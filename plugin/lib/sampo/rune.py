@@ -1271,15 +1271,15 @@ def export(p, out):
     """The tower as data for a page (genesis.json) plus each doc as a file beside it, home paths shown as ~ and
     secrets redacted, so the run can be followed from the repo or its site."""
     import json
-    d, home_dir = home(p), os.path.expanduser("~")
+    d, terms = home(p), c.private_terms()
     if not os.path.isfile(os.path.join(d, "gen-0.md")):
         raise ValueError(f"no Genesis tower here ({d}): fm genesis init first, or run from the project that has one")
-    def scrub(x):  # every string the page gets: home paths as ~, secrets redacted
+    def scrub(x):  # every string the page gets: any home path as ~, private hosts and terms, secrets redacted (T-3551)
         if isinstance(x, str):
-            return c.redact(x.replace(home_dir, "~") if len(home_dir) > 1 else x)
+            return c.redact(c.redact_local(x, terms))
         if isinstance(x, list):
             return [scrub(v) for v in x]
-        return {k: scrub(v) for k, v in x.items()} if isinstance(x, dict) else x
+        return {scrub(k): scrub(v) for k, v in x.items()} if isinstance(x, dict) else x  # keys too
     docs = {}
     for root, dirs, files in os.walk(d):
         dirs.sort()
@@ -1670,10 +1670,15 @@ def publish(p, settle=False):
                 git(wt, "commit", "-q", "-m", "Genesis: tower update (fm genesis live)" if old != new
                     else "Site: daily data refresh (fm genesis live)")
                 sha = git(wt, "rev-parse", "HEAD").strip()
-                stray = [f for f in git(wt, "diff", "--name-only", base, sha).splitlines()
-                         if not f.startswith(("site/genesis/", CARDS + "/")) and f != STATS]
+                touched = [f for f in git(wt, "diff", "--name-only", "-z", base, sha).split("\0") if f]
+                stray = [f for f in touched if not f.startswith(("site/genesis/", CARDS + "/")) and f != STATS]
                 if stray:
                     raise ValueError(f"refusing to push: the commit touches {stray[:3]} outside the site's data")
+                commits, files = release._private_hits(wt, [sha], sha, set(touched))  # T-3551: as fm ship does
+                if commits or files:  # recorded, not raised: the hook that kicked it goes on; files only, never the term
+                    return _record(p, "refused: a private term (sampo private list) or a secrets-file value is in "
+                                   + (c.joinmore(files, 5) if files else "the commit") + "; nothing was pushed: "
+                                   "redact it where the tower, the stats or the cards read it, and the next publish retries")
                 git(p.root, "push", "-q", remote, f"{sha}:refs/heads/main")
             finally:
                 git(p.root, "worktree", "remove", "--force", wt, ok=True)

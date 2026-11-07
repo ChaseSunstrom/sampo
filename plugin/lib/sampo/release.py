@@ -363,10 +363,21 @@ def _refuse_private(root, picks, tip):
     """T-3529: refuse when the commits picks (messages, added lines against the first parent) or tip's tree hold one of
     the user's private terms (sampo private) or a value from their secrets file, naming the commits (the user's own
     shas: a scratch tree's re-picks differ) and files, never the term."""
+    commits, files = _private_hits(root, picks, tip)
+    if commits or files:
+        where = ([f"commit{'s' if len(commits) > 1 else ''} " + c.joinmore([s[:8] for s in commits], 5)] if commits else []) \
+            + ([f"file{'s' if len(files) > 1 else ''} " + c.joinmore(files, 5)] if files else [])
+        _err(f"a private term (sampo private list) or a secrets-file value is in {' and '.join(where)}; nothing was "
+             "pushed: redact it (sampo sync export for .sampo/; amend or rebase a commit that carries it), then ship again")
+
+
+def _private_hits(root, picks, tip, paths=None):
+    """(commits, files) of _refuse_private's scan, files named redacted; paths: only those files of tip's tree (T-3551:
+    the tower checks the files its commit touches, so a file already on main can't hold its pushes back)."""
     from sampo import models, sandbox  # a secret-named line only: a base URL or a port there is no secret
     terms, values = c.private_terms(), [v for k, v in models.secret_pairs() if len(v) >= 8 and sandbox.secret(k)]
     if not terms and not values:
-        return
+        return [], []
     def bad(text):
         return c.has_private(text, terms) or any(v in text for v in values)
     commits = [s for s in picks
@@ -374,30 +385,29 @@ def _refuse_private(root, picks, tip):
                    ln for ln in _git(root, "diff", "--no-color", "--no-ext-diff", "-U0", f"{s}^", s).splitlines()
                    if ln.startswith("+") and not ln.startswith("+++ ")))]
     needles = [max(t.removeprefix("*.").split("*"), key=len) for t in terms] + values  # fixed strings; bad() decides
+    # paths: those files only, unless one holds a needle (a pathspec is argv too: then the whole tree, filtered below)
+    spec = [] if paths is None or any(n.lower() in f.lower() for f in paths for n in needles) \
+        else [":(literal)" + f for f in sorted(paths)]
     tmp = tempfile.mkdtemp(prefix="sampo-private-")  # argv shows in ps: the needles go in a 0600 file in a 0700 dir
     try:
         fd, pats = tempfile.mkstemp(dir=tmp)
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(needles) + "\n")
-        r = c._git(root, "grep", "-l", "-z", "-I", "-i", "-F", "-f", pats, tip, "--", timeout=300, proc=True)
+        r = c._git(root, "grep", "-l", "-z", "-I", "-i", "-F", "-f", pats, tip, "--", *spec, timeout=300, proc=True)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if r.returncode not in (0, 1):
         _err(f"git grep failed: {c.plain(r.stderr.strip())[:200]}; nothing was pushed")
     blobs = dict((ln.partition("\t")[2], ln.split()[2]) for ln in _git(root, "ls-tree", "-r", "-z", tip).split("\0") if ln)
+    blobs = {f: b for f, b in blobs.items() if paths is None or f in paths}
     hits = {x.split(":", 1)[1] for x in r.stdout.split("\0") if ":" in x}  # by blob id: a path may hold a term too
     files = sorted({f for f in hits if f in blobs and bad(_git(root, "cat-file", "blob", blobs[f]))} | set(filter(bad, blobs)))
     def shown(f):  # a path that holds a term or a value is named redacted
         for v in values:
             f = f.replace(v, "[REDACTED]")
         return c.redact_local(f)
-    files = [shown(f) for f in files]
-    if commits or files:
-        where = ([f"commit{'s' if len(commits) > 1 else ''} " + c.joinmore([s[:8] for s in commits], 5)] if commits else []) \
-            + ([f"file{'s' if len(files) > 1 else ''} " + c.joinmore(files, 5)] if files else [])
-        _err(f"a private term (sampo private list) or a secrets-file value is in {' and '.join(where)}; nothing was "
-             "pushed: redact it (sampo sync export for .sampo/; amend or rebase a commit that carries it), then ship again")
+    return commits, [shown(f) for f in files]
 
 
 def _push_main(p, tid, sha, remote, by):

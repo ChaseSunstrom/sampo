@@ -419,6 +419,14 @@ class Ship(ForemanTestCase):
         for needle in ("example-private", "fixture-value"):
             self.assertNotIn(needle, argv)
             self.assertNotIn(needle, msg)
+        seen.clear()  # T-3551: the tower's touched files go to git grep as the pathspec, unless one holds a needle
+        with mock.patch.dict(os.environ, {"FOREMAN_SECRETS": secrets}), mock.patch.object(c, "_git", spy):
+            self.assertEqual(release._private_hits(self.repo, [], tip, {"c.txt"}), ([], ["c.txt"]))
+            self.assertIn(":(literal)c.txt", [x for a in seen if "grep" in a for x in a])
+            seen.clear()
+            got = release._private_hits(self.repo, [], tip, {"c.txt", "hosts/llm.home.example-private.test/notes.md"})
+        self.assertEqual(got, ([], ["c.txt", "hosts/<host>/notes.md"]))
+        self.assertNotIn("example-private", "\0".join(x for a in seen for x in a).lower())
 
     def test_a_tree_changed_after_the_tests_ran_refuses_with_both_hashes(self):  # T-2642
         self.grant()

@@ -1453,17 +1453,18 @@ def _private_host(m):
     return "<host>" if private and max(a, b, *rest) <= 255 else m.group(0)
 
 
-def redact_local(text):
+def redact_local(text, terms=None):
     """T-3508: text bound for a public copy (the .sampo mirror) without this machine's layout: the home folder and any
     /home/<name> (or /Users/<name>) read as ~, and Claude's -home-<name>- project folders as -home-~-; a user@ip or bare
-    ip in 10/8, 172.16/12, 192.168/16 or CGNAT 100.64/10 reads as <host>."""
+    ip in 10/8, 172.16/12, 192.168/16 or CGNAT 100.64/10 reads as <host>. terms: the private terms read once by a caller
+    with many strings (default: read here)."""
     if not isinstance(text, str):
         return text
     home = os.path.expanduser("~").rstrip("/")
     if home:
         text = re.sub(_AT + re.escape(home) + r"(?![\w-]|\.\w)", r"\1~", text)
     text = _IPV4.sub(_private_host, _CLAUDE_HOMES.sub(r"-\1-~", _HOMES.sub(r"\1~", text)))
-    for rx, repl in _private_res(tuple(private_terms())):  # T-3529: and the user's own private terms
+    for rx, repl in _private_res(tuple(private_terms() if terms is None else terms)):  # T-3529: and the user's own
         text = rx.sub(repl, text)
     return text
 

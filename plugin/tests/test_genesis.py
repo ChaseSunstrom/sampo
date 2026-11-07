@@ -220,6 +220,22 @@ class GenesisExport(ForemanTestCase):
         data = json.loads(raw)
         self.assertEqual([e["run"] for e in data["exam"]], ["~/runs/x"])  # only objects; null and 5 dropped
 
+    def test_export_shows_any_home_a_private_ip_and_a_private_term_redacted(self):  # T-3551
+        self.fm("init")
+        self.fm("private", "add", "*.home.example.test")
+        self.fm("private", "add", "devbox")
+        self.fm("genesis", "init", "--file", "-", input=GEN0_CAPS)
+        tower = self.fm_json("genesis")["dir"]
+        tower_file(tower, "gap-map.md",
+                   "# Gaps\n\nlogs in /home/alice/work, on llm.devbox.home.example.test and 192.168.4.20\n")
+        tower_file(tower, "gen-1/mission-devbox.md", "# Mission: devbox\n")  # a term in a key: docs are keyed by name
+        out = os.path.join(self.tmp, "site-genesis")
+        self.fm_json("genesis", "export", out)
+        raw = read_text(os.path.join(out, "genesis.json")) + read_text(os.path.join(out, "gap-map.md"))
+        for leak in ("/home/alice", "example.test", "192.168.4.20", "devbox"):
+            self.assertNotIn(leak, raw)
+        self.assertIn("logs in ~/work, on <host> and <host>", raw)
+
     def test_a_re_export_drops_docs_the_tower_lost_and_nothing_else(self):
         """T-2084: only a file the last export listed, in the tower's shape and not a symlink, is removed."""
         from sampo import core
@@ -452,6 +468,47 @@ class GenesisLive(ForemanTestCase):
         pushed = json.loads(self.git("show", "main:site/data/stats.json", at=self.origin))
         self.assertEqual(pushed["generated"], datetime.date.today().isoformat())
         self.assertEqual(self.fm_json("genesis", "publish")["result"], "up to date")  # main's is today's: no push
+
+    def test_a_private_term_or_secrets_value_in_the_tower_commit_is_refused_and_recorded_not_pushed(self):  # T-3551
+        import datetime
+        from sampo import prove
+        stub = ("import datetime, json, os\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
+                "with open(os.path.join(root, 'site', 'data', 'stats.json'), 'w') as f:\n"
+                "    json.dump({'generated': datetime.date.today().isoformat(), 'note': os.environ.get('STUB_NOTE', '')}, f)\n")
+        os.makedirs(os.path.join(self.repo, "site", "data"), exist_ok=True)
+        with open(os.path.join(self.repo, "site", "stats.py"), "w") as f:
+            f.write(stub)
+        with open(os.path.join(self.repo, "site", "data", "stats.json"), "w") as f:
+            f.write('{"generated": "2000-01-01"}\n')
+        self.git("add", "site")
+        self.git("commit", "-qm", "site with old stats")
+        self.git("push", "-q", "origin", "main")
+        prove.remember(self.repo)
+        self.fm("private", "add", "*.home.example.test")
+        self.granted()
+        self.fm("genesis", "live", "on")
+        main = self.git("rev-parse", "main", at=self.origin).strip()
+        r = self.fm_json("genesis", "publish", env={"STUB_NOTE": "logs on llm.devbox.home.example.test"})
+        self.assertTrue(r["result"].startswith("refused:"), r)  # recorded, not raised into the hook
+        self.assertIn("site/data/stats.json", r["result"])
+        self.assertNotIn("example.test", r["result"], "the term itself is never named")
+        self.assertNotIn("sha", r)
+        self.assertEqual(self.git("rev-parse", "main", at=self.origin).strip(), main, "nothing was pushed")
+        self.assertIn("refused:", self.fm("genesis").stdout)
+        secrets = os.path.join(self.tmp, "secrets.env")
+        with open(secrets, "w") as f:
+            f.write("FIXTURE_TOKEN=fixture-value-0123456789\n")
+        os.chmod(secrets, 0o600)
+        tower_file(self.fm_json("genesis")["dir"], "gap-map.md", "# Gaps\n\nseen fixture-value-0123456789 here\n")
+        r = self.fm_json("genesis", "publish", env={"FOREMAN_SECRETS": secrets})
+        self.assertTrue(r["result"].startswith("refused:"), r)
+        self.assertIn("site/genesis/gap-map.md", r["result"])
+        self.assertNotIn("fixture-value", r["result"])
+        self.assertEqual(self.git("rev-parse", "main", at=self.origin).strip(), main)
+        r = self.fm_json("genesis", "publish")  # neither in it now: out it goes
+        self.assertEqual(r["result"], "pushed")
+        pushed = json.loads(self.git("show", "main:site/data/stats.json", at=self.origin))
+        self.assertEqual(pushed["generated"], datetime.date.today().isoformat())
 
     def test_main_decides_staleness_and_a_failed_or_foreign_stats_script_says_why(self):
         # T-2326 review: a fresh local stats.json hid main's stale one; a failing script was silent
