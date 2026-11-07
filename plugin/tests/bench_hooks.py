@@ -17,13 +17,25 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
 HOOK = os.path.join(PLUGIN, "hooks", "hook")
 FM = os.path.join(PLUGIN, "bin", "fm")
-sys.path.insert(0, os.path.join(PLUGIN, "lib"))
-import fmguard  # noqa: E402
+
+
+def script_budget():
+    """T-3132: the guard's script box, read by a child (-I), so the tree's code never runs in this timing process
+    (a branch's fmguard could patch resource.getrusage or statistics.median and fake its own timings)."""
+    code = "import sys; sys.path.insert(0, sys.argv[1]); import fmguard; print(fmguard._script_budget())"
+    try:
+        r = subprocess.run([sys.executable, "-I", "-c", code, os.path.join(PLUGIN, "lib")],
+                           capture_output=True, text=True, timeout=30)
+        v = float(r.stdout.strip().splitlines()[-1])
+        return min(v, 5 * 0.2) if v >= 0 else 0.2  # clamped: a branch can't loosen its own limit (nan/negative: default)
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return 0.2  # the guard's default box
+
 
 # T-1777: the script case is a hook plus the guard's CPU time box for one cold script read (the bench's script never
 # finishes inside it), so its budget is a hook's plus the box (300 left ~85 ms for startup, which load ate)
 BUDGET_MS = {"default": 150, "MessageDisplay": 100}
-BUDGET_MS["PreToolUse:Bash:script"] = BUDGET_MS["default"] + round(fmguard._script_budget() * 1000)
+BUDGET_MS["PreToolUse:Bash:script"] = BUDGET_MS["default"] + round(script_budget() * 1000)
 # T-1192: a real-shaped build script (functions, case, quoting, substitutions, a heredoc) the guard reads when a command
 # runs it (T-0275); repeated to ~40 KB and rewritten before every run, so each run is a cold read, not a cached one
 SCRIPT_BLOCK = r'''

@@ -23,9 +23,50 @@ class ScriptBudget(unittest.TestCase):  # T-1777
     def test_the_script_case_is_a_hook_plus_the_guards_time_box(self):
         # the bench's 37 KB script never finishes inside the guard's CPU box (a full read took 124 s), so the case
         # costs a hook's startup plus that box: a hook's budget plus the box, moving with it
+        sys.path.insert(0, os.path.join(bench_hooks.PLUGIN, "lib"))  # the test's own process; the bench no longer does
         import fmguard
         self.assertEqual(bench_hooks.BUDGET_MS["PreToolUse:Bash:script"],
                          bench_hooks.BUDGET_MS["default"] + round(fmguard._script_budget() * 1000))
+
+
+class Isolation(unittest.TestCase):  # T-3132
+    def test_the_benched_trees_code_never_enters_the_timing_process(self):
+        import json
+        import shutil
+        import subprocess
+        import tempfile
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "plugin", "lib"))
+            os.makedirs(os.path.join(t, "plugin", "tests"))
+            shutil.copy(os.path.join(os.path.dirname(__file__), "bench_hooks.py"), os.path.join(t, "plugin", "tests"))
+            with open(os.path.join(t, "plugin", "lib", "fmguard.py"), "w") as f:
+                f.write("import resource\nresource.getrusage = lambda *a: 1/0\n"
+                        "def _script_budget():\n    return 0.7\n")
+            code = ("import sys, json, resource; sys.path.insert(0, 'plugin/tests'); import bench_hooks as b; "
+                    "print(json.dumps([[m for m in sys.modules if m.startswith('fmguard')], "
+                    "resource.getrusage.__module__, b.BUDGET_MS['PreToolUse:Bash:script']]))")
+            r = subprocess.run([sys.executable, "-I", "-c", code], cwd=t, capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            mods, rusage, budget = json.loads(r.stdout)
+            self.assertEqual(mods, [])
+            self.assertEqual(rusage, "resource")
+            self.assertEqual(budget, 150 + 700, "the child still reads the tree's budget")
+
+
+    def test_a_branch_cant_loosen_its_own_script_limit(self):
+        import tempfile
+        for val, want in (("600.0", 1.0), ("0.4", 0.4), ("float('nan')", 0.2), ("-3", 0.2)):
+            with tempfile.TemporaryDirectory() as t:
+                lib = os.path.join(t, "plugin", "lib")
+                os.makedirs(lib)
+                with open(os.path.join(lib, "fmguard.py"), "w") as f:
+                    f.write(f"def _script_budget():\n    return {val}\n")
+                orig = bench_hooks.PLUGIN
+                bench_hooks.PLUGIN = os.path.join(t, "plugin")
+                try:
+                    self.assertEqual(bench_hooks.script_budget(), want, val)
+                finally:
+                    bench_hooks.PLUGIN = orig
 
 
 class Modules(unittest.TestCase):  # T-3139
