@@ -35,8 +35,9 @@ class OutlineFirst(Base):
         out = self.pre({"file_path": self.big})
         self.assertEqual(out.get("permissionDecision"), "deny")
         reason = out["permissionDecisionReason"]
-        self.assertIn("def handler_0", reason)
-        self.assertIn("def handler_79", reason)
+        self.assertIn("1 handler_0 · ", reason)  # T-3670: names packed several per line, no def prefix
+        self.assertIn("more", reason, "80 defs don't fit: the rest are counted")
+        self.assertLessEqual(len(reason.splitlines()), 8, "T-3670: the terminal shows it as an error block")
         self.assertIn("offset", reason)
         self.assertEqual(self.pre({"file_path": self.big}), {}, "asked again: it reads whole")
 
