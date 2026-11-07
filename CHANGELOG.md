@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The UI card grid is grown: 12,000 UI cards across 2,541 of its 3,840 cells (66%), written by Haiku and the local models; cards name each platform's own test runner, card commands are checked the way bash reads them, and the grower runs repairs in parallel and stops cleanly when interrupted (T-2994)
 - Test classes no longer inherit operator switches (FOREMAN_LOAD_GATE, SAMPO_SLOT and the like), a test makes every new env name Sampo reads declare itself switch or harness, and a merge train checks the base's affected tests first whenever its env differs from the last green train's, so an env change that turns the base red stops it in minutes (T-3625)
 - Page tests (live page and four site modules) share one headless browser per run with a fresh context per test (69% less launch CPU over 20 empty pages, ABAB), night generator jobs run at nice 19 and other night jobs at nice 10 at most (T-3296)
 - `sampo cpu` shows this session's CPU from its cgroup as cores and % of the machine, split by kind, a self-check says how far the 10-minute average is over the 10% goal and what uses most, and `sampo cpu cap` sets an optional quota on the session's own scope (T-3592).
