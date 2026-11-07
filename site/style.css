@@ -161,8 +161,14 @@ h3 { font-size: var(--step-1); line-height: 1.15; }
 .nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
 .nav a { color: var(--ink-2); text-decoration: none; font-weight: 500; white-space: nowrap; transition: color var(--dur-small); }
 .nav a:hover { color: var(--ink); }
-.nav .hide-sm { display: none; }
-@media (min-width: 940px) { .nav .hide-sm { display: inline; } } /* T-2753: at 768 px the full nav pushed the theme button off the page */
+.nav .hide-sm, .nav .mid-sm { display: none; }
+@media (min-width: 940px) { .nav .mid-sm { display: inline; } }
+@media (min-width: 1180px) { .nav .hide-sm { display: inline; } .nav .menu { display: none; } } /* T-2753: at 768 px the full nav pushed the theme button off the page; T-2903: eleven entries need 1180, below it the menu lists them all */
+.nav .menu { position: relative; }
+.nav .menu summary { cursor: pointer; list-style: none; color: var(--ink-2); font-weight: 500; }
+.nav .menu summary::-webkit-details-marker { display: none; }
+.nav .menu-list { position: absolute; right: 0; top: calc(100% + 12px); z-index: 30; display: grid; gap: 4px; min-width: 200px; padding: 10px; background: var(--raised); border: 1px solid var(--border); border-radius: 8px; }
+.nav .menu-list a { padding: 8px 10px; }
 /* T-1683, T-2089: the display face is wide, so under 420 px the gaps and brand tighten, and under
    360 px the header GitHub link goes (the footer keeps one); the brand never shrinks, so its text can't spill */
 @media (max-width: 419px) { .top .wrap { gap: 10px; } .nav { gap: 14px; } .brand { font-size: 1.3rem; gap: 8px; } }

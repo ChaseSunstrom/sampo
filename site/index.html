@@ -173,28 +173,12 @@ if(!matchMedia('(prefers-reduced-motion: reduce)').matches)d.classList.add('anim
 <header class="bar">
   <a class="brand" href="#top" aria-label="Sampo, home"><img src="assets/sampo.svg" alt="" width="34" height="34">Sampo</a>
   <nav class="nav" aria-label="Sections">
-    <a href="#how">How it works</a>
-    <a href="#smith">Smith</a>
-    <a href="genesis/index.html">Rune</a>
-    <a href="#ward">Ward</a>
-    <a href="#moons">Moons</a>
-    <a href="#record">Record</a>
-    <a href="features/index.html">Features</a>
-    <a href="cards.html">Cards</a>
-    <a href="features/benchmarks.html">Benchmarks</a>
+    {{nav}}
   </nav>
   <details class="menu">
     <summary class="tbtn">Sections</summary>
     <nav aria-label="Sections, on a small screen">
-      <a href="#how">How it works</a>
-      <a href="#smith">Smith</a>
-      <a href="genesis/index.html">Rune</a>
-      <a href="#ward">Ward</a>
-      <a href="#moons">Moons</a>
-      <a href="#record">Record</a>
-    <a href="features/index.html">Features</a>
-    <a href="cards.html">Cards</a>
-    <a href="features/benchmarks.html">Benchmarks</a>
+      {{menu}}
     </nav>
   </details>
   <button class="tbtn" id="theme" type="button" aria-label="Switch theme"><span class="n">Day<span class="lg">light</span></span><span class="d">Forge<span class="lg"> light</span></span></button>

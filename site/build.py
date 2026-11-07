@@ -378,6 +378,31 @@ def dials(items, note):
     return f'<div class="proof"><p>{note}</p><dl>{cells}</dl></div>'
 
 
+# T-2903: the main nav, once, for the landing, the tower and every section page (label, path from the site root, shown: 0 from 1180 px, 2 from 940 px, 1 always)
+NAV = (("How it works", "index.html#how", 0), ("Smith", "index.html#smith", 0), ("Rune", "genesis/index.html", 0),
+       ("Ward", "index.html#ward", 0), ("Moons", "index.html#moons", 0), ("Record", "index.html#record", 0),
+       ("Features", "features/index.html", 2), ("Cards", "cards.html", 1), ("Benchmarks", "features/benchmarks.html", 0),
+       ("Install", "index.html#install", 1), ("GitHub", "https://github.com/ChaseSunstrom/sampo", 1))
+
+
+def nav_links(up, here="", skip=(), hide=True, landing=False, menu=False):
+    """NAV as links. up: the way to the site root; landing: its own anchors drop the file name; here: this page's path,
+    marked current; skip: labels left out; hide: entries not always shown hide on a narrow screen; menu: after the
+    links, a <details> listing every entry for the screens where some are hidden."""
+    out = []
+    for label, path, always in NAV:
+        if label in skip:
+            continue
+        href = path if "//" in path else path[len("index.html"):] if landing and path.startswith("index.html#") else up + path
+        cls = "" if always == 1 or not hide else ' class="mid-sm"' if always else ' class="hide-sm"'
+        cur = ' aria-current="page"' if path == here else ""
+        out.append(f'<a{cls} href="{href}"{cur}>{esc(label)}</a>')
+    if menu:
+        out.append('<details class="menu"><summary aria-label="All sections" title="All sections">&#9776;</summary><div class="menu-list">'
+                   + nav_links(up, here, skip, False, landing) + "</div></details>")
+    return "\n      ".join(out)
+
+
 def layout(title, desc, body, pages, here, depth=1, script=""):
     """A section page. pages=None: one wide column with no side list of feature pages (site/cards.html); script: its own JS."""
     up = "../" * depth
@@ -408,10 +433,7 @@ def layout(title, desc, body, pages, here, depth=1, script=""):
   <div class="wrap">
     <a class="brand" href="{up}index.html"><img src="{up}{ICON}" alt="" width="28" height="28">Sampo</a>
     <nav class="nav" aria-label="Main">
-      <a class="hide-sm" href="{up}features/index.html">Features</a>
-      <a href="{up}cards.html"{current if here == "cards.html" else ""}>Cards</a>
-      <a href="{up}index.html#install">Install</a>
-      <a href="https://github.com/ChaseSunstrom/sampo">GitHub</a>
+      {nav_links(up, here if here == "cards.html" else f"features/{here}.html", menu=True)}
       <button class="theme" type="button" aria-label="Switch between light and dark" title="Light or dark">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>
       </button>
@@ -750,6 +772,8 @@ def build(out):
         if old not in page:  # a reworded tag would ship the old, cached file
             raise SystemExit(f"build.py: site/index.html lost {old}")
         page = page.replace(old, new)
+    page = (page.replace("{{nav}}", nav_links("", skip=("GitHub",), hide=False, landing=True))  # T-2903
+            .replace("{{menu}}", nav_links("", hide=False, landing=True)))
     for k, v in counts.items():
         page = page.replace("{{" + k + "}}", fmt(v))
     if "{{" in page:  # a count the build doesn't know would ship as braces
@@ -761,6 +785,7 @@ def build(out):
         gpage = f.read()
     if 'href="../style.css"' not in gpage:
         raise SystemExit('build.py: site/genesis/index.html lost href="../style.css"')
+    gpage = gpage.replace("{{nav}}", nav_links("../", "genesis/index.html", menu=True))  # T-2903
     gpage = (gpage.replace('href="../style.css"', f'href="../{CSS}"').replace('"../assets/sampo.svg"', f'"../{ICON}"')
              .replace('"../assets/favicon.ico"', f'"../{FAVICON}"'))
     with open(gpath, "w", encoding="utf-8") as f:

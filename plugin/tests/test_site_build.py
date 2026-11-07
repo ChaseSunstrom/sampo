@@ -61,6 +61,38 @@ class Reproducible(unittest.TestCase):
                     self.assertTrue(a.read() == b.read(), f"{rel} differs between two builds")
 
 
+class SharedNav(unittest.TestCase):
+    """T-2903: the landing, the tower and the section pages draw their main nav from one list in build.py."""
+
+    def test_every_page_has_the_same_links_with_install_and_github(self):
+        with tempfile.TemporaryDirectory() as out:
+            p = subprocess.run([sys.executable, os.path.join(ROOT, "site", "build.py"), out], capture_output=True,
+                               text=True, timeout=300)
+            self.assertEqual(p.returncode, 0, p.stderr)
+            seen = {}
+            for rel in ("index.html", "genesis/index.html", "cards.html", "features/benchmarks.html", "features/index.html"):
+                head = re.search(r"<header.*?</header>", read_text(os.path.join(out, rel)), re.S).group(0)
+                nav = re.search(r'<nav class="nav".*?</nav>', head, re.S).group(0)
+                seen[rel] = set(re.findall(r">([^<]+)</a>", nav))
+                landing = read_text(os.path.join(out, "index.html"))
+                for href in re.findall(r'href="([^"]+)"', nav):  # every link lands on a file, and an anchor on a landing id
+                    if "//" in href:
+                        continue
+                    path, _, anchor = href.partition("#")
+                    target = os.path.normpath(os.path.join(out, os.path.dirname(rel), path)) if path else os.path.join(out, rel)
+                    self.assertTrue(os.path.isfile(target), f"{rel}: {href} has no file")
+                    if anchor:
+                        self.assertEqual(os.path.basename(target), "index.html", f"{rel}: {href}")
+                        self.assertIn(f'id="{anchor}"', landing, f"{rel}: {href} has no anchor on the landing")
+                if rel == "index.html":  # the landing's GitHub is its own button beside the nav
+                    seen[rel] |= set(re.findall(r'class="gh"[^>]*>([^<]+)<', head))
+                self.assertLessEqual({"Install", "GitHub", "Cards", "Features", "Rune"}, seen[rel], rel)
+            for rel in ("genesis/index.html", "features/benchmarks.html"):  # no menu on the landing: it has its own
+                self.assertIn('<details class="menu">', read_text(os.path.join(out, rel)), rel)
+            self.assertEqual(len({frozenset(v) for v in seen.values()}), 1, seen)
+            self.assertIn('aria-current="page">Rune<', read_text(os.path.join(out, "genesis", "index.html")))
+
+
 class ModelBench(unittest.TestCase):
     def test_the_models_section_shows_the_last_good_run_stale_beside_the_baselines(self):  # T-3093
         sys.path.insert(0, os.path.join(PLUGIN, "lib"))
