@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The merge train's gate and probes, `sampo ship`'s suite and `sampo check` in the main checkout now take freed CPU test slots ahead of builder lanes' runs, so a gate no longer gets 1/N of the pool beside ~10 testing builders (T-3614)
 - Local Ollama models that sit fully on the GPU now run with one CPU thread through Ollama's native chat API, because llama.cpp's eight default threads only busy-wait there and the OpenAI endpoint can't pass the setting (T-3588).
 - The genesis tower's live publish now runs the same private-term and secrets-value scan as sampo ship on the files its commit touches, and records a refusal instead of pushing; its export redacts any home path, private IP and private term in both keys and values (T-3551).
 - finished_lanes reads every lane's tip in one worktree list and one log walk, and keeps each lane's answer until its tip, index or main moves, so a refresh with unchanged lanes runs 2 git processes instead of ~260 (T-3585).
