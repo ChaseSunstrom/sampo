@@ -59,20 +59,56 @@ class ArgAliases(CodeCase):
 class AsksChange(unittest.TestCase):
     def test_a_question_asks_for_no_change(self):
         for q in ("Why does the cache update twice?", "Explain how handle works", "what does calc.add do",
-                  "Can you add a test?", "is the fix in?"):
+                  "Can you add a test?", "is the fix in?", "Summarize the failing tests", "list the open bugs",
+                  "Describe the slow paths"):
             with self.subTest(q=q):
                 self.assertIsNone(smith.asks_change(q))
 
     def test_an_imperative_does(self):
         for r, word in (("fix add", "fix"), ("Something is off in the paging; find and fix it.", "fix"),
-                        ("make this faster", "make"), ("The tests won't run; fix it.", "fix")):
+                        ("make this faster", "make"), ("The tests won't run; fix it.", "fix"),
+                        # T-3688: a find-and-fix request; 285 of T-3676's 339 missed fixes were answered read-only
+                        ("Check the docs are right.", "check"), ("Check the test coverage.", "check"),
+                        ("Review this for security problems.", "review"),
+                        ("CI fails now and then; find out why.", "fails"), ("", "find and fix")):
             with self.subTest(r=r):
                 self.assertEqual(smith.asks_change(r), word)
-        self.assertIsNone(smith.asks_change("Check the docs are right."))
+
+
+class FixPlanCheck(unittest.TestCase):
+    """T-3688: for a request that asks for a change, small-model mode's plan check refuses what can't change or prove
+    anything: an answer, a RESEARCH plan, a verify that can't fail (none-python's 'echo task received')."""
+
+    @staticmethod
+    def verify(cmd):
+        return dict(PLAN, criteria=[{"text": "calc.add adds", "verify": cmd}])
+
+    def test_an_answer_and_a_research_plan_are_refused(self):
+        answer = {"answer": "README names page() but the code has paginate()"}
+        self.assertIsNone(smith.check_plan(answer), "a question's answer stands")
+        self.assertIn("read-only answer", smith.check_plan(answer, change="check"))
+        self.assertIn("RESEARCH plan", smith.check_plan(dict(PLAN, type="RESEARCH"), change="check"))
+        self.assertIsNone(smith.check_plan(PLAN, change="check"))
+
+    def test_a_verify_that_cant_fail_is_refused(self):
+        for cmd in ("echo 'task received'", "true", ":", "exit 0", "python3 test_calc.py || true",
+                    "python3 test_calc.py; echo done", "python3 -m pytest -q | tail -5",
+                    "sh -c 'python3 test_calc.py || exit 0'", "printf ok"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(smith.check_plan(self.verify(cmd)), "outside a fix request, as before")
+                self.assertIn("can't fail", smith.check_plan(self.verify(cmd), change="check"))
+
+    def test_a_verify_that_can_fail_stands(self):
+        for cmd in ("python3 test_calc.py", "python3 test_calc.py && echo ok", "grep -q paginate README.md",
+                    "! grep -q 'page(' README.md", "python3 -c \"import calc; print('ok')\"", "cargo test 2>&1",
+                    "node --test || exit 1"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(smith.check_plan(self.verify(cmd), change="check"))
 
 
 GREEN ="python3 -c 'import calc'"  # passes before any work
 FIX_EDIT = call("edit", file="calc.py", old="a - b", new="a + b")
+LOOK = call("done", summary="calc.add subtracts (calc.py:2): a - b should be a + b")  # T-3688: the look before the plan
 
 
 class SmallMode(CodeCase):
@@ -85,25 +121,53 @@ class SmallMode(CodeCase):
         perf = dict(PLAN, type="PERFORMANCE", criteria=[{"text": "calc imports", "verify": GREEN}])
         for small in (True, False):
             with self.subTest(small=small):
-                f, r = self.run_small(small, plan(perf), plan(PLAN), FIX_EDIT, call("done", summary="fixed"), CLOSE)
-                sent_back = "already passes before any work" in f.said(1)
+                f, r = self.run_small(small, *[LOOK] * small, plan(perf), plan(PLAN), FIX_EDIT,
+                                      call("done", summary="fixed"), CLOSE)
+                sent_back = "already passes before any work" in f.said(1 + small)
                 self.assertEqual(sent_back, small, r.stdout + r.stderr)
                 self.tearDown()
                 self.setUp()
 
     def test_a_change_request_planned_as_research_goes_back_to_be_typed(self):
         research = dict(PLAN, type="RESEARCH")
-        f, r = self.run_small(True, plan(research), plan(PLAN), FIX_EDIT, call("done", summary="fixed"), CLOSE)
-        self.assertIn("asks for a change", f.said(1))
-        self.assertIn("RESEARCH", f.said(1))
+        f, r = self.run_small(True, LOOK, plan(research), plan(PLAN), FIX_EDIT, call("done", summary="fixed"), CLOSE)
+        self.assertIn("asks for a change", f.said(2))
+        self.assertIn("RESEARCH", f.said(2))
         self.assertEqual(self.task()["type"], "FIX")
 
     def test_a_change_request_answered_goes_back_for_a_plan(self):
         answer = {"text": json.dumps({"answer": "calc.add subtracts; change - to +"})}
-        f, r = self.run_small(True, answer, plan(PLAN), FIX_EDIT, call("done", summary="fixed"), CLOSE)
-        self.assertIn("asks for a change", f.said(1))
+        f, r = self.run_small(True, LOOK, answer, plan(PLAN), FIX_EDIT, call("done", summary="fixed"), CLOSE)
+        self.assertIn("asks for a change", f.said(2))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.task()["status"], "done")
+
+    def test_a_find_and_fix_request_answered_twice_still_gets_a_plan_and_an_edit(self):
+        # T-3688: docs-rust-3d91ae's planner named the defect in an answer and nothing was edited
+        answer = {"text": json.dumps({"answer": "calc.add subtracts; change - to +"})}
+        f, r = self.run_small(True, LOOK, answer, answer, plan(PLAN), FIX_EDIT, DONE, CLOSE, request="Check calc.add.")
+        self.assertIn("read-only answer", f.said(2))
+        self.assertIn("read-only answer", f.said(3), "the second answer is refused too, not taken")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        with open(os.path.join(self.repo, "calc.py"), encoding="utf-8") as h:
+            self.assertIn("a + b", h.read())
+        self.assertEqual(self.task()["status"], "done")
+
+    def test_a_find_and_fix_request_outside_small_mode_is_still_answered(self):
+        answer = {"text": json.dumps({"answer": "calc.add subtracts"})}
+        f, r = self.run_small(False, answer, call("done", summary="calc.add subtracts (calc.py:2)"),
+                              request="Check calc.add.")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("read-only answer", json.dumps(f.seen))
+
+    def test_a_fix_round_quotes_the_visible_verify_and_nothing_else(self):
+        # T-3688: the retry hears its own failing check's output; an exam's hidden check is never in the tree it runs in
+        f, r = self.run_small(True, LOOK, plan(PLAN), call("write", file="notes.txt", content="x\n"), DONE, FIX_EDIT,
+                              DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        fix = next(json.dumps(s) for s in f.seen if "fix round 1" in json.dumps(s))
+        self.assertIn("python3 test_calc.py", fix)
+        self.assertIn("AssertionError: -1", fix, "the failing check's own output")
 
     def test_a_question_is_still_answered(self):
         answer = {"text": json.dumps({"answer": "calc.add subtracts"})}
@@ -111,16 +175,37 @@ class SmallMode(CodeCase):
                               request="what does calc.add do?")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("asks for a change", json.dumps(f.seen))
+        self.assertNotIn("Before any plan", json.dumps(f.seen), "a question has no look before its plan")
+
+    def test_a_change_request_looks_before_it_plans(self):
+        # T-3688: the planner sees only the file list; s31-039's blind fix plans found 5 defects of 24 where the
+        # read-only answers had found 11. A read-only look reads first, and the plan hears what it found.
+        f, r = self.run_small(True, call("read", file="calc.py"), LOOK, plan(PLAN), FIX_EDIT, DONE, CLOSE,
+                              request="Check calc.add.")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Before any plan", f.said(0))
+        self.assertEqual({t["function"]["name"] for t in f.seen[0]["tools"]}, {"read", "search", "done"},
+                         "the look can't change a file")
+        self.assertIn("a - b should be a + b", f.said(2), "the planner hears what the look found")
+        self.assertEqual(self.task()["status"], "done")
+
+    def test_a_look_that_never_ends_stops_at_its_own_turns_and_the_work_keeps_its_own(self):
+        looks = [call("search", pattern=f"x{i}") for i in range(smith.LOOK_TURNS)]
+        f = self.serve("openai", *looks, plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        r = self.code("fix add", "--model", "fake", "--small", "--max-steps", "3", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("What a read-only look", f.said(smith.LOOK_TURNS), "no summary: nothing to hear")
+        self.assertEqual(self.task()["status"], "done")
 
     def test_the_last_step_of_a_change_plan_cant_end_with_nothing_changed(self):
         green = dict(PLAN, criteria=[{"text": "calc imports", "verify": GREEN}])
         close = {"text": json.dumps(dict(json.loads(CLOSE["text"]), regression="none: the check was green before"))}
-        f, r = self.run_small(True, plan(green), plan(green), call("done", summary="nothing to do"), FIX_EDIT,
+        f, r = self.run_small(True, LOOK, plan(green), plan(green), call("done", summary="nothing to do"), FIX_EDIT,
                               call("done", summary="fixed"), close)  # a green-before check: the close asks why
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         refused = [json.loads(ln) for ln in journal_text(self).splitlines() if '"early_done"' in ln]
         self.assertEqual(len(refused), 1)
-        self.assertIn("no file has changed", f.said(3))
+        self.assertIn("no file has changed", f.said(4))
 
     def test_the_exam_arm_passes_small_and_records_it(self):
         script = "import json,sys\nprint(json.dumps({'event':'answer','text':' '.join(sys.argv)}))\n"
@@ -136,3 +221,7 @@ class SmallMode(CodeCase):
                                        os.path.join(tmp, "e.jsonl"), small=True)
             self.assertIn("--small", ans["notes"][0])
             self.assertTrue(ans["small"])
+
+
+if __name__ == "__main__":  # T-3688: run as a script, as the brief's verify does, it ran nothing before
+    unittest.main()

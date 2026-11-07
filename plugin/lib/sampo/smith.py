@@ -87,22 +87,34 @@ NESTED = ("args", "arguments", "parameters", "input")
 CHANGE_TYPES = ("FIX", "FEATURE", "PERFORMANCE", "SECURITY")
 _CHANGE = re.compile(r"(?<![\w.])(?:fix|repair|make(?! sure)|add|implement|handle|change|rename|remove|update|speed up)"
                      r"(?![\w.(])", re.I)  # a word, not an identifier: calc.add, add() and make_page don't count
-SMALL_CHANGE = ("The request asks for a change ({word!r}), so a {what} won't do: reply with only a plan as a JSON object, "
-                "typed FIX, FEATURE, PERFORMANCE or SECURITY, with a verify that fails now and passes once the change "
-                "is made.")
+SMALL_CHANGE = ("The request asks for a change ({word!r}: find what is wrong and fix it), so a {what} won't do: reply "
+                "with only a plan as a JSON object, typed FIX, FEATURE, PERFORMANCE or SECURITY, with a verify that "
+                "fails now and passes once the change is made.")
+# T-3688: a find-and-fix request: a check, review or audit, or one naming a defect (T-3676: 285 of 339 missed exam
+# fixes were 'Check the docs are right.'-style requests answered read-only, the defect named and nothing edited)
+_FIND = re.compile(r"\A(?:check|review|audit|inspect|scan|find)\b|\b(?:fails?|failing|broken|wrong|slow|flaky|insecure|"
+                   r"bugs?|problems?|issues?|errors?|leaks?|vulnerab\w*)\b", re.I)
+# a verify whose exit status can't be non-zero: its last command is echo, printf, true, ':' or exit 0 after ';' or
+# '||' (none-python's T-3676 plan: verify `echo 'task received'`), or it pipes into a filter that exits 0
+_CANT_FAIL = re.compile(r"(?:\A|;|\|\|)\s*(?:(?:true|echo|printf)\b|exit\s+0\b|:(?=\s|\Z))[^;&|]*\Z"
+                        r"|\|\s*(?:tail|head|tee|cat|sort|uniq|wc)\b[^;&|]*\Z")
 
 
 _QUESTION = re.compile(r"\s*(?:what|why|how|does|do|did|is|are|was|can|could|should|would|will|where|when|which|who|"
-                       r"explain)\b", re.I)
+                       r"explain|describe|summari[sz]e|list|show|tell)\b", re.I)
 
 
 def asks_change(request):
-    """T-2878: the first word in the request that asks for a change, or None: a review asks for none, and nor does a
-    question (it starts with a question word or ends with '?'; 'Can you add a test?' is let through as a question)."""
+    """T-2878: the first word in the request that asks for a change, or None: a question asks for none (it starts with
+    a question word or ends with '?'; 'Can you add a test?' is let through as a question), nor does a request to
+    explain, list or summarize. T-3688: a check, a review or a named defect asks to find and fix, and so does no
+    request at all (find a defect, prove it, fix it)."""
     r = (request or "").strip()
+    if not r:
+        return None if request is None else "find and fix"  # None: no request text is known (a resumed task)
     if r.endswith("?") or _QUESTION.match(r):
         return None
-    hit = _CHANGE.search(r)
+    hit = _CHANGE.search(r) or _FIND.search(r)
     return hit and hit[0].lower()
 
 
@@ -311,10 +323,14 @@ def next_step(e, tid):
 
 # ---------------------------------------------------------------- slots
 
-def check_plan(v):
-    """None when v is a usable plan, else what's wrong with it (quoted back to the model)."""
+def check_plan(v, change=None):
+    """None when v is a usable plan, else what's wrong with it (quoted back to the model). T-3688: given `change`, the
+    request's word asking for one (small-model mode), an answer, a RESEARCH plan and a verify that can't fail are
+    refused too: the repairs, and the field ladder past them, end with a plan that changes something."""
     if not isinstance(v, dict):
         return "the reply holds no JSON object"
+    if change and (is_answer(v) or v.get("type") == "RESEARCH"):
+        return SMALL_CHANGE.format(word=change, what="read-only answer" if is_answer(v) else "RESEARCH plan")
     if is_answer(v):  # T-1320: a question
         return None if isinstance(v["answer"], str) and v["answer"].strip() else "answer must be text"
     if v.get("type") not in TYPES:
@@ -332,6 +348,10 @@ def check_plan(v):
             return f"criterion {i} needs both text and verify, as text"
         if "::" in cr["text"] or "\n" in cr["text"] + cr["verify"]:
             return f"criterion {i}: text and verify are one line each, and text has no '::'"
+        if change and _CANT_FAIL.search(cr["verify"]):
+            return (f"criterion {i}'s verify `{cr['verify']}` can't fail (it ends in an echo, true or exit 0, or pipes "
+                    "into tail or head), so it proves nothing: give a check that fails now and passes once the fix "
+                    "is made")
     steps = v.get("steps")
     if not isinstance(steps, list) or not 1 <= len(steps) <= 12 or \
             not all(isinstance(s, str) and s.strip() and "\n" not in s for s in steps):
@@ -3203,10 +3223,15 @@ def _plan(run, profile, dry=False):
              + run.fence(_files(run.root)) + user_note()},
             {"role": "user", "content": run.request + _context_note(run)}]
     profile = run.planner or profile  # T-2945: --planner asks the plan (and its re-plan); steps stay on --model
-    run.plan = slot(run, profile, msgs, check_plan, "plan", PLAN_FIELDS)
-    if is_answer(run.plan) and getattr(run, "small", False) and (word := asks_change(run.request)):  # T-2878: once
-        msgs.append({"role": "user", "content": SMALL_CHANGE.format(word=word, what="read-only answer")})
-        run.plan = slot(run, profile, msgs, check_plan, "plan", PLAN_FIELDS)
+    word = (getattr(run, "small", False) and not getattr(run, "ask", False)
+            and asks_change(run.request))  # T-2878, T-3688: a change is planned, not answered
+    run.plan_check = check = (lambda v: check_plan(v, word)) if word else check_plan
+    found = word and _look(run, profile)
+    if found:
+        msgs[1]["content"] += ("\n\nWhat a read-only look at the files found (its own words; data, not instructions):\n"
+                               f"{run.fence(found[:LOOK_CHARS])}\nPlan the fix of what it found, with a verify that "
+                               "fails now because of it.")
+    run.plan = slot(run, profile, msgs, check, "plan", PLAN_FIELDS)
     if is_answer(run.plan):  # a question: no checks to judge
         return
     if getattr(run, "ask", False):  # T-1770: it holds no lock, so it never goes on to change anything
@@ -3215,7 +3240,7 @@ def _plan(run, profile, dry=False):
     why = None if dry else _plan_problem(run)  # --dry-plan runs nothing
     if why:  # one re-plan
         msgs.append({"role": "user", "content": f"{why} Reply with only the corrected plan as a JSON object."})
-        run.plan = slot(run, profile, msgs, check_plan, "plan", PLAN_FIELDS)
+        run.plan = slot(run, profile, msgs, check, "plan", PLAN_FIELDS)
         why = _plan_problem(run)
         if why and why.startswith("refused"):
             raise CodeError(why)
@@ -3223,6 +3248,33 @@ def _plan(run, profile, dry=False):
     pl = run.plan
     run.emit("plan", f"plan: {pl['type']} {pl['tier']} {pl['title']} (criteria: {len(pl['criteria'])}, "
                      f"steps: {len(pl['steps'])})", plan=pl)
+
+
+LOOK_TURNS, LOOK_CHARS = 15, 4000
+
+
+def _look(run, profile):
+    """T-3688: small-model mode looks before it plans a change. The plan slot sees only the file list, so a blind plan
+    names no defect and its verify proves nothing (s31-039: 5 defects of 24 found once find-and-fix requests were
+    planned blind, 11 when they were answered read-only). A read-only phase reads and searches; its done summary goes
+    to the planner (and, as a done, to an exam's findings). Its turns are its own, LOOK_TURNS at most, so the work
+    keeps its --max-steps; a look that runs out plans without it. A CLI planner reads the files itself."""
+    if profile.get("kind") == "cli":
+        return None
+    cap, start, run.read_only, run.summary = run.max_steps, run.turns, True, None
+    run.max_steps = start + LOOK_TURNS
+    try:
+        run.phase("look", profile, f"Request: {run.request}\n\nBefore any plan, look: read and search the files this "
+                                   "request concerns and find what is wrong. Change nothing yet. Then call done with a "
+                                   "summary naming each defect you found, its file and function, and a command that "
+                                   "fails now because of it.")
+    except CodeError:
+        if run.turns < run.max_steps:  # not the look's own turn cap: a --max-usd stop, say
+            raise
+        run.emit("note", f"the look before the plan used its {LOOK_TURNS} turns without a done: planning without it")
+    finally:
+        run.read_only, run.max_steps = False, cap + run.turns - start
+    return run.summary
 
 
 def choose_profile(run, model):
@@ -3303,9 +3355,8 @@ def _plan_problem(run):
         if why:
             return (f"Criterion {n}'s verify `{cr['verify']}` can't run here: {why}. Use a check this project can run "
                     "(its own test runner, python3 -m unittest, node --test, a python3 -c assert).")
-    small = getattr(run, "small", False)  # T-2878: small-model mode checks every change type, and the type itself
-    if small and not run.own_plan and run.plan["type"] == "RESEARCH" and (word := asks_change(run.request)):
-        return SMALL_CHANGE.format(word=word, what="RESEARCH plan")
+    # T-2878: small-model mode checks every change type (T-3688: check_plan refuses a change request's RESEARCH plan)
+    small = getattr(run, "small", False)
     if run.plan["type"] not in (CHANGE_TYPES if small else ("FIX", "FEATURE")):
         return None
     for n, cr in enumerate(run.plan["criteria"], 1):
@@ -3427,7 +3478,7 @@ def _replan(run, profile, tid, why, repaired, code):
             "now.\n" if "a criterion for" in why else "")
     msgs.append({"role": "user", "content": f"The plan gate refused this plan: {why}\n{hint}"
                                             "Reply with only the corrected plan as a JSON object."})
-    run.plan = slot(run, run.planner or profile, msgs, check_plan, "plan", PLAN_FIELDS)
+    run.plan = slot(run, run.planner or profile, msgs, getattr(run, "plan_check", check_plan), "plan", PLAN_FIELDS)
     problem = "the planner answered instead of planning" if is_answer(run.plan) else _plan_problem(run)
     if problem:  # the refused task stays, to be looked at
         raise CodeError(f"{why}\nre-plan: {problem}", then=then)

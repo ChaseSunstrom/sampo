@@ -84,6 +84,44 @@ class SmithFindings(unittest.TestCase):
         self.assertIn("Files it changed: app.ts\n", ask, "an edit that went through, not a refused write")
         self.assertEqual([f["symbol"] for f in ans["findings"]], ["uniq_keep_order()"])
 
+    def test_an_answer_run_sends_its_words_once(self):
+        # T-3688: the done step's say JSON and the answer event carry the same summary; twice used half the budget
+        said = "uniq_keep_order (app.ts:15) is O(n^2): out.includes(x) per element"
+        evs = [{"event": "say", "text": json.dumps({"action": "done", "summary": said})},
+               {"event": "action", "action": "done", "target": said[:40], "result": "ok"},
+               {"event": "answer", "text": said}]
+        _, calls, _ = self.arm(evs, json.dumps({"findings": []}), files={"app.ts": UNIQ_TS})
+        ask = calls[0][-1]["content"]
+        self.assertEqual(ask.count("out.includes(x)"), 1, ask)
+        self.assertNotIn('"action"', ask, "the summary, not the JSON around it")
+
+    def test_the_hidden_check_never_enters_smiths_tree_or_argv(self):
+        # T-3688: what the grade checks (base/hidden, the key) is never where Smith runs, so no retry can quote it
+        script = ("import json,os,sys\nseen=sys.argv+list(os.environ.values())\nfor d,ds,fs in os.walk('..'):\n"
+                  "    ds[:]=[x for x in ds if x!='.git']\n    for f in fs:\n        p=os.path.join(d,f)\n"
+                  "        try:\n            seen.append(p+':'+open(p,errors='replace').read())\n"
+                  "        except OSError:\n            pass\n"
+                  "print(json.dumps({'event':'answer','text':' '.join(seen)}))\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            base, work = os.path.join(tmp, "base"), os.path.join(tmp, "work")
+            for d, f, src in (("repo", "app.js", SQL_JS), ("hidden", "check.sh", "HIDDEN_SENTINEL\n")):
+                os.makedirs(os.path.join(base, d))
+                with open(os.path.join(base, d, f), "w") as h:
+                    h.write(src)
+            fm = os.path.join(tmp, "fm.py")
+            with open(fm, "w") as h:
+                h.write(script)
+            with mock.patch.object(smithbench, "FM", fm), mock.patch.object(models, "resolve", lambda m: {"name": m}), \
+                    mock.patch.object(models, "complete", lambda *a, **k: {"text": "{}", "tool_calls": [], "usage": {}}):
+                louhi._smith_arm(base, {"request": "audit", "kind": "vuln", "defects": [{"says": "HIDDEN_KEY"}]},
+                                 work, "fake", None, os.path.join(tmp, "e.jsonl"))
+            with open(os.path.join(tmp, "e.jsonl")) as h:
+                saw = "\n".join(json.loads(ln).get("text") or "" for ln in h if '"answer"' in ln)
+        self.assertIn("find_user_sql", saw, "Smith's whole run directory was walked")
+        self.assertNotIn("HIDDEN_SENTINEL", saw)
+        self.assertNotIn("HIDDEN_KEY", saw)
+        self.assertNotIn(base, saw)
+
     def test_a_finding_whose_name_is_not_in_its_file_is_dropped_and_logged(self):
         # T-3676: the Nov 7 false alarms' biggest grounded class: a name the file never holds (unknown, fix:1, step_4,
         # paging, T-0001, verify_command), or the same finding twice

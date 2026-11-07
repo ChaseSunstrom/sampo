@@ -4075,13 +4075,16 @@ SMITH_CONF = {"answer": 15}
 def _smith_words(evs):
     """T-3676: what Smith said, oldest first: each step's done summary (the say that held it, whole, else the action's
     cut target) and each end text, deduped, the tail kept within FINDINGS_TEXT; and the files it edited or wrote."""
+    from sampo import models
     said, words, changed = "", [], []
     for e in evs:
         ev, act = e.get("event"), e.get("action")
         if ev == "say":
             said = str(e.get("text") or "")
         elif ev == "action" and act == "done":
-            words.append(said if '"summary"' in said else str(e.get("target") or ""))
+            said_v = models.extract_json(said) if '"summary"' in said else None  # T-3688: the summary, not its JSON,
+            summary = said_v.get("summary") if isinstance(said_v, dict) else None  # so the answer's copy dedupes
+            words.append(summary if isinstance(summary, str) and summary.strip() else str(e.get("target") or ""))
         elif ev == "action" and act in ("edit", "write") and e.get("result") == "ok":
             changed.append(str(e.get("target") or ""))
         elif ev in ("closed", "blocked", "error", "answer"):
