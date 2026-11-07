@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- One load signal for timeouts: core.load_factor (max of the 1-minute load and the runnable count, per CPU, with the instant runnable term capped at 4x) now scales gate timeouts, run.py's class timers and the tests' hang guards alike, and FOREMAN_HOST accepts runnable= (T-3391).
 - fm doctor's hook SLO judges only PreToolUse runs with a recorded load under 0.5 per CPU (T-2798's 1.5 bar let busy-machine runs in); with fewer than 20 calm runs, or none in the last 24 h, it reports "not enough (recent) calm samples" and passes, and shows the oldest calm sample's age (T-2933).
 - Session liveness readers (_other_session and the focus note) also scan the per-session sessions/<sid>.seen markers, so a second session working autonomously no longer looks idle; markers carry the Claude pid and project, so a resume, /clear or a session in another project is not mistaken for another session here; workers and lane runners write none, and markers over a day old are pruned (T-3422).
 - Session liveness refreshes from tool calls too: PostToolUse moves the session's seen stamp at most once a minute, gated by a per-session marker file's mtime so most calls cost one stat; a busy lock skips the refresh without waiting, so a session doing long autonomous work no longer looks dead to the second-session lane gate (T-3389).
