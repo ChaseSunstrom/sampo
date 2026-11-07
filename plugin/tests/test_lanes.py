@@ -50,6 +50,51 @@ class Lanes(ForemanTestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("lane", p.stderr)
 
+    def test_two_lanes_keep_their_focus_through_each_others_focus_check_and_pause(self):  # T-3396
+        self.fm("check", "add", "true")
+        self.fm("sync", "on")
+        lane2 = os.path.join(self.tmp, "lane2")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "foreman/lane2", lane2], check=True)
+        a, b = self.new("A work", self.lane), self.new("B work", lane2)
+        m = self.new("Main work", self.repo)
+        a2 = self.new("A second", self.lane, focus=False)
+
+        def active(cwd):
+            return (json.loads(self.fm("state", "--json", cwd=cwd).stdout)["active"] or {}).get("id")
+
+        def edit_ok(cwd):
+            ev = {"tool_name": "Write", "tool_input": {"file_path": os.path.join(cwd, "x.py"), "content": "x"}, "cwd": cwd}
+            return self.hook("PreToolUse", ev).returncode == 0
+        for cwd, step in ((self.lane, ("focus", a2)), (self.lane, ("check", "--fresh")), (self.lane, ("checkpoint",)),
+                          (self.repo, ("focus", m)), (self.repo, ("check", "--fresh"))):
+            self.fm(*step, cwd=cwd, check=False)
+            self.assertEqual(active(lane2), b, step)
+            self.assertTrue(edit_ok(lane2), step)
+        mirror = os.path.join(self.repo, ".sampo", "tasks")
+        mf = [f for f in os.listdir(mirror) if f.startswith(b)][0]  # a merged lane commit carries an older copy
+        old = read_text(os.path.join(mirror, mf))
+        with open(os.path.join(mirror, mf), "w") as f:
+            f.write(old.replace("status: active", "status: planned") + "\n")
+        self.hook("SessionStart", {"source": "startup"})
+        self.assertEqual(active(lane2), b, "a session start in main must not import a lane's focus away")
+        self.fm("check", "--fresh", cwd=lane2, check=False)
+        self.assertEqual((active(self.lane), active(self.repo), active(lane2)), (a2, m, b))
+        self.assertTrue(edit_ok(self.lane))
+
+    def test_a_repo_copy_that_pauses_or_closes_a_task_beats_a_local_active_one(self):  # T-3396 review
+        mirror = os.path.join(self.repo, ".sampo", "tasks")
+        self.fm("sync", "on")
+        for status in ("planned", "blocked", "deferred", "done", "dropped"):
+            with self.subTest(status):
+                tid = self.new(f"{status} work", self.repo)
+                path = os.path.join(mirror, [f for f in os.listdir(mirror) if f.startswith(tid)][0])
+                text = read_text(path).replace("status: active", f"status: {status}")
+                with open(path, "w") as f:
+                    f.write(text + "\n")
+                self.hook("SessionStart", {"source": "startup"})
+                now = json.loads(self.fm("task", "show", tid, "--json").stdout)["status"]
+                self.assertEqual(now, "active" if status == "planned" else status)
+
     def test_a_task_whose_lane_folder_is_gone_is_named_not_no_active_task(self):
         tid = self.new("Lane work", self.lane)  # T-1841
         shutil.rmtree(self.lane)

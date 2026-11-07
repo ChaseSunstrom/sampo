@@ -436,7 +436,9 @@ def import_(p):
             local = mine.get(theirs.id)
             if local and name(os.path.relpath(local.path, p.dir).replace(os.sep, "/")) == rel:
                 dest = local.path  # T-3574: the mirror's redacted name for this machine's own file: it keeps its name
-            keep = theirs.status in ("active", "verifying") and theirs.id in active and theirs.status
+            # T-3396: focus is per checkout: a task active here (main or a lane) stays active whatever the repo's older
+            # copy says (a merged lane commit carries a planned one); only a closed copy ends it
+            keep = theirs.id in active and theirs.status in c.RUNNABLE and local.status
             settle(theirs, local is None)
             if keep:  # this machine's own focus stays
                 theirs.meta["status"] = keep
