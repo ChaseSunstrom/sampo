@@ -3819,7 +3819,7 @@ def key(plugin):
         ds[:] = sorted(x for x in ds if x != "__pycache__" and not (d == plugin and x == "tests"))
         for f in sorted(fs):
             q = os.path.join(d, f)
-            h.update(q.encode())
+            h.update(os.path.relpath(q, plugin).encode())  # T-3379: not the temp dir's name, or a second gate call benches the base again
             try:
                 with open(q, "rb") as fh:
                     h.update(fh.read())
@@ -3834,7 +3834,16 @@ def memo(fn):
             seen[k] = fn(plugin, *a)
         return seen[k]
     return run
-g._bench, g._verdicts = memo(g._bench), memo(g._verdicts)
+def bench(plugin):  # T-3379: this tree's hooks (the base's bench script) over FIXTURES in one process: a planted rise shows in any hook
+    import importlib.util
+    s = importlib.util.spec_from_file_location("bench_hooks", os.path.join(plugin, "tests", "bench_hooks.py"))
+    m = importlib.util.module_from_spec(s)
+    s.loader.exec_module(m)
+    return m.run_bench(g.RUNS, only=lambda n: n in FIXTURES), m.injection_sizes()
+FIXTURES = ("SessionStart", "UserPromptSubmit", "PreToolUse:Bash", "Stop")
+g._bench, g._verdicts = memo(bench), memo(g._verdicts)
+# T-3379: the import map costs a bench-sized scratch run; a hook always imports hooks.py and nothing here plants into another mapped module
+g.hook_map = lambda *a: {"SessionStart": ["plugin/lib/sampo/hooks.py"]}
 orig = g._slower, g._verdicts, g._verbs, doctor.grown
 p = c.find_project(main)
 out = {}

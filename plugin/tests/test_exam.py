@@ -1934,6 +1934,33 @@ class GateGrowth:  # T-3171: one class (so one process, run.py's unit) per plant
             self.assertFalse(x["refused"], x)  # a control passes
 
 
+class GateBenchFixtures(ForemanTestCase):  # T-3379: the gate runner benches a few hook fixtures, all of them real ones
+    def test_the_runners_fixtures_exist_in_the_hook_payloads(self):
+        import re
+        from sampo import louhi
+        fx = re.search(r"^FIXTURES = (\(.*\))$", louhi._GATE_RUNNER, re.M)
+        names = __import__("ast").literal_eval(fx.group(1))
+        have = json.loads(read_text(os.path.join(os.path.dirname(__file__), "fixtures", "hook_payloads.json")))
+        self.assertTrue(names and set(names) <= set(have), names)
+
+    def test_the_real_import_map_has_hooks_py_for_every_runner_fixture(self):
+        # T-3379: the runner stubs selfgate.hook_map, so this is the end-to-end check that bench_hooks.hook_modules
+        # (what selfgate._hook_modules runs) still maps a hook process to hooks.py, and that each fixture reaches hooks.run
+        import re
+        import sys
+        from sampo import louhi
+        names = __import__("ast").literal_eval(re.search(r"^FIXTURES = (\(.*\))$", louhi._GATE_RUNNER, re.M).group(1))
+        sys.path.insert(0, os.path.dirname(__file__))
+        try:
+            import bench_hooks
+        finally:
+            sys.path.pop(0)
+        got = bench_hooks.hook_modules(lambda n: n in names)
+        self.assertEqual(set(got), set(names))
+        for n, files in got.items():
+            self.assertIn("plugin/lib/sampo/hooks.py", files, n)
+
+
 def _planted_growths():
     from sampo import louhi
     for m in louhi.GATE_MUTATIONS:
