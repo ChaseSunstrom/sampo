@@ -573,8 +573,11 @@ def ran_tests(root, base, tree, paths):
                 hits.add(i)
     out = set()
     for cid, recs in classes.items() if hits else ():
-        # a record from before function keys names each module the class imported as read whole: a newer one tells better
-        idx = [i for r in ([r for r in recs if not fn.isdisjoint(r[2])] or recs) for i in r[2]]
+        # a record from before function keys names each module the class imported as read whole: only a newer one counts
+        # (T-3711: as a fallback it selected nearly every class for any change until a full re-record)
+        idx = [i for r in recs if not fn.isdisjoint(r[2]) for i in r[2]]
+        if not idx:
+            continue
         if hits.isdisjoint(idx):
             continue
         mod = cid.rsplit(".", 1)[0].rpartition(".")[2] + ".py"  # run.py's id: the TestCase's module, then its name

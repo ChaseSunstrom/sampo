@@ -261,9 +261,11 @@ class AffectedSymbols(ForemanTestCase):
         self.write("data/table.json", "{}\n")
         self.assertEqual(["tests/test_drive_text.py"], self.run_affected()[0])
 
-    def test_a_record_from_before_function_keys_counts_only_without_a_newer_one(self):
+    def test_a_record_from_before_function_keys_adds_nothing(self):
         """A record written before T-3603 names every module a class imported as read whole: beside a newer record of
-        the class it is ignored (main's cache held 190 such readers of hooks.py), alone it is the file-level fallback."""
+        the class it is ignored (main's cache held 190 such readers of hooks.py), and alone it adds nothing either
+        (T-3711: as the fallback it selected nearly every class for any change until a full re-record, ~416 modules
+        per probe); the static map still decides for that class."""
         import run
         self.ran({"test_drive_alpha": [HUB + "::", HUB + "::alpha"]})
         old = {f"{mod}.Drive": ["old", 1, [f"tests/{mod}.py", HUB]] for mod in ("test_drive_alpha", "test_drive_gamma")}
@@ -273,7 +275,7 @@ class AffectedSymbols(ForemanTestCase):
         self.edit("return 2", "return 22")
         tests, _ = self.run_affected()
         self.assertNotIn("tests/test_drive_alpha.py", tests)
-        self.assertIn("tests/test_drive_gamma.py", tests)
+        self.assertNotIn("tests/test_drive_gamma.py", tests, "an old-format record alone adds nothing (T-3711)")
 
     def test_merge_888c3d75d_selects_the_firewall_test_that_ran_outline_first(self):
         """T-3670's miss: the merge changed hooks._outline_first and the constant beside it, and its train's affected
