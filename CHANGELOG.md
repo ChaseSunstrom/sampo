@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo doctor` warns once, naming each MCP server configured with the deprecated HTTP+SSE transport (`"type": "sse"`, in ~/.claude.json, per project and the project's .mcp.json), and warns when either file can't be read; cites the MCP 2026-07-28 changelog (T-3346).
 - Local models take turns on the shared GPU instead of evicting each other on every call, the machine's Ollama is no longer polled twice a second for its model list, and a model Ollama can't load is asked once and then skipped for 6 hours (T-3597, T-3598, T-3599).
 - Test runs share one warm fork server across all their classes and send hook calls through it too, so a test's sampo and hook calls no longer start a fresh interpreter, and the forked calls' CPU now shows up in a run's timings (T-3572).
 - The merge train's gate and probes, `sampo ship`'s suite and `sampo check` in the main checkout now take freed CPU test slots ahead of builder lanes' runs, so a gate no longer gets 1/N of the pool beside ~10 testing builders (T-3614)
