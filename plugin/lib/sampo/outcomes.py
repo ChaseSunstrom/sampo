@@ -19,18 +19,36 @@ _VERSION = re.compile(r"\b\d+\.\d+\.\d+\b")  # a release task names what it ship
 
 def reverts(p, n=200):
     """[(date, revert subject, the reverted commit's subject, {task ids named})] from git's Revert commits, newest
-    first; [] outside git."""
+    first; [] outside git. T-3692: kept in cache/reverts.json per checkout root and n while git's refs stand still
+    (core.git_stamp, as T-3580 keeps ref answers): a focus asked three times, each a git process."""
+    stamp, path, key, kept = c.git_stamp(p.root), os.path.join(p.dir, "cache", "reverts.json"), f"{p.root}\0{n}", {}
+    if stamp:
+        try:
+            with open(path, encoding="utf-8") as f:
+                got = json.load(f)
+            if got["stamp"] == stamp:
+                kept = dict(got["answers"])
+                if key in kept:
+                    return [(at, subj, orig, set(tids)) for at, subj, orig, tids in kept[key]]
+        except (OSError, ValueError, LookupError, TypeError):  # a bad kept file is asked again
+            kept = {}
     try:
-        out = subprocess.run(["git", "-C", p.root, "log", f"-n{n}", "--grep=^Revert ", "--format=%cI%x1f%s%x1f%b%x1e"],
-                             capture_output=True, text=True, timeout=10).stdout
+        r = subprocess.run(["git", "-C", p.root, "log", f"-n{n}", "--grep=^Revert ", "--format=%cI%x1f%s%x1f%b%x1e"],
+                           capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return []
     rows = []
-    for rec in out.split("\x1e"):
+    for rec in r.stdout.split("\x1e"):
         parts = rec.strip().split("\x1f")
         if len(parts) == 3:
             orig = (re.match(r'Revert "(.*)"$', parts[1]) or [None, parts[1]])[1]
             rows.append((parts[0], parts[1], orig, set(_TID.findall(parts[1] + " " + parts[2]))))
+    if stamp and r.returncode == 0:  # stamped before the log: refs that moved during it are asked again next time
+        kept[key] = [(at, subj, orig, sorted(tids)) for at, subj, orig, tids in rows]
+        try:
+            c.write_atomic(path, json.dumps({"stamp": stamp, "answers": kept}))
+        except OSError:
+            pass
     return rows
 
 

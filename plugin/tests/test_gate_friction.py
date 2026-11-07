@@ -137,6 +137,28 @@ class Typos(ForemanTestCase):
                     rc = e.code
             self.assertEqual((rc or 0, out.getvalue()), (0, f"sampo {want}\n"), argv)
 
+    def test_the_sampo_launcher_answers_version_without_importing_cli(self):
+        # T-3692: importing sampo.cli cost ~40 ms of CPU in a fresh process to print one line
+        import json
+        import subprocess
+        import sys
+        import tempfile
+        from helpers import PLUGIN
+        with open(os.path.join(PLUGIN, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            want = json.load(f)["version"]
+        probe = ("import runpy, sys\nsys.argv = sys.argv[1:]\ntry:\n    runpy.run_path(sys.argv[0], run_name='__main__')\n"
+                 "finally:\n    print('cli' if 'sampo.cli' in sys.modules else 'no cli')\n")
+        env = {k: v for k, v in os.environ.items() if k != "SAMPO_LANE_CHILD"}
+        with tempfile.TemporaryDirectory() as tmp:
+            run = lambda *argv: subprocess.run([sys.executable, "-c", probe, *argv], capture_output=True, text=True,  # noqa: E731
+                                               cwd=tmp, env=env, timeout=60)
+            p = run(os.path.join(PLUGIN, "bin", "sampo"), "--version")
+            self.assertEqual((p.returncode, p.stdout), (0, f"sampo {want}\nno cli\n"), p.stderr)
+            link = os.path.join(tmp, "fm")  # another name: cli answers, saying the name back
+            os.symlink(os.path.join(PLUGIN, "bin", "sampo"), link)
+            p = run(link, "--version")
+            self.assertEqual((p.returncode, p.stdout), (0, f"fm {want}\ncli\n"), p.stderr)
+
     def test_guessed_verbs_name_the_real_one_and_run_nothing(self):
         # T-3612: the other top unknown_word guesses in events.jsonl; each named the wrong verb by spelling
         self.fm("init")

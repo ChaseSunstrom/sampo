@@ -72,23 +72,74 @@ def _files(b):
     return [x.lstrip("- ").strip() for x in b.section("Files touched").splitlines() if x.strip()]
 
 
-def _documents(p, skip=None):
-    """(kind, label, text, tier of a finished brief or None, extra) for everything recall can point to; extra has the
-    age in days and, for briefs, the files they touched and their step count."""
-    retired = retired_lessons(p)
-    for b in c.load_briefs(p, include_archive=True):
-        if b.id == skip or b.status == "captured":
+def _brief_entry(b):
+    """What recall needs of one brief, its words stemmed (space-joined); every lesson, retired ones too."""
+    if b.status == "captured":
+        return {"id": b.id, "status": b.status}
+    lessons = [x.lstrip("- ").strip() for x in b.section("Lessons").splitlines() if x.strip()]
+    return {"id": b.id, "status": b.status, "tier": b.tier, "head": f"{b.id} [{b.type} {b.tier}, {b.status}, "
+            f"{len(b.steps())} steps] {b.title}", "lessons": lessons, "lw": [" ".join(_tokens(x)) for x in lessons],
+            "words": " ".join(_tokens(" ".join([b.title, b.section("Raw request"), b.section("Interpretation"),
+                                                " ".join(b.meta.get("scope") or [])]))),
+            "at": str(b.meta.get("updated") or b.meta.get("created") or ""), "files": _files(b), "steps": len(b.steps()),
+            "late": [x[len("- added late: "):] for x in b.section("Plan gaps").splitlines()
+                     if x.startswith("- added late: ")]}
+
+
+def _brief_docs(p, skip=None):
+    """(kind, label, words, tier of a finished brief or None, extra) for each brief, archive included; extra has the
+    age in days, the files it touched and its step count. T-3692: each brief's entry is kept in cache/recall-briefs.json
+    under its file's (inode, mtime_ns, size) and this file's and core's stats, so a focus reads and stems only the
+    briefs that changed (it re-read and re-stemmed all of them); a retired lesson drops out here, at each call."""
+    path = os.path.join(p.dir, "cache", "recall-briefs.json")
+    src = [[x, st.st_mtime_ns, st.st_size] for x, st in ((x, os.stat(x)) for x in (__file__, c.__file__))]
+    try:
+        with open(path, encoding="utf-8") as fh:
+            got = json.load(fh)
+        kept = got["e"] if got["src"] == src and isinstance(got["e"], dict) else {}
+    except (OSError, ValueError, LookupError, TypeError):
+        kept = {}
+    retired, docs, fresh, read = retired_lessons(p), [], {}, False
+    for f in c.brief_paths(p, include_archive=True):
+        try:
+            st = os.stat(f)
+            key, e = [st.st_ino, st.st_mtime_ns, st.st_size], kept.get(f)
+            old = time.time() - st.st_mtime > 2  # as core's brief index: a same-size rewrite in the same tick could pass
+            try:  # a kept entry this code can't read (a hand-edited file) is read afresh
+                doc = _brief_doc(e[1], skip, retired) if isinstance(e, list) and len(e) == 2 and e[0] == key else 0
+            except (LookupError, TypeError, AttributeError, ValueError):
+                doc = 0
+            if doc == 0:
+                e = [key, _brief_entry(c._read_brief(f))]  # keyed on the stat before the read: a save between is read again
+                doc, read = _brief_doc(e[1], skip, retired), read or old
+        except (OSError, ValueError):
             continue
-        lesson = [x.lstrip("- ").strip() for i, x in enumerate((y for y in b.section("Lessons").splitlines()
-                                                               if y.strip()), 1) if f"{b.id}.{i}" not in retired]
-        label = (f"{b.id} [{b.type} {b.tier}, {b.status}, {len(b.steps())} steps] {b.title}"
-                 + (f" — lesson: {lesson[0]}" if lesson else ""))
-        text = " ".join([b.title, b.section("Raw request"), b.section("Interpretation"), " ".join(lesson),
-                         " ".join(b.meta.get("scope") or [])])
-        yield "brief", label, text, b.tier if b.status == "done" else None, {
-            "age": _age(b.meta.get("updated") or b.meta.get("created")), "files": _files(b), "steps": len(b.steps()),
-            "id": b.id, "late": [x[len("- added late: "):] for x in b.section("Plan gaps").splitlines()
-                                 if x.startswith("- added late: ")]}
+        if old:
+            fresh[f] = e
+        if doc:
+            docs.append(doc)
+    if read or len(fresh) != len(kept):  # fresh holds kept's own entries otherwise: unchanged
+        try:
+            c.write_atomic(path, json.dumps({"src": src, "e": fresh}, separators=(",", ":")))
+        except OSError:
+            pass
+    return docs
+
+
+def _brief_doc(e, skip, retired):
+    """The recall document of a _brief_entry, less its retired lessons; None for the skipped or a captured one."""
+    if e["id"] == skip or e["status"] == "captured":
+        return None
+    keep = [i for i in range(len(e["lessons"])) if f"{e['id']}.{i + 1}" not in retired]
+    return ("brief", e["head"] + (f" — lesson: {e['lessons'][keep[0]]}" if keep else ""),
+            e["words"].split() + [w for i in keep for w in e["lw"][i].split()],
+            e["tier"] if e["status"] == "done" else None,
+            {"age": _age(e["at"]), "files": list(e["files"]), "steps": e["steps"], "id": e["id"], "late": list(e["late"])})
+
+
+def _documents(p, skip=None):
+    """(kind, label, text, tier or None, extra) for everything else recall can point to (briefs: _brief_docs); extra has
+    the age in days."""
     try:
         with open(os.path.join(p.dir, "decisions.md"), encoding="utf-8", errors="replace") as f:
             for line in f:
@@ -210,7 +261,8 @@ def recall(p, query, skip=None, n=HITS, cover=0.0):
     if not q:
         return []
     act = activation(p)
-    docs = [*((kind, label, _tokens(text), tier, extra) for kind, label, text, tier, extra in _documents(p, skip)),
+    docs = [*_brief_docs(p, skip),
+            *((kind, label, _tokens(text), tier, extra) for kind, label, text, tier, extra in _documents(p, skip)),
             *(("playbook", label, words, None, {"age": 0.0}) for label, words in _books()),
             *((kind, label, _tokens(text), tier, extra) for kind, label, text, tier, extra in _shared_docs(p))]
     if not docs:

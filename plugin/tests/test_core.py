@@ -4,6 +4,7 @@ import multiprocessing
 import os
 import re
 import subprocess
+import sys
 import time
 import unittest
 from unittest import mock
@@ -571,6 +572,46 @@ class BriefLines(unittest.TestCase):
         self.assertEqual(c._STEP_RE.match("3. [ ] <- CURRENT x").groups(), ("3", " ", "<- CURRENT x", None))
         self.assertEqual(c._AC_RE.match("- [x] a  b  ").groups(), ("x", "a  b"))
         self.assertEqual(c._AC_RE.match("- [ ]  ").groups(), (" ", ""))
+
+
+class ParseTs(unittest.TestCase):
+    """T-3692: parse_ts reads the form now() writes without strptime (its first call cost ~17 ms a process), and
+    answers as strptime did for every other string."""
+
+    FORMS = ("2026-11-07T18:45:05Z", "2024-02-29T23:59:59Z", "2000-01-01T00:00:00Z", "0999-12-31T00:00:00Z",
+             "2023-02-29T00:00:00Z", "2026-04-31T00:00:00Z", "2026-13-01T00:00:00Z", "2026-00-10T00:00:00Z",
+             "0000-01-01T00:00:00Z", "2026-11-07T24:00:00Z", "2026-11-07T23:60:00Z", "2026-11-07T23:59:60Z",
+             "2026-11-07T23:59:61Z", "2026-11-07t18:45:05z", "2026-11-07T18:45:05", "2026-11-07T18:45:05+00:00",
+             "2026-11-07T18:45:05.5Z", "2026-11-07 18:45:05Z", "2026-1-7T8:5:5Z", "2026-W45-6T18:45:05Z",
+             "20261107T184505Z", "2026-11-07T18:45:05ZZ", " 2026-11-07T18:45:05Z", "2026-11-07T18:45:05Z\n",
+             "２０２６-11-07T18:45:05Z", "2026-11-07T18:45:0٥Z", "+026-11-07T18:45:05Z", "2026-11-07T18:45:-5Z",
+             "2026-11-07T18:4_:05Z", "2026_11-07T18:45:05Z", "", "Z", None, 5, b"2026-11-07T18:45:05Z")
+
+    @staticmethod
+    def _strptime(ts):
+        import datetime
+        try:
+            return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+        except (TypeError, ValueError):
+            return None
+
+    def test_parse_ts_answers_as_strptime_for_every_form(self):
+        for ts in self.FORMS:
+            with self.subTest(ts=ts):
+                got, want = c.parse_ts(ts), self._strptime(ts)
+                self.assertEqual(got, want)
+                self.assertIs(type(got), type(want))
+                if want is not None:
+                    self.assertIs(got.tzinfo, want.tzinfo)
+        self.assertIsNotNone(c.parse_ts("2026-11-07T18:45:05Z"))
+        self.assertIsNone(c.parse_ts("2026-11-07T24:00:00Z"))
+
+    def test_parse_ts_reads_the_canonical_form_without_strptime(self):
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); from sampo import core; "
+                "t = core.parse_ts('2026-11-07T18:45:05Z'); print(t.isoformat(), '_strptime' in sys.modules)")
+        lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib")
+        out = subprocess.run([sys.executable, "-c", code, lib], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.split(), ["2026-11-07T18:45:05+00:00", "False"], out.stderr)
 
 
 class Stages(unittest.TestCase):

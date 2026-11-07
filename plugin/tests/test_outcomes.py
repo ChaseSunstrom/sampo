@@ -61,6 +61,55 @@ class Outcomes(Base):
         self.assertEqual(data["tasks"][held]["fate"], "held")
 
 
+class KeptReverts(Base):
+    """T-3692: reverts' answer is kept while git's refs stand still (core.git_stamp), so a focus's three asks run no
+    git; a new Revert commit, another n or another checkout's root asks again."""
+
+    def gits(self, *args):
+        from unittest import mock
+        from sampo import outcomes
+        with mock.patch.object(subprocess, "run", wraps=subprocess.run) as run:
+            got = outcomes.reverts(*args)
+        return got, sum(1 for call in run.call_args_list if call.args and call.args[0][:1] == ["git"])
+
+    def test_reverts_are_kept_until_the_refs_move(self):
+        self.commit("Add session cache (T-0009)")
+        self.git("revert", "--no-edit", "HEAD")
+        first, ran = self.gits(self.p)
+        self.assertEqual(ran, 1)
+        self.assertEqual([(r[2], r[3]) for r in first], [("Add session cache (T-0009)", {"T-0009"})])
+        again, ran = self.gits(self.p)
+        self.assertEqual((again, ran), (first, 0))
+        self.assertIs(type(again[0][3]), set)
+        self.assertEqual(self.gits(self.p, 1), (first, 1))  # another n is its own answer
+        self.assertEqual(self.gits(self.p, 1), (first, 0))
+        self.commit("Add export (T-0010)", name="y.py")
+        self.git("revert", "--no-edit", "HEAD")
+        moved, ran = self.gits(self.p)
+        self.assertEqual(ran, 1)
+        self.assertEqual([r[3] for r in moved], [{"T-0010"}, {"T-0009"}])
+
+    def test_reverts_key_on_the_checkout_root_and_survive_a_bad_kept_file(self):
+        import types
+        self.commit("Base")
+        wt = os.path.join(self.tmp, "wt")
+        self.git("worktree", "add", "-q", "--detach", wt, "HEAD")
+        self.commit("Add session cache (T-0009)")
+        self.git("revert", "--no-edit", "HEAD")
+        self.assertEqual(len(self.gits(self.p)[0]), 1)
+        other = types.SimpleNamespace(root=wt, dir=self.p.dir)
+        self.assertEqual(self.gits(other), ([], 1))  # the same stamp, but the other checkout's HEAD has no revert
+        kept = os.path.join(self.p.dir, "cache", "reverts.json")
+        for bad in ("{", "[]", json.dumps({"stamp": c.git_stamp(self.repo), "answers": {f"{self.repo}\0200": [[1]]}})):
+            with open(kept, "w") as f:
+                f.write(bad)
+            got, ran = self.gits(self.p)
+            self.assertEqual((len(got), ran), (1, 1), bad)
+        outside = types.SimpleNamespace(root=os.path.join(self.tmp, "nogit"), dir=self.p.dir)
+        os.makedirs(outside.root)
+        self.assertEqual(self.gits(outside)[0], [])
+
+
 class Survival(Base):
     """T-1060 (wild C1): each close graded by a 30-day window: survived, lost (and why, when), settling (days left);
     a settle event per grade, the digest's line, the pane's history, and the reports that read the grades."""

@@ -94,6 +94,46 @@ class Recall(ForemanTestCase):
         tid = self.new("Login timeout on slow wifi again", "FIX", "S")
         self.assertIn("similar past tasks were M", self.fm("focus", tid).stdout)
 
+    def test_recall_reads_only_the_briefs_whose_file_changed(self):
+        """T-3692: each brief's words are kept under its file's stats, so a focus reads and stems only the briefs that
+        changed (it re-read and re-stemmed every one, archive included, each time); the hits stay the same."""
+        from sampo import recall
+        p = c.find_project(self.repo)
+        archive = os.path.join(p.dir, "archive", "2026")
+        os.makedirs(archive)
+        done = c.find_brief(p, self.old).path
+        os.rename(done, os.path.join(archive, os.path.basename(done)))
+        old = time.time() - 60
+        for path in c.brief_paths(p, include_archive=True):
+            os.utime(path, (old, old))
+
+        def ask(query):  # the briefs recall reads and stems: read once, they come back from the kept file
+            with mock.patch.object(recall, "_brief_entry", wraps=recall._brief_entry) as read:
+                hits = recall.recall(p, query)
+            return [(k, label, tier, round(s, 4)) for s, k, label, tier, _ in hits], read.call_count
+
+        query = "login timeout on slow wifi session renewal export"
+        cold, reads = ask(query)
+        self.assertGreaterEqual(reads, 2)
+        self.assertIn(f"{self.old} [FIX M, done", " ".join(x[1] for x in cold))
+        self.assertIn("lesson: retry the token refresh", " ".join(x[1] for x in cold))
+        self.assertEqual(ask(query), (cold, 0))
+        self.fm("task", "set", self.other, "--section", "Interpretation", "--text", "zeppelin hangar mooring plan")
+        hits, reads = ask("zeppelin hangar mooring")
+        self.assertEqual(reads, 1)
+        self.assertIn(self.other, " ".join(x[1] for x in hits))
+        os.utime(c.find_brief(p, self.other).path, (old, old))  # a new stat: read again, then kept
+        self.assertEqual(ask("zeppelin hangar mooring"), (hits, 1))
+        self.assertEqual(ask("zeppelin hangar mooring"), (hits, 0))
+        self.fm("recall", "--lessons", "--retire", f"{self.old}.1", "--why", "stale")
+        hits, reads = ask(query)
+        self.assertEqual(reads, 0)  # a lesson retires at each call, from the kept words
+        self.assertNotIn("lesson:", " ".join(x[1] for x in hits))
+        self.assertIn(self.old, " ".join(x[1] for x in hits))
+        with open(os.path.join(p.dir, "cache", "recall-briefs.json"), "w") as f:
+            f.write("{")
+        self.assertEqual(ask(query)[0], hits)  # a bad kept file is built again
+
     def test_recalled_text_is_plain_and_capped(self):
         self.fm("decide", "login \x1b]0;pwned\x07 timeout " + "x" * 400)
         out = self.fm("recall", "login timeout").stdout

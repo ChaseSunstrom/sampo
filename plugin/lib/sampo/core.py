@@ -204,6 +204,13 @@ def iso(epoch):
 
 def parse_ts(ts):
     try:
+        if type(ts) is str and len(ts) == 20 and ts.isascii() and ts[4] + ts[7] + ts[10] + ts[13] + ts[16] + ts[19] == "--T::Z":
+            # T-3692: the form now() writes, built directly: strptime's first call in a process imports _strptime and
+            # builds its locale regexes. The constructor checks the ranges strptime's own datetime build does; other forms
+            # (lowercase t/z, single digits) still go through strptime below.
+            f = ts[:4], ts[5:7], ts[8:10], ts[11:13], ts[14:16], ts[17:19]
+            if "".join(f).isdigit():
+                return datetime.datetime(*map(int, f), tzinfo=datetime.timezone.utc)
         return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
     except (TypeError, ValueError):
         return None
@@ -1085,6 +1092,39 @@ def git_root(path):
         if parent == d:
             return None
         d = parent
+
+
+def git_stamp(root):
+    """T-3580: (path, inode, mtime, size) of what git's ref answers stand on: HEAD, packed-refs, each folder under refs/
+    (an update renames a file into one), the worktrees folder and each worktree's HEAD. None outside a git checkout."""
+    top = git_root(root)
+    if not top:
+        return None
+    common = os.path.join(top, ".git")
+    if os.path.isfile(common):  # a worktree: its .git file names its git dir, whose commondir names the shared one
+        try:
+            with open(common, encoding="utf-8") as f:
+                common = os.path.join(top, f.read().partition("gitdir:")[2].strip())
+            with open(os.path.join(common, "commondir"), encoding="utf-8") as f:
+                common = os.path.normpath(os.path.join(common, f.read().strip()))
+        except FileNotFoundError:  # a submodule's git dir is its own common dir
+            pass
+        except OSError:
+            return None
+    paths = [os.path.join(common, n) for n in ("HEAD", "packed-refs", "worktrees")]
+    paths += sorted(d for d, _, _ in os.walk(os.path.join(common, "refs")))
+    try:
+        paths += [os.path.join(common, "worktrees", n, "HEAD") for n in sorted(os.listdir(paths[2]))]
+    except OSError:
+        pass
+    out = []
+    for path in paths:
+        try:
+            st = os.stat(path)
+            out.append([path, st.st_ino, st.st_mtime_ns, st.st_size])
+        except OSError:
+            out.append([path])
+    return out
 
 
 def record(cls):

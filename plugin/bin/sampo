@@ -3,17 +3,31 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+LIB = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib")
+sys.path.insert(0, LIB)
 try:  # T-0368: below Python 3.12.7, re-run under a supported one
     from sampo import py  # noqa: E402
     py.lane_reexec(__file__)  # T-2843: inside a lane, run the lane's own plugin
     py.reexec()
 except Exception:
     pass
-from sampo import cli  # noqa: E402
+version = None
+if sys.argv[1:] == ["--version"] and os.path.basename(sys.argv[0]) == "sampo":  # T-3692: cli's own line, without
+    try:  # importing cli (~40 ms of CPU in a fresh process); under another name (fm), cli says that name back
+        import json
+        with open(os.path.join(os.path.dirname(LIB), ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            version = f"sampo {json.load(f).get('version', '?')}"
+    except (OSError, ValueError, AttributeError):  # cli's --version says what is wrong
+        pass
+if version is None:
+    from sampo import cli  # noqa: E402
 
 try:
-    code = cli.main()
+    if version is None:
+        code = cli.main()
+    else:
+        print(version)
+        code = 0
     sys.stdout.flush()
 except BrokenPipeError:  # T-0825: the reader quit (sampo … | head): end quietly
     os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())

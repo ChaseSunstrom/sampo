@@ -1376,15 +1376,25 @@ class _Quoted(str):
 
 
 _OPS = ";&|()<>"
-_OP_WORD = lazy(r"[;&|()<>]+")
 # what shlex mustn't see as itself, as plain word characters: _ESC and a digit is _ENCODED's character at that place,
 # _ESC _ESC is _ESC (so no character a line already holds can pass for one: self-review)
 _ESC, _ENCODED = "", _OPS + '"'
-_DECODE = lazy(_ESC + "(.)", re.S)
+
+
+def _op_word(w):
+    """[;&|()<>]+, a run of operator characters. T-3692: this and _decode test strings, so a fresh hook process reading
+    a command compiles no regex (it compiled nine)."""
+    return bool(w) and not w.strip(_OPS)
 
 
 def _decode(token):
-    return _DECODE.sub(lambda m: _ESC if m.group(1) == _ESC else _ENCODED[int(m.group(1))], token)
+    """Each _ESC and the character after it back to what it stands for, left to right (as re.sub(_ESC + '(.)') did)."""
+    out, i = [], 0
+    while 0 <= (j := token.find(_ESC, i)) < len(token) - 1:
+        c = token[j + 1]
+        out += [token[i:j], _ESC if c == _ESC else _ENCODED[int(c)]]
+        i = j + 2
+    return "".join(out) + token[i:]
 
 
 def _hide_quoted_ops(text, encoded=False):
@@ -1397,11 +1407,14 @@ def _hide_quoted_ops(text, encoded=False):
     out, q, i, tail = [], None, 0, ""
     while i < len(text):
         ch = text[i]
-        if not q and ch in "0123456789" and (i == 0 or text[i - 1] in " \t\n;&|(") and \
-                (fd := re.match(r"[0-9]+(?=[<>])", text[i:])):
-            out.append(" ")  # review: a space, never nothing: ;2>f must stay ; and >f, not the one token ;>
-            i += fd.end()
-            continue
+        if not q and ch in "0123456789" and (i == 0 or text[i - 1] in " \t\n;&|("):
+            j = i + 1  # [0-9]+(?=[<>]) by hand: a fresh hook compiles no regex for it (T-3692)
+            while j < len(text) and text[j] in "0123456789":
+                j += 1
+            if text[j:j + 1] in ("<", ">"):
+                out.append(" ")  # review: a space, never nothing: ;2>f must stay ; and >f, not the one token ;>
+                i = j
+                continue
         if ch == _ESC:
             out.append(text[i:i + 2] if encoded else _ESC + _ESC)
             i += 2 if encoded else 1
@@ -1431,7 +1444,7 @@ def _shlex_words(text, close=False, encoded=False):
     out = []
     for t in lex:
         w = _decode(t) if _ESC in t else t
-        out.append(_Quoted(w) if w is not t and _OP_WORD.fullmatch(w) else w)
+        out.append(_Quoted(w) if w is not t and _op_word(w) else w)
     return out
 
 
@@ -1461,7 +1474,7 @@ def _tokens_read(cmd):
         nested = _shlex_words(_mask_nested_dq(text), close=True, encoded=True)
     except ValueError:
         return words
-    d = sum(t.count("(") - t.count(")") for t in words if not isinstance(t, _Quoted) and _OP_WORD.fullmatch(t))
+    d = sum(t.count("(") - t.count(")") for t in words if not isinstance(t, _Quoted) and _op_word(t))
     return words + [";"] + ([")" * d] if d > 0 else ["(" * -d] if d < 0 else []) + [";"] + nested  # depth 0 again
 
 
@@ -1542,7 +1555,7 @@ def _bash_word(word):
         return word
     if len(parts) != 1:
         return word
-    return _Quoted(parts[0]) if _OP_WORD.fullmatch(parts[0]) else parts[0]
+    return _Quoted(parts[0]) if _op_word(parts[0]) else parts[0]
 
 
 def _split(tokens):
@@ -1554,7 +1567,8 @@ def _split(tokens):
             cur.argv.append(t)
             i += 1
             continue
-        if re.fullmatch(r"[;&|()<>]+", t):  # every punctuation run, even one read below as a word (<(( …)
+        if _op_word(t):  # every punctuation run, even one read below as a word (<(( …); T-3692: string tests below
+            # too, not re.fullmatch per token
             depth += t.count("(") - t.count(")")
         if t in ("<(", ">("):
             cur.procsub = True
@@ -1562,7 +1576,7 @@ def _split(tokens):
             cur = Cmd([], [], False, depth=depth)
             i += 1
             continue
-        if re.fullmatch(r"[;&|()]+", t) and not re.fullmatch(r"&>+", t):
+        if t and not t.strip(";&|()"):  # [;&|()]+ (an &> run has a >, so it never got here)
             empty = not (cur.argv or cur.redirs or cur.procsub or cur.stdin)  # T-1224: $(< file) reads file
             if t == ";" and empty and cur.op in ("|", "|&", "&&", "||"):
                 i += 1  # a newline after | && || continues the command (_lines made it a ;): T-0355 review
@@ -1573,8 +1587,8 @@ def _split(tokens):
             cur = Cmd([], [], t in ("|", "|&") or keep, op=cur.op + t if keep else t, depth=depth)
             i += 1
             continue
-        if re.fullmatch(r"[<>&]+\|?", t):
-            t = t.rstrip("|")  # >| writes even under noclobber (T-0358)
+        if (u := t[:-1] if t.endswith("|") else t) and not u.strip("<>&"):  # [<>&]+\|?
+            t = u  # >| writes even under noclobber (T-0358)
             nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
             if t == "<" and nxt == "(":
                 cur.procsub = True
@@ -1583,7 +1597,7 @@ def _split(tokens):
                 cur = Cmd([], [], False, depth=depth)
                 i += 2
                 continue
-            if t.endswith("&") and re.fullmatch(r"\d+|-", nxt):
+            if t.endswith("&") and (nxt == "-" or nxt.isdecimal()):  # \d+|- (\d is Unicode Nd, as isdecimal)
                 i += 2
                 continue
             if t in ("<<", "<<<"):
@@ -1614,7 +1628,9 @@ def _strip_wrappers(argv):
     while i < len(argv):
         a = argv[i]
         base = os.path.basename(a)
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\+?=", a) or a in _KEYWORDS:  # T-0159: `do rm …` is rm; T-0270: NAME+=v
+        n = a.find("=")  # NAME= or NAME+= ([A-Za-z_][A-Za-z0-9_]*\+?=) by string tests, no regex to compile: T-3692
+        name = a[:n - 1] if n > 0 and a[n - 1] == "+" else a[:n]
+        if n > 0 and name.isascii() and name.isidentifier() or a in _KEYWORDS:  # T-0159: `do rm …` is rm; T-0270: +=
             i += 1
         elif base in ("sudo", "doas"):
             i += 1
@@ -5381,7 +5397,8 @@ def _write_targets(name, args):
         return outs
     if name == "sed" and any(a == "--in-place" or a.startswith("-i") for a in args):
         return pos if any(a in ("-e", "-f") for a in args) else pos[1:]
-    if re.fullmatch(r"(?:perl|ruby)[0-9.]*", name) and any(_inplace_switch(a) for a in args):  # perl -pi -e … FILE
+    if name[:4] in ("perl", "ruby") and not name[4:].strip("0123456789.") and \
+            any(_inplace_switch(a) for a in args):  # (?:perl|ruby)[0-9.]*: perl -pi -e … FILE
         files, skip = [], False
         for a in args:
             if skip:
@@ -5401,11 +5418,12 @@ def _write_targets(name, args):
             a = args[i]
             if a == "--":
                 return out + args[i + 1:]
-            flags = re.fullmatch(r"-([afhmc]*)([rdt]?)", a)  # a short cluster; r, d and t take the next word
-            if a.startswith("--no-c") and "--no-create".startswith(a) or flags and "c" in flags[1]:
+            cut = len(a) - 1 if len(a) > 1 and a[-1] in "rdt" else len(a)  # -[afhmc]*[rdt]?, a short cluster; r, d
+            flags = a[:1] == "-" and not a[1:cut].strip("afhmc") and (a[1:cut], a[cut:])  # and t take the next word
+            if a.startswith("--no-c") and "--no-create".startswith(a) or flags and "c" in flags[0]:
                 return []  # makes nothing
             valued = len(a) > 2 and "=" not in a and any(w.startswith(a) for w in ("--reference", "--date", "--time"))
-            i += 2 if valued or flags and flags[2] else 1  # GNU takes a long option's unambiguous prefix (--da)
+            i += 2 if valued or flags and flags[1] else 1  # GNU takes a long option's unambiguous prefix (--da)
             out += [] if a.startswith("-") else [a]  # - is its stdout
         return out
     if name == "curl":

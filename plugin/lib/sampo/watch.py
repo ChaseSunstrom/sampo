@@ -898,42 +898,11 @@ def _cached_view(p):
     return text
 
 
-def _git_stamp(root):
-    """T-3580: (path, inode, mtime, size) of what git's ref answers stand on: HEAD, packed-refs, each folder under refs/
-    (an update renames a file into one), the worktrees folder and each worktree's HEAD. None outside a git checkout."""
-    top = c.git_root(root)
-    if not top:
-        return None
-    common = os.path.join(top, ".git")
-    if os.path.isfile(common):  # a worktree: its .git file names its git dir, whose commondir names the shared one
-        try:
-            with open(common, encoding="utf-8") as f:
-                common = os.path.join(top, f.read().partition("gitdir:")[2].strip())
-            with open(os.path.join(common, "commondir"), encoding="utf-8") as f:
-                common = os.path.normpath(os.path.join(common, f.read().strip()))
-        except FileNotFoundError:  # a submodule's git dir is its own common dir
-            pass
-        except OSError:
-            return None
-    paths = [os.path.join(common, n) for n in ("HEAD", "packed-refs", "worktrees")]
-    paths += sorted(d for d, _, _ in os.walk(os.path.join(common, "refs")))
-    with contextlib.suppress(OSError):
-        paths += [os.path.join(common, "worktrees", n, "HEAD") for n in sorted(os.listdir(paths[2]))]
-    out = []
-    for path in paths:
-        try:
-            st = os.stat(path)
-            out.append([path, st.st_ino, st.st_mtime_ns, st.st_size])
-        except OSError:
-            out.append([path])
-    return out
-
-
 @contextlib.contextmanager
 def _git_kept(p):
     """T-3580: core._git's ref-only answers for this run, kept in cache/git.json while the stamp of what they stand on
-    holds: the pane's run started ~20 git processes, nearly all asking what the last run asked."""
-    stamp, path, kept = _git_stamp(p.root), os.path.join(p.dir, "cache", "git.json"), {}
+    (core.git_stamp) holds: the pane's run started ~20 git processes, nearly all asking what the last run asked."""
+    stamp, path, kept = c.git_stamp(p.root), os.path.join(p.dir, "cache", "git.json"), {}
     if stamp:
         try:
             with open(path, encoding="utf-8") as f:
