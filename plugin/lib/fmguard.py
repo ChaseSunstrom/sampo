@@ -2531,7 +2531,8 @@ def _hides_claude(words):
         return True
     if name == "unset" and (named or any(re.search(r"[$`]", a) for a in ops)):  # unset $v: a name it computes
         return True
-    if name in ("local", "read", "mapfile", "readarray", "getopts") and named:
+    if name in ("local", "read", "mapfile", "readarray", "getopts") and named or \
+            name in ("for", "select") and ops[:1] and ops[0] in named:  # T-3683: for V in sets V (a word after in doesn't)
         return True
     if name in ("declare", "typeset", "local") and any(_CC_NAME.search(a) for a in ops) and not any(
             a.startswith("-") and "p" in a for a in ops):  # declare -n r=CLAUDECODE makes r the variable
@@ -2962,11 +2963,11 @@ def _writes_nothing(x):
     name, args = os.path.basename(a[0]), a[1:]
     if name == "printf" and _setter(name, args):
         return False
-    if name == "curl":  # value flags: a header or agent, a -w format (not %output{file}), -o only to /dev/null
-        i = 0
+    if name == "curl":  # value flags: a header or agent, a -w format (not %output{file}), -o only to /dev/null; T-3683:
+        i = 0  # -b reads cookies (a string or a jar it only reads; -c is the jar it writes)
         while i < len(args):
             w, v = args[i], args[i + 1] if i + 1 < len(args) else ""
-            if w in ("-H", "--header", "-A", "--user-agent", "-X", "--request") or \
+            if w in ("-H", "--header", "-A", "--user-agent", "-X", "--request", "-b", "--cookie") or \
                     w in ("-w", "--write-out") and "%output{" not in v or w in ("-o", "--output") and v == "/dev/null" \
                     or _CURL_TIMES.fullmatch(w) and re.fullmatch(r"\d+(?:\.\d+)?", v):
                 i += 2
@@ -3013,10 +3014,48 @@ def _shadowed(cwds, mods):
     return False
 
 
-def _reads_pipe_as_data(c, argv, cmds, cwds, cmd, ignore_writes=False):
+def _py_code(args):
+    """T-3683: (the flags before -c, CODE) when python's words are a run of flags that only narrow what it reads or
+    does, then -c CODE; else None. -I (isolated: -E, -s and -P at once), -E (no PYTHON* variable), -s, -S, -P (no
+    script folder on sys.path; a Python older than 3.11 rejects it and runs nothing), -B, -u, -q, -O, -OO, and -X
+    importtime or utf8, apart or fused (-IB, -IBc CODE). Never -i (stdin runs as code after CODE), -m, -W (imports
+    a warning category), another -X (pycache_prefix reads planted .pyc), --, - or a script; -Icexec(input()) is
+    CODE fused to -c, so it isn't proved."""
+    flags, i = "", 0
+    while i < len(args):
+        w = args[i]
+        if w in ("-Ximporttime", "-Xutf8") or w == "-X" and args[i + 1:i + 2] in (["importtime"], ["utf8"]):
+            i += 2 if w == "-X" else 1
+            continue
+        m = re.fullmatch(r"-([IEsSPBuqO]*)(c?)", w)
+        if not m or w == "-":
+            return None
+        flags += m.group(1)
+        if m.group(2):
+            return (flags, args[i + 1]) if i + 1 < len(args) else None
+        i += 1
+    return None
+
+
+def _unloop(x):
+    """T-3683: a loop's words read as its unrolled body would: `for NAME in WORDS` sets NAME to each word in turn, a
+    leading do, while or until goes (the command after it runs as is), and a lone done runs nothing (its redirects
+    still count). Any other form (for NAME without in, for ((…)), select, a { group) is x itself, which
+    _writes_nothing still reads as unknown."""
+    a = x.argv
+    if len(a) >= 4 and a[0] == "for" and re.fullmatch(r"[A-Za-z_]\w*", a[1]) and a[2] == "in":
+        a = [f"{a[1]}={w}" for w in a[3:]]
+    else:
+        while a and a[0] in ("do", "while", "until"):
+            a = a[1:]
+        a = [] if a == ["done"] else a
+    return x if a is x.argv else Cmd(a or ["true"], x.redirs, x.piped, x.procsub, x.op, x.depth)
+
+
+def _reads_pipe_as_data(c, cmds, cwds, cmd, ignore_writes=False):
     """T-0344: `curl … | python3 -c CODE` reads the download as data when CODE is proved (_open_targets: pure modules,
-    nothing dynamic, nothing written) and nothing makes python read stdin as code. -c comes first (every word after
-    CODE is sys.argv, so no -i before it); python runs bare and every other command is a plain data tool that writes no
+    nothing dynamic, nothing written) and nothing makes python read stdin as code. -c comes first, after narrowing
+    flags only (every word after CODE is sys.argv, so no -i before it); python runs bare and every other command is a plain data tool that writes no
     file or a plain assignment of a name python can't see (_writes_nothing), so no env, export or eval can set
     PYTHONINSPECT (its review: PYTH""ONINSPECT=1) and no module can appear before python starts; none is inherited; and
     nothing in the folder it runs in shadows a module it may import (_shadowed: python -c searches that folder first).
@@ -3024,35 +3063,58 @@ def _reads_pipe_as_data(c, argv, cmds, cwds, cmd, ignore_writes=False):
     group's redirect or pipe is written after python but opens before it or runs beside it); what runs after python
     exits can't change it. A bare & refuses outright (it runs a command beside python, and `&</dev/null x` hides x
     from _split), as does a substitution in a live heredoc body. A name set here may be read only where its every value
-    is a plain word: no space, glob, quote, $ or leading -, so it can't split into flags or close a string in CODE."""
-    name, args = (os.path.basename(argv[0]) if argv else ""), argv[1:]
-    if not (re.match(r"^python[0-9.]*$", name) and c.argv == argv and set(c.redirs) <= {"/dev/null"} and len(args) >= 2
-            and args[0] == "-c"):
+    is a plain word: no space, glob, quote, $ or leading -, so it can't split into flags or close a string in CODE.
+    T-3683: flags that only narrow python may come before -c (_py_code): -I or -P keeps the folder off sys.path (no
+    _shadowed), -I or -E ignores the inherited PYTHON* variables. A loop reads as its unrolled body (_unloop): every
+    command on the line counts, since later passes of python run after the whole body. ignore_writes skips only the
+    writers outside python's own pipeline, which running that pipeline alone leaves behind. Another python on the line
+    that passes the same proof (_proved_py) writes nothing either: a literal loop unrolls into one per word."""
+    if not _proved_py(c, cwds):
         return False
     shell = _mask_quotes(_strip_heredocs(cmd))
     if re.search(r"(?<![&<>|])&(?![&>])", shell) or any(_RUNS.search(b) for b in _live_heredocs(cmd)):
         return False
-    i = end = cmds.index(c)
+    i = start = end = cmds.index(c)
     while end + 1 < len(cmds) and "|" in cmds[end + 1].op.replace("||", ""):
         end += 1
+    while start > 0 and "|" in cmds[start].op.replace("||", ""):
+        start -= 1
     # review: _split counts a quoted ")" as a real one (shlex makes it a bare token), so python can look outside a
     # group it is in; bare paren tokens that outnumber the unquoted parens mean the depths can't be trusted
     bare = [t for t in _tokens(_lines(_strip_heredocs(cmd))) if re.fullmatch(r"[$<>]?\(+|\)+", t)]
     top = (c.depth == 0 and all(x.depth >= 0 for x in cmds) and shell.count("(") == shell.count(")")
            and sum(t.count("(") for t in bare) == shell.count("(") and sum(t.count(")") for t in bare) == shell.count(")"))
-    others = [x for x in (cmds[:end + 1] if top else cmds) if x is not c]
-    if not ignore_writes and not all(_writes_nothing(x) for x in others):  # ignore_writes: T-3673, to tell why it said no
-        return False
+    loop = any(_unloop(x) is not x for x in cmds)
+    rest = [x for x in (cmds[:end + 1] if top and not loop else cmds) if x is not c]
+    others = [_unloop(x) for x in rest]
+    if any(not _writes_nothing(u) and not _proved_py(u, cwds) for x, u in zip(rest, others)
+           if not ignore_writes or x in cmds[start:end + 1]):
+        return False  # ignore_writes: T-3673, to tell why it said no
     pairs = [w.split("=", 1) for x in others if all(_ASSIGN.match(w) for w in x.argv) for w in x.argv]
     loose = {k for k, v in pairs if v.startswith("-") or not re.fullmatch(r"[\w.:/@%+,=-]*", v)}
     words = [w for x in others + [c] if not all(_ASSIGN.match(v) for v in x.argv) for w in x.argv]
     read = {r for w in words for r in re.findall(r"\$\{?[#!]?([A-Za-z_]\w*)", w)}
-    if loose & read or loose and any("${!" in w for w in words):  # ${!R} reads the name R holds
+    return not (loose & read or loose and any("${!" in w for w in words))  # ${!R} reads the name R holds
+
+
+def _proved_py(x, cwds):
+    """T-0344: x is a bare python -c CODE (no wrapper or assignment, output to /dev/null at most) that reads stdin
+    only as data and writes nothing: CODE proved (_open_targets), no inherited PYTHONINSPECT or import path, nothing
+    in its folder shadowing a module it may import (_shadowed). T-3683: narrowing flags first (_py_code); -I or -E
+    ignores the inherited PYTHON* variables, -I or -P keeps the folder off sys.path."""
+    argv, _ = _strip_wrappers(x.argv)
+    py = _py_code(argv[1:]) if argv and x.argv == argv and re.match(r"^python[0-9.]*$", os.path.basename(argv[0])) \
+        else None
+    if not py or not set(x.redirs) <= {"/dev/null"}:
         return False
-    if any(os.environ.get(k) for k in ("PYTHONINSPECT", *_PY_PATH_VARS)) or _open_targets(args[1]) != []:
+    flags, code = py
+    if not set(flags) & set("IE") and any(os.environ.get(k) for k in ("PYTHONINSPECT", *_PY_PATH_VARS)) or \
+            _open_targets(code) != []:
         return False
+    if set(flags) & set("IP"):
+        return True
     import ast
-    mods = {al.name.split(".")[0] for n in ast.walk(ast.parse(args[1])) if isinstance(n, ast.Import) for al in n.names}
+    mods = {al.name.split(".")[0] for n in ast.walk(ast.parse(code)) if isinstance(n, ast.Import) for al in n.names}
     return not _shadowed(cwds, mods)
 
 
@@ -3273,8 +3335,10 @@ def _expand_literal_loops(cmd):
         body, mbody = cmd[m.start(3):m.end(3)], m.group(3)
         before = masked[:m.start()].rstrip()
         uses = list(re.finditer(rf"\$(?:\{{{var}\}}|{var}(?!\w))", body))
+        # T-3683: V set where bash sets it matters when a command run in the body reads it (PATH picks the program):
+        # such a V, or an exported one, stays as written
         if (before and before[-1] not in ";&|\n(" or not words or not all(_LITERAL_WORD.fullmatch(w) for w in words)
-                or _LOOP_SETTERS.search(mbody) or re.search(rf"(?<![\w$-]){var}(?!\w)", re.sub(
+                or var in os.environ or _REACHES_PYTHON.fullmatch(var) or _LOOP_SETTERS.search(mbody) or re.search(rf"(?<![\w$-]){var}(?!\w)", re.sub(
                     rf"\$(?:\{{{var}\}}|{var}(?!\w))", "", body)) or any(_single_quoted(body, u.start()) for u in uses)):
             continue
         after = masked[m.end():].lstrip(" \t")
@@ -3817,11 +3881,12 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             # T-0421: a download anywhere on the line counts (a $( ), a group or a <( ) splits it from the shell's own
             # chain; a file downloaded first and then piped in is a download too), and so does a pipe into a group
             fetched = any(_name(x.argv) in _FETCHERS for x in chain) or _FETCH_WORD.search(_mask_quotes(cmd))
-            if (c.piped or "|" in c.op) and fetched and not _reads_pipe_as_data(c, argv, cmds, cwds, cmd):
+            if (c.piped or "|" in c.op) and fetched and not _reads_pipe_as_data(c, cmds, cwds, cmd):
                 why = f"downloaded content piped into {name}"
-                if _reads_pipe_as_data(c, argv, cmds, cwds, cmd, ignore_writes=True):  # T-3673: only the others fail it
-                    why += (": run the `curl … | python3 -c …` pipeline as its own command, since the commands before "
-                            "it on this line write files and could plant a module python imports")
+                if _reads_pipe_as_data(c, cmds, cwds, cmd, ignore_writes=True):  # T-3673: only the others fail it
+                    why += (": run the `curl … | python3 -c …` pipeline as its own command (a for or while loop of it "
+                            "and sleep passes too), since other commands on this line write files and could plant a "
+                            "module python imports")
                 found.append(("pipe-shell", why))
             nxt = cmds[idx + 1] if idx + 1 < len(cmds) else None
             if c.procsub and nxt and _name(nxt.argv) in _FETCHERS:
