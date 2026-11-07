@@ -7703,7 +7703,8 @@ def _build_parser(only=None):
     s = add("ship", lazy("sampo.release", "cmd_ship"), tier=("Project and settings", 907),
             help="land HEAD's unpushed commits (or the named ones) on the remote's main: cherry-picked onto the fetched "
                  "main in a scratch worktree, tested there, pushed if main didn't move; needs the active task's (or --task ID's) publish "
-                 "grant; run it in the background (T-1943)")
+                 "grant; run it in the background (T-1943). Without commits it ships up to the newest commit whose tree "
+                 "the post-merge verify passed in full, reusing that run (T-3666)")
     s.add_argument("commits", nargs="*", metavar="COMMIT", help="default: HEAD's commits main lacks (git cherry), or the branch's "
                    "own steps since the last ship while main still matches it")
     s.add_argument("--remote", metavar="URL", help="push to this remote instead of origin")
@@ -7715,6 +7716,8 @@ def _build_parser(only=None):
                                                 "active task's, and spend it (T-2007)")
     s.add_argument("--check", action="store_true", help="push nothing: exit 0 when the remote's main has these commits' "
                                                         "changes (by patch), 1 naming the ones it lacks; no grant needed (T-1960)")
+    s.add_argument("--head", action="store_true", help="ship up to HEAD, tested here unless a recorded pass covers its "
+                   "tree, instead of up to the newest commit the post-merge verify passed in full (T-3666)")
     add("release-check", lazy("sampo.demo", "cmd_release_check"), tier=("Project and settings", 910),
         help="sampo doctor and sampo demo in a temporary HOME: a clean checkout passes before a release (T-0960)")
     s = add("secrets", lazy("sampo.secrets", "cmd_secrets"), tier=("Finding your way", 400), help="credentials in the working tree, Claude config and "

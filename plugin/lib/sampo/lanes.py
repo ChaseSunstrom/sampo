@@ -2411,6 +2411,31 @@ def _pm_uncached_due(p):
         return due
 
 
+FULL_KEEP = 50
+
+
+def pm_full_pass(p, main, sha, cmd):
+    """T-3666: a clean uncached run of the whole suite on sha's tree, for fm ship to push that commit without running it
+    again (~80 CPU-min). The newest FULL_KEEP, oldest first, in postmerge/.full.json (pm_records skips a list)."""
+    tree = _git(main, "rev-parse", f"{sha}^{{tree}}").stdout.strip()
+    if not tree or not cmd:
+        return
+    os.makedirs(_pm_dir(p), exist_ok=True)
+    with c.lock(_pm_dir(p)):
+        rows = pm_full_passes(p) + [{"sha": _git(main, "rev-parse", sha).stdout.strip(), "tree": tree, "cmd": cmd,
+                                     "env": c.env_id(), "at": c.now()}]
+        c.write_atomic(os.path.join(_pm_dir(p), ".full.json"), json.dumps(rows[-FULL_KEEP:]))
+
+
+def pm_full_passes(p):
+    try:
+        with open(os.path.join(_pm_dir(p), ".full.json")) as f:
+            rows = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
 def pm_rerun_cmd(main, classes):
     """T-3216: the red classes run alone: FM_POSTMERGE_RERUN ({classes} filled in), else this repo's runner on them;
     "" when a red isn't a module.Class name (a bare suite exit can't be re-run alone)."""
@@ -2623,6 +2648,8 @@ def pm_verify(p, main, sha):
         return True
     if not code:
         pm_set(p, sha, state="green")
+        if full and not gone:  # T-3666: sha's own tree passed the whole suite uncached; a requeued one ran another tree
+            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True))
         cli.mutate(p, r["task"], lambda x: (x.append_log(f"verified: the full suite is green on {sha[:9]}"),
                                             x.meta.update(lane_verified=sha)), "lane_verified", {"sha": sha})
         return True
@@ -2711,12 +2738,19 @@ def pm_run(p, main):
 
 
 def _pm_green_at(p, main, sha):
-    """T-3446: the full suite on sha in a throwaway worktree; True only on a clean pass (a probe: records nothing)."""
+    """T-3446: the full suite on sha in a throwaway worktree; True only on a clean pass (a probe: no merge's record, but
+    an uncached pass is recorded for fm ship, T-3666)."""
     tmp = tempfile.mkdtemp(prefix="fm-verify-")
     wt = os.path.join(tmp, "wt")
     try:
-        return not _git(main, "worktree", "add", "--detach", wt, sha).returncode and \
-            c.run_command(wt, pm_cmd(main, uncached=_pm_uncached_due(p)), c.load_scaled(3600))[0] == 0
+        if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
+            return False
+        full = _pm_uncached_due(p)
+        if c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600))[0]:
+            return False
+        if full:
+            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True))
+        return True
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)

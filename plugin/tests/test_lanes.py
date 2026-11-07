@@ -2918,6 +2918,50 @@ class PostMergeVerify(ForemanTestCase):
             self.assertTrue(due())
         self.assertFalse(due())
 
+    def full_passes(self):
+        return [(x["sha"], x["tree"], x["cmd"], x["env"]) for x in slanes.pm_full_passes(self.p)]
+
+    def test_a_clean_uncached_verify_records_a_full_pass(self):
+        # T-3666: fm ship ran the whole suite again (~80 CPU-min) on trees the verify had just passed in full
+        sha = self.land("a")
+        slanes.pm_run(self.p, self.repo)  # the first verify runs uncached
+        self.assertEqual(self.full_passes(), [(sha, self.git("rev-parse", f"{sha}^{{tree}}"), self.RED, c.env_id())])
+        self.assertTrue(c.parse_ts(slanes.pm_full_passes(self.p)[0]["at"]))
+
+    def test_a_cached_or_flaky_or_reverted_run_records_no_full_pass(self):  # T-3666
+        slanes._pm_uncached_due(self.p)  # the first is spent: the next verify runs cached
+        a = self.land("a")
+        slanes.pm_run(self.p, self.repo)
+        self.assertEqual(self.state(a), "green")
+        self.assertEqual(self.full_passes(), [], "a cached run is no full pass")
+        with mock.patch.object(slanes, "_pm_uncached_due", return_value=True):
+            os.environ["FM_POSTMERGE_RERUN"] = "true"  # red in the suite, green alone: a flake
+            self.addCleanup(os.environ.pop, "FM_POSTMERGE_RERUN", None)
+            flaky = self.land("f", bad=True)
+            slanes.pm_run(self.p, self.repo)
+            self.assertEqual(slanes.pm_records(self.p)[flaky].get("flaky"), ["test_mod.Cls"])
+            self.assertEqual(self.full_passes(), [], "a flaky pass is no full pass")
+            os.environ.pop("FM_POSTMERGE_RERUN")
+            self.git("rm", "-q", "bad.txt")
+            self.git("commit", "-qm", "drop bad")
+            x, g = self.land("x", bad=True), self.land("g")
+            slanes.pm_run(self.p, self.repo)  # x reverts; g is judged on its tree without x: no commit has that tree
+            self.assertEqual((self.state(x), self.state(g)), ("reverted", "green"))
+        self.assertEqual(self.full_passes(), [])
+
+    def test_the_head_probe_records_a_full_pass(self):  # T-3666
+        shas = [self.land(n) for n in ("a", "b")]
+        slanes.pm_run(self.p, self.repo)  # two pending: one uncached run on HEAD settles both
+        head = self.git("rev-parse", "HEAD")
+        self.assertEqual([self.state(s) for s in shas], ["green", "green"])
+        self.assertEqual(self.full_passes(), [(head, self.git("rev-parse", "HEAD^{tree}"), self.RED, c.env_id())])
+
+    def test_full_passes_keep_the_newest_fifty(self):  # T-3666: bounded
+        for i in range(55):
+            slanes.pm_full_pass(self.p, self.repo, "HEAD", f"run {i}")
+        got = slanes.pm_full_passes(self.p)
+        self.assertEqual((len(got), got[0]["cmd"], got[-1]["cmd"]), (50, "run 5", "run 54"))
+
     def test_no_suite_is_logged_once(self):
         os.environ.pop("FM_POSTMERGE_CMD")
         for _ in range(2):

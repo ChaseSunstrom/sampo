@@ -334,6 +334,102 @@ class Ship(ForemanTestCase):
         self.assertTrue(self.granted())
         self.assertEqual(sh(self.repo, "worktree", "list").count("\n"), 1)
 
+    def verified(self, rev, cmd=None):
+        """T-3666: the post-merge verify's clean uncached run on rev's tree, as pm_verify records it."""
+        from sampo import lanes
+        sha = sh(self.repo, "rev-parse", rev).strip()
+        lanes.pm_full_pass(c.find_project(self.repo), self.repo, sha, cmd or self.FAILS)
+        return sha
+
+    def test_a_verified_commit_older_than_head_ships_without_the_suite(self):
+        # T-3666: every ship ran the whole suite on HEAD (~80 CPU-min), a tree the verify had almost never run yet
+        self.grant()
+        first = self.verified("HEAD~1")
+        r = self.ship("--test", self.FAILS + " -j 6")  # a run would fail; the job count runs the same tests
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[0], "add a")
+        self.assertNotIn("add b", self.main_log(), "the unverified commit waits")
+        self.assertIn(f"shipping {first[:9]}", r.stdout)
+        self.assertIn("1 newer commit", r.stdout)
+        self.assertIn("reusing the post-merge verify's full run", r.stdout)
+        self.assertEqual(sh(self.repo, "rev-parse", "refs/foreman/shipped").strip(), first)
+        self.grant()  # nothing newer verified: the next ship tests HEAD and lands the rest
+        r = self.ship("--test", "true")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:2], ["add b", "add a"])
+
+    def test_a_verified_commit_at_head_ships_everything_without_the_suite(self):  # T-3666
+        self.grant()
+        self.verified("HEAD")
+        r = self.ship("--test", self.FAILS)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:2], ["add b", "add a"])
+        self.assertIn("reusing the post-merge verify's full run", r.stdout)
+
+    def test_no_verified_commit_newer_than_main_tests_head(self):  # T-3666
+        self.grant()
+        self.verified("origin/main")
+        r = self.ship("--test", self.FAILS)
+        self.assertNotEqual(r.returncode, 0, "the suite ran on HEAD and failed")
+        self.assertNotIn("add a", self.main_log())
+        self.assertNotIn("post-merge verify", r.stdout)
+
+    def test_head_flag_tests_head(self):  # T-3666
+        self.grant()
+        self.verified("HEAD~1")
+        r = self.ship("--head", "--test", "true")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:2], ["add b", "add a"])
+        self.assertNotIn("post-merge verify", r.stdout)
+
+    def test_another_suite_command_or_env_or_a_stale_pass_tests_head(self):  # T-3666
+        from sampo import lanes
+        p = c.find_project(self.repo)
+        self.grant()
+        self.verified("HEAD~1", "python3 plugin/tests/run.py")  # another suite than the ship's
+        self.verified("HEAD~1")
+        self.verified("HEAD~1")
+        path = os.path.join(p.dir, "postmerge", ".full.json")
+        with open(path) as f:
+            rows = json.load(f)
+        rows[1]["env"], rows[2]["at"] = "another-python", "2026-01-01T00:00:00Z"
+        c.write_atomic(path, json.dumps(rows))
+        self.assertEqual(len(lanes.pm_full_passes(p)), 3)
+        r = self.ship("--test", self.FAILS)
+        self.assertNotEqual(r.returncode, 0, "no pass holds: the suite ran on HEAD and failed")
+        self.assertNotIn("add a", self.main_log())
+        self.assertNotIn("post-merge verify", r.stdout)
+
+    def test_the_default_fm_check_tests_head(self):  # T-3666: its lint gates are no part of the verify's suite
+        self.grant()
+        self.fm("check", "add", "false")
+        self.verified("HEAD~1", "")
+        r = self.ship()
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("add a", self.main_log())
+        self.assertNotIn("post-merge verify", r.stdout)
+
+    def test_the_private_scan_still_runs_on_the_verified_commit(self):  # T-3666
+        self.grant()
+        self.fm("private", "add", "*.home.example-private.test")
+        with open(os.path.join(self.repo, "c.txt"), "w") as f:
+            f.write("url = http://llm.home.example-private.test/v1\n")
+        sh(self.repo, "add", "c.txt")
+        sh(self.repo, "commit", "-qm", "add c")
+        leak = self.verified("HEAD")
+        with open(os.path.join(self.repo, "d.txt"), "w") as f:
+            f.write("d\n")
+        sh(self.repo, "add", "d.txt")
+        sh(self.repo, "commit", "-qm", "add d")
+        r = self.ship("--test", self.FAILS)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn(f"shipping {leak[:9]}", out)
+        self.assertIn("c.txt", out)
+        self.assertIn("private term", out)
+        self.assertNotIn("add a", self.main_log())
+        self.assertTrue(self.granted())
+
     def test_a_private_term_or_a_secret_value_in_the_shipped_commits_or_tree_refuses_naming_where(self):  # T-3529
         self.grant()
         self.fm("private", "add", "*.home.example-private.test")

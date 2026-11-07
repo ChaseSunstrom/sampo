@@ -449,21 +449,62 @@ def _ci_ignored(root, rev):
     return [_glob_re(g) for g in out if g]
 
 
-def _gated_pass(p, root, wt, base, said):
+def _suite(cmd):
+    """T-3666: a test command's words without its job count: -j 6 runs the same tests as -j 2 or none."""
+    import shlex
+    try:
+        words = shlex.split(str(cmd or ""))
+    except ValueError:
+        return str(cmd)
+    out, skip = [], False
+    for w in words:
+        if skip:
+            skip = False
+        elif w in ("-j", "--jobs"):
+            skip = True
+        elif not re.fullmatch(r"-j\d+|--jobs=\d+", w):
+            out.append(w)
+    return shlex.join(out)
+
+
+def _verified(p, root, said, base, last):
+    """T-3666: the newest commit on HEAD's first-parent line that main and the last ship lack, whose tree the post-merge
+    verify passed in full (lanes.pm_full_pass) with this ship's suite, in this environment, within the run cache's
+    window: (sha, how to say the pass) or (None, None). The default fm check runs lint gates too: never the suite."""
+    from sampo import cli, lanes
+    if not said:
+        return None, None
+    fresh = lambda at: (lambda d: d is not None and d < cli.CACHE_DAYS)(c.age_days(str(at)))  # noqa: E731
+    passes = {str(x.get("tree")): x for x in lanes.pm_full_passes(p)
+              if _suite(x.get("cmd")) == _suite(said) and x.get("env") == c.env_id() and fresh(x.get("at"))}
+    if not passes:
+        return None, None
+    line = _git(root, "log", "--first-parent", "-n", "500", "--format=%H %T", "HEAD", f"^{base}",
+                *([f"^{last}"] if last else []), ok=True).split()
+    for sha, tree in zip(line[::2], line[1::2]):
+        x = passes.get(tree)
+        if x and not (last and c._git(root, "merge-base", "--is-ancestor", last, sha, timeout=60, proc=True).returncode):
+            return sha, f"the post-merge verify's full run on {str(x.get('sha'))[:9]} ({x.get('at')})"
+    return None, None
+
+
+def _gated_pass(p, root, wt, base, said, target="HEAD", full=None):
     """T-3468: the gates' pass (a train's or a full fm check's) that already covers the tree about to be pushed, or
     None. It holds when the ship's test is the gates' own (the default fm check, or one of the configured checks),
     HEAD's code tree passed every configured gate, the shipped commits change no CI workflow (they supply the ignore
     globs), and the pushed tree differs from HEAD's in no CI workflow and no Python file under plugin/. After a train
     the ship ran the whole suite again on the same code (14-20 min at load). Returns (the pass or None, the differing
     files besides CI-skipped ones (paths-ignore: the tower's shards) and the sync mirror's notes): T-3533, the tower's
-    stats or a CHANGELOG.md main changed, whose affected tests the caller runs instead of the suite (17-25 min)."""
+    stats or a CHANGELOG.md main changed, whose affected tests the caller runs instead of the suite (17-25 min).
+    T-3666: `target`, the commit shipped (HEAD or a verified one); `full`, the post-merge verify's pass on its tree
+    (_verified matched the suite), which stands in for the gates'."""
     import shlex
     from sampo import cli
     checks = list(c.read_meta(p).get("checks") or [])
     norm = lambda s: shlex.join(shlex.split(s))  # noqa: E731
-    head = _git(root, "rev-parse", "HEAD^{tree}").strip()
+    head = _git(root, "rev-parse", f"{target}^{{tree}}").strip()
     pushed = _git(wt, "rev-parse", "HEAD^{tree}").strip()
-    if not checks or not head or not pushed or (said and norm(said) not in {norm(x) for x in checks}):
+    if not head or not pushed or not full and (not checks or (said and norm(said) not in {norm(x) for x in checks})):
         return None, []
     if _git(wt, "diff", "--name-only", base, "HEAD", "--", ".github").strip():
         return None, []
@@ -472,7 +513,10 @@ def _gated_pass(p, root, wt, base, said):
             if not ((f.startswith(c.MIRROR_DIRS) and f.endswith(".md")) or any(g.match(f) for g in ignored))]
     if any(f.startswith(".github/") or (f.startswith("plugin/") and f.endswith(".py")) for f in rest):
         return None, []
-    return cli._cached_pass(p, checks, head[:12], (), c.code_tree(root, head)), rest
+    if full:
+        return full, rest
+    hit = cli._cached_pass(p, checks, head[:12], (), c.code_tree(root, head))
+    return (f"the gates' pass ({hit})" if hit else None), rest
 
 
 def _run_test(p, wt, base, env, test, log):
@@ -589,12 +633,27 @@ def ship(p, args):
     def _files(a, b):
         return set(_git(root, "diff", "--name-only", a, b).splitlines())
     tower = _tower_files(root, last, base) if last else set()  # T-2955: main's copy of these is the one to keep
-    if not picks and last and not ((_files(last, base) - tower) & _files(last, "HEAD")):
-        # T-2054: main is where the last ship left it (T-2212: or moved only in files the branch left alone), so replay
-        # the branch's own history: a merged lane's commit may not apply alone (its merge settled a conflict), but each
-        # first-parent step applies in turn
-        picks = _git(root, "rev-list", "--first-parent", "--reverse", f"{last}..HEAD").split()
-    picks = picks or [ln[2:] for ln in _git(root, "cherry", base, "HEAD", *([last] if last else [])).splitlines() if ln.startswith("+ ")]
+    def _picks(upto):
+        if last and not ((_files(last, base) - tower) & _files(last, upto)):
+            # T-2054: main is where the last ship left it (T-2212: or moved only in files the branch left alone), so
+            # replay the branch's own history: a merged lane's commit may not apply alone (its merge settled a
+            # conflict), but each first-parent step applies in turn
+            got = _git(root, "rev-list", "--first-parent", "--reverse", f"{last}..{upto}").split()
+            if got:
+                return got
+        return [ln[2:] for ln in _git(root, "cherry", base, upto, *([last] if last else [])).splitlines() if ln.startswith("+ ")]
+    said = args.test or _git(root, "config", "--local", "--get", "foreman.shiptest", ok=True).strip()
+    target, full = "HEAD", None
+    if not picks and not args.check and not getattr(args, "head", False):
+        # T-3666: the newest commit the post-merge verify ran the whole suite on, so the ship needn't run it (~80 CPU-min)
+        try:
+            target, full = _verified(p, root, said, base, last)
+        except Exception as e:  # a convenience: HEAD ships, tested, as before
+            target, full = None, None
+            print(f"post-merge verify reuse skipped: {c.fit(c.plain(str(e)), 120)}", flush=True)
+        picks = _picks(target) if target else []
+        target, full = (target, full) if picks else ("HEAD", None)
+    picks = picks or _picks("HEAD")
     if not picks:
         print(f"nothing to ship: {remote} main already has HEAD's changes" + (f" after the last shipped commit {last[:8]}" if last else ""))
         return 0
@@ -609,8 +668,12 @@ def ship(p, args):
          else _grant(p) or _err(_NEED_GRANT.replace("--push", "fm ship", 1) + "; nothing was pushed"))
     if args.test:  # T-1950: remembered per repo, so the oldest runtime's suite isn't retyped each ship
         _git(root, "config", "--local", "foreman.shiptest", args.test, ok=True)
-    said = args.test or _git(root, "config", "--local", "--get", "foreman.shiptest", ok=True).strip()
     test = shlex.split(said) if said else [*FM, "check"]
+    if full:
+        k = int(_git(root, "rev-list", "--count", "--first-parent", f"{target}..HEAD").strip() or 0)
+        print(f"shipping {target[:9]}, the newest commit the post-merge verify passed in full; " + (
+            f"{k} newer commit{'s' if k > 1 else ''} on the branch wait{'' if k > 1 else 's'} for the next verified one"
+            if k else "it is HEAD"), flush=True)
     files = sorted({f for s in picks for f in _git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-m", s).splitlines() if f})
     n = f"{len(picks)} commit{'s' if len(picks) > 1 else ''}"
     with tempfile.TemporaryDirectory() as tmp:
@@ -640,7 +703,7 @@ def ship(p, args):
             failed, tail, hit, rest = 0, "", None, []
             try:  # a full fm check here waits for this run; the ship's own fm check (in wt) doesn't
                 try:
-                    hit, rest = _gated_pass(p, root, wt, base, said)  # T-3468
+                    hit, rest = _gated_pass(p, root, wt, base, said, target, full)  # T-3468
                 except Exception as e:  # review: a check that can't run falls back to the suite
                     print(f"gates pass reuse skipped: {c.fit(c.plain(str(e)), 120)}", flush=True)
                 # T-3533: main moved files tests read (the tower's daily stats): only their tests run, red stops the ship
@@ -649,7 +712,7 @@ def ship(p, args):
                 if hit:
                     top = (f"; in {c.joinmore(rest, 5)} its affected tests passed "
                            f"({c.joinmore([os.path.basename(t) for t in ran], 8) or 'none linked'})") if rest else ""
-                    print(f"reusing the gates' pass ({hit}): the pushed tree differs from it only in files its CI "
+                    print(f"reusing {hit}: the pushed tree differs from it only in files its CI "
                           f"skips or the sync mirror{top}, so the suite isn't run again", flush=True)
                 else:
                     failed, tail = _run_test(p, wt, base, env, test, log)
