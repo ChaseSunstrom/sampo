@@ -3013,7 +3013,7 @@ def _shadowed(cwds, mods):
     return False
 
 
-def _reads_pipe_as_data(c, argv, cmds, cwds, cmd):
+def _reads_pipe_as_data(c, argv, cmds, cwds, cmd, ignore_writes=False):
     """T-0344: `curl … | python3 -c CODE` reads the download as data when CODE is proved (_open_targets: pure modules,
     nothing dynamic, nothing written) and nothing makes python read stdin as code. -c comes first (every word after
     CODE is sys.argv, so no -i before it); python runs bare and every other command is a plain data tool that writes no
@@ -3041,7 +3041,7 @@ def _reads_pipe_as_data(c, argv, cmds, cwds, cmd):
     top = (c.depth == 0 and all(x.depth >= 0 for x in cmds) and shell.count("(") == shell.count(")")
            and sum(t.count("(") for t in bare) == shell.count("(") and sum(t.count(")") for t in bare) == shell.count(")"))
     others = [x for x in (cmds[:end + 1] if top else cmds) if x is not c]
-    if not all(_writes_nothing(x) for x in others):
+    if not ignore_writes and not all(_writes_nothing(x) for x in others):  # ignore_writes: T-3673, to tell why it said no
         return False
     pairs = [w.split("=", 1) for x in others if all(_ASSIGN.match(w) for w in x.argv) for w in x.argv]
     loose = {k for k, v in pairs if v.startswith("-") or not re.fullmatch(r"[\w.:/@%+,=-]*", v)}
@@ -3818,7 +3818,11 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             # chain; a file downloaded first and then piped in is a download too), and so does a pipe into a group
             fetched = any(_name(x.argv) in _FETCHERS for x in chain) or _FETCH_WORD.search(_mask_quotes(cmd))
             if (c.piped or "|" in c.op) and fetched and not _reads_pipe_as_data(c, argv, cmds, cwds, cmd):
-                found.append(("pipe-shell", f"downloaded content piped into {name}"))
+                why = f"downloaded content piped into {name}"
+                if _reads_pipe_as_data(c, argv, cmds, cwds, cmd, ignore_writes=True):  # T-3673: only the others fail it
+                    why += (": run the `curl … | python3 -c …` pipeline as its own command, since the commands before "
+                            "it on this line write files and could plant a module python imports")
+                found.append(("pipe-shell", why))
             nxt = cmds[idx + 1] if idx + 1 < len(cmds) else None
             if c.procsub and nxt and _name(nxt.argv) in _FETCHERS:
                 found.append(("pipe-shell", f"{name} <(download)"))
