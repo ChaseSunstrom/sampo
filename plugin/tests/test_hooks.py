@@ -2338,6 +2338,51 @@ class DesignNudge(HookCase):
 
 
 class PostToolUse(HookCase):
+    def test_a_tool_call_refreshes_the_sessions_seen_stamp_at_most_once_a_minute(self):
+        # T-3389: seen moved only on prompts, so a holder in 15 minutes of autonomous work looked dead to others
+        self.fm("init")
+        self.hook("UserPromptSubmit", {"prompt": "hi", "session_id": "s89"})
+        p = self.project()
+        pl = {"tool_name": "Read", "tool_input": {"file_path": "x"}, "session_id": "s89"}
+        seen = lambda: c.read_meta(p)["session"]["seen"]
+        old = c.iso(time.time() - 300)
+        c.update_meta(p, session=dict(c.read_meta(p)["session"], seen=old))
+        self.hook("PostToolUse", pl)
+        fresh = seen()
+        self.assertNotEqual(fresh, old, "a call five minutes after the last stamp refreshes it")
+        stamp = os.stat(os.path.join(p.dir, "meta.json")).st_mtime_ns
+        self.hook("PostToolUse", pl)
+        self.assertEqual(os.stat(os.path.join(p.dir, "meta.json")).st_mtime_ns, stamp, "within the minute: no write")
+        c.update_meta(p, session=dict(c.read_meta(p)["session"], id="other", seen=old))
+        os.remove(os.path.join(c.state_dir(), "sessions", "s89.seen"))
+        self.hook("PostToolUse", pl)
+        self.assertEqual(seen(), old, "another session's stamp is not this one's to move")
+
+    def test_seen_refresh_keeps_pid_skips_a_busy_lock_and_ignores_a_missing_session_id(self):
+        self.fm("init")
+        self.hook("UserPromptSubmit", {"prompt": "hi", "session_id": "s90"})
+        p = self.project()
+        pl = {"tool_name": "Read", "tool_input": {"file_path": "x"}, "session_id": "s90"}
+        old = c.iso(time.time() - 300)
+        c.update_meta(p, session=dict(c.read_meta(p)["session"], pid=4242, seen=old))
+        mark = os.path.join(c.state_dir(), "sessions", "s90.seen")
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        open(mark, "w").close()
+        os.utime(mark, (time.time() + 3600, time.time() + 3600))  # a clock set back: the marker's age is negative
+        with c.lock(p.dir):
+            t0 = time.monotonic()
+            self.hook("PostToolUse", pl)
+            self.assertLess(time.monotonic() - t0, 4, "a busy lock is skipped, not waited for")
+        self.assertEqual(c.read_meta(p)["session"]["seen"], old)
+        os.utime(mark, (time.time() - 300, time.time() - 300))
+        self.hook("PostToolUse", pl)
+        s = c.read_meta(p)["session"]
+        self.assertNotEqual(s["seen"], old)
+        self.assertEqual(s["pid"], 4242, "the refresh keeps whose process it is")
+        stamp = os.stat(os.path.join(p.dir, "meta.json")).st_mtime_ns
+        self.hook("PostToolUse", dict(pl, session_id=None))
+        self.assertEqual(os.stat(os.path.join(p.dir, "meta.json")).st_mtime_ns, stamp)
+
     def test_compact_output(self):
         # T-0783 end to end: fm compact-output on registers the hook in the user's settings; that command, given a
         # 20,000-char failing run, hands back under 8,000 chars with every failure line and the full text's path

@@ -3338,9 +3338,44 @@ def _question_answer(pl, p, ok):
                           headers=[c.fit(c.plain(str(q.get("header") or "")), 12) for q in qs][:4]))
 
 
+SEEN_EVERY_S = 60  # T-3389: how often a tool call may move the session's liveness stamp
+
+
+def _touch_seen(p, sid):
+    """T-3389: liveness from tool calls, not only prompts. A per-session marker file's mtime gates it (one stat per call,
+    no meta.json parse); a marker a minute old is touched and, if this session owns the meta slot, the slot's stamp is
+    refreshed under a lock that is never waited for. ponytail: the slot names one session (the last to prompt), so a
+    non-owner's marker only throttles itself; readers still see the owner's stamp, not a non-owner's marker."""
+    if not sid or not re.fullmatch(r"[\w-]{1,100}", sid):
+        return
+    mark = os.path.join(c.state_dir(), "sessions", sid + ".seen")
+    try:
+        if 0 <= time.time() - os.stat(mark).st_mtime < SEEN_EVERY_S:  # a clock set back reads negative: stale
+            return
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(mark), exist_ok=True)
+        with open(mark, "a"):
+            os.utime(mark)
+        if (c.read_meta(p).get("session") or {}).get("id") != sid:
+            return
+        with c.lock(p.dir, timeout=0):
+            meta = c.read_meta(p)
+            if (meta.get("session") or {}).get("id") == sid:
+                meta["session"] = dict(meta["session"], seen=c.now())
+                c.write_meta(p, meta)
+    except c.LockTimeout:
+        pass  # busy: the next call after the minute tries again
+    except Exception:
+        log_error("PostToolUse", _tb())
+
+
 def post_tool_use(pl, ok=True):
     tool, ti = pl.get("tool_name", ""), pl.get("tool_input") or {}
     p = c.find_project(_cwd(pl))
+    if p:
+        _touch_seen(p, pl.get("session_id"))
     rec = {"session_id": pl.get("session_id"), "kind": "tool" if ok else "tool_fail", "tool": tool,
            "target": _target(ti)[:120], "ms": pl.get("duration_ms"), "ok": ok, "project": p.slug if p else None}
     if pl.get("agent_type"):
