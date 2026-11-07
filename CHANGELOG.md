@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- fm sync import no longer turns a task that is active in the main checkout or a lane back to planned when the repo's mirror copy is an older runnable one; blocked, deferred and closed repo copies still win (T-3396).
 - Every hook keeps its compiled regex patterns between calls, so a PreToolUse Bash call no longer recompiles about 120 of them (CPU 53.8 -> 45.5 ms per call) (T-3584)
 - Timing tests hold under load (interleaved A/B, event waits, load-scaled deadlines), the exam's planted hook wait is 3x the hook process's own age so the self-change gate sees it at any load, and a merge train re-runs a red acceptance command once and notes it flaky instead of leaving the lane out (T-3629)
 - The Ward treats anything that could swap or poison `plugin/native/sampo-fast` as a protected-core write: cargo, rustc or rustup output aimed into `plugin/`, build settings or a toolchain path on a main `plugin/native` build, cargo config and toolchain files at or above it, cargo's `bin/` and rustup's toolchains, and any `.cargo/config` with a path that resolves into the main checkout; `--config FILE` and rustc `@FILE` are refused unread (T-3607)
