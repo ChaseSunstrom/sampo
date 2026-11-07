@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Timing tests hold under load (interleaved A/B, event waits, load-scaled deadlines), the exam's planted hook wait is 3x the hook process's own age so the self-change gate sees it at any load, and a merge train re-runs a red acceptance command once and notes it flaky instead of leaving the lane out (T-3629)
 - The Ward treats anything that could swap or poison `plugin/native/sampo-fast` as a protected-core write: cargo, rustc or rustup output aimed into `plugin/`, build settings or a toolchain path on a main `plugin/native` build, cargo config and toolchain files at or above it, cargo's `bin/` and rustup's toolchains, and any `.cargo/config` with a path that resolves into the main checkout; `--config FILE` and rustc `@FILE` are refused unread (T-3607)
 - The tests' scratch repo is copied from a per-process template and only `git commit` runs per test, cutting git processes from 5 to 1 per repo and fixture CPU from 8.4 to 4.0 ms (T-3581)
 - One shared nav for the landing, the tower and the section pages (a single NAV list in site/build.py, with a menu on narrow screens), so Install and GitHub are back on the tower and the links can't drift again (T-2903).
