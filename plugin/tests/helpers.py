@@ -43,7 +43,8 @@ os.chmod(os.path.join(CLEAN_READER, "claude"), 0o755)
 atexit.register(shutil.rmtree, CLEAN_READER, True)
 # T-0744: every test sees a calm host unless it says otherwise; the machine's real load (a full run beside other work)
 # turned lanes and ambient runs off and failed tests only then
-os.environ.setdefault("FOREMAN_HOST", "load=0.1,cpus=8,mem_mb=8192")
+CALM_HOST = "load=0.1,cpus=8,mem_mb=8192"
+os.environ.setdefault("FOREMAN_HOST", CALM_HOST)
 # T-1791: the Claude Code env fm install-user sets (T-1796's 200k compact window) belongs to the running session, not a
 # test: the bench stub read an inherited window as a soak and 10 tests failed in every installed session
 from sampo import setup  # noqa: E402
@@ -81,18 +82,9 @@ def busy_factor(cap=8.0):
     """T-1730: how many times slower than a quiet machine a child runs now: runnable tasks (the 1-min load, or the
     count runnable this instant, which a fresh burst shows before the average catches up) per core, at least 1 and at
     most `cap`. A test's hang guard (a subprocess timeout) is multiplied by it; what a test times on purpose is not."""
-    cores = os.cpu_count() or 1
-    try:
-        with open("/proc/loadavg") as f:
-            fields = f.read().split()
-        now = int(fields[3].split("/")[0])
-        avg = float(fields[0])
-    except (OSError, IndexError, ValueError):
-        try:
-            avg, now = os.getloadavg()[0], 0
-        except OSError:
-            return 1.0
-    return min(cap, max(1.0, avg / cores, now / cores))
+    from sampo import core  # T-3391: the one signal gates use too; the calm default stand-in (line 46) reads the real host
+    host = os.environ.get("FOREMAN_HOST")
+    return core.load_factor(cap, "" if host == CALM_HOST else host)
 
 
 def read_text(path, encoding="utf-8", limit=-1):

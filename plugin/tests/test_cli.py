@@ -9,7 +9,7 @@ import threading
 import time
 import unittest
 
-from helpers import ForemanTestCase, read_text, read_json
+from helpers import CALM_HOST, ForemanTestCase, read_text, read_json
 
 from sampo import core as c
 from sampo import cli
@@ -1076,7 +1076,7 @@ class Checks(ForemanTestCase):
         suite = "python3 plugin/tests/run.py"
         for load, want in ((1, 1800), (16, 1800), (32, 3600), (400, 7200)):  # per 16 CPUs; capped at 7200
             os.environ["FOREMAN_HOST"] = f"load={load},cpus=16"
-            self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", "load=0.1,cpus=8,mem_mb=8192")
+            self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
             self.assertEqual(cli._gate_deadline(suite, 600), want)
             self.assertEqual(cli._gate_deadline("python3 plugin/tests/run.py test_cli", 600), min(7200, 600 * max(1, load / 16)))
         self.fm("init")

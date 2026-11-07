@@ -604,13 +604,37 @@ def sandbox_env(base, keep=(), drop=SANDBOX_DROP, **extra):
     return env
 
 
+BURST_CAP = 4.0  # T-3391: most the instant runnable count adds to load_factor; the 1-minute average is not capped
+
+
+def load_factor(cap=None, host=None):
+    """T-3391: how many times slower than a quiet machine a child runs now, the one signal behind gate timeouts
+    (load_scaled), run.py's class timers and the tests' hang guards (helpers.busy_factor): max(1-minute load, runnable
+    tasks this instant, which a fresh burst shows before the average catches up) per CPU, at least 1, at most cap.
+    host: a FOREMAN_HOST-style string (load=, cpus=, runnable=) instead of the environment's; an unreadable load is 1."""
+    try:
+        fake = dict(kv.split("=", 1) for kv in (os.environ.get("FOREMAN_HOST", "") if host is None else host).split(",")
+                    if "=" in kv)
+        cpus = int(fake["cpus"]) if "cpus" in fake else (os.cpu_count() or 1)
+        avg = float(fake["load"]) if "load" in fake else os.getloadavg()[0]
+        if "runnable" in fake or "load" in fake:  # a stand-in that names the load describes the whole host
+            now = float(fake.get("runnable", 0))
+        else:
+            try:
+                with open("/proc/loadavg") as f:
+                    now = int(f.read().split()[3].split("/")[0])
+            except (OSError, IndexError, ValueError):
+                now = 0
+    except (OSError, ValueError):
+        return 1.0
+    f = max(1.0, avg / max(1, cpus), min(now / max(1, cpus), BURST_CAP))  # one sample of a burst can't stretch a hang 6x
+    return f if cap is None else min(cap, f)
+
+
 def load_scaled(timeout):
-    """T-2797: a gate's run timeout times max(1, load per CPU), so a slow-but-correct run under load isn't failed for
-    timing; None (no limit) and an unreadable load leave it as it is."""
-    hl = host_load()
-    if timeout is None or not hl or hl[1] < 1:
-        return timeout
-    return timeout * max(1.0, hl[0] / hl[1])
+    """T-2797: a gate's run timeout times load_factor(), so a slow-but-correct run under load isn't failed for timing;
+    None (no limit) leaves it as it is."""
+    return timeout if timeout is None else timeout * load_factor()
 
 
 def wait_for_load(who, limit=None, out=None):

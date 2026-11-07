@@ -5397,7 +5397,7 @@ def _cmd_check(args):
 
 def _gate_deadline(cmd, timeout):
     """T-3174: a gate's run deadline: the whole suite (tests/run.py with no names) gets at least 30 min, any gate its
-    timeout, times max(1, load per CPU) (core.load_scaled), at most 2 h; None stays unlimited."""
+    timeout, times core.load_factor (max of the 1-min load and the capped instant runnable count, per CPU, at least 1: core.load_scaled), at most 2 h; None stays unlimited."""
     if timeout is not None and re.search(r"tests/run\.py\s*$", cmd):
         timeout = max(timeout, 1800)
     t = c.load_scaled(timeout)

@@ -13,7 +13,7 @@ import unittest
 import unittest.mock
 from unittest import mock
 
-from helpers import ForemanTestCase, read_text, valid_m_plan
+from helpers import CALM_HOST, ForemanTestCase, read_text, valid_m_plan
 
 from sampo import core as c
 from sampo import lanes as slanes
@@ -870,17 +870,28 @@ class LoadGates(ForemanTestCase):
     def test_a_gate_scales_its_timeout_by_load_per_cpu_and_never_shrinks_it(self):
         for load, want in ((1, 600), (8, 600), (16, 1200), (28, 2100)):
             os.environ["FOREMAN_HOST"] = f"load={load},cpus=8"
-            self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", "load=0.1,cpus=8,mem_mb=8192")
+            self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
             self.assertEqual(c.load_scaled(600), want)
         self.assertIsNone(c.load_scaled(None))
         os.environ["FOREMAN_HOST"] = "load=x,cpus=8"  # unreadable: the timeout stands
         self.assertEqual(c.load_scaled(600), 600)
 
+    def test_gates_and_tests_read_one_load_factor_for_the_same_host_state(self):
+        # T-3391: a burst (many runnable, low average) stretched busy_factor but not load_scaled
+        import helpers
+        for host, want in (("load=0.1,cpus=8", 1.0), ("load=16,cpus=8", 2.0), ("load=1,cpus=8,runnable=24", 3.0),
+                           ("load=200,cpus=8,runnable=0", 8.0), ("load=1,cpus=16,runnable=100", 4.0),
+                           ("load=1,cpus=8,runnable=800", 4.0), ("load=x,cpus=8", 1.0)):
+            os.environ["FOREMAN_HOST"] = host
+            self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
+            self.assertEqual(helpers.busy_factor(), want, host)
+            self.assertEqual(c.load_scaled(600), 600 * (want if want < 8 else 25), host)
+
     def test_a_gate_waits_while_the_host_is_over_the_bar_then_goes_ahead(self):
         import io
         out = io.StringIO()
         os.environ["FOREMAN_HOST"] = "load=20,cpus=8"
-        self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", "load=0.1,cpus=8,mem_mb=8192")
+        self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
         self.assertTrue(c.wait_for_load("fm check", limit=0, out=out))
         self.assertIn("load (20.0 over 8 CPUs)", out.getvalue())
         self.assertIn("going ahead", out.getvalue())
@@ -902,7 +913,7 @@ class LoadGates(ForemanTestCase):
         import io
         out = io.StringIO()
         os.environ["FOREMAN_HOST"] = "load=20,cpus=8,mem_mb=8192"
-        self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", "load=0.1,cpus=8,mem_mb=8192")
+        self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
         os.environ["FOREMAN_LOAD_GATE"] = "0"
         self.addCleanup(os.environ.pop, "FOREMAN_LOAD_GATE", None)
         self.assertFalse(c.wait_for_load("fm task finish T-0001", limit=0, out=out))
