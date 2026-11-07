@@ -6,6 +6,7 @@ Exit 1 on any failure, with each failing class's report.
   python3 plugin/tests/run.py [-j N] [-k PATTERN] [-p GLOB] [--load N] [NAME ...]
 """
 import argparse
+import ast
 import atexit
 import concurrent.futures
 import contextlib
@@ -24,6 +25,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 
 try:
     import fcntl
@@ -495,15 +497,24 @@ def covered(text, repo, blobs):
     .pyc), its listed folders ('x/', './' the root), '*' for the whole tree. A file on disk that git doesn't see
     (ignored, or under .git/) and Sampo's task state are left out; a missing one stays, so creating it reruns.
     Accepted gaps (the 1-in-10 rerun is their backstop): the import system's own folder listings, so a new module
-    shadowing one later on sys.path goes unseen, and where an in-repo symlink points."""
+    shadowing one later on sys.path goes unseen, and where an in-repo symlink points.
+    T-3603: a module it ran is 'x.py::' (the file less its functions' bodies), a function it ran 'x.py::QUALNAME' and
+    its module's 'x.py::'; a lambda's, a generator expression's or an annotation's outside any function counts as the
+    module's. A file it read whole stands for its parts. Accepted gaps: output that depends on where in the file a
+    function is (a line number logged, not a traceback, which reads the file) and code read without being run
+    (f.__code__)."""
     roots, out = _roots(repo), set()
     for ln in text.splitlines():
         kind, _, p = ln.partition(" ")
         if kind in ("*", "g"):  # a child it couldn't follow; "g": that child was git on the repo
             out.add("*" if kind == "*" else GIT_STATE)
             continue
+        qual = None
+        if kind == "c":
+            p, _, qual = p.rpartition(" ")
+            qual = "" if qual.rsplit(".", 1)[-1].startswith("<") else qual  # no def names it: the module's code
         root = next((r for r in roots if (p + os.sep).startswith(r)), None)
-        if root is None or kind not in ("f", "d", "s"):
+        if root is None or kind not in ("f", "d", "s", "m", "c"):
             continue
         rel = p[len(root):].replace(os.sep, "/")
         if kind == "s":  # stat, exists, access: a file's content and mode, else whether it is there (review)
@@ -518,8 +529,8 @@ def covered(text, repo, blobs):
             with contextlib.suppress(ValueError):
                 rel = importlib.util.source_from_cache(rel)
         if rel and not rel.startswith(STATE) and (rel in blobs or not os.path.lexists(os.path.join(repo, rel))):
-            out.add(rel)
-    return out
+            out.update([rel] if kind == "f" else [rel + "::", rel + "::" + qual] if qual else [rel + "::"])
+    return {p for p in out if p in blobs or "::" not in p or p.rpartition("::")[0] not in out}  # a part of a whole one
 
 
 def shared(repo, blobs):
@@ -529,10 +540,83 @@ def shared(repo, blobs):
             and not os.path.basename(f).startswith("test")}
 
 
-def values(blobs):
+def _yields(body):
+    """Whether a function's own code (not a function or class inside it, whose defaults and bases are its) yields."""
+    todo = list(body)
+    while todo:
+        n = todo.pop()
+        if isinstance(n, (ast.Yield, ast.YieldFrom)):
+            return True
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            todo.extend(c for name, v in ast.iter_fields(n) if name != "body"
+                        for c in (v if isinstance(v, list) else [v]) if isinstance(c, ast.AST))
+        else:
+            todo.extend(ast.iter_child_nodes(n))
+    return False
+
+
+def units(data):
+    """T-3603: a Python source's parts, ({function qualname: its body's hash}, the rest's hash), None when it doesn't
+    parse. A function's body with its docstring (no code here reads a __doc__ it didn't call) and the functions and
+    classes in it ("f.<locals>.g" is f's); the rest is the file with each body cut to whether it yields (a generator
+    never started ran none of its body: turning one into a function reruns every class that ran its module). Neither
+    holds line numbers or comments. A qualname defined twice (an if/else) is one part of both bodies."""
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # an invalid escape's SyntaxWarning is the module's business
+            tree = ast.parse(data)
+    except Exception:  # not Python: a syntax error, a null byte, too deep
+        return None
+    funcs = {}
+
+    def walk(body, prefix):
+        for node in body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                b, name = node.body, prefix + node.name
+                funcs[name] = funcs.get(name, "") + "\0" + "\n".join(ast.dump(s) for s in b)
+                node.body = [ast.Expr(ast.Constant(_yields(b)))]
+            elif isinstance(node, ast.ClassDef):
+                walk(node.body, prefix + node.name + ".")
+            else:  # if, for, while, with, try, match: a def in them is the module's (or class's)
+                for field in ("body", "orelse", "finalbody"):
+                    walk(getattr(node, field, None) or [], prefix)
+                for sub in (getattr(node, "handlers", None) or []) + (getattr(node, "cases", None) or []):
+                    walk(sub.body, prefix)
+    walk(tree.body, "")
+    h = lambda s: hashlib.sha1(s.encode("utf-8", "surrogateescape")).hexdigest()  # noqa: E731
+    return {q: h(s) for q, s in funcs.items()}, h(ast.dump(tree))
+
+
+_UNITS = {}  # T-3603: blob -> units() of its bytes, for every values() of this run
+
+
+def _units(repo, rel, blob):
+    """units() of a tree's file ("mode blob"): its bytes from disk when they are the blob's, else from git; None for a
+    symlink or a submodule, or bytes git can't give (a dirty file a filter changed)."""
+    mode, _, sha = blob.partition(" ")
+    if mode not in ("100644", "100755"):
+        return None
+    if sha not in _UNITS:
+        data = None
+        with contextlib.suppress(OSError):
+            with open(os.path.join(repo, rel), "rb") as f:
+                data = f.read()
+        if data is None or hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest() != sha:
+            data = None
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                data = subprocess.run(["git", "-C", repo, "cat-file", "blob", sha], capture_output=True, timeout=60,
+                                      check=True, env={k: v for k, v in os.environ.items()
+                                                       if not k.startswith("GIT_")}).stdout
+        _UNITS[sha] = None if data is None else units(data)
+    return _UNITS[sha]
+
+
+def values(repo, blobs):
     """T-3593: what a recorded path is worth in a tree: a file its mode and blob ('' when gone), a folder ('x/') the
     names in it, '?x' whether x is a file, a folder or absent, '*' the whole tree's files (Sampo's task state left
-    out), GIT_STATE HEAD and the tags."""
+    out), GIT_STATE HEAD and the tags. T-3603: 'x.py::QUALNAME' its function's body, 'x.py::' its mode and the rest
+    of the file (units()); either the file's blob when it doesn't parse or no def has that name (code compiled from
+    a string with the file's name), an annotation function's the rest's."""
     memo, kids = {}, {}
 
     def value(p):
@@ -549,8 +633,14 @@ def values(blobs):
                 q = p[1:]
                 memo[p] = ("/".join(sorted(kids.get(p, ()))) if p.endswith("/") else
                            "file" if q in blobs else "dir" if q + "/" in kids else "")
-            else:
+            elif p in blobs or "::" not in p:
                 memo[p] = blobs.get(p, "")
+            else:
+                rel, _, q = p.rpartition("::")
+                b = blobs.get(rel, "")
+                u = _units(repo, rel, b) if b else None
+                memo[p] = (b if u is None else u[0][q] if q in u[0] else
+                           f"{b.partition(' ')[0]} {u[1]}" if not q or q.rsplit(".", 1)[-1] == "__annotate__" else b)
         return memo[p]
     return value
 
@@ -873,7 +963,7 @@ def main():
     if not (a.k or (_env(NO_CACHE) or "0") != "0" or _env(SLOT_ENV)):
         got = tree()
     if got:
-        cache, value = cache_path(got[2]), values(got[1])
+        cache, value = cache_path(got[2]), values(*got[:2])
         COVERED.clear()
         gen, recs = load_cache(cache)
         hits = {c: r[1] for c in todo for r in recs.get(c, ())[::-1] if r[0] == digest(r[2], value)} if a.names or incr else {}
@@ -937,7 +1027,7 @@ def main():
                if ok and None not in cov[c] and n == size.get(c) == len(parts.get(c, ()))}
         again = tree() if new else None  # a file edited while the run ran: its class ran the old code or the new
         if again and again[0] == got[0]:
-            base, after = shared(*got[:2]), values(again[1])
+            base, after = shared(*got[:2]), values(*again[:2])
             paths = {c: sorted(base.union(*(covered(t, *got[:2]) for t in cov[c]))) for c in new}
             new = {c: [digest(paths[c], value), n, paths[c]] for c, n in new.items()}
             new = {c: r for c, r in new.items() if digest(r[2], after) == r[0]}

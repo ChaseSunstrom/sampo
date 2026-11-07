@@ -402,11 +402,10 @@ def _names_at(src, lines):
     return found
 
 
-def changed_symbols(root, base, tree, paths):
-    """{path: set of top-level names (and methods) | None}: the names whose lines differ between `base` and git tree
-    `tree`, from one `git diff -U0` mapped through ast on both versions, then closed over in-file use (_close); None
-    when that can't be told, so the caller falls back to the whole file (T-3306)."""
-    out = {p: None for p in paths}
+def _diff_lines(root, base, tree, paths):
+    """{path: (old text, new text, old lines, new lines)} for each of paths that differs between `base` and git tree
+    `tree` in both (one `git diff -U0`; the lines 1-based); a path missing from either side or the diff is left out."""
+    out = {}
     if not tree or not paths:
         return out
     diff = c._git(root, "diff", "-U0", "--no-renames", base, tree, "--", *paths, timeout=300, fail=None)
@@ -415,21 +414,174 @@ def changed_symbols(root, base, tree, paths):
     parts = re.split(r"(?m)^diff --git ", diff)
     for p in paths:
         sec = next((s for s in parts if s.startswith(f"a/{p} b/{p}\n")), None)
+        if sec is None or not _HUNK.search(sec):
+            continue
         old = c._git(root, "show", f"{base}:{p}", fail=None)
         new = c._git(root, "show", f"{tree}:{p}", fail=None)
-        if sec is None or old is None or new is None or not _HUNK.search(sec):
+        if old is None or new is None:
             continue
         ranges = ([], [])
         for a, b, x, y in _HUNK.findall(sec):
             ranges[0].extend(range(int(a), int(a) + int(b or 1)) if b != "0" else [])
             ranges[1].extend(range(int(x), int(x) + int(y or 1)) if y != "0" else [])
-        olds, news = _names_at(old, ranges[0]), _names_at(new, ranges[1])
+        out[p] = (old, new, *ranges)
+    return out
+
+
+def changed_symbols(root, base, tree, paths):
+    """{path: set of top-level names (and methods) | None}: the names whose lines differ between `base` and git tree
+    `tree`, from one `git diff -U0` mapped through ast on both versions, then closed over in-file use (_close); None
+    when that can't be told, so the caller falls back to the whole file (T-3306)."""
+    out = {p: None for p in paths}
+    for p, (old, new, lo, ln) in _diff_lines(root, base, tree, paths).items():
+        olds, news = _names_at(old, lo), _names_at(new, ln)
         if olds is None or news is None:
             continue
         names = olds | news
         co, cn = _close(old, names), _close(new, names)
         out[p] = None if co is None or cn is None else co | cn
     return out
+
+
+_FUNC = ("FunctionDef", "AsyncFunctionDef")
+
+
+def _first(node):
+    return min([node.lineno] + [d.lineno for d in getattr(node, "decorator_list", [])])
+
+
+def _quals_at(tree, rows, lines):
+    """(function qualnames, class prefixes, bound names) that source lines `lines` touch, as the test runner's record
+    names them (runcover: "f", "K.meth"; a nested def is its outer function's): a function's lines (decorators and
+    signature too) are its own; a class's own lines (header, attributes, a nested class) are every method's, and bind
+    the class's name; a top-level assignment or import binds its names. None when one can't be told: module code that
+    runs something, a docstring."""
+    import ast
+    quals, prefixes, bound = set(), set(), set()
+    for n in lines:
+        node = next((x for x in tree.body if _first(x) <= n <= x.end_lineno), None)
+        if node is None:  # between nodes: a blank line or comment is nothing, anything else we can't place
+            if 0 < n <= len(rows) and rows[n - 1].strip() and not rows[n - 1].lstrip().startswith("#"):
+                return None
+        elif type(node).__name__ in _FUNC:
+            quals.add(node.name)
+        elif isinstance(node, ast.ClassDef):
+            sub = next((s for s in node.body if type(s).__name__ in _FUNC and _first(s) <= n <= s.end_lineno), None)
+            if sub is not None:
+                quals.add(f"{node.name}.{sub.name}")
+            else:
+                prefixes.add(node.name)
+                bound.add(node.name)
+        elif (b := _bound(node)) is not None:
+            bound |= b
+        else:
+            return None
+    return quals, prefixes, bound
+
+
+def _reach(tree, quals, prefixes, bound):
+    """quals and prefixes plus the top-level code that reads a bound name, repeated until nothing is added: a def
+    reading one is run with the new value (its own record names it; its callers' records name it too, so no caller is
+    added); a class reading one (a base, an attribute) is every method's and binds its name; an assignment or import
+    reading one binds its names. None when module code that runs something reads one."""
+    import ast
+    reads = [{x.id for x in ast.walk(node) if isinstance(x, ast.Name)} for node in tree.body] if bound else []
+    seen = bool(bound)
+    while seen:
+        seen = False
+        for node, names in zip(tree.body, reads):
+            if names.isdisjoint(bound):
+                continue
+            if type(node).__name__ in _FUNC:
+                quals.add(node.name)
+            elif isinstance(node, ast.ClassDef):
+                prefixes.add(node.name)
+                seen |= node.name not in bound
+                bound.add(node.name)
+            elif (b := _bound(node)) is not None:
+                seen |= not b <= bound
+                bound |= b
+            else:
+                return None
+    return quals, prefixes
+
+
+def _methods(tree):
+    import ast
+    return {f"{k.name}.{s.name}" for k in tree.body if isinstance(k, ast.ClassDef)
+            for s in k.body if type(s).__name__ in _FUNC}
+
+
+def _ran_quals(old, new, lo, ln):
+    """(function qualnames, class prefixes) a change from source old to new reaches (both versions mapped and closed
+    over bindings; a method added or removed is its class's, as it may now hide or show a base's), None when it can't
+    be told."""
+    import ast
+    import warnings
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            to, tn = ast.parse(old), ast.parse(new)
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    a, b = _quals_at(to, old.splitlines(), lo), _quals_at(tn, new.splitlines(), ln)
+    if a is None or b is None:
+        return None
+    quals, prefixes, bound = a[0] | b[0], a[1] | b[1], a[2] | b[2]
+    for m in _methods(to) ^ _methods(tn):
+        prefixes.add(m.split(".")[0])
+        bound.add(m.split(".")[0])
+    ra, rb = _reach(to, set(quals), set(prefixes), set(bound)), _reach(tn, set(quals), set(prefixes), set(bound))
+    if ra is None or rb is None:
+        return None
+    return ra[0] | rb[0], ra[1] | rb[1]
+
+
+def ran_tests(root, base, tree, paths):
+    """T-3603: the test files of the classes the test runner's cache (plugin/tests/run.py: per class, what its last
+    green runs read and the functions they ran) says ran a changed function of paths or read a changed file whole,
+    between `base` and git tree `tree`: a test that drives code only through a hook's JSON or a child process (T-3670's
+    test_firewall.OutlineFirst) names none of it, so no map link or symbol search finds it. A .py change that can't be
+    told by function selects every class that ran any of the file. Only adds: a class without a record, or whose test
+    file is gone, adds nothing."""
+    common = c._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", fail=None)
+    if not paths or not tree or not common:
+        return []
+    import hashlib
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "sampo",
+                         "run-cache", hashlib.sha1(os.fsencode(os.path.realpath(common.strip()))).hexdigest()[:16] + ".json")
+    try:  # run.py's format: {"paths": [key, ...], "classes": {id: [[digest, tests, [index, ...]], ...]}}
+        with open(cache) as f:
+            d = json.load(f)
+        table, classes = d["paths"], d["classes"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    changed, funcs, fn = set(paths), {}, set()
+    for i, k in enumerate(table):
+        f, sep, q = k.partition("::")
+        if sep:
+            fn.add(i)
+            if f in changed and f.endswith(".py"):
+                funcs.setdefault(f, []).append((i, q))
+    hits = {i for i, k in enumerate(table) if k in changed or (k[:1] == "?" and k[1:] in changed)}
+    lines = _diff_lines(root, base, tree, sorted(funcs))
+    for f, keys in funcs.items():  # a file added, deleted or not text (no lines) is told by file
+        reach = _ran_quals(*lines[f]) if f in lines else None
+        heads = reach and reach[0] | reach[1]
+        for i, q in keys:
+            if reach is None or (q and (q in heads or any(q.startswith(s + ".") for s in heads))):
+                hits.add(i)
+    out = set()
+    for cid, recs in classes.items() if hits else ():
+        # a record from before function keys names each module the class imported as read whole: a newer one tells better
+        idx = [i for r in ([r for r in recs if not fn.isdisjoint(r[2])] or recs) for i in r[2]]
+        if hits.isdisjoint(idx):
+            continue
+        mod = cid.rsplit(".", 1)[0].rpartition(".")[2] + ".py"  # run.py's id: the TestCase's module, then its name
+        own = next((table[i].partition("::")[0] for i in idx if os.path.basename(table[i].partition("::")[0]) == mod), None)
+        if own and c.TESTISH.search(mod) and os.path.isfile(os.path.join(root, own)):
+            out.add(own)
+    return sorted(out)
 
 
 def render(m):

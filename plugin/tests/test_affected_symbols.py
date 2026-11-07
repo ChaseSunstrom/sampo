@@ -4,6 +4,7 @@ the file: any cli.py edit used to run ~2,000 tests. When in doubt it keeps the t
 import json
 import os
 import subprocess
+from unittest import mock
 
 from helpers import ForemanTestCase
 
@@ -65,6 +66,10 @@ class K:
         return 3
 '''
 USES = ["alpha()", "alpha()", "beta()", "beta()", "gamma()", "delta()", 'fm("go")', 'fm("lz")']
+# T-3603: test files the map links to nothing and that name nothing in the hub (a test driving it through a hook's
+# JSON or a child process); only the run cache's records tie them to the code they ran
+DRIVERS = ["test_drive_alpha", "test_drive_beta", "test_drive_gamma", "test_drive_delta", "test_drive_meth",
+           "test_drive_text", "test_drive_other"]
 
 
 class AffectedSymbols(ForemanTestCase):
@@ -81,6 +86,7 @@ class AffectedSymbols(ForemanTestCase):
         super().setUp()
         files = {HUB: BODY, "src/other.py": "N = 1\n", CONVENTION: "# convention\n", "tests/test_other.py": "N = 1\n"}
         files.update({t: use + "\n" for t, use in zip(R, USES)})
+        files.update({f"tests/{mod}.py": "pass\n" for mod in DRIVERS})
         for rel, body in files.items():
             self.write(rel, body)
         self.commit("seed")
@@ -197,6 +203,98 @@ class AffectedSymbols(ForemanTestCase):
         tests, detail = self.run_affected()
         self.assertEqual(["N"], detail["src/other.py"]["symbols"])
         self.assertEqual(["tests/test_other.py", "tests/test_heavy.py"], sorted(detail["src/other.py"]["tests"], reverse=True))
+
+    def ran(self, records):
+        """T-3603: the test runner's run cache (run.py's own writer) holding, per test module (DRIVERS), one class
+        whose record names its module and the keys given."""
+        import run
+        cache = os.path.join(self.tmp, "cache")
+        patch = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": cache})
+        patch.start()
+        self.addCleanup(patch.stop)
+        new = {f"{mod}.Drive": ["d", 1, [f"tests/{mod}.py", f"tests/{mod}.py::", f"tests/{mod}.py::Drive.test_a", *keys]]
+               for mod, keys in records.items()}
+        run.save_cache(run.cache_path(os.path.realpath(os.path.join(self.repo, ".git"))), new, 0)
+
+    def test_a_test_that_ran_a_changed_function_is_selected_and_one_that_ran_another_is_not(self):
+        self.ran({"test_drive_beta": [HUB + "::", HUB + "::beta"], "test_drive_alpha": [HUB + "::", HUB + "::alpha"],
+                  "test_drive_gamma": [HUB + "::", HUB + "::gamma", HUB + "::alpha"],
+                  "test_drive_other": ["src/other.py::", "src/other.py::f"]})
+        self.edit("return 2", "return 22")
+        tests, _ = self.run_affected()
+        self.assertEqual(sorted([CONVENTION, R[2], R[3], "tests/test_drive_beta.py"]), tests)
+        self.edit("return 22", "return 2")
+        self.edit("return 6", "return 66")  # eps: no class ran it
+        self.assertFalse([t for t in self.run_affected()[0] if "drive" in t], "an uncalled function selects none")
+
+    def test_a_record_whose_test_file_is_gone_selects_nothing(self):
+        self.ran({"test_drive_gone": [HUB + "::beta"]})
+        self.edit("return 2", "return 22")
+        self.assertNotIn("tests/test_drive_gone.py", self.run_affected()[0])
+
+    def test_a_changed_constant_selects_the_tests_that_ran_a_function_reading_it(self):
+        self.ran({"test_drive_delta": [HUB + "::", HUB + "::delta"], "test_drive_alpha": [HUB + "::", HUB + "::alpha"]})
+        self.edit("LIMIT = 1", "LIMIT = 2")
+        tests, _ = self.run_affected()
+        self.assertIn("tests/test_drive_delta.py", tests)
+        self.assertNotIn("tests/test_drive_alpha.py", tests)
+
+    def test_a_class_level_change_selects_the_tests_that_ran_its_methods(self):
+        self.ran({"test_drive_meth": [HUB + "::", HUB + "::K.meth"], "test_drive_alpha": [HUB + "::", HUB + "::alpha"]})
+        self.edit("class K:\n", "class K:\n    flag = 1\n\n")
+        tests, _ = self.run_affected()
+        self.assertIn("tests/test_drive_meth.py", tests)
+        self.assertNotIn("tests/test_drive_alpha.py", tests)
+
+    def test_a_change_not_told_by_function_selects_every_test_that_ran_the_file(self):
+        self.ran({"test_drive_alpha": [HUB + "::", HUB + "::alpha"], "test_drive_other": ["src/other.py::"]})
+        self.edit("LIMIT = 1\n", "LIMIT = 1\nprint('side effect')\n")
+        tests, _ = self.run_affected()
+        self.assertIn("tests/test_drive_alpha.py", tests)
+        self.assertNotIn("tests/test_drive_other.py", tests)
+
+    def test_a_test_that_read_a_changed_file_whole_is_selected(self):
+        self.ran({"test_drive_text": [HUB, "data/table.json"], "test_drive_alpha": [HUB + "::", HUB + "::alpha"]})
+        self.edit("return 2", "return 22")
+        self.assertIn("tests/test_drive_text.py", self.run_affected()[0])
+        self.edit("return 22", "return 2")
+        self.write("data/table.json", "{}\n")
+        self.assertEqual(["tests/test_drive_text.py"], self.run_affected()[0])
+
+    def test_a_record_from_before_function_keys_counts_only_without_a_newer_one(self):
+        """A record written before T-3603 names every module a class imported as read whole: beside a newer record of
+        the class it is ignored (main's cache held 190 such readers of hooks.py), alone it is the file-level fallback."""
+        import run
+        self.ran({"test_drive_alpha": [HUB + "::", HUB + "::alpha"]})
+        old = {f"{mod}.Drive": ["old", 1, [f"tests/{mod}.py", HUB]] for mod in ("test_drive_alpha", "test_drive_gamma")}
+        path = run.cache_path(os.path.realpath(os.path.join(self.repo, ".git")))
+        run.save_cache(path, old, 0)
+        self.assertEqual(["old", "d"], [r[0] for r in run.load_cache(path)[1]["test_drive_alpha.Drive"]])
+        self.edit("return 2", "return 22")
+        tests, _ = self.run_affected()
+        self.assertNotIn("tests/test_drive_alpha.py", tests)
+        self.assertIn("tests/test_drive_gamma.py", tests)
+
+    def test_merge_888c3d75d_selects_the_firewall_test_that_ran_outline_first(self):
+        """T-3670's miss: the merge changed hooks._outline_first and the constant beside it, and its train's affected
+        gate left out test_firewall.OutlineFirst, which drives the Read hook only through its JSON payload. Its record
+        names the function; a class that ran another hook function stays out."""
+        from sampo import map as smap
+        import run
+        top = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        hooks = "plugin/lib/sampo/hooks.py"
+        if subprocess.run(["git", "-C", top, "cat-file", "-e", "888c3d75d^{commit}"], capture_output=True).returncode:
+            self.skipTest("merge 888c3d75d isn't in this clone")
+        common = subprocess.run(["git", "-C", top, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                                capture_output=True, text=True, check=True).stdout.strip()
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": os.path.join(self.tmp, "real")}):
+            run.save_cache(run.cache_path(os.path.realpath(common)), {
+                "test_firewall.OutlineFirst": ["d", 4, ["plugin/tests/test_firewall.py::OutlineFirst.test_a", hooks + "::",
+                                                        hooks + "::run", hooks + "::_outline_first"]],
+                "test_run_cache.Other": ["d", 1, ["plugin/tests/test_run_cache.py::", hooks + "::", hooks + "::run",
+                                                  hooks + "::_ask_prompt"]]}, 0)
+            got = smap.ran_tests(top, "888c3d75d^1", "888c3d75d", [hooks])
+        self.assertEqual(["plugin/tests/test_firewall.py"], got)
 
     def test_json_lists_per_hub_the_symbols_and_tests_chosen(self):
         self.edit("return 2", "return 22")

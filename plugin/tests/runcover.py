@@ -4,13 +4,19 @@ RUNPY_COVER_ROOTS names (the repo) that the process reads: "f PATH" for a module
 for one it stats (exists, isdir, access), "d PATH" for a folder it lists (not the import system's own listings), and
 "*" (the whole tree; with "g", git's HEAD and tags, when that child is git on the repo) when it starts a child it can't
 follow: a Python without this hook or writing elsewhere (another interpreter, -S, another RUNPY_COVER), git on the
-repo, a program working in the repo or given a path in it, or one that runs a python itself (a shell, env, bwrap)."""
+repo, a program working in the repo or given a path in it, or one that runs a python itself (a shell, env, bwrap).
+T-3603: with sys.monitoring (Python 3.12+) a module the process runs is "m PATH" (its module and class bodies ran: the
+file less its functions' bodies) and each function of it that starts "c PATH QUALNAME" (a nested one as the function
+it is in), so run.py reruns a class for an edited function only when the class ran it; the import system reading a
+module's source or .pyc to run it is that module's "m", not its whole file."""
 import os
 import sys
 
 VAR, ROOTS_VAR = "RUNPY_COVER", "RUNPY_COVER_ROOTS"
 PY = ""  # this venv's python: a child started with it records too
-_ST = {"ctx": None, "seen": set(), "fd": -1, "ino": None, "out0": None, "rs": None, "roots": (), "roots0": ""}
+TOOL = 3  # T-3603: the sys.monitoring tool id; debug.py's flight recorder takes 4
+_ST = {"ctx": None, "seen": set(), "fd": -1, "ino": None, "out0": None, "rs": None, "roots": (), "roots0": "",
+       "mon": False, "funcs": set(), "where": {}, "wroots": None}
 
 
 def setup(py):
@@ -20,6 +26,35 @@ def setup(py):
     _ST["out0"], _ST["roots0"] = os.environ.get(VAR), os.environ.get(ROOTS_VAR, "")
     sys.addaudithook(_hook)
     os.stat, os.lstat, os.access = _watch(os.stat), _watch(os.lstat), _watch(os.access)
+    try:
+        m = sys.monitoring
+        m.use_tool_id(TOOL, "runcover")
+        m.register_callback(TOOL, m.events.PY_START, _start)
+        m.set_events(TOOL, m.events.PY_START)
+        _ST["mon"] = True
+    except Exception:  # before 3.12, or the id taken: a module counts whole, as before T-3603
+        pass
+
+
+def _start(code, offset):
+    """T-3603: a function's first start ("c PATH QUALNAME"); module and class bodies (not CO_OPTIMIZED) are their
+    module's "m". Remembered even with nothing to write to, so a fork that records later names what its parent ran
+    (a fork server's preloads): the code's event is off after its first start, in the fork too."""
+    try:
+        if code.co_flags & 1:
+            f, roots = code.co_filename, _roots()
+            if _ST["wroots"] is not roots:  # where each file is, judged against the repo it is now
+                _ST["wroots"], _ST["where"] = roots, {}
+            key = f if os.path.isabs(f) else (f, os.getcwd())
+            if (p := _ST["where"].get(key, 0)) == 0:
+                p = _ST["where"][key] = os.path.abspath(f) if f[:1] != "<" and _inside(f) else None
+            if p:
+                q = code.co_qualname.split(".<locals>", 1)[0]
+                _ST["funcs"].add((p, q))
+                _put([f"c {p} {q}"])
+    except Exception:  # never fail the code under test
+        pass
+    return sys.monitoring.DISABLE
 
 
 def _watch(fn):
@@ -81,9 +116,11 @@ def _put(lines):
     if not out:
         return
     fd, new = _fd(out)
-    if new:  # what the process already runs counts too (a fork server's preloaded modules)
-        lines = [*lines, *(f"f {f}" for m in list(sys.modules.values())
-                           if isinstance(f := getattr(m, "__file__", None), str) and os.path.isabs(f) and _inside(f))]
+    if new:  # what the process already runs counts too (a fork server's preloaded modules, the functions they ran)
+        kind = "m" if _ST["mon"] else "f"
+        lines = [*lines, *(f"{kind} {f}" for m in list(sys.modules.values())
+                           if isinstance(f := getattr(m, "__file__", None), str) and os.path.isabs(f) and _inside(f)),
+                 *(f"c {p} {q}" for p, q in list(_ST["funcs"]))]
     new = [ln for ln in dict.fromkeys(lines) if ln not in _ST["seen"]]
     if new:  # no lock: two threads racing write a line twice at worst, never miss one
         os.write(fd, "".join(ln + "\n" for ln in new).encode("utf-8", "surrogateescape"))
@@ -204,12 +241,15 @@ def _hook(ev, args):
         if ev == "exec":
             f = getattr(args[0], "co_filename", "")
             if f[:1] != "<" and _inside(f):
-                _put([f"f {os.path.abspath(f)}"])
+                _put([f"{'m' if _ST['mon'] else 'f'} {os.path.abspath(f)}"])
         elif ev in ("open", "sqlite3.connect", "cpython.run_file"):
             p = args[0]
             if isinstance(p, (str, bytes)) and _inside(p := os.fsdecode(p)) and p != _out() and (
                     os.path.isabs(p) or os.path.exists(p)):  # a missing relative name: likely a dir_fd's (rmtree)
-                _put([f"f {os.path.abspath(p)}"])
+                fr = sys._getframe(1)  # T-3603: the import system reading a module (or its .pyc) to run it, not to show it
+                run = _ST["mon"] and fr.f_code.co_name == "get_data" and fr.f_code.co_filename.startswith(
+                    "<frozen importlib") and fr.f_back is not None and fr.f_back.f_code.co_name == "get_code"
+                _put([f"{'m' if run else 'f'} {os.path.abspath(p)}"])
         elif ev in ("os.listdir", "os.scandir"):
             p = "." if args[0] is None else args[0]
             if isinstance(p, (str, bytes)) and _inside(p := os.fsdecode(p)) and \

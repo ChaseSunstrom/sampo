@@ -6143,9 +6143,12 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None):
     budget = {HOOK_BUDGET[1]} if changed & set(HOOK_BUDGET[0]) and os.path.isfile(os.path.join(p.root, HOOK_BUDGET[1])) else set()
     rules = {f"plugin/tests/{t}.py" for t in RULE_TESTS if os.path.isfile(os.path.join(p.root, "plugin", "tests", t + ".py"))} \
         if changed else set()  # T-2992: a builder's missing MASTER bullet or fm shim fails in its own lane
-    picked = _hub_tests(p, m, base, sorted(changed), detail, c.worktree_tree(p.root) if changed else None)  # T-3306: a hub file's symbols, not the whole file
+    tree = c.worktree_tree(p.root) if changed else None
+    picked = _hub_tests(p, m, base, sorted(changed), detail, tree)  # T-3306: a hub file's symbols, not the whole file
+    # T-3603: the tests the run cache saw run a changed function (T-3670: one that drives a hook only by its JSON)
+    ran = set(smap.ran_tests(p.root, base, tree, sorted(changed))) if changed else set()
     every = sorted(set(smap.tests_for(m, sorted(changed - set(picked)))) | set().union(*picked.values())
-                   | own | paired | broke | budget | rules)
+                   | own | paired | broke | budget | rules | ran)
     fill = lambda tpl, ts: tpl.replace("{tests}", " ".join(shlex.quote(t) for t in ts)).replace(  # noqa: E731
         "{names}", " ".join(shlex.quote(os.path.basename(t).rsplit(".", 1)[0]) for t in ts))
 

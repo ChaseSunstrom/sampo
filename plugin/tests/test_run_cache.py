@@ -44,6 +44,39 @@ def scratch(d, files):
 
 
 TEST = "import unittest\nclass C(unittest.TestCase):\n    def test_x(self):\n        pass\n"
+UNITS = '''"""A module."""
+import os
+
+X = 1
+
+
+def f(a=1):
+    """F's doc."""
+    return a + 1
+
+
+def g():
+    return 2
+
+
+class C:
+    Y = 2
+
+    def m(self):
+        def inner():
+            return 3
+        return inner()
+
+
+def gen():
+    return [1]
+'''
+MON = hasattr(sys, "monitoring")  # T-3603: where runcover.py records the functions a process ran
+
+
+def module(rel):
+    """The key a module a process imported (ran, rather than read) is recorded under."""
+    return rel + "::" if MON else rel
 
 
 class Coverage(unittest.TestCase):
@@ -60,6 +93,7 @@ class Coverage(unittest.TestCase):
             "plugin/tests/test_a.py": TEST,
             "plugin/tests/fixtures/data.txt": "x\n",
             "plugin/lib/mod.py": "X = 1\n",
+            "plugin/lib/units.py": UNITS,
             "docs/guide.md": "words\n",
             ".sampo/tasks/T-1.md": "state\n",
         })
@@ -85,8 +119,8 @@ class Coverage(unittest.TestCase):
         blobs = self.tree()[1]
         self.assertIn(bad, blobs)
         paths = sorted([bad, "./", "*", "?" + bad])
-        d = run.digest(paths, run.values(blobs))
-        self.assertEqual(d, run.digest(paths, run.values(blobs)))
+        d = run.digest(paths, run.values(self.d, blobs))
+        self.assertEqual(d, run.digest(paths, run.values(self.d, blobs)))
         with tempfile.TemporaryDirectory() as t:
             p = os.path.join(t, "c.json")
             run.save_cache(p, {"m.C": [d, 1, paths]}, 0)
@@ -94,9 +128,63 @@ class Coverage(unittest.TestCase):
 
     def changes(self, paths, edit):
         """Whether edit() changes the digest of what a class that read paths depends on."""
-        before = run.digest(sorted(paths), run.values(self.tree()[1]))
+        before = run.digest(sorted(paths), run.values(*self.tree()[:2]))
         edit()
-        return before != run.digest(sorted(paths), run.values(self.tree()[1]))
+        return before != run.digest(sorted(paths), run.values(*self.tree()[:2]))
+
+    def moved(self, old, new, rel="plugin/lib/units.py", units=("", "f", "g", "C.m", "gen")):
+        """The unit keys of rel ('' its module's own code) whose value an edit of old to new there moves."""
+        keys = [f"{rel}::{u}" for u in units]
+        before = run.values(*self.tree()[:2])
+        before = {k: before(k) for k in keys}
+        p = os.path.join(self.d, rel)
+        with open(p) as f:
+            text = f.read()
+        self.assertIn(old, text)
+        with open(p, "w") as f:
+            f.write(text.replace(old, new, 1))
+        after = run.values(*self.tree()[:2])
+        return sorted(k[len(rel) + 2:] for k in keys if after(k) != before[k])
+
+    def test_a_function_s_key_moves_with_its_own_body_alone(self):  # T-3603
+        for old, new, want in (("return a + 1", "return a + 2", ["f"]),
+                               ("return 3", "return 4", ["C.m"]),  # a nested function is its outer one's
+                               ("    return 2\n", "    return 2  # two\n", []),  # a comment
+                               ("X = 1\n", "\n\nX = 1\n", []),  # every line below moved
+                               ("def f(a=1)", "def f(a=2)", [""]),  # a default runs at import: the module's
+                               ('"""F\'s doc."""', '"""F\'s new doc."""', ["f"]),  # no code here reads __doc__
+                               ("X = 1", "X = 2", [""]), ("Y = 2", "Y = 3", [""]),
+                               ("def g():", "@staticmethod\ndef g():", [""]),  # a decorator
+                               ("def gen():", "def h():\n    pass\n\n\ndef gen():", [""]),  # a new function
+                               ("return [1]", "yield 1", ["", "gen"]),  # a call no longer runs its body
+                               ("def g():", "def g2():", ["", "g"])):  # gone: the class that ran it reruns
+            with self.subTest(new):
+                git(self.d, "checkout", "-q", "--", ".")
+                self.assertEqual(self.moved(old, new), want)
+        annotate = ("", "__annotate__", "C.__annotate__", "f")  # no def of that name: the annotations' own code
+        git(self.d, "checkout", "-q", "--", ".")
+        self.assertEqual(self.moved("X = 1", "X: int = 1", units=annotate), ["", "C.__annotate__", "__annotate__"])
+        self.assertEqual(self.moved("return a + 1", "return a + 2", units=annotate), ["f"])
+
+    def test_a_file_that_doesn_t_parse_or_is_gone_moves_every_key(self):
+        every = ["", "C.m", "f", "g", "gen"]
+        self.assertEqual(self.moved("return 2", "return ("), every)
+        self.assertEqual(sorted(self.moved("return (", "return 2")), every, "and back")
+        before = run.values(*self.tree()[:2])("plugin/lib/units.py::f")
+        os.remove(os.path.join(self.d, "plugin", "lib", "units.py"))
+        self.assertNotEqual(run.values(*self.tree()[:2])("plugin/lib/units.py::f"), before)
+
+    def test_a_function_it_ran_is_keyed_by_its_unit_and_its_module_a_file_it_read_whole(self):  # T-3603
+        d, u = self.d, f"{self.d}/plugin/lib/units.py"
+        text = "\n".join([f"m {u}", f"c {u} f", f"c {u} C.m", f"c {u} <lambda>", f"c {u} C.<genexpr>",
+                          f"c {u} __annotate__", f"c {u} C.__annotate__",  # a module or class body's own code
+                          f"m {d}/plugin/lib/mod.py", f"c {d}/plugin/lib/mod.py f", f"f {d}/plugin/lib/mod.py",
+                          f"c {d}/plugin/lib/gone.py f", f"m {d}/.sampo/x.py", f"c {d}/.sampo/x.py f"])
+        with mock.patch.object(run, "HERE", self.here):
+            got = run.covered(text, d, self.tree()[1])
+        self.assertEqual(got, {"plugin/lib/units.py::", "plugin/lib/units.py::f", "plugin/lib/units.py::C.m",
+                               "plugin/lib/units.py::__annotate__", "plugin/lib/units.py::C.__annotate__",  # values()'s
+                               "plugin/lib/mod.py", "plugin/lib/gone.py::", "plugin/lib/gone.py::f"})
 
     def test_recorded_lines_name_files_modules_folders_and_the_whole_tree(self):
         d, tag = self.d, sys.implementation.cache_tag
@@ -193,6 +281,10 @@ class Coverage(unittest.TestCase):
             self.assertIsNone(run.tree())
 
 
+MOD_C = ("def f():\n    def inner():\n        return 1\n    return inner()\n\n\ndef g():\n    return 2\n\n\n"
+         "class K:\n    def m(self):\n        return (lambda: 3)()\n")
+
+
 class Recorder(unittest.TestCase):
     """T-3593: runcover.py in cover_python's venv: what a process and its children record."""
 
@@ -200,6 +292,7 @@ class Recorder(unittest.TestCase):
     def setUpClass(cls):
         cls.d = os.path.realpath(tempfile.mkdtemp())
         scratch(cls.d, {"lib/mod_a.py": "A = 1\n", "lib/mod_b.py": "B = 1\n", "data.txt": "x\n", "folder/f.txt": "y\n",
+                        "lib/mod_c.py": MOD_C,
                         "bin/tool": "#!/bin/sh\ntrue\n", "bin/sleep": "#!/bin/sh\ntrue\n",
                         "bin/pytool": "#!/usr/bin/env python3\nimport sys\nsys.path.insert(0, '.')\nimport mod_b\n"})
         for name in ("tool", "pytool", "sleep"):
@@ -241,20 +334,46 @@ class Recorder(unittest.TestCase):
 
     def test_a_cleared_environment_or_closed_descriptors_lose_nothing_and_write_nowhere_else(self):
         got = self.record("os.environ.clear()\nimport mod_a\n")
-        self.assertIn("lib/mod_a.py", got)
+        self.assertIn(module("lib/mod_a.py"), got)
         mine = os.path.join(tempfile.mkdtemp(), "mine")
         self.addCleanup(shutil.rmtree, os.path.dirname(mine), True)
         got = self.record(f"open('data.txt').read()\nos.closerange(3, 4096)\nfd = os.open({mine!r}, os.O_CREAT | os.O_WRONLY)\n"
                           "import mod_b\nos.close(fd)\n")
-        self.assertIn("lib/mod_b.py", got)
+        self.assertIn(module("lib/mod_b.py"), got)
         with open(mine) as f:
             self.assertEqual(f.read(), "", "a reused descriptor number is never written to")
 
     def test_modules_files_folders_and_a_child_python_s_reads(self):
         got = self.record("import mod_a\nopen('data.txt').read()\nos.listdir('folder')\n"
                           "subprocess.run([sys.executable, '-c', 'import mod_b'], cwd='lib', check=True)\n")
-        self.assertLessEqual({"lib/mod_a.py", "data.txt", "folder/", "lib/mod_b.py"}, got)
+        self.assertLessEqual({module("lib/mod_a.py"), "data.txt", "folder/", module("lib/mod_b.py")}, got)
         self.assertNotIn("*", got)
+
+    @unittest.skipUnless(MON, "sys.monitoring needs Python 3.12")
+    def test_a_module_s_functions_count_once_run_its_source_only_once_read(self):  # T-3603
+        for _ in range(2):  # the second import reads the .pyc the first wrote
+            got = self.record("import mod_c\nmod_c.f()\nmod_c.K().m()\n")
+            self.assertEqual({p for p in got if p.startswith("lib/mod_c.py")},
+                             {"lib/mod_c.py::", "lib/mod_c.py::f", "lib/mod_c.py::K.m"})
+        got = self.record("import mod_c\nopen('lib/mod_c.py').read()\n")  # read as data (inspect.getsource, a test)
+        self.assertEqual({p for p in got if p.startswith("lib/mod_c.py")}, {"lib/mod_c.py"})
+
+    @unittest.skipUnless(MON, "sys.monitoring needs Python 3.12")
+    def test_a_fork_records_what_its_parent_ran_before_it_recorded(self):  # T-3603: a fork server's preloaded calls
+        child = ("import os, sys\nsys.path.insert(0, 'lib')\nimport mod_c\nmod_c.f()\nif os.fork() == 0:\n"
+                 "    os.environ['RUNPY_COVER'] = os.environ['LATER']\n    open('data.txt').read()\n    os._exit(0)\n"
+                 "os.wait()\n")
+        got = self.record("e = {k: v for k, v in os.environ.items() if k != 'RUNPY_COVER'}\n"
+                          f"subprocess.run([sys.executable, '-c', {child!r}], env=dict(e, LATER=os.environ['RUNPY_COVER']),"
+                          " check=True)\n")
+        self.assertLessEqual({"data.txt", "lib/mod_c.py::", "lib/mod_c.py::f"}, got)
+        self.assertNotIn("lib/mod_c.py::g", got)
+
+    @unittest.skipUnless(MON, "sys.monitoring needs Python 3.12")
+    def test_the_monitoring_tool_id_is_not_the_flight_recorder_s(self):  # T-3603: debug.py's _RECORDER holds 4
+        r = subprocess.run([self.py, "-c", "import sys; print(sys.monitoring.get_tool(3), sys.monitoring.get_tool(4))"],
+                           capture_output=True, text=True, check=True, env=dict(os.environ, RUNPY_COVER=os.devnull))
+        self.assertEqual(r.stdout.split(), ["runcover", "None"])
 
     def test_what_it_only_stats_exists_or_accesses(self):
         got = self.record("os.path.exists('missing.txt')\nos.path.isdir('folder')\nos.access('data.txt', os.X_OK)\n"
@@ -267,10 +386,10 @@ class Recorder(unittest.TestCase):
 
     def test_a_forked_child_s_reads_and_one_that_execs_this_python(self):
         got = self.record("pid = os.fork()\nif pid == 0:\n    import mod_b\n    os._exit(0)\nos.waitpid(pid, 0)\n")
-        self.assertIn("lib/mod_b.py", got)
+        self.assertIn(module("lib/mod_b.py"), got)
         got = self.record("pid = os.fork()\nif pid == 0:\n    os.chdir('lib')\n"
                           "    os.execv(sys.executable, [sys.executable, '-c', 'import mod_b'])\nos.waitpid(pid, 0)\n")
-        self.assertIn("lib/mod_b.py", got)
+        self.assertIn(module("lib/mod_b.py"), got)
         self.assertNotIn("*", got)
 
     def test_a_child_it_cant_follow_is_the_whole_tree(self):
@@ -303,7 +422,7 @@ class Recorder(unittest.TestCase):
                      " sys.executable, '-c', 'import mod_b'], cwd='lib', check=True)"):
             with self.subTest(code):
                 got = self.record(code + "\n")
-                self.assertIn("lib/mod_b.py", got)
+                self.assertIn(module("lib/mod_b.py"), got)
                 self.assertNotIn("*", got)
         self.assertIn("*", self.record("subprocess.run([os.path.abspath('bin/pytool')], cwd='lib')\n"),
                       "its #! python, found on this PATH, isn't this venv's")
@@ -636,7 +755,9 @@ class EndToEnd(unittest.TestCase):
     """The real run.py and runcover.py in a scratch repo: a rerun skips; a change reruns the classes that read it,
     in a child process too; a helper beside run.py reruns all; a renamed test runs."""
 
-    def test_a_change_reruns_the_classes_that_read_it(self):
+    def repo(self, files, names):
+        """A scratch repo holding files, run.py and runcover.py; go(*names) runs run.py there (names by default) and
+        returns its stderr; stale() names the classes the cache would rerun now (no record matches the tree)."""
         top = os.path.realpath(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, top, True)
         d = os.path.join(top, "repo")
@@ -644,20 +765,108 @@ class EndToEnd(unittest.TestCase):
         os.makedirs(tests)
         for name in ("run.py", "runcover.py"):
             shutil.copy(os.path.join(run.HERE, name), os.path.join(tests, name))
-        scratch(d, {"plugin/tests/test_one.py": ONE, "plugin/tests/test_two.py": TWO, "plugin/tests/common.py": "",
-                    "plugin/tests/fixtures/data.txt": "x\n", "plugin/lib/mod_a.py": "A = 1\n",
-                    "plugin/lib/mod_b.py": "B = 1\n", "plugin/lib/tool.py": "import mod_b\n", "README.md": "hi\n"})
+        scratch(d, files)
         env = outer(XDG_CACHE_HOME=os.path.join(top, "cache"), FOREMAN_SLOTS="0", FM_TEST_TIMES=os.path.join(top, "t.json"))
 
-        def go(*names):
-            r = subprocess.run([sys.executable, os.path.join(tests, "run.py"), *(names or ("test_one", "test_two"))],
+        def go(*more):
+            r = subprocess.run([sys.executable, os.path.join(tests, "run.py"), *(more or names)],
                                capture_output=True, text=True, timeout=300, env=env, cwd=d)
             self.assertEqual(r.returncode, 0, r.stderr)
             return r.stderr
 
-        def edit(path):
+        def stale():
+            with mock.patch.object(run, "HERE", tests), mock.patch.dict(os.environ, {"XDG_CACHE_HOME": env["XDG_CACHE_HOME"]}):
+                got = run.tree()
+                value = run.values(*got[:2])
+                recs = run.load_cache(run.cache_path(got[2]))[1]
+            return sorted(c for c, rs in recs.items() if not any(r[0] == run.digest(r[2], value) for r in rs))
+        return d, go, stale
+
+    @unittest.skipUnless(MON, "sys.monitoring needs Python 3.12")
+    def test_an_edited_function_reruns_the_classes_that_ran_it_and_no_other(self):  # T-3603
+        use = "import os, sys, unittest\nsys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'lib'))\n"
+        d, go, stale = self.repo({
+            "plugin/lib/mod_a.py": "A = 1\n\n\ndef used():\n    return 1\n\n\ndef unused():\n    return 2\n",
+            "plugin/tests/test_one.py": use + "import mod_a\nclass One(unittest.TestCase):\n    def test_a(self):\n"
+                                              "        self.assertTrue(mod_a.used())\n",
+            "plugin/tests/test_two.py": use + "import mod_a\nclass Two(unittest.TestCase):\n    def test_a(self):\n"
+                                              "        self.assertTrue(mod_a.A)\n",
+            "plugin/tests/test_three.py": use + "class Three(unittest.TestCase):\n    def test_a(self):\n        pass\n"},
+            ("test_one", "test_two", "test_three"))
+
+        def edit(old, new):
+            p = os.path.join(d, "plugin/lib/mod_a.py")
+            with open(p) as f:
+                text = f.read()
+            self.assertIn(old, text)
+            with open(p, "w") as f:
+                f.write(text.replace(old, new, 1))
+        self.assertRegex(go(), r"Ran 3 tests")
+        self.assertEqual(stale(), [])
+        edit("return 2", "return 22")  # a function no class ran
+        self.assertEqual(stale(), [], "an edit to a function no class called reruns none")
+        self.assertTrue(any(re.search(r"skipped [23] classes", go()) for _ in range(3)))
+        edit("return 1", "return 11")  # the function test_one ran
+        self.assertEqual(stale(), ["test_one.One"])
+        edit("A = 1", "A = 2")  # module level: every class that imported it
+        self.assertEqual(stale(), ["test_one.One", "test_two.Two"])
+        self.assertRegex(go("test_one", "test_two", "test_three"), r"Ran (2 tests .*; 1 more green|3 tests)")
+
+    @unittest.skipUnless(MON, "sys.monitoring needs Python 3.12")
+    def test_a_hook_run_through_its_json_in_a_child_is_selected_by_the_function_it_ran(self):  # T-3603: T-3670's miss
+        """test_firewall.OutlineFirst drives the Read hook only through its JSON payload in another process, so no map
+        link or symbol search tied it to hooks._outline_first, and merge 888c3d75d's change to that function (and to the
+        constant beside it) went red in build. The record follows the hook into the child, and the affected pick reads
+        it: the class that ran the function is selected, the one that ran another handler of the same hook is not."""
+        hooks = ("import json, sys\n\n\nOUTLINE_LINES, OUTLINE_ROWS = 600, 80\n\n\n"
+                 "def _outline_first(pl):\n    ti = pl.get('tool_input') or {}\n"
+                 "    if any(ti.get(k) is not None for k in ('offset', 'limit')):\n        return None\n"
+                 "    return 'outline: ' + str(OUTLINE_ROWS)\n\n\n"
+                 "def _bash(pl):\n    return 'bash'\n\n\n"
+                 "HANDLERS = {'Read': _outline_first, 'Bash': _bash}\n\n\n"
+                 "def run():\n    pl = json.load(sys.stdin)\n    print(HANDLERS[pl['tool_name']](pl))\n")
+        drive = ("import json, os, subprocess, sys, unittest\n"
+                 "HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'lib', 'hook.py')\n\n\n"
+                 "def pre(tool, ti):\n    return subprocess.run([sys.executable, HOOK], input=json.dumps({'tool_name': tool, "
+                 "'tool_input': ti}), capture_output=True, text=True, check=True).stdout\n\n\n")
+        d, go, stale = self.repo({
+            "plugin/lib/hooks.py": hooks, "plugin/lib/hook.py": "import hooks\nhooks.run()\n",  # the hook's entry script
+            "plugin/tests/test_firewall.py": drive + "class OutlineFirst(unittest.TestCase):\n    def test_a(self):\n"
+                                             "        self.assertIn('outline', pre('Read', {'file_path': 'big.py'}))\n",
+            "plugin/tests/test_shell.py": drive + "class Shell(unittest.TestCase):\n    def test_a(self):\n"
+                                          "        self.assertEqual('bash\\n', pre('Bash', {}))\n",
+            "plugin/tests/test_plain.py": "import unittest\nclass Plain(unittest.TestCase):\n    def test_a(self):\n"
+                                          "        pass\n"},
+            ("test_firewall", "test_shell", "test_plain"))
+        self.assertRegex(go(), r"Ran 3 tests")
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": os.path.join(os.path.dirname(d), "cache")}):
+            recs = run.load_cache(run.cache_path(os.path.join(d, ".git")))[1]
+        self.assertIn("plugin/lib/hooks.py::_outline_first", recs["test_firewall.OutlineFirst"][0][2],
+                      "the record follows the hook into the child the test runs it in")
+        path = os.path.join(d, "plugin/lib/hooks.py")
+        with open(path, "w") as f:  # 888c3d75d's change: the constant, the early-out and the text returned
+            f.write(hooks.replace("600, 80", "600, 6  # packed rows").replace(
+                "    if any(", "    if ti.get('allow_large') is True or any(").replace(
+                "'outline: ' + str(OUTLINE_ROWS)", "'outline; pass allow_large: ' + str(OUTLINE_ROWS)"))
+        git(d, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-qam", "outline rows")
+        self.assertEqual(stale(), ["test_firewall.OutlineFirst", "test_shell.Shell"], "run.py: the module's rest changed")
+        lib = os.path.realpath(os.path.join(run.HERE, "..", "lib"))
+        if lib not in sys.path:
+            sys.path.insert(0, lib)
+        from sampo import map as smap
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": os.path.join(os.path.dirname(d), "cache")}):
+            self.assertEqual(["plugin/tests/test_firewall.py"],
+                             smap.ran_tests(d, "HEAD~1", "HEAD", ["plugin/lib/hooks.py"]))
+
+    def test_a_change_reruns_the_classes_that_read_it(self):
+        d, go, _ = self.repo({"plugin/tests/test_one.py": ONE, "plugin/tests/test_two.py": TWO, "plugin/tests/common.py": "",
+                              "plugin/tests/fixtures/data.txt": "x\n", "plugin/lib/mod_a.py": "A = 1\n",
+                              "plugin/lib/mod_b.py": "B = 1\n", "plugin/lib/tool.py": "import mod_b\n", "README.md": "hi\n"},
+                             ("test_one", "test_two"))
+
+        def edit(path):  # a statement, not a comment: a module's comment changes no code it ran (T-3603)
             with open(os.path.join(d, path), "a") as f:
-                f.write("# edited\n")
+                f.write("edited = 1\n")
         self.assertRegex(go(), r"Ran 3 tests")
         # test_one has 1 test, test_two 2; each cached class reruns 1 time in 10, so a skip shows within 3 runs (1e-6)
         self.assertTrue(any("classes green at the same code" in go() for _ in range(3)))
@@ -669,6 +878,7 @@ class EndToEnd(unittest.TestCase):
         self.assertRegex(go(), r"Ran (1 tests .*; 2 more green|3 tests)")
         edit("plugin/tests/common.py")  # a helper beside run.py: every class's
         self.assertRegex(go(), r"Ran 3 tests in [^\n]*\)\n")
+        tests = os.path.join(d, "plugin", "tests")
         os.rename(os.path.join(tests, "test_one.py"), os.path.join(tests, "test_uno.py"))
         self.assertRegex(go("test_uno", "test_two"), r"Ran (1 tests .*; 2 more green|3 tests)")
 
