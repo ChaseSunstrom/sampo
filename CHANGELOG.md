@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- `sampo --version` and `sampo version` print Sampo's version, and the verbs agents most often guess (`models`, `where`, `task scope`, `lane awaiting`, `affected`, `task approve`) now name the right one instead of a misspelling match (T-3612)
+- The Ward now reads a sampo verb, gated word or stored command the shell fills in (a variable, a substitution, xargs input, an alias, a nameref or anything else that rebinds a name, env -S, source <(...), a computed path to sampo) through the values the line sets only where nothing in the shell can rebind them, refuses one it still can't read (no grant lifts it), and says whether to type the verb or write the value into the command (T-3600)
 - The prompt and session-start hooks, `sampo capture` and `task new` hold the project lock only for their writes, with the brief load, state build, view regeneration and rewind git snapshot moved after or before it (T-3582)
 - One load signal for timeouts: core.load_factor (max of the 1-minute load and the runnable count, per CPU, with the instant runnable term capped at 4x) now scales gate timeouts, run.py's class timers and the tests' hang guards alike, and FOREMAN_HOST accepts runnable= (T-3391).
 - fm doctor's hook SLO judges only PreToolUse runs with a recorded load under 0.5 per CPU (T-2798's 1.5 bar let busy-machine runs in); with fewer than 20 calm runs, or none in the last 24 h, it reports "not enough (recent) calm samples" and passes, and shows the oldest calm sample's age (T-2933).
