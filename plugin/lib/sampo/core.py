@@ -5249,6 +5249,8 @@ def _goal_count(p, briefs):
 
 
 def _genesis(p, briefs):
+    if "sampo.rune" not in sys.modules and not os.path.isfile(os.path.join(p.dir, "research", "genesis", "gen-0.md")):
+        return None  # T-3677: no tower, so rune.health's answer; importing rune for it cost every view regen ~9 ms
     try:
         from sampo import rune
         return rune.health(p, briefs)

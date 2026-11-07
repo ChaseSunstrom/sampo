@@ -535,3 +535,46 @@ class KeptVerbDocs(unittest.TestCase):
             with mock.patch.object(sys, "dont_write_bytecode", True):
                 self.assertEqual(docs(os.path.join(d, "none"))[1], 1)
             self.assertFalse(os.path.exists(os.path.join(d, "none")), "nothing written where bytecode isn't")
+
+
+class KeptPlaybooks(unittest.TestCase):
+    def test_the_playbooks_words_are_kept_until_a_book_changes(self):
+        # T-3677: every focus and recall re-read and re-stemmed all 113 playbooks, ~24 ms and 62k stem calls a call
+        from sampo import recall
+        with tempfile.TemporaryDirectory() as d:
+            books, kept = os.path.join(d, "references"), os.path.join(d, "kept")
+            os.makedirs(os.path.join(books, "perf"))
+
+            def write(rel, text):
+                with open(os.path.join(books, rel), "w", encoding="utf-8") as f:
+                    f.write(text)
+
+            def read(folder=kept):
+                with mock.patch.object(recall, "PLAYBOOKS", books), \
+                        mock.patch.object(recall, "_tokens", wraps=recall._tokens) as stemmed:
+                    return recall._books(folder), stemmed.call_count
+
+            def book(rel, title, text):  # what recall ranked on before: the path's words, then the text
+                return [f"playbook {title} (fm playbooks show {rel[:-3]})",
+                        recall._tokens(f"{rel[:-3].replace('-', ' ').replace('/', ' ')} {text}")]
+
+            prof, test = "# Profiling\nMeasure a baseline first.\n", "# Testing\nWrite the failing test.\n"
+            write("perf/profiling-cpu.md", prof)
+            write("zeta.md", test)
+            first, n = read()
+            self.assertEqual(first, [book("zeta.md", "Testing", test), book("perf/profiling-cpu.md", "Profiling", prof)])
+            self.assertEqual(n, 2)
+            self.assertEqual(read(), (first, 0), "kept: the same words, nothing read or stemmed")
+            write("zeta.md", "# Testing\nWrite the failing tests first.\n")
+            self.assertEqual(read()[1], 2, "a book changed: read again")
+            write("perf/tracing.md", "# Tracing\nspans\n")
+            got, n = read()
+            self.assertEqual((n, got[-1][0]), (3, "playbook Tracing (fm playbooks show perf/tracing)"), "a book added")
+            os.remove(os.path.join(books, "perf", "tracing.md"))
+            self.assertEqual(len(read()[0]), 2, "a book removed")
+            for name in os.listdir(kept):
+                os.chmod(os.path.join(kept, name), 0o666)
+            self.assertEqual(read()[1], 2, "a file others can write is never read")
+            with mock.patch.object(sys, "dont_write_bytecode", True):
+                self.assertEqual(read(os.path.join(d, "none"))[1], 2)
+            self.assertFalse(os.path.exists(os.path.join(d, "none")), "nothing written where bytecode isn't")

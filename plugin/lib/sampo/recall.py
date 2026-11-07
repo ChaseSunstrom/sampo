@@ -124,17 +124,29 @@ def _documents(p, skip=None):
         yield "research", f"research {n[:-3]}: {first}", f"{n[:-3].replace('-', ' ')} {text}", None, {
             "age": max(0.0, (__import__("time").time() - os.path.getmtime(path)) / 86400),
             "at": os.path.getmtime(path), "cites": _cites(p.root, text)}
-    for group, _, names in sorted(os.walk(PLAYBOOKS)):  # the ported procedures: a request about profiling should
-        for n in sorted(x for x in names if x.endswith(".md")):  # surface the profiling playbook (no age)
-            rel = os.path.relpath(os.path.join(group, n), PLAYBOOKS)
+
+
+def _books(folder=None):
+    """[[label, stemmed words]] of the ported procedures, so a request about profiling surfaces the profiling playbook.
+    T-3677: kept beside the bytecode while no book and not this file change: every focus re-read and re-stemmed all
+    113 (~24 ms)."""
+    files = [os.path.join(g, n) for g, _, ns in sorted(os.walk(PLAYBOOKS))
+             for n in sorted(x for x in ns if x.endswith(".md"))]
+
+    def build():
+        out = []
+        for path in files:
+            rel = os.path.relpath(path, PLAYBOOKS)
             try:
-                with open(os.path.join(group, n), encoding="utf-8", errors="replace") as f:
+                with open(path, encoding="utf-8", errors="replace") as f:
                     text = f.read(MAX_READ)
             except OSError:
                 continue
-            title = next((x[2:].strip() for x in text.splitlines() if x.startswith("# ")), n[:-3])
-            yield "playbook", f"playbook {title} (fm playbooks show {rel[:-3]})", \
-                f"{rel[:-3].replace('-', ' ').replace('/', ' ')} {text}", None, {"age": 0.0}
+            title = next((x[2:].strip() for x in text.splitlines() if x.startswith("# ")), os.path.basename(rel)[:-3])
+            out.append([f"playbook {title} (fm playbooks show {rel[:-3]})",
+                        _tokens(f"{rel[:-3].replace('-', ' ').replace('/', ' ')} {text}")])
+        return out
+    return _kept("playbooks", files + [os.path.abspath(__file__)], build, folder)
 
 
 _PATH = c.lazy(r"(?<![\w/.-])((?:[\w.-]+/)+[\w.-]+\.\w{1,6})(?::\d+)?")
@@ -198,8 +210,9 @@ def recall(p, query, skip=None, n=HITS, cover=0.0):
     if not q:
         return []
     act = activation(p)
-    docs = [(kind, label, _tokens(text), tier, extra) for kind, label, text, tier, extra in
-            [*_documents(p, skip), *_shared_docs(p)]]
+    docs = [*((kind, label, _tokens(text), tier, extra) for kind, label, text, tier, extra in _documents(p, skip)),
+            *(("playbook", label, words, None, {"age": 0.0}) for label, words in _books()),
+            *((kind, label, _tokens(text), tier, extra) for kind, label, text, tier, extra in _shared_docs(p))]
     if not docs:
         return []
     avg = sum(len(d[2]) for d in docs) / len(docs) or 1
@@ -350,28 +363,38 @@ def verb_docs(folder=None):
     folder) while no source file and not the rules change, each stamped by mtime and size as a .pyc is: covered() built
     the whole parser for every task new and capture, ~40 ms of a forked task new's ~90. A missing, stale or unreadable
     file, or one another user owns or others can write, is built again; nothing is written where bytecode isn't."""
-    rules = os.path.join(c.PLUGIN_ROOT, "rules", "foreman.md")
-    path = os.path.join(folder or os.path.join(SOURCES, "__pycache__"), f"verb-docs.{sys.implementation.cache_tag}.json")
     try:
-        stamp = [sys.version] + [[f, st.st_mtime_ns, st.st_size] for f, st in [(rules, os.stat(rules))] + sorted(
-            (e.name, e.stat()) for e in os.scandir(SOURCES) if e.name.endswith(".py"))]
+        files = [os.path.join(c.PLUGIN_ROOT, "rules", "foreman.md")] + sorted(
+            e.path for e in os.scandir(SOURCES) if e.name.endswith(".py"))
     except OSError:
         return _verb_docs()
+    return {k: tuple(v) for k, v in _kept("verb-docs", files, _verb_docs, folder).items()}
+
+
+def _kept(name, files, build, folder=None):
+    """build(), kept as JSON in the package's __pycache__ (or folder) while files keep their mtime and size, as a .pyc
+    is (T-3667, T-3677). A missing, stale or unreadable file, or one another user owns or others can write, is built
+    again; nothing is written where bytecode isn't."""
+    path = os.path.join(folder or os.path.join(SOURCES, "__pycache__"), f"{name}.{sys.implementation.cache_tag}.json")
+    try:
+        stamp = [sys.version] + [[f, st.st_mtime_ns, st.st_size] for f, st in ((f, os.stat(f)) for f in files)]
+    except OSError:
+        return build()
     try:
         with open(path, encoding="utf-8") as f:
             st = os.fstat(f.fileno())
             kept = json.load(f) if st.st_uid == os.getuid() and not st.st_mode & 0o022 else {}
         if kept.get("stamp") == stamp:
-            return {k: tuple(v) for k, v in kept["docs"].items()}
+            return kept["data"]
     except (OSError, ValueError, AttributeError, KeyError, TypeError):
         pass
-    docs = _verb_docs()
+    data = build()
     if not sys.dont_write_bytecode:
         try:
-            c.write_atomic(path, json.dumps({"stamp": stamp, "docs": docs}))
+            c.write_atomic(path, json.dumps({"stamp": stamp, "data": data}))
         except OSError:
             pass
-    return docs
+    return data
 
 
 def _verb_docs():

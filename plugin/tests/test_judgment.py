@@ -62,6 +62,23 @@ class DoorGate(DoorBase):
         with mock.patch("fmguard.check_bash", side_effect=RuntimeError("no parse")):
             self.assertEqual(self.doors(tid)["step 1"]["door"], "guard")
 
+    def test_the_gate_asks_the_guard_only_about_commands_that_name_a_path(self):
+        # T-3677: focus put every step's and verify's command through the guard (~9 ms of its patterns compiled, a
+        # call) though the gate acts only on a local door, which needs a path; the guard's own doors stay its to stop
+        import fmguard
+        from unittest import mock
+        from sampo import doors as sdoors
+        self.data()
+        plain = self.brief("run `git push --force origin main`", "edit it", verify="python3 -c pass")
+        named = self.brief("run `rm -rf /var/lib/appdata`", "delete data/old.csv", verify="rm -f data/old.csv")
+        with mock.patch.object(fmguard, "check_bash", wraps=fmguard.check_bash) as asked:
+            self.assertIsNone(sdoors.gate(self.p, plain))
+            self.assertEqual(asked.call_count, 0, "no path named: no local door, nothing to ask")
+            sdoors.gate(self.p, named)
+            self.assertEqual(asked.call_count, 2, "a command naming a path still goes through the guard")
+        self.assertEqual(c.door_marked(c.find_brief(self.p, named), "door_acs"), [1], "the verify is still a door")
+        self.assertEqual(self.doors(plain)["step 1"]["door"], "guard", "classify still names the guard's doors")
+
     def test_a_verify_that_only_creates_a_new_file_outside_the_repo_is_two_way(self):  # T-2435
         marker = os.path.join(self.tmp, "ran")
         tid = self.brief("edit it", verify=f"touch {marker}; echo x > {marker}.2; true")

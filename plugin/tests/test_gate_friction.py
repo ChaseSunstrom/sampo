@@ -115,6 +115,28 @@ class Typos(ForemanTestCase):
             self.assertEqual(p.returncode, 0, (argv, p.stderr))
             self.assertIn(want, p.stdout, argv)
 
+    def test_version_builds_no_parser(self):
+        # T-3677: --version built all ~230 subparsers (~34 ms) to print one line
+        import contextlib
+        import io
+        import json
+        import sys
+        from unittest import mock
+        from sampo import cli
+        with open(os.path.join(cli.c.PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            want = json.load(f)["version"]
+        for argv in (["--version"], ["version"]):
+            out, err = io.StringIO(), io.StringIO()
+            with mock.patch.object(cli, "_PARSER", None), mock.patch.dict(cli._PARTS, clear=True), \
+                    mock.patch.object(cli, "_build_parser", side_effect=AssertionError("built a parser")), \
+                    mock.patch.object(sys, "argv", ["/x/sampo"]), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    rc = cli.main(argv)
+                except SystemExit as e:  # --version exits as argparse's version action did
+                    rc = e.code
+            self.assertEqual((rc or 0, out.getvalue()), (0, f"sampo {want}\n"), argv)
+
     def test_guessed_verbs_name_the_real_one_and_run_nothing(self):
         # T-3612: the other top unknown_word guesses in events.jsonl; each named the wrong verb by spelling
         self.fm("init")

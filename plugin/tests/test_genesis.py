@@ -3552,6 +3552,23 @@ class GenesisHealth(ForemanTestCase):
                 mock.patch.object(c, "write_atomic", side_effect=AssertionError("rewrote genesis-step.json")):
             self.assertIsNotNone(rune.health(self.p))
 
+    def test_views_without_a_tower_never_import_rune(self):
+        # T-3677: every view regen (task new, step, set, focus …) imported rune, ~9 ms and ~40 patterns compiled, only
+        # for health() to find no gen-0.md
+        import subprocess
+        import sys
+        lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib")
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); from sampo import core as c; "
+                "c.regen_views(c.find_project(sys.argv[2])); print('sampo.rune' in sys.modules)")
+
+        def imported():
+            return subprocess.run([sys.executable, "-c", code, lib, self.repo], capture_output=True, text=True,
+                                  check=True, timeout=60).stdout.split()
+
+        self.assertEqual(imported(), ["False"])
+        self.tower()
+        self.assertEqual(imported(), ["True"], "a tower: health() reads it")
+
     def test_cached_until_a_tower_file_or_a_task_status_changes(self):
         from sampo import rune
         self.assertIsNone(rune.health(self.p))  # no tower: nothing to show

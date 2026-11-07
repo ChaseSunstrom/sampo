@@ -142,15 +142,16 @@ def _cmd_targets(cmd):
     return out
 
 
-def _one(where, text, shell, ctx_of, root):
+def _one(where, text, shell, ctx_of, root, local_only=False):
     head = text.split("Undo:", 1)[0]
     cmds = [text] if shell else _TICK.findall(head)
-    cats = _cats(cmds, ctx_of()) if cmds else []
+    toks = [t for cmd in cmds for t in _cmd_targets(cmd)]
+    if not shell and _DESTROY.search(head):
+        toks += [*_tokens(head), *_bare(head)]
+    # T-3677: a local door needs a path, so the gate skips the guard (~9 ms of its patterns compiled) when none is named
+    cats = _cats(cmds, ctx_of()) if cmds and (toks or not local_only) else []
     paths, named, flag = [], [], None
     if not cats:
-        toks = [t for cmd in cmds for t in _cmd_targets(cmd)]
-        if not shell and _DESTROY.search(head):
-            toks += [*_tokens(head), *_bare(head)]
         for t in dict.fromkeys(toks):
             hits = [(h, _local(h, root)) for h in _expand(t, root)]
             hits = [(h, k) for h, k in hits if k]
@@ -162,19 +163,20 @@ def _one(where, text, shell, ctx_of, root):
             "named": named, "root": True if flag else None}
 
 
-def classify(p, b):
-    """[{where: 'step N' | 'verify N', door: guard | local | two-way, cats, paths}] for every step and verify command."""
+def classify(p, b, local_only=False):
+    """[{where: 'step N' | 'verify N', door: guard | local | two-way, cats, paths}] for every step and verify command;
+    local_only (the gate's) reads a guard's door that names no path as two-way, every local door unchanged."""
     box = []
 
     def ctx_of():
         if not box:
             box.append(_ctx(p, b))
         return box[0]
-    rows = [_one(f"step {s.n}", s.text, False, ctx_of, p.root) for s in b.steps()]
+    rows = [_one(f"step {s.n}", s.text, False, ctx_of, p.root, local_only) for s in b.steps()]
     for a in b.acceptance():
         cmd = c.verify_of(a.text)
         if cmd:
-            rows.append(_one(f"verify {a.n}", cmd, True, ctx_of, p.root))
+            rows.append(_one(f"verify {a.n}", cmd, True, ctx_of, p.root, local_only))
     return rows
 
 
@@ -349,7 +351,7 @@ def gate(p, tid):
     acs = {a.n: c.verify_of(a.text) for a in b.acceptance() if not a.checked}
     old = {k: [str(x) for x in b.meta.get(k) or []] for k in ("door_seen", "door_undone")}
     seen, undone, edits, notes, doors, door_acs, park = list(old["door_seen"]), list(old["door_undone"]), {}, [], [], [], None
-    for d in classify(p, b):
+    for d in classify(p, b, local_only=True):
         kind, n = d["where"].split()[0], int(d["where"].split()[1])
         text = todo[n].text if kind == "step" and n in todo else acs.get(n) if kind == "verify" else None
         if d["door"] != "local" or not text:

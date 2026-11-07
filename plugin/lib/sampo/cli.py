@@ -6831,8 +6831,24 @@ def build_parser():
     and fmrecall's command search each asked for it again."""
     global _PARSER
     if _PARSER is None:
-        _PARSER = _build_parser()
+        _PARSER = _untranslated(_build_parser)
     return _PARSER
+
+
+def _untranslated(build, *a, **kw):
+    """T-3677: argparse asks gettext for each string it registers, and with no catalog every ask runs find() over the
+    locale dirs only to hand the message back: ~17 ms of a ~40 ms full build. With no catalog for the domain, the
+    build runs with them bound to identity, the very strings gettext returns then; a catalog keeps the lookups."""
+    import gettext
+    domain = gettext.textdomain()
+    if gettext.find(domain, gettext.bindtextdomain(domain)):
+        return build(*a, **kw)
+    saved = argparse._, argparse.ngettext
+    argparse._, argparse.ngettext = (lambda m: m), (lambda s, p, n: s if n == 1 else p)
+    try:
+        return build(*a, **kw)
+    finally:
+        argparse._, argparse.ngettext = saved
 
 
 class _Skip:
@@ -6858,7 +6874,7 @@ def _parser_for(argv):
     if _PARSER is not None or not name or name.startswith("-"):
         return build_parser()
     if name not in _PARTS:
-        ap = _build_parser(only=name)
+        ap = _untranslated(_build_parser, only=name)
         sub = next(a for a in ap._actions if isinstance(a, argparse._SubParsersAction))
         _PARTS[name] = ap if name in sub.choices else None
     return _PARTS[name] or build_parser()
@@ -6873,9 +6889,14 @@ class _Version(argparse.Action):
     """T-3612: sampo --version, the top guess in events.jsonl; plugin.json is read only when asked."""
 
     def __call__(self, parser, *_):
-        with open(os.path.join(c.PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
-            print(f"{_prog()} {json.load(f).get('version', '?')}")
+        _version()
         parser.exit()
+
+
+def _version():
+    with open(os.path.join(c.PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+        print(f"{_prog()} {json.load(f).get('version', '?')}")
+    return 0
 
 
 def _build_parser(only=None):
@@ -9335,6 +9356,9 @@ def main(argv=None):
     argv, aliased = _alias(list(argv))
     if aliased:
         print(f"(ran `{_prog()} {aliased}`)", file=sys.stderr)
+    if argv == ["--version"]:  # T-3677: one line, not ~34 ms of building every subparser first
+        _version()
+        raise SystemExit(0)  # as argparse's version action exits: in-process callers (test_live) rely on it
     parser = _parser_for(argv)
     argv = _task_shape(parser, argv)
     global _ARGV
