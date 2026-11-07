@@ -3212,6 +3212,21 @@ def is_plan_only(text):
     return bool(_PLAN_ONLY.search(text or ""))
 
 
+# T-3687: the wrappers Claude Code puts in a user-role turn the user didn't type (each seen in real transcripts; the
+# teammate one is agent teams'). <pasted_content> and other HTML stay the user's, so only these tags at the start count.
+MACHINE_TAGS = ("task-notification", "system-reminder", "cross-session-message", "teammate-message", "agent-message",
+                "command-name", "command-message", "command-args", "local-command-caveat", "local-command-stdout",
+                "local-command-stderr", "bash-input", "bash-stdout", "bash-stderr", "fork-boilerplate")
+_MACHINE = lazy(r"\s*<(?:" + "|".join(MACHINE_TAGS) + r"|(?:local-)?command-[a-z-]+)(?=[\s>/])")  # any command-*
+
+
+def machine_text(text):
+    """A turn Claude Code made (another session's or agent's message, a notification, a reminder), not the user's
+    words: never a request, steer, approval or hold. The whole turn counts, so a body that closes the tag early and
+    adds a "yes" is still not the user's."""
+    return bool(_MACHINE.match(text or ""))
+
+
 def is_work_request(text):
     """A plain, untagged request with a concrete target ("add a --verbose flag"): intake classifies it first."""
     t = (text or "").strip()

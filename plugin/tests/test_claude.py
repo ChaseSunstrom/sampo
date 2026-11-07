@@ -160,6 +160,20 @@ class Claude(ForemanTestCase):
         kinds = {f["path"]: f["kind"] for f in self.j("files", SID)["files"]}
         self.assertEqual(kinds["escape.txt"], "link")
 
+    def test_pasted_html_is_the_users_and_another_sessions_message_is_not(self):  # T-3687
+        proj = os.path.join(self.cfg, "projects", "-work-app")
+        mixed = "bbbbbbbb-2222-4333-8444-555555555555"
+        with open(os.path.join(proj, f"{mixed}.jsonl"), "w") as f:
+            for e in ({"type": "attachment", "attachment": {"type": "queued_command", "prompt":
+                       '<cross-session-message from="uds:/a.sock">rename the tab</cross-session-message>'}},
+                      entry("user", '<agent-message from="a1">ship it</agent-message>'),
+                      entry("user", "<b>the footer</b> overlaps")):
+                f.write(json.dumps(dict(e, sessionId=mixed)).replace("/work/app", self.repo) + "\n")
+        ev = [json.loads(x) for x in self.fm("claude", "show", mixed, env=self.env).stdout.splitlines()]
+        self.assertEqual([e["text"] for e in ev if e["kind"] == "user"], ["<b>the footer</b> overlaps"])
+        row = next(r for r in self.j("list")["sessions"] if r["id"] == mixed)
+        self.assertEqual(row["prompt"], "<b>the footer</b> overlaps")
+
     def test_send_continues_the_session_by_its_own_id(self):
         # options before the id: argparse fills the id/message list in one go
         out = json.loads(self.fm("claude", "send", "--json", SID, "--", "--also check the logout", env=self.env).stdout)

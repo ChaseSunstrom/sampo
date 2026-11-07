@@ -252,7 +252,7 @@ def text(s):
 
 def steer_shaped(text):
     t = (text or "").strip()
-    return len(t.split()) >= MIN_WORDS and not t.endswith("?") and not t.startswith(("/", "<"))
+    return len(t.split()) >= MIN_WORDS and not t.endswith("?") and not t.startswith("/") and not c.machine_text(t)
 
 
 def said_hash(text):

@@ -915,8 +915,8 @@ def _first_prompt(path):
                 body = m.get("content")
                 if isinstance(body, list):
                     body = "".join(x.get("text", "") for x in body if isinstance(x, dict) and x.get("type") == "text")
-                if isinstance(body, str) and body.strip():
-                    return body
+                if isinstance(body, str) and body.strip() and not e.get("isMeta") and not c.machine_text(body):
+                    return body  # T-3687: the user's, never a reminder or another session's message
     except (OSError, ValueError, TypeError):
         pass
     return None
@@ -1616,9 +1616,19 @@ def user_prompt_submit(pl):
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit",
                                        "additionalContext": ONEOFF_NOTE + (f" {secret}." if secret else "")}}
     text = _PASTED.sub("", pl.get("prompt") or "").strip()
-    if text.startswith("<task-notification>"):  # a background agent's result, not the user: no approvals, words, holds
-        for tid in re.findall(r"<task-id>([\w-]+)</task-id>", text):
-            _event({"kind": "bg_done", "session_id": sid, "id": tid})  # drive stops waiting on it
+    if c.machine_text(text):  # T-3687: a background agent's result, another session's or agent's message, a reminder:
+        # not the user, so no approvals, override words, clauses, steer, holds or captures
+        if text.startswith("<task-notification>"):
+            for tid in re.findall(r"<task-id>([\w-]+)</task-id>", text):
+                _event({"kind": "bg_done", "session_id": sid, "id": tid})  # drive stops waiting on it
+        elif text.startswith("<cross-session-message"):  # noted by sender only: the body is another session's words
+            try:
+                if not c.read_meta(p).get("sensitive"):
+                    who = re.match(r'<cross-session-message\b[^>]*?\bfrom-name="([^"]*)"', text)
+                    c.log_event(p, "cross_session", data={"from": c.fit(c.plain(who.group(1)), 80) if who else None},
+                                session=sid)
+            except Exception:
+                log_error("UserPromptSubmit", _tb())
         return None
     if text.lower().strip(" ?.!") in STATUS_WORDS:  # R2: a state question costs no model tokens
         try:
@@ -4321,8 +4331,9 @@ def _turn_calls(path, cap=4_000_000):
                 isinstance(x, dict) and x.get("type") == "text" for x in content or [])):
             said = content if isinstance(content, str) else " ".join(
                 str(x.get("text") or "") for x in content if isinstance(x, dict))  # T-0907: the list form too
-            if not e.get("isMeta") and not said.lstrip().startswith(("<task-notification>", "<system-reminder>")):
-                calls, by_id = [], {}  # a new prompt from the user starts the turn again
+            if not e.get("isMeta") and (not c.machine_text(said) or said.lstrip().startswith("<command-")):
+                calls, by_id = [], {}  # a new prompt (or slash command) from the user starts the turn again; T-3687:
+                # another session's or agent's message doesn't, like a task notification
             continue
         for x in content if isinstance(content, list) else []:
             if not isinstance(x, dict):

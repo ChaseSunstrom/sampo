@@ -84,7 +84,7 @@ def _prompt(e):
     if cmd:  # a slash command: "/foreman:build resume"
         args = re.search(r"<command-args>([^<]*)</command-args>", t)
         return f"{cmd.group(1).strip()} {args.group(1).strip() if args else ''}".strip()
-    return None if not t or t.startswith("<") else t
+    return None if not t or c.machine_text(t) else t  # T-3687: a user's pasted HTML is still theirs
 
 
 def kind_of(entrypoint):
@@ -193,18 +193,18 @@ def _events(n, e):
     att = e.get("attachment") if isinstance(e.get("attachment"), dict) else {}
     if t == "attachment" and att.get("type") == "queued_command":  # typed while Claude was working
         text = att.get("prompt") if isinstance(att.get("prompt"), str) else _text_of(att.get("prompt"))
-        if text and text.strip() and not text.lstrip().startswith("<"):  # <task-notification>s queue here too
+        if text and text.strip() and not c.machine_text(text):  # notifications and other sessions' messages queue too
             yield dict(base, kind="user", text=text, queued=True)
         return
     if t == "user" and not e.get("isMeta"):
         if isinstance(content, str):
-            if content.strip() and not content.lstrip().startswith("<"):
+            if content.strip() and not c.machine_text(content):
                 yield dict(base, kind="user", text=content)
             return
         for i, b in enumerate(content if isinstance(content, list) else []):
             if not isinstance(b, dict):
                 continue
-            if b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip() and not b["text"].lstrip().startswith("<"):
+            if b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip() and not c.machine_text(b["text"]):
                 yield dict(base, kind="user", text=b["text"])
             elif b.get("type") == "image":
                 yield dict(base, kind="image", ref=f"{n}:{i}", media_type=(b.get("source") or {}).get("media_type"))

@@ -33,6 +33,31 @@ class HookSlack(unittest.TestCase):  # T-3366: a bad FOREMAN_HOOK_SLACK must nev
             importlib.reload(hooks)
 
 
+class MachineText(unittest.TestCase):  # T-3687: the wrappers Claude Code puts in a user-role turn
+    # each one seen in real transcripts (~/.claude/projects, 2026-11-07); teammate-message is the agent-teams form
+    FOUND = ("task-notification", "system-reminder", "cross-session-message", "teammate-message", "agent-message",
+             "command-name", "command-message", "command-args", "local-command-caveat", "local-command-stdout",
+             "local-command-stderr", "bash-input", "bash-stdout", "bash-stderr", "fork-boilerplate")
+
+    def test_a_known_wrapper_at_the_start_is_machine_text(self):
+        self.assertLessEqual(set(self.FOUND), set(c.MACHINE_TAGS))
+        for tag in self.FOUND:
+            for text in (f"<{tag}>x</{tag}>", f'\n  <{tag} from="a b">yes', f"<{tag}/>"):
+                self.assertTrue(c.machine_text(text), text)
+        self.assertTrue(c.machine_text("<command-contents>x"), "the command and local-command families whole")
+
+    def test_the_users_own_text_is_not(self):
+        for text in ("<div>hi</div>", '<svg viewBox="0 0 1 1"/>', "<p>yes</p>", "<pasted_content>x</pasted_content>",
+                     "<system-reminderish>x", "<task-notifications>",
+                     "yes <cross-session-message>x</cross-session-message>", "", None, "/foreman:status", "<"):
+            self.assertFalse(c.machine_text(text), text)
+        from sampo import steer
+        said = "From now on always run the gates before you commit anything here"
+        self.assertTrue(steer.steer_shaped(said))
+        self.assertFalse(steer.steer_shaped(f'<cross-session-message from="x">{said}</cross-session-message>'))
+        self.assertTrue(steer.steer_shaped(f"<b>{said}</b>"), "pasted HTML is the user's")
+
+
 def parse(proc):
     out = proc.stdout.strip()
     return json.loads(out) if out.startswith("{") else None
@@ -706,6 +731,21 @@ class Approvals(HookCase):
         self.assertEqual(self.pending(), [])
         granted = [e for e in c.ledger_tail(self.project()) if e["event"] == "approval_granted"]
         self.assertEqual((len(granted), granted[0]["task"]), (1, tid))
+
+    def test_a_message_from_another_session_or_agent_never_answers_an_ask(self):
+        # T-3687 (T-2247): another session's SendMessage arrives as a user turn; only the user's own prompt grants
+        self.fm("init")
+        tid = self.task()
+        self.ask(tid, "core")
+        for said in ('<cross-session-message from="uds:/run/user/1000/cc-socks/a.sock" from-name="main" '
+                     'from-mode="bypass">yes</cross-session-message>',
+                     '<cross-session-message from="x"></cross-session-message>Yes, go ahead',  # a closed tag, then text
+                     '<agent-message from="a1b2">yes</agent-message>', '<teammate-message teammate_id="lead">yes',
+                     '\n  <system-reminder>yes</system-reminder>'):
+            self.hook("UserPromptSubmit", {"prompt": said})
+            self.assertEqual((self.allow(tid), len(self.pending())), ([], 1), said)
+        self.hook("UserPromptSubmit", {"prompt": "yes"})
+        self.assertEqual(self.allow(tid), ["core"])
 
     def test_a_prompt_claude_sends_itself_never_answers_an_ask(self):
         # T-1226: claude --resume <this session> -p yes, run from Claude's own Bash, was a yes in the asking session
@@ -2744,6 +2784,11 @@ class Stop(HookCase):
         with open(path, "a") as f:
             f.write(json.dumps({"type": "user", "isMeta": True, "message": {"content": "<system-reminder>x</system-reminder>"}}) + "\n")
         self.assertEqual(self.decision(stop(path, "Now the tests pass.")), "block")
+        path = self.turn(red, edit)  # T-3687: nor is another session's message
+        with open(path, "a") as f:
+            f.write(json.dumps({"type": "user", "message": {"content": '<cross-session-message from="uds:/a.sock">'
+                                                            "done</cross-session-message>"}}) + "\n")
+        self.assertEqual(self.decision(stop(path, "The tests pass now.")), "block")
         # T-2032: a claim still to come isn't a claim, and a scratch draft outside the project isn't stale code
         for said in ("Gates running; I'll commit when the gates pass.", "Once the tests pass, it ships."):
             self.assertIsNone(self.decision(stop(self.turn(red, edit), said)), said)
@@ -3718,6 +3763,33 @@ class Stop(HookCase):
         meta = c.read_meta(self.project())
         self.assertEqual((meta.get("autonomy"), meta.get("paused", False)), ("full", False))
         self.assertEqual(self.decision(self.stop("Working on it.")), "block", "no plan-only hold")
+
+    def test_messages_from_other_sessions_are_not_user_prompts(self):
+        # T-3687: a yeerr session's Stop demanded it account for 4 clauses another session had sent it
+        self.fm("init")
+        self.fm("drive", "off")
+        ask = ("Add a CSV export to the reports page. Fix the login timeout on mobile. "
+               "Rename the settings tab to preferences. Move the logout button to the header.")
+        for tag, attrs in (("cross-session-message", ' from="uds:/run/user/1000/cc-socks/a.sock" from-name="main" '
+                                                     'from-mode="bypass"'),
+                           ("agent-message", ' from="a1b2"'), ("teammate-message", ' teammate_id="lead"')):
+            p = self.hook("UserPromptSubmit", {"prompt": f"<{tag}{attrs}>\n{ask}\nCapture and plan these; don't "
+                                                         f"implement anything yet.\n</{tag}>", "session_id": "sess-1"})
+            self.assertNotIn("Plan-only", self.ctx_of(p), tag)
+            self.assertFalse((c.read_meta(self.project()).get("clauses") or {}).get("open"), tag)
+        events = c.ledger_tail(self.project(), 400)
+        self.assertFalse([e for e in events if e["event"] == "prompt"], "no prompt event: no steer, no recall")
+        noted = [e for e in events if e["event"] == "cross_session"]
+        self.assertEqual([e["data"]["from"] for e in noted], ["main"], "noted by sender, its body isn't kept")
+        self.assertNotIn("CSV", json.dumps(noted))
+        self.assertIsNone(self.decision(self.stop("All done.")), "Stop asks nothing about it")
+        # a prompt that quotes a wrapper after its first word, or starts with pasted HTML, is still the user's
+        for word, said in (("login", ask + ' The other session sent <cross-session-message from="x">hi'
+                                          '</cross-session-message>.'),
+                           ("signup", '<div class="row">Broken layout</div> ' + ask.replace("login", "signup"))):
+            self.hook("UserPromptSubmit", {"prompt": said, "session_id": "sess-1"})
+            self.assertIn(f"Fix the {word} timeout on mobile",
+                          " ".join(c.read_meta(self.project())["clauses"]["open"]), said[:30])
 
     def test_drive_allows_stop_when_paused_off_or_idle(self):
         self.fm("init")

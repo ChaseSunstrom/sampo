@@ -307,8 +307,7 @@ def _user_messages(path, n=40):
                     x.get("text", "") for x in content or [] if isinstance(x, dict) and x.get("type") == "text"]
                 for t in texts:
                     t = (t or "").strip()
-                    if t and not t.startswith(("<task-notification>", "<command-", "<local-command", "<system-reminder>",
-                                               "Caveat:", "[Request interrupted")):
+                    if t and not c.machine_text(t) and not t.startswith(("Caveat:", "[Request interrupted")):  # T-3687
                         out.append(c.fit(c.redact(c.plain(t)), 300))  # review: secrets never leave in a prompt
     except OSError:
         return []
