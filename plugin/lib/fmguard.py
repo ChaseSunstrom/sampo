@@ -135,6 +135,7 @@ class Block:
     def __init__(self, category, detail):
         self.category, self.detail = category, detail
         self.rule = rule_id(category, str(detail))  # T-0672: which check fired, for fire counts
+        self.fallback = False  # T-3684: the words came from the quote-blind split (shlex couldn't read the line)
 
     def __repr__(self):
         return f"Block({self.category!r}, {self.detail!r})"
@@ -168,6 +169,7 @@ def findings(tool_name, tool_input, ctx):
     if tool_name == "Bash":
         _DISCARDS[:], _DISCARDS_OF[0] = [], tool_input["command"]  # T-1482: filled by this check only
         _COMMITS.clear()
+        _FELL_BACK.clear()
         return check_bash(tool_input["command"], ctx)
     if tool_name == "Read":  # T-1224
         path = _resolve(_expand(str(tool_input.get("file_path") or ""), ctx), ctx.cwd)
@@ -185,8 +187,10 @@ def check(tool_name, tool_input, ctx, found=None):
                     continue
                 if got == "brief" and tool_name == "Bash" and _focuses(tool_input.get("command") or ""):
                     detail += _FOCUS_LATE  # T-0404: the line's own fm focus hasn't run when the guard reads it
-                return Block(got, detail)
-    plug = [d for got, d in found if got == "plugin"]
+                blk = Block(got, detail)
+                blk.fallback = got == "system" and tool_name == "Bash" and bool(_FELL_BACK)
+                return blk
+    plug =[d for got, d in found if got == "plugin"]
     # T-0201: refreshing listings before one `claude plugin update` is that update (unpinned; it refreshes them itself)
     if plug.count(_UPDATE) == 1 and all(d in (_UPDATE, _MARKET_UPDATE) for d in plug):
         plug = [_UPDATE]
@@ -306,7 +310,12 @@ def message(block, ctx):
     where = ""  # T-1125: a shell left inside state/ by an earlier cd turns a relative path into a state write
     if detail.endswith("(written from interpreter code)") and _under(ctx.cwd or "", os.path.join(ctx.foreman_home, "state")):
         where = f" The shell is in {ctx.cwd}, so a relative path lands there: use an absolute path or cd out first."
-    return _message(block, ctx) + where + _hint(detail, block.category)
+    msg = _message(block, ctx) + where + _hint(detail, block.category)
+    if getattr(block, "fallback", False):  # T-3684: a parse failure, not a command: the fix comes before any grant
+        msg = ("Ward: the guard could not parse this line's quoting (nested \" or $( ) inside a quoted program), so it "
+               "read words inside the string as commands. Put the program in a heredoc (node <<'EOF' … EOF) or a "
+               "file, which it can read; no grant is needed for that. (Refusal as read: " + msg.removeprefix("Ward: ") + ")")
+    return msg
 
 
 def _message(block, ctx):
@@ -1454,6 +1463,18 @@ def _tokens_read(cmd):
         return words
     d = sum(t.count("(") - t.count(")") for t in words if not isinstance(t, _Quoted) and _OP_WORD.fullmatch(t))
     return words + [";"] + ([")" * d] if d > 0 else ["(" * -d] if d < 0 else []) + [";"] + nested  # depth 0 again
+
+
+_FELL_BACK = []  # T-3684: set when a system finding was read from text shlex couldn't parse (cleared per Bash check)
+
+
+def _shlex_fails(cmd):
+    """T-3684: _tokens_read took its quote-blind fallback for this line."""
+    try:
+        _shlex_words(_strip_comments(cmd))
+    except ValueError:
+        return True
+    return False
 
 
 def _mask_nested_dq(text):
@@ -4104,7 +4125,10 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                 wargs = [_with_vars(a, known) for a in args]
                 _DISCARDS.extend((d and w, x) for d in here_dirs for w, x in _git_discards(wargs, d or "/"))  # d None:
                 # the folder is unknown, and the hook says so rather than saving its own
-            found += _check_system(nm, args)
+            sysf = _check_system(nm, args)
+            if sysf and _shlex_fails(cmd):  # T-3684: read off the quote-blind split; the refusal says so
+                _FELL_BACK[:] = [1]
+            found += sysf
             found += _check_claude_config(nm, args, cmd if c.piped or "<<" in cmd else "")
             found += _check_publish(nm, args)
         # T-1480: a pipe's later commands see the name's value on this line (C=env; $C | curl pipes env); the checks
