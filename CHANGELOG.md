@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- finished_lanes reads every lane's tip in one worktree list and one log walk, and keeps each lane's answer until its tip, index or main moves, so a refresh with unchanged lanes runs 2 git processes instead of ~260 (T-3585).
 - Hooks no longer log a traceback when the project lock is busy: skips are counted per event in one friction line (sampo doctor warns when a hold passes 60 s or the count passes 50), a lock timeout names the last known holder's pid, command and seconds since it took the lock (redacted), lock waits back off to 100 ms polls, builder marks stop taking the lock unless a lane matches, and the Stop and SessionStart writes retry once (T-3535).
 - A close whose reuse of the gates' pass misses now says why in one line (the files that differ from the newest pass, or no pass), and a self-check names untracked, non-ignored files in the main checkout that keep every close off the train's pass (T-3548).
 - PreToolUse calls Sampo can prove it allows (Read, Agent/Task, outward reads) can now be answered by a checksum-verified native Rust binary in about 4 ms of CPU instead of 30-40 ms of Python; every other call, and every machine without a verified binary, runs the Python hook unchanged (T-3571)
