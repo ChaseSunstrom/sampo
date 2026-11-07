@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-07T20:11:41Z",
- "rev": "10e9be473",
+ "updated": "2026-11-07T20:19:26Z",
+ "rev": "1fe5e25f3",
  "capabilities": [
   {
    "n": 1,
@@ -52554,7 +52554,7 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 929,
+ "unproven": 926,
  "unproven_kinds": {
   "meaning-notes": 410,
   "meaning-user": 272,
@@ -52563,7 +52563,7 @@
   "typed": 58,
   "red": 86,
   "tui-unshot": 13,
-  "docs": 90,
+  "docs": 86,
   "perf-noise": 1,
   "ui-unshot": 46,
   "data": 8,
@@ -53772,10 +53772,10 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 49577,
+   "generated": 49927,
    "write": {
-    "title": 330,
-    "line": 2644,
+    "title": 337,
+    "line": 2645,
     "payoff": 32,
     "kill test": 163,
     "code": 15
@@ -53787,12 +53787,12 @@
    },
    "rejected": {
     "kill": 25230,
-    "tier": 17444,
+    "tier": 17491,
     "novelty": 152
    },
-   "merged": 1425,
-   "kept": 1961,
-   "pending": 67
+   "merged": 1430,
+   "kept": 1976,
+   "pending": 342
   },
   "families": [
    {
@@ -53830,7 +53830,7 @@
    },
    {
     "id": "F-016199",
-    "size": 352,
+    "size": 355,
     "lead": "Store Sampo's memory as a gravitational lensing field",
     "today": "Today you can't compress and retrieve Sampo's historical context by simulating how light bends around massive objects.",
     "with_this": "With this, Sampo can access relevant past decisions with zero latency by treating data mass as gravitational wells that naturally attract relevant queries, rather than using linear search.",
@@ -53877,11 +53877,11 @@
     ]
    },
    {
-    "id": "F-014278",
-    "size": 38,
-    "lead": "Simulate ecosystem ripple effects before releasing a single crate",
-    "today": "Today you can't predict how a breaking change in your library will break thousands of downstream users' builds until they file bugs.",
-    "with_this": "With this, you can see a live map of which downstream projects will fail, crash, or degrade in performance when you publish your next version.",
+    "id": "F-013646",
+    "size": 41,
+    "lead": "Predict ecosystem fragmentation via phase transition modeling",
+    "today": "Today you can't predict if a new release will cause your user base to fragment into incompatible communities.",
+    "with_this": "With this, you can prevent community fragmentation by analyzing release changes as a phase transition, identifying critical points where user behavior shifts from coherent to disordered states.",
     "tier": "extreme",
     "cold": null,
     "wild": 5,
@@ -54054,22 +54054,6 @@
     "kinds": [
      "ops",
      "refactors"
-    ]
-   },
-   {
-    "id": "F-013646",
-    "size": 2,
-    "lead": "Predict ecosystem fragmentation via phase transition modeling",
-    "today": "Today you can't predict if a new release will cause your user base to fragment into incompatible communities.",
-    "with_this": "With this, you can prevent community fragmentation by analyzing release changes as a phase transition, identifying critical points where user behavior shifts from coherent to disordered states.",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 5,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "releases"
     ]
    },
    {
@@ -55367,6 +55351,23 @@
     "evidence": "",
     "kinds": [
      "features",
+     "ops"
+    ]
+   },
+   {
+    "id": "F-013932",
+    "size": 2,
+    "lead": "Let PRs bid against each other for the fastest merge",
+    "today": "Today you can't have your documentation updates compete in an auction to determine who gets reviewed first.",
+    "with_this": "With this, you can save hours of review backlog by letting high-priority doc fixes win immediate attention through market dynamics.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 1,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "docs",
      "ops"
     ]
    },
@@ -57068,10 +57069,10 @@
     ]
    }
   ],
-  "families_total": 1405,
+  "families_total": 1413,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 1961
+   "total": 1976
   }
  },
  "steer": {
@@ -57105,7 +57106,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57128,7 +57129,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57151,7 +57152,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57174,7 +57175,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57197,7 +57198,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57220,7 +57221,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57243,7 +57244,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57266,7 +57267,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57289,7 +57290,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57312,7 +57313,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57335,7 +57336,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57358,7 +57359,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57381,7 +57382,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57404,7 +57405,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57427,7 +57428,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57450,7 +57451,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57473,7 +57474,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57496,7 +57497,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57519,7 +57520,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57542,7 +57543,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57565,7 +57566,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57588,7 +57589,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57611,7 +57612,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57634,7 +57635,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57657,7 +57658,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -57680,7 +57681,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 41.9,
+    "idle_h": 42.0,
     "spend": 0,
     "missions": 0,
     "restarted": null,
