@@ -388,21 +388,25 @@ def _claude_pid():
         return None
 
 
-def _other_session(other, sid, mine):
+def _other_session(other, sid, mine, slug=None):
     """The note when another session claimed this project in the last 15 minutes. T-0841: a resume (or /clear) in the
     same claude process changes the id but is the same session, so a claim from this process is no other."""
     age = c.age_days(other.get("seen"))
-    if not other.get("id") or other["id"] == sid or age is None:
-        return None
-    try:  # T-3331: a recorded process says whether the holder lives; the 15-minute stamp is the fallback
-        from sampo import bus
-        state = bus.proc_state(other["proc"]) if other.get("proc") else None
-    except Exception:
-        state = None
-    if state == "stopped" or (state != "alive" and age >= 15 / 1440):
-        return None
-    if mine and other.get("pid") == mine:
-        return None
+    live = bool(other.get("id")) and other["id"] != sid and age is not None
+    if live:
+        try:  # T-3331: a recorded process says whether the holder lives; the 15-minute stamp is the fallback
+            from sampo import bus
+            state = bus.proc_state(other["proc"]) if other.get("proc") else None
+        except Exception:
+            state = None
+        live = not (state == "stopped" or (state != "alive" and age >= 15 / 1440) or (mine and other.get("pid") == mine))
+    if not live:
+        # T-3422: a non-owner working autonomously leaves only its marker; only the note reads them (slug given), so
+        # the holder checks (T-3331: _mark_second, _second_refusal) still read the slot alone
+        marker = slug and c.other_live_session(sid, 15, mine, slug)
+        if not marker:
+            return None
+        other, age = {"id": marker[0]}, marker[1]
     return f"Another Claude Code session ({other['id'][:8]}) was active in this project {int(age * 1440)}m ago."
 
 
@@ -508,7 +512,7 @@ def session_start(pl):
     with contextlib.ExitStack() as held:
         _lock_retry(held, p.dir)
         meta = c.read_meta(p)
-        other_note = _other_session(meta.get("session") or {}, sid, _claude_pid())
+        other_note = _other_session(meta.get("session") or {}, sid, _claude_pid(), p.slug)
         busy = other_note is not None
         second = busy and _mark_second(meta, sid, _claude_pid())
         if second:  # T-3331: the holder stays the holder; this one is told to take a lane
@@ -3346,7 +3350,8 @@ def _touch_seen(p, sid):
     no meta.json parse); a marker a minute old is touched and, if this session owns the meta slot, the slot's stamp is
     refreshed under a lock that is never waited for. ponytail: the slot names one session (the last to prompt), so a
     non-owner's marker only throttles itself; readers still see the owner's stamp, not a non-owner's marker."""
-    if not sid or not re.fullmatch(r"[\w-]{1,100}", sid):
+    if not sid or not re.fullmatch(r"[\w-]{1,100}", sid) or os.environ.get("FOREMAN_WORKER_OF") \
+            or os.environ.get("FOREMAN_DRIVE_TASK"):  # T-3422: a claude -p worker or lane runner is no session of its own
         return
     mark = os.path.join(c.state_dir(), "sessions", sid + ".seen")
     try:
@@ -3356,8 +3361,9 @@ def _touch_seen(p, sid):
         pass
     try:
         os.makedirs(os.path.dirname(mark), exist_ok=True)
-        with open(mark, "a"):
-            os.utime(mark)
+        # T-3422: '<claude pid> <project slug>' (atomic: no reader sees it empty): a reader tells a resume (same process)
+        # from another session, and another project's from this one's
+        c.write_atomic(mark, f"{_claude_pid() or 0} {p.slug}")
         if (c.read_meta(p).get("session") or {}).get("id") != sid:
             return
         with c.lock(p.dir, timeout=0):
@@ -3374,7 +3380,7 @@ def _touch_seen(p, sid):
 def post_tool_use(pl, ok=True):
     tool, ti = pl.get("tool_name", ""), pl.get("tool_input") or {}
     p = c.find_project(_cwd(pl))
-    if p:
+    if p:  # T-3422: a subagent's calls carry its parent's session_id and keep that session alive: no agent_id skip
         _touch_seen(p, pl.get("session_id"))
     rec = {"session_id": pl.get("session_id"), "kind": "tool" if ok else "tool_fail", "tool": tool,
            "target": _target(ti)[:120], "ms": pl.get("duration_ms"), "ok": ok, "project": p.slug if p else None}

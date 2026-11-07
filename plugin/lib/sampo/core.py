@@ -216,6 +216,33 @@ def age_days(ts):
     return (datetime.datetime.now(datetime.timezone.utc) - t).total_seconds() / 86400
 
 
+def other_live_session(sid, minutes, mine=None, slug=None):
+    """T-3422: (id, age in days) of the freshest session other than sid whose state/sessions/<id>.seen marker was
+    touched within `minutes`, or None. Every name is statted (markers over a day old are pruned); a fresh one that
+    could win is read, '<claude pid> <project slug>': another project's is no other here, and one whose pid equals
+    `mine` is the same process (T-0841: a resume or /clear)."""
+    folder, best, now = os.path.join(state_dir(), "sessions"), None, time.time()
+    try:
+        names = [n for n in os.listdir(folder) if n.endswith(".seen")]
+    except OSError:
+        return None
+    for n in names:
+        try:
+            age = now - os.stat(os.path.join(folder, n)).st_mtime
+            if age > 86400:
+                os.remove(os.path.join(folder, n))
+            elif 0 <= age < minutes * 60 and n[:-5] != sid and (best is None or age < best[1]):
+                if mine or slug:
+                    with open(os.path.join(folder, n)) as f:
+                        pid, _, theirs = f.read(300).partition(" ")
+                    if (mine and pid == str(mine)) or (slug and theirs.strip() != slug):
+                        continue
+                best = (n[:-5], age)
+        except OSError:
+            pass
+    return best and (best[0], best[1] / 86400)
+
+
 # ---------------------------------------------------------------- paths and projects
 
 def foreman_home():

@@ -4049,8 +4049,11 @@ def cmd_focus(args):
         other = c.read_meta(p).get("session") or {}
         age = c.age_days(other.get("seen"))
         from sampo import bus
-        if other.get("id") and session() and other["id"] != session() and age is not None and age < 10 / 1440 \
-                and not (other.get("pid") and other["pid"] == bus.claude_pid()):  # T-0841: a resume is no other
+        if not (other.get("id") and session() and other["id"] != session() and age is not None and age < 10 / 1440
+                and not (other.get("pid") and other["pid"] == bus.claude_pid())):  # T-0841: a resume is no other
+            m = session() and c.other_live_session(session(), 10, bus.claude_pid(), p.slug)  # T-3422: a non-owner's marker
+            other = {"id": m[0]} if m else {}
+        if other.get("id"):
             warn = f"note: another Claude Code session ({other['id'][:8]}) was active in this project within 10 minutes"
         c.log_event(p, "focus", task=target.id, session=session())
         if c.stage(target) != stage_before:

@@ -8,6 +8,7 @@ import sys
 import time
 import re
 import unittest
+import unittest.mock
 
 from helpers import HOOK, RELAY, ForemanTestCase, read_json, read_text
 
@@ -2335,6 +2336,81 @@ class DesignNudge(HookCase):
         os.mkfifo(path)
         self.task(title="Second")
         self.assertIn("ui/design-direction.md", self.edit("web/App.vue"))
+
+
+class OtherSessionMarkers(HookCase):
+    def mark(self, sid, age_s, pid=0, slug=None):
+        f = os.path.join(c.state_dir(), "sessions", sid + ".seen")
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        with open(f, "w") as fh:
+            fh.write(f"{pid} {slug or self.project().slug}")
+        os.utime(f, (time.time() - age_s,) * 2)
+        return f
+
+    def test_a_fresh_marker_of_a_non_owner_counts_a_stale_or_own_one_does_not(self):
+        # T-3422: the meta slot names only the last session to prompt; a second autonomous one left a marker
+        self.fm("init")
+        self.hook("UserPromptSubmit", {"prompt": "hi", "session_id": "owner-1"})
+        # the owner is gone: no live process on record (T-3331 reads a live one as holding however old its stamp)
+        c.update_meta(self.project(), session=dict(c.read_meta(self.project())["session"], seen=c.iso(time.time() - 7200),
+                                                   proc=None))
+        self.mark("me-me-me", 5)
+        self.assertIsNone(c.other_live_session("me-me-me", 15), "its own marker is no other")
+        self.mark("auto-sess", 600)
+        self.assertEqual(c.other_live_session("me-me-me", 15)[0], "auto-sess")
+        self.mark("auto-sess", 1200)
+        self.assertIsNone(c.other_live_session("me-me-me", 15), "a stale marker doesn't count")
+        from sampo import hooks
+        self.mark("auto-sess", 30)
+        self.assertIn("auto-ses", hooks._other_session(c.read_meta(self.project())["session"], "me-me-me", None,
+                                                       self.project().slug))
+        self.assertIsNone(hooks._other_session(c.read_meta(self.project())["session"], "me-me-me", None),
+                          "T-3331's holder checks pass no slug: a marker never makes a holder")
+        old = self.mark("ancient", 3 * 86400)
+        c.other_live_session("me-me-me", 15)
+        self.assertFalse(os.path.exists(old), "a marker older than a day is pruned")
+
+
+    def test_a_marker_from_the_same_claude_process_is_a_resume_not_another_session(self):
+        self.fm("init")
+        self.mark("old-id", 5, pid=4242)
+        self.assertIsNone(c.other_live_session("new-id", 15, 4242), "T-0841: same process, same session")
+        self.assertEqual(c.other_live_session("new-id", 15, 99)[0], "old-id")
+        self.assertEqual(c.other_live_session("new-id", 15)[0], "old-id", "no pid known: stat only")
+
+    def test_the_marker_a_tool_call_writes_holds_the_claude_pid_and_project(self):
+        self.fm("init")
+        p = self.project()
+        mark = os.path.join(c.state_dir(), "sessions", "pid-sess.seen")
+        from sampo import hooks
+        with unittest.mock.patch("sampo.hooks._claude_pid", return_value=777):
+            hooks._touch_seen(p, "pid-sess")
+        with open(mark) as f:
+            self.assertEqual(f.read(), f"777 {p.slug}")
+
+    def test_a_marker_from_another_project_is_no_other_session_here(self):
+        # T-3422 review: markers are global; a session working in project Y must not read as live in X
+        self.fm("init")
+        self.mark("in-y", 10, slug="project-y")
+        self.assertIsNone(c.other_live_session("me-me-me", 15, None, self.project().slug))
+        self.mark("in-x", 10)
+        self.assertEqual(c.other_live_session("me-me-me", 15, None, self.project().slug)[0], "in-x")
+
+    def test_workers_and_lane_runners_write_no_marker(self):
+        self.fm("init")
+        from sampo import hooks
+        for var in ("FOREMAN_WORKER_OF", "FOREMAN_DRIVE_TASK"):
+            with unittest.mock.patch.dict(os.environ, {var: "T-1"}):
+                hooks._touch_seen(self.project(), "worker-sess")
+            self.assertFalse(os.path.exists(os.path.join(c.state_dir(), "sessions", "worker-sess.seen")), var)
+
+    def test_the_focus_note_names_a_non_owner_with_a_fresh_marker(self):
+        # T-3422: the slot is empty or stale, yet another session is working
+        self.fm("init")
+        tid = self.task(focus=False)
+        self.mark("busy-other-sess", 30, pid=1)
+        r = self.fm("focus", tid, env={"FOREMAN_SESSION_ID": "me-me-me"})
+        self.assertIn("busy-oth", r.stderr)
 
 
 class PostToolUse(HookCase):
