@@ -893,7 +893,7 @@ def cmd_task(args):
         drift, notes = sdocs.task_docs(p.root, pre.section("Docs impact")) if pre.tier in ("M", "L") else ([], [])
 
         lesson = c.plain(args.lesson or "").strip()
-        touches, risky = _task_files(p, pre)
+        touches, risky, gone = _task_files(p, pre)
         files = list(touches)
 
         def done(b):
@@ -902,14 +902,7 @@ def cmd_task(args):
             from sampo import split  # T-0709: a parent closes after its children
             reasons += [f"child {k.id} is {k.status}: finish it first (sampo task capsule {k.id} shows what it returned)"
                         for k in split.open_children(p, b)]
-            outside = c.scope_drift(b, files)
-            if outside and not c.scope_reason_covers(b, touches, outside):
-                latest = max(outside, key=lambda f: touches.get(f, ""))  # T-0168: a reason counts after this edit
-                shown, left = c.more(outside, 8)
-                reasons.append(f"edited outside scope [{', '.join(b.meta.get('scope') or [])}]: "
-                               f"{', '.join(shown + [left] if left else shown)}"
-                               f"; widen it (sampo task set {b.id} scope=…) or say why after your last edit of {latest} "
-                               f"(sampo task log {b.id} \"scope: <why>\"; a reason logged before an edit doesn't cover it)")
+            reasons += _scope_gaps(p, b, touches)
             if b.type == "CLEAN" and first_edit and not b.section("Behaviour lock").strip() and not any(
                     ts <= first_edit for ts in b.ran_times()):
                 reasons.append(f"no behaviour lock: a CLEAN change needs the tests run before its first edit (sampo check "
@@ -1000,6 +993,10 @@ def cmd_task(args):
         except Exception as e:
             print(f"fm: warning: playbook use not recorded: {e}", file=sys.stderr)
         warns = _close_warnings(p, b, files)  # T-0672: seen, never a refusal
+        if gone:  # T-3550: left out of its edits, never silently
+            shown, left = c.more(gone, 8)
+            warns.append(f"{len(gone)} untracked file{'' if len(gone) == 1 else 's'} gone since the start (not counted "
+                         f"as this task's edits): {', '.join(shown + [left] if left else shown)}")
         if warns:  # T-0956: the verdict first, then the details
             kinds = dict.fromkeys(_warning_kind(w) for w in warns)
             print(f"fm: {len(warns)} warning{'' if len(warns) == 1 else 's'}: {', '.join(kinds)}", file=sys.stderr)
@@ -1444,12 +1441,13 @@ def _task_finish(p, args):
     # T-1272: a step that has a run (a failed one, else it would have closed) is told so, not that it has no evidence
     red = [n for kind, n, cmd in todo if cmd is None and kind == "step" and b.has_evidence(step=n)]
     missing = [named(kind, n) for kind, n, cmd in todo if cmd is None and not (kind == "step" and n in red)]
+    touches, risky, _ = _task_files(p, b)  # once for both pre-checks (done() reads it again after the gates)
     gaps = [f"{named('step', n)}: its last run failed; record a passing run (sampo task evidence {b.id} --step {n} --run CMD, or finish with --run CMD)"
             for n in red] + ([f"give --run \"<cmd>\" (or record evidence): {', '.join(missing)} has no verify command or "
                               f"evidence of its own"] if missing else []) + _finish_gaps(b, args, lenses, p) + _self_docs_gaps(p, b) \
         + _file_map_gaps(p, b) + [g for g in [b.proof_gap(then=[cmd for _, _, cmd in todo] + [args.run])] if g] \
         + _proved_gaps(p, b, then=[cmd for _, _, cmd in todo] + [args.run]) \
-        + _adversary_gaps(p, b, lenses)  # T-1906, T-1907: asked before anything runs
+        + _adversary_gaps(p, b, lenses, risky) + _scope_gaps(p, b, touches)  # T-1906, T-1907, T-3550: before anything runs
     from sampo import miss  # T-2369: an open capability miss refuses every try; only a later passing run closes it
     from sampo import toolproof  # T-2372: first, so a proved tool resolves its miss in the same try
     from sampo import incident  # T-2388: its criterion's own run is the close's second green
@@ -2034,15 +2032,24 @@ def _warning_kind(w):
 
 
 def _task_files(p, b):
-    """({file: when touched}, the security-sensitive ones): edits made outside Claude since the task's base count."""
-    touches = c.task_touches(p, b.id)
+    """({file: when touched}, the security-sensitive ones, the untracked files gone since the start, not counted):
+    edits made outside Claude since the task's base count."""
+    touches, gone = c.task_touches(p, b.id), set()
     base = c.task_base(p.root, b) if c.git_root(p.root) else None
     if base:  # R1: edits made through the shell or outside Claude count too
         from sampo import map as smap
         changed = smap.changed(p.root, base)
         theirs = set(_theirs(p, b, changed))  # T-1968: another task's edits are its to answer for (scope, audit)
+        # T-3550: a file untracked at the start and removed since (another task, a shell rm) is no edit of this task's:
+        # read as touched now, no 'scope:' reason could ever cover it. Tracked at the start or in HEAD, it still counts.
+        gone = {f for f in changed if f not in touches and not os.path.lexists(os.path.join(p.root, f))}
+        for rev in filter(None, ("HEAD", b.meta.get("base"))):
+            if not gone:  # no paths would list the whole tree
+                break
+            kept = c._git(p.root, "ls-tree", "-r", "--name-only", rev, "--", *gone, timeout=30, fail=None)
+            gone -= set(gone if kept is None else kept.splitlines())  # can't tell: counted, as before
         for f in changed:
-            if f not in touches and f not in theirs and not f.startswith(c.MIRROR_DIRS):
+            if f not in touches and f not in theirs and f not in gone and not f.startswith(c.MIRROR_DIRS):
                 try:
                     touches[f] = c.iso(os.path.getmtime(os.path.join(p.root, f)))
                 except OSError:  # deleted
@@ -2052,7 +2059,7 @@ def _task_files(p, b):
     recorded = b.meta.get("base_tree") or b.meta.get("base")  # never focused: no start point, as before
     if diff is None and recorded and c.git_root(p.root):  # T-0078 review: what can't be read isn't passed as clean
         risky.append("diff unavailable, so its content wasn't checked")
-    return touches, risky
+    return touches, risky, sorted(gone)
 
 
 def _adversary_ask(risky):
@@ -2066,13 +2073,27 @@ def _merge_aware_tree(p, b):
     return c.audit_tree_past_merges(p, b, tree) if tree else None
 
 
-def _adversary_gaps(p, b, lenses):
+def _adversary_gaps(p, b, lenses, risky):
     """T-1907: a close over security-sensitive files is asked for its adversary lens before any check runs."""
     if any(lens == "adversary" for lens, _ in lenses):
         return []
-    risky = _task_files(p, b)[1]
     return [r + _adversary_ask(risky) for r in (b.audit_blockers(tree=_merge_aware_tree(p, b), need=("adversary",)) if risky else [])
             if r.startswith("audit missing: adversary")]
+
+
+def _scope_gaps(p, b, touches):
+    """Edits outside the task's scope that no later 'scope:' reason covers (T-0055): done() refuses them, and finish
+    asks before any check runs (T-3550: T-3163's close ran its gates, then was refused for one file)."""
+    if not b.meta.get("scope"):
+        return []
+    outside = c.scope_drift(b, list(touches))
+    if not outside or c.scope_reason_covers(b, touches, outside):
+        return []
+    latest = max(outside, key=lambda f: touches.get(f, ""))  # T-0168: a reason counts after this edit
+    shown, left = c.more(outside, 8)
+    return [f"edited outside scope [{', '.join(b.meta['scope'])}]: {', '.join(shown + [left] if left else shown)}"
+            f"; widen it (sampo task set {b.id} scope=…) or say why after your last edit of {latest} "
+            f"(sampo task log {b.id} \"scope: <why>\"; a reason logged before an edit doesn't cover it)"]
 
 
 def _finish_gaps(b, args, lenses, p=None):

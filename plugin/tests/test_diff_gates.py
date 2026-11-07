@@ -56,6 +56,35 @@ class DiffGates(ForemanTestCase):
         self.fm("task", "audit", "T-0001", "self", "rechecked after the tox.ini edit", "ok")
         self.assertEqual(self.fm("task", "done", "T-0001", check=False).returncode, 0)
 
+    def test_finish_refuses_an_out_of_scope_edit_before_any_check_runs(self):
+        # T-3550: T-3163's close ran its gates, then done() refused it for one file outside scope
+        self.task("--scope", "src/**")
+        self.touch("src/app.py")
+        self.touch("setup.cfg")
+        p = self.fm("task", "finish", "T-0001", "--audit", "self", "--run", "true", check=False)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("nothing ran", p.stderr)
+        self.assertIn("edited outside scope [src/**]: setup.cfg", p.stderr)
+        self.assertEqual(c.find_brief(self.p, "T-0001").evidence(), [])
+
+    def test_an_untracked_file_removed_since_the_start_is_not_this_tasks_edit(self):
+        # T-3550: removed by another task or a shell rm, it read as touched "now", so no scope reason could cover it
+        self.write("docs/old.md")  # tracked: its removal is still an edit
+        subprocess.run(["git", "-C", self.repo, "add", "docs/old.md"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "old"], check=True)
+        self.write("notes/scratch.md", "draft\n")  # untracked when the task starts
+        self.task("--scope", "src/**")
+        self.touch("src/app.py")
+        os.remove(os.path.join(self.repo, "notes/scratch.md"))
+        os.remove(os.path.join(self.repo, "docs/old.md"))
+        p = self.finish()
+        self.assertIn("edited outside scope [src/**]: docs/old.md", p.stderr)
+        self.assertNotIn("scratch", p.stderr)
+        self.fm("task", "set", "T-0001", "scope+=docs/old.md")  # a reason can't cover a deletion: it reads as touched now
+        p = self.fm("task", "done", "T-0001")
+        self.assertIn("1 untracked file gone since the start (not counted as this task's edits): notes/scratch.md",
+                      p.stderr)  # left out, never silently
+
     def test_security_sensitive_change_needs_the_adversary_lens(self):
         self.task()
         self.touch("auth/login.py")

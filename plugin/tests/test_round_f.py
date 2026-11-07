@@ -30,7 +30,7 @@ class RoundF(ForemanTestCase):
         p = self.fm("task", "finish", "T-0001", "--run", "true", "--audit", "checked", check=False)
         self.assertIn("edited outside scope [src/**]: setup.cfg", p.stderr)
         self.fm("task", "log", "T-0001", "scope: build config")
-        self.fm("task", "done", "T-0001")
+        self.fm("task", "finish", "T-0001", "--run", "true", "--audit", "checked")  # T-3550: refused before it ran
         self.assertIn("src/a.py", c.find_brief(self.p, "T-0001").section("Files touched"))
 
     def test_an_old_cached_pass_reruns_and_a_gate_that_writes_is_named(self):
