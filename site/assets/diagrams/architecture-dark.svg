@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 420" width="880" height="420" role="img">
+<title>How Sampo fits together: Claude Code, other agents, sampo smith and headless runs call Sampo's hooks and the sampo CLI, which keep state on disk; the pane, status line, desktop app and MCP clients read sampo's JSON</title>
+<style>
+text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+.edge{fill:none;stroke:#FFFFFF;stroke-opacity:.12}
+.card{fill:#131822;stroke:#FFFFFF;stroke-opacity:.12}
+.box{fill:#131822;stroke:#E5A53A;stroke-opacity:.5}
+.hub{fill:#E5A53A;fill-opacity:.1;stroke:#E5A53A;stroke-opacity:.8}
+.t{font-size:20px;font-weight:650;letter-spacing:-.01em;fill:#E8ECF4}
+.u{font-size:13.5px;fill:#B4BDCE}
+.k{font-size:11px;font-weight:700;letter-spacing:.14em}
+.h{font-size:15px;font-weight:600;fill:#E8ECF4}
+.s{font-size:12.5px;fill:#B4BDCE}
+.cli{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:17px;font-weight:700;fill:#E5A53A}
+.fA{fill:#7AA2FF}.fB{fill:#5B8CFF}.fG{fill:#E5A53A}.fN{fill:#34D399}.fM{fill:#8893A7}
+.wire{fill:none;stroke:#8893A7;stroke-width:1.5;stroke-linecap:round}
+.gw{fill:none;stroke:#E5A53A;stroke-width:2;stroke-linecap:round}
+</style>
+<defs>
+<marker id="aM" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto"><path class="fM" d="M0 1L10 5L0 9L2.6 5z"/></marker>
+<marker id="aG" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path class="fG" d="M0 1L10 5L0 9L2.6 5z"/></marker>
+</defs>
+<rect fill="#0B0E14" width="880" height="420" rx="16"/>
+<rect class="edge" x=".5" y=".5" width="879" height="419" rx="15.5"/>
+<text class="k fA" x="32" y="40">ARCHITECTURE</text>
+<text class="t" x="32" y="66">How the pieces fit</text>
+<text class="u" x="32" y="88">One CLI and one state folder. Every view reads sampo's JSON; rules and gates live in sampo.</text>
+<text class="k fA" x="32" y="128">WHERE YOU WORK</text>
+<text class="k fG" x="325" y="128">SAMPO</text>
+<text class="k fN" x="618" y="128">WHAT YOU SEE</text>
+<g>
+<rect class="card" x="32.5" y="140.5" width="229" height="55" rx="10"/><rect class="fB" x="33" y="150" width="3" height="36" rx="1.5"/>
+<text class="h" x="48" y="163">Claude Code</text><text class="s" x="48" y="183">a hook on every tool call</text>
+<rect class="card" x="32.5" y="206.5" width="229" height="55" rx="10"/><rect class="fB" x="33" y="216" width="3" height="36" rx="1.5"/>
+<text class="h" x="48" y="229">Other agents</text><text class="s" x="48" y="249">Codex, Gemini CLI, opencode</text>
+<rect class="card" x="32.5" y="272.5" width="229" height="55" rx="10"/><rect class="fB" x="33" y="282" width="3" height="36" rx="1.5"/>
+<text class="h" x="48" y="295">sampo smith</text><text class="s" x="48" y="315">the loop on any model</text>
+<rect class="card" x="32.5" y="338.5" width="229" height="55" rx="10"/><rect class="fB" x="33" y="348" width="3" height="36" rx="1.5"/>
+<text class="h" x="48" y="361">sampo run · sampo serve</text><text class="s" x="48" y="381">headless, on a server</text>
+</g>
+<g class="wire">
+<path d="M266 168C296 168 296 172 323 172" marker-end="url(#aM)"/><path d="M266 234C298 234 296 184 323 184" marker-end="url(#aM)"/>
+<path d="M266 300C300 300 300 260 323 260" marker-end="url(#aM)"/><path d="M266 366C302 366 302 274 323 274" marker-end="url(#aM)"/>
+</g>
+<rect class="box" x="325.5" y="140.5" width="229" height="61" rx="10"/>
+<text class="h" x="341" y="165">Hooks</text><text class="s" x="341" y="185">Ward · context · drive · gates</text>
+<path class="gw" d="M440 205V236" marker-end="url(#aG)"/>
+<rect class="hub" x="325.5" y="238.5" width="229" height="61" rx="10"/>
+<text class="cli" x="341" y="265">sampo</text>
+<text class="s" x="341" y="285">one CLI: tasks, evidence, gates</text>
+<path class="gw" d="M440 303V334" marker-end="url(#aG)"/>
+<rect class="box" x="325.5" y="336.5" width="229" height="57" rx="10"/>
+<text class="h" x="341" y="360">State on disk</text><text class="s" x="341" y="380">briefs · proof ledger · lessons</text>
+<g class="wire">
+<path d="M558 262C586 262 584 168 616 168" marker-end="url(#aM)"/><path d="M558 268C590 268 586 234 616 234" marker-end="url(#aM)"/>
+<path d="M558 274C590 274 586 300 616 300" marker-end="url(#aM)"/><path d="M558 280C586 280 584 366 616 366" marker-end="url(#aM)"/>
+</g>
+<g>
+<rect class="card" x="618.5" y="140.5" width="229" height="55" rx="10"/><rect class="fN" x="844" y="150" width="3" height="36" rx="1.5"/>
+<text class="h" x="634" y="163">sampo-ui pane</text><text class="s" x="634" y="183">task, stages, agents, charts</text>
+<rect class="card" x="618.5" y="206.5" width="229" height="55" rx="10"/><rect class="fN" x="844" y="216" width="3" height="36" rx="1.5"/>
+<text class="h" x="634" y="229">Status line and band</text><text class="s" x="634" y="249">task, step and queue</text>
+<rect class="card" x="618.5" y="272.5" width="229" height="55" rx="10"/><rect class="fN" x="844" y="282" width="3" height="36" rx="1.5"/>
+<text class="h" x="634" y="295">Sampo Desktop</text><text class="s" x="634" y="315">every project and session</text>
+<rect class="card" x="618.5" y="338.5" width="229" height="55" rx="10"/><rect class="fN" x="844" y="348" width="3" height="36" rx="1.5"/>
+<text class="h" x="634" y="361">sampo mcp</text><text class="s" x="634" y="381">read-only, any MCP client</text>
+</g>
+</svg>

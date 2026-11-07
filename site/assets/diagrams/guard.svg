@@ -1,56 +1,68 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 380" width="880" height="380" role="img">
-<title>The guard: every command passes the guard hook first; most run, ones that would discard uncommitted work are snapshotted first, dangerous ones are refused until you grant them</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 400" width="880" height="400" role="img">
+<title>The Ward, Sampo's guard: every command passes the Ward first; most run, ones that would discard uncommitted work are snapshotted first, dangerous ones are refused until you grant them</title>
 <style>
-text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif}
-.t{font-size:19px;font-weight:700;fill:#E7ECF4}
-.u{font-size:13.5px;fill:#9AA8BC}
-.k{font-size:11px;font-weight:700;letter-spacing:.14em;fill:#7E8BA0}
-.m{font:13.5px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#D7DEE9}
-.h{font-size:15.5px;font-weight:600;fill:#E7ECF4}
-.s{font-size:12.5px;fill:#9AA8BC}
-.g{font-size:12px;font-weight:800;letter-spacing:.16em;fill:#0A1220;text-anchor:middle}
-.pulse{animation:p 2.4s ease-in-out infinite}
-@keyframes p{50%{opacity:.3}}
-@media (prefers-reduced-motion:reduce){.pulse{animation:none}}
+text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+.edge{fill:none;stroke:#FFFFFF;stroke-opacity:.12}
+.plate{fill:#131822;stroke:#FFFFFF;stroke-opacity:.12}
+.rule{fill:none;stroke:#FFFFFF;stroke-opacity:.12}
+.out{fill:#131822;stroke-opacity:.5}
+.t{font-size:20px;font-weight:650;letter-spacing:-.01em;fill:#E8ECF4}
+.u{font-size:13.5px;fill:#B4BDCE}
+.k{font-size:11px;font-weight:700;letter-spacing:.14em}
+.ka{fill:#B4BDCE}
+.m{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px;fill:#E8ECF4}
+.h{font-size:15.5px;font-weight:600;fill:#E8ECF4}
+.s{font-size:12.5px;fill:#B4BDCE}
+.f{font-size:13px;fill:#B4BDCE}
+.w{font-size:13px;font-weight:800;letter-spacing:.16em;fill:#E8ECF4;text-anchor:middle}
+.pt{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:11.5px;fill:#B4BDCE;text-anchor:middle}
+.fA{fill:#7AA2FF}.fG{fill:#E5A53A}.fN{fill:#34D399}.fR{fill:#F87171}.fM{fill:#8893A7}
+.sG{stroke:#E5A53A}.sN{stroke:#34D399}.sR{stroke:#F87171}.sM{stroke:#8893A7}
+.on{fill:none;stroke:#0B0E14;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}
+.halo{fill:none;stroke-opacity:.14;stroke-width:12;stroke-linejoin:round}
+.shield{fill-opacity:.14;stroke-width:2;stroke-linejoin:round}
+.base{fill:#131822}
+.wire{fill:none;stroke-width:1.75;stroke-linecap:round}
 </style>
 <defs>
-<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#18243A"/><stop offset="1" stop-color="#0B111C"/></linearGradient>
-<linearGradient id="gold" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFD866"/><stop offset="1" stop-color="#F5A00B"/></linearGradient>
-<marker id="ok" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#47C98B"/></marker>
-<marker id="snap" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#FFC83D"/></marker>
-<marker id="stop" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#FF6B6B"/></marker>
-<marker id="in" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#7E8BA0"/></marker>
+<marker id="aM" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path class="fM" d="M0 1L10 5L0 9L2.6 5z"/></marker>
+<marker id="aN" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path class="fN" d="M0 1L10 5L0 9L2.6 5z"/></marker>
+<marker id="aG" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path class="fG" d="M0 1L10 5L0 9L2.6 5z"/></marker>
+<marker id="aR" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path class="fR" d="M0 1L10 5L0 9L2.6 5z"/></marker>
 </defs>
-<rect width="880" height="380" rx="16" fill="url(#bg)"/>
-<rect x=".5" y=".5" width="879" height="379" rx="15.5" fill="none" stroke="#fff" stroke-opacity=".08"/>
-<text class="t" x="32" y="44">The guard reads every command before it runs</text>
-<text class="u" x="32" y="67">Fail-closed and built for bypass mode. A speed bump, not a sandbox.</text>
-<rect x="32" y="126" width="232" height="156" rx="12" fill="#131C2B" stroke="#24324A"/>
-<text class="k" x="50" y="154">CLAUDE WANTS TO RUN</text>
-<circle cx="56" cy="180" r="4" fill="#47C98B"/><text class="m" x="70" y="185">pytest -q</text>
-<circle cx="56" cy="212" r="4" fill="#FFC83D"/><text class="m" x="70" y="217">git reset --hard</text>
-<circle cx="56" cy="244" r="4" fill="#FF6B6B"/><text class="m" x="70" y="249">rm -rf ~</text>
-<path d="M266 204H312" stroke="#7E8BA0" stroke-width="2" marker-end="url(#in)"/>
-<path class="pulse" d="M370 142l50 18v44c0 32-22 50-50 62c-28-12-50-30-50-62v-44z" fill="none" stroke="#FFC83D" stroke-width="7" stroke-opacity=".3"/>
-<path d="M370 142l50 18v44c0 32-22 50-50 62c-28-12-50-30-50-62v-44z" fill="url(#gold)"/>
-<text class="g" x="370" y="204">GUARD</text>
-<text x="370" y="221" text-anchor="middle" style="font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#3A2A00">PreToolUse</text>
-<path d="M424 192C452 192 450 134 478 134" fill="none" stroke="#47C98B" stroke-width="2" marker-end="url(#ok)"/>
-<path d="M424 204H478" stroke="#FFC83D" stroke-width="2" marker-end="url(#snap)"/>
-<path d="M424 216C452 216 450 274 478 274" fill="none" stroke="#FF6B6B" stroke-width="2" marker-end="url(#stop)"/>
-<rect x="484" y="104" width="364" height="60" rx="12" fill="#47C98B" fill-opacity=".08" stroke="#47C98B" stroke-opacity=".45"/>
-<circle cx="514" cy="134" r="12" fill="#47C98B"/><path d="M508 134.5l4 4l8-8.5" fill="none" stroke="#0A1220" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
-<text class="h" x="538" y="130">Runs</text>
-<text class="s" x="538" y="150">tests, builds, reads, scoped edits</text>
-<rect x="484" y="174" width="364" height="60" rx="12" fill="#FFC83D" fill-opacity=".08" stroke="#FFC83D" stroke-opacity=".45"/>
-<circle cx="514" cy="204" r="12" fill="#FFC83D"/><path d="M508 200h12v9h-12zM511 200v-2.5h6v2.5" fill="none" stroke="#0A1220" stroke-width="2" stroke-linejoin="round"/>
-<text class="h" x="538" y="200">Saves your work, then runs</text>
-<text class="s" x="538" y="220">snapshot first; fm oops brings it back</text>
-<rect x="484" y="244" width="364" height="60" rx="12" fill="#FF6B6B" fill-opacity=".08" stroke="#FF6B6B" stroke-opacity=".5"/>
-<circle cx="514" cy="274" r="12" fill="#FF6B6B"/><path d="M509 269l10 10M519 269l-10 10" stroke="#0A1220" stroke-width="2.6" stroke-linecap="round"/>
-<text class="h" x="538" y="270">Refused, with how to grant it</text>
-<text class="s" x="538" y="290">wide deletes, force-push, curl | sh</text>
-<path d="M32 320H848" stroke="#24324A"/>
-<text class="s" x="32" y="345" style="font-size:13px">Granting takes your yes in Claude Code's own permission prompt, for that one thing on that one task.</text>
-<text class="s" x="32" y="364" style="font-size:13px">Nothing else can grant it: not a chat message, a skill or a scheduled prompt.</text>
+<rect fill="#0B0E14" width="880" height="400" rx="16"/>
+<rect class="edge" x=".5" y=".5" width="879" height="399" rx="15.5"/>
+<text class="k fA" x="32" y="40">THE WARD</text>
+<text class="t" x="32" y="66">The Ward reads every command before it runs</text>
+<text class="u" x="32" y="88">Fail-closed and built for bypass mode. A speed bump, not a sandbox.</text>
+<rect class="plate" x="32.5" y="136.5" width="232" height="164" rx="12"/>
+<text class="k ka" x="50" y="166">CLAUDE WANTS TO RUN</text>
+<path class="rule" d="M48 210.5H249M48 242.5H249"/>
+<circle class="fN" cx="56" cy="194" r="4"/><text class="m" x="70" y="199">pytest -q</text>
+<circle class="fG" cx="56" cy="226" r="4"/><text class="m" x="70" y="231">git reset --hard</text>
+<circle class="fR" cx="56" cy="258" r="4"/><text class="m" x="70" y="263">rm -rf ~</text>
+<path class="wire sM" d="M270 218H312" marker-end="url(#aM)"/>
+<path class="halo sG" d="M370 156l50 18v44c0 32-22 50-50 62c-28-12-50-30-50-62v-44z"/>
+<path class="base" d="M370 156l50 18v44c0 32-22 50-50 62c-28-12-50-30-50-62v-44z"/>
+<path class="shield fG sG" d="M370 156l50 18v44c0 32-22 50-50 62c-28-12-50-30-50-62v-44z"/>
+<text class="w" x="370" y="214">WARD</text>
+<text class="pt" x="370" y="232">PreToolUse</text>
+<path class="wire sN" d="M426 206C454 206 452 148 482 148" marker-end="url(#aN)"/>
+<path class="wire sG" d="M426 218H482" marker-end="url(#aG)"/>
+<path class="wire sR" d="M426 230C454 230 452 288 482 288" marker-end="url(#aR)"/>
+<rect class="out sN" x="484.5" y="118.5" width="363" height="59" rx="12"/>
+<circle class="fN" cx="514" cy="148" r="12"/><path class="on" d="M508 148.5l4 4l8-8.5"/>
+<text class="h" x="538" y="144">Runs</text>
+<text class="s" x="538" y="164">tests, builds, reads, scoped edits</text>
+<rect class="out sG" x="484.5" y="188.5" width="363" height="59" rx="12"/>
+<circle class="fG" cx="514" cy="218" r="12"/><path class="on" d="M508 214.5h12v8h-12zM511 214.5v-2.5h6v2.5"/>
+<text class="h" x="538" y="214">Saves your work, then runs</text>
+<text class="s" x="538" y="234">snapshot first; sampo oops brings it back</text>
+<rect class="out sR" x="484.5" y="258.5" width="363" height="59" rx="12"/>
+<circle class="fR" cx="514" cy="288" r="12"/><path class="on" d="M509 283l10 10M519 283l-10 10"/>
+<text class="h" x="538" y="284">Refused, with how to grant it</text>
+<text class="s" x="538" y="304">wide deletes, force-push, curl | sh</text>
+<path class="rule" d="M32 340.5H848"/>
+<text class="f" x="32" y="364">Granting takes your yes in Claude Code's own permission prompt, for that one thing on that one task.</text>
+<text class="f" x="32" y="383">Nothing else can grant it: not a chat message, a skill or a scheduled prompt.</text>
 </svg>

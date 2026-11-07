@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 372" width="880" height="372" role="img">
+<title>The Sampo loop: capture, expand, ground, plan, execute, verify, reflect, record, then the next queued task starts by itself</title>
+<style>
+text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+.edge{fill:none;stroke:#FFFFFF;stroke-opacity:.12}
+.plate{fill:#131822;stroke:#FFFFFF;stroke-opacity:.12}
+.trk{fill:none;stroke:#FFFFFF;stroke-opacity:.08}
+.t{font-size:20px;font-weight:650;letter-spacing:-.01em;fill:#E8ECF4}
+.u{font-size:13.5px;fill:#B4BDCE}
+.k{font-size:11px;font-weight:700;letter-spacing:.14em}
+.l{font-size:15px;font-weight:600;fill:#E8ECF4;text-anchor:middle}
+.s{font-size:12.5px;fill:#8893A7;text-anchor:middle}
+.n{font-size:13px;font-weight:700;text-anchor:middle;font-variant-numeric:tabular-nums}
+.p{font-size:13px;font-weight:600;fill:#E8ECF4}
+.fA{fill:#7AA2FF}.fB{fill:#5B8CFF}.fG{fill:#E5A53A}.fN{fill:#34D399}.fV{fill:#A78BFA}.fM{fill:#8893A7}
+.sB{stroke:#5B8CFF}.sG{stroke:#E5A53A}.sN{stroke:#34D399}.sV{stroke:#A78BFA}.sM{stroke:#8893A7}
+.on{stroke:#0B0E14}
+.ring{fill:#131822;stroke-width:2}
+.halo{fill-opacity:.12}
+.tint{fill-opacity:.1;stroke-opacity:.45}
+.f{font-size:12.5px;font-weight:500;fill:#B4BDCE;text-anchor:middle}
+</style>
+<defs>
+<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path class="fM" d="M0 1L10 5L0 9L2.6 5z"/></marker>
+</defs>
+<rect fill="#0B0E14" width="880" height="372" rx="16"/>
+<rect class="edge" x=".5" y=".5" width="879" height="371" rx="15.5"/>
+<text class="k fA" x="32" y="40">THE SAMPO LOOP</text>
+<text class="t" x="32" y="66">Every request runs the same loop</text>
+<text class="u" x="32" y="88">Plain words in; a proved, committed change out. However terse the ask.</text>
+<g fill="none" stroke-width="1.5" stroke-opacity=".6" stroke-linecap="round">
+<path class="sB" d="M60 140v-6H409v6"/><path class="sG" d="M452 140v-6H532v6"/>
+<path class="sN" d="M555 140v-6H635v6"/><path class="sV" d="M678 140v-6H821v6"/>
+</g>
+<text class="k fB" x="234.5" y="125" text-anchor="middle">UNDERSTAND</text>
+<text class="k fG" x="492" y="125" text-anchor="middle">BUILD</text>
+<text class="k fN" x="595" y="125" text-anchor="middle">PROVE</text>
+<text class="k fV" x="749.5" y="125" text-anchor="middle">LEARN</text>
+<path class="trk" d="M80 172H801" stroke-width="6" stroke-linecap="round"/>
+<g fill="none" stroke-width="2.5"><path class="sB" d="M80 172H440.5"/><path class="sG" d="M440.5 172H543.5"/><path class="sN" d="M543.5 172H646.5"/><path class="sV" d="M646.5 172H801"/></g>
+<path class="sM" d="M822 172H834q10 0 10 10V334q0 10-10 10H46q-10 0-10-10V182q0-10 10-10H57.5" fill="none" stroke-width="1.5" stroke-dasharray="4 5" marker-end="url(#ah)"/>
+<g class="halo">
+<circle class="fB" cx="80" cy="172" r="25"/><circle class="fB" cx="183" cy="172" r="25"/>
+<circle class="fB" cx="286" cy="172" r="25"/><circle class="fB" cx="389" cy="172" r="25"/>
+<circle class="fG" cx="492" cy="172" r="25"/><circle class="fN" cx="595" cy="172" r="25"/>
+<circle class="fV" cx="698" cy="172" r="25"/><circle class="fV" cx="801" cy="172" r="25"/>
+</g>
+<g class="ring">
+<circle class="sB" cx="80" cy="172" r="18"/><circle class="sB" cx="183" cy="172" r="18"/>
+<circle class="sB" cx="286" cy="172" r="18"/><circle class="sB" cx="389" cy="172" r="18"/>
+<circle class="sG" cx="492" cy="172" r="18"/><circle class="sN" cx="595" cy="172" r="18"/>
+<circle class="sV" cx="698" cy="172" r="18"/><circle class="sV" cx="801" cy="172" r="18"/>
+</g>
+<g class="n">
+<text class="fB" x="80" y="176.5">1</text><text class="fB" x="183" y="176.5">2</text>
+<text class="fB" x="286" y="176.5">3</text><text class="fB" x="389" y="176.5">4</text>
+<text class="fG" x="492" y="176.5">5</text><text class="fN" x="595" y="176.5">6</text>
+<text class="fV" x="698" y="176.5">7</text><text class="fV" x="801" y="176.5">8</text>
+</g>
+<g class="l">
+<text x="80" y="220">capture</text><text x="183" y="220">expand</text><text x="286" y="220">ground</text><text x="389" y="220">plan</text>
+<text x="492" y="220">execute</text><text x="595" y="220">verify</text><text x="698" y="220">reflect</text><text x="801" y="220">record</text>
+</g>
+<g class="s">
+<text x="80" y="240">your words,</text><text x="80" y="256">any shape</text>
+<text x="183" y="240">type, size,</text><text x="183" y="256">done-when</text>
+<text x="286" y="240">read the</text><text x="286" y="256">real code</text>
+<text x="389" y="240">steps and</text><text x="389" y="256">their checks</text>
+<text x="492" y="240">test first,</text><text x="492" y="256">then the fix</text>
+<text x="595" y="240">commands it</text><text x="595" y="256">really ran</text>
+<text x="698" y="240">audits and</text><text x="698" y="256">a lesson</text>
+<text x="801" y="240">close and</text><text x="801" y="256">commit</text>
+</g>
+<rect class="fB sB tint" x="94.5" y="276.5" width="280" height="29" rx="14.5"/>
+<path class="sB" d="M112 284.5h6.5l3.5 3.5v9.5h-10zM118.5 284.5V288h3.5" fill="none" stroke-width="1.4" stroke-linejoin="round"/>
+<text class="p" x="132" y="295.5">One brief per task, kept on disk</text>
+<rect class="fG sG tint" x="398.5" y="276.5" width="250" height="29" rx="14.5"/>
+<path class="fG" d="M416 283.5l6 2.2v4.6c0 3.6-2.6 5.8-6 7.2c-3.4-1.4-6-3.6-6-7.2v-4.6z"/>
+<text class="p" x="430" y="295.5">The Ward checks every command</text>
+<rect class="fN sN tint" x="662.5" y="276.5" width="168" height="29" rx="14.5"/>
+<circle class="fN" cx="680" cy="291" r="7"/>
+<path class="on" d="M676.6 291.2l2.3 2.3l4.4-4.6" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text class="p" x="694" y="295.5">No proof, no close</text>
+<rect class="plate" x="280.5" y="332.5" width="319" height="23" rx="11.5"/>
+<text class="f" x="440" y="348.5">then the next queued task starts by itself</text>
+</svg>

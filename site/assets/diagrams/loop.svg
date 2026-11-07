@@ -1,72 +1,86 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 350" width="880" height="350" role="img">
-<title>The Foreman loop: capture, expand, ground, plan, execute, verify, reflect, record, then the next queued task</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 372" width="880" height="372" role="img">
+<title>The Sampo loop: capture, expand, ground, plan, execute, verify, reflect, record, then the next queued task starts by itself</title>
 <style>
-text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif}
-.t{font-size:19px;font-weight:700;fill:#E7ECF4}
-.u{font-size:13.5px;fill:#9AA8BC}
+text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+.edge{fill:none;stroke:#FFFFFF;stroke-opacity:.12}
+.plate{fill:#131822;stroke:#FFFFFF;stroke-opacity:.12}
+.trk{fill:none;stroke:#FFFFFF;stroke-opacity:.08}
+.t{font-size:20px;font-weight:650;letter-spacing:-.01em;fill:#E8ECF4}
+.u{font-size:13.5px;fill:#B4BDCE}
 .k{font-size:11px;font-weight:700;letter-spacing:.14em}
-.l{font-size:15px;font-weight:600;fill:#E7ECF4;text-anchor:middle}
-.s{font-size:12.5px;fill:#9AA8BC;text-anchor:middle}
-.n{font:700 13px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;text-anchor:middle}
-.p{font-size:13px;font-weight:600;text-anchor:middle}
-.comet{stroke-dasharray:34 762;animation:run 5s linear infinite}
-@keyframes run{to{stroke-dashoffset:-796}}
-@media (prefers-reduced-motion:reduce){.comet{animation:none;display:none}}
+.l{font-size:15px;font-weight:600;fill:#E8ECF4;text-anchor:middle}
+.s{font-size:12.5px;fill:#8893A7;text-anchor:middle}
+.n{font-size:13px;font-weight:700;text-anchor:middle;font-variant-numeric:tabular-nums}
+.p{font-size:13px;font-weight:600;fill:#E8ECF4}
+.fA{fill:#7AA2FF}.fB{fill:#5B8CFF}.fG{fill:#E5A53A}.fN{fill:#34D399}.fV{fill:#A78BFA}.fM{fill:#8893A7}
+.sB{stroke:#5B8CFF}.sG{stroke:#E5A53A}.sN{stroke:#34D399}.sV{stroke:#A78BFA}.sM{stroke:#8893A7}
+.on{stroke:#0B0E14}
+.ring{fill:#131822;stroke-width:2}
+.halo{fill-opacity:.12}
+.tint{fill-opacity:.1;stroke-opacity:.45}
+.f{font-size:12.5px;font-weight:500;fill:#B4BDCE;text-anchor:middle}
 </style>
 <defs>
-<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#18243A"/><stop offset="1" stop-color="#0B111C"/></linearGradient>
-<linearGradient id="rail" x1="80" y1="0" x2="801" y2="0" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#86A8FF"/><stop offset=".45" stop-color="#86A8FF"/><stop offset=".6" stop-color="#FFC83D"/><stop offset=".72" stop-color="#47C98B"/><stop offset=".86" stop-color="#C79BFF"/></linearGradient>
-<marker id="ah" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#7E8BA0"/></marker>
+<marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto"><path class="fM" d="M0 1L10 5L0 9L2.6 5z"/></marker>
 </defs>
-<rect width="880" height="350" rx="16" fill="url(#bg)"/>
-<rect x=".5" y=".5" width="879" height="349" rx="15.5" fill="none" stroke="#fff" stroke-opacity=".08"/>
-<text class="t" x="32" y="44">Every request runs the same loop</text>
-<text class="u" x="32" y="67">Plain words in; a proved, committed change out. However terse the ask.</text>
-<g fill="none" stroke-width="1.5" stroke-opacity=".55">
-<path d="M60 120v-6H409v6" stroke="#86A8FF"/><path d="M452 120v-6H532v6" stroke="#FFC83D"/>
-<path d="M555 120v-6H635v6" stroke="#47C98B"/><path d="M678 120v-6H821v6" stroke="#C79BFF"/>
+<rect fill="#0B0E14" width="880" height="372" rx="16"/>
+<rect class="edge" x=".5" y=".5" width="879" height="371" rx="15.5"/>
+<text class="k fA" x="32" y="40">THE SAMPO LOOP</text>
+<text class="t" x="32" y="66">Every request runs the same loop</text>
+<text class="u" x="32" y="88">Plain words in; a proved, committed change out. However terse the ask.</text>
+<g fill="none" stroke-width="1.5" stroke-opacity=".6" stroke-linecap="round">
+<path class="sB" d="M60 140v-6H409v6"/><path class="sG" d="M452 140v-6H532v6"/>
+<path class="sN" d="M555 140v-6H635v6"/><path class="sV" d="M678 140v-6H821v6"/>
 </g>
-<text class="k" x="234.5" y="104" text-anchor="middle" fill="#86A8FF">UNDERSTAND</text>
-<text class="k" x="492" y="104" text-anchor="middle" fill="#FFC83D">BUILD</text>
-<text class="k" x="595" y="104" text-anchor="middle" fill="#47C98B">PROVE</text>
-<text class="k" x="749.5" y="104" text-anchor="middle" fill="#C79BFF">LEARN</text>
-<path d="M80 152H801" stroke="#24324A" stroke-width="6" stroke-linecap="round"/>
-<path d="M80 152H801" stroke="url(#rail)" stroke-width="3" stroke-linecap="round"/>
-<path class="comet" d="M80 152H801" stroke="#fff" stroke-opacity=".9" stroke-width="3" stroke-linecap="round" fill="none"/>
-<g stroke-width="2.5" fill="#0F1726">
-<circle cx="80" cy="152" r="19" stroke="#86A8FF"/><circle cx="183" cy="152" r="19" stroke="#86A8FF"/>
-<circle cx="286" cy="152" r="19" stroke="#86A8FF"/><circle cx="389" cy="152" r="19" stroke="#86A8FF"/>
-<circle cx="492" cy="152" r="19" stroke="#FFC83D"/><circle cx="595" cy="152" r="19" stroke="#47C98B"/>
-<circle cx="698" cy="152" r="19" stroke="#C79BFF"/><circle cx="801" cy="152" r="19" stroke="#C79BFF"/>
+<text class="k fB" x="234.5" y="125" text-anchor="middle">UNDERSTAND</text>
+<text class="k fG" x="492" y="125" text-anchor="middle">BUILD</text>
+<text class="k fN" x="595" y="125" text-anchor="middle">PROVE</text>
+<text class="k fV" x="749.5" y="125" text-anchor="middle">LEARN</text>
+<path class="trk" d="M80 172H801" stroke-width="6" stroke-linecap="round"/>
+<g fill="none" stroke-width="2.5"><path class="sB" d="M80 172H440.5"/><path class="sG" d="M440.5 172H543.5"/><path class="sN" d="M543.5 172H646.5"/><path class="sV" d="M646.5 172H801"/></g>
+<path class="sM" d="M822 172H834q10 0 10 10V334q0 10-10 10H46q-10 0-10-10V182q0-10 10-10H57.5" fill="none" stroke-width="1.5" stroke-dasharray="4 5" marker-end="url(#ah)"/>
+<g class="halo">
+<circle class="fB" cx="80" cy="172" r="25"/><circle class="fB" cx="183" cy="172" r="25"/>
+<circle class="fB" cx="286" cy="172" r="25"/><circle class="fB" cx="389" cy="172" r="25"/>
+<circle class="fG" cx="492" cy="172" r="25"/><circle class="fN" cx="595" cy="172" r="25"/>
+<circle class="fV" cx="698" cy="172" r="25"/><circle class="fV" cx="801" cy="172" r="25"/>
+</g>
+<g class="ring">
+<circle class="sB" cx="80" cy="172" r="18"/><circle class="sB" cx="183" cy="172" r="18"/>
+<circle class="sB" cx="286" cy="172" r="18"/><circle class="sB" cx="389" cy="172" r="18"/>
+<circle class="sG" cx="492" cy="172" r="18"/><circle class="sN" cx="595" cy="172" r="18"/>
+<circle class="sV" cx="698" cy="172" r="18"/><circle class="sV" cx="801" cy="172" r="18"/>
 </g>
 <g class="n">
-<text x="80" y="156.5" fill="#86A8FF">1</text><text x="183" y="156.5" fill="#86A8FF">2</text>
-<text x="286" y="156.5" fill="#86A8FF">3</text><text x="389" y="156.5" fill="#86A8FF">4</text>
-<text x="492" y="156.5" fill="#FFC83D">5</text><text x="595" y="156.5" fill="#47C98B">6</text>
-<text x="698" y="156.5" fill="#C79BFF">7</text><text x="801" y="156.5" fill="#C79BFF">8</text>
+<text class="fB" x="80" y="176.5">1</text><text class="fB" x="183" y="176.5">2</text>
+<text class="fB" x="286" y="176.5">3</text><text class="fB" x="389" y="176.5">4</text>
+<text class="fG" x="492" y="176.5">5</text><text class="fN" x="595" y="176.5">6</text>
+<text class="fV" x="698" y="176.5">7</text><text class="fV" x="801" y="176.5">8</text>
 </g>
 <g class="l">
-<text x="80" y="198">capture</text><text x="183" y="198">expand</text><text x="286" y="198">ground</text><text x="389" y="198">plan</text>
-<text x="492" y="198">execute</text><text x="595" y="198">verify</text><text x="698" y="198">reflect</text><text x="801" y="198">record</text>
+<text x="80" y="220">capture</text><text x="183" y="220">expand</text><text x="286" y="220">ground</text><text x="389" y="220">plan</text>
+<text x="492" y="220">execute</text><text x="595" y="220">verify</text><text x="698" y="220">reflect</text><text x="801" y="220">record</text>
 </g>
 <g class="s">
-<text x="80" y="218">your words,</text><text x="80" y="234">any shape</text>
-<text x="183" y="218">type, size,</text><text x="183" y="234">done-when</text>
-<text x="286" y="218">read the</text><text x="286" y="234">real code</text>
-<text x="389" y="218">steps and</text><text x="389" y="234">their checks</text>
-<text x="492" y="218">test first,</text><text x="492" y="234">then the fix</text>
-<text x="595" y="218">commands it</text><text x="595" y="234">really ran</text>
-<text x="698" y="218">audits and</text><text x="698" y="234">a lesson</text>
-<text x="801" y="218">close and</text><text x="801" y="234">commit</text>
+<text x="80" y="240">your words,</text><text x="80" y="256">any shape</text>
+<text x="183" y="240">type, size,</text><text x="183" y="256">done-when</text>
+<text x="286" y="240">read the</text><text x="286" y="256">real code</text>
+<text x="389" y="240">steps and</text><text x="389" y="256">their checks</text>
+<text x="492" y="240">test first,</text><text x="492" y="256">then the fix</text>
+<text x="595" y="240">commands it</text><text x="595" y="256">really ran</text>
+<text x="698" y="240">audits and</text><text x="698" y="256">a lesson</text>
+<text x="801" y="240">close and</text><text x="801" y="256">commit</text>
 </g>
-<rect x="99.5" y="254" width="270" height="30" rx="15" fill="#86A8FF" fill-opacity=".1" stroke="#86A8FF" stroke-opacity=".45"/>
-<text class="p" x="234.5" y="274" fill="#B9CCFF">One brief per task, kept on disk</text>
-<rect x="385" y="254" width="270" height="30" rx="15" fill="#FF6B6B" fill-opacity=".1" stroke="#FF6B6B" stroke-opacity=".5"/>
-<path d="M404 262l7 2.5v5.5c0 4-3 6.5-7 8c-4-1.5-7-4-7-8v-5.5z" fill="#FF6B6B"/>
-<text class="p" x="527" y="274" fill="#FFB3B3">Guard checks every command</text>
-<rect x="674.5" y="254" width="150" height="30" rx="15" fill="#47C98B" fill-opacity=".1" stroke="#47C98B" stroke-opacity=".5"/>
-<text class="p" x="749.5" y="274" fill="#9BE6C2">No proof, no close</text>
-<path d="M801 292v18q0 10-10 10H90q-10 0-10-10v-14" fill="none" stroke="#7E8BA0" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#ah)"/>
-<rect x="282" y="310" width="316" height="20" fill="#101827"/>
-<text class="s" x="440" y="324.5" fill="#9AA8BC">then the next queued task starts by itself</text>
+<rect class="fB sB tint" x="94.5" y="276.5" width="280" height="29" rx="14.5"/>
+<path class="sB" d="M112 284.5h6.5l3.5 3.5v9.5h-10zM118.5 284.5V288h3.5" fill="none" stroke-width="1.4" stroke-linejoin="round"/>
+<text class="p" x="132" y="295.5">One brief per task, kept on disk</text>
+<rect class="fG sG tint" x="398.5" y="276.5" width="250" height="29" rx="14.5"/>
+<path class="fG" d="M416 283.5l6 2.2v4.6c0 3.6-2.6 5.8-6 7.2c-3.4-1.4-6-3.6-6-7.2v-4.6z"/>
+<text class="p" x="430" y="295.5">The Ward checks every command</text>
+<rect class="fN sN tint" x="662.5" y="276.5" width="168" height="29" rx="14.5"/>
+<circle class="fN" cx="680" cy="291" r="7"/>
+<path class="on" d="M676.6 291.2l2.3 2.3l4.4-4.6" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+<text class="p" x="694" y="295.5">No proof, no close</text>
+<rect class="plate" x="280.5" y="332.5" width="319" height="23" rx="11.5"/>
+<text class="f" x="440" y="348.5">then the next queued task starts by itself</text>
 </svg>
