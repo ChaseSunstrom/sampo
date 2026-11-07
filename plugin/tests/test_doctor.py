@@ -1582,3 +1582,72 @@ class AliasRemoval(unittest.TestCase):  # T-3095: the fm*.py shims name the rele
         self.assertNotIn("fmguard", r.detail)
         self.assertNotIn("fmtwo", r.detail)  # still imported
         self.assertNotIn("fmguard", d.check_aliases(version="1.4.0").detail)  # the real tree
+
+
+class McpTransport(unittest.TestCase):  # T-3346
+    def test_only_sse_servers_warn_once_each_with_the_changelog_url(self):
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, ".claude"))
+            with open(os.path.join(t, ".claude.json"), "w") as f:
+                json.dump({"mcpServers": {"oldsse": {"type": "sse", "url": "http://x/sse"},
+                                          "newhttp": {"type": "http", "url": "http://x/mcp"},
+                                          "bareurl": {"url": "http://x"}}}, f)
+            proj = os.path.join(t, "proj")
+            os.makedirs(proj)
+            with open(os.path.join(proj, ".mcp.json"), "w") as f:
+                json.dump({"mcpServers": {"projsse": {"type": "sse", "url": "http://y/sse"}}}, f)
+            r = d.check_mcp_transport(os.path.join(t, ".claude"), proj)
+            self.assertEqual(r.status, "WARN")
+            self.assertEqual(r.detail.count("https://modelcontextprotocol.io/specification/2026-07-28/changelog"), 1)
+            self.assertIn("oldsse", r.detail)
+            self.assertIn("projsse", r.detail)
+            self.assertNotIn("newhttp", r.detail)
+            self.assertNotIn("bareurl", r.detail)
+            ok = d.check_mcp_transport(os.path.join(t, ".claude"), os.path.join(t, "nowhere"))
+            self.assertEqual(ok.status, "WARN")
+            self.assertIn("oldsse", ok.detail)
+            self.assertNotIn("projsse", ok.detail)
+
+    def run_with(self, conf, mcp=None, raw=False):
+        t = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, t)
+        os.makedirs(os.path.join(t, ".claude"))
+        proj = os.path.join(t, "proj")
+        os.makedirs(proj)
+        dump = (lambda o, f: f.write(o)) if raw else json.dump
+        for path, obj in ((os.path.join(t, ".claude.json"), conf), (os.path.join(proj, ".mcp.json"), mcp)):
+            if obj is not None:
+                with open(path, "w") as f:
+                    dump(obj, f)
+        return d.check_mcp_transport(os.path.join(t, ".claude"), proj)
+
+    def test_per_project_servers_are_read(self):
+        r = self.run_with({"projects": {"/p": {"mcpServers": {"deep": {"type": "sse"}}}}})
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("deep", r.detail)
+
+    def test_odd_shapes_pass_without_raising(self):
+        for conf in ({"mcpServers": []}, {"projects": []}, {"mcpServers": {"a": "str", "b": None}}):
+            self.assertEqual(self.run_with(conf).status, "PASS", conf)
+
+    def test_unreadable_files_warn_not_pass(self):
+        for raw in ('{"mcpServers": {"a": ', '{"mcpServers": {"a": 1,}}', '[]'):
+            r = self.run_with(raw, raw=True)
+            self.assertEqual(r.status, "WARN", raw)
+            self.assertIn("could not read", r.detail)
+            self.assertIn(".claude.json", r.detail)
+        r = self.run_with({}, mcp='{"x":')
+        self.assertEqual(r.status, "WARN")  # a JSON string at the top, not a dict
+        self.assertIn(".mcp.json", r.detail)
+        self.assertIn("could not read", r.detail)
+
+    def test_url_secrets_never_appear_and_the_list_is_capped(self):
+        servers = {f"s{i}": {"type": "sse", "url": "https://u:tok@h/sse?token=SECRET"} for i in range(9)}
+        r = self.run_with({"mcpServers": servers})
+        self.assertNotIn("SECRET", r.detail)
+        self.assertNotIn("tok", r.detail.replace("token", ""))
+        self.assertIn("and 4 more", r.detail)
+        self.assertNotIn("s8", r.detail)
+        long = self.run_with({"mcpServers": {"x" * 200 + "\x1b[31m": {"type": "sse"}}})
+        self.assertNotIn("\x1b", long.detail)
+        self.assertNotIn("x" * 61, long.detail)

@@ -2272,6 +2272,42 @@ def _supply(claude):
     return out, errors
 
 
+def check_mcp_transport(claude, project_root):
+    """T-3346: MCP 2026-07-28 reclassified the HTTP+SSE transport (deprecated since 2025-03-26) as Deprecated, eligible
+    for removal. Warn once, naming each server with "type": "sse" (user-wide, per project, and the project's .mcp.json);
+    a url with no type is unclear and not flagged. Reads files only: no network, no process."""
+    bad = []
+
+    def load(path):  # {} for a missing file; None (and noted) for one that exists but can't be read as a JSON object
+        if not path or not os.path.lexists(path):
+            return {}
+        try:
+            if os.path.isfile(path) and os.path.getsize(path) <= 1_000_000:  # a FIFO or huge file would hang or bloat
+                got = _load_json(path)
+                if isinstance(got, dict):
+                    return got
+        except OSError:
+            pass
+        bad.append(c.plain(path)[-60:])  # the tail names the file
+        return {}
+
+    conf = load(os.path.join(os.path.dirname(claude), ".claude.json"))
+    mcp = load(os.path.join(project_root, ".mcp.json") if project_root else None)
+    projects = conf.get("projects") if isinstance(conf.get("projects"), dict) else {}
+    scopes = [("", conf.get("mcpServers")), (".mcp.json:", mcp.get("mcpServers"))] + [
+        (f"{k}:", v.get("mcpServers")) for k, v in sorted(projects.items()) if isinstance(v, dict)]
+    sse = [c.plain(f"{scope}{name}")[:60] for scope, servers in scopes for name, spec in sorted(
+        (servers if isinstance(servers, dict) else {}).items()) if isinstance(spec, dict) and spec.get("type") == "sse"]
+    unread = f"could not read {', '.join(bad)}, not checked" if bad else ""
+    if not sse:
+        return Result("mcp transport", "WARN", unread) if bad else Result(
+            "mcp transport", "PASS", "no MCP server uses the deprecated HTTP+SSE transport")
+    shown = ", ".join(sse[:5]) + (f" and {len(sse) - 5} more" if len(sse) > 5 else "")
+    return Result("mcp transport", "WARN", f"{shown}: HTTP+SSE transport is Deprecated and eligible for removal; edit that "
+                  "entry to Streamable HTTP (\"type\": \"http\"): https://modelcontextprotocol.io/specification/2026-07-28/changelog"
+                  + (f"; {unread}" if bad else ""))
+
+
 def check_supply(claude, accept=False):
     """T-0672 (T-0479): plugins and MCP servers are code every session runs; a change between doctor runs (an update
     or a tampered cache) is shown once, then accepted with fm doctor --accept-supply. The first run is the baseline;
@@ -2831,7 +2867,8 @@ def run_all(full=False, accept_supply=False):
                                     os.path.join(PLUGIN, "settings.json"), os.path.join(PLUGIN, "hooks", "hooks.json")]),
                check_hook_scripts(), check_state_dir(home, c.state_dir()), check_pinned_clock(), check_lock_probe(c.state_dir()), check_disk(), check_env(settings, manifest),
                check_serve(serve.states()), check_hook_events(), check_plugins(), check_mod_release(home),
-               check_supply(claude, accept_supply), check_worktree_base(settings), check_subagent_effort(settings), check_fm_link(),
+               check_supply(claude, accept_supply), check_mcp_transport(claude, c.git_root(os.getcwd())), check_worktree_base(settings),
+               check_subagent_effort(settings), check_fm_link(),
                check_invisible_text(instruction_files()), check_rule_conflicts(rule_files(c.git_root(os.getcwd())))]
     t_bench = time.perf_counter()  # T-2279: the bench runs outside any check_*; its whole cost is charged to "hook latency"
     meas = {}
