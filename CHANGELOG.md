@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- A close whose reuse of the gates' pass misses now says why in one line (the files that differ from the newest pass, or no pass), and a self-check names untracked, non-ignored files in the main checkout that keep every close off the train's pass (T-3548).
+- PreToolUse calls Sampo can prove it allows (Read, Agent/Task, outward reads) can now be answered by a checksum-verified native Rust binary in about 4 ms of CPU instead of 30-40 ms of Python; every other call, and every machine without a verified binary, runs the Python hook unchanged (T-3571)
 - sampo lane land trains every finished lane in batches, closes each landed task from the builder's report lines (CHANGELOG, TITLE, LESSON, NUMBERS, DOCS, recorded on its brief at the builder's return and read by sampo task finish), parks the rest with the reason, and ships on a publish grant already given; the drive names it for 2+ waiting lanes (T-3500).
 - A brief refusal for a path inside a builder lane or a .claude/worktrees worktree now names that lane, its task and the exact quoted `cd <lane> && sampo focus <ID>`, instead of telling the agent to start a new task in the main checkout (T-3534).
 - A git merge of the build branch typed in a lane's own worktree no longer counts as an edit of the project, as long as git is the first word and nothing on the line sets a GIT_* variable; a merge refused because the cd may not hold now names that cd instead of sampo lane merge (T-3537, T-3553).
