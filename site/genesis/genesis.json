@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-07T23:33:55Z",
+ "updated": "2026-11-07T23:39:20Z",
  "rev": "337e074b7",
  "capabilities": [
   {
@@ -53594,7 +53594,7 @@
     "novelty": "5",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-0673"
+    "asked": "T-3770"
    },
    {
     "id": "M-50",
