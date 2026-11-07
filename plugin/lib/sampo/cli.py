@@ -9014,6 +9014,8 @@ def _build_parser(only=None):
     s = add("docs", lazy("sampo.docs", "cmd_docs"), tier=("Project and settings", 860), help="report markdown that drifted from the repo")
     s.add_argument("path", nargs="?")
     s.add_argument("--strict", action="store_true", help="exit 1 when anything drifted")
+    s.add_argument("--trace", action="store_true", help="link each doc claim to the code lines that back it")
+    s.add_argument("--since", metavar="REF", help="with --trace: mark the claims whose backing changed since REF")
 
     s = add("ui", lazy("sampo.watch", "cmd_ui"), tier=("Running elsewhere", 1240), help="view model for UI surfaces (the foreman-ui mod): --json")
     s.add_argument("--follow", action="store_true", help="print a new view line whenever the project changes")

@@ -162,6 +162,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmdeps` (T-1049: a package new to the project in an npm/pip/cargo install gets… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmdesign` (T-1645: `sampo design check [ROOT]` runs the gates DESIGN.md's… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmdocs` (`sampo docs`: doc drift against the code) [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmdoctrace` (T-3287: `sampo docs --trace` links each doc claim to the code lines that back it; `--since REF` marks the claims whose backing changed) [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmdoctor` (T-2398: proof worlds: each fm-run evidence line carries [world H]… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmdojo` (T-1608: `sampo dojo [--rounds N] [--seed S] [--quiz]`, a drill for… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmdoors` (T-2342, Mission 5 #8; T-2424: _ambiguous also reads rival_split, so… [→ files-lib-1](docs/map/files-lib-1.md)

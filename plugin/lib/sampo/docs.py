@@ -463,6 +463,9 @@ def task_docs(root, docs_impact):
 def cmd_docs(args):
     from sampo import cli as scli
     from sampo import core as c
+    if getattr(args, "trace", False) or getattr(args, "since", None) is not None:  # T-3287: sampo.doctrace
+        from sampo import doctrace
+        return doctrace.cmd_trace(args)
     start = os.path.abspath(args.path or os.getcwd())
     root = c.git_root(start) or start
     findings = scan(root)
