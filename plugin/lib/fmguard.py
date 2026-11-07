@@ -231,7 +231,7 @@ def _hint(detail, cat=""):
         return (" If it is elsewhere, name the path literally, or set the variable once before any loop or pipe."
                 + research)
     if re.fullmatch(r"downloaded content piped into python[0-9.]*", detail):  # T-0395
-        return (" A python -c that only reads the download as data (json.load(sys.stdin)) passes when every command "
+        return (" A python3 -c that only reads the download as data (json.load(sys.stdin)) passes when every command "
                 "before it, or after it in its pipeline, is a plain data tool that writes no file (curl -s, jq, head, "
                 "tail, sleep) or sets a new name (T=…), and no & runs anything beside it: run a program that writes "
                 "files, or a redirect, as its own command or after python's pipeline (; git log).")
@@ -3122,10 +3122,12 @@ def _proved_py(x, cwds):
     """T-0344: x is a bare python -c CODE (no wrapper or assignment, output to /dev/null at most) that reads stdin
     only as data and writes nothing: CODE proved (_open_targets), no inherited PYTHONINSPECT or import path, nothing
     in its folder shadowing a module it may import (_shadowed). T-3683: narrowing flags first (_py_code); -I or -E
-    ignores the inherited PYTHON* variables, -I or -P keeps the folder off sys.path."""
+    ignores the inherited PYTHON* variables, -I or -P keeps the folder off sys.path. T-3689: only a python named for
+    major version 3 (python3, python3.N): Python 2's input() evaluates stdin as code, and plain python may be either
+    (the hook's PATH isn't the Bash tool's, so the guard can't tell which, and it never runs a program to ask)."""
     argv, _ = _strip_wrappers(x.argv)
-    py = _py_code(argv[1:]) if argv and x.argv == argv and re.match(r"^python[0-9.]*$", os.path.basename(argv[0])) \
-        else None
+    py3 = argv and x.argv == argv and re.fullmatch(r"python3(?:\.\d+)?", os.path.basename(argv[0]))
+    py = _py_code(argv[1:]) if py3 else None
     if not py or not set(x.redirs) <= {"/dev/null"}:
         return False
     flags, code = py
