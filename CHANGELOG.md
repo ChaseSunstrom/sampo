@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Local Ollama models that sit fully on the GPU now run with one CPU thread through Ollama's native chat API, because llama.cpp's eight default threads only busy-wait there and the OpenAI endpoint can't pass the setting (T-3588).
 - The genesis tower's live publish now runs the same private-term and secrets-value scan as sampo ship on the files its commit touches, and records a refusal instead of pushing; its export redacts any home path, private IP and private term in both keys and values (T-3551).
 - finished_lanes reads every lane's tip in one worktree list and one log walk, and keeps each lane's answer until its tip, index or main moves, so a refresh with unchanged lanes runs 2 git processes instead of ~260 (T-3585).
 - Hooks no longer log a traceback when the project lock is busy: skips are counted per event in one friction line (sampo doctor warns when a hold passes 60 s or the count passes 50), a lock timeout names the last known holder's pid, command and seconds since it took the lock (redacted), lock waits back off to 100 ms polls, builder marks stop taking the lock unless a lane matches, and the Stop and SessionStart writes retry once (T-3535).
