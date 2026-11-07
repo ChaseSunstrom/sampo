@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A red merge train names its culprit lanes from its own failure output (the file a failure names, the lane that changed the failing test, the lane whose diff reaches it) and bisects only an ambiguous red, each probe the failing classes alone once they're shown to fail alone, then confirms with the other gates and only those classes plus the left-out lanes' reach (T-3602)
 - `sampo next`, `fm ui`, and the Stop and UserPromptSubmit hooks stop re-reading every brief and the whole ledger: a self-checking index of event kinds and of open briefs means each call reads only what changed (T-3573).
 - The self-change gate's planted-growth proofs (LeanKindGate*) bench 4 hook fixtures in-process and skip the import-map run: about 2.5x faster under load, same refusals (T-3379).
 - fm sync import no longer turns a task that is active in the main checkout or a lane back to planned when the repo's mirror copy is an older runnable one; blocked, deferred and closed repo copies still win (T-3396).
