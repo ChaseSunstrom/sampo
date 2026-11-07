@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo lane land trains every finished lane in batches, closes each landed task from the builder's report lines (CHANGELOG, TITLE, LESSON, NUMBERS, DOCS, recorded on its brief at the builder's return and read by sampo task finish), parks the rest with the reason, and ships on a publish grant already given; the drive names it for 2+ waiting lanes (T-3500).
 - A brief refusal for a path inside a builder lane or a .claude/worktrees worktree now names that lane, its task and the exact quoted `cd <lane> && sampo focus <ID>`, instead of telling the agent to start a new task in the main checkout (T-3534).
 - A git merge of the build branch typed in a lane's own worktree no longer counts as an edit of the project, as long as git is the first word and nothing on the line sets a GIT_* variable; a merge refused because the cd may not hold now names that cd instead of sampo lane merge (T-3537, T-3553).
 - `sampo task finish` refuses an edit outside the task's scope before any check runs, and a file that was untracked at the task's start and removed since is no longer counted as the task's edit; the close names it in a warning instead (T-3550).
