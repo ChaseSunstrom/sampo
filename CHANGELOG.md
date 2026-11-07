@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- \`sampo docs --trace\` links each doc claim to the code lines that back it, definitions first; \`--since REF\` marks claims whose backing changed and \`--strict\` fails on an unbacked one (T-3287).
 - \`sampo lane brief --ready\` briefs every ready S/M task in one call and prints one block of launch lines, with \`--json\` for parallel Agent calls; a batch stops at the first refusal that holds for all, never briefs two tasks sharing a file, and caps its skip list (T-3293).
 - README diagrams (the loop, the Ward, how the pieces fit) redrawn in Sampo's modern look and name as dark and light pairs, each passing \`sampo works check\` (T-3248).
 - run.py now skips a test class when none of the repo files it read when it last passed have changed, recorded across every Python process it starts and shared by every worktree of the repo, so trains, closes and builders rerun only what a change can reach (T-3593)
