@@ -139,6 +139,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmaway` (T-1155: `sampo away`, the summary on return after a long gap) [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbacktest` (T-1058: `sampo backtest`, where a changed rule, known fix or card… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbench`… [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmboard` (T-3659: the live page's Board, nine panels from the snapshot… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbudget` (`sampo budget`: one spend ledger for child runs and subagents, caps… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbus` (`sampo bus`, `sampo lease`, `sampo conductor`: messages between… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmclaims` (cross-machine claims as git refs refs/sampo/<slug>/claim/<key>, taken by atomic compare-and-swap push so the remote picks one winner; expired claims taken over once; batched renewals, T-3321) [→ files-lib-1](docs/map/files-lib-1.md)

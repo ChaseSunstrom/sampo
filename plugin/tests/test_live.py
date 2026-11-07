@@ -13,7 +13,8 @@ from helpers import ForemanTestCase
 from sampo import core as c
 from sampo import live
 
-FIELDS = {"at", "project", "focus", "queue", "closed_today", "lanes", "jobs", "models", "gpu", "flows", "events", "stats"}
+FIELDS = {"at", "project", "focus", "queue", "closed_today", "lanes", "jobs", "models", "gpu", "flows", "events", "stats",
+          "board"}
 
 
 class Snapshot(ForemanTestCase):

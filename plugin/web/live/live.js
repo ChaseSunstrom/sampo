@@ -1161,12 +1161,13 @@ function frame() {
   publish();
 }
 function start() {
-  if (raf || still() || document.hidden || !cx) return;
+  if (raf || still() || document.hidden || !cx || view === "board") return;  // the Board runs its own loop
   lastT = 0;
   raf = requestAnimationFrame(frame);
 }
 function stop() { if (raf) cancelAnimationFrame(raf); raf = 0; }
 function paintStill() {
+  if (view === "board") return;
   if (view === "net") { netPaint(); return; }
   if (!cx || !G) return;
   const t = now();
@@ -1503,6 +1504,7 @@ function take(s) {
   renderTicker(arr(s.events).map(obj).slice(0, 60), first);
   sceneTake(s, first);
   netIngest(s);
+  if (board) { board.update(window.SampoBoard.boardModel(s, boardPrev ? [boardPrev] : [])); boardPrev = s; }
 }
 
 // ---------- the machine: sessions, projects, and the pick (kept in #project=SLUG) ----------
@@ -1519,7 +1521,8 @@ function fromHash() {
   const v = hashParts().project || "";
   return SLUG.test(v) ? v : "";
 }
-const hashFor = (p, v) => [p ? "project=" + encodeURIComponent(p) : "", v === "net" && !modern ? "view=net" : ""].filter(Boolean).join("&");
+const hashFor = (p, v) => [p ? "project=" + encodeURIComponent(p) : "", v === "net" ? "view=net" : ""].filter(Boolean).join("&");
+const hashView = () => hashParts().view === "net" ? "net" : modern ? "board" : "forge";  // modern: Board|Network; the forge: Forge|Network
 let hashProject = fromHash();  // the project the hash named last: a view change leaves it alone, so the stream stays
 let currentProject = hashProject, loadId = 0, machine = null, machineGone = false, machineTimer = 0;
 const qs = () => currentProject ? "?project=" + encodeURIComponent(currentProject) : "";
@@ -1706,7 +1709,7 @@ if (rail) {
     if (btn) btn.focus();
   });
   window.addEventListener("hashchange", () => {  // the one way in: a click, the back button and a typed link all arrive here
-    const p = fromHash(), v = modern || hashParts().view === "net" ? "net" : "forge";
+    const p = fromHash(), v = hashView();
     if (v !== view) { showView(v); keep(v); }  // Back returns to the other view; no reconnect
     if (p !== hashProject) { hashProject = currentProject = p; load(); }
   });
@@ -1749,15 +1752,18 @@ const VKEY = "sampo-live-view", NCAP = 8, NLIT = 6;
 const NCOL = modern ? [[122, 162, 255], [150, 180, 255], [176, 196, 232]] : [WARM, EMBER, BRASS], NHEAD = ["AGENTS", "TOOLS · JOBS", "MODELS"];
 const JKIND = {funnel: "judge", grow: "write", exam: "plan", train: "train", bench: "embed", check: "review"};
 const store = (v) => { try { return v === undefined ? localStorage.getItem(VKEY) : localStorage.setItem(VKEY, v); } catch (err) { return null; } };
-const keep = v => store(v);
+const keep = v => { if (!modern) store(v); };  // the forge remembers its view; the modern look opens on the Board unless the address says net
 let view = "forge";
 {
   const hv = hashParts().view;
-  view = modern || hv === "net" ? "net" : hv === "forge" ? "forge" : store() === "net" ? "net" : "forge";
+  view = modern ? hashView() : hv === "net" ? "net" : hv === "forge" ? "forge" : store() === "net" ? "net" : "forge";
   if (!modern && view === "net" && hv !== "net" && window.history && history.replaceState) {  // the remembered view goes into the address
     try { history.replaceState(null, "", location.pathname + location.search + "#" + hashFor(hashProject, "net")); } catch (err) { /* keep the view without the hash */ }
   }
 }
+const boardEl = $("board"), vBoard = $("view-board");
+const board = modern && boardEl && window.SampoBoard ? window.SampoBoard.mount(boardEl) : null;  // the forge look has no Board
+let boardPrev = null;  // the snapshot before: the library's kept-per-hour reads the change
 let nflows = [], nsnap = null, nnodes = new Map(), nedges = [], npulses = [];
 const nseen = new Map(), nlitE = new Map(), nlitN = new Map(), nglowE = new Map(), ncnt = {pulses: 0, lit: 0, frames: 0}, nshown = {};
 let NW = 0, NH = 0, ndpr = 1, npainted = false, nlitTimer = 0, ncols = [[], [], []];
@@ -2067,19 +2073,22 @@ function netResize() {
 
 const stageEl = $("stage"), stageLabel = stageEl ? stageEl.getAttribute("aria-label") : "";
 function showView(v) {
-  view = v === "net" ? "net" : "forge";
+  view = v === "net" || (modern && !board) ? "net" : modern ? "board" : "forge";  // no board.js: the network, not an empty page
   root.setAttribute("data-view", view);
   if (stageEl) stageEl.setAttribute("aria-label", view === "net" ? "The network: agents, tools and jobs, and models, with a line for each recent call; the calls are listed as text after the picture" : stageLabel);
   ndirty = true;
   if (vForge) vForge.setAttribute("aria-pressed", String(view === "forge"));
+  if (vBoard) vBoard.setAttribute("aria-pressed", String(view === "board"));
   if (vNet) vNet.setAttribute("aria-pressed", String(view === "net"));
+  if (board) board.show(view === "board");
+  if (view === "board") { stop(); return; }
   if (view === "net") { netResize(); netBuild(); } else resize();
   if (still()) paintStill(); else start();
 }
 function pickView(v) {
   if (v === view) return;
   showView(v); keep(v);
-  if (stageEl && stageEl.scrollIntoView && stageEl.getBoundingClientRect().bottom > window.innerHeight) {  // below 1400 px the stage sits under the rail's strips
+  if (view !== "board" && stageEl && stageEl.scrollIntoView && stageEl.getBoundingClientRect().bottom > window.innerHeight) {  // below 1400 px the stage sits under the rail's strips
     stageEl.scrollIntoView({block: "nearest", behavior: still() ? "auto" : "smooth"});
   }
   location.hash = hashFor(hashProject, v);  // its hashchange finds the view already set: no reload, no reconnect
@@ -2090,6 +2099,7 @@ const btn = $("motion");
 function applyMode() {
   const s = still();
   root.setAttribute("data-motion", s ? "still" : "full");
+  if (board) board.still(s);
   if (btn) {
     btn.setAttribute("aria-pressed", String(s));
     btn.textContent = s && !reduce.matches ? "Animate" : "Still";  // the label names what a press does
@@ -2144,6 +2154,7 @@ if (nx) {
 }
 if (vForge) vForge.addEventListener("click", () => pickView("forge"));
 if (vNet) vNet.addEventListener("click", () => pickView("net"));
+if (vBoard) vBoard.addEventListener("click", () => pickView("board"));
 showView(view);
 applyMode();
 setInterval(age, 1000);

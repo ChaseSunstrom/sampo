@@ -9,7 +9,9 @@
 <link rel="icon" href="data:,">
 <script src="/static/theme.js" nonce="__NONCE__"></script>
 <link rel="stylesheet" href="/static/live.css" nonce="__NONCE__">
+<link rel="stylesheet" href="/static/board.css" nonce="__NONCE__">
 <script src="/static/charts.js" nonce="__NONCE__" defer></script>
+<script src="/static/board.js" nonce="__NONCE__" defer></script>
 <script src="/static/live.js" nonce="__NONCE__" defer></script>
 </head>
 <body>
@@ -20,6 +22,7 @@
   <p class="clock"><span class="clock-k">as of</span> <time id="clock">--:--:--</time> <span class="clock-age" id="clock-age"></span></p>
   <div class="views" id="views" role="group" aria-label="View">
     <button class="vbtn" id="view-forge" type="button" aria-pressed="true" title="The forge scene">Forge</button>
+    <button class="vbtn" id="view-board" type="button" aria-pressed="false" title="Nine live panels, one per Sampo mechanism">Board</button>
     <button class="vbtn" id="view-net" type="button" aria-pressed="false" title="Agents, tools and models as a network">Network</button>
   </div>
   <button class="motion" id="theme-btn" type="button" aria-pressed="false" title="The forge look: the old night-forge scene and words (kept in this browser)">Forge look</button>
@@ -126,6 +129,8 @@
       <p class="empty" id="bench-empty">No bench rows yet<span>a bench run writes its trials here</span></p>
     </section>
   </div>
+
+  <section class="board" id="board" aria-label="The Board: lanes, the merge train, CPU, the loop, the library, models, sampo, state and tests"></section>
 </main>
 </body>
 </html>

@@ -73,6 +73,7 @@
   {"at": "2026-11-04T18:02:05Z", "kind": "lane", "text": "builder lane out for T-2999 (opus)"},
   {"at": "2026-11-04T18:02:00Z", "kind": "lane", "text": "builder lane out for T-2998 (sonnet)"}
  ],
+ "board": {},
  "stats": {
   "cards": {"general": 1894, "ui": 125, "ui_cells": 28, "grid_ui": 3840},
   "moons": {"candidates": 10007, "stages": {

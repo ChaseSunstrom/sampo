@@ -448,7 +448,13 @@ main{display:grid;grid-template-rows:minmax(320px,1fr) auto auto var(--deck-h);g
 [data-theme="modern"] .motion:focus-visible,[data-theme="modern"] .tk-band:focus-visible,
 [data-theme="modern"] .rail-list:focus-visible,[data-theme="modern"] .pick:focus-visible,
 [data-theme="modern"] .act:focus-visible,[data-theme="modern"] .note-in:focus-visible{outline-color:var(--brass)}
-[data-theme="modern"] .views,[data-theme="modern"] #scene{display:none!important}
+[data-theme="modern"] #view-forge,[data-theme="modern"] #scene{display:none!important}
+/* T-3659: the Board is the modern default view: its nine panels alone; Network keeps the rest of the page, one click away */
+#board,#view-board{display:none}
+[data-theme="modern"] #view-board{display:inline-block;border-radius:3px 0 0 3px;border-right-width:0}
+[data-view="board"] main{display:block}
+[data-view="board"] #board{display:grid}
+[data-view="board"] main>:not(#board),[data-view="board"] #rail{display:none}
 [data-theme="modern"] .drop{color:var(--on-accent);background:var(--gold);border-radius:8px}
 
 /* the stage: a focus strip, the network as the hero, a one-line key */

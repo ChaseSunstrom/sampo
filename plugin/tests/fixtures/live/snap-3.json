@@ -90,6 +90,7 @@
   {"at": "2026-11-04T18:21:10Z", "kind": "model", "text": "jeff/ui-cards adapter idle, kept warm"},
   {"at": "2026-11-04T18:12:40Z", "kind": "close", "text": "T-2992 closed: Repeat-failure firewall"}
  ],
+ "board": {},
  "stats": {
   "cards": {"general": 1894, "ui": 129, "ui_cells": 29, "grid_ui": 3840},
   "moons": {"candidates": 10007, "stages": {

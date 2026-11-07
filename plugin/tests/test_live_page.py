@@ -45,7 +45,7 @@ class Files(unittest.TestCase):
         got = snaps()
         self.assertGreaterEqual(len(got), 3)
         keys = {"at", "project", "focus", "queue", "closed_today", "lanes", "jobs", "models", "gpu", "flows", "events",
-                "stats"}
+                "stats", "board"}
         self.assertTrue([s for s in got if s["flows"]], "some snapshot carries flows")
         last = got[-1]  # bench rows don't exist yet; the funnel and training report progress (T-3083, T-3044), the rest none
         self.assertEqual(last["stats"]["bench"], [])
@@ -75,20 +75,20 @@ class Files(unittest.TestCase):
         self.assertNotIn("javascript:", page.lower())
 
     def test_no_external_urls_anywhere(self):
-        for name in ("index.html", "live.css", "live.js", "charts.js"):
+        for name in ("index.html", "live.css", "live.js", "charts.js", "board.css", "board.js", "board-tokens.json"):
             body = text(name)
             for pat in (r"(?i)\bhttps?://", r"(?i)url\(\s*['\"]?//", r"(?i)(?:src|href)\s*=\s*['\"]//", r"(?i)@import"):
                 self.assertNotRegex(body, pat, f"{name}: everything works offline")
 
     def test_the_script_stays_inside_the_csp(self):
-        js = text("live.js") + text("charts.js")
+        js = text("live.js") + text("charts.js") + text("board.js")
         for pat in (r"\beval\s*\(", r"\bnew\s+Function\b", r"\.innerHTML\b", r"\.outerHTML\b", r"insertAdjacentHTML",
                     r"document\.write", r"setAttribute\(\s*['\"]style", r"set(?:Timeout|Interval)\(\s*['\"`]"):
             self.assertNotRegex(js, pat)
 
     def test_every_panel_has_its_element(self):
         page = text("index.html")
-        for panel in PANELS + ("link", "motion", "net", "view-forge", "view-net"):
+        for panel in PANELS + ("link", "motion", "net", "view-forge", "view-net", "board", "view-board"):
             self.assertRegex(page, rf'\bid="{panel}"', panel)
 
     def test_scrolling_lists_take_the_keyboard(self):  # T-2999 review: keyboard users could not scroll long lists
@@ -105,6 +105,17 @@ class Files(unittest.TestCase):
     def test_reduced_motion_is_honoured_by_the_style_and_the_script(self):
         self.assertIn("prefers-reduced-motion", text("live.css"))
         self.assertIn("prefers-reduced-motion", text("live.js"))
+
+    def test_the_board_kit_loads_like_the_rest(self):  # T-3659: its two files, each with the nonce, before live.js
+        page = text("index.html")
+        self.assertRegex(page, r'<link rel="stylesheet" href="/static/board\.css" nonce="__NONCE__">')
+        self.assertRegex(page, r'<script src="/static/board\.js" nonce="__NONCE__" defer></script>')
+        self.assertLess(page.index("board.js"), page.index("live.js"), "the kit is there when live.js mounts it")
+        self.assertIn("prefers-reduced-motion", text("board.css"))
+        urls = re.findall(r"url\(\s*['\"]?([^'\")]+)", text("board.css"))
+        for u in urls:
+            self.assertRegex(u, FLAT, u)
+            self.assertTrue(os.path.isfile(os.path.join(WEB, u)), u)
 
     def test_fonts_are_bundled_files(self):
         urls = re.findall(r"url\(\s*['\"]?([^'\")]+)", text("live.css"))
@@ -255,7 +266,13 @@ PROBE = """(() => { const $ = id => document.getElementById(id), n = (id, sel) =
     wide: document.documentElement.scrollWidth,
     theme: document.documentElement.getAttribute("data-theme"), text: document.body.innerText,
     fonts: ["h2", ".word", ".cv", "body"].map(q => (document.querySelector(q) ? getComputedStyle(document.querySelector(q)).fontFamily : "")).join("|"),
-    shown: Object.fromEntries(["scene", "views", "theme-btn", "focus", "net"].map(id => [id, !!$(id) && getComputedStyle($(id)).display !== "none"])),
+    board: (() => { const q = $("board"); if (!q) return null; const r = q.getBoundingClientRect(), d = q.dataset;
+      const ps = Array.from(q.querySelectorAll(".bd-p")).map(p => { const cv = p.querySelector("canvas"), b = p.getBoundingClientRect(), t = s => { const e = p.querySelector(s); return e ? e.textContent.trim() : ""; };
+        return {k: p.dataset.k, chip: t(".bd-chip"), title: t(".bd-t"), label: t(".bd-l"), foot: t(".bd-f"), x: Math.round(b.left), w: Math.round(b.width), h: Math.round(b.height),
+                painted: !!cv && cv.dataset.painted === "1", canvas: cv ? [cv.width, cv.height] : [0, 0], font: getComputedStyle(p.querySelector(".bd-t") || p).fontFamily}; });
+      return {shown: r.width > 0, panels: ps, cols: new Set(ps.filter(p => p.w).map(p => p.x)).size, frames: +(d.frames || 0), running: d.running || "",
+              painted: ps.length > 0 && ps.every(p => p.painted)}; })(),
+    shown: Object.fromEntries(["scene", "views", "theme-btn", "focus", "net", "board", "view-board", "view-forge", "view-net", "rail"].map(id => [id, !!$(id) && getComputedStyle($(id)).display !== "none"])),
     bg: getComputedStyle(document.body).backgroundColor, ink: getComputedStyle(document.body).color,
     stheme: (() => { try { return localStorage.getItem("sampo-live-theme"); } catch (e) { return "x"; } })(),
     themepressed: $("theme-btn") ? $("theme-btn").getAttribute("aria-pressed") : null, title: document.title,
@@ -686,6 +703,7 @@ class Page(unittest.TestCase):
     FORGE_WORDS = re.compile(r"furnace|anvil|ember|quench|struck|lantern|banked", re.I)
 
     def modern(self, size, scheme="dark", **kw):
+        kw.setdefault("hash", "#view=net")  # T-3659: the board is the default; these look at the network, one click away
         got, errs = self.watch(size, True, lambda g: g.get("net") and g["net"]["painted"] and g.get("ticker", 0) > 0,
                                theme=None, scheme=scheme, **kw)
         self.assertEqual(errs, [], f"console at {size}")
@@ -699,7 +717,8 @@ class Page(unittest.TestCase):
                 self.assertEqual(got["theme"], "modern", where)
                 self.assertEqual(got["view"], "net", where)
                 self.assertTrue(got["shown"]["net"] and not got["shown"]["scene"], f"the net is the hero, no scene {where}")
-                self.assertFalse(got["shown"]["views"], f"no Forge|Network toggle without a scene {where}")
+                self.assertTrue(got["shown"]["views"] and got["shown"]["view-board"], f"Board|Network {where}")
+                self.assertFalse(got["shown"]["view-forge"] or got["shown"]["board"], f"no Forge button without a scene {where}")
                 self.assertTrue(got["shown"]["theme-btn"], where)
                 self.assertEqual(got["themepressed"], "false", where)
                 self.assertEqual(got["themelabel"], "Forge look", f"one fixed name, pressed = forge on {where}")
@@ -738,7 +757,7 @@ class Page(unittest.TestCase):
             for scheme in ("dark", "light"):
                 where = f"{size} {scheme}"
                 got, errs = self.watch(size, True, lambda g: g.get("net") and g["net"]["painted"] and any("430 of" in t for t in g.get("pgt", [])),  # the last snapshot has landed
-                                       theme=None, scheme=scheme)
+                                       theme=None, scheme=scheme, hash="#view=net")
                 self.assertEqual(errs, [], where)
                 for id, c in got["charts"].items():
                     self.assertTrue(c["shown"] and c["svg"], f"{id} drawn {where} {c}")
@@ -807,11 +826,11 @@ class Page(unittest.TestCase):
 
         def step(b, got):
             ev = lambda js: b.call("Runtime.evaluate", b.sid, expression=js, returnByValue=True)["result"].get("value")
-            if ctx["s"] == 0 and got.get("net") and got["net"]["painted"]:
+            if ctx["s"] == 0 and got.get("board") and got["board"]["painted"]:
                 ctx["first"] = got["theme"]; ev("document.getElementById('theme-btn').click()"); ctx["s"] = 1
             elif ctx["s"] == 1 and got.get("theme") == "forge" and got.get("nodes", 0) > 0:
                 ctx["second"], ctx["kept"] = got["stheme"], got["stheme"]; ev("document.getElementById('theme-btn').click()"); ctx["s"] = 2
-            elif ctx["s"] == 2 and got.get("theme") == "modern" and got["net"] and got["net"]["painted"] and got["stheme"] == "modern" and got["say"]:
+            elif ctx["s"] == 2 and got.get("theme") == "modern" and got["board"] and got["board"]["painted"] and got["stheme"] == "modern" and got["say"]:
                 ctx["after"] = (got["active"], got["say"]); ctx["s"] = 3
         got, errs = self.watch((1440, 900), True, lambda g: ctx["s"] == 3, step=step, theme=None)
         self.assertEqual(errs, [])
@@ -833,11 +852,80 @@ class Page(unittest.TestCase):
                 ctx["s"] = 1
         got, errs = self.watch((1440, 900), True, lambda g: ctx["s"] == 1 and "other-1b2c3d" in g.get("hash", "")
                                and "The other project" in g.get("focus", "") and g.get("net") and g["net"]["painted"],
-                               step=step, theme=None)
+                               step=step, theme=None, hash="#view=net")
         self.assertEqual(errs, [])
         self.assertEqual(got["view"], "net", "the pick keeps the net")
         self.assertIn("other-1b2c3d", got["hash"])
         self.assertTrue([r for r in got["reqs"] if r.startswith("/api/stream?project=other-1b2c3d")], got["reqs"])
+
+    # T-3659: one test per size, so the runner shoots the three in parallel (six loads in one test took 228 s under load)
+    def test_the_board_is_the_modern_default_nine_painted_panels_in_three_columns_on_a_desktop(self):
+        self.board_at((1600, 1000), 3)
+
+    def test_the_board_takes_two_columns_on_a_tablet(self):
+        self.board_at((900, 1100), 2)
+
+    def test_the_board_takes_one_column_on_a_phone(self):
+        self.board_at((390, 844), 1)
+
+    def board_at(self, size, cols):
+        for scheme in ("dark", "light"):
+            where = f"{size} {scheme}"
+            got, errs = self.watch(size, False, lambda g: g.get("board") and g["board"]["painted"] and g["board"]["frames"] > 20,
+                                   theme=None, scheme=scheme)
+            self.assertEqual(errs, [], where)
+            bd = got["board"]
+            self.assertEqual((got["theme"], got["view"]), ("modern", "board"), where)
+            self.assertTrue(got["shown"]["board"] and got["shown"]["views"] and got["shown"]["view-board"], where)
+            self.assertFalse(got["shown"]["net"] or got["shown"]["view-forge"] or got["shown"]["rail"], f"the board alone {where}")
+            self.assertEqual([p["k"] for p in bd["panels"]], ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests"])
+            for i, p in enumerate(bd["panels"]):
+                self.assertEqual(p["chip"], f"{i + 1:02}", where)
+                self.assertTrue(p["title"] and p["label"] and p["foot"], f"{p} {where}")
+                self.assertGreater(p["canvas"][0] * p["canvas"][1], 0, f"{p['k']} {where}")
+                self.assertRegex(p["font"].lower(), r"martian|mono", where)
+            self.assertEqual(bd["cols"], cols, where)
+            self.assertEqual(bd["running"], "1", where)
+            self.assertLessEqual(got["wide"], size[0], f"no sideways scroll {where}")
+            self.assertIsNone(self.FORGE_WORDS.search(got["text"].replace("Forge look", "")), where)
+            self.assertNotIn("/home/", got["text"], where)
+
+    def test_the_board_holds_still_when_asked_and_when_the_tab_is_hidden(self):  # T-3659
+        got, errs = self.watch((1600, 1000), True, lambda g: g.get("board") and g["board"]["painted"] and self.back(g), theme=None)
+        self.assertEqual(errs, [])
+        self.assertEqual(got["board"]["running"], "0", "reduced motion: one frame per change, no loop")
+        self.assertLess(got["board"]["frames"], 40, got["board"])
+        ctx = {"s": 0}
+
+        def step(b, got):
+            ev = lambda js: b.call("Runtime.evaluate", b.sid, expression=js, returnByValue=True)["result"].get("value")
+            bd = got.get("board") or {}
+            if ctx["s"] == 0 and bd.get("painted") and bd.get("running") == "1":
+                ev("document.getElementById('motion').click()")
+                ctx["s"] = 1
+            elif ctx["s"] == 1 and bd.get("running") == "0":
+                ctx["still"], ctx["t"] = bd["frames"], time.monotonic()
+                ctx["s"] = 2
+            elif ctx["s"] == 2 and time.monotonic() - ctx["t"] > 1.5:
+                ctx["still2"] = bd["frames"]
+                ev("document.getElementById('motion').click()")
+                ctx["s"] = 3
+            elif ctx["s"] == 3 and bd.get("running") == "1":
+                ev("Object.defineProperty(document, 'hidden', {value: true, configurable: true});"
+                   "Object.defineProperty(document, 'visibilityState', {value: 'hidden', configurable: true});"
+                   "document.dispatchEvent(new Event('visibilitychange'))")
+                ctx["s"] = 4
+            elif ctx["s"] == 4 and bd.get("running") == "0":
+                ctx["hid"], ctx["t"] = bd["frames"], time.monotonic()
+                ctx["s"] = 5
+            elif ctx["s"] == 5 and time.monotonic() - ctx["t"] > 1.5:
+                ctx["hid2"] = bd["frames"]
+                ctx["s"] = 6
+        got, errs = self.watch((1600, 1000), False, lambda g: ctx["s"] == 6, step=step, theme=None)
+        self.assertEqual(errs, [])
+        self.assertEqual(ctx["s"], 6, ctx)
+        self.assertLessEqual(ctx["still2"] - ctx["still"], 3, f"Still draws a frame per change, not 60 a second {ctx}")
+        self.assertEqual(ctx["hid2"], ctx["hid"], f"a hidden tab draws nothing {ctx}")
 
     def test_the_theme_file_and_the_two_looks_are_in_the_page(self):
         page, css, js = text("index.html"), text("live.css"), text("live.js")

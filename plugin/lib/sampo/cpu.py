@@ -76,10 +76,11 @@ def limit(text):
         return None
 
 
-def _scan(d, proc, facts):
-    """{(pid, start): (own ticks, reaped children's ticks)} for the scope's processes now; facts gets what each is."""
+def _scan(d, proc, facts, pids=None):
+    """{(pid, start): (own ticks, reaped children's ticks)} for the scope's processes now (or for pids: T-3659's Board
+    reads the whole machine); facts gets what each is."""
     out = {}
-    for pid in (_read(os.path.join(d, "cgroup.procs")) or "").split():
+    for pid in (_read(os.path.join(d, "cgroup.procs")) or "").split() if pids is None else pids:
         s = _read(os.path.join(proc, pid, "stat"))
         if not s:
             continue  # gone

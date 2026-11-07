@@ -91,6 +91,20 @@
   {"at": "2026-11-04T18:26:30Z", "kind": "capture", "text": "captured T-3001: the bench table needs a coverage column"},
   {"at": "2026-11-04T18:12:40Z", "kind": "close", "text": "T-2992 closed: Repeat-failure firewall"}
  ],
+ "board": {
+  "lanes": [{"task": "T-2999", "title": "The live page: the forge scene and panels", "state": "building", "steps": {"done": 2, "total": 5}, "more": 0,
+    "files": [{"path": "plugin/web/live/live.js", "hot": true}, {"path": "plugin/lib/sampo/live.py", "hot": false}]}],
+  "train": null,
+  "cpu": {"kinds": ["tests", "claude", "models", "hooks", "other"], "goal_pct": 10, "cores": 16,
+   "minutes": [[1793816880, 0.3, 1.1, 2.4, 0.1, 0.4], [1793816940, 0.2, 1.2, 2.3, 0.1, 0.4]],
+   "now": {"busy": 4.1, "tests": 0.2, "claude": 1.2, "models": 2.2, "hooks": 0.1, "other": 0.4}},
+  "loop": null,
+  "library": {"calling": 410, "hourly": [3, 0, 0, 1, 0, 0, 2, 5, 8, 12, 6, 4, 9, 14, 11, 7, 10, 16, 21, 13, 9, 18, 24, 4], "recent": []},
+  "commands": [{"at": "2026-11-04T18:24:10Z", "cmd": "sampo next", "ok": true}],
+  "deps": [],
+  "state": null,
+  "tests": {"modules": [{"name": "test_live", "state": "cached"}, {"name": "test_exam", "state": "running"}], "done": 0, "total": 0, "running": 1, "source": "run cache"}
+ },
  "stats": {
   "cards": {"general": 1894, "ui": 131, "ui_cells": 29, "grid_ui": 3840},
   "moons": {"candidates": 10007, "stages": {

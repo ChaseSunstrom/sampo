@@ -476,9 +476,15 @@ def stats(p):
     return dict(_cached(("stats", p.dir), SLOW_S, slow), closed_today=len(_closed_today(p)))
 
 
+def board(p):
+    """T-3659: the Board's own facts (sampo.board imports this module, so it loads here)."""
+    from sampo import board as b
+    return b.collect(p)
+
+
 COLLECTORS = {"project": project, "focus": focus, "queue": queue, "closed_today": closed_today, "lanes": lanes, "jobs": jobs,
-              "models": models, "gpu": gpu, "flows": flows, "events": events, "stats": stats}
-EMPTY = {"project": {}, "focus": None, "gpu": None, "stats": {}}  # every other field's empty is []
+              "models": models, "gpu": gpu, "flows": flows, "events": events, "stats": stats, "board": board}
+EMPTY = {"project": {}, "focus": None, "gpu": None, "stats": {}, "board": {}}  # every other field's empty is []
 
 
 def snapshot(p):
