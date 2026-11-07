@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- README diagrams (the loop, the Ward, how the pieces fit) redrawn in Sampo's modern look and name as dark and light pairs, each passing \`sampo works check\` (T-3248).
 - run.py now skips a test class when none of the repo files it read when it last passed have changed, recorded across every Python process it starts and shared by every worktree of the repo, so trains, closes and builders rerun only what a change can reach (T-3593)
 - run.py skips a test class already green at the same content of its test file, imported helpers, the plugin tree and the files the map links to it, reruns 1 in 10 of them and drops the cache when one fails; the full gate, -k runs and FOREMAN_NO_TEST_CACHE=1 never skip; a class is recorded only when its key is unchanged after the run and none of its tests skipped (T-3502).
 - A red merge train names its culprit lanes from its own failure output (the file a failure names, the lane that changed the failing test, the lane whose diff reaches it) and bisects only an ambiguous red, each probe the failing classes alone once they're shown to fail alone, then confirms with the other gates and only those classes plus the left-out lanes' reach (T-3602)
