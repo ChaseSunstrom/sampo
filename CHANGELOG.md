@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Every regen_views call made under the project lock now exports the mirror there and builds the views after the lock is released, so about 50 more commands hold the lock for their writes only (lock body 0.08-0.14 s -> 0.006 s) (T-3613)
 - The self-change gate judges a lane merged onto the base, as the train lands it, instead of its tip, so a lane built before a guard-tightening commit is no longer held for loosening it (T-3647)
 - One table of speed promises for the hot CLI verbs, measured on child CPU time as a ratio to bare python, with hook budgets from bench_hooks (T-3272).
 - The hook bench reads the script budget from a -I child and clamps it, so a branch's guard code can't patch or loosen the clock that times it (T-3132).
