@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The prompt and session-start hooks, `sampo capture` and `task new` hold the project lock only for their writes, with the brief load, state build, view regeneration and rewind git snapshot moved after or before it (T-3582)
 - One load signal for timeouts: core.load_factor (max of the 1-minute load and the runnable count, per CPU, with the instant runnable term capped at 4x) now scales gate timeouts, run.py's class timers and the tests' hang guards alike, and FOREMAN_HOST accepts runnable= (T-3391).
 - fm doctor's hook SLO judges only PreToolUse runs with a recorded load under 0.5 per CPU (T-2798's 1.5 bar let busy-machine runs in); with fewer than 20 calm runs, or none in the last 24 h, it reports "not enough (recent) calm samples" and passes, and shows the oldest calm sample's age (T-2933).
 - Session liveness readers (_other_session and the focus note) also scan the per-session sessions/<sid>.seen markers, so a second session working autonomously no longer looks idle; markers carry the Claude pid and project, so a resume, /clear or a session in another project is not mistaken for another session here; workers and lane runners write none, and markers over a day old are pruned (T-3422).
