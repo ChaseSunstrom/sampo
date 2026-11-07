@@ -13,7 +13,8 @@ from helpers import ForemanTestCase
 first = lambda text: json.JSONDecoder().raw_decode(text)[0]  # noqa: E731
 
 
-class Lanes(ForemanTestCase):
+class TrainCase(ForemanTestCase):
+    """The fixtures: an initialised repo with one gate that counts its runs and fails when BREAK exists."""
     def setUp(self):
         super().setUp()
         self.fm("init")
@@ -26,8 +27,8 @@ class Lanes(ForemanTestCase):
     def gate_runs(self):
         return len(open(self.runs).read().split()) if os.path.exists(self.runs) else 0
 
-    def lane(self, n, name, text=None, ac="true"):
-        """A lane worktree with a task and one commit writing `name`; its task id."""
+    def lane(self, n, name, text=None, ac="true", when=None):
+        """A lane worktree with a task and one commit writing `name` (dated `when`, else now); its task id."""
         path = os.path.join(self.tmp, f"lane{n}")
         subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", f"foreman/lane{n}", path], check=True)
         tid = first(self.fm("task", "new", f"Lane {n}", "--type", "FEATURE", "--tier", "S", "--ac", f"ok :: {ac}",
@@ -35,7 +36,8 @@ class Lanes(ForemanTestCase):
         with open(os.path.join(path, name), "w") as f:
             f.write(text or f"{n}\n")
         self.git("add", name, cwd=path)
-        self.git("commit", "-qm", f"lane {n}", cwd=path)
+        subprocess.run(["git", "-C", path, "commit", "-qm", f"lane {n}"], check=True, capture_output=True,
+                       env=dict(os.environ, GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when) if when else None)
         return tid
 
     def train(self, *ids, check=True, env=None):
@@ -45,7 +47,7 @@ class Lanes(ForemanTestCase):
         return json.loads(self.fm("task", "show", tid, "--json").stdout)["meta"]
 
 
-class Train(Lanes):
+class Train(TrainCase):
     def test_a_breaking_lane_is_named_and_left_out_within_the_gate_budget(self):
         ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt"), self.lane(3, "c.txt"), self.lane(4, "BREAK")]
         r = self.train(*ids)
@@ -306,7 +308,7 @@ DEP = ("# map-links: a.txt\nimport os, unittest\n\n\nclass Dep(unittest.TestCase
        "        self.assertTrue(os.path.exists('a.txt') or not os.path.exists('b.txt'))\n")
 
 
-class AffectedGate(Lanes):
+class AffectedGate(TrainCase):
     """T-3544: the train's full-suite gate (the affected template's runner with no names) runs only the tests the
     batch's merged changes reach plus the rule tests; the full suite moves to the post-merge verify."""
     def setUp(self):
@@ -561,7 +563,7 @@ class RedNames(unittest.TestCase):
                                   "\nFAILED (1 classes: test_x.X.test_a)\n"), ["test_x.X"])
 
 
-class SlotPriority(Lanes):
+class SlotPriority(TrainCase):
     def test_the_train_and_the_main_checks_runs_take_slots_first_and_a_lanes_do_not(self):
         """T-3614: tests/run.py gives freed CPU slots to a waiting run with SAMPO_SLOT_PRIORITY=1 first."""
         seen = os.path.join(self.tmp, "priority")

@@ -41,8 +41,11 @@ The contract — break none of it:
   (a sampo edit batch, notes, a draft) with the Write tool; heredocs and `cat >` are refused there too. The folder
   sits in your worktree and git ignores it; /tmp and the main thread's
   scratchpad are outside the worktree, and the isolation refuses them (T-2259).
-- Don't edit CHANGELOG.md: give the task's changelog line, in the style of the existing entries, in your final report;
-  the main thread adds it at finish (T-0428).
+- Don't edit CHANGELOG.md: end your final report with these lines, one each (T-0428, T-3500), which Sampo records
+  on the brief as you return; the close adds the changelog line and commits under the title:
+  `CHANGELOG: <one sentence in the style of the existing entries, ending (<ID>)>`, `TITLE: <a short commit title
+  ending (<ID>)>`, `LESSON: <the general rule this taught>`, `NUMBERS: <metric: before → after (how measured)>` or
+  `NUMBERS: none: <why>`, `DOCS: <the docs you updated>` or `DOCS: none: <why>`.
 - Claude Code may refuse a command because "this agent is isolated in the worktree" (make, gradle, expo, a long
   pipeline, `sampo task evidence`/`sampo task log` in a lane, and any read or write outside the worktree: another session's
   task output files under /tmp/claude-*/…/tasks, the main thread's scratchpad): that's the harness, not a bug. Don't

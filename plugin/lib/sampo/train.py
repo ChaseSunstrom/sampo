@@ -7,10 +7,13 @@ The train's check_run carries the code tree (core.code_tree: no CHANGELOG.md, no
 each close reuses the pass while the code is unchanged. T-3544: the full-suite gate runs only the tests the batch's
 changes reach (_affected_gate); the full suite then runs on the landed merges in the background (lanes.pm_run)."""
 import concurrent.futures
+import contextlib
+import io
 import os
 import re
 import shlex
 import shutil
+import sys
 import tempfile
 import time
 
@@ -306,6 +309,13 @@ def _held(p, b, main, tip):
     return "the self-change gate holds it: " + c.joinmore(held, 4, "; ") if held else ""
 
 
+def _none(head, left):
+    """The refusal when no lane lands, carrying `left` [(id, why)] for sampo lane land to park each (T-3500)."""
+    e = c.PolicyError(head + "; ".join(f"{i}: {w}" for i, w in left))
+    e.left = list(left)
+    return e
+
+
 def train(p, main, ids=None):
     """Land the named `ids` (a bare train would land lanes nobody picked) through one gate run, one train at a time.
     Returns a dict: merged, left_out [(id, why)], gate_runs, probes, tip, branch. Raises PolicyError when nothing can
@@ -365,7 +375,7 @@ def _run(p, main, ids):
             left.append((b.id, why)) if why else cands.append((b, tip))
     t1 = time.monotonic()
     if not cands:
-        raise c.PolicyError("nothing to merge: " + "; ".join(f"{i}: {w}" for i, w in left))
+        raise _none("nothing to merge: ", left)
     wt = tempfile.mkdtemp(prefix="sampo-train-")  # outside the main checkout; git worktree add takes the empty dir
     r = _git(main, "worktree", "add", "-q", "--detach", wt, base)
     if r.returncode:
@@ -547,7 +557,7 @@ def _run(p, main, ids):
             last[suite] = dict(last[suite], affected=sorted(set(top["affected"]) | set(last[suite].get("affected") or ())))
         green = [last[g] for g in checks] if merged else []
         if not merged:
-            raise c.PolicyError("nothing landed: " + "; ".join(f"{i}: {w}" for i, w in left))
+            raise _none("nothing landed: ", left)
         _mark_green(p)  # T-3625: this env's gate went green
         t2 = time.monotonic()
         tip =_git(wt, "rev-parse", "HEAD").stdout.strip()
@@ -602,5 +612,183 @@ def cmd(p, args, main):
         lines.append(f"The test gate ran {len(got['affected'])} affected test module(s), not the full suite "
                      "(FOREMAN_FULL_GATE=1 runs it); the full suite verifies the landed merges in the background.")
     lines.append("sampo check now reuses this pass while only CHANGELOG.md and the sync mirror change.")
+    return cli.out(args, got, "\n".join(lines))
+
+
+# ---------------------------------------------------------------- sampo lane land (T-3500)
+
+LAND_AUDIT = ("sampo lane land: the review recorded on the brief before the merge, re-recorded at the close; the train "
+              "merged the lane's branch as reviewed, re-ran its criteria in its worktree and passed the gates once on the "
+              "merged tree")
+
+
+def landing(p):
+    """T-3500: True while a sampo lane land holds its lock (the drive then names no merge)."""
+    try:
+        with c.lock(os.path.join(p.dir, "land"), timeout=0):
+            return False
+    except c.LockTimeout:
+        return True
+
+
+def _sampo(argv):
+    """(exit code, stdout, stderr) of one sampo verb run in this process: the checks its command line runs."""
+    from sampo import cli
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = cli.main(argv)
+    return rc, out.getvalue(), err.getvalue()
+
+
+def _why(text):
+    """A refusal's own lines (its Next: hint aside) as one line."""
+    lines = (ln.strip().removeprefix("fm: ").removeprefix("refused: ").removeprefix("- ") for ln in text.splitlines())
+    return c.fit("; ".join(ln for ln in lines if ln and not ln.startswith("Next:")), 400) or "no reason given"
+
+
+def _park_kind(why):
+    """The lane_stop (kind, arg) a train's reason maps to, as `lane merge` marks the same refusals (lanes.STOP_CAUSES)."""
+    if why.startswith("conflicts with"):
+        return "conflict", ""
+    if why.startswith("the self-change gate"):
+        return "guard", "core"
+    if why.startswith("the guard refuses"):
+        return "guard", why.rpartition("(")[2].rstrip(")")
+    return "refused", ""
+
+
+def land(p, main, batch=None):
+    """T-3500: every finished lane waiting on a merge (lanes.awaiting_merge) through `train`, `batch` at a time (one
+    that conflicts with the branch is parked before any criteria or gate run); each landed lane is removed and its task
+    closed from its brief's Close fields through sampo task finish's own checks; the rest are parked (lane_stop and a
+    Log line), which awaiting_merge leaves out until the lane has a new commit. Nothing is forced, reset or granted;
+    a task already holding the publish grant ships after. One land at a time, never beside an active main task."""
+    busy = c.active_brief_fast(p)
+    if busy:
+        raise c.PolicyError(f"{busy.id} is active in the main checkout, where sampo lane land focuses each lane's task to "
+                            f"close it: finish {busy.id} (or sampo task set {busy.id} status=planned), then land")
+    with contextlib.ExitStack() as held:
+        try:
+            held.enter_context(c.lock(os.path.join(p.dir, "land"), timeout=1))
+        except c.LockTimeout:
+            raise c.PolicyError("another sampo lane land is running; it lands these lanes too") from None
+        return _land(p, main, batch or c.TRAIN_BATCH)
+
+
+def _land(p, main, batch):
+    from sampo import lanes
+    briefs = c.load_briefs(p)
+    branch = _git(main, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or "HEAD"
+
+    def tip(b):
+        return _git(main, "rev-parse", "--verify", "-q",
+                    f"{b.meta.get('lane_branch') or 'foreman/' + b.id}^{{commit}}").stdout.strip()
+    # a land cut short (or a train by hand) left these merged and open: they only need their close
+    landed = [b.id for b in briefs if b.status not in c.CLOSED and b.meta.get("lane") and lanes._stop(b)[0] == "merged"
+              and (t := tip(b)) and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode]
+    parked, ready, trains, stopped = [], [], 0, ""
+    waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
+    for b in (x for x in briefs if x.id in waiting):
+        r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tip(b) or "HEAD")
+        if r.returncode == 1:  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
+            files = [f for f in r.stdout.splitlines()[1:] if f]
+            parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
+        else:
+            ready.append(b.id)
+    for i in range(0, len(ready), batch):
+        ids = ready[i:i + batch]
+        print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
+        try:
+            got = train(p, main, ids)
+        except c.PolicyError as e:
+            if not hasattr(e, "left"):  # a red base, a moved branch: no later batch would land either
+                stopped = str(e).splitlines()[0]
+                break
+            got = {"merged": [], "left_out": e.left}
+        except c.LockTimeout:
+            stopped = "a sampo lane train is running: land again after it"
+            break
+        trains += 1
+        landed += got["merged"]
+        parked += got["left_out"]
+    for tid, why in parked:
+        kind, arg = _park_kind(why)
+        lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}")
+    closed, hand = [], []
+    for tid in landed:
+        try:
+            why, last = _close(p, main, tid)
+        except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
+            why, last = f"{type(e).__name__}: {e}", ""
+        (hand if why else closed).append((tid, why or last))
+    ship = ""
+    grant = next((b for b in c.load_briefs(p) if "publish" in (b.meta.get("allow") or [])), None) if landed else None
+    if grant:  # never granted here: only a grant someone already gave (sampo task set ID --allow publish)
+        print(f"sampo lane land: shipping on {grant.id}'s publish grant", file=sys.stderr, flush=True)
+        rc, out, err = _sampo(["ship", "--task", grant.id])
+        ship = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out)
+    return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
+            "stopped": stopped, "ship": ship, "ship_grant": grant.id if grant else None, "lines": closed}
+
+
+def _close(p, main, tid):
+    """('', 'TITLE — the close's last line'), or (why it's left for a hand close, ''). The task closes from the main
+    checkout with its lane still in place, which goes only once the close is done: a refused close keeps it for a fix.
+    Only audits made after the lane's tip commit count, and the close's lenses name that tip."""
+    from sampo import cli
+    from sampo import lanes
+    busy = c.active_brief_fast(p)
+    if busy:
+        return f"{busy.id} became active in the main checkout, so land closes nothing more", ""
+    b = cli.need_brief(p, tid)
+    path = b.meta.get("lane") or ""
+    sha = _git(path, "rev-parse", "--short", "HEAD").stdout.strip() if path else ""
+    last = float(_git(path, "log", "-1", "--format=%ct").stdout.strip() or 0) if path else 0.0
+    f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
+    if not f.get("changelog"):
+        return "no close fields on its brief (its builder's report had no CHANGELOG line)", ""
+    line, why = lanes.close_line(f["changelog"], "changelog", tid)
+    if why:
+        return why, ""
+    title = lanes.close_line(f.get("title"), "title", tid)[0] or lanes.close_line(b.title, "title", tid)[0]
+    newest = {}
+    for (lens, ts, _), text in zip(b.audits(), [x for x in b.evidence() if c._AUDIT_RE.match(x)]):
+        newest[lens] = (ts, text)
+    if not newest:
+        return "no audit recorded: review the merged diff and record it (sampo task audit), then finish it", ""
+    fresh = {lens: text for lens, (ts, text) in newest.items() if (at := c.parse_ts(ts)) and at.timestamp() >= last}
+    if not fresh:
+        return f"its audits predate the lane tip {sha}: review it again", ""
+    asks = sorted(lens for lens, text in fresh.items() if "→ changes needed" in text)
+    if asks:
+        return f"its {', '.join(asks)} audit asks for changes", ""
+    seen = f"as recorded before the merge, after lane tip {sha}"
+    rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
+                           *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
+                           "--commit", title])
+    if rc:
+        return _why(err or out) + ("; its lane is kept" if path else ""), ""
+    done = cli.need_brief(p, tid)
+    if path and done.meta.get("lane"):
+        try:
+            lanes.remove(p, done, main)
+        except (c.PolicyError, cli.UsageError) as e:  # closed; only the folder is left: fm tidy offers it
+            out += f"\nclosed; its lane stays: {str(e).splitlines()[0]}"
+    return "", f"{title} — {(out.strip().splitlines() or ['closed'])[-1]}"
+
+
+def cmd_land(p, args, main):
+    from sampo import cli
+    if args.batch is not None and args.batch < 1:
+        raise cli.UsageError("--batch takes a whole number of lanes per train, 1 or more")
+    got = land(p, main, args.batch)
+    lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {len(got['closed'])} closed, "
+             f"{len(got['hand'])} left for a hand close, {len(got['parked'])} parked."
+             if got["landed"] or got["parked"] or got["stopped"] else "Land: no finished lane waits on a merge."]
+    lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in got.pop("lines")]
+    lines += [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in got["hand"]]
+    lines += [f"  parked {t}: {w}" for t, w in got["parked"]]
+    lines += [f"Stopped: {got['stopped']}"] if got["stopped"] else []
+    lines += [f"Ship ({got['ship_grant']}'s grant): {c.fit(c.plain(got['ship']), 300)}"] if got["ship_grant"] else []
     return cli.out(args, got, "\n".join(lines))
 

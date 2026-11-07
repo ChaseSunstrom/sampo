@@ -1378,7 +1378,13 @@ def _task_finish(p, args):
     claims = parse_claims(getattr(args, "claim", None))  # a bad tag stops it before anything runs
     if b.status == "dropped":  # T-0679 chaos test
         raise c.PolicyError(f"{b.id} is dropped: reopen it first (sampo task set {b.id} status=planned)")
+    from sampo import lanes as slanes  # T-3500: what the builder's report recorded, where this call gives nothing
+    fields = slanes.close_fields(b.section(slanes.CLOSE_FIELDS))
+    for k in ("lesson", "numbers", "docs"):
+        if fields.get(k) and not getattr(args, k, None):
+            setattr(args, k, fields[k])
     if b.status == "done" and args.commit:  # T-0720: a commit refused after the close is retried on its own
+        _changelog_line(p, b, fields)
         _commit_task(p, b, args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)
         if not getattr(args, "json", False):
             print(_landed(p, b))
@@ -1535,6 +1541,8 @@ def _task_finish(p, args):
         print(f"{b.id}: captured {f.id} — catch it earlier: {c.fit(why, 80)}")
     elif not rc and b.type == "FIX" and not why and not b.section("Why not caught").strip():
         print(f"{b.id}: what would have caught this earlier? (--why-not-caught next time; M/L fixes need it)")
+    if not rc:  # T-3500: after the close's checks, so the audits they judged still cover the tree
+        _changelog_line(p, b, fields)
     if args.commit and not rc:
         _commit_task(p, need_brief(p, b.id), args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)
     if not rc and not getattr(args, "json", False):
@@ -1580,6 +1588,28 @@ def _task_finish(p, args):
                   f"comment on {src[0]} {src[1]}")
         print(_landed(p, b))  # T-0956: the close's last line
     return rc
+
+
+def _changelog_line(p, b, fields):
+    """T-3500: the CHANGELOG line the task's Close fields carry, under '## Unreleased' (its '### Everything else' when
+    there is one), once: a CHANGELOG.md that has the task's own line (a bullet ending in (ID)) is left alone, as is a
+    project without the heading or a line lanes.close_line refuses (a URL, a link, another task's id)."""
+    from sampo import lanes as slanes
+    line = slanes.close_line(fields.get("changelog"), "changelog", b.id)[0] if fields.get("changelog") else ""
+    path = os.path.join(p.root, "CHANGELOG.md")
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except OSError:
+        return
+    if not line or re.search(rf"(?m)^- .*\({re.escape(b.id)}\)\.?$", text) or "## Unreleased\n" not in text:
+        return
+    head = text.index("## Unreleased\n")
+    end = text.find("\n## ", head)
+    sub = text.find("### Everything else\n", head, end if end >= 0 else len(text))
+    at = sub + len("### Everything else\n") if sub >= 0 else head + len("## Unreleased\n")
+    at += text[at:at + 1] == "\n"  # past the heading's blank line
+    c.write_atomic(path, text[:at] + f"- {line}\n" + text[at:])
 
 
 RECEIPT_NS = "foreman-receipt"  # T-1547: the ssh-keygen -Y namespace a receipt signature is made in
@@ -8848,9 +8878,14 @@ def _build_parser(only=None):
                                                        "train IDS: land several finished lanes at once in a scratch tree with one gate run "
                                                        "and a red set bisected (T-3380; no comma here: T-3467); "
                                                        "precheck: a lane's criteria run ahead of its merge, "
-                                                       "which reuses passes on an unchanged tree (T-3444)")
+                                                       "which reuses passes on an unchanged tree (T-3444); "
+                                                       "land [--batch N]: every finished lane through trains of N and "
+                                                       "each landed task closed from its builder's report lines (the "
+                                                       "rest parked with why) then a ship on a publish grant already "
+                                                       "given (T-3500)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
-                                      "stats", "verify", "train", "precheck"])
+                                      "stats", "verify", "train", "precheck", "land"])
+    s.add_argument("--batch", type=int, metavar="N", help=f"land: lanes per train (default {c.TRAIN_BATCH}) (T-3500)")
     s.add_argument("--reset", metavar="SHA", help="verify: settle a conflict or red record after a forward fix (T-3141)")
     s.add_argument("--agent-stopped", action="store_true", help="recover: its agent was stopped (TaskStop), so a "
                                                                 "stalled lane is free to take back (T-2354)")

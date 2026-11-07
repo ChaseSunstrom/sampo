@@ -177,11 +177,11 @@ def cmd_lane(args):
             c.update_meta(p, builders=int(args.id))
         return cli.out(args, {"builders": builders_cap(p)}, f"Builders at once: {builders_cap(p)} (fm lane max N, "
                          f"1 to {BUILDERS_MAX})")
-    if args.action == "train":  # T-3380: N reviewed lanes through one gate run
+    if args.action in ("train", "land"):  # T-3380: N reviewed lanes through one gate run; T-3500: all of them, closed
         if p.lane:
-            raise c.PolicyError("sampo lane train runs from the main checkout, not from inside a lane")
+            raise c.PolicyError(f"sampo lane {args.action} runs from the main checkout, not from inside a lane")
         from sampo import train
-        return train.cmd(p, args, main)
+        return (train.cmd if args.action == "train" else train.cmd_land)(p, args, main)
     if args.action == "stats":  # T-2368: does a long brief land worse than a short one
         rows = stats(p)
         return cli.out(args, {"stats": rows}, "\n".join(
@@ -467,12 +467,28 @@ def recovery_text(cause, tid, detail=""):
     return STOP_CAUSES[cause][1].format(id=tid, reset=detail or "its reset time", grant=detail or "<category>")
 
 
-def stop_mark(p, tid, kind, arg=""):
+def stop_mark(p, tid, kind, arg="", log=""):
     """Where the lane's last `fm lane merge` ended (conflict, refused, guard + its category, merged), on the brief: a busy
-    ledger can't push it out of a tail. Reset when the lane is taken back; fm task unblock clears it too."""
+    ledger can't push it out of a tail. Reset when the lane is taken back; fm task unblock clears it too. `log`: a line
+    for the brief's Log (T-3500: why sampo lane land parked it)."""
     from sampo import cli
     stamp = f"{kind} {c.now()} {arg}".strip()
-    cli.mutate(p, tid, lambda x: x.meta.update(lane_stop=stamp), "lane_stop", {"kind": kind, "arg": arg})
+
+    def mark(x):
+        x.meta.update(lane_stop=stamp)
+        if log:
+            x.append_log(log)
+    cli.mutate(p, tid, mark, "lane_stop", {"kind": kind, "arg": arg})
+
+
+def parked(b):
+    """T-3500: the lane's last merge or land conflicted or was refused and it has no commit since: it waits on a
+    recovery or a grant, not on another merge."""
+    kind, at, _ = _stop(b)
+    if kind not in _STOP_KINDS or not b.meta.get("lane"):
+        return False
+    last = _git(b.meta["lane"], "log", "-1", "--format=%ct", timeout=10).stdout.strip()
+    return float(last or 0) <= at + 2
 
 
 def _stop(b):
@@ -616,7 +632,9 @@ def awaiting_merge(p, briefs):
     if not done:
         return []
     cause = stop_causes(p, briefs)  # every lane, so finished_lanes' cache keeps one key
-    return [i for i in done if cause.get(i, ("",))[0] not in ("merge_conflict", "red_after_merge", "guard_refused")]
+    by_id = {b.id: b for b in briefs}
+    return [i for i in done if cause.get(i, ("",))[0] not in ("merge_conflict", "red_after_merge", "guard_refused")
+            and not (i in by_id and parked(by_id[i]))]  # T-3500: a builder with no process record too
 
 
 def recover(p, b, main, args):
@@ -1454,6 +1472,62 @@ def reviewer_findings(msg, cap=30):
         if m and len(out) < cap:
             out.append((lens, m.group(1).upper(), m.group(2)[:200], c.redact(m.group(3)).split(" — ")[0][:300]))
     return out
+
+
+CLOSE_FIELDS = "Close fields"  # T-3500: the brief section a builder's report lines land in
+CLOSE_KEYS = ("changelog", "title", "lesson", "numbers", "docs")
+_CLOSE_LINE = re.compile(r"(?m)^[ \t>*_`-]*(CHANGELOG|TITLE|LESSON|NUMBERS|DOCS)[*_`]*[ \t]*:[*_`]*[ \t]*(\S.*?)[ \t*_`]*$")
+
+
+def close_fields(text, tail=False):
+    """T-3500: {key: value} from 'CHANGELOG: …', 'TITLE: …', 'LESSON: …', 'NUMBERS: …', 'DOCS: …' lines (bold and list
+    marks tolerated, the last of each wins), plus 'id', the task its CHANGELOG or TITLE line ends with: (T-NNNN). Each
+    value is one redacted line; one that reads like instructions (core.defang) is dropped, never published. `tail`:
+    only the block of such lines that ends the text (a report's own close, not lines it quotes)."""
+    text = str(text or "")
+    if tail:
+        lines = text.rstrip().splitlines()
+        n = len(lines)
+        while n and (_CLOSE_LINE.match(lines[n - 1]) or not lines[n - 1].strip()):
+            n -= 1
+        text = "\n".join(lines[n:])
+    got = {}
+    for key, value in _CLOSE_LINE.findall(text):
+        value = c.fit(" ".join(c.redact(c.plain(value)).split()), 1000)
+        if c.defang(value) == value:
+            got[key.lower()] = value
+    for key in ("changelog", "title"):
+        m = re.search(r"\((T-\d{4,})\)\W*$", got.get(key, ""))
+        if m:
+            got.setdefault("id", m.group(1))
+    return got
+
+
+def close_text(fields):
+    """The Close fields section for `fields`: the lines close_fields reads back."""
+    return "".join(f"{k.upper()}: {fields[k]}\n" for k in CLOSE_KEYS if fields.get(k))
+
+
+CLOSE_CAPS = {"title": 120, "changelog": 400}  # a commit subject; a CHANGELOG line
+_LINK = re.compile(r"(?i)\b(?:https?|ftp|file|ssh|git)://|\bwww\.|\]\(|<[a-z][\w+.-]*:")
+_ESC = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|.)")  # CSI, OSC, any other escape
+
+
+def close_line(value, key, tid):
+    """T-3500: a Close fields TITLE or CHANGELOG line made safe to commit or publish: (text, '') or ('', why). One line
+    of printable characters, ending in (tid) (added when missing), cut to CLOSE_CAPS; a URL, a markdown link or a
+    (T-NNNN) of another task refuses it."""
+    text = " ".join(c.plain(_ESC.sub("", c.redact(str(value or "")))).split())
+    if not text:
+        return "", f"no {key} line"
+    if _LINK.search(text):
+        return "", f"its {key} line holds a URL or a link"
+    other = sorted(set(re.findall(r"\((T-\d{4,})\)", text)) - {tid})
+    if other:
+        return "", f"its {key} line names another task ({', '.join(other)})"
+    body = re.sub(rf"\s*\({re.escape(tid)}\)\W*$", "", text).rstrip(" .")
+    end = f" ({tid})" + ("." if key == "changelog" else "")
+    return c.fit(body, CLOSE_CAPS[key] - len(end)) + end, ""
 
 
 STANDING = ("- models advise, proof decides: no model gates a close or a merge",  # T-2992

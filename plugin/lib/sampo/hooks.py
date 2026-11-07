@@ -4605,13 +4605,20 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         done = [] if work else slanes.awaiting_merge(p, briefs)  # T-2038: a finished lane waits on a merge
     except Exception:
         done = [] if work else c.finished_lanes(p, briefs)
+    if done:
+        from sampo import train as strain
+        if strain.landing(p):  # T-3500: a land under way takes these; a merge named beside it would race it
+            done = []
     if not work and (held or done):  # said once per set of lanes; each builder's notification wakes the session
         if d.get("lanes") == held + ["done"] + done or not saved:
             return None
         d["lanes"] = held + ["done"] + done
-        if done:  # T-3163: one line; T-3467: two or more land through one train (merge_hint names the batch)
+        if len(done) > 1:  # T-3500: land closes each from its builder's report lines; the review stays the session's
+            return _line(f"Sampo drive: {len(done)} builder lanes wait on a merge: review each branch and record its audits "
+                         "(sampo task audit), then sampo lane land", [" in the background"])
+        if done:  # T-3163: one line; T-3467: one lane merges (merge_hint)
             return _line(f"Sampo drive: builder lane(s) finished and wait on a merge: {c.merge_hint(done)}",
-                         [" after reviewing the branches; then close each here", " after reviewing the branches"])
+                         [" after reviewing the branch; then close it here", " after reviewing the branch"])
         return _line(f"Sampo drive: builder lanes hold {c.joinmore(held, 3)} and nothing else is queued: when a builder's "
                      "notification comes, review its branch and sampo lane merge it")
     if d.get("hold"):
@@ -5003,6 +5010,42 @@ def _mark_builder(pl, returned):
         log_error("builder mark", _tb())
 
 
+def _close_fields(pl):
+    """T-3500: a returning agent's CHANGELOG/TITLE/LESSON/NUMBERS/DOCS report lines go onto the open task they name
+    ((T-NNNN) at the end of its CHANGELOG or TITLE line) as its Close fields section, which sampo task finish and
+    sampo lane land read, so nobody retypes them at the close. Only from an agent that builds, only the block that ends
+    its message (not lines it quotes), only for an open task whose lane has commits since it was made, and never over
+    fields already recorded (a note in the Log instead): a scout echoing a README can't write them."""
+    from sampo import lanes as slanes
+    who = str(pl.get("agent_type") or "")
+    if not re.fullmatch(r"(?:[\w-]+:)?(?:fm-builder|general-purpose|claude)", who):
+        return
+    got = slanes.close_fields(pl.get("last_assistant_message"), tail=True)
+    if not got.get("id") or not slanes.close_text(got):
+        return
+    try:
+        p = c.find_project(_cwd(pl))
+        b = c.find_brief(p, got["id"]) if p else None
+        lane = str(b.meta.get("lane") or "") if b else ""
+        if not lane or b.status in c.CLOSED or not os.path.isdir(lane):
+            return
+        head = c._git(c.main_worktree(p.root) or p.root, "rev-parse", "HEAD", timeout=10).strip()
+        if not head or c._git(lane, "rev-list", "--count", "HEAD", "--not", head, timeout=10).strip() in ("", "0"):
+            return  # no commit since the lane was made: nothing of its own to close
+        with c.lock(p.dir, timeout=LOCK_QUICK):
+            b = c.find_brief(p, got["id"])
+            if b and b.status not in c.CLOSED:
+                kept = bool(b.section(slanes.CLOSE_FIELDS).strip())
+                if not kept:
+                    b.set_section(slanes.CLOSE_FIELDS, slanes.close_text(got))
+                keys, name = ", ".join(k for k in slanes.CLOSE_KEYS if got.get(k)), c.fit(c.plain(who), 60)
+                b.append_log(f"close fields kept: a later report from {name} left out ({keys})" if kept else
+                             f"close fields from the {name}'s report: {keys}")
+                c.save_brief(p, b)
+    except Exception:  # bookkeeping: never the subagent's own event
+        log_error("close fields", _tb())
+
+
 def subagent_stop(pl):
     _event({"kind": "subagent_stop", "session_id": pl.get("session_id"), "agent_id": pl.get("agent_id"),
             "agent_type": pl.get("agent_type")})
@@ -5016,6 +5059,7 @@ def subagent_stop(pl):
         except Exception:  # the ledger is bookkeeping: never the subagent's log event
             log_error("SubagentStop", _tb())
     _mark_builder(pl, True)  # T-3145
+    _close_fields(pl)  # T-3500
     p = c.find_project(_cwd(pl))
     if p and pl.get("agent_type"):
         act = c.active_brief_fast(p, p.lane)

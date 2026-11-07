@@ -4777,12 +4777,12 @@ TRAIN_BATCH = 8  # T-3467: lanes per suggested train: a red one costs ~log2(8) =
 def merge_hint(done):
     """T-3467: the command a set of finished lanes waits on: one merges; two or more land through one train (one gate
     run for them all, a red set bisected), TRAIN_BATCH at a time. Listing one `lane merge` each led a session to merge
-    ~80 lanes one at a time (~10 min apiece) beside the built train."""
+    ~80 lanes one at a time (~10 min apiece) beside the built train. T-3500: sampo lane land runs those trains, closes
+    each landed task from its builder's report lines and parks the rest, so two or more are named to it."""
     if len(done) == 1:
         return f"sampo lane merge {done[0]}"
-    more = len(done) - TRAIN_BATCH
-    return (f"sampo lane train {','.join(done[:TRAIN_BATCH])} (one gate run for them all"
-            + (f"; {more} more after it" if more > 0 else "") + ")")
+    return (f"sampo lane land ({len(done)} lanes: trains of {TRAIN_BATCH}, one gate run each; each landed task closed "
+            f"from its builder's report lines; run it in the background)")
 
 
 def next_for(p, briefs=None, checks=True):
