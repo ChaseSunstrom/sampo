@@ -8897,7 +8897,8 @@ def _build_parser(only=None):
                                                         "and files outside scope, name a leader (T-1069, T-2339)")
     s.add_argument("--sides", type=int, metavar="N", help="race: 2 or 3 sides, one per Approach option, the stated "
                                                           "choice first (default 2) (T-2339)")
-    s.add_argument("id", nargs="?", help="the task id; max: how many builders may be out at once (1-6)")
+    s.add_argument("id", nargs="?", help="the task id; max: how many builders may be out at once (1 up to the "
+                                         "ceiling in lanes.BUILDERS_MAX)")
     s.add_argument("--confidence", metavar="N", help="race: whole percent, 0-100, that the original side wins; a bet in "
                                                      "the calibration ledger (T-2337)")
     s.add_argument("--spike", action="store_true", help="new: a throwaway lane sampo lane merge refuses (T-0732)")
@@ -8908,6 +8909,11 @@ def _build_parser(only=None):
     s.add_argument("--model", choices=["sonnet", "opus", "haiku"], help="brief: the builder's model, over the history's pick (T-2291)")
     s.add_argument("--revert-route", metavar="DATE", help="brief, no id: put back the dearer picks the probe-down route "
                                                           "promoted since DATE (YYYY-MM-DD), probing paused 20 lanes (T-2353)")
+    s.add_argument("--ready", action="store_true", help="brief, no id: brief every planned S/M task whose deps are closed, "
+                                                        "with no open lane and nothing waiting on you, up to the free builder "
+                                                        "slots; prints one block of launch lines and lists the skipped (T-3293)")
+    s.add_argument("--limit", type=int, metavar="N", help="brief --ready: at most N briefs, never more than the free builder "
+                                                          "slots (T-3293)")
     s.add_argument("--why", metavar="REASON", help="rm: drop the builder's work (its branch is kept, a locked worktree "
                                                    "goes); the next sampo lane brief starts from this (T-1823)")
     s = add("session", lazy("sampo.session", "cmd_session"), tier=("Running elsewhere", 1160), help="agent sessions on this device (claude, codex, gemini, "

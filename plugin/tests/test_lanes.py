@@ -583,6 +583,110 @@ class Lanes(ForemanTestCase):
         self.assertTrue(refused())
         self.assertIn('model: "sonnet"', self.fm("lane", "brief", fresh).stdout)
 
+    def test_brief_ready_briefs_every_ready_task_and_skips_the_rest(self):  # T-3293
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "max", "3")  # three free builder slots
+        a, b, d = mk("Ready a"), mk("Ready b"), mk("Ready d")
+        waits = mk("Waits on a")
+        self.fm("task", "set", waits, f"depends_on={a}")
+        out = json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)
+        self.assertEqual({x["id"] for x in out["briefed"]}, {a, b, d})
+        skipped = {x["id"]: x["reason"] for x in out["skipped"]}
+        self.assertEqual(set(skipped), {waits})
+        self.assertIn(a, skipped[waits], "the skipped task names the open dep it waits on")
+        for x in out["briefed"]:  # each brief is written and has its launch line
+            self.assertTrue(os.path.exists(x["path"]))
+            self.assertIn(x["id"], x["launch"])
+    def test_brief_ready_honours_limit_never_briefs_twice_and_refuses_misuse(self):  # T-3293
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "max", "3")
+        a, b, d = mk("Limit a"), mk("Limit b"), mk("Limit d")
+        one = json.loads(self.fm("lane", "brief", "--ready", "--limit", "1", "--json").stdout)
+        self.assertEqual(len(one["briefed"]), 1)
+        first_id = one["briefed"][0]["id"]
+        again = json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)  # one slot is out, two are free
+        now = {x["id"] for x in again["briefed"]}
+        self.assertEqual(now, {a, b, d} - {first_id}, "a rerun briefs the rest, not the first task twice")
+        self.assertIn(first_id, {x["id"] for x in again["skipped"]})
+        self.assertIn("already briefed", {x["id"]: x["reason"] for x in again["skipped"]}[first_id])
+        for args in (("lane", "brief", "--ready", "--limit", "0"), ("lane", "brief", a, "--limit", "1"),
+                     ("lane", "brief", "--ready", a)):
+            self.assertNotEqual(self.fm(*args, check=False).returncode, 0, args)
+
+    def test_brief_ready_text_prints_one_launch_line_per_brief_and_why_the_rest_wait(self):  # T-3293
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "max", "2")  # two free slots: the third ready task is not tried
+        a, b, d = mk("Text a"), mk("Text b"), mk("Text d")
+        text = self.fm("lane", "brief", "--ready").stdout
+        for tid in (a, b):
+            self.assertRegex(text, rf'(?m)^  {tid}: Agent — subagent_type: "foreman:fm-builder"')
+        self.assertRegex(text, rf"(?m)^  {d}: not tried: no builder slot left \(2 of 2 out")
+        self.assertIn("fm lane rm", text, "an unlaunched brief keeps its slot until it is removed")
+
+    def test_brief_ready_stops_at_a_batch_wide_refusal_and_does_not_try_the_rest(self):  # T-3293
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "max", "3")
+        a, b, d = mk("Strain a"), mk("Strain b"), mk("Strain d")
+        out = json.loads(self.fm("lane", "brief", "--ready", "--json",
+                                 env={"FOREMAN_HOST": "load=40,cpus=8,mem_mb=8192"}).stdout)
+        self.assertEqual(out["briefed"], [])
+        skipped = {x["id"]: x["reason"] for x in out["skipped"]}
+        self.assertEqual(set(skipped), {a, b, d})
+        self.assertIn("load", skipped[a], "the one try says why")
+        for tid in (b, d):  # the strain is the same for every task: none of them is briefed, none is tried
+            self.assertEqual(skipped[tid], "not tried: " + skipped[a])
+
+    def test_brief_ready_keeps_going_past_a_task_that_crashes(self):  # T-3293
+        import argparse
+        import contextlib
+        import io
+        import unittest.mock
+        from sampo import lanes as slanes
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        a, b = mk("Crash a"), mk("Crash b")
+        p = c.find_project(self.repo)
+        real = slanes.builder_brief
+
+        def flaky(p_, task, args):
+            if task.id == a:
+                raise RuntimeError("boom")
+            return real(p_, task, args)
+        buf = io.StringIO()
+        with unittest.mock.patch.object(slanes, "builder_brief", side_effect=flaky), contextlib.redirect_stdout(buf):
+            slanes.brief_ready(p, argparse.Namespace(limit=None, json=True))
+        out = json.loads(buf.getvalue())
+        self.assertEqual([x["id"] for x in out["briefed"]], [b])
+        self.assertEqual({x["id"]: x["reason"] for x in out["skipped"]}[a], "RuntimeError: boom")
+
+    def test_brief_ready_does_not_brief_two_tasks_that_share_a_file(self):  # T-3293
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        self.fm("lane", "max", "3")
+        a, b = mk("Overlap a"), mk("Overlap b")
+        self.fm("task", "set", a, "scope=plugin/lib/sampo/lanes.py")
+        self.fm("task", "set", b, "scope=plugin/lib/sampo/lanes.py,plugin/tests/test_lanes.py")
+        out = json.loads(self.fm("lane", "brief", "--ready", "--json").stdout)
+        briefed = [x["id"] for x in out["briefed"]]
+        self.assertEqual(len(briefed), 1)
+        other = ({a, b} - set(briefed)).pop()
+        self.assertEqual({x["id"]: x["reason"] for x in out["skipped"]}[other], f"scope overlaps {briefed[0]}")
+
+    def test_brief_ready_lists_at_most_fifteen_skips_and_says_how_many_more(self):  # T-3293
+        mk = lambda t, tier: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", tier, "--ac", "ok :: true",  # noqa: E731
+                                           "--step", "s", "--json").stdout)["id"]
+        ready = mk("Cap ready", "S")
+        for i in range(17):  # an L task stays in the main thread: one skip each
+            mk(f"Cap long {i}", "L")
+        text = self.fm("lane", "brief", "--ready").stdout
+        self.assertRegex(text, rf"(?m)^  {ready}: Agent ")
+        self.assertEqual(len(re.findall(r"(?m)^  T-\d+: an L task stays", text)), 15)
+        self.assertIn("and 2 more", text)
+
     def test_lane_stats_rates_landing_by_brief_size(self):  # T-2368
         p = c.find_project(self.repo)
         c.log_event(p, "lane_builder", task="T-0901", data={"path": "a", "chars": 3000})
