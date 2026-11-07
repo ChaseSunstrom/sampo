@@ -574,6 +574,27 @@ def _ledger_lines(b):
             "inconclusive": len(b.inconclusive()), "unverified": [c.plain(x)[:200] for x in b.unverified()][:5]}
 
 
+YOURS = ("user", "steer")  # T-3664: the sources that are the user's own words
+
+
+def _lanes(p, briefs, sd):
+    """T-3664: the open work in lanes, which the queue leaves out: building (a builder is at it), merging (finished,
+    its commits wait on a merge) and closing (merged, its close still owed), newest first. The waiting rule is
+    live.lanes()'s (T-3170); finished_lanes is cached per lane tip (T-3585), so a poll costs no git call."""
+    held = {s["id"] for s in sd["lanes"]}
+    finished = set(c.finished_lanes(p, briefs, quiet_min=0))
+    out = {"building": [], "merging": [], "closing": []}
+    for b in sorted((b for b in briefs if b.id in held and b.status in ("active", "verifying")),
+                    key=lambda b: b.meta.get("updated") or "", reverse=True):
+        steps = b.steps()
+        k = ("closing" if str(b.meta.get("lane_stop") or "").startswith("merged ")
+             else "merging" if b.id in finished or b.meta.get("builder_returned") else "building")
+        out[k].append({"id": b.id, "type": b.type, "tier": b.tier, "title": c.plain(b.title)[:160],
+                       "steps_done": sum(s.done for s in steps), "steps_total": len(steps),
+                       "since": b.meta.get("updated")})
+    return out
+
+
 def _worktrees(p, briefs):
     """T-1023: the git worktrees beside the main checkout, for the pane's Agents graph: the branch, the task whose lane
     it is, the Claude Code subagent it was made for (its branch is worktree-agent-<id>), its age and the commits it
@@ -638,7 +659,7 @@ def view(p):
         b = by_id.get(s["id"])
         waits = c.waits_on_user(b, pending, autonomy) if b else None
         out = {"id": s["id"], "type": s["type"], "tier": s["tier"], "title": s["title"], "status": s["status"],
-               "waits": waits, "steps_done": s["steps_done"], "steps_total": s["steps_total"],
+               "source": s.get("source"), "waits": waits, "steps_done": s["steps_done"], "steps_total": s["steps_total"],
                "age_days": round(c.age_days(s.get("created")) or 0, 1)}
         if waits == "plan approval":  # a yes is given where what it approves is shown
             d = c.brief_detail(b)
@@ -669,8 +690,12 @@ def view(p):
         "active": active,
         "next": c.plain(c.next_for(p, briefs)[2]),
         "genesis": sd.get("genesis"),  # T-2118: the tower's next action (fmgenesis.health)
-        "queue": [item(s) for s in sd["queue"]][:20],
-        "inbox": [item(s) for s in sd["inbox"]][:10], "inbox_total": len(sd["inbox"]),
+        "queue": [item(s) for s in sd["queue"][:20]], "queue_total": len(sd["queue"]),  # T-3664: the list is capped
+        # T-3664: the user's own asks first (intake rank kept within each part): by rank alone 154 discovered items
+        # sat above them; lanes: the work the queue leaves out
+        "inbox": [item(s) for s in sorted(sd["inbox"], key=lambda s: s.get("source") not in YOURS)[:10]],
+        "inbox_total": len(sd["inbox"]), "inbox_yours": sum(s.get("source") in YOURS for s in sd["inbox"]),
+        "lanes": _guarded(lambda: _lanes(p, briefs, sd)) or {"building": [], "merging": [], "closing": []},
         "blocked_total": len(sd["blocked"]),  # T-1026: the pane's work bar
         "approvals": [{"task": a.get("task"), "allow": list(a.get("allow") or []), "why": c.plain(a.get("why") or "")}
                       for a in meta.get("pending_approvals") or [] if isinstance(a, dict) and a.get("task")],

@@ -173,6 +173,15 @@ export function lastLine(output: unknown): string {
 const waiting = (v: FmView | null) =>
   !!v && ((v.approvals ?? []).length > 0 || (v.queue ?? []).some(q => q.waits === 'plan approval'))
 
+/** T-3664: the work in lanes as the band's and the queue card's words, empty parts left out. */
+const flowWords = (v: FmView) => {
+  const l = v.lanes
+  return l
+    ? [l.building.length ? `${l.building.length} building` : '', l.merging.length ? `${l.merging.length} to merge` : '',
+       l.closing.length ? `${l.closing.length} to close` : ''].filter(Boolean)
+    : []
+}
+
 // Module variables start over on a reload; what a drawing reads lives in $.state.
 let fmPath: string | null = null
 let marks: string | null = null // the busy watched files' stamps (null: not seen yet)
@@ -1211,9 +1220,10 @@ export const register: Register = (on, options) => {
     const cur = a?.steps.find(s => s.current)
     const narrow = e.props.bodyColumns < 90 // beside a docked pane: one column of single lines, details dropped
     const width = narrow ? Math.max(6, Math.min(12, e.props.bodyColumns - 28)) : Math.max(10, Math.min(28, e.props.bodyColumns - 70))
-    const queued = (v.queue ?? []).length
+    const queued = v.queue_total ?? (v.queue ?? []).length
     const inboxN = v.inbox_total ?? (v.inbox ?? []).length
     const todayDone = v.today_done ?? 0
+    const inFlight = flowWords(v) // T-3664: the work in lanes, which the queue leaves out
     const upNext = (v.queue ?? [])[0] ?? (v.inbox ?? [])[0]
     const usual = a ? v.typical?.[`${a.type}/${a.tier}`] : undefined
     const bandNow = await $.clock.now()
@@ -1346,12 +1356,12 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" borderStyle="round" borderColor={hex(working ? pulse(C.accent, f) : C.track)} paddingX={1} key="fm-band">
         {head}
         {treeLive && treeRows >= 3 ? tree(treeRows) : null}
-        {(queued > 0 || inboxN > 0) && (
+        {(queued > 0 || inboxN > 0 || inFlight.length > 0) && (
           <Box flexDirection="row" gap={1} key="fm-band-queue-row">
             {!narrow && <Text color={hex(C.dim)}>today</Text>}
             {!narrow && meter($.ui.resolve(e), e, 'fm-band-queue', 10, todayDone / Math.max(1, todayDone + queued + inboxN + (a ? 1 : 0)), C.accent2, null)}
             <Text color={hex(C.dim)} wrap={cut}>
-              ✓{todayDone} done · {queued} queued · {inboxN} in inbox
+              {[`✓${todayDone} done`, ...inFlight, `${queued} queued`, `${inboxN} in inbox`].join(' · ')}
               {upNext && !narrow ? ` · next ${upNext.id} ${upNext.title}` : ''}
             </Text>
           </Box>
@@ -1462,8 +1472,10 @@ export const register: Register = (on, options) => {
     const shownPlan = await read($, reviewing)
     const doneSince = await read($, away)
     const queue = v.queue ?? []
+    const queueN = v.queue_total ?? queue.length // T-3664: the list is the first 20
     const inbox = v.inbox ?? []
     const inboxN = v.inbox_total ?? inbox.length
+    const ln = v.lanes ?? { building: [], merging: [], closing: [] }
     const checks = v.checks
     const stageIdx = a ? a.stages.indexOf(a.stage) : -1
     const usual = a ? v.typical?.[`${a.type}/${a.tier}`] : undefined
@@ -1479,7 +1491,7 @@ export const register: Register = (on, options) => {
     const since = (ms: number) => (ms < 3600000 ? `${Math.max(1, Math.round(ms / 60000))}m ago` : hoursAgo(ms / 3600000))
     const raster = (key: string, cols: number, cellsOf: string, twin: string, color: number) =>
       term ? <Raster key={key} columns={cols} rows={1} cells={cellsOf} /> : <Text key={key} color={hex(color)}>{twin}</Text>
-    const typeWord = (it: FmItem) => (
+    const typeWord = (it: { type: string }) => (
       <Box flexShrink={0}>
         <Text weight="bold" color={typeColor(it.type)}>
           {(it.type === 'PERFORMANCE' ? 'PERF' : it.type).padEnd(8)}
@@ -1489,7 +1501,28 @@ export const register: Register = (on, options) => {
 
     // ── up next: plans waiting for a yes first, the queue, the inbox, a line to capture into it
     const capture = captureBox($, e)
+    const ids = (xs: { id: string }[], n = 6) => xs.slice(0, n).map(x => x.id).join(' ') + (xs.length > n ? ` +${xs.length - n}` : '')
     const queueRows: RenderElement[] = [
+      // T-3664: what is moving first: builders at work, then the lanes waiting on a merge or a close
+      ...ln.building.map(l => (
+        <Box flexDirection="row" gap={1} key={`b-${l.id}`}>
+          <Box flexShrink={0}>
+            <Text color={hex(C.agent)}>⚙</Text>
+          </Box>
+          {typeWord(l)}
+          <Box flexShrink={0}>
+            <Text color={hex(C.agent)}>{l.id}</Text>
+          </Box>
+          <Text wrap="truncate-end">{l.title}</Text>
+          {l.steps_total > 0 && (
+            <Box flexShrink={0}>
+              <Text color={dim}>{`${l.steps_done}/${l.steps_total}`}</Text>
+            </Box>
+          )}
+        </Box>
+      )),
+      ...(ln.merging.length ? [<Text key="b-merging" color={muted} wrap="truncate-end">{`⇢ ${ln.merging.length} waiting to merge · ${ids(ln.merging)}`}</Text>] : []),
+      ...(ln.closing.length ? [<Text key="b-closing" color={muted} wrap="truncate-end">{`✓ ${ln.closing.length} merged, close owed · ${ids(ln.closing)}`}</Text>] : []),
       ...[...queue].sort((x, y) => Number(!!y.plan) - Number(!!x.plan)).map((q, i) => (
         <Box flexDirection="row" gap={1} key={`q-${q.id}`}>
           <Box flexShrink={0}>
@@ -1510,7 +1543,7 @@ export const register: Register = (on, options) => {
       ...inbox.map(it => (
         <Box flexDirection="row" gap={1} key={`in-${it.id}`}>
           <Box flexShrink={0}>
-            <Text color={hex((it.age_days ?? 0) >= 7 ? C.warn : C.track)}>⚑</Text>
+            <Text color={hex(it.source === 'user' || it.source === 'steer' ? C.accent : (it.age_days ?? 0) >= 7 ? C.warn : C.track)}>⚑</Text>
           </Box>
           {typeWord(it)}
           <Box flexShrink={0}>
@@ -1785,7 +1818,9 @@ export const register: Register = (on, options) => {
     const work = [
       { n: v.today_done ?? 0, word: 'done today', color: C.steel },
       { n: a ? 1 : 0, word: 'now', color: C.accent },
-      { n: queue.length, word: 'queued', color: C.accent2 },
+      { n: ln.building.length, word: 'building', color: C.agent },
+      { n: ln.merging.length + ln.closing.length, word: 'to land', color: C.accent2 },
+      { n: queueN, word: 'queued', color: C.accent2 },
       { n: inboxN, word: 'inbox', color: C.muted },
       { n: v.blocked_total ?? 0, word: 'blocked', color: C.warn },
     ]
@@ -2179,7 +2214,7 @@ export const register: Register = (on, options) => {
       { key: 'agents', title: titleRow('agents', 'Agents', gLive ? C.agent : C.dim,
           [gLive ? `${gLive} running` : '', trees.length ? `${trees.length} worktree${trees.length === 1 ? '' : 's'}` : '', `${gSpan / 60000}m`].filter(Boolean).join(', ')),
         rows: agentRows },
-      { key: 'queue', title: titleRow('queue', 'Up next', C.accent2, inboxN ? `${queue.length} queued, ${inboxN} in the inbox` : `${queue.length} queued`), rows: queueRows },
+      { key: 'queue', title: titleRow('queue', 'Up next', C.accent2, [...flowWords(v), `${queueN} queued`, inboxN ? `${inboxN} in the inbox${v.inbox_yours ? ` (${v.inbox_yours} yours)` : ''}` : ''].filter(Boolean).join(', ')), rows: queueRows },
       { key: 'sessions', title: titleRow('sessions', 'Sessions', C.agent, `${fleet.filter(s => !s.error).length} live`), rows: sessionRows },
       { key: 'history', title: titleRow('history', 'History', C.dim, ''), rows: historyRows, log: true },
       { key: 'today', title: todayTitle, rows: todayBody, tall: Math.max(0, R.today! - 1) },

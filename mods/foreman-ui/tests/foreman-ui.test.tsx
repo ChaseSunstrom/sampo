@@ -926,6 +926,21 @@ test('the band shows the whole queue: today, queued, inbox and what is next', as
   await ui.unmount()
 })
 
+test('the band and the pane show the work in lanes, which the queue leaves out (T-3664)', async ($, on) => {
+  const lane = (id: string, title: string) => ({ id, type: 'FIX', tier: 'S', title, steps_done: 1, steps_total: 2 })
+  world(on, [{ ...VIEW, today_done: 3, queue_total: 31, inbox_yours: 1,
+    lanes: { building: [lane('T-0050', 'Retry the upload')], merging: [lane('T-0051', 'a'), lane('T-0052', 'b')], closing: [] } }])
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: 'foreman-ui', surface: 'terminal', ...band() })
+  expect(await ui.find({ type: 'Text', text: '✓3 done · 1 building · 2 to merge · 31 queued · 1 in inbox' })).toBeDefined()
+  await ui.unmount()
+  const pane = await $.ui.mount({ plugin: 'foreman-ui', surface: 'terminal', ...PANE })
+  expect(await pane.find({ type: 'Text', text: 'T-0050' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '⇢ 2 waiting to merge · T-0051 T-0052' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /1 building, 2 to merge, 31 queued, 1 in the inbox \(1 yours\)/ })).toBeDefined()
+  await pane.unmount()
+})
+
 test('a paused hook shows in the band and, before anything else, in the pane (T-0087)', async ($, on) => {
   world(on, [{ ...VIEW, health: { hook_p95_ms: 31, guard_blocks: 0, hook_errors: 3, paused_hooks: ['Stop'] } }])
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })

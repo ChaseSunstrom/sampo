@@ -295,6 +295,33 @@ class UiView(ForemanTestCase):
         self.fm("task", "finish", "T-0001", "--audit", "self checklist")
         self.assertEqual(json.loads(self.fm("ui", "--json").stdout)["today_done"], 1)
 
+    def test_the_view_carries_the_work_in_lanes_by_where_it_stands(self):
+        # T-3664: the queue leaves out tasks in lanes, so the pane showed none of the 79 tasks actually moving
+        from sampo import core as c
+        p = c.find_project(self.repo)
+        lane = os.path.join(self.tmp, "lane")
+        os.makedirs(lane)
+        for title, extra in (("Building", {}), ("Returned", {"builder_returned": True}),
+                             ("Merged", {"lane_stop": "merged 2026-11-07T12:00:00Z"})):
+            tid = self.fm("capture", title, "--type", "FIX", "--tier", "S").stdout.split()[2]
+            b = c.find_brief(p, tid)
+            b.meta.update(lane=lane, status="active", **extra)
+            c.save_brief(p, b)
+        v = json.loads(self.fm("ui", "--json").stdout)
+        got = {k: [x["title"] for x in v["lanes"][k]] for k in ("building", "merging", "closing")}
+        self.assertEqual(got, {"building": ["Building"], "merging": ["Returned"], "closing": ["Merged"]})
+        self.assertNotIn("Building", [x["title"] for x in v["queue"]], "a lane's task is in the lanes block, not the queue")
+
+    def test_the_inbox_lists_the_users_own_asks_first(self):
+        # T-3664: intake rank put 154 discovered items above the user's 10 asks; the pane shows theirs first
+        self.fm("capture", "Grounded brainstorm of the parser", "--type", "RESEARCH", "--source", "discovered")
+        self.fm("capture", "Make the live view look like the reference", "--type", "FEATURE", "--source", "user")
+        v = json.loads(self.fm("ui", "--json").stdout)
+        self.assertEqual([x["source"] for x in v["inbox"]], ["user", "user", "discovered"])
+        self.assertIn("Make the live view look like the reference", [x["title"] for x in v["inbox"][:2]])
+        self.assertEqual((v["inbox_total"], v["inbox_yours"]), (3, 2), "setUp's capture is the user's too")
+        self.assertEqual(v["queue_total"], len(v["queue"]), "the count the pane shows is the queue's, not the list's cap")
+
     def test_the_view_counts_blocked_tasks_for_the_work_bar(self):
         # T-1026: the pane shows done and left at a glance, blocked included
         self.assertEqual(json.loads(self.fm("ui", "--json").stdout)["blocked_total"], 0)

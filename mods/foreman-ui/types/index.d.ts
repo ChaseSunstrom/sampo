@@ -12,7 +12,10 @@ export type FmItem = {
   steps_done?: number
   steps_total?: number
   age_days?: number
+  source?: string | null // T-3664: who asked: user and steer are the user's own words
 }
+// T-3664: a task in a lane, which the queue leaves out
+export type FmLane = { id: string; type: string; tier: string; title: string; steps_done: number; steps_total: number; since?: string | null }
 export type FmPlan = { interpretation: string; approach: string; steps: FmStep[]; criteria: FmCriterion[] }
 export type FmActive = FmItem & {
   stage: string
@@ -64,9 +67,13 @@ export type FmView = {
   next?: string | null
   // T-2118: the Genesis tower's next action (fmgenesis.step, cached); kind ok|blocked|fatal|stopped|done
   genesis?: { stage: string; gen: number; action: string; command: string; kind: string } | null
-  queue?: FmItem[]
-  inbox?: FmItem[]
+  queue?: FmItem[] // the first 20
+  queue_total?: number // T-3664: all of it
+  inbox?: FmItem[] // the first 10, the user's own asks first
   inbox_total?: number
+  inbox_yours?: number // T-3664: captured from the user's words (source user or steer)
+  // T-3664: open work in lanes: a builder at it, finished and waiting on a merge, merged with its close owed
+  lanes?: { building: FmLane[]; merging: FmLane[]; closing: FmLane[] }
   approvals?: FmApproval[]
   closed?: { id: string; status: string; title?: string; grade?: string | null; lenses?: string[] }[] // T-0473
   signals?: { level: 'red' | 'amber'; text: string }[] // T-0472: shown as one glyph only when any
