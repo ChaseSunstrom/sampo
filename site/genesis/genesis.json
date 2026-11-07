@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-07T14:44:36Z",
- "rev": "bedc06911",
+ "updated": "2026-11-07T15:05:12Z",
+ "rev": "621fda374",
  "capabilities": [
   {
    "n": 1,
@@ -49632,16 +49632,16 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 922,
+ "unproven": 927,
  "unproven_kinds": {
-  "meaning-notes": 405,
-  "meaning-user": 268,
+  "meaning-notes": 406,
+  "meaning-user": 269,
   "research-uncited": 34,
-  "perf-typed": 88,
-  "typed": 53,
+  "perf-typed": 91,
+  "typed": 55,
   "red": 86,
   "tui-unshot": 13,
-  "docs": 105,
+  "docs": 104,
   "perf-noise": 1,
   "infra": 9,
   "ui-unshot": 44,
@@ -50850,10 +50850,10 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 46746,
+   "generated": 46939,
    "write": {
     "title": 323,
-    "line": 2521,
+    "line": 2535,
     "payoff": 30,
     "kill test": 154,
     "code": 14
@@ -50869,8 +50869,8 @@
     "novelty": 150
    },
    "merged": 1269,
-   "kept": 1836,
-   "pending": 18
+   "kept": 1854,
+   "pending": 179
   },
   "families": [
    {
@@ -50907,11 +50907,11 @@
     ]
    },
    {
-    "id": "F-018446",
-    "size": 325,
-    "lead": "Simulate multi-user memory interference as magnetic domains",
-    "today": "Today you can't know if two concurrent sessions will corrupt each other's context when merged",
-    "with_this": "With this, Sampo can predict and prevent context bleeding between users by modeling memory states as non-interfering magnetic domains",
+    "id": "F-016199",
+    "size": 329,
+    "lead": "Store Sampo's memory as a gravitational lensing field",
+    "today": "Today you can't compress and retrieve Sampo's historical context by simulating how light bends around massive objects.",
+    "with_this": "With this, Sampo can access relevant past decisions with zero latency by treating data mass as gravitational wells that naturally attract relevant queries, rather than using linear search.",
     "tier": "extreme",
     "cold": null,
     "wild": 5,
@@ -50956,7 +50956,7 @@
    },
    {
     "id": "F-014278",
-    "size": 34,
+    "size": 35,
     "lead": "Simulate ecosystem ripple effects before releasing a single crate",
     "today": "Today you can't predict how a breaking change in your library will break thousands of downstream users' builds until they file bugs.",
     "with_this": "With this, you can see a live map of which downstream projects will fail, crash, or degrade in performance when you publish your next version.",
@@ -51049,6 +51049,24 @@
     ]
    },
    {
+    "id": "F-046464",
+    "size": 3,
+    "lead": "Resolve conflicts via binary star mutual orbit",
+    "today": "Today you can't get Sampo to agree on a refactoring strategy when there are multiple valid but conflicting best practices.",
+    "with_this": "With this, Sampo can settle on a stable refactoring strategy by letting two competing best practices orbit each other, finding a stable binary configuration that satisfies both constraints simultaneously rather than choosing one.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "observability",
+     "performance",
+     "problem solving"
+    ]
+   },
+   {
     "id": "F-000412",
     "size": 2,
     "lead": "Breed a generation of refactor variants and keep the best lineage",
@@ -51128,6 +51146,23 @@
     "evidence": "",
     "kinds": [
      "verifying anything"
+    ]
+   },
+   {
+    "id": "F-046468",
+    "size": 2,
+    "lead": "Simulate ecosystem collapse to prune inefficient reasoning branches",
+    "today": "Today you can't see which parts of your reasoning are parasitic dead weight that consumes tokens without adding value.",
+    "with_this": "With this, Sampo can simulate the 'death' of its own reasoning steps to identify and prune parasitic branches that waste computational energy.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "calibrated judgment",
+     "orchestration"
     ]
    },
    {
@@ -51611,22 +51646,6 @@
     ]
    },
    {
-    "id": "F-016199",
-    "size": 1,
-    "lead": "Store Sampo's memory as a gravitational lensing field",
-    "today": "Today you can't compress and retrieve Sampo's historical context by simulating how light bends around massive objects.",
-    "with_this": "With this, Sampo can access relevant past decisions with zero latency by treating data mass as gravitational wells that naturally attract relevant queries, rather than using linear search.",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 5,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "docs"
-    ]
-   },
-   {
     "id": "F-017587",
     "size": 1,
     "lead": "Simulate the superposition of all possible architectural states",
@@ -52027,6 +52046,118 @@
     ]
    },
    {
+    "id": "F-046403",
+    "size": 1,
+    "lead": "Verify code execution by simulating the atomic decay of bugs",
+    "today": "Today you can't predict which lines of code will fail under load before actually deploying them",
+    "with_this": "With this, Sampo can predict bug emergence by modeling each line of code as a radioactive isotope with a half-life based on its complexity and dependency depth, allowing it to discard unstable code before it breaks in production",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "verifying anything"
+    ]
+   },
+   {
+    "id": "F-046405",
+    "size": 1,
+    "lead": "Verify prompt injection resistance by simulating the pressure of adversarial inputs",
+    "today": "Today you can't know if Sampo will break under a novel prompt injection attack before it happens",
+    "with_this": "With this, Sampo can test its own structural integrity by simulating the hydrostatic pressure of adversarial tokens, identifying which parts of its reasoning stack are most likely to rupture under high-pressure injection attacks",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "verifying anything"
+    ]
+   },
+   {
+    "id": "F-046406",
+    "size": 1,
+    "lead": "Verify data provenance by tracking the gravitational pull of sources",
+    "today": "Today you can't know if Sampo is using a reliable source or a hallucinated one because the final answer looks the same",
+    "with_this": "With this, Sampo can verify the reliability of its information sources by simulating the gravitational pull of each source on its reasoning, ensuring that high-quality sources exert a stronger and more stable influence than low-quality ones",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "verifying anything"
+    ]
+   },
+   {
+    "id": "F-046460",
+    "size": 1,
+    "lead": "Resolve ambiguity via orbital resonance locking",
+    "today": "Today you can't get Sampo to pick the right API version when multiple deprecated ones exist, as it often oscillates between guesses or fails.",
+    "with_this": "With this, Sampo can lock onto the correct solution path by letting competing hypotheses orbit each other, where the correct one gradually gains stability through resonance with the codebase's existing patterns, while incorrect ones decay.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
+    "id": "F-046461",
+    "size": 1,
+    "lead": "Predict failures via tidal locking of dependencies",
+    "today": "Today you can't see how a change in one function will break a seemingly unrelated test in another module.",
+    "with_this": "With this, Sampo can predict breakage by modeling the codebase as a body where every function is locked to its dependents, so pulling one star shifts the entire orbital plane, revealing the exact points of shear.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
+    "id": "F-046462",
+    "size": 1,
+    "lead": "Boost efficiency via relativistic time dilation for hot paths",
+    "today": "Today you can't make Sampo analyze your codebase faster for critical bugs without analyzing everything at the same slow speed.",
+    "with_this": "With this, Sampo can accelerate its analysis of high-risk code segments by subjecting them to a local 'time dilation' effect, allowing it to process critical logic in microseconds while background code processes in seconds.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
+    "id": "F-046466",
+    "size": 1,
+    "lead": "Accelerate learning via slingshot trajectory optimization",
+    "today": "Today you can't get Sampo to learn a new codebase pattern quickly without extensive manual training examples.",
+    "with_this": "With this, Sampo can learn new patterns rapidly by using a 'slingshot' effect, where a small amount of new data is accelerated by the gravitational field of existing similar patterns, allowing it to gain enough velocity to master the new pattern quickly.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
     "id": "F-010563",
     "size": 4,
     "lead": "Settle security disagreements by letting two rival fixes fight in a tournament",
@@ -52078,6 +52209,24 @@
      "initiative",
      "performance",
      "security"
+    ]
+   },
+   {
+    "id": "F-000458",
+    "size": 3,
+    "lead": "Let your dependencies write their own security patches",
+    "today": "Today you can't get a vulnerability fixed in a library you depend on until its maintainer notices, reviews it, and releases.",
+    "with_this": "With this, you can get a working fix for a library flaw landing in your repository in hours, and your users stop sitting exposed while upstream catches up.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "data",
+     "design",
+     "migrations"
     ]
    },
    {
@@ -52163,23 +52312,6 @@
     "evidence": "",
     "kinds": [
      "migrations"
-    ]
-   },
-   {
-    "id": "F-000458",
-    "size": 2,
-    "lead": "Let your dependencies write their own security patches",
-    "today": "Today you can't get a vulnerability fixed in a library you depend on until its maintainer notices, reviews it, and releases.",
-    "with_this": "With this, you can get a working fix for a library flaw landing in your repository in hours, and your users stop sitting exposed while upstream catches up.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data",
-     "design"
     ]
    },
    {
@@ -54010,140 +54142,12 @@
     "kinds": [
      "ops"
     ]
-   },
-   {
-    "id": "F-011182",
-    "size": 1,
-    "lead": "Predictively fork session states at critical decision points",
-    "today": "Today you can't explore multiple codebases or logic branches in parallel without manually saving and reloading entire environments.",
-    "with_this": "With this, you can test ten different architectural decisions in the same run, keeping only the branch that passes the final exam, saving days of trial-and-error.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "features"
-    ]
-   },
-   {
-    "id": "F-011213",
-    "size": 1,
-    "lead": "Derive feature priorities from collective athlete fatigue patterns",
-    "today": "Today you can't see which new features are causing burnout across the entire engineering organization.",
-    "with_this": "With this, you can automatically suppress low-impact feature requests that historically correlate with team fatigue, saving thousands of development hours.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "features"
-    ]
-   },
-   {
-    "id": "F-011277",
-    "size": 1,
-    "lead": "Auto-negotiate schema drift via reputation auctions",
-    "today": "Today you can't let the system fix data shape mismatches without asking permission every time.",
-    "with_this": "With this, you can have data pipelines self-heal by bidding compute credits to resolve conflicts, saving hours of manual mapping.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data"
-    ]
-   },
-   {
-    "id": "F-011420",
-    "size": 1,
-    "lead": "Autonomous dependency patching with human veto only",
-    "today": "Today you can't update a specific UI package without the harness halting to ask for manual permission on every single grant.",
-    "with_this": "With this, you can set a trust radius where routine version bumps apply instantly and only high-risk changes pause for a quick nod in the editor.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 2,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
-    ]
-   },
-   {
-    "id": "F-011422",
-    "size": 1,
-    "lead": "Contextual version locking based on team conventions",
-    "today": "Today you can't enforce that specific UI packages only update when the whole team agrees on a new minor version.",
-    "with_this": "With this, you can define 'ecosystem locks' where a dependency update is blocked in the editor until a designated peer reviews the changelog.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 2,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
-    ]
-   },
-   {
-    "id": "F-011474",
-    "size": 1,
-    "lead": "Trade unfinished proof tasks for instant market liquidity",
-    "today": "Today you can't hand off a complex verification step to a crowd of unknowns without trusting their code.",
-    "with_this": "With this, you can convert blocked proof tasks into instant, verified deliverables that save your project hours of manual debugging and QA time.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
-    ]
-   },
-   {
-    "id": "F-011475",
-    "size": 1,
-    "lead": "Price your technical debt as a real-time financial asset",
-    "today": "Today you can't see the exact monetary cost of leaving a critical proof step unfinished in your project.",
-    "with_this": "With this, you can make informed decisions on when to pay down technical debt by seeing its live price tag based on project risk and user impact.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
-    ]
-   },
-   {
-    "id": "F-011476",
-    "size": 1,
-    "lead": "Arbitrage between different teams' proof solution speeds",
-    "today": "Today you can't exploit the price difference between your team's speed and other teams' speed on similar tasks.",
-    "with_this": "With this, you can identify when your team is slow on a proof task and buy solutions from faster teams, then resell the efficiency gain back to your project's budget.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
-    ]
    }
   ],
-  "families_total": 1335,
+  "families_total": 1343,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 1836
+   "total": 1854
   }
  },
  "steer": {
@@ -54177,7 +54181,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54200,7 +54204,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54223,7 +54227,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54246,7 +54250,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54269,7 +54273,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54292,7 +54296,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54315,7 +54319,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54338,7 +54342,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54361,7 +54365,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54384,7 +54388,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54407,7 +54411,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54430,7 +54434,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54453,7 +54457,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54476,7 +54480,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54499,7 +54503,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54522,7 +54526,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54545,7 +54549,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54568,7 +54572,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54591,7 +54595,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54614,7 +54618,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54637,7 +54641,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54660,7 +54664,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54683,7 +54687,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54706,7 +54710,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54729,7 +54733,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
@@ -54752,7 +54756,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 36.4,
+    "idle_h": 36.8,
     "spend": 0,
     "missions": 0,
     "restarted": null,
