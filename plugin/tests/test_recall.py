@@ -1,7 +1,11 @@
 """fm recall (T-0043) and lessons (T-0048): related past work surfaces when a task is planned or focused."""
 import json
 import os
+import sys
+import tempfile
 import time
+import unittest
+from unittest import mock
 
 from helpers import ForemanTestCase
 
@@ -490,3 +494,44 @@ class NoBuiltMatcher(ForemanTestCase):  # T-2587: the MASTER-clause matcher fail
             self.assertFalse(hasattr(recall, name), name)
         r = self.fm("recall", "--backtest-built", "a", "b", check=False)
         self.assertNotEqual(r.returncode, 0)
+
+
+class KeptVerbDocs(unittest.TestCase):
+    def test_the_commands_help_is_kept_until_a_source_or_the_rules_change(self):
+        # T-3667: covered() built fm's whole parser for every task new and capture, ~40 ms of a forked task new's ~90
+        # and 48 CPU-s of a 1-in-8 test sample; the help it reads changes only when Sampo's code or rules do
+        from sampo import cli, recall
+        cli.build_parser()  # its lazy imports done with the real plugin root
+        with tempfile.TemporaryDirectory() as d:
+            src, rules, kept = os.path.join(d, "src"), os.path.join(d, "rules", "foreman.md"), os.path.join(d, "kept")
+            os.makedirs(src)
+            os.makedirs(os.path.dirname(rules))
+
+            def write(path, text):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(text)
+
+            def docs(folder=kept):
+                with mock.patch.object(cli, "_PARSER", None), mock.patch.object(c, "PLUGIN_ROOT", d), \
+                        mock.patch.object(recall, "SOURCES", src), \
+                        mock.patch.object(cli, "_build_parser", wraps=cli._build_parser) as built:
+                    return recall.verb_docs(folder), built.call_count
+
+            write(os.path.join(src, "a.py"), "x = 1\n")
+            write(rules, '"what now" → `sampo next`\n')
+            first, n = docs()
+            self.assertEqual(n, 1)
+            self.assertTrue(first["next"][1].endswith(" what now"))
+            self.assertEqual(docs(), (first, 0), "kept: the same docs, no parser built")
+            write(os.path.join(src, "a.py"), "x = 22\n")
+            self.assertEqual(docs(), (first, 1), "a source changed: built again")
+            write(rules, '"keep going" → `sampo next`\n')
+            again, n = docs()
+            self.assertEqual((n, again["next"][1].endswith(" keep going")), (1, True), "the rules changed")
+            self.assertEqual(docs()[1], 0)
+            for name in os.listdir(kept):
+                os.chmod(os.path.join(kept, name), 0o666)
+            self.assertEqual(docs()[1], 1, "a file others can write is never read")
+            with mock.patch.object(sys, "dont_write_bytecode", True):
+                self.assertEqual(docs(os.path.join(d, "none"))[1], 1)
+            self.assertFalse(os.path.exists(os.path.join(d, "none")), "nothing written where bytecode isn't")

@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sys
 import time
 
 from sampo import core as c
@@ -339,10 +340,41 @@ _PLAIN = c.lazy(r'"([^"`·→]+)" → ([^·\n]+)')  # the rules' "plain words" �
 _VERB = c.lazy(r'`(?:fm|sampo) ([\w-]+)(?: ([\w-]+))?')  # each `fm verb …` in it ("serve this repo": fm ask, then fm serve)
 
 
-def verb_docs():
+SOURCES = os.path.dirname(os.path.abspath(__file__))  # the package fm's parser is built from: verb_docs's stamp
+
+
+def verb_docs(folder=None):
     """{command: (its help, one text of its name, help and options' help)} from fm's parser (fm which: T-1699). T-1908:
     a subcommand with help is its own command ("task drop"), and the rules' plain words join their command's text.
-    T-1916: so is an action choice its help describes ("lane merge")."""
+    T-1916: so is an action choice its help describes ("lane merge"). T-3667: kept in the package's __pycache__ (or
+    folder) while no source file and not the rules change, each stamped by mtime and size as a .pyc is: covered() built
+    the whole parser for every task new and capture, ~40 ms of a forked task new's ~90. A missing, stale or unreadable
+    file, or one another user owns or others can write, is built again; nothing is written where bytecode isn't."""
+    rules = os.path.join(c.PLUGIN_ROOT, "rules", "foreman.md")
+    path = os.path.join(folder or os.path.join(SOURCES, "__pycache__"), f"verb-docs.{sys.implementation.cache_tag}.json")
+    try:
+        stamp = [sys.version] + [[f, st.st_mtime_ns, st.st_size] for f, st in [(rules, os.stat(rules))] + sorted(
+            (e.name, e.stat()) for e in os.scandir(SOURCES) if e.name.endswith(".py"))]
+    except OSError:
+        return _verb_docs()
+    try:
+        with open(path, encoding="utf-8") as f:
+            st = os.fstat(f.fileno())
+            kept = json.load(f) if st.st_uid == os.getuid() and not st.st_mode & 0o022 else {}
+        if kept.get("stamp") == stamp:
+            return {k: tuple(v) for k, v in kept["docs"].items()}
+    except (OSError, ValueError, AttributeError, KeyError, TypeError):
+        pass
+    docs = _verb_docs()
+    if not sys.dont_write_bytecode:
+        try:
+            c.write_atomic(path, json.dumps({"stamp": stamp, "docs": docs}))
+        except OSError:
+            pass
+    return docs
+
+
+def _verb_docs():
     import argparse
     from sampo import cli
     docs = {}
