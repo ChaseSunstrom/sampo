@@ -7,14 +7,14 @@ holds them to it), so no fork inherits the server's settings. Any trouble reachi
 subprocess, and FOREMAN_FORK_CLI=0 turns the server off. T-3572: run.py starts one server for all its classes
 (share()), so a class starts its own only outside run.py, under --sandbox, or when the run's is gone.
 
-Each request: the server forks a manager (which owns the connection), the manager forks the worker that runs the
-script, waits for it and sends back its exit status. The worker's pid goes to the client first, so a timeout kills it.
+Each request: the server forks the worker that runs the script and, when it exits, sends back its exit status (T-3678:
+no manager process between them). The worker's pid goes to the client first, so a timeout kills it.
 """
 import atexit
 import json
 import locale
 import os
-import select
+import selectors  # subprocess imports it already
 import shutil
 import signal
 import socket
@@ -44,8 +44,8 @@ _BASE_PATH = []  # the server's sys.path after its script folder: what a fresh `
 
 
 def _die_with_parent():
-    """A forked manager or worker dies with its parent, as run.py's classes do (T-2034), so a killed test or server
-    leaves no fm call running in its own session."""
+    """A forked worker dies with its server, as run.py's classes do (T-2034), so a killed test or server leaves no fm
+    call running in its own session."""
     try:
         import ctypes
         ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
@@ -94,8 +94,8 @@ def _worker(req):
             os.dup2(f, fd)
             os.close(f)
         sys.argv = [req["script"], *req["args"]]
-        # T-3572: a fresh child's parent is its caller, not this manager: what walks from os.getppid() (the hook's own
-        # Claude Code, T-1226; SessionStart's recorded pids) sees the test; the manager ends the call if the caller goes
+        # T-3572: a fresh child's parent is its caller, not the server: what walks from os.getppid() (the hook's own
+        # Claude Code, T-1226; SessionStart's recorded pids) sees the test; the server ends the call if the caller goes
         os.getppid = lambda: req["ppid"]
         sys.path[:] = [os.path.dirname(os.path.abspath(req["script"])), *_BASE_PATH]  # as `python3 SCRIPT` sets it
         try:
@@ -124,8 +124,10 @@ def _worker(req):
 
 
 def serve(path, parent):
-    """The server: import ahead, then fork a manager per connection until the test process is gone; its folder goes
-    with it."""
+    """The server: import ahead, then fork one worker per request until the test process is gone; its folder goes
+    with it. T-3678: one loop and no manager per call (a fork fewer each): it reads every connection without blocking,
+    so a slow client stalls no other; a worker's exit (SIGCHLD, through a wakeup pipe) sends its status; a connection
+    that closes while its call runs (the client killed or timed out) takes the call with it."""
     me = os.getpid()
     _BASE_PATH[:] = sys.path[1:]
     sys.path.insert(0, LIB)
@@ -134,68 +136,119 @@ def serve(path, parent):
     for mod in PRELOAD:
         __import__(mod)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # stop(): the finally below still runs
+    wake_r, wake_w = os.pipe()
+    for fd in (wake_r, wake_w):
+        os.set_blocking(fd, False)
+    signal.signal(signal.SIGCHLD, lambda *_: None)  # not ignored, which drops the workers' CPU time (T-3572)
+    signal.set_wakeup_fd(wake_w)
+    sel = selectors.DefaultSelector()
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    calls = {}  # a running worker's pid -> its client's connection
     try:
         srv.bind(path)
         srv.listen(64)
-        srv.settimeout(1.0)
+        srv.setblocking(False)
+        sel.register(srv, selectors.EVENT_READ)
+        sel.register(wake_r, selectors.EVENT_READ)
         print("ready", flush=True)
         while os.getppid() == parent:
-            try:
-                conn, _ = srv.accept()
-            except OSError:  # the 1 s timeout, or an accept that failed (EMFILE): keep serving
-                conn = None
-            if conn:
-                try:
-                    if os.fork() == 0:
-                        srv.close()
-                        _manage(conn)
-                except OSError:  # no fork (EAGAIN): the client reads a closed connection and fails that call
-                    pass
-                conn.close()
-            _reap()
+            for key, _ in sel.select(1.0):  # the 1 s: a test process gone ends the server
+                if key.fileobj is srv:
+                    try:
+                        conn, _ = srv.accept()
+                    except OSError:  # EAGAIN, or EMFILE: keep serving
+                        continue
+                    conn.setblocking(False)
+                    sel.register(conn, selectors.EVENT_READ, b"")
+                elif key.fileobj == wake_r:
+                    try:
+                        while os.read(wake_r, 4096):
+                            pass
+                    except BlockingIOError:
+                        pass
+                else:
+                    _read(sel, key, calls, wake_w)
+            _reap(sel, calls)
     finally:
         if os.getpid() == me:  # never a forked child's exit
             shutil.rmtree(os.path.dirname(path), ignore_errors=True)
 
 
-def _reap():
-    """T-3572: wait for the managers that ended (not SIGCHLD ignored, which drops their CPU time), so a run's
-    rusage counts its forked calls the way it counts fresh ones."""
-    try:
-        while os.waitpid(-1, os.WNOHANG)[0]:
-            pass
-    except ChildProcessError:
-        pass
+def _drop(sel, conn):
+    sel.unregister(conn)
+    conn.close()
 
 
-def _manage(conn):
-    """In the forked manager: run one request's worker, send its pid, wait, send its exit status, exit."""
-    signal.signal(signal.SIGTERM, signal.SIG_DFL)
-    _die_with_parent()
+def _read(sel, key, calls, wake_w):
+    """One connection's turn: more of its request (the whole one forks its worker), or its end."""
+    conn, got = key.fileobj, key.data
     try:
-        conn.settimeout(None)
-        req = _recv(conn)
-        pid = os.fork()
-        if pid == 0:
-            conn.close()
-            _worker(req)
-        _send(conn, {"pid": pid})
-        try:  # T-3572: a client gone (run.py killed its class) takes its call with it
-            done = os.pidfd_open(pid)
-        except (AttributeError, OSError):  # no pidfd (not Linux, an old kernel): only wait, as before
-            done = None
-        if done is not None:
-            if done not in select.select([conn, done], [], [])[0]:
+        part = conn.recv(1 << 16)
+    except BlockingIOError:
+        return
+    except OSError:
+        part = b""
+    if isinstance(got, int):  # its call runs: the client sends nothing more, so this is its end
+        if not part:  # T-3572: a client gone (run.py killed its class) takes its call with it
+            calls.pop(got, None)
+            try:
+                os.killpg(got, signal.SIGKILL)
+            except OSError:  # not its own group yet
                 try:
-                    os.killpg(pid, signal.SIGKILL)
-                except ProcessLookupError:  # not its own group yet
-                    os.kill(pid, signal.SIGKILL)
-        _, status = os.waitpid(pid, 0)
-        _send(conn, {"code": os.waitstatus_to_exitcode(status)})
-    except Exception:  # noqa: BLE001 - the client reads a closed connection
+                    os.kill(got, signal.SIGKILL)
+                except OSError:
+                    pass
+            _drop(sel, conn)
+        return
+    if not part:  # gone before its whole request
+        return _drop(sel, conn)
+    got += part
+    size = int.from_bytes(got[:4], "big") if len(got) >= 4 else -1
+    if size < 0 or len(got) < 4 + size:
+        return sel.modify(conn, selectors.EVENT_READ, got)
+    try:
+        req = json.loads(got[4:4 + size])
+        pid = os.fork()
+    except (ValueError, OSError):  # a bad request, or no fork (EAGAIN): the client reads a closed connection
+        return _drop(sel, conn)
+    if pid == 0:  # the worker keeps nothing of the server's: no other call's connection, no wakeup, no handlers
+        try:
+            signal.set_wakeup_fd(-1)
+            for sig in (signal.SIGCHLD, signal.SIGTERM):
+                signal.signal(sig, signal.SIG_DFL)
+            for k in list(sel.get_map().values()):
+                k.fileobj.close() if hasattr(k.fileobj, "close") else os.close(k.fileobj)
+            sel.close()
+            os.close(wake_w)
+            _worker(req)
+        finally:
+            os._exit(1)  # never back into the server's loop
+    calls[pid] = conn
+    sel.modify(conn, selectors.EVENT_READ, pid)
+    try:
+        _send(conn, {"pid": pid})
+    except OSError:  # its client is gone already: the next read sees the end and kills the call
         pass
-    os._exit(0)
+
+
+def _reap(sel, calls):
+    """Wait for every worker that ended and send its exit status to its client (T-3572: waited for, so a run's
+    rusage counts its forked calls the way it counts fresh ones)."""
+    while True:
+        try:
+            pid, status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if not pid:
+            return
+        conn = calls.pop(pid, None)
+        if conn is None:  # its client went first
+            continue
+        try:
+            _send(conn, {"code": os.waitstatus_to_exitcode(status)})
+        except OSError:
+            pass
+        _drop(sel, conn)
 
 
 def _server():
@@ -254,6 +307,7 @@ def stop():
         except subprocess.TimeoutExpired:
             got[1].kill()
             got[1].wait()
+        got[1].stdout.close()  # its ready line's pipe (a ResourceWarning each stop)
         shutil.rmtree(os.path.dirname(got[0]), ignore_errors=True)
 
 
@@ -265,7 +319,8 @@ def run(script, args, cwd=None, env=None, input=None, timeout=None):
     # an interpreter or locale setting (PYTHONPATH, -X options, LC_ALL, TZ) shapes a fresh start, which a fork lacks
     same_start = all(env.get(k) == os.environ.get(k) for k in set(env) | set(os.environ) if k.startswith(START_ENV))
     path = _server() if os.path.isdir(cwd) and same_start else None
-    fresh = lambda: subprocess.run(argv, cwd=cwd, env=env, input=input, capture_output=True, text=True, timeout=timeout)
+    fresh = lambda: subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout,  # as a fork:
+                                   **({"input": input} if input is not None else {"stdin": subprocess.DEVNULL}))  # no input reads /dev/null
     if path is None:
         return fresh()
     with tempfile.TemporaryDirectory(prefix="fmcall-") as d:

@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tarfile
 
+import forkcli
 from helpers import FM, ForemanTestCase, git_repo, read_text
 
 from sampo import core as c
@@ -225,8 +226,8 @@ class HarnessCanary(ForemanTestCase):
         return {"PATH": bin_dir + os.pathsep + os.environ["PATH"], "HOME": self.tmp}
 
     def canary(self, env):
-        p = subprocess.run([sys.executable, FM, "canary", "--if-changed", "--json"], cwd=self.repo, capture_output=True,
-                           text=True, timeout=300, env=dict(os.environ, FOREMAN_HOME=self.home, **env))
+        p = forkcli.run(FM, ["canary", "--if-changed", "--json"], cwd=self.repo, timeout=300,  # T-3678: a fork
+                        env=dict(os.environ, FOREMAN_HOME=self.home, **env))
         self.assertIn(p.returncode, (0, 1), p.stderr)
         return json.loads(p.stdout)
 

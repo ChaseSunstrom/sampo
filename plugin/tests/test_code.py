@@ -8,6 +8,7 @@ import sys
 import threading
 import time
 
+import forkcli
 from helpers import FM, PLUGIN, ForemanTestCase, busy_factor, read_json, read_text, stub_corpus_replay
 
 PLAN = {"type": "FIX", "tier": "S", "title": "Make calc.add add",
@@ -97,17 +98,14 @@ CLOSE = {"text": json.dumps({"intent": "calc.add adds, as asked", "adversary": "
 
 class CodeCase(ForemanTestCase):
     replayed = True  # T-1401: a fresh green guard corpus replay on record, so unattended runs aren't refused
+    # T-3678: the bug, committed in each test's repo by git_repo from a per-process template (2 git processes fewer a test)
+    repo_seed = ("seed the bug", (("calc.py", "def add(a, b):\n    return a - b\n"),
+                                  ("test_calc.py", "import calc\nassert calc.add(2, 3) == 5, calc.add(2, 3)\nprint('ok')\n")))
 
     def setUp(self):
         super().setUp()
         if self.replayed:
             stub_corpus_replay(self.repo)
-        with open(os.path.join(self.repo, "calc.py"), "w") as f:
-            f.write("def add(a, b):\n    return a - b\n")
-        with open(os.path.join(self.repo, "test_calc.py"), "w") as f:
-            f.write("import calc\nassert calc.add(2, 3) == 5, calc.add(2, 3)\nprint('ok')\n")
-        subprocess.run(["git", "-C", self.repo, "add", "."], check=True)
-        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "seed the bug"], check=True)
         self.fake_home = os.path.join(self.tmp, "home")  # rm -rf ~ in a script can only ever reach this
         os.makedirs(self.fake_home)
         with open(os.path.join(self.fake_home, "keep"), "w") as f:
@@ -138,9 +136,9 @@ class CodeCase(ForemanTestCase):
         return e
 
     def code(self, *args, check=True, env=None, input=None):
-        p = subprocess.run([sys.executable, FM, "code", *args], cwd=self.repo, env=self.env(env), capture_output=True,
-                           text=True, timeout=60 * busy_factor(),  # T-1721: a hang guard; six builders' load tripped it
-                           **({"input": input} if input is not None else {"stdin": subprocess.DEVNULL}))  # T-1374
+        # T-3678: a fork of the warm server, not a fresh interpreter; no input reads /dev/null (T-1374)
+        p = forkcli.run(FM, ["code", *args], cwd=self.repo, env=self.env(env), input=input,
+                        timeout=60 * busy_factor())  # T-1721: a hang guard; six builders' load tripped it
         if check and p.returncode:
             raise AssertionError(f"fm code exited {p.returncode}\nstdout:{p.stdout}\nstderr:{p.stderr}")
         return p
@@ -166,6 +164,18 @@ class CodeEnv(CodeCase):
             self.assertTrue(e[k].startswith(self.fake_home + os.sep), (k, e[k]))
         outside = self.env({"XDG_CONFIG_HOME": "/elsewhere"})  # a test's own extra still wins
         self.assertEqual(outside["XDG_CONFIG_HOME"], "/elsewhere")
+
+    def test_fm_code_runs_as_a_fork_of_the_warm_server_in_a_repo_seeded_before_the_test(self):
+        # T-3678: ~600 tests' fm code calls each paid a fresh interpreter, and their seed 2 git processes
+        from unittest import mock
+        with mock.patch.object(forkcli, "run", wraps=forkcli.run) as run:
+            self.assertIn("usage", self.code("--help").stdout)
+        self.assertEqual(run.call_args.args[:2], (FM, ["code", "--help"]))
+        self.assertEqual(run.call_args.kwargs["cwd"], self.repo)
+        log = subprocess.run(["git", "-C", self.repo, "log", "--format=%s", "--name-only"], capture_output=True,
+                             text=True).stdout.splitlines()
+        self.assertEqual([x for x in log if x], ["seed the bug", "calc.py", "test_calc.py", "init", "README.md"])
+        self.assertEqual(self.status(), "")
 
 
 class EndToEnd(CodeCase):
@@ -569,8 +579,8 @@ class ClaudeFlags(CodeCase):
         elsewhere = os.path.join(self.tmp, "elsewhere")
         os.makedirs(elsewhere)
         self.serve("openai", plan())
-        r = subprocess.run([sys.executable, FM, "-p", slug, "code", "-p", "fix add", "--model", "fake", "--dry-plan"],
-                           cwd=elsewhere, env=self.env(), capture_output=True, text=True, timeout=60)
+        r = forkcli.run(FM, ["-p", slug, "code", "-p", "fix add", "--model", "fake", "--dry-plan"], cwd=elsewhere,
+                        env=self.env(), timeout=60 * busy_factor())
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("Make calc.add add", r.stdout)
         self.assertEqual(self.status(), "")
@@ -918,8 +928,7 @@ class SkillOffer(CodeCase):  # T-1397
                 f.write(body)
         for a in (["init", "-q"], ["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "kit"]):
             subprocess.run(["git", "-C", kit, *a], check=True)
-        p = subprocess.run([sys.executable, FM, "lib", "source", "add", kit, "--name", "kit"], cwd=self.repo,
-                           env=self.env(), capture_output=True, text=True)
+        p = forkcli.run(FM, ["lib", "source", "add", kit, "--name", "kit"], cwd=self.repo, env=self.env())
         self.assertEqual(p.returncode, 0, p.stderr)
         self.serve("openai", plan())
         out = self.code("extract tables from this pdf", "--model", "fake", "--dry-plan").stdout

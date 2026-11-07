@@ -976,10 +976,15 @@ class Gallery(ForemanTestCase):
             if action == "airlock":
                 return real(action, types.SimpleNamespace(**{**vars(a), "days": 1}))
             return real(action, a)
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)  # the gallery reads the project it runs in: this test's, as fm scene gallery's tests do
         with mock.patch.object(sscene, "guard_counts", return_value=({}, 0)), \
                 mock.patch.object(sscene, "_builtin", side_effect=broken), \
+                mock.patch.object(sscene, "churn", wraps=sscene.churn) as churn, \
                 mock.patch("sampo.core.find_project", return_value=object()):
             w, h, rgb, said = sscene.gallery()
+        # T-3678: the churn tile reads the test's own repo, never the checkout the run started in (5 CPU-s of git)
+        self.assertEqual(churn.call_args.args[0], self.repo)
         self.assertEqual((w, h, len(said)), (480, 200, 5))
         self.assertIn("(a sample: unreadable (KeyError))", said[3])
         self.assertIn("(a sample: no guard record over 1 days)", said[2])  # an empty record isn't a bare gate

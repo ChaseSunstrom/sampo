@@ -77,6 +77,40 @@ class ScratchRepoCost(unittest.TestCase):
         with open(os.path.join(self.tmp, "warm", "README.md")) as f:
             self.assertEqual(f.read(), "# app\n", "an edit in one repo reached another")
 
+    def test_a_seeded_repo_is_init_then_its_seed_commit_made_now_in_one_git_process(self):
+        # T-3678: a class's seed files (test_code's calc.py) ride in its template: 1 git process a test, not 3
+        seed = ("seed the bug", (("calc.py", "def add(a, b):\n    return a - b\n"), ("pkg/t.py", "x = 1\n")))
+        warm = self.helpers.git_repo(self.tmp, "warm", seed=seed)
+        with mock.patch.object(subprocess, "run", wraps=subprocess.run) as run, \
+                mock.patch.dict(os.environ, {"GIT_COMMITTER_DATE": "@1000000000 +0000"}):
+            root = self.helpers.git_repo(self.tmp, "app", seed=seed)
+        self.assertEqual(run.call_count, 1, run.call_args_list)
+        log = self.git(root, "log", "--format=%ct %s").stdout.split("\n")
+        self.assertEqual((log[0], log[1].split(" ", 1)[1]), ("1000000000 seed the bug", "init"))
+        self.assertEqual(self.git(root, "show", "--format=", "--name-only", "HEAD").stdout.split(), ["calc.py", "pkg/t.py"])
+        self.assertEqual(self.git(root, "diff-files", "--quiet").returncode, 0, "a copied index reads dirty")
+        self.assertEqual(self.git(root, "diff-index", "--quiet", "HEAD").returncode, 0)
+        self.assertEqual(self.git(root, "status", "--porcelain").stdout, "")
+        with open(os.path.join(root, "calc.py"), "w") as f:
+            f.write("def add(a, b):\n    return a + b\n")  # same size, same second: still seen
+        self.assertEqual(self.git(root, "diff-files", "--name-only").stdout.strip(), "calc.py")
+        for other in (warm, self.helpers._repo_template(seed)):
+            with open(os.path.join(other, "calc.py")) as f:
+                self.assertIn("a - b", f.read(), "an edit in one repo reached another")
+        self.assertNotIn("calc.py", os.listdir(self.helpers._repo_template()), "an unseeded repo gets no seed")
+
+    def test_a_scratch_repos_commits_start_no_background_maintenance(self):
+        # T-3678: each commit forked a detached `git maintenance run --auto` (a git process a commit), and the seeded
+        # template's raced the next copy: its maintenance.lock vanished mid-copytree
+        trace = os.path.join(self.tmp, "trace")
+        with mock.patch.dict(os.environ, {"GIT_TRACE": trace}):
+            root = self.helpers.git_repo(self.tmp, "app", seed=("s", (("a.py", "x\n"),)))
+            self.git(root, "commit", "-q", "--allow-empty", "-m", "later")
+        with open(trace) as f:
+            said = f.read()
+        self.assertIn("commit", said)
+        self.assertNotIn("maintenance", said)
+
 
 class GateKeyIsolation(unittest.TestCase):
     def test_an_in_process_gate_signs_with_the_tests_own_key_not_the_users(self):

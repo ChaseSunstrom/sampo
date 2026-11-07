@@ -44,6 +44,20 @@ if sys.argv[1:2] == ["ppid"]:
     print("parent", os.getppid())
 if sys.argv[1:2] == ["path"]:
     print("tests on path", any(p.rstrip("/").endswith("plugin/tests") for p in sys.path))
+if sys.argv[1:2] == ["nap"]:
+    import time; time.sleep(0.3)
+if sys.argv[1:2] == ["real"]:  # the real parent, which os.getppid() hides in a fork
+    print("real parent", open("/proc/self/stat").read().rsplit(")", 1)[1].split()[1])
+if sys.argv[1:2] == ["inherit"]:  # T-3678: nothing of the server's loop reaches a call: no socket, pipe, poll, handler
+    import signal
+    fds = []
+    for fd in sorted(int(n) for n in os.listdir("/proc/self/fd") if int(n) > 2):
+        try:
+            fds.append(os.readlink(f"/proc/self/fd/{fd}").split(":")[0])
+        except OSError:  # the listing's own folder, closed by now
+            pass
+    print("fds", [k for k in fds if k in ("socket", "pipe", "anon_inode")])
+    print("signals", signal.getsignal(signal.SIGCHLD), signal.getsignal(signal.SIGTERM), signal.set_wakeup_fd(-1))
 sys.exit(int(sys.argv[1]) if sys.argv[1:2] and sys.argv[1].isdigit() else 0)
 '''
 
@@ -92,9 +106,34 @@ class ForkServer(ForemanTestCase):
         os.makedirs(other)
         for args, env in ((["neg"], {"PATH": os.environ["PATH"]}),
                           (["tmp"], {"PATH": os.environ["PATH"], "TMPDIR": other}),
-                          (["path"], {"PATH": os.environ["PATH"]}), (["ppid"], {"PATH": os.environ["PATH"]})):
+                          (["path"], {"PATH": os.environ["PATH"]}), (["ppid"], {"PATH": os.environ["PATH"]}),
+                          (["inherit"], {"PATH": os.environ["PATH"]})):
             fresh, forked = self.both(args, env, self.tmp)
             self.assertEqual((forked.returncode, forked.stdout), (fresh.returncode, fresh.stdout), args)
+
+    def test_a_call_is_one_fork_of_the_server(self):
+        # T-3678: no manager per call (a fork and a waiting process fewer each): the worker is the server's own child
+        r = forkcli.run(self.script, ["real"], cwd=self.tmp, env=base(), timeout=30)
+        self.assertIn(f"real parent {forkcli._SERVER[os.getpid()][1].pid}\n", r.stdout)
+
+    def test_concurrent_calls_keep_their_own_env_cwd_and_stdin_and_a_stalled_client_blocks_none(self):
+        # T-3678: one server loop serves every call; a client that sent half a request holds up no other
+        import socket
+        from concurrent.futures import ThreadPoolExecutor
+        forkcli.run(self.script, ["0"], cwd=self.tmp, env=base(), timeout=30)
+        stalled = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.addCleanup(stalled.close)
+        stalled.connect(forkcli._SERVER[os.getpid()][0])
+        stalled.sendall(b"\0\0")  # half a length prefix, and never the rest
+        dirs = [os.path.join(self.tmp, f"d{i}") for i in range(8)]
+        for d in dirs:
+            os.makedirs(d)
+        with ThreadPoolExecutor(8) as pool:
+            got = list(pool.map(lambda i: forkcli.run(self.script, ["nap", str(i)], cwd=dirs[i], env=base(PROBE=f"p{i}"),
+                                                      input=f"in{i}", timeout=60), range(8)))
+        for i, r in enumerate(got):
+            self.assertEqual((r.returncode, r.stdout.splitlines()),
+                             (0, [f"argv ['nap', '{i}']", f"cwd {dirs[i]}", f"env p{i} False", f"stdin 'in{i}'"]))
 
     def test_the_server_leaves_no_folder_behind(self):
         forkcli.run(self.script, ["0"], cwd=self.tmp, env=base(), timeout=30)
@@ -140,8 +179,8 @@ class ForkServer(ForemanTestCase):
 # T-3572: a class process run by run.py: one call through forkcli, then which process served it and its own servers
 CLASS = ("import json, sys, forkcli; p = forkcli.run(sys.argv[1], [], timeout=60); "
          "print(json.dumps([p.returncode, p.stdout.strip(), [v[0] for v in forkcli._SERVER.values()]]))")
-# the real parent's argv[3] (os.getppid() reads as the caller in a fork): a forked call's manager is a fork of
-# `python3 forkcli.py serve SOCKET PID`; a fresh call's parent is `python3 -c CLASS SCRIPT`
+# the real parent's argv[3] (os.getppid() reads as the caller in a fork): a forked call's parent is
+# `python3 forkcli.py serve SOCKET PID` (T-3678); a fresh call's parent is `python3 -c CLASS SCRIPT`
 PARENT = ("ppid = open('/proc/self/stat').read().rsplit(')', 1)[1].split()[1]\n"
           "print(open(f'/proc/{ppid}/cmdline').read().split(chr(0))[3])\n")
 

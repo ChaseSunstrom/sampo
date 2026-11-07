@@ -278,31 +278,43 @@ def stub_corpus_replay(repo, drifted=0, days=0, cases=3):
 
 
 @functools.cache
-def _repo_template():
-    """T-3581: the scratch repo up to its commit (init, identity, README added), made once a process."""
+def _repo_template(seed=None):
+    """T-3581: the scratch repo up to its commit (init, identity, README added), made once a process. T-3678: with a
+    seed (message, ((path, text), ...)), init is committed here and the seed's files are added for git_repo's commit."""
     base = tempfile.mkdtemp(prefix="fm-test-repo-")
     atexit.register(shutil.rmtree, base, True)
     root = os.path.join(base, "app")
     subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
     with open(os.path.join(root, ".git", "config"), "a") as f:  # what `git config user.*` writes, minus 2 processes
-        f.write("[user]\n\temail = t@example.com\n\tname = t\n")
+        # T-3678: and no detached `git maintenance run --auto` after each commit (a process each; one raced copytree)
+        f.write("[user]\n\temail = t@example.com\n\tname = t\n[maintenance]\n\tauto = false\n")
     with open(os.path.join(root, "README.md"), "w") as f:
         f.write("# app\n")
     subprocess.run(["git", "-C", root, "add", "."], check=True)
+    if seed:  # the init commit is the process's (its time and hash shared); each test's seed commit is its own, made now
+        subprocess.run(["git", "-C", root, "commit", "-qm", "init"], check=True)
+        for rel, text in seed[1]:
+            os.makedirs(os.path.dirname(os.path.join(root, rel)), exist_ok=True)
+            with open(os.path.join(root, rel), "w") as f:
+                f.write(text)
+        subprocess.run(["git", "-C", root, "add", "."], check=True)
     return root
 
 
-def git_repo(parent, name="app"):
+def git_repo(parent, name="app", seed=None):
     """A copy of the template, then its own init commit made now: 1 git process instead of 5 (T-3581). The commit
-    also refreshes the copied index, whose stat data would otherwise read dirty to diff-files/diff-index."""
+    also refreshes the copied index, whose stat data would otherwise read dirty to diff-files/diff-index. T-3678: a
+    seed's commit, on the template's init, is that one process (a class's own files and commit cost 2 more)."""
     root = os.path.join(parent, name)
-    shutil.copytree(_repo_template(), root, copy_function=shutil.copy, ignore=shutil.ignore_patterns("*.sample"))
-    subprocess.run(["git", "-C", root, "commit", "-qm", "init"], check=True)
+    shutil.copytree(_repo_template(seed), root, copy_function=shutil.copy, ignore=shutil.ignore_patterns("*.sample"))
+    subprocess.run(["git", "-C", root, "commit", "-qm", seed[0] if seed else "init"], check=True)
     return root
 
 
 class SampoTestCase(unittest.TestCase):
     """Each test gets its own FOREMAN_HOME and a scratch git repo."""
+
+    repo_seed = None  # T-3678: (message, ((path, text), ...)), committed on init in each test's repo (git_repo)
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -339,7 +351,7 @@ class SampoTestCase(unittest.TestCase):
             self.addCleanup(key.stop)
         except (ImportError, AttributeError):
             pass
-        self.repo = git_repo(self.tmp)
+        self.repo = git_repo(self.tmp, seed=self.repo_seed)
 
     def tearDown(self):
         for k, v in self._env.items():
