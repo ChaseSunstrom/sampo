@@ -2,7 +2,10 @@
 each with an exact command, one worked example, a self-check and the traps small models fall into. The store is
 <state>/cards/cards.jsonl (append-only, admitted cards only); the grid is kind x stack x stage x surface, read thin
 first; `sampo playbooks small grow|coverage|show` drives it. The model calls, workers, think switch, local-first then
-Haiku routing and JSON parsing are moonscale's (T-2868/T-2893), imported, not copied."""
+Haiku routing and JSON parsing are moonscale's (T-2868/T-2893), imported, not copied.
+The admit's command check is a hygiene filter for card quality, not a security boundary: KNOWN includes sh, bash, env,
+xargs and python3, so a card can always name a command that runs anything. Sampo never runs a card; the guard of the
+model that follows one is the boundary."""
 import collections
 import concurrent.futures
 import functools
@@ -10,6 +13,7 @@ import json
 import os
 import random
 import re
+import shlex
 import zlib
 
 from sampo import budget
@@ -41,14 +45,20 @@ PLATFORMS = ("react", "vue", "svelte", "html-css", "tailwind", "swiftui", "flutt
 CONCERNS = ("accessibility", "responsive", "theming and dark mode", "motion", "loading", "empty and error states",
             "forms and validation", "performance", "i18n", "typography and design tokens")  # ten: 16 x 8 x 10 x 3 = 3,840 cells
 UI_STAGES = ("plan", "build", "verify")
-UI_KNOWN = KNOWN | {"pnpm", "yarn"}
+UI_KNOWN = KNOWN | {"pnpm", "yarn", "flutter", "dart", "swift", "swiftc", "xcodebuild", "xcrun", "tmux", "tput"}  # tmux capture-pane: a TUI's screenshot
+# tmux and xcrun run whatever follows them, unread: a card names only their screenshot and test tools
+SUBCOMMANDS = {"tmux": {"capture-pane", "has-session", "kill-session"}, "xcrun": {"simctl", "xcodebuild"}}
 UI_RUNNERS = frozenset("npx npm pnpm yarn pytest node".split())  # a first word that runs a real check
+# a platform runner is a check only when it tests: flutter test (goldens are screenshot diffs), not flutter pub add
+UI_TESTS = {"flutter": {"test", "drive", "analyze"}, "dart": {"test", "analyze"}, "swift": {"test"},
+            "xcodebuild": {"test"}, "cargo": {"test"}}
+UI_CHECKS = {"flutter": "flutter test, golden files as screenshot diffs", "swiftui": "xcodebuild test or swift test, "
+             "snapshot tests", "terminal-tui": "pytest or cargo test"}  # else the web runners below
 _UI_FIELDS = ("component", "platform", "concern", "stage")
 _MEASURE = re.compile(r"\b\d+(\.\d+)?\s*(:1|px|rem|em|ms|s|sec|fps|kb|kib|mb|%|dp|pt|pts|items?|rows?|cells?|colou?rs?|"
                       r"lines?|columns?|chars?|characters?)(?![a-z])|\b(exactly|at least|at most|under|over|within) \d", re.I)
 _UI_VAGUE = re.compile(r"\b(looks?|feels?|seems?) (good|nice|great|right|better|fine|clean|polished)\b|\bmake it (nice|pretty|"
                        r"better|look|feel)|\bby eye\b|\bpretty\b|\bnicer\b", re.I)
-_BAD_SHELL =re.compile(r";|&&|\|\||`|\$\(|>|<<|\brm\s+-")
 _VAGUE = re.compile(r"\b(etc|as needed|if necessary|appropriate(ly)?|whatever|somehow|and so on|as required|properly|"
                     r"correctly configure|best practices?)\b", re.I)
 SYSTEM = ("You write cards for small language models (4B to 27B parameters): short, explicit, numbered, with exact "
@@ -99,26 +109,86 @@ def _clean(card):
     return out if len(out["steps"]) == len(card["steps"]) and len(out["traps"]) == len(card["traps"]) else None
 
 
+def _ansi_c(cmd):
+    """True when bash would start an ANSI-C string ($'...', whose quotes are not shlex's): a $' outside any quotes.
+    Inside '...' nothing escapes; outside and inside "..." a backslash escapes the next character."""
+    state, i = "", 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if state == "'":
+            state = "" if ch == "'" else state
+        elif ch == "\\":
+            i += 1
+        elif state == '"':
+            state = "" if ch == '"' else state
+        elif ch == "$" and cmd[i + 1:i + 2] == "'":
+            return True
+        elif ch in "'\"":
+            state = ch
+        i += 1
+    return False
+
+
+def _stages(cmd):
+    """T-2994: cmd's pipe stages as bash reads them (shlex), or why it chains, redirects or deletes. A quoted pattern
+    ('<Button>', "a|b", 'a\\|b') is one word, never a redirect or a pipe; a word holding ; && ` or $( is code; the code
+    of sh or bash (every word after it) is read the same way; rm (but a stage's git rm), find's -delete, an open quote
+    and an ANSI-C $'...' (a $' outside quotes; '^[1-9]$' is only a regex) are refused.
+    ponytail: inline code for awk, python3 or node (-c, -e) is read as one word; its own calls go unseen."""
+    chain = f"{cmd!r} chains, redirects or deletes; one plain command per step"
+    lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+    lex.whitespace_split, lex.commenters = True, ""  # bash reads a # inside a word as itself
+    try:
+        toks = list(lex)
+    except ValueError:
+        return f"{cmd!r} leaves a quote open"
+    if _ansi_c(cmd) or re.search(r"\brm\s+-", cmd):
+        return chain
+    stages = [[]]
+    for i, t in enumerate(toks):
+        if t and set(t) <= set("();<>|&"):  # an operator (a pattern of these characters alone reads as one: refused)
+            if t not in ("|", "<"):
+                return chain
+            if t == "|":
+                stages.append([])
+                continue
+        elif re.search(r"[;`]|&&|\$\(", t) or t == "-delete" or os.path.basename(t) == "rm" and stages[-1] != ["git"]:
+            return chain
+        elif os.path.basename(t) in ("sh", "bash"):  # bash script.sh runs a file; bash -c -- 'code' runs a later word
+            rest = toks[i + 1:]
+            rest = rest[:rest.index("|")] if "|" in rest else rest
+            if any(isinstance(_stages(x), str) for x in rest if not x.startswith("-")):
+                return chain
+        stages[-1].append(t)
+    return stages
+
+
 def _bad_command(cmd, verbs, known=KNOWN):
     """Why a command can't run (a reason), or "" when its every word-one exists. Pipes are fine; chaining is not."""
-    if _BAD_SHELL.search(cmd):
-        return f"{cmd!r} chains, redirects or deletes; one plain command per step"
-    for part in cmd.split("|"):
-        w = part.split()
+    stages = _stages(cmd)
+    if isinstance(stages, str):
+        return stages
+    for w in stages:
         if not w:
             return f"{cmd!r} has an empty pipe stage"
         if w[0] not in known:
             return f"{w[0]!r} is not a command a card may name"
         if w[0] in ("sampo", "fm") and (len(w) < 2 or w[1] not in verbs):
-            return f"{part.strip()!r} is not a sampo verb"
+            return f"{' '.join(w)!r} is not a sampo verb"
+        if w[0] in SUBCOMMANDS and (len(w) < 2 or w[1] not in SUBCOMMANDS[w[0]]):
+            return f"{' '.join(w[:2])!r}: a card names {w[0]} only as {', '.join(sorted(SUBCOMMANDS[w[0]]))}"
     return ""
 
 
 def _measured(s):
     """T-2994: a step whose check is a signal: a real runner (npx playwright, pnpm test) or a stated number (4.5:1, 44px)."""
     w = s["cmd"].split()
+    if w and w[0] in ("echo", "printf"):  # printing a number checks nothing (live: echo '200ms')
+        return False
     if w and w[0] in UI_RUNNERS and not (len(w) > 1 and w[1] in ("install", "i", "ci", "add", "init", "create")):
         return True
+    if w and w[0] in UI_TESTS and (UI_TESTS[w[0]] & set(w[1:]) if w[0] == "xcodebuild" else w[1:2] and w[1] in UI_TESTS[w[0]]):
+        return True  # flutter test, never flutter pub add test; xcodebuild takes its action anywhere
     return bool(_MEASURE.search(s["do"] + " " + s["cmd"]))
 
 
@@ -277,8 +347,9 @@ def _ui_prompt(cell, k):
             f"Use {cell['platform']}'s real idioms, APIs and file names (not another framework's). The stage is "
             "plan (decide what to build), build (write it) or verify (prove it works).\n"
             f"Commands a step may name, first word only: {', '.join(sorted(UI_KNOWN))}. For sampo, the second word is a "
-            "real verb.\nEvery card has at least one step that checks a measurable signal: a real command (npx "
-            "playwright test, npx axe, npx lighthouse, a test runner) or a stated number to check (a contrast ratio "
+            "real verb.\nEvery card has at least one step that checks a measurable signal: a real command ("
+            + UI_CHECKS.get(cell["platform"], "npx playwright test, npx axe, npx lighthouse, a test runner")
+            + ") or a stated number to check (a contrast ratio "
             "like 4.5:1, a size like 44px or 1rem, a time like 200ms, a count). Never 'looks good' or 'make it nice'.\n\n"
             "Each card is one JSON object on its own line with these keys:\n"
             '- "title": what the card does, 3 to 12 words\n'
@@ -344,16 +415,28 @@ def grow(p, target=None, batch=6, seed=0, max_calls=None, workers=None, think=No
                     workers if max_calls is None else max_calls - r["calls"])
             cells = _pick(cnt, k, seed + r["calls"], grid)
             r["calls"] += len(cells)
-            futs = [pool.submit(ms._ask, p, SYSTEM, _ui_prompt(cell, batch) if grid else _prompt(cell, batch, _source(cell, cnt[_key(cell)])),
-                                paid=paid + i, **kw) for i, cell in enumerate(cells)]
-            for cell, fut in zip(cells, futs):  # one thread reads the replies and writes the rows, in order
+            futs = [(cell, pool.submit(ms._ask, p, SYSTEM, _ui_prompt(cell, batch) if grid else _prompt(cell, batch, _source(cell, cnt[_key(cell)])),
+                                       paid=paid + i, **kw), None) for i, cell in enumerate(cells)]
+            for cell, fut, repair in futs:  # one thread reads the replies and writes the rows, in order; repairs join the queue
                 try:
                     text, model = fut.result()
                 except budget.BudgetError as e:
                     r["stopped"], r["error"] = "budget", c.fit(ms._norm(e), 300)
                     continue
                 except (ValueError, OSError, models.ModelError) as e:
-                    fails, r["error"] = fails + 1, c.fit(ms._norm(e), 300)
+                    if repair:
+                        r["error"] = c.fit(ms._norm(e), 300)
+                    else:
+                        fails, r["error"] = fails + 1, c.fit(ms._norm(e), 300)
+                    continue
+                if repair:
+                    paid += model in ("haiku", "sonnet", ms.rune.REVIEW_MODELS[-1])
+                    n = sum(v == "kept" for _, v, _ in add(p, ms._objects(text, repair[0]), cell, model, repair[1]))
+                    r["repair_kept"] += n
+                    r["kept"] += n
+                    r["rejected"] -= n
+                    cnt[_key(cell)] += n
+                    total += n
                     continue
                 paid += model in ("haiku", "sonnet", ms.rune.REVIEW_MODELS[-1])  # a local answer is free
                 objs = ms._objects(text, batch)
@@ -370,28 +453,15 @@ def grow(p, target=None, batch=6, seed=0, max_calls=None, workers=None, think=No
                 r["models"][model] += 1
                 for _, verdict, why in out:
                     r[verdict] += 1
-                    if why:
-                        r["reasons"][why.split(":")[0]] += 1
+                    if why:  # an unknown command names its word: the writer's habits show in the grow line
+                        m = re.search(r"'([^' ]+)' is not a command", why)
+                        r["reasons"][why.split(":")[0] + (f" {m.group(1)}" if m else "")] += 1
                 bad = [(o, v[2]) for o, v in zip(objs, out) if v[1] == "rejected"]
-                if bad:  # one repair round per batch, never a loop
+                if bad:  # one repair round per batch, never a loop; asked in the pool beside the round's other calls
                     r["repair_asked"] += len(bad)
-                    try:
-                        text, rmodel = ms._ask(p, SYSTEM, _repair_prompt(bad, grid), paid=paid, **kw)
-                    except budget.BudgetError as e:
-                        r["stopped"], r["error"] = "budget", c.fit(ms._norm(e), 300)
-                        continue
-                    except (ValueError, OSError, models.ModelError) as e:
-                        r["error"] = c.fit(ms._norm(e), 300)
-                        continue
-                    paid += rmodel in ("haiku", "sonnet", ms.rune.REVIEW_MODELS[-1])
-                    n = sum(v == "kept" for _, v, _ in add(p, ms._objects(text, len(bad)), cell, rmodel, batch_no))
-                    r["repair_kept"] += n
-                    r["kept"] += n
-                    r["rejected"] -= n
-                    cnt[_key(cell)] += n
-                    total += n
+                    futs.append((cell, pool.submit(ms._ask, p, SYSTEM, _repair_prompt(bad, grid), paid=paid + len(futs), **kw), (len(bad), batch_no)))
     finally:
-        pool.shutdown()
+        pool.shutdown(wait=False, cancel_futures=True)  # an interrupted run returns now: queued calls are dropped, a running one ends alone
         ms._THINK = None
         c.progress_end()
     r.update(total=total, reasons=dict(r["reasons"]), models=dict(r["models"]))

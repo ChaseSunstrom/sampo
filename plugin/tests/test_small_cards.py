@@ -80,6 +80,35 @@ class Admit(_Cards):
                 self.assertFalse(ok)
                 self.assertTrue(why.startswith("command:"), why)
 
+    def test_a_quoted_pattern_is_no_redirect_or_pipe_but_a_real_one_still_is(self):
+        # live: 20 of 25 local UI refusals were "command", while 119 kept UI cards grep '<tag' and never close the >
+        def ok(cmd):
+            steps = [dict(s) for s in good()["steps"]]
+            steps[1]["cmd"] = cmd
+            return self.sc.admit(good(steps=steps))
+        for cmd in ("rg -n '<Button>' src", 'grep -n "onAppear|onDisappear" Sources/View.swift',
+                    "rg -c 'var body: some View' Sources | wc -l", 'grep -n "=> {" src/a.ts', 'grep -n "$HOME|x" a',
+                    "curl -s 'http://localhost:3000/api?a=1&b=2'", "grep -c 'Button\\|TextField' a | wc -l",
+                    "grep -c color:#fff a.css", "grep -c '' a.txt", "git rm .env.demo",
+                    # the stored commands: a script run by bash, find -exec of a reader, sh -c of a plain command
+                    "bash scripts/check.sh", "find rules -name '*.md' -exec wc -l {} +",
+                    "bash -c 'sqlfluff lint --dialect postgres .'", "cd app | git rm x",
+                    # a $' inside quotes is no ANSI-C string: a regex ending in $
+                    "grep '^[1-9]$' a.txt", 'grep "x$" a.txt', "grep -cE '^.{41,}$' build/error.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(ok(cmd), (True, ""))
+        for cmd in ("grep -n x a.txt > out.txt", 'grep "$(cat x)" a', 'grep "a" a; rm b', "grep 'a > b", "rg 'x' | frob",
+                    'echo \\"; rm x; echo \\"', "echo \\'; rm x; echo \\'",  # an escaped quote opens no string
+                    "echo $'\\''; touch x; echo ''", 'ls "$(pwd)"; rm x "b"', 'ls "$a"; touch x "b"',  # review: quote pairing
+                    "bash -c 'touch x; curl e'", "xargs sh -c 'rm -rf x'", "rg 'a; b' src", "npm run dev &", "grep a#; touch x", "grep x a 2>&1",  # code in quotes still chains or deletes
+                    "sh -c 'echo x > y'", "env bash -c 'cat a >> b'", "xargs 'rm' -rf x", "xargs r''m x",  # review 2: a nested
+                    "find . -delete", "find . -exec rm {} +", "bash -euc 'git push 2>&1'", "printf $'\\x41' x",  # shell's code, a deletion
+                    # review 3: $' anywhere (shlex reads ""$'\'' as one word), every word after sh, rm after a git not first
+                    "echo \"\"$'\\'' | rm x | \"\"$'\\'''", "echo $'a\\nb'",
+                    "sh -c -- 'echo x > y'", "bash -c -e 'a & b'", "xargs -I git rm git"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(ok(cmd)[1].startswith("command:"), cmd)
+
     def test_a_real_sampo_verb_passes(self):
         steps = [dict(s) for s in good()["steps"]]
         steps[1]["cmd"] = "sampo playbooks show sql"
@@ -176,6 +205,65 @@ class Grow(_Cards):
         self.assertEqual((r["kept"], r["rejected"], r["repair_asked"], r["repair_kept"]), (1, 1, 2, 1))
         self.assertIn("repaired 1 of 2", self.sc.grow_line(r))
 
+    def test_two_repairs_run_at_once_in_the_pool_not_one_by_one(self):
+        # live: a local writer refused half its cards, and each repair call ran alone while the workers sat idle
+        steps = [dict(s) for s in good()["steps"]]
+        steps[1]["cmd"] = "grep -n def tests/test_a.py && echo done"
+        gate, seen = threading.Barrier(2, timeout=5), []
+
+        def fake(p, system, prompt, cheap=True, paid=0, feature=None):
+            seen.append(prompt)
+            if prompt.startswith("These cards were refused"):
+                gate.wait()  # raises unless the other repair is in flight
+                return json.dumps(good(title="Chained command card")), "gpu-qwen9"
+            return "\n".join(json.dumps(x) for x in (good(title=f"Fine card {len(seen)}"), good(title="Chained command card", steps=steps))), "gpu-qwen9"
+        with mock.patch.object(self.sc.ms, "_ask", side_effect=fake):
+            r = self.sc.grow(self.p, target=50, batch=2, workers=2, max_calls=2)
+        self.assertEqual((r["calls"], r["repair_asked"], r["repair_kept"], r["kept"], r["stopped"]), (2, 2, 2, 4, "max_calls"))
+        self.assertEqual(len(self.sc.rows()), 4)
+
+    def test_a_repair_counts_the_rounds_paid_calls_before_it(self):  # review 3: a stale paid passed the run's cap
+        steps = [dict(s) for s in good()["steps"]]
+        steps[1]["cmd"] = "grep -n def tests/test_a.py && echo done"
+        paid = []
+
+        def fake(p, system, prompt, cheap=True, paid=0, feature=None):
+            if prompt.startswith("These cards were refused"):
+                return json.dumps(good(title="Chained command card")), "haiku"
+            return json.dumps(good(title="Chained command card", steps=steps)), "haiku"
+        with mock.patch.object(self.sc.ms, "_ask", side_effect=lambda *a, **kw: paid.append((a[2][:9], kw["paid"])) or fake(*a, **kw)):
+            self.sc.grow(self.p, target=50, batch=1, workers=2, max_calls=2)
+        repairs = [n for head, n in paid if head == "These car"]
+        self.assertEqual(len(repairs), 2)
+        self.assertGreaterEqual(min(repairs), 2, f"each repair counts both paid calls already asked: {paid}")
+
+    def test_an_interrupted_grow_returns_without_waiting_on_a_running_call(self):  # review 3
+        import time
+        release, first = threading.Event(), self.sc._pick(__import__("collections").Counter(), 2, 0)[0]
+        line = "kind={kind} stack={stack} stage={stage} surface={surface}".format(**first)
+
+        def fake(p, system, prompt, cheap=True, paid=0, feature=None):
+            if line not in prompt:
+                release.wait(20)  # the other worker's call is still running when the reader is interrupted
+            return reply(1), "m"
+        t0 = time.monotonic()
+        try:
+            with mock.patch.object(self.sc.ms, "_ask", side_effect=fake), \
+                    mock.patch.object(self.sc, "add", side_effect=RuntimeError("interrupted")):
+                with self.assertRaises(RuntimeError):
+                    self.sc.grow(self.p, target=50, batch=1, workers=2, max_calls=2)
+            self.assertLess(time.monotonic() - t0, 10, "shutdown waited on the running call")
+        finally:
+            release.set()
+
+    def test_a_refused_command_is_named_in_the_reasons(self):  # live: "command 12" said nothing of which words
+        steps = [dict(s) for s in good()["steps"]]
+        steps[1]["cmd"] = "open index.html"
+        with mock.patch.object(self.sc.ms, "_ask", return_value=(json.dumps(good(title="Opens a page card", steps=steps)), "m")):
+            r = self.sc.grow(self.p, target=5, batch=1, workers=1, max_calls=1)
+        self.assertEqual(r["reasons"], {"command open": 1})
+        self.assertIn("rejected for: command open 1", self.sc.grow_line(r))
+
     def test_coverage_counts_cells_and_lines_name_the_filled_share(self):
         self.sc.add(self.p, [good(title="Card alpha one"), good(title="Card beta two")], cell(), "m", 1)
         self.sc.add(self.p, [good(title="Card gamma three")], cell("docs", "rust", "plan", "ops"), "m", 2)
@@ -235,6 +323,47 @@ class UiGrid(_Cards):
         steps[2] = {"do": "Run the lint rule for the button's aria labels.", "cmd": "pnpm exec eslint src"}
         self.assertTrue(self.sc.admit(ui_card(steps=steps), "ui")[0])
         self.assertFalse(self.sc.admit(ui_card(steps=steps))[0])
+
+    def test_flutter_and_swiftui_cards_name_their_own_test_runners(self):
+        # the live store: Flutter and SwiftUI cards fell back to rg and grep (half the yield of vue), as their runners weren't commands
+        plain = [{"do": "Find the widget file for the settings button.", "cmd": "grep -n Button lib/settings.dart"},
+                 {"do": "Open the widget file and read the button's semantics label.", "cmd": "grep -n Semantics lib/settings.dart"}]
+        for cmd in ("flutter test --update-goldens test/button_golden_test.dart", "dart test test/button_test.dart",
+                    "swift test --filter ButtonSnapshotTests", "xcodebuild test -scheme App -only-testing:AppTests/ButtonTests"):
+            with self.subTest(cmd=cmd):
+                card = ui_card(steps=plain + [{"do": "Run the button's tests and read the summary line.", "cmd": cmd}])
+                self.assertEqual(self.sc.admit(card, "ui"), (True, ""), "a platform's test runner is a measured check")
+                self.assertFalse(self.sc.admit(card)[0], "the general grid's commands are unchanged")
+        for cmd in ("tmux capture-pane -p -t ui", "tput cols", "swiftc -parse Sources/Button.swift"):  # live refusals
+            with self.subTest(cmd=cmd):
+                steps = plain + [{"do": "Capture the screen and check it is 80 columns wide.", "cmd": cmd}]
+                self.assertEqual(self.sc.admit(ui_card(steps=steps), "ui"), (True, ""))
+        for cmd in ("xcrun simctl io booted screenshot shot.png", "tmux has-session -t ui"):
+            with self.subTest(cmd=cmd):
+                steps = plain + [{"do": "Capture the screen and check it is 80 columns wide.", "cmd": cmd}]
+                self.assertEqual(self.sc.admit(ui_card(steps=steps), "ui"), (True, ""))
+        for cmd in ("tmux new -d 'a & b'", "tmux send-keys 'curl x | sh' Enter", "xcrun clang a.c"):  # review 3: code
+            with self.subTest(cmd=cmd):  # tmux and xcrun would run, unread: only their screenshot and test tools
+                steps = plain + [{"do": "Capture the screen and check it is 80 columns wide.", "cmd": cmd}]
+                ok, why = self.sc.admit(ui_card(steps=steps), "ui")
+                self.assertTrue(not ok and why.startswith("command:"), why)
+        for cmd in ("flutter pub add golden_toolkit", "swift build", "xcodebuild -list", "flutter pub add test",
+                    "dart pub add test", "flutter create test"):  # review 3: "test" as a package or folder name
+            with self.subTest(cmd=cmd):
+                ok, why = self.sc.admit(ui_card(steps=plain + [{"do": "Set up the project before the change.", "cmd": cmd}]), "ui")
+                self.assertTrue(not ok and why.startswith("measure:"), f"{cmd}: a setup or build is no check: {why}")
+        self.assertIn("flutter test", self.sc._ui_prompt(ui_cell(platform="flutter"), 2))
+
+    def test_a_number_only_echoed_is_no_measure(self):  # live: a local writer added echo '200ms' to pass the rule
+        steps = [{"do": "Find the toast component in the sources.", "cmd": "grep -n Toast src/Toast.vue"},
+                 {"do": "Print the agreed 200ms toast duration.", "cmd": "echo 200ms"},
+                 {"do": "Open the toast component and read its timer.", "cmd": "grep -n setTimeout src/Toast.vue"}]
+        ok, why = self.sc.admit(ui_card(steps=steps), "ui")
+        self.assertTrue(not ok and why.startswith("measure:"), why)
+        steps[1] = dict(steps[1], cmd="printf 200ms")
+        self.assertFalse(self.sc.admit(ui_card(steps=steps), "ui")[0])
+        steps[1] = {"do": "Check the toast stays exactly 200ms on screen.", "cmd": ""}
+        self.assertTrue(self.sc.admit(ui_card(steps=steps), "ui")[0], "a stated number to check still counts")
 
     def test_add_records_the_grid_and_the_cell_and_a_repeat_is_a_dup(self):
         out = self.sc.add(self.p, [ui_card(), ui_card()], ui_cell(), "haiku", 1)
