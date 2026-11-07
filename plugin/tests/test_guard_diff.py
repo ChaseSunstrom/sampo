@@ -13,6 +13,7 @@ import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
 import fmguard as g  # noqa: E402
+from test_guard import GuardCase  # noqa: E402
 
 PAYLOADS = {"rm": "rm -rf ~", "git": "git push --force origin main", "claude": "claude plugin install x@y"}
 # shell forms the guard claims to read; computed command names and variables are out of scope (a documented limit)
@@ -34,6 +35,8 @@ FORMS = [
     # T-1487: a folder named once and reused across ; and && (git init's target resolves; the payload still counts)
     "D=/tmp/fmd; mkdir -p $D && git init -q $D; {p}", "D=/tmp/fmd && git init -q $D && {p}",
     "D=~; mkdir -p $D && git init -q $D; {p}",
+    # T-3537: a build-branch merge in a lane worktree (setUp makes .claude/worktrees/w one) passes; what follows it doesn't
+    "cd .claude/worktrees/w && git merge --no-edit foreman/build; {p}", "cd .claude/worktrees/w && git merge foreman/build && {p}",
 ]
 # whole commands (no payload slot): variables the guard resolves (T-0151) must still resolve the way bash does
 EXTRA = ['D=~; rm -rf "$D"', 'D=/; false && D=x; rm -rf "$D"', 'D=/; (D=x); rm -rf "$D"', 'D=x; D=~; rm -rf "$D"',
@@ -219,6 +222,13 @@ class GuardAgainstBash(unittest.TestCase):
             with open(path, "w") as f:
                 f.write(STUB)
             os.chmod(path, 0o755)
+        lane = os.path.join(self.project, ".claude", "worktrees", "w")  # T-3537: a lane of the project on foreman/build
+        os.makedirs(lane)
+        os.makedirs(os.path.join(self.project, ".git"))
+        with open(os.path.join(self.project, ".git", "HEAD"), "w") as f:
+            f.write("ref: refs/heads/foreman/build\n")
+        with open(os.path.join(lane, ".git"), "w") as f:
+            f.write(f"gitdir: {self.project}/.git/worktrees/w\n")
         self.ctx = g.Ctx(cwd=self.project, project_root=self.project, home=HOME,
                          foreman_home=os.path.join(self.tmp, "fhome"))
 
@@ -283,6 +293,115 @@ class GuardAgainstBash(unittest.TestCase):
                     self.assertTrue(escape, "the guard blocks this one now: drop its \"open \" mark")
                 else:
                     self.assertIsNone(escape)
+
+
+class LaneMerge(GuardCase):
+    """T-3537: the lane lesson's step, bringing a lane up to date with the build branch from inside it, was refused 5
+    times in a day (brief: a .claude/worktrees lane is strictly inside the project with no task). Only that merge in a
+    lane's own root passes; one in the main checkout, of another branch, or where the cd may not hold stays refused.
+    T-3553: such a refusal names the cd to make literal, not sampo lane merge (that lands a lane from the main checkout)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        git = lambda *a: subprocess.run(["git", "-C", cls.fhome, *a], check=True, capture_output=True)  # noqa: E731
+        git("init", "-q", "-b", "foreman/build")
+        git("config", "user.email", "t@example.invalid")
+        git("config", "user.name", "t")
+        os.makedirs(os.path.join(cls.fhome, "plugin", "lib"))
+        with open(os.path.join(cls.fhome, "plugin", "lib", "x.py"), "w") as f:
+            f.write("x = 1\n")
+        git("add", "plugin")
+        git("commit", "-qm", "init")
+        cls.lane = cls.fhome + ".lanes/T-1234"
+        cls.wt = os.path.join(cls.fhome, ".claude", "worktrees", "agent-x")
+        cls.other = os.path.join(os.path.dirname(cls.home), "elsewhere", "w")  # a worktree that is no lane
+        cls.spaced = os.path.join(os.path.dirname(cls.home), "elsewhere", "w 2")  # a name the hint must quote
+        for path, branch in ((cls.lane, "foreman/T-1234"), (cls.wt, "worktree-agent-x"), (cls.other, "side"),
+                             (cls.spaced, "side-2")):
+            git("worktree", "add", "-q", "-b", branch, path)
+        cls.sha = git("rev-parse", "HEAD").stdout.decode().strip()
+
+    def ctx(self, cwd=None, task=None, confine=None):
+        cwd = cwd or self.fhome
+        return g.Ctx(cwd=cwd, project_root=g.project_root_for(cwd, self.home), home=self.home, foreman_home=self.fhome,
+                     scratch=["/tmp"], task_id=task, confine=confine, unbriefed=None if task else self.fhome)
+
+    def verdict(self, cmd, **kw):
+        cmd = cmd.format(lane=self.lane, wt=self.wt, other=self.other, home=self.home, fhome=self.fhome, sha=self.sha)
+        return g.check("Bash", {"command": cmd}, self.ctx(**kw))
+
+    def test_build_merge_in_a_lane_passes(self):
+        for cmd in ("cd {lane} && git merge foreman/build",
+                    "cd {lane} && git merge --no-edit foreman/build 2>&1 | tail -15; git status --short | head -20",
+                    "cd {wt} && git merge foreman/build --no-edit 2>&1 | tail -15; git status --short | head -20",
+                    "cd {wt} && git merge --no-commit foreman/build 2>&1 | tail -15"):
+            for task in (None, "T-0007"):
+                with self.subTest(cmd=cmd, task=task):
+                    self.assertIsNone(self.verdict(cmd, task=task))
+
+    def test_other_merges_stay_refused(self):
+        self.run_table([
+            ("git merge foreman/build", "core"),  # in the main checkout
+            ("git merge --no-ff foreman/T-1234", "core"),  # a lane into build
+            ("cd {wt} && git merge worktree-agent-y", "brief"),  # another branch into the lane: no task, no edit
+            ("cd {wt} && git merge foreman/build worktree-agent-y", "brief"),  # an octopus brings more than build
+            ("cd {wt} && git merge -s ours foreman/build", "brief"),  # a strategy: not the plain update
+            ("cd {wt} && git reset --hard foreman/build", "brief"),  # other tree writes: as before
+            ("cd {wt} && git merge foreman/build > ../../../notes.md", "brief"),  # a redirect into the project
+            ("false && cd {lane}; git merge foreman/build", "core"),  # the cd may not hold: main checkout
+            ("cd {wt} && GIT_WORK_TREE={home}/.claude/foreman git merge foreman/build", "core"),
+            # its security review: whatever may move git's work tree or git dir, and every other operand or place
+            ("export GIT_DIR=/tmp/atk/.git GIT_WORK_TREE={home}; cd {wt} && git merge foreman/build", "brief"),
+            ("printf -v GIT_DIR %s /tmp/atk; export GIT_DIR; cd {wt} && git merge foreman/build", "brief"),
+            ("export GIT_WORK_TREE={home}; bash -c 'cd {wt} && git merge foreman/build'", "brief"),
+            ("cd {wt} && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.worktree GIT_CONFIG_VALUE_0={fhome} git merge "
+             "foreman/build", "brief"),
+            ("cd {wt} && git -C {fhome} merge foreman/build", "core"),
+            ("cd {wt} && git -c core.worktree={fhome} merge foreman/build", "brief"),
+            ("cd {wt} && git --git-dir={fhome}/.git merge foreman/build", "brief"),
+            ("cd {wt} || true; git merge foreman/build", None),  # a cd into a folder that exists can't fail: the lane
+            ("cd {wt}/gone || true; git merge foreman/build", "core"),  # one that fails leaves it in the main checkout
+            ("(cd {wt}); git merge foreman/build", "core"),
+            ("cd {wt} && git merge {sha}", "brief"),
+            ("cd {wt} && git merge FETCH_HEAD", "brief"),
+            ("cd {wt} && git merge --allow-unrelated-histories foreman/build", "brief"),
+            # its re-review: a wrapper or prefix the guard strips may still move git
+            ("cd {wt}; a=GIT; env ${{a}}_DIR=/tmp/atk/.git git merge foreman/build", "brief"),
+            ("cd {wt} && env \"G\"\"IT_INDEX_FILE=/tmp/atk/index\" git merge foreman/build", "brief"),
+            ("cd {wt} && env -C {fhome} git merge foreman/build", "brief"),
+            ("cd {wt} && LC_ALL=C git merge foreman/build", "brief"),
+        ], self.verdict)
+
+    def test_a_detached_main_checkout_has_no_build_branch(self):
+        subprocess.run(["git", "-C", self.fhome, "checkout", "-q", "--detach"], check=True)
+        try:
+            self.assertBlocked(self.verdict("cd {wt} && git merge foreman/build"), "brief")
+        finally:
+            subprocess.run(["git", "-C", self.fhome, "checkout", "-q", "foreman/build"], check=True)
+
+    def test_a_confined_builder_still_merges_only_its_own_lane(self):
+        r = self.verdict("cd {lane} && git merge foreman/build", cwd=self.wt, task="T-0007", confine=(self.wt, self.fhome))
+        self.assertBlocked(r, "confine")
+
+    def test_merge_refusal_names_the_cd_when_it_may_not_hold(self):
+        # T-3553: the merge hint said sampo lane merge (the main checkout's landing) for a merge meant for a worktree
+        for where in (self.lane, self.other):
+            with self.subTest(where=where):
+                ctx = self.ctx(task="T-0007")
+                block = g.check("Bash", {"command": f"false && cd {where}; git merge --no-edit side"}, ctx)
+                self.assertBlocked(block, "core")
+                msg = g.message(block, ctx)
+                self.assertIn(f"cd {where} && git merge", msg)
+                self.assertNotIn("sampo lane merge", msg)
+        ctx = self.ctx(task="T-0007")
+        block = g.check("Bash", {"command": "git merge --no-ff foreman/T-1234"}, ctx)
+        self.assertIn("sampo lane merge", g.message(block, ctx))  # landing in the main checkout keeps its hint
+        block = g.check("Bash", {"command": f"false && cd '{self.spaced}'; git merge --no-edit side"}, ctx)
+        self.assertIn(f"cd '{self.spaced}' && git merge", g.message(block, ctx))  # quoted, to paste as it stands
+        block = g.check("Bash", {"command": "git reset --hard merge"}, ctx)  # a ref named merge is no merge
+        self.assertBlocked(block, "core")
+        self.assertNotIn("sampo lane merge", g.message(block, ctx))
 
 
 if __name__ == "__main__":

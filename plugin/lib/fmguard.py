@@ -252,6 +252,11 @@ def _hint(detail, cat=""):
                 "done, add the line in the next task and say why there (sampo task log ID \"scope: …\").")  # T-1767
     if detail.endswith(_FOCUS_LATE):
         return " Run the sampo focus (or sampo task new … --focus) as its own command, then this one."
+    hop = re.search(r"; git merge, the cd to (.+) may not hold\)$", detail)
+    if hop:  # T-3553: meant for a worktree, not the main checkout: sampo lane merge is no way there
+        return (f" Run cd {shlex.quote(hop[1])} && git merge … as its own command, the folder named literally: on this line the guard "
+                "can't tell the cd holds (a cd that may fail or be skipped, or a later loop or substitution), so it reads "
+                "the merge as maybe running here too. A build-branch merge in a lane's own folder passes.")
     if detail.endswith("; git merge)"):
         return (" On Sampo's own repo, land a reviewed builder branch with sampo lane merge ID: it merges --no-ff and "
                 "checks each file it changes as that task's write.")
@@ -3867,16 +3872,26 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         hint = (f"; {unset} unresolved: set it to a literal path earlier in the command, or pass the path" if unset
                 else '; git init writes its folder: chain the cd with && or pass the path, git init "$S/toy"') \
             if init else ""
+        # T-3537: a build-branch merge in a lane's own root is no edit of the project it sits in (brief), as one at the
+        # project's root isn't; confine and every other target are judged as before
+        # (security review: and only where nothing on the line may set a GIT_* name, exported or inline, which can move
+        # the work tree or git dir: bare is None when a builtin may set any name; at depth 0, so no outer text set one;
+        # git typed bare, as the command word: a wrapper or assignment prefix (env ${a}_DIR=…, env -C DIR) may move it)
+        lane = c.argv[:1] == ["git"] and argv == c.argv and not depth and not git_env and not lost and \
+            bare is not None and not any(n.startswith("GIT_") for n in bare) and _lane_merge(args, cwds)
         for target in c.redirs + ([] if bare_init else _write_targets(name, targs)) + git_env + _env_files(c.argv):
             how = classify_unlink if target in unlinks and not target.endswith("/") else _classify_made if \
                 target in touched else classify_write
-            found += _target_cats(target, known, bare, cwds, lost, scan, ctx, how,
-                                  f" ({hint[2:]})" if init and target not in c.redirs else "")
+            found += [f for f in _target_cats(target, known, bare, cwds, lost, scan, ctx, how,
+                                              f" ({hint[2:]})" if init and target not in c.redirs else "")
+                      if not (lane and target == "." and f[0] == "brief")]
             found += _cargo_config_hit(target, cmd, cwds or [ctx.cwd], ctx)  # T-3607 review
+        merge = name == "git" and _git_sub(args) == "merge"  # T-0394: its refusal names sampo lane merge; T-3553: one the
+        away = next((d for d in cwds if d != ctx.cwd and os.path.isfile(os.path.join(d, ".git"))), None) if merge \
+            and len(cwds) > 1 else None  # walk also reads where the line began, though a cd named a worktree: that cd
         for target in [] if bare_init else _tree_targets(name, targs) + git_env:
-            found += _target_cats(target, known, bare, cwds, lost, scan, ctx, classify_tree,  # T-0394: a merge's
-                                  " (a tree write over it" + ("; git merge" if name == "git" and "merge" in args
-                                                             else "") + ")" + hint)  # refusal names fm lane merge
+            found += _target_cats(target, known, bare, cwds, lost, scan, ctx, classify_tree, " (a tree write over it" + (
+                "; git merge" + (f", the cd to {away} may not hold" if away else "") if merge else "") + ")" + hint)
         for target in _build_outs(name, args, c.argv):  # T-3607: where cargo or rustc writes
             found += _target_cats(target, known, bare, cwds, lost, scan, ctx, _build_cats,
                                   " (written by a cargo, rustc or rustup call)")
@@ -5089,6 +5104,45 @@ def _tree_targets(name, args):
             (name in ("cp", "install") and recursive):
         return _write_targets(name, args)
     return []
+
+
+def _git_sub(args):
+    """The git subcommand `git ARGS` runs, past its global options ("" for none)."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in _GIT_VALUED else 1
+    return args[i] if i < len(args) else ""
+
+
+_LANE_ROOT = lazy(r"(.+)\.lanes/[^/]+|(.+)/\.claude/worktrees/[^/]+")
+_LANE_MERGE_FLAGS = {"--no-edit", "--no-commit", "--no-ff", "--ff-only", "-q", "--quiet"}
+
+
+def _lane_merge(args, cwds):
+    """T-3537: whether `git ARGS`, run in each of cwds, merges the build branch (the one its main checkout has out) into
+    a lane: each cwd a lane's own root, <repo>.lanes/<ID> or <repo>/.claude/worktrees/<name>, whose .git file links
+    into <repo>/.git/worktrees/. The lane lesson's step before re-review; it rewrites only that lane's checkout."""
+    pos = [a for a in args[1:] if not a.startswith("-")]
+    if args[:1] != ["merge"] or len(pos) != 1 or not cwds or not set(args[1:]) - {pos[0]} <= _LANE_MERGE_FLAGS:
+        return False
+    for d in cwds:
+        real = os.path.realpath(d)
+        m = _LANE_ROOT.fullmatch(real)
+        if not m:
+            return False
+        repo = m[1] or m[2]
+        try:
+            with open(os.path.join(real, ".git")) as f:
+                link = f.read().strip()
+            with open(os.path.join(repo, ".git", "HEAD")) as f:
+                head = f.read().strip()
+        except OSError:  # no .git file (the main checkout has a folder) or no HEAD: no lane
+            return False
+        gitdir = os.path.realpath(os.path.join(real, link.removeprefix("gitdir: ")))
+        if not link.startswith("gitdir: ") or os.path.dirname(gitdir) != os.path.realpath(
+                os.path.join(repo, ".git", "worktrees")) or head != f"ref: refs/heads/{pos[0]}":
+            return False
+    return True
 
 
 def write_targets(cmd):
