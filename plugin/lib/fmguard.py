@@ -119,6 +119,7 @@ class Ctx:
         self.confine = confine  # T-1902: and each as it really is (macOS's temp folder is a link, as for scratch)
         self.confine_real = tuple(x and os.path.realpath(x) for x in confine) if confine else None
         self.unbriefed = unbriefed  # T-0308: the project's root while no task is active — writes inside wait for one
+        self.lane = None  # T-3534: (lane folder, what to do there), set by the hook when a brief refusal's path is in one
 
     @property
     def state_dirs(self):
@@ -318,6 +319,8 @@ def _message(block, ctx):
     if cat == "confine":
         return (f"Ward: blocked confine: {detail} is outside this builder's worktree ({ctx.confine[0]}). A builder "
                 f"writes only there (and in scratch); report what needs changing elsewhere to the main thread.")
+    if cat == "brief" and getattr(ctx, "lane", None):  # T-3534: the lane's task, never a new one in the main checkout
+        return f"Sampo: no active task in lane {ctx.lane[0]}, so {detail} can't be edited yet.{ctx.lane[1]}"
     if cat == "brief":
         return (f"Sampo: no active task in this project, so {detail} can't be edited yet. One command starts a small "
                 f"task: sampo task new \"<title>\" --type FIX --tier S --ac \"<done when>\" --step \"<step>\" --focus "

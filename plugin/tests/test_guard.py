@@ -2943,6 +2943,61 @@ class LaneAutoFocus(ForemanTestCase):
         self.assertEqual(self.edit(lane).returncode, 0)
         self.assertEqual(self.auto(), [tid], "once: the second edit finds it active")
 
+    def test_a_refusal_in_a_lane_names_the_lane_its_task_and_the_focus_command(self):
+        """T-3534: a lane's refusal said 'no active task in this project … sampo task new', from the lane or the main
+        checkout; it names the lane, its task and cd <lane> && sampo focus <ID>. The main checkout's text stays."""
+        lane = self.lane(os.path.join(self.repo, ".claude", "worktrees", "agent-y"), "worktree-agent-y")
+        p = self.edit(lane)  # from the lane: no task names it
+        self.assertEqual(p.returncode, 2, p.stdout)
+        self.assertIn(f"no active task in lane {lane}, so {os.path.join(lane, 'x.py')} can't", p.stdout)
+        self.assertIn(f"cd {lane} && sampo focus ID", p.stdout)
+        self.assertNotIn("in this project", p.stdout)
+        tid = self.planned("Worktree work")
+        self.fm("focus", tid, cwd=lane)  # its brief records the lane
+        self.fm("task", "block", tid, "waits", cwd=lane)
+        self.fm("task", "unblock", tid, cwd=lane)
+        p = self.hook("PreToolUse", {"tool_name": "Write", "cwd": self.repo,  # from the main checkout, into the lane
+                                     "tool_input": {"file_path": os.path.join(lane, "x.py"), "content": "x"}})
+        self.assertEqual(p.returncode, 2, p.stdout)
+        self.assertIn(f"no active task in lane {lane}", p.stdout)
+        self.assertIn(f"The lane's task is {tid}: cd {lane} && sampo focus {tid}, then retry.", p.stdout)
+        self.assertNotIn("sampo task new", p.stdout)
+        p = self.hook("PreToolUse", {"tool_name": "Write", "cwd": self.repo,
+                                     "tool_input": {"file_path": os.path.join(self.repo, "y.py"), "content": "y"}})
+        self.assertEqual(p.returncode, 2, p.stdout)
+        self.assertIn(f"no active task in this project, so {os.path.join(self.repo, 'y.py')} can't", p.stdout)
+        self.assertIn("sampo task new", p.stdout)  # the main checkout's text, unchanged
+        self.assertNotIn("&& sampo focus", p.stdout)
+
+    def test_the_lane_is_quoted_and_only_a_worktrees_own_folder_is_a_lane(self):
+        """T-3534 review: the cd quotes the folder (its name is anyone's, and the agent runs it); a plain folder or a
+        link under .claude/worktrees, or <main>.lanes/../x, is no lane."""
+        import shlex
+        from sampo import core as c, hooks
+        wt = os.path.join(self.repo, ".claude", "worktrees")
+        for i, name in enumerate(("agent y", "agent;touch pwned")):
+            lane = self.lane(os.path.join(wt, name), f"w{i}")
+            p = self.edit(lane)
+            self.assertEqual(p.returncode, 2, p.stdout)
+            self.assertIn(f"cd {shlex.quote(lane)} && sampo focus ID", p.stdout)
+            self.assertNotIn(f"cd {lane} &&", p.stdout)
+        other = os.path.join(self.tmp, "other")
+        subprocess.run(["git", "init", "-q", other], check=True)
+        subprocess.run(["git", "-C", other, "-c", "user.name=alice", "-c", "user.email=alice@devbox.example.test",
+                        "commit", "-q", "--allow-empty", "-m", "x"], check=True)
+        os.makedirs(os.path.join(wt, "plain"))
+        os.symlink(other, os.path.join(wt, "link"))
+        proj = c.find_project(self.repo)
+        for name in ("plain", "link"):
+            lane = hooks._lane_dir(proj, os.path.join(wt, name, "x.py"))
+            self.assertEqual(lane, os.path.join(wt, name))
+            self.assertIsNone(hooks._lane_tasks(proj, lane), name)  # no worktree's own top: no lane
+        self.assertIsNone(hooks._lane_dir(proj, self.repo + ".lanes/../x/y.py"))
+        p = self.hook("PreToolUse", {"tool_name": "Write", "cwd": self.repo,
+                                     "tool_input": {"file_path": os.path.join(wt, "plain", "x.py"), "content": "x"}})
+        self.assertEqual(p.returncode, 2, p.stdout)
+        self.assertIn("no active task in this project", p.stdout)
+
     def test_a_brief_recording_the_lane_is_its_task_and_none_or_several_still_refuse(self):
         a, b = self.planned("First"), self.planned("Second")
         lane = self.lane(os.path.join(self.repo, ".claude", "worktrees", "agent-x"), "worktree-agent-x")
@@ -2995,7 +3050,7 @@ class LaneAutoFocus(ForemanTestCase):
         lane = self.sampo_lane(tid)
         p, t0 = c.find_project(lane), time.monotonic()
         with mock.patch.dict(os.environ, self.slow_start(5)), mock.patch.object(hooks, "LANE_FOCUS_S", 1.0):
-            note, hint = hooks._lane_focus(p, "sess-1")  # review: never the hook's 5 s, never a hang
+            note, hint, _ = hooks._lane_focus(p, "sess-1")  # review: never the hook's 5 s, never a hang
         self.assertLess(time.monotonic() - t0, 4)
         self.assertIsNone(note)
         self.assertIn(f"sampo focus {tid} didn't finish in time", hint)
