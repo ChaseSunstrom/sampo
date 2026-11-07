@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-07T18:45:56Z",
+ "updated": "2026-11-07T18:51:06Z",
  "rev": "0c99af26a",
  "capabilities": [
   {
@@ -48832,6 +48832,373 @@
     "vuln"
    ],
    "author": "self"
+  },
+  {
+   "run": "s31-039",
+   "agent": "smith",
+   "keyed": 24,
+   "found": 5,
+   "false_alarms": 7,
+   "exam_defects": 0,
+   "fixable": 24,
+   "fixed": 6,
+   "tf_keyed": 12,
+   "tf_first": 0,
+   "readings_keyed": 4,
+   "readings_hit": 0,
+   "missing_keyed": 2,
+   "missing_hit": 1,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 1,
+   "broken": 0,
+   "scenarios": 22,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 22,
+   "conf_missing": 0,
+   "brier_sum": 0.975,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "rust": [
+      2,
+      10
+     ],
+     "python": [
+      2,
+      6
+     ],
+     "ruby": [
+      0,
+      2
+     ],
+     "c": [
+      1,
+      4
+     ],
+     "ts": [
+      0,
+      2
+     ]
+    },
+    "kind": {
+     "bug": [
+      1,
+      4
+     ],
+     "dep": [
+      1,
+      2
+     ],
+     "docs": [
+      0,
+      4
+     ],
+     "flaky": [
+      1,
+      2
+     ],
+     "vuln": [
+      1,
+      4
+     ],
+     "untested": [
+      0,
+      4
+     ],
+     "slow": [
+      1,
+      4
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 12,
+    "found": 3,
+    "false_alarms": 4,
+    "exam_defects": 0,
+    "fixable": 12,
+    "fixed": 4,
+    "tf_keyed": 6,
+    "tf_first": 0,
+    "readings_keyed": 2,
+    "readings_hit": 0,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 11,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 11,
+    "conf_missing": 0,
+    "brier_sum": 0.0475,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "rust": [
+       2,
+       4
+      ],
+      "ruby": [
+       0,
+       1
+      ],
+      "python": [
+       1,
+       5
+      ],
+      "c": [
+       0,
+       1
+      ],
+      "ts": [
+       0,
+       1
+      ]
+     },
+     "kind": {
+      "bug": [
+       1,
+       2
+      ],
+      "dep": [
+       0,
+       1
+      ],
+      "docs": [
+       0,
+       2
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "vuln": [
+       0,
+       2
+      ],
+      "untested": [
+       0,
+       2
+      ],
+      "slow": [
+       1,
+       2
+      ]
+     }
+    },
+    "false_by_kind": {
+     "ambiguous": 1,
+     "dep": 1,
+     "missing-tool": 1,
+     "slow": 1
+    },
+    "brier": 0.0043,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 12,
+    "found": 2,
+    "false_alarms": 3,
+    "exam_defects": 0,
+    "fixable": 12,
+    "fixed": 2,
+    "tf_keyed": 6,
+    "tf_first": 0,
+    "readings_keyed": 2,
+    "readings_hit": 0,
+    "missing_keyed": 1,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 1,
+    "broken": 0,
+    "scenarios": 11,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 11,
+    "conf_missing": 0,
+    "brier_sum": 0.9275,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "rust": [
+       0,
+       6
+      ],
+      "python": [
+       1,
+       1
+      ],
+      "c": [
+       1,
+       3
+      ],
+      "ruby": [
+       0,
+       1
+      ],
+      "ts": [
+       0,
+       1
+      ]
+     },
+     "kind": {
+      "bug": [
+       0,
+       2
+      ],
+      "dep": [
+       1,
+       1
+      ],
+      "docs": [
+       0,
+       2
+      ],
+      "flaky": [
+       0,
+       1
+      ],
+      "vuln": [
+       1,
+       2
+      ],
+      "untested": [
+       0,
+       2
+      ],
+      "slow": [
+       0,
+       2
+      ]
+     }
+    },
+    "false_by_kind": {
+     "ambiguous": 1,
+     "none": 1,
+     "untested": 1
+    },
+    "brier": 0.0843,
+    "closed_share": 0.0909
+   },
+   "cost": 0,
+   "closed": {
+    "train": [
+     "dep-python-8fce7d"
+    ],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-js-383b14",
+     "bug-rust-45824f",
+     "dep-ruby-845279",
+     "docs-rust-3d91ae",
+     "flaky-rust-40aa04",
+     "missing-tool-ts-0f9416",
+     "none-python-248f5e",
+     "slow-c-15642e",
+     "untested-ts-e93305",
+     "vague-python-0840bf",
+     "vuln-rust-e8da41"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "ambiguous": 2,
+    "dep": 1,
+    "missing-tool": 1,
+    "none": 1,
+    "slow": 1,
+    "untested": 1
+   },
+   "brier": 0.0443,
+   "closed_share": 0.0455,
+   "tokens": 1837626,
+   "fix_rate": 0.0455,
+   "tokens_per_fix": 1837626,
+   "model": "jarvis-nothink",
+   "at": "2026-11-07T18:49:14Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "ambiguous",
+    "bug",
+    "dep",
+    "docs",
+    "flaky",
+    "missing-tool",
+    "none",
+    "slow",
+    "untested",
+    "vague",
+    "vuln"
+   ],
+   "author": "self"
   }
  ],
  "coverage": {
@@ -52666,10 +53033,10 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 48768,
+   "generated": 48924,
    "write": {
     "title": 329,
-    "line": 2599,
+    "line": 2620,
     "payoff": 32,
     "kill test": 159,
     "code": 14
@@ -52681,12 +53048,12 @@
    },
    "rejected": {
     "kill": 24853,
-    "tier": 17103,
+    "tier": 17194,
     "novelty": 152
    },
-   "merged": 1362,
-   "kept": 1938,
-   "pending": 113
+   "merged": 1375,
+   "kept": 1947,
+   "pending": 135
   },
   "families": [
    {
@@ -52724,7 +53091,7 @@
    },
    {
     "id": "F-016199",
-    "size": 347,
+    "size": 351,
     "lead": "Store Sampo's memory as a gravitational lensing field",
     "today": "Today you can't compress and retrieve Sampo's historical context by simulating how light bends around massive objects.",
     "with_this": "With this, Sampo can access relevant past decisions with zero latency by treating data mass as gravitational wells that naturally attract relevant queries, rather than using linear search.",
@@ -52772,7 +53139,7 @@
    },
    {
     "id": "F-014278",
-    "size": 35,
+    "size": 36,
     "lead": "Simulate ecosystem ripple effects before releasing a single crate",
     "today": "Today you can't predict how a breaking change in your library will break thousands of downstream users' builds until they file bugs.",
     "with_this": "With this, you can see a live map of which downstream projects will fail, crash, or degrade in performance when you publish your next version.",
@@ -55962,10 +56329,10 @@
     ]
    }
   ],
-  "families_total": 1393,
+  "families_total": 1395,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 1938
+   "total": 1947
   }
  },
  "steer": {
