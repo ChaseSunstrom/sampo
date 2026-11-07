@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo cpu` shows this session's CPU from its cgroup as cores and % of the machine, split by kind, a self-check says how far the 10-minute average is over the 10% goal and what uses most, and `sampo cpu cap` sets an optional quota on the session's own scope (T-3592).
 - \`sampo docs --trace\` links each doc claim to the code lines that back it, definitions first; \`--since REF\` marks claims whose backing changed and \`--strict\` fails on an unbacked one (T-3287).
 - \`sampo lane brief --ready\` briefs every ready S/M task in one call and prints one block of launch lines, with \`--json\` for parallel Agent calls; a batch stops at the first refusal that holds for all, never briefs two tasks sharing a file, and caps its skip list (T-3293).
 - README diagrams (the loop, the Ward, how the pieces fit) redrawn in Sampo's modern look and name as dark and light pairs, each passing \`sampo works check\` (T-3248).
