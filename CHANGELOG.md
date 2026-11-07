@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo task finish` refuses an edit outside the task's scope before any check runs, and a file that was untracked at the task's start and removed since is no longer counted as the task's edit; the close names it in a warning instead (T-3550).
 - The Sampo pane reruns fm ui at most every 10 s for busy files, and at once when a pause, trust, an ask, drive or the active task changes; each run keeps git's answers until a ref moves and reads the ledgers from where it stopped, cutting fm ui from ~1,100 to ~110 CPU-s/h (T-3580).
 - `fm ui --json` keeps its JSON in the project's cache/ while HEAD, meta.json, the ledger, the tasks/ folder, trust and the pause flag stand still (at most 10 s, and the pane asks again after a cached reply when its paths moved), so the pane's poll after every tool call costs ~0.2 s CPU instead of ~0.8 s, and its kept band lines no longer wake the pane (T-3542).
 - risk.json, genesis-step.json and doctor-cache.json no longer get rewritten by lanes and main for each other: risk keeps one HEAD-reflog entry per checkout under the worktree's real git dir, and rune.health and doctor key on content hashes (c.content_key), not on mtimes or the plugin path (T-3565).
