@@ -3986,8 +3986,8 @@ def _per_fix(res, tokens):
 def _smith_arm(base, key, work, model, request, events, planner=None, reason=None, small=False):
     """T-2908: fm code on a local model profile in a temp copy of the scenario (own Smith home, no user state, the
     smithbench isolation); the tree it leaves is copied to work, Smith's event stream to `events`. The answer has no
-    findings of its own (Smith reports a summary), so _smith_findings asks the profile once for them from the end
-    text (T-2931); the grade also reads the tree, as for a goal."""
+    findings of its own (Smith reports a summary), so _smith_findings asks the profile once for them from Smith's
+    words (T-2931, T-3676); the grade also reads the tree, as for a goal."""
     from sampo import models as smodels, smithbench
     prof = smodels.resolve(model)
     host = urllib.parse.urlparse(str(prof.get("base_url") or "")).hostname
@@ -4044,42 +4044,117 @@ def _smith_arm(base, key, work, model, request, events, planner=None, reason=Non
             except (OSError, ValueError, smodels.ModelError):
                 pass  # no journal is no failure: the exam's grade never depends on it
     end = next((e for e in reversed(evs) if e.get("event") in ("closed", "blocked", "error", "answer")), {})
-    found = _smith_findings(prof, str(end.get("text") or ""), work, evs)
+    found = _smith_findings(prof, work, evs, os.path.join(base, "repo"))
     log = "".join(c.redact(json.dumps(e)) + "\n" for e in evs)[:EVENTS_CAP]
     c.write_atomic(events, log)
     tokens = next((e.get("total_in", 0) + e.get("total_out", 0) for e in reversed(evs) if e.get("event") == "tokens"), 0)
     crashed = not evs and not late  # no event at all: fm code itself failed
     return {"findings": found, "notes": [c.redact(str(end.get("text") or ""))[:400]] if end else [],
             "done": end.get("event") == "closed", "cost": 0, "tokens": tokens,
+            "confidence": SMITH_CONF.get(evs_end.get("event"), 5),  # T-3676: the run's own end, never the hidden check
             "error": "timeout" if late else c.redact(err.strip()[-300:] or "fm code gave no events") if crashed else None,
             "model": c.plain(model)[:60], "planner": c.plain(planner)[:60] if planner else None,
             "reason": reason, "small": bool(small)}
 
 
-FINDINGS_TEXT, FINDINGS_FILES = 4000, 300  # chars of end text and repo paths sent to the findings call
+FINDINGS_TEXT, FINDINGS_FILES = 4000, 300  # chars of Smith's words and repo paths sent to the findings call
+FINDINGS_READ = 1 << 20  # bytes of a file read to ground a finding's name
+# ponytail: the most serious finding only (T-3676 live replay of 352 Nov 7 answers on jarvis-nothink: the first kept found
+# 166 with 36 false alarms; every later one added 18 found and 92 false alarms). The ceiling: a review whose scenario
+# plants several defects (kind none, 4 each) gets one credited. Raise it when a replay shows later findings mostly right.
+FINDINGS_KEEP = 1
+FINDINGS_ASK = ("listing only the faults in the code, tests or docs that the words above name, the most serious first, each "
+                "with its file and the function or name as written there; leave out side notes (what the words call minor, "
+                "low, fine, acceptable or only partly covered) and never a task, step, criterion, check, commit or tool; "
+                "invent none.")
+# ponytail: one table from jarvis-nothink's Nov 7 exams (T-3676): no green close ever closed its scenario (0/136), an
+# answer did 15% of the time, the rest near 0; per-model rates from the stored exam rows when closes start to land
+SMITH_CONF = {"answer": 15}
 
 
-def _smith_findings(prof, text, work, evs):
-    """T-2931: one tool-less call on the arm's own profile turns fm code's end text into the findings object the session
-    arms answer with. It sees the end text and the repo's file list, never the key; a finding naming a file not in the
-    tree is dropped (the only guard on invention); the grade still decides credit and false alarms. No end text, no
-    call. The call goes in evs (the events log); a model error leaves the findings empty."""
+def _smith_words(evs):
+    """T-3676: what Smith said, oldest first: each step's done summary (the say that held it, whole, else the action's
+    cut target) and each end text, deduped, the tail kept within FINDINGS_TEXT; and the files it edited or wrote."""
+    said, words, changed = "", [], []
+    for e in evs:
+        ev, act = e.get("event"), e.get("action")
+        if ev == "say":
+            said = str(e.get("text") or "")
+        elif ev == "action" and act == "done":
+            words.append(said if '"summary"' in said else str(e.get("target") or ""))
+        elif ev == "action" and act in ("edit", "write") and e.get("result") == "ok":
+            changed.append(str(e.get("target") or ""))
+        elif ev in ("closed", "blocked", "error", "answer"):
+            words.append(str(e.get("text") or ""))
+    text = "\n\n".join(dict.fromkeys(w.strip() for w in words if w.strip()))
+    return text[-FINDINGS_TEXT:], [f for f in dict.fromkeys(changed) if f]
+
+
+def _grounded(f, roots):
+    """T-3676: some name of 3+ characters in the finding's symbol (`uniq_keep_order (app.ts:15)`, `Store.find`) is a
+    whole word in its file, as the run left it or as the scenario gave it (a fix may delete the name); for a doc or a
+    test file, in any file (a README that misnames paginate() as page() never holds paginate: s30-037/docs-rust-73139b;
+    an untested limit_to is absent from test_app.c by definition: s28-027/untested-c-2ef72d). The Nov 7 false alarms
+    named things no file holds: unknown, fix:1, step_4, T-0001, verify_command."""
+    names = re.findall(r"[A-Za-z_]\w{2,}", str(f.get("symbol") or ""))
+    fl = os.path.normpath(str(f.get("file") or ""))
+    doc = os.path.splitext(fl)[1].lower() in (".md", ".rst", ".txt", "") or c.TESTISH.search(fl.replace(os.sep, "/"))
+    for root in roots if names else ():
+        top = os.path.realpath(root)
+        paths = [os.path.join(top, fl)]
+        if doc:
+            for d, ds, fs in os.walk(top):
+                ds[:] = [x for x in ds if x not in (".git", ".fm")]
+                paths += [os.path.join(d, x) for x in fs]
+                if len(paths) > FINDINGS_FILES:
+                    break
+        for path in map(os.path.realpath, paths[:FINDINGS_FILES]):
+            try:
+                if not path.startswith(top + os.sep) or not os.path.isfile(path):  # a fifo the run made would block
+                    continue
+                with open(path, errors="replace") as h:
+                    src = h.read(FINDINGS_READ)
+            except OSError:
+                continue
+            if any(re.search(rf"(?<!\w){re.escape(n)}(?!\w)", src) for n in names):
+                return True
+    return False
+
+
+def _smith_findings(prof, work, evs, repo):
+    """T-2931: one tool-less call on the arm's own profile turns Smith's words into the findings object the session
+    arms answer with. T-3676: the words are every step's done summary and the end text (a closed run's end text is a
+    commit line, so the defects its steps named went uncredited), with the files it changed and the repo's file list,
+    never the key. A finding is kept only when its file is in the tree, the tree grounds a name in its symbol
+    (_grounded), it isn't a repeat and it is among the first FINDINGS_KEEP (the ask puts the most serious first); the
+    dropped ones go in the log with why. No words, no call. A model error leaves the findings empty."""
     from sampo import models as smodels
-    if not text.strip():
+    text, changed = _smith_words(evs)
+    if not text:
         return []
     files = sorted(os.path.relpath(os.path.join(d, f), work) for d, ds, fs in os.walk(work)
                    for f in fs if not any(x in (".git", ".fm") for x in os.path.relpath(d, work).split(os.sep)))
-    ask = (f"A coding run ended with this report:\n\n{c.redact(text)[:FINDINGS_TEXT]}\n\nThe repo's files:\n"
-           + "\n".join(files[:FINDINGS_FILES]) + "\n\n" + AGAIN.replace("listing every defect you found or fixed here.",
-           "listing only the defects the report above names; invent none."))
+    ask = (f"A coding run worked on this repo. Its own words, step by step:\n\n{c.redact(text)}\n\n"
+           f"Files it changed: {', '.join(changed) or 'none'}\n\nThe repo's files:\n" + "\n".join(files[:FINDINGS_FILES])
+           + "\n\n" + AGAIN.replace("listing every defect you found or fixed here.", FINDINGS_ASK))
     try:
         got = smodels.complete(prof, [{"role": "user", "content": ask}], max_tokens=1024, timeout=120)
         reply = str(got.get("text") or "")
     except (smodels.ModelError, OSError) as e:
         evs.append({"event": "findings", "text": f"no findings: {c.redact(str(e))[:200]}"})
         return []
-    out = [f for f in _reply(reply)["findings"] if os.path.normpath(str(f.get("file") or "")) in files]
-    evs.append({"event": "findings", "text": c.redact(reply)[:1000], "kept": len(out)})
+    out, dropped, seen = [], [], set()
+    for f in _reply(reply)["findings"]:
+        fl, sym = os.path.normpath(str(f.get("file") or "")), str(f.get("symbol") or "")
+        why = ("past the first" if len(out) >= FINDINGS_KEEP else "file not in the tree" if fl not in files
+               else "a repeat" if (fl, sym.strip().lower()) in seen
+               else "name not in its file" if not _grounded(f, (work, repo)) else None)  # cheap checks first
+        seen.add((fl, sym.strip().lower()))
+        if why:
+            dropped.append(c.redact(f"{fl}::{sym[:60]}: {why}"))
+        else:
+            out.append(f)
+    evs.append({"event": "findings", "text": c.redact(reply)[:1000], "kept": len(out), "dropped": dropped[:30]})
     return out
 
 
