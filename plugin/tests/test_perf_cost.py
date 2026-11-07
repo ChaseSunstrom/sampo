@@ -69,7 +69,7 @@ class HookSlo(HookCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             for rev, ms in rows:
-                f.write(json.dumps({"ts": c.now(), "kind": "hook_ms", "event": "PreToolUse", "ms": ms, "rev": rev}) + "\n")
+                f.write(json.dumps({"ts": c.now(), "kind": "hook_ms", "event": "PreToolUse", "ms": ms, "rev": rev, "load": 0.2}) + "\n")
 
     def test_each_hook_ms_event_carries_the_revision(self):
         self.fm("init")
@@ -96,23 +96,45 @@ class HookSlo(HookCase):
         path = os.path.join(c.state_dir(), "events.jsonl")
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
-        def put(rows):
+        def put(rows, ts=None):
             with open(path, "w") as f:
                 for ms, load in rows:
-                    f.write(json.dumps({"ts": c.now(), "kind": "hook_ms", "event": "PreToolUse", "ms": ms, "rev": "1",
+                    f.write(json.dumps({"ts": ts or c.now(), "kind": "hook_ms", "event": "PreToolUse", "ms": ms, "rev": "1",
                                         **({} if load is None else {"load": load})}) + "\n")
-        put([(40, 0.5)] * 30 + [(900, 3.0)] * 40)
+        put([(40, 0.3)] * 30 + [(900, 3.0)] * 40)
         r = doctor.check_hook_slo()
         self.assertEqual(r.status, "PASS", r.detail)
         self.assertIn("40 left out", r.detail)
-        put([(40, 0.5)] * 250 + [(900, 3.0)] * 10)  # more normal runs than the window: only the loaded ones are counted
+        put([(40, 0.3)] * 250 + [(900, 3.0)] * 10)  # more calm runs than the window: only the loaded ones are counted
         self.assertIn("; 10 left out", doctor.check_hook_slo().detail)
-        put([(400, 0.5)] * 30 + [(40, 3.0)] * 40)
-        self.assertEqual(doctor.check_hook_slo().status, "WARN", "normal-load runs over the SLO still warn")
+        put([(400, 0.3)] * 30 + [(40, 3.0)] * 40)
+        self.assertEqual(doctor.check_hook_slo().status, "WARN", "calm runs over the SLO still warn")
         put([(400, None)] * 30)
-        self.assertEqual(doctor.check_hook_slo().status, "WARN", "events without a load count as normal load")
-        put([(900, 3.0)] * 40 + [(40, 0.5)] * 5)
-        self.assertEqual(doctor.check_hook_slo().status, "PASS", "under 20 normal-load runs: it doesn't judge")
+        self.assertEqual(doctor.check_hook_slo().status, "PASS", "events without a load are not known calm: not judged")
+        put([(40, 0.3)] * 200 + [(400, 1.2)] * 200)  # T-2933: T-2798's bar (1.5) let these in; only under 0.5 counts
+        r = doctor.check_hook_slo()
+        self.assertEqual(r.status, "PASS", r.detail)
+        self.assertIn("200 left out", r.detail)
+        put([(400, 0.3)] * 200 + [(40, 1.2)] * 200)
+        self.assertEqual(doctor.check_hook_slo().status, "WARN", "calm runs over the SLO warn")
+        put([(400, 1.2)] * 200 + [(40, 0.3)] * 5)
+        r = doctor.check_hook_slo()
+        self.assertEqual(r.status, "PASS", r.detail)
+        self.assertIn("not enough calm", r.detail)
+        put([(900, 3.0)] * 500 + [(40, 0.3)] * 30)  # loaded runs before the oldest calm one aren't counted
+        r = doctor.check_hook_slo()
+        self.assertNotIn("left out", r.detail)
+        self.assertIn("oldest calm sample 0.0 d old", r.detail)
+        put([(400, 0.49)] * 30 + [(40, 0.5)] * 30)  # the bar: 0.49 kept, 0.5 left out
+        r = doctor.check_hook_slo()
+        self.assertEqual(r.status, "WARN", r.detail)
+        self.assertIn("over the last 30 runs", r.detail)
+        self.assertIn("30 left out", r.detail)
+        put([(400, 0.3)] * 30, ts=c.iso(time.time() - 3 * 86400))  # calm runs days old say nothing about now
+        r = doctor.check_hook_slo()
+        self.assertEqual(r.status, "PASS", r.detail)
+        self.assertIn("not enough recent calm samples", r.detail)
+        self.assertIn("3.0 d old", r.detail)
 
     def test_each_hook_ms_event_carries_the_load_per_cpu(self):  # T-2798
         self.fm("init")

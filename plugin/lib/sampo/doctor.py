@@ -132,7 +132,8 @@ def check_hook_latency(bench, busy=None):
     return Result("hook latency", "FAIL" if over else "PASS", "; ".join(over) or f"all {len(bench)} fixtures, worst p95 {worst} ms")
 
 
-SLO_RUNS = 200  # T-0486: the recent PreToolUse runs the SLO judges (state/events.jsonl, hook_ms)
+SLO_LOAD = 0.5  # T-2933: load per CPU under which a hook run is calm enough for the SLO row to judge
+SLO_RUNS = 200 # T-0486: the recent PreToolUse runs the SLO judges (state/events.jsonl, hook_ms)
 
 
 def _p95(xs):
@@ -172,15 +173,26 @@ def check_hook_slo():
         slo = 150
     allruns = [e for e in c.tail_jsonl(os.path.join(c.state_dir(), "events.jsonl"), 20000) if e.get("kind") == "hook_ms"
                and e.get("event") == "PreToolUse" and isinstance(e.get("ms"), (int, float))]
-    # T-2798: a run on a busy machine measures the machine; one with no load recorded (older) counts as normal
-    normal = [e for e in allruns if not (isinstance(e.get("load"), (int, float)) and e["load"] > c.LOAD_BAR)]
-    runs, left = normal[-SLO_RUNS:], len(allruns) - len(normal)  # left: the loaded runs, not the window's cut
-    out = f"; {left} left out at load over {c.LOAD_BAR:g} per CPU" if left else ""
+    # T-2798/T-2933: a run on a busy machine measures the machine, and 1.5 per CPU (LOAD_BAR) is busy: p95 174-269 ms
+    # at 0.5-1.5 against 103-121 ms under 0.5. Only runs with a recorded load under SLO_LOAD count; no load = not known calm
+    calm = lambda e: isinstance(e.get("load"), (int, float)) and e["load"] < SLO_LOAD
+    runs = [e for e in allruns if calm(e)][-SLO_RUNS:]
+    # left out: only the non-calm runs from the window's oldest calm run onward, not the whole tail
+    first = next((i for i, e in enumerate(allruns) if runs and e is runs[0]), 0)
+    left = sum(1 for e in allruns[first:] if not calm(e))
+    out = f"; {left} left out (load not under {SLO_LOAD:g} per CPU, or not recorded)" if left else ""
+    ages = [a for a in (c.age_days(runs[0].get("ts")), c.age_days(runs[-1].get("ts"))) if a is not None] if runs else []
+    old = f"; oldest calm sample {ages[0]:.1f} d old" if ages else ""
     if len(runs) < 20:
-        return Result("hook SLO", "PASS", f"{len(runs)} normal-load PreToolUse run(s) recorded; it judges from 20{out}")
+        return Result("hook SLO", "PASS", f"not enough calm samples: {len(runs)} PreToolUse run(s) at load under "
+                                          f"{SLO_LOAD:g} per CPU; it judges from 20{out}{old}")
+    newest = c.age_days(runs[-1].get("ts"))
+    if newest is not None and newest > 1:  # a box rarely calm: days-old runs say nothing about now
+        return Result("hook SLO", "PASS", f"not enough recent calm samples: the newest of {len(runs)} calm runs is "
+                                          f"{newest:.1f} d old (judges from the last 24 h){out}{old}")
     p95 = _p95([e["ms"] for e in runs])
     if p95 <= slo:
-        return Result("hook SLO", "PASS", f"PreToolUse p95 {p95:.0f} ms over the last {len(runs)} runs (SLO {slo} ms){out}")
+        return Result("hook SLO", "PASS", f"PreToolUse p95 {p95:.0f} ms over the last {len(runs)} runs (SLO {slo} ms){out}{old}")
     by = {}
     for e in runs:  # first-seen order
         by.setdefault(str(e.get("rev") or "?"), []).append(e["ms"])
@@ -189,7 +201,7 @@ def check_hook_slo():
     where = (f"it rose at {rose[0][0]} (p95 {rose[0][1]:.0f} ms; {rose[1][0]} before it: {rose[1][1]:.0f} ms)" if rose
              else f"over since {revs[0][0]} at least (the oldest revision in the window)")
     return Result("hook SLO", "WARN", f"PreToolUse p95 {p95:.0f} ms over the last {len(runs)} runs > the {slo} ms SLO "
-                                      f"(bench_hooks' budget); {where}{out}")
+                                      f"(bench_hooks' budget); {where}{out}{old}")
 
 
 def check_hook_exit_codes(bench):
