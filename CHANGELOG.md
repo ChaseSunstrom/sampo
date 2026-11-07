@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- fm doctor's hook SLO judges only PreToolUse runs with a recorded load under 0.5 per CPU (T-2798's 1.5 bar let busy-machine runs in); with fewer than 20 calm runs, or none in the last 24 h, it reports "not enough (recent) calm samples" and passes, and shows the oldest calm sample's age (T-2933).
 - Session liveness readers (_other_session and the focus note) also scan the per-session sessions/<sid>.seen markers, so a second session working autonomously no longer looks idle; markers carry the Claude pid and project, so a resume, /clear or a session in another project is not mistaken for another session here; workers and lane runners write none, and markers over a day old are pruned (T-3422).
 - Session liveness refreshes from tool calls too: PostToolUse moves the session's seen stamp at most once a minute, gated by a per-session marker file's mtime so most calls cost one stat; a busy lock skips the refresh without waiting, so a session doing long autonomous work no longer looks dead to the second-session lane gate (T-3389).
 - `sampo doctor` warns once, naming each MCP server configured with the deprecated HTTP+SSE transport (`"type": "sse"`, in ~/.claude.json, per project and the project's .mcp.json), and warns when either file can't be read; cites the MCP 2026-07-28 changelog (T-3346).
