@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- One table of speed promises for the hot CLI verbs, measured on child CPU time as a ratio to bare python, with hook budgets from bench_hooks (T-3272).
 - The hook bench reads the script budget from a -I child and clamps it, so a branch's guard code can't patch or loosen the clock that times it (T-3132).
 - The UI card grid is grown: 12,000 UI cards across 2,541 of its 3,840 cells (66%), written by Haiku and the local models; cards name each platform's own test runner, card commands are checked the way bash reads them, and the grower runs repairs in parallel and stops cleanly when interrupted (T-2994)
 - Test classes no longer inherit operator switches (FOREMAN_LOAD_GATE, SAMPO_SLOT and the like), a test makes every new env name Sampo reads declare itself switch or harness, and a merge train checks the base's affected tests first whenever its env differs from the last green train's, so an env change that turns the base red stops it in minutes (T-3625)
