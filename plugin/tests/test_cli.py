@@ -1168,6 +1168,24 @@ class Checks(ForemanTestCase):
         self.assertNotIn("can't run", out)
         self.assertEqual(before[0], None)
 
+    def test_bare_check_affected_shows_and_only_clear_unsets(self):
+        # T-3671: a bare `check affected` (a look) wiped the template; now it shows, --clear unsets, and it's logged
+        self.fm("init")
+        self.fm("check", "affected", "echo py {names}")
+        self.fm("check", "affected", "--for", ".tsx", "echo tsx")
+        shown = self.fm("check", "affected").stdout
+        self.assertIn("echo py {names}", shown)
+        self.assertIn("echo tsx", self.fm("check", "affected", "--for", ".tsx").stdout)
+        p = c.find_project(self.repo, create=False)
+        self.assertEqual(c.read_meta(p)["affected"], "echo py {names}")
+        self.assertEqual(c.read_meta(p)["affected_by"], {".tsx": "echo tsx"})
+        self.fm("check", "affected", "--clear", "--for", "tsx")
+        self.assertEqual(c.read_meta(p)["affected_by"], {})
+        self.fm("check", "affected", "--clear")
+        self.assertEqual(c.read_meta(p)["affected"], "")
+        with open(os.path.join(p.dir, "ledger.jsonl")) as f:
+            self.assertIn("affected_template", f.read())
+
     def test_a_flaky_gate_is_rerun_and_labelled_and_old_failures_are_told_apart(self):
         # T-0047: a failure that passes on a rerun is flaky; one that already failed before the task is pre-existing
         self.fm("init")

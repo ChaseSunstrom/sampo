@@ -5203,14 +5203,28 @@ def _cmd_check(args):
         with c.lock(p.dir):
             meta = c.read_meta(p)
             ext = (args.__dict__.get("for_ext") or "").strip()
+            clear = bool(args.__dict__.get("clear"))
+            if args.words and clear:
+                raise UsageError("check affected: give a command or --clear, not both")
             if ext:  # T-1135: one command per test-file extension, beside the default
                 ext = "." + ext.lstrip(".")
                 by = dict(meta.get("affected_by") or {})
-                by.pop(ext, None) if not args.words else by.update({ext: " ".join(args.words)})
+                old = by.get(ext, "")
+                if clear:
+                    by.pop(ext, None)
+                elif args.words:  # T-3671: no words only shows
+                    by[ext] = " ".join(args.words)
+                new = by.get(ext, "")
                 meta["affected_by"] = by
+                key = ext
             else:
-                meta["affected"] = " ".join(args.words)
-            c.write_meta(p, meta)
+                old = meta.get("affected", "")
+                new = "" if clear else " ".join(args.words) if args.words else old
+                meta["affected"] = new
+                key = "default"
+            if new != old:  # T-3671: a wipe must be visible
+                c.write_meta(p, meta)
+                c.log_event(p, "affected_template", data={"for": key, "old": old, "new": new}, session=session())
         by = meta.get("affected_by") or {}
         return out(args, {"affected": meta.get("affected", ""), "affected_by": by},
                    f"sampo check --affected runs: {meta.get('affected') or '(unset)'}"
@@ -7890,7 +7904,9 @@ def _build_parser(only=None):
     s.add_argument("--sheets", type=int, metavar="N", help="office: the workbook's sheet count")
     s.add_argument("--contains", action="append", metavar="TEXT", help="office: text a docx must hold (repeatable)")
     s.add_argument("--for", dest="for_ext", metavar="EXT", help="affected: the command is for tests with this extension "
-                                                                "(.tsx), run beside the default (T-1135)")
+                                                                "(.tsx), run beside the default (T-1135); no command "
+                                                                "shows it, --clear removes it (T-3671)")
+    s.add_argument("--clear", action="store_true", help="affected: unset the template (with --for, that extension's)")
     s.add_argument("--python", metavar="VER", help="run the gates with python VER (3.12) or 'oldest' (the lowest Sampo "
                                                    "supports) as python3: once before a push to main or a release "
                                                    "(T-1805)")
