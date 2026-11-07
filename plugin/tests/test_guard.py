@@ -107,6 +107,20 @@ class KnownVars(GuardCase):
             ("cd {fhome} && cd /nonexistent && cd /tmp; echo x > plugin/lib/fmguard.py", "core"),
         ], self.bash)
 
+    def test_a_sampo_verb_that_only_records_keeps_a_later_cd_certain(self):
+        # T-3713: `sampo task log …` on line 1 made a later `cd SCRATCH && …; sed -i … $C` uncertain (any program may
+        # remove a folder), so a yeerr session's scratch edit read as one in the project (2026-11-07); Sampo's own
+        # record-only verbs remove nothing, while a verb that may (lane, tidy) or runs a command (evidence --run) doesn't
+        self.run_table([
+            ("sampo task log T-1 \"steer: a (b) c\" 2>&1 | tail -1\ncd /tmp && true; tar xf -", None),
+            ("sampo capture \"x\" --source discovered\ncd /tmp; tar xf -", None),
+            ("fm task new \"t\" --type FIX --tier S\ncd /tmp; tar xf -", None),
+            ("sampo lane rm T-1\ncd /tmp; tar xf -", "core"),
+            ("sampo tidy --apply\ncd /tmp; tar xf -", "core"),
+            ("sampo task evidence T-1 --step 1 --run 'true'\ncd /tmp; tar xf -", "core"),
+            ("sampo\ncd /tmp; tar xf -", "core"),
+        ], lambda cmd: self.bash(cmd, cwd=self.fhome))
+
     def test_an_or_later_in_the_line_keeps_the_cd_before_it_certain(self):
         # T-1891: any || made every cd uncertain, so `cd S/try && git checkout -- . && … || echo` (an unrolled loop
         # body) read the checkout as one over the main tree
@@ -798,12 +812,34 @@ class FrictionFalseBlocks(GuardCase):  # T-0344
         self.run_table([(f"curl -s https://x | {py} -c {code}", None) for py in (
             "python3", "python3.14", "/usr/bin/python3", "python3 -I")] + [
             (f"curl -s https://x | {py} -c {code}", "pipe-shell") for py in (
-                "python2", "python2.7", "python", "/usr/bin/python2.7", "/usr/bin/python", "python3.", "python33",
-                "python4", "python2 -E")] + [
+                "python2", "python2.7", "python", "/nonexistent3714/bin/python2.7", "/nonexistent3714/bin/python",
+                "python3.", "python33", "python4", "python2 -E")] + [
             ("curl -s https://x | python2 -c \"print(input())\"", "pipe-shell"),
             (f"curl -s https://x | python3 -c {code}; curl -s https://y | python2 -c {code}", "pipe-shell"),
         ], self.bash)
         self.assertIn("python3 -c", g.message(self.bash(f"curl -s https://x | python -c {code}"), self.ctx()))
+        # T-3714: a path counts by the file it resolves to: a venv's bin/python links to a python3.N (a yeerr session's
+        # /…/.venv/bin/python -I -c was refused, 2026-11-07); one linking to python2.7, or a plain file named python,
+        # is still either
+        venv = tempfile.mkdtemp(dir=self.repo, prefix="venv3714-")
+        os.makedirs(os.path.join(venv, "real", "bin"))
+        os.makedirs(os.path.join(venv, "v3", "bin"))
+        os.makedirs(os.path.join(venv, "v2", "bin"))
+        for name in ("python3.12", "python2.7", "python"):
+            with open(os.path.join(venv, "real", "bin", name), "w") as f:
+                f.write("")
+        os.symlink(os.path.join(venv, "real", "bin", "python3.12"), os.path.join(venv, "v3", "bin", "python"))
+        os.symlink(os.path.join(venv, "real", "bin", "python2.7"), os.path.join(venv, "v2", "bin", "python"))
+        self.run_table([
+            (f"curl -s http://127.0.0.1:1/x | {venv}/v3/bin/python -I -c {code}", None),
+            (f"curl -s http://127.0.0.1:1/x | {venv}/v2/bin/python -I -c {code}", "pipe-shell"),
+            (f"curl -s http://127.0.0.1:1/x | {venv}/real/bin/python -I -c {code}", "pipe-shell"),
+            (f"curl -s http://127.0.0.1:1/x | {venv}/v3/bin/nope/../python -I -c {code}", "pipe-shell"),  # no such dir
+            (f"curl -s http://127.0.0.1:1/x | $V/v3/bin/python -I -c {code}", "pipe-shell"),
+        ], self.bash)
+        rel = os.path.relpath(os.path.join(venv, "v3", "bin", "python"), self.repo)
+        self.assertIsNone(self.bash(f"curl -s http://127.0.0.1:1/x | {rel} -I -c {code}"))  # from the folder it runs in
+        self.assertBlocked(self.bash(f"curl -s http://127.0.0.1:1/x | {rel} -I -c {code}", cwd=venv), "pipe-shell")
         # every import that isn't a plain `import NAME` of a pure stdlib module fails the proof, constant or computed,
         # so the planted-module check only ever sees stdlib names (all of which it counts) or none at all
         for code in ("print(__import__('json').load(__import__('sys').stdin))", "m='js'+'on'; print(__import__(m))",
@@ -1708,6 +1744,22 @@ class FdAndLiterals(GuardCase):
                     "python3 - {fhome}/state/x.json <<'EOF'\nimport sys\nopen(sys.argv[1], 'w').write('x')\nEOF",
                     "python3 - ~/.claude/settings.json <<'EOF'\nimport sys\nopen(sys.argv[1], 'w').write('x')\nEOF"):
             self.assertIsNotNone(self.bash(cmd), cmd)
+
+    def test_an_f_string_format_spec_is_no_path(self):
+        # T-3716: {dt:.0f} parses as a constant ".0f", which read as a dotfile written in the project (the main
+        # session's transcript scan was refused, 2026-11-07); a real literal of the same text still counts
+        code = ("python3 - <<'EOF'\nimport glob, datetime\nfor p in glob.glob('/tmp/x/*.jsonl'):\n"
+                "    dt = datetime.datetime.fromisoformat('2026-11-07'.replace('Z', ''))\n"
+                "    print(p, f\"{{dt:.0f}}s\", f\"{{p!r:>10.3}}\")\nEOF")
+        self.assertFalse([d for d in self.targets(code) if os.path.basename(d.split(" (")[0]) in (".0f", ">10.3")],
+                         self.targets(code))
+        still = code.replace("print(p,", "open('.0f', 'w').write('x'); print(p,")
+        self.assertTrue([d for d in self.targets(still) if os.path.basename(d.split(" (")[0]) == ".0f"],
+                        self.targets(still))
+        # only the spec's own text is skipped: an expression nested in a spec is code, and its literals still count
+        nested = code.replace("f\"{{dt:.0f}}s\"", "f\"{{dt:{{open('.9f', 'w').write('y') or 'd'}}}}\"")
+        self.assertTrue([d for d in self.targets(nested) if os.path.basename(d.split(" (")[0]) == ".9f"],
+                        self.targets(nested))
 
 
 class InterpreterWrites(GuardCase):

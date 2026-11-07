@@ -2482,6 +2482,8 @@ def _quoted_paths(cmd):
             text += "\n" + code
             continue
         skip = {id(a) for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_sys_path_call(n.func) for a in n.args}
+        skip |= {id(v) for n in ast.walk(tree) if isinstance(n, ast.FormattedValue) and n.format_spec  # T-3716: the
+                 for v in n.format_spec.values if isinstance(v, ast.Constant)}  # .0f of {dt:.0f}; nested code counts
         for n in ast.walk(tree):  # T-2662: sys.path.insert/append(…, "/lib") names an import folder, not a write
             if id(n) not in skip and isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)):  # open(b'/x', 'w') writes /x too
                 v = n.value.decode("latin-1") if isinstance(n.value, bytes) else n.value
@@ -2790,6 +2792,9 @@ _READS = {
                                      "-fprintf", "-fls"),
 }
 _GIT_READS = {"status", "log", "diff", "show", "blame", "rev-parse", "ls-files", "describe", "shortlog", "grep"}
+# T-3713: Sampo verbs that only read or record its state (never lane, tidy, or evidence --run, which runs a command)
+_FM_KEEPS = {"capture", "decide", "status", "which", "find", "outline", "queue", "inbox", "next", "focus"}
+_FM_TASK_KEEPS = {"log", "new", "set", "show", "list"}
 _GIT_BAD = ("-o", "--output", "--ext-diff", "--textconv", "--open-files-in-pager", "-O")
 
 
@@ -2849,6 +2854,9 @@ def _keeps_folders(c, argv):
         return not any(a.startswith(("-m", "--mode")) for a in argv[1:])
     if argv[0] == "git":
         return argv[1:2] != [] and argv[1] in _GIT_READS and not _bad_flag(argv[2:], _GIT_BAD)
+    if argv[0] in ("sampo", "fm"):  # T-3713: Sampo's record-only verbs remove no folder
+        return argv[1:2] == ["task"] and argv[2:3] != [] and argv[2] in _FM_TASK_KEEPS or argv[1:2] != [] and \
+            argv[1] in _FM_KEEPS
     bad = _READS.get(argv[0])
     return bad is not None and not _bad_flag(argv[1:], bad)
 
@@ -3134,15 +3142,29 @@ def _reads_pipe_as_data(c, cmds, cwds, cmd, ignore_writes=False):
     return not (loose & read or loose and any("${!" in w for w in words))  # ${!R} reads the name R holds
 
 
+_PY3 = lazy(r"python3(?:\.\d+)?")
+
+
+def _py3_path(word, cwds):
+    """T-3714: word is a literal path (a /, nothing the shell expands) to a file whose real name, symlinks followed,
+    is python3 or python3.N, from every folder the line may run in (a relative one needs them all known)."""
+    if "/" not in word or re.search(r"[$`*?\[\]{}~\\'\"\s]", word):
+        return False
+    paths = [word] if os.path.isabs(word) else [os.path.join(d, word) for d in cwds or [] if d]
+    return bool(paths) and all(os.path.isfile(p) and _PY3.fullmatch(os.path.basename(os.path.realpath(p)))
+                               for p in paths)
+
+
 def _proved_py(x, cwds):
     """T-0344: x is a bare python -c CODE (no wrapper or assignment, output to /dev/null at most) that reads stdin
     only as data and writes nothing: CODE proved (_open_targets), no inherited PYTHONINSPECT or import path, nothing
     in its folder shadowing a module it may import (_shadowed). T-3683: narrowing flags first (_py_code); -I or -E
     ignores the inherited PYTHON* variables, -I or -P keeps the folder off sys.path. T-3689: only a python named for
     major version 3 (python3, python3.N): Python 2's input() evaluates stdin as code, and plain python may be either
-    (the hook's PATH isn't the Bash tool's, so the guard can't tell which, and it never runs a program to ask)."""
+    (the hook's PATH isn't the Bash tool's, so the guard can't tell which, and it never runs a program to ask).
+    T-3714: a literal path counts by the file it resolves to (_py3_path): a venv's bin/python links to a python3.N."""
     argv, _ = _strip_wrappers(x.argv)
-    py3 = argv and x.argv == argv and re.fullmatch(r"python3(?:\.\d+)?", os.path.basename(argv[0]))
+    py3 = argv and x.argv == argv and (_PY3.fullmatch(os.path.basename(argv[0])) or _py3_path(argv[0], cwds))
     py = _py_code(argv[1:]) if py3 else None
     if not py or not set(x.redirs) <= {"/dev/null"}:
         return False
