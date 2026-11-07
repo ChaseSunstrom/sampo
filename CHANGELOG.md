@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo next`, `fm ui`, and the Stop and UserPromptSubmit hooks stop re-reading every brief and the whole ledger: a self-checking index of event kinds and of open briefs means each call reads only what changed (T-3573).
 - The self-change gate's planted-growth proofs (LeanKindGate*) bench 4 hook fixtures in-process and skip the import-map run: about 2.5x faster under load, same refusals (T-3379).
 - fm sync import no longer turns a task that is active in the main checkout or a lane back to planned when the repo's mirror copy is an older runnable one; blocked, deferred and closed repo copies still win (T-3396).
 - Every hook keeps its compiled regex patterns between calls, so a PreToolUse Bash call no longer recompiles about 120 of them (CPU 53.8 -> 45.5 ms per call) (T-3584)
