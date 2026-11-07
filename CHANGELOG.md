@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A builder's start/stop mark now survives a busy project lock: the brief is found before the lock, one brief is re-read and saved under it with retries, and contention is one counted hooks.log line instead of a traceback (T-3609)
 - `sampo --version` and `sampo version` print Sampo's version, and the verbs agents most often guess (`models`, `where`, `task scope`, `lane awaiting`, `affected`, `task approve`) now name the right one instead of a misspelling match (T-3612)
 - The Ward now reads a sampo verb, gated word or stored command the shell fills in (a variable, a substitution, xargs input, an alias, a nameref or anything else that rebinds a name, env -S, source <(...), a computed path to sampo) through the values the line sets only where nothing in the shell can rebind them, refuses one it still can't read (no grant lifts it), and says whether to type the verb or write the value into the command (T-3600)
 - The prompt and session-start hooks, `sampo capture` and `task new` hold the project lock only for their writes, with the brief load, state build, view regeneration and rewind git snapshot moved after or before it (T-3582)
