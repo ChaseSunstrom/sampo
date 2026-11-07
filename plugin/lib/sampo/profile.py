@@ -27,11 +27,11 @@ DIGEST_MAX = 600   # bytes a session's digest may take (SessionStart, the builde
 BRIEF_MAX = 320    # a subagent's (SubagentStart): every subagent pays it
 FULL_MAX = 4000    # the whole profile (sampo profile show, the MCP resource)
 LIVE_MAX = 200     # the live line naming other sessions' projects
-ITEM_MAX = 110     # one item in a digest
+SHORT_MAX = 80     # one item's short form in a digest (T-3690)
 CHECK_S = 600      # a session start refreshes the profile at most this often (a detached rebuild --if-stale)
 BEGIN, END = "<!-- sampo-profile:begin -->", "<!-- sampo-profile:end -->"
 HEAD = "# The user (machine-local profile: sampo profile)"
-DIGEST_HEAD = "The user's standing preferences (machine-local; all: sampo profile show):"
+DIGEST_HEAD = "The user's standing preferences (full text: sampo profile show):"
 NEW_FOLDER = ("This folder is new to Sampo: `sampo init` registers it (git init first for lanes and history); "
               "`sampo next` then says what to do.")
 _PUBLIC = ("github.com", "gitlab.com", "anthropic.com", "claude.ai", "claude.com")
@@ -273,18 +273,60 @@ def items():
     return [ln[2:] for ln in text.splitlines() if ln.startswith("- ")]
 
 
+_HEADLINE = c.lazy(r"([^.:;!?]{1,40}): (.+)", re.S)
+_SCRUBBED = c.lazy(r"<(?:user|host|private)>")
+_BACKREF = c.lazy(r"\b(?:it|its|they|them|their|this|these|those)\b", re.I)  # needs the sentence before it
+
+
+def _clip(text, room):
+    """text in whole words within room chars: cut at its last ', ' that fits, else its last space ('' when none)."""
+    if len(text) <= room:
+        return text
+    cut = text[:max(room, 0) + 1]
+    at = cut.rfind(", ")
+    at = at if at > 0 else cut.rfind(" ")
+    return text[:at].rstrip(" ,;:") if at > 0 else ""
+
+
+def short_form(item, cap=SHORT_MAX):
+    """T-3690: an item in a few whole words: its headline (the words before a first ': ' no sentence end precedes),
+    its first sentence's leading clause (the words before any ': ', clipped at a comma to fit), then each later
+    sentence's leading clause that still fits cap. A clause naming a scrubbed value (<user>, <host>) is a fact about
+    the machine, not a rule, and is skipped; so is a later one whose pronoun ("never print it") points into a sentence
+    the form drops. Derived on every read, so it follows the memories as they change."""
+    m = _HEADLINE.fullmatch(item)
+    head, rest = (m.group(1), m.group(2)) if m else ("", item)
+    leads = [s.split(": ")[0].rstrip(".;!? ") for s in re.split(r"(?<=[.;!?])\s+", rest)]
+    leads = [x for x in leads if x and not _SCRUBBED.search(x)] or leads[:1]
+    out = head
+    for i, lead in enumerate(leads):
+        if i and _BACKREF.search(lead):
+            continue
+        sep =(": " if head else "") if out == head else "; "
+        room = cap - len(out) - len(sep)
+        lead = _clip(lead, room) if i == 0 else lead
+        if lead and len(lead) <= room:
+            out += sep + lead
+    return out
+
+
 def digest(short=False):
-    """The items that fit DIGEST_MAX (short: BRIEF_MAX) bytes under a header; '' with no profile or a leak in it."""
+    """T-3690: the items' short forms, ' · ' between them in the profile's order under a header, within DIGEST_MAX
+    (short: BRIEF_MAX) bytes: whole items drop last-first and are counted (+N more). '' with no profile, a leak in it,
+    or no room for one item."""
     text = _read(path())
     if not text or leaks(text):
         return ""
-    cap, out = BRIEF_MAX if short else DIGEST_MAX, DIGEST_HEAD
-    for it in items():
-        line = "\n- " + c.fit(it, ITEM_MAX if not short else 80)
-        if len((out + line).encode()) > cap:
+    cap, its = BRIEF_MAX if short else DIGEST_MAX, items()
+    out, kept = DIGEST_HEAD + "\n", 0
+    for form in filter(None, map(short_form, its)):
+        line = out + (" · " if kept else "") + form
+        more = len(its) - kept - 1
+        if len((line + (f" · +{more} more" if more else "")).encode()) > cap:
             break
-        out += line
-    return out if out != DIGEST_HEAD else ""
+        out, kept = line, kept + 1
+    more = len(its) - kept
+    return out + (f" · +{more} more" if more else "") if kept else ""
 
 
 def full():

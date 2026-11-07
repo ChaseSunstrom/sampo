@@ -9,6 +9,25 @@ from helpers import FM, HOOK, SampoTestCase, git_repo
 
 SEED = ("# notes\n<!-- sampo-profile:begin -->\n# The user\n- Full autonomy, standing:\n  - Never ask; decide and report.\n"
         "- Visual taste: crafted, animated, real data.\n<!-- sampo-profile:end -->\n")
+MACHINE = (  # T-3690: the shape of a real seed, made-up values
+    "Full autonomy, standing: Never ask: no question prompts, no permission asks, not even design picks. Decide with "
+    "your default, record it, and report at the end. Never hand the user a command to run; only logins and secrets "
+    "are theirs to type. Releases and pushes to main are pre-approved.",
+    "Finish the whole request unattended: Never sit idle on a long job; background it and keep working. Replies are "
+    "short and quiet; spell out codes.",
+    "Build the complete, ambitious version, with tests and a review. Anticipate problems. A correction from the user "
+    "is a pattern to fix everywhere, unasked; they should never have to say it twice.",
+    "The machine has 8 cores, shared with up to ~40 agents. Aim for agent work under 10% of the CPU: nice heavy runs, "
+    "run only the tests a change touches, never peg the PC. The GPU models on the lab box at 10.0.0.7 are free. "
+    "Their key is in a local file; never print it.",
+    "Visual taste: Crafted, detailed, continuously animated, real data. \"Visuals\" means a dense dark board of "
+    "numbered panels with animated diagrams, not plain charts.",
+    "GitHub: the account is alice. Port 22 times out here, so push over ssh.github.com:443. Copy core.sshCommand "
+    "from the main checkout.",
+    "Privacy: never put the user's home domain, IPs, logins or home username into a repo, a commit or a public page; "
+    "use made-up values.",
+    "Sampo runs the work. In a new folder run `sampo init`, capture the request as tasks, and follow `sampo next`.",
+)
 
 
 class Profile(SampoTestCase):
@@ -110,6 +129,45 @@ class Profile(SampoTestCase):
         self.assertIn("Full autonomy", ctx)
         self.assertLessEqual(len(ctx.encode()), profile.BRIEF_MAX)
         self.assertEqual(json.loads(out.stdout)["hookSpecificOutput"]["hookEventName"], "SubagentStart")
+
+    def machine_like(self):
+        """A profile shaped like a real machine's: long seed rules, then more memories than any digest holds."""
+        os.makedirs(self.cc, exist_ok=True)
+        with open(os.path.join(self.cc, "CLAUDE.md"), "w") as f:
+            f.write("<!-- sampo-profile:begin -->\n" + "".join(f"- {s}\n" for s in MACHINE) + "<!-- sampo-profile:end -->\n")
+        for i in range(10):
+            self.plant(f"rule{i}", "feedback", f"Rule {i} of the long tail: keep doing the thing this memory describes "
+                                               "at length, well past any digest's room for one item")
+        self.fm("profile", "rebuild", env=self.env)
+
+    def test_the_digest_packs_whole_short_forms_and_counts_the_rest(self):
+        import re
+        from sampo import profile
+        self.machine_like()
+        d = profile.digest()
+        self.assertNotIn("…", d)  # T-3690: never cut mid-word
+        self.assertLessEqual(len(d.encode()), profile.DIGEST_MAX)
+        for named in ("autonomy", "never hand the user a command", "privacy", "github", "ssh.github.com:443"):
+            self.assertIn(named, d.lower())
+        self.assertNotIn("never print it", d)  # a clause whose "it" lives in another sentence misleads (T-3690)
+        self.assertIn("sampo profile show", d)
+        body = d.split("\n", 1)[1]
+        more = re.search(r" · \+(\d+) more$", body)
+        self.assertTrue(more, body)
+        forms = body[:more.start()].split(" · ")
+        items = profile.items()
+        self.assertEqual(forms, [profile.short_form(i) for i in items[:len(forms)]])  # priority order, dropped last-first
+        self.assertEqual(int(more.group(1)), len(items) - len(forms))
+        self.assertGreaterEqual(len(forms), 7)
+        self.assertLessEqual(set(re.findall(r"\w+", " ".join(forms))), set(re.findall(r"\w+", self.profile_text())))
+        plain = os.path.join(self.tmp, "plain")
+        os.makedirs(plain)
+        self.assertIn(d, self.context(self.hook("SessionStart", {"cwd": plain, "source": "startup"})))
+        brief = profile.digest(short=True)
+        self.assertNotIn("…", brief)
+        self.assertLessEqual(len(brief.encode()), profile.BRIEF_MAX)
+        self.assertIn("autonomy", brief.lower())
+        self.assertRegex(brief, r" · \+\d+ more$")
 
     def test_the_mcp_resource_and_tool_carry_the_profile(self):
         self.built()
