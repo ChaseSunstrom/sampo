@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- The coverage recorder no longer counts sleep, nvidia-smi and similar programs run from the repo as reading the whole tree, reads --opt=path, file:// URLs with query or escapes as the paths they name, and keeps DevTools-driven browsers blind, so 3 more costly classes can be skipped when unchanged (T-3623)
+- Single-kind ledger readers (cost, night, outcomes, contract, graph, recall, ideas, rune, grants, mcp, playbooks, cli, hooks) decode only their kind's lines, about 3.7x less CPU per read on a 50k-line ledger (T-3586)
 - The Sampo pane and band show the work in lanes (building, waiting to merge, close owed), the whole queue's count instead of the list's cap of 20, and the user's own asks first in the inbox with how many are theirs (T-3664)
 - The post-merge verify skips classes green at the same code through the coverage cache (opt-in SAMPO_CACHE_FULL, stripped from child envs, 1-in-10 resample kept; every 6th verify or 4 h runs uncached), while ship stays one truly full run (T-3638)
 - A merge train's report line gives the minutes its probe, gate and land phases took and how many probes a held green run skipped, so the slow phase of a merge is visible (T-3596)
