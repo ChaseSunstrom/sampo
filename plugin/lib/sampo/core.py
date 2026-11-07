@@ -714,6 +714,18 @@ def task_base(root, b):
     return None
 
 
+def lane_base(root, b):
+    """T-3696: where a lane's own changes start, for picking tests: once the lane merged the main checkout's branch,
+    the merge-base of its HEAD and the main checkout's HEAD (when it descends from the task's start commit), so the
+    files main changed since aren't the lane's. Else task_base; the main checkout (no main worktree) always is."""
+    start, main = b.meta.get("base"), main_worktree(root)
+    tip = _git(main, "rev-parse", "HEAD", timeout=10).strip() if main and start else ""
+    mb = _git(root, "merge-base", "HEAD", tip, timeout=10).strip() if tip else ""
+    if mb and mb != start and _git(root, "merge-base", "--is-ancestor", start, mb, timeout=10, proc=True).returncode == 0:
+        return mb
+    return task_base(root, b)
+
+
 def merged_in(root, b):
     """T-2784: {file: the task} for files that `fm lane merge` commits ("Merge T-XXXX: …") of other tasks brought in
     since this task's start commit: theirs to answer for, not this task's edits. T-3452: and their reverts (the

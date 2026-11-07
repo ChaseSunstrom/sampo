@@ -6111,7 +6111,8 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None):
     from sampo import map as smap
     import shlex
     act = b or (None if since else c.active_brief(c.load_briefs(p), p.lane))  # T-1117 review: the closing task's base, active or not
-    base = since or (c.task_base(p.root, act) if act else None) or "HEAD"  # T-2323: fm ship's range, from a commit
+    # T-2323: fm ship's range, from a commit; T-3696: a lane past its merge of main's branch, from that merge
+    base = since or (c.lane_base(p.root, act) if act else None) or "HEAD"
     changed = set(only) if only is not None else set(smap.changed(p.root, base))
     # T-3566: the sync mirror's .md files are no code (core.code_tree and worktree_tree leave them out); those other
     # closes had committed linked ten tests (test_fixes, ...) to every close, none in a train's part
