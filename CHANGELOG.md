@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The self-change gate's planted-growth proofs (LeanKindGate*) bench 4 hook fixtures in-process and skip the import-map run: about 2.5x faster under load, same refusals (T-3379).
 - fm sync import no longer turns a task that is active in the main checkout or a lane back to planned when the repo's mirror copy is an older runnable one; blocked, deferred and closed repo copies still win (T-3396).
 - Every hook keeps its compiled regex patterns between calls, so a PreToolUse Bash call no longer recompiles about 120 of them (CPU 53.8 -> 45.5 ms per call) (T-3584)
 - Timing tests hold under load (interleaved A/B, event waits, load-scaled deadlines), the exam's planted hook wait is 3x the hook process's own age so the self-change gate sees it at any load, and a merge train re-runs a red acceptance command once and notes it flaky instead of leaving the lane out (T-3629)
