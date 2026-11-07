@@ -2937,7 +2937,7 @@ def _stdin_hang(pl):
     return None
 
 
-OUTLINE_LINES, OUTLINE_ROWS = 600, 80
+OUTLINE_LINES, OUTLINE_ROWS = 600, 6  # rows: packed name lines (header + 6 + "… N more" = 8 lines)
 
 
 def _outline_first(pl):
@@ -2947,7 +2947,8 @@ def _outline_first(pl):
     ti = pl.get("tool_input") or {}
     path, sid = ti.get("file_path"), str(pl.get("session_id") or "")
     who = str(pl.get("agent_id") or "main")
-    if not isinstance(path, str) or any(ti.get(k) is not None for k in ("offset", "limit", "pages")) or not (
+    if not isinstance(path, str) or ti.get("allow_large") is True or any(
+            ti.get(k) is not None for k in ("offset", "limit", "pages")) or not (
             re.fullmatch(r"[\w-]{1,100}", sid) and re.fullmatch(r"[\w-]{1,100}", who)):
         return None
     try:
@@ -2974,12 +2975,26 @@ def _outline_first(pl):
         return None
     os.makedirs(os.path.dirname(seen_at), exist_ok=True)
     c.write_atomic(seen_at, json.dumps((seen + [key])[-200:]))
-    rows = defs if len(defs) <= OUTLINE_ROWS else [x for x in defs if x[2] == 0] or defs
-    lines = [f"{a}-{b} {'  ' * d}{name}" for a, b, d, name in rows[:OUTLINE_ROWS]]
-    more = f"\n… {len(rows) - OUTLINE_ROWS} more" if len(rows) > OUTLINE_ROWS else ""
-    return (f"Sampo: {os.path.basename(path)} is {total} lines, so here is its outline instead of the whole file. "
-            f"Read the part you need (offset and limit, e.g. offset {rows[0][0]} limit {min(200, rows[0][1] - rows[0][0] + 1)}); "
-            f"read it again with no range to get all of it.\n" + c.plain_lines("\n".join(lines)) + more)
+    top = [x for x in defs if x[2] == 0] or defs
+    rows = defs if len(top) <= 6 and len(defs) <= 24 else top  # nested defs only when there are few
+    cells = [f"{a} {re.sub(r'^(def|class|function|func|fn|async) ', '', name)}"[:60] for a, b, d, name in rows]
+    lines, cur, k = [], "", 0
+    for k, cell in enumerate(cells):
+        if cur and len(cur) + len(cell) + 3 > 140:
+            lines.append(cur)
+            cur = ""
+        if len(lines) == OUTLINE_ROWS:
+            break
+        cur += (" · " if cur else "") + cell
+    else:
+        k += 1
+    if cur and len(lines) < OUTLINE_ROWS:
+        lines.append(cur)
+    else:
+        k = sum(x.count(" · ") + 1 for x in lines)
+    more = f"\n… {len(cells) - k} more" if k < len(cells) else ""
+    return (f"Sampo: {os.path.basename(path)} is {total} lines; read a range (offset, limit; names below start at "
+            f"their line) or pass allow_large: true for the whole file.\n" + c.plain_lines("\n".join(lines)) + more)
 
 
 def _ask_prompt(pl, p, fmguard):

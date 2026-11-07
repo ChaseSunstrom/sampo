@@ -38,7 +38,7 @@ const PACE_FLOOR: f64 = 75.0;
 const MIRRORS: [(&str, &str); 31] = [
     ("hooks.run", "e9a5910273f5"), ("hooks._run", "76bd3cd91b92"), ("hooks._pre_tool_use", "1b0be872783c"),
     ("hooks._credential_like", "a60da1d880d6"),
-    ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "752d0a23c580"),
+    ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "08b8f3abe964"),
     ("hooks._outward_denial", "1e6d4418ddd5"), ("hooks._event", "debcc448ac4d"), ("hooks._rev", "7ee872410ee6"),
     ("hooks._cwd", "5dfb7c01da10"), ("budget.check_subagent", "4575be89ca9a"),
     ("budget.subagent_pause", "50158870729a"), ("budget.rate_limits", "295d742b9f04"),
