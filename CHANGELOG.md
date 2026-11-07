@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- The Sampo pane and band show the work in lanes (building, waiting to merge, close owed), the whole queue's count instead of the list's cap of 20, and the user's own asks first in the inbox with how many are theirs (T-3664)
+- The post-merge verify skips classes green at the same code through the coverage cache (opt-in SAMPO_CACHE_FULL, stripped from child envs, 1-in-10 resample kept; every 6th verify or 4 h runs uncached), while ship stays one truly full run (T-3638)
 - A merge train's report line gives the minutes its probe, gate and land phases took and how many probes a held green run skipped, so the slow phase of a merge is visible (T-3596)
 - Every regen_views call made under the project lock now exports the mirror there and builds the views after the lock is released, so about 50 more commands hold the lock for their writes only (lock body 0.08-0.14 s -> 0.006 s) (T-3613)
 - The self-change gate judges a lane merged onto the base, as the train lands it, instead of its tip, so a lane built before a guard-tightening commit is no longer held for loosening it (T-3647)
