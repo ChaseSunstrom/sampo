@@ -460,9 +460,11 @@ class PluginFiles(unittest.TestCase):
             handlers = [h for g in groups for h in g["hooks"]]
             # T-0724: PreToolUse has a second entry, for Read (outline-first), with its own failure rule; T-0784: a
             # third, for the tools that send content off the machine; T-0947: PostToolUse is sync for file writes
-            # (their validators block, handler PostToolUseValidate) beside the async catch-all
-            self.assertEqual(len(handlers), {"PreToolUse": 3, "PostToolUse": 2}.get(event, 1), event)
-            self.assertTrue(all(h["args"] in ([event], [event + "Validate"]) for h in handlers), event)
+            # (their validators block, handler PostToolUseValidate) beside the async catch-all; T-3672: SubagentStart
+            # has a sync half (SubagentStartContext, the profile's digest) beside the async bookkeeping
+            self.assertEqual(len(handlers), {"PreToolUse": 3, "PostToolUse": 2, "SubagentStart": 2}.get(event, 1), event)
+            self.assertTrue(all(h["args"] in ([event], [event + "Validate"], [event + "Context"]) for h in handlers),
+                            event)
 
     def test_the_guard_hook_fails_closed(self):
         hooks = read_json(os.path.join(PLUGIN, "hooks", "hooks.json"))["hooks"]

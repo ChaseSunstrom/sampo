@@ -49,6 +49,8 @@ _FAIL = dict(_instr("fail"), properties={"text": _str("the test runner's failure
 TOOLS = [
     ("state", "The project's Sampo state: active task, queue, inbox, blocked work.", _TEXT, lambda a, p: ["state"]),
     ("next", "The one next required action and its procedure.", _TEXT, lambda a, p: ["next"]),
+    ("profile", "The user's standing preferences (their machine-local profile, also the sampo://profile resource): how "
+     "they want work done, read before acting.", _TEXT, None),  # T-3672
     ("recall", "Past work, decisions, lessons and research related to a question.",
      {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
      lambda a, p: ["recall", _need(a, "query", r"[^\x00-][^\x00]{0,499}")]),  # review: no leading -, so never a flag
@@ -202,6 +204,9 @@ def _call(p, name, args):
                 return f"no research note named {note}", True
             with open(path, encoding="utf-8", errors="replace") as f:
                 return f.read(200_000), False
+        if name == "profile":  # T-3672
+            from sampo import profile
+            return profile.full() or "(no profile: sampo profile rebuild builds one)", False
         if name == "checks":  # review: the request's "check results", read from the ledger in-process
             run = next((e for e in reversed(c.ledger_tail(p, 5000, kinds=("check_run",))) if e.get("event") == "check_run"), None)
             if not run:
@@ -271,6 +276,9 @@ def _call(p, name, args):
         return f"{type(e).__name__}: {c.fit(str(e), 200)}", True
 
 
+PROFILE_URI = "sampo://profile"
+
+
 def _answer(p, msg):
     """The response to one message, or None for a notification."""
     if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0" or not isinstance(msg.get("method"), str):
@@ -281,10 +289,20 @@ def _answer(p, msg):
         return None
     if method == "initialize":
         result = {"protocolVersion": params.get("protocolVersion") or VERSION,
-                  "capabilities": {"tools": {"listChanged": False}},
+                  "capabilities": {"tools": {"listChanged": False}, "resources": {}},
                   "serverInfo": {"name": "foreman", "version": "1"}}
     elif method == "ping":
         result = {}
+    elif method in ("resources/list", "resources/read"):  # T-3672: the profile, as a resource too
+        from sampo import profile
+        text = "" if c.read_meta(p).get("sensitive") else profile.full()
+        if method == "resources/list":
+            result = {"resources": [{"uri": PROFILE_URI, "name": "The user's profile", "mimeType": "text/markdown",
+                                     "description": "The user's standing preferences (machine-local)"}] if text else []}
+        elif params.get("uri") != PROFILE_URI or not text:
+            return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32002, "message": "Resource not found"}}
+        else:
+            result = {"contents": [{"uri": PROFILE_URI, "mimeType": "text/markdown", "text": c.redact(text)}]}
     elif method == "tools/list":
         sensitive = c.read_meta(p).get("sensitive")
         result = {"tools": [] if sensitive else [{"name": n, "description": d, "inputSchema": s} for n, d, s, _ in TOOLS]}

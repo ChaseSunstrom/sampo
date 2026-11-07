@@ -8289,7 +8289,17 @@ def _build_parser(only=None):
     s.add_argument("value", nargs="?", help="goal: a percent of the machine; cap: a percent of the machine, or off")
     s.add_argument("--window", type=float, default=5.0, help="show: seconds to measure (default 5)")
 
-    s = add("settings", lambda a: (lazy("sampo.settingsserve", "cmd_serve") if a.action == "serve" else  # T-1659
+    s = add("profile", lazy("sampo.profile", "cmd_profile"), tier=("Project and settings", 776),
+            help="the user's machine-local profile (state/profile/, git-ignored): built from Claude's user and feedback "
+                 "memories and a seed, scrubbed of hosts, logins and home paths; every session, subagent, builder brief "
+                 "and MCP client starts with its digest (T-3672). show, edit (the seed), rebuild, check (size and "
+                 "privacy), link codex|gemini [--off] (opt-in copy in their rules file)")
+    s.add_argument("action", nargs="?", default="show", choices=["show", "edit", "rebuild", "check", "link"])
+    s.add_argument("tool", nargs="?", help="link: codex or gemini")
+    s.add_argument("--off", action="store_true", help="link: remove the profile from that tool's rules file")
+    s.add_argument("--if-stale", action="store_true", help="rebuild: only when a memory or the seed changed")
+
+    s = add("settings",lambda a: (lazy("sampo.settingsserve", "cmd_serve") if a.action == "serve" else  # T-1659
                                    lazy("sampo.settings", "cmd_settings"))(a), tier=("Project and settings", 775),
             help="the sampo code app's and the foreman-ui pane's settings in one list: value, default, where (T-1496); "
                  "serve: the same as a page on 127.0.0.1, token-locked, changes through set")

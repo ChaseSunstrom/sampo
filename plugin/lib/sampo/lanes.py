@@ -1995,6 +1995,13 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
     if keeps:
         parts += ["## Defects this project keeps shipping", "Reviewers confirmed these in the last 30 days; check your "
                   "diff for each before you report:", *keeps, ""]
+    try:  # T-3672: the builder starts knowing the user too (profile.DIGEST_MAX bytes; none without a profile)
+        from sampo import profile
+        who = profile.digest()
+    except Exception:  # noqa: BLE001 — a profile never costs a builder its brief
+        who = ""
+    if who:
+        parts += ["## The user (machine-local profile)", who, ""]
     parts += ["## Standing rules", "Checked before the merge (sampo check --affected runs their tests); break none:",
               *STANDING, *[f"- {d}: {t}" for d, t in standing_decisions(p)], ""]
     parts.append(contract(b.id, base, p.root))

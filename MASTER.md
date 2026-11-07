@@ -224,6 +224,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmplaybooks` (`sampo check playbooks [ratchet]`, T-1505: the playbook… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmplugins` (`sampo plugins`: marketplace search, conflict check) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmpr` (T-2430: sampo pr train runs fmselfgate.gate on each PR head after its… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmprofile` (T-3672: `sampo profile`, the user's machine-local profile in state/profile/, injected where an agent st… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmprove`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmpy` (T-0368: below Python 3.12.7, sampo and the statusline re-exec and the… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmraster` (T-1631: an integer rasteriser, edge functions, a 1/z z-buffer and… [→ files-lib-3](docs/map/files-lib-3.md)

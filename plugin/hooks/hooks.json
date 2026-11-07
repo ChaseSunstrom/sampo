@@ -168,6 +168,18 @@
             "async": true
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/hook",
+            "args": [
+              "SubagentStartContext"
+            ],
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SubagentStop": [

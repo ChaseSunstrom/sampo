@@ -1177,7 +1177,7 @@ class Run:
         if name not in self.msgs:
             self.add(name, {"role": "system", "content": ACT_PROMPT + (f"\n{variant_note()}" if variant_note() else "")
                             + ("" if profile.get("tools") else TEXT_ACTIONS) + self.small_playbook(profile)
-                            + self.cards_note(profile) + (STATE_NOTE if self.reason == "state" else "")})
+                            + self.cards_note(profile) + (STATE_NOTE if self.reason == "state" else "") + user_note()})
             self.add(name, {"role": "user", "content": prompt})
         msgs = self.msgs[name]
         if self.tree0 is None:
@@ -3200,7 +3200,7 @@ def _plan(run, profile, dry=False):
     if run.verify_cmd:
         return _verify_plan(run, dry)
     msgs = [{"role": "system", "content": (f"{variant_note()}\n" if variant_note() else "") + PLAN_PROMPT
-             + run.fence(_files(run.root))},
+             + run.fence(_files(run.root)) + user_note()},
             {"role": "user", "content": run.request + _context_note(run)}]
     profile = run.planner or profile  # T-2945: --planner asks the plan (and its re-plan); steps stay on --model
     run.plan = slot(run, profile, msgs, check_plan, "plan", PLAN_FIELDS)
@@ -3372,6 +3372,17 @@ VARIANTS = {"evidence": "When you can't tell what a file, function or value hold
 
 def variant_note():
     return VARIANTS.get(os.environ.get("FM_PROMPT_VARIANT") or "", "")
+
+
+def user_note():
+    """T-3672: the user's profile, short digest (profile.BRIEF_MAX bytes), for the plan's and each step's system
+    prompt; '' with no profile (a bench's own state has none)."""
+    try:
+        from sampo import profile as user
+        text = user.note(short=True)
+    except Exception:  # noqa: BLE001 — a missing profile never stops a run
+        return ""
+    return "\n\n" + text if text else ""
 
 
 def follow_up(jdir, tid):

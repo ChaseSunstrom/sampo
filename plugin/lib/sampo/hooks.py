@@ -461,6 +461,19 @@ def _second_refusal(p, pl, path):
             "lane_per_session=false.")
 
 
+def _profile_note(sid, new_folder=False):
+    """T-3672: the profile digest (and the other live sessions' projects) for a session starting now; a detached
+    `sampo profile rebuild --if-stale` keeps an existing profile current. '' with no profile, and on any error."""
+    try:
+        from sampo import profile
+        if not os.environ.get("FOREMAN_NO_BACKGROUND") and os.path.exists(profile.path()):
+            profile.refresh()  # only once the user built one: a fresh install never builds a profile on its own
+        return profile.note(sid, new_folder=new_folder)
+    except Exception:  # a profile that fails must never cost the session its start
+        log_error("SessionStart", _tb())
+        return ""
+
+
 def session_start(pl):
     sid = pl.get("session_id")
     if sid and re.fullmatch(r"[\w-]{1,100}", sid):  # a new or compacted context: the next prompt restates the state,
@@ -491,8 +504,9 @@ def session_start(pl):
         except Exception:  # a sweep that fails must never cost the session its start
             log_error("SessionStart", _tb())
     p = c.find_project(_cwd(pl), create=not os.environ.get("FOREMAN_WORKER_OF"))  # T-1438: a worker sets up nothing
-    if not p:
-        return None
+    if not p:  # T-3672: a folder Sampo never set up still starts knowing the user, and how to register it
+        note = "" if os.environ.get("FOREMAN_WORKER_OF") or _oneoff() else _profile_note(sid, new_folder=True)
+        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": note}} if note else None
     if reaped:
         c.log_event(p, "orphans_reaped", data={"count": reaped}, session=sid)
     if _oneoff():
@@ -638,6 +652,9 @@ def session_start(pl):
                                              budget)
     out["additionalContext"] += tail
     addon = len(out["additionalContext"])
+    prof = _profile_note(sid)  # T-3672: the user's machine-local profile, capped apart (profile.DIGEST_MAX, LIVE_MAX)
+    if prof:
+        out["additionalContext"] += "\n\n" + prof
     if repo_note:  # after the budgeted context, so the queue never pushes it out
         out["additionalContext"] += "\n\n" + repo_note
     if pl.get("source") == "compact":
@@ -5028,6 +5045,20 @@ def subagent_start(pl):
     return None
 
 
+def subagent_context(pl):
+    """T-3672: SubagentStart's synchronous half: the profile's short digest (profile.BRIEF_MAX bytes) so a subagent
+    starts knowing the user too; a builder's brief already carries the longer one."""
+    if pl.get("agent_type") == "foreman:fm-builder":
+        return None
+    try:
+        from sampo import profile
+        text = profile.note(short=True)
+    except Exception:
+        log_error("SubagentStart", _tb())
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": text}} if text else None
+
+
 def _mark_builder(pl, returned):
     """T-3145: a foreman:fm-builder's own start or stop marks the task whose lane is its worktree (agent-<id>), so the
     builder cap sees a returned builder even while the session that launched it (builder_proc) lives on."""
@@ -5180,7 +5211,7 @@ def session_end(pl):
 HANDLERS = {
     "SessionStart": session_start, "UserPromptSubmit": user_prompt_submit, "PostToolUse": post_tool_use, "PostToolUseValidate": post_tool_validate,
     "PostToolUseFailure": post_tool_use_failure, "PreCompact": pre_compact, "Stop": stop,
-    "TaskCompleted": task_completed, "SubagentStart": subagent_start, "SubagentStop": subagent_stop,
-    "MessageDisplay": message_display, "Notification": notification, "SessionEnd": session_end,
+    "TaskCompleted": task_completed, "SubagentStart": subagent_start, "SubagentStartContext": subagent_context,
+    "SubagentStop": subagent_stop, "MessageDisplay": message_display, "Notification": notification, "SessionEnd": session_end,
     "PermissionRequest": permission_request,
 }
