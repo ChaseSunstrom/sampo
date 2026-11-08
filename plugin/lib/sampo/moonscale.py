@@ -553,11 +553,13 @@ def _generative(sensitive):
     try:
         conf = models.configured()[1]
         skip = {x["model"] for x in models.systemone_profiles() + models.embedding_profiles()}
+        ok = []
         for prof in list(conf.values()) + list(models._local()):
             host = urllib.parse.urlsplit(prof.get("base_url") or "").hostname or ""
             if prof.get("kind") == "openai" and prof.get("model") not in skip and (
                     models.is_loopback(host) or (prof.get("own") and not sensitive)):
-                yield prof
+                ok.append(prof)
+        yield from models.for_purpose(ok, None)  # T-3744: moons text isn't a 3D coder's job
     except (models.ModelError, OSError, ValueError):
         return
 

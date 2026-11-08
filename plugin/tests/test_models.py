@@ -911,6 +911,26 @@ class Extras(Base):  # T-2893: a profile's body extras, its reasoning switch, an
         self.assertEqual((p["body"], p["think"], p["slots"], p["max_out"]), ({"a": 1}, False, 2, 9000))
 
 
+class Purposes(unittest.TestCase):  # T-3744: a job goes to a model made for it before scores are compared
+    def test_purposes_are_checked(self):
+        for bad in ("tools", [], [""], ["a", 5]):
+            with self.subTest(bad=bad), self.assertRaises(m.ModelError):
+                m._profile("x", {"model": "a", "purposes": bad}, "t")
+        self.assertEqual(m._profile("x", {"model": "a", "purposes": ["tools", "structured"]}, "t")["purposes"],
+                         ["tools", "structured"])
+        self.assertNotIn("purposes", m._profile("x", {"model": "a"}, "t"))
+
+    def test_a_job_only_goes_to_a_model_whose_purposes_include_it(self):
+        general, lfm, scenes = {"name": "g"}, {"name": "l", "purposes": ["tools", "structured"]}, \
+            {"name": "s", "purposes": ["3d-scenes"]}
+        order = [general, scenes, lfm]
+        self.assertEqual(m.for_purpose(order, "structured"), [lfm])
+        self.assertEqual(m.for_purpose(order, "3d-scenes"), [scenes])
+        self.assertEqual(m.for_purpose(order, "agent"), [general], "none matches: today's (general) choice")
+        self.assertEqual(m.for_purpose(order, None), [general], "an unlabelled job never lands on a specialist")
+        self.assertEqual(m.for_purpose([scenes, lfm], "agent"), [scenes, lfm], "only specialists: nothing to drop")
+
+
 def ollama_reply(text="ok", tool_calls=None, done="stop"):
     msg = dict({"role": "assistant", "content": text}, **({"tool_calls": tool_calls} if tool_calls else {}))
     return {"message": msg, "done_reason": done, "prompt_eval_count": 7, "eval_count": 3}

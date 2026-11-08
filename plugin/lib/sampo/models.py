@@ -31,6 +31,9 @@ llama.cpp's CPU threads only busy-poll there and /v1 drops options (T-3588); a p
 $FOREMAN_HOME/models.json (user-edited, optional; a bad field is a ModelError naming the file):
   {"default": "mine", "profiles": {"mine": {"kind": "openai", "base_url": "http://host/v1", "model": "x",
                                             "key_env": "MY_KEY", "context": 32768, "tools": true}}}
+A profile may add "purposes": ["tools", "structured", "agent", "3d-scenes"] (the jobs its makers built it for; sampling
+from its card goes in "body": {"temperature": 0.1, "top_k": 50, "repeat_penalty": 1.1}); for_purpose(profiles, job)
+sends a job to the profiles naming it, else to those declaring none (T-3744).
 The built-in clouds' default model ids (CLOUD below) are only defaults: a models.json profile of the same name
 overrides one.
 
@@ -300,6 +303,11 @@ def _profile(name, d, where):
         if not isinstance(d["think"], bool):
             bad("think must be true or false")
         p["think"] = d["think"]
+    if "purposes" in d:  # T-3744: the jobs the makers built it for ("tools", "structured", "agent", "3d-scenes"); see for_purpose
+        pu = d["purposes"]
+        if not (isinstance(pu, list) and pu and all(isinstance(x, str) and x for x in pu)):
+            bad("purposes must be a non-empty list of job names")
+        p["purposes"] = pu
     for k in ("slots", "max_out"):  # T-2893: parallel requests the server allows; the output budget of a bulk call
         if k in d:
             if isinstance(d[k], bool) or not isinstance(d[k], int) or d[k] <= 0:
@@ -616,6 +624,17 @@ def _env_profiles():
 def profiles():
     _, conf = _config()
     return list(conf.values()) + _env_profiles() + list(_local()) + _cloud()
+
+
+def for_purpose(profs, purpose):
+    """T-3744: the profiles for one job, order kept. A profile that declares purposes serves only those jobs; the
+    profiles that name the job come first and alone, else today's choice: the ones declaring none (or all, when
+    every one is a specialist)."""
+    profs = list(profs)
+    hit = [x for x in profs if purpose and purpose in (x.get("purposes") or ())]
+    if hit:
+        return hit
+    return [x for x in profs if not x.get("purposes")] or profs
 
 
 def resolve(name=None):
