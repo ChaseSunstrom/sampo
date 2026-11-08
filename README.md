@@ -267,6 +267,8 @@ A blocked command says how to authorize it for the current task. Anything that n
 
 **Trust mode.** To let Claude edit those too (the Ward and Claude Code's settings, never Sampo state), type `/fm-trust on` yourself. The sampo-ui mod only accepts it from your own prompt (or your phone), never from Claude, a scheduled prompt or a skill, and the Ward refuses any attempt by Claude to turn it on. The band shows `⚠ trust on` while it lasts. `/fm-trust off` (or `sampo trust off`) ends it. Other questions come as a prompt too.
 
+**Risk budget off switch.** The daily risk budget steps Claude's autonomy down when guard blocks, failed closes and reverts pile up. To turn it off, type `/fm-risk off` (every project) or `/fm-risk off here` (this one) yourself; `/fm-risk on [here]` restores it. Like `/fm-trust`, only your own prompt is accepted and the Ward refuses `sampo risk off` from Claude. `sampo risk`, the band (`risk off`) and `sampo doctor` say who set it and when. A destructive block that the same session then passes with a rewrite of the same command costs no point.
+
 **Fewer dialogs outside bypass mode.** In Claude Code's default mode every Bash command off your allow list asks. Type `! sampo approve-reads on` and Sampo answers that dialog for commands that only read (`ls`, `cat`, `grep`, `git status` or `git log`, `find` without `-exec` or `-delete`, …).
 - Every part of the command has to be one of those without a writing flag, with no redirect except to `/dev/null` and no `$` (a variable can print a secret). Anything else still asks.
 - Only you can turn it on (the Ward refuses it from Claude); `sampo approve-reads off` ends it.

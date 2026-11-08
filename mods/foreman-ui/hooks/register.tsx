@@ -705,6 +705,27 @@ export const register: Register = (on, options) => {
     return { text: `${r.stdout.trim() || r.stderr.trim()}`.split('\n').at(-1) ?? '' }
   })
 
+  // T-3752: the risk budget's off switch, the same way: only the person's typed Enter writes the record (everywhere, or
+  // `here` for this project); the guard refuses an agent's `fm risk off`, so a braked agent can't lift its own brake.
+  // On is fm's (removing the record lifts nothing).
+  on('command.run', { command: 'fm-risk' }, async ($, e) => {
+    const kind = e.origin?.kind
+    if (kind !== 'composer' && kind !== 'bridge') return { text: 'Ward: /fm-risk works only when you type it.' }
+    const [arg, where] = e.args.trim().split(/\s+/)
+    const here = where === 'here'
+    if (arg !== 'off' && arg !== 'on') return { text: 'Usage: /fm-risk off|on [here]' }
+    if (arg === 'off') {
+      const files = (await read($, view))?.risk_files
+      const path = files?.[here ? 1 : 0]
+      if (!path) return { text: 'Sampo has not told this pane where the record goes yet; try again after a turn.' }
+      await $.fs.write(path, JSON.stringify({ on: true, at: new Date(await $.clock.now()).toISOString().slice(0, 19) + 'Z', via: kind }))
+    }
+    const r = await run($, ['risk', ...(arg === 'on' ? ['on'] : []), ...(here && arg === 'on' ? ['--here'] : [])])
+    isDirty = true
+    await refresh($)
+    return { text: arg === 'off' ? `Risk budget off ${here ? 'for this project' : 'everywhere'} (by you). /fm-risk on restores it.` : `${r.stdout.trim() || r.stderr.trim()}`.split('\n').at(-1) ?? '' }
+  })
+
   on('turn.start', async ($, e, next) => {
     // Claude Code 2.1.299: turn.start fires for subagents too (with agentId); their progress is the Subagents card's,
     // and resetting here would wipe the main turn's counts mid-turn (T-0944)
@@ -1323,6 +1344,7 @@ export const register: Register = (on, options) => {
             {m && <Text color={hex(m.autonomy === 'full' ? C.accent2 : C.dim)}>{m.autonomy === 'full' ? 'full auto' : 'standard'}</Text>}
             {m && !m.drive && <Text color={hex(C.warn)}>drive off</Text>}
             {m?.trust && <Text color={hex(C.warn)}>trust on</Text>}
+            {m?.risk_off && <Text color={hex(C.warn)}>risk off</Text>}
             {v.loop?.on && <Text color={hex(C.agent)}>∞ round {v.loop.round}</Text> /* T-1057: the forever loop */}
             {sl && <Text color={hex(sl.level === 'red' ? C.err : C.warn)} wrap={cut}>{sl.level === 'red' ? '●' : '◐'} {sl.text}</Text>}
           </Box>
@@ -1811,6 +1833,7 @@ export const register: Register = (on, options) => {
           ...(m.drive ? [] : ([['drive off', C.warn]] as [string, number][])),
           ...(m.sensitive ? ([['sensitive', C.warn]] as [string, number][]) : []),
           ...(m.trust ? ([['trust on', C.warn]] as [string, number][]) : []),
+          ...(m.risk_off ? ([['risk off', C.warn]] as [string, number][]) : []),
           ...(v.loop?.on ? ([[`∞ round ${v.loop.round}${v.loop.dry ? ` · ${v.loop.dry} dry` : ''}`, C.agent]] as [string, number][]) : []), // T-1057
         ]
       : []

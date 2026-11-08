@@ -2354,6 +2354,8 @@ def _pre_tool_use(raw):
                             data={"category": block.category, "detail": str(block.detail)[:200],
                                   "rule": getattr(block, "rule", None)},  # T-0672 (committed fallback may lack it)
                             session=pl.get("session_id"))
+                from sampo import risk  # T-3752: a rewrite that passes next takes the point back
+                risk.note_block(p, pl.get("session_id"), tool, _target(pl.get("tool_input") or {}), block.category)
                 if block.category == "plugin" and not pl.get("agent_id"):  # T-2370: the session wanted a tool it lacks
                     _capability_miss(p, pl.get("session_id"), "", name=(guard.plugin_target(block.detail) or "?").split("@")[0],
                                      kind="plugin")
@@ -2363,6 +2365,12 @@ def _pre_tool_use(raw):
                                                  "permissionDecisionReason": reason}}))
         print(reason, file=sys.stderr)
         return 2
+    try:
+        if p:
+            from sampo import risk
+            risk.forgive(p, pl.get("session_id"), tool, _target(pl.get("tool_input") or {}))  # T-3752
+    except Exception:
+        log_error("PreToolUse", _tb())
     unread = []  # T-0275: scripts the guard allowed unread (over its time budget): logged, and noted below
     try:
         unread = getattr(guard, "take_unread", lambda: [])()

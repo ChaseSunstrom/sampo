@@ -62,7 +62,7 @@ export type FmView = {
   v: number
   project: string | null
   root?: string
-  mode?: { autonomy: string; drive: boolean; sensitive: boolean; trust?: boolean; standing?: string[] }
+  mode?: { autonomy: string; drive: boolean; sensitive: boolean; trust?: boolean; risk_off?: string | null; standing?: string[] }
   active?: FmActive | null
   next?: string | null
   // T-2118: the Genesis tower's next action (fmgenesis.step, cached); kind ok|blocked|fatal|stopped|done
@@ -105,6 +105,7 @@ export type FmView = {
   research?: FmResearchAsk[] // T-0228: the newest fm research ask notes
   revisit?: { date: string; decision: string; why: string }[] // T-0247: decisions whose revisit trigger fired
   vetoes?: string[] // T-0251: the user's recorded 'never/don't' corrections, newest first (checked before matching calls)
+  risk_files?: string[] // T-3752: where /fm-risk off writes its record: everywhere's, then this project's
   trust_file?: string // where /fm-trust on writes the trust record (Sampo state)
   /** T-0145: a driven turn ended so this session's mod could reload; the reloaded mod starts the next turn */
   resume_after_reload?: { session: string; at: string; task?: string } | null

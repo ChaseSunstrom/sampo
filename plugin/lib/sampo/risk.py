@@ -14,7 +14,8 @@ DESTRUCTIVE = {"rm-outside", "git-destructive", "system", "credentials", "self-a
 CAP = 6
 _MEMO = {}  # (slug, day, ledger size and mtime) -> status: one read per process while nothing new is logged
 CACHE = "risk.json"  # T-2028: today's counts, the ledger offset they cover and the revert count, for the next process
-_MARKS = c.lazy(rb'"guard_block"|"close_affected"')
+_MARKS = c.lazy(rb'"guard_block"|"close_affected"|"guard_forgiven"')
+OFF = "risk_off.json"  # T-3752: the user's switch, in Sampo state (no tool call writes there): everywhere, or one project's
 
 
 def _day():
@@ -26,8 +27,27 @@ def cap(p, meta=None):
     return float(v) if isinstance(v, (int, float)) and math.isfinite(v) and v >= 0 else CAP
 
 
+def off(p):
+    """T-3752: {"scope", "at", "via"} when the user turned the budget off for this project or everywhere, else None. Only the
+    foreman-ui mod's /fm-risk off (typed) or the user's own `sampo risk off` writes it; an agent's call is refused."""
+    for scope, d in ((("here", p.dir),) if p else ()) + (("everywhere", c.state_dir()),):
+        try:
+            with open(os.path.join(d, OFF), encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(rec, dict) and rec.get("on") is True:
+            return {"scope": scope, "at": c.plain(str(rec.get("at") or "?"))[:25], "via": c.plain(str(rec.get("via") or "?"))[:20]}
+    return None
+
+
+def off_line(p):
+    o = off(p)
+    return o and f"risk budget off (by you, {o['at']}; {'this project' if o['scope'] == 'here' else 'every project'})"
+
+
 def status(p, meta=None):
-    """{"spent", "cap", "slowed", "counts"} for today."""
+    """{"spent", "cap", "slowed", "counts", "off"} for today."""
     day = _day()
     try:
         st = os.stat(os.path.join(p.dir, "ledger.jsonl"))
@@ -39,7 +59,8 @@ def status(p, meta=None):
         counts = _MEMO[key] = _counts(p, day)
     spent = sum(WEIGHTS[k] * n for k, n in counts.items())
     limit = cap(p, meta)
-    return {"spent": spent, "cap": limit, "slowed": spent >= limit, "counts": counts}
+    o = off(p)
+    return {"spent": spent, "cap": limit, "slowed": spent >= limit and not o, "counts": counts, "off": o}
 
 
 def _counts(p, day):
@@ -81,6 +102,8 @@ def _counts(p, day):
                     if isinstance(e, dict) and str(e.get("ts") or "") >= day:
                         if e.get("event") == "guard_block" and d.get("category") in DESTRUCTIVE:
                             n["destructive block"] += 1
+                        elif e.get("event") == "guard_forgiven" and d.get("category") in DESTRUCTIVE:  # T-3752
+                            n["destructive block"] = max(0, n["destructive block"] - 1)
                         elif e.get("event") == "close_affected" and d.get("exit"):
                             n["failed close"] += 1
                 line, mark, off = off, raw[:64].decode("latin-1"), off + len(raw)
@@ -179,9 +202,61 @@ def collision_line(p, least=3):
     return c.fit(f"{top['rule']} blocked {top['n']}× in 7 days → fm risk", 160)
 
 
+PENDING, FORGIVE_S, SAME = "risk_pending.json", 600, 0.45  # a rewrite must come within ten minutes and read alike
+
+
+def note_block(p, sid, tool, cmd, category):
+    """T-3752: remember this session's latest destructive block, for `forgive` to settle."""
+    if not sid or category not in DESTRUCTIVE:
+        return
+    path = os.path.join(p.dir, PENDING)
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        rec = {}
+    rec = {k: v for k, v in (rec if isinstance(rec, dict) else {}).items()
+           if isinstance(v, dict) and time.time() - v.get("t", 0) < FORGIVE_S}
+    rec[str(sid)[:80]] = {"t": time.time(), "tool": tool, "cmd": str(cmd)[:400], "category": category}
+    c.write_atomic(path, json.dumps(rec))
+
+
+def forgive(p, sid, tool, cmd):
+    """T-3752: an allowed call from the session that was just blocked, of the same tool and reading alike, is the rewrite
+    the hint asked for: the block was a false refusal, so it stops costing a point (only a block that stays refused
+    counts). One stat per allowed call when nothing is pending."""
+    path = os.path.join(p.dir, PENDING)
+    if not sid or not os.path.exists(path):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+        hit = rec.get(str(sid)[:80])
+    except (OSError, ValueError, AttributeError):
+        return False
+    if not isinstance(hit, dict) or time.time() - hit.get("t", 0) >= FORGIVE_S or hit.get("tool") != tool:
+        return False
+    import difflib
+    if difflib.SequenceMatcher(None, str(cmd)[:400], hit.get("cmd", ""), autojunk=False).ratio() < SAME:
+        return False
+    del rec[str(sid)[:80]]
+    c.write_atomic(path, json.dumps(rec))
+    c.log_event(p, "guard_forgiven", data={"category": hit.get("category")}, session=sid)
+    return True
+
+
 def cmd_risk(args):
     from sampo import cli
     p = cli.resolve(args)
+    if args.action in ("off", "on"):  # T-3752: off is the user's (the guard refuses an agent's); the mod writes it too
+        path = os.path.join(p.dir if args.here else c.state_dir(), OFF)
+        if args.action == "off":
+            c.write_atomic(path, json.dumps({"on": True, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                             "via": "cli"}))
+        elif os.path.exists(path):
+            os.remove(path)
+        c.log_event(p, "risk_off" if args.action == "off" else "risk_on", data={"here": bool(args.here)})
+        return cli.out(args, {"off": off(p)}, off_line(p) or "risk budget on")
     if args.action == "set":
         if args.day is None or not (math.isfinite(args.day) and args.day >= 0):
             raise cli.UsageError("sampo risk set --day N --because \"<why>\" (N ≥ 0 points a day)")
@@ -193,6 +268,8 @@ def cmd_risk(args):
         return cli.out(args, {"cap": args.day}, f"risk cap {old:g} → {args.day:g} points a day")
     s = status(p)
     lines = [f"Risk today: {s['spent']:g} of {s['cap']:g} points" + (" — slowed" if s["slowed"] else "")]
+    if s["off"]:
+        lines.insert(0, off_line(p))
     lines += [f"  {n} {k} × {WEIGHTS[k]}" for k, n in s["counts"].items() if n]
     if s["slowed"]:
         lines.append("  " + slowed(p))

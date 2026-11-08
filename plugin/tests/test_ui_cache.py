@@ -109,7 +109,9 @@ class UiCadence(ForemanTestCase):
         v = self.view()
         brief = c.find_brief(self.p, "T-0001").path
         self.assertEqual(v["watch_now"], [os.path.join(self.p.dir, "meta.json"), os.path.join(self.p.dir, "asks.json"),
-                                          c.trust_path(), os.path.join(c.state_dir(), "PANIC"), brief])
+                                          c.trust_path(), os.path.join(c.state_dir(), "risk_off.json"),
+                                          os.path.join(self.p.dir, "risk_off.json"),
+                                          os.path.join(c.state_dir(), "PANIC"), brief])
         self.assertNotIn(self.p.dir, v["watch"], "every derived file written there moved it: a rerun per tool call")
         self.assertIn(os.path.join(self.p.dir, "ledger.jsonl"), v["watch"])
 

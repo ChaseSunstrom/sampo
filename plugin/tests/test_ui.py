@@ -142,7 +142,7 @@ class UiView(ForemanTestCase):
         v = json.loads(self.fm("ui", "--json").stdout)
         self.assertEqual(v["v"], 1)
         self.assertTrue(v["project"])
-        self.assertEqual(v["mode"], {"autonomy": "standard", "drive": True, "sensitive": False, "trust": False,
+        self.assertEqual(v["mode"], {"autonomy": "standard", "drive": True, "sensitive": False, "trust": False, "risk_off": None,
                                      "standing": []})
         a = v["active"]
         self.assertEqual((a["id"], a["type"], a["tier"], a["stage"]), ("T-0001", "FIX", "S", "executing"))

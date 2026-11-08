@@ -373,7 +373,7 @@ def _learned_line(p):
     return _kept(p, "learned-line.json", lambda: cost.learned(p, 7, len(cost._week(p, 7)[0]))["line"], SLOW_TTL_S)
 
 
-_PATHS = ("watch", "watch_now", "trust_file", "root")  # paths a surface stats or writes: kept as they are
+_PATHS = ("watch", "watch_now", "trust_file", "risk_files", "root")  # paths a surface stats or writes: kept as they are
 _ESCAPES = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b.")  # CSI, OSC, ESC x
 
 
@@ -686,7 +686,8 @@ def view(p):
     return _shown({
         "v": 1, "project": p.slug, "root": p.root,
         "mode": {"autonomy": autonomy, "drive": bool(sd["drive"]), "sensitive": bool(sd["sensitive"]),
-                 "trust": bool(c.trusted()), "standing": sorted(meta.get("standing") or {})},
+                 "trust": bool(c.trusted()), "risk_off": _guarded(lambda: __import__("sampo.risk").risk.off_line(p)),
+                 "standing": sorted(meta.get("standing") or {})},
         "active": active,
         "next": c.plain(c.next_for(p, briefs)[2]),
         "genesis": sd.get("genesis"),  # T-2118: the tower's next action (fmgenesis.health)
@@ -710,6 +711,7 @@ def view(p):
         "look": _guarded(lambda: __import__("sampo.taste").taste.roll_line()),  # T-1672: the look of the day, once taste exists
         "done_days": done_days,
         "trust_file": c.trust_path(),  # where /fm-trust on writes (the mod, never a tool call)
+        "risk_files": [os.path.join(c.state_dir(), "risk_off.json"), os.path.join(p.dir, "risk_off.json")],  # T-3752: /fm-risk off
         # T-0145: a driven turn ended so a session's mod could reload; that mod starts the next turn (fresh ones only)
         "resume_after_reload": resume if resume_age is not None and resume_age * 1440 < 10 else None,
         "typical": typical(events),
@@ -845,6 +847,7 @@ def _watch_now(p, act=None):
     approval, the pause flag), asks.json, the trust record, the PANIC flag and the active task's brief (its focus moving
     off, a step done)."""
     return [os.path.join(p.dir, "meta.json"), os.path.join(p.dir, "asks.json"), c.trust_path(),
+            os.path.join(c.state_dir(), "risk_off.json"), os.path.join(p.dir, "risk_off.json"),
             os.path.join(c.state_dir(), "PANIC")] + ([act.path] if act and act.path else [])
 
 

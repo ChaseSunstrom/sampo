@@ -877,6 +877,14 @@ def check_muted_triggers(p):
                   + (f"; … {len(muted) - 4} more (fm triggers)" if len(muted) > 4 else ""))
 
 
+def check_risk_off(p):
+    """T-3752: the user turned the risk budget off; say so, who and when, and how it comes back."""
+    from sampo import risk
+    line = risk.off_line(p)
+    return Result("risk budget", "WARN", f"{line}; /fm-risk on or sampo risk on restores it") if line else \
+        Result("risk budget", "PASS", "the risk budget is on")
+
+
 def check_steers(p, run=False):
     """T-2167: in a Genesis tower project every rule cited from a user steer has a check (--full runs them; fm genesis
     sweep always does). A FAIL, so fm check stops a commit that leaves a steer rule unchecked; a rule whose
@@ -2934,6 +2942,7 @@ def run_all(full=False, accept_supply=False):
     results.append(check_steers(here, run=full))
     results.append(check_muted_triggers(here))
     results.append(check_night_timers(here))
+    results.append(check_risk_off(here))
     results.append(check_anergy())
     results.append(check_predictions(here))
     results.append(check_model_backends(here))

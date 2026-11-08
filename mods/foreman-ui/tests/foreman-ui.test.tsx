@@ -1149,6 +1149,27 @@ test('/fm-trust works only when the person types it; it writes the trust record 
   expect(calls.at(-2)).toEqual(['fm', 'trust', 'off'])
 })
 
+test('/fm-risk off works only when the person types it; it writes the record itself (everywhere or here); on is fm\'s', async ($, on) => {
+  // T-3752: the risk budget is a brake on the agent, so only the typed command lifts it
+  const { calls } = world(on, [{ ...CALM, risk_files: ['/h/foreman/state/risk_off.json', '/h/foreman/state/projects/x/risk_off.json'] }])
+  const written: { path: string; text: string }[] = []
+  on('fs.write', async ($, e) => {
+    written.push({ path: e.path, text: e.text })
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const presentation = { isFullscreen: false, columns: 120 }
+  const refused = await $.command.run({ command: 'fm-risk', args: 'off', origin: { kind: 'scheduled-trigger' }, presentation })
+  expect(refused.text).toMatch(/only when you type it/)
+  expect(written).toEqual([])
+  await $.command.run({ command: 'fm-risk', args: 'off', origin: { kind: 'composer' }, presentation })
+  await $.command.run({ command: 'fm-risk', args: 'off here', origin: { kind: 'composer' }, presentation })
+  expect(written.map(w => w.path)).toEqual(['/h/foreman/state/risk_off.json', '/h/foreman/state/projects/x/risk_off.json'])
+  expect(JSON.parse(written[0]!.text)).toMatchObject({ on: true, via: 'composer' })
+  await $.command.run({ command: 'fm-risk', args: 'on here', origin: { kind: 'composer' }, presentation })
+  expect(calls.some(c => c.join(' ') === 'fm risk on --here')).toBe(true)
+})
+
 test('the look: coloured words not highlighted blocks, quiet controls, the human next, a narrow band that never wraps', async ($, on) => {
   // T-0122, from the live render: chips were background blocks, buttons [ boxed ], the pane showed the agent's own
   // instruction, and beside a docked pane the band wrapped letter by letter

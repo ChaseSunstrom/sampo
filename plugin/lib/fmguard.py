@@ -61,8 +61,9 @@ USER_ONLY_FM = {
                           "may have revoked since", "sampo rollback --yes"),  # T-1085
     "decide": ("--answer", "sampo decide ANSWER --answer N records the user's answer to an ask, and answers become "
                            "precedent for proxy answers: only the user records them", "sampo decide ANSWER --answer N"),  # T-1064
-    "risk": ("set", "sampo risk set moves the daily risk budget that slows Claude's autonomy: the brake is the user's to "
-                    "move", "sampo risk set --day N --because \"<why>\""),  # T-1080
+    "risk": (("set", "off"), "sampo risk set and sampo risk off move or lift the daily risk budget that slows Claude's "
+                             "autonomy: the brake is the user's to move (/fm-risk off, typed)",
+             "sampo risk set --day N --because \"<why>\""),  # T-1080, T-3752
     "home": ("import", "sampo home import is the user's to run: it writes a whole Sampo state, settings included, from "
                        "a file", "sampo home import FILE"),  # T-1665
     "prove": ("--yes-run", "sampo prove --yes-run is the user's to run: it says yes to running this tree's tests, as "

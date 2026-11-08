@@ -225,3 +225,74 @@ class Risk(HookCase):
         g = lambda *a: subprocess.run(["git", "-C", self.repo, *a], check=True, capture_output=True)  # noqa: E731
         g("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "--allow-empty", "-m", 'Revert "x"')
         self.assertEqual(self.fm_json("risk")["spent"], 3)
+
+
+class RiskOff(HookCase):
+    """T-3752: the user's off switch (global or per project) and blocks rewritten and passed spending nothing."""
+
+    def spend(self, blocks=0):
+        p = self.project()
+        for _ in range(blocks):
+            c.log_event(p, "guard_block", data={"category": "rm-outside"})
+        return p
+
+    def off(self, here=False):
+        rec = {"on": True, "at": "2026-11-07T10:00:00Z", "via": "composer"}
+        path = os.path.join(self.project().dir if here else c.state_dir(), risk.OFF)
+        with open(path, "w") as f:
+            json.dump(rec, f)
+        return path
+
+    def test_off_everywhere_or_here_stops_the_step_down_and_on_restores(self):
+        self.fm("init")
+        self.fm("autonomy", "full")
+        p = self.spend(blocks=2)
+        self.fm("risk", "set", "--day", "2", "--because", "test")
+        self.assertEqual(c.effective_autonomy(p), "standard")
+        here = self.off(here=True)
+        self.assertEqual(c.effective_autonomy(p), "full")
+        self.fm("risk", "on", "--here")
+        self.assertFalse(os.path.exists(here))
+        self.assertEqual(c.effective_autonomy(p), "standard")
+        glob = self.off()
+        self.assertEqual(c.effective_autonomy(p), "full")
+        self.fm("risk", "on")
+        self.assertFalse(os.path.exists(glob))
+        self.assertEqual(c.effective_autonomy(p), "standard")
+
+    def test_an_agent_cannot_turn_it_off_but_the_user_can_with_a_bang(self):
+        self.fm("init")
+        for cmd in ("fm risk off", "sampo risk off --here", "fm risk set --day 99 --because x"):
+            self.assertEqual(self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}}).returncode, 2, cmd)
+        p = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "fm risk on"}})
+        self.assertEqual(p.returncode, 0)
+        self.fm("risk", "off")  # the user's own shell (the guard guards tool calls only)
+        self.assertTrue(os.path.exists(os.path.join(c.state_dir(), risk.OFF)))
+
+    def test_fm_risk_ui_and_doctor_name_the_switch_who_and_when(self):
+        self.fm("init")
+        self.assertNotIn("risk budget off", self.fm("risk").stdout)
+        self.off()
+        out = self.fm("risk").stdout
+        self.assertIn("risk budget off (by you, 2026-11-07T10:00:00Z;", out)
+        self.assertEqual(self.fm_json("risk")["off"]["scope"], "everywhere")
+        self.assertIn("risk budget off", json.loads(self.fm("ui", "--json").stdout)["mode"]["risk_off"])
+        from sampo import doctor
+        r = doctor.check_risk_off(self.project())
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("risk budget off (by you", r.detail)
+
+    def block(self, cmd, sid="s1"):
+        return self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": sid})
+
+    def test_a_block_the_session_rewrites_and_passes_spends_no_point(self):
+        self.fm("init")
+        self.task()
+        self.assertEqual(self.block("rm -rf /usr/local/zzz-cache").returncode, 2)
+        self.assertEqual(self.fm_json("risk")["spent"], 1)
+        self.assertEqual(self.block("rm -rf ./zzz-cache").returncode, 0)  # the rewrite passes
+        self.assertEqual(self.fm_json("risk")["spent"], 0)
+        self.assertEqual(self.block("rm -rf /usr/local/zzz-cache").returncode, 2)
+        self.assertEqual(self.block("git status", sid="s2").returncode, 0)  # another session, unrelated
+        self.assertEqual(self.block("ls", sid="s1").returncode, 0)  # unrelated call: the block stays spent
+        self.assertEqual(self.fm_json("risk")["spent"], 1)
