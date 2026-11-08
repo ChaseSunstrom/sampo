@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo task ac edit corrects the words of a criterion that already has evidence when its verify command stays the same (logged), so a brief can say what was built; a changed check is still refused (T-3823).
 - The merge train's hook bench judges a busy machine by each hook's CPU median instead of its p95, which load inflates (one commit measured 404 then 106 ms), so a load spike no longer leaves a good lane out while a slower hook still fails (T-3821).
 - sampo lane land names, before its first train, each lane whose close will be refused for a missing line (DOCS, NUMBERS, LESSON, why not caught), so the line can be added while the gates run, and each hand close's progress line says why, not only the final report hours later (T-3819).
 - The Ward no longer refuses a design-tokens file in a project's web asset folder (plugin/web/live/board-tokens.json, static/css/tokens.json) as a credential; tokens.json at a repo root, under a dot folder or anywhere in ~/.config still is one (T-3810).
