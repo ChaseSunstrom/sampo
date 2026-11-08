@@ -1391,7 +1391,8 @@ def check_hook_writers(settings, home):
 
 def recent_hook_errors(days=1):
     """Hook errors of the last `days` (24h), each its log lines: "<ts> <event> <traceback…>" and its continuation."""
-    log = _read(os.path.join(c.state_dir(), "logs", "hooks.log")) or ""
+    p = os.path.join(c.state_dir(), "logs", "hooks.log")
+    log = (_read(p + ".1") or "") + (_read(p) or "")  # T-3423: the rotated half is still history
     entries = []
     for line in log.splitlines():
         if re.match(r"\d{4}-\d\d-\d\dT\S+ ", line):

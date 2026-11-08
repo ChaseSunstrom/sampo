@@ -248,14 +248,36 @@ def _rev():
     return _REV
 
 
+HOOKS_LOG_MAX = 1_000_000  # T-3423: rotate to hooks.log.1 past this
+HOOKS_LOG_DEDUP_S = 60
+
+
 def log_error(event, text):
+    """T-3423: one os.stat rotates at HOOKS_LOG_MAX (rename is atomic; a racing appender may lose a line); an identical
+    event+text within a minute of the last identical one isn't appended (sidecar hooks.log.last: "<epoch> <digest>")."""
     busy = sys.exc_info()[1]
     if isinstance(busy, c.LockTimeout):  # T-3535: a busy lock is contention, not a failure: one rolled-up count
         return _lock_busy(event, busy)
     try:
         path = os.path.join(c.state_dir(), "logs", "hooks.log")
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        c.append_line(path, f"{c.now()} {event} {c.redact(text).rstrip()}\n")
+        line = f"{event} {c.redact(text).rstrip()}\n"
+        now, digest = time.time(), c.sha1(line.encode()).hexdigest()
+        try:
+            with open(path + ".last") as f:
+                last = f.read().split()
+            if last[1] == digest and now - float(last[0]) < HOOKS_LOG_DEDUP_S:
+                return
+        except (OSError, IndexError, ValueError):
+            pass
+        with open(path + ".last", "w") as f:  # ponytail: only the last line is remembered; A,B,A,B isn't collapsed
+            f.write(f"{now:.0f} {digest}")
+        try:
+            if os.stat(path).st_size > HOOKS_LOG_MAX:
+                os.replace(path, path + ".1")
+        except OSError:
+            pass
+        c.append_line(path, f"{c.now()} {line}")
     except OSError:
         pass
 

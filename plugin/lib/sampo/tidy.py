@@ -680,6 +680,8 @@ def _check_instructions(slug, base, md_files, rules_dir, max_lines):
 # ---------------------------------------------------------------- global checks
 
 def check_global(apply, actions, plugins=False):
+    """T-3423: hooks.log is rotated by hooks.log_error itself now (to hooks.log.1); the rotate_hooks_log finding below is
+    mostly a fallback for direct appenders that bypass log_error."""
     home_claude = os.path.join(os.path.expanduser("~"), ".claude")
     out = _check_instructions(None, os.path.expanduser("~"), [os.path.join(home_claude, "CLAUDE.md")],
                               os.path.join(home_claude, "rules"), GLOBAL_MD_MAX)

@@ -110,6 +110,43 @@ class NoteKeyPossessive(unittest.TestCase):  # T-2313
         self.assertEqual(hooks._note_key("Foreman: don't edit \"quoted\" files"), "don t edit quoted files")
 
 
+class LogErrorCap(ForemanTestCase):  # T-3423
+    def test_rotates_past_the_cap_and_collapses_repeats(self):
+        from sampo import core as c, hooks
+        path = os.path.join(c.state_dir(), "logs", "hooks.log")
+        hooks.log_error("Ev", "same")
+        hooks.log_error("Ev", "same")  # within 60 s: not appended
+        hooks.log_error("Ev", "other")
+        with open(path) as f:
+            self.assertEqual(len(f.read().splitlines()), 2)
+        old = hooks.HOOKS_LOG_MAX
+        hooks.HOOKS_LOG_MAX = 10
+        try:
+            hooks.log_error("Ev", "third")
+        finally:
+            hooks.HOOKS_LOG_MAX = old
+        with open(path) as f:
+            self.assertEqual(len(f.read().splitlines()), 1)
+        with open(path + ".1") as f:
+            self.assertEqual(len(f.read().splitlines()), 2)
+
+
+    def test_a_repeat_after_the_window_is_logged_and_doctor_reads_the_rotated_half(self):
+        import time
+        from unittest import mock
+        from sampo import core as c, hooks, doctor
+        path = os.path.join(c.state_dir(), "logs", "hooks.log")
+        t = time.time()
+        with mock.patch.object(hooks.time, "time", return_value=t):
+            hooks.log_error("Ev", "same")
+        with mock.patch.object(hooks.time, "time", return_value=t + hooks.HOOKS_LOG_DEDUP_S + 1):
+            hooks.log_error("Ev", "same")
+        with open(path) as f:
+            self.assertEqual(len(f.read().splitlines()), 2)
+        os.replace(path, path + ".1")
+        self.assertEqual(len(doctor.recent_hook_errors()), 2)
+
+
 class BatchNoteOnce(ForemanTestCase):
     def test_the_third_edit_note_is_said_in_full_once_a_session(self):
         # T-2108: the full fm edit paragraph came back for every file and after every compaction
