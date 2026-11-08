@@ -2696,6 +2696,8 @@ SNAPSHOT_S = 3.0  # of the PreToolUse hook's 5 s
 
 
 _GATE_PIPE = c.lazy(r"(?m)(?:^\s*|[;&|(]\s*)(?:\w+=\S*\s+)*(?:fm|sampo)\s+(?:quiet\s+(?:--\s+)?(?:fm|sampo)\s+)?check\b(?![-\w])"
+                        # T-3776: the verbs that set gates up (add, rm, list …) and help run none
+                        r"(?!\s+(?:add|rm|list|paths|affected|ambient|onwrite|playbooks|office)\b)(?![^|;&\n]*\s(?:-h|--help)\b)"
                         r"(?:[^|;&\n]|>&)*\|(?!\|)")  # a command's first word; 2>&1 before the pipe
 
 

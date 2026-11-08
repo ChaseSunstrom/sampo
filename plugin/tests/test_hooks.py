@@ -74,8 +74,15 @@ class GatePipe(ForemanTestCase):  # T-1759, T-2765: a refusal, not a note
             self.assertIn("drop the pipe (its summary is short) or start with set -o pipefail;", d[1])
         for cmd in ("fm check", "set -o pipefail; fm check | tail -5", "fm check || true", "fm check || echo red",
                     "fm checkpoint | x", "fm quiet -- fm check", "echo fm check | wc", "sampo checkpoint | tail",
-                    'grep -n "fm check playbooks\\|fm check onwrite" README.md | cut -c1-80', "grep 'x|sampo check y' f | wc"):
+                    'grep -n "fm check playbooks\\|fm check onwrite" README.md | cut -c1-80', "grep 'x|sampo check y' f | wc",
+                    # T-3776: setting gates up or reading help runs no gate (yeerr was refused for each, 2026-11-08)
+                    "sampo check add 'hadolint Dockerfile' 2>&1 | tail -1", "sampo check list | head -3",
+                    "sampo check rm 2 | tail -1", "sampo check --help 2>&1 | sed -n 1,12p", "fm check -h | grep rm",
+                    "sampo check add 'cd app && x -m unittest discover -s ../tests -q' 2>&1 | tail -1; sampo check add "
+                    "'hadolint Dockerfile' 2>&1 | tail -1; sampo check add 'shellcheck app/a.sh' 2>&1 | tail -1"):
             self.assertIsNone(deny(cmd), cmd)
+        for cmd in ("sampo check run | tail -2", "sampo check --affected --evidence T-1 | tail -2"):  # these run gates
+            self.assertEqual(deny(cmd)[0], "deny", cmd)
         self.assertIsNone(hooks._gate_pipe_deny({"tool_name": "Read", "tool_input": {"command": "fm check | tail"}}))
 
     def test_pretooluse_carries_the_deny(self):
