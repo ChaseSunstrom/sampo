@@ -203,6 +203,10 @@ def collision_line(p, least=3):
 
 
 PENDING, FORGIVE_S, SAME = "risk_pending.json", 600, 0.45  # a rewrite must come within ten minutes and read alike
+# T-3812 (security review of T-3752): only categories whose false refusals have an obvious rewrite are forgiven
+# (credentials, system, self-authorize and confine blocks are rarely false, and probing them must keep costing), and
+# a session is forgiven FORGIVE_DAY times a day at most
+FORGIVABLE, FORGIVE_DAY = {"rm-outside", "git-destructive", "pipe-shell"}, 3
 
 
 def note_block(p, sid, tool, cmd, category):
@@ -215,8 +219,11 @@ def note_block(p, sid, tool, cmd, category):
             rec = json.load(f)
     except (OSError, ValueError):
         rec = {}
-    rec = {k: v for k, v in (rec if isinstance(rec, dict) else {}).items()
-           if isinstance(v, dict) and time.time() - v.get("t", 0) < FORGIVE_S}
+    rec = rec if isinstance(rec, dict) else {}
+    kept = {k: v for k, v in rec.items() if k != "forgiven" and isinstance(v, dict) and time.time() - v.get("t", 0) < FORGIVE_S}
+    if isinstance(rec.get("forgiven"), dict):  # T-3812: the day's forgiveness counts outlive each pending block
+        kept["forgiven"] = {k: v for k, v in rec["forgiven"].items() if k.startswith(_day())}
+    rec = kept
     rec[str(sid)[:80]] = {"t": time.time(), "tool": tool, "cmd": str(cmd)[:400], "category": category}
     c.write_atomic(path, json.dumps(rec))
 
@@ -236,10 +243,17 @@ def forgive(p, sid, tool, cmd):
         return False
     if not isinstance(hit, dict) or time.time() - hit.get("t", 0) >= FORGIVE_S or hit.get("tool") != tool:
         return False
+    if hit.get("category") not in FORGIVABLE or str(cmd).split()[:1] != str(hit.get("cmd", "")).split()[:1]:
+        return False  # T-3812: a sure category, or another program: no rewrite of the blocked call
+    day = rec.get("forgiven") if isinstance(rec.get("forgiven"), dict) else {}
+    key = f"{_day()} {str(sid)[:80]}"
+    if day.get(key, 0) >= FORGIVE_DAY:
+        return False
     import difflib
     if difflib.SequenceMatcher(None, str(cmd)[:400], hit.get("cmd", ""), autojunk=False).ratio() < SAME:
         return False
     del rec[str(sid)[:80]]
+    rec["forgiven"] = {k: v for k, v in day.items() if k.startswith(_day())} | {key: day.get(key, 0) + 1}
     c.write_atomic(path, json.dumps(rec))
     c.log_event(p, "guard_forgiven", data={"category": hit.get("category")}, session=sid)
     return True
