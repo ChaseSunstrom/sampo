@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo task set ID --section A --file a --section B --file b fills both sections, each from its own file, as its help said; only the last --file was kept before (T-3805).
 - The Ward no longer confines the main session as a builder when it has cd'd into a subagent builder's worktree (.claude/worktrees/agent-<id>) to run its tests or merge main in: there only the subagent's own calls, which carry an agent_id, are confined; lanes made by sampo lane new stay confined as before (T-3802).
 - sampo lane land trains urgent lanes first, then performance and security fixes, then the user's own asks, then the rest (oldest first in each); sampo lane land --first T-1,T-2 puts lanes ahead, queued into a running land at its next train boundary; and each train's lanes close as soon as it lands them (lanes an earlier train merged close before the first train), so a long land no longer… (T-3796).
 - The plugin is now `sampo@sampo` (with `sampo-ui@sampo` and `sampo-design@sampo`) in a marketplace named `sampo`; it was still `foreman@foreman`. `sampo migrate plugins` moves an existing install in one write per file, so the old and new ids are never enabled together, and `--undo` restores the files byte for byte. install.sh runs it for you, and `sampo doctor` says when it's due. `/foreman:` commands become `/sampo:` (T-3707, T-2879)
