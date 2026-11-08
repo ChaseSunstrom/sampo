@@ -1259,6 +1259,9 @@ def _slow_verify_note(p, cmd):
 
 
 def _lint_verify(p, cmds):
+    """The notes and warnings a verify command earns, on stderr; returns the warnings, which T-3813's callers repeat on
+    their last line (a caller reading 2>&1 | tail -1 saw only 'criterion added.')."""
+    warned = []
     for cmd in filter(None, cmds):
         note = _slow_verify_note(p, cmd)
         if note:
@@ -1273,6 +1276,13 @@ def _lint_verify(p, cmds):
         problems = c.lint_verify(cmd, p.root)
         if problems:
             print(f"fm: warning: verify command `{cmd}`: {'; '.join(problems)}", file=sys.stderr)
+            warned += problems
+    return warned
+
+
+def _warned(warns):
+    """T-3813: the suffix a result line carries for its verify warnings, '' for none."""
+    return f" Warning: {warns[0]}" + (f" (+{len(warns) - 1} more above)" if len(warns) > 1 else "") if warns else ""
 
 
 def guard_stored(p, b, cmd):
@@ -3600,16 +3610,21 @@ def task_new(p, args):
             for text in args.step or []:
                 b.add_step(text)
         b, _ = mutate(p, b.id, plan, "task_plan", {"ac": len(args.ac or []), "step": len(args.step or [])})
-        _lint_verify(p, [v for _, v in map(c.split_verify, args.ac or []) if v])
+        warns = _lint_verify(p, [v for _, v in map(c.split_verify, args.ac or []) if v])
+    else:
+        warns = []
     b = _adopt_draft(p, b, args.source)
     if not args.from_id:
         _note_escapes(p, b, " ".join(filter(None, [args.title, args.raw])))
     out(args, c.brief_summary(b), f"{b.id} [{b.type} {b.tier}] {b.title} — planned ({b.path}){reused}"
-        + ("" if args.from_id else _covered_note(p, b.id, " ".join(filter(None, [args.title, args.raw])))))
+        + ("" if args.from_id else _covered_note(p, b.id, " ".join(filter(None, [args.title, args.raw]))))
+        + _warned(warns))
     if args.focus:
         import contextlib  # T-1954: under --json, stdout stays one JSON document
         with contextlib.redirect_stdout(sys.stderr) if getattr(args, "json", False) else contextlib.nullcontext():
             cmd_focus(argparse.Namespace(id=b.id, project=getattr(args, "project", None), json=False))
+            if warns:  # T-3813: still the last line after focus's own
+                print(f"{b.id}: verify{_warned(warns)}")
 
 
 def _section_pairs(args):
@@ -3865,9 +3880,9 @@ def task_ac(p, args):
         verify = args.verify or verify
         _refuse_unrunnable(p, [verify])
         b, _ = mutate(p, args.id, lambda b: _filled(b, b.add_ac(text, verify)), "ac_add", {"text": text})
-        _lint_verify(p, [verify])
+        warns = _lint_verify(p, [verify])
         _door_check(p, b)
-        return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion added.")
+        return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion added.{_warned(warns)}")
     try:
         n = int(args.arg)
     except ValueError:
@@ -3890,9 +3905,9 @@ def task_ac(p, args):
             b, _ = mutate(p, args.id, lambda b: b.edit_ac(n, text, verify), "ac_edit", {"ac": n})
         except KeyError as e:
             raise UsageError(str(e).strip("'\""))
-        _lint_verify(p, [verify])
+        warns = _lint_verify(p, [verify])
         _door_check(p, b)
-        return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion {n} edited.")
+        return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion {n} edited.{_warned(warns)}")
     ev = args.evidence
 
     def check(b):

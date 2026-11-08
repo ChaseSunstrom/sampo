@@ -1798,6 +1798,26 @@ class SetLists(ForemanTestCase):
         self.fm("task", "set", a, f"depends_on={b.lower()}")
         self.assertEqual(c.find_brief(p, a).meta["depends_on"], [b])
 
+    def test_a_verify_warning_reaches_the_last_line(self):
+        # T-3813: the warning sat on stderr above 'criterion added.', and a caller reading 2>&1 | tail -1 never saw
+        # it; two criteria naming tests that don't exist then reached merge trains (2026-11-08)
+        self.fm("init")
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"), exist_ok=True)
+        with open(os.path.join(self.repo, "plugin", "tests", "test_real.py"), "w") as f:
+            f.write("import unittest\nclass Real(unittest.TestCase):\n    def test_it(self):\n        pass\n")
+        open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w").close()
+        bad = "python3 plugin/tests/run.py test_missing"
+        last = lambda r: r.stdout.strip().splitlines()[-1]  # noqa: E731 — the line a 2>&1 | tail -1 shows (stderr went first)
+        r = self.fm("task", "new", "W", "--type", "FIX", "--tier", "S", "--ac", f"ok :: {bad}", "--step", "s",
+                    "--focus")
+        self.assertIn("names no test", last(r))
+        tid = c.active_brief(c.load_briefs(c.find_project(self.repo))).id
+        self.assertIn("names no test", last(self.fm("task", "ac", tid, "add", f"two :: {bad}")))
+        self.assertIn("matches -k Nope", last(self.fm("task", "ac", tid, "edit", "1", "--verify",
+                                                       "python3 plugin/tests/run.py test_real -k Nope")))
+        self.assertEqual(last(self.fm("task", "ac", tid, "edit", "1", "--verify",
+                                      "python3 plugin/tests/run.py test_real -k Real")), f"{tid}: criterion 1 edited.")
+
     def test_several_sections_in_one_call_all_land(self):
         # T-1124: only the last --section/--text pair was applied, silently
         self.fm("init")
