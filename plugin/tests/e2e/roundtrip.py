@@ -87,8 +87,9 @@ def main():
         s1 = load(os.path.join(claude_dir, "settings.json")) or {}
         wrapper = os.path.join(fhome, "plugin", "hooks", "statusline")
         check("installed: statusLine is the Foreman wrapper", (s1.get("statusLine") or {}).get("command") == wrapper)
-        check("installed: deny rules + drive env", len((s1.get("permissions") or {}).get("deny", [])) >= 20 and
-              "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP" in (s1.get("env") or {}))
+        deny1 = (s1.get("permissions") or {}).get("deny", [])  # T-3704: no rm rule (CC reads "*" as a wildcard and asks)
+        check("installed: deny rules + drive env", len(deny1) >= 10 and "Bash(mkfs *)" in deny1 and
+              not [r for r in deny1 if r.startswith("Bash(rm ")] and "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP" in (s1.get("env") or {}))
         check("installed: bypass default mode", (s1.get("permissions") or {}).get("defaultMode") == "bypassPermissions")
         check("installed: CLAUDE.md block", "<!-- foreman:begin -->" in (read(os.path.join(claude_dir, "CLAUDE.md")) or ""))
         link = os.path.join(claude_dir, "rules", "foreman.md")

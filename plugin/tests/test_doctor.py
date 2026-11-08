@@ -583,6 +583,14 @@ class Checks(unittest.TestCase):
             with unittest.mock.patch.object(d, "_run", return_value=subprocess.CompletedProcess([], 127, "", "timeout")):
                 self.assertFalse(d._sibling_worktree(main, wt))  # a git failure or timeout is never a WARN
 
+    def test_deny_check_passes_after_the_rm_rules_are_pruned(self):
+        # T-3704: the manifest no longer lists the retired rm rules once install-user prunes them
+        from sampo import setup
+        self.assertFalse([r for r in setup.DENY_RULES if "rm " in r])
+        manifest = {"deny_added": list(setup.DENY_RULES)}
+        settings = {"permissions": {"deny": list(setup.DENY_RULES) + ["Bash(rm -rf /data)"]}}
+        self.assertEqual(d.check_deny_rules(settings, manifest).status, "PASS")
+
     def test_statusline_and_deny(self):
         wrapper = "/x/plugin/hooks/statusline"
         manifest = {"statusLine_original": {"command": "orig"}, "deny_added": ["Bash(mkfs *)"]}
@@ -1651,6 +1659,31 @@ class McpTransport(unittest.TestCase):  # T-3346
         long = self.run_with({"mcpServers": {"x" * 200 + "\x1b[31m": {"type": "sse"}}})
         self.assertNotIn("\x1b", long.detail)
         self.assertNotIn("x" * 61, long.detail)
+
+
+class PermissionMode(Checks):
+    """T-3704: doctor names the mode Claude Code runs in; information only."""
+
+    def test_the_mode_in_settings_is_named_and_rm_asks_are_explained(self):
+        user = self.write("u/settings.json", '{"permissions": {"defaultMode": "acceptEdits"}}')
+        r = d.check_permission_mode([user])
+        self.assertEqual(r.status, "PASS")
+        self.assertIn("acceptEdits", r.detail)
+        self.assertIn("rm", r.detail)
+        self.assertIn("bypassPermissions", r.detail)
+
+    def test_the_project_file_wins_and_bypass_says_rm_is_waived(self):
+        user = self.write("u/settings.json", '{"permissions": {"defaultMode": "acceptEdits"}}')
+        proj = self.write("p/settings.json", '{"permissions": {"defaultMode": "bypassPermissions"}}')
+        r = d.check_permission_mode([user, proj])
+        self.assertIn("bypassPermissions", r.detail)
+        self.assertIn("waives", r.detail)
+
+    def test_no_mode_set_reads_as_default_and_a_bad_file_is_quiet(self):
+        bad = self.write("b/settings.json", "{not json")
+        r = d.check_permission_mode([bad, os.path.join(self.t, "none.json")])
+        self.assertEqual(r.status, "PASS")
+        self.assertIn("default", r.detail)
 
 
 class CrashHeal(unittest.TestCase):

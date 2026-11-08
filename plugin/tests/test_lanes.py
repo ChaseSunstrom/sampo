@@ -3140,5 +3140,29 @@ class VerifyTimeout(ForemanTestCase):  # T-3418
         self.assertIn("is red", msg)
 
 
+class AndonClear(BoardLanes):
+    """T-3704: an agent answers an andon with `sampo lane andon`, a rename: no rm for Claude Code to ask about."""
+
+    def test_the_andon_verb_clears_and_reads_as_answered(self):
+        from sampo import core as c
+        path = self.lane("x = 1\n")
+        with open(os.path.join(path, "ANDON.md"), "w") as f:
+            f.write("Which port?\nassume 80\n")
+        briefs = c.load_briefs(c.find_project(self.repo))
+        self.assertEqual(c.andons(briefs), [("T-0001", "Which port?")])
+        r = self.fm("lane", "andon", cwd=path)
+        self.assertIn("answered", r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(path, "ANDON.md")))
+        self.assertTrue(os.path.isfile(os.path.join(path, ".fm-scratch", "ANDON.answered.md")))
+        self.assertEqual(c.andons(briefs), [])
+        self.assertIn("nothing", self.fm("lane", "andon", cwd=path).stdout)  # a second run is quiet
+
+    def test_the_builder_contract_names_the_verb_not_a_delete(self):
+        from helpers import PLUGIN
+        text = open(os.path.join(PLUGIN, "agents", "fm-builder.md"), encoding="utf-8").read()
+        self.assertIn("sampo lane andon", text)
+        self.assertNotIn("delete the file", text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,9 +15,10 @@ import time
 
 from sampo import core as c
 
+# T-3704: no rm rule. "*" in a Claude Code rule is a wildcard ("rm -rf /*" denied every rm -rf of an absolute path), and a
+# deny rule's text found in a command CC can't parse simply makes it ask, bypass-immune. The Ward and CC's own
+# dangerousRemoval check still stop a catastrophic delete. A backstop rule must never name a common command prefix.
 DENY_RULES = [
-    "Bash(rm -rf /)", "Bash(rm -rf /*)", "Bash(rm -rf ~)", "Bash(rm -rf ~/)", "Bash(rm -rf ~/*)",
-    "Bash(rm -rf $HOME)", "Bash(rm -rf $HOME/*)", "Bash(rm -fr /)", "Bash(rm -fr ~)",
     "Bash(mkfs *)", "Bash(mkfs.* *)", "Bash(dd * of=/dev/*)",
     "Bash(git push --force * main)", "Bash(git push -f * main)", "Bash(git push --force * master)", "Bash(git push -f * master)",
     "Edit(~/.ssh/**)", "Edit(~/.gnupg/**)", "Edit(~/.aws/credentials)", "Edit(~/.claude/.credentials.json)",
@@ -128,6 +129,11 @@ def plan_install(P):
     deny_existed = "deny" in perms
     deny = perms.setdefault("deny", [])
     new_m.setdefault("deny_created", not deny_existed)
+    stale = [r for r in new_m.get("deny_added", []) if r not in DENY_RULES]  # T-3704: a rule we no longer install
+    if stale:
+        deny[:] = [r for r in deny if r not in stale]
+        new_m["deny_added"] = [r for r in new_m["deny_added"] if r not in stale]
+        actions.append(f"permissions.deny -= {len(stale)} retired Sampo rules")
     added = [r for r in DENY_RULES if r not in deny]
     if added:
         deny.extend(added)

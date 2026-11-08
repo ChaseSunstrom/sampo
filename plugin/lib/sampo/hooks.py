@@ -2448,7 +2448,7 @@ def _pre_tool_use(raw):
             return 2
     try:
         _record_asks(pl, p, guard)
-        decision = _ask_prompt(pl, p, guard) or (_taint_check(pl, p) if tool == "Bash" else None) or _gate_pipe_deny(pl) or _wait_loop(pl) or _self_match(pl) or _stdin_hang(pl)
+        decision = _ask_prompt(pl, p, guard) or (_taint_check(pl, p) if tool == "Bash" else None) or _gate_pipe_deny(pl) or _wait_loop(pl) or _rm_var(pl) or _self_match(pl) or _stdin_hang(pl)
     except Exception:
         log_error("PreToolUse", _tb())
         decision = None
@@ -2953,6 +2953,75 @@ def _wait_loop(pl):
     return ("deny", "Sampo: a foreground wait loop holds this session idle until it ends. Run it with "
                     "run_in_background (its completion notification wakes you) or as a Monitor, and do other work "
                     "meanwhile: the next step, another task, a builder lane.")
+
+
+_RM_TOKEN = c.lazy(r"""(?:"[^"]*"|'[^']*'|\\.|[^\s"'\\;&|])+""")
+_RM_SEG = c.lazy(r"[;&|\n]+")
+_RM_N = r"[A-Za-z_]\w*"
+_RM_LEADVAR = c.lazy(rf"""^["']*(\$(?:\{{({_RM_N})[^}}]*\}}|({_RM_N})))""")
+_RM_DERIVED = c.lazy(r"\$\(\s*(?:cd|pwd|dirname|git\s+rev-parse)\b|`\s*(?:cd|pwd|dirname|git\s+rev-parse)\b")
+_RM_VARX = rf"""\$(?:\{{{_RM_N}(?::?-(?:["']{{2}}|"?\$\{{?{_RM_N}\}}?"?)?)?\}}|{_RM_N})"""  # ${N}, ${N-}, ${N:-$M}: not ${N:?}
+_RM_A = c.lazy(rf"""^["']*{_RM_VARX}["']*\\?/(?:[*?[{{]|\$|/|["']|$)""")
+_RM_B = c.lazy(rf"""^["']*{_RM_VARX}["']*\\?/(?:bin|boot|dev|etc|home|lib|lib32|lib64|libx32|media|mnt|opt|proc|root|run|sbin|srv|sys|tmp|usr|var|snap|nix|lost\+found|private|cores|Applications|Library|System|Users|Volumes|Windows|ProgramData|cygdrive)(?:/\*)?/?$""", re.I)
+_RM_LEAD = c.lazy(r"^(?:(?:do|then|else|elif|if|while|until|sudo|command|exec|nohup|time|[({!])\s*)*(?:\\|/\w+/)*(rm|rmdir|unlink)$")
+
+
+def _rm_var(pl):
+    """T-3704: Claude Code 2.1.319's dangerousRemoval check asks the user about an rm/rmdir/unlink whose target holds a
+    shell variable it can't verify (`rm -rf $S/x`, `rm -rf "$d"`), in every mode (bypass-immune, no hook can pre-approve).
+    Refuse it first with the rewrite: the literal path when the variable was set to a literal earlier on the line, else
+    `"${VAR:?}"` (CC's own advice: the shell stops when it is unset). Literal paths pass. Quote-blind split: a miss errs
+    toward not refusing."""
+    cmd = str((pl.get("tool_input") or {}).get("command") or "") if pl.get("tool_name") == "Bash" else ""
+    if "rm" not in cmd and "unlink" not in cmd:
+        return None
+    known, assigned, derived = {}, set(), set()
+    for seg in _RM_SEG.split(cmd):
+        toks = _RM_TOKEN.findall(seg)
+        for t in toks[:2]:  # NAME=value, or export NAME=value
+            m = re.fullmatch(r"([A-Za-z_]\w*)=(.*)", t, re.S)
+            if not m:
+                continue
+            assigned.add(m.group(1))
+            if _RM_DERIVED.search(m.group(2)):
+                derived.add(m.group(1))
+            lit = re.fullmatch(r"\"([^$`\"]*)\"|'([^']*)'|([^$`\"'\s]*)", m.group(2))
+            if lit:
+                known[m.group(1)] = next(g for g in lit.groups() if g is not None)
+        for i, t in enumerate(toks):
+            if not _RM_LEAD.match(" ".join(toks[:i + 1])):
+                continue
+            for arg in toks[i + 1:]:
+                fixed = None if arg.startswith("-") else _rm_fix(arg, known, assigned, derived)
+                if fixed is None:
+                    continue
+                how = (f"{cmd.replace(arg, fixed)[:300]}" if fixed else
+                       "a literal path (a ${VAR:?} guard doesn't help a value taken from cd/pwd/dirname/git)")
+                return ("deny", f"Sampo: Claude Code asks the user about an {t.lstrip(chr(92))} whose target starts with a "
+                                f"shell variable it can't verify, in every permission mode. Write it as {how}")
+            break
+    return None
+
+
+def _rm_fix(arg, known, assigned, derived):
+    """T-3704: the rewrite of one rm target when it has a shape Claude Code 2.1.319 flags, '' when it flags it and no
+    mechanical rewrite exists, else None. (a) $VAR then / then a glob char, $, /, a quote or the end; (b) $VAR then a
+    top-level name (/tmp, /usr/*) when VAR may be unset; (c) VAR taken from cd/pwd/dirname/git rev-parse. A ${VAR:?}
+    guard falls outside (a) and (b)."""
+    m = _RM_LEADVAR.match(arg)
+    if not m:
+        return None
+    name = m.group(2) or m.group(3)
+    if name in derived:
+        return ""
+    if not (_RM_A.match(arg) or (_RM_B.match(arg) and (name in ("TMPDIR", "TMP", "TEMP") or (
+            name not in assigned and not os.environ.get(name))))):
+        return None
+    if name in known:
+        new = known[name]
+    else:
+        new = f"${{{name}:?}}" if arg[:m.start(1)].endswith(('"', "'")) else f'"${{{name}:?}}"'
+    return arg[:m.start(1)] + new + arg[m.end(1):]
 
 
 _PGREP = c.lazy(r"""(?:^|[;&|(`!{]|\b(?:while|until|if|then|do|else|sudo|exec|nohup|timeout\s+\S+))\s*"""

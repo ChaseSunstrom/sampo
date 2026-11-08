@@ -634,7 +634,7 @@ def _restart(p, r):
         shutil.copy2(newest, os.path.join(snap, base))
     _tower_set(p, name, restarted=mark)
     _act(p, "restart", name, f"no new generation in {r['idle_h']:g}h: restarted, its next step runs first",
-         undo=f"rm -rf {newest} && cp -r {os.path.join(snap, base)} {newest}", snapshot=snap)
+         undo=f"mv {newest} {newest}.replaced && cp -r {os.path.join(snap, base)} {newest}", snapshot=snap)
 
 
 def _touches(row):

@@ -2013,6 +2013,31 @@ class PreToolUse(HookCase):
         poll = 'for i in $(seq 1 110); do grep -q "^EXIT" f.log && break; sleep 5; done; tail f.log'
         self.assertEqual(self.pre("Bash", {"command": poll}).returncode, 2)
 
+    def test_an_rm_on_an_unverifiable_variable_is_refused_with_its_rewrite(self):
+        # T-3704 (CC 2.1.319's dangerousRemoval check is bypass-immune): refuse only the shapes it flags, with the rewrite
+        from sampo import hooks
+        rm = lambda cmd: hooks._rm_var({"tool_name": "Bash", "tool_input": {"command": cmd}})  # noqa: E731
+        U = "T3704_UNSET"
+        for ok in ("rm -f \"$d\"", "rm -f out_$i.txt", "rm -rf $S/shots2", 'rm -rf "${S:?}"/*', "S=/x; rm -rf $S/tmp",
+                   "rm -rf /tmp/claude-1000/x/d", "rm -f 'a$b'", 'echo "rm -rf $d/*"', "ls $d/*", "rm -f $d/a.txt"):
+            with self.subTest(ok=ok):
+                self.assertIsNone(rm(ok), ok)
+        for bad, fix in (("rm -rf $S/*", 'rm -rf "${S:?}"/*'), ('rm -rf "$d"/', 'rm -rf "${d:?}"/'),
+                         (f"rm -rf ${U}/tmp", f'rm -rf "${{{U}:?}}"/tmp'), ("S=/x; rm -rf $S/*", "rm -rf /x/*"),
+                         ("rm -rf ${S}/*", 'rm -rf "${S:?}"/*')):
+            with self.subTest(bad=bad):
+                d = rm(bad)
+                self.assertEqual(d[0], "deny", bad)
+                self.assertIn(fix, d[1])
+        d = rm("D=$(pwd); rm -rf $D/x")  # derived from cd/pwd/dirname/git rev-parse: a ${D:?} guard doesn't help
+        self.assertEqual(d[0], "deny")
+        self.assertIn("literal path", d[1])
+        self.assertNotIn("${D:?}", d[1])
+        with unittest.mock.patch.dict(os.environ, {"T3704_SET": "/x"}):
+            self.assertIsNone(rm("rm -rf $T3704_SET/tmp"))  # non-empty in the environment: CC can verify it
+        self.assertEqual(rm("rm -rf $TMPDIR/tmp")[0], "deny")
+        self.assertIsNone(rm("X=/x; rm -rf $X/tmp"))
+
     def test_a_loop_only_saved_or_quoted_is_no_wait(self):
         # T-3725 (2026-11-07): a yeerr session writing gluetun's front script (cd D && cat > yeerr-vpn.sh <<'EOF' …
         # while true; do … sleep 5 … EOF) was refused 3 times, and so was a task title naming such a loop: neither runs

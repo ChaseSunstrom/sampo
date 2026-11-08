@@ -8958,9 +8958,10 @@ def _build_parser(only=None):
                                                        "land [--batch N]: every finished lane through trains of N and "
                                                        "each landed task closed from its builder's report lines (the "
                                                        "rest parked with why) then a ship on a publish grant already "
-                                                       "given (T-3500)")
+                                                       "given (T-3500); "
+                                                       "andon: mark this lane's ANDON.md answered, moved aside, no rm (T-3704)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
-                                      "stats", "verify", "train", "precheck", "land"])
+                                      "stats", "verify", "train", "precheck", "land", "andon"])
     s.add_argument("--batch", type=int, metavar="N", help=f"land: lanes per train (default {c.TRAIN_BATCH}) (T-3500)")
     s.add_argument("--reset", metavar="SHA", help="verify: settle a conflict or red record after a forward fix (T-3141)")
     s.add_argument("--agent-stopped", action="store_true", help="recover: its agent was stopped (TaskStop), so a "

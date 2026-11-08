@@ -1241,3 +1241,11 @@ class KalevalaWatch(ForemanTestCase):
         with self.assertRaises(budget.BudgetError):
             kalevala.loop(p, runner=run, rounds=5)
         self.assertEqual(calls, [])
+
+
+class RestartUndoHasNoRm(ForemanTestCase):
+    def test_the_restart_undo_hint_holds_no_rm(self):
+        from sampo import kalevala
+        src = open(kalevala.__file__, encoding="utf-8").read()
+        self.assertNotRegex(src, r"undo=f?[\"']rm\b")
+        self.assertNotIn("rm -rf {newest}", src)

@@ -689,6 +689,21 @@ def check_served_context():
         f"{x['context']}: set num_ctx {x['context']} in its Modelfile (long prompts are cut at {n})" for x, n in bad))
 
 
+def check_permission_mode(paths):
+    """T-3704: information only. The permission mode Claude Code sessions here run in (permissions.defaultMode; a later
+    path wins). Claude Code's dangerousRemoval check is bypass-immune (read from 2.1.319) and no hook can pre-approve
+    it, so hooks.py denies the shape first. This never changes the mode."""
+    mode = "default"
+    for path in paths:
+        m = ((_load_json(path) or {}).get("permissions") or {})
+        m = m.get("defaultMode") if isinstance(m, dict) else None
+        if isinstance(m, str) and m:
+            mode = c.plain(m)[:40]
+    return Result("permission mode", "PASS", f"{mode}: an agent's rm whose target holds a shell variable Claude Code "
+                  "can't verify asks the user in every mode, bypassPermissions included (a built-in safety check no hook "
+                  "or mode waives); Sampo denies that rm first and says the literal path to use, so rm itself stays available")
+
+
 EMBED_PINS = ("bge-m3:567m", "nomic-embed-text:v1.5")  # T-2880: install.sh's EMBED_PINS (a test keeps them equal)
 
 
@@ -2962,6 +2977,9 @@ def run_all(full=False, accept_supply=False):
     results.append(check_predictions(here))
     results.append(check_model_backends(here))
     results.append(check_served_context())
+    results.append(check_permission_mode([settings_path, os.path.join(claude, "settings.local.json"),
+                                          os.path.join(os.getcwd(), ".claude", "settings.json"),
+                                          os.path.join(os.getcwd(), ".claude", "settings.local.json")]))
     if not os.environ.get("FOREMAN_NO_BACKGROUND"):  # T-2643: a test's doctor run never spends real model calls
         results.append(check_model_pins())
     results.append(check_self_fixes(here))

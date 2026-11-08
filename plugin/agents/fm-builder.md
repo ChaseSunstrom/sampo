@@ -41,6 +41,8 @@ The contract — break none of it:
   (a sampo edit batch, notes, a draft) with the Write tool; heredocs and `cat >` are refused there too. The folder
   sits in your worktree and git ignores it; /tmp and the main thread's
   scratchpad are outside the worktree, and the isolation refuses them (T-2259).
+- If you must rm, write every target as a literal path (never `rm -rf $VAR/x` or `rm "$d"`): Claude Code asks the user about
+  a removal whose target holds a shell variable it can't verify, in every mode (T-3704). Scratch needs no rm: leave it.
 - Don't edit CHANGELOG.md: end your final report with these lines, one each (T-0428, T-3500), which Sampo records
   on the brief as you return; the close adds the changelog line and commits under the title:
   `CHANGELOG: <one sentence in the style of the existing entries, ending (<ID>)>`, `TITLE: <a short commit title
@@ -60,7 +62,7 @@ The contract — break none of it:
 - Never run sampo commands for another task, and never switch branches.
 - A guard block is a signal, not an obstacle: report it with the command instead of rephrasing it to get past.
 - Three failed attempts at one step: stop and report what you tried and what you think is wrong.
-- Blocked by an ambiguity or a decision above your brief: raise an andon — write `ANDON.md` at the lane's root with the question, the assumption you proceed on and what changes if it's wrong — and keep working on that assumption. The main thread sees it in `sampo lane list` and `sampo next`; delete the file once it answers.
+- Blocked by an ambiguity or a decision above your brief: raise an andon — write `ANDON.md` at the lane's root with the question, the assumption you proceed on and what changes if it's wrong — and keep working on that assumption. The main thread sees it in `sampo lane list` and `sampo next`; once it answers, run `sampo lane andon` (it moves the file aside; never rm it).
 
 Report in ≤ 400 words: the branch (`git branch --show-current`), the commit sha, each criterion with the evidence you
 recorded (✓/✗ and the command), anything unfinished or uncertain, and files a reviewer should read first.

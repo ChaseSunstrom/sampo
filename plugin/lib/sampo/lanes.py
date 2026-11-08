@@ -177,6 +177,14 @@ def cmd_lane(args):
             c.update_meta(p, builders=int(args.id))
         return cli.out(args, {"builders": builders_cap(p)}, f"Builders at once: {builders_cap(p)} (fm lane max N, "
                          f"1 to {BUILDERS_MAX})")
+    if args.action == "andon":  # T-3704: answering an andon is a move, so no agent needs an rm (Claude Code asks about each)
+        src = os.path.join(p.root, "ANDON.md")
+        if not os.path.isfile(src):
+            return cli.out(args, {"cleared": False}, "No ANDON.md here: nothing to answer.")
+        dst = os.path.join(p.root, ".fm-scratch", "ANDON.answered.md")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        os.replace(src, dst)
+        return cli.out(args, {"cleared": True}, f"Andon answered: ANDON.md moved to {dst}.")
     if args.action in ("train", "land"):  # T-3380: N reviewed lanes through one gate run; T-3500: all of them, closed
         if p.lane:
             raise c.PolicyError(f"sampo lane {args.action} runs from the main checkout, not from inside a lane")

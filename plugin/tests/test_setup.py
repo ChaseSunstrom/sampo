@@ -92,6 +92,34 @@ class SetupCase(unittest.TestCase):
 
 
 class Install(SetupCase):
+    OLD_RM = ["Bash(rm -rf /)", "Bash(rm -rf /*)", "Bash(rm -rf ~)", "Bash(rm -rf ~/)", "Bash(rm -rf ~/*)",
+              "Bash(rm -rf $HOME)", "Bash(rm -rf $HOME/*)", "Bash(rm -fr /)", "Bash(rm -fr ~)"]
+
+    def test_no_rm_rule_is_installed_and_an_old_install_is_pruned(self):
+        # T-3704: CC reads "*" in a rule as a wildcard and asks (bypass-immune) when a deny rule's text sits in a command
+        # it can't parse simply, so "Bash(rm -rf /*)" made every `rm -rf /abs/path` prompt
+        self.assertFalse([r for r in setup.DENY_RULES if "rm " in r])
+        p = self.run_fm("install-user")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertFalse([r for r in self.load()["permissions"]["deny"] if "rm " in r])
+        # an old install: our rm rules in deny_added, plus the user's own rm rule
+        s = self.load()
+        s["permissions"]["deny"] += self.OLD_RM + ["Bash(rm -rf /data)"]
+        with open(self.settings, "w") as f:
+            json.dump(s, f)
+        m = read_json(self.manifest_path())
+        m["deny_added"] += self.OLD_RM
+        with open(self.manifest_path(), "w") as f:
+            json.dump(m, f)
+        self.assertEqual(self.run_fm("install-user").returncode, 0)
+        deny = self.load()["permissions"]["deny"]
+        self.assertIn("Bash(rm -rf /data)", deny)
+        self.assertIn("Bash(sudo *)", deny)
+        self.assertEqual([r for r in deny if "rm " in r], ["Bash(rm -rf /data)"])
+        self.assertFalse(set(self.OLD_RM) & set(read_json(self.manifest_path())["deny_added"]))
+        from sampo import doctor
+        self.assertEqual(doctor.check_deny_rules(self.load(), read_json(self.manifest_path())).status, "PASS")
+
     def test_install_wires_everything_and_records_originals(self):
         p = self.run_fm("install-user")
         self.assertEqual(p.returncode, 0, p.stderr)
