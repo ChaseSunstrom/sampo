@@ -210,6 +210,7 @@ def _is_allow(arg):
 _ASK = "sampo ask {id} {cat} --why \"<what and why>\", then ask the user one yes/no question; their yes grants it"
 
 
+_CD_FAILED = r" \(the cd to (\S+) may have failed\)$"  # T-3713 (detail suffix; check_bash adds it)
 _FOCUS_LATE = " (this command's own sampo focus hasn't run yet: the guard reads the whole command first)"
 
 
@@ -253,7 +254,11 @@ def _hint(detail, cat=""):
         return " Pass the commands with -c (the guard reads them), or make the change with the Edit tool."
     if detail.startswith("IFS") and "can't read" in detail:
         return " Leave IFS at its default on a line that splits words, or set it inside a script file the guard reads."
-    if cat == "brief" and os.path.basename(detail).lower() == "changelog.md":  # T-1452
+    cdf = re.search(_CD_FAILED, detail) if cat == "brief" else None
+    if cdf:  # T-3713: the target is in the project only if that cd failed: say which, and the chain that fixes it
+        return (f" The cd to {cdf[1]} may fail, so the write may land here: chain it with && (cd {cdf[1]} && …) "
+                "so the write runs only there.")
+    if cat == "brief" and os.path.basename(re.sub(_CD_FAILED, "", detail)).lower() == "changelog.md":  # T-1452
         return (" A changelog line belongs to the task it describes: add it before sampo task finish. Once that task is "
                 "done, add the line in the next task and say why there (sampo task log ID \"scope: …\").")  # T-1767
     if detail.endswith(_FOCUS_LATE):
@@ -3954,6 +3959,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     scan = _mask_fm(shell, ctx)  # T-0183: guess from the command's own words, not fm's text arguments
     chmodded = set()  # T-3387: paths an earlier command here gave an exec bit
     wrote, fed = [], []  # T-0275: files earlier commands here write (all; and those a heredoc fills)
+    failcd = ""  # T-3713: the last cd that may have failed (its target), named in a brief refusal
     gone = False  # T-1924 review: an earlier command here may remove, rename or relink a folder a later cd names
     fm_elsewhere = fm_lits = None  # T-3600 review: read once a line, when a command word is computed or runs fm
     for idx, c in enumerate(cmds):
@@ -4010,6 +4016,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                     os.path.isdir(x) and os.access(x, os.X_OK)) for x in lands)  # (too many arguments); `cd ..` doubled
                 certain = not child and not piped and c.op != "||" and (  # T-1891: a cd after || may be skipped
                     and_chain or in_chain or ((straight or mixed) and not can_fail))
+                failcd = shlex.quote(tgt) if can_fail and not certain and not _unresolvable(tgt) else failcd
                 before = cwds
                 cwds, lost = _moved(cwds, lost, tgt, certain, cdpath, ctx)
                 new = [_cd_from(tgt, r, ctx) for r in rd]
@@ -4186,8 +4193,9 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         for target in c.redirs + ([] if bare_init else _write_targets(name, targs)) + git_env + _env_files(c.argv):
             how = classify_unlink if target in unlinks and not target.endswith("/") else _classify_made if \
                 target in touched else classify_write
-            found += [f for f in _target_cats(target, known, bare, cwds, lost, scan, ctx, how,
-                                              f" ({hint[2:]})" if init and target not in c.redirs else "")
+            found += [(f[0], f[1] + (f" (the cd to {failcd} may have failed)" if failcd and f[0] == "brief" and
+                                     isinstance(f[1], str) and not f[1].endswith(")") else "")) for f in _target_cats(
+                target, known, bare, cwds, lost, scan, ctx, how, f" ({hint[2:]})" if init and target not in c.redirs else "")
                       if not (lane and target == "." and f[0] == "brief")]
             found += _cargo_config_hit(target, cmd, cwds or [ctx.cwd], ctx)  # T-3607 review
         merge = name == "git" and _git_sub(args) == "merge"  # T-0394: its refusal names sampo lane merge; T-3553: one the

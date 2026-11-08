@@ -1605,6 +1605,20 @@ class FocusHint(GuardCase):
         plain = g.check("Bash", {"command": f"echo x > {self.repo}/f.txt"}, ctx)
         self.assertNotIn("own command", g.message(plain, ctx))
 
+    def test_brief_refusal_names_the_cd_that_may_have_failed(self):
+        # T-3713: `cd SCRATCH; echo x > f` is a write in the project when the cd fails; the refusal says which cd
+        ctx = g.Ctx(cwd=self.repo, project_root=self.repo, home=self.home, foreman_home=self.fhome, scratch=["/tmp"],
+                    allow=set(), task_id=None, unbriefed=self.repo)
+        block = g.check("Bash", {"command": "cd /nonexistent/s; echo x > f.txt"}, ctx)
+        self.assertBlocked(block, "brief")
+        msg = g.message(block, ctx)
+        self.assertIn("cd /nonexistent/s", msg)
+        self.assertIn("&&", msg)
+        self.assertNotIn("may have failed", g.message(g.check("Bash", {"command": "echo x > f.txt"}, ctx), ctx))
+        # a folder-removing command before a cd still leaves both folders possible
+        self.assertBlocked(g.check("Bash", {"command": "sampo task log T-1 x\nmv a b\ncd /tmp && true; echo x > f.txt"},
+                                   ctx), "brief")
+
 
 class SymlinkRemoval(GuardCase):
     def test_removing_a_symlink_judges_the_link(self):
