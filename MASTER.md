@@ -200,6 +200,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmjeffexport` (T-2970: Sampo's own decider on Jeff, `sampo exam models --jeff DIR` and `--train-jeff`: Examples… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlake` (T-2974: the training lake, `sampo exam models --export DIR [--with-agent]`: outcome-labelled… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlandlock` (T-1607: a sampo smith worker's writes confined with Landlock… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmlane_overlap` (T-3285): `sampo lane list` prints an OVERLAP line per pair of open lanes that add the same def or touch the same file (`scan()`) [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlanes` (`sampo lane`: git worktrees as lanes with their own active task; `sampo lane train` (sampo/train, T-3380) gates N lanes once… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmledger` (`sampo verify-ledger`: the ledger's hash chain proved line by line… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlib` (T-0933: `sampo lib` — the stack library: card parsing and lint, stack… [→ files-lib-2](docs/map/files-lib-2.md)
@@ -412,7 +413,7 @@ The notes below are grouped; each group folds. `sampo outline MASTER.md` lists t
 |---|---|---|
 | [Dev loop and install](#dev-loop-and-install) | Edit, reload, test; the shell, time travel, MCP, plugin workflows, integrations, install and health checks, plugins, Claude Code and portability notes | 15 |
 | [Tasks, batches and backlog](#tasks-batches-and-backlog) | Batches, capture nudges, inbox and backlog tools, waits, many ids at once, tours, away and todo, queue preview and ranking | 15 |
-| [Lanes and builders](#lanes-and-builders) | Linked worktrees, defect classes, merge-prone files, changed text still found elsewhere, stalled and dropped builders, claims, racing builders, cut-off lane repair | 9 |
+| [Lanes and builders](#lanes-and-builders) | Linked worktrees, defect classes, merge-prone files, changed text still found elsewhere, stalled and dropped builders, claims, racing builders, cut-off lane repair, overlapping lanes | 10 |
 | [Evidence, gates and verification](#evidence-gates-and-verification) | Evidence, gate runs and reuse, affected tests, close gates, hunk proofs, audits, second reads, test claims, print-mode holds, recurring failures | 19 |
 | [Guard and security](#guard-and-security) | The guard's reads, scripts, oracle, mutation and ratchets; credentials, stored commands, install checks, approvals, outbound, sandbox | 19 |
 | [Hooks, notes and steering](#hooks-notes-and-steering) | What the hooks say and when: steering as data, session map, tripwires, write validators, outside text, breakers, postures | 11 |
@@ -477,6 +478,7 @@ Each note below is one index line: the first words of its full note and a link t
 - Defect classes (T-1164, `fmlanes.defect_classes`): every builder brief carries… [→ ops-1](docs/map/ops-1.md)
 - Merge-prone files (T-1161, `fmlanes.hot_files`): a conflicting… [→ ops-1](docs/map/ops-1.md)
 - Changed text still found elsewhere (T-2861, `fmlanes.twins`): a merged… [→ ops-1](docs/map/ops-1.md)
+- Overlapping lanes (T-3285, `fmlane_overlap.scan`): `sampo lane list` prints one OVERLAP line per pair of open lanes that add the same def or touch the same file… [→ files-lib-2](docs/map/files-lib-2.md)
 - Dropped builder redo (T-1823): `sampo lane rm ID --why REASON` (main thread… [→ ops-1](docs/map/ops-1.md)
 - Cut-off lane repair (T-2257): a lane whose creation was interrupted (0-byte… [→ ops-1](docs/map/ops-1.md)
 - Stalled builders (T-1156, `fmlanes.stalled`): a lane whose builder process is… [→ ops-1](docs/map/ops-1.md)

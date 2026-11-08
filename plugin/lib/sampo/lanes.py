@@ -235,7 +235,10 @@ def cmd_lane(args):
                              "tasks": [{"id": b.id, "status": b.status, "title": b.title}]})
                 lines.append(f"{b.meta['lane']} [missing]: {b.id} {b.status} {c.fit(b.title, 50)} — fm lane rm {b.id} "
                              f"frees it")
-        return cli.out(args, {"lanes": rows}, "\n".join(lines) or "No lanes: fm lane new <task id> makes one.")
+        from sampo import lane_overlap  # T-3285: open lanes whose branch diffs add the same def or touch the same file
+        ov = lane_overlap.scan(main, rows)
+        return cli.out(args, {"lanes": rows, **ov}, "\n".join(lines + lane_overlap.lines(ov))
+                       or "No lanes: fm lane new <task id> makes one.")
     if getattr(args, "revert_route", None):  # T-2353: the off switch for the probe-down route, no task id
         if args.action != "brief" or p.lane:
             raise cli.UsageError("fm lane brief --revert-route DATE runs from the main checkout, with no task id")
