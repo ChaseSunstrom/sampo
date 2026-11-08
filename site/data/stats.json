@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-07",
+ "generated": "2026-11-08",
  "totals": {
-  "tasks_done": 554,
-  "evidence": 3258,
-  "proofs": 312,
-  "commits": 432,
-  "gate_runs": 265,
-  "subagents": 1537,
-  "lanes_merged": 253,
-  "findings": 464,
-  "guard_blocks": 507,
-  "captures": 811,
-  "lessons_shown": 1249
+  "tasks_done": 620,
+  "evidence": 3669,
+  "proofs": 341,
+  "commits": 490,
+  "gate_runs": 308,
+  "subagents": 1811,
+  "lanes_merged": 375,
+  "findings": 529,
+  "guard_blocks": 653,
+  "captures": 988,
+  "lessons_shown": 1360
  },
  "daily": [
   {
@@ -82,71 +82,82 @@
   },
   {
    "day": "2026-11-07",
-   "FEATURE": 6,
-   "FIX": 3,
-   "CLEAN": 1,
-   "PERFORMANCE": 9,
-   "SECURITY": 5,
+   "FEATURE": 20,
+   "FIX": 21,
+   "CLEAN": 3,
+   "PERFORMANCE": 26,
+   "SECURITY": 9,
    "RESEARCH": 0,
-   "lanes": 17,
-   "evidence": 248
+   "lanes": 94,
+   "evidence": 537
+  },
+  {
+   "day": "2026-11-08",
+   "FEATURE": 0,
+   "FIX": 6,
+   "CLEAN": 0,
+   "PERFORMANCE": 2,
+   "SECURITY": 1,
+   "RESEARCH": 2,
+   "lanes": 45,
+   "evidence": 122
   }
  ],
  "tiers": {
-  "S": 320,
-  "M": 217,
-  "L": 17
+  "S": 338,
+  "M": 264,
+  "L": 18
  },
  "types": {
-  "FEATURE": 214,
-  "FIX": 248,
-  "CLEAN": 34,
-  "PERFORMANCE": 30,
-  "SECURITY": 14,
-  "RESEARCH": 14
+  "FEATURE": 228,
+  "FIX": 272,
+  "CLEAN": 36,
+  "PERFORMANCE": 49,
+  "SECURITY": 19,
+  "RESEARCH": 16
  },
  "guard": {
-  "brief": 281,
-  "core": 120,
-  "system": 32,
-  "state-direct": 31,
-  "rm-outside": 17,
-  "pipe-shell": 10,
-  "credentials": 8,
-  "plugin": 4
+  "brief": 360,
+  "core": 154,
+  "system": 46,
+  "state-direct": 33,
+  "rm-outside": 18,
+  "pipe-shell": 14,
+  "credentials": 12,
+  "plugin": 7
  },
  "findings": {
   "lenses": {
-   "edge": 134,
-   "adversary": 99,
-   "self": 67,
-   "intent": 52,
-   "design": 48,
-   "maintainer": 38
+   "edge": 161,
+   "adversary": 117,
+   "self": 68,
+   "intent": 59,
+   "design": 51,
+   "maintainer": 42
   },
   "severity": {
-   "LOW": 263,
-   "MEDIUM": 169,
-   "HIGH": 32
+   "LOW": 298,
+   "MEDIUM": 195,
+   "HIGH": 36
   }
  },
  "subagents": {
-  "fm-builder": 962,
-  "general-purpose": 337,
-  "fm-reviewer": 188,
-  "fm-recon": 36,
+  "fm-builder": 1112,
+  "general-purpose": 438,
+  "fm-reviewer": 207,
+  "fm-recon": 40,
   "Plan": 8,
   "claude-code-guide": 4
  },
  "gate_seconds": {
-  "runs": 265,
-  "median": 335.9
+  "runs": 308,
+  "median": 361.0
  },
  "tools": {
-  "misses": 16,
+  "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 105,
+  "searches": 132,
   "queued": 3,
   "refused": 0
  },
@@ -264,16 +275,16 @@
   "hardware": 8
  },
  "code": {
-  "model_tests": 80,
+  "model_tests": 89,
   "endpoints": 9,
-  "tests": 7237
+  "tests": 7839
  },
  "calibration": {
-  "scored": 27,
-  "pending": 397,
+  "scored": 30,
+  "pending": 454,
   "brier": {
-   "stated": 0.09694444444444444,
-   "base": 0.10861923076923077
+   "stated": 0.15416666666666667,
+   "base": 0.18750689655172412
   },
   "bars": {
    "research": 70,
@@ -287,13 +298,22 @@
   "kinds": {
    "choice": [
     {
-     "lo": 80,
-     "hi": 94,
-     "n": 2,
+     "lo": 60,
+     "hi": 79,
+     "n": 1,
      "held": 0,
      "pct": 0,
-     "stated": 88,
-     "gap": 88
+     "stated": 75,
+     "gap": 75
+    },
+    {
+     "lo": 80,
+     "hi": 94,
+     "n": 4,
+     "held": 0,
+     "pct": 0,
+     "stated": 86,
+     "gap": 86
     }
    ],
    "ship": [
@@ -326,23 +346,35 @@
     }
    ]
   },
-  "interim": {}
+  "interim": {
+   "choice": [
+    {
+     "lo": 60,
+     "hi": 79,
+     "n": 5,
+     "held": 5,
+     "pct": 100
+    },
+    {
+     "lo": 80,
+     "hi": 94,
+     "n": 39,
+     "held": 39,
+     "pct": 100
+    }
+   ]
+  }
  },
  "proof": {
-  "n": 913,
+  "n": 819,
   "counts": {
-   "meaning-notes": 397,
-   "meaning-user": 266,
-   "research-uncited": 34,
-   "perf-typed": 77,
-   "typed": 50,
+   "meaning-notes": 404,
+   "meaning-user": 256,
+   "research-uncited": 36,
+   "perf-typed": 95,
+   "typed": 56,
    "red": 86,
-   "tui-unshot": 12,
-   "docs": 126,
-   "perf-noise": 1,
-   "infra": 9,
-   "ui-unshot": 43,
-   "data": 7
+   "perf-noise": 1
   },
   "history": [
    {
@@ -372,6 +404,10 @@
    {
     "day": "2026-11-07",
     "n": 913
+   },
+   {
+    "day": "2026-11-08",
+    "n": 819
    }
   ]
  },
@@ -379,14 +415,14 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 979,
-    "precision": 0.785,
+    "fired": 1065,
+    "precision": 0.787,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 308,
-    "precision": 0.78,
+    "fired": 325,
+    "precision": 0.779,
     "route": "inbox"
    },
    {
@@ -396,15 +432,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "genesis-review",
-    "fired": 70,
-    "precision": 0.236,
+    "trigger": "steer",
+    "fired": 88,
+    "precision": 0.421,
     "route": "inbox"
    },
    {
-    "trigger": "steer",
-    "fired": 68,
-    "precision": 0.389,
+    "trigger": "genesis-review",
+    "fired": 70,
+    "precision": 0.236,
     "route": "inbox"
    },
    {
@@ -421,7 +457,7 @@
    },
    {
     "trigger": "ci-red",
-    "fired": 26,
+    "fired": 32,
     "precision": 0.833,
     "route": "inbox"
    },
@@ -444,15 +480,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "foresight-cochange",
-    "fired": 6,
-    "precision": 0.2,
+    "trigger": "friction",
+    "fired": 7,
+    "precision": 0.0,
     "route": "inbox"
    },
    {
-    "trigger": "friction",
+    "trigger": "foresight-cochange",
     "fired": 6,
-    "precision": 0.0,
+    "precision": 0.2,
     "route": "inbox"
    },
    {
@@ -482,7 +518,7 @@
    {
     "trigger": "did-not-hold",
     "fired": 1,
-    "precision": null,
+    "precision": 1.0,
     "route": "inbox"
    },
    {
@@ -506,20 +542,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 147,
-    "hit": 0.422,
-    "base_hit": 0.347,
+    "n": 181,
+    "hit": 0.436,
+    "base_hit": 0.37,
     "lead": [
      true,
-     0.00960540771484375,
-     15,
+     0.005908966064453125,
+     16,
      4
     ],
     "muted": false,
-    "shown_n": 82,
-    "shown_hit": 0.427,
-    "overlap": 0.1,
-    "base_overlap": 0.096
+    "shown_n": 112,
+    "shown_hit": 0.446,
+    "overlap": 0.096,
+    "base_overlap": 0.092
    }
   ],
   "lean": [
@@ -576,6 +612,188 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-08",
+   "text": "read T-3850: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3848: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "Recommendation: research/direction.md is Sampo's direction (one line, sections 0-8, tensions and measures tables), carried to every agent by the profile because the Ward keeps sampo mandate set the us",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "T-3843: Kalevala's sessions run in the night's rounds and on demand (sampo kalevala step), not in the hourly tick, which stays model-free by its own contract (T-2356); if the direction's 'towers climb",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3840: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3838: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "T-3699: keep the Board's 5-minute idle read (db79cedb9) and revert the key-press-only read (6ca186e20): an idle board frozen until a key press shows stale lanes and trains, which the user's live-data ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "Slate from 500 ideas / 40 grounded clusters (research note brainstorm-2026-11-07-ai-pipelines; checklist page https://claude.ai/artifact/6ng8Pe7f2dTezeL8NuLpqc): build T-3777 ceiling register (the met",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "T-3765 slate: 5 new tasks, 19 clusters folded into T-3761/T-3755/T-3770/T-3757, 13 later, 1 skipped; perf work first since drive is on for it",
+   "later": null,
+   "confidence": 80,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3769: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3764: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "LFM3-1.7B waits for the user's next Ollama update; Sampo doesn't install or upgrade runtimes (T-3760 tracks it)",
+   "later": null,
+   "confidence": 90,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3756: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3754: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3749: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3745: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3741: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3738: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3735: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3710: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3708: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3675: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3669: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3665: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3664: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-07",
+   "text": "read T-3659: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
   {
    "date": "2026-11-07",
    "text": "T-3602: a red train blames the lane whose diff changed the file the failure output names first (rule a), before the lane that changed the failing test (rule c)",
@@ -1820,210 +2038,10 @@
    "later": null,
    "confidence": null,
    "kind": "outward"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "read T-2792: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Sampo's look is Kirjokansi fused with Ilmarinen's forge (astrolabe frame, forge horizon and heat language), checked",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Sampo's look is Kirjokansi fused with Ilmarinen's forge: the Kirjokansi astrolabe is the logo and the frame (indigo sky, brass, the page read from the pole star to the horizon); the forge lives at the",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Standing rule: when a task finishes, keep working the rest of the queue (open tasks, lanes, inbox) without waiting for a prompt; stop only when nothing is left or only the user can unblock it",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "read T-2771: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "read T-2770: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "SAMPO_X moves into FOREMAN_X when sampo.core loads and leaves the environment (SAMPO wins); FOREMAN_X is not copied back to SAMPO_X",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Plugin ids for the rename: the marketplace keeps its name 'foreman' (an id part, kept like any alias); inside it the plugin becomes 'sampo' (and 'sampo-ui', 'sampo-design'), and thin 'foreman' and 'fo",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Sampo's logo is the Runestone direction (a rune ring around a forge-lit millstone with its rynd bar), picked by a cold design review on fable over Orrery and Emberline; shipped after a second cold rev",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "The rename's guard step comes first: Ward refuses under the Sampo names (sampo, sampo.* modules, SAMPO_*, the new verbs) whatever it refuses under the Foreman ones; landed as T-2745 with the user's ye",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Sampo's logo is the Runestone direction (a rune ring around a forge-lit millstone with its rynd bar), picked by a cold design review on fable over Orrery and Emberline; shipped after a second cold rev",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "The rename's guard step comes first: Ward refuses under the Sampo names (sampo, sampo.* modules, SAMPO_*, the new verbs) whatever it refuses under the Foreman ones; landed as T-2745 with the user's ye",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Sampo's logo is the Runestone direction (a rune ring around a forge-lit millstone with its rynd bar), picked by a cold design review on fable (8/7/5/6/7) over Orrery (reads as a settings cog) and Embe",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "The rename's guard step comes first: sampo, the new verbs and SAMPO_* are honoured only once the guard (Ward) recognises them; until the user's yes on that protected-core change, sampo refuses inside ",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Rename Foreman to Sampo per SAMPO.md: aliases first, then the migration (move with backup, manifest and undo), then internals with shims, then visible surfaces, then the design system, logo and site; ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "Lines built never stand in for a grade: select keeps a generation only on more train scenarios closed, a smoke run's verdict stays provisional until the production exam, and a number that moves becaus",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "A kill test states how each class is drawn, in the script, before its first run, and pairs or stratifies the classes so they share an era.",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "A rule that asks for a proof checks what the proof says, not only that it is there.",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "Evidence handed to a judge keeps every row the judged text can cite; a newer row replaces only a row of the same subject.",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "A test of a drive or next-action rule also runs with the project's standing state on: an open tower, a mandate, a lane.",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "A feature that reads project state is run once on this project's live state before it closes, and its audit says what it printed there.",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "genesis select gen-3: revert (seed base gen-2)",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "Recommendation: don't build the decider market; M-12 waits in not-yet.md at Stage kill. No forecaster beats chance on whether a close survives 14 days (best AUC 0.58 on 44 era-matched closes), so a po",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "Recommendation: Mission 7 builds four anticipation gaps where Foreman computes what the user will need but it never reaches them (the booked next-request guess, unshipped work under the push grant, th",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "Recommendation: M-02 is viable at the kill stage (3 of 3 spec-suite modules rebuilt blind passed every test) and moves to its slice: regenerate one of Foreman's own small modules from its briefs, CHAN",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-02",
-   "text": "Recommendation: the floor's kill test this generation is M-02's (rebuild three deleted spec-suite modules from their specs and tests alone, two attempts each), the cheapest of the four moonshots still",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
   }
  ],
  "louhi": {
-  "trials": 170,
+  "trials": 178,
   "runs": [
    {
     "run": "s0-001",
@@ -2248,19 +2266,26 @@
     "scenarios": 88,
     "keyed": 96,
     "found": 12
+   },
+   {
+    "run": "s31-039",
+    "trials": 8,
+    "scenarios": 176,
+    "keyed": 192,
+    "found": 79
    }
   ],
   "agents": [
    {
     "agent": "smith",
-    "trials": 79,
-    "scenarios": 1726,
-    "keyed": 1820,
-    "found": 288,
-    "false_alarms": 587,
-    "fixable": 1820,
-    "fixed": 181,
-    "brier": 0.25
+    "trials": 87,
+    "scenarios": 1902,
+    "keyed": 2012,
+    "found": 367,
+    "false_alarms": 630,
+    "fixable": 2012,
+    "fixed": 238,
+    "brier": 0.24
    },
    {
     "agent": "foreman",

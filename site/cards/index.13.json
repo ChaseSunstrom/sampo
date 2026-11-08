@@ -1,0 +1,3 @@
+{"cards":[
+{"id":"K-024001","grid":"ui","cell":{"component":"select","platform":"flutter","concern":"forms and validation","stage":"build"},"title":"Build select items from an enum without duplicate values","when":"A select lists options from an enum or list where each option needs a unique, non-null value.","cmds":"grep -rn enum lib\ngrep -rn DropdownButton lib\ntouch tool/check_items.dart\ndart run tool/check_items.dart\nflutter test test/select_items_test.dart","shard":"ui-48"}
+]}
