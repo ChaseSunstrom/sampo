@@ -1622,6 +1622,9 @@ def _changelog_line(p, b, fields):
     at = sub + len("### Everything else\n") if sub >= 0 else head + len("## Unreleased\n")
     at += text[at:at + 1] == "\n"  # past the heading's blank line
     c.write_atomic(path, text[:at] + f"- {line}\n" + text[at:])
+    # T-4007: the task's own edit, so its --commit takes the file even when another lane's merge changed it too (else
+    # _theirs left it out, uncommitted, and the next merge train's fast-forward was refused over it)
+    c.log_event(p, "touched", task=b.id, data={"file": path, "tool": "close"})
 
 
 RECEIPT_NS = "foreman-receipt"  # T-1547: the ssh-keygen -Y namespace a receipt signature is made in

@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- A merge train no longer throws its green work away when the main checkout has uncommitted changes to files it merged: it sets them aside, fast-forwards and puts them back, keeping one that no longer applies as a named stash with the landed files in place; and a close now commits the CHANGELOG line it writes, which it used to leave uncommitted whenever another lane's merge had changed the file (T-4007).
+- The live page's POST /api/act now refuses any request a proxy has marked Forwarded or X-Forwarded-*, and one test attacks each act (drive, checkpoint, pause, note) with no token, a stale token, another Origin, a forwarded Host or port and proxy headers, then runs it for the user (T-3063).
 - The land closes each merged task and ships with a fresh sampo process, so verbs and docs merged during a long land run no longer get its closes refused as unknown commands (T-3970).
 - An urgent task gets a builder lane even while 20 finished lanes wait on a merge, so the fixes that drain a merge backlog are never held behind it; every other task still waits (T-3964).
 - `sampo conductor send NAME "text"` messages one added remote or one live session by its id prefix, not all of them; an unknown name exits 1 listing the known names (T-3932).

@@ -102,6 +102,43 @@ class Train(TrainCase):
         self.assertEqual(self.git("reflog", "-n", "1", "--format=%gs").split()[0], "merge", "one fast-forward")
         self.assertFalse(self.meta(b).get("lane_stop", "").startswith("merged"))
 
+    def test_a_local_change_to_a_merged_file_is_set_aside_and_put_back(self):  # T-4007
+        lines = "".join(f"{i}\n" for i in range(10))
+        with open(os.path.join(self.repo, "log.txt"), "w") as f:
+            f.write(lines)
+        self.git("add", "log.txt")
+        self.git("commit", "-qm", "log")
+        a = self.lane(1, "log.txt", lines.replace("0\n", "zero\n", 1))
+        with open(os.path.join(self.repo, "log.txt"), "w") as f:  # someone's own stash, which the train never touches
+            f.write("theirs\n")
+        self.git("stash", "push", "-q", "-m", "someone else's")
+        with open(os.path.join(self.repo, "log.txt"), "w") as f:  # uncommitted, far from the lane's line
+            f.write(lines.replace("9\n", "nine\n"))
+        r = self.train(a)
+        self.assertIn(a, r.stdout)
+        self.assertEqual(open(os.path.join(self.repo, "log.txt")).read().split()[::9], ["zero", "nine"])
+        self.assertEqual(self.git("diff", "--name-only"), "log.txt", "the local change is back, still uncommitted")
+        self.assertEqual(self.git("stash", "list", "--format=%gs"), "On main: someone else's")
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"))
+
+    def test_a_local_change_the_train_conflicts_with_is_kept_as_a_named_stash(self):  # T-4007
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("one\n")
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "same")
+        a = self.lane(1, "same.txt", "two\n")
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("mine\n")
+        r = self.train(a)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout + r.stderr)
+        self.assertEqual(open(os.path.join(self.repo, "same.txt")).read(), "two\n", "the landed file, no markers")
+        self.assertEqual(self.git("ls-files", "-u"), "")
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+        self.assertIn("sampo train", self.git("stash", "list"))
+        self.assertIn("mine", self.git("stash", "show", "-p"))
+        self.assertIn("kept as stash", r.stdout)
+        self.assertIn("same.txt", r.stdout)
+
     def test_a_lane_conflicting_with_the_base_is_left_out_before_any_gate_run(self):
         """T-3474: git merge-tree names a conflict with the base in milliseconds, not as 'an earlier lane'."""
         a = self.lane(1, "same.txt", "lane\n")

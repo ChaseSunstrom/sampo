@@ -585,7 +585,9 @@ def _run(p, main, ids):
                 x.append_log(f"merged {b.meta.get('lane_branch') or 'foreman/' + b.id} in merge train")
                 x.meta.update(lane_stop=f"merged {c.now()}")
             cli.mutate(p, b.id, done, "lane_merge", {"train": ids_in})
-        ff = _git(main, "merge", "-q", "--ff-only", tip)
+        ff, kept = _fast_forward(main, tip)
+        if kept:
+            notes.append((branch, kept))
         if ff.returncode:
             for b, _ in merged:
                 cli.mutate(p, b.id, lambda x: x.meta.update(lane_stop=f"refused {c.now()}: the train's fast-forward failed"),
@@ -601,13 +603,42 @@ def _run(p, main, ids):
                                           "results": green})
         t3 = time.monotonic()
         mins = {"probe": round((t1 - t0) / 60, 1), "gate": round((t2 - t1) / 60, 1), "land": round((t3 - t2) / 60, 1)}
-        return {"merged": ids_in, "left_out": left, "notes": notes, "gate_runs": runs[0], "probes": probes[0], "tip": tip,
-                "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
+        return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "gate_runs": runs[0],
+                "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
                     w.startswith(SKIPPED) for _, w in notes), "lanes_probed": len(rows)}
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(wt, ignore_errors=True)
         _git(main, "worktree", "prune")
+
+
+def _fast_forward(main, tip):
+    """T-4007: (git merge --ff-only tip in the main checkout, a note or ''). git refuses to overwrite an uncommitted
+    change to a file the train merged, and that threw a green train away; so those files are stashed first and put back
+    after. One that no longer applies stays a named stash with the landed files in place: never conflict markers in the
+    checkout the Ward runs from (the JARVIS box's outage, 2026-11-08)."""
+    st = _git(main, "status", "--porcelain", "-z", "-uall", "--no-renames").stdout
+    merged = set(_git(main, "diff", "--name-only", "-z", "HEAD", tip).stdout.split("\0"))
+    dirty = sorted({e[3:] for e in st.split("\0") if len(e) > 3} & merged)
+    tag = f"sampo train {time.strftime('%Y-%m-%d %H:%M:%S')} ({os.getpid()}): local changes to files it merged"
+    if not dirty or _git(main, "stash", "push", "-q", "-u", "-m", tag, "--", *dirty).returncode:
+        return _git(main, "merge", "-q", "--ff-only", tip), ""  # nothing to set aside, or git's own refusal stands
+    ff = _git(main, "merge", "-q", "--ff-only", tip)
+    # every worktree and session shares the stash stack: ours by its tag, never whatever stash@{0} is by now
+    ours = lambda: next((r for r, _, s in (x.partition(" ") for x in _git(  # noqa: E731
+        main, "stash", "list", "--format=%gd %gs").stdout.splitlines()) if s.endswith(tag)), "")
+    if (ref := ours()) and not _git(main, "stash", "apply", "-q", ref).returncode:
+        _git(main, "stash", "drop", "-q", ours() or ref)
+        return ff, f"set aside and put back local changes to {c.joinmore(dirty, 4, ', ')}"
+    known = set(_git(main, "ls-tree", "-r", "-z", "--name-only", "HEAD", "--", *dirty).stdout.split("\0"))
+    _git(main, "reset", "-q", "--", *dirty)  # the apply's unmerged entries
+    if known & set(dirty):
+        _git(main, "checkout", "HEAD", "--", *sorted(known & set(dirty)))
+    for f in set(dirty) - known:  # gone at the tip: the stash holds its local version
+        with contextlib.suppress(OSError):
+            os.remove(os.path.join(main, f))
+    return ff, (f"local changes to {c.joinmore(dirty, 4, ', ')} no longer apply over the train: kept as stash "
+                f"'{tag}' (git stash list)")
 
 
 def cmd(p, args, main):
@@ -813,6 +844,8 @@ def _land(p, main, batch):
         except c.LockTimeout:
             stopped = "a sampo lane train is running: land again after it"
             break
+        if got.get("kept"):  # T-4007: the main checkout's local changes the fast-forward set aside
+            print(f"sampo lane land: {got['kept']}", file=sys.stderr, flush=True)
         trains += 1
         landed += got["merged"]
         parked += got["left_out"]

@@ -169,6 +169,23 @@ class Land(LandCase):
         self.assertIsNone(c.active_brief_fast(p), "land leaves the main checkout free")
         self.assertNotIn("Ship", out, "no publish grant: nothing ships")
 
+    def test_a_close_commits_the_changelog_line_it_wrote_when_an_earlier_merge_also_changed_it(self):  # T-4007
+        a, b = self.lane(1, "a.txt", when=OLD), self.lane(2, "b.txt", when=OLD)
+        one = os.path.join(self.tmp, "lane1")
+        with open(os.path.join(one, "CHANGELOG.md"), "a") as f:
+            f.write(f"- Lane one lands with one gate run ({a}).\n")  # lane one carries its own line
+        self.git("commit", "-qam", "lane one's line", cwd=one)
+        subprocess.run(["git", "-C", one, "commit", "--amend", "-qC", "HEAD"], check=True,
+                       env=dict(os.environ, GIT_AUTHOR_DATE=OLD, GIT_COMMITTER_DATE=OLD))
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")  # lane two's line comes from its close, into a file lane one's merge changed
+        out = self.land().stdout
+        self.assertEqual(self.brief(b).status, "done", out)
+        self.assertIn(f"- Lane two lands with one gate run ({b}).", self.git("show", "HEAD:CHANGELOG.md"))
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "", "the close left nothing behind "
+                         "to refuse the next train's fast-forward")
+
     def test_a_lane_fixed_after_the_tip_the_land_tested_is_not_parked_whatever_its_commit_date(self):  # T-3994
         b = self.lane(2, "BREAK", when=OLD)
         self.audited(b)
