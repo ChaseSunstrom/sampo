@@ -24,12 +24,8 @@ let DAY = false, skyTouch = () => {}; const readDay = () => (DAY = root.dataset.
 readDay(); mqDay.addEventListener('change', readDay);
 
 /* ---------- theme, copy, phone menu ---------- */
-$('#theme').addEventListener('click', () => {
-  const next = DAY ? 'dark' : 'light'; root.dataset.theme = next; readDay(); skyTouch();
-  try { localStorage.setItem('fm-theme', next); } catch (e) {}
-});
-$$('.menu nav a').forEach(a => a.addEventListener('click', () => (a.closest('details').open = false)));
-document.addEventListener('click', e => { const m = $('.menu[open]'); if (m && !m.contains(e.target)) m.open = false; });
+/* T-3996: site.js owns the switch and the menu on every page; the sky follows whatever sets the theme */
+new MutationObserver(() => { readDay(); skyTouch(); }).observe(root, { attributes: true, attributeFilter: ['data-theme'] });
 
 /* ---------- arrivals ---------- */
 const io = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } }), { rootMargin: '0px 0px -10% 0px' });

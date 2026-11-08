@@ -593,6 +593,11 @@ class RedNames(unittest.TestCase):
                          ["test_late.L", "test_x.X"])
         self.assertEqual(self.red("FAIL: test_a (test_x.X.test_a)" + listed + "\nFAILED (3 classes: …)\n"), [])
 
+    def test_classes_the_deadline_cut_are_named_beside_the_failed_one(self):  # T-3936
+        out = ("FAIL: test_a (test_x.X.test_a)\n\n  failed class: test_x.X\n\nFAILED (1 classes: test_x.X)\n"
+               "not run (deadline): 2\n  not run class: test_late.L\n  not run class: test_later.M\n")
+        self.assertEqual(self.red(out), ["test_late.L", "test_later.M", "test_x.X"])
+
     def test_a_red_line_naming_no_class_gives_none_and_a_split_job_folds_into_its_class(self):
         self.assertEqual(self.red("FAIL: test_a (test_x.X.test_a)\nERROR: oddity (nowhere)\n"), [])
         self.assertEqual(self.red("FAIL: test_a (test_x.X.test_a)\n  failed class: test_x.X.test_a\n"

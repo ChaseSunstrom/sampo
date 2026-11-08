@@ -360,16 +360,20 @@ def _land_over_picks(wt, sha, v):
     print(f"  {v}: main held the branch's commits as cherry-picks; landed the release tree over it with main's data")
 
 
-def _refuse_private(root, picks, tip):
+def private_where(commits, files):
+    """Where _private_hits found a term, by commit and file, never the term (ship's refusal, and lane merge's: T-3999)."""
+    return " and ".join(([f"commit{'s' if len(commits) > 1 else ''} " + c.joinmore([s[:8] for s in commits], 5)]
+                         if commits else []) + ([f"file{'s' if len(files) > 1 else ''} " + c.joinmore(files, 5)] if files else []))
+
+
+def _refuse_private(root, picks, tip, hits=None):
     """T-3529: refuse when the commits picks (messages, added lines against the first parent) or tip's tree hold one of
     the user's private terms (sampo private) or a value from their secrets file, naming the commits (the user's own
-    shas: a scratch tree's re-picks differ) and files, never the term."""
-    commits, files = _private_hits(root, picks, tip)
+    shas: a scratch tree's re-picks differ) and files, never the term. hits: _private_hits' answer, already asked."""
+    commits, files = hits or _private_hits(root, picks, tip)
     if commits or files:
-        where = ([f"commit{'s' if len(commits) > 1 else ''} " + c.joinmore([s[:8] for s in commits], 5)] if commits else []) \
-            + ([f"file{'s' if len(files) > 1 else ''} " + c.joinmore(files, 5)] if files else [])
-        _err(f"a private term (sampo private list) or a secrets-file value is in {' and '.join(where)}; nothing was "
-             "pushed: redact it (sampo sync export for .sampo/; amend or rebase a commit that carries it), then ship again")
+        _err(f"a private term (sampo private list) or a secrets-file value is in {private_where(commits, files)}; nothing "
+             "was pushed: redact it (sampo sync export for .sampo/; amend or rebase a commit that carries it), then ship again")
 
 
 def _private_hits(root, picks, tip, paths=None):
@@ -690,7 +694,21 @@ def ship(p, args):
             if mine and c._git(wt, "diff", "--quiet", "HEAD", picks[-1], "--", *mine, timeout=300, proc=True).returncode:
                 _err(f"the shipped files differ from {picks[-1][:8]}'s: a commit is missing or extra, or main changed "
                      "these files since the branch left it (rebase onto main); nothing was pushed")
-            _refuse_private(root, picks, _git(wt, "rev-parse", "HEAD").strip())  # T-3529: before the suite runs
+            head = _git(wt, "rev-parse", "HEAD").strip()
+            hits = _private_hits(root, picks, head)  # T-3529: before the suite runs
+            sent = picks  # what lands on main, one cherry-pick each
+            if hits[0] and not hits[1]:
+                # T-3999: a later commit took the term out (or only a message held it), so main gets the clean tree as one
+                # commit: no commit pushed holds it, and the branch's history needs no rewrite (every lane based on it would conflict)
+                subjects = "\n".join(f"- {_git(root, 'log', '-1', '--format=%s', s).strip()}" for s in picks if s not in hits[0])
+                head = _git(wt, "commit-tree", f"{head}^{{tree}}", "-p", base, "-m",
+                            f"Sampo: {n} in one commit (a private term in {len(hits[0])} of them, left out)\n\n{subjects}").strip()
+                _git(wt, "reset", "-q", "--hard", head)
+                sent = [head]
+                print(f"{private_where(hits[0], [])} held a private term the tree to push no longer has: main gets {n} in "
+                      "one commit, without it", flush=True)
+                hits = _private_hits(root, sent, head)  # the one commit main gets: its message, its lines, its tree
+            _refuse_private(root, sent, head, hits)
             from sampo import ambient
             c.wait_while(lambda: c.gates_live(p) or ambient.running(p),  # T-1978: never two suites at once
                          "a running fm check or ambient test run", "fm ship", out=sys.stdout)
@@ -761,7 +779,7 @@ def ship(p, args):
                              "nothing was pushed: run fm ship again (it tests the new main)")
                     _git(wt, "checkout", "-q", "--detach", new)
                     again = _tower_files(root, last, new) if last else tower  # T-2963:the tower may have moved again
-                    for sha in picks:
+                    for sha in sent:  # T-3999: the one squashed commit, when the picks were squashed
                         if _pick(root, wt, sha, again).returncode:
                             _err(f"{remote} main moved while testing and re-picking onto it conflicted; nothing was pushed")
                     print(f"{remote} main moved while testing, only in files these commits don't touch: re-picked onto it")

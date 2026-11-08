@@ -505,8 +505,10 @@ def mirror_ignored(root, name=MIRROR):
 
 
 # T-3380: what every task close rewrites, not the code. T-3120: only the mirror's .md files, as worktree_tree skips
-# them; a policy.toml in the mirror is read as repo policy and stays part of the code tree.
-CODE_TREE_SKIP = ("CHANGELOG.md",) + tuple(f":(glob){m}/**/*.md" for m in MIRRORS)
+# them (T-3333: and its .jsonl line logs and .gitattributes); a policy.toml in the mirror is read as repo policy and
+# stays part of the code tree.
+CODE_TREE_SKIP = ("CHANGELOG.md",) + tuple(s for m in MIRRORS for s in (f":(glob){m}/**/*.md", f":(glob){m}/**/*.jsonl",
+                                                                         f"{m}/.gitattributes"))
 
 
 def code_tree(root, tree=None):
@@ -544,8 +546,9 @@ def worktree_tree(root, timeout=None):
                 shutil.copy2(real, env["GIT_INDEX_FILE"])
             # fm sync's mirror (.sampo/**.md) changes with every fm call: not the work being audited. Anything else
             # put in that folder still counts. An ignored mirror needs no exclude, and git add refuses one naming it.
-            spec = [f":(exclude,glob){m}/**/*.md" for m in MIRRORS
-                    if os.path.isdir(os.path.join(root, m)) and not mirror_ignored(root, m)]
+            spec = [s for m in MIRRORS if os.path.isdir(os.path.join(root, m)) and not mirror_ignored(root, m)
+                    for s in (f":(exclude,glob){m}/**/*.md", f":(exclude,glob){m}/**/*.jsonl",
+                              f":(exclude){m}/.gitattributes")]  # T-3333: the line logs too
             subprocess.run(["git", "-C", root, "add", "-A", "--", ".", *spec], env=env,
                            capture_output=True, timeout=left(120), check=True)
             tree = subprocess.run(["git", "-C", root, "write-tree"], env=env, capture_output=True, text=True,
@@ -680,6 +683,19 @@ def host_load():
         return None
 
 
+def _load5():
+    """T-3961: the 5-minute load average, or None when unreadable; in tests FOREMAN_HOST's load5 (a fake host without
+    one has no 5-minute average, so its gates wait as before)."""
+    fake = os.environ.get("FOREMAN_HOST", "")
+    try:
+        if fake:
+            got = dict(kv.split("=", 1) for kv in fake.split(",") if "=" in kv).get("load5")
+            return float(got) if got is not None else None
+        return os.getloadavg()[1]
+    except (OSError, ValueError):
+        return None
+
+
 LOAD_BAR = 1.5  # T-2797: load per CPU past which a lane isn't started and a gate waits (and above which it gets longer)
 SANDBOX_DROP = ("FOREMAN_", "CLAUDE", "GIT_")  # T-2822: what a sandbox's env doesn't inherit unless its builder says so
 
@@ -735,7 +751,8 @@ def load_scaled(timeout):
 def wait_for_load(who, limit=None, out=None):
     """T-2797: wait (at most limit seconds; default FOREMAN_LOAD_WAIT or 60, never over 60: T-3144) while the 1-minute
     load is over LOAD_BAR per CPU, saying why; True when it waited. An unreadable load never waits: the caller goes ahead
-    and its run timeout is scaled by load_scaled. Only a full suite or a merge calls it; targeted runs just scale."""
+    and its run timeout is scaled by load_scaled. Only a full suite or a merge calls it; targeted runs just scale.
+    T-3961: a 5-minute average over the bar too is a sustained load that won't fall within the wait: go ahead at once."""
     if limit is None:
         try:
             limit = max(0.0, float(os.environ.get("FOREMAN_LOAD_WAIT") or 60))
@@ -747,6 +764,10 @@ def wait_for_load(who, limit=None, out=None):
         return False
     out = out or sys.stderr
     load, cpus = host_load()
+    if (l5 := _load5()) is not None and l5 / cpus > LOAD_BAR:  # T-3961: a load that held for 5 minutes won't fall in 60 s
+        print(f"{who}: the load is sustained ({l5:.1f} over 5 minutes, {cpus} CPUs); going ahead, with a longer timeout",
+              file=out, flush=True)
+        return False
     print(f"{who}: waiting for the machine's load ({load:.1f} over {cpus} CPUs) to fall under {LOAD_BAR:g} per CPU "
           f"(at most {limit:g} seconds)", file=out, flush=True)
     end = time.time() + limit

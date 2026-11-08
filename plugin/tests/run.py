@@ -1107,6 +1107,13 @@ def burn(n):
             p.wait()
 
 
+LOAD_BAR = 1.5  # T-3936: as core.LOAD_BAR: load per CPU past which a cap-kill is a busy host's, retried alone
+
+
+def load_per_cpu():
+    return os.getloadavg()[0] / (os.cpu_count() or 1) if hasattr(os, "getloadavg") else 0.0
+
+
 def load_room(n, cpus=None, load=None, spinners=None):
     """T-3441: how many of --load's n busy loops fit under twice the CPU count, given the 1-minute load and the burn
     spinners already running (counted from /proc: the average lags a run started seconds ago)."""
@@ -1263,6 +1270,13 @@ def main():
     with slot, burn(a.load), concurrent.futures.ThreadPoolExecutor(max(1, a.j)) as ex:
         go = lambda c: run_one(c, a.k or a.names, cap, end)  # noqa: E731  # T-1994: the class is in a named module, so -k alone
         results = list(ex.map(go, todo))
+        for i, r in enumerate(results):  # T-3936: a cap-kill on a loaded host runs once more alone, the pool drained
+            if r[1] < 0 and "killed (T-1808)" in r[2] and (lp := load_per_cpu()) > LOAD_BAR:
+                again = go(r[0])
+                if again[1] == 0:
+                    sys.stderr.write(f"run.py: {r[0]} passed alone (load {lp:.1f} per CPU): "
+                                     f"its kill at the cap was the host's\n")
+                    results[i] = again
         bad = [r[0] for r in results if r[1] != 0 and owner(r[0]) in drawn  # a deadline's stop says nothing of it
                and r[2] != NOT_STARTED and "the run's deadline" not in r[2]]
         if bad:  # T-3502: green in the cache at this code, red now: the cache is wrong, so nothing it said holds
@@ -1337,18 +1351,22 @@ def main():
     for cid, s, usual, why in cpu_red:  # T-3757: a red class like any other, so the train's probes narrow to it
         sys.stderr.write(f"\n==== {cid}\nrun.py: CPU over its margin (T-3757): {s:.1f} CPU s, {why}"
                          + (f" ({usual:.1f} s)" if usual is not None else "") + "\n")
-    names = [r[0] for r in failed] + [c for c, *_ in cpu_red if c not in {r[0] for r in failed}]
+    # T-3936: a class the deadline cut is 'not run', never 'failed': the host was slow, nothing regressed
+    stopped = [r for r in failed if r[2] == NOT_STARTED or "the run's deadline" in r[2]]
+    real = [r for r in failed if r not in stopped]
+    names = [r[0] for r in real] + [c for c, *_ in cpu_red if c not in {r[0] for r in real}]
     said = ", ".join(names[:5]) + (f", +{len(names) - 5} more" if len(names) > 5 else "")
     sys.stderr.write("".join(f"\n  failed class: {n}" for n in names) + ("\n" if names else ""))  # T-3397: all of them, one per line
     me = resource.getrusage(resource.RUSAGE_SELF) if resource else None
     spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     sys.stderr.write(f"\nRan {total} tests in {time.time() - t0:.1f}s ({len(todo)} jobs, {a.j} at a time; "
                      f"slowest: {slow}; cpu {spent:.1f} s){cached}\n\n"
-                     f"{f'FAILED ({len(names)} classes: {said})' if names else 'OK' if total or skip else 'NO TESTS RAN'}\n")
+                     f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip else 'NO TESTS RAN'}\n")
+    if stopped:
+        sys.stderr.write(f"not run (deadline): {len(stopped)}\n" + "".join(f"  not run class: {r[0]}\n" for r in stopped))
     # T-2944: stopped at its own deadline with nothing really failed: exit 124 and say so last, so a caller (the
     # sentinel's re-verify) reads a busy machine, not a regression
-    stopped = [r for r in failed if r[2] == NOT_STARTED or "the run's deadline" in r[2]]
-    if stopped and len(stopped) == len(failed) and not cpu_red:
+    if stopped and not names:
         sys.stderr.write("run.py: stopped at its deadline\n")
         return 124
     return 1 if failed or cpu_red or not (total or skip) else 0

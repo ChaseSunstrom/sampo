@@ -98,6 +98,152 @@ def dismiss(p, key):
         c.log_event(p, "repeats_dismissed", data={"key": key[:200]})
 
 
+SEQ_MIN, SEQ_MAX = 3, 6  # calls in a routine
+SEQ_RUNS, SEQ_SESSIONS = 2, 2  # runs of one routine in a session, in this many sessions, before it is a routine
+SEQ_DAYS_MAX = 3650  # --days: a window longer than this is a typo, and a huge one would overflow the date math
+SEQ_DAYS, SEQ_TOP = 7, 20  # the window (sampo repeats --days), and the routines listed
+SEQ_CALL_CAP, SEQ_LEDGER_CAP = 100000, 20000  # ponytail: calls read per run (a GB-a-week transcript folder would not fit)
+_PATH = re.compile(r"(?<![\w.-])(?:~|\.{1,2})?/[\w./@+-]*|\b\w[\w.-]*/[\w./@+-]+")
+_HEXID = re.compile(r"\b[0-9a-f]{7,40}\b")
+_GIT_C = re.compile(r"\bgit\s+-C\s+\S+\s*")  # where git runs, not what it does: `git -C /r status` is `git status`
+_BASIC = re.compile(r"(\s(?:-u|--user)(?:\s+|=))\S+")  # curl -u user:password: c.redact doesn't know this form
+
+
+def _path_tok(m):
+    """A path as a placeholder, a script's basename kept (`scripts/a.py` and `tools/b.py` are different calls)."""
+    base = m.group(0).rsplit("/", 1)[-1]
+    return base if re.fullmatch(r"[\w-]+\.\w+", base) else "PATH"
+
+
+_CHAIN = re.compile(r"\s*(?:&&|\|\||;|\||\n)\s*")  # a chain's links
+_SETUP = re.compile(r"^(?:cd\s|export\s|[A-Za-z_]\w*=\S*(?:\s|$))")  # where the shell is, not what it runs
+_SAMPO = re.compile(r"^(?:python3?\s+\S*/)?(?:sampo|fm)\b")  # `python3 plugin/bin/sampo x` and `fm x` are the sampo verb `x`
+
+
+def _norm_cmd(cmd):
+    """T-3921: a call is the first thing it runs after its setup (`cd x; S=y; uptime | head` is one uptime), shaped as
+    `sampo repeats` shapes a habit, then its paths and hex ids as placeholders (after the shape, so the words it keeps
+    still tell the subcommands apart). shape() keeps a chain whole: right for a habit, too narrow for a routine."""
+    links = [s for s in _CHAIN.split(_GIT_C.sub("git ", cmd).strip()) if s and not _SETUP.match(s)]
+    head = _SAMPO.sub("sampo", links[0]) if links else ""
+    return _PATH.sub(_path_tok, shape(_HEXID.sub("HEX", head))) or "Bash"
+
+
+def _call(name, inp):
+    """(token, example, specific) of one tool call: a Bash command by its shape, any other tool by its name (the file
+    or the pattern it touched is the example's, not the routine's). Secrets are redacted before anything is counted
+    or shown; specific: a Bash command or an MCP tool, the calls that say what was done (not Read, Edit or Grep)."""
+    inp = inp if isinstance(inp, dict) else {}
+    if name == "Bash":
+        raw = _BASIC.sub(r"\1[REDACTED]", c.redact(str(inp.get("command") or "")))
+        return _norm_cmd(raw), c.redact_local(raw), True
+    if name == "Agent":  # a subagent launch: the type says what was run (`sampo lane brief` → Agent fm-builder is a routine)
+        kind = str(inp.get("subagent_type") or "general")
+        return f"Agent {kind}", c.redact_local(c.redact(f"Agent {kind}")), True
+    arg = next((str(inp[k]) for k in ("file_path", "path", "pattern", "url", "description") if inp.get(k)), "")
+    return name, c.redact_local(c.redact(f"{name} {arg}".strip())), name.startswith("mcp__")
+
+
+def _folders(p):
+    """T-3921 review (T-3938): a project's sessions run in its worktrees and lanes, each with its own transcript folder
+    (`<root>--claude-worktrees-…`, `<root>-lanes-…`), so the walk reads the main checkout's family of folders."""
+    from sampo import cost
+    base = cost.transcripts_dir(c.main_worktree(p.root) or p.root)
+    parent, name = os.path.split(base)
+    try:
+        names = sorted(os.listdir(parent))
+    except OSError:
+        return [base]
+    return [os.path.join(parent, n) for n in names
+            if n == name or n.startswith((name + "--claude-worktrees-", name + "-lanes-"))]
+
+
+def _units(p, since):
+    """({unit: (session id, [(token, example, specific)])}, truncated): each transcript file in the project's folder
+    (a main session, or one subagent's run in it), newest first, plus the event log's evidence for the sessions no
+    transcript holds (T-3921). truncated: the reads stopped at a cap, so older runs are not counted."""
+    from sampo import cost  # the transcript walk fm cost uses: subagents included, files older than the window skipped
+    units, n, truncated = {}, 0, False
+    for path, e in cost._entries(_folders(p), since, need='"tool_use"', newest=True):
+        content = (e.get("message") or {}).get("content") if isinstance(e.get("message"), dict) else None
+        sid = str(e.get("sessionId") or "")
+        for x in content if isinstance(content, list) and sid else []:
+            if isinstance(x, dict) and x.get("type") == "tool_use":
+                units.setdefault(("transcript", path), (sid, []))[1].append(_call(str(x.get("name") or "?"), x.get("input")))
+                n += 1
+        if n > SEQ_CALL_CAP:
+            truncated = True
+            break
+    have = {sid for sid, _ in units.values()}
+    ledger = c.ledger_tail(p, SEQ_LEDGER_CAP, kinds=["evidence"])
+    truncated = truncated or len(ledger) >= SEQ_LEDGER_CAP
+    for e in ledger:
+        data, sid = e.get("data"), str(e.get("session_id") or "")
+        cmd = data.get("cmd") if isinstance(data, dict) else None
+        if sid and sid not in have and isinstance(cmd, str) and str(e.get("ts") or "") >= since:
+            units.setdefault(("ledger", sid), (sid, []))[1].append(_call("Bash", {"command": cmd}))
+    return units, truncated
+
+
+def _inside(g, h):
+    n = len(g)
+    return any(h[i:i + n] == g for i in range(len(h) - n + 1))
+
+
+def sequences(p, days=SEQ_DAYS):
+    """T-3921: the routines the sessions run by hand, a run of SEQ_MIN-SEQ_MAX calls that repeats: {"sequences":
+    [{calls, count, sessions, saved, example}], "days"}, ranked by calls saved (count x (calls - 1)). A routine that
+    is part of a longer one that runs as often is that routine's, so it is not listed twice."""
+    since = c.iso(c.clock().timestamp() - days * 86400)
+    units, truncated = _units(p, since)
+    runs = {}
+    for unit, (_, calls) in units.items():  # a unit is one run: a main session's file, a subagent's file, a ledger session
+        toks = [t for t, _, _ in calls]
+        for n in range(SEQ_MIN, min(SEQ_MAX, len(toks)) + 1):
+            for i in range(len(toks) - n + 1):
+                g = tuple(toks[i:i + n])
+                if len(set(g)) < 2:  # one call again and again is a loop, not a routine
+                    continue
+                if len({t for t, _, s in calls[i:i + n] if s}) < 2:  # Read -> Edit -> Read is every session's noise
+                    continue
+                r = runs.get(g)
+                if r is None:
+                    r = runs[g] = {"per": {}, "example": [x for _, x, _ in calls[i:i + n]]}
+                r["per"][unit] = r["per"].get(unit, 0) + 1
+    cand = []
+    for g, r in runs.items():  # SEQ_RUNS+ runs in SEQ_SESSIONS+ sessions: a routine each session runs once still repeats
+        if sum(r["per"].values()) >= SEQ_RUNS and len(r["per"]) >= SEQ_SESSIONS:
+            cand.append((g, sum(r["per"].values()), len(r["per"]), r["example"]))
+    cand.sort(key=lambda x: (-x[1] * (len(x[0]) - 1), -x[1], x[0]))
+    kept = []
+    for g, count, nses, ex in cand:  # a longer routine that runs as often comes first (more calls saved), so it covers its parts
+        if any(h[1] == count and _inside(g, h[0]) for h in kept):
+            continue
+        kept.append((g, count, nses, ex))
+        if len(kept) == SEQ_TOP:
+            break
+    return {"sequences": [{"calls": [c.plain(c.redact_local(t)) for t in g], "count": count, "sessions": nses,
+                           "saved": count * (len(g) - 1),
+                           "example": [c.plain(c.redact_local(c.redact(x.replace("\n", " ")))) for x in ex]}
+                          for g, count, nses, ex in kept], "days": days, "truncated": truncated}
+
+
+def sequence_lines(r):
+    if not r["sequences"]:
+        lines = [f"No routine repeats in {SEQ_SESSIONS}+ sessions yet ({SEQ_MIN}-{SEQ_MAX} calls, {SEQ_RUNS}+ runs "
+                 f"each, the last {r['days']:g} day(s))."]
+    else:
+        lines = [f"Routines ({SEQ_MIN}-{SEQ_MAX} calls, {SEQ_RUNS}+ runs in {SEQ_SESSIONS}+ sessions, the last "
+                 f"{r['days']:g} day(s); by calls saved):"]
+    for x in r["sequences"]:
+        lines.append(f"  {x['count']}× in {x['sessions']} sessions  saves {x['saved']} calls  "
+                     + " → ".join(c.fit(t, 60) for t in x["calls"]))
+        lines.append("      e.g. " + " → ".join(c.fit(e, 60) for e in x["example"]))
+    if r["truncated"]:
+        lines.append("(The read stopped at its cap: the newest transcripts only; older runs are not counted.)")
+    return "\n".join(lines)
+
+
 def open_candidates(report):
     return sum(1 for x in report["commands"] if not x["covered"]) + len(report["steps"])
 
@@ -195,6 +341,8 @@ def forge(p):
 def cmd_repeats(args):
     from sampo import cli
     p = cli.resolve(args)
+    if args.days is not None and not getattr(args, "sequences", False):
+        raise cli.UsageError("fm repeats --days goes with --sequences (the window of its routines)")
     if getattr(args, "forge", False):
         made = forge(p)
         return cli.out(args, {"drafts": made}, "\n".join(f"Drafted {d['path']} (task {d['task']})" for d in made)
@@ -204,6 +352,12 @@ def cmd_repeats(args):
         return cli.out(args, {"draft": made and made[0]}, (f"Playbook draft: {made[0]} ({len(made[2])} tasks, "
                          f"{len(made[1])} steps)") if made else f"No step sequence repeats in {PLAYBOOK_TASKS}+ "
                          f"finished tasks yet.")
+    if getattr(args, "sequences", False):  # T-3921: routines of 3+ calls, from the transcripts and the event log
+        days = SEQ_DAYS if args.days is None else args.days
+        if not 0 < days <= SEQ_DAYS_MAX:  # NaN and inf fail this too
+            raise cli.UsageError(f"fm repeats --days needs a number of days above 0 and at most {SEQ_DAYS_MAX}")
+        r = sequences(p, days)
+        return cli.out(args, r, sequence_lines(r))
     if args.action == "dismiss":
         if not args.words:
             raise cli.UsageError("fm repeats dismiss needs the shape or step, as fm repeats prints it")

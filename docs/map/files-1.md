@@ -33,6 +33,7 @@ Full entries for [MASTER.md](../../MASTER.md) section 3 (File map); MASTER.md ke
 | `plugin/settings.json` | plugin default `subagentStatusLine` | Claude | by Claude Code | only `agent`/`subagentStatusLine` honored |
 | `plugin/bin/fm` | CLI entry (on the Bash tool PATH; protected) | Claude | on call | — |
 | `plugin/lib/` | the Python modules, one line each under "plugin/lib modules" below the table (T-1713) |
+| `plugin/macros/` | routines (T-3922): one `NAME.json` each (`about`, 1–3 `steps` of sampo verbs), run by `sampo do NAME` (`sampo.macros`); `--list` names them | Claude | on call | — |
 | `plugin/cards/` | calling cards (T-3160): one folder per card (card.json, gen.py or templates, check, tests), run by `sampo card` (`sampo.callcards`); `SAMPO_CALLCARDS` adds absolute folders outside the repo | Claude | on call | — |
 | `plugin/hooks/hooks.json` | one handler per event (13 events), exec form (protected) | Claude | by Claude Code | p95 ≤ 150 ms |
 | `plugin/defaults.json` | every setting's default as the last release shipped it: sampo release names each one it changes in the notes and rewrites it; sampo settings changed compares with it (T-1549) | sampo release | read at release and by sampo settings changed | — |

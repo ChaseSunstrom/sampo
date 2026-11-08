@@ -770,6 +770,28 @@ def cmd_conductor(args):
             refresh(name)
         return 0
     sessions = live()
+    if args.action == "send":  # T-3932: one remote the user added, or one live session by its id prefix
+        if len(args.words) < 2:
+            raise cli.UsageError('fm conductor send <session|remote> "<text>"')
+        name, text = args.words[0], " ".join(args.words[1:])
+        r = remotes().get(name)
+        if r:
+            try:
+                ok = not _ssh(r, f"{r.get('fm') or REMOTE_FM} bus send all {shlex.quote(text)}").returncode
+            except (OSError, subprocess.SubprocessError):
+                ok = False
+            if not ok:
+                raise cli.UsageError(f"{name} did not take the message (ssh or its fm failed)")
+            return cli.out(args, {"remote": name}, f"Sent to {name}.")
+        ids = [s["session_id"] for s in sessions]
+        hits = [i for i in ids if _sid(name) and i.startswith(_sid(name))]
+        if len(hits) == 1:
+            msg = send(hits[0], text, "note", cli.session())
+            return cli.out(args, {"session": msg["to"]}, f"Sent to session {msg['to'][:8]}.")
+        if len(hits) > 1:
+            raise cli.UsageError(f"{name} matches {len(hits)} live sessions: give more of the id")
+        known = [f"remote {k}" for k in remotes()] + [f"session {i}" for i in ids]
+        raise cli.UsageError(f"No remote or live session named {name}. Known: {', '.join(known) or 'none'}")
     if args.action == "steer":
         if not args.words:
             raise cli.UsageError("fm conductor steer \"<text>\" [--wake]")

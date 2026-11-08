@@ -5,12 +5,14 @@ import collections
 import concurrent.futures
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 from sampo import budget
@@ -131,6 +133,110 @@ def tower_lock(p, name):
         except OSError:
             raise Busy(name) from None
         yield
+
+
+def _claims(p):
+    """T-3333: the fleet's claims for this project, or None without FOREMAN_CLAIMS_REMOTE (an origin alone isn't
+    enough: a read-only clone would fence every tower): then Kalevala is single-machine, as before."""
+    from sampo import claims
+    if not os.environ.get("FOREMAN_CLAIMS_REMOTE"):
+        return None
+    return claims.Claims(c.main_view(p).root)
+
+
+def _held_path(p):
+    return os.path.join(home(p), "claims-held.json")
+
+
+def _lease_cache(p):
+    """{tower: epoch its last claim here ran to}: what an offline machine may still step on."""
+    try:
+        with open(_held_path(p), encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _remember(p, name, until):
+    os.makedirs(home(p), exist_ok=True)
+    with c.lock(home(p)):  # the renewal thread and the round both write it
+        h = _lease_cache(p)
+        if until is None:
+            h.pop(name, None)
+        else:
+            h[name] = until
+        c.write_atomic(_held_path(p), json.dumps(h, sort_keys=True))
+
+
+RENEW_TICK = 600  # seconds between renewals of the claims a running job holds (the TTL is 30 min)
+
+
+@contextlib.contextmanager
+def _renewing(p, cl, names):
+    """While jobs run, keep their tower claims alive; when they end, release them (a genesis job can outlast the TTL)."""
+    from sampo import claims
+    stop = threading.Event()
+
+    def beat():
+        while not stop.wait(RENEW_TICK):
+            try:
+                r = cl.renew(force=True)
+            except Exception:  # a failed renewal must not kill the job; the TTL then decides
+                continue
+            for key in r.get("keys", []):
+                _remember(p, key.split(":", 1)[-1], time.time() + claims.TTL)
+    t = threading.Thread(target=beat, daemon=True)
+    t.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        t.join()
+        for n in names:
+            cl.release(f"tower:{n}")
+            _remember(p, n, None)
+
+
+def _theirs(p, cl, rows):
+    """Only the holder steps and watches a tower (T-3333): the rows this machine may work on, and the fenced rest
+    [{tower, status held|offline, holder?}]. Offline: only a tower whose claim this machine holds and hasn't seen
+    expire."""
+    now = time.time()
+    lst = cl.list(now)
+    held = _lease_cache(p)
+    keep, fenced = [], []
+    for r in rows:
+        n = r["name"]
+        if lst is None:
+            if held.get(n, 0) > now:
+                keep.append(r)
+            else:
+                fenced.append({"tower": n, "status": "offline"})
+            continue
+        e = next((x for x in lst if x["key"] == f"tower:{n}" and not x["expired"]), None)
+        if e and e["machine"] != cl.me["id"]:
+            fenced.append({"tower": n, "status": "held", "holder": e["machine"], "holder_name": e.get("name")})
+            _remember(p, n, None)
+        else:
+            keep.append(r)
+    return keep, fenced
+
+
+def _take(p, cl, n):
+    """Claim a tower before its job: None when this machine holds it, else the fenced row."""
+    from sampo import claims
+    r = cl.take(f"tower:{n}")
+    if r["result"] == "taken":
+        _remember(p, n, time.time() + claims.TTL)
+        return None
+    if r["result"] == "held":
+        by = r.get("by") or {}
+        _remember(p, n, None)
+        return {"tower": n, "status": "held", "holder": by.get("machine"), "holder_name": by.get("name")}
+    if r["result"] == "offline" and _lease_cache(p).get(n, 0) > time.time():
+        return None
+    return {"tower": n, "status": "offline" if r["result"] == "offline" else r["result"]}
 
 
 DECIDE_WAIT = 30.0  # seconds a step waits for another step's decision on one tower before it skips that tower as busy
@@ -257,9 +363,23 @@ def step(p, k=None, runner=None, dry_run=False):
     env = dict(os.environ, FOREMAN_NO_BACKGROUND="1", FOREMAN_TOWER_READONLY_EXAM="1", FOREMAN_SPEND_AS=FEATURE)
     allrows = watch(p)["towers"]
     rows = [r for r in allrows if not r.get("error")]  # an unreadable tower sits out and is listed as skipped
+    cl, fenced, later = (None if dry_run else _claims(p)), [], []
+    if cl:  # T-3333: only a tower's holder watches and steps it; a machine claims at most K towers a round
+        rows, fenced = _theirs(p, cl, rows)
+        mine = []
+        for n in order(rows):
+            if len(mine) >= (k or len(rows)):
+                later.append(n)  # left for the fleet's other machines
+            elif f := _take(p, cl, n):  # lost the claim race: another machine steps it
+                fenced.append(f)
+            else:
+                mine.append(n)
+        rows = [r for r in rows if r["name"] in mine]
     byrow = {r["name"]: r for r in rows}
     sat = {} if dry_run else _decide(p, rows)  # Väinämöinen's acts before any job; a dry run acts on nothing
     with contextlib.ExitStack() as held:  # a round holds the locks of the towers it charges until their jobs end
+        if cl:  # the claims last as long as the round: renewed while jobs run, released at its end
+            held.enter_context(_renewing(p, cl, mine))
         with c.lock(p.dir):  # stages, plan and charges under one lock: no stale stage, no two steps on one headroom
             names = order(rows)
             stages = {n: _stage(p, n) for n in names}
@@ -298,7 +418,7 @@ def step(p, k=None, runner=None, dry_run=False):
         finally:  # each job's own spend is charged under FEATURE by its child; the estimate given back leaves the real cost
             for n in charged:
                 budget.record(FEATURE, usd=-est, runs=0, project=p.slug, detail=f"settle {n}")
-    done += skipped
+    done += skipped + [dict(f, stage=None, rc=None, at=at) for f in fenced]
     with c.lock(p.dir):
         m = load(p)
         m["rounds"] = m.get("rounds", 0) + 1
@@ -306,7 +426,7 @@ def step(p, k=None, runner=None, dry_run=False):
         _save(p, m)
     _all_failed(p, done)
     return {"dry_run": False, "k": width, "est": est, "share": round(share(), 4), "spent": spent_today(),
-            "results": done, "queued": queued, "rounds": m["rounds"]}
+            "results": done, "queued": queued + later, "rounds": m["rounds"]}
 
 
 def _all_failed(p, done):
@@ -568,15 +688,38 @@ PATHS = re.compile(r"[\w.-]+(?:/[\w.-]+)+")  # ponytail: a slash-joined word is 
 
 
 def _act(p, act, name, reason, undo, **extra):
-    """One act in the ledger (T-3082): what Väinämöinen did to a tower, why, and the line that undoes it."""
+    """One act in the ledger (T-3082): what Väinämöinen did to a tower, why, and the line that undoes it. T-3333: also
+    one line in acts.jsonl, which travels with fm sync and merges by line; its id is a hash of the line, so the same
+    act arriving twice is one act."""
     data = {"act": act, "tower": name, "reason": reason, "undo": undo, **extra}
+    at = c.now()
+    data["id"] = hashlib.sha256(json.dumps([data, at], sort_keys=True).encode()).hexdigest()[:16]
     c.log_event(p, "kalevala_act", data=data)
+    os.makedirs(home(p), exist_ok=True)
+    with open(os.path.join(home(p), "acts.jsonl"), "a", encoding="utf-8") as f:
+        f.write(json.dumps(dict(c.redact_obj(data), at=at), sort_keys=True) + "\n")
     return data
 
 
 def acts(p):
-    """Every act logged, oldest first: each with its kind, tower, reason, undo line and time."""
-    return [dict(e.get("data") or {}, at=e.get("ts")) for e in c.ledger_events(p, ["kalevala_act"])]
+    """Every act logged here or arrived from another machine, oldest first: each with its kind, tower, reason, undo
+    line and time; one per id."""
+    out = [dict(e.get("data") or {}, at=e.get("ts")) for e in c.ledger_events(p, ["kalevala_act"])]
+    seen = {a.get("id") for a in out if a.get("id")}
+    try:
+        with open(os.path.join(home(p), "acts.jsonl"), encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError:
+        lines = []
+    for raw in lines:
+        try:
+            a = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(a, dict) and a.get("id") and a["id"] not in seen:
+            seen.add(a["id"])
+            out.append(a)
+    return sorted(out, key=lambda a: a.get("at") or "")  # stable: same-second acts keep their order
 
 
 def _tower_set(p, name, **kv):

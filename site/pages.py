@@ -4,7 +4,7 @@ import re
 
 import os
 
-from build import TYPES, columns, dials, esc, hbars, line, pairs, table, tiles, verdicts
+from build import GROUPS, TYPES, columns, dials, esc, hbars, line, pairs, table, tiles, verdicts
 
 LIBRARY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugin", "skills", "playbooks",
                        "references")
@@ -626,6 +626,15 @@ FLOW_CODE = """<div class="flow"><svg viewBox="0 0 760 210" role="img" aria-labe
 <path class="arrow" d="M425 84V122"/><path class="arrow" d="M500 158H526"/>
 </svg></div>"""
 
+
+def themed(name, alt, w, h, ext="svg"):
+    """T-3996: one of the README's pictures, as drawn for each theme (build.py copies docs/assets into assets/docs); the
+    page's own light or dark choice shows one."""
+    src = "../assets/docs/" + name
+    return "".join(f'<img class="dia-{t}" src="{src}-{t}.{ext}" width="{w}" height="{h}" alt="{esc(alt)}" loading="lazy">'
+                   for t in ("light", "dark"))
+
+
 PAGES = [
     {"slug": "planning", "nav": "Planning", "title": "Every request becomes a plan first",
      "desc": "Intake turns a request into a brief with a type, a size, criteria and the commands that prove them.",
@@ -784,6 +793,29 @@ PAGES = [
           "the user steer it rests on and the check that proves a standing rule still holds. A later row that "
           "reverses or revisits it is linked here, so a choice that didn't last shows as one.</p>"),
          ("chart", _decisions)]},
+    {"slug": "kalevala", "nav": "Kalevala", "title": "It improves itself, one tower per aspect",  # T-3996
+     "desc": "One Rune tower per aspect climbs generation after generation; a rewrite stays only if it beats its parent "
+             "on Louhi's exam.",
+     "lede": "Sampo is built by Sampo, and so is the way it builds. Kalevala runs one Rune tower per aspect, each "
+             "rewriting its own seed, missions and lenses, and what one tower learns every tower reads.",
+     "blocks": [
+         ("raw", '<figure class="dia forged">' + themed("kalevala", "Kalevala: a tower per aspect, each from a sealed "
+                 "gen-0, sharing moons, lessons and steers; each generation seeds up to eight missions, builds them as "
+                 "tasks in lanes, is scored on Louhi's exam and kept only if it beats its parent", 1098, 780)
+          + "<figcaption><b>A generation</b><span>Seed, missions, lanes, exam, select: kept only if it closes more "
+          "scenarios than its parent.</span></figcaption></figure>"),
+         ("text", "A tower", "<ul><li><strong>gen-0 is yours</strong>: your goals, MUST and NEVER lines, sealed by "
+          "its hash; every later seed is checked against it word for word.</li><li><strong>Each generation</strong> "
+          "plans up to eight Missions ranked by expected value, builds them as tasks in lanes, then a cold reviewer on "
+          "a stronger model reads only its diff, exam lines and outcomes.</li><li><strong>Kept or reverted</strong>: a "
+          "rewrite stays only if it closes more exam scenarios than its parent; three reverts in a row stop the tower "
+          "and hand it back to you.</li></ul>"),
+         ("text", "Many towers", "<p>Kalevala runs a tower for each area of the coverage map with a gap, plus problem "
+          "solving, memory and efficiency. Moons, exam scenarios and your steers are shared, so a gain in one tower "
+          "reaches every other. Each round first restarts a tower that stopped climbing and pauses one that drifted."
+          "</p>"),
+         ("term", "$ sampo kalevala status\n$ sampo kalevala step\n$ sampo rune step\n$ sampo kalevala watch"),
+         ("chart", _louhi)]},
     {"slug": "louhi", "nav": "Louhi", "title": "Louhi sets the trials, and keeps the score",  # T-2767
      "desc": "Every exam run against the scenarios' keyed faults: what each arm found, what it raised in error, how well "
              "its confidence matched, and the harness's own record by generation.",
@@ -874,7 +906,14 @@ PAGES = [
           "contract: the base commit, test first, the files it may change, the defects reviewers keep finding.</li>"
           "<li><strong>Review.</strong> An independent reviewer reads the branch; findings go back to the builder.</li>"
           "<li><strong>Merge.</strong> <code>sampo lane merge</code> runs the task's criteria first and refuses a red "
-          "branch.</li><li><strong>Resume.</strong> A stopped session picks its lanes back up.</li></ul>")]},
+          "branch.</li><li><strong>Land.</strong> <code>sampo lane land</code> takes up to eight finished lanes as one merge train: "
+          "the tests they reach run once on the merged tree, a red run names its culprit, the rest land and each task "
+          "closes through <code>sampo task finish</code>'s own checks. A lane fixed after a red run trains again.</li>"
+          "<li><strong>Resume.</strong> A stopped session picks its lanes back up.</li></ul>"),
+         ("raw", '<figure class="dia forged">' + themed("merge-train", "The merge train: finished lanes queue, their merged "
+                 "tree runs the tests they reach once, a red run is bisected to its culprit, and the rest land on main", 864, 773)
+          + "<figcaption><b>The merge train</b><span>One gate run for up to eight lanes; a red one is bisected and "
+          "parked with its reason.</span></figcaption></figure>")]},
     {"slug": "drive", "nav": "Drive and headless", "title": "It keeps going until the queue is done",
      "desc": "Drive mode, full auto, sampo run and sampo serve keep work moving without you watching.",
      "lede": "Drive mode works through the whole queue. In full auto the agent decides, records why, and saves what only "
@@ -899,17 +938,34 @@ PAGES = [
           "that imports a framework gets that framework's card too. <code>sampo lib source add</code> indexes another "
           "skills repo read-only.</p><p>These are the stack library's cards. The small cards Sampo writes as it works, "
           "general and UI alike, have <a href=\"../cards.html\">their own searchable page</a>.</p>")]},
-    {"slug": "panel", "nav": "The panel", "title": "Sampo, live inside Claude Code",
-     "desc": "The Sampo pane draws the task, the stage rail, agents, activity and charts in the session itself.",
-     "lede": "The Sampo pane shows Sampo's state as you work: a card above the prompt, a docked panel beside the "
-             "chat, a status line under it, and a chat that reads as a tree.",
+    {"slug": "panel", "nav": "Where you see it", "title": "Sampo, live where you work",  # T-3996: the Board pane
+     "desc": "The sampo-ui mod in Claude Code, sampo smith in a terminal, the live Board, Sampo Desktop and sampo mcp: "
+             "one state, every view.",
+     "lede": "Every view reads the same <code>sampo … --json</code>, so the task, the lanes, the merge train and the "
+             "checks look the same in Claude Code, a terminal, a browser or the desktop app.",
      "blocks": [
-         ("raw", '<img class="shot" src="../assets/poster.jpg" alt="Claude Code with the Sampo panel: the task, '
-                 'its stage rail and steps, activity lanes, agents, history and today\'s charts" loading="lazy">'),
-         ("text", "What it shows", "<ul><li><strong>The task</strong>, its stage from plan to close, and the step bar."
-          "</li><li><strong>Activity lanes</strong> for edits, runs, reads, agents, skills and web calls.</li><li>"
-          "<strong>Agents</strong> as a graph with their own recent calls and time bars.</li><li><strong>Today</strong>"
-          ": context, spend, hook time and gates as small charts.</li></ul>"),
+         ("raw", '<figure class="dia forged">' + themed("board", "The live Board, numbered panels: builder lanes and the "
+                 "files they hold, the merge train at its gate, CPU by kind of work against a 10% goal, the task in focus, "
+                 "models, the library, state and tests", 1440, 1297, "png")
+          + "<figcaption><b>The Board</b><span>Ten numbered panels, each a picture of one mechanism, drawn from Sampo's "
+          "own state.</span></figcaption></figure>"),
+         ("text", "In Claude Code", "<ul><li><strong>The band</strong> above the prompt: the task, its stage rail and "
+          "step bar, and a live tree of every call with its time.</li><li><strong>The Board pane</strong> beside the "
+          "chat (<code>/fm</code>): the Board's panels in a grid that fits the dock, the ones that matter now first."
+          "</li><li><strong>Compact rows</strong> in the chat: a mark, a bold label and the one line that matters."
+          "</li><li><strong>The status line</strong> under the prompt: model, context, spend and the task.</li></ul>"),
+         ("raw", '<img class="shot" src="../assets/docs/claude-code.png" width="1546" height="890" loading="lazy" '
+                 'alt="Claude Code with the sampo-ui mod, mid-task: the chat as a tree of compact rows, the band with the '
+                 'task, its stage rail and step bar, and the status line">'),
+         ("text", "In a terminal", "<p><code>sampo smith</code> runs the same loop on any model and draws it: the "
+          "stations from plan to close, each check, what changed, and the time and tokens of every call.</p>"),
+         ("raw", '<figure class="dia">' + themed("smith-tui", "sampo smith after a closed run: the plan and its steps "
+                 "checked off, the activity log, three passing checks, the changed files and a time chart per step",
+                 1040, 606) + "</figure>"),
+         ("text", "Everywhere else", "<ul><li><strong>Sampo Desktop</strong>: every project and session in one "
+          "window.</li><li><strong><code>sampo mcp</code></strong>: the project, read-only, for any MCP client.</li>"
+          "<li><strong>Other agents</strong>: <code>sampo agents install codex|gemini|opencode</code> gives Codex, "
+          "Gemini CLI and opencode the same Ward and context.</li></ul>"),
          ("chart", lambda s: _latency(s, {"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse"}))]},
     {"slug": "speed", "nav": "Speed", "title": "Light enough to forget it's there",
      "desc": "Only the Ward runs synchronously; everything else records asynchronously or once per turn.",
@@ -1202,6 +1258,12 @@ PAGES = [
           "home.</li><li><strong>Your yes to push</strong>, spent by that one push.</li><li><strong>Resumable.</strong> "
           "A stop at any step continues from there with <code>--resume</code>.</li></ul>")]},
 ]
+
+# T-3996: the features index and every page's side list draw these groups, in this order; each page is in one
+_BY = {p["slug"]: p for p in PAGES}
+PAGES = [_BY[slug] for _, _, slugs in GROUPS for slug in slugs]  # the Next links follow the groups
+if len(PAGES) != len(_BY):
+    raise SystemExit(f"site/pages.py: pages in no group: {sorted(set(_BY) - {p['slug'] for p in PAGES})}")
 
 
 def cards_page(index_url):

@@ -784,6 +784,39 @@ class Act(ForemanTestCase):  # T-3026: POST /api/act, with the same-uid peer the
             self.assertEqual(self.act(ok, Origin=f"http://localhost:{self.port}")[0], 200)
             self.assertEqual(self.act(ok, **{"Content-Type": "application/json; charset=utf-8"})[0], 200)
 
+    def test_each_act_refuses_an_attacker_and_runs_for_the_user(self):  # T-3063: one attack list, every act
+        slug = self.p.slug
+        acts = [{"action": "drive_on", "project": slug}, {"action": "drive_off", "project": slug},
+                {"action": "checkpoint", "project": slug}, {"action": "pause_now", "confirmed": True},
+                {"action": "pause_off"}, {"action": "note", "session": "abcdef01", "text": "hi"}]
+        port, stale = self.port, self.nonce
+        self.server.session = "rotated-secret"  # the secret the page's token came from is gone: that token is stale
+        fresh = self.page_nonce()
+        self.assertNotEqual(fresh, stale)
+        attacks = {"no token": {"X-Sampo-Nonce": None}, "a stale token": {"X-Sampo-Nonce": stale},
+                   "another site's Origin": {"Origin": "http://evil.example"},
+                   "a forwarded Host with its own Origin": {"Host": "evil.example", "Origin": "http://evil.example"},
+                   "a forwarded Host, right Origin": {"Host": "evil.example"},
+                   "a forwarded port": {"Host": f"localhost:{port + 1}", "Origin": f"http://localhost:{port + 1}"},
+                   "a forwarded port with no port": {"Host": "localhost", "Origin": "http://localhost"},
+                   "a proxy's X-Forwarded-For": {"X-Forwarded-For": "203.0.113.9"},
+                   "a proxy's X-Forwarded-Host": {"X-Forwarded-Host": "evil.example"},
+                   "a proxy's Forwarded": {"Forwarded": "for=203.0.113.9"}}
+        live_ = [{"session_id": "abcdef0123456789", "project": slug}]
+        with mock.patch.object(live, "_run", return_value=0) as run, mock.patch("sampo.bus.send") as send, \
+                mock.patch("sampo.bus.live", return_value=live_):
+            for body in acts:
+                for why, over in attacks.items():
+                    over = {"X-Sampo-Nonce": fresh, **over}  # the attack's one wrong header; the rest is the user's request
+                    self.assertEqual(self.act(body, **over)[0], 403, f"{body['action']}: {why}")
+            run.assert_not_called()
+            send.assert_not_called()
+            self.assertEqual(self.rows(), [])
+            for body in acts:
+                self.assertEqual(self.act(body, **{"X-Sampo-Nonce": fresh})[0], 200, body["action"])
+        self.assertEqual(run.call_count, 5)
+        send.assert_called_once()
+
     def test_page_loads_cannot_evict_the_token(self):  # a cross-site page can GET / as often as it likes
         with mock.patch.object(live, "_run", return_value=0):
             for _ in range(100):

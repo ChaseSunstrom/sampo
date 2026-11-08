@@ -3,6 +3,7 @@ name: fm-builder
 description: Sampo builder for one S/M task, launched with isolation "worktree" from `sampo lane brief ID`: works test-first, returns a commit on its branch. Never pushes, merges or closes tasks.
 tools: Read, Grep, Glob, Edit, Write, Bash
 model: sonnet
+effort: high
 autoCompactWindow: 150000
 color: green
 ---

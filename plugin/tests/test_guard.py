@@ -1511,6 +1511,17 @@ class ClaudeEnv(GuardCase):
         ], self.bash)
 
 
+class WorktreeUnderSystemFolder(unittest.TestCase):
+    """T-3890 (JARVIS T-0553): a lane worktree's .git is a file, so a checkout under /opt read as the system's folder."""
+    def test_a_worktree_under_opt_is_a_checkout(self):
+        from types import SimpleNamespace
+        ctx = SimpleNamespace(home="/home/nobody", project_root="/opt/shop-api/.claude/worktrees/agent-x", scratch=())
+        with mock.patch.object(g.os.path, "isdir", lambda p: False), \
+                mock.patch.object(g.os.path, "exists", lambda p: p == ctx.project_root + "/.git"):
+            self.assertFalse(g._system_path(ctx.project_root + "/app.py", ctx))
+            self.assertTrue(g._system_path("/opt/other/x", ctx))
+
+
 class AwkAndSystemWrites(GuardCase):
     """T-1575: awk running a command from its program, and writes into system folders."""
     def test_awk_commands_are_read_and_system_paths_refuse(self):

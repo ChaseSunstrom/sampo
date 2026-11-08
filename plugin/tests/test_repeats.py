@@ -1,10 +1,13 @@
 """fm repeats: procedures and commands a project keeps repeating, and what to turn them into (T-0023)."""
+import datetime
 import json
 import os
+from unittest import mock
 
 from helpers import ForemanTestCase, git_repo
 
 from sampo import core as c
+from sampo import repeats
 
 
 class Repeats(ForemanTestCase):
@@ -147,3 +150,134 @@ class Repeats(ForemanTestCase):
         for d in self.fm_json("repeats", "--forge")["drafts"]:
             self.assertNotIn("npm run", open(d["path"]).read())
             self.assertNotIn("Write a failing test", open(d["path"]).read())
+
+
+class Sequences(ForemanTestCase):  # T-3921: multi-call routines, from the transcripts (main and subagents) and the event log
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.cfg = os.path.join(self.tmp, "claude")
+        self.folder = os.path.join(self.cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        self.now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        self.env = {"CLAUDE_CONFIG_DIR": self.cfg}
+
+    def write(self, rel, sid, calls):  # one assistant line per tool call, as Claude Code writes them
+        path = os.path.join(self.folder, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lines = [{"type": "assistant", "timestamp": self.now, "sessionId": sid,
+                  "message": {"content": [{"type": "tool_use", "id": f"{sid}-{i}", "name": n, "input": inp}]}}
+                 for i, (n, inp) in enumerate(calls)]
+        with open(path, "w") as f:
+            f.write("\n".join(json.dumps(x) for x in lines) + "\n")
+
+    def routine(self, k):  # the same four calls, each with its own ids, paths and quoted text
+        return [("Bash", {"command": f"git -C /work/repo{k} status"}),
+                ("Bash", {"command": f"sampo task evidence T-000{k} --step 1 --run 'pytest case {k}'"}),
+                ("Edit", {"file_path": f"/work/repo{k}/a.py"}),
+                ("Bash", {"command": f"python3 -m unittest tests.test_a{k} -q"})]
+
+    def test_repeats_sequences_mine_routines_from_main_and_subagent_transcripts(self):
+        self.write("s1.jsonl", "s1", self.routine(1) + self.routine(4))  # two runs in s1
+        self.write("s2.jsonl", "s2", self.routine(2) + [("Read", {"file_path": "/x"})])
+        self.write("s2/subagents/agent-a1.jsonl", "s2", self.routine(3))  # a subagent of s2: a run of its own
+        self.write("s3.jsonl", "s3", [("Bash", {"command": "ls -la"}), ("Read", {"file_path": "/y"}),
+                                      ("Grep", {"pattern": "z"})])  # once: not a routine
+        r = self.fm_json("repeats", "--sequences", env=self.env)
+        seqs = r["sequences"]
+        self.assertEqual(len(seqs), 1, "the four-call routine; its three-call parts are the same runs, not more")
+        top = seqs[0]
+        self.assertEqual((top["count"], top["sessions"], top["saved"]), (4, 3, 12))  # three transcript files: 2 + 1 + 1 runs
+        self.assertEqual(top["calls"], ["git status", "sampo task evidence …", "Edit", "python3 -m unittest …"])
+        self.assertTrue(top["example"][0].startswith("git -C /work/repo"), top["example"])
+        self.assertIn("pytest case", top["example"][1])
+        self.assertFalse(r["truncated"])
+        text = self.fm("repeats", "--sequences", env=self.env).stdout
+        self.assertIn("4× in 3 sessions  saves 12 calls", text)
+        self.assertIn("→ Edit →", text)
+
+    def test_repeats_sequences_count_the_event_log_when_no_transcript_has_the_session(self):  # T-3921
+        for sid, runs in (("L1", 2), ("L2", 2)):
+            for _ in range(runs):
+                tid = self.fm_json("task", "new", f"Ship {sid}", "--type", "FIX", "--tier", "S",
+                                   "--step", "Ship it")["id"]
+                p = c.find_project(self.repo)
+                for cmd in ("npm ci", "npm run build", "npm test -- --ci"):  # the evidence events a run writes
+                    c.log_event(p, "evidence", task=tid, data={"step": 1, "cmd": cmd, "auto": "runner"}, session=sid)
+        r = self.fm_json("repeats", "--sequences", env=self.env)
+        # the event log has no run boundaries: each session's two runs read as one six-call routine, which saves more
+        self.assertEqual([(x["calls"], x["count"], x["sessions"]) for x in r["sequences"]],
+                         [(["npm ci", "npm run build", "npm test -- …"] * 2, 2, 2),
+                          (["npm ci", "npm run build", "npm test -- …"], 4, 2)])
+
+    def test_repeats_sequences_one_session_with_many_runs_is_not_two_sessions(self):  # 2+ runs in 2+ sessions
+        self.write("s1.jsonl", "s1", self.routine(1) + self.routine(4) + self.routine(5))
+        self.assertEqual(self.fm_json("repeats", "--sequences", env=self.env)["sequences"], [])
+
+    def test_repeats_sequences_a_routine_each_session_runs_once_still_repeats(self):  # T-3921: real shape
+        # `sampo task show` -> `sampo task set` -> `sampo lane brief`, once in each of two sessions, twice in one
+        routine = [("Bash", {"command": "sampo task show T-3921"}),
+                   ("Bash", {"command": "sampo task set T-3921 --section Approach --text x"}),
+                   ("Bash", {"command": "python3 plugin/bin/sampo lane brief T-3921"})]
+        self.write("s1.jsonl", "s1", routine + routine)
+        self.write("s2.jsonl", "s2", routine)
+        self.write("s3.jsonl", "s3", [("Read", {"file_path": "/x"})])
+        r = self.fm_json("repeats", "--sequences", env=self.env)
+        self.assertEqual([(x["calls"], x["count"], x["sessions"]) for x in r["sequences"]],
+                         [(["sampo task show …", "sampo task set …", "sampo lane brief …"], 3, 2)])
+
+    def test_repeats_sequences_keep_secrets_and_home_paths_out_of_the_output(self):
+        token = "ghp_" + "a" * 36
+        calls = [("Bash", {"command": f"git clone https://x:{token}@github.com/o/r"}),
+                 ("Bash", {"command": "curl -u admin:hunter2 https://h.example/x"}),
+                 ("Bash", {"command": "export TOKEN=abcd1234efgh5678"}),
+                 ("Edit", {"file_path": os.path.join(os.path.expanduser("~"), "proj", "a.py")})]
+        self.write("s1.jsonl", "s1", calls + calls)
+        self.write("s2.jsonl", "s2", calls + calls)
+        out = json.dumps(self.fm_json("repeats", "--sequences", env=self.env))
+        text = self.fm("repeats", "--sequences", env=self.env).stdout
+        for shown in (out, text):
+            for secret in (token, "hunter2", "abcd1234efgh5678"):
+                self.assertNotIn(secret, shown)
+        self.assertIn("[REDACTED]", text)
+        home = os.path.expanduser("~")
+        if home not in ("", "/"):
+            self.assertNotIn(home + "/proj", out)
+
+    def test_repeats_sequences_keep_unrelated_calls_apart(self):  # the same routine on other repos still merges
+        norm = repeats._norm_cmd
+        self.assertEqual(norm("git -C /work/repo1 status"), norm("git -C /work/repo2 status"))
+        self.assertNotEqual(norm("git -C /r status"), norm("git -C /r diff"))
+        self.assertNotEqual(norm("git -C /r diff"), norm("git -C /r commit -m x"))
+        self.assertNotEqual(norm("python3 scripts/a.py"), norm("python3 tools/b.py"))
+        self.assertEqual(norm("python3 plugin/bin/sampo lane brief T-1"), norm("fm lane brief T-2"))  # T-3921
+        self.assertEqual(norm("S=/tmp/x; cd ~/proj; uptime | head -1"), "uptime")  # setup is not the call
+
+    def test_repeats_sequences_drop_generic_noise_that_has_no_two_specific_calls(self):
+        for sid, name in (("s1", "a"), ("s1", "b"), ("s2", "c"), ("s2", "d")):  # Read, Edit, Read, Grep: no Bash
+            self.write(f"{sid}-{name}.jsonl", sid, [("Read", {"file_path": f"/{name}"}), ("Edit", {"file_path": "/x"}),
+                                                    ("Read", {"file_path": "/y"}), ("Grep", {"pattern": "z"})])
+        self.assertEqual(self.fm_json("repeats", "--sequences", env=self.env)["sequences"], [])
+
+    def test_repeats_sequences_read_the_newest_transcripts_first_and_flag_a_cut_read(self):
+        old = os.path.join(self.folder, "old.jsonl")
+        self.write("old.jsonl", "old", self.routine(1))
+        os.utime(old, (0, 0))  # the oldest file: read last, so a cut read leaves it out
+        self.write("new.jsonl", "new", self.routine(2))
+        p = c.find_project(self.repo)
+        since = c.iso(c.clock().timestamp() - 7 * 86400)
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(repeats, "SEQ_CALL_CAP", 3):
+            units, truncated = repeats._units(p, since)
+        paths = [path for _, path in units]
+        self.assertTrue(truncated)
+        self.assertTrue(any(x.endswith("new.jsonl") for x in paths), paths)
+        self.assertFalse(any(x.endswith("old.jsonl") for x in paths), paths)
+
+    def test_repeats_sequences_days_are_checked_and_need_the_flag(self):
+        for days in ("inf", "nan", "0", "3651"):
+            r = self.fm("repeats", "--sequences", "--days", days, env=self.env, check=False)
+            self.assertNotEqual(r.returncode, 0, days)
+            self.assertIn("--days needs", r.stderr)
+        self.assertEqual(self.fm("repeats", "--sequences", "--days", "3650", env=self.env).returncode, 0)
+        r = self.fm("repeats", "--days", "3", env=self.env, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("goes with --sequences", r.stderr)

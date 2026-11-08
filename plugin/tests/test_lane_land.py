@@ -169,6 +169,23 @@ class Land(LandCase):
         self.assertIsNone(c.active_brief_fast(p), "land leaves the main checkout free")
         self.assertNotIn("Ship", out, "no publish grant: nothing ships")
 
+    def test_a_lane_fixed_after_the_tip_the_land_tested_is_not_parked_whatever_its_commit_date(self):  # T-3994
+        b = self.lane(2, "BREAK", when=OLD)
+        self.audited(b)
+        self.returned(b, "Lane two")
+        tested = self.git("rev-parse", "HEAD", cwd=os.path.join(self.tmp, "lane2"))
+        self.land()
+        p = c.find_project(self.repo)
+        from sampo import lanes
+        self.assertEqual(self.brief(b).meta.get("lane_stop_tip"), tested, self.brief(b).meta)
+        self.assertTrue(lanes.parked(self.brief(b)), "the tip the land tested stays parked")
+        path = os.path.join(self.tmp, "lane2")  # the builder's fix, dated before the park (it ran during the train)
+        self.git("rm", "-q", "BREAK", cwd=path)
+        subprocess.run(["git", "-C", path, "commit", "-qm", "fix"], check=True, capture_output=True,
+                       env=dict(os.environ, GIT_AUTHOR_DATE=OLD, GIT_COMMITTER_DATE=OLD))
+        self.assertFalse(lanes.parked(self.brief(b)), "a new tip waits on a merge again")
+        self.assertIn(b, lanes.awaiting_merge(p, c.load_briefs(p)))
+
     def test_a_conflicting_lane_is_parked_before_any_gate_runs(self):
         with open(os.path.join(self.repo, "same.txt"), "w") as f:
             f.write("main\n")
@@ -202,6 +219,32 @@ class Land(LandCase):
         r = self.land()
         self.assertRegex(r.stdout, rf"(?m)^  hand close {a}: .*predate the lane tip")
         self.assertNotEqual(self.brief(a).status, "done")
+
+    def merged_then_later_code(self):
+        a = self.lane(1, "a.txt", when=OLD)
+        self.git("merge", "-q", "--no-edit", "foreman/lane1")
+        with open(os.path.join(self.repo, "later.py"), "w") as f:
+            f.write("import subprocess\nsubprocess.run('x', shell=True)\n")
+        self.git("add", "later.py")
+        self.git("commit", "-qm", "another task's exec code")
+        from sampo import cli
+        p = c.find_project(self.repo)
+        return cli._task_files(p, c.find_brief(p, a)), a
+
+    def test_a_merged_lane_is_judged_on_its_own_diff_not_later_merges(self):  # T-3968
+        (touches, risky, _), _ = self.merged_then_later_code()
+        self.assertEqual(sorted(touches), ["a.txt"])
+        self.assertEqual(risky, [])
+
+    def test_a_lane_not_merged_is_judged_as_before(self):  # T-3968
+        a = self.lane(1, "a.txt", when=OLD)
+        with open(os.path.join(self.repo, "later.py"), "w") as f:
+            f.write("import subprocess\nsubprocess.run('x', shell=True)\n")
+        from sampo import cli
+        p = c.find_project(self.repo)
+        touches, risky, _ = cli._task_files(p, c.find_brief(p, a))
+        self.assertIn("later.py", touches)
+        self.assertTrue(risky)
 
     def test_a_lane_closed_in_place_is_landed(self):  # T-3907: finish inside the lane left a done task, branch unmerged
         a = self.lane(1, "a.txt", when=OLD)
@@ -385,6 +428,53 @@ class Land(LandCase):
         self.assertIn(f"Lane two ({b})", log, r.stdout + r.stderr)
         self.assertNotIn("publish", self.brief(a).meta.get("allow") or [], "the grant is spent")
         self.assertNotIn("publish", self.brief(b).meta.get("allow") or [], "and none was given")
+
+    def test_ships_after_each_train(self):  # T-3849: a long land's merges reach the remote per train, not at its end
+        origin = os.path.join(self.tmp, "origin.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", origin], check=True)
+        self.git("remote", "add", "origin", origin)
+        self.git("push", "-q", "origin", "HEAD:main")
+        g = self.lane(1, "g.txt", when=OLD)
+        b = self.lane(2, "b.txt", when=OLD)
+        d = self.lane(3, "d.txt", when=OLD)
+        e = self.lane(4, "e.txt", when=OLD)
+        for t in (g, b, d, e):
+            self.audited(t)
+            self.returned(t, f"Lane {t}")
+        p = c.find_project(self.repo)
+
+        def grant(t):
+            x = self.brief(t)
+            x.meta["allow"] = ["publish"]
+            c.save_brief(p, x)
+        grant(g)
+        r = self.land("--batch", "1")
+        self.assertEqual(self.brief(g).section("Log").count("publish grant kept"), 4, r.stdout + r.stderr)  # one ship per train
+        self.assertEqual(self.gate_runs(), 4, "one gate run per train, none more from the ships")  # extra suite runs
+        log = subprocess.run(["git", "-C", origin, "log", "--format=%s", "main"], capture_output=True, text=True).stdout
+        for t in (g, b, d, e):
+            self.assertIn(t, log, r.stdout)
+        self.assertNotIn("publish", self.brief(g).meta.get("allow") or [], "the land's last ship spends the grant")
+        # a train by hand ships once, on a grant given
+        f = self.lane(5, "f.txt", when=OLD)
+        self.audited(f)
+        self.returned(f, "Lane five")
+        grant(g)
+        self.train(f)
+        log = subprocess.run(["git", "-C", origin, "log", "--format=%s", "main"], capture_output=True, text=True).stdout
+        self.assertIn(f, log)
+        self.assertNotIn("publish", self.brief(g).meta.get("allow") or [])
+
+
+class FreshProcess(unittest.TestCase):
+    def test_the_lands_closes_run_the_checkouts_code_not_its_own(self):
+        # T-3970: 2026-11-08, a land that predated two new verbs refused four closes for docs naming them
+        from unittest import mock
+        from sampo import train
+        with mock.patch("sampo.cli.main", side_effect=AssertionError("ran in the land's own process")):
+            rc, out, err = train._sampo(["--version"])
+        self.assertEqual(rc, 0, err)
+        self.assertRegex(out + err, r"\d+\.\d+")
 
 
 if __name__ == "__main__":

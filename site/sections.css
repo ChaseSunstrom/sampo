@@ -22,21 +22,9 @@ body { margin: 0; background: var(--surface); color: var(--text); font: 400 1.06
 .wrap { width: min(1120px, 100% - 32px); margin-inline: auto; }
 @media (min-width: 720px) { .wrap { width: min(1120px, 100% - 64px); } }
 
-/* the bar: 12's header, a solid night with a brass hairline under it */
-.top { position: sticky; top: 0; z-index: 10; background: var(--surface); border-bottom: 1px solid var(--rule); backdrop-filter: none; }
-.top .wrap { display: flex; align-items: center; gap: 20px; height: 60px; }
+/* the header is the landing's .bar, in style.css (T-3996); the footer's brand */
 .brand { display: flex; flex: none; align-items: center; gap: 10px; color: var(--text); text-decoration: none;
   font: 500 1.6rem/1 var(--font-display); letter-spacing: .01em; }
-.nav { margin-left: auto; display: flex; align-items: center; gap: 22px; }
-.nav a { color: var(--text-muted); text-decoration: none; font: 500 .94rem/1 var(--font-text); padding: 6px 0;
-  background: linear-gradient(var(--s1), var(--s1)) no-repeat 0 100% / 0 1px;
-  transition: background-size var(--dur-move) var(--ease-enter), color var(--dur-small); }
-.nav a:hover { color: var(--text); background-size: 100% 1px; }
-.theme { appearance: none; display: grid; place-items: center; width: 38px; height: 38px; cursor: pointer; color: var(--text);
-  background: none; border: 1px solid var(--rule-2); border-radius: 2px;
-  transition: border-color var(--dur-small), background-color var(--dur-small); }
-.theme:hover { border-color: var(--bronze); background: var(--raised); }
-.theme:active { background: var(--sunken); }
 
 /* the side list of pages: a brass bar marks the one you are on */
 .side a { color: var(--text-muted); border-radius: 2px; transition: color var(--dur-small), background-color var(--dur-small); }
@@ -181,10 +169,68 @@ footer .fine { font: 500 11.5px/1.6 var(--font-mono); letter-spacing: .06em; }
   @keyframes kin { from { opacity: 0; translate: 0 6px; } }
 }
 
-@media (max-width: 419px) { .top .wrap { gap: 10px; } .nav { gap: 14px; } .brand { font-size: 1.3rem; gap: 8px; }
-  .feature.wide { padding-top: 28px; } .cards-tools { padding: 14px; } .cards-search > span { display: none; }
+@media (max-width: 419px) { .feature.wide { padding-top: 28px; } .cards-tools { padding: 14px; } .cards-search > span { display: none; }
   .kcard summary { padding: 12px 40px 12px 14px; } .kbody { margin: 0 14px; } }
 @media (prefers-reduced-motion: reduce) {
-  .nav a, .theme, .side a, .fcard, .feature .next a, .cards-search input, .cards-facet select, .cards-grid, .cards-more,
+  .side a, .fcard, .feature .next a, .cards-search input, .cards-facet select, .cards-grid, .cards-more,
   .cards-grid .n, .kcopy, .kcard { transition: none; }
+}
+
+/* T-3996: the features index in the landing's station idiom: an engraved head, then the groups, each a numbered
+   station of rows (a page's name in the display italic over what it does), a brass bar drawn in on hover */
+.fhead { max-width: 760px; }
+.engraved em { font-style: italic; color: var(--bronze); -webkit-text-fill-color: var(--bronze); }
+/* columns, not a grid: groups of 2 to 6 pages fill each column to an even foot, with no empty slot or ragged row */
+.fgroups { margin-top: 56px; column-gap: 40px; }
+@media (min-width: 760px) { .fgroups { columns: 2; } }
+@media (min-width: 1100px) { .fgroups { columns: 3; } }
+.fgroup { --no: 2.8rem; position: relative; min-width: 0; padding-top: 26px; margin-bottom: 48px; break-inside: avoid; }
+.fgroup::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 9px; border-top: 1px solid var(--rule-2);
+  background: repeating-linear-gradient(90deg, var(--rule) 0 1px, transparent 1px 12px) top / 100% 5px no-repeat,
+    repeating-linear-gradient(90deg, var(--rule-2) 0 1px, transparent 1px 60px) top / 100% 9px no-repeat; }
+.fgroup h2 { display: flex; align-items: baseline; margin: 0; font: 500 12px/1.4 var(--font-mono);
+  letter-spacing: .16em; text-transform: uppercase; color: var(--bronze); }
+.fgroup h2 .no { flex: 0 0 var(--no); font: italic 400 1.7rem/1 var(--font-display); letter-spacing: 0; text-transform: none; color: var(--text); }
+/* one left edge: the numeral hangs in its own column; the label, the why and every row's text share the next */
+.fgroup .why { margin: 6px 0 16px var(--no); color: var(--text-muted); font-size: .95rem; }
+.frows { list-style: none; margin: 0; padding: 0; }
+.frows li { border-top: 1px solid var(--rule); }
+.frows li:last-child { border-bottom: 1px solid var(--rule); }
+.frows a { position: relative; display: grid; gap: 3px; padding: 12px 12px 13px var(--no); color: var(--text); text-decoration: none;
+  transition: background-color var(--dur-small); }
+.frows a::before { content: ""; position: absolute; left: 0; top: 11px; bottom: 11px; width: 2px; background: var(--s1);
+  box-shadow: 0 0 10px var(--s1); transform: scaleY(0); transform-origin: 50% 0; transition: transform var(--dur-enter) var(--ease-enter); }
+.frows a:hover, .frows a:focus-visible { background: var(--plate-face); }
+.frows a:hover::before, .frows a:focus-visible::before { transform: scaleY(1); }
+.frows b { font: italic 500 1.32rem/1.15 var(--font-display); }
+.frows span { color: var(--text-muted); font-size: .93rem; line-height: 1.45; }
+@media (prefers-reduced-motion: no-preference) {
+  .fgroup { animation: fin var(--dur-enter) var(--ease-enter) both; animation-delay: calc(var(--i, 0) * var(--dur-tap)); }
+  @keyframes fin { from { opacity: 0; translate: 0 10px; } }
+}
+@media (prefers-reduced-motion: reduce) { .frows a, .frows a::before { transition: none; } }
+
+/* the side list in the same groups; on a wide screen it scrolls on its own, so its foot is never out of reach */
+.side .g { display: none; }
+@media (min-width: 980px) {
+  .side { max-height: calc(100vh - 110px); overflow-y: auto; scrollbar-width: thin; }
+  .side .g { display: block; margin: 18px 12px 4px; font: 500 11px/1.4 var(--font-mono); letter-spacing: .14em;
+    text-transform: uppercase; color: var(--bronze); }
+  .side .g:first-child { margin-top: 0; }
+  .side a { padding: 5px 12px; }
+}
+
+/* the README's pictures, each drawn for both themes: the page's own choice shows one */
+.dia { margin: 36px 0 0; }
+.dia img { display: block; width: 100%; height: auto; }
+.dia.forged { padding: 16px 18px 0; }
+.dia.forged figcaption { display: grid; gap: 4px; margin: 14px -18px 0; padding: 10px 18px 12px; border-top: 1px solid var(--rule); }
+.dia.forged figcaption b { font: 500 12px/1.4 var(--font-mono); letter-spacing: .14em; text-transform: uppercase; color: var(--bronze); }
+.dia.forged figcaption span { color: var(--text-muted); font-size: .95rem; }
+.dia-dark { display: none !important; }
+:root[data-theme="dark"] .dia-light { display: none !important; }
+:root[data-theme="dark"] .dia-dark { display: block !important; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .dia-light { display: none !important; }
+  :root:not([data-theme="light"]) .dia-dark { display: block !important; }
 }

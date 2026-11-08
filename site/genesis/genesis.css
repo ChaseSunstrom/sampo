@@ -396,7 +396,6 @@ code .nw{white-space:nowrap}
 .rules{border-top:0;max-width:none}
 .rules>.rule{display:block;grid-template-columns:none;padding:14px 16px 15px;border-bottom:0}
 .rules>.rule.solos{display:flex;padding:11px 16px 12px}
-.top .wrap{width:auto;margin-inline:var(--gutter)}
 .tbl tr[class^="w"] td:nth-child(3){white-space:nowrap}
 .docs .first .doc + h3{margin-top:24px}
 .docs{display:block;columns:4 250px;column-gap:24px}  /* R-s: the groups pack into balanced columns, so no group sits alone on a row */

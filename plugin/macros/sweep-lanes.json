@@ -1,0 +1,4 @@
+{
+  "about": "recover every lane stopped before its merge (one launch line each), then land the finished lanes",
+  "steps": [["lane", "recover", "--all"], ["lane", "land", "--bg"]]
+}

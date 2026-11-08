@@ -539,6 +539,22 @@ def _strip_generated(text):
     return re.sub(r"(?m)^_Generated .*_$", "", text or "")
 
 
+def check_outcomes(projects):
+    """T-3934: shipped features whose declared outcome signal never fired at 1, 7 or 30 days (cached per project 6 h)."""
+    from sampo import outcomes
+    bad = []
+    for p in projects:
+        try:
+            bad += [(p.slug, r) for r in outcomes.flagged(outcomes.probes(p, cached=True))]
+        except Exception:
+            continue  # an unreadable project is check_briefs's to report
+    if not bad:
+        return Result("outcomes", "PASS", "every declared outcome was seen or isn't due yet")
+    slug, r = bad[0]
+    return Result("outcomes", "WARN", f"{len(bad)} shipped feature(s) never showed their outcome; oldest {slug} {r['task']} "
+                                      f"({r['signal']}, {r['status']}): sampo outcomes --silent")
+
+
 def check_briefs(p):
     errors = []
     briefs = c.load_briefs(p, errors=errors)
@@ -962,7 +978,10 @@ def check_git_hygiene(repo):
     # T-0382: --no-renames, or a staged rename that also adds a secret (R, not A or M) is never scanned
     staged = [f for f in _run(["git", "-C", repo, "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=AM",
                                "-z"]).stdout.split("\0") if f]
-    secrets = [p for p in staged if (lambda t: c.redact(t) != t)(_run(["git", "-C", repo, "show", f":{p}"]).stdout)]
+    # T-3892: only the lines the change adds (a new file: all of them), so a file that already held one isn't blocked
+    added = lambda p: "\n".join(l[1:] for l in _run(["git", "-C", repo, "diff", "--cached", "-U0", "--no-renames", "--",
+                                                       p]).stdout.splitlines() if l[:1] == "+" and l[:4] != "+++ ")
+    secrets = [p for p in staged if (lambda t: c.redact(t) != t)(added(p))]
     bad = [f"ignored but tracked: {', '.join(tracked)}"] if tracked else []
     bad += [f"secret-like content staged in: {', '.join(secrets)}"] if secrets else []
     return Result("git hygiene", "FAIL" if bad else "PASS", "; ".join(bad) or "nothing ignored is tracked; no secrets staged")
@@ -1226,6 +1245,8 @@ CC_FEATURES = [
     # read from 2.1.296, but below Foreman's CLAUDE_CODE_AUTO_COMPACT_WINDOW (T-1796) it only lowers it from 2.1.312
     ("agent autoCompactWindow", (2, 1, 312), ["agents/*.md"], r"(?m)^autoCompactWindow:"),
     ("agent effort/maxTurns", (2, 1, 78), ["agents/*.md"], r"(?m)^(effort|maxTurns):"),
+    # T-3341: SubagentStop fires once per subagent from 2.1.311; older versions overcount budget rows
+    ("SubagentStop once per subagent (budget rows trustworthy)", (2, 1, 311), ["hooks/*.json"], r'"SubagentStop"'),
     ("hook if", (2, 1, 85), ["hooks/*.json"], r'"if"\s*:'),
     ("plugin monitors", (2, 1, 105), ["monitors/monitors.json"], r"."),
     ("PostToolUse updatedToolOutput", (2, 1, 121), ["lib/sampo/hooks.py"], r"updatedToolOutput"),
@@ -2999,6 +3020,7 @@ def run_all(full=False, accept_supply=False):
     worst = next((s for s in ("FAIL", "WARN") if any(r.status == s for r in brief_results)), "PASS")
     results.append(Result("briefs", worst, "; ".join(r.detail for r in brief_results if r.status != "PASS")
                           or f"{len(projects)} project(s) OK", int((time.perf_counter() - t0) * 1000)))
+    results.append(check_outcomes(projects))  # T-3934
     t0 = time.perf_counter()
     stale = [p.slug for p in projects if not views_match(p)]  # T-0494
     results.append(Result("views", "WARN" if stale else "PASS",

@@ -450,15 +450,7 @@ class Ship(ForemanTestCase):
         self.assertFalse(os.path.exists(ran), "refused before the tests run")
         self.assertNotIn("add a", self.main_log())
         self.assertTrue(self.granted())
-        with open(os.path.join(self.repo, "c.txt"), "w") as f:
-            f.write("url = http://<host>/v1\n")
-        sh(self.repo, "commit", "-qam", "redact c")
-        r = self.ship("--test", "true")
-        out = r.stdout + r.stderr
-        self.assertNotEqual(r.returncode, 0, "the commit that added it still carries it: amend or rebase it out")
-        self.assertIn(f"private term (sampo private list) or a secrets-file value is in commit {leak[:8]};", out)
-        self.assertNotIn("c.txt", out, "the tree is clean now")
-        sh(self.repo, "reset", "-q", "--hard", "HEAD~2")
+        sh(self.repo, "reset", "-q", "--hard", "HEAD~1")  # a redaction after it ships as one commit (T-3999, below)
         secrets = os.path.join(self.tmp, "secrets.env")
         with open(secrets, "w") as f:
             f.write("export FIXTURE_TOKEN='fixture-value-0123456789'\nSHORT=abc\nBASE_URL=http://127.0.0.1:11434/v1\n")
@@ -474,14 +466,64 @@ class Ship(ForemanTestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)  # a URL line names no secret
         self.grant()
         commit("e.txt", "e\n", "token fixture-value-0123456789")
+        commit("f.txt", "token = fixture-value-0123456789\n", "add f")
         r = self.fm("ship", "--remote", "origin", "--test", "true", check=False, env=env)
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn(sh(self.repo, "rev-parse", "HEAD").strip()[:8], out)
         self.assertIn("secrets-file value", out)
+        self.assertIn("f.txt", out)
         self.assertNotIn("fixture-value", out)
         self.assertNotIn("token", self.main_log()[0])
         self.assertTrue(self.granted())
+        sh(self.repo, "reset", "-q", "--hard", "HEAD~1")  # T-3999: only a message holds it: main gets the work without it
+        r = self.fm("ship", "--remote", "origin", "--test", "true", check=False, env=env)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertNotIn("fixture-value", out + sh(self.origin, "log", "-p", "--format=%B", "main"))
+
+    def test_a_term_a_later_commit_removed_ships_as_one_commit_with_the_clean_tree(self):  # T-3999
+        # a builder's test named a real remote; ship refused every run after it until a history rewrite, which every
+        # lane based on the branch would conflict with. Now main gets the clean tree as one commit
+        self.grant()
+        self.fm("private", "add", "*.home.example-private.test")
+        def commit(name, text, msg):
+            with open(os.path.join(self.repo, name), "w") as f:
+                f.write(text)
+            sh(self.repo, "add", name)
+            sh(self.repo, "commit", "-qm", msg)
+        commit("c.txt", "url = http://llm.home.example-private.test/v1\n", "add c")
+        leak = sh(self.repo, "rev-parse", "HEAD").strip()
+        commit("d.txt", "d\n", "add d")
+        commit("c.txt", "url = http://<host>/v1\n", "redact c")
+        r = self.ship("--test", "true")
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn(f"commit {leak[:8]} held a private term the tree to push no longer has: main gets ", out)
+        self.assertNotIn("example-private", out)
+        squashed = self.main_log()[0]
+        self.assertRegex(squashed, r"^Sampo: \d+ commits in one commit \(a private term in 1 of them, left out\)$")
+        pushed = sh(self.origin, "log", "-p", "--format=%B", "main")
+        self.assertNotIn("example-private", pushed, "no commit main received holds the term")
+        self.assertIn("- add d", pushed)
+        self.assertIn("- redact c", pushed)
+        self.assertNotIn("- add c", pushed, "the subject of a commit that held it is left out")
+        self.assertEqual(sh(self.origin, "show", "main:c.txt"), "url = http://<host>/v1\n")
+        self.assertFalse(self.granted(), "one push, one grant")
+        self.grant()  # the next ship starts after the squashed range, one pick each again
+        commit("e.txt", "e\n", "add e")
+        r = self.ship("--test", "true")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:2], ["add e", squashed])
+        self.grant()  # a term still in the tree to push refuses as before, squash or not
+        commit("f.txt", "url = http://llm.home.example-private.test/v1\n", "add f")
+        commit("g.txt", "g\n", "add g")
+        r = self.ship("--test", "true")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("f.txt", out)
+        self.assertNotIn("in one commit", out)
+        self.assertEqual(self.main_log()[0], "add e")
 
     def test_the_private_scan_never_puts_a_term_or_a_secret_on_gits_command_line(self):  # T-3529 review
         # argv shows in ps and /proc/<pid>/cmdline to anyone on the machine: needles go through a 0600 pattern file

@@ -1504,6 +1504,8 @@ def _task_finish(p, args):
                 x.add_audit(lens, args.audit, result, tree=tree)
             if args.docs:
                 x.set_section("Docs impact", c.redact(args.docs))
+            if getattr(args, "outcome", None):  # T-3934: probed later; the first line is the signal
+                x.set_section("Outcome", c.redact(" ".join(args.outcome.split())) + "\n\nRead it: sampo outcomes --silent")
             if getattr(args, "numbers", None):  # T-1956
                 x.set_section("Measurements", c.redact(c.plain(args.numbers).strip()))
             if getattr(args, "why_not_caught", None):  # T-0598
@@ -2087,14 +2089,30 @@ def _warning_kind(w):
     return re.split(r"[:(\[]| in ", w, maxsplit=1)[0].strip()
 
 
+def _merged_lane_tip(p, b):
+    """T-3968: the task's lane branch tip when that branch is already part of HEAD (and isn't HEAD itself), else None."""
+    br = b.meta.get("lane_branch")
+    if not br or not c.git_root(p.root):
+        return None
+    tip = (c._git(p.root, "rev-parse", "--verify", "-q", br + "^{commit}", fail="") or "").strip()
+    if not tip or c._git(p.root, "merge-base", "--is-ancestor", tip, "HEAD", proc=True).returncode != 0:
+        return None
+    if tip == (c._git(p.root, "rev-parse", "HEAD", fail="") or "").strip():
+        return None  # closed in its own lane (or fast-forwarded): the working files may hold uncommitted work
+    return tip
+
+
 def _task_files(p, b):
     """({file: when touched}, the security-sensitive ones, the untracked files gone since the start, not counted):
     edits made outside Claude since the task's base count."""
     touches, gone = c.task_touches(p, b.id), set()
     base = c.task_base(p.root, b) if c.git_root(p.root) else None
+    tip = _merged_lane_tip(p, b) if base else None
     if base:  # R1: edits made through the shell or outside Claude count too
         from sampo import map as smap
-        changed = smap.changed(p.root, base)
+        # T-3968: a lane already merged is judged on its own commits; later merges by others aren't its change
+        changed = sorted(set((c._git(p.root, "diff", "--name-only", "--no-renames", base, tip, timeout=60, fail="") or "")
+                             .splitlines())) if tip else smap.changed(p.root, base)
         theirs = set(_theirs(p, b, changed))  # T-1968: another task's edits are its to answer for (scope, audit)
         # T-3550: a file untracked at the start and removed since (another task, a shell rm) is no edit of this task's:
         # read as touched now, no 'scope:' reason could ever cover it. Tracked at the start or in HEAD, it still counts.
@@ -2110,7 +2128,7 @@ def _task_files(p, b):
                     touches[f] = c.iso(os.path.getmtime(os.path.join(p.root, f)))
                 except OSError:  # deleted
                     touches[f] = c.now()
-    diff = c.task_diff(p.root, base) if base else None
+    diff = (c._git(p.root, "diff", base, tip, timeout=300, fail=None) if tip else c.task_diff(p.root, base)) if base else None
     risky = c.sensitive(list(touches), diff or "")
     recorded = b.meta.get("base_tree") or b.meta.get("base")  # never focused: no start point, as before
     if diff is None and recorded and c.git_root(p.root):  # T-0078 review: what can't be read isn't passed as clean
@@ -2679,14 +2697,21 @@ def task_prove(p, args):
     base = b.meta.get("base")
     if not base:
         raise UsageError(f"{b.id} has no start commit on record: prove needs the tree the task started from")
-    changed = [f for f in smap.changed(p.root, base) if smap._TEST.search(f) and os.path.isfile(os.path.join(p.root, f))]
+    root = p.root
+    lane, br = b.meta.get("lane"), b.meta.get("lane_branch")
+    if lane and br and os.path.isdir(lane) and c._git(root, "merge-base", "--is-ancestor", br, "HEAD", proc=True).returncode == 1:
+        # T-3940: the change lives only in the lane: its committed tree is the "current" one (a dirty lane would prove code not in its commit)
+        if c._git(lane, "status", "--porcelain", fail="?").strip():
+            raise UsageError(f"{b.id}: its lane {lane} has uncommitted work: commit it, then prove (prove reads the lane's commit)")
+        root = lane
+    changed = [f for f in smap.changed(root, base) if smap._TEST.search(f) and os.path.isfile(os.path.join(root, f))]
     named = [f for f in changed if c.TESTISH.search(os.path.basename(f))]
     # T-3808: a tests-folder file is a test when it's named as one or holds a TestCase; run.py and forkcli.py are code
-    tests = [f for f in changed if f in named or _has_testcase(p.root, f)]
+    tests = [f for f in changed if f in named or _has_testcase(root, f)]
     code = [f for f in changed if f not in tests]
     kept = []  # T-3107: no changed test file: the check runs on the start tree as it was; T-1919: tests-folder files the start tree has, not test-named (run.py): code under change stays there
     subjects = {re.sub(r"^test_|_test$|\.(?:test|spec)$", "", os.path.splitext(os.path.basename(f))[0]) for f in named}
-    src = "\n".join(pathlib.Path(p.root, f).read_text(errors="replace") for f in named)
+    src = "\n".join(pathlib.Path(root, f).read_text(errors="replace") for f in named)
 
     def needed(f):  # review: one a new test imports comes over (its new code), unless a test is named for it (test_run
         m = os.path.splitext(os.path.basename(f))[0]  # ↔ run.py: its subject); pytest loads conftest.py by itself
@@ -2704,20 +2729,20 @@ def task_prove(p, args):
                     kept.append(f)
                     continue
                 os.makedirs(os.path.dirname(os.path.join(wt, f)), exist_ok=True)
-                shutil.copy2(os.path.join(p.root, f), os.path.join(wt, f))
+                shutil.copy2(os.path.join(root, f), os.path.join(wt, f))
             for f in code:  # T-3808: code the start tree has stays at its start version (a copy would pass the red run); a new one a test imports comes over
                 if os.path.lexists(os.path.join(wt, f)):
                     kept.append(f)
                 elif needed(f):
                     os.makedirs(os.path.dirname(os.path.join(wt, f)), exist_ok=True)
-                    shutil.copy2(os.path.join(p.root, f), os.path.join(wt, f))
+                    shutil.copy2(os.path.join(root, f), os.path.join(wt, f))
             if not tests:  # T-3107: no anchor: a path the command names must exist at the start tree
                 import shlex
                 try:
                     words = shlex.split(args.run)
                 except ValueError:
                     words = args.run.split()
-                new = [w for w in words if not w.startswith("-") and os.path.exists(os.path.join(p.root, w))
+                new = [w for w in words if not w.startswith("-") and os.path.exists(os.path.join(root, w))
                        and not os.path.lexists(os.path.join(wt, w))]
                 if new:
                     raise UsageError(f"{b.id}: --run names {new[0]}, absent at the start tree {base[:12]}: it would "
@@ -2726,8 +2751,8 @@ def task_prove(p, args):
         finally:
             c._git(p.root, "worktree", "remove", "--force", wt, timeout=60)
             c._git(p.root, "worktree", "prune", timeout=30)
-    green = c.run_command(p.root, args.run, args.timeout)
-    tree = c.worktree_id(p.root)
+    green = c.run_command(root, args.run, args.timeout)
+    tree = c.worktree_id(root)
 
     def record(b):
         b.add_evidence(args.run, c.run_result(*red) + " (start tree + this task's tests)", step=args.step, ac=args.ac,
@@ -6667,6 +6692,8 @@ def cmd_next(args):
              f"them to the user at the end, never act on them first; deferred after {ASK_DAYS} days)") if asks else ""
     from sampo import contract
     over += contract.line(p)  # T-1158
+    from sampo import outcomes as _oc
+    over += _oc.line(p)  # T-3934: the oldest shipped feature whose outcome was never seen (cached 6 h)
     hollow = [e for e in c.ledger_tail(p, 500, kinds=("hollow_return",)) if e.get("event") == "hollow_return"
               and (age := c.age_days(e.get("ts"))) is not None and age < 1]  # T-0963: today's, so an old one doesn't nag forever
     if hollow:
@@ -7335,6 +7362,8 @@ def _build_parser(only=None):
     t.add_argument("--lens", action="append", help="M/L: '<lens>: <result>' per audit lens (repeatable)")
     t.add_argument("--docs", help="Docs impact: the docs updated, or none: why")
     t.add_argument("--numbers", help="PERFORMANCE: the Measurements, '<metric>: <before> → <after> (<how measured>)' (T-1956)")
+    t.add_argument("--outcome", metavar="SIGNAL", help="FEATURE: how the feature's use is seen after the merge: event:KIND, "
+                   "verb:NAME, file:GLOB, row:PATH or metric:NAME; probed at 1, 7 and 30 days (sampo outcomes --silent)")
     t.add_argument("--skip-affected", metavar="WHY", help="T-1117: close without the linked tests' verdict (a runner "
                                                          "sampo can't read, a known-red suite), logged with WHY")
     t.add_argument("--lesson")
@@ -7516,6 +7545,16 @@ def _build_parser(only=None):
     s = add("away", lazy("sampo.away", "cmd_away"), tier=("Reports", 975), help="what closed, blocked, was asked or was reverted since you last spoke (T-1155)")
     s = add("outcomes", lazy("sampo.outcomes", "cmd_outcomes"), tier=("Reports", 980), help="what became of finished tasks: reverted, fixed later "
                                                                  "by a task naming them, or held; track record (T-0616)")
+    s.add_argument("--silent", action="store_true", help="features whose declared outcome signal (sampo task finish "
+                   "--outcome) never fired 1, 7 or 30 days after the merge (T-3934)")
+    s.add_argument("--census", action="store_true", help="every verb, skill, playbook, night job and hook note at three "
+                   "levels over the last 14 days: exists, used outside a builder, effective (T-3934)")
+    s.add_argument("--capture", action="store_true", help="--census: one capture per never-used or ineffective item "
+                   "(at most 10, once each)")
+    s.add_argument("--days", type=float, help="--census, --backfill: the window in days (14; 30)")
+    s.add_argument("--backfill", action="store_true", help="propose an Outcome signal for each FEATURE closed in the "
+                   "window (30 days) that has none, from its criteria and CHANGELOG line (T-3934)")
+    s.add_argument("--apply", action="store_true", help="--backfill: write the proposals into the briefs")
     s.add_argument("--atlas", action="store_true", help="by file and language: where work didn't hold (T-0620)")
     s.add_argument("--calibration", action="store_true", help="per tier: median actual/predicted minutes (T-2290)")
     s.add_argument("--judgment", action="store_true", help="the confidence ledger: stated bets scored by outcomes, "
@@ -7566,7 +7605,8 @@ def _build_parser(only=None):
     s.add_argument("--warn", action="store_true", help="take a claim that overlaps another session's, with a warning")
     s = add("conductor", lazy("sampo.bus", "cmd_conductor"), tier=("Running elsewhere", 1310), help="live sessions with their task, context, mail and leases; "
                                                               "steer them all (T-0708)")
-    s.add_argument("action", nargs="?", default="list", choices=["list", "steer", "remote", "refresh"])
+    s.add_argument("action", nargs="?", default="list", choices=["list", "steer", "send", "remote", "refresh"],
+                   help="send NAME \"text\": one added remote or one live session by its id prefix (T-3932)")
     s.add_argument("words", nargs="*")
     s.add_argument("--wake", action="store_true")
     s = add("spec", lazy("sampo.change", "cmd_spec"), tier=("Finding your way", 630), help="a one-line wish as a red unittest: a tool-less child's "
@@ -8088,6 +8128,9 @@ def _build_parser(only=None):
                                                         "capture a task to adopt it (T-1070)")
     s.add_argument("--draft", action="store_true", help="write a playbook draft from steps 3+ finished tasks took in "
                                                         "the same order (T-0734; adopting it is asked first)")
+    s.add_argument("--sequences", action="store_true", help="routines of 3-6 calls the sessions repeat (main and "
+                                                            "subagents, and the event log), ranked by calls saved (T-3921)")
+    s.add_argument("--days", type=float, help="--sequences: the window, in days, above 0 and at most 3650 (default 7)")
 
     s = add("misses", lazy("sampo.selfaware", "cmd_misses"), tier=("Reports", 1032),
             help="what the user had to point out: logged misses by class and per day (T-3126)")
@@ -8103,6 +8146,9 @@ def _build_parser(only=None):
                  "the sync mirror shows <host> or <private>, sampo ship refuses a push carrying one (T-3529)")
     s.add_argument("action", choices=["add", "rm", "list"])
     s.add_argument("term", nargs="?", help="add, rm: the term (never printed or logged; a digest is)")
+
+    s = add("fleet", lazy("sampo.claims", "cmd_fleet"), tier=("Project and settings", 792),
+            help="who holds which claim on the shared remote, until when, and whether its drift fingerprint matches (T-3334)")
 
     s = add("audit", cmd_audit, tier=("Finding your way", 420), help="prep audits: freeze the task's diff and write one review brief for one reviewer")
     s.add_argument("action", choices=["prep", "scan", "run", "ahead"], help="prep ID: review brief for a task; scan: mechanical "
@@ -9067,6 +9113,10 @@ def _build_parser(only=None):
     s.add_argument("--n", type=int, help="tournament: 2 (a duel), 4 or 8 of the best-ranked looks; book: how many "
                    "(default 6) (T-1536)")
     s.add_argument("--out", help="book: the HTML page to write")
+    s = add("do", lazy("sampo.macros", "cmd_do"), tier=("Every task", 115), help="NAME: a routine from plugin/macros (JSON steps "
+                                                                              "run as sampo verbs, five lines or fewer); --list shows them (T-3922)")
+    s.add_argument("name", nargs="?", help="the routine's name (sampo do --list)")
+    s.add_argument("--list", action="store_true", help="list the routines and any file that didn't load, with why")
     s = add("lane", lazy("sampo.lanes", "cmd_lane"), tier=("Running elsewhere", 1120), help="a git worktree beside the repo with its own active task: "
                                                        "new <id>, list, rm <id> (never discards uncommitted work); "
                                                        "brief <id>: an S/M task for a sampo:fm-builder subagent; "
@@ -9083,9 +9133,18 @@ def _build_parser(only=None):
                                                        "each landed task closed from its builder's report lines (the "
                                                        "rest parked with why) then a ship on a publish grant already "
                                                        "given (T-3500); "
-                                                       "andon: mark this lane's ANDON.md answered, moved aside, no rm (T-3704)")
+                                                       "andon: mark this lane's ANDON.md answered, moved aside, no rm (T-3704); "
+                                                       "accept ID --audit LENS 'how' 'result' …: a reviewed lane's audits, "
+                                                       "its close's gaps named, then it lands first (T-3922); "
+                                                       "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
-                                      "stats", "verify", "train", "precheck", "land", "andon"])
+                                      "stats", "verify", "train", "precheck", "land", "andon", "accept"])
+    s.add_argument("--all", action="store_true", help="recover: every lane stopped before its merge, one launch line each "
+                                                      "or the reason it's left (T-3922)")
+    s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),
+                   help="accept: one audit of the lane (its lens, how it was done, the result); repeat per lens (T-3922)")
+    s.add_argument("--bg", action="store_true", help="land: start it detached (log in the state's land.log) and return at "
+                                                     "once, never waited on (T-3922)")
     s.add_argument("--batch", type=int, metavar="N", help=f"land: lanes per train (default {c.TRAIN_BATCH}) (T-3500)")
     s.add_argument("--first", metavar="IDS", help="land: these lanes train first (T-1,T-2); while a land runs, at its "
                                                   "next train (T-3796)")

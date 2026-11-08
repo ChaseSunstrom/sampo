@@ -4,7 +4,10 @@ import functools
 import http.server
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -14,7 +17,7 @@ from helpers import PLUGIN, ForemanTestCase, read_doc, read_text
 from sampo import shot
 
 SITE = os.path.join(os.path.dirname(PLUGIN), "site")
-RECTS = """JSON.stringify([...document.querySelectorAll('header.top .brand, header.top .nav > *')]
+RECTS = """JSON.stringify([...document.querySelectorAll('header.bar > *')]
   .filter(e => getComputedStyle(e).display !== 'none')
   .map(e => { const r = e.getBoundingClientRect(), g = document.createRange(); g.selectNodeContents(e);
               const t = g.getBoundingClientRect();  // T-2089: the text, which can spill past a shrunk box
@@ -31,7 +34,12 @@ class Header(unittest.TestCase):
         cls.browser = shot.find_browser("test_site")[0]
         if not cls.browser:
             raise unittest.SkipTest("no headless Chromium (FOREMAN_CHROME, PATH or Playwright's)")
-        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=SITE)
+        cls.out = tempfile.mkdtemp(prefix="test-site-")  # T-3996: the built pages, whose header the build writes
+        p = subprocess.run([sys.executable, os.path.join(SITE, "build.py"), cls.out], capture_output=True, text=True,
+                           timeout=300)
+        if p.returncode:
+            raise AssertionError(p.stderr)
+        handler = functools.partial(http.server.SimpleHTTPRequestHandler, directory=cls.out)
         handler.log_message = lambda *a: None
         cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
         threading.Thread(target=cls.server.serve_forever, daemon=True).start()
@@ -40,6 +48,7 @@ class Header(unittest.TestCase):
     def tearDownClass(cls):
         cls.server.shutdown()
         cls.server.server_close()
+        shutil.rmtree(cls.out, ignore_errors=True)
 
     def rects(self, width, page="index.html"):
         b = shot.shared(self.browser, (width, 640))
@@ -51,9 +60,10 @@ class Header(unittest.TestCase):
             b.close()
 
     def test_nothing_in_the_header_overlaps_or_overflows_at_phone_widths(self):
-        for width, name in ((w, n) for w in (320, 360, 390) for n in ("index.html", "genesis/index.html")):
+        for width, name in ((w, n) for w in (320, 360, 390) for n in ("index.html", "genesis/index.html", "features/index.html")):
             with self.subTest(width=width, page=name):  # T-2089: without Barlow the wider fallback spilled at 360
                 *items, page = self.rects(width, name)
+                self.assertGreaterEqual(len(items), 3, f"{name}: no header drawn")  # brand, menu, theme at least
                 self.assertLessEqual(page[2], width, "the page scrolls sideways")
                 for (a, al, ar, at, ab), (b, bl, br, bt, bb) in zip(items, items[1:]):
                     self.assertLessEqual(ar, bl + 0.5, f"{a!r} overlaps {b!r} at {width} px")

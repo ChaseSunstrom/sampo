@@ -19,7 +19,7 @@
     return t ? t === "light" : !!(typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: light)").matches);
   }
   if (LIVE) requestAnimationFrame(function () { [].forEach.call(document.querySelectorAll(".rise"), function (el) { el.classList.add("in"); }); });
-  var theme = document.querySelector(".theme");  /* the site header's button; the choice is the site's fm-theme */
+  var theme = document.getElementById("theme");  /* the site header's button; the choice is the site's fm-theme */
   if (theme && theme.addEventListener) theme.addEventListener("click", function () {
     var next = isDay() ? "dark" : "light";
     root.setAttribute("data-theme", next);

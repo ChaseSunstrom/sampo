@@ -48,6 +48,20 @@ class Checks(_TmpDir):
         self.assertEqual(d.check_cc_features((2, 1, 299), pl).status, "PASS")
         self.assertEqual(d.check_cc_features((), pl).status, "PASS")  # unknown version: nothing to compare
 
+    def test_subagent_stop_once_per_subagent(self):
+        # T-3341: before 2.1.311 SubagentStop fired more than once per subagent, so budget rows overcount
+        self.write("pl/hooks/hooks.json", '{"hooks": {"SubagentStop": [{"hooks": []}]}}')
+        pl = os.path.join(self.t, "pl")
+        r = d.check_cc_features((2, 1, 310), pl)
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("SubagentStop", r.detail)
+        self.assertEqual(d.check_cc_features((2, 1, 318), pl).status, "PASS")
+
+    def test_every_agent_names_effort(self):
+        import glob
+        for f in glob.glob(os.path.join(d.PLUGIN, "agents", "*.md")):
+            self.assertIn("effort", d._frontmatter(f) or {}, f)  # frontmatter only, not the prompt body
+
     def test_upstream_issues(self):
         # T-1076: a recurring error that is a known Claude Code bug is named with the version that fixes it
         url = "https://github.com/anthropics/claude-code/issues/25990"
@@ -530,6 +544,11 @@ class Checks(_TmpDir):
             f.write("API_KEY = 'sk-ant-api03-abcdefghijklmnopqrstu'\n")  # pragma: allowlist secret
         subprocess.run(["git", "-C", repo, "add", "moved.txt"], check=True)
         self.assertIn("moved.txt", d.check_git_hygiene(repo).detail)
+        subprocess.run(["git", "-C", repo, "commit", "-qm", "already there"], check=True)
+        with open(os.path.join(repo, "moved.txt"), "a") as f:  # T-3892: only what the change adds is scanned
+            f.write("one more line\n")
+        subprocess.run(["git", "-C", repo, "add", "moved.txt"], check=True)
+        self.assertEqual(d.check_git_hygiene(repo).status, "PASS", "a secret already committed isn't this change's")
 
     def test_backup(self):
         home = os.path.join(self.t, "fh")

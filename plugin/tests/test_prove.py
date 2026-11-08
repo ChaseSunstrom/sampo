@@ -903,6 +903,38 @@ class InfraProof(ForemanTestCase):
         write(self.tree, {"compose.yaml": "include:\n  - ./other.yaml\nservices: {}\n"})
         self.assertEqual(self.by_file(fmprove_infra.infra(self.tree, allowed=False))["compose.yaml"]["verdict"], "pass")
 
+    def test_a_compose_override_is_checked_with_its_base(self):
+        # T-3897: docker-compose.gpu.yml only adds to docker-compose.yml; alone it has "neither an image nor a build
+        # context", so every close on the JARVIS box was refused by a valid stack
+        self.script("docker", "#!/bin/sh\ncase \"$*\" in\n"
+                    "  *'-f docker-compose.yml -f docker-compose.gpu.yml config'*) while read -r l; do case \"$l\" in "
+                    "*broken*) echo 'services.x.deploy must be a mapping' >&2; exit 1 ;; esac; done "
+                    "< docker-compose.gpu.yml; exit 0 ;;\n"  # builtins only: the PATH holds only the stubs
+                    "  *'-f docker-compose.yml config'*) exit 0 ;;\n"
+                    "  *) echo 'service \"x\" has neither an image nor a build context specified' >&2; exit 1 ;;\nesac\n")
+        write(self.tree, {"docker-compose.yml": "services:\n  x:\n    image: x\n",
+                          "docker-compose.gpu.yml": "services:\n  x:\n    deploy: {}\n"})
+        got = self.by_file(fmprove_infra.infra(self.tree, allowed=False))
+        self.assertEqual(got["docker-compose.yml"]["verdict"], "pass")
+        self.assertEqual(got["docker-compose.gpu.yml"]["verdict"], "pass", got["docker-compose.gpu.yml"])
+        write(self.tree, {"docker-compose.gpu.yml": "services:\n  x:\n    deploy: broken\n"})
+        got = self.by_file(fmprove_infra.infra(self.tree, allowed=False))
+        self.assertEqual(got["docker-compose.gpu.yml"]["verdict"], "fail", "a broken override still fails")
+        os.remove(os.path.join(self.tree, "docker-compose.yml"))
+        got = self.by_file(fmprove_infra.infra(self.tree, allowed=False))
+        self.assertEqual(got["docker-compose.gpu.yml"]["verdict"], "fail", "no base: checked alone, as before")
+
+    def test_a_compose_file_that_needs_its_env_is_unproven_not_failed(self):
+        # T-3897: the copy leaves .env out, so ${TAILSCALE_IP}:8000:8000 reads ':8000:8000' and compose exits 1
+        self.script("docker", "#!/bin/sh\necho 'time=\"x\" level=warning msg=\"The \\\"TAILSCALE_IP\\\" variable is not "
+                    "set. Defaulting to a blank string.\"' >&2\necho 'invalid port \":8000:8000\"' >&2\nexit 1\n")
+        write(self.tree, {"compose.yaml": "services:\n  x:\n    image: x\n    ports: [\"${TAILSCALE_IP}:8000:8000\"]\n"})
+        got = self.by_file(fmprove_infra.infra(self.tree, allowed=False))["compose.yaml"]
+        self.assertEqual(got["verdict"], "unproven", got)
+        self.assertIn("TAILSCALE_IP", got["why"])
+        self.script("docker", "#!/bin/sh\necho 'services.x.ports must be a list' >&2\nexit 1\n")
+        self.assertEqual(self.by_file(fmprove_infra.infra(self.tree, allowed=False))["compose.yaml"]["verdict"], "fail")
+
     def test_infra_proof_style_notes_do_not_fail_a_file(self):
         self.stub("shellcheck")
         write(self.tree, {"run.sh": "echo\n"})

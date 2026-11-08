@@ -127,6 +127,24 @@ def _above(rel):
     return ["/".join(parts[:i]) for i in range(len(parts), -1, -1)]
 
 
+_OVERRIDE = re.compile(r"(docker-compose|compose)\.[^/]+\.ya?ml")
+COMPOSE_UNSET = re.compile(r'The \\?"?(\w+)\\?"? variable is not set')  # compose's warning for a blank ${VAR}
+
+
+def _compose_base(root, rel):
+    """T-3897: the base compose file an override (docker-compose.gpu.yml, compose.prod.yaml) adds to, beside it in
+    the same folder, or None: a base file, or an override with no base, is checked alone."""
+    d, name = os.path.split(rel)
+    m = _OVERRIDE.fullmatch(name)
+    if not m:
+        return None
+    for ext in (".yml", ".yaml"):
+        base = os.path.join(d, m.group(1) + ext)
+        if os.path.isfile(os.path.join(root, base)) and not os.path.islink(os.path.join(root, base)):
+            return base
+    return None
+
+
 def _which(name, env, root):
     """The tool's path on the user's PATH (env's), or None: a link into the tree is the tree's own file, not the user's tool."""
     exe = shutil.which(name, path=env["PATH"])
@@ -275,6 +293,10 @@ def infra(root, allowed=False, p=None, only=None, budget=None):
         safe = lambda x: "./" + x if x.startswith("-") else x  # noqa: E731  a file or folder named -x is not an option
         argv = sandbox(dst) + [exe] + [a.replace("{f}", safe(rel)).replace("{d}", safe(d))
                                        .replace("{schemas}", os.path.join(schemas, SCHEMA_PATH)) for a in k["argv"][1:]]
+        base = _compose_base(root, rel) if name == "compose" else None
+        if base:  # T-3897: an override (docker-compose.gpu.yml) only adds to its base: compose reads them together
+            i = argv.index("-f", len(sandbox(dst)))
+            argv[i:i] = ["-f", safe(base)]
         out, err, rc, why = _run(argv, dst, dict(env, HOME=tmp, NO_COLOR="1", CHECKPOINT_DISABLE="1", TF_IN_AUTOMATION="1"), end)
         if why:
             return "unproven", f"{k['tool']} {why}"
@@ -286,6 +308,10 @@ def infra(root, allowed=False, p=None, only=None, budget=None):
         text = (out + "\n" + err).replace(dst + os.sep, "").replace(tmp, "")
         if name == "terraform" and TF_UNINIT.search(text):
             return "unproven", "the folder's providers or modules aren't installed here (terraform init is yours to run)"
+        unset = sorted(set(COMPOSE_UNSET.findall(text))) if name == "compose" else []
+        if unset:  # T-3897: the copy leaves the .env out (secrets stay home), so a ${VAR} reads blank: no verdict
+            return "unproven", (f"it reads {c.joinmore(unset, 4)} from an .env the copy leaves out (secrets stay "
+                                f"home); with them blank compose can't judge it")
         lines = [l for l in text.splitlines() if l.strip()]
         bad = "\n".join(l for l in lines if not (name == "systemd" and BENIGN.search(l)))
         if name == "systemd" and lines and not bad:

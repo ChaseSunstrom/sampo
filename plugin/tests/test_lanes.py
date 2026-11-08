@@ -2,6 +2,8 @@
 (focus there pauses only that lane's), does its git work in its own files, and neither side's next or queue offers a
 task the other holds. fm lane new|list|rm manage them; rm never discards uncommitted work."""
 import argparse
+import contextlib
+import io
 import json
 import re
 import os
@@ -173,6 +175,28 @@ class Lanes(ForemanTestCase):
         self.assertIn("Lane work", self.git("log", "--format=%s", "foreman/lane"))
         self.assertNotIn("Lane work", self.git("log", "--format=%s", "main"))
         self.assertFalse(os.path.exists(os.path.join(self.repo, "lane.py")))
+
+    def test_a_lane_whose_commits_add_a_private_term_is_refused_at_merge_naming_where(self):
+        # T-3999: a builder's test named a real remote; only the ship, 47 commits later, refused it
+        self.fm("private", "add", "*.home.example-private.test")
+        tid = self.new("Lane work", self.lane)
+        with open(os.path.join(self.lane, "remote.py"), "w") as f:
+            f.write('HOST = "llm.home.example-private.test"\n')
+        self.git("add", "remote.py", cwd=self.lane)
+        self.git("commit", "-qm", "remote", cwd=self.lane)
+        leak, before = self.git("rev-parse", "HEAD", cwd=self.lane).strip(), self.git("rev-parse", "HEAD").strip()
+        r = self.fm("lane", "merge", tid, check=False)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn(f"private term (sampo private list) or a secrets-file value is in commit {leak[:8]} and file "
+                      "remote.py; nothing was merged", out)
+        self.assertNotIn("example-private", out, "the term itself is never printed")
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), before)
+        with open(os.path.join(self.lane, "remote.py"), "w") as f:
+            f.write('HOST = "llm.example.test"\n')
+        self.git("commit", "-q", "--amend", "-am", "remote", cwd=self.lane)
+        self.fm("lane", "merge", tid)
+        self.assertIn("llm.example.test", self.git("show", "HEAD:remote.py"))
 
     def test_a_merged_lanes_task_is_measured_from_the_main_commit_before_the_merge(self):
         # T-0804: main-thread commits made while the lane ran were counted as the lane task's out-of-scope edits
@@ -836,6 +860,28 @@ class Lanes(ForemanTestCase):
             self.assertEqual(slanes._slots(p, c.load_briefs(p), exclude=tid), ([], []))
             slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))  # not refused
 
+    def test_a_builder_stamp_with_no_lane_frees_its_slot_after_30_minutes(self):
+        # T-3995: T-3290..T-3292 were briefed for builders that never started (no lane) and held the cap of 2 for 2 days
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 31 * 60))
+        ids = []
+        for title, stamp, lane in (("Never started", old, None), ("Just briefed", c.now(), None),
+                                   ("Started", old, self.lane)):
+            tid = first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                                "--step", "s", "--json").stdout)["id"]
+            b = c.find_brief(p, tid)
+            b.meta["builder"] = stamp
+            if lane:
+                os.makedirs(lane, exist_ok=True)
+                b.meta["lane"] = lane
+            c.save_brief(p, b)
+            ids.append(tid)
+        working, _waiting = slanes._slots(p, c.load_briefs(p))
+        self.assertNotIn(ids[0], working, "stamped 31 min ago and no lane: the launch never happened")
+        self.assertIn(ids[1], working, "a builder just briefed may still be starting")
+        self.assertIn(ids[2], working, "a lane: the builder is at work")
+
     def test_too_many_unmerged_lanes_refuse_a_new_one_and_say_so(self):
         from sampo import lanes as slanes
         with mock.patch.object(slanes, "UNMERGED_MAX", 2):
@@ -848,6 +894,12 @@ class Lanes(ForemanTestCase):
             with self.assertRaises(c.PolicyError) as e:
                 slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))
             self.assertIn("wait unmerged", str(e.exception))
+            self.fm("task", "set", tid, "priority=urgent")  # T-3964: the urgent work that drains the pile passes
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))
+            self.assertIn("urgent", err.getvalue())
+            self.assertIn("unmerged", err.getvalue())
 
     def test_a_finished_lane_asks_for_a_merge_not_a_resume(self):
         tid, path = self.finished_builder()
@@ -1064,6 +1116,22 @@ class LoadGates(ForemanTestCase):
         out = io.StringIO()
         self.assertFalse(c.wait_for_load("fm check", limit=0, out=out))
         self.assertEqual(out.getvalue(), "")
+
+    def test_a_sustained_load_goes_ahead_at_once_and_a_spike_still_waits(self):
+        # T-3961: 56 of 74 load waits in the land log timed out: a load over the bar for 5 minutes won't fall in 60 s
+        import io
+        self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
+        os.environ["FOREMAN_HOST"] = "load=40,load5=40,cpus=16"
+        out = io.StringIO()
+        with mock.patch("time.sleep") as sleep:
+            self.assertFalse(c.wait_for_load("fm lane merge T-1", limit=60, out=out))
+        sleep.assert_not_called()
+        self.assertIn("sustained (40.0 over 5 minutes, 16 CPUs)", out.getvalue())
+        self.assertIn("going ahead", out.getvalue())
+        os.environ["FOREMAN_HOST"] = "load=40,load5=8,cpus=16"  # a spike: the 5-minute average is under the bar
+        out = io.StringIO()
+        self.assertTrue(c.wait_for_load("fm lane merge T-1", limit=0, out=out))
+        self.assertIn("waiting for the machine's load", out.getvalue())
 
     def test_fm_check_says_why_it_waits(self):
         self.fm("init")

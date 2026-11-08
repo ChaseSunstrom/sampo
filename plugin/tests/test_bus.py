@@ -401,6 +401,77 @@ class Conductor(Base):
         self.fm("conductor", "steer", "stop touching the guard")
         self.assertIn("stop touching the guard", self.note("sess-x")[1].get("additionalContext", ""))
 
+    def conductor(self, action, *words):
+        """T-3932: in-process, so _ssh can be stubbed: no test ever ssh's anywhere."""
+        import argparse
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            bus.cmd_conductor(argparse.Namespace(action=action, words=list(words), json=False, wake=False))
+        return buf.getvalue()
+
+    def test_send_to_one_remote_calls_only_that_remote_and_an_unknown_name_lists_the_known_ones(self):  # T-3932
+        import subprocess
+        from unittest import mock
+        from sampo import cli
+        self.fm("conductor", "remote", "add", "jarvis", "dev@192.0.2.7")
+        self.fm("conductor", "remote", "add", "other", "ops@10.0.0.2")
+        self.snap("sess-aaaa01")
+        calls = []
+
+        def ssh(r, command, timeout=20):
+            calls.append((r["target"], command))
+            return subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(bus, "_ssh", ssh):
+            self.conductor("send", "jarvis", "use the new parser")
+            self.assertEqual(len(calls), 1, calls)
+            self.assertEqual(calls[0][0], "dev@192.0.2.7")
+            self.assertIn("bus send all 'use the new parser'", calls[0][1])
+            self.assertNotIn("steer", calls[0][1], "a send is not a steer")
+            with self.assertRaises(cli.UsageError) as ctx:
+                self.conductor("send", "nobody", "hi")
+            fail = mock.patch.object(bus, "_ssh", lambda r, command, timeout=20: subprocess.CompletedProcess([], 255, "", "no"))
+            with fail, self.assertRaises(cli.UsageError) as dead:
+                self.conductor("send", "other", "hi")
+            self.assertIn("did not take the message", str(dead.exception))
+        self.assertEqual(len(calls), 1, "an unknown name calls no remote")
+        for known in ("jarvis", "other", "sess-aaaa01"):
+            self.assertIn(known, str(ctx.exception))
+
+    def test_send_to_a_session_prefix_writes_only_its_mailbox_and_steer_still_broadcasts(self):  # T-3932
+        import subprocess
+        from unittest import mock
+        self.fm("conductor", "remote", "add", "jarvis", "dev@192.0.2.7")
+        self.snap("sess-aaaa01")
+        self.snap("sess-bbbb02")
+        calls = []
+
+        def ssh(r, command, timeout=20):
+            calls.append(command)
+            return subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(bus, "_ssh", ssh):
+            self.conductor("send", "sess-aa", "only for you")
+            self.assertEqual(calls, [], "a local session's send never ssh's")
+            self.assertIn("only for you", self.note("sess-aaaa01")[1].get("additionalContext", ""))
+            self.assertNotIn("only for you", self.note("sess-bbbb02")[1].get("additionalContext", ""))
+            from sampo import cli
+            with self.assertRaises(cli.UsageError) as amb:
+                self.conductor("send", "sess-", "x")  # two live sessions share the prefix: nobody is sent to
+            self.assertIn("matches 2", str(amb.exception))
+            self.conductor("steer", "freeze the API")
+            self.assertEqual(len(calls), 1, "steer still reaches each remote")
+            self.assertIn("bus send all", calls[0])
+            self.assertIn("--type steer", calls[0])
+        self.assertIn("freeze the API", self.note("sess-bbbb02")[1].get("additionalContext", ""))
+
+    def test_the_real_parser_takes_send_and_an_unknown_name_exits_non_zero_listing_the_known(self):  # T-3932
+        p = self.fm("conductor", "send", "nosuch-name", "x", check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertNotIn("invalid choice", p.stderr, "send is a real conductor action")
+        self.assertIn("No remote or live session named nosuch-name", p.stderr)
+        self.assertNotIn("Traceback", p.stderr)
+
 
 class FailingMark(HookCase):
     """T-1449: one note builder raising (a full disk failed the bus's seen-mark write) dropped every PreToolUse note."""

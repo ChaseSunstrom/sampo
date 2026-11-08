@@ -253,12 +253,21 @@ def cmd_lane(args):
         if args.limit is not None and args.limit < 1:
             raise cli.UsageError("fm lane brief --limit N: N is at least 1")
         return brief_ready(p, args)
+    if args.action == "recover" and getattr(args, "all", False):  # T-3922: every stopped lane, no id
+        if args.id or p.lane:
+            raise cli.UsageError("fm lane recover --all takes no task id, and runs from the main checkout")
+        return recover_all(p, main, args)
     if not args.id:
         raise cli.UsageError(f"fm lane {args.action} needs a task id")
     if p.lane:  # T-0234 review: a lane (a builder's above all) doesn't hand itself back or start others
         raise c.PolicyError(f"fm lane {args.action} runs from the main checkout ({main}), not from inside a lane")
     b = cli.need_brief(p, args.id)
     branch = f"foreman/{b.id}"
+    if args.action == "accept":  # T-3922: a reviewed lane's audits, then the lane lands first
+        if not getattr(args, "audit", None):
+            raise cli.UsageError("fm lane accept ID --audit LENS 'how' 'result' (one per lens reviewed)")
+        from sampo import train
+        return train.accept(p, b, main, args)
     if args.action == "race":
         return score(p, b, main, args) if getattr(args, "score", False) else race(p, b, main, args)
     if args.action == "pick":
@@ -485,15 +494,19 @@ def recovery_text(cause, tid, detail=""):
     return STOP_CAUSES[cause][1].format(id=tid, reset=detail or "its reset time", grant=detail or "<category>")
 
 
-def stop_mark(p, tid, kind, arg="", log=""):
+def stop_mark(p, tid, kind, arg="", log="", tip=""):
     """Where the lane's last `fm lane merge` ended (conflict, refused, guard + its category, merged), on the brief: a busy
     ledger can't push it out of a tail. Reset when the lane is taken back; fm task unblock clears it too. `log`: a line
-    for the brief's Log (T-3500: why sampo lane land parked it)."""
+    for the brief's Log (T-3500: why sampo lane land parked it). `tip`: the lane commit that verdict judged (T-3994)."""
     from sampo import cli
     stamp = f"{kind} {c.now()} {arg}".strip()
 
     def mark(x):
         x.meta.update(lane_stop=stamp)
+        if tip:
+            x.meta["lane_stop_tip"] = tip
+        else:
+            x.meta.pop("lane_stop_tip", None)
         if log:
             x.append_log(log)
     cli.mutate(p, tid, mark, "lane_stop", {"kind": kind, "arg": arg})
@@ -501,10 +514,13 @@ def stop_mark(p, tid, kind, arg="", log=""):
 
 def parked(b):
     """T-3500: the lane's last merge or land conflicted or was refused and it has no commit since: it waits on a
-    recovery or a grant, not on another merge."""
+    recovery or a grant, not on another merge. T-3994: when the verdict names the tip it judged, any other head is
+    unjudged work (a fix committed while the train ran is dated before the park, so its date can't tell)."""
     kind, at, _ = _stop(b)
     if kind not in _STOP_KINDS or not b.meta.get("lane"):
         return False
+    if b.meta.get("lane_stop_tip"):
+        return _git(b.meta["lane"], "rev-parse", "HEAD", timeout=10).stdout.strip() == b.meta["lane_stop_tip"]
     last = _git(b.meta["lane"], "log", "-1", "--format=%ct", timeout=10).stdout.strip()
     return float(last or 0) <= at + 2
 
@@ -720,6 +736,40 @@ def recover(p, b, main, args):
         after = "The previous builder's process ended before it reported."
     rec = {"cause": cause, "attempt": len(tried) + 1, "agent_stopped": agent_stopped}
     return resume(p, b, main, args, ended=True, recover=rec, after=after)
+
+
+def recover_all(p, main, args):
+    """T-3922: sampo lane recover --all: every lane whose builder stopped before its merge (stop_causes; no_report waits
+    on a merge, not a recovery) gets its one recovery through recover, unforced. A recovered lane prints the Agent line
+    to launch; one left prints why, as recover says it. Nothing is forced or granted here."""
+    from sampo import cli
+    causes = stop_causes(p, c.load_briefs(p), fresh=True)
+    todo = sorted(t for t, (cause, _) in causes.items() if cause != "no_report")
+    if not todo:
+        return cli.out(args, {"launch": [], "left": []}, "No lane to recover.")
+    inner = argparse.Namespace(json=True, agent_stopped=bool(getattr(args, "agent_stopped", False)), force=None)
+    launch, left = [], []
+    for tid in todo:
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                recover(p, cli.need_brief(p, tid), main, inner)
+            data = json.JSONDecoder().raw_decode(buf.getvalue().strip())[0]
+        except (c.PolicyError, cli.UsageError) as e:
+            left.append((tid, c.fit(str(e).splitlines()[0], 300)))
+            continue
+        except ValueError:  # recover printed no report to read
+            left.append((tid, "recovered with no report to read its Agent line from"))
+            continue
+        if data.get("blocked"):
+            left.append((tid, c.fit(str(data.get("reason") or "blocked"), 300)))
+        elif data.get("agent"):
+            launch.append((tid, data["agent"]))
+        else:
+            left.append((tid, "recovered with no Agent line to launch"))
+    lines = [f"{tid}: launch: {agent}" for tid, agent in launch] + [f"{tid} left: {why}" for tid, why in left]
+    return cli.out(args, {"launch": [{"id": t, "agent": a} for t, a in launch],
+                          "left": [{"id": t, "why": w} for t, w in left]}, "\n".join(lines))
 
 
 def _ignored(path):
@@ -1826,8 +1876,12 @@ def _batch_refusal(err):
 def _slots(p, briefs, exclude=None):
     """T-3135, T-3145: the builders out, as (working, waiting). A lane whose builder returned (commits, clean tree, no
     live builder) or said so waits on a merge, not a slot. `exclude` leaves one task out (its own brief)."""
+    def never_started(x):  # T-3995: briefed, no lane 30 min on: the launch never happened (3 held the cap for 2 days)
+        at = c.parse_ts(x.meta.get("builder") or "")
+        return not (x.meta.get("lane") and os.path.isdir(x.meta["lane"])) and bool(at) and time.time() - at.timestamp() > 1800
     out = [x.id for x in briefs if x.meta.get("builder") and x.status not in c.CLOSED and x.id != exclude
-           and _stop(x)[0] != "merged"]  # T-3847: merged, open only for its close: no slot, no merge to wait on
+           and _stop(x)[0] != "merged"  # T-3847: merged, open only for its close: no slot, no merge to wait on
+           and not never_started(x)]
     try:  # unreadable lanes count as working: the cap errs toward fewer builders
         done = set(c.finished_lanes(p, briefs, quiet_min=0))
     except Exception:
@@ -1961,7 +2015,10 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         raise _batch_refusal(c.PolicyError(
             f"{len(working)} builders are still working ({', '.join(working)}), the cap is {cap}: wait for one to "
             f"return (fm lane max N raises the cap, up to {BUILDERS_MAX})"))
-    if len(waiting) >= UNMERGED_MAX:
+    if len(waiting) >= UNMERGED_MAX and b.priority == "urgent":  # T-3964: urgent work trains first and drains the pile
+        print(f"fm: {b.id} is urgent: briefed past the unmerged cap ({len(waiting)} finished lanes wait, the cap is "
+              f"{UNMERGED_MAX})", file=sys.stderr)
+    elif len(waiting) >= UNMERGED_MAX:
         raise _batch_refusal(c.PolicyError(f"{len(waiting)} finished lanes wait unmerged ({', '.join(waiting[:8])}…): merge some "
                                    f"first (fm lane merge ID)"))
     # T-2797: five lanes and a design agent drove load to 3.5 per core: gates timed out. T-3243: but the first lane is
@@ -2293,6 +2350,14 @@ def merge(p, b, main, unverified=None):
     # T-0382: --no-renames, so a file moved away is listed by its old path too (a rename deletes it from main)
     files = [f for f in _git(main, "diff", "--name-only", "--no-renames", "-z", f"HEAD...{tip}").stdout.split("\0")
              if f]
+    # T-3999: ship refused a private term only once 47 commits sat on the one that added it (T-3932's test named a
+    # real remote); here, the lane's own commits and files are judged as ship judges them, while amending is cheap
+    from sampo import release
+    held, where = release._private_hits(main, _git(main, "rev-list", f"HEAD..{tip}").stdout.split(), tip, set(files))
+    if held or where:
+        raise c.PolicyError(f"{b.id}: a private term (sampo private list) or a secrets-file value is in "
+                            f"{release.private_where(held, where)}; nothing was merged: redact it in the lane and amend "
+                            "the commits that carry it, then merge again")
     # T-0403: the main thread is often mid-task, so uncommitted edits the branch doesn't touch stay and the merge goes
     # ahead, as git's own does; a staged change (the merge commit would record it) or an overlapping edit refuses
     entries, staged, dirty, i = _git(main, "status", "--porcelain", "-z", "--untracked-files=no").stdout.split("\0"), [], set(), 0
@@ -2371,6 +2436,7 @@ def merge(p, b, main, unverified=None):
             x.meta.update(old)
             if clashed:  # T-2354: the marker rides the brief; recover reads it, a busy ledger can't push it out
                 x.meta["lane_stop"] = f"conflict {c.now()}"
+                x.meta.pop("lane_stop_tip", None)  # T-3994: no tip named, the date rule judges
         cli.mutate(p, b.id, restore, "lane_merge_base", {"branch": branch, "restored": True})
         raise cli.UsageError(f"git merge {branch} failed and was aborted: {(r.stderr or r.stdout).strip()[:300]}"
                                + (f"\nConflict brief: {brief}" if brief else ""))
@@ -2729,7 +2795,7 @@ def _pm_revert(p, main, sha):
     by = c.joinmore(r.get("reached_by") or [], 5)
     cli.mutate(p, r["task"], lambda x: (x.append_log(f"red after merge: {why}; {sha[:9]} reverted" + (f" (reached by: {by})" if by else "")),
                                         x.meta.update(lane_stop=f"refused {c.now()}", postmerge_red=why,
-                                                      postmerge_sha=sha)),
+                                                      postmerge_sha=sha), x.meta.pop("lane_stop_tip", None)),
                "lane_red_after_merge", {"sha": sha, "classes": classes, "reached_by": r.get("reached_by") or []})
     return True
 

@@ -783,7 +783,11 @@ class Handler(settingsserve.Handler):
 
     def _allowed(self):
         """T-3023: a loopback peer whose socket is the server's own uid needs no link (Host is still checked); another uid,
-        or none found, takes the token and cookie path."""
+        or none found, takes the token and cookie path. T-3063: a request a proxy has marked (Forwarded, X-Forwarded-*) came
+        from beyond this machine however its socket reads, so it is refused outright."""
+        if any(h.lower() == "forwarded" or h.lower().startswith("x-forwarded-") for h in self.headers.keys()):
+            self._send(403, "refused: forwarded request")
+            return None
         if (self.headers.get("Host") or "").lower() in self._mine():
             me = self.server.server_address[1]
             if peer_uid(self.client_address[0], self.client_address[1], me, saddr=self.server.server_address[0]) == os.getuid():
@@ -798,8 +802,10 @@ class Handler(settingsserve.Handler):
         defence: JSON only (a cross-site form can't send it without a preflight, which is never answered), Origin the
         server's own, the act token only this page's HTML carries. Nothing runs before all pass.
 
-        Limit: a forwarder the user runs (ssh -L, a VS Code port forward, socat) makes its remote clients look like the
-        user's uid, so they pass _allowed; they still need the token, which only a page they can already load holds."""
+        Limit (T-3063, measured by test_each_act_refuses_an_attacker_and_runs_for_the_user): a forwarder the user runs
+        (ssh -L, a VS Code port forward, socat) makes its remote clients look like the user's uid, so they pass _allowed.
+        A forward onto another port or a proxy's header fails the Host / Forwarded checks; a same-port forward that adds
+        nothing is a second copy of the user's own browser, and can load the page and its token: that one stays open."""
         path = self._allowed()
         if path is None:
             return

@@ -345,7 +345,7 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 - M and L work lists the approaches first.
 - The queue orders itself, dependencies included.
 - Each brief lives in Sampo's state, outside your repo, unless you turn on `sampo sync`.
-- `sampo private add '*.home.example.test'` (or a word) keeps a private name out of the repo: the mirror shows `<host>` or `<private>`, and `sampo ship` refuses a push that carries one. The terms stay in Sampo's state.
+- `sampo private add '*.home.example.test'` (or a word) keeps a private name out of the repo: the mirror shows `<host>` or `<private>`, a lane that adds one is refused at merge, and `sampo ship` refuses a push that carries one. The terms stay in Sampo's state.
 
 </details>
 
@@ -402,6 +402,7 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 - `sampo draft` has the top queued small task drafted on a throwaway branch while Claude waits; `sampo lane race T` has two builders take different approaches and `sampo lane pick` merges the better one.
 - A missing tool gets a note on the spot (`sampo which` searches every shelf, `sampo new tool` builds one) and holds the task until a run gets past it: in Claude Code (PostToolUseFailure), `sampo smith`, Codex, Gemini CLI and opencode. Installs queue for your yes (`sampo ask ID plugin --later`), shown in the band and the read-only MCP `which` and `grants` tools.
 - Every M plan names two readings, three or more options with how each fails, and `Choice N (NN%)`, a bet outcomes score; `sampo focus` and `sampo smith`'s planner hold to it. A one-way, ambiguous step parks for you. `sampo outcomes --judgment` sets the stated Brier beside the base rate's, with races (`sampo lane race`) and how often the first choice lost (also the MCP `calibration` tool). It also prints an interim read, labeled as never scored: bets on tasks closed 7 or more days ago, and how many held so far.
+- A shipped feature is done when its outcome is seen: `sampo task finish --outcome SIGNAL` (`event:KIND`, `verb:NAME`, `file:GLOB`, `row:PATH`, `metric:NAME`) is probed 1, 7 and 30 days after the merge, each result stamped with its check time, and `sampo outcomes --silent`, `sampo next` and `sampo doctor` flag the ones never seen (a signal nobody can read is `manual`, never passing). `sampo outcomes --census` rates every verb, skill, playbook, night job and hook note over 14 days as existing, used (a builder's own run doesn't count) and effective (a capture, task or decision right after it in the same session); `--capture` files up to 10 of the unused or ineffective ones.
 - `sampo ci-watch` follows the CI run of the commit you pushed and turns a failure into a fix task; `sampo pr threads` turns review comments into steps and `sampo pr train` merges approved, green PRs in order after a re-test.
 - **The forever loop.** `sampo loop on` keeps Sampo improving without being asked: when the queue and inbox run out, `sampo next` and the Stop drive start the next round instead of ending the run.
   - A round reviews what shipped since the last one, brainstorms past the newest earlier brainstorms, grounds the ideas in the code, queues every one that holds up and builds them.

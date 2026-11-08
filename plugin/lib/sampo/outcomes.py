@@ -1,12 +1,14 @@
 """What became of finished work (T-0616): reverted in git, fixed later by a FIX task that names it, or held; and the
 track record that follows (T-0641): per type and tier, how many closed on their first fm task finish and how many held.
 Everything is derived on demand from git, the briefs and the ledger, so there is nothing extra to keep in sync."""
+import bisect
 import collections
 import json
 import os
 import re
 import statistics
 import subprocess
+import sys
 import time
 
 from sampo import core as c
@@ -212,6 +214,8 @@ def cmd_outcomes(args):
     if getattr(args, "judgment", False):  # T-2461: fm calibration folded in here
         return cmd_calibration(args)
     p = cli.resolve(args)
+    if getattr(args, "silent", False) or getattr(args, "census", False) or getattr(args, "backfill", False):  # T-3934
+        return cmd_probes(args, p)
     if getattr(args, "predictions", False) or getattr(args, "unmute", None):  # T-2406: the prediction book
         from sampo import foresight
         if getattr(args, "ask_local", False):  # T-2912: the night job books the local model's guess first
@@ -1116,6 +1120,341 @@ def atlas_lines(p, outs=None, n=8):
             f"- {k}: {bad} of {total} needed a later fix or revert" + (f", {weak} closed weak" if weak else "")
             for k, total, bad, weak in rows] if rows else []
     return out or [f"No file or language with {ATLAS_MIN}+ finished tasks has needed a later fix yet."]
+
+
+# ---- T-3934: outcome probes (a shipped feature is done when its outcome is seen) and the census of what exists
+
+STAGES = (1, 7, 30)  # days after the merge a declared signal is checked
+PROBE_TTL = 6 * 3600  # sampo next and doctor reuse a result this long; sampo outcomes --silent always re-reads
+WINDOW_DAYS = 45  # a close older than this is out of the probe: its 30-day check has had its say, and the events are bounded
+SIGNAL = re.compile(r"\s*(event|verb|file|row|metric):\s*(\S.*?)\s*$")
+# the cases found 2026-11-08 in Foreman's own repo, probed like any declared signal: (id, title, signal, since)
+SEEDS = [("seed:skills", "Sampo's skills are loaded (20 of 26 were never loaded in a month)", "metric:skills_loaded",
+          "2026-11-05T00:00:00Z"),
+         ("seed:model-bench", "the night's model bench writes a row", "row:research/models/bench.jsonl", "2026-11-05T00:00:00Z"),
+         ("seed:call-cards", "call cards are run on a real task (they are unproven)", "verb:card", "2026-11-05T00:00:00Z")]
+CENSUS_SEEDS = {"misses": "caught 2 of 7 asks", "repeats": "can't see ops scripts",
+                "conductor": "remote was registered but the session relayed by tmux", "outcomes": "--predictions has 0 catches"}
+ACTIONS = ("capture", "task_new", "task_split", "scope_note", "step_edit", "decision")  # what an output can lead to
+ADJACENT = 600  # seconds: an action this soon after a use, in the same session, credits the use (ponytail: busy sessions
+# over-credit; upgrade to explicit acted-on events if it proves noisy)
+
+
+def stage(age):
+    """The latest probe (1, 7 or 30) an age in days has reached; 0 before the first."""
+    return max((s for s in STAGES if age >= s), default=0)
+
+
+def _builder(e):
+    return "builder" in str(e.get("agent_type") or "")  # ponytail: a builder's own run is no use, whatever lane scope it had
+
+
+def used_counts(events, slug):
+    """{"verb:X" | "skill:X" | "playbook:X" | "hook:KEY": [(session, ts)]} from global events, builders' runs left out."""
+    out = collections.defaultdict(list)
+    for e in events:
+        if e.get("kind") == "inject":
+            out[f"hook:{e.get('key')}"].append((None, e.get("ts")))
+        if e.get("project") != slug or _builder(e):
+            continue
+        at, tool, target = (e.get("session_id"), e.get("ts")), e.get("tool"), str(e.get("target") or "")
+        if e.get("kind") == "slash":
+            for s in e.get("skills") or []:
+                out[f"skill:{s}"].append(at)
+        elif e.get("kind") != "tool":
+            continue
+        elif tool == "Skill":
+            out[f"skill:{target.split(':')[-1]}"].append(at)
+        elif tool == "Read" and "/skills/playbooks/references/" in target and target.endswith(".md"):
+            out[f"playbook:{target.split('/skills/playbooks/references/')[1][:-3]}"].append(at)
+        elif tool == "Bash" and (m := re.match(r"\s*(?:sampo|fm)\s+([a-z][a-z-]*)", target)):
+            out[f"verb:{m.group(1)}"].append(at)
+    return out
+
+
+def _skills():
+    root = os.path.join(c.PLUGIN_ROOT, "skills")
+    return sorted(n for n in os.listdir(root) if os.path.isfile(os.path.join(root, n, "SKILL.md")))
+
+
+def _loaded_share(events, slug):
+    names = _skills()
+    used = used_counts(events, slug)
+    return sum(bool(used.get(f"skill:{n}")) for n in names) / (len(names) or 1)
+
+
+METRICS = {"skills_loaded": lambda ev, slug: _loaded_share(ev, slug) >= 0.5}  # half of the skills loaded in the window
+
+
+def _safe(rel):
+    return not (os.path.isabs(rel) or ".." in rel.split("/"))
+
+
+def _fired(p, kind, sel, since, ev, slug):
+    """"fired", "silent" or "manual" (a signal this can't read is never passing) for one signal since an ISO time."""
+    from glob import glob
+    mine = [e for e in ev if str(e.get("ts") or "")[:19] >= since[:19]]
+    if kind == "event":
+        return "fired" if any(e.get("kind") == sel or e.get("event") == sel for e in mine) else "silent"
+    if kind == "verb":
+        words = sel.split()
+        rx = re.compile(r"\s*(?:sampo|fm)\s+" + r"\s+".join(map(re.escape, words)) + r"\b")
+        return "fired" if any(e.get("kind") == "tool" and e.get("tool") == "Bash" and e.get("project") == slug
+                              and not _builder(e) and rx.match(str(e.get("target") or "")) for e in mine) else "silent"
+    if kind == "metric":
+        return "manual" if sel not in METRICS else "fired" if METRICS[sel](mine, slug) else "silent"
+    if not _safe(sel):
+        return "manual"
+    t0 = c.parse_ts(since).timestamp()
+    if kind == "file":
+        return "fired" if any(os.path.getmtime(f) >= t0 for f in glob(os.path.join(p.root, sel), recursive=True)
+                              if os.path.lexists(f)) else "silent"
+    path = next((x for x in (os.path.join(p.root, sel), os.path.join(c.state_dir(), sel)) if os.path.isfile(x)), None)
+    if not path:  # row:
+        return "silent"
+    for r in c.tail_jsonl(path, 200) or []:
+        stamp = r.get("at") or r.get("ts") if isinstance(r, dict) else None
+        if (str(stamp)[:19] >= since[:19]) if stamp else os.path.getmtime(path) >= t0:
+            return "fired"
+    return "silent"
+
+
+def _evaluate(p):
+    declared = []  # [(id, title, signal, merged)]
+    for b in c.load_briefs(p):
+        if b.status != "done" or (c.age_days(b.meta.get("updated")) or 0) > WINDOW_DAYS + 5:
+            continue
+        sig = (b.section("Outcome").strip().splitlines() or [""])[0]
+        if sig and (age := c.age_days(done_at(b))) is not None and age <= WINDOW_DAYS:
+            declared.append((b.id, b.title, sig, done_at(b)))
+    if os.path.isfile(os.path.join(p.root, "plugin", "lib", "sampo", "outcomes.py")):  # Foreman's own repo
+        declared += list(SEEDS)
+    rows, stamp, ev = [], c.now(), []
+    due = [d for d in declared if stage(c.age_days(d[3]) or 0)]
+    if due:
+        oldest = min(d[3] for d in due)
+        ev = [e for e in c.global_events(oldest) if e.get("project") == p.slug or e.get("kind") == "inject"]
+        names = tuple({m.group(2) for d in due if (m := SIGNAL.match(d[2])) and m.group(1) == "event"})
+        ev += [e for e in c.ledger_events(p, names, since=oldest)] if names else []
+    for tid, title, sig, merged in declared:
+        age = c.age_days(merged) or 0
+        m = SIGNAL.match(sig)
+        st = "waiting" if not stage(age) else "manual" if not m else _fired(p, m.group(1), m.group(2), merged, ev, p.slug)
+        rows.append({"task": tid, "title": title[:100], "signal": sig, "merged": merged, "age_days": round(age, 1),
+                     "stage": stage(age), "status": st, "checked": stamp})
+    return rows
+
+
+def _spawn(p):
+    """Refresh the cache in a detached child, never waited on (the Stop hook can't pay the probe's seconds); at most
+    one start per 10 minutes; FOREMAN_NO_BACKGROUND skips it."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND"):
+        return
+    mark = os.path.join(p.dir, "outcome-probes.refresh")
+    try:
+        if time.time() - os.path.getmtime(mark) < 600:
+            return
+    except OSError:
+        pass
+    try:
+        with open(mark, "w") as f:
+            f.write(c.now())
+        subprocess.Popen([sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "-p", p.slug, "outcomes", "--silent"],
+                         cwd=p.root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        pass
+
+
+def probes(p, fresh=False, cached=False):
+    """Every declared outcome's probe result, each stamped with its check time. Cached per project for PROBE_TTL.
+    cached=True (sampo next, doctor: the hook path) never evaluates inline: a stale or missing cache returns what it
+    holds and starts a detached refresh."""
+    path = os.path.join(p.dir, "outcome-probes.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        cache = {}
+    if not fresh and time.time() - cache.get("t", 0) < PROBE_TTL:
+        return cache.get("rows") or []
+    if cached and not fresh:
+        _spawn(p)
+        return cache.get("rows") or []
+    rows = _evaluate(p)
+    try:
+        tmp = f"{path}.{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"t": time.time(), "rows": rows}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+    return rows
+
+
+def flagged(rows):
+    """Due and not fired (silent, or manual: nobody can read it), oldest merge first."""
+    return sorted((r for r in rows if r["status"] in ("silent", "manual")), key=lambda r: r["merged"])
+
+
+def line(p):
+    """The one sampo next line: the oldest feature whose outcome was never seen (cached; empty when nothing is)."""
+    try:
+        bad = flagged(probes(p, cached=True))
+    except Exception:
+        return ""
+    if not bad:
+        return ""
+    r = bad[0]
+    return (f" · outcome not seen: {r['task']} ({c.fit(r['title'], 60)}) shipped {r['age_days']:g} days ago, signal "
+            f"{r['signal']} is {r['status']} (checked {r['checked']}); {len(bad)} in all: sampo outcomes --silent")
+
+
+def _census_items(p, days):
+    from sampo import cli
+    since = c.iso(time.time() - days * 86400)
+    ev = [e for e in c.global_events(since) if e.get("project") == p.slug or e.get("kind") == "inject"]
+    used = used_counts(ev, p.slug)
+    acts = collections.defaultdict(list)
+    for e in c.ledger_events(p, ACTIONS + ("night",), since=since):
+        if e.get("event") == "night":
+            for j in (e.get("data") or {}).get("ran") or []:
+                used[f"night:{j.get('name')}"].append((e.get("session_id"), e.get("ts")))
+        elif e.get("session_id") and (t := c.parse_ts(e.get("ts"))):
+            acts[e["session_id"]].append(t.timestamp())
+    root = next(a for a in cli.build_parser()._actions if hasattr(a, "choices") and a.choices)
+    ref = os.path.join(c.PLUGIN_ROOT, "skills", "playbooks", "references")
+    exists = ([("verb", v) for v in sorted(root.choices)] + [("skill", s) for s in _skills()]
+              + [("playbook", os.path.relpath(os.path.join(d, n), ref)[:-3]) for d, _, fs in os.walk(ref) for n in sorted(fs)
+                 if n.endswith(".md")])
+    try:
+        from sampo import night
+        exists += [("night", j[0]) for j in night.jobs(p)]
+    except Exception:  # a night job list that can't be built (no local model, no budget) leaves the jobs out
+        pass
+    exists += [("hook", k.split(":", 1)[1]) for k in sorted(used) if k.startswith("hook:")]
+    line = collections.defaultdict(list)  # session -> [(time, key)] of every verb, skill and playbook use
+    for key, us in used.items():
+        if key.split(":")[0] in ("verb", "skill", "playbook"):
+            for sid, ts in us:
+                if sid and (t := c.parse_ts(ts)):
+                    line[sid].append((t.timestamp(), key))
+    credit = collections.Counter()  # an action credits only the one use right before it: a busy session can't credit all
+    for sid, times in acts.items():
+        tl = sorted(line.get(sid, ()))
+        for a in times:
+            if (i := bisect.bisect_right([x[0] for x in tl], a) - 1) >= 0 and a - tl[i][0] <= ADJACENT:
+                credit[tl[i][1]] += 1
+    items = []
+    for kind, name in exists:
+        uses = used.get(f"{kind}:{name}", [])
+        hit = None if kind in ("hook", "night") else min(credit[f"{kind}:{name}"], len(uses))  # hooks and night: unmeasured
+        items.append({"kind": kind, "name": name, "exists": True, "used": len(uses), "effective": hit})
+    return items
+
+
+def census(p, days=14):
+    """Every verb, skill, playbook, night job and hook note at three levels over the last days: exists, used (a run or
+    load outside a builder), effective (an action followed in the same session)."""
+    items = _census_items(p, days)
+    for i in items:
+        i["flag"] = "never used" if not i["used"] else "used, never effective" if i["effective"] == 0 else ""
+    return items
+
+
+def census_captures(p, items, limit=10):
+    """Titles for the flagged items, the 2026-11-08 finds first, at most limit, none already on the board."""
+    bad = [i for i in items if i["flag"] and i["kind"] != "hook"]
+    bad.sort(key=lambda i: (i["name"] not in CENSUS_SEEDS or i["kind"] != "verb", i["kind"], i["name"]))
+    have = {b.title for b in c.load_briefs(p)}
+    out = []
+    for i in bad:
+        t = f"Outcome census: {i['kind']} {i['name']} is {i['flag']} in 14 days: wire it in (who should reach it, when) or retire it"
+        if i["kind"] == "verb" and i["name"] in CENSUS_SEEDS:
+            t += f" ({CENSUS_SEEDS[i['name']]})"
+        if t not in have:
+            out.append(t)
+    return out[:limit]
+
+
+VERB = re.compile(r"\b(?:sampo|fm) (?!task\b)([a-z][a-z-]{2,})")
+GENERIC = {"check", "next", "status", "focus", "doctor", "evidence", "finish", "the", "and", "for", "run", "can"}
+
+
+def backfill(p, days=30):
+    """[(brief, signal or None)] for each FEATURE closed within days that declares no Outcome: the first `sampo VERB`
+    its criteria or its CHANGELOG line names (a verb someone runs is an outcome we can see), else None. ponytail: only
+    verbs; add file:/row: guesses when a pattern in the real proposals earns it."""
+    try:
+        with open(os.path.join(p.root, "CHANGELOG.md"), encoding="utf-8") as f:
+            log = f.read().splitlines()
+    except OSError:
+        log = []
+    from sampo import cli
+    real = set(next(a for a in cli.build_parser()._actions if hasattr(a, "choices") and a.choices).choices)
+    out = []
+    for b in c.load_briefs(p):
+        if b.status != "done" or b.meta.get("type") != "FEATURE" or b.section("Outcome").strip():
+            continue
+        if (age := c.age_days(done_at(b))) is None or age > days:
+            continue
+        text = b.section("Acceptance criteria") + " " + " ".join(l for l in log if f"({b.id})" in l)
+        verbs = [v for v in VERB.findall(text) if v in real and v not in GENERIC]
+        out.append((b, f"verb:{verbs[0]}" if verbs else None))
+    return sorted(out, key=lambda r: done_at(r[0]))
+
+
+def cmd_backfill(args, p):
+    from sampo import cli
+    rows = backfill(p, getattr(args, "days", None) or 30)
+    todo = [(b, s) for b, s in rows if s]
+    if getattr(args, "apply", False):
+        for b, s in todo:
+            cli.mutate(p, b.id, lambda x, s=s: x.set_section("Outcome", f"{s}\n\nRead it: sampo outcomes --silent"),
+                       "outcome_backfill", {"signal": s})
+    return cli.out(args, {"proposals": [{"task": b.id, "title": b.title, "signal": s} for b, s in rows],
+                          "applied": bool(getattr(args, "apply", False))},
+                   "\n".join([f"{len(todo)} of {len(rows)} FEATURE(s) get a signal" + (" (written)" if getattr(args, "apply", False)
+                                                                                  else " (--apply writes them)") + ":"]
+                             + [f"  {b.id} {s or '(none derivable)'}  {c.fit(b.title, 70)}" for b, s in rows]))
+
+
+def cmd_probes(args, p):
+    from sampo import cli
+    if getattr(args, "backfill", False):
+        return cmd_backfill(args, p)
+    if getattr(args, "silent", False):
+        rows = probes(p, fresh=True)
+        bad = flagged(rows)
+        return cli.out(args, {"silent": bad, "checked": len(rows)},
+                       "\n".join([f"{len(bad)} of {len(rows)} declared outcome(s) never seen at 1, 7 or 30 days:"]
+                                 + [f"  {r['task']} [{r['status']}, {r['age_days']:g} d, probe {r['stage']}] "
+                                    f"{c.fit(r['title'], 70)}: {r['signal']} (checked {r['checked']})" for r in bad]))
+    items = census(p, getattr(args, "days", None) or 14)
+    flags = [i for i in items if i["flag"]]
+    made = []
+    if getattr(args, "capture", False):
+        from sampo import cli as _cli
+        with c.lock(p.dir):
+            for t in census_captures(p, items):
+                f = _cli._create(p, t, "FEATURE", "S", "captured", raw=t, source="discovered")
+                c.log_event(p, "capture", task=f.id, data={"source": "discovered", "from": "outcomes --census"},
+                            session=_cli.session())
+                made.append(f.id)
+            c.regen_views(p)
+    by = collections.Counter((i["kind"], i["flag"]) for i in flags)
+    head = [f"{len(items)} item(s), last 14 days: "
+            + ", ".join(f"{n} {k} {f}" for (k, f), n in sorted(by.items())) + (f"; captured {', '.join(made)}" if made else "")]
+    order = ("verb", "skill", "night", "playbook")  # each kind shows its first 12, ineffective before never used
+    show = []
+    for k in order:
+        mine = sorted((i for i in flags if i["kind"] == k), key=lambda i: (
+            not (k == "verb" and i["name"] in CENSUS_SEEDS), i["flag"] != "used, never effective", -i["used"], i["name"]))
+        show += mine[:12]
+    return cli.out(args, {"items": items, "captured": made},
+                   "\n".join(head + [f"  {i['kind']} {i['name']}: {i['flag']} (used {i['used']}, effective {i['effective']})"
+                                     for i in show] + [f"  … {len([i for i in flags if i['kind'] != 'hook']) - len(show)} more "
+                                                       "(--json)"]))
 
 
 def caution(p, scope):

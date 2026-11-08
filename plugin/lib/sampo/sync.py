@@ -226,8 +226,30 @@ def _walk(base):
         dirs[:] = sorted(x for x in dirs if not os.path.islink(os.path.join(d, x)))
         for f in sorted(files):
             path = os.path.join(d, f)
-            if f.endswith(".md") and not os.path.islink(path) and os.path.isfile(path):  # no FIFO or device reads
+            if (f.endswith(".md") or f in LINE_FILES) and not os.path.islink(path) and os.path.isfile(path):  # no FIFO or device reads
                 yield os.path.relpath(os.path.join(d, f), base).replace(os.sep, "/")
+
+
+LINE_FILES = ("exam.jsonl", "acts.jsonl")  # T-3333: Kalevala's logs merge by line across machines
+MAX_LINE_FILE = 50_000_000  # bytes; the logs only grow, so they get a far higher import bound than a note
+
+
+def _limit(rel):
+    return MAX_LINE_FILE if os.path.basename(rel) in LINE_FILES else MAX_IMPORT
+
+
+def merge_lines(a, b):
+    """The lines of a and b, each once (the same line twice is one), oldest first by its "at"/"ts" (a line without one
+    sorts by its text): one order whichever side merges, so two machines converge and a repeat merge changes nothing."""
+    def key(line):
+        try:
+            d = json.loads(line)
+            t = d.get("at") or d.get("ts") or "" if isinstance(d, dict) else ""
+        except ValueError:
+            t = ""
+        return (str(t), line)
+    lines = sorted({l.rstrip() for l in (a + "\n" + b).splitlines() if l.strip()}, key=key)
+    return "\n".join(lines) + "\n" if lines else ""
 
 
 def _travels(rel):
@@ -320,6 +342,8 @@ def export(p):
     if not os.path.exists(readme) or not old and os.path.isfile(readme) and _read(readme) != README \
             and _read(readme).startswith(("# " + DIR + "\n", "# " + OLD + "\n")):  # fm's heading: not the user's own
         _write(readme, README)
+    if not os.path.exists(os.path.join(root, ".gitattributes")):  # T-3333: git keeps both sides of concurrent appends
+        _write(os.path.join(root, ".gitattributes"), "*.jsonl merge=union\n")
     for lrel in _local(p):
         m = _ID.match(os.path.basename(lrel)) if lrel.startswith(BRIEFS) else None
         if lrel.startswith(BRIEFS) and not m:
@@ -358,6 +382,16 @@ def export(p):
             os.remove(os.path.join(root, rel))
             base.pop(rel, None)
             stamps.pop(rel, None)
+    import time
+    from sampo import eco, mandate
+    # one file per machine, so pulls never conflict; recomputed at most every 10 minutes (the seal scans the ledger)
+    mid = re.sub(r"[^A-Za-z0-9_.-]", "_", str(eco.machine()["id"]))
+    fdest = os.path.join(root, "fleet", mid + ".md")
+    if not os.path.isfile(fdest) or time.time() - os.path.getmtime(fdest) > 600:
+        fleet = "# fleet\n\nT-3334: this machine's drift fingerprint parts (hashes only).\n\n" \
+                + "".join(f"- {k}: {v or '-'}\n" for k, v in mandate.parts(p).items())
+        if not os.path.isfile(fdest) or _read(fdest) != fleet:
+            _write(fdest, fleet)
     _save_base(p, base)
     if stamps != old:
         c.write_atomic(os.path.join(p.dir, STAMPS), json.dumps(stamps, sort_keys=True))
@@ -416,8 +450,8 @@ def import_(p):
     for rel in _walk(root):
         if not _travels(rel):
             continue
-        if os.path.getsize(os.path.join(root, rel)) > MAX_IMPORT:
-            res["conflicts"].append(f"{rel}: too large to import (over {MAX_IMPORT // 1000} kB); left in the repo")
+        if os.path.getsize(os.path.join(root, rel)) > _limit(rel):
+            res["conflicts"].append(f"{rel}: too large to import (over {_limit(rel) // 1000} kB); left in the repo")
             continue
         cur = _read(os.path.join(root, rel))
         h = _sha(cur)
@@ -468,13 +502,20 @@ def import_(p):
                     os.remove(local.path)  # archived (or restored) on the other side
                 _write(dest, theirs.render())
                 res["updated"] += 1
-        elif rel in ("decisions.md", "fixes.md"):  # append-only: take the lines this copy lacks (T-1032: fixes)
+        elif rel in ("decisions.md", "fixes.md") or os.path.basename(rel) == "steers.md":  # T-3333: steers too, # append-only: take the lines this copy lacks (T-1032: fixes)
             have = _read(dest) if os.path.exists(dest) else ""
             seen = set(have.splitlines()) | set(_outgoing(rel, have).splitlines())  # ours, as exported too
             extra = [l for l in c.plain_lines(cur).splitlines() if l.strip() and l not in seen]
             if extra:
                 _write(dest, have.rstrip("\n") + ("\n" if have else "") + "\n".join(extra) + "\n")
                 res["updated"] += 1
+        elif os.path.basename(rel) in LINE_FILES:  # T-3333: both sides' lines, each once, in one order
+            have = _read(dest) if os.path.exists(dest) else ""
+            ours = set(_outgoing(rel, have).splitlines()) - set(have.splitlines())  # T-3508: ours, as exported
+            merged = merge_lines(have, "\n".join(l for l in c.plain_lines(cur).splitlines() if l not in ours))
+            if merged != have:
+                _write(dest, merged)
+                res["updated" if have else "added"] += 1
         elif not os.path.exists(dest):
             _write(dest, c.plain_lines(cur))  # pulled text: no terminal sequences
             res["added"] += 1
@@ -488,7 +529,7 @@ def import_(p):
 def incoming(p):
     """Has the repo changed any mirrored file since fm last wrote or read it?"""
     base, root = c.read_meta(p).get("sync_base") or {}, mirror(p)
-    return any(_travels(rel) and os.path.getsize(os.path.join(root, rel)) <= MAX_IMPORT
+    return any(_travels(rel) and os.path.getsize(os.path.join(root, rel)) <= _limit(rel)
                and base.get(rel) != _sha(_read(os.path.join(root, rel))) for rel in _walk(root))
 
 

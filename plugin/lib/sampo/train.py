@@ -9,11 +9,11 @@ changes reach (_affected_gate); the full suite then runs on the landed merges in
 import concurrent.futures
 import contextlib
 import hashlib
-import io
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -25,6 +25,7 @@ SKIPPED = "probe skipped"  # the note a held green run leaves; the report counts
 PROBE_JOBS = 3 # T-3531: pre-filter probes at once
 _FAILED = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([\w.]+)\)", re.M)  # unittest's red line: test (where)
 _LISTED = re.compile(r"^  failed class: (\S+)", re.M)  # run.py's every red class, one per line, never-started ones too
+_CUT = re.compile(r"^  not run class: (\S+)", re.M)  # T-3936: run.py's classes the deadline cut (the train runs them too)
 _COUNT = re.compile(r"^FAILED \((\d+) classes", re.M)  # run.py's summary count
 _FIXTURES = ("setUpModule", "tearDownModule", "setUpClass", "tearDownClass")  # unittest names the module or class
 _FRAME = re.compile(r'^\s*File ".*", line \d+.*$', re.M)  # a traceback frame: the test and the code on its stack
@@ -138,18 +139,19 @@ def _red(out):
     """Every test name a red run fails, or [] when it can't be sure it has them all (then nothing narrows to them and
     the gate reruns whole). unittest's FAIL/ERROR lines give the class (mod.Class.test), the module or class a fixture
     failed in (setUpModule (mod)) and a module that won't import (unittest.loader._FailedTest.mod: by its name);
-    run.py's `failed class:` lines add the ones that never started. [] when a line names nothing runnable, or
+    run.py's `failed class:` lines add the ones that failed whole and its `not run class:` lines the ones that never started. [] when a line names nothing runnable, or
     run.py's count disagrees with its lines. A name inside another (mod.Class.test in mod.Class) is dropped."""
     got, lines = set(), _FAILED.findall(out)
     for test, where in lines:
         got.add(test if where.startswith("unittest.loader._FailedTest") else where if test in _FIXTURES
                 else where.rsplit(".", 1)[0] if "." in where else "")
     listed = set(_LISTED.findall(out))
+    cut = set(_CUT.findall(out))  # T-3936: classes the deadline cut: run, but not in FAILED's count
     count = _COUNT.findall(out)
     whole = len(lines) == len(re.findall(r"^(?:FAIL|ERROR): ", out, re.M)) and "" not in got  # every line read
     if (count and int(count[-1]) != len(listed)) or not (listed and count or whole):
         return []
-    names = {n for n in got | listed if n and not n.startswith("unittest.")}
+    names = {n for n in got | listed | cut if n and not n.startswith("unittest.")}
     if any(n.startswith("unittest.") for n in listed) and not any(w.startswith("unittest.") for _, w in lines):
         return []  # run.py says a module failed to import but no line says which
     return sorted(n for n in names if not any(n.startswith(m + ".") for m in names))
@@ -623,6 +625,9 @@ def cmd(p, args, main):
         lines.append(f"The test gate ran {len(got['affected'])} affected test module(s), not the full suite "
                      "(FOREMAN_FULL_GATE=1 runs it); the full suite verifies the landed merges in the background.")
     lines.append("sampo check now reuses this pass while only CHANGELOG.md and the sync mirror change.")
+    if got["merged"] and (sh := _ship(p, False)):  # T-3849: a train by hand ships too, on a grant already given
+        got["ship"] = sh[1]
+        lines.append(f"Ship ({sh[0]}'s grant): {c.fit(c.plain(sh[1]), 300)}")
     return cli.out(args, got, "\n".join(lines))
 
 
@@ -643,12 +648,40 @@ def landing(p):
 
 
 def _sampo(argv):
-    """(exit code, stdout, stderr) of one sampo verb run in this process: the checks its command line runs."""
-    from sampo import cli
-    out, err = io.StringIO(), io.StringIO()
-    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-        rc = cli.main(argv)
-    return rc, out.getvalue(), err.getvalue()
+    """(exit code, stdout, stderr) of one sampo verb, the checks its command line runs, in a fresh process: a land
+    outlives the trains it merges, so its own code would judge their verbs and docs as unknown (T-3970)."""
+    r = subprocess.run([sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), *argv], capture_output=True,
+                       text=True)
+    return r.returncode, r.stdout, r.stderr
+
+
+def _ship(p, keep):
+    """T-3849: sampo ship on a publish grant someone already gave (never granted here): (grant id, one line) or None.
+    keep=True (between a land's trains) gives a spent grant back with a Log line so the next train ships too; keep=False
+    (the land's or a train's last ship) leaves it spent, spending it when nothing was left to push. A refusal is a
+    line, never an error: it never stops the land."""
+    from sampo import release
+    grant = next((b for b in c.load_briefs(p) if "publish" in (b.meta.get("allow") or [])), None)
+    if not grant:
+        return None
+    print(f"sampo lane land: shipping on {grant.id}'s publish grant", file=sys.stderr, flush=True)
+    try:
+        rc, out, err = _sampo(["ship", "--task", grant.id])
+    except Exception as e:  # noqa: BLE001 — a failed ship is said, never stops the land
+        rc, out, err = 1, "", f"{type(e).__name__}: {e}"
+    line = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out)
+    if rc:
+        return grant.id, line
+    with c.lock(p.dir):
+        b = c.find_brief(p, grant.id)
+        held = "publish" in (b.meta.get("allow") or [])
+        if keep and not held:
+            b.meta["allow"] = [*(b.meta.get("allow") or []), "publish"]
+            b.append_log("publish grant kept for the land's next train (spent at its last ship)")
+            c.save_brief(p, b)
+    if held and not keep:
+        release._spend(p, grant.id, "sampo lane land")
+    return grant.id, line
 
 
 def _why(text):
@@ -722,7 +755,8 @@ def _land(p, main, batch):
     landed = [b.id for b in briefs if b.status not in c.CLOSED and b.meta.get("lane") and lanes._stop(b)[0] == "merged"
               and (t := tip(b)) and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode]
     parked, ready, trains, stopped = [], [], 0, ""
-    closed, hand = [], []
+    closed, hand, shipped = [], [], None
+    by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
 
     def close(ids):  # T-3796: each lane closes once its train lands it, not after the whole pile has trained
         for tid in ids:
@@ -736,7 +770,8 @@ def _land(p, main, batch):
 
     def sort(bs):  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
         for b in sorted(bs, key=land_key):
-            r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tip(b) or "HEAD")
+            by[b.id], tested[b.id] = b, tip(b)
+            r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tested[b.id] or "HEAD")
             if r.returncode == 1:
                 files = [f for f in r.stdout.splitlines()[1:] if f]
                 parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
@@ -767,6 +802,7 @@ def _land(p, main, batch):
             break
         ids, ready = ready[:batch], ready[batch:]
         print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
+        tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts
         try:
             got = train(p, main, ids)
         except c.PolicyError as e:
@@ -781,18 +817,17 @@ def _land(p, main, batch):
         landed += got["merged"]
         parked += got["left_out"]
         close(got["merged"])
+        if got["merged"]:  # T-3849: reaches the remote per train, the grant kept for the next
+            shipped = _ship(p, True) or shipped
     close(left)
     for tid, why in parked:
         kind, arg = _park_kind(why)
-        lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}")
-    ship = ""
-    grant = next((b for b in c.load_briefs(p) if "publish" in (b.meta.get("allow") or [])), None) if landed else None
-    if grant:  # never granted here: only a grant someone already gave (sampo task set ID --allow publish)
-        print(f"sampo lane land: shipping on {grant.id}'s publish grant", file=sys.stderr, flush=True)
-        rc, out, err = _sampo(["ship", "--task", grant.id])
-        ship = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out)
+        lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}", tip=tested.get(tid, ""))
+    last = _ship(p, False) if landed else None  # the land's last ship spends the grant
+    shipped = last if last and not last[1].startswith("nothing to ship") else shipped or last
+    grant, ship = shipped or (None, "")
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
-            "stopped": stopped, "ship": ship, "ship_grant": grant.id if grant else None, "lines": closed}
+            "stopped": stopped, "ship": ship, "ship_grant": grant, "lines": closed}
 
 
 def _close_gaps(b):
@@ -898,6 +933,17 @@ def cmd_land(p, args, main):
         if landing(p):
             return cli.out(args, {"queued": first}, f"Land: {', '.join(first)} train next, at the running land's next "
                                                     "train boundary.")
+    if getattr(args, "bg", False):  # T-3922: started detached, returned at once; a land takes hours
+        if landing(p):
+            return cli.out(args, {"land": "running"}, "A land is already running: it trains the finished lanes at its "
+                                                      "next train boundary.")
+        started = spawn_land(p, main)
+        if started is None:
+            return cli.out(args, {"land": "not started"}, "Land not started in the background (FOREMAN_NO_BACKGROUND or "
+                                                          "paused): sampo lane land runs it here.")
+        pid, log = started
+        return cli.out(args, {"land": "started", "pid": pid, "log": log},
+                       f"land started in the background (pid {pid}, log {log}); it trains the finished lanes.")
     got = land(p, main, args.batch)
     lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {len(got['closed'])} closed, "
              f"{len(got['hand'])} left for a hand close, {len(got['parked'])} parked."
@@ -910,4 +956,59 @@ def cmd_land(p, args, main):
     lines += [f"Stopped: {got['stopped']}"] if got["stopped"] else []
     lines += [f"Ship ({got['ship_grant']}'s grant): {c.fit(c.plain(got['ship']), 300)}"] if got["ship_grant"] else []
     return cli.out(args, got, "\n".join(lines))
+
+
+def spawn_land(p, main):
+    """T-3922: a detached `fm lane land` in its own session, its output appended to the state's land.log; never waited on.
+    None when FOREMAN_NO_BACKGROUND is set (the tests') or sampo is paused (T-0591: paused, it waits)."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND") or c.panicked():
+        return None
+    log = os.path.join(p.dir, "land.log")
+    with open(log, "a", encoding="utf-8") as out:  # ponytail: the log only appends; rotate it when it grows
+        proc = subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "lane", "land"], cwd=main,
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+    return proc.pid, log
+
+
+# ---------------------------------------------------------------- sampo lane accept (T-3922)
+
+def accept(p, b, main, args):
+    """T-3922: a reviewed lane in one call: each --audit (lens, how, result) recorded on its brief from the lane's tree,
+    the close's missing lines named, and the lane queued first (first_ids): into a running land at its next train
+    boundary, or with none running a detached land starts now and trains it first (accept never waits on it). Only a lane awaiting a merge is queued (quiet 0:
+    the review just happened); any other lane says why. Nothing is forced, granted or closed beyond land's own close."""
+    from sampo import cli
+    from sampo import lanes
+    rows = [tuple(x) for x in (getattr(args, "audit", None) or [])]
+    if not rows:
+        raise cli.UsageError("sampo lane accept needs --audit LENS 'how' 'result' (one per lens reviewed)")
+    bad = sorted({lens for lens, _, _ in rows if lens not in c.AUDIT_LENSES})
+    if bad:  # refused before anything is recorded
+        raise cli.UsageError(f"unknown lens {', '.join(bad)}; one of {', '.join(c.AUDIT_LENSES)}")
+    path = b.meta.get("lane") or ""
+    if not path or not os.path.isdir(path):
+        raise c.PolicyError(f"{b.id} has no lane to accept (fm lane brief {b.id} starts a builder)")
+    tree = c.worktree_id(path)
+    for lens, how, result in rows:
+        cli.mutate(p, b.id, lambda x, lens=lens, how=how, result=result: x.add_audit(lens, how, result, tree=tree),
+                   "audit", {"lens": lens, "how": how[:200], "result": result[:300]})
+    b = cli.need_brief(p, b.id)
+    lines = [f"accept {b.id}: {len(rows)} audit(s) recorded ({', '.join(sorted({lens for lens, _, _ in rows}))})."]
+    lines += [f"  the close will be refused: {g} (add it to the brief's Close fields before the land closes it)"
+              for g in _close_gaps(b)]
+    if b.id not in lanes.awaiting_merge(p, c.load_briefs(p), 0):
+        lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
+                     "fm lane list says what it waits on")
+        return cli.out(args, {"id": b.id, "queued": False, "audits": len(rows)}, "\n".join(lines))
+    first_ids(p, [b.id])
+    if landing(p):
+        lines.append(f"  {b.id} queued first in the running land: it trains at the land's next train boundary.")
+        return cli.out(args, {"id": b.id, "queued": True, "land": "running"}, "\n".join(lines))
+    started = spawn_land(p, main)  # none running: a detached land trains it first; a land takes hours, so never waited on
+    if started is None:
+        lines.append("  land not started in the background (FOREMAN_NO_BACKGROUND or paused): sampo lane land runs it here")
+        return cli.out(args, {"id": b.id, "queued": True, "land": "not started"}, "\n".join(lines))
+    pid, log = started
+    lines.append(f"  land started in the background (pid {pid}, log {log}); it trains {b.id} first.")
+    return cli.out(args, {"id": b.id, "queued": True, "land": "started", "pid": pid, "log": log}, "\n".join(lines))
 

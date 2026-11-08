@@ -1,6 +1,7 @@
 """T-0808: run.py takes test module names positionally, so fm check affected can hand it {names}."""
 import contextlib
 import os
+import re
 import sys
 import unittest
 from unittest import mock
@@ -386,6 +387,63 @@ class Hang(unittest.TestCase):
         self.assertIn("::error title=run.py::1 classes never started", out.getvalue())
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             run.parse(["--deadline", "0"])  # review: 0 read as falsy turned the deadline off
+
+
+class DeadlineIsNotFailure(unittest.TestCase):
+    """T-3936: classes cut by the deadline read 'not run', and a load cap-kill gets one solo retry."""
+
+    def main(self, results, load=0.0):
+        import contextlib
+        import io
+        import tempfile
+        calls = []
+
+        def fake(cid, k, timeout=480, deadline=None):
+            calls.append(cid)
+            r = results[cid]
+            return r.pop(0) if isinstance(r, list) else r
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as d:
+            for m in ({c.split(".")[0] for c in results}):
+                with open(os.path.join(d, m + ".py"), "w") as f:
+                    f.write("import unittest\n" + "".join(f"class {c.split('.')[1]}(unittest.TestCase):\n"
+                            "    def test_a(self):\n        pass\n" for c in results if c.startswith(m + ".")))
+            with mock.patch.object(run, "HERE", d), mock.patch.object(run, "skipped", return_value=set()), \
+                    mock.patch.object(run, "run_one", side_effect=fake), \
+                    mock.patch.object(run, "load_per_cpu", return_value=load), \
+                    mock.patch.object(sys, "argv", ["run.py", "-j", "1", "-p", *[m + ".py" for m in {c.split(".")[0] for c in results}]]), \
+                    in_process(FOREMAN_NO_TEST_CACHE="1", FM_TEST_TIMES=os.path.join(d, "t.json")), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                code = run.main()
+            for m in {c.split(".")[0] for c in results}:  # the next call's folder holds another file of that name
+                sys.modules.pop(m, None)
+        return code, err.getvalue(), calls
+
+    def test_cut_classes_are_not_run_not_failed(self):
+        bad = ("test_t1.A", 1, "boom\n", 1, 1.0)
+        cut = lambda c: (c, 1, run.NOT_STARTED, 0, 0.0)  # noqa: E731
+        code, err, _ = self.main({"test_t1.A": bad, "test_t1.B": cut("test_t1.B"), "test_t1.C": cut("test_t1.C")})
+        self.assertEqual(code, 1)
+        self.assertIn("FAILED (1 classes: test_t1.A)", err)
+        self.assertIn("not run (deadline): 2\n  not run class: test_t1.B\n  not run class: test_t1.C\n", err)
+        self.assertEqual(re.findall(r"^  failed class: (\S+)", err, re.M), ["test_t1.A"])  # core's failing classes
+        code, err, _ = self.main({"test_t1.B": cut("test_t1.B"), "test_t1.C": cut("test_t1.C")})
+        self.assertEqual(code, 124)
+        self.assertIn("INCOMPLETE", err)
+        self.assertTrue(err.rstrip().endswith("run.py: stopped at its deadline"))  # cli._timed_out reads it
+        self.assertNotIn("FAILED", err)
+
+    def test_a_cap_kill_under_load_is_retried_once_alone(self):
+        kill = ("test_t2.A", -9, "x\nrun.py: test_t2.A still running after 480s: killed (T-1808)\n", 0, 480.0)
+        ok = ("test_t2.A", 0, "Ran 1 test\n", 1, 3.0)
+        code, err, calls = self.main({"test_t2.A": [kill, ok]}, load=2.0)
+        self.assertEqual((code, calls), (0, ["test_t2.A"] * 2))
+        self.assertIn("test_t2.A passed alone (load 2.0 per CPU", err)
+        code, err, calls = self.main({"test_t2.A": [kill, ok]}, load=0.5)  # an idle host: a real hang, not retried
+        self.assertEqual((code, calls), (1, ["test_t2.A"]))
+        self.assertIn("FAILED", err)
+        code, err, calls = self.main({"test_t2.A": [kill, kill]}, load=2.0)  # still killed alone: failed, one retry only
+        self.assertEqual((code, calls), (1, ["test_t2.A"] * 2))
 
 
 class HangsWhenAsked(unittest.TestCase):

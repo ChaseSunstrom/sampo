@@ -1,7 +1,7 @@
 (function () {
   var root = document.documentElement;
   try { var t = localStorage.getItem("fm-theme"); if (t) root.setAttribute("data-theme", t); } catch (e) {}
-  var toggle = document.querySelector(".theme");
+  var toggle = document.getElementById("theme");  /* T-3996: the one header's switch, on every page */
   if (toggle) toggle.addEventListener("click", function () {
     var dark = root.getAttribute("data-theme") === "dark" ||
       (!root.getAttribute("data-theme") && matchMedia("(prefers-color-scheme: dark)").matches);
@@ -9,6 +9,17 @@
     root.setAttribute("data-theme", next);
     try { localStorage.setItem("fm-theme", next); } catch (e) {}
   });
+
+  document.querySelectorAll(".menu nav a").forEach(function (a) { a.addEventListener("click", function () { a.closest("details").open = false; }); });
+  document.addEventListener("click", function (e) { var m = document.querySelector(".menu[open]"); if (m && !m.contains(e.target)) m.open = false; });
+
+  /* T-3996: the side list scrolls on its own (down on a wide screen, sideways on a phone): open it at this page's entry */
+  var side = document.querySelector(".side"), cur = side && side.querySelector("[aria-current]");
+  if (cur) {  // rects, not offsets: the sticky list is its links' offsetParent on a wide screen, the body on a phone
+    var at = cur.getBoundingClientRect(), box = side.getBoundingClientRect();
+    if (side.scrollHeight > side.clientHeight) side.scrollTop += at.top - box.top - (side.clientHeight - at.height) / 2;
+    if (side.scrollWidth > side.clientWidth) side.scrollLeft += at.left - box.left - (side.clientWidth - at.width) / 2;
+  }
 
   document.querySelectorAll("[data-copy]").forEach(function (b) {
     b.addEventListener("click", function () {

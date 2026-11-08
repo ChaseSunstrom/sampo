@@ -285,9 +285,9 @@ class GenesisExport(ForemanTestCase):
         # T-2087: one site, not two: the shared stylesheet (its dark palette too) and the landing page's own nav
         self.assertIn('<link rel="stylesheet" href="../style.css">', html)
         self.assertIn("prefers-color-scheme: dark", read_text(os.path.join(root, "site", "style.css")))
-        # T-2903: both navs come from build.py's NAV (test_site_build.SharedNav compares the built links)
-        self.assertIn("{{nav}}", html)
-        self.assertIn("{{nav}}", landing)
+        # T-2903, T-3996: both headers are build.py's bar() (test_site_shell compares the built headers)
+        self.assertIn("{{bar}}", html)
+        self.assertIn("{{bar}}", landing)
         self.assertNotRegex(read_text(os.path.join(root, "site", "genesis", "genesis.css")), r"(?m)--bg:\s*#|Inter|\.sheet|^\.head\b")
 
     def test_the_page_markdown_escapes_and_keeps_only_safe_links(self):

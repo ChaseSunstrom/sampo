@@ -63,7 +63,7 @@ class Gallery(unittest.TestCase):
             out = os.path.join(tmp, "_site")
             build.build(out)
             page = read_text(os.path.join(out, "features", "gallery.html"))
-            self.assertIn('href="../features/gallery.html"', read_text(os.path.join(out, "features", "index.html")))
+            self.assertIn('href="gallery.html"', read_text(os.path.join(out, "features", "index.html")))  # T-3996: the grouped index
             for name, _, _, src in pages.gallery():
                 self.assertEqual(read_text(os.path.join(out, "gallery", name + ".html")), read_text(src))
                 self.assertIn(f'href="../gallery/{name}.html"', page)

@@ -35,6 +35,15 @@ TOKENS = os.path.join(ROOT, "design", "sampo", "tokens.json")
 TOKENS_START = "/* tokens: python3 site/build.py --tokens writes this block from design/sampo/tokens.json; edit the json */"
 TOKENS_END = "/* end tokens */"
 NIGHT = ".install, .window, .term, .ex-cmd"  # terminals are iron in either theme
+# T-3996: the features index's groups (name, why, pages); pages.py orders PAGES by them
+GROUPS = (("The loop", "plan, prove, decide, learn", ("planning", "judgment", "proof", "verifying", "decisions", "learning")),
+          ("The Ward", "what the agent may never do", ("guard", "permissions", "review")),
+          ("Many hands", "work that keeps moving", ("lanes", "drive", "self-running", "initiative")),
+          ("Improves itself", "towers, trials and big ideas", ("kalevala", "louhi", "moons", "underworld", "model-layer",
+                                                              "lacks")),
+          ("Where you see it", "every view, one state", ("panel", "code", "tools", "speed")),
+          ("Library and looks", "what it knows and draws", ("cards", "playbooks", "shaders", "gallery")),
+          ("The record", "measured, then shipped", ("benchmarks", "releases")))
 
 
 def tokens_css():
@@ -378,37 +387,50 @@ def dials(items, note):
     return f'<div class="proof"><p>{note}</p><dl>{cells}</dl></div>'
 
 
-# T-2903: the main nav, once, for the landing, the tower and every section page (label, path from the site root, shown: 0 from 1180 px, 2 from 940 px, 1 always)
-NAV = (("How it works", "index.html#how", 0), ("Smith", "index.html#smith", 0), ("Rune", "genesis/index.html", 0),
-       ("Ward", "index.html#ward", 0), ("Moons", "index.html#moons", 0), ("Record", "index.html#record", 0),
-       ("Features", "features/index.html", 2), ("Cards", "cards.html", 1), ("Benchmarks", "features/benchmarks.html", 0),
-       ("Install", "index.html#install", 1), ("GitHub", "https://github.com/ChaseSunstrom/sampo", 1))
+# T-2903, T-3996: the main nav, once, for every page (label, path from the site root). Six links: the landing's own
+# sections are a scroll away on it, and every part of Sampo has its page under Features
+NAV = (("How it works", "index.html#how"), ("Features", "features/index.html"), ("Benchmarks", "features/benchmarks.html"),
+       ("Rune", "genesis/index.html"), ("Cards", "cards.html"), ("Install", "index.html#install"))
+GITHUB = "https://github.com/ChaseSunstrom/sampo"
+ROMAN = ("I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X")
+DOC_PICTURES = ("diagrams/kalevala-light.svg", "diagrams/kalevala-dark.svg", "diagrams/merge-train-light.svg",
+                "diagrams/merge-train-dark.svg", "screens/board-light.png", "screens/board-dark.png",
+                "screens/claude-code.png", "screens/smith-tui-light.svg", "screens/smith-tui-dark.svg")
 
 
-def nav_links(up, here="", skip=(), hide=True, landing=False, menu=False):
+def nav_links(up, here="", landing=False):
     """NAV as links. up: the way to the site root; landing: its own anchors drop the file name; here: this page's path,
-    marked current; skip: labels left out; hide: entries not always shown hide on a narrow screen; menu: after the
-    links, a <details> listing every entry for the screens where some are hidden."""
+    marked current."""
     out = []
-    for label, path, always in NAV:
-        if label in skip:
-            continue
-        href = path if "//" in path else path[len("index.html"):] if landing and path.startswith("index.html#") else up + path
-        cls = "" if always == 1 or not hide else ' class="mid-sm"' if always else ' class="hide-sm"'
+    for label, path in NAV:
+        href = path[len("index.html"):] if landing and path.startswith("index.html#") else up + path
         cur = ' aria-current="page"' if path == here else ""
-        out.append(f'<a{cls} href="{href}"{cur}>{esc(label)}</a>')
-    if menu:
-        out.append('<details class="menu"><summary aria-label="All sections" title="All sections">&#9776;</summary><div class="menu-list">'
-                   + nav_links(up, here, skip, False, landing) + "</div></details>")
-    return "\n      ".join(out)
+        out.append(f'<a href="{href}"{cur}>{esc(label)}</a>')
+    return "\n    ".join(out)
+
+
+def bar(up="", here="", landing=False):
+    """T-3996: the one header every page carries, the landing's: the brand, NAV, a Sections menu where NAV doesn't fit
+    (it also lists GitHub, whose button goes on a phone), the theme switch and GitHub."""
+    home = "#top" if landing else up + "index.html"
+    links = nav_links(up, here, landing)
+    return (f'<header class="bar">\n  <a class="brand" href="{home}" aria-label="Sampo, home"><img src="{up}{ICON}" alt="" '
+            f'width="34" height="34">Sampo</a>\n  <nav class="nav" aria-label="Sections">\n    {links}\n  </nav>\n'
+            f'  <details class="menu">\n    <summary class="tbtn">Sections</summary>\n    <nav aria-label="Sections, on a '
+            f'small screen">\n    {links}\n    <a href="{GITHUB}">GitHub</a>\n    </nav>\n  </details>\n'
+            '  <button class="tbtn" id="theme" type="button" aria-label="Switch theme"><span class="n">Day<span class="lg">'
+            'light</span></span><span class="d">Forge<span class="lg"> light</span></span></button>\n'
+            f'  <a class="gh" href="{GITHUB}">GitHub</a>\n</header>')
 
 
 def layout(title, desc, body, pages, here, depth=1, script=""):
     """A section page. pages=None: one wide column with no side list of feature pages (site/cards.html); script: its own JS."""
     up = "../" * depth
     current = ' aria-current="page"'
-    nav = "".join(f'<a href="{up}features/{p["slug"]}.html"{current if p["slug"] == here else ""}>{esc(p["nav"])}</a>'
-                  for p in pages or ())
+    by = {p["slug"]: p for p in pages or ()}  # T-3996: the side list in the index's groups
+    nav = "".join(f'<p class="g">{esc(name)}</p>' + "".join(
+        f'<a href="{up}features/{s}.html"{current if s == here else ""}>{esc(by[s]["nav"])}</a>' for s in slugs if s in by)
+        for name, _, slugs in (GROUPS if pages else ()))
     shell = (f'<div class="wrap feature-shell">\n  <nav class="side" aria-label="Features">{nav}</nav>\n  '
              f'<main class="feature">{body}</main>\n</div>') if pages else f'<main class="wrap feature wide">{body}</main>'
     script = f'\n<script src="{up}{script}" defer></script>' if script else ""
@@ -429,17 +451,7 @@ def layout(title, desc, body, pages, here, depth=1, script=""):
 <link rel="stylesheet" href="{up}{SECTIONS}">
 </head>
 <body>
-<header class="top">
-  <div class="wrap">
-    <a class="brand" href="{up}index.html"><img src="{up}{ICON}" alt="" width="28" height="28">Sampo</a>
-    <nav class="nav" aria-label="Main">
-      {nav_links(up, here if here == "cards.html" else f"features/{here}.html", menu=True)}
-      <button class="theme" type="button" aria-label="Switch between light and dark" title="Light or dark">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg>
-      </button>
-    </nav>
-  </div>
-</header>
+{bar(up, "features/index.html" if here == "features/index" else here if here == "cards.html" else f"features/{here}.html")}
 {shell}
 <footer>
   <div class="wrap">
@@ -585,12 +597,20 @@ def render_page(p, stats, pages):
 
 
 def render_index(pages):
-    cards = "".join(f'<a class="fcard" href="{p["slug"]}.html"><b>{esc(p["nav"])}</b><span>{esc(p["desc"])}</span></a>'
-                    for p in pages)
-    body = ('<p class="kicker eyebrow">Features</p><h1 class="engraved">Everything Sampo does</h1><p class="lede">Each page shows what one part '
-            'of Sampo does, how it works, the commands, and charts from Sampo\'s own record of building itself.</p>'
-            f'<div class="fgrid">{cards}</div>')
-    return layout("Features", "Every part of Sampo, with charts from its own history.", body, pages, "index")
+    """T-3996: the features index in the landing's idiom: an engraved head over the GROUPS, each a
+    numbered station of rows, a page's name in the display italic over what it does."""
+    by = {p["slug"]: p for p in pages}
+    groups = []
+    for n, (name, why, slugs) in enumerate(GROUPS):
+        rows = "".join(f'<li><a href="{s}.html"><b>{esc(by[s]["nav"])}</b><span>{esc(by[s]["desc"])}</span></a></li>'
+                       for s in slugs)
+        groups.append(f'<section class="fgroup" style="--i:{n}"><h2><span class="no">{ROMAN[n]}</span>{esc(name)}</h2>'
+                      f'<p class="why">{esc(why)}</p><ol class="frows">{rows}</ol></section>')
+    body = ('<div class="fhead"><p class="kicker eyebrow">Features</p><h1 class="engraved">Everything Sampo does,<br>'
+            '<em>one page each</em></h1><p class="lede">Each page shows what one part of Sampo does, how it works, the '
+            f'commands, and charts from Sampo\'s own record of building itself. {len(pages)} pages in '
+            f'{len(GROUPS)} groups.</p></div><div class="fgroups">{"".join(groups)}</div>')
+    return layout("Features", "Every part of Sampo, with charts from its own history.", body, None, "features/index")
 
 
 def roles(v):
@@ -740,6 +760,9 @@ def build(out):
         shutil.rmtree(out)
     shutil.copytree(HERE, out, ignore=lambda d, names: [n for n in names if n in SOURCE_ONLY])
     shutil.copyfile(os.path.join(out, ICON.split("?")[0]), os.path.join(out, "assets", "foreman.svg"))  # old links, new mark
+    os.makedirs(os.path.join(out, "assets", "docs"), exist_ok=True)  # T-3996: the README's pictures, one copy in docs/assets
+    for name in DOC_PICTURES:
+        shutil.copy2(os.path.join(ROOT, "docs", "assets", name), os.path.join(out, "assets", "docs", os.path.basename(name)))
     with open(os.path.join(out, "index.html"), encoding="utf-8") as f:  # T-1609: the hero's poster
         page = f.read()
     for what, mark in (("proof", PROOF_MARK), ("shaders", SHADER_MARK), ("moons", MOONS_MARK)):  # review: a lost mark shipped a hero with no proof
@@ -765,15 +788,13 @@ def build(out):
     for old, new in (('rel="icon" href="assets/sampo.svg"', f'rel="icon" href="{ICON}"'),
                      ('rel="icon" href="assets/favicon.ico"', f'rel="icon" href="{FAVICON}"'),
                      ('rel="stylesheet" href="style.css"', f'rel="stylesheet" href="{CSS}"'),
-                     ('<img src="assets/sampo.svg"', f'<img src="{ICON}"'),
                      ('rel="stylesheet" href="forge.css"', f'rel="stylesheet" href="{FORGE_CSS}"'),
                      ('<script src="forge.js">', f'<script src="{FORGE_JS}">'),
                      ('<script src="site.js">', f'<script src="{JS}">')):
         if old not in page:  # a reworded tag would ship the old, cached file
             raise SystemExit(f"build.py: site/index.html lost {old}")
         page = page.replace(old, new)
-    page = (page.replace("{{nav}}", nav_links("", skip=("GitHub",), hide=False, landing=True))  # T-2903
-            .replace("{{menu}}", nav_links("", hide=False, landing=True)))
+    page = page.replace("{{bar}}", bar(landing=True))  # T-2903, T-3996: one header for every page
     for k, v in counts.items():
         page = page.replace("{{" + k + "}}", fmt(v))
     if "{{" in page:  # a count the build doesn't know would ship as braces
@@ -785,7 +806,7 @@ def build(out):
         gpage = f.read()
     if 'href="../style.css"' not in gpage:
         raise SystemExit('build.py: site/genesis/index.html lost href="../style.css"')
-    gpage = gpage.replace("{{nav}}", nav_links("../", "genesis/index.html", menu=True))  # T-2903
+    gpage = gpage.replace("{{bar}}", bar("../", "genesis/index.html"))  # T-2903, T-3996
     gpage = (gpage.replace('href="../style.css"', f'href="../{CSS}"').replace('"../assets/sampo.svg"', f'"../{ICON}"')
              .replace('"../assets/favicon.ico"', f'"../{FAVICON}"'))
     with open(gpath, "w", encoding="utf-8") as f:

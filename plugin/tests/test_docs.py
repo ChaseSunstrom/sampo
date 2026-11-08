@@ -617,7 +617,7 @@ class Site(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             shutil.copytree(os.path.join(self.ROOT, "site"), os.path.join(tmp, "site"),
                             ignore=shutil.ignore_patterns("__pycache__"))
-            for d in ("demo", "plugin", "design"):  # T-2753: the build reads design/sampo/tokens.json
+            for d in ("demo", "plugin", "design", "docs"):  # T-2753: design/sampo/tokens.json; T-3996: docs/assets pictures
                 os.symlink(os.path.join(self.ROOT, d), os.path.join(tmp, d))
             with open(os.path.join(tmp, "site", "fixture.html"), "w", encoding="utf-8") as f:
                 f.write('<link href="https://fonts.googleapis.com/css2?family=Barlow" rel="stylesheet">')

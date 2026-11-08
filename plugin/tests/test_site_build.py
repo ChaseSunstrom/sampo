@@ -84,8 +84,7 @@ class SharedNav(unittest.TestCase):
                     if anchor:
                         self.assertEqual(os.path.basename(target), "index.html", f"{rel}: {href}")
                         self.assertIn(f'id="{anchor}"', landing, f"{rel}: {href} has no anchor on the landing")
-                if rel == "index.html":  # the landing's GitHub is its own button beside the nav
-                    seen[rel] |= set(re.findall(r'class="gh"[^>]*>([^<]+)<', head))
+                seen[rel] |= set(re.findall(r'class="gh"[^>]*>([^<]+)<', head))  # GitHub: its own button on every page
                 self.assertLessEqual({"Install", "GitHub", "Cards", "Features", "Rune"}, seen[rel], rel)
             for rel in ("genesis/index.html", "features/benchmarks.html"):  # no menu on the landing: it has its own
                 self.assertIn('<details class="menu">', read_text(os.path.join(out, rel)), rel)

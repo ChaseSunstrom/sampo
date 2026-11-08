@@ -779,8 +779,9 @@ def _system_path(p, ctx):
     return (any(_under(p, d) for d in _SYSTEM_DIRS) and not any(_under(p, d) for d in _SYSTEM_OK)
             and not re.match(r"/proc/(?:self|thread-self|\d+)/fd(?:/|$)", p)  # /dev/stderr's real path
             and not _under(p, ctx.home)
-            and not (ctx.project_root and os.path.isdir(os.path.join(ctx.project_root, ".git"))  # cd /etc isn't a
+            and not (ctx.project_root and os.path.exists(os.path.join(ctx.project_root, ".git"))  # cd /etc isn't a
                      and _under(p, ctx.project_root))  # project: only a real checkout under /opt or /srv is exempt
+            # (exists, not isdir: a lane worktree's .git is a file, and every lane edit was refused, T-3890)
             and not any(_under(p, s) for s in getattr(ctx, "scratch", ()) or ()))
 
 

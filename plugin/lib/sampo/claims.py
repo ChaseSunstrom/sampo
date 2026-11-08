@@ -9,6 +9,7 @@ the old sha, so exactly one taker wins. Renewals of all of a machine's claims go
 minutes. Remote: FOREMAN_CLAIMS_REMOTE, else origin. Results: taken|held|lost (the race was lost)|offline (remote
 unreachable: the caller decides)|error (the remote refused or git failed). Nothing here raises past take/release/renew/list."""
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -48,8 +49,23 @@ def _failed():
     return subprocess.CompletedProcess([], 255, "", "git did not run")
 
 
+ADVISORY = ("intent", "plugin")  # shown by fleet, never refuse: they differ on the first machine of a rolling upgrade
+
+
+def fingerprint(parts):
+    """T-3334: a short hash over the enforced drift parts ('' when there are none); derived, never stored apart."""
+    own = {k: v for k, v in (parts or {}).items() if k not in ADVISORY}
+    return hashlib.sha256(json.dumps(own, sort_keys=True).encode()).hexdigest()[:12] if own else ""
+
+
+def differs(mine, theirs, advisory=False):
+    """The enforced parts that differ between two parts dicts (the advisory ones with advisory=True)."""
+    return sorted(k for k in set(mine) | set(theirs) if (k in ADVISORY) == advisory and mine.get(k) != theirs.get(k))
+
+
 class Claims:
-    def __init__(self, root, slug=None, remote=None, session=None):
+    def __init__(self, root, slug=None, remote=None, session=None, parts=None):
+        self.parts = parts or {}  # T-3334: the drift fingerprint's parts (mandate.parts); none = no fingerprint
         self.root = root
         self.remote = remote or os.environ.get("FOREMAN_CLAIMS_REMOTE") or "origin"
         from sampo import eco
@@ -94,7 +110,8 @@ class Claims:
 
     def _commit(self, key, now):
         body = {"key": key, "machine": self.me["id"], "session": self.session, "at": iso(now),
-                "until": iso(now + TTL), "fingerprint": "", "n": os.urandom(4).hex()}
+                "until": iso(now + TTL), "fingerprint": fingerprint(self.parts), "parts": self.parts,
+                "n": os.urandom(4).hex()}
         if self.me["named"]:  # a hostname is never written unasked
             body["name"] = self.me["name"]
         self._git("hash-object", "-t", "tree", "-w", "--stdin", input="")
@@ -125,6 +142,10 @@ class Claims:
         if refs is None:
             return {"result": "offline"}
         old = refs.get(ref, "")
+        if key.startswith("tower:") and self.parts:  # T-3334: a drifted machine works no tower
+            d = self.drift(now, refs)
+            if d:
+                return {"result": "drift", "differs": d}
         if old:
             by = self._body(ref, old)
             if not self._mine_now(by) and not expired(by, now):
@@ -219,10 +240,11 @@ class Claims:
             pass
         return {"result": "renewed", "keys": [r["key"] for r in rows]}
 
-    def list(self, now=None):
-        """Every claim on the remote [{key, machine, name, session, until, fingerprint, expired, sha}], or None offline."""
+    def list(self, now=None, refs=None):
+        """Every claim on the remote [{key, machine, name, session, at, until, fingerprint, parts, expired, sha}], or
+        None offline. refs: the {ref: sha} the caller just read, so a second ls-remote is skipped."""
         now = time.time() if now is None else now
-        refs = self._remote_refs()
+        refs = self._remote_refs() if refs is None else refs
         if refs is None:
             return None
         pre = f"refs/sampo/{self.slug}/claim/"
@@ -232,6 +254,59 @@ class Claims:
         for ref, sha in sorted(refs.items()):
             b = self._body(ref, sha) or {}
             out.append({"key": b.get("key") or ref[len(pre):].replace("%3A", ":"), "machine": b.get("machine"),
-                        "name": b.get("name"), "session": b.get("session"), "until": b.get("until"),
-                        "fingerprint": b.get("fingerprint", ""), "expired": expired(b, now), "sha": sha})
+                        "name": b.get("name"), "session": b.get("session"), "at": b.get("at"),
+                        "until": b.get("until"), "fingerprint": fingerprint(b.get("parts")),
+                        "parts": b.get("parts") if isinstance(b.get("parts"), dict) else {},
+                        "expired": expired(b, now), "sha": sha})
         return out
+
+    def drift(self, now=None, refs=None):
+        """T-3334: the enforced parts of ours that differ from the fleet's, [] when none. One vote per other machine
+        (its newest live claim); the fleet's is the most common fingerprint. A tie that includes ours is no drift."""
+        newest = {}
+        for r in self.list(now=now, refs=refs) or []:
+            who = (r["machine"], r["session"])
+            if r["expired"] or who == (self.me["id"], self.session) or not r["parts"]:
+                continue
+            if who not in newest or (r["at"] or "") > (newest[who]["at"] or ""):
+                newest[who] = r
+        votes = {}
+        for r in newest.values():
+            votes.setdefault(r["fingerprint"], []).append(r)
+        if not votes:
+            return []
+        top = max(len(v) for v in votes.values())
+        mine = fingerprint(self.parts)
+        if len(votes.get(mine, [])) == top:
+            return []
+        best = min((v[0] for v in votes.values() if len(v) == top), key=lambda r: r["fingerprint"])
+        return differs(self.parts, best["parts"])
+
+    def fleet(self, now=None):
+        """Who holds what, from the refs: [{key, machine, who, until, expired, match, differs}], or None offline.
+        `who` is the name the machine chose, else its id (never a hostname); `differs` names the parts that differ."""
+        rows = self.list(now=now)
+        if rows is None:
+            return None
+        mine = fingerprint(self.parts)
+        return [dict(r, who=r["name"] or r["machine"], match=r["fingerprint"] == mine,
+                     differs=differs(self.parts, r["parts"]) if r["fingerprint"] != mine and r["parts"] else [],
+                     advisory=differs(self.parts, r["parts"], True) if r["parts"] else [])
+                for r in rows]
+
+
+def cmd_fleet(args):
+    """sampo fleet: every claim on the remote, who holds it, until when, and whether its fingerprint matches ours."""
+    from sampo import cli, mandate
+    p = cli.resolve(args)
+    rows = Claims(p.root, parts=mandate.parts(p)).fleet()
+    if rows is None:
+        print("fleet: the claims remote can't be reached")
+        return 0
+    for r in rows:
+        fp = ("no fingerprint" if not r["fingerprint"] else "matches" if r["match"] else "differs: " + ", ".join(r["differs"]))
+        adv = f"  (advisory: {', '.join(r['advisory'])})" if r["advisory"] else ""
+        print(f"{r['key']}  {r['who']}" + (f"  until {r['until']}" if r["until"] else "")
+              + f"{' (expired)' if r['expired'] else ''}  {fp}{adv}")
+    print(f"{len(rows)} claim(s)" if rows else "no claims")
+    return 0

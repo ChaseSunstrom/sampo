@@ -59,40 +59,50 @@ _TS = re.compile(r'"timestamp":\s*"([^"]{19})')
 _BLOB = '{"type":"api-request-blob"'  # T-3521: a request's body, with no top-level timestamp: no reader here uses one
 
 
-def _entries(folder, since, need=None):
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _entries(folder, since, need=None, newest=False):
     """(file path, entry) for each transcript line on or after the cutoff. T-1116: a file not written since the
     cutoff is skipped unopened, and a line is parsed only when one of its timestamps reaches the cutoff (the newest
     counts: a nested older one can't hide the entry's own). T-3193: `need`, a substring a wanted line always holds,
     skips the rest before any regex or parse. T-3521: request blobs are skipped unparsed, and the line's last stamp (the
-    entry's own) is read first: only when it is older are all of them searched."""
+    entry's own) is read first: only when it is older are all of them searched. T-3921: newest, the files newest first
+    (a reader that stops early keeps the latest)."""
     cutoff = since[:19]
     try:
         cut = datetime.datetime.strptime(since[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
     except ValueError:
         cut = 0
-    for dirpath, _, files in os.walk(folder):
-        for n in files:
-            path = os.path.join(dirpath, n)
-            try:
-                if not n.endswith(".jsonl") or os.path.getmtime(path) < cut:
-                    continue
-                with open(path, encoding="utf-8", errors="replace") as f:
-                    for line in f:
-                        if need and need not in line or line.startswith(_BLOB):
-                            continue
-                        last = _TS.match(line, max(line.rfind('"timestamp":'), 0))
-                        if not (last and last.group(1) >= cutoff):
-                            stamps = _TS.findall(line)
-                            if stamps and max(stamps) < cutoff:
-                                continue
-                        try:
-                            e = json.loads(line)
-                        except ValueError:
-                            continue
-                        if isinstance(e, dict):
-                            yield path, e
-            except OSError:
+    roots = [folder] if isinstance(folder, str) else folder  # T-3921: a project's worktrees and lanes, one list
+    paths = [os.path.join(d, n) for root in roots for d, _, ns in os.walk(root) for n in ns if n.endswith(".jsonl")]
+    if newest:
+        paths.sort(key=_mtime, reverse=True)
+    for path in paths:
+        try:
+            if os.path.getmtime(path) < cut:
                 continue
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    if need and need not in line or line.startswith(_BLOB):
+                        continue
+                    last = _TS.match(line, max(line.rfind('"timestamp":'), 0))
+                    if not (last and last.group(1) >= cutoff):
+                        stamps = _TS.findall(line)
+                        if stamps and max(stamps) < cutoff:
+                            continue
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(e, dict):
+                        yield path, e
+        except OSError:
+            continue
 
 
 _TWO_WORD = ("task", "bench", "lib", "lane")  # verbs whose subcommand names the cost

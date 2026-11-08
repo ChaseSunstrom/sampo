@@ -9,6 +9,43 @@ import time
 from sampo import core as c
 
 
+def parts(p):
+    """T-3334: the drift fingerprint's parts, each a short hash ('' for none): the mandate, the root gen-0 seal, the
+    towers' gen-0s, the user's steers, the standing-intent file and the plugin version. Claims carry them (claims.py)."""
+    import hashlib
+    import os
+    from sampo import rune
+
+    def h(x):
+        return hashlib.sha256(x.encode("utf-8", "replace")).hexdigest()[:12] if x else ""
+
+    def file(path):
+        try:
+            with open(path, "rb") as f:
+                return hashlib.sha256(f.read()).hexdigest()[:12]
+        except OSError:
+            return ""
+    m = c.read_meta(p).get("mandate")
+    tdir = os.path.join(rune.root(p), "towers")
+    towers = [f"{n}:{file(os.path.join(tdir, n, 'gen-0.md'))}"
+              for n in (sorted(os.listdir(tdir)) if os.path.isdir(tdir) else []) if os.path.isdir(os.path.join(tdir, n))]
+    try:
+        with open(os.path.join(c.PLUGIN_ROOT, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+            ver = str(json.load(f).get("version", ""))
+    except (OSError, ValueError):
+        ver = ""
+    tower, rune._TOWER = rune._TOWER, None  # the root's seal, even inside a --tower process
+    try:
+        seal = rune.seal(p)[:12]
+    finally:
+        rune._TOWER = tower
+    # the text only: `until` is a local-day end that differs by time zone
+    return {"mandate": h(m.get("text", "")) if isinstance(m, dict) and m.get("text") else "",
+            "seal": seal, "towers": h("\n".join(towers)),
+            "steers": h("\n".join(f"{d} {t}" for d, t in c.steer_rules(p))),
+            "intent": file(rune.INTENT), "plugin": ver}
+
+
 def get(p):
     """The project's mandate with `expired` worked out, or None."""
     m = c.read_meta(p).get("mandate")
