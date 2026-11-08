@@ -256,6 +256,97 @@ class Review(GuardCase):
         self.run_table([(self.p("bad-x.sh"), "rm-outside"), (self.p("ok-x.sh"), None),
                         (f"{self.p('ok-x.sh')} --flag", None)], self.bash)
 
+    def test_env_shebang_options_are_skipped(self):  # T-3387
+        bad = "import os\nos.system('rm -rf ~')\n"
+        for name, head, body in (("e1", "#!/usr/bin/env python3", bad), ("e2", "#!/usr/bin/env -S python3 -I", bad),
+                                 ("e3", "#!/usr/bin/env -i PATH=/x -u FOO bash", "rm -rf ~\n"),
+                                 ("e4", "#!/usr/bin/env -S", "rm -rf ~\n"),
+                                 ("e5", "#!/usr/bin/env -S python3 -I", "print(1)\n")):
+            with open(self.p(name), "w") as f:
+                f.write(head + "\n" + body)
+            os.chmod(self.p(name), 0o755)
+        self.run_table([(self.p(n), "rm-outside") for n in ("e1", "e2", "e3", "e4")] + [(self.p("e5"), None)], self.bash)
+        self.assertEqual([g._shebang_interp(h) for h in ("#!/usr/bin/env -i PATH=/x bash", "#!/bin/sh -e", "#!/usr/bin/env")],
+                         ["bash", "sh", "sh"])
+
+    def test_env_shebang_glued_quoted_and_clustered_forms(self):  # T-3387 review
+        for head, want in (("-Spython3 -I", "python3"), ("--split-string=python3 -I", "python3"),
+                           ('--split-string="python3 -I"', "python3"), ('-S"python3 -I"', "python3"),
+                           ('-S "python3" -I', "python3"), ("-S 'python3 -I'", "python3"),
+                           ('-S VAR="a b" python3', "python3"), ("-iu FOO python3", "python3"),
+                           ("-vC dir python3", "python3"), ("-iuFOO python3", "python3"), ("-S", "sh"),
+                           ("-S 'unterminated python3", "unterminated"), ("--unset FOO python3", "python3"),
+                           ("--unset=FOO python3", "python3"), ("-- python3", "python3"), ("-i -", "sh")):
+            with self.subTest(head=head):
+                self.assertEqual(g._shebang_interp("#!/usr/bin/env " + head), want)
+        self.assertEqual(g._shebang_interp("#!/usr/bin/env\t-S\tpython3"), "python3")
+        for head, kind in (("#!/usr/bin/pypy3", "py"), ("#!/usr/bin/env -S uv run --script", "py"),
+                           ("#!/usr/bin/ipython", "py"), ("#!/usr/bin/perl", None), ("#!/opt/odd/thing", "sh"),
+                           ("#!/usr/bin/env node", None), ("#!/usr/bin/gawk -f", None), ("#!/bin/mksh", "sh")):
+            with self.subTest(head=head):
+                self.assertEqual(g._script_text(self.write_x("k", head + "\nls\n"), "/", shebang=True)[2], kind)
+
+    def test_non_shell_interpreters_stay_unread_unknown_ones_read_as_sh(self):  # T-3387 decision
+        self.write_x("pl", "#!/usr/bin/perl\nrm -rf ~\n")  # shell-looking text, but perl
+        self.write_x("odd", "#!/opt/odd/thing\nrm -rf ~\n")
+        self.run_table([(self.p("pl"), None), (self.p("odd"), "rm-outside")], self.bash)
+
+    def write_x(self, name, text, mode=0o755):
+        with open(self.p(name), "w") as f:
+            f.write(text)
+        os.chmod(self.p(name), mode)
+        return self.p(name)
+
+    def test_shebang_line_payload_is_checked(self):  # T-3387 review
+        for i, head in enumerate(("#!/usr/bin/env -S bash -c 'rm -rf ~'", '#!/usr/bin/env -S python3 -c "import os;os.system(\'rm -rf ~\')"',
+                                  "#!/bin/bash -c 'rm -rf ~'")):
+            self.write_x(f"sb{i}", head + "\nls\n")
+        self.run_table([(self.p(f"sb{i}"), "rm-outside") for i in range(3)], self.bash)
+
+    def test_round_two_shebang_forms(self):  # T-3387 second review
+        for i, head in enumerate(("#!/usr/bin/env -Sbash -c 'rm -rf ~'", "#!/usr/bin/env --split-string=bash -c 'rm -rf ~'")):
+            self.write_x(f"r2p{i}", head + "\nls\n")
+        self.run_table([(self.p(f"r2p{i}"), "rm-outside") for i in range(2)], self.bash)
+        for head, want in (("-S --unse python3 bash", "bash"), ("--bogus python3", "sh"), ("--ignore-env python3", "python3"),
+                           ("--uns=FOO python3", "python3")):
+            with self.subTest(head=head):
+                self.assertEqual(g._shebang_interp("#!/usr/bin/env " + head), want)
+        os.path.lexists(self.p("python3")) and os.unlink(self.p("python3"))
+        os.symlink("/bin/sh", self.p("python3"))
+        for head, kind in (("#!/usr/bin/env -S uv run bash", "sh"), ("#!/usr/bin/env -S uv run --script", "py"),
+                           ("#!" + self.p("python3"), "sh"), ("#!/usr/bin/env python3", "py")):
+            with self.subTest(head=head):
+                self.assertEqual(g._shebang_kind((head + "\nls\n").encode()), kind)
+        self.assertEqual(g._shebang_kind(b"rm -rf ~\n"), "sh")  # no #!: bash runs it
+        self.assertIsNone(g._shebang_kind(b"\x7fELF\0\0"))
+        self.assertIsNone(g._shebang_kind(b"a\0b"))
+        self.write_x("noshebang", "rm -rf ~\n")
+        self.assertBlocked(self.bash(self.p("noshebang")), "rm-outside")
+
+    def test_chmod_forms_and_written_then_run(self):  # T-3387 second review
+        new = self.p("newx")
+        if os.path.exists(new):
+            os.unlink(new)
+        self.assertBlocked(self.bash(f"printf 'rm -rf ~\\n' > {new} && chmod +x {new} && {new}"), "system")
+        sub = self.p("sub")
+        os.makedirs(sub, exist_ok=True)
+        for n in ("r1", "r2"):
+            with open(os.path.join(sub, n), "w") as f:
+                f.write("#!/bin/bash\nrm -rf ~\n")
+            os.chmod(os.path.join(sub, n), 0o644)
+        self.assertBlocked(self.bash(f"chmod -R +x {sub} && {sub}/r1"), "rm-outside")
+        self.assertBlocked(self.bash(f"chmod +x {sub}/r* && {sub}/r2"), "rm-outside")
+        self.assertBlocked(self.bash(f"chmod +x $T && {sub}/r2"), "rm-outside")
+        self.assertIsNone(self.bash(f"chmod +x {self.p('ok-x.sh')} && {sub}/r2"))
+
+    def test_chmod_then_run_reads_the_script(self):  # T-3387 review
+        self.write_x("cx.sh", "#!/bin/bash\nrm -rf ~\n", 0o644)
+        for mode in ("+x", "a+x", "u+x", "755", "0700"):
+            with self.subTest(mode=mode):
+                self.assertBlocked(self.bash(f"chmod {mode} {self.p('cx.sh')} && {self.p('cx.sh')}"), "rm-outside")
+        self.assertIsNone(self.bash(f"chmod -x {self.p('cx.sh')} && {self.p('cx.sh')}"))
+        self.assertIsNone(self.bash(f"chmod 644 {self.p('cx.sh')} && {self.p('cx.sh')}"))
+
 
 class ScriptCache(GuardCase):
     """T-0275: the hook runs before every Bash call, so a script's verdict is cached by (path, size, mtime) and one
@@ -596,6 +687,12 @@ class ScriptReadSpeed(GuardCase):  # T-1778
         t = g._tokens("echo a b")
         t.append("x")
         self.assertEqual(g._tokens("echo a b"), ["echo", "a", "b"], "a caller's change never reaches the next call")
+
+    def test_env_wrapper_and_env_s_helpers_do_not_collide(self):
+        """T-3387: a second _env_split shadowed the wrapper stripper's, so `env -i ... python3` raised AttributeError."""
+        for cmd in ("env -i PATH=/usr/bin:/bin HOME=/tmp/fm-home python3 plugin/tests/run.py",
+                    'env -i PATH="$PATH" python3 plugin/tests/run.py test_replay'):
+            self.assertIsNone(self.bash(cmd))
 
 
 class ScriptHook(HookCase):

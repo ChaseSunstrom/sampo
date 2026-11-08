@@ -3951,6 +3951,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     fixed = pre if env is None and bare is not None else {}  # T-0183: set once before the
     outside = {**outside, **fixed}                                                  # branches, known in them
     scan = _mask_fm(shell, ctx)  # T-0183: guess from the command's own words, not fm's text arguments
+    chmodded = set()  # T-3387: paths an earlier command here gave an exec bit
     wrote, fed = [], []  # T-0275: files earlier commands here write (all; and those a heredoc fills)
     gone = False  # T-1924 review: an earlier command here may remove, rename or relink a folder a later cd names
     fm_elsewhere = fm_lits = None  # T-3600 review: read once a line, when a command word is computed or runs fm
@@ -4130,12 +4131,25 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             # a python script written by a heredoc in this command is read by the heredoc scan (T-0345); a path-named
             # command is refused only when it looks like a script: curl -o x; ./x is a download, not a script
             elif path in {norm(w) for w in wrote} and not (kind == "py" and "<<" in cmd) and (
-                    kind != "exec" or script.endswith((".sh", ".bash", ".zsh", ".py", ".ksh"))):
+                    kind != "exec" or script.endswith((".sh", ".bash", ".zsh", ".py", ".ksh")) or _chmodded(path, chmodded)):
                 found.append(("system", f"{script} is written earlier in this command and run here, which the guard "
                                         "can't read: write it in one command, run it in the next"))
             else:
-                found += _script_verdict(script, cwd, kind, ctx, depth)
-        fed += c.redirs if any(op == "<<" for op, _ in c.feeds) else []
+                found += _script_verdict(script, cwd, kind, ctx, depth, assume_x=_chmodded(path, chmodded))
+        if name == "chmod":  # chmod +x F && F: F runs as an executable though it isn't one yet
+            mode = next((a for a in args if not a.startswith("-") or re.match(r"-[rwxXstugo+=,-]*[+=]", a)), "")
+            if re.search(r"[+=][rwXstugo]*x|^[0-7]*[1357][0-7]{0,2}$", mode):
+                rec = any(a == "--recursive" or re.fullmatch(r"-[a-zA-Z]*R[a-zA-Z]*", a) for a in args)
+                for a in args:
+                    if a == mode or a.startswith("-"):
+                        continue
+                    if re.search(r"[*?\[$`]", a):
+                        chmodded.add("*")  # a glob or variable: any path in this command may be the one
+                    else:
+                        t = os.path.normpath(os.path.join(cwd, os.path.expanduser(a)))
+                        chmodded.add(t + "/" if rec else t)
+                        chmodded.add(t)
+        fed +=c.redirs if any(op == "<<" for op, _ in c.feeds) else []
         # an in-place edit (sed -i FILE && python3 FILE) is the everyday edit-then-run: only a file made here counts
         wrote += c.redirs + ([] if name in ("sed", "gsed", "perl", "ed", "ex", "touch")  # touch: an empty file
                              else _write_targets(name, args))
@@ -4642,7 +4656,92 @@ _SCRIPT_LIMIT = 1 << 18
 _SH_NAME = lazy(r"^(ba|z|da|k|fi|c|tc)?sh$")
 
 
-def _script_text(path, cwd, shebang=False, data=None):
+_ENV_LONG = {"ignore-environment": 0, "null": 0, "debug": 0, "split-string": 1, "unset": 1, "chdir": 1, "argv0": 1,
+             "default-path": 1, "block-signal": 0, "default-signal": 0, "ignore-signal": 0,
+             "list-signal-handling": 0, "version": 0, "help": 0}
+
+
+def _shebang_interp(head):
+    """The interpreter's basename a '#!' line names (see _shebang)."""
+    return os.path.basename(_shebang(head)[0])
+
+
+def _shebang(head):
+    """(interpreter word, command) of a '#!' line: the command is what the kernel runs, interpreter onward. For env,
+    the first word after its own options (-S, -i, -u NAME, -C DIR, long options by unique prefix, ...) and NAME=value
+    words. An env line that names no interpreter, or an option not recognised, reads as 'sh' (fail closed: the
+    file is read as shell, never skipped). ("", "") when there is no #! line."""
+    raw = head[2:].rstrip("\r\n") if head.startswith("#!") else ""
+    ms = list(re.finditer(r"[^ \t]+", raw))
+    if not ms:
+        return "", ""
+    if os.path.basename(ms[0].group()) != "env":
+        return ms[0].group(), raw.strip(" \t")
+    toks, ends, split = [m.group() for m in ms[1:]], [m.end() for m in ms[1:]], False
+    i = 0
+    while i < len(toks):
+        w, after = toks[i], (raw[ends[i]:] if ends else " ".join(toks[i + 1:]))
+        i += 1
+        if w.startswith("--") and len(w) > 2:
+            name, eq, val = w.partition("=")
+            hits = [n for n in _ENV_LONG if n.startswith(name[2:])]
+            if name[2:] in _ENV_LONG:
+                hits = [name[2:]]
+            if len(hits) != 1:  # unknown or ambiguous: don't guess which word is the program
+                return "sh", ""
+            if hits[0] == "split-string":
+                toks, ends, i, split = _env_s_words(val + after if eq else after), [], 0, True
+            elif _ENV_LONG[hits[0]] and not eq:
+                i += 1
+        elif w.startswith("-") and len(w) > 1 and w != "--":
+            for j, c in enumerate(w[1:], 2):
+                if c in "uCPaS":
+                    if c == "S":
+                        toks, ends, i, split = _env_s_words(w[j:] + after), [], 0, True
+                    elif j == len(w):
+                        i += 1
+                    break
+        elif w != "--" and w != "-" and not re.match(r"[^=\s]+=", w):
+            word = (w.split() or ["sh"])[0].strip("'\"")  # a quoted "python3 -I" word: python3
+            return word, shlex.join(toks[i - 1:]) if split else " ".join(toks[i - 1:])
+    return "sh", ""  # env named nothing we could read: read the file as shell, never skip it
+
+
+def _env_s_words(s):
+    """env -S's string cut into words, quotes honoured; unbalanced quotes split on blanks."""
+    try:
+        return shlex.split(s, posix=True)
+    except ValueError:
+        return s.split()
+
+
+def _chmodded(path, chmodded):
+    """True if an earlier command in this line gave path an exec bit ('*': a glob did; 'dir/': chmod -R did)."""
+    return path in chmodded or "*" in chmodded or any(e.endswith("/") and path.startswith(e) for e in chmodded)
+
+
+def _shebang_kind(data):
+    """'py' or 'sh' for an executable's bytes, None for a binary. A python-like interpreter (an explicit path only if
+    it resolves to one: a /tmp/python3 link to sh is a shell) reads as python; uv only as `uv run [options]`; any other
+    text shebang, and a text file with no #! at all (bash runs it as a script: ENOEXEC), reads as shell."""
+    if data.startswith(b"\x7fELF") or b"\0" in data:
+        return None
+    word, cmd = _shebang(data[:256].split(b"\n")[0].decode("utf-8", "replace"))
+    if not word:
+        return "sh"
+    real = os.path.basename(os.path.realpath(word)) if "/" in word else os.path.basename(word)
+    if os.path.basename(word) == "uv" and real == "uv":
+        rest = cmd.split()[1:]
+        return "py" if rest[:1] == ["run"] and all(w.startswith("-") for w in rest[1:]) else "sh"
+    name = os.path.basename(word)
+    if re.fullmatch(r"(?:i?python|pypy|py)[0-9.]*", real) and re.fullmatch(r"(?:i?python|pypy|py)[0-9.]*", name):
+        return "py"
+    if all(re.fullmatch(_INTERP_NAMES + r"|[gmn]?awk|osascript|java", x) for x in (real, name)):
+        return None  # perl, node, ... : not shell, so reading it as shell would only invent denials (it stays unread)
+    return "sh"
+
+
+def _script_text(path, cwd, shebang=False, data=None, assume_x=False):
     """(text, problem, kind) of a script file a shell, source or python is told to run (shebang: of an executable run
     by its path, read only when it starts #! with a shell or python; a binary or other script is no concern).
     text None: not read (computed, missing, not a plain file). problem: refused (over the size limit).
@@ -4657,17 +4756,12 @@ def _script_text(path, cwd, shebang=False, data=None):
             return None, None, None
         kind = None
         if shebang:
-            if not os.access(p, os.X_OK):
+            if not (assume_x or os.access(p, os.X_OK)):
                 return None, None, None
-            if data is not None:
-                head = data[:256].split(b"\n")[0].decode("utf-8", "replace")
-            else:
+            if data is None:
                 with open(p, "rb") as f:
-                    head = f.readline(256).decode("utf-8", "replace")
-            words = head[2:].split() if head.startswith("#!") else []
-            interp = os.path.basename(words[1] if words[:1] and os.path.basename(words[0]) == "env" and len(words) > 1
-                                      else words[0]) if words else ""
-            kind = "py" if interp.startswith("python") else "sh" if _SH_NAME.match(interp) else None
+                    data = f.read(_SCRIPT_LIMIT + 1)
+            kind = _shebang_kind(data)
             if kind is None:
                 return None, None, None
         size = len(data) if data is not None and len(data) <= _SCRIPT_LIMIT else os.path.getsize(p)
@@ -5017,7 +5111,7 @@ def _run_targets(text):
     return out
 
 
-def _script_verdict(script, cwd, kind, ctx, depth):
+def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
     """Findings for the script file a command runs, cached by the sha256 of its bytes (and of this guard file) in
     Sampo's state folder, where the guard refuses direct writes: a script run again costs a hash, not a parse (the
     hook runs before every Bash call: a 20 KB script took seconds to parse cold). One cold read has a time budget
@@ -5048,7 +5142,7 @@ def _script_verdict(script, cwd, kind, ctx, depth):
     if len(data) <= _SCRIPT_LIMIT:  # over it: refused below, nothing to cache
         key = "|".join((p, digest, hashlib.sha256(repr(
             (ctx.home, ctx.foreman_home, ctx.project_root, ctx.cwd, cwd, depth, tuple(ctx.scratch), ctx.state_dir, tuple(ctx.state_fallbacks), ctx.confine,
-             ctx.unbriefed, kind, _guard_hash())).encode()).hexdigest()[:16]))
+             ctx.unbriefed, kind, assume_x, _guard_hash())).encode()).hexdigest()[:16]))
     path = _script_cache_path(ctx)
     hit = None if nested or key is None else _cache_load(path).get(key)
     if hit and all(_file_digest(dp) == dd for dp, dd in hit.get("n", [])):  # the scripts it read, unchanged
@@ -5062,9 +5156,11 @@ def _script_verdict(script, cwd, kind, ctx, depth):
     _IN_SCRIPT.append(1)
     old = None
     try:
-        text, why, got = _script_text(script, cwd, shebang=kind == "exec", data=data)
+        text, why, got = _script_text(script, cwd, shebang=kind == "exec", data=data, assume_x=assume_x)
         if text is not None:
             _TEXTS.append((p, text))
+            if kind == "exec":  # the #! line is a command too: env -S bash -c '…' runs its -c string, not the body
+                found += check_bash(_shebang(data[:256].split(b"\n")[0].decode("utf-8", "replace"))[1], ctx, depth + 1)
         if not nested:
             def over(*_):
                 raise _OverBudget()
