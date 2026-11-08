@@ -312,6 +312,135 @@ class UiView(ForemanTestCase):
         self.assertEqual(got, {"building": ["Building"], "merging": ["Returned"], "closing": ["Merged"]})
         self.assertNotIn("Building", [x["title"] for x in v["queue"]], "a lane's task is in the lanes block, not the queue")
 
+    def test_the_view_carries_the_sampo_sessions_cpu_against_the_goal(self):
+        # T-3701: the pane's CPU panel, from the samples `sampo cpu`'s self-check keeps (no new /proc or cgroup reads)
+        import time
+        from sampo import core as c
+        from sampo import cpu
+        now, cores = time.time(), cpu.ncores()
+        a, b = "/sys/fs/cgroup/user.slice/x.slice/term-1.scope", "/sys/fs/cgroup/user.slice/x.slice/term-2.scope"
+        usec = lambda pct, s: int(pct / 100 * cores * s * 1e6)  # noqa: E731: what pct of the machine for s seconds used
+        samples = {a: [[now - 900, 0], [now - 600, usec(4, 300)], [now - 300, usec(4, 300) + usec(8, 300)]],
+                   b: [[now - 1200, 5], [now - 60, 5 + usec(2, 1140)]],
+                   "/gone.scope": [[now - 9000, 0], [now - 8000, 10]]}  # older than the window: left out
+        c.write_atomic(os.path.join(c.state_dir(), "cpu.json"), json.dumps({"samples": samples}))
+        got = json.loads(self.fm("ui", "--json").stdout)["cpu"]
+        self.assertEqual((got["goal"], got["cores"], got["step_s"]), (10.0, cores, 150))
+        names = [s["name"] for s in got["sessions"]]
+        self.assertEqual(sorted(names), ["term-1", "term-2"])
+        one = next(s["pct"] for s in got["sessions"] if s["name"] == "term-1")
+        self.assertEqual(len(one), 12)
+        self.assertEqual(one[:6], [0.0] * 6)  # nothing sampled before 15 min ago
+        self.assertAlmostEqual(one[7], 4.0, places=1)
+        self.assertAlmostEqual(one[9], 8.0, places=1)
+        self.assertAlmostEqual(one[-1], 8.0, places=1)  # since the newest sample: its rate still holds
+        self.assertAlmostEqual(got["now"], 10.0, places=1)  # 8 + 2
+        self.fm("cpu", "goal", "25")
+        self.assertEqual(json.loads(self.fm("ui", "--json").stdout)["cpu"]["goal"], 25.0)
+
+    def test_the_view_carries_the_train_and_the_files_each_lane_holds(self):
+        # T-3701: the pane's MERGE picture (a train running, what landed in the last day, lanes parked) and LANES picture
+        # (a dot per file a lane's leases hold), all without git: the train's lock, the ledger's lane_merge events, leases
+        import fcntl
+        import time
+        from sampo import bus
+        from sampo import core as c
+        p = c.find_project(self.repo)
+        lane = os.path.join(self.tmp, "lane")
+        os.makedirs(lane)
+        tid = self.fm("capture", "Building", "--type", "FIX", "--tier", "S").stdout.split()[2]
+        b = c.find_brief(p, tid)
+        b.meta.update(lane=lane, status="active")
+        c.save_brief(p, b)
+        park = self.fm("capture", "Parked", "--type", "FIX", "--tier", "S").stdout.split()[2]
+        b = c.find_brief(p, park)
+        b.meta.update(lane=lane, status="active", lane_stop=f"conflict {c.iso(time.time())} src/a.py")
+        c.save_brief(p, b)
+        bus._write_leases({f"k{i}": {"project": p.slug, "task": tid, "file": f, "until": time.time() + 600}
+                           for i, f in enumerate(["src/app.py", "src/util.py::main"])})
+        c.log_event(p, "lane_merge", task="T-0900")
+        v = json.loads(self.fm("ui", "--json").stdout)
+        self.assertEqual((v["train"]["running"], v["train"]["landed"], v["train"]["landed_24h"], v["train"]["parked"]),
+                         (False, ["T-0900"], 1, 1))
+        self.assertRegex(v["train"]["landed_at"][0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d")  # when it landed: the list's time column
+        lane_row = next(x for x in v["lanes"]["building"] if x["id"] == tid)
+        self.assertEqual(lane_row["files"], ["src/app.py", "src/util.py"])  # a symbol's lease names its file
+        os.makedirs(os.path.join(p.dir, "train"), exist_ok=True)
+        with open(os.path.join(p.dir, "train", ".lock"), "a+") as f:  # a train holds its lock while it runs
+            fcntl.flock(f, fcntl.LOCK_EX)
+            self.assertTrue(json.loads(self.fm("ui", "--json").stdout)["train"]["running"])
+
+    def test_the_view_carries_who_called_which_model(self):
+        # T-3701: the pane's MODELS picture: a link a caller and model over five minutes, its calls in the last minute
+        # hot; from the call log and Claude's spend log (older rows, and rows without a caller, left out)
+        import time
+        from sampo import core as c
+        now = time.time()
+        os.makedirs(c.state_dir(), exist_ok=True)
+        with open(os.path.join(c.state_dir(), "calls.jsonl"), "w") as f:
+            for at, a, to in [(now - 20, "cost", "qwen3.5:4b"), (now - 200, "cost", "qwen3.5:4b"), (now - 30, "cost", "qwen3.5:9b"),
+                              (now - 900, "cost", "old:1b"), (now - 10, "", "qwen3.5:4b")]:
+                f.write(json.dumps({"ts": c.iso(at), "from": a, "to": to}) + "\n")
+        with open(os.path.join(c.state_dir(), "spend.jsonl"), "w") as f:
+            f.write(json.dumps({"ts": c.iso(now - 100), "feature": "review", "usd": 0.1}) + "\n")
+        v = json.loads(self.fm("ui", "--json").stdout)
+        self.assertEqual([(x["from"], x["to"], x["n"], x["hot"]) for x in v["flows"]],
+                         [("cost", "qwen3.5:4b", 2, 1), ("cost", "qwen3.5:9b", 1, 1), ("review", "claude", 1, 0)])
+
+    def test_the_board_panels_read_a_cache_a_detached_run_refreshes(self):
+        # T-3701: LIBRARY, SAMPO, STATE and TESTS come from cache/board.json, which `fm ui --board-cache` writes; a
+        # stale or missing file starts that run detached (once in 30 s), never reads it inline on the poll
+        import subprocess
+        import time
+        from unittest import mock
+        from sampo import core as c
+        from sampo import watch
+        self.fm("task", "new", "Login retries", "--type", "FIX", "--tier", "S", "--ac", "it retries :: true", "--step", "retry",
+                "--focus")
+        self.fm("ui", "--board-cache")
+        p = c.find_project(self.repo)
+        with open(os.path.join(p.dir, "cache", "board.json")) as f:
+            kept = json.load(f)
+        self.assertTrue({"library", "state", "tests", "commands", "counts", "cpu"} <= set(kept))
+        v = json.loads(self.fm("ui", "--json").stdout)
+        self.assertEqual(v["board"], kept)
+        self.assertEqual(v["active"]["words"], "Login retries")  # THE LOOP's "you asked": the raw request, else the title
+        # the card and moon totals read every card and moon: a refresh keeps them for ten minutes
+        c.write_atomic(os.path.join(p.dir, "cache", "board.json"), json.dumps(dict(kept, counts=dict(kept["counts"], cards=4242))))
+        self.fm("ui", "--board-cache")
+        with open(os.path.join(p.dir, "cache", "board.json")) as f:
+            kept = json.load(f)
+        self.assertEqual(kept["counts"]["cards"], 4242)
+        old = time.time() - 120
+        os.utime(os.path.join(p.dir, "cache", "board.json"), (old, old))
+        with mock.patch.dict(os.environ, {"FOREMAN_NO_BACKGROUND": ""}), mock.patch.object(subprocess, "Popen") as run:
+            self.assertEqual(watch._board_extras(p), kept)  # the stale file answers this poll
+            watch._board_extras(p)  # a refresh already started: no second one
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_args[0][0][-2:], ["ui", "--board-cache"])
+
+    def test_the_board_cache_keeps_the_cpu_by_kind_a_minute_a_bar(self):
+        # T-3701: the pane's CPU panel as the web Board's: the cores each kind uses now, and a bar a minute of the last
+        # 30, from the readings of this refresh and the earlier ones the cache kept
+        import time
+        from unittest import mock
+        from sampo import board, watch
+        from sampo import core as c
+        p = c.find_project(self.repo)
+        now = time.time()
+        m = int(now // 60 * 60)
+        was = {"samples": [[now - 3000, 9, 9, 9, 9, 9], [m - 59, 1, 0, 0, 0, 1], [m, 2, 1, 0, 0, 0]]}  # too old, a minute ago, now
+        part = {"kinds": list(board.KINDS), "goal_pct": 10, "cores": 16, "minutes": [],
+                "now": {"tests": 4.0, "claude": 3.0, "models": 0.0, "hooks": 0.0, "other": 1.0, "busy": 8.0}}
+        with mock.patch.object(board, "cpu_tick"), mock.patch.object(board, "cpu_part", return_value=part), \
+                mock.patch.object(time, "sleep"):
+            got = watch._board_cpu(p, was)
+            self.assertEqual(watch._board_cpu(p, None)["minutes"], [[m, 4.0, 3.0, 0.0, 0.0, 1.0]])
+            with mock.patch.object(board, "cpu_part", return_value=dict(part, now=None)):
+                self.assertIs(watch._board_cpu(p, was), was)  # /proc unreadable: the last reading stands
+        self.assertEqual(got["minutes"], [[m - 60, 1.0, 0.0, 0.0, 0.0, 1.0], [m, 3.0, 2.0, 0.0, 0.0, 0.5]])
+        self.assertEqual((len(got["samples"]), got["now"]["busy"], got["cores"]), (3, 8.0, 16))
+
     def test_the_inbox_lists_the_users_own_asks_first(self):
         # T-3664: intake rank put 154 discovered items above the user's 10 asks; the pane shows theirs first
         self.fm("capture", "Grounded brainstorm of the parser", "--type", "RESEARCH", "--source", "discovered")

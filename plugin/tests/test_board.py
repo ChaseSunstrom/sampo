@@ -374,3 +374,12 @@ class Model(SampoTestCase):
         for scheme, block in (("dark", dark), ("light", light)):
             for k, v in tokens[scheme].items():
                 self.assertRegex(block, rf"--bd-{re.escape(k)}:\s*{re.escape(v)};", f"{scheme} {k}")
+
+    def test_the_claude_code_mods_board_palette_is_generated_from_the_tokens(self):
+        # T-3701: one source of truth; the mod ships alone, so its copy is generated and must match
+        tool = os.path.join(ROOT, "mods", "foreman-ui", "tools", "board_palette.py")
+        out = subprocess.run(["python3", tool, "--check"], capture_output=True, text=True, timeout=30)
+        self.assertEqual(out.returncode, 0, out.stdout + out.stderr)
+        ts = read_text(os.path.join(ROOT, "mods", "foreman-ui", "hooks", "board-palette.ts"))
+        for k, v in json.loads(read_text(os.path.join(WEB, "board-tokens.json")))["dark"].items():
+            self.assertIn(f"  {k}: 0x{v[1:].lower()},", ts)

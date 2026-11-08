@@ -55,7 +55,7 @@ test('replay: the pane draws from a recorded view with no live session (T-1534)'
   const drawn = await draw($, on)
   if (REPLAY.print) console.log(MARK + drawn)
   expect(drawn).toContain('"key":"fm-pane"')
-  if (REPLAY.view.project) expect(drawn).toContain(JSON.stringify(`  ${REPLAY.view.project}`)) // the head, at any size
+  if (REPLAY.view.project) expect(drawn).toContain(JSON.stringify(` ${REPLAY.view.project}`)) // the head (the top bar: after SAMPO), at any size
   if (REPLAY.rows >= 24 && REPLAY.view.active?.id) expect(drawn).toContain(REPLAY.view.active.id) // as the sweep (T-1050)
 })
 

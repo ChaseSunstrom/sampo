@@ -29,6 +29,12 @@ class Base(HookCase):
 
 
 class Bus(Base):
+    def test_a_fleet_row_names_the_sessions_model(self):
+        # T-3701: the pane's SESSIONS panel shows each live session's model, from its statusline snapshot
+        from sampo import bus
+        self.snap("live0002", model="Opus 5.5")
+        self.assertEqual(next(r for r in bus.rows() if r["session"] == "live0002")["model"], "Opus 5.5")
+
     def test_a_message_reaches_its_session_once_and_all_reach_everyone(self):
         self.fm("bus", "send", "sess-2", "use the new parser", env={"CLAUDE_CODE_SESSION_ID": "sess-1"})
         _, out = self.note("sess-2")

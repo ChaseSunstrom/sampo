@@ -3,7 +3,8 @@
 draw the screen, colours included, to a PNG, so a UI change can be looked at and not only tested.
 
   shot.py start DIR [--cols 200] [--rows 60] [--model haiku]
-                                               claude --plugin-dir <this mod> in DIR (FOREMAN_STATE passes through)
+                                               claude --plugin-dir <this mod> in DIR (FOREMAN_STATE passes through);
+                                               --view FIXTURE: the mod draws that recorded view (T-3701)
   shot.py keys TEXT [--enter]                  type into it: /fm, /reload-plugins, a digit for a dialog
   shot.py snap OUT.png                         the visible screen as a PNG (and OUT.txt, its plain text)
   shot.py self OUT.png [--back N]              the same for the tmux pane this session runs in (its own UI, live)
@@ -48,6 +49,8 @@ def start(a, cmd=None):
     # T-1209: Claude Code drops to 256 colours inside tmux unless told the server passes true colour through
     env = ["-e", "COLORTERM=truecolor", "-e", "CLAUDE_CODE_TMUX_TRUECOLOR=1",
            "-e", f"FOREMAN_STATE={own}" if own else "FOREMAN_ONEOFF=1"]
+    if getattr(a, "view", None):  # T-3701: the mod draws a recorded view: FOREMAN_FM is a stub that answers `ui` with it
+        env += ["-e", f"FOREMAN_FM={stub_fm(a.view)}"]
     # T-2055: settings = a JSON string for --settings (the demo recorder turns off every non-Sampo plugin with it)
     tmux("new-session", "-d", "-s", SESSION, "-x", str(a.cols), "-y", str(a.rows), "-c", os.path.abspath(a.dir), *env,
          cmd or f"claude --plugin-dir {MOD}" + (f" --model {a.model}" if getattr(a, "model", None) else "")
@@ -55,6 +58,21 @@ def start(a, cmd=None):
     print(f"started {SESSION} ({a.cols}x{a.rows}) in {a.dir}")
     if cmd is None and answer_trust(a.dir):
         print("answered Claude Code's folder-trust prompt (a folder Sampo made)")
+
+
+def stub_fm(fixture):
+    """T-3701: an fm for the harnessed mod that prints fixture's view (a .json file, or a tests/fixtures .ts one) for
+    `fm ui …` and `ok` for anything else, so a screenshot shows a chosen view and no command touches real state."""
+    import json
+    from pane_replay import load
+    d = tempfile.mkdtemp(prefix="fm-shot-view-")
+    with open(os.path.join(d, "view.json"), "w", encoding="utf-8") as f:
+        json.dump(load(fixture), f)
+    path = os.path.join(d, "fm")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(f'#!/bin/sh\n[ "$1" = ui ] && exec cat {shlex.quote(os.path.join(d, "view.json"))}\necho ok\n')
+    os.chmod(path, 0o755)
+    return path
 
 
 def _ours(path):
@@ -265,6 +283,7 @@ def main():
     s.add_argument("--model", help="e.g. haiku: a cheap turn, without changing the saved default model as /model does")
     s.add_argument("--settings", help="JSON for claude --settings, e.g. '{\"enabledPlugins\": {\"sampo-ui@sampo\": "
                    "false}}' so a worktree's mod draws, not the installed one (T-3163)")
+    s.add_argument("--view", help="a recorded `fm ui --json` view (.json, or a tests/fixtures .ts) the mod draws (T-3701)")
     s = sub.add_parser("keys")
     s.add_argument("text")
     s.add_argument("--enter", action="store_true")

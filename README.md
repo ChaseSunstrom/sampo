@@ -494,14 +494,15 @@ Only the Ward (on tool calls that can change something) and the write validators
 **The card.** Above the prompt sits a card showing:
 - the task's type chip, id and title, and its stage on a mini rail (●━●━◉─○─○);
 - a true-color gradient step bar that animates while Claude works;
-- audits, queue and inbox counts, and what waits on you;
+- audits, and one dense line of the work: a SAMPO chip, then the counts as pills (done, building, to merge, queued, inbox) and today's meter;
+- what waits on you;
 - speedrun splits: each stage's time against your typical for that kind of task, green under and red over;
 - when idle, one line on what Sampo learned this week (fixes that worked or missed, rules to propose);
 - `[f]` dashboard and `[n]` next.
 
-Set `palette: 'cb'` for a colourblind-safe ok/error pair (errors keep their ✗), or `'riso'` for Smith's risograph inks, and in the history press `b` to step back in time and `l` to return to live.
+The mod wears the live page's Board look by default: its near-black navy, dim rules and pastel-neon accents, generated from the same `board-tokens.json`, chips and pills in the band and the chat. Set `look: 'forge'` for the anvil-fire look before it; `palette` takes the same words as `sampo code`'s: `'cb'` for a colourblind-safe ok/error pair (errors keep their ✗), or `'riso'` for Smith's risograph inks; those keep coloured words without blocks behind them. In the history press `b` to step back in time and `l` to return to live.
 
-**The chat.** Every row reads like a section of the pane: a mark, a bold label in the row's colour, its subject, a rule fading out in that colour and the facts on the right.
+**The chat.** Every row reads like a section of the pane: a mark, a chip naming the kind on its accent (RUN, EDIT, READ, AGENT …), a bold label in the row's colour, its subject, a rule fading out in that colour and the facts on the right.
 - Your prompts (`❯ You`), Claude's replies (`● Claude`), commands, edits, subagents and every other tool (skills, MCP calls, artifacts …) get one. A tool's result of up to three lines sits in its row; a longer one keeps Claude Code's own block under it, which expands.
 - While a call runs, a comet runs along its rule beside the elapsed time. A command shows its lines, its output (failures first when it failed), the files it changed and a commit.
 - An edit's diff keeps a line of context either side of each change, breaks between hunks with `┄`, and washes only the words that changed in a changed line, never the whole width.
@@ -527,14 +528,38 @@ Set `palette: 'cb'` for a colourblind-safe ok/error pair (errors keep their ✗)
 
 **The mascot.** The pane's top-right corner has Claude Code's own Claude from the welcome screen. Its `mascot` setting picks blue, orange, purple, green or off. It dances while Claude works, blinks while idle and cheers when a task closes, with a mini Claude in its own color beside it for each running subagent.
 
-**The dashboard.** `/fm` (or `[f]`) opens one panel beside the chat that fills the dock exactly. Each section sits under a titled divider in its own colour, says only what it must, and draws its numbers as pictures. Activity and Today keep a fixed height, the lists take the rows they hold, and History takes what's left, so nothing jumps as work comes and goes. Top to bottom:
+**The dashboard.** `/fm` (or `[f]`) opens one panel beside the chat that fills the dock exactly, in the Board's language.
+
+It opens on **the board**: the Board's top bar over its panels, each a picture with the Board's chrome (a numbered chip, an UPPERCASE name, the web's one-line subtitle where the panel is wide enough to hold it whole, a label, corner brackets, a footer with its stat).
+- **The top bar**, framed like a panel: the SAMPO mark, the project and how it runs, and the work as counts (done, building, to merge, queued, inbox), numbers bright and words dim; the task in focus as the NOW strip (its kind, id, title, stage, a thin meter and the time); and, only when something needs you, one amber callout with its actions as key caps (`a` approve, `s` show).
+- **The grid**: three columns on a very wide dock, two from about 84 columns, one below, a blank row between rows. A last row with fewer panels widens them to the full width, so no slot is ever empty. Fills are drawn in half blocks (two pixels a cell) and dots and hairlines in braille (eight a cell), so clouds and curves stay fine.
+
+The panels:
+1. **Lanes:** each lane a hub under its id, the files it holds as named leaves on hairline spokes, its state and steps under it; a file two lanes hold is lit in both and joined by a dotted line (lanes sharing files sit side by side, so it runs level); a building lane sends a packet down its spokes.
+2. **Merge train:** each waiting lane a box (its id, its title) pouring a hairline into the gold gate (`gate · running` while a train runs), out into `foreman/build` with what landed in the last day, and under it the lanes landed, newest first, a ✓ and the time each; packets ride the lines while a train runs.
+3. **CPU:** the machine by kind of work, as `sampo cpu` splits it (tests, claude, models, hooks, other): the cores busy now as a big figure, its share and whether it's over or under the goal, each kind's cores, and a stacked bar a minute of the last 30 under the goal's dashed line.
+4. **The loop:** the words you asked ❯❯❯ the brief they became (its title, `[x]`/`[ ]` criteria, `✓`/`▸` steps), over its progress and the stages.
+5. **Library:** a dotted globe, a dot per kept card or moon, over the cards and moons kept each hour of the last day.
+6. **Models:** who called which model in the last five minutes, a line a pair as thick as its calls, the models under their families.
+7. **Sampo:** the newest `sampo` commands run here, over the queue as a table with status pills; past its rows, a last row says how many more.
+8. **State:** the state folder as a tree as wide as its names, each entry's time (and size where there's room), the newest lit, beside the latest decision as a card titled with its file and date.
+9. **Sessions:** every live Claude Code session on this machine, any project, orbiting the machine: a ring gauge of its context in its project's colour, its task and its model; idle ones dimmed.
+10. **Tests:** a tile a test module, cached, running, failing or idle (an outline), the tiles sized to fill the panel, a count of each above.
+
+The footer's controls are key caps too (`p` details, `n` next, `d` drive, `u` autonomy, `m` mute, `r` refresh); with the pane focused (ctrl+x tab) the key presses it. Where the dock can't hold every panel it scrolls (the arrows, while the pane has the keyboard), and the panels what's happening makes most relevant come first: lanes, the train, the task, models being called. Only the panels in view draw, and a picture redraws only while something in it moves. Library, Sampo, State, Tests and the CPU by kind read `cache/board.json`, which a background `sampo ui --board-cache` refreshes at most every 30 s (it reads /proc twice a second apart and keeps a row a minute).
+
+`p` (or *details*) turns to every section and back, and the pane remembers which. On the details page each section is a panel with a numbered chip on its accent, an UPPERCASE name and what it does, a label on the right, corner brackets and, on a tall dock, a footer with a caption and a stat. Each says only what it must and draws its numbers as pictures; the lists take the rows they hold and History takes what's left, so nothing jumps as work comes and goes; on a short dock the least important panels give way. Top to bottom:
 - **The head:** project, mode and the mascot; a bar of the work, done today against what's left (now, queued, inbox, blocked); and the one thing that needs you, most urgent first: a paused Sampo hook, a question waiting for your answer, a yes Sampo is waiting for, a plan waiting for approval (✓ approve, or *show* to read it), a task that just closed (a green sweep, grade, proof and time), failing gates, halved spend caps, a decision due for another look; otherwise *nothing needs you*.
 - **The task:** type, id and size, criteria proved and time on it against the usual, the title, a bar with a segment per step (*3 of 5 steps done · 2 left*), the stage rail from plan to close, and the steps around the current one. With nothing active: what's next and how many closed today, or a plan waiting for your yes. <!-- rule -->
-- **Activity:** one braille lane per kind of tool call (edit, run, read, agent, skill, web) plotting the session's calls over the last 30 minutes, each ending with what runs there now or the last thing it touched.
+- **Lanes**, while builders are out: a node cluster per lane (its hub, a node per step, lit when done) joined by a dashed link, its id as a pill and building, waiting, parked or merged under it.
+- **Merge**, while lanes wait: each waiting lane with a mini bar runs into one line to the build (`▶ ▣ build`), the merged ones listed beside it.
+- **Tools**, once the session has made a call: one braille lane per kind of tool call (edit, run, read, agent, skill, web) plotting the session's calls over the last 30 minutes, each ending with what runs there now or the last thing it touched.
 - **Agents**, while there are any: a node graph rooted at this session, with a branch (`├─`, `└─`) to each subagent (running, or finished in the last half hour), each brainstorm and each lone git worktree, and a builder's worktree under its agent. Every node's bar sits in one column on a shared axis, with a dot where a tool call or an answer landed, and ■ stop for a subagent quiet ten minutes.
-- **Up next:** plans waiting for your yes (each with ✓ approve), the queue, the inbox with Start and Drop, and a capture box (Enter runs `sampo capture` without interrupting Claude).
+- **Queue:** a table (ID, a status pill, kind, title): lanes building, plans waiting for your yes (each with ✓ approve), the queue, the inbox with Start and Drop, and a capture box (Enter runs `sampo capture` without interrupting Claude).
+- **CPU**, from the samples `sampo cpu` keeps: the Sampo sessions' share of the machine over the last half hour as stacked columns, one colour a session, against the dashed goal line (10%, or `sampo cpu goal`).
+- **Checks:** a cell per gate, green or red, with what fails.
 - **Sessions**, when there are others: each with its context and task, and one steer for all.
-- **History:** what happened, newest first, one line each, red for a failure and green for a pass or a close.
+- **History:** an area of the events over their span, then what happened, newest first, one line each, red for a failure and green for a pass or a close.
 - **Closed per day** for 14 days beside **Today**: four tanks for context, spend against the day's cap, hook latency and gates passed.
 - Next, Drive, Autonomy, Mute and Refresh.
 

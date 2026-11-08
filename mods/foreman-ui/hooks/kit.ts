@@ -1,5 +1,6 @@
 // The visual kit: palette, true-color Raster bars for the terminal and their text twins for other surfaces, the
 // spinner, and how each tool call reads while it runs. Pure functions: no $, so every surface and test can use them.
+import { BOARD } from './board-palette'
 
 export const C = { // T-2853: the forge (design/sampo/tokens.json's night theme and 12's fire colours)
   accent: 0xffc24d, // the fire's gold: what runs now
@@ -20,24 +21,72 @@ export const C = { // T-2853: the forge (design/sampo/tokens.json's night theme 
   hot: 0xff6a4a, // T-2876: the ember (tokens.json): the live point of running work
   steel: 0xc8d8ec, // T-2876: the forge's steel highlight: finished work has cooled
   todo: 0x5c6390, // T-2876: work still to come (tokens.json's border): the iron track is too faint to read on the night
+  // T-3701: the Board's chrome: the ground the pane paints, a panel's rules, body text, a chip's text, the corner brackets
+  bg: 0x181a21,
+  line: 0x2a2c33,
+  ink: 0xd0d5dd,
+  on: 0x181a21,
+  bracket: 0x6e9bff,
+}
+
+// T-3701: the Board kit's palette (board-palette.ts, generated from the live page's board-tokens.json), every key of C:
+// running work in yellow, reading in cyan, finished in green, edits pink, agents violet, warnings orange
+const B = BOARD
+const BOARD_C: typeof C = {
+  accent: B.yellow, accent2: B.cyan, ok: B.green, warn: B.orange, err: B.red, edit: B.pink, agent: B.violet, web: B.green,
+  skill: mix(B.yellow, B.ink, 0.35), dim: B.dim, muted: B.muted, add: mix(B.green, B.ink, 0.35), del: mix(B.red, B.ink, 0.4),
+  track: B.line, white: 0xffffff, hot: B.pink, steel: B.green, todo: mix(B.line, B.dim, 0.5),
+  bg: B.bg, line: B.line, ink: B.ink, on: B.on, bracket: B.bracket,
 }
 
 // T-1081: the colourblind-safe pair (Okabe-Ito blue and orange); rows that mean an error also carry a glyph
 // T-1512: riso, fm code's risograph inks for a dark background (fmcodetui.RISO["night"]): green, fluorescent pink,
 // cornflower and sunflower (accent and accent2 stay far apart: running and reading rows)
+// T-3701: default is the Board's; forge is the T-2853 look that was the default before
 export const PALETTES = {
-  default: { ok: 0x6fd8a0, err: 0xff85bc, accent: 0xffc24d, accent2: 0x6e9bff },
+  default: { ok: BOARD_C.ok, err: BOARD_C.err, accent: BOARD_C.accent, accent2: BOARD_C.accent2 },
+  forge: { ok: 0x6fd8a0, err: 0xff85bc, accent: 0xffc24d, accent2: 0x6e9bff },
   cb: { ok: 0x56b4e9, err: 0xe69f00, accent: 0x5fd7d7, accent2: 0x87afff },
   riso: { ok: 0x00a95c, err: 0xff48b0, accent: 0x62a8e5, accent2: 0xffb511 },
 }
-const BASE = { ...C } // T-1717: every colour as shipped, so a cleared saved palette puts all of them back
+const BASE = { ...C } // T-1717: every colour as shipped (the forge's), so a cleared saved palette puts all of them back
+let board = true
+/** T-3701: whether the Board's palette is on: the pane then paints the Board's ground under its body */
+export const isBoard = () => board
+// T-3701: still charts drawn once per input and palette: the pane redraws at 8 fps while work runs, its still parts with it
+const CELL_MEMO = new Map<string, string>()
+/** T-3701: the board's grid: `n` panels in rows of `cols`, every row exactly `width` wide with `gap` between panels;
+ * a last row of fewer panels widens them (one alone spans it, two split it), so no slot is ever empty. A row's widths,
+ * left to right. */
+export function gridRows(n: number, cols: number, width: number, gap: number): number[][] {
+  const out: number[][] = []
+  for (let i = 0; i < n; i += Math.max(1, cols)) {
+    const k = Math.min(Math.max(1, cols), n - i), room = width - (k - 1) * gap, w = Math.floor(room / k), rem = room - w * k
+    out.push(Array.from({ length: k }, (_, j) => w + (j < rem ? 1 : 0)))
+  }
+  return out
+}
+
+export function memo(key: string, draw: () => string): string {
+  const k = `${C.track} ${C.line} ${C.dim} ${C.ink} ${C.err} ${key}` // the colours these charts take from the palette
+  let got = CELL_MEMO.get(k)
+  if (got === undefined) {
+    if (CELL_MEMO.size >= 256) CELL_MEMO.clear() // ponytail: a full clear, not LRU; 256 still charts is many redraws
+    CELL_MEMO.set(k, (got = draw()))
+  }
+  return got
+}
 export const setPalette = (name: string, custom?: Record<string, unknown>) => {
   const mine = customColors(custom)
-  Object.assign(C, BASE, name === 'cb' || name === 'riso' ? PALETTES[name] : { ...PALETTES.default, ...mine })
+  // T-3701: a saved palette paints over the forge's colours, as it did before the Board: nothing it showed changes
+  board = name !== 'cb' && name !== 'riso' && name !== 'forge' && !Object.keys(mine).length
+  if (board) return void Object.assign(C, BOARD_C)
+  Object.assign(C, BASE, name === 'cb' || name === 'riso' ? PALETTES[name] : { ...PALETTES.forge, ...mine })
   // T-2876: the heat language is the forge's; cb, riso and a saved palette keep their own accent and ok for running
   // and finished work, so nothing they showed changes
   if (name === 'cb' || name === 'riso' || Object.keys(mine).length) Object.assign(C, { hot: mine.hot ?? C.accent, steel: mine.steel ?? C.ok, todo: mine.todo ?? C.track })
 }
+setPalette('default') // T-3701: the Board's from the first draw
 
 /** T-2876: the pane's mark (design/sampo/logo/pane-glyph.txt): the anvil-stone at rest; while work runs, it and the
  * band struck slant in turn, one a frame. One terminal cell (East Asian width N). */
@@ -63,10 +112,12 @@ const TYPE_COLOR: Record<string, keyof typeof C | number> = {
   SECURITY: 'edit',
   RESEARCH: 0xafafff,
 }
-export const typeColor = (type: string) => {
+/** A task type's colour as a number (T-3701: the pane's pictures draw in numbers) */
+export const typeNum = (type: string) => {
   const c = TYPE_COLOR[type] ?? 'dim'
-  return hex(typeof c === 'number' ? c : C[c])
+  return typeof c === 'number' ? c : C[c]
 }
+export const typeColor = (type: string) => hex(typeNum(type))
 
 export function mix(a: number, b: number, t: number): number {
   const k = Math.max(0, Math.min(1, t))
@@ -282,9 +333,11 @@ export function laneCells(lanes: readonly { color: number; slots: readonly numbe
 
 /** T-1026: a section divider: a line in the section's colour fading into the track, so sections read apart. */
 export function ruleCells(width: number, color: number): string {
-  const out: [string, number][] = []
-  for (let i = 0; i < width; i++) out.push(['─', mix(mix(C.track, color, 0.85), C.track, width > 1 ? i / (width - 1) : 0)])
-  return cells(out)
+  return memo(`rule ${width} ${color}`, () => {
+    const out: [string, number][] = []
+    for (let i = 0; i < width; i++) out.push(['─', mix(mix(C.track, color, 0.85), C.track, width > 1 ? i / (width - 1) : 0)])
+    return cells(out)
+  })
 }
 
 /** T-1023: one row of the Agents Gantt, `width` cells over [t0, t0 + span]: plain before the run started and after it
@@ -512,7 +565,162 @@ export const sizeWord = (tier: string) => SIZE[tier] ?? tier
  * `stretch` one (the history) what it holds of the rest; rows still spare go to the `grow` ones (more lanes, taller
  * charts) up to their allowance, then pad the history (or the task). When sections get no rows the least important
  * (last) of them is dropped and the rest placed again, so its divider goes to the others. */
-export type Part = { key: string; want: number; cap?: number; min?: number; fixed?: number; stretch?: boolean; bare?: boolean; grow?: number }
+// ── T-3701: the Board's instruments on the terminal. Each draws Raster cells from one slice of the view; the pane's
+// panels place them, and their text twins stand in where there is no Raster.
+
+/** The accent of the panel numbered n (1 up), as the Board's chips run: cyan, yellow, green, pink, violet. */
+export const panelAccent = (n: number) => [C.accent2, C.accent, C.ok, C.edit, C.agent][(Math.max(1, n) - 1) % 5]!
+
+/** A braille dot canvas, 2×4 dots a cell: nodes, links and curves at four times the rows. A cell takes the colour of
+ * the last dot drawn into it, so draw links first and nodes last. */
+export function dotCanvas(cols: number, rows: number) {
+  const bits = new Array<number>(cols * rows).fill(0)
+  const fg = new Array<number>(cols * rows).fill(C.dim)
+  const BIT = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]]
+  const set = (x: number, y: number, color: number) => {
+    const X = Math.round(x), Y = Math.round(y)
+    if (X < 0 || Y < 0 || X >= cols * 2 || Y >= rows * 4) return
+    const i = (Y >> 2) * cols + (X >> 1)
+    bits[i]! |= BIT[Y & 3]![X & 1]!
+    fg[i] = color
+  }
+  /** A straight line; `dash` > 0 draws that many dots, then skips as many. */
+  const line = (x0: number, y0: number, x1: number, y1: number, color: number, dash = 0) => {
+    const n = Math.max(1, Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0))))
+    for (let k = 0; k <= n; k++) if (!dash || k % (2 * dash) < dash) set(x0 + ((x1 - x0) * k) / n, y0 + ((y1 - y0) * k) / n, color)
+  }
+  const glyphs = new Map<number, string>()
+  /** A whole cell as one character (a node reads bigger than a dot), over any dots drawn there. */
+  const glyph = (x: number, y: number, ch: string, color: number) => {
+    const X = Math.floor(x / 2), Y = Math.floor(y / 4)
+    if (X < 0 || Y < 0 || X >= cols || Y >= rows) return
+    glyphs.set(Y * cols + X, ch)
+    fg[Y * cols + X] = color
+  }
+  return { set, line, glyph, cols, rows,
+    cells: () => cells(bits.map((b, i) => [glyphs.get(i) ?? (b ? String.fromCharCode(0x2800 + b) : ' '), fg[i]!] as const)) }
+}
+
+export type LaneNode = { id: string; color: number; done: number; total: number }
+
+/** LANES: a node cluster per lane over `cols`×`rows` cells: its steps ring the hub (lit when done) on spokes, and a
+ * dashed link joins each hub to the next, as the Board's lanes panel draws builders and the files they hold. */
+export function laneClusters(lanes: readonly LaneNode[], cols: number, rows: number): string {
+  return memo(`lanes ${cols} ${rows} ${JSON.stringify(lanes)}`, () => drawClusters(lanes, cols, rows))
+}
+function drawClusters(lanes: readonly LaneNode[], cols: number, rows: number): string {
+  const cv = dotCanvas(cols, rows)
+  const n = Math.max(1, lanes.length)
+  const slot = cols / n
+  const cy = (rows * 4 - 1) / 2
+  const hub = (i: number) => (i + 0.5) * slot * 2
+  const link = mix(C.line, C.dim, 0.55)
+  for (let i = 0; i + 1 < lanes.length; i++) cv.line(hub(i) + 3, cy, hub(i + 1) - 3, cy, link, 1)
+  lanes.forEach((l, i) => {
+    const x = hub(i)
+    const ry = Math.max(1.5, Math.min(6, cy - 0.5)) // dots are about square (4×4.75 px): one radius both ways
+    const rx = Math.max(2, Math.min(ry * 1.6, slot - 2)) // a little wider: the cluster reads as a spread, not a column
+    const k = Math.max(1, Math.min(12, l.total || 1))
+    const spoke = mix(C.line, l.color, 0.45)
+    const at = (j: number) => [x + rx * Math.cos(-Math.PI / 2 + (2 * Math.PI * j) / k), cy + ry * Math.sin(-Math.PI / 2 + (2 * Math.PI * j) / k)] as const
+    for (let j = 0; j < k; j++) cv.line(x, cy, at(j)[0], at(j)[1], spoke, 1)
+    // nodes as whole-cell glyphs over the dotted spokes: a step done lit, one to come dim, the hub ringed
+    for (let j = 0; j < k; j++) cv.glyph(at(j)[0], at(j)[1], j < l.done ? '●' : '○', j < l.done ? l.color : mix(C.line, C.dim, 0.8))
+    cv.glyph(x, cy, '◉', l.color)
+  })
+  return cv.cells()
+}
+
+/** MERGE: a curve from each source row (row i's middle, on the left edge) into the target row's middle on the right,
+ * as the Board's merge train flows lanes into the gate; each in its colour. */
+export function flowCells(colors: readonly number[], target: number, cols: number, rows: number): string {
+  return memo(`flow ${colors} ${target} ${cols} ${rows}`, () => drawFlows(colors, target, cols, rows))
+}
+function drawFlows(colors: readonly number[], target: number, cols: number, rows: number): string {
+  // in box-drawing lines (braille curves read as dots at a terminal's size): each source runs right to one bus column,
+  // the bus carries them to the target row, and a heavy line runs on into the build, ending in ▶
+  const n = colors.length
+  const bus = Math.max(1, Math.min(cols - 2, Math.floor(cols * 0.55)))
+  const lit = n ? colors[0]! : C.dim
+  const lo = n ? 0 : target, hi = n ? Math.max(target, n - 1) : target // the rows the bus spans
+  const BOX: Record<string, string> = { // left, up, down, right
+    '1010': '╮', '1100': '╯', '1110': '┤', '0110': '│', '0101': '╰', '0011': '╭', '0111': '├', '1001': '─',
+    '1101': '┴', '1011': '┬', '1111': '┼', '0001': '╶', '1000': '╴', '0100': '╵', '0010': '╷' }
+  const out: (readonly [string, number])[] = []
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      const own = r < n ? colors[r]! : lit
+      if (c < bus) out.push(r < n ? ['─', own] : [' ', C.dim])
+      else if (c === bus) {
+        const on = r >= lo && r <= hi
+        const key = [r < n, on && r > lo, on && r < hi, r === target].map(Number).join('')
+        out.push([BOX[key] ?? ' ', own])
+      } else out.push(r === target ? [c === cols - 1 ? '▶' : '━', lit] : [' ', C.dim])
+    }
+  return cells(out)
+}
+
+/** A bar's height in eighths, as one block character: ' ' to '█'. */
+const EIGHTHS = ' ▁▂▃▄▅▆▇█'
+
+/** CPU: stacked columns, one per value index (oldest first, the newest at the right edge), each series a colour from
+ * the bottom up, in eighths; a cell where two series meet draws both (the lower as the block, the upper behind it).
+ * `goal` draws a dashed line across at that height (over the bars too); `top` is the scale's top. */
+export function histCells(series: readonly { color: number; values: readonly number[] }[], cols: number, rows: number,
+  top: number, goal: number | null, gap = 1): string {
+  return memo(`hist ${JSON.stringify(series)} ${cols} ${rows} ${top} ${goal} ${gap}`, () => drawHist(series, cols, rows, top, goal, gap))
+}
+function drawHist(series: readonly { color: number; values: readonly number[] }[], cols: number, rows: number,
+  top: number, goal: number | null, gap: number): string {
+  const n = Math.max(0, ...series.map(s => s.values.length))
+  const bw = n ? Math.max(1, Math.floor((cols + gap) / n) - gap) : 1
+  const used = n * (bw + gap) - gap
+  const H8 = rows * 8
+  const scale = (v: number) => Math.max(0, Math.round((v / Math.max(1e-9, top)) * H8))
+  const goalRow = goal === null ? -1 : Math.min(rows - 1, Math.floor(scale(goal) / 8)) // from the bottom
+  const lineColor = mix(C.ink, C.err, 0.35)
+  const out: (readonly [string, number, number])[] = []
+  for (let r = rows - 1; r >= 0; r--) // top row first
+    for (let c = 0; c < cols; c++) {
+      const x = c - (cols - Math.max(0, used)) // right-aligned
+      const j = x >= 0 && x % (bw + gap) < bw ? Math.floor(x / (bw + gap)) : -1
+      let cum = 0
+      const edges = j < 0 ? [] : series.map(s => (cum += Math.max(0, s.values[j] ?? 0), { color: s.color, at: scale(cum) }))
+      const lo = 8 * r, total = edges.at(-1)?.at ?? 0
+      const fill = Math.max(0, Math.min(8, total - lo))
+      const segAt = (e: number) => edges.find(s => s.at > e)?.color ?? C.dim // the series covering eighth e
+      if (r === goalRow && (fill === 0 || fill === 8)) {
+        out.push(['╌', lineColor, fill ? segAt(lo + 4) : DEFAULT_BG])
+        continue
+      }
+      if (!fill) {
+        out.push([' ', C.dim, DEFAULT_BG])
+        continue
+      }
+      const below = segAt(lo), above = segAt(lo + fill - 1)
+      const split = edges.find(s => s.at > lo && s.at < lo + fill)?.at // a series ends inside this cell
+      out.push(split !== undefined && fill === 8 ? [EIGHTHS[split - lo]!, below, above] : [EIGHTHS[fill]!, above, DEFAULT_BG])
+    }
+  return cells(out)
+}
+
+/** CHECKS: a square cell per gate (two columns, one row), passing ones dim green, failing ones lit; wrapped into
+ * rows of what fits `cols`. The cells and their grid size. */
+export function checkCells(results: readonly { exit: number }[], cols: number): { cells: string; columns: number; rows: number } {
+  if (!results.length) return { cells: cells([[' ', C.dim]]), columns: 1, rows: 1 }
+  const per = Math.max(1, Math.floor((cols + 1) / 3))
+  const rows = Math.max(1, Math.ceil(results.length / per))
+  const columns = Math.min(cols, Math.min(per, results.length) * 3 - 1)
+  const out: (readonly [string, number])[] = []
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < columns; c++) {
+      const it = results[r * per + Math.floor(c / 3)]
+      out.push(!it || c % 3 === 2 ? [' ', C.dim] : ['█', it.exit ? C.err : mix(C.ok, C.bg, 0.4)])
+    }
+  return { cells: cells(out), columns: Math.max(1, columns), rows }
+}
+
+export type Part = { key: string; want: number; cap?: number; min?: number; fixed?: number; stretch?: boolean; bare?: boolean; grow?: number; spare?: boolean; whole?: boolean }
 export function layout(rows: number, parts: Part[]): { gap: number; rows: Record<string, number> } {
   const h = Math.max(0, Math.floor(rows))
   const gap = h >= 40 ? 1 : 0
@@ -524,20 +732,24 @@ export function layout(rows: number, parts: Part[]): { gap: number; rows: Record
     out = {}
     for (const p of shown) if (p.fixed) r -= out[p.key] = Math.min(p.fixed, r)
     const flex = shown.filter(p => !p.fixed && !p.stretch)
-    for (const p of flex) r -= out[p.key] = Math.max(0, Math.min(p.want, p.cap ?? p.want, p.min ?? 2, r)) // each its minimum first
+    for (const p of flex) { // each its minimum first; T-3701: a `whole` one (a chart) all of it or none, never squashed
+      const m = Math.min(p.want, p.cap ?? p.want, p.min ?? 2)
+      r -= out[p.key] = p.whole && r < m ? 0 : Math.max(0, Math.min(m, r))
+    }
     for (const p of flex) { // then up to its cap, in order
+      if (p.whole && !out[p.key]) continue
       const more = Math.max(0, Math.min(Math.min(p.want, p.cap ?? p.want) - out[p.key]!, r))
       out[p.key] = out[p.key]! + more
       r -= more
     }
     const stretch = shown.find(p => p.stretch)
     if (stretch) r -= out[stretch.key] = Math.min(stretch.want, r) // what it holds
-    for (const p of shown) if (p.grow) { // spare rows: more of the charts, up to each one's `grow`
+    for (const p of shown) if (p.grow && !(p.whole && !out[p.key])) { // spare rows: more of the charts, up to each one's `grow`
       const more = Math.min(p.grow, r)
       out[p.key] = (out[p.key] ?? 0) + more
       r -= more
     }
-    const spare = stretch ?? shown.find(p => p.bare) // then blank rows under the history, or under the task
+    const spare = stretch ?? shown.find(p => p.bare || p.spare) // then blank rows under the history, or under the task (T-3701: titled, `spare`)
     if (spare) out[spare.key] = (out[spare.key] ?? 0) + r
     const empty = shown.filter(p => !out[p.key])
     if (!empty.length) break

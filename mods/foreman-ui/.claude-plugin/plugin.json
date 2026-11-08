@@ -48,13 +48,23 @@
     "palette": {
       "type": "string",
       "title": "Palette",
-      "description": "default: green and red for ok and error. cb: a colourblind-safe blue and orange pair (errors also carry a glyph). riso: risograph inks, green, fluorescent pink and cornflower; the same words as fm code's palette setting.",
+      "description": "default: green and red for ok and error, on the look below. cb: a colourblind-safe blue and orange pair (errors also carry a glyph). riso: risograph inks, green, fluorescent pink and cornflower; the same words as fm code's palette setting.",
       "options": [
         "default",
         "cb",
         "riso"
       ],
       "default": "default"
+    },
+    "look": {
+      "type": "string",
+      "title": "Look",
+      "description": "board: the live page Board's (its board-tokens.json): near-black navy, neon yellow, cyan, green, pink and violet. forge: the anvil-fire look before it. Palette cb or riso draws its own colours on either.",
+      "options": [
+        "board",
+        "forge"
+      ],
+      "default": "board"
     },
     "chat": {
       "type": "string",

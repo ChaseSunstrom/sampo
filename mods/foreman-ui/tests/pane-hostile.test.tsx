@@ -67,18 +67,32 @@ function world(on: On, now: FmView) {
 }
 
 for (const [name, s] of Object.entries(HOSTILE))
-  test(`hostile ${name} text fits every size and draws no control, escape or bidi override (T-1679)`, async ($, on) => {
+  test(`hostile ${name} text fits every size and draws no control, escape or bidi override (T-1679)`, { timeoutMs: 30000 }, async ($, on) => { // both pages, every size: the board draws ten pictures
     world(on, view(s))
     await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
     const bad: string[] = []
+    const mount = (w: number, h: number) => $.ui.mount({
+      plugin: 'sampo-ui', surface: 'terminal', component: 'Pane', requestId: 'foreman',
+      props: { title: 'Sampo', isFocused: true, bodyColumns: w, placement: 'dock', scroll: { offset: 0, bodyRows: h }, view: {} },
+    } as never)
+    for (const page of ['board', 'details']) { // T-3701: the pictures, then every section (p)
+    if (page === 'details') {
+      const ui = await mount(80, 24)
+      await ui.press({ key: 'fm-page' })
+      await ui.unmount()
+    }
     for (const [w, h] of [[20, 12], [26, 12], [40, 16], [80, 24], [121, 34]] as const) {
-      const ui = await $.ui.mount({
-        plugin: 'sampo-ui', surface: 'terminal', component: 'Pane', requestId: 'foreman',
-        props: { title: 'Sampo', isFocused: true, bodyColumns: w, placement: 'dock', scroll: { offset: 0, bodyRows: h }, view: {} },
-      } as never)
+      const ui = await mount(w, h)
       if (w >= 26 && h >= 24 && !(await ui.find({ type: 'Text', text: /T-0007/ }))) bad.push(`${w}x${h} drew no task`)
       if (w < 26 && !(await ui.find({ type: 'Text', text: /26\+ columns/ }))) bad.push(`${w}x${h} said nothing of its floor`)
-      for (const r of await ui.findAll({ type: 'Raster' })) if (Number(r.props.columns) > w) bad.push(`${w}x${h} raster ${r.key} ${r.props.columns}`)
+      for (const r of await ui.findAll({ type: 'Raster' })) {
+        if (Number(r.props.columns) > w) bad.push(`${w}x${h} raster ${r.key} ${r.props.columns}`)
+        const bin = atob(String(r.props.cells)) // T-3701: the pictures write words into cells: none a control or bidi
+        for (let i = 0; i < bin.length; i += 12) {
+          const cp = (bin.charCodeAt(i) | (bin.charCodeAt(i + 1) << 8) | (bin.charCodeAt(i + 2) << 16)) >>> 0
+          if (BAD.test(String.fromCodePoint(cp))) bad.push(`${page} ${w}x${h} raster ${r.key} drew U+${cp.toString(16)}`)
+        }
+      }
       for (const b of await ui.findAll({ type: 'Box' })) if (typeof b.props.width === 'number' && b.props.width > w) bad.push(`${w}x${h} box ${b.key} ${b.props.width}`)
       // a span inside a truncating Text is cut with it: only a Text no cut parent holds must fit on its own
       const texts = (await ui.findAll({ type: 'Text' })).map(t => ({ text: String(t.text ?? ''), wrap: String(t.props.wrap ?? '') }))
@@ -89,6 +103,7 @@ for (const [name, s] of Object.entries(HOSTILE))
           bad.push(`${w}x${h} text ${cols(t.text)} cols: ${t.text.slice(0, 30)}`)
       }
       await ui.unmount()
+    }
     }
     expect([...new Set(bad)]).toEqual([])
   })

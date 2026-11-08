@@ -682,7 +682,8 @@ def rows(sessions=None):
         act = c.active_brief_fast(p, p.lane) if p else None  # T-3580: not every brief parsed per session per pane poll
         out.append({"session": sid, "project": s.get("project"), "task": act.id if act else None,
                     "title": c.fit(act.title, 80) if act else None, "context_pct": s.get("context_pct"),
-                    "seen": s.get("ts"), "tmux": bool(s.get("tmux_pane")), "mail": len(unread(sid, mark=False)),
+                    "seen": s.get("ts"), "model": s.get("model"),  # T-3701: the pane's SESSIONS panel names it
+                    "tmux": bool(s.get("tmux_pane")), "mail": len(unread(sid, mark=False)),
                     "leases": sum(v["session"] == sid for v in leases)})
     return out
 

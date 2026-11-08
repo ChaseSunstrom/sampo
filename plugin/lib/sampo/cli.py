@@ -9280,6 +9280,8 @@ def _build_parser(only=None):
     s.add_argument("--follow", action="store_true", help="print a new view line whenever the project changes")
     s.add_argument("--interval", type=float, default=0.5, help="--follow: seconds between checks")
     s.add_argument("--demo", action="store_true", help="print a canned view (every key a real one has) as JSON")
+    s.add_argument("--board-cache", action="store_true", help="read the Board's slow parts into cache/board.json for the "
+                                                              "pane (the view starts it, at most every 30 s)")
     s = add("projects", lazy("sampo.watch", "cmd_projects"), tier=("Running elsewhere", 1250), help="every Sampo project on this device (the desktop "
                                                                 "app's list): --json, --follow, --next")
     s.add_argument("--follow", action="store_true", help="print a new list whenever a project changes")

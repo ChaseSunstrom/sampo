@@ -15,7 +15,29 @@ export type FmItem = {
   source?: string | null // T-3664: who asked: user and steer are the user's own words
 }
 // T-3664: a task in a lane, which the queue leaves out
-export type FmLane = { id: string; type: string; tier: string; title: string; steps_done: number; steps_total: number; since?: string | null }
+/** T-3701: % of the machine's cores per session (each a cgroup scope `sampo cpu` sampled), in `step_s` buckets, oldest
+ * first, the newest last; `now` their sum in the newest bucket; `goal` the project's (sampo cpu goal, default 10) */
+export type FmCpu = { goal: number; cores: number; step_s: number; now: number | null; sessions: { name: string; pct: number[] }[] }
+export type FmLane = { id: string; type: string; tier: string; title: string; steps_done: number; steps_total: number; since?: string | null
+  files?: string[] } // T-3701: the files its leases hold (at most 12), for the LANES picture's dots
+/** T-3701: the merge train for the MERGE picture: whether one runs now (its lock held), the lanes landed in the last day
+ * (ids, newest last, at most 12, landed_at when each landed, and how many), the lanes parked (a conflict or a refusal) in that day */
+export type FmTrain = { running: boolean; landed: string[]; landed_at?: string[]; landed_24h: number; parked: number }
+/** T-3701: who called which model in the last five minutes (calls n, hot: in the last minute), for the MODELS picture */
+export type FmFlow = { from: string; to: string; n: number; hot: number }
+/** T-3701: the live page Board's slow parts (cache/board.json, read again at most every 30 s) for the pane's LIBRARY,
+ * SAMPO, STATE, TESTS and CPU panels; each part null when it couldn't be read */
+export type FmBoard = {
+  at?: string
+  library?: { calling: number; hourly: number[]; recent: { grid: string; at: string; kept: number }[] } | null
+  counts?: { cards: number; ui: number; moons: number; calling: number } | null
+  state?: { tree: { name: string; dir: boolean; at: string; n: number; kb: number }[]; newest: string;
+    doc: { kind: string; title: string; text: string; at: string } | null } | null
+  tests?: { modules: { name: string; state: 'running' | 'fail' | 'cached' | 'idle' }[]; done: number; total: number; running: number; source: string } | null
+  commands?: { at: string; cmd: string; ok: boolean }[] | null
+  /** the machine's cores by kind now, and a row a minute of the last 30 ([minute epoch, cores per kind…]), for CPU */
+  cpu?: { kinds: string[]; goal_pct: number; cores: number; minutes: number[][]; now: Record<string, number> | null } | null
+}
 export type FmPlan = { interpretation: string; approach: string; steps: FmStep[]; criteria: FmCriterion[] }
 export type FmActive = FmItem & {
   stage: string
@@ -27,6 +49,7 @@ export type FmActive = FmItem & {
   splits?: { stage: string; secs: number; typical: number | null; delta: number | null; sign: 'over' | 'under' | 'even' | null }[] // T-1078: time in each stage against the project's typical
   children?: { id: string; title: string; status: string; steps_done: number; steps_total: number }[] // T-0711
   on_task_s?: number | null // seconds since the task was first focused, when the view was built
+  words?: string // T-3701: the raw request, unquoted (else the title): THE LOOP's "you asked"
   hypotheses?: FmHypothesis[] // T-0207/T-0228: the debugging ledger
   oracle?: { examples: number; ambiguities: string[] } | null // T-0226: examples from the spec alone
   batch?: string[] // T-0257: the requests this task works as one batch
@@ -74,11 +97,16 @@ export type FmView = {
   inbox_yours?: number // T-3664: captured from the user's words (source user or steer)
   // T-3664: open work in lanes: a builder at it, finished and waiting on a merge, merged with its close owed
   lanes?: { building: FmLane[]; merging: FmLane[]; closing: FmLane[] }
+  cpu?: FmCpu | null // T-3701: the Sampo sessions' CPU against the goal, from sampo cpu's state/cpu.json
+  train?: FmTrain | null // T-3701
+  flows?: FmFlow[] | null // T-3701
+  board?: FmBoard | null // T-3701
   approvals?: FmApproval[]
   closed?: { id: string; status: string; title?: string; grade?: string | null; lenses?: string[] }[] // T-0473
   signals?: { level: 'red' | 'amber'; text: string }[] // T-0472: shown as one glyph only when any
   // T-0711: live sessions here and the cached tiles of remotes the user added (fm conductor remote add)
   fleet?: { session: string; project?: string | null; task?: string | null; title?: string | null; context_pct?: number | null
+    model?: string | null; seen?: string | null // T-3701: the SESSIONS panel
     mail?: number; leases?: number; remote?: string; age_s?: number | null; error?: string }[]
   recent?: string[]
   skills?: FmSkills // T-0939: Skill calls and stack-card reads this week, and the map's unread suggestions
@@ -157,6 +185,7 @@ declare module 'claude-code' {
       resumed: string | null // the resume record (its `at`) this session already acted on
       reviewing: string | null // T-0989: the waiting plan shown in the Task section, by id
       scrub: number // T-1081: how many history entries back the pane is showing
+      page: 'board' | 'details' // T-3701: the pictures, or every section (kept in the store, so a session starts on it)
     }
   }
 }

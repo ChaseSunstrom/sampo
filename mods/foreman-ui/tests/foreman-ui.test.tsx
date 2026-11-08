@@ -71,6 +71,12 @@ const decode = (b64: string) => {
   return out
 }
 
+// T-3701: the text drawn on a background that isn't a Board chip or pill (a short word, a space either side): the Board's
+// look has those; still no highlighted row, line or block (T-0122)
+const blocks = (t: unknown): string[] => !t || typeof t !== 'object' ? [] : Array.isArray(t) ? t.flatMap(blocks)
+  : [...((t as { props?: { backgroundColor?: string } }).props?.backgroundColor ? [JSON.stringify((t as { children?: unknown }).children)] : []), ...blocks((t as { children?: unknown }).children)]
+const notChips = (t: unknown) => blocks(t).filter(s => !/^\[" [^"]{1,12} "\]$/.test(s))
+
 // The world beneath the plugin: fm answers from `views` (last one repeats); every argv, toast and open is recorded.
 function world(on: On, views: FmView[]) {
   const calls: string[][] = []
@@ -102,7 +108,7 @@ function world(on: On, views: FmView[]) {
   const suggested: string[] = []
   const played: string[] = []
   const usage = { percent: 30, tokens: undefined as number | undefined, limits: [] as { kind: string; percentUsed: number }[] }
-  mock.store(on)
+  mock.store(on, { page: 'details' }) // T-3701: these tests read every section: the details page
   on('session.usage', async () => ({
     value: { startedAt: 0, context: { window: 1000, percent: usage.percent, tokens: usage.tokens }, rateLimits: usage.limits, cost: { usd: 1.5 } },
   }))
@@ -463,7 +469,8 @@ test('the pane is one panel of sections, no boxes inside; a waiting plan shows w
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'sampo-ui', surface, ...PANE })
-    for (const key of ['fm-pane-head', 'fm-pane-attention', 'task', 'activity', 'queue', 'history', 'today', 'fm-pane-controls'])
+    // T-3701: no call yet, so no tools (activity) panel
+    for (const key of ['fm-pane-head', 'fm-pane-attention', 'task', 'queue', 'history', 'today', 'fm-pane-controls'])
       expect(await ui.find({ key })).toBeDefined()
     expect((await ui.findAll({ type: 'Box' })).filter(b => b.props.borderStyle)).toEqual([]) // one panel: the dock's frame
     expect(await ui.find({ type: 'Text', text: /▸ +2 +raise the timeout/ })).toBeDefined()
@@ -500,7 +507,7 @@ test('a running edit is an animated row with its delta; a finished one is the en
   const props = { tool_use_id: 'tu1', tool: 'Edit', input, isRunning: true, isErrored: false, isInterrupted: false }
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'sampo-ui', surface, component: 'ToolUse', requestId: 'tu1', props })
-    expect(await ui.find({ type: 'Text', text: /✎ Editing/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /Editing/ })).toBeDefined() // T-3701: the icon is the EDIT chip in the Board's look
     expect(await ui.find({ type: 'Text', text: /login\.py/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: '+2 −1' })).toBeDefined()
     expect((await ui.find({ type: 'Box', key: 'fm-tool' }))?.props.borderStyle).toBeUndefined() // T-1031: a section, as in the pane
@@ -920,8 +927,9 @@ test('the band shows the whole queue: today, queued, inbox and what is next', as
   world(on, [{ ...VIEW, today_done: 3 }])
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'sampo-ui', surface: 'terminal', ...band() })
-  expect(await ui.find({ type: 'Text', text: '✓3 done · 2 queued · 1 in inbox' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /· next T-0008 Tidy helpers/ })).toBeDefined()
+  // T-3701: the counts as pills, the Board's language
+  for (const text of [/✓ 3 done/, /2 queued/, /1 inbox/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^next T-0008 Tidy helpers/ })).toBeDefined()
   expect((await ui.findAll({ type: 'Raster' })).some(r => r.key === 'fm-band-queue')).toBe(true)
   await ui.unmount()
 })
@@ -932,11 +940,13 @@ test('the band and the pane show the work in lanes, which the queue leaves out (
     lanes: { building: [lane('T-0050', 'Retry the upload')], merging: [lane('T-0051', 'a'), lane('T-0052', 'b')], closing: [] } }])
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'foreman-ui', surface: 'terminal', ...band() })
-  expect(await ui.find({ type: 'Text', text: '✓3 done · 1 building · 2 to merge · 31 queued · 1 in inbox' })).toBeDefined()
+  for (const text of [/✓ 3 done/, /1 building/, /2 to merge/, /31 queued/, /1 inbox/]) expect(await ui.find({ type: 'Text', text })).toBeDefined()
   await ui.unmount()
   const pane = await $.ui.mount({ plugin: 'foreman-ui', surface: 'terminal', ...PANE })
   expect(await pane.find({ type: 'Text', text: 'T-0050' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '⇢ 2 waiting to merge · T-0051 T-0052' })).toBeDefined()
+  // T-3701: the lanes waiting on a merge flow into the build in the MERGE panel
+  for (const id of ['T-0051', 'T-0052']) expect(await pane.find({ type: 'Text', text: id })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: /2 waiting to merge/ })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: /1 building, 2 to merge, 31 queued, 1 in the inbox \(1 yours\)/ })).toBeDefined()
   await pane.unmount()
 })
@@ -1180,7 +1190,7 @@ test('the look: coloured words not highlighted blocks, quiet controls, the human
   const pane = await $.ui.mount({ plugin: 'sampo-ui', surface: 'terminal', ...PANE })
   for (const ui of [wide, pane]) {
     const drawn = JSON.stringify(await ui.drawn())
-    expect(drawn).not.toContain('backgroundColor')
+    expect(notChips(await ui.drawn())).toEqual([]) // T-3701: chips and pills only
     expect(drawn).not.toContain('do it, verify')
     expect(drawn).toContain('raise the timeout')
     for (const b of await ui.findAll({ type: 'Button' })) expect(JSON.stringify(b)).toContain('"plain":true')
@@ -1270,7 +1280,7 @@ test('a finished edit is a Sampo row: the path, +added −removed, and its chang
   expect((await row.find({ type: 'Text', text: /^new two$/ }))?.props.color).toBe(hex(C.add))
   expect(await row.find({ type: 'Text', text: /^ ?12 $/ })).toBeDefined() // 'new two' is line 12 of the new file
   expect((await row.find({ type: 'Text', text: /^keep$/ }))?.props.color).toBe(hex(C.dim)) // T-1031: a line of context, quiet
-  expect(JSON.stringify(await row.drawn())).not.toContain('backgroundColor')
+  expect(notChips(await row.drawn())).toEqual([]) // T-3701: the kind's chip only
   // T-0179 steer: 'the command changes … I want in panels too'
   expect((await row.find({ type: 'Text', text: /Edited/ }))?.props.color).toBe(hex(C.edit)) // T-1031: the label in the edit colour
   await row.unmount()
@@ -1359,7 +1369,7 @@ test('a subagent call is a Sampo row: type, task, tools, time, tokens, its repor
   expect(await row.find({ type: 'Text', text: /Review T-0144 guard fix/ })).toBeDefined()
   expect(await row.find({ type: 'Text', text: /7 tools · 1m 20s · 32k tokens/ })).toBeDefined()
   expect(await row.find({ type: 'Text', text: /Verdict: changes needed\./ })).toBeDefined() // markdown stars dropped
-  expect(JSON.stringify(await row.drawn())).not.toContain('backgroundColor')
+  expect(notChips(await row.drawn())).toEqual([]) // T-3701: the kind's chip only
   await row.unmount()
   const res = await mount('ToolResult', 'g1', { isErrored: false, output: done })
   expect(await res.find({ type: 'Box', key: 'fm-agent-result' })).toBeDefined()
@@ -1603,6 +1613,8 @@ test('the pane reads top-down: head with the attention row, task, Activity, Up n
     today_done: 3,
   }])
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'WebFetch', url: 'https://example.com' } as never) // T-3701: a call, so the tools panel shows
+  await $.tool.call({ tool: 'Bash', command: 'ls', description: 'list' } as never)
   const ui = await $.ui.mount({ plugin: 'sampo-ui', surface: 'terminal', ...PANE })
   const drawn = JSON.stringify(await ui.drawn())
   const at = (key: string) => drawn.indexOf(`"${key}"`)
@@ -1610,11 +1622,12 @@ test('the pane reads top-down: head with the attention row, task, Activity, Up n
   expect(order.map(at).every(i => i >= 0)).toBe(true)
   expect([...order.map(at)].sort((x, y) => x - y)).toEqual(order.map(at))
   const crestRaster = (await ui.findAll({ type: 'Raster' })).find(r => r.key === 'fm-crest') // T-3113: the crest's rows come off the dock
-  let rows = 4 + (crestRaster?.props.rows as number) + (await ui.find({ key: 'task' }))?.props.height as number // head 3 (attention its third row), controls
+  let rows = 4 + (crestRaster?.props.rows as number) // head 3 (attention its third row), controls
   for (const key of ['head', 'controls']) if (await ui.find({ key: `gap-${key}` })) rows += 1
-  for (const key of ['activity', 'agents', 'queue', 'sessions', 'history', 'today']) {
-    const h = (await ui.find({ key: `${key}-body` }))?.props.height as number | undefined
-    if (h) rows += h + 1 + ((await ui.find({ key: `gap-${key}` })) ? 1 : 0) // its rows, its titled divider, the gap above
+  // T-3701: each panel its head, its rows and, on a tall dock, its footer (where the gap above a section was)
+  for (const key of ['task', 'lanes', 'merge', 'activity', 'agents', 'queue', 'cpu', 'checks', 'sessions', 'history', 'today']) {
+    const h = (await ui.find({ key: key === 'task' ? 'task' : `${key}-body` }))?.props.height as number | undefined
+    if (h) rows += h + 1 + ((await ui.find({ key: `${key}-foot` })) ? 1 : 0)
   }
   expect(rows).toBe(60) // T-1000, T-1002: the whole dock, no more, no less, dividers and spacing included
   const rasters = (await ui.findAll({ type: 'Raster' })).map(r => r.key)
@@ -1711,8 +1724,8 @@ test('History from fm ui: the id, a coloured event and the task title across the
   const rows = await ui.findAll({ type: 'Text', text: /^step 1 (passed|failed)$/ })
   expect(rows.map(r => (r as { text?: string }).text ?? r.props.children)).toEqual(['step 1 passed', 'step 1 failed']) // newest first
   const rules = (await ui.findAll({ type: 'Raster' })).map(r => String(r.key)).filter(k => k.endsWith('-rule'))
-  expect(rules).toEqual(expect.arrayContaining(['activity-rule', 'queue-rule', 'history-rule']))
-  const rule = decode(String((await ui.findAll({ type: 'Raster' })).find(r => r.key === 'activity-rule')!.props.cells))
+  expect(rules).toEqual(expect.arrayContaining(['task-rule', 'queue-rule', 'history-rule'])) // T-3701: in each panel's head
+  const rule = decode(String((await ui.findAll({ type: 'Raster' })).find(r => r.key === 'queue-rule')!.props.cells))
   expect(rule[0]!.fg).not.toBe(rule.at(-1)!.fg) // a gradient, not one gray
   await ui.unmount()
 })
@@ -1732,7 +1745,8 @@ test("a saved palette in fm ui's view paints over the default, checked (T-1717)"
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ plugin: 'sampo-ui', surface: 'terminal', ...PANE })
   expect((await ui.find({ type: 'Text', text: 'step 1 failed' }))?.props.color).toBe(hex(0x123456))
-  expect((await ui.find({ type: 'Text', text: 'step 1 passed' }))?.props.color).toBe(hex(PALETTES.default.ok)) // a bad value: kept
+  // a bad value: kept; T-3701: a saved palette paints over the forge's colours, as it did before the Board
+  expect((await ui.find({ type: 'Text', text: 'step 1 passed' }))?.props.color).toBe(hex(PALETTES.forge.ok))
   await ui.unmount()
 })
 
@@ -1857,6 +1871,8 @@ test('usable: a value the pane can use is taken, else the last good one, else no
     .toEqual({ out: { palette: 'cb', motion: 'off', other: 1 }, kept: ['palette'] })
   expect(usable({ palette: 'chartreuse' }, { palette: 'nope' })).toEqual({ out: {}, kept: ['palette'] })
   expect(usable({ palette: 'cb', mascot: { evil: 1 } }, {}).out).toEqual({ palette: 'cb' }) // a damaged stored copy
+  // T-3701: palette keeps fm code's words; the Board-or-forge choice is the mod's own look
+  expect(usable({ palette: 'forge', look: 'forge' }, { palette: 'riso' }).out).toEqual({ palette: 'riso', look: 'forge' })
 })
 
 test('a palette changed before the first poll applies on it, not only recorded (T-1574 review)', async ($, on) => {
@@ -2381,7 +2397,7 @@ test('Agents: a Gantt row per subagent (its worktree joined), per lone worktree 
   expect(rasters).toEqual(expect.arrayContaining(['gantt-session', 'gantt-ag1', 'gantt-tree-worktree-agent-ag1', 'gantt-tree-old-lane', 'gantt-ideas']))
   const order = rasters.filter(k => String(k).startsWith('gantt-'))
   expect(order.indexOf('gantt-tree-worktree-agent-ag1')).toBe(order.indexOf('gantt-ag1') + 1) // hangs under its agent
-  for (const text of ['this session', /old-lane/, 'merged', 'ideas: A mascot', '3/12', /2 running, 2 worktrees/, /T-0012/])
+  for (const text of ['this session', /old-lane/, 'merged', 'ideas: A mascot', '3/12', /2 running · 2 worktrees/, /T-0012/]) // T-3701: the footer
     expect(await ui.find({ type: 'Text', text })).toBeDefined()
   for (const text of [/^├─/, /^└─/, /^│ └─|^ {2}└─/]) expect(await ui.find({ type: 'Text', text })).toBeDefined() // the lines
   await ui.unmount()
@@ -2861,7 +2877,8 @@ test('the crest gives way on a short dock, shrinks under 60 columns and holds st
   }
   expect(await crestOf({ scroll: { offset: 0, bodyRows: 20 } })).toBeUndefined()
   expect((await crestOf({ bodyColumns: 50 }))?.props.rows).toBe(3)
-  expect((await crestOf({}))?.props.rows).toBe(8)
+  expect((await crestOf({}))?.props.rows).toBe(3) // T-3701: the Board's slim top under 80 rows
+  expect((await crestOf({ scroll: { offset: 0, bodyRows: 90 } }))?.props.rows).toBe(8)
 })
 
 test('the rows no hook styled draw in Sampo\'s look and keep what they say (T-3163)', async ($, on) => {

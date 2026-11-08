@@ -75,20 +75,30 @@ test('the pane fits every width and height: nothing wider than the pane, nothing
   world(on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   const bad: string[] = []
-  for (const w of [30, 40, 60, 80, 120, 200])
-    for (const h of [8, 12, 24, 40, 60]) {
-      const ui = await $.ui.mount({
-        plugin: 'sampo-ui', surface: 'terminal', component: 'Pane', requestId: 'foreman',
-        props: { title: 'Sampo', isFocused: true, bodyColumns: w, placement: 'dock', scroll: { offset: 0, bodyRows: h }, view: {} },
-      } as never)
-      if (h >= 24 && !(await ui.find({ type: 'Text', text: /T-0007/ }))) bad.push(`${w}x${h} drew no task`) // the sweep sees a real pane
-      for (const r of await ui.findAll({ type: 'Raster' })) if (Number(r.props.columns) > w) bad.push(`${w}x${h} raster ${r.key} ${r.props.columns}`)
-      for (const b of await ui.findAll({ type: 'Box' })) if (typeof b.props.width === 'number' && b.props.width > w) bad.push(`${w}x${h} box ${b.key} ${b.props.width}`)
-      for (const t of await ui.findAll({ type: 'Text' })) {
-        const s = String(t.text ?? '')
-        if ([...s].length > w && !String(t.props.wrap ?? '').startsWith('truncate') && t.props.wrap !== 'wrap') bad.push(`${w}x${h} text ${[...s].length}: ${s.slice(0, 40)}`)
-      }
+  const mount = (w: number, h: number) => $.ui.mount({
+    plugin: 'sampo-ui', surface: 'terminal', component: 'Pane', requestId: 'foreman',
+    props: { title: 'Sampo', isFocused: true, bodyColumns: w, placement: 'dock', scroll: { offset: 0, bodyRows: h }, view: {} },
+  } as never)
+  for (const page of ['board', 'details']) { // T-3701: the pictures first, then every section (p)
+    if (page === 'details') {
+      const ui = await mount(80, 40)
+      await ui.press({ key: 'fm-page' })
       await ui.unmount()
     }
+    for (const w of [30, 40, 60, 80, 120, 200])
+      for (const h of [8, 12, 24, 40, 60]) {
+        const ui = await mount(w, h)
+        const at = `${page} ${w}x${h}`
+        if (h >= 24 && !(await ui.find({ type: 'Text', text: /T-0007/ }))) bad.push(`${at} drew no task`) // the sweep sees a real pane
+        for (const r of await ui.findAll({ type: 'Raster' })) if (Number(r.props.columns) > w) bad.push(`${at} raster ${r.key} ${r.props.columns}`)
+        for (const b of await ui.findAll({ type: 'Box' })) if (typeof b.props.width === 'number' && b.props.width > w) bad.push(`${at} box ${b.key} ${b.props.width}`)
+        // a span inside a truncating Text is cut with it (as the hostile test holds): only a Text no cut parent holds must fit
+        const texts = (await ui.findAll({ type: 'Text' })).map(t => ({ text: String(t.text ?? ''), wrap: String(t.props.wrap ?? '') }))
+        const cut = (x: { wrap: string }) => x.wrap.startsWith('truncate') || x.wrap === 'wrap'
+        for (const t of texts)
+          if ([...t.text].length > w && !cut(t) && !texts.some(u => u !== t && cut(u) && u.text.includes(t.text))) bad.push(`${at} text ${[...t.text].length}: ${t.text.slice(0, 40)}`)
+        await ui.unmount()
+      }
+  }
   expect([...new Set(bad)]).toEqual([])
 })

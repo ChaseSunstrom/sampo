@@ -1,6 +1,6 @@
 import type { EngineInterface, RenderElement, ResolveInput } from 'claude-code'
 import type { LiveAgent } from '../types'
-import { C, MASCOT_COLORS, cells, crest, crestText, TONE_COLOR, activityCells, agentColor, barCells, changedLines, clawd, clean, diffRows, elapsed, ganttCells, hex, spin, miniClawd, mix, outputSummary, progressCells, ruleCells, shortPath, sparkCells, sparkText, stageCells, stageLabels, textBar, textComet, toolFace } from './kit'
+import { C, MASCOT_COLORS, cells, crest, isBoard, crestText, TONE_COLOR, activityCells, agentColor, barCells, changedLines, clawd, clean, diffRows, elapsed, ganttCells, hex, spin, miniClawd, mix, outputSummary, progressCells, ruleCells, shortPath, sparkCells, sparkText, stageCells, stageLabels, textBar, textComet, toolFace } from './kit'
 import type { DiffRow, LabelRun } from './kit'
 import { OUT_LINES, TINY_OUT, TREE_MS, cfg, diffCap, took } from './state'
 import type { FeedItem, Said, ToolUseRender } from './state'
@@ -58,7 +58,9 @@ export function sectionHead(ui: UI, e: ResolveInput, o: { key: string; color: nu
   const { Box, Raster, Text } = ui
   const width = Math.max(30, (o.width ?? (e.viewport?.columns ?? 100) - (treeOn(e) ? TREE_INDENT : 0)) - 2) // T-1040: beside the gutter
   const metaLen = (o.meta ?? []).reduce((n, p) => n + p.text.length, 0)
-  const room = width - (o.mark ? 2 : 0) - o.label.length - 1 - (metaLen ? metaLen + 1 : 0)
+  const kc = kindChip(o.label) // T-3701: in the Board's look the icon becomes a chip naming the kind
+  const label = kc ? kc.rest : o.label
+  const room = width - (o.mark ? 2 : 0) - label.length - 1 - (kc ? kc.word.length + 3 : 0) - (metaLen ? metaLen + 1 : 0)
   const fits = !!o.subject && o.subject.length <= room - 8
   const rw = Math.max(3, room - (fits ? o.subject!.length + 1 : 0))
   const rule = e.surface === 'terminal'
@@ -67,7 +69,8 @@ export function sectionHead(ui: UI, e: ResolveInput, o: { key: string; color: nu
   const head = (
     <Box key={`${o.key}-head`} flexDirection="row" gap={1} height={1} overflow="hidden">
       {o.mark ? <Box key={o.markKey ?? `${o.key}-mark`} flexShrink={0}><Text weight="bold" color={hex(o.markColor ?? o.color)}>{o.mark}</Text></Box> : null}
-      <Box flexShrink={0}><Text weight="bold" color={hex(o.color)}>{o.label}</Text></Box>
+      {kc ? <Box key={`${o.key}-chip`} flexShrink={0}>{chip(ui, `${o.key}-chip`, kc.word, o.color)}</Box> : null}
+      <Box flexShrink={0}><Text weight="bold" color={hex(o.color)}>{label}</Text></Box>
       {fits ? <Box flexShrink={0}><Text color={hex(LIGHT)}>{o.subject}</Text></Box> : null}
       <Box flexShrink={0}>{rule}</Box>
       {metaLen ? (
@@ -78,6 +81,85 @@ export function sectionHead(ui: UI, e: ResolveInput, o: { key: string; color: nu
     </Box>
   )
   return { head, rest: !o.subject || fits ? '' : o.subject }
+}
+
+/** `s` cut to `n` columns with an ellipsis when it doesn't fit (BMP text: a column a character). */
+export const fit = (s: string, n: number) => (n <= 0 ? '' : s.length <= n ? s : n === 1 ? '…' : `${s.slice(0, n - 1)}…`)
+
+/** T-3701: a Board pill: the word on a dark tint of its colour, a space either side. The other palettes keep coloured
+ * words, no block behind them (T-0122). */
+export function pill(ui: UI, key: string, word: string, color: number, width = 0) {
+  const { Text } = ui
+  return <Text key={key} color={hex(color)} backgroundColor={isBoard() ? hex(mix(C.bg, color, 0.22)) : undefined}>{` ${word.padEnd(width)} `}</Text>
+}
+
+/** T-3701: a Board chip: the word on its colour, in the ground's colour, bold (elsewhere a bold coloured word). */
+export function chip(ui: UI, key: string, word: string, color: number) {
+  const { Text } = ui
+  return isBoard()
+    ? <Text key={key} weight="bold" color={hex(C.on)} backgroundColor={hex(color)}>{` ${word} `}</Text>
+    : <Text key={key} weight="bold" color={hex(color)}>{` ${word} `}</Text>
+}
+
+// T-3701: a tool row's chip names its kind, from the icon its label starts with
+const KIND_CHIP: Record<string, string> = { '✎': 'EDIT', '❯': 'RUN', '◔': 'READ', '⌕': 'FIND', '◍': 'WEB', '◆': 'AGENT', '✦': 'SKILL', '⬡': 'MCP', '◇': 'REVIEW', '⚠': 'ASK', '•': 'TOOL' }
+/** The kind chip a label gets in the Board's look and the label without its icon; null in the other palettes. */
+export function kindChip(label: string): { word: string; rest: string } | null {
+  const m = /^(\S+) (.*)$/su.exec(label)
+  const word = m && isBoard() ? KIND_CHIP[m[1]!] : undefined
+  return word ? { word, rest: m![2]! } : null
+}
+
+/** T-3701: a Board panel's head, exactly `width` columns: ┌, the number on the panel's accent (a chip), the UPPERCASE
+ * name, a dim "· what it does", a rule fading out, the accent label, ┐. On a narrow pane the what goes first, then the
+ * label shortens, then the name. */
+export function panelHead(ui: UI, e: ResolveInput, o: { key: string; n: number; name: string; what: string; label: string; color: number; width: number }) {
+  const { Box, Raster, Text } = ui
+  const num = String(o.n).padStart(2, '0')
+  const fixed = 2 + num.length + 2 + 1 + 1 + 2 // '┌ ', the chip, a space, the space before the label, ' ┐'
+  const name = fit(o.name, Math.max(1, o.width - fixed - 1))
+  const label = fit(o.label, Math.max(0, o.width - fixed - name.length - 2))
+  const room = o.width - fixed - name.length - label.length
+  const what = room - 3 - 4 >= o.what.length ? o.what : '' // ' · ' and a rule of 4 at least; whole or none (T-3701)
+  const rw = Math.max(1, room - (what ? what.length + 3 : 0) - 1)
+  const bracket = hex(C.bracket)
+  return (
+    <Box key={`${o.key}-head`} flexDirection="row" height={1} overflow="hidden" flexShrink={0}>
+      <Text color={bracket}>┌ </Text>
+      <Box key={`${o.key}-chip`} flexShrink={0}>{chip(ui, `${o.key}-chip-text`, num, o.color)}</Box>
+      <Text> </Text>
+      <Box key={`${o.key}-name`} flexShrink={0}><Text weight="bold" color={hex(C.ink)}>{name}</Text></Box>
+      {what ? <Text key={`${o.key}-what`} color={hex(C.dim)}>{` · ${what}`}</Text> : null}
+      <Text> </Text>
+      {e.surface === 'terminal'
+        ? <Raster key={`${o.key}-rule`} columns={rw} rows={1} cells={ruleCells(rw, mix(C.line, o.color, 0.35))} />
+        : <Text key={`${o.key}-rule`} color={hex(C.line)}>{'─'.repeat(rw)}</Text>}
+      <Text> </Text>
+      <Box key={`${o.key}-label`} flexShrink={0}><Text weight="bold" color={hex(o.color)}>{label}</Text></Box>
+      <Text color={bracket}> ┐</Text>
+    </Box>
+  )
+}
+
+/** T-3701: a Board panel's footer, exactly `width` columns: └, a dim caption, a small meter when given, the stat in the
+ * panel's accent, ┘. The caption gives way first. */
+export function panelFoot(ui: UI, e: ResolveInput, o: { key: string; caption: string; stat: string; color: number; width: number; frac?: number }) {
+  const { Box, Text } = ui
+  const stat = fit(o.stat, Math.max(0, o.width - 6))
+  const mw = o.frac !== undefined && o.width >= 40 ? 6 : 0
+  const room = Math.max(0, o.width - 4 - stat.length - (mw ? mw + 1 : 0) - 1)
+  const bracket = hex(C.bracket)
+  return (
+    <Box key={`${o.key}-foot`} flexDirection="row" height={1} overflow="hidden" flexShrink={0}>
+      <Text color={bracket}>└ </Text>
+      <Text key={`${o.key}-caption`} color={hex(C.dim)}>{fit(o.caption, room)}</Text>
+      <Box flexShrink={0} width={Math.max(0, room - fit(o.caption, room).length) + 1} />
+      {mw ? meter(ui, e, `${o.key}-meter`, mw, o.frac!, o.color, null) : null}
+      {mw ? <Text> </Text> : null}
+      <Text key={`${o.key}-stat`} weight="bold" color={hex(o.color)}>{stat}</Text>
+      <Text color={bracket}> ┘</Text>
+    </Box>
+  )
 }
 
 // T-1040: the chat as a tree. The engine draws each row on its own and owns their order, so every row of a turn draws its
@@ -225,6 +307,7 @@ export function mascotTree(ui: UI, e: ResolveInput, state: 'work' | 'idle' | 'ha
  * gets the Raster, any other surface one line of text. */
 export function crestTree(ui: UI, e: ResolveInput, width: number, height: number, state: 'work' | 'idle' | 'happy', n: number, subs: LiveAgent[]) {
   if (cfg.mascot !== 'sampo' || height < 28) return { rows: 0, el: null } // a short dock keeps every row for the work
+  if (isBoard() && height < 80) height = 0 // T-3701: the Board's look has a slim top bar: the compact crest, 3 rows
   const running = subs.filter(s => !s.done)
   const { Raster, Text } = ui
   if (e.surface !== 'terminal')

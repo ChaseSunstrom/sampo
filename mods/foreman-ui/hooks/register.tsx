@@ -3,11 +3,18 @@ import type { EngineInterface, Register, RenderElement, RenderInput, ResolveInpu
 
 
 const scrub = atom({ plugin: 'sampo-ui', key: 'scrub' } as const, 0) // T-1081: how many history entries back the pane is showing
+const pageAtom = atom({ plugin: 'sampo-ui', key: 'page' } as const, 'board' as 'board' | 'details') // T-3701: the pictures, or every section
 import type { FileChurn, FmItem, FmView, LiveAgent, LiveShell, TurnSummary } from '../types'
 import {
   C,
   cleanDeep,
   setPalette,
+  isBoard,
+  checkCells,
+  flowCells,
+  histCells,
+  laneClusters,
+  panelAccent,
   MASCOT_COLORS,
   about,
   hoursAgo,
@@ -52,7 +59,12 @@ import {
   tone,
   toolFace,
   typeColor,
+  typeNum,
+  gridRows,
 } from './kit'
+import { cpuPicture, lanesPicture, libraryPicture, mergePicture, modelsPicture, notePicture, sampoPicture, sessionsPicture, statePicture, taskPicture,
+  testsPicture } from './canvas'
+import type { CpuIn, Picture } from './canvas'
 import { CHECKPOINT_AT, FRAME_MS, FRESH, IDLE_FRAMES, PANE, QUIET_MS, SHELL_MAX_MS, STOP_MS, TIMELINE_MS, TREE_MS, cfg, feed, laneOf, running, said, starts, ticks, took } from './state'
 import type { FeedItem } from './state'
 
@@ -70,7 +82,7 @@ const shells = atom({ plugin: 'sampo-ui', key: 'shells' } as const, [])
 const away = atom({ plugin: 'sampo-ui', key: 'away' } as const, []) // tasks done since the person last wrote
 const resumed = atom({ plugin: 'sampo-ui', key: 'resumed' } as const, null) // T-0145: the resume record acted on
 const reviewing = atom({ plugin: 'sampo-ui', key: 'reviewing' } as const, null as string | null) // T-0989: a waiting plan shown in the Task section
-import { LIGHT, TREE_INDENT, agentOut, agentRow, bars, branch, editChanges, editRow, gapTop, crestTree, liveTree, mascotTree, meter, miniRail, ownsResult, rail, railBox, sectionHead, shellRow, spark, toolRow, treeOn } from './rows'
+import { LIGHT, TREE_INDENT, agentOut, agentRow, bars, branch, chip, editChanges, editRow, fit as fitText, gapTop, kindChip, crestTree, liveTree, mascotTree, meter, miniRail, ownsResult, panelFoot, panelHead, pill, rail, railBox, sectionHead, shellRow, spark, toolRow, treeOn } from './rows'
 import type { Motion } from './rows'
 
 // Sampo inside Claude Code. A pure renderer over `fm ui --json` plus what the session's own tool calls show it:
@@ -318,7 +330,8 @@ const OPTION_OK: Record<string, (v: unknown) => boolean> = {
   mascot: v => typeof v === 'string' && (v === 'off' || v === 'sampo' || v in MASCOT_COLORS),
   motion: v => v === 'full' || v === 'reduced' || v === 'calm' || v === 'off',
   chat: v => v === 'full' || v === 'tree',
-  palette: v => v === 'default' || v === 'cb' || v === 'riso',
+  palette: v => v === 'default' || v === 'cb' || v === 'riso', // fm code's words (settings.SHARED)
+  look: v => v === 'board' || v === 'forge', // T-3701: the Board's, or the forge look before it
 }
 let goodOptions: Record<string, unknown> = {}
 
@@ -349,7 +362,10 @@ async function pollOptions($: EngineInterface) {
   if (seen === seenOptions) return
   seenOptions = seen
   const { out, kept } = usable({ ...startOptions, ...now }, goodOptions)
+  const wasBoard = isBoard()
   applyOptions(out)
+  // T-3701: an open pane takes the new palette's ground (each open sets it anew)
+  if (wasBoard !== isBoard() && (await $.ui.panes().catch(() => [])).some(p => p.id === PANE && p.isShown)) await openPane($, false).catch(() => undefined)
   for (const k of Object.keys(OPTION_OK)) if (OPTION_OK[k]!(out[k])) goodOptions[k] = out[k]
   await $.store.set('goodOptions', goodOptions).catch(() => undefined)
   const show = (v: unknown) => clean(typeof v === 'string' ? `'${v}'` : JSON.stringify(v) ?? '').slice(0, 40)
@@ -491,9 +507,13 @@ async function steer($: EngineInterface, text: string) {
   await refresh($)
 }
 
+const DOCK_COLS = 104
 async function openPane($: EngineInterface, focus: boolean) {
-  // ~76 columns docked: the cards fit, and the transcript and band keep the rest (T-0122: the share left them ~37)
-  return $.ui.open(focus ? { id: PANE, title: 'Sampo', focus: true, columns: 76 } : { id: PANE, title: 'Sampo', columns: 76 })
+  // ~76 columns docked: the cards fit, and the transcript and band keep the rest (T-0122: the share left them ~37);
+  // T-3701: 104 since the board page: two columns of its nine panels (at most 45% of the terminal, the host's cap)
+  // T-3701: in the Board's palette the pane paints the Board's near-black ground; the other palettes keep the terminal's
+  const bg = isBoard() ? { backgroundColor: hex(C.bg) } : {}
+  return $.ui.open(focus ? { id: PANE, title: 'Sampo', focus: true, columns: DOCK_COLS, ...bg } : { id: PANE, title: 'Sampo', columns: DOCK_COLS, ...bg })
 }
 
 // T-0909: the pane's moving rasters (the rail's comet, the live lane's glow) repaint by blit at ~30 fps while work is
@@ -645,7 +665,8 @@ function applyOptions(options: Record<string, unknown>) {
   // T-1496: reduced is fm code's word too; the old calm still means it
   cfg.motion = options.motion === 'reduced' || options.motion === 'calm' ? 'reduced' : options.motion === 'off' ? 'off' : 'full'
   cfg.chat = options.chat === 'full' ? 'full' : 'tree' // T-1040
-  cfg.palette = options.palette === 'cb' || options.palette === 'riso' ? options.palette : 'default' // T-1081, T-1512
+  // T-1081, T-1512; T-3701: palette keeps fm code's words (default, cb, riso); the look picks what default draws on
+  cfg.palette = options.palette === 'cb' || options.palette === 'riso' ? options.palette : options.look === 'forge' ? 'forge' : 'default'
   setPalette(cfg.palette, savedPalette) // T-1780: the saved one too, or an options change dropped it until a refresh
 }
 
@@ -668,6 +689,8 @@ export const register: Register = (on, options) => {
     applyOptions(usable(startOptions, goodOptions).out)
     const stored = await $.store.get('sound').catch(() => undefined)
     if (stored === false) await update($, sound, () => false)
+    const kept = await $.store.get('page').catch(() => undefined) // T-3701: the page the person left the pane on
+    if (kept === 'details' || kept === 'board') await update($, pageAtom, () => kept)
     await refresh($)
     await resumeAfterReload($)
     poll?.cancel() // one poller per environment, however often the session starts
@@ -929,9 +952,10 @@ export const register: Register = (on, options) => {
       const face = toolFace(e.props.tool, e.props.input, cfg.root)
       const { Box, Text } = $.ui.resolve(e)
       const more = readSummary(e.props.tool, e.props.output)
+      const kc = kindChip(`${face.icon} ${face.verb}`) // T-3701: the kind's chip in the Board's look
       return tree(
         <Box flexDirection="row" gap={1} key="fm-read">
-          <Text color={hex(face.color)}>{face.icon}</Text>
+          {kc ? <Box flexShrink={0}>{chip($.ui.resolve(e), 'fm-read-chip', kc.word, face.color)}</Box> : <Text color={hex(face.color)}>{face.icon}</Text>}
           <Text weight="bold" color={hex(mix(face.color, C.muted, 0.5))}>{face.verb.replace(/ing\b/, '')}</Text>
           <Text wrap="truncate-start" color={hex(0xd0d5dd)}>{face.target}</Text>
           {more ? <Text color={hex(C.muted)}>· {more}</Text> : null}
@@ -1379,13 +1403,16 @@ export const register: Register = (on, options) => {
         {head}
         {treeLive && treeRows >= 3 ? tree(treeRows) : null}
         {(queued > 0 || inboxN > 0 || inFlight.length > 0) && (
-          <Box flexDirection="row" gap={1} key="fm-band-queue-row">
+          // T-3701: one dense line in the Board's language: a chip, the counts as pills, today's meter, what is next
+          <Box flexDirection="row" gap={1} key="fm-band-queue-row" height={1} overflow="hidden">
+            <Box flexShrink={0}>{chip($.ui.resolve(e), 'fm-band-chip', narrow ? '⊖' : 'SAMPO', C.accent)}</Box>
+            {([[`✓ ${todayDone} done`, C.ok], ...inFlight.map(w => [w, / building$/.test(w) ? C.accent2 : / to merge$/.test(w) ? C.accent : C.ok]),
+              [`${queued} queued`, C.muted], [`${inboxN} inbox`, v.inbox_yours ? C.accent : C.muted]] as [string, number][]).map(([w, c], i) => (
+              <Box key={`band-pill-${i}`} flexShrink={0}>{pill($.ui.resolve(e), `band-pill-${i}`, w, c)}</Box>
+            ))}
             {!narrow && <Text color={hex(C.dim)}>today</Text>}
             {!narrow && meter($.ui.resolve(e), e, 'fm-band-queue', 10, todayDone / Math.max(1, todayDone + queued + inboxN + (a ? 1 : 0)), C.accent2, null)}
-            <Text color={hex(C.dim)} wrap={cut}>
-              {[`✓${todayDone} done`, ...inFlight, `${queued} queued`, `${inboxN} in inbox`].join(' · ')}
-              {upNext && !narrow ? ` · next ${upNext.id} ${upNext.title}` : ''}
-            </Text>
+            {upNext && !narrow ? <Text color={hex(C.dim)} wrap={cut}>{`next ${upNext.id} ${upNext.title}`}</Text> : null}
           </Box>
         )}
         {doneSince.length > 0 && (
@@ -1513,76 +1540,433 @@ export const register: Register = (on, options) => {
     const since = (ms: number) => (ms < 3600000 ? `${Math.max(1, Math.round(ms / 60000))}m ago` : hoursAgo(ms / 3600000))
     const raster = (key: string, cols: number, cellsOf: string, twin: string, color: number) =>
       term ? <Raster key={key} columns={cols} rows={1} cells={cellsOf} /> : <Text key={key} color={hex(color)}>{twin}</Text>
-    const typeWord = (it: { type: string }) => (
-      <Box flexShrink={0}>
-        <Text weight="bold" color={typeColor(it.type)}>
-          {(it.type === 'PERFORMANCE' ? 'PERF' : it.type).padEnd(8)}
-        </Text>
+
+    // ── the one thing that needs you
+    const callo: { v: { color: number; text: string; plan?: string; title?: string } | null } = { v: null } // T-3701: the board's callout
+    const attention = (() => {
+      const row = (color: number, text: string, lead?: RenderElement | null, tail?: RenderElement | null) => {
+        callo.v = { color, text }
+        return (
+          <Box key="fm-pane-attention" flexDirection="row" gap={1} height={1} overflow="hidden" flexShrink={0}>
+            {lead}
+            <Text color={hex(color)} wrap="truncate-end">
+              {text}
+            </Text>
+            {tail}
+          </Box>
+        )
+      }
+      if (err) return row(C.err, `✗ fm: ${err}`)
+      if (paused.length) // Sampo's own checks are off: before anything else (T-0087)
+        return row(C.warn, `⚠ ${paused.join(', ')} hook${paused.length === 1 ? ' is' : 's are'} paused after failing 3 times in a row (fm doctor)`)
+      if (asking) return row(C.warn, `⚠ waiting for your answer, ${elapsed(clockNow - asking[1].at)}`)
+      if (asks.length) {
+        const x = asks[0]!
+        return row(C.warn, `⚠ needs you: ${x.task} ${x.allow.join(', ')} — ${x.why}${asks.length > 1 ? ` (+${asks.length - 1} more)` : ''}`)
+      }
+      if (plans.length) {
+        const q = plans[0]!
+        const el = row(
+          C.warn,
+          `⚠ ${q.id} plan awaits your yes${a ? `: ${q.title}` : ''}${plans.length > 1 ? ` (+${plans.length - 1} more)` : ''}`,
+          null,
+          <Box key="attention-plan" flexDirection="row" gap={1} flexShrink={0}>
+            <Button key={`att-approve-${q.id}`} label="✓ approve" plain onPress={() => act($, ['task', 'set', q.id, 'approved=true'], `✓ ${q.id} plan approved`)} />
+            {a && (
+              <Button key={`review-${q.id}`} label={shownPlan === q.id ? 'hide' : 'show'} plain dimColor
+                onPress={() => update($, reviewing, x => (x === q.id ? null : q.id))} />
+            )}
+          </Box>,
+        )
+        callo.v = { ...callo.v!, plan: q.id, title: q.title }
+        return el
+      }
+      if (closing && clockNow - closing.at < CLOSING_MS) {
+        const c = closing
+        const sweep = (t: number) => Math.min(1, Math.max(0, (t - c.at) / SWEEP_MS))
+        if (blit) blit.set('closed-sweep', { columns: 8, rows: 1, draw: fr => progressCells(8, sweep(fr * FRAME_MS), mix(C.ok, C.accent2, 0.6), C.ok, null) })
+        const facts = [
+          c.proved !== null ? `${c.proved} criteri${c.proved === 1 ? 'on' : 'a'} proven` : '',
+          c.minutes !== null ? elapsed(c.minutes * 60000) : '',
+          c.usual !== undefined ? `usually ${about(c.usual)}` : '',
+        ].filter(Boolean)
+        return row(C.steel, `✔ ${c.id} done${closeCard(c)}${facts.length ? ` · ${facts.join(' · ')}` : ''}${c.title ? ` · ${c.title}` : ''}`,
+          <Box key="attention-sweep" flexShrink={0}>{meter(ui, e, 'closed-sweep', 8, cfg.motion === 'off' ? 1 : sweep(clockNow), C.ok, null)}</Box>)
+      }
+      if (failing) return row(C.err, `✗ gates failing: ${checks!.results.filter(r => r.exit).map(r => r.cmd).join(', ')}`)
+      const caps = v.budget?.halved || v.budget?.subagents_paused
+      if (caps) return row(C.warn, `◐ spend caps halved: ${caps}${v.budget?.subagents_paused ? ', subagents wait' : ''}`)
+      const rv = (v.revisit ?? [])[0]
+      if (rv) return row(C.warn, `◆ revisit: ${rv.decision} (${rv.why})`)
+      if (doneSince.length) return row(C.steel, `✔ since your last message: ${doneSince.length} done (${doneSince.slice(-6).join(' ')})`)
+      const sl = signalLine(v) // T-0472: usage ahead of pace, tasks blocked …: the band's glyph, here while the pane is open
+      if (sl) return row(sl.level === 'red' ? C.err : C.warn, `${sl.level === 'red' ? '●' : '◐'} ${sl.text}`)
+      if (v.genesis && v.genesis.kind !== 'done') return row(C.dim, `⌂ genesis gen ${v.genesis.gen} · ${v.genesis.stage}: ${v.genesis.action}`) // T-2118
+      return row(C.dim, '✓ nothing needs you')
+    })()
+    // T-3701: the board page: the Board's top bar over its panels; the controls as key caps, as many as the width holds
+    const page = await read($, pageAtom)
+    const keycap = (k: string) => <Text key="cap" weight="bold" color={hex(C.ink)} backgroundColor={hex(mix(C.bg, C.line, 0.95))}>{` ${k} `}</Text>
+    // a control as a key cap and its words: the click on a plain Button holding them, the key on a hotkey Button kept
+    // 0 wide beside it (a plain Button with a hotkey draws `p:` before its words, which a key cap replaces)
+    const capped = (key: string, k: string, word: string, press: () => unknown, color: number, words = true, short?: string) => (
+      <Box key={`${key}-ctl`} flexDirection="row" flexShrink={0}>
+        <Box key={`${key}-hot`} width={0} height={1} overflow="hidden"><Button key={`${key}-key`} label={word} hotkey={k} plain onPress={press} /></Box>
+        <Button key={key} label={word} plain onPress={press}>
+          {keycap(k)}
+          {words ? <Text key="word" color={hex(color)}>{` ${short ?? word}`}</Text> : null}
+        </Button>
       </Box>
     )
+    // the word on a key cap is short; the Button's label says the whole action
+    const ctl: { key: string; k: string; word: string; short?: string; board?: false; press: () => unknown }[] = [
+      { key: 'fm-page', k: 'p', word: page === 'board' ? 'details' : 'board', press: async () => { // T-3701: the store keeps it
+        const to = (await read($, pageAtom)) === 'board' ? 'details' : 'board'
+        await update($, pageAtom, () => to)
+        await $.store.set('page', to).catch(() => undefined)
+      } },
+      { key: 'next', k: 'n', word: 'next', press: () => void $.prompt.submit({ text: '/sampo:next', asUser: true }) },
+      { key: 'drive', k: 'd', word: m?.drive ? 'turn drive off' : 'turn drive on', short: m?.drive ? 'drive off' : 'drive on', press: () => act($, ['drive', m?.drive ? 'off' : 'on'], `drive ${m?.drive ? 'off' : 'on'}`) },
+      { key: 'scrub-back', k: 'b', word: '◂ back', board: false, press: () => update($, scrub, x => x + 1) },
+      { key: 'scrub-live', k: 'l', word: 'live', board: false, press: () => update($, scrub, () => 0) },
+      { key: 'autonomy', k: 'u', word: m?.autonomy === 'full' ? 'switch to standard' : 'switch to full auto', short: m?.autonomy === 'full' ? 'standard' : 'full auto', press: () => {
+        const level = m?.autonomy === 'full' ? 'standard' : 'full'
+        return act($, ['autonomy', level], `autonomy ${level}`)
+      } },
+      { key: 'sound', k: 'm', word: isOn ? 'mute' : 'unmute', press: async () => {
+        await update($, sound, x => !x)
+        await $.store.set('sound', await read($, sound))
+      } },
+      { key: 'refresh', k: 'r', word: 'refresh', press: () => refresh($) },
+    ]
+    // each a key cap and its words while they fit, then the cap alone (the label still names it): never cut mid-word
+    const ctlShown = ctl.filter(c => page !== 'board' || c.board !== false) // the time scrub steps through the details' history
+    let room = W - (ctlShown.length - 1) * 2 - ctlShown.length * 3
+    const worded = new Set(ctlShown.filter(c => (room -= (c.short ?? c.word).length + 1) >= 0).map(c => c.key))
+    const controls = (
+      <Box flexDirection="row" gap={2} key="fm-pane-controls" height={1} overflow="hidden" flexShrink={0}>
+        {ctlShown.map(c => capped(c.key, c.k, c.word, c.press, C.muted, worded.has(c.key), c.short))}
+      </Box>
+    )
+    if (page === 'board') {
+      // the top bar, in the panels' chrome: ┌ SAMPO, the project and how it runs, the work as counts ┐; the task in
+      // focus as the NOW strip; one amber callout when something needs you, its actions as key caps; └ … ┘
+      const bracket = hex(C.bracket)
+      const modeLine = [m?.autonomy === 'full' ? 'full auto' : 'standard', ...(m && !m.drive ? ['drive off'] : []), ...(m?.trust ? ['trust on'] : []), ...(m?.risk_off ? ['risk off'] : []),
+        ...(v.loop?.on ? [`∞ round ${v.loop.round}`] : [])].join(' · ')
+      // the counts, the ones that matter most first (a narrow bar drops from the end): numbers bright, words dim
+      const stats = ([[v.today_done ?? 0, 'done', C.ok], [ln.building.length, 'building', C.accent2], [ln.merging.length, 'to merge', C.accent],
+        [queueN, 'queued', C.ink], [inboxN, 'inbox', v.inbox_yours ? C.accent : C.ink], [v.blocked_total ?? 0, 'blocked', C.warn],
+        [ln.closing.length, 'to close', C.ok]] as [number, string, number][]).filter(([n, w]) => n || ['done', 'queued', 'inbox'].includes(w))
+      const proj = fitText(v.project ?? '', Math.max(4, Math.floor(W / 4)))
+      // ┌ (2), the chip (9), the project (1 + its), the mode (2 + its), a rule between spaces, the counts, ┐ (2)
+      const base = 2 + 9 + 1 + proj.length, mode = 2 + modeLine.length
+      const statW = (s: typeof stats) => s.reduce((t, [n, w], i) => t + String(n).length + 1 + w.length + (i ? 2 : 0), 0)
+      let shownStats = stats
+      while (shownStats.length && base + 3 + statW(shownStats) + 2 > W) shownStats = shownStats.slice(0, -1)
+      const showMode = base + mode + 3 + statW(shownStats) + 2 <= W
+      const rule = Math.max(1, W - base - (showMode ? mode : 0) - 2 - statW(shownStats) - 2)
+      const need = callo.v && (callo.v.color === C.warn || callo.v.color === C.err) ? callo.v : null
+      const stepsDone = a ? a.steps.filter(s => s.done).length : 0
+      const mw = W >= 60 ? 10 : 6 // the NOW strip's meter
+      const timeWord = onMin !== null ? elapsed(onMin * 60000) : ''
+      const nowRow = (last: boolean) => (
+        <Box key="head-now" flexDirection="row" height={1} overflow="hidden" flexShrink={0}>
+          <Text color={bracket}>{last ? '└ ' : '  '}</Text>
+          {a ? (
+            <Box key="now" flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden">
+              <Box key="now-head" flexDirection="row" flexShrink={0}>
+                <Text color={dim}>NOW </Text>
+                {chip(ui, 'now-kind-chip', a.type, typeNum(a.type))}
+                <Text weight="bold" color={hex(C.accent)}>{` ${a.id} `}</Text>
+              </Box>
+              <Box key="now-title" flexGrow={1} flexShrink={1} overflow="hidden"><Text weight="bold" color={hex(C.ink)} wrap="truncate-end">{a.title}</Text></Box>
+              <Box key="now-tail" flexDirection="row" flexShrink={0}>
+                {W >= 72 ? <Text color={dim}>{`  ${a.stage}`}</Text> : null}
+                <Text color={hex(C.edit)}>{`  ${'━'.repeat(Math.round((mw * stepsDone) / Math.max(1, a.steps.length)))}`}</Text>
+                <Text color={hex(mix(C.line, C.dim, 0.4))}>{'─'.repeat(mw - Math.round((mw * stepsDone) / Math.max(1, a.steps.length)))}</Text>
+                <Text color={dim}>{` ${stepsDone}/${a.steps.length}${timeWord ? ` · ${timeWord}` : ''}`}</Text>
+              </Box>
+            </Box>
+          ) : (
+            <Box key="now" flexGrow={1} flexShrink={1} overflow="hidden">
+              <Text color={dim} wrap="truncate-end">{`NOW  ${live ? 'working, no task in focus' : 'nothing in focus'}${v.next ? `  · next: ${humanNext(v.next)}` : ''}`}</Text>
+            </Box>
+          )}
+          <Text color={bracket}>{last ? ' ┘' : '  '}</Text>
+        </Box>
+      )
+      const callout = need && (
+        <Box key="head-callout" flexDirection="row" height={1} overflow="hidden" flexShrink={0}>
+          <Text color={bracket}>└ </Text>
+          <Box key="callout" flexDirection="row" flexGrow={1} flexShrink={1} overflow="hidden" backgroundColor={hex(mix(C.bg, need.color, 0.16))}>
+            <Box key="callout-text" flexGrow={1} flexShrink={1} overflow="hidden">
+              <Text color={hex(need.color)} wrap="truncate-end">{` ${need.plan
+                ? (W - 30 >= `⚠ ${need.plan} plan awaits your yes: ${need.title ?? ''}`.length ? `⚠ ${need.plan} plan awaits your yes: ${need.title ?? ''}` : `⚠ ${need.plan} plan, your yes: ${need.title ?? ''}`)
+                : need.text.replace(/^[⚠✗◐●◆]\s*/, '⚠ ')}`}</Text>
+            </Box>
+            {need.plan ? (
+              <Box key="callout-keys" flexDirection="row" gap={2} flexShrink={0}>
+                {capped(`att-approve-${need.plan}`, 'a', 'approve', () => act($, ['task', 'set', need.plan!, 'approved=true'], `✓ ${need.plan} plan approved`), need.color)}
+                {capped(`review-${need.plan}`, 's', 'show', async () => {
+                  await update($, reviewing, () => need.plan!) // the plan is read on the details page
+                  await update($, pageAtom, () => 'details')
+                }, need.color)}
+                <Text key="callout-end"> </Text>
+              </Box>
+            ) : null}
+          </Box>
+          <Text color={bracket}> ┘</Text>
+        </Box>
+      )
+      const headRows = callout ? 3 : 2
+      const boardHead = (
+        <Box key="fm-pane-head" flexDirection="column" height={headRows} overflow="hidden" flexShrink={0}>
+          <Box key="head-bar" flexDirection="row" height={1} overflow="hidden" flexShrink={0}>
+            <Text color={bracket}>┌ </Text>
+            <Text key="head-mark" weight="bold" color={hex(C.on)} backgroundColor={hex(C.accent)}>{` ${paneMark(moving, f ?? 0)} SAMPO `}</Text>
+            <Text key="head-project" color={muted}>{` ${proj}`}</Text>
+            {showMode ? <Text key="head-mode" color={dim}>{`  ${modeLine}`}</Text> : null}
+            <Text key="head-rule" color={hex(mix(C.line, C.dim, 0.3))}>{` ${'─'.repeat(rule)} `}</Text>
+            {shownStats.map(([n, w, color], i) => (
+              <Text key={`head-stat-${w}`}>
+                <Text weight="bold" color={hex(color)}>{`${i ? '  ' : ''}${n}`}</Text>
+                <Text color={dim}>{` ${w}`}</Text>
+              </Text>
+            ))}
+            <Text color={bracket}> ┐</Text>
+          </Box>
+          {nowRow(!callout)}
+          {callout || null}
+        </Box>
+      )
+      // T-3701: the live page Board's nine panels and SESSIONS, each a picture, in its order (when the dock can't hold them all, the
+      // ones the state makes most relevant first), a grid of 1, 2 or 3 columns by the pane's width; only the panels in
+      // the window draw, and only a moving one redraws
+      const train = v.train
+      const flows = v.flows ?? []
+      const bd = v.board ?? {}
+      const cpuNowB = v.cpu ? v.cpu.now ?? v.cpu.sessions.reduce((t, s) => t + (s.pct.at(-1) ?? 0), 0) : 0
+      const spin = (s: string) => [C.accent2, C.edit, C.accent, C.agent, C.ok, C.warn][[...s].reduce((t, ch) => t + ch.charCodeAt(0), 0) % 6]!
+      const churn = await read($, files)
+      // three columns on a very wide dock, two from 84 (a panel 41 wide: a docked pane is often ~90), else one
+      const ncol = W >= 200 ? 3 : W >= 84 ? 2 : 1, gapX = 2
+      const ORDER = ['lanes', 'merge', 'cpu', 'loop', 'library', 'models', 'sampo', 'state', 'sessions', 'tests'] as const
+      const layout = gridRows(ORDER.length, ncol, W, gapX), nrow = layout.length // a short last row widens: no empty slot
+      // a picture's rows: as many as let every row of panels fit the dock (with the head and the controls), 12 to 24:
+      // under 12 a picture says too little, so a short dock scrolls
+      const PH = Math.max(12, Math.min(24, Math.floor((H - headRows - 3 - (nrow - 1)) / nrow) - 2))
+      const used = headRows + 1 + nrow * (PH + 2) + (nrow - 1)
+      const hot = new Set<string>([...(ln.merging.length || train?.running ? ['merge'] : []), ...(ln.building.length ? ['lanes'] : []),
+        ...(a ? ['loop'] : []), ...(flows.some(f => f.hot) ? ['models'] : [])])
+      const order = used + 2 <= H ? [...ORDER] : [...ORDER.filter(k => hot.has(k)), ...ORDER.filter(k => !hot.has(k))]
+      const off = e.props.scroll?.offset ?? 0
+      let pw = 0 // the width of the panel being drawn: its row's share
+      const note = (...lines: string[]) => () => notePicture(pw, PH, lines.filter(Boolean))
+      const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+      type Panel = { name: string; what: string; label: string; caption: string; stat: string; pic: () => Picture; twin: string[] }
+      const panel = (k: (typeof ORDER)[number]): Panel => {
+        if (k === 'lanes') {
+          const L = [...ln.building.map(l => ({ l, state: 'building' })), ...ln.merging.map(l => ({ l, state: 'waiting' }))]
+          const held = L.reduce((t, x) => t + (x.l.files?.length ?? 0), 0)
+          return { name: 'LANES', what: 'builders and the files they hold', label: plural(L.length, 'lane').toUpperCase(),
+            caption: L.length ? `building ${ln.building.length} · waiting ${ln.merging.length}` : 'no builder lanes out', stat: held ? `${held} files held` : '',
+            pic: () => lanesPicture(pw, PH, L.map(({ l, state }) => ({ id: l.id, title: l.title, color: spin(l.id), done: l.steps_done, total: l.steps_total,
+              files: l.files ?? [], state, next: l.id === ln.merging[0]?.id }))),
+            twin: L.map(({ l, state }) => `◉ ${l.id} ${state} ${l.steps_done}/${l.steps_total} · ${l.title}`) }
+        }
+        if (k === 'merge') {
+          const landed = train?.landed ?? ln.closing.map(l => l.id)
+          const d = { waiting: ln.merging.map(l => ({ id: l.id, title: l.title, color: typeNum(l.type), frac: l.steps_total ? l.steps_done / l.steps_total : 1 })),
+            landed: landed.map((id, i) => ({ id, at: train?.landed_at?.[i] ?? '' })), landed24: train?.landed_24h ?? landed.length, running: !!train?.running }
+          return { name: 'MERGE TRAIN', what: 'finished lanes into one build', label: train?.running ? 'TRAIN RUNNING' : 'FOREMAN/BUILD',
+            caption: `${train?.landed_24h ?? ln.closing.length} landed in 24 h${train?.parked ? ` · ${train.parked} parked` : ''}`,
+            stat: `${ln.merging.length} waiting`, pic: () => mergePicture(pw, PH, d),
+            twin: [`${ln.merging.length} waiting → gates → build · ${train?.landed_24h ?? ln.closing.length} landed`, ...ln.merging.map(l => `▣ ${l.id} ${l.title}`)] }
+        }
+        if (k === 'cpu') {
+          // by kind of work, as the web Board's (the board cache reads /proc each refresh); else this project's sessions
+          const bc = bd.cpu, cpu = v.cpu
+          const len = cpu ? Math.max(0, ...cpu.sessions.map(s => s.pct.length)) : 0
+          const span = cpu ? Math.min(30, Math.round((len * cpu.step_s) / 60)) : 0 // the minutes the samples cover
+          const kin: CpuIn | null = bc?.now
+            ? { cores: bc.cores, goal: bc.goal_pct, kinds: bc.kinds, now: bc.now, minutes: bc.minutes }
+            : cpu ? { cores: cpu.cores, goal: cpu.goal, kinds: ['claude'], now: { claude: (cpuNowB / 100) * cpu.cores, busy: (cpuNowB / 100) * cpu.cores },
+              minutes: Array.from({ length: span }, (_, m) => { // a row a minute, from the sample each minute falls in
+                const i = len - 1 - Math.floor(((span - 1 - m) * 60) / Math.max(1, cpu.step_s))
+                return [m * 60, (cpu.sessions.reduce((t, s) => t + (s.pct[s.pct.length - len + i] ?? 0), 0) / 100) * cpu.cores]
+              }) }
+            : null
+          if (!kin) return { name: 'CPU', what: 'the machine by kind of work', label: 'GOAL 10%', caption: 'no CPU reading yet', stat: '',
+            pic: note('no CPU reading yet', 'sampo cpu samples the machine'), twin: ['no CPU reading yet'] }
+          const busy = kin.now.busy ?? 0, share = kin.cores ? (100 * busy) / kin.cores : 0
+          const peak = Math.max(0, ...kin.minutes.map(r => r.slice(1).reduce((t, x) => t + x, 0)))
+          const mins = kin.minutes.length ? Math.min(30, Math.round((kin.minutes.at(-1)![0]! - kin.minutes[0]![0]!) / 60) + 1) : 0
+          return { name: 'CPU', what: 'the machine by kind of work', label: share > kin.goal ? 'OVER GOAL' : `GOAL ${kin.goal}%`,
+            caption: mins ? `peak ${peak.toFixed(1)} cores in ${mins} min` : 'the first minute',
+            stat: `${share.toFixed(1)}%`,
+            pic: () => cpuPicture(pw, PH, kin),
+            twin: [`${busy.toFixed(1)} of ${kin.cores} cores busy · goal ${kin.goal}%`, ...kin.kinds.map(k => `${k} ${(kin.now[k] ?? 0).toFixed(1)}`)] }
+        }
+        if (k === 'loop') {
+          if (!a) return { name: 'THE LOOP', what: 'your words into a brief', label: 'IDLE', caption: 'no task in focus', stat: '',
+            pic: note('no task in focus', v.next ? `next: ${humanNext(v.next)}` : ''), twin: ['no task in focus'] }
+          const top = [...churn].sort((x, y) => y.add + y.del - (x.add + x.del)).slice(0, 10)
+          const met = a.criteria.filter(c => c.checked).length
+          return { name: 'THE LOOP', what: 'your words into a brief', label: a.stage.toUpperCase(),
+            caption: `${a.id} · ${met} of ${plural(a.criteria.length, 'criterion').replace(/criterions$/, 'criteria')} met`,
+            stat: a.steps.length ? `step ${Math.min(a.steps.length, a.steps.filter(s => s.done).length + 1)}/${a.steps.length}` : '',
+            pic: () => taskPicture(pw, PH, { id: a.id, stage: a.stage, stages: a.stages, title: a.title, words: a.words ?? a.title,
+              criteria: a.criteria.map(c => ({ text: c.text.split(' :: ')[0]!, ok: c.checked })),
+              steps: a.steps.map(s => ({ text: s.text, done: s.done, current: s.current })), files: top.map(x => ({ add: x.add, del: x.del })),
+              done: a.steps.filter(s => s.done).length, total: a.steps.length, time: onMin !== null ? elapsed(onMin * 60000) : '' }),
+            twin: [`${a.id} · ${met}/${a.criteria.length} criteria · ${a.steps.filter(s => s.done).length}/${a.steps.length} steps`] }
+        }
+        if (k === 'library') {
+          const counts = bd.counts, hourly = bd.library?.hourly ?? []
+          const total = counts ? counts.cards + counts.ui + counts.moons + counts.calling : 0
+          return { name: 'LIBRARY', what: 'cards and moons kept', label: `${total.toLocaleString('en')} KEPT`,
+            caption: counts ? `cards ${counts.cards} · ui ${counts.ui} · moons ${counts.moons}` : "the library isn't read yet",
+            stat: hourly.length ? `${hourly.at(-1)} / h` : '', pic: counts ? () => libraryPicture(pw, PH, { counts, hourly }) : note("the library isn't read yet"),
+            twin: [counts ? `${total} kept · ${hourly.at(-1) ?? 0} this hour` : "the library isn't read yet"] }
+        }
+        if (k === 'models') {
+          const calls = flows.reduce((t, f) => t + f.n, 0), models = new Set(flows.map(f => f.to)).size
+          return { name: 'MODELS', what: 'who calls which model', label: `${Math.round(calls / 5)} CALLS / MIN`,
+            caption: `${plural(calls, 'call')} in 5 min · ${plural(models, 'model')}`, stat: flows.some(f => f.hot) ? 'calling now' : '',
+            pic: () => modelsPicture(pw, PH, { links: flows }), twin: flows.map(f => `${f.from} → ${f.to} · ${f.n}`) }
+        }
+        if (k === 'sampo') {
+          const cmds = bd.commands ?? [], last = cmds.at(-1)
+          return { name: 'SAMPO', what: 'commands and the queue', label: `${queueN} QUEUED`,
+            caption: last ? `$ ${last.cmd}` : 'no sampo commands seen yet', stat: cmds.length ? `${cmds.filter(c => c.ok).length}/${cmds.length} ok` : '',
+            pic: () => sampoPicture(pw, PH, { cmds: cmds.map(c => ({ cmd: c.cmd, ok: c.ok })), queued: queueN,
+              queue: queue.map(q => ({ id: q.id, status: q.waits ? 'waits' : q.status, kind: `${q.type}/${q.tier}`, title: q.title })) }),
+            twin: queue.slice(0, 6).map(q => `${q.id} ${q.status} · ${q.title}`) }
+        }
+        if (k === 'state') {
+          const st = bd.state
+          return { name: 'STATE', what: 'the files Sampo keeps', label: 'STATE/',
+            caption: st ? `newest ${st.newest || '—'}` : "the state folder isn't read yet",
+            stat: st?.doc ? `latest ${st.doc.kind}` : '', pic: st ? () => statePicture(pw, PH, st) : note("the state folder isn't read yet"),
+            twin: st?.doc ? [`${st.doc.kind}: ${st.doc.title}`] : ['no decision yet'] }
+        }
+        if (k === 'sessions') {
+          const fl = (v.fleet ?? []).filter(x => !x.error && x.session !== '-')
+          const newest = Math.max(0, ...fl.map(x => Date.parse(x.seen ?? '') || 0))
+          const SC = [C.accent2, C.edit, C.accent, C.agent, C.ok, C.warn]
+          const colorOf = (pr: string) => (pr === v.project ? C.accent2 : SC[[...pr].reduce((t, ch) => t + ch.charCodeAt(0), 0) % SC.length]!)
+          const idleN = fl.filter(x => newest - (Date.parse(x.seen ?? '') || 0) > 120000).length
+          const projects = new Set(fl.map(x => x.remote ?? x.project ?? '')).size
+          return { name: 'SESSIONS', what: 'every live session, any project', label: plural(fl.length, 'session').toUpperCase(),
+            caption: fl.length ? `${plural(projects, 'project')} · ${idleN} idle` : 'no live sessions',
+            stat: fl.length ? `context ${Math.round(fl.reduce((t, x) => t + (x.context_pct ?? 0), 0) / fl.length)}% avg` : '',
+            pic: () => sessionsPicture(pw, PH, { sessions: fl.map(x => {
+              const pr = x.remote ?? x.project ?? '—'
+              return { id: x.session, project: pr, color: colorOf(pr), task: x.task ?? '', model: (x.model ?? '').toLowerCase(),
+                pct: x.context_pct ?? null, idle: newest - (Date.parse(x.seen ?? '') || 0) > 120000 } // idle: 2 min behind the newest
+            }) }),
+            twin: fl.map(x => `${x.project ?? '—'} ${x.task ?? 'no task'} · ${x.model ?? '?'} · ${x.context_pct ?? '?'}%`) }
+        }
+        const ts = bd.tests, by = (s: string) => ts?.modules.filter(m => m.state === s).length ?? 0
+        return { name: 'TESTS', what: 'every module, cached or run', label: plural(ts?.modules.length ?? 0, 'module').toUpperCase(),
+          caption: ts ? `${by('fail')} failing · ${by('running')} running` : 'no test run seen yet',
+          stat: ts?.total ? `${ts.done}/${ts.total} passed` : '', pic: ts ? () => testsPicture(pw, PH, { modules: ts.modules, source: ts.source }) : note('no test run seen yet'),
+          twin: [ts ? `${by('fail')} failing · ${by('running')} running of ${ts.modules.length}` : 'no test run seen yet'] }
+      }
+      const grid: RenderElement[] = []
+      let at = 0
+      for (let r = 0; r < nrow; r++) {
+        const y = headRows + 1 + r * (PH + 3) // the row's first line in the tree: under the top bar and a blank line
+        const shown = y + PH + 2 > off && y < off + H
+        const widths = layout[r]!
+        grid.push(
+          <Box key={`panel-row-${r}`} flexDirection="row" gap={gapX} flexShrink={0} marginTop={r ? 1 : 0}>
+            {widths.map(w => {
+              const k = order[at++]!
+              pw = w
+              const n = ORDER.indexOf(k) + 1, P = panel(k), color = panelAccent(n), key = `panel-${k}`
+              let body: RenderElement
+              if (!shown) body = <Box key={`${key}-pic`} height={PH} flexShrink={0} /> // off screen: nothing drawn
+              else if (term) {
+                const p = P.pic()
+                // a moving part (packets, a pulse) redraws only while it moves and this session's clocks run, ≤10 fps
+                if (p.live && blit && ft !== null) blit.set(`${key}-pic`, { columns: pw, rows: PH, draw: fr => p.live!((fr * FRAME_MS) / 1000) })
+                body = <Raster key={`${key}-pic`} columns={pw} rows={PH} cells={p.live ? p.live(ft !== null ? (ft * FRAME_MS) / 1000 : 0) : p.cells} />
+              } else body = (
+                <Box key={`${key}-pic`} flexDirection="column" height={PH} overflow="hidden">
+                  {P.twin.slice(0, PH).map((s, j) => <Text key={`twin-${j}`} color={j ? muted : hex(color)} wrap="truncate-end">{s}</Text>)}
+                </Box>
+              )
+              return (
+                <Box key={key} flexDirection="column" width={pw} flexShrink={0}>
+                  {panelHead(ui, e, { key, n, name: P.name, what: P.what, label: P.label, color, width: pw })}
+                  {body}
+                  {panelFoot(ui, e, { key, caption: P.caption, stat: P.stat, color, width: pw })}
+                </Box>
+              )
+            })}
+          </Box>,
+        )
+      }
+      return (
+        <Box flexDirection="column" key="fm-pane" paddingX={1}>
+          {boardHead}
+          <Box key="gap-head" height={1} flexShrink={0} />
+          {grid}
+          <Box key="gap-controls" height={Math.max(1, H - used - 1)} flexShrink={0} />
+          {controls}
+        </Box>
+      )
+    }
 
     // ── up next: plans waiting for a yes first, the queue, the inbox, a line to capture into it
     const capture = captureBox($, e)
-    const ids = (xs: { id: string }[], n = 6) => xs.slice(0, n).map(x => x.id).join(' ') + (xs.length > n ? ` +${xs.length - n}` : '')
+    // T-3701: a table as the Board's SAMPO panel draws the queue: ID, a status pill, the kind and size, the title
+    const narrowQ = W < 44 // no kind column below that: the title keeps room
+    const idW = Math.max(6, ...[...ln.building, ...queue, ...inbox].map(x => x.id.length))
+    const qRow = (key: string, id: string, idColor: number, status: [string, number], it: { type: string; tier: string }, title: RenderElement, tail: RenderElement[] = []) => (
+      <Box flexDirection="row" gap={1} key={key} height={1} overflow="hidden">
+        <Box flexShrink={0} width={idW}><Text color={hex(idColor)}>{id}</Text></Box>
+        <Box flexShrink={0}>{pill(ui, `${key}-pill`, status[0], status[1], 8)}</Box>
+        {narrowQ ? null : (
+          <Box flexShrink={0} width={7}>
+            <Text color={typeColor(it.type)}>{`${({ PERFORMANCE: 'PERF', SECURITY: 'SEC', RESEARCH: 'RSRCH', FEATURE: 'FEAT' } as Record<string, string>)[it.type] ?? it.type.slice(0, 5)}`.padEnd(6)}</Text>
+          </Box>
+        )}
+        {title}
+        {tail}
+      </Box>
+    )
     const queueRows: RenderElement[] = [
-      // T-3664: what is moving first: builders at work, then the lanes waiting on a merge or a close
-      ...ln.building.map(l => (
-        <Box flexDirection="row" gap={1} key={`b-${l.id}`}>
-          <Box flexShrink={0}>
-            <Text color={hex(C.agent)}>⚙</Text>
-          </Box>
-          {typeWord(l)}
-          <Box flexShrink={0}>
-            <Text color={hex(C.agent)}>{l.id}</Text>
-          </Box>
-          <Text wrap="truncate-end">{l.title}</Text>
-          {l.steps_total > 0 && (
-            <Box flexShrink={0}>
-              <Text color={dim}>{`${l.steps_done}/${l.steps_total}`}</Text>
-            </Box>
-          )}
-        </Box>
-      )),
-      ...(ln.merging.length ? [<Text key="b-merging" color={muted} wrap="truncate-end">{`⇢ ${ln.merging.length} waiting to merge · ${ids(ln.merging)}`}</Text>] : []),
-      ...(ln.closing.length ? [<Text key="b-closing" color={muted} wrap="truncate-end">{`✓ ${ln.closing.length} merged, close owed · ${ids(ln.closing)}`}</Text>] : []),
-      ...[...queue].sort((x, y) => Number(!!y.plan) - Number(!!x.plan)).map((q, i) => (
-        <Box flexDirection="row" gap={1} key={`q-${q.id}`}>
-          <Box flexShrink={0}>
-            <Text color={hex(i === 0 ? C.accent2 : C.track)}>{i === 0 ? '▶' : '·'}</Text>
-          </Box>
-          {typeWord(q)}
-          <Box flexShrink={0}>
-            <Text color={hex(q.waits ? C.warn : C.accent)}>{q.id}</Text>
-          </Box>
-          <Text wrap="truncate-end" color={q.waits ? hex(C.warn) : undefined}>
-            {q.title}
-          </Text>
-          {q.plan && (
-            <Button key={`approve-${q.id}`} label="✓ approve" plain onPress={() => act($, ['task', 'set', q.id, 'approved=true'], `✓ ${q.id} plan approved`)} />
-          )}
-        </Box>
-      )),
-      ...inbox.map(it => (
-        <Box flexDirection="row" gap={1} key={`in-${it.id}`}>
-          <Box flexShrink={0}>
-            <Text color={hex(it.source === 'user' || it.source === 'steer' ? C.accent : (it.age_days ?? 0) >= 7 ? C.warn : C.track)}>⚑</Text>
-          </Box>
-          {typeWord(it)}
-          <Box flexShrink={0}>
-            <Text color={muted}>{it.id}</Text>
-          </Box>
-          <Text wrap="truncate-end" color={hex(mix(C.dim, 0xc8ccd4, 0.7))}>
-            {it.title}
-          </Text>
-          <Button key={`start-${it.id}`} label="start" plain dimColor
-            onPress={() => void $.prompt.submit({ text: `Plan and start ${it.id} (/sampo:intake).`, asUser: true })} />
-          <Button key={`drop-${it.id}`} label="drop" plain dimColor
-            onPress={() => act($, ['task', 'drop', it.id, 'dropped from the Sampo pane'], `${it.id} dropped`)} />
-        </Box>
-      )),
+      <Box key="q-head" flexDirection="row" gap={1} height={1} overflow="hidden">
+        <Box flexShrink={0} width={idW}><Text weight="bold" color={dim}>ID</Text></Box>
+        <Box flexShrink={0} width={10}><Text weight="bold" color={dim}>STATUS</Text></Box>
+        {narrowQ ? null : <Box flexShrink={0} width={7}><Text weight="bold" color={dim}>KIND</Text></Box>}
+        <Text weight="bold" color={dim} wrap="truncate-end">TITLE</Text>
+      </Box>,
+      // T-3664: what is moving first: builders at work (the MERGE panel has the lanes waiting on a merge or a close)
+      ...ln.building.map(l => qRow(`b-${l.id}`, l.id, C.accent2, ['building', C.accent2], l,
+        <Text key="title" wrap="truncate-end">{l.title}</Text>,
+        l.steps_total > 0 ? [<Box key="steps" flexShrink={0}><Text color={dim}>{`${l.steps_done}/${l.steps_total}`}</Text></Box>] : [])),
+      ...[...queue].sort((x, y) => Number(!!y.plan) - Number(!!x.plan)).map((q, i) => qRow(`q-${q.id}`, q.id, q.waits ? C.warn : C.ink,
+        q.plan ? ['plan', C.warn] : q.waits ? ['waits', C.warn] : i === 0 ? ['next', C.accent] : ['queued', C.dim], q,
+        <Text key="title" wrap="truncate-end" color={q.waits ? hex(C.warn) : undefined}>{q.title}</Text>,
+        q.plan ? [<Button key={`approve-${q.id}`} label="✓ approve" plain onPress={() => act($, ['task', 'set', q.id, 'approved=true'], `✓ ${q.id} plan approved`)} />] : [])),
+      ...inbox.map(it => {
+        const yours = it.source === 'user' || it.source === 'steer'
+        return qRow(`in-${it.id}`, it.id, C.muted, yours ? ['yours', C.accent] : (it.age_days ?? 0) >= 7 ? ['stale', C.warn] : ['inbox', C.muted], it,
+          <Text key="title" wrap="truncate-end" color={hex(mix(C.dim, C.ink, 0.7))}>{it.title}</Text>, [
+            <Button key={`start-${it.id}`} label="start" plain dimColor
+              onPress={() => void $.prompt.submit({ text: `Plan and start ${it.id} (/sampo:intake).`, asUser: true })} />,
+            <Button key={`drop-${it.id}`} label="drop" plain dimColor
+              onPress={() => act($, ['task', 'drop', it.id, 'dropped from the Sampo pane'], `${it.id} dropped`)} />,
+          ])
+      }),
       ...(inboxN > inbox.length ? [<Text key="in-more" color={dim}>{`… ${inboxN - inbox.length} more in the inbox`}</Text>] : []),
       ...(capture ? [capture] : []), // last: a crowded dock cuts it before a plan waiting for a yes
     ]
+    if (queueRows.length === 1 || (queueRows.length === 2 && capture)) queueRows.shift() // a header over nothing: none
 
     // ── other sessions here, each with its context, and one steer for all (T-0711: one alone is this one)
     const fleet = v.fleet ?? []
@@ -1754,77 +2138,42 @@ export const register: Register = (on, options) => {
           ...(g.child ? [{ ...g.child, prefix: `${last ? '  ' : '│ '}└─`, lineColor: line }] : [])]
       }),
     ]
+    // ── T-3701: the Board's instruments, each from its slice of the view: LANES (a node cluster per lane), MERGE (the
+    // waiting lanes flowing into the build), CPU (the Sampo sessions stacked against the goal), CHECKS (a cell a gate)
+    const inLanes = new Set([...ln.building, ...ln.merging, ...ln.closing].map(l => l.id))
+    const laneNodes = [
+      ...ln.building.map(l => ({ id: l.id, color: C.accent2, done: l.steps_done, total: l.steps_total, word: 'building' })),
+      ...ln.merging.map(l => ({ id: l.id, color: C.accent, done: l.steps_done, total: l.steps_total, word: 'waiting' })),
+      ...trees.filter(w => w.stopped && w.task && !inLanes.has(w.task)).map(w => ({ id: w.task!, color: C.agent, done: 0, total: 1, word: 'parked' })),
+      ...ln.closing.map(l => ({ id: l.id, color: C.ok, done: l.steps_done, total: l.steps_total, word: 'merged' })),
+    ]
+    const lanesWant = laneNodes.length ? (H >= 40 ? 5 : 4) : 0 // the ids, the clusters (2 rows up), their states
+    // T-3701: no call in the window and none running: no tools panel, not six empty lanes
+    const toolsIdle = !nowCalls.length && !bgShells.length && !ticks.some(t => clockNow - t.at <= TIMELINE_MS)
+    const mergeWant = ln.merging.length || ln.closing.length ? Math.max(2, Math.min(4, Math.max(ln.merging.length, ln.closing.length))) : 0
+    const cpu = v.cpu && v.cpu.sessions.length ? v.cpu : null
+    const cpuWant = cpu ? (H >= 40 ? 4 : 3) : 0
+    const checkList = checks?.results ?? []
+    const checkW = Math.max(2, Math.min(W - 22, checkList.length * 3 - 1))
+    const checksWant = checkList.length ? Math.min(3, Math.max(checkCells(checkList, checkW).rows, 1 + Math.min(2, checkList.filter(r => r.exit).length))) : 0 // the cells, or the count and what fails
     // T-3113: the crest takes the pane's top rows; every section is placed in what is left under it
     const mood = live ? 'work' : clockNow < happyUntil ? 'happy' : 'idle'
     const crestTop = crestTree(ui, e, W, H, mood, live ? (f ?? 0) : idleBeat, subs)
-    const L = layout(H - crestTop.rows, [
-      { key: 'task', want: taskWant, cap: Math.max(4, Math.round(H * 0.4)), min: Math.min(taskWant, 4), bare: true },
-      { key: 'activity', want: 1, fixed: nLanes + axis, grow: KINDS.length - nLanes }, // spare rows: every lane
-      { key: 'today', want: 1, fixed: T, grow: Math.max(0, 8 - T) }, // then taller charts
+    const L = layout(H - crestTop.rows, [ // in the order rows are shared out: the task first, the history last
+      { key: 'task', want: taskWant, cap: Math.max(4, Math.round(H * 0.4)), min: Math.min(taskWant, H >= 50 ? 9 : 4), spare: true }, // T-3701: the rail and steps before the instruments
+      { key: 'activity', want: toolsIdle ? 0 : 1, fixed: toolsIdle ? 0 : nLanes + axis, grow: toolsIdle ? 0 : KINDS.length - nLanes }, // spare rows: every lane
+      { key: 'lanes', want: lanesWant, cap: lanesWant, min: Math.min(lanesWant, 4), whole: true },
+      { key: 'merge', want: mergeWant, cap: mergeWant },
       { key: 'agents', want: nodes.length, cap: Math.max(3, Math.round(H * 0.18)), min: Math.min(nodes.length, H >= 40 ? 5 : 3) }, // the root and its children, not just the root
-      { key: 'queue', want: queueRows.length, cap: Math.max(3, Math.round(H * 0.2)), min: plans.length + 2 }, // every plan's approve
+      { key: 'queue', want: queueRows.length, cap: Math.max(4, Math.round(H * 0.2)), min: plans.length + 3 }, // the header, every plan's approve
+      { key: 'cpu', want: cpuWant, cap: cpuWant, min: Math.min(cpuWant, 3), whole: true },
+      { key: 'checks', want: checksWant, cap: checksWant, min: 1 },
+      // T-3701: Today after the instruments (its gates tank is CHECKS in small); spare rows still make its charts taller
+      { key: 'today', want: T, cap: T, min: T, grow: Math.max(0, 8 - T), whole: true },
       { key: 'sessions', want: sessionRows.length, cap: 5, min: Math.min(sessionRows.length, 3) },
-      { key: 'history', want: historyRows.length, stretch: true },
+      { key: 'history', want: historyRows.length + (shown.length >= 3 ? 1 : 0), stretch: true }, // its lines and their area
     ])
     const R = L.rows
-
-    // ── the one thing that needs you
-    const attention = (() => {
-      const row = (color: number, text: string, lead?: RenderElement | null, tail?: RenderElement | null) => (
-        <Box key="fm-pane-attention" flexDirection="row" gap={1} height={1} overflow="hidden" flexShrink={0}>
-          {lead}
-          <Text color={hex(color)} wrap="truncate-end">
-            {text}
-          </Text>
-          {tail}
-        </Box>
-      )
-      if (err) return row(C.err, `✗ fm: ${err}`)
-      if (paused.length) // Sampo's own checks are off: before anything else (T-0087)
-        return row(C.warn, `⚠ ${paused.join(', ')} hook${paused.length === 1 ? ' is' : 's are'} paused after failing 3 times in a row (fm doctor)`)
-      if (asking) return row(C.warn, `⚠ waiting for your answer, ${elapsed(clockNow - asking[1].at)}`)
-      if (asks.length) {
-        const x = asks[0]!
-        return row(C.warn, `⚠ needs you: ${x.task} ${x.allow.join(', ')} — ${x.why}${asks.length > 1 ? ` (+${asks.length - 1} more)` : ''}`)
-      }
-      if (plans.length) {
-        const q = plans[0]!
-        return row(
-          C.warn,
-          `⚠ ${q.id} plan awaits your yes${a ? `: ${q.title}` : ''}${plans.length > 1 ? ` (+${plans.length - 1} more)` : ''}`,
-          null,
-          <Box key="attention-plan" flexDirection="row" gap={1} flexShrink={0}>
-            <Button key={`att-approve-${q.id}`} label="✓ approve" plain onPress={() => act($, ['task', 'set', q.id, 'approved=true'], `✓ ${q.id} plan approved`)} />
-            {a && (
-              <Button key={`review-${q.id}`} label={shownPlan === q.id ? 'hide' : 'show'} plain dimColor
-                onPress={() => update($, reviewing, x => (x === q.id ? null : q.id))} />
-            )}
-          </Box>,
-        )
-      }
-      if (closing && clockNow - closing.at < CLOSING_MS) {
-        const c = closing
-        const sweep = (t: number) => Math.min(1, Math.max(0, (t - c.at) / SWEEP_MS))
-        if (blit) blit.set('closed-sweep', { columns: 8, rows: 1, draw: fr => progressCells(8, sweep(fr * FRAME_MS), mix(C.ok, C.accent2, 0.6), C.ok, null) })
-        const facts = [
-          c.proved !== null ? `${c.proved} criteri${c.proved === 1 ? 'on' : 'a'} proven` : '',
-          c.minutes !== null ? elapsed(c.minutes * 60000) : '',
-          c.usual !== undefined ? `usually ${about(c.usual)}` : '',
-        ].filter(Boolean)
-        return row(C.steel, `✔ ${c.id} done${closeCard(c)}${facts.length ? ` · ${facts.join(' · ')}` : ''}${c.title ? ` · ${c.title}` : ''}`,
-          <Box key="attention-sweep" flexShrink={0}>{meter(ui, e, 'closed-sweep', 8, cfg.motion === 'off' ? 1 : sweep(clockNow), C.ok, null)}</Box>)
-      }
-      if (failing) return row(C.err, `✗ gates failing: ${checks!.results.filter(r => r.exit).map(r => r.cmd).join(', ')}`)
-      const caps = v.budget?.halved || v.budget?.subagents_paused
-      if (caps) return row(C.warn, `◐ spend caps halved: ${caps}${v.budget?.subagents_paused ? ', subagents wait' : ''}`)
-      const rv = (v.revisit ?? [])[0]
-      if (rv) return row(C.warn, `◆ revisit: ${rv.decision} (${rv.why})`)
-      if (doneSince.length) return row(C.steel, `✔ since your last message: ${doneSince.length} done (${doneSince.slice(-6).join(' ')})`)
-      const sl = signalLine(v) // T-0472: usage ahead of pace, tasks blocked …: the band's glyph, here while the pane is open
-      if (sl) return row(sl.level === 'red' ? C.err : C.warn, `${sl.level === 'red' ? '●' : '◐'} ${sl.text}`)
-      if (v.genesis && v.genesis.kind !== 'done') return row(C.dim, `⌂ genesis gen ${v.genesis.gen} · ${v.genesis.stage}: ${v.genesis.action}`) // T-2118
-      return row(C.dim, '✓ nothing needs you')
-    })()
 
     // ── head: who and how, the mascot on the right
     const modes: [string, number][] = m
@@ -2191,36 +2540,166 @@ export const register: Register = (on, options) => {
       </Box>,
     ] : []
 
-    // ── drawing: a titled divider, then exactly the section's rows; what doesn't fit is counted, never cut silently
-    // T-1026: a divider is a line in the section's own colour, fading out; the words around it read in muted, not dim
-    const rule = (key: string, width: number, color: number) => {
-      const n = Math.max(1, width)
-      return term
-        ? <Raster key={key} columns={n} rows={1} cells={ruleCells(n, color)} />
-        : <Text key={key} color={hex(mix(C.track, color, 0.5))}>{'─'.repeat(n)}</Text>
-    }
-    const titleRow = (key: string, label: string, color: number, right: string) => (
-      <Box key={`${key}-title`} flexDirection="row" gap={1} height={1} overflow="hidden">
-        <Box flexShrink={0}>
-          <Text weight="bold" color={hex(color)}>{label}</Text>
+    // ── T-3701: the Board's instruments. Each takes the rows the layout gave it; off the terminal, its text twin.
+    const pad = (n: number) => ' '.repeat(Math.max(0, n))
+    const lanesBody = (rows: number): RenderElement[] => {
+      if (!laneNodes.length || rows <= 0) return []
+      const k = Math.max(1, Math.min(laneNodes.length, Math.floor(W / 10)))
+      const shownL = laneNodes.slice(0, k)
+      const sw = Math.floor(W / k)
+      const more = laneNodes.length - k
+      const ids = (
+        <Box key="lanes-ids" flexDirection="row" height={1} overflow="hidden">
+          {shownL.map((l, i) => (
+            <Box key={`id-${l.id}`} flexShrink={0} width={sw} flexDirection="row">
+              <Text>{pad(Math.floor((sw - l.id.length - 2) / 2))}</Text>
+              {pill(ui, `lane-pill-${i}`, l.id, l.color)}
+            </Box>
+          ))}
         </Box>
-        <Box flexShrink={0}>{rule(`${key}-rule`, W - label.length - 1 - (right ? right.length + 1 : 0), color)}</Box>
-        {right ? (
-          <Box flexShrink={0}>
-            <Text color={muted}>{right}</Text>
+      )
+      const states = (
+        <Text key="lanes-states" color={dim} wrap="truncate-end">
+          {shownL.map((l, i) => centre(i === k - 1 && more ? `+${more} more` : `${l.word} ${l.done}/${l.total}`, sw)).join('')}
+        </Text>
+      )
+      const gRows = rows - 2
+      if (gRows < 1) return rows === 1 ? [ids] : [ids, states]
+      const graph = term
+        ? <Raster key="lanes-graph" columns={k * sw} rows={gRows} cells={laneClusters(shownL, k * sw, gRows)} />
+        : <Box key="lanes-graph"><Text color={muted}>{shownL.map(l => centre(`◉ ${'●'.repeat(Math.min(6, l.done))}${'○'.repeat(Math.min(6, Math.max(0, l.total - l.done)))}`, sw)).join('')}</Text></Box>
+      return [ids, graph, states]
+    }
+    const mergeBody = (rows: number): RenderElement[] => {
+      if (rows <= 0) return []
+      const src = ln.merging.slice(0, rows)
+      const extra = ln.merging.length - src.length
+      const landed = ln.closing
+      const RW = landed.length && W >= 50 ? 9 : 0
+      const BW = 10
+      const LW = Math.max(12, Math.min(28, Math.floor(W * 0.38)))
+      const FW = Math.max(4, W - LW - BW - RW - 2)
+      const target = Math.floor((rows - 1) / 2)
+      const at = Array.from({ length: rows }, (_, i) => i)
+      const box = mix(C.bg, C.ok, 0.22)
+      return [
+        <Box key="merge-row" flexDirection="row" height={rows} overflow="hidden">
+          <Box key="merge-src" flexDirection="column" flexShrink={0} width={LW}>
+            {at.map(i => {
+              const l = src[i]
+              if (!l) return <Text key={`src-${i}`} color={dim}>{i === src.length && extra ? `+${extra} more` : ' '}</Text>
+              return (
+                <Box key={`src-${i}`} flexDirection="row" gap={1} height={1} overflow="hidden">
+                  <Box flexShrink={0}><Text weight="bold" color={hex(C.accent)}>{l.id}</Text></Box>
+                  <Box flexShrink={1} flexGrow={1}><Text wrap="truncate-end" color={muted}>{l.title}</Text></Box>
+                  <Box flexShrink={0}>{meter(ui, e, `src-bar-${i}`, 4, l.steps_total ? l.steps_done / l.steps_total : 1, C.accent, null)}</Box>
+                </Box>
+              )
+            })}
           </Box>
-        ) : null}
-      </Box>
-    )
-    const todayTitle = (
-      <Box key="today-title" flexDirection="row" height={1} overflow="hidden">
-        {showDays && <Box flexShrink={0}><Text weight="bold" color={hex(C.ok)}>Closed per day </Text></Box>}
-        {showDays && <Box flexShrink={0}>{rule('days-rule', leftW - 15, C.ok)}</Box>}
-        {showDays && <Box flexShrink={0} width={GAP} />}
-        <Box flexShrink={0}><Text weight="bold" color={hex(C.accent2)}>Today </Text></Box>
-        <Box flexShrink={0}>{rule('today-rule', W - leftW - GAP - 6, C.accent2)}</Box>
-      </Box>
-    )
+          <Box key="merge-gap" flexShrink={0} width={1} />
+          {term
+            ? <Raster key="merge-flow" columns={FW} rows={rows} cells={flowCells(src.map(() => C.accent), target, FW, rows)} />
+            : (
+              <Box key="merge-flow" flexDirection="column" flexShrink={0} width={FW}>
+                {at.map(i => <Text key={`fl-${i}`} color={hex(C.accent)}>{src[i] ? `${'─'.repeat(Math.max(1, FW - 1))}${i === target ? '▶' : '╯'}` : i === target ? `${pad(FW - 1)}▶` : ' '}</Text>)}
+              </Box>
+            )}
+          <Box key="merge-box" flexDirection="column" flexShrink={0} width={BW}>
+            {at.map(i => i === target
+              ? <Text key={`box-${i}`} weight="bold" color={hex(C.ink)} backgroundColor={hex(box)}>{' ▣ build '}</Text>
+              : i === target + 1 && landed.length ? <Text key={`box-${i}`} color={dim}>{` ${landed.length} landed`.slice(0, BW)}</Text>
+              : <Text key={`box-${i}`}> </Text>)}
+          </Box>
+          {RW ? (
+            <Box key="merge-landed" flexDirection="column" flexShrink={0} width={RW}>
+              {at.map(i => <Text key={`ld-${i}`} color={hex(C.ok)}>{landed[i] ? (i === rows - 1 && landed.length > rows ? `+${landed.length - i}` : `✓ ${landed[i]!.id}`) : ' '}</Text>)}
+            </Box>
+          ) : null}
+        </Box>,
+      ]
+    }
+    const CPU_COLORS = [C.accent2, C.edit, C.accent, C.agent, C.ok, C.warn]
+    const cpuSessions = (cpu?.sessions ?? []).slice(0, CPU_COLORS.length)
+    const cpuTotals = Array.from({ length: Math.max(0, ...cpuSessions.map(s => s.pct.length)) }, (_, j) => cpuSessions.reduce((t, s) => t + (s.pct[j] ?? 0), 0))
+    const cpuNow = cpu ? cpu.now ?? cpuTotals.at(-1) ?? 0 : 0
+    const cpuBody = (rows: number): RenderElement[] => {
+      if (!cpu || rows <= 0) return []
+      const over = cpuNow > cpu.goal
+      const top = Math.max(cpu.goal * 1.5, Math.max(0, ...cpuTotals) * 1.1, 1)
+      const LW = W >= 60 ? 19 : W >= 50 ? 16 : 11, AX = 4
+      const HW = Math.max(6, W - LW - AX - 2)
+      const goalRow = rows - 1 - Math.min(rows - 1, Math.floor(Math.round((cpu.goal / top) * rows * 8) / 8)) // from the top
+      const legend = cpuSessions.map((s, i) => (
+        <Text key={`cpu-l-${i}`} wrap="truncate-end">
+          <Text color={hex(CPU_COLORS[i]!)}>■ </Text>
+          <Text color={muted}>{(s.name.length > LW - 8 ? `${s.name.slice(0, Math.ceil((LW - 9) / 2))}…${s.name.slice(-Math.floor((LW - 9) / 2))}` : s.name).padEnd(LW - 8)}</Text>
+          <Text color={hex(C.ink)}>{(s.pct.at(-1) ?? 0).toFixed(1).padStart(4)}</Text>
+        </Text>
+      ))
+      const left = [
+        <Text key="cpu-now" wrap="truncate-end"><Text weight="bold" color={hex(over ? C.err : C.ok)}>{`${cpuNow.toFixed(1)}%`}</Text><Text color={dim}> now</Text></Text>,
+        <Text key="cpu-goal" color={over ? hex(C.err) : dim} wrap="truncate-end">{over ? `over the ${cpu.goal}% goal` : `goal ${cpu.goal}%`}</Text>,
+        ...legend,
+      ].slice(0, rows)
+      return [
+        <Box key="cpu-row" flexDirection="row" gap={1} height={rows} overflow="hidden">
+          <Box key="cpu-left" flexDirection="column" flexShrink={0} width={LW}>{left}</Box>
+          {term
+            ? <Raster key="cpu-hist" columns={HW} rows={rows} cells={histCells(cpuSessions.map((s, i) => ({ color: CPU_COLORS[i]!, values: s.pct })), HW, rows, top, cpu.goal)} />
+            : <Box key="cpu-hist" flexShrink={0} width={HW}><Text color={hex(C.accent2)}>{sparkText(cpuTotals, HW)}</Text></Box>}
+          <Box key="cpu-axis" flexDirection="column" flexShrink={0} width={AX}>
+            {Array.from({ length: rows }, (_, i) => <Text key={`ax-${i}`} color={dim}>{i === goalRow ? `${cpu.goal}%`.slice(0, AX) : ' '}</Text>)}
+          </Box>
+        </Box>,
+      ]
+    }
+    const failed = checkList.filter(r => r.exit)
+    const checksBody = (rows: number): RenderElement[] => {
+      if (!checkList.length || rows <= 0) return []
+      const g = checkCells(checkList, checkW)
+      const legend = [
+        <Text key="ck-count" wrap="truncate-end">
+          <Text color={hex(C.ok)}>{`✓ ${passed} pass`}</Text>
+          {failed.length ? <Text color={hex(C.err)}>{`  ✗ ${failed.length} fail`}</Text> : null}
+        </Text>,
+        ...failed.map((r, i) => <Text key={`ck-f-${i}`} color={hex(C.err)} wrap="truncate-end">{`✗ ${r.cmd}${r.note ? ` · ${r.note}` : ''}`}</Text>),
+      ].slice(0, Math.max(1, rows))
+      return [
+        <Box key="checks-row" flexDirection="row" gap={2} height={rows} overflow="hidden">
+          {term
+            ? <Raster key="checks-cells" columns={g.columns} rows={Math.min(g.rows, rows)} cells={g.cells} />
+            : <Box key="checks-cells" flexShrink={0}><Text>{checkList.map((r, i) => <Text key={`c-${i}`} color={hex(r.exit ? C.err : C.ok)}>■ </Text>)}</Text></Box>}
+          <Box key="checks-legend" flexDirection="column" flexShrink={1}>{legend}</Box>
+        </Box>,
+      ]
+    }
+    // History: an area of the events over their span (failures on top, in red), above the lines
+    const histSpark = (() => {
+      if (shown.length < 3) return []
+      let last = -1, base = 0
+      const mins = shown.map(ev => {
+        const m = /^(\d\d):(\d\d)$/.exec(ev.time)
+        const t = m ? Number(m[1]) * 60 + Number(m[2]) : last
+        if (t + base < last - 720) base += 1440 // past midnight
+        last = t + base
+        return last
+      })
+      if (mins[0]! < 0) return []
+      const nb = Math.max(4, Math.min(24, Math.floor((W + 1) / 3)))
+      const span = Math.max(1, mins.at(-1)! - mins[0]!)
+      const bucket = (i: number) => Math.min(nb - 1, Math.floor(((mins[i]! - mins[0]!) / span) * nb))
+      const ok = Array(nb).fill(0) as number[], bad = Array(nb).fill(0) as number[]
+      shown.forEach((ev, i) => void ('✗✖'.includes(ev.mark) ? bad : ok)[bucket(i)]!++)
+      const top = Math.max(1, ...ok.map((x, i) => x + bad[i]!))
+      return [term
+        ? <Raster key="history-spark" columns={W} rows={1} cells={histCells([{ color: C.accent2, values: ok }, { color: C.err, values: bad }], W, 1, top, null)} />
+        : <Box key="history-spark" height={1}><Text color={hex(C.accent2)}>{sparkText(ok.map((x, i) => x + bad[i]!), W)}</Text></Box>]
+    })()
+
+    // ── drawing (T-3701): each section a Board panel: its head (┌ the number on its accent, NAME · what, the label ┐),
+    // exactly its rows (what doesn't fit is counted, never cut silently), and on a tall dock, where a blank row parted
+    // sections, its footer (└ a caption, the stat ┘). Numbered in the order drawn, the chips' colours in the Board's turn.
     const body = (key: string, rows: number, xs: RenderElement[], tall = 0, log = false) => {
       const over = xs.length + tall > rows
       const shown = log || !over // a log just loses its oldest lines; never more rows than fit, or flex squeezes them
@@ -2232,25 +2711,56 @@ export const register: Register = (on, options) => {
         </Box>
       )
     }
-    const SECTIONS: { key: string; title: RenderElement; rows: RenderElement[]; tall?: number; log?: boolean }[] = [
-      { key: 'activity', title: titleRow('activity', 'Activity', nLive ? C.accent : C.dim, activityRight), rows: [...laneRows, ...(axis ? [axisRow] : [])] },
-      { key: 'agents', title: titleRow('agents', 'Agents', gLive ? C.agent : C.dim,
-          [gLive ? `${gLive} running` : '', trees.length ? `${trees.length} worktree${trees.length === 1 ? '' : 's'}` : '', `${gSpan / 60000}m`].filter(Boolean).join(', ')),
-        rows: agentRows },
-      { key: 'queue', title: titleRow('queue', 'Up next', C.accent2, [...flowWords(v), `${queueN} queued`, inboxN ? `${inboxN} in the inbox${v.inbox_yours ? ` (${v.inbox_yours} yours)` : ''}` : ''].filter(Boolean).join(', ')), rows: queueRows },
-      { key: 'sessions', title: titleRow('sessions', 'Sessions', C.agent, `${fleet.filter(s => !s.error).length} live`), rows: sessionRows },
-      { key: 'history', title: titleRow('history', 'History', C.dim, ''), rows: historyRows, log: true },
-      { key: 'today', title: todayTitle, rows: todayBody, tall: Math.max(0, R.today! - 1) },
+    const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
+    const stepsDone = a ? a.steps.filter(s => s.done).length : 0
+    const laneCount = (w: string) => laneNodes.filter(l => l.word === w).length
+    type Panel = { key: string; name: string; what: string; label: string; caption: string; stat: string; frac?: number; rows: RenderElement[]; tall?: number; log?: boolean }
+    const PANELS: Panel[] = [
+      { key: 'task', name: planQ ? 'PLAN' : 'TASK', what: planQ ? 'awaits your yes' : 'the brief in focus', rows: [],
+        label: planQ ? 'TO APPROVE' : a ? a.stage.toUpperCase() : live ? 'WORKING' : 'IDLE',
+        caption: a ? `${a.id} · ${a.criteria.filter(c => c.checked).length} of ${a.criteria.length} criteria met` : `${v.today_done ?? 0} closed today`,
+        stat: a && a.steps.length ? `${stepsDone}/${a.steps.length} steps` : '', frac: a && a.steps.length ? stepsDone / a.steps.length : undefined },
+      { key: 'lanes', name: 'LANES', what: 'builders in flight', label: plural(laneNodes.length, 'lane').toUpperCase(), rows: lanesBody(R.lanes ?? 0),
+        caption: ['building', 'waiting', 'parked', 'merged'].map(w => `${w} ${laneCount(w)}`).join(' · '),
+        stat: `${laneNodes.reduce((t, l) => t + l.done, 0)}/${laneNodes.reduce((t, l) => t + l.total, 0)} steps` },
+      { key: 'merge', name: 'MERGE', what: 'waiting → build', label: ln.merging.length ? `${ln.merging.length} WAITING` : 'CLEAR', rows: mergeBody(R.merge ?? 0),
+        caption: `${ln.merging.length} waiting to merge · ${ln.closing.length} merged, close owed`, stat: `${ln.merging.length + ln.closing.length} to land` },
+      { key: 'activity', name: 'TOOLS', what: "this session's calls", label: nLive ? `${nLive} RUNNING` : plural(recentTicks.length, 'call').toUpperCase(),
+        rows: [...laneRows, ...(axis ? [axisRow] : [])],
+        caption: activityRight, stat: `${spanMs / 60000} min` },
+      { key: 'agents', name: 'AGENTS', what: 'subagents and worktrees', label: gLive ? `${gLive} RUNNING` : plural(trees.length, 'worktree').toUpperCase(), rows: agentRows,
+        caption: [gLive ? `${gLive} running` : '', trees.length ? plural(trees.length, 'worktree') : '', `the last ${gSpan / 60000} min`].filter(Boolean).join(' · '),
+        stat: plural(Math.max(0, nodes.length - 1), 'node') },
+      { key: 'queue', name: 'QUEUE', what: 'up next', label: `${queueN} QUEUED`, rows: queueRows,
+        caption: [...flowWords(v), `${queueN} queued`, inboxN ? `${inboxN} in the inbox${v.inbox_yours ? ` (${v.inbox_yours} yours)` : ''}` : ''].filter(Boolean).join(', '),
+        stat: '' }, // the next is the table's first row: the caption keeps the room
+      { key: 'cpu', name: 'CPU', what: 'against the goal', label: cpu && cpuNow > cpu.goal ? 'OVER GOAL' : `GOAL ${cpu?.goal ?? 10}%`, rows: cpuBody(R.cpu ?? 0),
+        caption: cpu ? `${plural(cpuSessions.length, 'session')} · the last ${Math.round((cpuTotals.length * cpu.step_s) / 60)} min · ${cpu.cores} cores` : '',
+        stat: `${cpuNow.toFixed(1)}%`, frac: cpu ? Math.min(1, cpuNow / Math.max(0.1, cpu.goal)) : undefined },
+      { key: 'checks', name: 'CHECKS', what: 'the gates', label: failed.length ? `${failed.length} FAILING` : `${passed}/${checkList.length} PASS`, rows: checksBody(R.checks ?? 0),
+        caption: checks ? `ran ${checks.at.slice(11, 16)} · slowest ${Math.round(Math.max(0, ...checkList.map(r => r.s)))} s` : '', stat: `${passed}/${checkList.length}`,
+        frac: checkList.length ? passed / checkList.length : undefined },
+      { key: 'sessions', name: 'SESSIONS', what: 'live here', label: `${fleet.filter(s => !s.error).length} LIVE`, rows: sessionRows,
+        caption: `${fleet.filter(s => s.task).length} on a task · ${fleet.reduce((t, s) => t + (s.mail ?? 0), 0)} mail`, stat: '' },
+      { key: 'history', name: 'HISTORY', what: 'what happened', label: back ? `AS OF ${shown.at(-1)?.time || '?'}` : 'LIVE', rows: [...histSpark, ...historyRows], log: true,
+        caption: hist.length ? `${plural(shown.length, 'event')} since ${shown[0]?.time || '?'}` : plural(recent.length, 'event'),
+        stat: `${shown.filter(ev => '✗✖'.includes(ev.mark)).length} failed` },
+      { key: 'today', name: 'TODAY', what: 'closed per day, the gauges', label: `${v.today_done ?? 0} DONE`, rows: todayBody, tall: Math.max(0, R.today! - 1),
+        caption: showDays ? 'the last 14 days' : 'context · spend · hooks · gates', stat: `${v.today_done ?? 0} today` },
     ]
     const sections: RenderElement[] = []
-    for (const s of SECTIONS) {
+    let num = 0
+    for (const s of PANELS) {
       const n = R[s.key] ?? 0
       if (!n) continue
-      if (L.gap) sections.push(<Box key={`gap-${s.key}`} height={1} flexShrink={0} />)
+      const color = panelAccent(++num)
       sections.push(
-        <Box key={s.key} flexDirection="column" flexShrink={0}>
-          {s.title}
-          {body(s.key, n, s.rows, s.tall ?? 0, s.log)}
+        <Box key={s.key === 'task' ? 'task-panel' : s.key} flexDirection="column" flexShrink={0}>
+          {panelHead(ui, e, { key: s.key, n: num, name: s.name, what: s.what, label: s.label, color, width: W })}
+          {s.key === 'task'
+            ? <Box key="task" flexDirection="column" height={n} overflow="hidden" flexShrink={0}>{taskRows.slice(0, n)}</Box>
+            : body(s.key, n, s.rows, s.tall ?? 0, s.log)}
+          {L.gap ? panelFoot(ui, e, { key: s.key, caption: s.caption, stat: s.stat, color, width: W, frac: s.frac }) : null}
         </Box>,
       )
     }
@@ -2260,29 +2770,9 @@ export const register: Register = (on, options) => {
         {crestTop.el}
         {head}
         {L.gap ? <Box key="gap-head" height={1} flexShrink={0} /> : null}
-        <Box key="task" flexDirection="column" height={R.task!} overflow="hidden" flexShrink={0}>
-          {taskRows.slice(0, R.task!)}
-        </Box>
         {sections}
         {L.gap ? <Box key="gap-controls" height={1} flexShrink={0} /> : null}
-        <Box flexDirection="row" gap={W >= 64 ? 3 : 2} key="fm-pane-controls" height={1} overflow="hidden" flexShrink={0}>
-          <Button key="next" label="next" hotkey="n" plain onPress={() => void $.prompt.submit({ text: '/sampo:next', asUser: true })} />
-          <Button key="drive" label={m?.drive ? 'turn drive off' : 'turn drive on'} hotkey="d" plain
-            onPress={() => act($, ['drive', m?.drive ? 'off' : 'on'], `drive ${m?.drive ? 'off' : 'on'}`)} />
-          <Button key="autonomy" label={m?.autonomy === 'full' ? 'switch to standard' : 'switch to full auto'} plain dimColor
-            onPress={() => {
-              const level = m?.autonomy === 'full' ? 'standard' : 'full'
-              return act($, ['autonomy', level], `autonomy ${level}`)
-            }} />
-          <Button key="sound" label={isOn ? 'mute' : 'unmute'} plain dimColor
-            onPress={async () => {
-              await update($, sound, x => !x)
-              await $.store.set('sound', await read($, sound))
-            }} />
- <Button key="scrub-back" label="◂ back" hotkey="b" plain dimColor onPress={() => update($, scrub, x => x + 1)} />
-          <Button key="scrub-live" label="live" hotkey="l" plain dimColor onPress={() => update($, scrub, () => 0)} />
-          <Button key="refresh" label="refresh" hotkey="r" plain dimColor onPress={() => refresh($)} />
-        </Box>
+        {controls}
       </Box>
     )
   })

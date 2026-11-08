@@ -198,6 +198,38 @@ def goal(p):
         return GOAL
 
 
+def series(goal_pct=GOAL, now=None, span_s=WINDOW_S * 3, step_s=150):
+    """T-3701: the Sampo sessions' CPU for the pane's CPU panel, from the samples the self-check keeps in state/cpu.json
+    (one small file read; no /proc or cgroup reads): per scope, % of the machine's cores in step_s buckets over the last
+    span_s, oldest first. A bucket takes the rate of the sampled interval round its middle; after the newest sample the
+    newest rate holds (up to WINDOW_S), before the oldest it is 0. None when no scope has two samples in the span."""
+    now = time.time() if now is None else now
+    _, st = _state()
+    every = st.get("samples") if isinstance(st.get("samples"), dict) else {}
+    n, cores, out = int(span_s // step_s), ncores(), []
+    for d, rows in every.items():
+        rows = sorted(r for r in rows or [] if isinstance(r, list) and len(r) == 2
+                      and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in r))
+        pairs = [(a, b) for a, b in zip(rows, rows[1:]) if b[0] > a[0] and b[1] >= a[1] and b[0] > now - span_s]
+        if not pairs:
+            continue
+        rate = lambda a, b: (b[1] - a[1]) / 1e6 / (b[0] - a[0]) / cores * 100  # noqa: E731
+        pct = []
+        for k in range(n):
+            mid = now - span_s + (k + 0.5) * step_s
+            hit = next(((a, b) for a, b in pairs if a[0] <= mid < b[0]), None)
+            if hit is None and pairs[-1][1][0] <= mid <= pairs[-1][1][0] + WINDOW_S:
+                hit = pairs[-1]
+            pct.append(round(rate(*hit), 1) if hit else 0.0)
+        if any(pct):
+            out.append({"name": os.path.basename(str(d)).removesuffix(".scope")[:24], "pct": pct})
+    if not out:
+        return None
+    out = sorted(out, key=lambda s: -sum(s["pct"]))[:6]
+    return {"goal": goal_pct, "cores": cores, "step_s": step_s, "now": round(sum(s["pct"][-1] for s in out), 1),
+            "sessions": out}
+
+
 def goal_line(p, now=None):
     """The self-check: None under the goal or without 10 minutes of samples; else how far over, and the top consumer."""
     d = scope()

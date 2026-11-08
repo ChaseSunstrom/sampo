@@ -266,13 +266,13 @@ def _kind(pid, table):
     return "claude" if k in ("Claude itself", "short-lived under Claude") else "other"
 
 
-def cpu_tick(now=None, proc="/proc"):
-    """Reads the machine (at most once each TICK_S): the cores each kind used since the last read, into this minute's
-    average. A process first seen now started since the last read, so all its ticks count; a child seen then and gone
+def cpu_tick(now=None, proc="/proc", every=TICK_S):
+    """Reads the machine (at most once each `every` seconds): the cores each kind used since the last read, into this
+    minute's average. A process first seen now started since the last read, so all its ticks count; a child seen then and gone
     now is already in its parent's reaped ticks, so those are taken off (cpu.sample's rule). other is the busy rest."""
     now = time.time() if now is None else now
     with _RING_LOCK:
-        if _RING["at"] is not None and 0 <= now - _RING["at"] < TICK_S:
+        if _RING["at"] is not None and 0 <= now - _RING["at"] < every:
             return
         facts, busy = _RING["facts"], _busy(proc)
         scan = cpu._scan(None, proc, facts, pids=[n for n in _ls(proc) if n.isdigit()])

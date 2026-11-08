@@ -389,6 +389,11 @@ def _shown(x, key=None):
     return c.plain_lines(_ESCAPES.sub("", x)) if isinstance(x, str) else x
 
 
+def _cpu_series(p):
+    from sampo import cpu
+    return cpu.series(cpu.goal(p))
+
+
 def _guarded(fn):
     """A pane section that fails is left out, never the whole view (the mod renders what it gets)."""
     try:
@@ -584,6 +589,13 @@ def _lanes(p, briefs, sd):
     held = {s["id"] for s in sd["lanes"]}
     finished = set(c.finished_lanes(p, briefs, quiet_min=0))
     out = {"building": [], "merging": [], "closing": []}
+    from sampo import bus
+    leased = {}  # T-3701: the files each lane's leases hold, for the pane's LANES picture (one small file read)
+    for v in bus._leases().values():
+        if isinstance(v, dict) and v.get("project") == p.slug and v.get("file") and v.get("task"):
+            f = str(v["file"]).partition("::")[0]
+            if f not in leased.setdefault(v["task"], []):
+                leased[v["task"]].append(f)
     for b in sorted((b for b in briefs if b.id in held and b.status in ("active", "verifying")),
                     key=lambda b: b.meta.get("updated") or "", reverse=True):
         steps = b.steps()
@@ -591,8 +603,151 @@ def _lanes(p, briefs, sd):
              else "merging" if b.id in finished or b.meta.get("builder_returned") else "building")
         out[k].append({"id": b.id, "type": b.type, "tier": b.tier, "title": c.plain(b.title)[:160],
                        "steps_done": sum(s.done for s in steps), "steps_total": len(steps),
-                       "since": b.meta.get("updated")})
+                       "since": b.meta.get("updated"), "files": sorted(c.plain(f)[:120] for f in leased.get(b.id, []))[:12]})
     return out
+
+
+def _train(p, briefs):
+    """T-3701: the merge train for the pane's MERGE picture, without git: whether one runs (its lock, or a land's, is
+    held: a shared lock probe, nothing written), the lanes landed in the last day (the ledger's lane_merge events, and
+    when) and the lanes parked in it (a conflict or a refusal on the brief)."""
+    import fcntl
+    from sampo import lanes as slanes
+    running = False
+    for name in ("train", "land"):
+        try:
+            with open(os.path.join(p.dir, name, ".lock"), "rb") as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                except BlockingIOError:
+                    running = True
+        except OSError:
+            pass
+    now = time.time()
+    landed = [e for e in c.ledger_events(p, ["lane_merge"], c.iso(now - 86400)) if e.get("task")]
+    parked = sum(1 for b in briefs if b.meta.get("lane") and (lambda k: k[0] in ("conflict", "refused") and now - k[1] < 86400)(slanes._stop(b)))
+    return {"running": running, "landed": [c.plain(str(e["task"]))[:16] for e in landed[-12:]],
+            "landed_at": [str(e.get("ts") or "")[:25] for e in landed[-12:]], "landed_24h": len(landed), "parked": parked}
+
+
+BOARD_CACHE_S = 30  # T-3701: how often the Board's slow parts are read again for the pane
+BOARD_COUNTS_S = 600  # T-3701: … and the card and moon totals, which read every card and moon
+
+
+def _board_cache_path(p):
+    return os.path.join(p.dir, "cache", "board.json")  # cache/: a write at the top would wake the mod's watch
+
+
+def _board_extras(p):
+    """T-3701: the live page Board's slow parts for the pane's LIBRARY, SAMPO, STATE and TESTS panels, as
+    cache/board.json holds them. Older than BOARD_CACHE_S (or missing), a detached `fm ui --board-cache` reads them
+    again (one at a time: a .building mark as old as that) and this poll answers with what the file holds: the read
+    (callcards, card and moon counts, the test modules, live's import) never runs on the 2 s poll."""
+    path = _board_cache_path(p)
+    try:
+        age = time.time() - os.path.getmtime(path)
+        with open(path, encoding="utf-8") as f:
+            kept = json.load(f)
+    except (OSError, ValueError):
+        age, kept = None, {}
+    if (age is None or not 0 <= age < BOARD_CACHE_S) and not os.environ.get("FOREMAN_NO_BACKGROUND"):
+        mark = path + ".building"
+        try:
+            fresh = 0 <= time.time() - os.path.getmtime(mark) < BOARD_CACHE_S
+        except OSError:
+            fresh = False
+        if not fresh:
+            import subprocess
+            with contextlib.suppress(OSError):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(mark, "w").close()
+                subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "ui", "--board-cache"], cwd=p.root,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+    return kept if isinstance(kept, dict) else {}
+
+
+def board_cache(p):
+    """T-3701: `fm ui --board-cache`: the Board's library (calling cards, kept per hour, card and moon counts), state
+    tree and newest decision, test modules, newest sampo commands and the CPU by kind, written to cache/board.json
+    for the pane."""
+    from sampo import board, live
+    with contextlib.suppress(OSError):
+        os.nice(10)  # a background refresh: never ahead of the work it shows
+    path, now = _board_cache_path(p), time.time()
+    try:
+        with open(path, encoding="utf-8") as f:
+            was = json.load(f)
+    except (OSError, ValueError):
+        was = {}
+    out = {"at": c.iso(now)}
+    for name, fn in (("library", board.part_library), ("state", board.part_state), ("tests", board.part_tests),
+                     ("commands", board.part_commands)):
+        try:
+            out[name] = fn(p)
+        except Exception:  # one part down leaves the rest
+            out[name] = None
+    # the card and moon totals read every card and moon (~8 s here): kept BOARD_COUNTS_S, the rest every refresh
+    kept = was.get("counts") if isinstance(was, dict) and isinstance(was.get("counts"), dict) else None
+    if kept and isinstance(was.get("counts_at"), (int, float)) and 0 <= now - was["counts_at"] < BOARD_COUNTS_S:
+        out["counts"], out["counts_at"] = dict(kept, calling=int((out["library"] or {}).get("calling") or kept.get("calling") or 0)), was["counts_at"]
+    else:
+        try:
+            st = live.stats(p)
+            out["counts"] = {"cards": int(st["cards"]["general"]), "ui": int(st["cards"]["ui"]), "moons": int(st["moons"]["candidates"]),
+                             "calling": int((out["library"] or {}).get("calling") or 0)}
+            out["counts_at"] = now
+        except Exception:
+            out["counts"] = kept
+    try:
+        out["cpu"] = _board_cpu(p, was.get("cpu") if isinstance(was, dict) else None)
+    except Exception:
+        out["cpu"] = None
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    c.write_atomic(path, json.dumps(out))
+
+
+def _board_cpu(p, was, proc="/proc"):
+    """T-3701: the machine's cores by kind (board.KINDS: tests, claude, models, hooks, other) for the pane's CPU panel,
+    as the web Board's: two reads of /proc a second apart (board.cpu_tick), kept with the earlier refreshes' readings
+    of the last 30 minutes, averaged a minute a bar. /proc unreadable: the last reading stands."""
+    from sampo import board
+    board.cpu_tick(proc=proc, every=0)
+    time.sleep(1)
+    board.cpu_tick(proc=proc, every=0)
+    part = board.cpu_part(p)
+    if not part["now"]:
+        return was
+    now, n = time.time(), 1 + len(board.KINDS)
+    samples = [x for x in (was or {}).get("samples") or [] if isinstance(x, list) and len(x) == n and 0 <= now - x[0] < 1800]
+    samples.append([int(now)] + [part["now"].get(k, 0.0) for k in board.KINDS])
+    by = {}
+    for x in samples:
+        by.setdefault(int(x[0] // 60 * 60), []).append(x[1:])
+    minutes = [[m] + [round(sum(col) / len(rows), 2) for col in zip(*rows)] for m, rows in sorted(by.items())]
+    return dict(part, minutes=minutes[-30:], samples=samples[-120:])
+
+
+def _flows(now=None):
+    """T-3701: who called which model in the last five minutes, for the pane's MODELS picture: a link a caller and a
+    model, its calls (n) and those of the last minute (hot). Read from the call log each models.complete call writes and
+    Claude's spend log, as live._calls does, but here: importing live costs the 2 s poll ~35 ms (urllib). Machine-wide,
+    as the web Board's."""
+    now = time.time() if now is None else now
+    since, hot = c.iso(now - 300), c.iso(now - 60)
+    rows = [(e.get("ts"), e.get("from"), e.get("to")) for e in c.tail_jsonl(os.path.join(c.state_dir(), "calls.jsonl"), 400)]
+    rows += [(e.get("ts"), e.get("feature"), "claude") for e in c.tail_jsonl(os.path.join(c.state_dir(), "spend.jsonl"), 200)]
+    links = {}
+    for at, a, to in rows:  # ponytail: the ledger's card and moon grow calls (live.FLOW_OF) are left out
+        at = str(at or "")
+        if at < since or not a or not to:
+            continue
+        a, to = c.plain(str(a))[:40], c.plain(str(to))[:40]
+        link = links.setdefault((a, to), {"from": a, "to": to, "n": 0, "hot": 0})
+        link["n"] += 1
+        link["hot"] += at >= hot
+    return sorted(links.values(), key=lambda x: (-x["n"], x["from"], x["to"]))[:16]
 
 
 def _worktrees(p, briefs):
@@ -650,6 +805,8 @@ def view(p):
     if active:
         focused = next((e.get("ts") for e in events if e.get("event") == "focus" and e.get("task") == act.id), None)
         active["on_task_s"] = round((c.age_days(focused) or 0) * 86400) if focused else None
+        asked = " ".join(x.lstrip("> ").strip() for x in (act.section("Raw request") or "").splitlines()).strip()
+        active["words"] = c.plain(asked or act.title)[:240]  # T-3701: THE LOOP's "you asked", unquoted
         active["splits"] = splits(events, act)
         active["children"] = [{"id": k.id, "title": c.plain(k.title)[:120], "status": k.status,  # T-0711: the tree
                                "steps_done": sum(s.done for s in k.steps()), "steps_total": len(k.steps())}
@@ -697,6 +854,10 @@ def view(p):
         "inbox": [item(s) for s in sorted(sd["inbox"], key=lambda s: s.get("source") not in YOURS)[:10]],
         "inbox_total": len(sd["inbox"]), "inbox_yours": sum(s.get("source") in YOURS for s in sd["inbox"]),
         "lanes": _guarded(lambda: _lanes(p, briefs, sd)) or {"building": [], "merging": [], "closing": []},
+        "cpu": _guarded(lambda: _cpu_series(p)),  # T-3701: the pane's CPU panel, from state/cpu.json's samples
+        "train": _guarded(lambda: _train(p, briefs)),  # T-3701: the pane's MERGE picture
+        "flows": _guarded(_flows) or [],  # T-3701: the pane's MODELS picture
+        "board": _guarded(lambda: _board_extras(p)) or {},  # T-3701: LIBRARY, SAMPO, STATE, TESTS, from cache/board.json
         "blocked_total": len(sd["blocked"]),  # T-1026: the pane's work bar
         "approvals": [{"task": a.get("task"), "allow": list(a.get("allow") or []), "why": c.plain(a.get("why") or "")}
                       for a in meta.get("pending_approvals") or [] if isinstance(a, dict) and a.get("task")],
@@ -818,6 +979,8 @@ def cmd_ui(args):
         p = cli.resolve(args, create=False)
     except cli.UsageError:
         p = None
+    if getattr(args, "board_cache", False):  # T-3701: the detached refresh _board_extras starts
+        return board_cache(p) if p else None
     if getattr(args, "follow", False) and p:
         return _follow(lambda: view(p), lambda v: v["watch_now"] + v["watch"], args.interval)
     if getattr(args, "json", False):

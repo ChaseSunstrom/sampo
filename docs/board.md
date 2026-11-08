@@ -21,7 +21,14 @@ Three files under `plugin/web/live/`, no libraries, shared by every panel (and m
 skills to reuse):
 
 - `board-tokens.json`: the palette, dark and light. `board.css` declares the same values as `--bd-*` custom properties
-  (test_board keeps them equal); the canvases read them from there, so chrome and drawing never disagree.
+  (test_board keeps them equal); the canvases read them from there, so chrome and drawing never disagree. The Claude
+  Code mod's default palette is generated from its dark scheme (`mods/foreman-ui/tools/board_palette.py`, T-3701), and
+  its pane draws the same panel language in the terminal: chips, UPPERCASE names, labels, brackets, footers. Its board
+  page ports all nine of this page's panels, and a SESSIONS orbit of every live session, to a pixel canvas of half
+  blocks and braille (`mods/foreman-ui/hooks/canvas.ts`), in a grid of 3, 2 or 1 columns by the dock's width with no
+  empty slot; the slow parts (library, state, tests, commands) come from the same `board.part_*` functions through
+  `cache/board.json`, and its CPU panel draws `board.cpu_part`'s kinds from there too (a refresh reads /proc twice a
+  second apart and keeps a row a minute for 30 minutes).
 - `board.css`: the grid (1 column under 700 px, 2 under 1200 px, 3 above), the panel chrome: a numbered accent chip,
   the UPPERCASE name and a dim "what", the accent label on the right, the canvas, a footer caption with an optional
   progress bar and a stat. 1 px rules, cyan L-brackets where they cross; no rounded cards, no shadows.

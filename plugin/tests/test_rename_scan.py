@@ -28,7 +28,9 @@ SURFACES = ("README.md", "MASTER.md", "INSTALL.md", "site/*.html", "site/*.js", 
 # the marketplace sampo (sampo@sampo), and sampo migrate plugins moves an install that still has an old id
 KEPT = re.compile(r"(?:sampo|foreman)?(?:-ui|-design)?@foreman\b|foreman-ui|/foreman:|(?-i:foreman:(?=[a-z]))|foreman:fm-|FOREMAN_|Foreman-Task|"
                   r"\.claude/foreman|(?-i:/foreman/)|'foreman'|(?-i:Continue the Foreman drive)|"
-                  r"(?-i:Foreman guard:|Foreman asks |Foreman\(\?: guard\)\?:)|"  # the last: register.tsx's guard regex source
+                  r"(?-i:Foreman guard:|Foreman asks |Foreman\(\?: guard\)\?:|\(\?:Foreman\|Sampo\|Ward\)\(\?: guard\)\?:)|"  # the last two: register.tsx's guard regex source, old and new
+                  # T-3701: the build ref as a Board panel's UPPERCASE label (the web's train label, foreman/build in CSS caps)
+                  r"(?-i:FOREMAN/BUILD)|"
                   r"formerly Foreman|was called Foreman|renamed from Foreman|"
                   # T-2810: lowercase ids a page names as code (.foreman/, refs/foreman/, foreman-ui, foreman.md, a `foreman` arm,
                   # `claude mcp add foreman`): a folder, ref, file, plugin or arm name, kept like the plugin id; a capital F is prose
