@@ -219,6 +219,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmnew` (`sampo new [list] | NAME [DIR] [--force] | check PATH... [--run]`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmnight` (T-2607: each tick records the trigger kinds it could not watch with… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmoffice` (T-1406: `sampo check office FILE`, a stdlib asserter for… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmhotfn` (T-3271, `sampo hotfn`: Sampo's functions ranked by churn x lines x (1 + FIX touches), `--capture K` files the top K as refactor tasks once per function… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmoracle` (T-1553: the guard's oracle, a line run in a throwaway bwrap sandbox… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmorders` (`sampo orders`: standing orders that capture a task on a schedule… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmoutcomes` (`sampo outcomes`: each finished task's fate — reverted, fixed… [→ files-lib-3](docs/map/files-lib-3.md)

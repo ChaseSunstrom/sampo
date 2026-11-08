@@ -8170,6 +8170,11 @@ def _build_parser(only=None):
     s.add_argument("--here", action="store_true", help="off/on: this project only (default: every project; the user's to run)")
     s.add_argument("--day", type=float, help="set: the daily cap in points (the user's to set)")
     s.add_argument("--because", help="set: why (logged)")
+    s = add("hotfn", lazy("sampo.hotfn", "cmd_hotfn"), tier=("Project and settings", 781), help="Sampo's own functions ranked by churn x lines x "
+                                                        "(1 + FIX touches) over 500 commits; --capture K files the top K as refactor tasks")
+    s.add_argument("path", nargs="?", help="the checkout to rank (default: the project root)")
+    s.add_argument("--top", type=int, default=10, help="rows to print (default 10)")
+    s.add_argument("--capture", type=int, default=0, metavar="K", help="file the top K not yet filed as refactor tasks")
     s = add("canary", lazy("sampo.eco", "cmd_canary"), tier=("Project and settings", 920), help="Claude Code's version against the last seen; on a change the "
                                                          "hook fixtures, a hook smoke and sampo replay run, a failure is a brief")
     s.add_argument("--if-changed", action="store_true", help="only when the version changed (each session start)")
