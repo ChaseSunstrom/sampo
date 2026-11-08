@@ -20,6 +20,7 @@ import time
 import zlib
 
 from sampo import core as c
+from sampo import racemetrics
 
 _git = functools.partial(c._git, timeout=120, proc=True)  # T-0961: fmcore's runner; callers read returncode/stderr
 
@@ -1080,7 +1081,7 @@ def _side(p, x, main, avoid=()):
     how many of the user's recorded no's (avoid, T-2403) its added lines hold."""
     branch, path = x.meta.get("lane_branch"), x.meta.get("lane")
     row = {"id": x.id, "branch": branch, "tests": 0, "passed": 0, "lines": None, "outside": 0, "diff": None,
-           "caught": 0, "broken": 0, "coupled": 0, "taste": 0}
+           "caught": 0, "broken": 0, "coupled": 0, "taste": 0, "import_ms": None, "import_modules": 0, "import_why": None}
     if not branch or not path or not os.path.isdir(path):
         return row
     if _git(path, "status", "--porcelain").stdout.strip():  # the diff below reads commits: this side's work isn't in it
@@ -1099,6 +1100,9 @@ def _side(p, x, main, avoid=()):
     row["taste"] = _taste(patch, avoid)
     checks = _checks(p, x)
     row["tests"], row["passed"] = len(checks), len(checks) - len(_failing(p, x, path, checks))
+    if any(rel.startswith(racemetrics.LIB) and rel.endswith(".py") for rel in names):  # T-3280: never ranked
+        _say(f"timing imports of {x.id}")
+        row["import_ms"], row["import_modules"], row["import_why"] = racemetrics.import_ms(path, names)
     return row
 
 
@@ -1271,6 +1275,10 @@ def score(p, b, main, args):
                                f"{r['broken']}), coupled to {r['coupled']}"
                                + (f"; holds {r['taste']} of what you said never to (a tie goes against it)"
                                   if r.get("taste") else "")  # T-2403
+                               + (f"; import {r['import_ms']} ms over {r['import_modules']} module"  # T-3280
+                                  + ("s" if r["import_modules"] != 1 else "")
+                                  if r.get("import_ms") is not None
+                                  else f"; import not measured: {r['import_why']}" if r.get("import_why") else "")
                                + (f"; {r['cross_stopped']}" if r.get("cross_stopped") else "")
                                if r["lines"] is not None else f"error: {r['error']}" if r.get("error")
                                else "not started (no worktree yet)")
