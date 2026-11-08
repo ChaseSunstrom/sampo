@@ -3010,20 +3010,23 @@ _REACHES_PYTHON = lazy(r"PYTHON\w*|LD_\w*|PATH|HOME|ENV|BASH_ENV|IFS")  # read b
 _BRACES = lazy(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")  # a brace expansion bash would turn into several words
 
 
-def _writes_nothing(x):
+def _writes_nothing(x, cwds):
     """T-0344 review: a command beside the python that can't create a file python would then import: no output
     redirect, and curl or wget only with flags that keep their download on stdout (any other flag, -o/-O, a config
     or a cookie jar, voids it); every other data tool writes nowhere but stdout. T-0414: no word with a substitution
     left in it (a quoted "$( )" or `…` runs a command _split doesn't see; an unquoted $( ) is a command of its own,
     checked here too) and no printf -v; a command of NAME=value words only sets names, each absent from the
-    environment (so not exported to python) and none that python, its loader or the shell reads (_REACHES_PYTHON)."""
+    environment (so not exported to python) and none that python, its loader or the shell reads (_REACHES_PYTHON).
+    T-3693: a tool given as a path must be that tool by the file it runs too (./cat linked to curl takes -o)."""
     if x.redirs or any(_RUNS.search(w) or _BRACES.search(w) for w in x.argv):  # T-0422: {-o,json.py} is -o json.py
         return False
     sets = [_ASSIGN.match(w) for w in x.argv]
     if x.argv and all(sets):
         return not any(m.group(1) in os.environ or _REACHES_PYTHON.fullmatch(m.group(1)) for m in sets)
     a, _ = _strip_wrappers(x.argv)
-    if x.argv != a or not a or os.path.basename(a[0]) not in _DATA_TOOLS:
+    real = _system_files(a[0], cwds) if a else None
+    if x.argv != a or real is None or os.path.basename(a[0]) not in _DATA_TOOLS or any(
+            os.path.basename(p) != os.path.basename(a[0]) for p in real):
         return False
     name, args = os.path.basename(a[0]), a[1:]
     if name == "printf" and _setter(name, args):
@@ -3152,7 +3155,7 @@ def _reads_pipe_as_data(c, cmds, cwds, cmd, ignore_writes=False):
     loop = any(_unloop(x) is not x for x in cmds)
     rest = [x for x in (cmds[:end + 1] if top and not loop else cmds) if x is not c]
     others = [_unloop(x) for x in rest]
-    if any(not _writes_nothing(u) and not _proved_py(u, cwds) for x, u in zip(rest, others)
+    if any(not _writes_nothing(u, cwds) and not _proved_py(u, cwds) for x, u in zip(rest, others)
            if not ignore_writes or x in cmds[start:end + 1]):
         return False  # ignore_writes: T-3673, to tell why it said no
     pairs = [w.split("=", 1) for x in others if all(_ASSIGN.match(w) for w in x.argv) for w in x.argv]
@@ -3165,16 +3168,6 @@ def _reads_pipe_as_data(c, cmds, cwds, cmd, ignore_writes=False):
 _PY3 = lazy(r"python3(?:\.\d+)?")
 
 
-def _py3_path(word, cwds):
-    """T-3714: word is a literal path (a /, nothing the shell expands) to a file whose real name, symlinks followed,
-    is python3 or python3.N, from every folder the line may run in (a relative one needs them all known)."""
-    if "/" not in word or re.search(r"[$`*?\[\]{}~\\'\"\s]", word):
-        return False
-    paths = [word] if os.path.isabs(word) else [os.path.join(d, word) for d in cwds or [] if d]
-    return bool(paths) and all(os.path.isfile(p) and _PY3.fullmatch(os.path.basename(os.path.realpath(p)))
-                               for p in paths)
-
-
 def _proved_py(x, cwds):
     """T-0344: x is a bare python -c CODE (no wrapper or assignment, output to /dev/null at most) that reads stdin
     only as data and writes nothing: CODE proved (_open_targets), no inherited PYTHONINSPECT or import path, nothing
@@ -3182,9 +3175,11 @@ def _proved_py(x, cwds):
     ignores the inherited PYTHON* variables, -I or -P keeps the folder off sys.path. T-3689: only a python named for
     major version 3 (python3, python3.N): Python 2's input() evaluates stdin as code, and plain python may be either
     (the hook's PATH isn't the Bash tool's, so the guard can't tell which, and it never runs a program to ask).
-    T-3714: a literal path counts by the file it resolves to (_py3_path): a venv's bin/python links to a python3.N."""
+    T-3693: a python given as a path must also be one by the file it runs (_system_files: ./python3 linked to bash), a
+    file only root can change. T-3714: then its own name may be plain python (a venv's bin/python links to python3.N)."""
     argv, _ = _strip_wrappers(x.argv)
-    py3 = argv and x.argv == argv and (_PY3.fullmatch(os.path.basename(argv[0])) or _py3_path(argv[0], cwds))
+    real = _system_files(argv[0], cwds) if argv else None
+    py3 = real is not None and x.argv == argv and all(_PY3.fullmatch(os.path.basename(w)) for w in real or argv[:1])
     py = _py_code(argv[1:]) if py3 else None
     if not py or not set(x.redirs) <= {"/dev/null"}:
         return False
@@ -3197,6 +3192,37 @@ def _proved_py(x, cwds):
     import ast
     mods = {al.name.split(".")[0] for n in ast.walk(ast.parse(code)) if isinstance(n, ast.Import) for al in n.names}
     return not _shadowed(cwds, mods)
+
+
+def _real_files(word, cwds):
+    """T-3693: the real files a command word given as a path runs, one per folder the command may run in (realpath:
+    ./python3 linked to bash runs bash); [] for a bare name (the guard never searches PATH: the hook's isn't the Bash
+    tool's); None when the word is computed or names no file in some folder (it may be made earlier on the line)."""
+    if "/" not in word:
+        return []
+    out = []
+    for b in [] if re.search(r"[$`*?\[~\\]", word) else [""] if word.startswith("/") else cwds:
+        p = os.path.realpath(os.path.join(b, word))
+        # T-3714's case: the path as written must reach a file too; realpath folds v3/bin/nope/../python to a file
+        # that exists, though bash finds no nope (or one a link made earlier on the line points elsewhere)
+        if not (os.path.isfile(p) and os.path.isfile(os.path.join(b, word))):
+            return None
+        out.append(p)
+    return out or None
+
+
+def _system_files(word, cwds):
+    """T-3693: _real_files when each is a file only root can change, as a name proves nothing about a file the user
+    owns (a copy of bash named python3); None otherwise, and for every path when the guard itself runs as root."""
+    real = _real_files(word, cwds)
+    for p in real or []:
+        try:
+            st = os.stat(p)
+        except OSError:
+            return None
+        if st.st_uid != 0 or st.st_mode & 0o022 or os.geteuid() == 0:
+            return None
+    return real
 
 
 def _a_path(word, fixed):
@@ -4000,13 +4026,16 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         # "name" holding a quote or a redirect is debris of the quote-blind fallback split, e.g. awk's program
         # $1<1200'. The top-level command is still read whole, so a real | python3 there is still refused
         debris = bool(depth and re.search(r"['\"<>]", name))
-        if c.piped and not debris and not (name == "$" and depth) and _reads_stdin_code("bash" if computed else name, args, via_xargs, any_word=computed) and not (
+        # T-3693: a pathed command fed by a pipe is read as the file it runs too (./cat linked to bash is a shell)
+        sh = next((b for b in map(os.path.basename, _real_files(argv[0], cwds) or []) if _SHELLS.match(b)),
+                  None) if argv and (c.piped or "|" in c.op) else None
+        if c.piped and not debris and not (name == "$" and depth) and _reads_stdin_code("bash" if computed else sh or name, args, via_xargs, any_word=computed) and not (
                 # T-0715: echo 'rm -rf ~' | bash; T-0716: | (sh), | $SH (a computed name may be a shell); a
                 any(_name(x.argv) in _FETCHERS for x in chain) or _FETCH_WORD.search(_mask_quotes(cmd))):  # download
             # piped in is pipe-shell's (below), which the user can grant for an installer
             found.append(("system", f"{name} reads its program from a pipe, which the guard can't read: put it in a "
                                     f"heredoc ({name} <<'EOF' … EOF), which it reads, or in a file"))
-        if _SHELLS.match(name) or name in ("source", "."):
+        if _SHELLS.match(sh or name) or name in ("source", "."):
             # T-0421: a download anywhere on the line counts (a $( ), a group or a <( ) splits it from the shell's own
             # chain; a file downloaded first and then piped in is a download too), and so does a pipe into a group
             fetched = any(_name(x.argv) in _FETCHERS for x in chain) or _FETCH_WORD.search(_mask_quotes(cmd))

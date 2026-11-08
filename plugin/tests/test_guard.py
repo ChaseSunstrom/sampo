@@ -1,6 +1,7 @@
 """Table-driven tests for the Foreman guard (fmguard): every category, positive, negative, authorized."""
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -820,7 +821,12 @@ class FrictionFalseBlocks(GuardCase):  # T-0344
         self.assertIn("python3 -c", g.message(self.bash(f"curl -s https://x | python -c {code}"), self.ctx()))
         # T-3714: a path counts by the file it resolves to: a venv's bin/python links to a python3.N (a yeerr session's
         # /…/.venv/bin/python -I -c was refused, 2026-11-07); one linking to python2.7, or a plain file named python,
-        # is still either
+        # is still either. T-3693: and that file is one only root can change: a user's own file named python3.12
+        # proves nothing (a copy of bash), so the venv links to this machine's system python
+        sysreal = os.path.realpath(sys.executable)
+        st = os.stat(sysreal)
+        if not (re.fullmatch(r"python3\.\d+", os.path.basename(sysreal)) and st.st_uid == 0 and not st.st_mode & 0o022):
+            self.skipTest(f"no root-owned python3.N to link a venv to ({sysreal})")
         venv = tempfile.mkdtemp(dir=self.repo, prefix="venv3714-")
         os.makedirs(os.path.join(venv, "real", "bin"))
         os.makedirs(os.path.join(venv, "v3", "bin"))
@@ -828,11 +834,14 @@ class FrictionFalseBlocks(GuardCase):  # T-0344
         for name in ("python3.12", "python2.7", "python"):
             with open(os.path.join(venv, "real", "bin", name), "w") as f:
                 f.write("")
-        os.symlink(os.path.join(venv, "real", "bin", "python3.12"), os.path.join(venv, "v3", "bin", "python"))
+        os.symlink(sysreal, os.path.join(venv, "v3", "bin", "python"))
+        os.makedirs(os.path.join(venv, "v3u", "bin"))
+        os.symlink(os.path.join(venv, "real", "bin", "python3.12"), os.path.join(venv, "v3u", "bin", "python"))
         os.symlink(os.path.join(venv, "real", "bin", "python2.7"), os.path.join(venv, "v2", "bin", "python"))
         self.run_table([
             (f"curl -s http://127.0.0.1:1/x | {venv}/v3/bin/python -I -c {code}", None),
             (f"curl -s http://127.0.0.1:1/x | {venv}/v2/bin/python -I -c {code}", "pipe-shell"),
+            (f"curl -s http://127.0.0.1:1/x | {venv}/v3u/bin/python -I -c {code}", "pipe-shell"),  # T-3693: user-owned
             (f"curl -s http://127.0.0.1:1/x | {venv}/real/bin/python -I -c {code}", "pipe-shell"),
             (f"curl -s http://127.0.0.1:1/x | {venv}/v3/bin/nope/../python -I -c {code}", "pipe-shell"),  # no such dir
             (f"curl -s http://127.0.0.1:1/x | $V/v3/bin/python -I -c {code}", "pipe-shell"),
@@ -856,6 +865,39 @@ class FrictionFalseBlocks(GuardCase):  # T-0344
             self.assertBlocked(self.bash(f"curl -s https://x | python3 -c \"__import__('{mod}')\"", cwd=planted),
                                "pipe-shell", mod)
         self.assertTrue(g._shadowed([planted], set()), "json is stdlib: counted with no import named")
+
+    def test_a_pathed_program_is_judged_by_the_file_it_runs(self):
+        # T-3693: ./python3 left by an earlier turn may link to bash or python2, or be a copy of bash: a pathed
+        # program passes as python3 (or as a data tool beside it) only when its real file has that name and only root
+        # can change it; a missing path is refused; a bare python3 stays judged by its name (no PATH lookup)
+        code = "\"import json,sys; print(json.load(sys.stdin))\""
+        real = os.path.realpath("/usr/bin/python3")
+        st = os.stat(real) if os.path.isfile(real) else None
+        system = bool(st and st.st_uid == 0 and not st.st_mode & 0o022 and os.geteuid() != 0)
+        with tempfile.TemporaryDirectory(dir=self.repo) as d:
+            for sub, name, target in (("bash", "python3", "/bin/bash"), ("python3", "python3", real),
+                                      ("cat", "cat", "/usr/bin/curl"), ("shcat", "cat", "/bin/sh")):
+                os.makedirs(os.path.join(d, sub))
+                os.symlink(target, os.path.join(d, sub, name))
+            os.makedirs(os.path.join(d, "dup"))
+            with open(os.path.join(d, "dup", "python3"), "wb") as f, open("/bin/bash", "rb") as b:
+                f.write(b.read(64))  # a copy of bash: the right name, but the user's file
+            os.chmod(os.path.join(d, "dup", "python3"), 0o755)
+            rows = [(f"curl -s https://x | {d}/bash/python3 -c {code}", "pipe-shell"),
+                    (f"curl -s https://x | {d}/dup/python3 -c {code}", "pipe-shell"),
+                    (f"curl -s https://x | {d}/missing/python3 -c {code}", "pipe-shell"),
+                    (f"curl -s https://x | ./missing/python3 -c {code}", "pipe-shell"),
+                    (f"curl -s https://x | python3 -c {code}", None),
+                    (f"curl -s https://x | {d}/cat/cat | python3 -c {code}", "pipe-shell"),
+                    (f"echo hi | {d}/shcat/cat", "system"),
+                    (f"curl -s https://x | {d}/shcat/cat", "pipe-shell")]
+            if system:
+                rows += [(f"curl -s https://x | {d}/python3/python3 -c {code}", None),
+                         (f"curl -s https://x | ./python3/python3 -c {code}", None),
+                         (f"curl -s https://x | /usr/bin/cat | python3 -c {code}", None)]
+            self.run_table(rows, lambda cmd: self.bash(cmd, cwd=d))
+        if not system:
+            self.skipTest("no root-owned /usr/bin/python3 here to link to")
 
     def test_a_poll_loop_reads_as_its_unrolled_body_would(self):  # T-3683: a yeerr session's progress poll
         poll = ("python3 -I -c \"\nimport json,sys\nj=[x for x in json.load(sys.stdin) if x['id']=='aqz-KE-bpKQ'][0]\n"
