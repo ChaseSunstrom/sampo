@@ -136,6 +136,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmagents` (`sampo agents list|install|uninstall codex|gemini|opencode`: `list`… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmambient` (`sampo check ambient on`: the affected tests run detached after… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmanergy` (T-2563, gen-2 moonshot: anergy for permission prompts [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmobjections` (T-3276: `sampo audit ahead ID` lists the objections past reviews raised on the task's diff, before the review: the same files (cli._past_nits), then their folders, then the defect classes the added lines cue; rejected and own findings left out; 8 rows at most… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmauditrun` (T-1186: `sampo audit run ID`, the audit lenses as headless… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmaway` (T-1155: `sampo away`, the summary on return after a long gap) [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbacktest` (T-1058: `sampo backtest`, where a changed rule, known fix or card… [→ files-lib-1](docs/map/files-lib-1.md)

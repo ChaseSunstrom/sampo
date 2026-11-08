@@ -1709,11 +1709,9 @@ def _sign_receipt(p, b, text, key, svg=None):
     return {"receipt": path, "signature": path + ".sig", "signers": path + ".allowed_signers", "identity": identity}
 
 
-def _past_nits(p, files, tid=None, most=12):
-    """T-1547, the pre-review checklist: what reviews of earlier tasks found in these files (ledger finding events
-    naming one, by path or by a path its text starts with; rejected ones left out), newest first."""
-    want = {f for f in files}
-    out = []
+def past_findings(p, tid=None):
+    """(file, text, lens, task) of each ledger finding that names a file (by its file, or a path its text starts with),
+    newest first; rejected ones and tid's left out. The pre-review checklist and `sampo audit ahead` both read it."""
     for e in reversed(c.ledger_events(p, ["finding"])):
         d = e.get("data") if isinstance(e.get("data"), dict) else {}
         text = c.plain(str(d.get("text") or "")).strip()
@@ -1724,8 +1722,21 @@ def _past_nits(p, files, tid=None, most=12):
         where = where.split(":")[0]
         if e.get("task") == tid or d.get("verdict") == "rejected" or len(text) < 12 or not where:
             continue
-        if any(where == f or f.endswith("/" + where) or where.endswith("/" + f) for f in want):
-            line = f"{where}: {c.fit(text, 160)} ({d.get('lens') or 'review'}, {e.get('task') or '?'})"
+        yield where, text, str(d.get("lens") or "review"), str(e.get("task") or "?")
+
+
+def named_by(where, files):
+    """Whether a finding's file is one of files: the same path, or one path ending in the other's."""
+    return any(where == f or f.endswith("/" + where) or where.endswith("/" + f) for f in files)
+
+
+def _past_nits(p, files, tid=None, most=12):
+    """T-1547, the pre-review checklist: what reviews of earlier tasks found in these files, newest first."""
+    want = set(files)
+    out = []
+    for where, text, lens, task in past_findings(p, tid):
+        if named_by(where, want):
+            line = f"{where}: {c.fit(text, 160)} ({lens}, {task})"
             if line not in out:
                 out.append(line)
         if len(out) >= most:
@@ -6385,6 +6396,11 @@ def cmd_audit(args):
             raise UsageError("sampo audit run needs a task id")
         from sampo import auditrun
         return auditrun.run(p, args)
+    if args.action == "ahead":  # T-3276: the objections past reviews raised on this diff, before the review
+        if not args.id:
+            raise UsageError("sampo audit ahead needs a task id")
+        from sampo import objections
+        return objections.ahead(p, need_brief(p, args.id), args)
     if not args.id:
         raise UsageError("sampo audit prep needs a task id")
     b = need_brief(p, args.id)
@@ -6564,6 +6580,7 @@ def cmd_audit(args):
         how += ("\nInstalled review skills that fit a lens (run one on the diff and record what it finds as that lens):"
                 + "".join(f"\n  {lens}: {', '.join(names)} — sampo task audit {b.id} {lens} \"{names[0]}\" \"<result>\""
                           for lens, names in fit.items()))
+    how += f"\nObjections past reviews raised on these files: sampo audit ahead {b.id} (run it before committing)."  # T-3276
     # the brief goes to a file: printed, it would be paid for twice (here and in the reviewer's prompt)
     out(args, {"diff": path, "base": base, "lenses": lenses, "brief": brief, "briefs": briefs, "pre_audit": found,
                "lens_skills": fit},
@@ -8052,9 +8069,10 @@ def _build_parser(only=None):
     s.add_argument("term", nargs="?", help="add, rm: the term (never printed or logged; a digest is)")
 
     s = add("audit", cmd_audit, tier=("Finding your way", 420), help="prep audits: freeze the task's diff and write one review brief for one reviewer")
-    s.add_argument("action", choices=["prep", "scan", "run"], help="prep ID: review brief for a task; scan: mechanical "
+    s.add_argument("action", choices=["prep", "scan", "run", "ahead"], help="prep ID: review brief for a task; scan: mechanical "
                                                                     "pre-audit of any diff (--base, default: the main branch); "
-                                                                    "run ID: headless reviewers, one per lens (T-1186)")
+                                                                    "run ID: headless reviewers, one per lens (T-1186); "
+                                                                    "ahead ID: the objections past reviews raised on this diff (T-3276)")
     s.add_argument("--model", default="sonnet", help="run: the reviewers' model")
     s.add_argument("--timeout", type=int, default=900, help="run: seconds the reviewers get")
     s.add_argument("id", nargs="?")
