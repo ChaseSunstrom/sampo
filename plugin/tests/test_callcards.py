@@ -18,7 +18,7 @@ from unittest import mock
 from helpers import SampoTestCase
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lib"))
-from sampo import callcards, landlock  # noqa: E402
+from sampo import callcards, landlock, louhi  # noqa: E402
 
 # T-3238: a test that runs a card for real needs calls confined; elsewhere (macOS: no Landlock) they refuse, by design
 confined = unittest.skipUnless(callcards.confinement()[0], "no confinement on this machine: calls refuse (Unconfined "
@@ -778,6 +778,72 @@ class Cli(Base):
             p = self.fm("card", "bench", "s1", "--limit", n, "--model", "no-such-model", check=False)
             self.assertNotEqual(p.returncode, 0)
             self.assertIn("--limit must be at least 1", p.stdout + p.stderr)
+
+
+class Misses(SampoTestCase):
+    """T-3488: a missed scenario files a card request naming its failure class, once per scenario and class; a bench row
+    says whether a card applied a change in its run."""
+
+    def test_an_applied_card_call_marks_the_run_a_fix_and_a_read_facts_or_refusal_does_not(self):
+        applied = {"event": "action", "action": "card", "result": "ok", "detail": "card shout: applied, changed a.txt\n+X"}
+        self.assertTrue(callcards.bench_events([applied], {"shout"})["fix_card_applied"])
+        self.assertFalse(callcards.bench_events([dict(applied, detail="card measure: facts\n{}")], {"measure"})[
+            "fix_card_applied"])
+        self.assertFalse(callcards.bench_events([dict(applied, result="refused", detail="refused: card shout")], {"shout"})[
+            "fix_card_applied"])
+        self.assertFalse(callcards.bench_events([dict(applied, action="read")], {"shout"})["fix_card_applied"])
+
+    def test_a_missed_run_is_named_by_the_class_its_stream_ended_in(self):
+        self.assertIsNone(callcards._miss_class([{"event": "closed"}], True))
+        self.assertEqual(callcards._miss_class([{"event": "error", "text": "used all 40 turns"}], False), "loop")
+        self.assertEqual(callcards._miss_class([{"event": "timeout"}], False), "timeout")
+        self.assertEqual(callcards._miss_class([{"event": "closed", "text": "done"}], False), "false_done")
+        self.assertEqual(callcards._miss_class([{"event": "action", "action": "edit", "result": "refused"}], False), "refused")
+        self.assertEqual(callcards._miss_class([{"event": "error", "text": "boom"}], False), "other")
+
+    def test_bench_one_names_the_class_and_whether_a_card_applied(self):
+        def smith(base, key, work, model, request, events):
+            with open(events, "w") as f:
+                f.write(json.dumps({"event": "action", "action": "card", "result": "ok",
+                                    "detail": "card shout: applied, changed a.txt\n"}) + "\n")
+                f.write(json.dumps({"event": "error", "text": "used all 40 turns"}) + "\n")
+            return {"done": False, "tokens": 9, "error": None}
+        with mock.patch.object(louhi, "_smith_arm", side_effect=smith):
+            r = callcards._bench_one(self.tmp, {"id": "s1", "request": "fix it", "defects": []}, "m", "on")
+        self.assertFalse(r["passed"])
+        self.assertEqual((r["failure_class"], r["fix_card_applied"]), ("loop", True))
+
+    def bench(self, out, verdicts):
+        """bench over two scenarios with the arm faked: verdicts maps (scenario, arm) to its failure class, None if it
+        passed. The fake's fix flag is set on the passing on arm only: this tests the row's plumbing, not the events."""
+        def one(base, key, model, arm):
+            cls = verdicts[(key["id"], arm)]
+            return {"passed": cls is None, "failure_class": cls, "fix_card_applied": arm == "on" and cls is None,
+                    "closed": False, "tokens": 5, "seconds": 1.0, "error": None, "offered": [], "card_calls": 0,
+                    "card_ok": 0, "trail": []}
+        scen = [{"id": "s1", "lang": "python", "kind": "bug"}, {"id": "s2", "lang": "python", "kind": "bug"}]
+        with mock.patch.object(callcards, "_answering", return_value=("m", [])), \
+                mock.patch.object(louhi, "load", return_value={"scenarios": scen}), \
+                mock.patch.object(louhi, "_key", side_effect=lambda p, run, sid: {"id": sid, "request": f"fix {sid}",
+                                                                                   "defects": []}), \
+                mock.patch.object(louhi, "root", return_value=self.tmp), \
+                mock.patch.object(callcards, "_bench_one", side_effect=one):
+            return callcards.bench("p", "r1", ["m"], out, log=lambda line: None)
+
+    def test_a_missed_scenario_files_one_request_per_class_and_bench_rows_carry_the_fix_flag(self):
+        out = os.path.join(self.tmp, "bench.jsonl")
+        self.bench(out, {("s1", "off"): "loop", ("s1", "on"): "loop", ("s2", "off"): None, ("s2", "on"): None})
+        rows = callcards.bench_rows(out)
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(sorted((r["scenario"], r["arm"], r["fix_card_applied"]) for r in rows),
+                         [("s1", "off", False), ("s1", "on", False), ("s2", "off", False), ("s2", "on", True)])
+        asks = callcards.bench_rows(callcards.requests_path())
+        self.assertEqual([(a["scenario"], a["failure_class"], a["text"]) for a in asks], [("s1", "loop", "fix s1")])
+        # a second run of the same miss files nothing new; the same scenario failing another way files its own row
+        self.bench(os.path.join(self.tmp, "again.jsonl"),
+                   {("s1", "off"): "loop", ("s1", "on"): "timeout", ("s2", "off"): None, ("s2", "on"): None})
+        asks = callcards.bench_rows(callcards.requests_path())
+        self.assertEqual([(a["scenario"], a["failure_class"]) for a in asks], [("s1", "loop"), ("s1", "timeout")])
 
 
 if __name__ == "__main__":

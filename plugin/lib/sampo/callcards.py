@@ -989,21 +989,23 @@ def _bench_one(base, key, model, arm):
                 passed = bool(real) and all(louhi.passes(base, key, d, work) for d in key["defects"])
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 passed = False
-            seen = bench_events(bench_rows(events), set(cards()[0]))
+            evs = bench_rows(events)
+            seen = bench_events(evs, set(cards()[0]))
     finally:
         if old is None:
             os.environ.pop("SAMPO_CARDS", None)
         else:
             os.environ["SAMPO_CARDS"] = old
     return dict({"passed": passed, "closed": bool(a.get("done")), "tokens": a.get("tokens") or 0,
-                 "seconds": round(secs, 1), "error": a.get("error")}, **seen)
+                 "seconds": round(secs, 1), "error": a.get("error"), "failure_class": _miss_class(evs, passed)}, **seen)
 
 
 def bench_events(events, names):
     """What one fm code run's events say for the bench row: the cards it was offered, its card calls (by the card
     action or a card's own name) and how many came back ok, and its trail of turns and actions (at most 60), the
-    material of slice.md's what-failed."""
-    calls, ok, trail, offered = 0, 0, [], []
+    material of slice.md's what-failed, and fix_card_applied: a card call whose result says it applied a change (a
+    card's result starts 'card NAME: applied'; a read card's facts and a refusal don't count)."""
+    calls, ok, trail, offered, applied = 0, 0, [], [], False
     for e in events:
         ev = e.get("event")
         if ev == "note" and isinstance(e.get("cards"), list):
@@ -1022,7 +1024,42 @@ def bench_events(events, names):
             if e.get("action") == "card" or e.get("action") in names:
                 calls += 1
                 ok += e.get("result") == "ok"
-    return {"offered": offered, "card_calls": calls, "card_ok": ok, "trail": trail[:60]}
+            applied = applied or (e.get("action") == "card" and _APPLIED.match(str(e.get("detail") or "")) is not None)
+    return {"offered": offered, "card_calls": calls, "card_ok": ok, "trail": trail[:60], "fix_card_applied": applied}
+
+
+_APPLIED = re.compile(r"card [a-z][a-z0-9-]*: applied")  # callcards.text's first line for a call that changed files
+
+
+def _miss_class(evs, passed):
+    """T-3488: the class a missed scenario is filed under, None when it passed: the FAILURE_CLASSES name its stream ended
+    in; a run that said done and was graded a miss is false_done; else its most common class; else other (no name)."""
+    if passed:
+        return None
+    from sampo import louhi
+    end = louhi.end_class(evs)
+    if end in louhi.FAILURE_CLASSES:
+        return end
+    if end == "closed":
+        return "false_done"
+    seen = louhi.failure_classes(evs)
+    return max(seen, key=seen.get) if seen else "other"
+
+
+def _file_miss(task, row):
+    """T-3488: a missed scenario files a card request in requests_path (the file pick() files a miss in), naming its
+    failure class and scenario; the same scenario missing the same class again files nothing. Smallcards' admit gates any
+    card made from it."""
+    path = requests_path()
+    if any(x.get("scenario") == row["scenario"] and x.get("failure_class") == row["failure_class"]
+           for x in bench_rows(path)):
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    c.append_line(path, json.dumps({"at": c.now(), "text": str(task)[:2000],
+                                    "top": [[cd["name"], round(s, 3)] for s, cd in rank(task)[:3]],
+                                    "scenario": row["scenario"], "run": row["run"], "model": row["model"],
+                                    "arm": row["arm"], "failure_class": row["failure_class"]}))
+    return True
 
 
 def bench(p, run, models, out, limit=10, kinds=("bug",), lang="python", log=print):
@@ -1054,6 +1091,8 @@ def bench(p, run, models, out, limit=10, kinds=("bug",), lang="python", log=prin
                        **_bench_one(base, key, model, arm), at=c.now())
             os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
             c.append_line(out, json.dumps(row))
+            if not row["passed"]:  # T-3488: a miss is a card request, named by its class (once per scenario and class)
+                _file_miss(key.get("request"), row)
             log(f"{s['id']} {arm}: {'pass' if row['passed'] else 'fail'}, {row['tokens']} tokens, {row['seconds']} s, "
                 f"{row['card_calls']} card call(s)" + (f", {row['error']}" if row["error"] else ""))
     return bench_summary([r for r in bench_rows(out) if r.get("run") == run and r.get("model") == model])
