@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-08T06:32:47Z",
+ "updated": "2026-11-08T06:33:06Z",
  "rev": "cb9cbaf10",
  "capabilities": [
   {
@@ -57193,7 +57193,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 0.9,
+    "idle_h": 1.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1793931533.653407,
