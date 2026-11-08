@@ -238,7 +238,7 @@ class Land(LandCase):
         self.train(early)  # merged by a train of its own: open until a land closes it
         r = self.land("--batch", "1")
         steps = re.findall(r"(?m)^sampo lane land: (train \d+: \S+|closed \S+)$", r.stderr)
-        self.assertEqual(steps, [f"closed {early}", f"train 1: {a}", f"closed {a}", f"train 2: {b}", f"closed {b}"],
+        self.assertEqual(steps, [f"train 1: {a}", f"closed {a}", f"train 2: {b}", f"closed {b}", f"closed {early}"],  # T-3884: leftovers last
                          r.stderr)
 
     def test_a_returned_or_first_lane_lands_without_the_quiet_wait(self):
@@ -276,6 +276,34 @@ class Land(LandCase):
         self.assertNotRegex(err, rf"{a} lands but", "a lane with every line closes")
         self.assertRegex(err, rf"(?m)^sampo lane land: left for a hand close {d}: .*docs impact missing")
         self.assertEqual(self.brief(a).status, "done", err)
+
+    def test_a_refused_close_is_remembered(self):
+        # T-3884: 2026-11-08 a land retried 32 merged-open tasks for the same refusals as the land before
+        d = self.lane(2, "d.txt", when=OLD)
+        self.audited(d)
+        self.fm("task", "set", d, "tier=M")
+        r = self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",
+                                       "last_assistant_message": report(d, "Lane two").replace("DOCS: none: an internal "
+                                                                                               "lane\n", "")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.land()
+        self.assertIn("close refused", self.brief(d).section("Log"), r.stderr)
+        self.assertNotIn("no retry", r.stderr)
+        r = self.land()  # nothing changed: the record answers
+        self.assertRegex(r.stderr, rf"left for a hand close {d}: .*docs impact missing.*no retry")
+        p = c.find_project(self.repo)
+        self.assertIn("1 refused close(s) not retried", r.stdout)
+        b = c.find_brief(p, d)  # a record older than 6 h is retried (a fix on main may have changed the answer)
+        b.set_section("Log", re.sub(r"(?m)^- \S+ (land: close refused)", r"- 2020-01-01T00:00:00Z \1", b.section("Log")))
+        c.save_brief(p, b)
+        r = self.land()
+        self.assertNotIn("no retry", r.stderr)
+        b = c.find_brief(p, d)
+        b.set_section("Approach", b.section("Approach") + "\nchanged\n")
+        c.save_brief(p, b)
+        r = self.land()  # the brief changed: tried again (and refused again, for the same gap)
+        self.assertRegex(r.stderr, rf"left for a hand close {d}: .*docs impact missing")
+        self.assertNotIn("no retry", r.stderr)
 
     def test_land_refuses_while_the_main_checkout_has_an_active_task(self):
         a = self.lane(1, "a.txt", when=OLD)

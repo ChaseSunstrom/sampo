@@ -8,6 +8,7 @@ each close reuses the pass while the code is unchanged. T-3544: the full-suite g
 changes reach (_affected_gate); the full suite then runs on the landed merges in the background (lanes.pm_run)."""
 import concurrent.futures
 import contextlib
+import hashlib
 import io
 import os
 import re
@@ -744,7 +745,7 @@ def _land(p, main, batch):
                 if gaps := _close_gaps(b):  # T-3819: said before the trains, so the lines are added while they run
                     print(f"sampo lane land: {b.id} lands but its close will be refused: {'; '.join(gaps)} (add the "
                           "lines to its Close fields before its train ends)", file=sys.stderr, flush=True)
-    close(landed)  # merged and open (a train by hand, a land cut short): closed before any new train
+    left = list(landed)  # merged and open (a train by hand, a land cut short): closed after the trains (T-3884)
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
     seen = set(waiting) | set(landed)
@@ -780,6 +781,7 @@ def _land(p, main, batch):
         landed += got["merged"]
         parked += got["left_out"]
         close(got["merged"])
+    close(left)
     for tid, why in parked:
         kind, arg = _park_kind(why)
         lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}")
@@ -803,6 +805,27 @@ def _close_gaps(b):
     if not f.get("changelog"):
         return ["no CHANGELOG line in its Close fields"]
     return cli._field_gaps(b, SimpleNamespace(docs=f.get("docs"), numbers=f.get("numbers"), lesson=f.get("lesson")))
+
+
+def _brief_hash(b):
+    """T-3884: the brief's text without its Log (the refusal record lives there)."""
+    return hashlib.sha1("\0".join(f"{h}\1{t}" for h, t in b.sections if h.strip() != "Log").encode()).hexdigest()[:12]
+
+
+# ponytail: a refusal caused outside the brief and tip (a gate rule fixed on main) is retried after this long; key on the
+# gate's inputs if stale refusals matter
+REFUSAL_TTL_S = 6 * 3600
+
+
+def _refused_before(b, tip):
+    """The reason the last land's close was refused when the brief and the lane tip are as they were then, else None."""
+    for line in reversed(b.section("Log").splitlines()):
+        if m := re.search(r"^- (\S+) land: close refused: (.*) @ (\w+) (\w*)$", line):
+            at = c.parse_ts(m.group(1))
+            if not at or time.time() - at.timestamp() > REFUSAL_TTL_S:
+                return None
+            return m.group(2) if (m.group(3), m.group(4)) == (_brief_hash(b), tip) else None
+    return None
 
 
 def _close(p, main, tid):
@@ -837,11 +860,17 @@ def _close(p, main, tid):
     if asks:
         return f"its {', '.join(asks)} audit asks for changes", ""
     seen = f"as recorded before the merge, after lane tip {sha}"
+    if (was := _refused_before(b, sha)) is not None:  # T-3884: same brief, same tip: the answer can't have changed
+        return was + " (unchanged since the land that refused it: no retry)", ""
     rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
                            *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
                            "--commit", title])
     if rc:
-        return _why(err or out) + ("; its lane is kept" if path else ""), ""
+        why = _why(err or out) + ("; its lane is kept" if path else "")
+        nb = cli.need_brief(p, tid)  # after the refusal: it may have touched the brief, and the hash must match then
+        nb.append_log(f"land: close refused: {c.fit(' '.join(why.split()), 400)} @ {_brief_hash(nb)} {sha}")
+        c.save_brief(p, nb)
+        return why, ""
     done = cli.need_brief(p, tid)
     if path and done.meta.get("lane"):
         try:
@@ -867,6 +896,8 @@ def cmd_land(p, args, main):
     lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {len(got['closed'])} closed, "
              f"{len(got['hand'])} left for a hand close, {len(got['parked'])} parked."
              if got["landed"] or got["parked"] or got["stopped"] else "Land: no finished lane waits on a merge."]
+    skipped = sum("no retry)" in w for _, w in got["hand"])
+    lines += [f"  {skipped} refused close(s) not retried: brief and lane tip unchanged since the last land"] * bool(skipped)
     lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in got.pop("lines")]
     lines += [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in got["hand"]]
     lines += [f"  parked {t}: {w}" for t, w in got["parked"]]
