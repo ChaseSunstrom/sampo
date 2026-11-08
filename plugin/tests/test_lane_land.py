@@ -190,6 +190,21 @@ class Land(LandCase):
         self.assertRegex(r.stdout, rf"(?m)^  hand close {a}: .*predate the lane tip")
         self.assertNotEqual(self.brief(a).status, "done")
 
+    def test_a_lane_closed_in_place_is_landed(self):  # T-3907: finish inside the lane left a done task, branch unmerged
+        a = self.lane(1, "a.txt", when=OLD)
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, a)
+        b.meta["status"] = "done"
+        c.save_brief(p, b)
+        from sampo import lanes
+        self.assertEqual(lanes.awaiting_merge(p, c.load_briefs(p)), [a])
+        r = self.land("--first", a)
+        self.assertNotIn("not a finished lane", r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")), r.stdout + r.stderr)
+        self.assertEqual(self.brief(a).status, "done")
+        self.assertFalse(self.brief(a).meta.get("lane"), "its lane goes once it is landed")
+        self.assertEqual(lanes.awaiting_merge(p, c.load_briefs(p)), [])
+
     def test_lanes_go_through_in_batches(self):
         ids = [self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2, 3)]
         self.audited(*ids)

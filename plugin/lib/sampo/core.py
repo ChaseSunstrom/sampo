@@ -4913,7 +4913,8 @@ def finished_lanes(p, briefs, quiet_min=30):
     kept per lane on (tip, main); a clean tree is kept on (tip, index), so an unchanged lane costs no git process. The
     cache holds facts, not ids, so quiet_min 0 and 30 callers share it."""
     from sampo import bus
-    lanes = [b for b in briefs if b.meta.get("lane") and b.status not in CLOSED and os.path.isdir(b.meta["lane"])
+    # T-3907: a done task still holding its lane was closed inside it; unmerged commits make it wait like any other
+    lanes = [b for b in briefs if b.meta.get("lane") and b.status != "dropped" and os.path.isdir(b.meta["lane"])
              and not b.meta.get("lane_spike")  # T-2340: a spike's code is never merged
              # T-3824: builder_proc is the launching session, alive long after its builder returned (T-3145)
              and (b.meta.get("builder_returned") or bus.proc_state(b.meta.get("builder_proc")) != "alive")]

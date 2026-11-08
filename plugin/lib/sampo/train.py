@@ -839,6 +839,12 @@ def _close(p, main, tid):
         return f"{busy.id} became active in the main checkout, so land closes nothing more", ""
     b = cli.need_brief(p, tid)
     path = b.meta.get("lane") or ""
+    if b.status == "done":  # T-3907: closed inside its lane; the merge was all it lacked
+        try:
+            lanes.remove(p, b, main)
+        except (c.PolicyError, cli.UsageError) as e:
+            return f"merged; its lane stays: {str(e).splitlines()[0]}", ""
+        return "", f"{b.title} — already closed in its lane"
     sha = _git(path, "rev-parse", "--short", "HEAD").stdout.strip() if path else ""
     last = float(_git(path, "log", "-1", "--format=%ct").stdout.strip() or 0) if path else 0.0
     f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
