@@ -1870,6 +1870,11 @@ def _close_affected(p, b, runs, args):
     if why:  # T-3548: a miss says why instead of a silent rerun
         say(f"linked tests: no reusable gate pass: {why[0]}")
     guard_stored(p, b, cmd)
+    from sampo import ambient
+    if ambient.passed(p, cmd):  # T-3270: the ambient run passed this command on this exact tree: nothing to rerun
+        c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "exit": 0, "failing": [], "s": 0.0,
+                                                          "cached": True}, session=session())
+        return
     env, timeout = _skip_env(skip), c.load_scaled(args.timeout if args.timeout > 0 else None)
     t0 = time.monotonic()
     code, output = c.run_command(p.root, cmd, timeout, env=env)
@@ -1880,7 +1885,7 @@ def _close_affected(p, b, runs, args):
         args.timings.append((cmd, secs))
     names = c.failing_tests(output) if code else []
     c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "exit": code, "failing": names[:20],
-                                                      "s": round(secs, 1),
+                                                      "s": round(secs, 1), "cached": False,
                                                       **({"miss": c.fit(why[0], 300)} if why else {})}, session=session())
     if not code:
         return

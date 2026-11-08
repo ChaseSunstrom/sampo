@@ -79,8 +79,10 @@ def run(p):
                 c.log_event(p, "ambient_refused", data={"cmd": c.fit(cmd, 200), "why": c.fit(str(e), 300)})
                 cmd = None
             if cmd:
+                before = c.worktree_tree(p.root)  # T-3270: the verdict is for the tree the run began on
                 code, output = c.run_command(p.root, cmd, 600)
                 _record(p, cmd, tests, code, output)
+                _write_pass(p, cmd, before, code)
             if not os.path.exists(os.path.join(d, "dirty")):
                 break
     except Exception as e:  # never a crash in a detached run: one line in the folder says why
@@ -129,6 +131,37 @@ def _record(p, cmd, tests, code, output):
         c.write_atomic(os.path.join(d, "note.json"), json.dumps({"text": text, "ts": c.now()}))
     c.log_event(p, "ambient_run", task=act.id if act else None, data={"tests": len(tests), "exit": code,
                                                                        "flip": bool(text)})
+
+
+def _write_pass(p, cmd, before, code):
+    """T-3270: the run's verdict for the close, kept only when the working tree is the one the run began on and no edit
+    landed during the run (the dirty marker: an edit then a revert leaves the tree id as it was). An edit, or a file a
+    test wrote during the run, moves the tree: then the run answers for neither tree and nothing is kept."""
+    if before is None or os.path.exists(os.path.join(_dir(p), "dirty")) or c.worktree_tree(p.root) != before:
+        return
+    c.write_atomic(os.path.join(_dir(p), "verdict.json"), json.dumps({"cmd": cmd, "tree": before, "exit": code,
+                                                                     "env": c.env_id(), "ts": c.now()}))
+
+
+def passed(p, cmd):
+    """T-3270: True when the last ambient verdict for this command passed on the working tree as it is now, in this
+    environment (c.env_id, as the gate cache keys on it) and no older than the gate cache's window (cli.CACHE_DAYS).
+    The close then skips its own run; a red verdict, another command, another environment, a stale one or a moved tree
+    reruns it. Limit: only the tree id is compared, and the ignored files are not in it, so a gitignored input's change
+    is not seen."""
+    from sampo import cli
+    try:
+        with open(os.path.join(p.dir, "ambient", "verdict.json")) as f:
+            v = json.load(f)
+    except (OSError, ValueError):
+        return False
+    if not isinstance(v, dict) or v.get("cmd") != cmd or v.get("exit") != 0 or not v.get("tree") \
+            or v.get("env") != c.env_id():
+        return False
+    age = c.age_days(v.get("ts"))
+    if age is None or age >= cli.CACHE_DAYS:
+        return False
+    return c.worktree_tree(p.root) == v["tree"]
 
 
 def note(p):

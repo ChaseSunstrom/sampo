@@ -1,5 +1,6 @@
 """T-0705 (Frontier 05, first slice): ambient verification. Affected tests run after each edit, out of the model's
 turns; only a flip reaches it, once; a pass never closes a step (T-0994)."""
+import json
 import os
 import subprocess
 
@@ -19,6 +20,7 @@ class Ambient(HookCase):
         self.fm("init")
         self.write("calc.py", GOOD)
         self.write("test_calc.py", TEST)
+        self.write(".gitignore", "__pycache__/\n")  # a test run's bytecode is not a change to the tree
         subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
         subprocess.run(["git", "-C", self.repo, "commit", "-qm", "calc"], check=True)
         self.fm("check", "affected", "python3 -m unittest -q {names}")
@@ -58,6 +60,107 @@ class Ambient(HookCase):
         self.assertIn(f"fm task evidence {self.tid} --step 1 --run", back)
         b = c.find_brief(self.project(), self.tid)
         self.assertFalse(b.has_evidence(step=1), b.evidence())
+
+    def verdict(self):
+        try:
+            with open(os.path.join(self.project().dir, "ambient", "verdict.json")) as f:
+                return json.load(f)
+        except OSError:
+            return None
+
+    def focus_task(self):
+        """A task whose criterion passes, focused before any edit (its base is the tree it starts from)."""
+        tid = self.fm_json("task", "new", "Add", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true",
+                           "--step", "s", "--scope", "calc.py")["id"]
+        self.fm("focus", tid)
+        return tid
+
+    def close(self, tid):
+        """The close runs (or reuses) the affected tests for the edits since the task's base."""
+        return self.fm("task", "finish", tid, "--audit", "self", "--run", "true", check=False,
+                       env={"FOREMAN_SENTINEL": "off"})
+
+    def close_events(self):
+        return c.ledger_events(self.project(), ("close_affected",))
+
+    def test_a_clean_ambient_run_records_a_pass_for_the_tree_it_ran_on(self):
+        # T-3270: the close reuses this verdict only for the same command on the same working tree
+        self.fm("check", "ambient", "on")
+        self.edit(GOOD + "# touched\n")
+        v = self.verdict()
+        self.assertIsNotNone(v)
+        self.assertEqual(v["exit"], 0)
+        self.assertIn("test_calc", v["cmd"])
+        self.assertEqual(v["tree"], c.worktree_tree(self.repo))
+
+    def test_a_run_that_moves_the_tree_records_no_verdict(self):
+        # T-3270: a test that writes a file changes the tree during its run: that run proves nothing about any tree
+        self.fm("check", "ambient", "on")
+        self.write("test_calc.py", TEST + "\n    def test_writes(self):\n        open('scratch.txt', 'w').write('x')\n")
+        self.edit(GOOD + "# touched\n")
+        self.assertIsNone(self.verdict())
+
+    def test_a_run_an_edit_landed_in_writes_no_pass(self):
+        # review: an edit then a revert during the run leaves the tree id unchanged; the dirty marker still says it moved
+        from sampo import ambient
+        p = self.project()
+        os.makedirs(os.path.join(p.dir, "ambient"), exist_ok=True)
+        open(os.path.join(p.dir, "ambient", "dirty"), "w").close()
+        ambient._write_pass(p, "python3 -m unittest -q test_calc", c.worktree_tree(self.repo), 0)
+        self.assertIsNone(self.verdict())
+
+    def stored(self, cmd, **over):
+        """A pass for the tree as it is now, written the way _write_pass writes it, with some fields overridden."""
+        v = {"cmd": cmd, "tree": c.worktree_tree(self.repo), "exit": 0, "env": c.env_id(), "ts": c.now()}
+        v.update(over)
+        os.makedirs(os.path.join(self.project().dir, "ambient"), exist_ok=True)
+        with open(os.path.join(self.project().dir, "ambient", "verdict.json"), "w") as f:
+            json.dump(v, f)
+
+    def test_a_pass_from_another_environment_is_not_reused(self):
+        from sampo import ambient
+        cmd = "python3 -m unittest -q test_calc"
+        self.stored(cmd, env="0badenv0")
+        self.assertFalse(ambient.passed(self.project(), cmd))
+        self.stored(cmd)  # control: the same pass in this environment is reused
+        self.assertTrue(ambient.passed(self.project(), cmd))
+
+    def test_a_pass_older_than_the_cache_window_is_not_reused(self):
+        from sampo import ambient
+        cmd = "python3 -m unittest -q test_calc"
+        self.stored(cmd, ts="2020-01-01T00:00:00Z")
+        self.assertFalse(ambient.passed(self.project(), cmd))
+        self.stored(cmd)  # control: a fresh pass is reused
+        self.assertTrue(ambient.passed(self.project(), cmd))
+
+    def test_a_close_reuses_the_ambient_pass_for_the_same_command_and_tree(self):
+        self.fm("check", "ambient", "on")
+        tid = self.focus_task()
+        self.edit(GOOD + "# touched\n")
+        r = self.close(tid)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        last = self.close_events()[-1]["data"]
+        self.assertIs(last.get("cached"), True, last)
+        self.assertEqual(last.get("exit"), 0)
+
+    def test_a_close_reruns_when_the_tree_moved_since_the_pass(self):
+        self.fm("check", "ambient", "on")
+        tid = self.focus_task()
+        self.edit(GOOD + "# touched\n")
+        self.write("calc.py", "def add(a, b):\n    return a - b\n")  # no ambient run: the tree moved and is red
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("test_calc", r.stdout + r.stderr)
+        self.assertIs(self.close_events()[-1]["data"].get("cached"), False)
+
+    def test_a_close_reruns_after_a_red_ambient_run(self):
+        self.fm("check", "ambient", "on")
+        tid = self.focus_task()
+        self.edit("def add(a, b):\n    return a - b\n")
+        self.assertEqual(self.verdict()["exit"], 1)
+        r = self.close(tid)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIs(self.close_events()[-1]["data"].get("cached"), False)
 
     def test_a_full_check_waits_for_an_ambient_run(self):
         # T-1964: a full fm check started while an ambient run was going ran two suites at once
