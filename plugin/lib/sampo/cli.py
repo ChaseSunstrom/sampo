@@ -8979,6 +8979,8 @@ def _build_parser(only=None):
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon"])
     s.add_argument("--batch", type=int, metavar="N", help=f"land: lanes per train (default {c.TRAIN_BATCH}) (T-3500)")
+    s.add_argument("--first", metavar="IDS", help="land: these lanes train first (T-1,T-2); while a land runs, at its "
+                                                  "next train (T-3796)")
     s.add_argument("--reset", metavar="SHA", help="verify: settle a conflict or red record after a forward fix (T-3141)")
     s.add_argument("--agent-stopped", action="store_true", help="recover: its agent was stopped (TaskStop), so a "
                                                                 "stalled lane is free to take back (T-2354)")

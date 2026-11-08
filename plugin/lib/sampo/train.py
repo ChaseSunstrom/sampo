@@ -684,6 +684,30 @@ def land(p, main, batch=None):
         return _land(p, main, batch or c.TRAIN_BATCH)
 
 
+def first_ids(p, add=()):
+    """T-3796: the ids sampo lane land --first put ahead of the rest: `add` appends to them (returning them all);
+    with none, they are taken (returned and emptied) at a train boundary."""
+    d = os.path.join(p.dir, "land-first")
+    path = os.path.join(d, "ids")
+    with c.lock(d):
+        try:
+            with open(path) as f:
+                have = f.read().split()
+        except OSError:
+            have = []
+        keep = list(dict.fromkeys([*have, *add])) if add else []
+        if keep or have:
+            c.write_atomic(path, " ".join(keep))
+    return keep if add else have
+
+
+def land_key(b):
+    """T-3796: the order lanes train in: urgent, then performance and security fixes, then the user's own asks, then
+    the rest (discovered work, follow-ups), oldest first in each."""
+    kind = 0 if b.type in ("PERFORMANCE", "SECURITY") else 1 if b.meta.get("source") == "user" else 2
+    return (b.priority != "urgent", kind, c.id_num(b.id))
+
+
 def _land(p, main, batch):
     from sampo import lanes
     briefs = c.load_briefs(p)
@@ -696,16 +720,46 @@ def _land(p, main, batch):
     landed = [b.id for b in briefs if b.status not in c.CLOSED and b.meta.get("lane") and lanes._stop(b)[0] == "merged"
               and (t := tip(b)) and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode]
     parked, ready, trains, stopped = [], [], 0, ""
+    closed, hand = [], []
+
+    def close(ids):  # T-3796: each lane closes once its train lands it, not after the whole pile has trained
+        for tid in ids:
+            try:
+                why, last = _close(p, main, tid)
+            except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
+                why, last = f"{type(e).__name__}: {e}", ""
+            (hand if why else closed).append((tid, why or last))
+            print(f"sampo lane land: {'left for a hand close' if why else 'closed'} {tid}", file=sys.stderr, flush=True)
+
+    def sort(bs):  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
+        for b in sorted(bs, key=land_key):
+            r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tip(b) or "HEAD")
+            if r.returncode == 1:
+                files = [f for f in r.stdout.splitlines()[1:] if f]
+                parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
+            else:
+                ready.append(b.id)
+    close(landed)  # merged and open (a train by hand, a land cut short): closed before any new train
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
-    for b in (x for x in briefs if x.id in waiting):
-        r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tip(b) or "HEAD")
-        if r.returncode == 1:  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
-            files = [f for f in r.stdout.splitlines()[1:] if f]
-            parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
-        else:
-            ready.append(b.id)
-    for i in range(0, len(ready), batch):
-        ids = ready[i:i + batch]
+    sort(x for x in briefs if x.id in waiting)
+    seen = set(waiting) | set(landed)
+    while True:
+        jump = first_ids(p)  # T-3796: asked for meanwhile go next, a lane finished since the land began too
+        if jump:
+            late = set()
+            if set(jump) - seen:
+                now = c.load_briefs(p)
+                late = (set(lanes.awaiting_merge(p, now)) - seen) & set(jump)
+                sort(b for b in now if b.id in late)
+                seen |= late
+            front = [t for t in jump if t in ready]
+            ready = front + [t for t in ready if t not in front]
+            for t in (t for t in jump if t not in front):
+                print(f"sampo lane land: --first {t}: not a finished lane waiting on a merge here (merged, parked or "
+                      "still building)", file=sys.stderr, flush=True)
+        if not ready:
+            break
+        ids, ready = ready[:batch], ready[batch:]
         print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
         try:
             got = train(p, main, ids)
@@ -720,16 +774,10 @@ def _land(p, main, batch):
         trains += 1
         landed += got["merged"]
         parked += got["left_out"]
+        close(got["merged"])
     for tid, why in parked:
         kind, arg = _park_kind(why)
         lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}")
-    closed, hand = [], []
-    for tid in landed:
-        try:
-            why, last = _close(p, main, tid)
-        except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
-            why, last = f"{type(e).__name__}: {e}", ""
-        (hand if why else closed).append((tid, why or last))
     ship = ""
     grant = next((b for b in c.load_briefs(p) if "publish" in (b.meta.get("allow") or [])), None) if landed else None
     if grant:  # never granted here: only a grant someone already gave (sampo task set ID --allow publish)
@@ -790,6 +838,14 @@ def cmd_land(p, args, main):
     from sampo import cli
     if args.batch is not None and args.batch < 1:
         raise cli.UsageError("--batch takes a whole number of lanes per train, 1 or more")
+    first = [x.upper() for x in (getattr(args, "first", None) or "").replace(",", " ").split() if x]
+    if first:  # T-3796: ahead of the rest; into a running land at its next train boundary
+        for t in first:
+            cli.need_brief(p, t)
+        first_ids(p, first)
+        if landing(p):
+            return cli.out(args, {"queued": first}, f"Land: {', '.join(first)} train next, at the running land's next "
+                                                    "train boundary.")
     got = land(p, main, args.batch)
     lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {len(got['closed'])} closed, "
              f"{len(got['hand'])} left for a hand close, {len(got['parked'])} parked."

@@ -4,6 +4,7 @@ lane land trains every finished lane in batches, closes each landed one from its
 and ships on a publish grant already given. The drive names it when 2+ lanes wait and no land runs."""
 # map-links: plugin/lib/sampo/train.py
 import os
+import re
 import subprocess
 import unittest
 
@@ -197,6 +198,48 @@ class Land(LandCase):
         r = self.land("--batch", "2")
         self.assertEqual([self.brief(t).status for t in ids], ["done"] * 3, r.stdout + r.stderr)
         self.assertEqual(self.gate_runs(), 2, "one gate run per batch")
+
+    def trains(self, r):
+        return re.findall(r"(?m)^sampo lane land: train \d+: (.+)$", r.stderr)
+
+    def test_urgent_lanes_land_first_then_performance_then_the_users_asks_then_the_rest(self):
+        # T-3796: by brief id, perf fixes and the user's asks waited hours behind 80 older lanes (2026-11-07)
+        ids = [self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2, 3, 4)]
+        self.audited(*ids)
+        for tid in ids:
+            self.returned(tid, f"Lane {tid}")
+        self.fm("task", "set", ids[0], "source=discovered")
+        self.fm("task", "set", ids[2], "type=PERFORMANCE")
+        self.fm("task", "set", ids[3], "priority=urgent")
+        r = self.land("--batch", "1")
+        self.assertEqual(self.trains(r), [ids[3], ids[2], ids[1], ids[0]], r.stderr)
+
+    def test_first_puts_lanes_ahead_and_a_running_land_takes_them_at_its_next_train(self):
+        ids = [self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2, 3)]
+        self.audited(*ids)
+        for tid in ids:
+            self.returned(tid, f"Lane {tid}")
+        p = c.find_project(self.repo)
+        with c.lock(os.path.join(p.dir, "land"), timeout=1):  # a land is running: queued, nothing landed here
+            r = self.land("--first", ids[2])
+        self.assertIn("next train", r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "3.txt")))
+        r = self.land("--batch", "1")
+        self.assertEqual(self.trains(r), [ids[2], ids[0], ids[1]], r.stderr)
+        self.assertEqual([self.brief(t).status for t in ids], ["done"] * 3, r.stdout + r.stderr)
+        self.assertNotEqual(self.land("--first", "T-9999", check=False).returncode, 0, "an unknown id is refused")
+
+    def test_each_train_s_lanes_close_before_the_next_train_and_earlier_merges_first(self):
+        # T-3796: closes waited for the whole pile (2026-11-08: twelve merged tasks open for hours, nothing shipped)
+        early, a, b = (self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2, 3))
+        self.audited(early, a, b)
+        for tid in (early, a, b):
+            self.returned(tid, f"Lane {tid}")
+        self.train(early)  # merged by a train of its own: open until a land closes it
+        r = self.land("--batch", "1")
+        steps = re.findall(r"(?m)^sampo lane land: (train \d+: \S+|closed \S+)$", r.stderr)
+        self.assertEqual(steps, [f"closed {early}", f"train 1: {a}", f"closed {a}", f"train 2: {b}", f"closed {b}"],
+                         r.stderr)
 
     def test_land_refuses_while_the_main_checkout_has_an_active_task(self):
         a = self.lane(1, "a.txt", when=OLD)
