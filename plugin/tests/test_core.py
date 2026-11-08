@@ -314,6 +314,31 @@ class Ledger(ForemanTestCase):
         c.log_event(p, "touched", task="T-0001", data={"file": os.path.join(p.root, "README.md")})
         self.assertEqual(sorted(c.task_touches(p, "T-0001")), ["README.md", "plugin/lib/a.py"])
 
+    def test_last_change_ignores_files_outside_the_repo(self):
+        # T-3317: a scratchpad or memory write staled five audits though no repo file changed
+        p = c.init_project(self.repo)
+        c.log_event(p, "touched", task="T-0001", data={"file": os.path.join(p.root, "a.py")})
+        repo_ts = c.last_change(p, "T-0001")
+        self.assertTrue(repo_ts)
+        time.sleep(1.1)  # ledger timestamps have 1 s resolution
+        c.log_event(p, "touched", task="T-0001", data={"file": "/tmp/scratch/diagram.md"})
+        self.assertEqual(c.last_change(p, "T-0001"), repo_ts)
+        c.log_event(p, "touched", task="T-0001", data={"file": p.root + "-old/x.py"})  # a sibling sharing the prefix
+        self.assertEqual(c.last_change(p, "T-0001"), repo_ts)
+        files = [(e.get("data") or {}).get("file") for e in c.ledger_tail(p, 50) if e.get("event") == "touched"]
+        self.assertIn("/tmp/scratch/diagram.md", files, "still logged")
+        time.sleep(1.1)
+        c.log_event(p, "touched", task="T-0001", data={"file": os.path.join(p.root, "b.py")})
+        self.assertGreater(c.last_change(p, "T-0001"), repo_ts)
+
+    def test_last_change_counts_a_repo_file_reached_through_a_symlink(self):
+        # T-3317: the hook logs the path as the session saw it, p.root is realpath'd; failing open left audits fresh
+        p = c.init_project(self.repo)
+        link = os.path.join(os.path.dirname(p.root), os.path.basename(p.root) + "-link")
+        os.symlink(p.root, link)
+        c.log_event(p, "touched", task="T-0001", data={"file": os.path.join(link, "a.py")})
+        self.assertTrue(c.last_change(p, "T-0001"))
+
     def test_last_change_dates_a_bash_edit_at_its_mtime(self):
         # T-3378: a Bash touch seen after a hook delay carries data.at; no at / a future at keeps the event's ts
         p = c.init_project(self.repo)

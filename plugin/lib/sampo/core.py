@@ -4158,6 +4158,15 @@ def rewind_note(hit):
 _LAST_CHANGE = {}  # T-2024: (ledger, task) -> (file signature, answer); state_dict and the Next line both ask
 
 
+def _counts_as_change(p, f):
+    """T-3317: scratchpad and memory writes change no file the reviewers saw. A relative or missing path counts; an
+    absolute one must sit under p.root, as logged or symlink-resolved (the hook logs it as the session saw it)."""
+    if not (isinstance(f, str) and os.path.isabs(f)):
+        return True
+    root = p.root.rstrip("/") + "/"
+    return f.startswith(root) or os.path.realpath(f).startswith(root)
+
+
 def _created(p, tid):
     """A task's created stamp, cached; "" when its brief is missing or unreadable (last_change never raises)."""
     if tid not in _CREATED:
@@ -4199,7 +4208,8 @@ def last_change(p, tid, started=None):
     if started is None:
         started = _created(p, tid)
     ts = max((touch_time(e, started) for e in rows if isinstance(e, dict) and e.get("task") == tid
-              and e.get("event") == "touched"), default="")
+              and e.get("event") == "touched" and _counts_as_change(p, (e.get("data") or {}).get("file"))),
+             default="")
     if sig:
         _LAST_CHANGE[(path, tid)] = (sig, ts)
     return ts
