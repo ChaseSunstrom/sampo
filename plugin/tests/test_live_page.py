@@ -302,13 +302,13 @@ class Page(unittest.TestCase):
         sys.path.insert(0, os.path.join(PLUGIN, "lib"))
         self.last = snaps()[-1]
 
-    def watch(self, size, reduced, done, within=45, step=None, hash="", theme="forge", scheme=None):
+    def watch(self, size, reduced, done, within=45, step=None, hash="", theme="forge", scheme=None, motion=False):
         """Load the page at size, poll PROBE until done(got) or `within` s; (got, errors). step(b, got), if given, runs
         on every poll (it clicks, reloads); got["reqs"] lists the requests the server saw.
         A green run returns in about 8 s; the long ceiling is for a loaded machine (the gates run 16 at a time)."""
         from sampo import shot
         srv, errs = serve(), []
-        b = shot.shared(self.browser, size, reduced=reduced)
+        b = shot.shared(self.browser, size, reduced=reduced or not motion)  # T-3715: still frame unless motion=True (the CPU was the animation)
         try:
             b.on["Runtime.exceptionThrown"] = lambda p: errs.append("exception: " + json.dumps(p.get("exceptionDetails"))[:400])
             b.on["Runtime.consoleAPICalled"] = lambda p: p.get("type") in ("error", "assert", "warning") and errs.append(
@@ -322,7 +322,9 @@ class Page(unittest.TestCase):
                 b.call("Page.addScriptToEvaluateOnNewDocument", b.sid, source=f"try {{ if (!sessionStorage.getItem('t')) {{ "
                        f"sessionStorage.setItem('t', '1'); localStorage.setItem('sampo-live-theme', '{theme}'); }} }} catch (e) {{}}")
             if scheme:
-                b.call("Emulation.setEmulatedMedia", b.sid, features=[{"name": "prefers-color-scheme", "value": scheme}])
+                # T-3715: setEmulatedMedia replaces every feature, so the reduced-motion one rides along or the scheme drops it
+                b.call("Emulation.setEmulatedMedia", b.sid, features=[{"name": "prefers-color-scheme", "value": scheme}]
+                       + ([] if motion else [{"name": "prefers-reduced-motion", "value": "reduce"}]))
             shot.load(b, f"http://127.0.0.1:{srv.server_address[1]}/" + hash)
             deadline = time.monotonic() + within
             while True:
@@ -332,6 +334,9 @@ class Page(unittest.TestCase):
                 if step and not done(got):
                     step(b, got)
                 if done(got) or time.monotonic() > deadline:
+                    if not motion:  # T-3715: a test that doesn't check motion leaves no animation loop running
+                        self.assertNotEqual(got.get("motion"), "full", "a still-frame test must run with reduced motion")
+                        self.assertNotEqual((got.get("board") or {}).get("running"), "1", "the board's frame loop must not run")
                     return got, errs
                 b.wait("live-test.never", 0.3)  # events (console, log) are read meanwhile
         finally:
@@ -367,12 +372,13 @@ class Page(unittest.TestCase):
 
     def test_sparks_travel_from_caller_to_model_at_desktop_and_phone(self):
         for size in ((1920, 1080), (390, 844)):
-            got, errs = self.watch(size, False, lambda g: self.back(g) and g.get("flown", 0) > 0)
+            move = size[0] > 1000  # T-3715: sparks fly on the desktop run; the phone run checks the layout on a still frame
+            got, errs = self.watch(size, False, lambda g: self.back(g) and (g.get("flown", 0) > 0 or not move), motion=move)
             self.assertEqual(errs, [], f"console at {size}")
             self.filled(got, size)
-            self.assertEqual(got["motion"], "full")
-            self.assertGreater(got["sparks"], 0, size)
-            self.assertGreater(got["flown"], 0, f"a spark reached its model at {size}")
+            self.assertEqual(got["motion"], "full" if move else "still")
+            self.assertGreater(got["sparks"], 0, size) if move else None
+            self.assertGreater(got["flown"], 0, f"a spark reached its model at {size}") if move else None
             links = got["links"]
             self.assertEqual(links[-1], "live", links)
             self.assertIn("reconnecting", links, "a dropped stream is shown")
@@ -556,7 +562,7 @@ class Page(unittest.TestCase):
             def step(b, got):
                 if got.get("net") and got["net"]["nodes"] > 0 and "p0" not in ctx:
                     ctx["p0"] = got["net"]["pulses"]  # what the first snapshot started; the stream adds more
-            got, errs = self.watch(size, False, lambda g: self.netsee(g) and g["net"]["pulses"] > ctx.get("p0", 99),
+            got, errs = self.watch(size, False, lambda g: self.netsee(g) and g["net"]["pulses"] > ctx.get("p0", 99), motion=True,
                                    step=step, hash="#view=net")
             self.assertEqual(errs, [], f"console at {size}")
             net = got["net"]
@@ -603,7 +609,7 @@ class Page(unittest.TestCase):
 
         def idle(g):  # some 1 s window drew at most 25 frames (60 fps is 60)
             return any(t2 - t1 >= 1 and f2 - f1 <= 25 for i, (t1, f1) in enumerate(seen) for t2, f2 in seen[i + 1:])
-        got, errs = self.watch((1440, 900), False, idle, step=step, hash="#view=net", within=60)
+        got, errs = self.watch((1440, 900), False, idle, step=step, hash="#view=net", within=60, motion=True)
         self.assertEqual(errs, [])
         self.assertTrue(idle(got), seen[-6:])
 
@@ -860,7 +866,7 @@ class Page(unittest.TestCase):
 
     # T-3659: one test per size, so the runner shoots the three in parallel (six loads in one test took 228 s under load)
     def test_the_board_is_the_modern_default_nine_painted_panels_in_three_columns_on_a_desktop(self):
-        self.board_at((1600, 1000), 3)
+        self.board_at((1600, 1000), 3, motion=True)
 
     def test_the_board_takes_two_columns_on_a_tablet(self):
         self.board_at((900, 1100), 2)
@@ -868,11 +874,11 @@ class Page(unittest.TestCase):
     def test_the_board_takes_one_column_on_a_phone(self):
         self.board_at((390, 844), 1)
 
-    def board_at(self, size, cols):
+    def board_at(self, size, cols, motion=False):  # T-3715: the desktop run checks the loop (a short window); the others the layout, still
         for scheme in ("dark", "light"):
             where = f"{size} {scheme}"
-            got, errs = self.watch(size, False, lambda g: g.get("board") and g["board"]["painted"] and g["board"]["frames"] > 20,
-                                   theme=None, scheme=scheme)
+            got, errs = self.watch(size, False, lambda g: g.get("board") and g["board"]["painted"] and (g["board"]["frames"] > 3 or not motion),
+                                   theme=None, scheme=scheme, motion=motion)
             self.assertEqual(errs, [], where)
             bd = got["board"]
             self.assertEqual((got["theme"], got["view"]), ("modern", "board"), where)
@@ -885,7 +891,7 @@ class Page(unittest.TestCase):
                 self.assertGreater(p["canvas"][0] * p["canvas"][1], 0, f"{p['k']} {where}")
                 self.assertRegex(p["font"].lower(), r"martian|mono", where)
             self.assertEqual(bd["cols"], cols, where)
-            self.assertEqual(bd["running"], "1", where)
+            self.assertEqual(bd["running"], "1" if motion else "0", where)
             self.assertLessEqual(got["wide"], size[0], f"no sideways scroll {where}")
             self.assertIsNone(self.FORGE_WORDS.search(got["text"].replace("Forge look", "")), where)
             self.assertNotIn("/home/", got["text"], where)
@@ -921,7 +927,7 @@ class Page(unittest.TestCase):
             elif ctx["s"] == 5 and time.monotonic() - ctx["t"] > 1.5:
                 ctx["hid2"] = bd["frames"]
                 ctx["s"] = 6
-        got, errs = self.watch((1600, 1000), False, lambda g: ctx["s"] == 6, step=step, theme=None)
+        got, errs = self.watch((1600, 1000), False, lambda g: ctx["s"] == 6, step=step, theme=None, motion=True)
         self.assertEqual(errs, [])
         self.assertEqual(ctx["s"], 6, ctx)
         self.assertLessEqual(ctx["still2"] - ctx["still"], 3, f"Still draws a frame per change, not 60 a second {ctx}")

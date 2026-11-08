@@ -1220,7 +1220,7 @@ const SampoBoard = (() => {
     });
     const byBox = new Map(panels.map((p) => [p.box, p]));
     const bySec = new Map(panels.map((p) => [p.sec, p]));
-    let raf = 0, still = false, shown = true, frames = 0, hidden = !!doc.hidden;
+    let lastPaint = 0, raf = 0, still = false, shown = true, frames = 0, hidden = !!doc.hidden;
 
     const size = (p) => {
       const r = p.box.getBoundingClientRect(), dpr = Math.min(2, win.devicePixelRatio || 1);
@@ -1280,6 +1280,8 @@ const SampoBoard = (() => {
     function frame(now) {
       raf = 0;
       if (!want()) return kick();
+      if (now - lastPaint < 30) { raf = win.requestAnimationFrame(frame); return; }  // T-3715: at most ~30 fps, half the canvas work of a 60 Hz loop
+      lastPaint = now;
       const t = now / 1000;
       for (const p of panels) if (p.vis) paint(p, t);
       el.dataset.frames = String(++frames);
