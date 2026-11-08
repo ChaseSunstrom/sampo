@@ -1,0 +1,99 @@
+{
+  "name": "panel-tanks",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a tanks panel as dark and light SVG in the Board look (or blueprint, paper): tanks filled to a level, joined by a manifold of pipes and valves.",
+  "examples": [
+    "draw a tanks panel",
+    "a tanks diagram of my project",
+    "tanks filled to a level, joined by a manifold of pipes and valves"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 640
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 400
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "tanks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 12
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 2,
+            "maxItems": 6
+          }
+        },
+        "required": [
+          "tanks"
+        ],
+        "additionalProperties": false,
+        "description": "the tanks panel's data: tanks"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}

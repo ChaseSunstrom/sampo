@@ -834,26 +834,9 @@ def _route_edge(a, b, lr):
 
 def panel(p, pal, nn):
     """One numbered Board panel: the frame a group's nodes sit in. T-3662's calling cards replace this one function."""
-    from sampo import design
-    acc = pal["accents"][p["accent"] % len(pal["accents"])]
-    x, y, w, h = p["x"], p["y"], p["w"], p["h"]
-    on = max((pal["bg"], pal["ink"]), key=lambda col: design.contrast(design.parse_colour(col), design.parse_colour(acc)))
-    fill = _readable(acc, (on,), pal["ink"] if on == pal["bg"] else pal["bg"])  # the badge's number reads at 4.6:1
-    bw = _w(nn, HEAD) + 10
-    out = [f'<rect x="{_n(x)}" y="{_n(y)}" width="{_n(w)}" height="{_n(h)}" rx="4" fill="{pal["panel"]}" '
-           f'stroke="{pal["line"]}"/>',
-           f'<path d="M{_n(x)} {_n(y + HEADER - 8)}H{_n(x + w)}" stroke="{pal["line"]}"/>',
-           f'<rect x="{_n(x + 12)}" y="{_n(y + 9)}" width="{_n(bw)}" height="16" rx="2" fill="{fill}"/>',
-           f'<text x="{_n(x + 17)}" y="{_n(y + 21)}" font-size="{HEAD}" font-weight="700" fill="{on}">{nn}</text>',
-           f'<text x="{_n(x + 22 + bw)}" y="{_n(y + 21)}" font-size="{HEAD}" font-weight="700" letter-spacing=".9" '
-           f'fill="{pal["ink"]}">{html.escape(p["label"].upper())}'
-           + (f'<tspan font-weight="400" letter-spacing="0" fill="{pal["muted"]}"> · {html.escape(p["sub"])}</tspan>'
-              if p["sub"] else "") + "</text>"]
-    t = 7  # corner ticks, the Board's crosshair corners
-    out.append(f'<path d="M{_n(x - 3)} {_n(y + t)}V{_n(y - 3)}H{_n(x + t)}M{_n(x + w - t)} {_n(y - 3)}H{_n(x + w + 3)}'
-               f'V{_n(y + t)}M{_n(x + w + 3)} {_n(y + h - t)}V{_n(y + h + 3)}H{_n(x + w - t)}M{_n(x + t)} '
-               f'{_n(y + h + 3)}H{_n(x - 3)}V{_n(y + h - t)}" fill="none" stroke="{acc}" stroke-width="1.5"/>')
-    return out
+    from sampo import panels
+    k = panels.kit()
+    return k.chrome(k.theme(tokens=pal, scheme=pal.get("scheme", "dark")), p["x"], p["y"], p["w"], p["h"], str(nn), p["label"], "", p["accent"], p["sub"])
 
 
 def _node(b, pal):

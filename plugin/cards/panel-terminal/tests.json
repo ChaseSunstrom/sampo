@@ -1,0 +1,82 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "terminal",
+   "data": {
+    "command": "shop check --all",
+    "columns": [
+     "service",
+     "version",
+     "status"
+    ],
+    "rows": [
+     [
+      "api",
+      "2.4.1",
+      "ok"
+     ],
+     [
+      "worker",
+      "2.4.0",
+      "ok"
+     ],
+     [
+      "search",
+      "1.9.2",
+      "warn"
+     ],
+     [
+      "mailer",
+      "0.8.0",
+      "fail"
+     ]
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "terminal",
+   "data": {
+    "command": "shop check --all",
+    "columns": [
+     "service",
+     "version",
+     "status"
+    ],
+    "rows": [
+     [
+      "api",
+      "2.4.1",
+      "ok"
+     ],
+     [
+      "worker",
+      "2.4.0",
+      "ok"
+     ],
+     [
+      "search",
+      "1.9.2",
+      "warn"
+     ],
+     [
+      "mailer",
+      "0.8.0",
+      "fail"
+     ]
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

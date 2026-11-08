@@ -1,0 +1,68 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "coremap",
+   "data": {
+    "core": "scheduler",
+    "modules": [
+     {
+      "label": "parser"
+     },
+     {
+      "label": "planner"
+     },
+     {
+      "label": "cache"
+     },
+     {
+      "label": "runner"
+     },
+     {
+      "label": "store"
+     },
+     {
+      "label": "logger"
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "coremap",
+   "data": {
+    "core": "scheduler",
+    "modules": [
+     {
+      "label": "parser"
+     },
+     {
+      "label": "planner"
+     },
+     {
+      "label": "cache"
+     },
+     {
+      "label": "runner"
+     },
+     {
+      "label": "store"
+     },
+     {
+      "label": "logger"
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

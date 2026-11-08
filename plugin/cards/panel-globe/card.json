@@ -1,0 +1,89 @@
+{
+  "name": "panel-globe",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a globe panel as dark and light SVG in the Board look (or blueprint, paper): a dotted globe over a histogram skyline.",
+  "examples": [
+    "draw a globe panel",
+    "a globe diagram of my project",
+    "a dotted globe over a histogram skyline"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 520
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 420
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "bars": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1000000000.0
+            },
+            "minItems": 4,
+            "maxItems": 48
+          },
+          "dots": {
+            "type": "number",
+            "minimum": 20,
+            "maximum": 400
+          }
+        },
+        "required": [
+          "bars"
+        ],
+        "additionalProperties": false,
+        "description": "the globe panel's data: bars, dots"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}

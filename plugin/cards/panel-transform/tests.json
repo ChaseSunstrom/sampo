@@ -1,0 +1,46 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "transform",
+   "data": {
+    "from": "checkout.html",
+    "to": "order.json",
+    "lines": [
+     "{",
+     "  \"id\": 8841,",
+     "  \"items\": 3,",
+     "  \"total\": 59.2,",
+     "  \"paid\": true",
+     "}"
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "transform",
+   "data": {
+    "from": "checkout.html",
+    "to": "order.json",
+    "lines": [
+     "{",
+     "  \"id\": 8841,",
+     "  \"items\": 3,",
+     "  \"total\": 59.2,",
+     "  \"paid\": true",
+     "}"
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

@@ -1,0 +1,88 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "globe",
+   "data": {
+    "bars": [
+     3,
+     5,
+     4,
+     8,
+     6,
+     9,
+     7,
+     12,
+     10,
+     8,
+     14,
+     11,
+     9,
+     13,
+     16,
+     12,
+     10,
+     15,
+     18,
+     14,
+     11,
+     9,
+     12,
+     8,
+     6,
+     7,
+     5,
+     4
+    ],
+    "dots": 180
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "globe",
+   "data": {
+    "bars": [
+     3,
+     5,
+     4,
+     8,
+     6,
+     9,
+     7,
+     12,
+     10,
+     8,
+     14,
+     11,
+     9,
+     13,
+     16,
+     12,
+     10,
+     15,
+     18,
+     14,
+     11,
+     9,
+     12,
+     8,
+     6,
+     7,
+     5,
+     4
+    ],
+    "dots": 180,
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

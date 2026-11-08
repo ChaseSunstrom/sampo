@@ -1,0 +1,62 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "tanks",
+   "data": {
+    "tanks": [
+     {
+      "label": "queue",
+      "value": 72
+     },
+     {
+      "label": "cache",
+      "value": 41
+     },
+     {
+      "label": "disk",
+      "value": 88
+     },
+     {
+      "label": "memory",
+      "value": 57
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "tanks",
+   "data": {
+    "tanks": [
+     {
+      "label": "queue",
+      "value": 72
+     },
+     {
+      "label": "cache",
+      "value": 41
+     },
+     {
+      "label": "disk",
+      "value": 88
+     },
+     {
+      "label": "memory",
+      "value": 57
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

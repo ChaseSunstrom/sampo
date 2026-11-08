@@ -1,0 +1,48 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "gate",
+   "data": {
+    "source": "requests",
+    "gate": "policy",
+    "allowed": [
+     "GET /orders",
+     "POST /cart",
+     "GET /items"
+    ],
+    "refused": [
+     "DELETE /users",
+     "GET /admin"
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "gate",
+   "data": {
+    "source": "requests",
+    "gate": "policy",
+    "allowed": [
+     "GET /orders",
+     "POST /cart",
+     "GET /items"
+    ],
+    "refused": [
+     "DELETE /users",
+     "GET /admin"
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

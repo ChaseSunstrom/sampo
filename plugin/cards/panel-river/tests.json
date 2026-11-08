@@ -1,0 +1,78 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "river",
+   "data": {
+    "events": [
+     {
+      "label": "v1.0",
+      "lane": 1
+     },
+     {
+      "label": "auth rewrite",
+      "lane": 0
+     },
+     {
+      "label": "v1.2",
+      "lane": 1
+     },
+     {
+      "label": "search",
+      "lane": 2
+     },
+     {
+      "label": "outage",
+      "lane": 0
+     },
+     {
+      "label": "v2.0",
+      "lane": 1
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "river",
+   "data": {
+    "events": [
+     {
+      "label": "v1.0",
+      "lane": 1
+     },
+     {
+      "label": "auth rewrite",
+      "lane": 0
+     },
+     {
+      "label": "v1.2",
+      "lane": 1
+     },
+     {
+      "label": "search",
+      "lane": 2
+     },
+     {
+      "label": "outage",
+      "lane": 0
+     },
+     {
+      "label": "v2.0",
+      "lane": 1
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

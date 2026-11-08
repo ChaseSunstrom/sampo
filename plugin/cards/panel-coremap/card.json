@@ -1,0 +1,99 @@
+{
+  "name": "panel-coremap",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a coremap panel as dark and light SVG in the Board look (or blueprint, paper): a chip die: a core, module blocks and the traces that wire them, pins along the edge.",
+  "examples": [
+    "draw a coremap panel",
+    "a coremap diagram of my project",
+    "a chip die: a core, module blocks and the traces that wire them, pins along the edge"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 640
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 400
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "core": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 14
+          },
+          "modules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 12
+                }
+              },
+              "required": [
+                "label"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 2,
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "core",
+          "modules"
+        ],
+        "additionalProperties": false,
+        "description": "the coremap panel's data: core, modules"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}

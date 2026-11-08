@@ -1,0 +1,70 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "filetree",
+   "data": {
+    "files": [
+     "src/app.py",
+     "src/routes/orders.py",
+     "src/routes/cart.py",
+     "src/db/models.py",
+     "tests/test_orders.py",
+     "README.md",
+     "pyproject.toml"
+    ],
+    "focus": "src/routes/orders.py",
+    "doc": {
+     "title": "orders.py",
+     "lines": [
+      "@router.get('/orders')",
+      "def list_orders():",
+      "    return db.all()",
+      "",
+      "@router.post('/orders')",
+      "def add_order(body):",
+      "    return db.add(body)"
+     ]
+    }
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "filetree",
+   "data": {
+    "files": [
+     "src/app.py",
+     "src/routes/orders.py",
+     "src/routes/cart.py",
+     "src/db/models.py",
+     "tests/test_orders.py",
+     "README.md",
+     "pyproject.toml"
+    ],
+    "focus": "src/routes/orders.py",
+    "doc": {
+     "title": "orders.py",
+     "lines": [
+      "@router.get('/orders')",
+      "def list_orders():",
+      "    return db.all()",
+      "",
+      "@router.post('/orders')",
+      "def add_order(body):",
+      "    return db.add(body)"
+     ]
+    },
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

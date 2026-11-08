@@ -1,0 +1,99 @@
+{
+  "name": "panel-orbit",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a orbit panel as dark and light SVG in the Board look (or blueprint, paper): a hub with its nodes on two orbits, joined by spokes.",
+  "examples": [
+    "draw a orbit panel",
+    "a orbit diagram of my project",
+    "a hub with its nodes on two orbits, joined by spokes"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 640
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 400
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "center": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 12
+                }
+              },
+              "required": [
+                "label"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 2,
+            "maxItems": 12
+          }
+        },
+        "required": [
+          "center",
+          "nodes"
+        ],
+        "additionalProperties": false,
+        "description": "the orbit panel's data: center, nodes"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}

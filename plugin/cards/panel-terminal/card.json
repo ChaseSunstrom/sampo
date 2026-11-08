@@ -1,0 +1,106 @@
+{
+  "name": "panel-terminal",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a terminal panel as dark and light SVG in the Board look (or blueprint, paper): a terminal running a command above a status table with state pills.",
+  "examples": [
+    "draw a terminal panel",
+    "a terminal diagram of my project",
+    "a terminal running a command above a status table with state pills"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 640
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 270
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 12
+            },
+            "minItems": 2,
+            "maxItems": 4
+          },
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 18
+              },
+              "minItems": 2,
+              "maxItems": 4
+            },
+            "minItems": 1,
+            "maxItems": 8
+          }
+        },
+        "required": [
+          "command",
+          "columns",
+          "rows"
+        ],
+        "additionalProperties": false,
+        "description": "the terminal panel's data: command, columns, rows"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}

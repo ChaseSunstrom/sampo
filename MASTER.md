@@ -231,6 +231,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmprove`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmpy` (T-0368: below Python 3.12.7, sampo and the statusline re-exec and the… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmraster` (T-1631: an integer rasteriser, edge functions, a 1/z z-buffer and… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmpanels` (T-3662: `sampo panels render|sheet|sample|kinds SPEC.json`, a typed JSON spec of panels drawn as static SVG mechanisms in the board, blueprint or paper style, dark and light; 13 kinds, each also a `panel-KIND` calling card) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmreadme` (T-3703: `sampo readme plan|shots|diagram|check`, a README's figures for any proj… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmrecall` (T-2546's MASTER-clause matcher and `sampo recall --backtest-built`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmrelate` (`sampo relate`: inferred dependencies and groups between open… [→ files-lib-3](docs/map/files-lib-3.md)

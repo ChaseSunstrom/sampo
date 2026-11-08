@@ -1,0 +1,72 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "funnel",
+   "data": {
+    "sources": [
+     {
+      "label": "Orders db",
+      "value": 4200
+     },
+     {
+      "label": "Webhooks",
+      "value": 2600
+     },
+     {
+      "label": "CSV import",
+      "value": 1500
+     },
+     {
+      "label": "Mobile app",
+      "value": 3100
+     }
+    ],
+    "gate": "validate",
+    "result": {
+     "label": "events",
+     "sub": "one schema"
+    }
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "funnel",
+   "data": {
+    "sources": [
+     {
+      "label": "Orders db",
+      "value": 4200
+     },
+     {
+      "label": "Webhooks",
+      "value": 2600
+     },
+     {
+      "label": "CSV import",
+      "value": 1500
+     },
+     {
+      "label": "Mobile app",
+      "value": 3100
+     }
+    ],
+    "gate": "validate",
+    "result": {
+     "label": "events",
+     "sub": "one schema"
+    },
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

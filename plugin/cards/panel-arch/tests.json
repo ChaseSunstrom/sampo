@@ -1,0 +1,126 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "arch",
+   "data": {
+    "nodes": [
+     {
+      "id": "browser",
+      "label": "Browser",
+      "sub": "React app"
+     },
+     {
+      "id": "api",
+      "label": "API",
+      "sub": "FastAPI"
+     },
+     {
+      "id": "worker",
+      "label": "Worker",
+      "sub": "Celery"
+     },
+     {
+      "id": "db",
+      "label": "Postgres"
+     },
+     {
+      "id": "cache",
+      "label": "Redis"
+     }
+    ],
+    "edges": [
+     {
+      "from": "browser",
+      "to": "api",
+      "label": "HTTPS"
+     },
+     {
+      "from": "api",
+      "to": "db",
+      "label": "SQL"
+     },
+     {
+      "from": "api",
+      "to": "cache"
+     },
+     {
+      "from": "api",
+      "to": "worker",
+      "label": "jobs"
+     },
+     {
+      "from": "worker",
+      "to": "db"
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "arch",
+   "data": {
+    "nodes": [
+     {
+      "id": "browser",
+      "label": "Browser",
+      "sub": "React app"
+     },
+     {
+      "id": "api",
+      "label": "API",
+      "sub": "FastAPI"
+     },
+     {
+      "id": "worker",
+      "label": "Worker",
+      "sub": "Celery"
+     },
+     {
+      "id": "db",
+      "label": "Postgres"
+     },
+     {
+      "id": "cache",
+      "label": "Redis"
+     }
+    ],
+    "edges": [
+     {
+      "from": "browser",
+      "to": "api",
+      "label": "HTTPS"
+     },
+     {
+      "from": "api",
+      "to": "db",
+      "label": "SQL"
+     },
+     {
+      "from": "api",
+      "to": "cache"
+     },
+     {
+      "from": "api",
+      "to": "worker",
+      "label": "jobs"
+     },
+     {
+      "from": "worker",
+      "to": "db"
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

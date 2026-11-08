@@ -1,0 +1,74 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "orbit",
+   "data": {
+    "center": "shop-api",
+    "nodes": [
+     {
+      "label": "Postgres"
+     },
+     {
+      "label": "Redis"
+     },
+     {
+      "label": "Stripe"
+     },
+     {
+      "label": "S3"
+     },
+     {
+      "label": "Sentry"
+     },
+     {
+      "label": "Mailgun"
+     },
+     {
+      "label": "CDN"
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "orbit",
+   "data": {
+    "center": "shop-api",
+    "nodes": [
+     {
+      "label": "Postgres"
+     },
+     {
+      "label": "Redis"
+     },
+     {
+      "label": "Stripe"
+     },
+     {
+      "label": "S3"
+     },
+     {
+      "label": "Sentry"
+     },
+     {
+      "label": "Mailgun"
+     },
+     {
+      "label": "CDN"
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

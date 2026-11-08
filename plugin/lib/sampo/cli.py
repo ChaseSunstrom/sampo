@@ -6977,6 +6977,15 @@ def _build_parser(only=None):
     s.add_argument("--out", metavar="DIR", help="shots: docs/assets/screens/; diagram: docs/assets/diagrams/")
     s.add_argument("--brief", nargs="?", const="", metavar="ID", help="plan: write the figures into the task's brief "
                    "(default: the active one)")
+    s = add("panels", lazy("sampo.panels", "cmd_panels"), tier=("Every task", 169), help="picture panels (T-3662): "
+            "render SPEC.json (a typed spec of panels, 13 kinds of mechanism from a cluster graph to architecture boxes with "
+            "packets, as dark and light SVG in the board, blueprint or paper style, in the repo's own colours when it has "
+            "them); sheet SPEC.json (all in one SVG); sample (a spec of every kind); kinds")
+    s.add_argument("action", choices=["render", "sheet", "sample", "kinds"])
+    s.add_argument("target", nargs="?", metavar="SPEC.json")
+    s.add_argument("--root", metavar="DIR", help="the repo (default: the git checkout around the working folder)")
+    s.add_argument("--style", choices=["board", "blueprint", "paper"], help="the look (default: the spec's, else board)")
+    s.add_argument("--out", metavar="DIR|STEM", help="render: docs/assets/panels/; sheet: the file stem")
     s = add("new",lazy("sampo.new", "cmd_new"), tier=("Finding your way", 385), help="strict-by-default templates: a web "
             "page, a 3D scene, a sampo code panel (list; NAME [DIR] copies one; check PATH holds a copy to its rules)")
     s.add_argument("words", nargs="*", metavar="list|NAME [DIR]|check PATH", help="web, scene or panel; a panel lands "

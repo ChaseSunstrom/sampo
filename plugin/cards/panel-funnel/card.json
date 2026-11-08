@@ -1,0 +1,124 @@
+{
+  "name": "panel-funnel",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a funnel panel as dark and light SVG in the Board look (or blueprint, paper): sources flow in ribbons through a gate into one output.",
+  "examples": [
+    "draw a funnel panel",
+    "a funnel diagram of my project",
+    "sources flow in ribbons through a gate into one output"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 640
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 400
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 18
+                },
+                "value": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 1000000000.0
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 2,
+            "maxItems": 8
+          },
+          "gate": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 14
+          },
+          "result": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 14
+              },
+              "sub": {
+                "type": "string",
+                "minLength": 0,
+                "maxLength": 22
+              }
+            },
+            "required": [
+              "label"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "sources",
+          "result"
+        ],
+        "additionalProperties": false,
+        "description": "the funnel panel's data: sources, gate, result"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}

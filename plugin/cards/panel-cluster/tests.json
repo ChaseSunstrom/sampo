@@ -1,0 +1,106 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "cluster",
+   "data": {
+    "clusters": [
+     {
+      "label": "orders",
+      "n": 26
+     },
+     {
+      "label": "billing",
+      "n": 18
+     },
+     {
+      "label": "search",
+      "n": 22
+     },
+     {
+      "label": "auth",
+      "n": 14
+     },
+     {
+      "label": "notify",
+      "n": 16
+     }
+    ],
+    "links": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      2
+     ],
+     [
+      3,
+      0
+     ],
+     [
+      2,
+      4
+     ]
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "cluster",
+   "data": {
+    "clusters": [
+     {
+      "label": "orders",
+      "n": 26
+     },
+     {
+      "label": "billing",
+      "n": 18
+     },
+     {
+      "label": "search",
+      "n": 22
+     },
+     {
+      "label": "auth",
+      "n": 14
+     },
+     {
+      "label": "notify",
+      "n": 16
+     }
+    ],
+    "links": [
+     [
+      0,
+      1
+     ],
+     [
+      0,
+      2
+     ],
+     [
+      3,
+      0
+     ],
+     [
+      2,
+      4
+     ]
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

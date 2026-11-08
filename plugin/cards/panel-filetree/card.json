@@ -1,0 +1,115 @@
+{
+  "name": "panel-filetree",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a filetree panel as dark and light SVG in the Board look (or blueprint, paper): a file tree with one file opened as a document card, joined by a connector.",
+  "examples": [
+    "draw a filetree panel",
+    "a filetree diagram of my project",
+    "a file tree with one file opened as a document card, joined by a connector"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 640
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 340
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 40
+            },
+            "minItems": 1,
+            "maxItems": 16
+          },
+          "focus": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 40
+          },
+          "doc": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 24
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 0,
+                  "maxLength": 34
+                },
+                "minItems": 1,
+                "maxItems": 9
+              }
+            },
+            "required": [
+              "title",
+              "lines"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "files",
+          "doc"
+        ],
+        "additionalProperties": false,
+        "description": "the filetree panel's data: files, focus, doc"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}

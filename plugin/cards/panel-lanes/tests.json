@@ -1,0 +1,76 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "lanes",
+   "data": {
+    "stages": [
+     "queue",
+     "build",
+     "test",
+     "deploy",
+     "verify"
+    ],
+    "lanes": [
+     {
+      "label": "shop-api",
+      "at": 3
+     },
+     {
+      "label": "notes-app",
+      "at": 1
+     },
+     {
+      "label": "billing",
+      "at": 4
+     },
+     {
+      "label": "search",
+      "at": 2
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "lanes",
+   "data": {
+    "stages": [
+     "queue",
+     "build",
+     "test",
+     "deploy",
+     "verify"
+    ],
+    "lanes": [
+     {
+      "label": "shop-api",
+      "at": 3
+     },
+     {
+      "label": "notes-app",
+      "at": 1
+     },
+     {
+      "label": "billing",
+      "at": 4
+     },
+     {
+      "label": "search",
+      "at": 2
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

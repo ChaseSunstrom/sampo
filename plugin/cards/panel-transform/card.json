@@ -1,0 +1,96 @@
+{
+  "name": "panel-transform",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a transform panel as dark and light SVG in the Board look (or blueprint, paper): a page becomes a clean output: a wireframe, chevrons, a document card.",
+  "examples": [
+    "draw a transform panel",
+    "a transform diagram of my project",
+    "a page becomes a clean output: a wireframe, chevrons, a document card"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 640
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 400
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 30
+            },
+            "minItems": 1,
+            "maxItems": 9
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "lines"
+        ],
+        "additionalProperties": false,
+        "description": "the transform panel's data: from, to, lines"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}

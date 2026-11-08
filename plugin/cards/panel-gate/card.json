@@ -1,0 +1,106 @@
+{
+  "name": "panel-gate",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw a gate panel as dark and light SVG in the Board look (or blueprint, paper): one stream hits a gate and splits: allowed items continue, refused ones are stopped.",
+  "examples": [
+    "draw a gate panel",
+    "a gate diagram of my project",
+    "one stream hits a gate and splits: allowed items continue, refused ones are stopped"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title",
+      "data"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40
+      },
+      "style": {
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board"
+      },
+      "stat": {
+        "type": "string",
+        "maxLength": 24
+      },
+      "foot": {
+        "type": "string",
+        "maxLength": 70
+      },
+      "w": {
+        "type": "integer",
+        "minimum": 420,
+        "maximum": 2400,
+        "default": 640
+      },
+      "h": {
+        "type": "integer",
+        "minimum": 260,
+        "maximum": 1600,
+        "default": 400
+      },
+      "data": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 14
+          },
+          "gate": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 14
+          },
+          "allowed": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16
+            },
+            "minItems": 1,
+            "maxItems": 5
+          },
+          "refused": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16
+            },
+            "minItems": 1,
+            "maxItems": 5
+          }
+        },
+        "required": [
+          "gate",
+          "allowed",
+          "refused"
+        ],
+        "additionalProperties": false,
+        "description": "the gate panel's data: source, gate, allowed, refused"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}
