@@ -1136,6 +1136,9 @@ def repro(p, args):
 
 def cmd_bench(args):
     from sampo import cli
+    if args.bench_cmd in ("swe", "runs"):  # T-3746
+        from sampo import bench_swe
+        return bench_swe.cmd(args) if args.bench_cmd == "swe" else bench_swe.runs_cmd(args)
     if args.bench_cmd == "guard":
         from sampo import replay
         return replay.cmd_guard(args)

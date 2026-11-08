@@ -268,6 +268,8 @@ One line per module, so two changes to different modules never touch the same li
 - `fmshot` (T-1636: `sampo shot URL|FILE...`, a viewport shot, frames in real… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmsmallcards`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmcallcards` (T-3160: `sampo card`, calling cards: verified generators run confined… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmbenchswe` (sampo/bench_swe, T-3746: `sampo bench swe`, SWE-bench Verified through Smith in each instance's docker image… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmdockershim` (T-3746: the docker-exec tool shim, `sampo-bench-*` containers only… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmint`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmsmoke` + `smoke_web.cjs` (`sampo smoke`: the web UI crawled in the project's… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmsplit` (`sampo task split`, `sampo task capsule`: a task's files partitioned… [→ files-lib-3](docs/map/files-lib-3.md)

@@ -8213,6 +8213,22 @@ def _build_parser(only=None):
     s = add("bench", lazy("sampo.bench", "cmd_bench"), tier=("Reports", 1090), help="Sampo's benchmark from finished tasks: build cases, replay "
                                                          "them with a candidate plugin, compare runs (T-0212)")
     bsp = s.add_subparsers(dest="bench_cmd", required=True)
+    b = bsp.add_parser("swe", help="SWE-bench Verified through Smith in each instance's docker image, on any model "
+                                   "profile; graded by FAIL_TO_PASS and PASS_TO_PASS (T-3746)")
+    b.add_argument("--json", action="store_true")
+    b.add_argument("-p", "--project", default=argparse.SUPPRESS)
+    b.add_argument("--model", help="a model profile (sampo models; default: the configured one)")
+    b.add_argument("--n", type=int, default=30, help="instances, stratified across repos (default 30)")
+    b.add_argument("--ids", metavar="A,B", help="these instance ids instead of the stratified pick")
+    b.add_argument("--max-steps", type=int, default=30, help="model turns per instance")
+    b.add_argument("--timeout", type=int, default=25, help="minutes per instance")
+    b.add_argument("--min-free-gb", type=float, default=40, help="stop pulling images below this much free disk")
+    b.add_argument("--keep-images", action="store_true", help="keep the images this run pulled (default: remove)")
+    b.add_argument("--harness", choices=("bare", "sampo", "both"), default="both",
+                   help="bare: the model alone in a minimal loop (control); sampo: Smith with everything Sampo adds")
+    b = bsp.add_parser("runs", help="saved bench swe runs: bare and sampo side by side with the delta (T-3746)")
+    b.add_argument("--json", action="store_true")
+    b.add_argument("-p", "--project", default=argparse.SUPPRESS)
     b = bsp.add_parser("seed-review", help="bench a reviewer on planted one-line bugs (T-0646)")
     b.add_argument("--json", action="store_true")
     b.add_argument("-p", "--project", default=argparse.SUPPRESS)
