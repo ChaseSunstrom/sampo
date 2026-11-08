@@ -16,7 +16,8 @@ from sampo import doctor as d
 from sampo import setup
 
 
-class Checks(unittest.TestCase):
+class _TmpDir(unittest.TestCase):
+    """A temporary folder and write(); no tests of its own, so a class built on it runs only its own (T-3814)."""
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.t = os.path.realpath(self._tmp.name)
@@ -31,6 +32,8 @@ class Checks(unittest.TestCase):
             f.write(text)
         return path
 
+
+class Checks(_TmpDir):
     def test_claude_code_features(self):
         # T-0785: a feature the installed Claude Code is too old for silently does nothing; only used features count
         self.write("pl/agents/a.md", "---\nname: a\nomitClaudeMd: true\n---\n")
@@ -177,6 +180,13 @@ class Checks(unittest.TestCase):
                 mock.patch.object(d.os, "getloadavg", lambda: (40.0, 40.0, 40.0)), \
                 mock.patch.object(d.os, "cpu_count", lambda: 16):
             self.assertIn("load", d.busy() or "")  # no PSI (macOS): the load average still decides
+        # T-3814: the SLO row's bar (0.5 per CPU): at 0.5-1.5 a hook's p95 runs 174-269 ms against 103-121 under it,
+        # and a train's doctor gate failed on SessionStart p95 189 and 156 ms (budget 150) at that load, 2026-11-08
+        for load, want in ((10.0, True), (7.0, False)):
+            with mock.patch.object(d, "PSI_CPU", os.path.join(self.t, "absent")), \
+                    mock.patch.object(d.os, "getloadavg", lambda load=load: (load, load, load)), \
+                    mock.patch.object(d.os, "cpu_count", lambda: 16):
+                self.assertEqual(bool(d.busy()), want, load)
 
     def test_python_below_the_floor_fails(self):
         for v, want in [((3, 12, 3), "FAIL"), ((3, 13, 0), "FAIL"), ((3, 12, 7), "PASS"), ((3, 14, 7), "PASS")]:
@@ -1693,7 +1703,7 @@ class McpTransport(unittest.TestCase):  # T-3346
         self.assertNotIn("x" * 61, long.detail)
 
 
-class PermissionMode(Checks):
+class PermissionMode(_TmpDir):  # T-3814: Checks' helpers, not its 36 tests again
     """T-3704: doctor names the mode Claude Code runs in; information only."""
 
     def test_the_mode_in_settings_is_named_and_rm_asks_are_explained(self):

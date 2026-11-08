@@ -116,7 +116,8 @@ def busy():
         load, cores = os.getloadavg()[0], os.cpu_count() or 1
     except (OSError, AttributeError):
         return None
-    return f"load {load:.1f} on {cores} cores" if load > cores else None
+    # T-3814: the SLO row's bar (SLO_LOAD per CPU): over it a hook's p95 measures the machine, not the hook
+    return f"load {load:.1f} on {cores} cores" if load > cores * SLO_LOAD else None
 
 
 def bench_runs(busy):
