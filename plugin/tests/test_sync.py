@@ -117,6 +117,32 @@ class Sync(ForemanTestCase):
         self.assertNotIn("[tree", b.render())
         self.assertEqual(b.status, "planned", "focus is per machine")
 
+    def test_a_local_audit_survives_an_import_and_a_foreign_one_is_still_marked(self):
+        # T-3395: an import relabelled this machine's own audit rows as imported, so they never counted at close
+        self.fm("sync", "on")
+        self.fm("task", "audit", self.tid, "intent", "checked", "ok")
+        self.pulled(lambda t: t + "- 2999-01-01T00:00:00Z pulled note\n- (audit edge) `x` → ok (2999-01-01T00:00:00Z)\n")
+        self.fm("sync", "import")
+        b = c.find_brief(c.find_project(self.repo), self.tid)
+        self.assertIn("pulled note", b.render())
+        self.assertEqual([a[0] for a in b.audits()], ["intent"], "the local row counts")
+        self.assertIn("(audit edge, imported)", b.render())
+
+    def test_a_local_audit_survives_an_import_when_the_local_brief_is_archived(self):
+        # T-3395 review: the local copy in archive/ and the mirror's in tasks/ (or the reverse) must still match
+        self.fm("sync", "on")
+        self.fm("task", "audit", self.tid, "intent", "checked", "ok")
+        p = c.find_project(self.repo)
+        old = c.find_brief(p, self.tid).path
+        new = os.path.join(p.dir, "archive", os.path.basename(old))
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        os.replace(old, new)
+        self.pulled(lambda t: t + "- 2999-01-01T00:00:00Z pulled note\n")
+        self.fm("sync", "import")
+        b = c.find_brief(p, self.tid)
+        self.assertIn("pulled note", b.render())
+        self.assertEqual([a[0] for a in b.audits()], ["intent"])
+
     def test_invisible_characters_inside_marks_dont_save_them(self):
         # T-1665 review: plain_lines ran last, so a zero-width, word-joiner or bidi mark inside a mark hid it from the subs
         self.fm("sync", "on")

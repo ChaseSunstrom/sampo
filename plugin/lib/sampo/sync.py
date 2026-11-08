@@ -309,12 +309,16 @@ def _namer():
     return name
 
 
-def _from_mirror(text):
+def _from_mirror(text, mine=""):
     """A mirrored brief as this machine may take it: no grants, no run or worktree marks, audits relabelled so they
     don't count here (this machine's gates need its own runs and audits)."""
     # a pulled brief is untrusted text that fm task show and other listings print: no terminal sequences. Plain first
     # (T-1665 review): an invisible character inside a mark hid it from the subs, then plain took it out
-    b = c.Brief.parse(_AUDIT_LINE.sub(r"\1, imported)", c._unmarked(c.plain_lines(text))))
+    # T-3395: a row this machine's brief already has (same text, time and tree) was recorded here; it stays counted
+    own = {l for l in c.plain_lines(mine).splitlines() if _AUDIT_LINE.match(l)}
+    text = "\n".join(l if l in own else _AUDIT_LINE.sub(r"\1, imported)", c._unmarked(l))
+                     for l in c.plain_lines(text).split("\n"))
+    b = c.Brief.parse(text)
     for k in LOCAL_ONLY:
         b.meta.pop(k, None)
     if isinstance(b.meta.get("scope"), list):  # T-3508: the export showed this machine's home as ~
@@ -468,6 +472,8 @@ def import_(p):
                 res["conflicts"].append(f"{rel}: not a brief")
                 continue
             local = mine.get(theirs.id)
+            if local:  # T-3395: keep this machine's own audit rows, as exported; its copy may be in tasks/ or archive/
+                theirs = _from_mirror(cur, _outgoing(rel, _read(local.path)))
             if local and name(os.path.relpath(local.path, p.dir).replace(os.sep, "/")) == rel:
                 dest = local.path  # T-3574: the mirror's redacted name for this machine's own file: it keeps its name
             # T-3396: focus is per checkout: a task active here (main or a lane) stays active whatever the repo's older
