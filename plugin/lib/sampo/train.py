@@ -203,7 +203,7 @@ def _merge_in(wt, b, tip, log):
     return None
 
 
-def _probe(p, main, base, b, tip, notes):
+def _probe(p, main, base, b, tip, notes, tests=True):
     """T-3474: why this lane can't land, known before any full gate run, or ''. `git merge-tree` names a conflict with
     the base in milliseconds; the tests affected by the lane's change (cli.affected, as `sampo ship` runs them first)
     run on base+lane in a throwaway tree, naming a red lane in a minute instead of a bisection of full gate runs. A
@@ -215,6 +215,8 @@ def _probe(p, main, base, b, tip, notes):
     if r.returncode == 1:  # 1 is a conflict; any other failure (an old git) leaves it to the train's own merge
         files = r.stdout.splitlines()[1:]  # the first line is the merged tree
         return "conflicts with the base" + (f": {c.joinmore(files, 8)}" if files else "")
+    if not tests:  # T-3770: the gate runs this lane's affected tests itself, and a red gate names its lane (T-3602)
+        return ""
     wt = tempfile.mkdtemp(prefix="sampo-probe-")
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode or _git(
@@ -364,7 +366,14 @@ def _run(p, main, ids):
                     seen.append((b.id, f"flaky (red once, green on a rerun): {str(e).splitlines()[0][:160]}"))
             except (c.PolicyError, cli.UsageError) as e:
                 why = str(e).splitlines()[0]
-        return why or _probe(p, main, base, b, tip, seen), seen  # T-3474: conflicts and red affected tests, before any gate run
+        return why or _probe(p, main, base, b, tip, seen, probe_tests), seen  # T-3474: conflicts (and red tests), before any gate run
+
+    # T-3770: when the gate is the suite the affected template runs (T-3544), it runs every lane's affected tests on the
+    # merged tree, and a red one bisects on its red classes alone (T-3602): a probe per lane ran them all twice (the
+    # 2026-11-07 trains: probes 55.8 and 71.8 min against gates of 14.9 and 10.1). The probes' test runs stay for a
+    # gate that runs no affected tests, or with FOREMAN_TRAIN_PROBES=1.
+    probe_tests = os.environ.get("FOREMAN_TRAIN_PROBES", "") not in ("", "0") or not cli.suite_gate(
+        p.root, c.read_meta(p).get("affected") or "", checks)
 
     # T-3531: PROBE_JOBS lanes at once, each in its own scratch tree (one on a host over 2x its CPUs); map keeps the
     # candidate order, so the left-out list and notes read as a serial run's

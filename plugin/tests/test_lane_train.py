@@ -333,6 +333,34 @@ class AffectedGate(TrainCase):
         with open(self.suite) as f:
             return [ln.split(" ", 1)[1].strip() for ln in f if ln.startswith("sampo-train-")]
 
+    def probe_runs(self):
+        """The suite's runs in a probe's scratch tree (T-3474's pre-filter), not the train's."""
+        with open(self.suite) as f:
+            return [ln for ln in f if ln.startswith("sampo-probe-")]
+
+    def test_a_gate_that_runs_the_affected_tests_needs_no_probe_of_them(self):  # T-3770
+        """The gate is the affected suite, so it runs each lane's tests on the merged tree once; no lane's tests run
+        again in a probe of its own first."""
+        a, b = self.lane(1, "test_a.py", OK.format("A")), self.lane(2, "test_b.py", OK.format("B"))
+        r = self.train(a, b)
+        self.assertEqual(self.probe_runs(), [], r.stdout)
+        self.assertEqual(self.gate_args(), ["test_doctor test_rename_aliases test_a test_b"], r.stdout)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged") and self.meta(b)["lane_stop"].startswith("merged"))
+
+    def test_a_red_lane_is_still_left_out_by_the_gate_with_no_probe(self):  # T-3770
+        bad = "import unittest\nclass Bad(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue(False)\n"
+        a, b = self.lane(1, "test_a.py", OK.format("A")), self.lane(2, "test_bad.py", bad)
+        r = self.train(a, b)
+        self.assertEqual(self.probe_runs(), [], r.stdout)
+        self.assertIn(f"left out {b}: its merge turns the gates red", r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "test_a.py")))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "test_bad.py")))
+
+    def test_the_probes_come_back_with_their_switch(self):  # T-3770
+        a = self.lane(1, "test_a.py", OK.format("A"))
+        r = self.train(a, env={"FOREMAN_TRAIN_PROBES": "1"})
+        self.assertNotEqual(self.probe_runs(), [], r.stdout)
+
     def test_the_gate_names_only_the_affected_modules_and_the_rule_tests(self):
         """A lane adding a module gets test_rename_aliases though no map link names it (T-3316's miss); the other
         gates run as configured, the pass records its modules, and each landed merge awaits the full suite."""
