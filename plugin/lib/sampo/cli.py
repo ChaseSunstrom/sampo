@@ -2145,6 +2145,12 @@ def _finish_gaps(b, args, lenses, p=None):
                                                                   else "")
             for g in c.REQUIRED_AUDITS.get(b.tier, c.REQUIRED_AUDITS["S"])
             if not g & given and any(r.startswith(f"audit missing: {' or '.join(sorted(g))}") for r in recorded)]
+    return gaps + _field_gaps(b, args)
+
+
+def _field_gaps(b, args):
+    """The lines a close needs that neither the brief nor this call has (T-3819: sampo lane land names them up front)."""
+    gaps = []
     if b.docs_gap() and not args.docs:
         gaps.append("docs impact missing: --docs \"<docs updated | none: why>\"")
     if b.type == "PERFORMANCE" and not getattr(args, "numbers", None) and not b.section("Measurements").strip():

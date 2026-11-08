@@ -241,6 +241,26 @@ class Land(LandCase):
         self.assertEqual(steps, [f"closed {early}", f"train 1: {a}", f"closed {a}", f"train 2: {b}", f"closed {b}"],
                          r.stderr)
 
+    def test_a_close_gap_is_named_before_any_train_and_on_the_hand_close_line(self):
+        # T-3819: 2026-11-08, 56 merged tasks were left for a hand close with each reason only in the final report,
+        # hours later; most lacked a DOCS line the land can't make up
+        a, d = self.lane(1, "a.txt", when=OLD), self.lane(2, "d.txt", when=OLD)
+        self.audited(a, d)
+        self.returned(a, "Lane one")
+        self.fm("task", "set", d, "tier=M")
+        r = self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",
+                                       "last_assistant_message": report(d, "Lane two").replace("DOCS: none: an internal "
+                                                                                               "lane\n", "")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.land("--batch", "1")
+        err = r.stderr
+        early = re.search(rf"(?m)^sampo lane land: {d} lands but its close will be refused: .*docs impact missing", err)
+        self.assertTrue(early, err)
+        self.assertLess(early.start(), err.index("train 1:"), "named before the first train")
+        self.assertNotRegex(err, rf"{a} lands but", "a lane with every line closes")
+        self.assertRegex(err, rf"(?m)^sampo lane land: left for a hand close {d}: .*docs impact missing")
+        self.assertEqual(self.brief(a).status, "done", err)
+
     def test_land_refuses_while_the_main_checkout_has_an_active_task(self):
         a = self.lane(1, "a.txt", when=OLD)
         busy = first(self.fm("task", "new", "Mine", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step",

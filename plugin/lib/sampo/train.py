@@ -729,7 +729,8 @@ def _land(p, main, batch):
             except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
                 why, last = f"{type(e).__name__}: {e}", ""
             (hand if why else closed).append((tid, why or last))
-            print(f"sampo lane land: {'left for a hand close' if why else 'closed'} {tid}", file=sys.stderr, flush=True)
+            print(f"sampo lane land: left for a hand close {tid}: {c.fit(why, 400)}" if why else
+                  f"sampo lane land: closed {tid}", file=sys.stderr, flush=True)  # T-3819: the reason, not hours later
 
     def sort(bs):  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
         for b in sorted(bs, key=land_key):
@@ -739,6 +740,9 @@ def _land(p, main, batch):
                 parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
             else:
                 ready.append(b.id)
+                if gaps := _close_gaps(b):  # T-3819: said before the trains, so the lines are added while they run
+                    print(f"sampo lane land: {b.id} lands but its close will be refused: {'; '.join(gaps)} (add the "
+                          "lines to its Close fields before its train ends)", file=sys.stderr, flush=True)
     close(landed)  # merged and open (a train by hand, a land cut short): closed before any new train
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
@@ -786,6 +790,18 @@ def _land(p, main, batch):
         ship = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out)
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
             "stopped": stopped, "ship": ship, "ship_grant": grant.id if grant else None, "lines": closed}
+
+
+def _close_gaps(b):
+    """T-3819: what a close would refuse for a line the brief lacks (CHANGELOG, DOCS, NUMBERS, LESSON, why not caught)."""
+    from types import SimpleNamespace
+
+    from sampo import cli
+    from sampo import lanes
+    f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
+    if not f.get("changelog"):
+        return ["no CHANGELOG line in its Close fields"]
+    return cli._field_gaps(b, SimpleNamespace(docs=f.get("docs"), numbers=f.get("numbers"), lesson=f.get("lesson")))
 
 
 def _close(p, main, tid):
