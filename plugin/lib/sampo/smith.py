@@ -30,6 +30,7 @@ An installed CLI (WORKERS, or 'CMD {prompt}') does each step and fix round in on
 own config and hooks are put back, a commit is undone (its changes stay), and each changed file the guard refuses as a
 Write is reverted and reported. The worker's exit code and reply never mark anything done: the harness's verify does.
 """
+import ast
 import glob
 import hashlib
 import itertools
@@ -689,6 +690,7 @@ class Run:
         self.early, self.edited, self.tree0 = 0, False, None  # T-3180: refused early dones; an edit landed; the tree at start
         self.nonce = secrets.token_hex(6)  # T-1394: the data envelope's tag, which no file can know ahead
         self.cards_offer = self.cards_session = None  # T-3160: the calling cards picked for this run, and their Session
+        self.harness_text = None  # T-3181: what the harness ran before turn 1 (its facts, any fix it applied)
 
     def fence(self, text):
         """T-1394: text the repo or a tool wrote, in this run's data envelope, the '<' of every envelope-shaped tag in it
@@ -1146,11 +1148,7 @@ class Run:
         if self.read_only and cd and not cd["read"]:
             return (f"refused: this run answers a question and changes nothing, and card {name} changes files: use a "
                     "read card, read or search")
-        if self.cards_session is None:
-            other = self.planner or self.escalate
-            self.cards_session = callcards.Session(self.root, guard=self.card_guard, escalate=(
-                lambda r: self.card_advice(other, r)) if other else None)
-        r = self.cards_session.call(name, inputs)
+        r = self.session().call(name, inputs)
         if r["status"] == "applied":
             for rel in r["changed"] + r["created"]:
                 full = os.path.join(self.root, rel)
@@ -1179,6 +1177,137 @@ class Run:
         res = m.complete(self.capped(other), msgs, max_tokens=600)
         self.usage(res, other, "card")
         return self.redact(res["text"] or "")
+
+    def session(self):
+        """This run's card Session: one per run, so its failed-call counts and closed cards carry over."""
+        from sampo import callcards
+        if self.cards_session is None:
+            other = self.planner or self.escalate
+            self.cards_session = callcards.Session(self.root, guard=self.card_guard, escalate=(
+                lambda r: self.card_advice(other, r)) if other else None)
+        return self.cards_session
+
+    def harness_call(self, name, inputs, calls):
+        """A card call the harness makes itself, through the run's Session; what it changed is recorded like a model's."""
+        r = self.session().call(name, inputs)
+        calls.append({"card": name, "status": r["status"]})
+        if r["status"] == "applied":
+            for rel in r["changed"] + r["created"]:
+                full = os.path.join(self.root, rel)
+                self.after("Write", {"file_path": full, "content": ""}, {"filePath": full})
+        return r
+
+    def harness(self, profile, failed):
+        """T-3181: before the first turn the harness runs the cards a failing verify calls for, not the model: the read
+        card failing-frame on the file the verify runs (its facts go into the first prompt), then the fix card whose
+        signature the failure matches, its one open slot filled by the model under a JSON schema. Passing verifies do
+        nothing; a read-only run gets the read cards but no fix. A step that can't finish changes nothing and the run
+        goes on. Opt-in (callcards.harness_enabled) until a pilot proves it. A fix stays only when it strictly shrinks
+        the set of failing criteria: otherwise the files go back to their bytes from before the card."""
+        from sampo import callcards
+        if not failed or not callcards.enabled() or not callcards.harness_enabled():
+            return
+        calls, parts, pre = [], [], {}
+        try:
+            target = _verify_target(failed[0][1])
+            fr = self.harness_call("failing-frame", {"target": target} if target else {}, calls)
+            parts.append(callcards.text(fr))
+            for rel in _frame_files(fr):  # the outline of each Python file the frame names, a few at most
+                parts.append(callcards.text(self.harness_call("py-outline", {"path": rel}, calls)))
+            fix = self.harness_fix(profile, fr, calls, failed, pre)
+            if fix:
+                parts.append(fix)
+        except (m.ModelError, OSError, ValueError) as e:  # a model or the machine failed: nothing half-done is kept
+            parts.append(f"the harness's card step stopped: {_one_line(e, 200)}")
+        if any(c["status"] == "applied" for c in calls):  # the read cards' status is facts: an applied call is a fix
+            # journaled before the second verify: a kill here and a resume still know the tree holds this edit
+            self.log(kind="harness", text="\n\n".join(parts) + "\n\nthe harness's fix was applied and its verify was "
+                     "not recorded (the run was stopped); the tree holds the edit", baseline=self.baseline)
+            now = self.verify("harness")
+            if {n for n, *_ in now} < {n for n, *_ in failed}:  # strictly fewer criteria fail: the baseline is what verifies now
+                self.baseline = _failures(now) or "every verify passes already"
+            else:
+                parts.append(self.harness_revert(pre, calls) + f" ({len(now)} of {len(failed)} criteria still fail)")
+        self.harness_text = "\n\n".join(parts)
+        self.log(kind="harness", text=self.harness_text, baseline=self.baseline)
+        self.emit("harness", f"harness before turn 1: {', '.join(c['card'] + ' ' + c['status'] for c in calls)}",
+                  quiet=True, calls=calls)
+
+    def harness_revert(self, pre, calls):
+        """Puts back what a harness fix changed: pre is {rel: its bytes from before the card, None for a file the card
+        created, False for one it changed that wasn't saved}. The text for the harness's record."""
+        left = []
+        for rel, data in sorted(pre.items()):
+            full = os.path.join(self.root, rel)
+            if data is False:
+                left.append(rel)
+                continue
+            if data is None:
+                os.unlink(full)
+            else:
+                with open(full, "wb") as f:
+                    f.write(data)
+            self.after("Write", {"file_path": full, "content": ""}, {"filePath": full})
+        for c in calls:
+            if c["status"] == "applied":
+                c["status"] = "reverted"
+        return ("the harness reverted its fix: it did not make fewer criteria fail"
+                + (f"; it could not restore {', '.join(left)}" if left else ""))
+
+    def harness_fix(self, profile, fr, calls, failed, pre):
+        """The fix card whose signature the failure matches, applied: its path and function (Class.method for a method)
+        from the failing frame, its one open slot the parameter the model names (the only one the function has, with no
+        model call; none at all when there is no model). Never in a test file or the file a verify runs. pre gets the
+        files' bytes from before the card. The text of what happened, or None when no card's signature matches."""
+        from sampo import callcards
+        facts = fr.get("facts") if fr.get("status") == "facts" else None
+        if self.read_only or not isinstance(facts, dict):
+            return None
+        exc, msg = str(facts.get("exception") or ""), str(facts.get("message") or "")
+        hits = sorted((cd for cd in callcards.cards(self.root)[0].values() if _signature_hit(cd.get("signature"), exc, msg)),
+                      key=lambda cd: cd["name"])
+        where = facts.get("where") or {}
+        if not hits or not where.get("file") or callcards._rel_ok(where["file"]) or not callcards._regular(
+                self.root, where["file"]) or _off_limits(where["file"], failed):
+            return None
+        fn, qual = _enclosing(self.root, where["file"], where.get("line"))
+        params = [a.arg for a in fn.args.posonlyargs + fn.args.args + fn.args.kwonlyargs
+                  if a.arg not in ("self", "cls")] if fn else []
+        if not params:
+            return None
+        if len(params) == 1:
+            param = params[0]
+        elif profile is None:  # a worker run with no model: nobody to name the parameter
+            return f"the harness applied no fix: no model to name which parameter of {qual} may be None"
+        else:
+            param = self.harness_param(profile, qual, params, fr)
+        if param is None:
+            return f"the harness applied no fix: the model's answer named no parameter of {qual}"
+        with open(os.path.join(self.root, where["file"]), "rb") as f:
+            pre[where["file"]] = f.read()
+        r = self.harness_call(hits[0]["name"], {"path": where["file"], "function": qual, "param": param,
+                                                "mode": "return", "value": "None"}, calls)
+        for rel in r["created"]:
+            pre.setdefault(rel, None)
+        for rel in r["changed"]:
+            pre.setdefault(rel, False)  # ponytail: only the card's input path is saved; a card that edits more can't be undone
+        return callcards.text(r)
+
+    def harness_param(self, profile, fn, params, fr):
+        """The model's one answer: which parameter of fn (its dotted name) may be None. Under a JSON schema whose only property is that
+        parameter, its enum the function's own names; None when the answer names none of them."""
+        schema = {"type": "object", "required": ["param"], "additionalProperties": False,
+                  "properties": {"param": {"type": "string", "enum": params}}}
+        msgs = [{"role": "system", "content": "A failing test raises an exception in one function. Name the one parameter "
+                 "of that function that may be None and causes it. " + DATA_NOTE},
+                {"role": "user", "content": f"The task:\n{self.fence(self.request)}\nThe failure:\n"
+                                            f"{self.fence(str(fr['facts'].get('message') or ''))}\n"
+                                            f"The function {fn} takes:{', '.join(params)}."}]
+        self.check_cap("harness")
+        res = m.complete(self.capped(profile), msgs, max_tokens=60, schema=schema)
+        self.usage(res, profile, "harness")
+        v = m.extract_json(res["text"] or "")
+        return v.get("param") if isinstance(v, dict) and v.get("param") in params else None
 
     def small_playbook(self, profile):
         """T-2917: for an own or loopback profile, the kept small-model variant of the playbook routed for the task's
@@ -3796,16 +3925,74 @@ def _start_model(run, p, profile):
     return run.escalate or profile
 
 
+def _verify_target(cmd):
+    """The Python file a verify command runs (python3 test_x.py), or None."""
+    hit = re.fullmatch(r"\s*python3?\s+(\S+\.py)\s*", cmd or "")
+    return hit.group(1) if hit else None
+
+
+def _frame_files(fr, limit=3):
+    """The distinct Python files a failing-frame result names, in frame order: at most limit (the outline cards' budget)."""
+    facts = fr.get("facts") if fr.get("status") == "facts" and isinstance(fr.get("facts"), dict) else {}
+    out = []
+    for f in facts.get("frames") or []:
+        rel = f.get("file") if isinstance(f, dict) else None
+        if isinstance(rel, str) and rel.endswith(".py") and rel not in out:
+            out.append(rel)
+    return out[:limit]
+
+
+def _signature_hit(sig, exc, msg):
+    """A fix card's signature (the exceptions it fits, a part of the message) against a failure's exception and message."""
+    return isinstance(sig, dict) and exc in sig.get("exception", []) and str(sig.get("message", "")) in msg
+
+
+def _off_limits(rel, failed):
+    """T-3181: a file a harness fix must not edit: a test file (the failing-frame card falls back to one when the whole
+    trace is tests: same rule as its is_test) or a file a failing verify command runs."""
+    base, parts = os.path.basename(rel), rel.split("/")[:-1]
+    return base.startswith("test") or base.endswith("_test.py") or base == "conftest.py" or "tests" in parts \
+        or "test" in parts or rel in {_verify_target(cmd) for _n, cmd, _out in failed}
+
+
+def _enclosing(root, rel, line):
+    """(the innermost function def in root/rel that spans line, its dotted name as cardkit.defs spells it: Class.method,
+    outer.inner), or (None, None) (a file too big or not Python: (None, None))."""
+    full = os.path.join(root, rel)
+    try:
+        if os.path.getsize(full) > 2 << 20:  # callcards.FILE_CAP: a card reads no more
+            return None, None
+        with open(full, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+    except (OSError, ValueError, SyntaxError):
+        return None, None
+    found = []
+
+    def walk(node, prefix):
+        for ch in ast.iter_child_nodes(node):
+            if isinstance(ch, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if not isinstance(ch, ast.ClassDef) and ch.lineno <= (line or 0) <= ch.end_lineno:
+                    found.append((ch, prefix + ch.name))
+                walk(ch, prefix + ch.name + ".")
+            elif not isinstance(ch, ast.expr):
+                walk(ch, prefix)
+    walk(tree, "")
+    return max(found, key=lambda x: x[0].lineno, default=(None, None))
+
+
 def _drive(run, profile):
     pl = run.plan
     if run.baseline is None:
         failed = run.verify("before")
         run.baseline = _failures(failed) or "every verify passes already"
         run.log(kind="baseline", text=run.baseline)
+        run.harness(profile, failed)  # T-3181: the cards the harness runs before turn 1, not the model
     for n, step in enumerate(pl["steps"], 1):
         if f"step:{n}" not in run.done:
             run.emit("step", f"step {n}/{len(pl['steps'])}: {step}", step=n)
-        prompt = (f"{_task_text(run)}\n\nVerify results before any change:\n{run.fence(run.baseline)}\n\n"
+        before_first = (f"Before your first turn the harness ran these calling cards:\n{run.fence(run.harness_text)}\n\n"
+                        if n == 1 and run.harness_text else "")
+        prompt = (f"{_task_text(run)}\n\nVerify results before any change:\n{run.fence(run.baseline)}\n\n{before_first}"
                   f"Now do step {n}" + (f": {step}" if run.own_plan else " of the plan's steps."))
         if run.worker:  # T-1394: a worker CLI never saw ACT_PROMPT, so it hears what the envelope is here
             run.work(f"step:{n}", f"{prompt}\n\n{DATA_NOTE}")
@@ -4012,6 +4199,8 @@ def _load(run, tid, ended=False):
             run.done.add(r["phase"])
         elif k == "baseline":
             run.baseline = r["text"]
+        elif k == "harness":  # T-3181: what the harness ran before turn 1, and the baseline after any fix it applied
+            run.harness_text, run.baseline = r.get("text"), r.get("baseline", run.baseline)
         elif k == "close_notes":
             run.close_notes = r["notes"]
         elif k == "gap_notes" and isinstance(r.get("notes"), dict):

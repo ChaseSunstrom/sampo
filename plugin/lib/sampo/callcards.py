@@ -839,6 +839,12 @@ def enabled():
                                                                                                    "no")
 
 
+def harness_enabled():
+    """T-3181: fm code's harness-run card step is opt-in, on only for an explicit SAMPO_CARDS=on (the card bench sets it
+    per arm), until a pilot proves it: the 30-pair one did not, and it cost 30% more tokens."""
+    return (os.environ.get("SAMPO_CARDS") or os.environ.get("FOREMAN_CARDS") or "").lower() in ("on", "1", "yes", "true")
+
+
 class Session:
     """One model's use of cards in one run, which can't loop: ATTEMPTS failed calls close a card, an identical call
     after a failure closes it without running, a deterministic card closes at its first failed run, and the first card
@@ -1007,6 +1013,10 @@ def bench_events(events, names):
         elif ev in ("plan", "answer", "blocked", "error", "closed"):
             plan = e.get("plan") if isinstance(e.get("plan"), dict) else {}
             trail.append(f"{ev}: {c.fit(str(e.get('reason') or e.get('text') or plan.get('title') or ''), 80)}")
+        elif ev == "harness":  # T-3181: the calls the harness made before turn 1 are card calls too
+            for hc in e.get("calls") or []:
+                calls += 1
+                ok += hc.get("status") in OK
         elif ev == "action":
             trail.append(f"{e.get('action')}:{e.get('result')}")
             if e.get("action") == "card" or e.get("action") in names:

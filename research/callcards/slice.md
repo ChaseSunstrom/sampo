@@ -1,4 +1,83 @@
-# Calling cards, the thin slice: the pilot (T-3160)
+# Calling cards, the thin slice: the pilot (T-3160) and the harness-driven pilot (T-3181)
+
+## Part 1b: the harness drives the cards (T-3181)
+
+The T-3160 pilot below found the model rarely calls a card (1 run of 10). T-3181 moves the decision to fm code:
+before turn 1, on a task whose verify is red, fm code itself runs `failing-frame` on the file the verify runs, runs
+the outline card on the files the frame names (at most 3), and puts the facts in the first prompt; when the failure's
+exception and message match a fix card's `signature` (`py-none-guard`: TypeError or AttributeError with
+"'NoneType'"), fm code applies that card to the frame's function (never in a test file or the file a verify runs), the model filling only the card's one open slot (the
+parameter to guard) under a JSON schema. A passing verify, a read-only run or a failed step changes nothing. The
+early-done refusal (T-3180) was already in.
+
+### Verdict
+
+Not proven. Thirty paired scenarios on `jarvis-nothink`: cards off passed 3 of 30, cards on 4 of 30. That is 2 wins
+and 1 loss; the exact two-sided sign test gives p = 1.0. The brief asks for 40 pairs before "proven" and the exam runs
+on this box hold 30 python `bug`, `vuln` and `none` scenarios in all, so the 40-pair bar could not be met; at 30 the
+result would not have been proven either (p = 1.0, and 2 wins against 1 loss).
+
+### How it was measured
+
+- Commands: `sampo card bench RUN --model jarvis-nothink --kind none,bug,vuln --limit 11 --out
+  research/callcards/t3181-pilot.jsonl` for RUN in s70-010, s21-013, s0-001, s31-006, s4-018, s5-019 and s7-004
+  (the rows are in `t3181-pilot.jsonl`; `sampo card bench --out` on it prints the summary). Same arms as T-3160:
+  `SAMPO_CARDS=off` against `on`, the same model, each in a throwaway copy, the first arm alternating. Pass is the
+  exam's hidden checks.
+- The pairs are not independent of the T-3160 pilot: its 10 scenarios were the first 10 python scenarios of s70-010,
+  and the s70-010 pairs here are the same ones, run again with the harness. They also share a model and a host, so
+  the sign test's independence assumption is only roughly met.
+- Because this is not proven, the harness is opt-in: fm code runs it only with `SAMPO_CARDS=on` set explicitly (the
+  card bench sets it per arm). A default run offers the cards but runs no harness step. After a fix card applies, the
+  harness verifies again and keeps the edit only when strictly fewer criteria fail; else it puts the files back.
+- The 30 pairs ran before the revert, the dotted-name and the test-file rules (review fixes), so the numbers describe
+  the first harness, not this one.
+- One pair (s5-019-m01, cards on) ran twice because two bench processes overlapped; the newest row counts and both
+  failed.
+- `card_calls` now counts the harness's own calls before turn 1 as well as the model's.
+- Host load was 80 to 170 over 16 CPUs, so `seconds` says little; Jarvis did the model work.
+
+### Numbers
+
+| | cards off | cards on |
+|---|---|---|
+| passed | 3 / 30 (10%) | 4 / 30 (13%) |
+| tokens per scenario, mean (median) | 65,710 (5,904) | 85,560 (20,994) |
+| seconds per scenario, mean (median) | 166 (23) | 154 (58) |
+| runs that called a card (calls) | 0 (0) | 13 (24) |
+| runs that edited or wrote a file | 6 | 9 |
+| runs that ended with done accepted | 5 | 12 |
+
+Wins (only on passed) 2: bug-python-1a097f and bug-python-1e5fc6. Losses (only off passed) 1: s5-019-m04. Ties 27:
+two passed in both arms (bug-python-88e0e5, bug-python-020e5a; both start with a green verify, so there was nothing
+for a card to do), 25 failed in both.
+
+### What failed
+
+- The gain is two scenarios, both `bug` with a red verify at the start: the harness ran `failing-frame`, the model
+  edited and the checks passed (39,955 and 41,893 tokens, against 4,054 and 2,966 for plain runs that read, then
+  called done). That is the shape the change was built for, but two of thirty is a count that chance alone gives.
+- The runs that ended early now end less often (12 accepted dones with cards against 5 plain, 9 runs that edited
+  against 6), yet most still failed the hidden checks: the model finds a spot, changes it and is wrong. The cards
+  give it facts about the failing frame, not the fix.
+- The harness had something to read in few runs. In the on-arm, the first verify was red (exit 1 or 5) in 9 of 30 runs,
+  and every one of those had a card call; 2 of the 9 passed. It was green at the start in 9 (the visible tests don't
+  catch the defect), where the harness reads no frame; and in 11 (5 `vuln`, 5 `bug`, 1 `none`) no verify ran at all, so the harness stood idle and the arm
+  differs from the plain one only by the card lines (one of them still called a card itself).
+- The fix card was not what won. Each of the two wins shows one card call, the failing frame; the trail does not
+  record a fix card applied, and the exam's seeded slips are mostly not None errors, so the signature (TypeError or
+  AttributeError with "NoneType") matches few failures.
+- Cost: the on-arm's mean tokens are 30% higher; the medians are 3.6 times higher. The long runs of s5-019 and s4-018
+  (300k to 500k tokens, both arms) dominate the means.
+
+### What would have to change
+
+A pool over 40 pairs (other kinds such as untested or slow, or a second model) and fix cards for the shapes the exam
+seeds (an off-by-one in a bound, a wrong comparison), with the frame's operands as the evidence. A card that locates the
+line is worth less than one that proposes the one-line change the failing test then checks. For 40 pairs on this pool
+the box needs about 10 more scenarios of python `bug`, `vuln` or `none` kind in the exam runs.
+
+## Part 1: the pilot (T-3160)
 
 The question: does a small local model fix more exam defects when fm code offers it calling cards (verified
 generators it calls by name with typed inputs) than when it works with the plain actions alone? The brief's step 3

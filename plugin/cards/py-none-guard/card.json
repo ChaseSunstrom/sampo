@@ -16,5 +16,6 @@
     "value": {"type": "string", "maxLength": 200,
               "description": "a Python expression: what to return, the exception to raise, or the default (needed for default)"}
   }},
+  "signature": {"exception": ["TypeError", "AttributeError"], "message": "'NoneType'"},
   "files": ["$path"]
 }
