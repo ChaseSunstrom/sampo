@@ -52,7 +52,7 @@ class Claude(ForemanTestCase):
             entry("user", "<local-command-stdout>noise</local-command-stdout>", isMeta=True),
             {"type": "attachment", "attachment": {"type": "queued_command", "prompt": "also the logout"}, "sessionId": SID},
             entry("assistant", [{"type": "tool_use", "id": "t3", "name": "Agent",
-                                 "input": {"subagent_type": "foreman:fm-recon", "description": "Map the auth code"}}]),
+                                 "input": {"subagent_type": "sampo:fm-recon", "description": "Map the auth code"}}]),
             {"type": "ai-title", "aiTitle": "Login timeout fix", "sessionId": SID},
             {"type": "last-prompt", "sessionId": SID},
         ]
@@ -62,7 +62,7 @@ class Claude(ForemanTestCase):
             f.write(json.dumps(entry("assistant", [{"type": "text", "text": "Auth lives in auth.py"}],
                                      isSidechain=True)) + "\n")
         with open(os.path.join(proj, SID, "subagents", f"agent-{AGENT}.meta.json"), "w") as f:
-            json.dump({"agentType": "foreman:fm-recon", "description": "Map the auth code", "toolUseId": "t3"}, f)
+            json.dump({"agentType": "sampo:fm-recon", "description": "Map the auth code", "toolUseId": "t3"}, f)
         with open(os.path.join(proj, f"{HEADLESS}.jsonl"), "w") as f:
             f.write(json.dumps(dict(entry("user", "Review this diff"), sessionId=HEADLESS, entrypoint="sdk-py")) + "\n")
         scratch = os.path.join(self.tmpdir, f"claude-{os.getuid()}", "-work-app", SID, "scratchpad")
@@ -117,7 +117,7 @@ class Claude(ForemanTestCase):
         self.assertEqual((ev[9]["text"], ev[9]["queued"]), ("also the logout", True))  # typed mid-turn
         self.assertEqual((ev[2]["tool"], ev[2]["detail"], ev[3]["ok"]), ("Bash", "ls", True))
         self.assertEqual(ev[5]["tool_use_id"], "t2")
-        self.assertIn("foreman:fm-recon", ev[10]["detail"])
+        self.assertIn("sampo:fm-recon", ev[10]["detail"])
         img = self.j("image", SID, ev[8]["ref"])
         self.assertEqual((img["media_type"], img["data"]), ("image/png", PNG))
         later = [json.loads(line) for line in self.fm("claude", "show", SID, "--from", str(ev[7]["n"]), env=self.env)
@@ -125,7 +125,7 @@ class Claude(ForemanTestCase):
         self.assertEqual(later[0]["text"], "and this one")
         agents = self.j("agents", SID)["agents"]
         self.assertEqual((agents[0]["id"], agents[0]["type"], agents[0]["description"]),
-                         (AGENT, "foreman:fm-recon", "Map the auth code"))
+                         (AGENT, "sampo:fm-recon", "Map the auth code"))
         sub = [json.loads(line) for line in self.fm("claude", "show", SID, "--agent", AGENT, env=self.env).stdout.splitlines()]
         self.assertEqual(sub[0]["text"], "Auth lives in auth.py")
 

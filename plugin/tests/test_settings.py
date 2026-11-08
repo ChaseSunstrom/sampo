@@ -81,7 +81,7 @@ class Command(ForemanTestCase):
         self.uhome = os.path.join(self.tmp, "uhome")
         os.makedirs(os.path.join(self.uhome, ".claude"))
         self.settings = os.path.join(self.uhome, ".claude", "settings.json")
-        self.before = json.dumps({"model": "x", "pluginConfigs": {"foreman-ui@foreman": {"options": {"motion": "calm"}},
+        self.before = json.dumps({"model": "x", "pluginConfigs": {"sampo-ui@sampo": {"options": {"motion": "calm"}},
                                                                    "other@m": {"options": {"a": 1}}}}, indent=2)
         with open(self.settings, "w") as f:
             f.write(self.before)
@@ -155,7 +155,7 @@ class Command(ForemanTestCase):
         self.assertEqual(by["app", "border"]["where"], os.path.join(self.home, "tui.toml"))
         self.assertEqual((by["plugin", "motion"]["value"], by["plugin", "motion"]["default"]), ("reduced", "full"))
         self.assertIn(self.settings, by["plugin", "motion"]["where"])
-        self.assertIn("foreman-ui@foreman", by["plugin", "motion"]["where"])
+        self.assertIn("sampo-ui@sampo", by["plugin", "motion"]["where"])
         self.assertEqual(by["plugin", "mascot"]["value"], "sampo", "unset: the default (T-3113: the crest)")
         text = self.fm("settings", "list", env=self.env).stdout
         self.assertIn("app", text)
@@ -163,7 +163,7 @@ class Command(ForemanTestCase):
         self.assertIn("heavy", text)
 
     def test_list_keys_or_layout_shows_that_group_alone(self):
-        """T-1511: /foreman:settings keys and layout show the bindings and the panel layout through fm settings list."""
+        """T-1511: /sampo:settings keys and layout show the bindings and the panel layout through fm settings list."""
         keys = self.fm("settings", "list", "keys", env=self.env).stdout
         self.assertIn('keys.d', keys)
         self.assertIn('"diff"', keys)
@@ -195,14 +195,14 @@ class Command(ForemanTestCase):
         p = self.fm("settings", "set", "mascot", "orange", env=self.claude, check=False)
         self.assertEqual(p.returncode, 2)
         said = p.stdout + p.stderr
-        for words in (self.settings, "pluginConfigs", "foreman-ui@foreman", '"mascot": "orange"'):
+        for words in (self.settings, "pluginConfigs", "sampo-ui@sampo", '"mascot": "orange"'):
             self.assertIn(words, said)
         self.assertEqual(read_text(self.settings), self.before)
 
     def test_in_the_users_terminal_settings_json_is_written(self):
         self.term("settings", "set", "mascot", "orange")
         got = read_json(self.settings)
-        self.assertEqual(got["pluginConfigs"]["foreman-ui@foreman"]["options"], {"motion": "calm", "mascot": "orange"})
+        self.assertEqual(got["pluginConfigs"]["sampo-ui@sampo"]["options"], {"motion": "calm", "mascot": "orange"})
         self.assertEqual((got["model"], got["pluginConfigs"]["other@m"]), ("x", {"options": {"a": 1}}))
 
     def test_a_plugin_set_the_guard_allows_keeps_the_rest_of_settings(self):
@@ -212,7 +212,7 @@ class Command(ForemanTestCase):
             f.write(self.before)
         self.fm("settings", "set", "palette", "cb", "--surface", "plugin", env=dict(self.claude, CLAUDE_CONFIG_DIR=other))
         got = read_json(os.path.join(other, "settings.json"))
-        self.assertEqual(got["pluginConfigs"]["foreman-ui@foreman"]["options"], {"motion": "calm", "palette": "cb"})
+        self.assertEqual(got["pluginConfigs"]["sampo-ui@sampo"]["options"], {"motion": "calm", "palette": "cb"})
         self.assertEqual((got["model"], got["pluginConfigs"]["other@m"]), ("x", {"options": {"a": 1}}))
 
     def test_a_shared_set_writes_what_it_may_and_says_what_the_rest_needs(self):
@@ -222,11 +222,11 @@ class Command(ForemanTestCase):
         self.assertEqual(p.returncode, 2, "the app half was refused")
         self.assertIn('motion = "off"', p.stdout + p.stderr)
         self.assertEqual(read_text(os.path.join(self.home, "tui.toml")), '# mine\nborder = "heavy"\n')
-        self.assertEqual(read_json(os.path.join(other, "settings.json"))["pluginConfigs"]["foreman-ui@foreman"],
+        self.assertEqual(read_json(os.path.join(other, "settings.json"))["pluginConfigs"]["sampo-ui@sampo"],
                          {"options": {"motion": "off"}})
         self.term("settings", "set", "motion", "off")  # the terminal: both
         self.assertIn('motion = "off"', read_text(os.path.join(self.home, "tui.toml")))
-        self.assertEqual(read_json(self.settings)["pluginConfigs"]["foreman-ui@foreman"]["options"]["motion"], "off")
+        self.assertEqual(read_json(self.settings)["pluginConfigs"]["sampo-ui@sampo"]["options"]["motion"], "off")
 
     def test_a_bad_plugin_value_is_refused(self):
         for key, value in (("freshAt", "500"), ("freshAt", "lots"), ("mascot", "pink"), ("motion", "wobbly")):
@@ -263,10 +263,10 @@ class History(ForemanTestCase):
         with open(self.toml, "w", encoding="utf-8") as f:
             f.write(toml)
         with open(self.settings, "w", encoding="utf-8") as f:
-            json.dump({"model": "x", "pluginConfigs": {"foreman-ui@foreman": {"options": options}}}, f)
+            json.dump({"model": "x", "pluginConfigs": {"sampo-ui@sampo": {"options": options}}}, f)
 
     def options(self):
-        return read_json(self.settings)["pluginConfigs"]["foreman-ui@foreman"]["options"]
+        return read_json(self.settings)["pluginConfigs"]["sampo-ui@sampo"]["options"]
 
     def test_diff_shows_changed_keys_and_flags_dead_ones(self):
         import base64
@@ -536,7 +536,7 @@ class Unknown(ForemanTestCase):
 
 
 class PluginSurface(unittest.TestCase):
-    """T-1574: /foreman:settings runs fm settings (one implementation); the pane re-reads its options on each poll."""
+    """T-1574: /sampo:settings runs fm settings (one implementation); the pane re-reads its options on each poll."""
     ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 
     def test_the_command_lists_and_sets_through_fm_settings(self):

@@ -171,5 +171,227 @@ class Migrate(ForemanTestCase):
         self.assertEqual(sens(self.old), before)  # through the symlink
 
 
+FILES = ("settings.json", "plugins/installed_plugins.json", "plugins/known_marketplaces.json")
+
+
+class MigratePlugins(ForemanTestCase):
+    """T-3707: sampo migrate plugins moves Claude Code's record of Sampo from foreman@foreman (and sampo@foreman, the
+    renames map's id) to sampo@sampo, re-adding the marketplace as sampo, one write per file, with an exact undo. The
+    config is laid out the way this machine's is, with made-up values; the real ~/.claude is never read."""
+
+    def setUp(self):
+        super().setUp()
+        self.h = os.path.join(self.tmp, "h")
+        self.cl = os.path.join(self.h, ".claude")
+        self.mk = os.path.join(self.h, "src", "sampo")  # the checkout the directory marketplace points at
+        for rel, data in ((".claude-plugin/marketplace.json", {"name": "sampo", "plugins": [
+                              {"name": "sampo", "source": "./plugin"}, {"name": "sampo-ui", "source": "./mods/foreman-ui"},
+                              {"name": "sampo-design", "source": "./plugins/foreman-design"}]}),
+                          ("plugin/.claude-plugin/plugin.json", {"name": "sampo", "version": "9.1.0"}),
+                          ("mods/foreman-ui/.claude-plugin/plugin.json", {"name": "sampo-ui", "version": "0.9.0"})):
+            self.write(os.path.join(self.mk, rel), data)
+        old = {"source": {"source": "directory", "path": self.mk}}
+        self.write(os.path.join(self.cl, "settings.json"), {
+            "env": {"SOME_FLAG": "1"}, "permissions": {"allow": ["Bash(ls:*)"], "defaultMode": "bypassPermissions"},
+            "model": "opus", "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "/x/stop.sh"}]}]},
+            "statusLine": {"type": "command", "command": os.path.join(self.mk, "plugin", "hooks", "statusline")},
+            "enabledPlugins": {"tool-a@official": True, "tool-b@official": False, "foreman@foreman": True,
+                               "design@synced": False, "foreman-ui@foreman": True},
+            "extraKnownMarketplaces": {"official": {"source": {"source": "github", "repo": "org/official"}},
+                                       "foreman": old},
+            "pluginConfigs": {"tool-c@tools": {"options": {"x": 1}}, "foreman-ui@foreman": {"options": {"motion": "off"}}},
+            "theme": "dark"}, newline=True)
+        rec = lambda name, v: [{"scope": "user", "installPath": os.path.join(self.cl, "plugins", "cache", "foreman", name, v),  # noqa: E731
+                                "version": v, "installedAt": "2026-09-26T04:24:30.268Z",
+                                "lastUpdated": "2026-09-26T04:24:30.268Z", "gitCommitSha": "0" * 40}]
+        self.write(os.path.join(self.cl, "plugins", "installed_plugins.json"), {"version": 2, "plugins": {
+            "tool-a@official": rec("tool-a", "1.0.0"), "foreman@foreman": rec("foreman", "0.1.0"),
+            "foreman-ui@foreman": rec("foreman-ui", "0.7.0")}})
+        self.write(os.path.join(self.cl, "plugins", "known_marketplaces.json"), {
+            "official": {"source": {"source": "github", "repo": "org/official"},
+                         "installLocation": os.path.join(self.cl, "plugins", "marketplaces", "official"),
+                         "lastUpdated": "2026-11-07T19:33:50.805Z"},
+            "foreman": dict(old, installLocation=self.mk, lastUpdated="2026-10-15T19:48:08.766Z")})
+        p = mock.patch.dict(os.environ, {"HOME": self.h})
+        p.start()
+        self.addCleanup(p.stop)
+        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+        self.before = self.bytes()
+
+    def write(self, path, data, newline=False):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(json.dumps(data, indent=2) + ("\n" if newline else ""))
+
+    def bytes(self):
+        return {f: open(os.path.join(self.cl, f), "rb").read() for f in FILES}
+
+    def read(self, f):
+        with open(os.path.join(self.cl, f)) as fh:
+            return json.load(fh)
+
+    def migrate(self, **kw):
+        from sampo import pluginmove
+        return pluginmove.migrate(**kw)
+
+    def test_a_dry_run_lists_the_swap_and_changes_nothing(self):
+        r = self.migrate(dry=True)
+        self.assertEqual(r["status"], "plan")
+        self.assertEqual(self.bytes(), self.before)
+        self.assertFalse(os.path.exists(os.path.join(self.cl, "sampo-migrate-plugins")))
+        from sampo import pluginmove
+        text = pluginmove.render(r)
+        for words in ("foreman@foreman -> sampo@sampo", "foreman-ui@foreman -> sampo-ui@sampo", "+ sampo", "- foreman",
+                      "dry run"):
+            self.assertIn(words, text)
+
+    def test_the_move_swaps_every_id_and_keeps_the_rest(self):
+        r = self.migrate()
+        self.assertEqual(r["status"], "done")
+        s = self.read("settings.json")
+        self.assertEqual(s["enabledPlugins"], {"tool-a@official": True, "tool-b@official": False, "sampo@sampo": True,
+                                               "design@synced": False, "sampo-ui@sampo": True})
+        self.assertEqual(list(s["enabledPlugins"]), ["tool-a@official", "tool-b@official", "sampo@sampo",
+                                                     "design@synced", "sampo-ui@sampo"])  # each in its old place
+        self.assertEqual(s["extraKnownMarketplaces"], {"official": {"source": {"source": "github", "repo": "org/official"}},
+                                                       "sampo": {"source": {"source": "directory", "path": self.mk}}})
+        self.assertEqual(s["pluginConfigs"], {"tool-c@tools": {"options": {"x": 1}},
+                                              "sampo-ui@sampo": {"options": {"motion": "off"}}})
+        for k in ("env", "permissions", "model", "hooks", "statusLine", "theme"):
+            self.assertEqual(s[k], json.loads(self.before["settings.json"])[k], k)
+        self.assertTrue(self.before["settings.json"].endswith(b"}\n"))
+        self.assertTrue(open(os.path.join(self.cl, "settings.json"), "rb").read().endswith(b"}\n"))
+        inst = self.read("plugins/installed_plugins.json")
+        self.assertEqual(sorted(inst["plugins"]), ["sampo-ui@sampo", "sampo@sampo", "tool-a@official"])
+        self.assertEqual(inst["version"], 2)
+        e = inst["plugins"]["sampo@sampo"][0]
+        self.assertEqual((e["scope"], e["installPath"], e["version"]), ("user", os.path.join(self.mk, "plugin"), "9.1.0"))
+        self.assertEqual(inst["plugins"]["sampo-ui@sampo"][0]["installPath"], os.path.join(self.mk, "mods", "foreman-ui"))
+        known = self.read("plugins/known_marketplaces.json")
+        self.assertEqual(sorted(known), ["official", "sampo"])
+        self.assertEqual(known["sampo"]["source"], {"source": "directory", "path": self.mk})
+        self.assertEqual(known["sampo"]["installLocation"], self.mk)
+        self.assertEqual(known["official"], json.loads(self.before["plugins/known_marketplaces.json"])["official"])
+
+    def test_never_both_ids_enabled_in_any_write(self):
+        from sampo import pluginmove
+        seen = []
+        real = pluginmove.c.write_atomic
+
+        def spy(path, text):
+            seen.append((os.path.relpath(path, self.cl), json.loads(text)))
+            return real(path, text)
+        with mock.patch.object(pluginmove.c, "write_atomic", spy):
+            self.migrate()
+        settings = [d for f, d in seen if f == "settings.json"]
+        self.assertEqual(len(settings), 1, "one write swaps the ids")
+        on = {k for k, v in settings[0]["enabledPlugins"].items() if v}
+        self.assertTrue({"sampo@sampo", "sampo-ui@sampo"} <= on)
+        self.assertFalse(on & {"foreman@foreman", "foreman-ui@foreman", "sampo@foreman", "sampo-ui@foreman"})
+        self.assertEqual(sorted(f for f, _ in seen if f in FILES), sorted(FILES), "each file written once")
+
+    def test_a_rerun_changes_nothing(self):
+        self.migrate()
+        after = self.bytes()
+        r = self.migrate()
+        self.assertEqual(r["status"], "done")
+        self.assertFalse(r["changed"])
+        self.assertEqual(self.bytes(), after)
+
+    def test_undo_restores_every_file_byte_for_byte(self):
+        self.migrate()
+        self.assertNotEqual(self.bytes(), self.before)
+        r = self.migrate(undo=True)
+        self.assertEqual(r["status"], "undone")
+        self.assertEqual(self.bytes(), self.before)
+        self.assertFalse(r.get("warning"))
+        with self.assertRaises(ValueError):
+            self.migrate(undo=True)  # nothing left to undo
+        self.assertEqual(self.migrate()["status"], "done")  # and it moves again after an undo
+        self.assertEqual(self.migrate(undo=True)["status"], "undone")
+        self.assertEqual(self.bytes(), self.before)
+
+    def test_undo_after_claude_code_rewrote_a_file_keeps_that_copy_and_warns(self):
+        self.migrate()
+        k = os.path.join(self.cl, "plugins", "known_marketplaces.json")
+        with open(k, "a") as f:
+            f.write(" ")
+        r = self.migrate(undo=True)
+        self.assertEqual(self.bytes(), self.before)
+        self.assertIn("known_marketplaces.json", r["warning"])
+        kept = [n for n in os.listdir(os.path.join(self.cl, "sampo-migrate-plugins")) if "known_marketplaces" in n
+                and n.endswith(".replaced")]
+        self.assertEqual(len(kept), 1)
+
+    def test_a_half_moved_config_ends_on_one_id(self):
+        # the renames map moved the plugin to sampo@foreman while foreman-ui@foreman and a stale foreman@foreman stayed
+        s = self.read("settings.json")
+        s["enabledPlugins"]["sampo@foreman"] = True
+        s["enabledPlugins"]["foreman-ui@foreman"] = False
+        self.write(os.path.join(self.cl, "settings.json"), s, newline=True)
+        self.migrate()
+        on = self.read("settings.json")["enabledPlugins"]
+        self.assertEqual({k: v for k, v in on.items() if "sampo" in k or "foreman" in k},
+                         {"sampo@sampo": True, "sampo-ui@sampo": False})  # a disabled mod stays disabled
+
+    def test_claude_config_dir_is_followed(self):
+        cfg = os.path.join(self.tmp, "cfg")
+        os.rename(self.cl, cfg)
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}):
+            self.assertEqual(self.migrate()["status"], "done")
+        with open(os.path.join(cfg, "settings.json")) as f:
+            self.assertIn("sampo@sampo", json.load(f)["enabledPlugins"])
+
+    def test_a_checkout_that_still_says_foreman_is_refused(self):
+        self.write(os.path.join(self.mk, ".claude-plugin", "marketplace.json"), {"name": "foreman", "plugins": []})
+        with self.assertRaises(ValueError) as e:
+            self.migrate()
+        self.assertIn("foreman", str(e.exception))
+        self.assertEqual(self.bytes(), self.before)
+
+    def test_a_marketplace_not_in_a_folder_is_refused_with_the_steps(self):
+        k = self.read("plugins/known_marketplaces.json")
+        k["foreman"] = {"source": {"source": "github", "repo": "ChaseSunstrom/sampo"}, "installLocation": "/x"}
+        self.write(os.path.join(self.cl, "plugins", "known_marketplaces.json"), k)
+        before = self.bytes()
+        with self.assertRaises(ValueError) as e:
+            self.migrate()
+        self.assertIn("claude plugin marketplace add ChaseSunstrom/sampo", str(e.exception))
+        self.assertEqual(self.bytes(), before)
+
+    def test_a_sampo_marketplace_already_added_is_kept_if_it_is_this_folder(self):
+        # install.sh's claude plugin marketplace add may have run first: same folder (through a link) is the one to keep
+        link = os.path.join(self.tmp, "link")
+        os.symlink(self.mk, link)
+        k = self.read("plugins/known_marketplaces.json")
+        k["sampo"] = {"source": {"source": "directory", "path": link}, "installLocation": link, "lastUpdated": "x"}
+        self.write(os.path.join(self.cl, "plugins", "known_marketplaces.json"), k)
+        self.migrate()
+        self.assertEqual(self.read("plugins/known_marketplaces.json")["sampo"], k["sampo"])
+        k["sampo"] = {"source": {"source": "github", "repo": "someone/else"}}
+        self.migrate(undo=True)
+        self.write(os.path.join(self.cl, "plugins", "known_marketplaces.json"), k)
+        before = self.bytes()
+        with self.assertRaises(ValueError) as e:
+            self.migrate()
+        self.assertIn("someone/else", str(e.exception))
+        self.assertEqual(self.bytes(), before)
+
+    def test_nothing_to_move_says_so(self):
+        self.migrate()
+        os.remove(os.path.join(self.cl, "sampo-migrate-plugins", "manifest.json"))
+        r = self.migrate()
+        self.assertFalse(r["changed"])
+
+    def test_the_cli_dry_run_and_undo(self):
+        e = {"HOME": self.h}
+        p = self.fm("migrate", "plugins", "--dry-run", env=e)
+        self.assertIn("foreman@foreman -> sampo@sampo", p.stdout)
+        self.assertEqual(self.bytes(), self.before)
+        self.assertIn("sampo@sampo", self.fm("migrate", "plugins", env=e).stdout)
+        self.fm("migrate", "plugins", "--undo", env=e)
+        self.assertEqual(self.bytes(), self.before)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -540,7 +540,7 @@ def plugin_skills():
     from sampo import plugins as splugins
     out = []
     for pid, info in sorted(splugins.installed().items()):
-        if not info.get("path") or pid.split("@")[0] == "foreman":
+        if not info.get("path") or pid.split("@")[0] in c.NAMESPACES:
             continue
         for f in sorted(glob.glob(os.path.join(info["path"], "skills", "*", "SKILL.md"))):
             fm = splugins._frontmatter(f)

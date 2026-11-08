@@ -405,10 +405,10 @@ class DesignPlugin(unittest.TestCase):  # T-1652: the design skills as an option
     def test_the_foreman_design_entry_resolves(self):
         root = os.path.dirname(PLUGIN)
         mk = json.loads(read_text(os.path.join(root, ".claude-plugin", "marketplace.json")))
-        entry = next(p for p in mk["plugins"] if p["name"] == "foreman-design")
+        entry = next(p for p in mk["plugins"] if p["name"] == "sampo-design")
         base = os.path.normpath(os.path.join(root, entry["source"]))
         self.assertEqual(json.loads(read_text(os.path.join(base, ".claude-plugin", "plugin.json")))["name"],
-                         "foreman-design")
+                         "sampo-design")
         skills = sorted(os.listdir(os.path.join(base, "skills")))
         self.assertEqual(skills, ["design-extract", "directions", "ui-design"])
         for s in skills:

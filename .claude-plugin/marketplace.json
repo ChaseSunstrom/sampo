@@ -1,5 +1,5 @@
 {
-  "name": "foreman",
+  "name": "sampo",
   "owner": {
     "name": "ChaseSunstrom"
   },
@@ -9,22 +9,27 @@
   },
   "plugins": [
     {
-      "name": "foreman",
+      "name": "sampo",
       "source": "./plugin",
       "description": "Plans, sequences, tracks and verifies work from terse prompts: evidence-gated briefs, focus lock, exact resume, a bypass-mode guard, drive mode and memory hygiene.",
       "version": "1.2.51"
     },
     {
-      "name": "foreman-ui",
+      "name": "sampo-ui",
       "source": "./mods/foreman-ui",
       "description": "Sampo inside Claude Code (mods): one docked panel that fits the screen and never jumps (what needs you, the task with its stage rail and progress, what runs now, live charts of the session, the queue), a band above the prompt when it's closed, toasts and one-press approve/next/drive/inbox actions. Needs a Claude Code build with function-hook plugins.",
       "version": "0.20.0"
     },
     {
-      "name": "foreman-design",
+      "name": "sampo-design",
       "source": "./plugins/foreman-design",
-      "description": "Sampo's design skills on their own (ui-design, directions, design-extract), for an install without the foreman plugin, which already has them: don't enable both. Their commands run fm (Sampo's install script sets it up).",
+      "description": "Sampo's design skills on their own (ui-design, directions, design-extract), for an install without the sampo plugin, which already has them: don't enable both. Their commands run fm (Sampo's install script sets it up).",
       "version": "1.2.51"
     }
-  ]
+  ],
+  "renames": {
+    "foreman": "sampo",
+    "foreman-ui": "sampo-ui",
+    "foreman-design": "sampo-design"
+  }
 }

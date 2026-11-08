@@ -146,7 +146,7 @@ class Speed(ForemanTestCase):
 
     def test_usage_counts_skills_and_lists_the_unused(self):
         with open(os.path.join(c.state_dir(), "events.jsonl"), "a") as f:
-            for tool, target in (("Skill", "foreman:intake"), ("Bash", "fm task new x"), ("Bash", "fm check")):
+            for tool, target in (("Skill", "sampo:intake"), ("Bash", "fm task new x"), ("Bash", "fm check")):
                 f.write(json.dumps({"ts": c.now(), "kind": "tool", "tool": tool, "target": target,
                                     "project": self.p.slug}) + "\n")
         data = self.fm_json("usage")

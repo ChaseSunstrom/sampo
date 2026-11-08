@@ -1,7 +1,7 @@
 {
-  "name": "foreman-design",
+  "name": "sampo-design",
   "version": "1.2.51",
-  "description": "Foreman's design skills on their own: ui-design (direction, tokens, motion, QA), directions (six looks, the pick saved as DESIGN.md) and design-extract. Their commands run fm, so install the foreman plugin too.",
+  "description": "Sampo's design skills on their own: ui-design (direction, tokens, motion, QA), directions (six looks, the pick saved as DESIGN.md) and design-extract. Their commands run fm, so install the sampo plugin too.",
   "author": {
     "name": "ChaseSunstrom"
   }

@@ -259,7 +259,7 @@ class Verbs(ForemanTestCase):
         self.assertEqual(got["hint"], c.SKILL_FOR["FIX"])
         self.assertTrue(got["playbooks"] and set(got["playbooks"]) <= set(pb.listed()), got)  # real ones, not pinned
         clean = json.loads(self.run_fm("route", "CLEAN", "--json", lib=False).stdout)["playbooks"]
-        self.assertIn("references/clean/repo-sweep.md", clean)  # "foreman:playbooks (clean)": the stage's books
+        self.assertIn("references/clean/repo-sweep.md", clean)  # "sampo:playbooks (clean)": the stage's books
         self.assertEqual(json.loads(self.run_fm("route", "ui", "--json", lib=False).stdout)["playbooks"],
                          ["references/ui/INDEX.md"])
         for stage in c.SKILL_FOR:  # every stage routes somewhere real, or says it has no playbook

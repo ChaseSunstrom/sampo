@@ -6,7 +6,7 @@ description: Use whenever a new UI needs a look: six style directions, the pick 
 # Sampo: style directions
 
 One sentence about a product in; six distinct style directions out, each a card that fits on one screen; one is
-picked and saved as `DESIGN.md` with an audacity level. Start it with `/foreman:directions <sentence>` (in Claude
+picked and saved as `DESIGN.md` with an audacity level. Start it with `/sampo:directions <sentence>` (in Claude
 Code or a Smith (`sampo smith`) session), or start it yourself when the user asks for looks or styles to choose from before a
 UI exists. It is for web and app screens; a terminal UI or a Claude Code mod takes the playbooks' `terminal-ui.md`
 instead.
@@ -21,7 +21,7 @@ then `sampo lib show look-NAME`: measured palettes, type, layout, motion and a c
 (`sampo lib show shader-NAME`) as an optional texture on one surface, never as the direction itself.
 
 The user's taste orders the looks: `sampo looks` ranks the twenty by what they kept, reverted, called "not like that"
-or picked in a calibration (`/foreman:looks calibrate`). Draw the looks you offer from its top, never one below 0
+or picked in a calibration (`/sampo:looks calibrate`). Draw the looks you offer from its top, never one below 0
 unless the user names it or none at 0 or above fits, else the least negative, and say which card the ranking
 favoured; with no signal yet every look is 0. Nothing detects a kept or reverted look on its own: when the user
 keeps or reverts one, run `sampo looks keep` or `sampo looks revert` yourself (step 5 says when).
@@ -61,7 +61,7 @@ keeps or reverts one, run `sampo looks keep` or `sampo looks revert` yourself (s
    **Diverge before you converge** when the user is torn or every card feels alike: a three-variant round (`sampo design
    diverge 3 <the screen> --out DIR`: briefs in looks far apart, each built in its own lane, the winner kept with
    `sampo design diverge pick LOOK`); a taste duel
-   or four-look tournament the user answers (`/foreman:looks tournament`); opposite day (`sampo looks opposite LOOK`, the
+   or four-look tournament the user answers (`/sampo:looks tournament`); opposite day (`sampo looks opposite LOOK`, the
    looks farthest from the current one); a lookbook page (`sampo looks book --out FILE`); or five historical idioms of
    one layout (`references/idioms.md`).
 5. **The pick.**

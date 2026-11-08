@@ -86,7 +86,7 @@ class OneOff(unittest.TestCase):
                 f.write("{not json")
             self.assertIsNone(rl.only_foreman(p))  # unreadable
             with open(p, "w") as f:
-                json.dump({"enabledPlugins": {"ponytail@x": True, "foreman@foreman": True, "foreman-ui@foreman": True,
+                json.dump({"enabledPlugins": {"ponytail@x": True, "sampo@sampo": True, "sampo-ui@sampo": True,
                                               "old@y": False, "claude-hud@z": True}}, f)
             got = json.loads(rl.only_foreman(p))
         self.assertEqual(got, {"enabledPlugins": {"ponytail@x": False, "claude-hud@z": False}})

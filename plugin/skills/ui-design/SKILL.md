@@ -17,7 +17,7 @@ Work inside a focused task (each step edits files). Per step, read only the play
 
 - The repo already has one (a `DESIGN.md` with a `## Direction` section, a brand guide, a shipped design system):
   it wins. Read it and go to step 2, unless the user asked for a new look.
-- No direction, or the user wants looks or styles to choose from: load: Skill foreman:directions (six one-screen
+- No direction, or the user wants looks or styles to choose from: load: Skill sampo:directions (six one-screen
   cards from one sentence, the pick saved as `DESIGN.md` with an audacity level).
 - Show real specimens instead of describing them: `sampo page looks` writes a gallery with one living specimen per look
   card; `sampo looks` ranks the twenty by the user's past keeps and reverts, so offer from its top.

@@ -315,7 +315,7 @@ token: {tok}
 
 
 class Extras(ForemanTestCase):
-    """T-1664: fm inbox first, swipe, pick, prefer and ticket; the spike note; /foreman:backlog."""
+    """T-1664: fm inbox first, swipe, pick, prefer and ticket; the spike note; /sampo:backlog."""
 
     def setUp(self):
         super().setUp()

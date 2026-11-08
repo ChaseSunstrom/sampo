@@ -109,7 +109,7 @@ class Skills(unittest.TestCase):
     def test_every_skill_the_rules_map_plain_words_to_is_model_invocable(self):
         # T-1705: a user-only skill can't be loaded by the model, so the rules may not send it there
         rules = read_text(os.path.join(PLUGIN, "rules", "foreman.md"))
-        for name in re.findall(r"→ `/foreman:([\w-]+)`", rules):
+        for name in re.findall(r"→ `/sampo:([\w-]+)`", rules):
             self.assertNotIn(name, USER_ONLY)
 
     def test_plain_requests_rank_their_own_skill_first_by_description_overlap(self):
@@ -238,7 +238,7 @@ class Skills(unittest.TestCase):
         for need in ("design", "scene", "motion", "looks", "page", "img", "new"):
             self.assertIn(need, named)
         self.assertEqual(fm_mention_problems(body), [])  # T-1701: the checker every skill test shares
-        self.assertIn("Skill foreman:directions", body)
+        self.assertIn("Skill sampo:directions", body)
         # T-1714: palette writes --out (it was ignored before); extract writes DESIGN.md's Tokens section unless --out
         palette = next(line for line in body.splitlines() if "sampo design palette" in line)
         self.assertRegex(palette, r"`sampo design palette \S+ --out \S+`")
@@ -380,7 +380,7 @@ class SampoFrontDoor(unittest.TestCase):  # T-2760
     def test_one_upgrade_note_names_every_kept_form_and_sampo_migrate(self):
         text = self.doc("README.md")
         note = next(p for p in text.split("\n\n") if "Foreman-Task" in p)
-        for kept in ("`fm`", "foreman@foreman", "foreman-ui@foreman", "/foreman:", "foreman:", "FOREMAN_*",
+        for kept in ("`fm`", "sampo@sampo", "sampo-ui@sampo", "@foreman", "sampo migrate plugins", "/foreman:", "foreman:", "FOREMAN_*",
                      "Foreman-Task", "~/.claude/foreman", "sampo migrate", "--undo", "formerly Foreman"):
             self.assertIn(kept, note)
         self.assertEqual(text.count("Foreman-Task"), 1)
@@ -436,8 +436,9 @@ class OutputStyle(unittest.TestCase):
         self.assertIn("name: Sampo", head)
         self.assertIn("keep-coding-instructions: true", head)
         self.assertIn('"Sampo project', body)  # T-2946: the note the session-start hook opens with
-        self.assertEqual(setup.OUTPUT_STYLE, "foreman:Sampo")  # plugin styles are selected as <plugin>:<name>
-        self.assertIn("foreman:Foreman", setup.OUTPUT_STYLES)  # a stored older choice still counts as ours
+        self.assertEqual(setup.OUTPUT_STYLE, "sampo:Sampo")  # plugin styles are selected as <plugin>:<name>
+        for old in ("foreman:Sampo", "foreman:Foreman"):  # a stored older choice still counts as ours (T-2879)
+            self.assertIn(old, setup.OUTPUT_STYLES)
         for needle in ("✓", "Changed:", "Next:", "Needs you", "write nothing between tool calls"):
             self.assertIn(needle, body)
         self.assertNotIn("▸ Step", body, "the band and tool rows show steps; replies don't repeat them (T-0095)")

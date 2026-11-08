@@ -427,6 +427,34 @@ class InstallScript(unittest.TestCase):
     def test_build_install_adds_build_tools(self):
         self.assertIn("--build-tools", self.setup_args("--build"))
 
+    def test_an_install_from_before_the_rename_is_moved_not_installed_beside(self):
+        # T-2879 review: a second install beside the old id loads every hook twice; T-3707: install.sh moves it with
+        # sampo migrate plugins (one write per file) and installs sampo@sampo only on a machine that has no old id
+        calls = os.path.join(self.env["HOME"], "claude-calls")
+        with open(os.path.join(self.env["HOME"], "bin", "claude"), "w") as f:
+            f.write(f'#!/usr/bin/env bash\necho "$*" >> {calls}\nexit 0\n')
+        os.makedirs(os.path.join(self.fhome, "plugin", "bin"))
+        with open(os.path.join(self.fhome, "plugin", "bin", "sampo"), "w") as f:
+            f.write(f'import sys\nopen({calls!r}, "a").write("sampo " + " ".join(sys.argv[1:]) + "\\n")\n')
+
+        def installs(record):
+            if os.path.exists(calls):
+                os.remove(calls)
+            plugins = os.path.join(self.env["HOME"], ".claude", "plugins")
+            os.makedirs(plugins, exist_ok=True)
+            with open(os.path.join(plugins, "installed_plugins.json"), "w") as f:
+                json.dump({"version": 2, "plugins": record}, f)
+            p = subprocess.run(["bash", os.path.join(self.fhome, "install.sh"), "--no-plugins", "--no-bypass", "--no-wiring"],
+                               capture_output=True, text=True, env=self.env, stdin=subprocess.DEVNULL, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+            return [ln for ln in read_text(calls).splitlines() if ln.startswith(("plugin install", "sampo "))], p.stdout
+        for old in ({"foreman@foreman": [{}], "foreman-ui@foreman": [{}]}, {"sampo@foreman": [{}], "sampo-ui@foreman": [{}]}):
+            done, out = installs(old)
+            self.assertEqual(done, ["sampo migrate plugins"], old)
+            self.assertIn("moved the plugin to sampo@sampo", out)
+        done, _ = installs({})
+        self.assertEqual(done, ["plugin install sampo@sampo --scope user", "plugin install sampo-ui@sampo --scope user"])
+
     def local_models(self, *flags, ollama=True):
         """T-2880: install.sh with a stub `ollama` that logs its calls (never a real pull), or with none on PATH."""
         calls = os.path.join(self.env["HOME"], "ollama-calls")

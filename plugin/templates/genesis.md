@@ -32,7 +32,7 @@ Save this message verbatim with `fm genesis init` (never edited), capture it as 
 
 ## 1. Gap map first (generation 1 only, no brainstorm yet)
 
-For each capability in §2, map what {{project}} already has with file and command evidence, what's partial, and what's missing, using `foreman:fm-recon` per capability in parallel. Save it with `fm genesis put gap-map.md`. Every later idea is checked against it. Nothing is built that already exists.
+For each capability in §2, map what {{project}} already has with file and command evidence, what's partial, and what's missing, using `sampo:fm-recon` per capability in parallel. Save it with `fm genesis put gap-map.md`. Every later idea is checked against it. Nothing is built that already exists.
 
 ## 2. The capability spec: what "complete and best-in-class" means for {{project}}
 

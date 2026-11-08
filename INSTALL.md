@@ -52,3 +52,20 @@ assume yes. The command it installs is `sampo`; `fm` still works as an alias for
 
 To remove it later: `~/.claude/foreman/plugin/uninstall.sh` (`--dry-run` previews; `state/` is kept unless
 `--purge-state`).
+
+**Upgrading an install from before the plugin rename.** The marketplace is now `sampo` and the plugins `sampo`,
+`sampo-ui` and `sampo-design`: ids `sampo@sampo`, `sampo-ui@sampo` and `sampo-design@sampo`, commands `/sampo:next`,
+agents `sampo:fm-builder`. Claude Code keeps a marketplace under the name it was added with, so an install made
+before still has ids ending `@foreman` (the old plugin names, or `sampo` once the marketplace's renames map moved it).
+It keeps working; to move it, run `sampo migrate plugins --dry-run` to see the change, then `sampo migrate plugins`
+(install.sh does this for you). It re-adds the marketplace as `sampo` from the same folder and swaps the ids, with the
+mod's options, in one write per file (`settings.json`, `plugins/installed_plugins.json`,
+`plugins/known_marketplaces.json`), so the old and new ids are never enabled together; a copy of each file goes to
+`~/.claude/sampo-migrate-plugins/`, and `sampo migrate plugins --undo` puts them back byte for byte. It moves a
+marketplace read from a folder (install.sh's); one added from GitHub keeps its old ids and works, or is re-added by
+hand (`/plugin marketplace add ChaseSunstrom/sampo`, `/plugin install sampo@sampo`, then uninstall the old id).
+Sampo still reads the old ids and names wherever they were saved (settings, logs, notes); Claude Code names commands
+after the plugin, so the old `/foreman:` commands are gone once a session starts on `sampo@sampo`: type `/sampo:`
+instead. Restart open Claude Code sessions after the move (don't count on `/reload-plugins`): until then each keeps
+the names it started with, and Sampo's notes to it use those. `sampo doctor` warns while an old id is enabled, and
+when an old and a new one are enabled together, and names `sampo migrate plugins`.

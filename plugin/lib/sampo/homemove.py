@@ -153,9 +153,13 @@ def render(r):
 
 def cmd_migrate(args):
     from sampo import cli
+    run, show = migrate, render
+    if getattr(args, "what", "home") == "plugins":  # T-3707: Claude Code's plugin ids, not the folders
+        from sampo import pluginmove
+        run, show = pluginmove.migrate, pluginmove.render
     try:
-        r = migrate(args.undo, args.dry_run)
+        r = run(args.undo, args.dry_run)
     except ValueError as e:
         raise cli.UsageError(str(e)) from None
-    cli.out(args, r, render(r))
+    cli.out(args, r, show(r))
     return 0

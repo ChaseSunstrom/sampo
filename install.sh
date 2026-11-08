@@ -114,14 +114,29 @@ fi
 # 3. The Sampo plugin itself, from this repo as a local marketplace (loads in place: edits apply on /reload-plugins)
 if [ "$CLAUDE" = 1 ]; then
 say "Installing the Sampo plugin"
-claude plugin marketplace add "$FOREMAN_HOME" >/dev/null 2>&1 || true
-claude plugin install foreman@foreman --scope user >/dev/null 2>&1 || die "couldn't install foreman@foreman (run: claude plugin validate $FOREMAN_HOME)"
+# T-3707: the marketplace is named sampo. An install made before (ids ending @foreman: the plugin's old name, or sampo
+# once the renames map ran) moves with sampo migrate plugins, one write per file, so the old and new ids never load
+# together; installing sampo@sampo beside it would load every hook twice
+had() { grep -qE "\"($1)@foreman\"" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" 2>/dev/null; }
+OLD_MOD=0; had 'foreman-ui|sampo-ui' && OLD_MOD=1  # read before the move: the mod moves (or stays) with the plugin
+if had 'foreman|sampo|foreman-ui|sampo-ui'; then
+  if python3 "$FOREMAN_HOME/plugin/bin/sampo" migrate plugins >/dev/null 2>&1; then
+    say "  moved the plugin to sampo@sampo (sampo migrate plugins --undo puts it back; restart open sessions)"
+  else
+    say "  ! the plugin keeps its old id: sampo migrate plugins --dry-run says why"
+  fi
+else
+  claude plugin marketplace add "$FOREMAN_HOME" >/dev/null 2>&1 || true
+  claude plugin install sampo@sampo --scope user >/dev/null 2>&1 || die "couldn't install sampo@sampo (run: claude plugin validate $FOREMAN_HOME)"
+fi
 # The UI mod (band, pane, toasts) is optional: builds without function-hook plugins keep the statusline and fm watch
 if [ "$MOD" = 1 ]; then
-  if claude plugin install foreman-ui@foreman --scope user >/dev/null 2>&1; then
-    say "  installed foreman-ui (band, /fm pane, toasts; --no-mod skips it, claude plugin disable foreman-ui@foreman turns it off)"
+  if [ "$OLD_MOD" = 1 ]; then
+    :  # moved with the plugin above, or kept under its old id with it
+  elif claude plugin install sampo-ui@sampo --scope user >/dev/null 2>&1; then
+    say "  installed sampo-ui (band, /fm pane, toasts; --no-mod skips it, claude plugin disable sampo-ui@sampo turns it off)"
   else
-    say "  (foreman-ui not installed: this Claude Code build has no mods; the statusline and fm watch still work)"
+    say "  (sampo-ui not installed: this Claude Code build has no mods; the statusline and fm watch still work)"
   fi
 fi
 fi
@@ -250,7 +265,7 @@ if [ "$BUILD" = 1 ] && (: </dev/tty) 2>/dev/null; then   # a terminal we can act
   exec claude "Run the Sampo build: read $FOREMAN_HOME/BUILD_PROMPT.md in full and execute it. If $FOREMAN_HOME/local/PLAN.md exists, resume from it instead of starting over." </dev/tty
 fi
 if [ "$CLAUDE" = 1 ]; then
-  printf '\nNext: start Claude Code in any repo and give it a request (e.g. FIX: ...).\n      /foreman:status shows where things stand; %s/MASTER.md explains everything.\n' "$FOREMAN_HOME"
+  printf '\nNext: start Claude Code in any repo and give it a request (e.g. FIX: ...).\n      /sampo:status shows where things stand; %s/MASTER.md explains everything.\n' "$FOREMAN_HOME"
 else
   printf '\nNext: start your agent in any repo and give it a request (e.g. FIX: ...), or run fm code "<request>".\n      fm status shows where things stand; %s/MASTER.md explains everything.\n' "$FOREMAN_HOME"
 fi

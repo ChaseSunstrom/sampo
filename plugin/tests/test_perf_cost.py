@@ -162,7 +162,7 @@ class DegradeOnPace(HookCase):
         queued = self.task("Second fix", focus=False)
         self.task("Current work")
         usage(**AHEAD)
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         p = self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Waiting for the review.",
                                "session_id": "sess-1"})
         reason = (parse(p) or {}).get("reason", "")

@@ -121,12 +121,39 @@ def _breaker_set(event, entry):
         return False
 
 
+_SID = c.lazy(r'"session_id"\s*:\s*"([\w-]{1,100})"')
+
+
 def run(event, raw):
     c._ACTIVE_MEMO = {}  # T-3577: the active task's scan, once per hook run while the tasks folder stays unchanged
     try:
         return _run(event, raw)
     finally:
         c._ACTIVE_MEMO = None
+
+
+def _as_loaded(raw):
+    """T-2879: a session whose Claude Code loaded Sampo as foreman (a session started before the move) is told
+    foreman: names in everything its hooks print (core.as_loaded), and the CLI it runs reads the same (note_ns).
+    Holds the hook's output from here; the function it returns writes it out. T-3707: called in _run's handler branch,
+    not run(): sampo-fast mirrors run() and answers PreToolUse itself, and a guard answer names no skill. No
+    contextlib: the hot events import none (test_bench_hooks.HotPathImports)."""
+    name = c.loaded_ns()
+    if name:
+        m = _SID.search(raw[:4096])
+        if m:
+            c.note_ns(m.group(1), name)
+    if name in (None, c.NS):
+        return lambda: None
+    import io
+    saved, held = (sys.stdout, sys.stderr), (io.StringIO(), io.StringIO())
+    sys.stdout, sys.stderr = held
+
+    def done():
+        sys.stdout, sys.stderr = saved
+        sys.stdout.write(c.as_loaded(held[0].getvalue(), name))
+        sys.stderr.write(c.as_loaded(held[1].getvalue(), name))
+    return done
 
 
 def _run(event, raw):
@@ -148,6 +175,7 @@ def _run(event, raw):
         code, state = 0, ({} if event in UNBREAKABLE else breaker().get(event) or {})
         if state.get("until", 0) > time.time():
             return 0  # T-0087: paused after failing in a row; fm doctor and the band say so
+        held = _as_loaded(raw)  # T-2879: an old session's names; written out in the finally below
         try:
             payload = json.loads(raw) if raw.strip() else {}
             handler = HANDLERS.get(event)
@@ -181,6 +209,8 @@ def _run(event, raw):
                 if _breaker_set(event, {"fails": fails, "until": until}) and until:
                     log_error(event, f"paused for {BREAKER_PAUSE_S // 60} min after {fails} failures in a row "
                                      f"(it runs again at {time.strftime('%H:%M', time.localtime(until))})")
+        finally:
+            held()
     if event not in UNTIMED:
         ms = round((time.monotonic() - t0) * 1000, 1)
         extra = {}
@@ -280,17 +310,17 @@ def _log_inject(event, text, pl=None):
         _skill_named(pl, text)
 
 
-_SKILL_NAME = r"foreman:([a-z][a-z-]{0,39})(?![a-z-])"  # a longer name is no skill: never logged
+_SKILL_NAME = rf"(?:{'|'.join(c.NAMESPACES)}):([a-z][a-z-]{{0,39}})(?![a-z-])"  # a longer name is no skill: never logged
 _TYPED = c.lazy(r"\s*(?:<command-name>)?/" + _SKILL_NAME)
-_NAMED = c.lazy(r"(?:/|\bSkill )" + _SKILL_NAME)  # /foreman:x, or a hint's "load: Skill foreman:x" (T-1697)
+_NAMED = c.lazy(r"(?:/|\bSkill )" + _SKILL_NAME)  # /sampo:x, or a hint's "load: Skill sampo:x" (T-1697); T-2879: foreman: too
 
 
 def _skill_named(pl, text, typed=False):
-    """T-1702: the foreman:x skills a hook's note names (skill_named), or the one the user typed (slash), as an event
+    """T-1702: the sampo:x skills a hook's note names (skill_named), or the one the user typed (slash), as an event
     fm usage holds against what the session loaded: named and never loaded is offered and ignored. Every note goes
     through here, so a hook naming a skill needs no call of its own; only text naming one pays for the lookup."""
     try:
-        if not isinstance(pl, dict) or "foreman:" not in str(text or ""):
+        if not isinstance(pl, dict) or not any(n in str(text or "") for n in c.ns_names("")):
             return
         m = _TYPED.match(str(text)) if typed else None
         names = ([m.group(1)] if m else []) if typed else sorted(set(_NAMED.findall(str(text))))
@@ -1657,7 +1687,7 @@ def user_prompt_submit(pl):
         except Exception:
             log_error("UserPromptSubmit", _tb())
     r = c.parse_intake(text)
-    if _CORRECTION.match(text):  # R2: the user's corrections, for /foreman:reflect to turn into durable preferences
+    if _CORRECTION.match(text):  # R2: the user's corrections, for /sampo:reflect to turn into durable preferences
         try:
             act = c.active_brief_fast(p, p.lane)
             c.log_event(p, "correction", task=act.id if act else None, data={"text": c.fit(c.plain(text), 300)},
@@ -1776,9 +1806,9 @@ def user_prompt_submit(pl):
         parts.append("Override word: " + ", ".join(r.overrides))
     elif c.is_exhaustive(text):
         parts.append("Exhaustive request (everything / fully featured): run sampo mission --request \"<their words>\" (it "
-                     "composes the mission, lenses and sampo ideas line), then /foreman:brainstorm super mode (--rounds 4) until dry")
+                     "composes the mission, lenses and sampo ideas line), then /sampo:brainstorm super mode (--rounds 4) until dry")
     elif not r.items and c.is_open_ended(text):
-        parts.append("Open-ended request with no concrete target; the Sampo procedure for it is /foreman:brainstorm, "
+        parts.append("Open-ended request with no concrete target; the Sampo procedure for it is /sampo:brainstorm, "
                      "seeded by sampo mission --request \"<their words>\"")
     elif c.is_broad(text):
         parts.append("Broad request: sweep the whole space before planning (sampo ideas --lens 'capability map' "
@@ -1800,7 +1830,7 @@ def user_prompt_submit(pl):
                      "a tool finding nothing isn't done)")
     if not r.items and not r.overrides and c.is_work_request(text):  # T-0364: a one-liner brief skipped the thinking
         parts.append("Work request: classify it (type and tier) on your first line; S → sampo task new … --focus; "
-                     "M/L → plan before any edit (/foreman:intake §2: every capability and approach, then choose)")
+                     "M/L → plan before any edit (/sampo:intake §2: every capability and approach, then choose)")
     try:  # T-0977: the stack cards the request names, once per session each; nothing loads until one is read
         from sampo import lib as slib
         named = [x for x in slib.cards_named(text) if _first_time(sid, "card-" + x)]
@@ -2317,7 +2347,7 @@ def _pre_tool_use(raw):
         why = _state_error(e)
         print(f"Ward internal error ({why or type(e).__name__}); the tool call was blocked (fail-closed). "
               f"Details: {os.path.join(c.state_dir(), 'logs', 'hooks.log')}. "
-              f"If this persists: claude plugin disable foreman@foreman", file=sys.stderr)
+              f"If this persists: claude plugin disable {(c.installed_ids() or c.plugin_ids())[0]}", file=sys.stderr)
         return 2
     made, lane_hint, lane_tasks = None, "", None
     if block and block.category == "brief" and p:
@@ -2619,7 +2649,7 @@ def _design_note(pl, p, act):
     _card_mark(p, act.id, ":design-direction")
     skill = os.path.isfile(os.path.join(c.PLUGIN_ROOT, "skills", "ui-design", "SKILL.md"))  # T-1715: the job skill
     return (f"Sampo: design direction: {act.id} edits UI and no DESIGN.md has a ## Direction. Pick a direction and "
-            f"write it before more UI (playbook ui/design-direction.md{'; load: Skill foreman:ui-design' if skill else ''}"
+            f"write it before more UI (playbook ui/design-direction.md{'; load: Skill sampo:ui-design' if skill else ''}"
             "). A nudge, not a block.")
 
 
@@ -2642,7 +2672,7 @@ def _readme_note(pl, p, act):
         return None
     _card_mark(p, act.id, ":readme-visuals")
     return (f"Sampo: README visuals: {act.id} edits a README with no image. Show the product: load: Skill "
-            "foreman:readme-visuals (sampo readme plan, shots, diagram, check). A nudge, not a block.")
+            "sampo:readme-visuals (sampo readme plan, shots, diagram, check). A nudge, not a block.")
 
 
 def _said_once(pl, parts):
@@ -5207,7 +5237,7 @@ def subagent_start(pl):
 def subagent_context(pl):
     """T-3672: SubagentStart's synchronous half: the profile's short digest (profile.BRIEF_MAX bytes) so a subagent
     starts knowing the user too; a builder's brief already carries the longer one."""
-    if pl.get("agent_type") == "foreman:fm-builder":
+    if pl.get("agent_type") in c.ns_names("fm-builder"):
         return None
     try:
         from sampo import profile
@@ -5219,10 +5249,10 @@ def subagent_context(pl):
 
 
 def _mark_builder(pl, returned):
-    """T-3145: a foreman:fm-builder's own start or stop marks the task whose lane is its worktree (agent-<id>), so the
+    """T-3145: a sampo:fm-builder's own start or stop marks the task whose lane is its worktree (agent-<id>), so the
     builder cap sees a returned builder even while the session that launched it (builder_proc) lives on."""
     aid = str(pl.get("agent_id") or "")
-    if pl.get("agent_type") != "foreman:fm-builder" or not re.fullmatch(r"[\w-]{4,64}", aid):
+    if pl.get("agent_type") not in c.ns_names("fm-builder") or not re.fullmatch(r"[\w-]{4,64}", aid):
         return
     def mine(b):  # open, and its lane is this builder's worktree
         return b and b.status not in c.CLOSED and str(b.meta.get("lane") or "").rstrip("/").endswith(f"agent-{aid}")

@@ -40,7 +40,7 @@ class TidyCase(ForemanTestCase):
     def seed_rot(self):
         with open(os.path.join(self.repo, "CLAUDE.md"), "w") as f:
             f.write("# app\n## Map\n- `src/api/` — handlers\n- `docs/missing-guide.md` — guide\n"
-                    "## Commands\n- Test: `npm run test:unit`\n- Plan with `/foreman:intake`, graph with `/graphify`\n")
+                    "## Commands\n- Test: `npm run test:unit`\n- Plan with `/sampo:intake`, graph with `/graphify`\n")
         with open(os.path.join(self.repo, "package.json"), "w") as f:
             json.dump({"scripts": {"test": "jest"}}, f)
         os.makedirs(os.path.join(self.repo, "src", "api"))
@@ -66,7 +66,7 @@ class DryRun(TidyCase):
         dead = [f for f in report["findings"] if f["kind"] == "dead_path"]
         self.assertTrue(any("docs/missing-guide.md" in f["detail"] for f in dead))
         self.assertFalse(any("src/api" in f["detail"] for f in dead), "existing paths are not dead")
-        self.assertFalse(any("/foreman:intake" in f["detail"] or "/graphify" in f["detail"] for f in dead),
+        self.assertFalse(any("/sampo:intake" in f["detail"] or "/graphify" in f["detail"] for f in dead),
                          "slash commands are not paths")
         self.assertEqual(sorted(os.listdir(os.path.join(self.p.dir, "tasks"))), before)
         self.assertEqual(read_text(os.path.join(self.mem, "MEMORY.md")), mem_before)

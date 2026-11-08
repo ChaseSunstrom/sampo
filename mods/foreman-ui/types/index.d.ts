@@ -142,7 +142,7 @@ export type TurnSummary = { durationMs: number; tools: number; edits: number; ad
 
 declare module 'claude-code' {
   interface PluginState {
-    'foreman-ui': {
+    'sampo-ui': {
       view: FmView | null
       error: string | null
       frame: number

@@ -2422,7 +2422,7 @@ class PluginChanges(GuardCase):
 
     def test_refreshing_a_marketplace_before_one_update_is_one_change(self):
         # T-0201: an update isn't pinned and refreshes the listing itself; an install after a refresh still is two
-        for cmd in ("claude plugin marketplace update foreman; claude plugin update foreman-ui@foreman",
+        for cmd in ("claude plugin marketplace update sampo; claude plugin update sampo-ui@sampo",
                     "claude plugin marketplace update m && claude plugin marketplace update n && claude plugin update x@m"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(self.bash(cmd, allow=["plugin"]))

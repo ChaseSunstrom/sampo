@@ -31,7 +31,7 @@ class ReviewerFindings(ForemanTestCase):
         self.fm("task", "ac", self.tid, "add", "works", "--verify", "pytest")
         self.fm("focus", self.tid)
 
-    def stop(self, msg=MSG, agent="foreman:fm-reviewer"):
+    def stop(self, msg=MSG, agent="sampo:fm-reviewer"):
         self.hook("SubagentStop", {"agent_id": "a1", "agent_type": agent, "last_assistant_message": msg})
 
     def found(self):
@@ -46,7 +46,7 @@ class ReviewerFindings(ForemanTestCase):
                                ("edge", "LOW", "plugin/tests/x.py:3", "reported", self.tid)])
 
     def test_non_reviewer_logs_nothing(self):
-        self.stop(agent="foreman:fm-recon")
+        self.stop(agent="sampo:fm-recon")
         self.assertEqual(self.found(), [])
 
     def test_cap_at_30(self):

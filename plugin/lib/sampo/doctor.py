@@ -497,7 +497,7 @@ def _cached(name, key, compute):
 
 
 UNLOADED_SESSIONS = 5  # T-1703: sessions that named a skill, none loading it, before doctor says so
-IDLE_NAMED = {"next"}  # the idle Next line names /foreman:next every turn, so every session names it
+IDLE_NAMED = {"next"}  # the idle Next line names /sampo:next every turn, so every session names it
 
 
 def check_unloaded_skills(events=None, plugin=PLUGIN, n=UNLOADED_SESSIONS):
@@ -1105,25 +1105,40 @@ def check_aliases(version=None, lib=None, checkout=None):
                                          + ", ".join(left[:8]) + (", …" if len(left) > 8 else ""))
 
 
+def _install(installed, part=""):
+    """T-2879: (id, record) of the first install under any id Sampo (part "ui": its mod) has had, else (None, None).
+    T-3707: the id's marketplace part names its entry in known_marketplaces.json (sampo, or foreman before the move)."""
+    plugins = (_load_json(installed) or {}).get("plugins") or {}
+    return next(((pid, e) for pid in c.plugin_ids(part) for e in (plugins.get(pid) or [])), (None, None))
+
+
+def _install_entry(installed, part=""):
+    return _install(installed, part)[1]
+
+
+def _market_source(known, pid):
+    """The source of the marketplace an installed id came from (its part after @), {} when unknown."""
+    e = (_load_json(known) or {}).get((pid or "@" + c.MARKET).split("@")[-1]) or {}
+    return e.get("source") if isinstance(e, dict) and isinstance(e.get("source"), dict) else {}
+
+
 def check_dual_install(home=None, known=None, installed=None):
     """T-0923: Sampo installed from a marketplace that isn't this home (GitHub, another folder) beside install.sh's
     copy here: sessions run whichever they started with, and the two drift apart. Different versions warn."""
     home = home or c.foreman_home()
-    entry = next(iter(((_load_json(installed or os.path.expanduser("~/.claude/plugins/installed_plugins.json")) or {})
-                       .get("plugins") or {}).get("foreman@foreman") or []), None)
+    pid, entry = _install(installed or os.path.expanduser("~/.claude/plugins/installed_plugins.json"))
     if not entry or not os.path.isdir(os.path.join(home, "plugin")):
         return Result("installs", "PASS", "one Sampo install")
-    src = ((_load_json(known or os.path.expanduser("~/.claude/plugins/known_marketplaces.json")) or {})
-           .get("foreman") or {}).get("source") or {}
+    src = _market_source(known or os.path.expanduser("~/.claude/plugins/known_marketplaces.json"), pid)
     if src.get("source") == "directory" and os.path.realpath(src.get("path") or "") == os.path.realpath(home):
-        return Result("installs", "PASS", f"the foreman marketplace is this home ({home})")
+        return Result("installs", "PASS", f"the {pid.split('@')[-1]} marketplace is this home ({home})")
     there = entry.get("version") or _version(entry.get("installPath") or "")
     here = _version(os.path.join(home, "plugin"))
     where = src.get("repo") or src.get("url") or src.get("path") or "another marketplace"
     if there == here:
         return Result("installs", "PASS", f"two Sampo installs at {here}: {where} and {home}")
     return Result("installs", "WARN", f"two Sampo installs: {there} from {where} and {here} in {home}; a session runs "
-                  "whichever it started with. Keep one: claude plugin update foreman@foreman (or uninstall it and keep "
+                  f"whichever it started with. Keep one: claude plugin update {pid} (or uninstall it and keep "
                   "this home's)")
 
 
@@ -1153,7 +1168,7 @@ def check_running_code(ledger, installed, plugin=PLUGIN):
                         continue
     except OSError:
         pass
-    entry = next(iter(((_load_json(installed) or {}).get("plugins") or {}).get("foreman@foreman") or []), None)
+    entry = _install_entry(installed)
     num = lambda v: tuple(int(x) for x in re.findall(r"\d+", v)[:3])  # noqa: E731
     # the newest Foreman here: the installed copy or this one (a dev checkout runs ahead of its install record)
     want_root = max(filter(None, [(entry or {}).get("installPath"), plugin]), key=lambda r: num(_version(r)))
@@ -1287,11 +1302,30 @@ def _enabled_plugin_paths(settings):
     enabled = {k for k, v in ((settings or {}).get("enabledPlugins") or {}).items() if v}
     out = {}
     for pid, entries in (installed.get("plugins") or {}).items():
-        if pid in enabled and not pid.startswith("foreman@"):
+        if pid in enabled and pid not in c.plugin_ids() + c.plugin_ids("ui") + c.plugin_ids("design"):
             for e in entries if isinstance(entries, list) else [entries]:
                 if isinstance(e, dict) and e.get("installPath"):
                     out[pid] = e["installPath"]
     return out
+
+
+def check_half_moved(settings):
+    """T-2879: Sampo enabled under an old id and its new one at once: every command, skill and hook loads twice.
+    T-3707: enabled under an old id at all (c.old_plugin_ids: @foreman, the renames map's or the one before) is a
+    machine whose marketplace was added before it was named sampo; sampo migrate plugins moves it in one write."""
+    enabled = {k for k, v in ((settings or {}).get("enabledPlugins") or {}).items() if v}
+    parts = [c.plugin_ids(part) for part in ("", "ui", "design")]
+    old = [i for ids in parts for i in ids[1:] if i in enabled]
+    if not old:
+        return Result("plugin move", "PASS", f"Sampo is enabled under its own id ({c.plugin_ids()[0]})" if
+                      c.plugin_ids()[0] in enabled else "no old Sampo plugin id is enabled")
+    twice = [i for ids in parts for i in ids[1:] if i in enabled and len(set(ids) & enabled) > 1]
+    fix = f"sampo migrate plugins (--dry-run shows it, --undo puts it back) moves it to {c.plugin_ids()[0]}"
+    if twice:
+        return Result("plugin move", "WARN", f"enabled under more than one id, so it loads twice: {', '.join(twice)} "
+                      f"beside another; {fix}, dropping the old ids in the same write")
+    return Result("plugin move", "WARN", f"enabled under its old id {', '.join(old)}; {fix} and re-adds the marketplace "
+                  f"as {c.MARKET}")
 
 
 def check_name_collisions(settings, plugin=PLUGIN):
@@ -1307,7 +1341,7 @@ def check_name_collisions(settings, plugin=PLUGIN):
     if os.path.isdir(user):
         clashes += [f"{n} (~/.claude/skills)" for n in sorted(ours & set(os.listdir(user)))]
     return Result("name collisions", "WARN" if clashes else "PASS",
-                  ("bare names shared (use /foreman:<name>): " + ", ".join(clashes)) if clashes else "no skill/command name collisions")
+                  (f"bare names shared (use /{c.NS}:<name>): " + ", ".join(clashes)) if clashes else "no skill/command name collisions")
 
 
 def check_hook_writers(settings, home):
@@ -1862,14 +1896,14 @@ def check_mod_release(home=None, listing=None):
     counts too."""
     from sampo import plugins as splugins
     repo = os.path.join(home or c.foreman_home(), "mods", "foreman-ui")
-    entry = ((_load_json(listing or os.path.expanduser("~/.claude/plugins/installed_plugins.json")) or {})
-             .get("plugins") or {}).get("foreman-ui@foreman") or [{}]
+    pid, rec = _install(listing or os.path.expanduser("~/.claude/plugins/installed_plugins.json"), "ui")
+    entry = [rec or {}]
     inst = entry[0].get("installPath") if isinstance(entry[0], dict) else None
     if not os.path.isdir(os.path.join(repo, "hooks")) or not inst or not os.path.isdir(inst):
         return Result("foreman-ui release", "PASS", "not installed from this repo")
     # T-1451: Claude Code reads a directory marketplace in place, so the cache copy above is a record no session draws
     known = os.path.join(os.path.dirname(listing or os.path.expanduser("~/.claude/plugins/x")), "known_marketplaces.json")
-    src = (((_load_json(known) or {}).get("foreman") or {}).get("source") or {})
+    src = _market_source(known, pid)
     if isinstance(src, dict) and src.get("source") == "directory" and isinstance(src.get("path"), str) and \
             os.path.realpath(src["path"]) == os.path.realpath(home or c.foreman_home()):
         return Result("foreman-ui release", "PASS", "read in place from this checkout (a directory marketplace)")
@@ -2784,7 +2818,7 @@ def _fsck_counts(found):
 
 
 def check_fsck(projects=None):
-    """T-1667: fm fsck's one line in fm doctor, so /foreman:doctor covers it."""
+    """T-1667: fm fsck's one line in fm doctor, so /sampo:doctor covers it."""
     try:
         found = fsck(projects)
     except Exception as e:  # the scan failing is a finding, not a crash of doctor
@@ -2940,6 +2974,7 @@ def run_all(full=False, accept_supply=False):
     except Exception as e:  # the bench itself failing is a finding, not a crash
         results += [Result(n, "FAIL", f"bench failed: {e}") for n in ("hook latency", "hook exit codes", "injection budgets")]
     results += [check_hook_errors(), check_hook_slo(), check_hook_writers(settings, home), check_name_collisions(settings),
+                check_half_moved(settings),
                 check_footprint(os.path.join(PLUGIN, "rules", "foreman.md"), os.path.join(claude, "CLAUDE.md"),
                                 project=c.find_project(os.getcwd()), extra=meas),
                 check_frontmatter(), check_unloaded_skills()]

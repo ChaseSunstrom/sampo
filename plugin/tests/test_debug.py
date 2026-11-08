@@ -115,5 +115,5 @@ class Debugger(ForemanTestCase):
             out = self.hook("PostToolUseFailure", {"tool_name": "Bash", "tool_input": {"command": "python3 x.py"},
                                                    "error": err})
         ctx = json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("foreman:fm-debugger", ctx)
+        self.assertIn("sampo:fm-debugger", ctx)
         self.assertIn("fm task hypo", ctx)

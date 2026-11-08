@@ -243,7 +243,7 @@ class Check(SampoTestCase):
 class Routing(SampoTestCase):
     def test_readme_words_route_to_the_skill(self):
         self.assertTrue(os.path.isfile(os.path.join(PLUGIN, "skills", "readme-visuals", "SKILL.md")))
-        self.assertIn("foreman:readme-visuals", c.SKILL_FOR["readme"])
+        self.assertIn("sampo:readme-visuals", c.SKILL_FOR["readme"])
         for prompt in ("add screenshots to the README", "rework readme.md", "the docs page needs an architecture diagram"):
             self.assertEqual(c.ui_request(prompt), "readme", prompt)
         for prompt in ("redesign the landing page", "fix the login", "read me the error"):
@@ -252,7 +252,7 @@ class Routing(SampoTestCase):
     def test_a_prompt_and_a_first_readme_edit_name_the_skill(self):
         self.fm("init")
         ups = self.hook("UserPromptSubmit", {"prompt": "rework the README for this tool", "session_id": "s-r"})
-        self.assertIn("README request: load: Skill foreman:readme-visuals", ctx_of(ups))
+        self.assertIn("README request: load: Skill sampo:readme-visuals", ctx_of(ups))
         tid = json.loads(self.fm("task", "new", "Docs", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
                                  "--step", "do it", "--json").stdout)["id"]
         self.fm("focus", tid)

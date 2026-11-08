@@ -2,7 +2,7 @@
 """Live end-to-end scenarios (BUILD_PROMPT §12) with real `claude -p` sessions.
 
 Each scenario gets its own scratch git repo (a tiny Python app with tests) and an isolated FOREMAN_HOME, so the
-live Foreman state is never touched. The installed foreman@foreman plugin loads in place from this repo, so its
+live Foreman state is never touched. The installed sampo@sampo plugin loads in place from this repo, so its
 hooks run in these sessions. Usage: scenarios.py [--only 1,2] [--model sonnet] [--out results.json] [--keep DIR (artifacts of non-passing runs)]
 Prints one PASS / FAIL / NOT-TRIGGERED line per scenario; exit 1 if any FAIL.
 """
@@ -210,7 +210,7 @@ def s7_out_of_scope(e):
 
 def s8_recon_subagent(e):
     before = e.git("status", "--porcelain").stdout
-    out = e.claude("Use the foreman:fm-recon agent to map how this repo's tests are organised, then summarise in 3 lines.",
+    out = e.claude("Use the sampo:fm-recon agent to map how this repo's tests are organised, then summarise in 3 lines.",
                    max_turns=15)
     ev = e.events()
     started = [x for x in ev if x.get("kind") == "subagent_start" and "fm-recon" in str(x.get("agent_type"))]
@@ -234,7 +234,7 @@ def s10_corrupt_state(e):
 
 def s11_plugin_disabled(e):
     n = len(e.events())
-    out = e.claude("Say hello in five words.", extra=["--settings", json.dumps({"enabledPlugins": {"foreman@foreman": False}})],
+    out = e.claude("Say hello in five words.", extra=["--settings", json.dumps({"enabledPlugins": {"sampo@sampo": False}})],
                    max_turns=3)
     written = len(e.events()) - n
     return verdict(out["_rc"] == 0 and written == 0 and not out.get("is_error"),

@@ -1316,7 +1316,7 @@ class AuditPrep(ForemanTestCase):
         with open(os.path.join(self.repo, "big.py"), "w") as f:
             f.write("".join(f"X{i} = {i}\n" for i in range(900)))
         one = self.fm("audit", "prep", "T-0001").stdout
-        self.assertIn("Run one foreman:fm-reviewer", one)
+        self.assertIn("Run one sampo:fm-reviewer", one)
         self.assertIn("--split", one, "a big L diff gets the suggestion")
         out = self.fm("audit", "prep", "T-0001", "--split").stdout
         briefs = sorted(set(re.findall(r"\S+T-0001\.review-\d\.md", out)))
@@ -1433,7 +1433,7 @@ class AuditPrep(ForemanTestCase):
         out = self.fm("audit", "prep", "--print", "T-0001", "--lens", "adversary", "--lens", "edge").stdout
         self.assertEqual(out.count("Diff to review:"), 1)
         self.assertEqual(out.count("=== review"), 1)
-        for needle in ("## adversary", "## edge", "trying to break", "environment", "one foreman:fm-reviewer"):
+        for needle in ("## adversary", "## edge", "trying to break", "environment", "one sampo:fm-reviewer"):
             self.assertIn(needle, out)
 
     def test_the_brief_goes_to_a_file_not_the_conversation(self):

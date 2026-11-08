@@ -10,8 +10,8 @@
   "PreCompact": {"trigger": "auto", "custom_instructions": null},
   "Stop": {"stop_hook_active": false, "last_assistant_message": "Working on the next step."},
   "TaskCompleted": {"task_id": "1", "task_subject": "T-0001 step 1: reproduce"},
-  "SubagentStart": {"agent_id": "a1", "agent_type": "foreman:fm-recon"},
-  "SubagentStop": {"agent_id": "a1", "agent_type": "foreman:fm-recon", "stop_hook_active": false, "last_assistant_message": "done"},
+  "SubagentStart": {"agent_id": "a1", "agent_type": "sampo:fm-recon"},
+  "SubagentStop": {"agent_id": "a1", "agent_type": "sampo:fm-recon", "stop_hook_active": false, "last_assistant_message": "done"},
   "MessageDisplay": {"turn_id": "t", "message_id": "m", "index": 0, "final": false, "delta": "Here is the plan:\n"},
   "Notification": {"message": "Claude needs your permission", "notification_type": "permission_prompt"},
   "SessionEnd": {"reason": "other"}

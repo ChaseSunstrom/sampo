@@ -13,7 +13,7 @@
 |---|---|---|
 | S | ~≤30 lines, 1–2 files, obvious approach, low risk | brief ≤ 10 content lines: R1 + light R2 + R4; still logged and verified |
 | M | several files or a real design choice | full R1–R4, three or more approaches, capability sweep for a FEATURE; `sampo second rival ID` (a cold read of the request alone) when your choice is under 80% sure, you claim one honest reading, or a step is one-way: `sampo focus` waits for it and for each rival-only Dissent line to be adopted or rejected |
-| L | cross-cutting, schema/API/security-sensitive, large or uncertain | R1–R4 + adversarial self-critique + staged sub-tasks, each independently verifiable; `sampo second plan ID` (another model reads the plan; its Plan review section is read before approving); optional `foreman:fm-reviewer` |
+| L | cross-cutting, schema/API/security-sensitive, large or uncertain | R1–R4 + adversarial self-critique + staged sub-tasks, each independently verifiable; `sampo second plan ID` (another model reads the plan; its Plan review section is read before approving); optional `sampo:fm-reviewer` |
 A request about a whole repo or "all …" (clean up everything, all docs) is never S. When unsure, go one tier up; tiers may change after R2 (`sampo task set ID tier=M`, and say so).
 
 ## Brief (created by sampo from templates/brief.md)

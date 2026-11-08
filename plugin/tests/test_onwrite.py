@@ -47,7 +47,7 @@ class OnWrite(HookCase):
 
     def test_invalid_json_blocks_in_a_subagent_too(self):
         path = self.write("conf.json", '{"a": 1,,}')
-        reason = self.blocked(self.post(path, agent_type="foreman:fm-builder", agent_id="a1"))
+        reason = self.blocked(self.post(path, agent_type="sampo:fm-builder", agent_id="a1"))
         self.assertIn("not valid JSON", reason)
         self.assertEqual(self.post(self.write("conf.json", '{"a": 1}')).stdout, "")
         jsonc = self.write("tsconfig.json", '{"compilerOptions": {}, // comments are fine here\n}')

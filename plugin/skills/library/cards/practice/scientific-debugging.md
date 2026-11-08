@@ -30,7 +30,7 @@ Add the expected failure text next to it. If you cannot make it fail, you have n
 - Read the actual error, the full stack, and the input that triggered it before guessing.
 - Fix the cause, then run the repro, the neighbouring tests and the full gate.
 - Keep the repro as a regression test.
-- After three failed attempts, write what is ruled out and hand the failure to a fresh reader (`foreman:fm-debugger`).
+- After three failed attempts, write what is ruled out and hand the failure to a fresh reader (`sampo:fm-debugger`).
 
 ## Avoid
 - Editing code to "see if it helps": write the hypothesis and the expected observation first.

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, RenderElement, RenderInput, ResolveInput } from 'claude-code'
 
 
-const scrub = atom({ plugin: 'foreman-ui', key: 'scrub' } as const, 0) // T-1081: how many history entries back the pane is showing
+const scrub = atom({ plugin: 'sampo-ui', key: 'scrub' } as const, 0) // T-1081: how many history entries back the pane is showing
 import type { FileChurn, FmItem, FmView, LiveAgent, LiveShell, TurnSummary } from '../types'
 import {
   C,
@@ -56,20 +56,20 @@ import {
 import { CHECKPOINT_AT, FRAME_MS, FRESH, IDLE_FRAMES, PANE, QUIET_MS, SHELL_MAX_MS, STOP_MS, TIMELINE_MS, TREE_MS, cfg, feed, laneOf, running, said, starts, ticks, took } from './state'
 import type { FeedItem } from './state'
 
-const view = atom({ plugin: 'foreman-ui', key: 'view' } as const, null)
+const view = atom({ plugin: 'sampo-ui', key: 'view' } as const, null)
 const PANE_MIN = 26 // T-1679: the narrowest pane the layout fits (24 inside the padding); below it, one line
-const error = atom({ plugin: 'foreman-ui', key: 'error' } as const, null)
-const frame = atom({ plugin: 'foreman-ui', key: 'frame' } as const, 0)
-const summaries = atom({ plugin: 'foreman-ui', key: 'summaries' } as const, [])
-const files = atom({ plugin: 'foreman-ui', key: 'files' } as const, [])
-const agents = atom({ plugin: 'foreman-ui', key: 'agents' } as const, [])
-const ctx = atom({ plugin: 'foreman-ui', key: 'ctx' } as const, null)
-const sound = atom({ plugin: 'foreman-ui', key: 'sound' } as const, true)
-const beat = atom({ plugin: 'foreman-ui', key: 'beat' } as const, 0)
-const shells = atom({ plugin: 'foreman-ui', key: 'shells' } as const, [])
-const away = atom({ plugin: 'foreman-ui', key: 'away' } as const, []) // tasks done since the person last wrote
-const resumed = atom({ plugin: 'foreman-ui', key: 'resumed' } as const, null) // T-0145: the resume record acted on
-const reviewing = atom({ plugin: 'foreman-ui', key: 'reviewing' } as const, null as string | null) // T-0989: a waiting plan shown in the Task section
+const error = atom({ plugin: 'sampo-ui', key: 'error' } as const, null)
+const frame = atom({ plugin: 'sampo-ui', key: 'frame' } as const, 0)
+const summaries = atom({ plugin: 'sampo-ui', key: 'summaries' } as const, [])
+const files = atom({ plugin: 'sampo-ui', key: 'files' } as const, [])
+const agents = atom({ plugin: 'sampo-ui', key: 'agents' } as const, [])
+const ctx = atom({ plugin: 'sampo-ui', key: 'ctx' } as const, null)
+const sound = atom({ plugin: 'sampo-ui', key: 'sound' } as const, true)
+const beat = atom({ plugin: 'sampo-ui', key: 'beat' } as const, 0)
+const shells = atom({ plugin: 'sampo-ui', key: 'shells' } as const, [])
+const away = atom({ plugin: 'sampo-ui', key: 'away' } as const, []) // tasks done since the person last wrote
+const resumed = atom({ plugin: 'sampo-ui', key: 'resumed' } as const, null) // T-0145: the resume record acted on
+const reviewing = atom({ plugin: 'sampo-ui', key: 'reviewing' } as const, null as string | null) // T-0989: a waiting plan shown in the Task section
 import { LIGHT, TREE_INDENT, agentOut, agentRow, bars, branch, editChanges, editRow, gapTop, crestTree, liveTree, mascotTree, meter, miniRail, ownsResult, rail, railBox, sectionHead, shellRow, spark, toolRow, treeOn } from './rows'
 import type { Motion } from './rows'
 
@@ -342,7 +342,7 @@ async function pollOptions($: EngineInterface) {
   if (!Array.isArray(rows)) return
   const now: Record<string, unknown> = {}
   for (const r of rows) {
-    const m = /^foreman-ui(?:@[^.]+)?\.(.+)$/.exec(r.key)
+    const m = /^(?:sampo|foreman)-ui(?:@[^.]+)?\.(.+)$/.exec(r.key) // T-2879: the mod under either name
     if (m) now[m[1]!] = r.value
   }
   const seen = JSON.stringify(now)
@@ -753,7 +753,7 @@ export const register: Register = (on, options) => {
       await update($, summaries, list => [...list, s].slice(-40))
       // Ghost text for the obvious next move; never a suggestion that would answer a question put to the person.
       if (fresh && !e.isAborted && v?.project && !waiting(v) && (a || (v.queue ?? []).length))
-        await $.prompt.suggest({ text: '/foreman:next' }).catch(() => undefined)
+        await $.prompt.suggest({ text: '/sampo:next' }).catch(() => undefined)
     }
     return next(e)
   })
@@ -883,7 +883,7 @@ export const register: Register = (on, options) => {
   on('prompt.compose', async ($, e, next) => {
     const r = await next(e)
     const text = economyText((await $.session.usage().catch(() => null))?.rateLimits ?? [], weeklyLean)
-    return text ? { ...r, sections: [...r.sections, { id: 'foreman-ui:economy', text, scope: 'session' }] } : r
+    return text ? { ...r, sections: [...r.sections, { id: 'sampo-ui:economy', text, scope: 'session' }] } : r
   })
 
   // A background task's notification (idle, or folded into a running turn) names the task that ended.
@@ -975,8 +975,8 @@ export const register: Register = (on, options) => {
   // A background task's notification: one Sampo line (ctrl+o still shows the engine's full row).
   on('ui.render', { component: 'UserMessage' }, async ($, e, next) => {
     const origin = e.props.origin as { kind?: string; name?: string } | undefined
-    const ours = /^The foreman-ui plugin sent a message:\n/ // how the model reads it; the row may carry that text
-    if (((origin?.kind === 'plugin' && origin.name === 'foreman-ui') || ours.test(e.props.text)) && !e.props.isExpanded) {
+    const ours = /^The (?:sampo|foreman)-ui plugin sent a message:\n/ // how the model reads it; the row may carry that text
+    if (((origin?.kind === 'plugin' && /^(?:sampo|foreman)-ui$/.test(origin.name ?? '')) || ours.test(e.props.text)) && !e.props.isExpanded) {
       // T-0143 live: our own resume prompt drew as a four-line grey block; one quiet line says it
       const { Box, Text } = $.ui.resolve(e)
       return branch($.ui.resolve(e), e, 'fm-branch', ( // T-1088: on the rail like every other row
@@ -1440,7 +1440,7 @@ export const register: Register = (on, options) => {
               label="next"
               hotkey="n"
               plain
-              onPress={() => void $.prompt.submit({ text: '/foreman:next', asUser: true })}
+              onPress={() => void $.prompt.submit({ text: '/sampo:next', asUser: true })}
             />
           )}
         </Box>
@@ -1462,7 +1462,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column">
           <Text color={hex(C.dim)}>Not a Sampo project here.{err ? ` (${err})` : ''}</Text>
-          <Text color={hex(C.dim)}>Ask Claude to set it up, or run /foreman:intake with a request.</Text>
+          <Text color={hex(C.dim)}>Ask Claude to set it up, or run /sampo:intake with a request.</Text>
         </Box>
       )
     }
@@ -1575,7 +1575,7 @@ export const register: Register = (on, options) => {
             {it.title}
           </Text>
           <Button key={`start-${it.id}`} label="start" plain dimColor
-            onPress={() => void $.prompt.submit({ text: `Plan and start ${it.id} (/foreman:intake).`, asUser: true })} />
+            onPress={() => void $.prompt.submit({ text: `Plan and start ${it.id} (/sampo:intake).`, asUser: true })} />
           <Button key={`drop-${it.id}`} label="drop" plain dimColor
             onPress={() => act($, ['task', 'drop', it.id, 'dropped from the Sampo pane'], `${it.id} dropped`)} />
         </Box>
@@ -2266,7 +2266,7 @@ export const register: Register = (on, options) => {
         {sections}
         {L.gap ? <Box key="gap-controls" height={1} flexShrink={0} /> : null}
         <Box flexDirection="row" gap={W >= 64 ? 3 : 2} key="fm-pane-controls" height={1} overflow="hidden" flexShrink={0}>
-          <Button key="next" label="next" hotkey="n" plain onPress={() => void $.prompt.submit({ text: '/foreman:next', asUser: true })} />
+          <Button key="next" label="next" hotkey="n" plain onPress={() => void $.prompt.submit({ text: '/sampo:next', asUser: true })} />
           <Button key="drive" label={m?.drive ? 'turn drive off' : 'turn drive on'} hotkey="d" plain
             onPress={() => act($, ['drive', m?.drive ? 'off' : 'on'], `drive ${m?.drive ? 'off' : 'on'}`)} />
           <Button key="autonomy" label={m?.autonomy === 'full' ? 'switch to standard' : 'switch to full auto'} plain dimColor

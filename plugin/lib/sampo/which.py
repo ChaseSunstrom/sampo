@@ -23,7 +23,7 @@ READ_MAX = 8000  # characters of a file read: a header is near the top
 HEADER_MAX = 600  # characters of a playbook's header indexed: a body's common words would outrank real headers
 CUT = 0.4  # listed: a score at least this share of its kind's best (a skill's one sentence scores less than a playbook)
 FLOOR = 0.25  # and this share of the best overall: a kind whose best is one stray word lists nothing
-NAMED = 2  # extra weight of a task word in a document's name (ui/motion, fm notify, foreman:tidy)
+NAMED = 2  # extra weight of a task word in a document's name (ui/motion, fm notify, sampo:tidy)
 STEM = 6  # letters a stem keeps: at fmrecall's 5, archives and architecture are one word
 SHOWN = {"skills": 3, "playbooks": 5, "commands": 3}
 BIG = 2000  # T-1835: past this many playbooks, candidates come from fmplaybooks.find's index, not every header
@@ -60,7 +60,7 @@ def skills(root=None):
             desc = desc[1:-1]
         front = re.match(r"---\n(.*?)\n---", _head(path), re.S)
         typed = bool(front and _USER_ONLY.search(front.group(1)))
-        out.append({"name": name, "load": f"(you type /foreman:{name})" if typed else f"Skill foreman:{name}",
+        out.append({"name": name, "load": f"(you type /sampo:{name})" if typed else f"Skill sampo:{name}",
                     "summary": desc, "text": f"{name.replace('-', ' ')} {desc}"})
     return out
 

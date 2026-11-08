@@ -60,7 +60,7 @@ class DriveSide(HookCase):
         return self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": msg, "session_id": "sess-1"})
 
     def reasons(self, n=3):
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         return [self.stop("Waiting for the review.").stdout for _ in range(n)]
 
     def offered(self, n=3):

@@ -263,7 +263,7 @@ def main():
     s.add_argument("--cols", type=int, default=200)
     s.add_argument("--rows", type=int, default=60)
     s.add_argument("--model", help="e.g. haiku: a cheap turn, without changing the saved default model as /model does")
-    s.add_argument("--settings", help="JSON for claude --settings, e.g. '{\"enabledPlugins\": {\"foreman-ui@foreman\": "
+    s.add_argument("--settings", help="JSON for claude --settings, e.g. '{\"enabledPlugins\": {\"sampo-ui@sampo\": "
                    "false}}' so a worktree's mod draws, not the installed one (T-3163)")
     s = sub.add_parser("keys")
     s.add_argument("text")

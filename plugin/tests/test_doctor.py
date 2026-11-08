@@ -1273,6 +1273,38 @@ class DoctorDualInstall(ForemanTestCase):
         self.assertIn("1.2.20", r.detail)
         self.assertIn("1.2.28", r.detail)
 
+    def test_a_half_moved_install_warns_with_the_fix(self):  # T-2879 review: both ids enabled loads Sampo twice
+        both = {"enabledPlugins": {"foreman@foreman": True, "sampo@sampo": True, "sampo-ui@sampo": True}}
+        r = d.check_half_moved(both)
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("twice", r.detail)
+        self.assertIn("foreman@foreman", r.detail)
+        self.assertNotIn("foreman-ui@foreman", r.detail)
+        self.assertIn("sampo migrate plugins", r.detail)  # T-3707: the move drops the old id in the same write
+        for one in ({"enabledPlugins": {"sampo@sampo": True}}, {"enabledPlugins": {"foreman@foreman": False, "sampo@sampo": True}},
+                    {}):
+            self.assertEqual(d.check_half_moved(one).status, "PASS", one)
+
+    def test_a_machine_still_on_an_old_id_is_told_the_migrate_command(self):  # T-3707
+        for old in ({"foreman@foreman": True, "foreman-ui@foreman": True}, {"sampo@foreman": True}):
+            r = d.check_half_moved({"enabledPlugins": old})
+            self.assertEqual(r.status, "WARN", old)
+            self.assertIn("sampo migrate plugins", r.detail)
+            self.assertIn("sampo@sampo", r.detail)
+            self.assertIn(next(iter(old)), r.detail)
+            self.assertNotIn("twice", r.detail)
+
+    def test_an_install_recorded_under_either_id_counts(self):  # T-2879: sampo@foreman once moved, foreman@foreman before
+        self.known_as({"source": "github", "repo": "ChaseSunstrom/sampo"})
+        with open(self.installed) as f:
+            data = json.load(f)
+        data["plugins"] = {"sampo@foreman": data["plugins"].pop("foreman@foreman")}
+        with open(self.installed, "w") as f:
+            json.dump(data, f)
+        r = d.check_dual_install(self.fmhome, self.known, self.installed)
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("claude plugin update sampo@foreman", r.detail)
+
     def test_the_marketplace_being_this_home_is_one_install(self):
         self.known_as({"source": "directory", "path": self.fmhome})
         self.assertEqual(d.check_dual_install(self.fmhome, self.known, self.installed).status, "PASS")

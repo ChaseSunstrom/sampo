@@ -20,7 +20,7 @@ those cards cover *how* to ship it.
    (see the table), run the interview.
 3. **Translate words to knobs** with the taste-word table. Five knobs: type, colour, density, motion, radius.
 4. **Pick one direction from the bank**, plus a runner-up you reject in writing. You may blend two at most:
-   one owns type, the other owns colour. Never three. To offer the user a choice first, `/foreman:directions`
+   one owns type, the other owns colour. Never three. To offer the user a choice first, `/sampo:directions`
    drafts six distinct directions from one sentence and saves the pick through steps 5 and 6.
 5. **Set the audacity dial**: safe, bold or wild.
 6. **Write `DESIGN.md` before the first component.** Pass: the file exists in the diff and predates (or shares

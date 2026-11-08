@@ -23,7 +23,7 @@ FOREMAN_OWNS = {
 # Measured conflicts, by plugin name; setup-plugins.sh warns about the same ones (test_docs keeps the lists equal).
 KNOWN_CONFLICTS = {
     "ecc": "~41k always-on tokens and 24 hook handlers, with its own memory, learning and planning; Sampo ports "
-           "its useful procedures as /foreman:playbooks",
+           "its useful procedures as /sampo:playbooks",
     "superpowers": "a second orchestrator (brainstorm → plan → execute); Sampo ports its debugging, TDD and "
                    "verification procedures",
     "feature-dev": "duplicates Sampo's intake and planning",
@@ -650,7 +650,7 @@ def check(only=None):
     """Conflicts among enabled plugins and with Sampo: [{plugin, kind, detail, action}]."""
     found, mcp = [], {}
     for pid, info in sorted(installed().items()):
-        if not info["enabled"] or pid.startswith("foreman@") or (only and pid != only):
+        if not info["enabled"] or pid.split("@")[0] in c.NAMESPACES or (only and pid != only):
             continue
         prof = profile(info["path"])
         if pid.split("@")[0] in KNOWN_CONFLICTS:
@@ -702,7 +702,7 @@ def _skill_index(p):
         return cached
     skills = []
     for pid, info in sorted(installed().items()):
-        if info["enabled"] and not pid.startswith("foreman@"):
+        if info["enabled"] and pid.split("@")[0] not in c.NAMESPACES:
             prof = profile(info["path"])
             skills += [{"name": f"/{pid.split('@')[0]}:{n}", "text": _gist(n, d)} for n, d in prof["skills"] + prof["commands"]]
     for base in watch[4:]:

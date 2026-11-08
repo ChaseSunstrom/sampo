@@ -441,7 +441,7 @@ export function agentRow(ui: UI, e: ToolUseRender) {
   const o = agentOut(e.props.tool, e.props.output)
   if (!o) return null
   const input = (e.props.input ?? {}) as { subagent_type?: unknown; description?: unknown }
-  const type = clean(String(input.subagent_type ?? o.agentType ?? 'agent')).replace(/^foreman:/, '')
+  const type = clean(String(input.subagent_type ?? o.agentType ?? 'agent')).replace(/^(?:sampo|foreman):/, '')
   const bg = o.status === 'async_launched'
   const report = Array.isArray(o.content) ? o.content.map(x => String((x as { text?: unknown }).text ?? '')).join('\n') : ''
   const first = clean(report.split('\n').find(l => l.trim()) ?? '').replace(/[*_`#>]/g, '').trim()

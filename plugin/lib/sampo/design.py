@@ -1327,7 +1327,7 @@ def write_section(path, lines, title, heading="## Tokens", keep=None):
         crlf = "\r\n" in text
         text = text.replace("\r\n", "\n")
         if not text.strip():
-            text = (f"# DESIGN.md: {_cell(title, 80)}\n\nNo direction recorded yet: /foreman:directions or the "
+            text = (f"# DESIGN.md: {_cell(title, 80)}\n\nNo direction recorded yet: /sampo:directions or the "
                     "playbook ui/design-direction.md fills the other sections.\n")
         doc = text.split("\n")
         heads, fence = headings(doc)
@@ -2305,7 +2305,7 @@ SPRINT = (("brief", "DESIGN.md's ## Point of view says it in concrete words (no 
           ("build", "the UI files under the root pass fm design lint"),
           ("critique", "the gates DESIGN.md opts into under ## Gates pass"))
 SPRINT_NEXT = {"brief": "write ## Point of view in the user's concrete words (fm design vague TEXT says what to ask)",
-               "direction": "/foreman:directions: six directions, one picked, its audacity named",
+               "direction": "/sampo:directions: six directions, one picked, its audacity named",
                "tokens": "fm design extract <ui root>, or fm design palette SEED to start one",
                "build": "fix what fm design lint <ui root> finds",
                "critique": "fix what fm design check finds, or opt into a gate under ## Gates (brief, a11y, debt)"}

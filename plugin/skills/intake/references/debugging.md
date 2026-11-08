@@ -159,7 +159,7 @@ You MUST complete each phase before proceeding to the next.
 4. **When You Don't Know**
    - Say "I don't understand X"
    - Don't pretend to know
-   - Get fresh eyes: `foreman:fm-debugger` with the exact failure, the suspect files and the path `sampo task hypo ID ruled --write` prints (the hypotheses ruled out, which it reads first); its hypotheses come back as `sampo task hypo` lines
+   - Get fresh eyes: `sampo:fm-debugger` with the exact failure, the suspect files and the path `sampo task hypo ID ruled --write` prints (the hypotheses ruled out, which it reads first); its hypotheses come back as `sampo task hypo` lines
    - Research more
 
 ### Phase 4: Implementation

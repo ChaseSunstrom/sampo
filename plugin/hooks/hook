@@ -112,6 +112,20 @@ def committed_library():
         return False
 
 
+def _our_id():
+    """T-2879: the id Claude Code recorded for Sampo (an old one until sampo migrate plugins), for the disable hint."""
+    import json
+    path = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "plugins",
+                        "installed_plugins.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            have = json.load(f).get("plugins") or {}
+    except (OSError, ValueError, AttributeError):
+        have = {}
+    ids = ("sampo@sampo", "sampo@foreman", "foreman@foreman")  # core.plugin_ids(), which a broken library can't give
+    return next((i for i in ids if i in have), ids[0])
+
+
 try:
     from sampo import hooks
     if AGENT:
@@ -129,7 +143,7 @@ except Exception as exc:  # broken install: never block unless this is the guard
                   file=sys.stderr)
             sys.exit(0)
         print(f"Sampo guard unavailable ({exc!r}); the tool call was blocked (fail-closed). "
-              "Fix the plugin or run: claude plugin disable foreman@foreman", file=sys.stderr)
+              f"Fix the plugin or run: claude plugin disable {_our_id()}", file=sys.stderr)
         sys.exit(2)
     from sampo import hooks
     if AGENT:

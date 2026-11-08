@@ -31,7 +31,7 @@ MEMORY_MAX_LINES, MEMORY_MAX_BYTES = 200, 25_000
 GLOBAL_MD_MAX, PROJECT_MD_MAX = 50, 150
 KNOWN_PLUGINS = {"ponytail", "claude-hud", "security-guidance", "code-review", "context7", "skill-creator",
                  "claude-md-management", "plugin-dev", "frontend-design", "clangd-lsp", "rust-analyzer-lsp",
-                 "pyright-lsp", "typescript-lsp", "gopls-lsp", "playwright", "chrome-devtools-mcp", "foreman",
+                 "pyright-lsp", "typescript-lsp", "gopls-lsp", "playwright", "chrome-devtools-mcp", "sampo", "foreman",
                  "ecc", "superpowers", "design", "figma", "document-skills", "differential-review",
                  "insecure-defaults", "static-analysis", "sharp-edges", "supply-chain-risk-auditor", "c-review"}
 LSP_BINARIES = {"clangd-lsp": "clangd", "pyright-lsp": "pyright-langserver", "typescript-lsp": "typescript-language-server",
@@ -50,7 +50,7 @@ _PATH_TOKEN = re.compile(r"`([^`\s]+)`")
 def _looks_like_path(tok):
     if any(ch in tok for ch in "<>$*{}|()=,;") or "://" in tok or tok.startswith(("-", "@", "#")):
         return False
-    if re.fullmatch(r"/[\w:-]+", tok):  # a slash command such as /foreman:intake, not a path
+    if re.fullmatch(r"/[\w:-]+", tok):  # a slash command such as /sampo:intake, not a path
         return False
     return "/" in tok or bool(re.fullmatch(r"[\w.-]+\.[A-Za-z0-9]{1,6}", tok))
 

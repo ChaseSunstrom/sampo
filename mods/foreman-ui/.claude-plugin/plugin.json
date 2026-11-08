@@ -1,5 +1,5 @@
 {
-  "name": "foreman-ui",
+  "name": "sampo-ui",
   "version": "0.20.0",
   "description": "Sampo inside Claude Code: one docked panel that fits the screen, a band above the prompt when it's closed, toasts and one-press approve/next/drive/inbox actions.",
   "author": {

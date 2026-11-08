@@ -39,4 +39,4 @@ Kept and reverted are detected only when `sampo looks history` runs. Whenever th
 says it's the one) or reverts or replaces one, in this command or anywhere else,
 run `sampo looks keep` or `sampo looks revert` yourself; otherwise the ledger hears of it only when its history is next read.
 
-Reply in at most 8 lines: what sampo printed, then that `/foreman:directions` drafts from the top of this ranking.
+Reply in at most 8 lines: what sampo printed, then that `/sampo:directions` drafts from the top of this ranking.

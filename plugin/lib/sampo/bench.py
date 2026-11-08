@@ -8,7 +8,7 @@ place and pass at the commit (SWE-bench's fail-to-pass check), so a case tells a
 full autonomy and drive on), `claude -p` with the candidate plugin (--plugin-dir; user settings left out so the
 installed Sampo doesn't load beside it); then the hidden tests are restored and the verify commands decide. Cost,
 turns and time come from claude's JSON result. Results are kept per label; `compare` sets two side by side, which is
-how /foreman:improve judges a candidate on real past work instead of synthetic cases."""
+how /sampo:improve judges a candidate on real past work instead of synthetic cases."""
 import collections
 import contextlib
 import glob

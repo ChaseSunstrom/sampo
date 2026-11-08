@@ -36,13 +36,13 @@ MAX_GAP = 1.2  # seconds a still screen is held at most (the model thinking), so
 
 
 def only_foreman(path=os.path.expanduser("~/.claude/settings.json")):
-    """T-2055: --settings JSON that turns off every plugin the user enabled outside the foreman marketplace (another
-    plugin's hook warning or status line must not reach a recording); login, permissions and env stay. None when the
-    settings file is missing or unreadable."""
+    """T-2055: --settings JSON that turns off every plugin the user enabled outside the sampo marketplace (foreman
+    before T-3707; another plugin's hook warning or status line must not reach a recording); login, permissions and
+    env stay. None when the settings file is missing or unreadable."""
     try:
         with open(path) as f:
             on = json.load(f).get("enabledPlugins", {})
-        off = {k: False for k, v in on.items() if v is True and k.rsplit("@", 1)[-1] != "foreman"}
+        off = {k: False for k, v in on.items() if v is True and k.rsplit("@", 1)[-1] not in ("sampo", "foreman")}
     except (OSError, ValueError, AttributeError):
         return None
     return json.dumps({"enabledPlugins": off})

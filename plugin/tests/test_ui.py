@@ -25,13 +25,13 @@ class UiSkills(ForemanTestCase):
         c, p, slug = self.c, self.p, self.p.slug
         old = c.time.strftime("%Y-%m-%dT%H:%M:%SZ", c.time.gmtime(c.time.time() - 8 * 86400))
         at = [c.time.strftime("%Y-%m-%dT%H:%M:%SZ", c.time.gmtime(c.time.time() - 60 * n)) for n in range(5, 0, -1)]
-        rows = [{"ts": old, "kind": "tool", "tool": "Skill", "target": "foreman:old", "project": slug},
-                {"ts": at[0], "kind": "tool", "tool": "Skill", "target": "foreman:brainstorm", "project": slug},
-                {"ts": at[1], "kind": "tool", "tool": "Skill", "target": "foreman:brainstorm", "project": slug},
+        rows = [{"ts": old, "kind": "tool", "tool": "Skill", "target": "sampo:old", "project": slug},
+                {"ts": at[0], "kind": "tool", "tool": "Skill", "target": "sampo:brainstorm", "project": slug},
+                {"ts": at[1], "kind": "tool", "tool": "Skill", "target": "sampo:brainstorm", "project": slug},
                 {"ts": at[1], "kind": "tool", "tool": "Skill", "target": "elsewhere:x", "project": "other-1"},
                 {"ts": at[2], "kind": "tool", "tool": "Bash", "target": "ls", "project": slug},
                 {"kind": "tool", "tool": "Skill", "target": "no:ts", "project": slug},
-                {"ts": at[3], "kind": "tool_fail", "tool": "Skill", "target": "foreman:broken", "project": slug}]
+                {"ts": at[3], "kind": "tool_fail", "tool": "Skill", "target": "sampo:broken", "project": slug}]
         os.makedirs(c.state_dir(), exist_ok=True)
         with open(os.path.join(c.state_dir(), "events.jsonl"), "w") as f:
             f.writelines(json.dumps(r) + "\n" for r in rows)
@@ -45,9 +45,9 @@ class UiSkills(ForemanTestCase):
             json.dump({"lib": ["python", "typescript", "bash", "semver"]}, f)
         s = self.skills()
         self.assertEqual([(x["name"], x["kind"]) for x in s["recent"]],
-                         [("python", "card"), ("bash", "card"), ("foreman:brainstorm", "skill")])
+                         [("python", "card"), ("bash", "card"), ("sampo:brainstorm", "skill")])
         self.assertEqual(s["recent"][2]["at"], at[1], "a name shows once, at its newest use")
-        self.assertEqual(s["counts"], {"foreman:brainstorm": 2, "python": 1, "bash": 1})
+        self.assertEqual(s["counts"], {"sampo:brainstorm": 2, "python": 1, "bash": 1})
         self.assertEqual(s["suggested"], ["python", "typescript", "bash", "semver"])
         self.assertEqual(s["unread"], ["typescript", "semver"])
 
@@ -58,9 +58,9 @@ class UiSkills(ForemanTestCase):
         filler = json.dumps({"ts": at, "kind": "tool", "tool": "Read", "target": "x" * 200, "project": slug}) + "\n"
         os.makedirs(c.state_dir(), exist_ok=True)
         with open(os.path.join(c.state_dir(), "events.jsonl"), "w") as f:
-            f.write(json.dumps({"ts": at, "kind": "tool", "tool": "Skill", "target": "foreman:intake", "project": slug}) + "\n")
+            f.write(json.dumps({"ts": at, "kind": "tool", "tool": "Skill", "target": "sampo:intake", "project": slug}) + "\n")
             f.write(filler * 2000)  # ~500 KB
-        self.assertEqual(self.skills()["counts"], {"foreman:intake": 1})
+        self.assertEqual(self.skills()["counts"], {"sampo:intake": 1})
 
     def test_recent_holds_eight_and_a_broken_map_is_no_map(self):
         c, p = self.c, self.p
@@ -174,7 +174,7 @@ class UiView(ForemanTestCase):
         from sampo import budget
         from sampo import core as c
         budget.record("bench", 0.4, runs=2)
-        budget.record("subagent:foreman:fm-reviewer", tokens=12000)
+        budget.record("subagent:sampo:fm-reviewer", tokens=12000)
         self.fm("task", "hypo", "T-0001", "add", "the timeout is per request", "--probe", "grep -n timeout x.py")
         self.fm("task", "assume", "T-0001", "add", "the timeout lives in x.py")
         self.fm("task", "evidence", "T-0001", "--step", "1", "--run", "true", "--inconclusive")

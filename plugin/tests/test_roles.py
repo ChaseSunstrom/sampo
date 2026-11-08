@@ -88,7 +88,7 @@ class Scorecard(ForemanTestCase):
         self.fm("init")
         with open(os.path.join(self.home, "state", "spend.jsonl"), "a") as f:
             for _ in range(2):
-                f.write(json.dumps({"day": c.now()[:10], "ts": c.now(), "feature": "subagent:foreman:fm-builder",
+                f.write(json.dumps({"day": c.now()[:10], "ts": c.now(), "feature": "subagent:sampo:fm-builder",
                                     "runs": 1, "tokens": 50000}) + "\n")
         p = c.find_project(self.repo)
         c.log_event(p, "lane_merge", task="T-0001", data={})

@@ -5,7 +5,7 @@ description: Use whenever you optimize or improve performance, or something is s
 
 # Sampo: performance
 
-No tuning without a number. A PERF task's criterion states the metric and the target ("p95 under 200 ms"). No brief yet → `/foreman:intake` first.
+No tuning without a number. A PERF task's criterion states the metric and the target ("p95 under 200 ms"). No brief yet → `/sampo:intake` first.
 
 1. **Baseline.** Run the workload several times and record the numbers, noise band included: `../playbooks/references/perf/benchmark-statistics.md`. Save the command in the brief with `sampo task evidence ID --step 1 --run "<benchmark>"`.
 2. **Find where the time goes** before guessing: `../playbooks/references/perf/profiling.md` (the biggest frame first). The stack's own profiler and the special cases are listed in `../playbooks/references/perf/INDEX.md` (database queries, regex backtracking, mobile startup, frame budget, latency-critical paths).

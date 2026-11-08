@@ -363,7 +363,7 @@ class Divergence(ForemanTestCase):
 
     def test_the_skill_and_command_offer_them(self):
         skill = read_text(os.path.join(PLUGIN, "skills", "directions", "SKILL.md"))
-        for word in ("sampo looks opposite", "sampo looks book", "/foreman:looks tournament", "references/idioms.md"):
+        for word in ("sampo looks opposite", "sampo looks book", "/sampo:looks tournament", "references/idioms.md"):
             self.assertIn(word, skill)
         idioms = read_text(os.path.join(PLUGIN, "skills", "directions", "references", "idioms.md"))
         for era in ("Swiss", "Bauhaus", "Art Deco", "Memphis", "Brutalist"):

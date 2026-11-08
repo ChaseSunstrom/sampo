@@ -5,7 +5,7 @@ description: Use whenever you fix build errors, do TDD, plan, write an ADR or ru
 
 # Sampo playbooks
 
-On-demand procedures, ported with attribution from ECC (MIT; see `plugin/THIRD_PARTY_LICENSES.md`). Load only the one you need: `sampo playbooks show PATH` adds this project's facts and its `.claude/playbooks/` overlay; before editing one, `sampo playbooks eval PATH` scores the shipped text against its held-out briefs (`plugin/evals/playbooks/`), with and without it; `route STAGE`, `blame PATH` (lines to tasks), `preview PATH` (checks it adds); from this repo's work, `draft ID`, `mine` (files changed together), `counter` (what failed here); to learn, `score NAME --task ID`, `kata NAME [--answer FILE]`, `lesson RANGE` (a diff in five minutes). They supplement the Sampo loop and never override it: Sampo's evidence rule, `sampo` state, the guard and the focus lock still apply. Where a playbook mentions an ECC agent, command, hook or script, use the Sampo equivalent: planning → `/foreman:intake`; review agents → `foreman:fm-reviewer` or the checklist itself; security review → `/security-review` plus `references/security/security-review.md`; TDD → `../intake/references/regression-test.md`; session save/resume → `sampo checkpoint` / `/foreman:resume`.
+On-demand procedures, ported with attribution from ECC (MIT; see `plugin/THIRD_PARTY_LICENSES.md`). Load only the one you need: `sampo playbooks show PATH` adds this project's facts and its `.claude/playbooks/` overlay; before editing one, `sampo playbooks eval PATH` scores the shipped text against its held-out briefs (`plugin/evals/playbooks/`), with and without it; `route STAGE`, `blame PATH` (lines to tasks), `preview PATH` (checks it adds); from this repo's work, `draft ID`, `mine` (files changed together), `counter` (what failed here); to learn, `score NAME --task ID`, `kata NAME [--answer FILE]`, `lesson RANGE` (a diff in five minutes). They supplement the Sampo loop and never override it: Sampo's evidence rule, `sampo` state, the guard and the focus lock still apply. Where a playbook mentions an ECC agent, command, hook or script, use the Sampo equivalent: planning → `/sampo:intake`; review agents → `sampo:fm-reviewer` or the checklist itself; security review → `/security-review` plus `references/security/security-review.md`; TDD → `../intake/references/regression-test.md`; session save/resume → `sampo checkpoint` / `/sampo:resume`.
 
 Core debugging, regression-test and verification procedures live with intake: `../intake/references/debugging.md`, `../intake/references/regression-test.md`, `../intake/references/verification.md`.
 
@@ -43,7 +43,7 @@ Core debugging, regression-test and verification procedures live with intake: `.
 - `references/verify/INDEX.md` — more: verifying per stack (plugins, data, games, Go, mobile).
 - `references/fix/INDEX.md` — bugs by kind: flaky tests, SQL, migrations, text and time, CLI errors, data pipelines, mobile crashes, serial and bus links.
 
-## REVIEW — checklists (also read by foreman:fm-reviewer)
+## REVIEW — checklists (also read by sampo:fm-reviewer)
 - `references/review/code-reviewer.md` — Expert code review specialist. Proactively reviews code for quality, security, and maintainability. Use…
 - `references/review/cpp.md` — Expert C++ code reviewer specializing in memory safety, modern C++ idioms, concurrency, and performance.…
 - `references/review/python.md` — Expert Python code reviewer specializing in PEP 8 compliance, Pythonic idioms, type hints, security, and…

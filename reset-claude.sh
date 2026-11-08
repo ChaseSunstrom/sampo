@@ -41,8 +41,9 @@ fi
 
 # Plugins Foreman keeps by default (BUILD_PROMPT.md §4.6); everything else is removed.
 OFF=claude-plugins-official
-KEEP="foreman@foreman ponytail@ponytail claude-hud@claude-hud context7@$OFF security-guidance@$OFF code-review@$OFF skill-creator@$OFF claude-md-management@$OFF plugin-dev@$OFF frontend-design@$OFF clangd-lsp@$OFF pyright-lsp@$OFF typescript-lsp@$OFF gopls-lsp@$OFF rust-analyzer-lsp@$OFF document-skills@anthropic-agent-skills differential-review@trailofbits insecure-defaults@trailofbits static-analysis@trailofbits sharp-edges@trailofbits supply-chain-risk-auditor@trailofbits c-review@trailofbits"
-[ "$ALL" = 1 ] && KEEP="foreman@foreman"
+OURS="sampo@sampo sampo-ui@sampo sampo@foreman sampo-ui@foreman foreman@foreman foreman-ui@foreman"  # T-2879/T-3707: the ids now and before
+KEEP="$OURS ponytail@ponytail claude-hud@claude-hud context7@$OFF security-guidance@$OFF code-review@$OFF skill-creator@$OFF claude-md-management@$OFF plugin-dev@$OFF frontend-design@$OFF clangd-lsp@$OFF pyright-lsp@$OFF typescript-lsp@$OFF gopls-lsp@$OFF rust-analyzer-lsp@$OFF document-skills@anthropic-agent-skills differential-review@trailofbits insecure-defaults@trailofbits static-analysis@trailofbits sharp-edges@trailofbits supply-chain-risk-auditor@trailofbits c-review@trailofbits"
+[ "$ALL" = 1 ] && KEEP="$OURS"
 KEEP="$KEEP ${EXTRA_KEEP//,/ }"
 kept() { case " $KEEP " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 

@@ -614,7 +614,7 @@ def note_failure(p, task, text):
                                              f"(skills/intake/references/debugging.md): write each suspicion down "
                                              f"(fm task hypo {task} add \"<claim>\" --probe \"<cmd>\") and test it "
                                              f"(fm task hypo {task} mark N ruled-out|confirmed --run \"<cmd>\" "
-                                             f"--why \"<reason>\"), or get fresh eyes: foreman:fm-debugger with the "
+                                             f"--why \"<reason>\"), or get fresh eyes: sampo:fm-debugger with the "
                                              f"failure, the files and what is ruled out (fm task hypo {task} ruled "
                                              f"--write)."]))
     try:  # T-2272: a capture that can't run (a busy lock) never costs the hints above

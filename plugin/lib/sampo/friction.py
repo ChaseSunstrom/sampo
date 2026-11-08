@@ -393,7 +393,7 @@ def due(p):
     return done >= every
 
 
-ACTION = ("self-improvement pass due: fm friction --brief, then one foreman:fm-recon subagent on that brief; capture "
+ACTION = ("self-improvement pass due: fm friction --brief, then one sampo:fm-recon subagent on that brief; capture "
           "its grounded findings with fm capture --source self, then fm friction --mark")
 
 

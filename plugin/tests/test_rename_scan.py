@@ -6,6 +6,8 @@ import re
 import subprocess
 import unittest
 
+import helpers  # noqa: F401  (plugin/lib on sys.path, for ReadersTakeBoth)
+
 # map-links: plugin/lib/sampo/cost.py plugin/lib/sampo/repeats.py plugin/lib/sampo/friction.py plugin/lib/sampo/bench.py plugin/lib/sampo/long.py plugin/lib/sampo/smithtui.py plugin/lib/sampo/mandate.py plugin/lib/sampo/rune.py plugin/lib/sampo/fixes.py plugin/lib/sampo/cli.py plugin/lib/sampo/louhi.py plugin/lib/fmguard.py
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -22,7 +24,9 @@ SURFACES = ("README.md", "MASTER.md", "INSTALL.md", "site/*.html", "site/*.js", 
 # the one line that says what Sampo was called. T-2807: also the strings code matches (the mod's pane id 'foreman', the
 # skill namespace foreman:next, the install folder /foreman/, the resume prompt the plugin and the mod both read, the
 # guard's refusal and ask prefixes); each moves in the task that changes its reader (T-2809 for the guard and prompt)
-KEPT = re.compile(r"foreman(?:-ui)?@foreman|foreman-ui|/foreman:|(?-i:foreman:(?=[a-z]))|foreman:fm-|FOREMAN_|Foreman-Task|"
+# T-2879: sampo@foreman is the id the renames map gives an install whose marketplace was added as foreman; T-3707 made
+# the marketplace sampo (sampo@sampo), and sampo migrate plugins moves an install that still has an old id
+KEPT = re.compile(r"(?:sampo|foreman)?(?:-ui|-design)?@foreman\b|foreman-ui|/foreman:|(?-i:foreman:(?=[a-z]))|foreman:fm-|FOREMAN_|Foreman-Task|"
                   r"\.claude/foreman|(?-i:/foreman/)|'foreman'|(?-i:Continue the Foreman drive)|"
                   r"(?-i:Foreman guard:|Foreman asks |Foreman\(\?: guard\)\?:)|"  # the last: register.tsx's guard regex source
                   r"formerly Foreman|was called Foreman|renamed from Foreman|"
@@ -255,6 +259,157 @@ class RenameScan(unittest.TestCase):
                             and not any(n == f and frag in " ".join(lines[node.lineno - 1:node.end_lineno]) for f, frag in allowed):
                         hits.append(f"{n}:{node.lineno}")
         self.assertEqual(hits, [])
+
+
+# T-2879/T-3707: the plugin ids moved to Sampo: sampo@sampo (sampo-ui, sampo-design), /sampo:next, sampo:fm-builder. OLD_NS
+# is every old spelling of the namespace or an id (the CLAUDE.md block's <!-- foreman:begin/end --> markers are none).
+OLD_NS = r"(?<![\w-])(?:(?:sampo|foreman)(?:-ui|-design)?@foreman\b|foreman:(?=[a-z{<(\[])(?!begin\b|end\b))"
+# The only paths that may still write one, each with why. Readers take both names for good (c.NAMESPACES,
+# c.plugin_ids), so they need no entry; any other file that writes an old spelling is a producer and fails the scan.
+OLD_NS_ALLOWED = {
+    "CHANGELOG.md": "history",
+    ".sampo": "task, research and decision records: history",
+    "site/genesis": "Genesis generation records: history",
+    "SEED_PROMPT.md": "the user's Genesis seed message, verbatim",
+    "SAMPO.md": "the rename's spec names the ids it renames",
+    "site/data/stats.json": "the homepage's record, quoting decision history (site/stats.py remakes it from state)",
+    "site/cards": "published calling cards, made from the card store's past runs",
+    "reset-claude.sh": "keeps the plugin installed under either id (a reader of both)",
+    "plugin/hooks/hook": "the broken-library fallback names every id itself (a reader; core.plugin_ids can't load)",
+    "scripts/probe-plugin-rename.sh": "installs the old ids in a scratch config to test the move",
+    "demo/demo.cast": "a recorded session", "demo/demo.svg": "a recorded session",
+    "demo/live.cast": "a recorded session", "demo/live.svg": "a recorded session",
+    "plugin/tests/test_rename_scan.py": "this scan and its old-id reader cases",
+    "plugin/tests/test_doctor.py": "old-id reader cases (an install record under foreman@foreman)",
+    "plugin/tests/test_migrate.py": "the plugin move's cases: a config holding the old ids it moves",
+    "plugin/tests/test_cost.py": "old-id reader cases (a transcript's foreman: listings)",
+    "plugin/tests/test_hooks.py": "old-id reader cases (a foreman:fm-builder start, a typed /foreman:next)",
+    "plugin/tests/test_setup.py": "old-id reader cases (an install record install.sh leaves to move itself)",
+    "mods/foreman-ui/tests/foreman-ui.test.tsx": "the mod's old-id reader cases",
+}
+
+
+def old_ns_rows():
+    out = subprocess.run(["git", "-C", ROOT, "grep", "-nIP", OLD_NS, "--", ".",
+                          *(f":(exclude){p}" for p in OLD_NS_ALLOWED)], capture_output=True, text=True).stdout
+    return [ln[:160] for ln in out.splitlines()]
+
+
+class PluginIds(unittest.TestCase):
+    def test_no_producer_writes_the_old_namespace(self):
+        rows = old_ns_rows()
+        self.assertEqual(rows, [], f"{len(rows)} lines write an old plugin namespace or id (sampo: and sampo@sampo "
+                                   f"now; a reader takes both via c.NAMESPACES): {rows[:8]}")
+
+    def test_old_ns_sees_the_forms(self):
+        for old in ("/foreman:next", "load: Skill foreman:intake", "`foreman:fm-builder`", "claude plugin disable "
+                    "foreman@foreman", "foreman-ui@foreman", "(foreman-design@foreman)", "'/foreman:next'", "sampo@foreman", "sampo-ui@foreman",
+                    'f"(you type /foreman:{name})"', "/foreman:<name>", r'r"Skill foreman:([\w-]+)"'):
+            self.assertTrue(re.search(OLD_NS, old), old)
+        for fine in ("<!-- foreman:begin -->", "<!-- foreman:end -->", "sampo@sampo", "sampo-ui@sampo", "/sampo:next",
+                     "mods/foreman-ui/", "foreman:Sampo", "user.email=foreman@localhost", "(?:sampo|foreman):x",
+                     '("sampo@", "foreman@")', "rules/foreman.md", "foreman-ui:economy"):
+            self.assertFalse(re.search(OLD_NS, fine), fine)
+
+    def test_allowed_paths_exist(self):  # a stale entry would hide nothing but reads as a licence
+        for p in OLD_NS_ALLOWED:
+            self.assertTrue(os.path.exists(os.path.join(ROOT, p)), p)
+
+    def test_manifests_name_sampo_and_map_every_old_name(self):
+        # the renames map moves foreman@foreman installs to sampo@foreman by themselves (probe T-2879-probe): a
+        # configured marketplace keeps the name it was added under, so only sampo migrate plugins reaches sampo@sampo
+        import json
+        with open(os.path.join(ROOT, ".claude-plugin", "marketplace.json"), encoding="utf-8") as f:
+            mk = json.load(f)
+        self.assertEqual(mk["name"], "sampo")  # T-3707: sampo@sampo; sampo migrate plugins re-adds it on a machine
+        sources = {e["name"]: e["source"] for e in mk["plugins"]}
+        self.assertEqual(sources, {"sampo": "./plugin", "sampo-ui": "./mods/foreman-ui", "sampo-design": "./plugins/foreman-design"})
+        self.assertEqual(mk.get("renames"), {"foreman": "sampo", "foreman-ui": "sampo-ui", "foreman-design": "sampo-design"})
+        for name, src in sources.items():
+            with open(os.path.join(ROOT, src, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["name"], name, src)
+
+
+class ReadersTakeBoth(unittest.TestCase):
+    """T-2879: an install, setting, log or habit from before the move says foreman; every reader still takes it."""
+
+    def test_core_names_every_id(self):
+        from sampo import core as c
+        self.assertEqual(c.plugin_ids(), ("sampo@sampo", "sampo@foreman", "foreman@foreman"))
+        self.assertEqual(c.plugin_ids("ui"), ("sampo-ui@sampo", "sampo-ui@foreman", "foreman-ui@foreman"))
+        self.assertEqual(c.old_plugin_ids(), ("sampo@foreman", "foreman@foreman"))
+        self.assertEqual(c.ns_names("fm-builder"), ("sampo:fm-builder", "foreman:fm-builder"))
+
+    def test_hooks_see_a_skill_named_either_way(self):
+        from sampo import hooks
+        text = "load: Skill sampo:intake; /foreman:next, then Skill foreman:ui-design and /sampo:review"
+        self.assertEqual(sorted(set(hooks._NAMED.findall(text))), ["intake", "next", "review", "ui-design"])
+        for typed in ("/sampo:status now", "/foreman:status now"):
+            self.assertEqual(hooks._TYPED.match(typed).group(1), "status", typed)
+
+    def test_playbook_stage_either_way(self):
+        from sampo import playbooks
+        for ns in ("sampo", "foreman"):
+            self.assertEqual(playbooks._STAGE.search(f"load: Skill {ns}:playbooks (clean)").group(1), "clean")
+
+    def test_settings_read_the_mod_under_either_id(self):
+        from sampo import settings
+        for pid in ("sampo-ui@sampo", "sampo-ui@foreman", "foreman-ui@foreman"):
+            data = {"enabledPlugins": {pid: True}, "pluginConfigs": {pid: {"options": {"mascot": "blue"}}}}
+            self.assertEqual(settings.plugin_id(data), pid)
+            self.assertEqual(settings.plugin_values(data), {"mascot": "blue"})
+        self.assertEqual(settings.plugin_id({}), "sampo-ui@sampo")  # nothing recorded: the id Claude Code uses now
+
+    def test_output_style_ids_both(self):
+        from sampo import setup
+        for sid in ("sampo:Sampo", "foreman:Sampo", "foreman:Foreman"):
+            self.assertIn(sid, setup.OUTPUT_STYLES)
+
+    def test_a_hook_knows_the_name_its_session_loaded(self):  # review: Claude Code's data folder is <name>-<market>
+        from unittest import mock
+        from sampo import core as c
+        for data, want in (("/c/plugins/data/foreman-foreman", "foreman"), ("/c/plugins/data/sampo-foreman/", "sampo"),
+                           ("/c/plugins/data/sampo-sampo", "sampo"), ("/c/plugins/data/sampo-ui-sampo", None),
+                           ("/c/plugins/data/sampo-ui-foreman", None), ("", None)):
+            with mock.patch.dict(os.environ, {"CLAUDE_PLUGIN_DATA": data}):
+                self.assertEqual(c.loaded_ns(), want, data)
+
+    def test_text_for_an_old_session_names_what_it_loaded(self):
+        from sampo import core as c
+        text = "load: Skill sampo:intake; /sampo:next; Agent sampo:fm-builder; claude plugin disable sampo@foreman; sampo: ok"
+        self.assertEqual(c.as_loaded(text, "foreman"), "load: Skill foreman:intake; /foreman:next; Agent foreman:fm-builder; "
+                                                       "claude plugin disable sampo@foreman; sampo: ok")
+        self.assertEqual(c.as_loaded(text, "sampo"), text)
+
+    def test_installed_ids_read_claude_codes_record(self):  # review: a disable hint names the id that is there
+        import json
+        import tempfile
+        from unittest import mock
+        from sampo import core as c
+        with tempfile.TemporaryDirectory() as t:
+            os.makedirs(os.path.join(t, "plugins"))
+            with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": t}):
+                self.assertEqual(c.installed_ids(), ())
+                with open(os.path.join(t, "plugins", "installed_plugins.json"), "w") as f:
+                    json.dump({"plugins": {"foreman@foreman": [{}], "foreman-ui@foreman": [{}]}}, f)
+                self.assertEqual(c.installed_ids(), ("foreman@foreman",))
+                self.assertEqual(c.installed_ids("ui"), ("foreman-ui@foreman",))
+
+    def test_settings_merge_the_mods_options_across_its_ids(self):  # review: never drop a saved option
+        import json
+        import tempfile
+        from sampo import settings
+        data = {"pluginConfigs": {"foreman-ui@foreman": {"options": {"mascot": "blue", "motion": "off"}},
+                                  "sampo-ui@foreman": {"options": {"mascot": "green"}}}}
+        self.assertEqual(settings.plugin_values(data), {"mascot": "green", "motion": "off"})
+        with tempfile.TemporaryDirectory() as t:
+            real = os.path.join(t, "settings.json")
+            settings._write_plugin(data, "sampo-ui@foreman", "palette", "cb", real, "")
+            with open(real) as f:
+                self.assertEqual(json.load(f)["pluginConfigs"]["sampo-ui@foreman"]["options"],
+                                 {"mascot": "green", "motion": "off", "palette": "cb"})
+            settings._write_plugin(data, "sampo-ui@foreman", "motion", None, real, "")  # an unset holds on both
+            self.assertNotIn("motion", settings.plugin_values(data))
 
 
 if __name__ == "__main__":

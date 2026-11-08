@@ -32,7 +32,7 @@ class Sprint(ForemanTestCase):
         self.assertEqual(rows[-1]["why"], "vague: modern, clean")
         _, rows = self.walk("# Design\n\n" + POV)
         self.assertEqual([(r["stage"], r["pass"]) for r in rows], [("brief", True), ("direction", False)])
-        self.assertIn("/foreman:directions", rows[-1]["next"])
+        self.assertIn("/sampo:directions", rows[-1]["next"])
         _, rows = self.walk("# Design\n\n" + POV + DIRECTION)
         self.assertEqual((rows[-1]["stage"], rows[-1]["why"]), ("tokens", "no ## Tokens table"))
         _, rows = self.walk("# Design\n\n" + POV + DIRECTION + TOKENS)

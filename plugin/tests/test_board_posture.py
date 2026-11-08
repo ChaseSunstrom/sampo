@@ -103,13 +103,13 @@ class BoardPosture(ForemanTestCase):
         p = c.find_project(self.repo)
         stop = lambda agent, msg: self.hook("SubagentStop", {"agent_type": agent, "agent_id": "a1",
                                                               "last_assistant_message": msg})
-        stop("foreman:fm-builder", "x" * 200)
+        stop("sampo:fm-builder", "x" * 200)
         stop("Explore", "ok")
         self.assertFalse([e for e in c.ledger_tail(p) if e.get("event") == "hollow_return"])
         self.assertNotIn("hollow", self.fm("next").stdout)
-        stop("foreman:fm-reviewer", "Done.")
+        stop("sampo:fm-reviewer", "Done.")
         [e] = [e for e in c.ledger_tail(p) if e.get("event") == "hollow_return"]
-        self.assertEqual(e["data"]["agent_type"], "foreman:fm-reviewer")
+        self.assertEqual(e["data"]["agent_type"], "sampo:fm-reviewer")
         self.assertIn("fm-reviewer", self.fm("next").stdout)
 
 

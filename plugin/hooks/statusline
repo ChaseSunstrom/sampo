@@ -314,7 +314,7 @@ def default_layout(c, data):
         ((settings.get("permissions") or {}).get("defaultMode") or "default")
     mode = {"bypassPermissions": "bypass"}.get(mode, mode)
     line1 = session_segs(data, cwd)
-    if (settings.get("enabledPlugins") or {}).get("foreman-ui@foreman"):  # the band shows the rest above the prompt
+    if any((settings.get("enabledPlugins") or {}).get(i) for i in c.plugin_ids("ui")):  # the band shows the rest above the prompt
         return [render(line1 + chip_segs(st), width)], p
     line2 = foreman_segs(st, mode) if st else [(MARK + "sampo", fg(ACCENT)), (" · no project here · guard on", fg(DIM))]
     return [render(line1, width), render(line2, width)], p

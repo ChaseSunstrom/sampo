@@ -11,11 +11,11 @@ from sampo import smithtui
 PLUGIN = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__))))
 CC_BUILTINS = {"/model", "ctrl+o", "Esc"}  # Claude Code's own: the model picker, the transcript, stop the turn
 # each fm code command's route in Claude Code; a new command needs one here or an APP_ONLY reason
-PLUGIN_ROUTES = {"new": "/foreman:intake", "stop": "Esc", "resume": "/foreman:resume", "diff": "git diff",
-                 "history": "fm digest", "projects": "fm projects", "model": "/model", "settings": "/foreman:settings",
-                 "looks": "/foreman:looks", "backlog": "/foreman:backlog", "hush": "fm settings set motion off",
-                 "queue": "/foreman:next",
-                 "tickets": "/foreman:capture", "undo": "fm task revert", "pr": "fm pr", "thoughts": "ctrl+o"}
+PLUGIN_ROUTES = {"new": "/sampo:intake", "stop": "Esc", "resume": "/sampo:resume", "diff": "git diff",
+                 "history": "fm digest", "projects": "fm projects", "model": "/model", "settings": "/sampo:settings",
+                 "looks": "/sampo:looks", "backlog": "/sampo:backlog", "hush": "fm settings set motion off",
+                 "queue": "/sampo:next",
+                 "tickets": "/sampo:capture", "undo": "fm task revert", "pr": "fm pr", "thoughts": "ctrl+o"}
 APP_ONLY = {"photo": "the app's own frame; Claude Code draws none to shoot", "breakout": "a game in the app while checks run",
             **dict.fromkeys(("focus", "up", "down", "expand", "follow", "search", "help", "quit"),
                             "moving around the app's own panels")}
@@ -34,7 +34,7 @@ def resolves(route):
     first = route.split()[0]
     if first == "fm":
         return fm_resolves(route.split()[1:])
-    if first.startswith("/foreman:"):
+    if first.startswith("/sampo:"):
         name = first.split(":", 1)[1]
         return (os.path.isfile(os.path.join(PLUGIN, "skills", name, "SKILL.md"))
                 or os.path.isfile(os.path.join(PLUGIN, "commands", f"{name}.md")))
@@ -54,10 +54,10 @@ class PluginParity(unittest.TestCase):
         self.assertEqual(set(PLUGIN_ROUTES) | set(APP_ONLY), commands, "a route for no command")
 
     def test_a_route_that_doesnt_exist_is_caught(self):
-        self.assertTrue(resolves("fm pr") and resolves("/foreman:intake") and resolves("/foreman:looks"))
+        self.assertTrue(resolves("fm pr") and resolves("/sampo:intake") and resolves("/sampo:looks"))
         self.assertFalse(resolves("fm nosuchverb"))
         self.assertFalse(resolves("fm task nosuchaction"))
-        self.assertFalse(resolves("/foreman:nosuchskill"))
+        self.assertFalse(resolves("/sampo:nosuchskill"))
         self.assertFalse(resolves("/nosuch"))
 
     def test_fm_ships_in_the_plugin(self):

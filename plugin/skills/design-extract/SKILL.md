@@ -1,6 +1,6 @@
 ---
 name: design-extract
-description: DESIGN.md's token table from a repo's CSS custom properties, its contrast proved, or a light/dark palette from one seed colour (usage /foreman:design-extract [ui root | seed colour]).
+description: DESIGN.md's token table from a repo's CSS custom properties, its contrast proved, or a light/dark palette from one seed colour (usage /sampo:design-extract [ui root | seed colour]).
 argument-hint: "[ui root | seed colour]"
 disable-model-invocation: true
 ---
@@ -42,4 +42,4 @@ and the playbook `../playbooks/references/ui/type-and-colour.md`, which say when
 5. **Prove it in CI.** Add `sampo design contrast <token file>` (or the copied script) to the checks the project runs,
    with the pairs its components actually use, and record it as the step's evidence.
 6. **No direction yet** (`DESIGN.md` has no `## Direction` section; a Tokens section alone is a palette): offer
-   `/foreman:directions`, which keeps the Tokens section and says per card whether it keeps this palette.
+   `/sampo:directions`, which keeps the Tokens section and says per card whether it keeps this palette.

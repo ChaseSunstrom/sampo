@@ -140,9 +140,10 @@ def _bump(ctx):
     if meta.get("version") == old:  # only what is at the old version moves, as release.py always did
         meta["version"] = v
     for e in data.get("plugins", []):
-        if e.get("name") in ("foreman", "foreman-design") and e.get("version") == old:  # T-1652: design's skills
+        name = str(e.get("name"))  # T-2879: sampo, sampo-design, sampo-ui (the foreman- names before)
+        if name in {n + s for n in c.NAMESPACES for s in ("", "-design")} and e.get("version") == old:  # T-1652
             e["version"] = v
-        elif e.get("name") == "foreman-ui" and ui:
+        elif name in {n + "-ui" for n in c.NAMESPACES} and ui:
             e["version"] = ui
     _setver(pj, v)
     if os.path.isfile(dj):

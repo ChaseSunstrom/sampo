@@ -1,6 +1,6 @@
 # FOREMAN — Build Prompt for Claude Code
 
-> **How to use this file:** it lives at the root of the user's `foreman` git repo, cloned to `~/.claude/foreman` by `install.sh` (which also runs `setup-plugins.sh` and installs the bootstrap plugin). Start the build with `/foreman:build` in Claude Code, or `install.sh --build`.
+> **How to use this file:** it lives at the root of the user's `foreman` git repo, cloned to `~/.claude/foreman` by `install.sh` (which also runs `setup-plugins.sh` and installs the bootstrap plugin). Start the build with `/sampo:build` in Claude Code, or `install.sh --build`.
 > Everything above Appendix A is addressed to you, the Claude Code agent. Appendix A records the plugin decisions for this machine; the executable version is `setup-plugins.sh`.
 
 ---
@@ -78,7 +78,7 @@ Self-critique the plan against §6.5 and revise (at most twice). If `BUILD_GATE:
 
 **Phase 4: Skills, commands, rules, agents, visibility.** `rules/foreman.md`, the skills in §4.5, the read-only agents in §8, and the visibility layer in §4.8.
 
-**Phase 5: Integration.** Apply the approved §4.6 decisions: wire plugins into the lifecycle, disable conflicts (never uninstall without asking), port the procedures listed in §4.6 with attribution, apply the CLAUDE.md changes from §10, finish the permission safety net in §4.7. Foreman is already installed as `foreman@foreman` (the bootstrap); extend `plugin/`, keeping `commands/build.md` working.
+**Phase 5: Integration.** Apply the approved §4.6 decisions: wire plugins into the lifecycle, disable conflicts (never uninstall without asking), port the procedures listed in §4.6 with attribution, apply the CLAUDE.md changes from §10, finish the permission safety net in §4.7. Foreman is already installed as `sampo@sampo` (the bootstrap); extend `plugin/`, keeping `commands/build.md` working.
 
 **Phase 6: Hygiene and doctor.** `fm tidy` (§9) and `fm doctor` (§12).
 
@@ -97,7 +97,7 @@ FOREMAN_HOME/                      # the user's git repo (pushed to GitHub)
 ├── README.md  install.sh  setup-plugins.sh  configure-repo.sh   # exist already; keep working
 ├── BUILD_PROMPT.md                # this file (origin spec)
 ├── MASTER.md                      # map of the whole system (§11), created in Phase 8
-├── .claude-plugin/marketplace.json   # local marketplace "foreman" -> ./plugin (exists)
+├── .claude-plugin/marketplace.json   # local marketplace "sampo" -> ./plugin (exists)
 ├── local/                         # gitignored: recon.md, PLAN.md, verification.md
 ├── plugin/                        # the plugin; already has .claude-plugin/plugin.json + commands/build.md
 │   ├── .claude-plugin/plugin.json
@@ -180,7 +180,7 @@ fm doctor
 
 Requirements: one implementation language chosen after recon (Python 3 stdlib-only, or POSIX sh + jq); `#!/usr/bin/env` shebangs; atomic writes (temp file + rename); a per-project lock with timeout; every mutating command appends a ledger event `{ts, session_id, project, task, event, data}`; `--json` output for hooks; documented exit codes; no network; tolerate two Claude Code sessions in the same project (lock, and warn if another live session holds focus).
 
-### 4.5 Skills and commands (namespaced, e.g. `/foreman:intake`)
+### 4.5 Skills and commands (namespaced, e.g. `/sampo:intake`)
 
 `intake` (parse §5, expand to briefs per §6, order the queue, apply AUTONOMY, start) · `next` / `resume` · `status` (≤ 25 lines) · `capture` · `tidy` · `doctor` · `reflect` (retro on last task/phase; writes learnings and decisions) · `improve` (§4.9).
 Give skills specific, slightly "pushy" descriptions so they trigger reliably; keep each SKILL.md under ~500 lines with detail in `references/`. `rules/foreman.md` (always loaded, ≤ ~80 lines) contains only: the loop, the intake cheat sheet, the canonical order, the focus-lock table in compressed form, the subagent rule, the evidence rule, "state goes through fm," and pointers to the skills and `MASTER.md`.
@@ -241,7 +241,7 @@ The Claude Code binary is closed-source and replaced on every update, so never p
 Foreman improves its own skills, rules, hooks, and scripts over time. It does not improve the model, and it never changes itself unreviewed: an agent that rewrites its own instructions without a referee drifts and bloats, and one running in bypass mode that can edit its own guard has no guard.
 
 - **Where ideas come from.** `reflect` after every task (what caused back-and-forth, what the user corrected, what the guard blocked that the user then allowed), repeated corrections in auto memory, doctor and tidy findings, hook latency and context-footprint trends, and recurring work (the same kind of task three or more times → propose a skill, built and evaluated with skill-creator). Each idea lands in Foreman's own INBOX as `source: self`, with its evidence. Nothing is applied directly.
-- **Cadence.** `/foreman:improve` (on request, or suggested weekly or every ~10 completed tasks) turns the self-inbox into a proposal of at most five changes, each with evidence and an expected effect.
+- **Cadence.** `/sampo:improve` (on request, or suggested weekly or every ~10 completed tasks) turns the self-inbox into a proposal of at most five changes, each with evidence and an expected effect.
 - **Isolation.** The live plugin loads in place from `FOREMAN_HOME/plugin` on `main`, so improvements are built in a git worktree on branch `improve/<date>` and tested with `--plugin-dir`, never in the live tree.
 - **Referee.** `plugin/evals/` holds `claude plugin eval` cases: the §12 scenarios plus sanitized replays of real past tasks. Run the suite against the live plugin and the candidate with a cost ceiling (`--max-cost-usd`). A candidate qualifies only if it scores at least as well in every category, regresses no scenario, stays within the §2.8 budgets, and doctor is green.
 - **Merging is the user's call.** Whatever AUTONOMY says, the user approves each self-improvement merge. Foreman then bumps the plugin version, updates MASTER.md and `CHANGELOG.md` in the same commit, and tags it (`claude plugin tag`). Rollback is `git revert` plus `/reload-plugins`.
@@ -418,7 +418,7 @@ Dry-run by default; `--apply` to act; archive before deleting; log every change.
 - **Knowledge graph** (only if a graph/memory MCP is installed): merge duplicate entities, remove orphan relations, prune observations tied to archived tasks; show the diff first.
 - **Task graph:** dependency cycles, dangling `depends_on`, blocked tasks whose blocker is done.
 - **Plugin footprint:** report always-on token cost per plugin (`claude plugin details`) and context injected by other plugins' hooks; flag plugins not used recently, LSP plugins whose server binary is missing, and newly installed plugins that §4.6 hasn't classified. Synced plugins can be turned off locally, not uninstalled.
-- **Cadence:** a cheap "tidy overdue" check at SessionStart; full tidy after each completed queue or via `/foreman:tidy`; never at SessionEnd.
+- **Cadence:** a cheap "tidy overdue" check at SessionStart; full tidy after each completed queue or via `/sampo:tidy`; never at SessionEnd.
 
 ---
 
@@ -492,7 +492,7 @@ Create `FOREMAN_HOME/MASTER.md`: the single document that explains the whole sys
 6. **Source-of-truth table** (§4.2) and **precedence:** the user's current message > project CLAUDE.md and rules > `rules/foreman.md` > skill defaults. Safety guards are never overridden.
 7. **Integrations:** each installed plugin/MCP → lifecycle stage → how it is invoked; disabled or conflicting ones and why.
 8. **Relationship to BUILD_PROMPT.md and the repo:** BUILD_PROMPT.md is the origin spec; the repo is how Foreman travels between machines (`install.sh` one-liner). Changes to Foreman itself go through intake as tasks against `FOREMAN_HOME/plugin`, and MASTER.md is updated in the same commit (doctor fails if the file map drifts from disk).
-9. **Operations:** the dev loop (edit `plugin/` → `/reload-plugins`), disable (`claude plugin disable foreman@foreman`), uninstall, restore a backup, logs, running doctor and tidy, and updating another machine (`git pull` or rerun `install.sh`).
+9. **Operations:** the dev loop (edit `plugin/` → `/reload-plugins`), disable (`claude plugin disable sampo@sampo`), uninstall, restore a backup, logs, running doctor and tidy, and updating another machine (`git pull` or rerun `install.sh`).
 10. **Known limitations.**
 
 ---

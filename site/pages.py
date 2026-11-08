@@ -862,7 +862,7 @@ PAGES = [
          ("chart", _findings), ("chart", _severity),
          ("text", "Review that learns", "<p>Every confirmed finding is logged with its lens and severity. The defect "
           "classes a project keeps shipping go into the next builder's brief, so the same mistake is checked for "
-          "before it is made again. <code>/foreman:review</code> runs one reviewer per lens over a diff, then two "
+          "before it is made again. <code>/sampo:review</code> runs one reviewer per lens over a diff, then two "
           "skeptics try to refute each finding.</p>")]},
     {"slug": "lanes", "nav": "Builder lanes", "title": "Many hands, one Smith",
      "desc": "Independent tasks run in parallel git worktrees, each reviewed before Sampo merges it.",
@@ -948,7 +948,7 @@ PAGES = [
           "<code>sampo scout --slow</code> files at most 3 leads open and 3 a day, only kinds that prove themselves, "
           "never one you dropped.</li><li><strong>Proven, then fixed.</strong> <code>sampo prove --capture 5</code> "
           "proves what it can on a throwaway copy and files each proven lead as a task whose check stays red until "
-          "it's fixed; nothing proven leaves a receipt. <code>/foreman:initiative</code> runs map, find, prove and "
+          "it's fixed; nothing proven leaves a receipt. <code>/sampo:initiative</code> runs map, find, prove and "
           "fix end to end.</li><li><strong>Only your trees.</strong> A tree whose recent commits aren't yours "
           "is skipped; where others commit too, each lead waits for your yes.</li><li><strong>Deeper when you "
           "allow it.</strong> <code>sampo find --ladder</code> adds each stack's own analyzers (ruff, go vet, gosec), "

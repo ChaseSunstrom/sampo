@@ -81,7 +81,7 @@ def _prompt(e):
         return None
     t = _text_of((e.get("message") or {}).get("content")).strip()
     cmd = re.search(r"<command-name>([^<]+)</command-name>", t)
-    if cmd:  # a slash command: "/foreman:build resume"
+    if cmd:  # a slash command: "/sampo:build resume"
         args = re.search(r"<command-args>([^<]*)</command-args>", t)
         return f"{cmd.group(1).strip()} {args.group(1).strip() if args else ''}".strip()
     return None if not t or c.machine_text(t) else t  # T-3687: a user's pasted HTML is still theirs

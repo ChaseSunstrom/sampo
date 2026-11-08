@@ -1,6 +1,6 @@
 ---
 name: capture
-description: Capture a request into the Sampo inbox without working on it (usage /foreman:capture <text>): an idea queued for later.
+description: Capture a request into the Sampo inbox without working on it (usage /sampo:capture <text>): an idea queued for later.
 argument-hint: "<request text>"
 disable-model-invocation: true
 ---

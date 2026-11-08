@@ -97,7 +97,7 @@ def probe_brainstorm(p, ctx):
         return []
     week = time.strftime("%G-W%V", time.gmtime())
     return [Finding(f"brainstorm:{week}", "Brainstorm round: what Sampo should build or fix next", "RESEARCH", "M",
-                    "the queue and inbox are empty and no brainstorm ran this week: /foreman:brainstorm, a cheap "
+                    "the queue and inbox are empty and no brainstorm ran this week: /sampo:brainstorm, a cheap "
                     "probe first (two lenses), ground every idea, queue the ones worth building")]
 
 
@@ -130,7 +130,7 @@ def _auto_start(p, m):
     rune.kick(p)
     return [Finding("genesis:started", "Genesis started from your goal: drive it with fm genesis step", "FEATURE", "M",
                     "the queue ran dry under full autonomy, so gen-0 was drafted from the standing goal, sealed in the "
-                    "tower folder and logged as a decision. Run fm genesis step and follow /foreman:genesis")]
+                    "tower folder and logged as a decision. Run fm genesis step and follow /sampo:genesis")]
 
 
 def _user_backed(p, text):
@@ -168,7 +168,7 @@ def probe_genesis(p, ctx):
                     "FEATURE", "L", "the queue is drained and this project has a track record: Genesis runs generations "
                     "toward one goal the user writes (gen-0). Ask for their goal and MUST/NEVER lines; with only a line, "
                     "fm genesis draft \"<line>\" prints a whole gen-0 to show them; fm genesis init saves it, then "
-                    "/foreman:genesis drives it. A no is a drop: it is never offered again",
+                    "/sampo:genesis drives it. A no is a drop: it is never offered again",
                     confirm="Genesis is a long run toward a goal only you can write")]
 
 

@@ -510,7 +510,7 @@ class UserPromptSubmit(HookCase):
         # Claude Code 2.1.299 runs UserPromptSubmit before skill and command expansion, so the hook sees the bare
         # command: it is no request to classify or capture (T-0944)
         self.fm("init")
-        for prompt in ("/foreman:next", "/foreman:status", "/compact keep the plan", "/fm"):
+        for prompt in ("/sampo:next", "/sampo:status", "/foreman:next", "/compact keep the plan", "/fm"):  # T-2879: old too
             ctx = self.ctx_of(self.hook("UserPromptSubmit", {"prompt": prompt}))
             self.assertNotIn("Work request", ctx, prompt)
             self.assertNotIn("Broad request", ctx, prompt)
@@ -560,7 +560,7 @@ class UserPromptSubmit(HookCase):
         tid = self.task()
         ctx = self.ctx_of(self.hook("UserPromptSubmit", {"prompt": "carry on"}))
         self.assertIn(f"Next: {tid} step 1/2", ctx)
-        self.assertIn("foreman:debug-test", ctx, "the harness names the FIX procedure")
+        self.assertIn("sampo:debug-test", ctx, "the harness names the FIX procedure")
         self.assertLessEqual(len(ctx), 400)
 
     def test_unchanged_state_is_not_repeated_every_turn(self):
@@ -574,6 +574,21 @@ class UserPromptSubmit(HookCase):
         self.hook("SessionStart", {"source": "compact"}, env={"CLAUDE_ENV_FILE": self.env_file})
         self.assertIn("Next:", self.ctx_of(self.hook("UserPromptSubmit", {"prompt": "carry on"})))
 
+    def test_a_session_is_told_the_names_its_claude_code_loaded(self):
+        # T-2879 review: a session started before the move has foreman:* loaded while the code says sampo:*; its hooks
+        # see CLAUDE_PLUGIN_DATA=…/data/foreman-foreman, so their notes and the CLI that session runs say foreman:
+        self.fm("init")
+        self.task(tier="M")  # a FIX: the Next line names Skill sampo:debug-test
+        data = lambda n: {"CLAUDE_PLUGIN_DATA": os.path.join(self.home, "plugins", "data", f"{n}-foreman")}
+        old = self.ctx_of(self.hook("UserPromptSubmit", {"prompt": "carry on", "session_id": "sess-old"}, env=data("foreman")))
+        self.assertIn("Skill foreman:debug-test", old)
+        self.assertNotIn("sampo:debug-test", old)
+        new = self.ctx_of(self.hook("UserPromptSubmit", {"prompt": "carry on", "session_id": "sess-new"}, env=data("sampo")))
+        self.assertIn("Skill sampo:debug-test", new)
+        self.assertIn("foreman:debug-test", self.fm("next", env={"CLAUDE_CODE_SESSION_ID": "sess-old"}).stdout)
+        self.assertIn("sampo:debug-test", self.fm("next", env={"CLAUDE_CODE_SESSION_ID": "sess-new"}).stdout)
+        self.assertIn("sampo:debug-test", self.fm("next").stdout, "no session: the name installs move to")
+
     def test_the_skill_that_fits_is_named_once_per_stage(self):
         # T-1697: the hooks handed over the exact fm command every turn, so the skill describing the step was never
         # loaded (1 of 13 used in 30 days). The Next line names it once per stage; its body loads only when invoked.
@@ -581,16 +596,16 @@ class UserPromptSubmit(HookCase):
         ups = lambda prompt, sid="sess-1": self.ctx_of(self.hook("UserPromptSubmit", {"prompt": prompt, "session_id": sid}))
         fix = self.task(tier="M")
         ctx = ups("carry on")
-        hint = "(load: Skill foreman:debug-test; sampo playbooks show tdd-workflow)"  # T-1701: the job skill
+        hint = "(load: Skill sampo:debug-test; sampo playbooks show tdd-workflow)"  # T-1701: the job skill
         self.assertIn(hint, ctx, "named whole, worded as the call to make")
         self.assertGreater(ctx.index(hint), ctx.index("Next: "), "on the Next line")
         self.assertLessEqual(len(ctx), 400)
         self.fm("task", "step", fix, "add", "another step")
         ctx = ups("carry on")
         self.assertIn("Next: ", ctx, "a new step restates the state")
-        self.assertNotIn("foreman:debug-test", ctx, "the same stage: named once")
+        self.assertNotIn("sampo:debug-test", ctx, "the same stage: named once")
         feat = self.task("Add export", type_="FEATURE", tier="M")
-        self.assertIn("(load: Skill foreman:intake, then its references/execute.md", ups("go on"))
+        self.assertIn("(load: Skill sampo:intake, then its references/execute.md", ups("go on"))
         self.assertEqual(json.loads(self.fm("next", "--json").stdout)["skill"], c.SKILL_FOR["FEATURE"], "sampo next: always")
         for n in ("1", "2"):
             self.fm("task", "step", feat, "done", n, "--evidence", "true", "ok")
@@ -600,7 +615,7 @@ class UserPromptSubmit(HookCase):
         self.assertNotIn("verification-loop", ups("go on"), "SessionStart named it")
         self.fm("task", "ac", feat, "check", "1", "--evidence", "true", "ok")
         self.fm("task", "set", feat, "--section", "Docs impact", "--text", "none: a test")
-        self.assertIn("/foreman:review", ups("go on"), "the audit stage names the review workflow")
+        self.assertIn("/sampo:review", ups("go on"), "the audit stage names the review workflow")
 
     def test_a_skill_hint_that_does_not_fit_waits_for_a_turn_with_room(self):
         # T-1697 review: a long step plus a work request's note left no room, and the state was recorded as told, so
@@ -610,11 +625,11 @@ class UserPromptSubmit(HookCase):
         self.task(tier="M", steps=("reproduce the login timeout on a throttled connection, then record it",))
         ctx = ups("fix the login timeout when wifi is slow")
         self.assertIn('--run "<verify cmd>"', ctx, "the Next line whole")
-        self.assertNotIn("foreman:debug-test", ctx, "no room: held back, never cut")
+        self.assertNotIn("sampo:debug-test", ctx, "no room: held back, never cut")
         self.assertLessEqual(len(ctx), 400)
         ctx = ups("carry on")
         self.assertIn("Next: ", ctx, "the state wasn't recorded as told: said again")
-        self.assertIn("(load: Skill foreman:debug-test;", ctx)
+        self.assertIn("(load: Skill sampo:debug-test;", ctx)
         self.assertNotIn("Next: ", ups("carry on"), "told now: the usual quiet")
 
     def test_a_ui_request_names_the_design_skill_or_the_ui_playbooks(self):
@@ -624,20 +639,20 @@ class UserPromptSubmit(HookCase):
         self.fm("init")
         ups = lambda prompt, sid: self.ctx_of(self.hook("UserPromptSubmit", {"prompt": prompt, "session_id": sid}))
         ctx = ups("redesign the settings page", "sess-2")
-        self.assertIn("Design request: load: Skill foreman:ui-design", ctx)
-        self.assertNotIn("foreman:ui-design", ups("redesign the landing page", "sess-2"), "said once a session")
+        self.assertIn("Design request: load: Skill sampo:ui-design", ctx)
+        self.assertNotIn("sampo:ui-design", ups("redesign the landing page", "sess-2"), "said once a session")
         for i, prompt in enumerate(("restyle the header", "give the UI a dark mode", "the frontend needs a colour palette",
                                     "animate the hero on scroll", "add a 3D globe with three.js",
                                     "the WebGL scene renders black", "add motion to the cards")):
             ctx = ups(prompt, f"sess-4-{i}")
-            self.assertIn("UI request: load: Skill foreman:ui-design", ctx, prompt)
+            self.assertIn("UI request: load: Skill sampo:ui-design", ctx, prompt)
             self.assertIn("sampo playbooks show ui/INDEX", ctx, prompt)
         for prompt in ("design the database schema", "redesign the cache layer", "redesign how the app handles retries",
                        "fix the fm ui --json crash", "the foreman-ui pane flickers", "the ui test fails", "fix the build",
                        "fm motion check crashes on an empty file"):
             ctx = ups(prompt, "sess-3")
             self.assertNotIn("ui/INDEX", ctx, prompt)
-            self.assertNotIn("foreman:ui-design", ctx, prompt)
+            self.assertNotIn("sampo:ui-design", ctx, prompt)
         self.task()
         ctx = ups("make the UI faster", "sess-5")  # a work request, a UI note, Active and Next: the Next line is never cut
         self.assertIn('--run "<verify cmd>"', ctx)
@@ -2402,7 +2417,7 @@ class DesignNudge(HookCase):
         self.assertIn(tid, note)
         self.assertLessEqual(len(note), 300)
         skill = os.path.isfile(os.path.join(c.PLUGIN_ROOT, "skills", "ui-design", "SKILL.md"))
-        self.assertEqual("Skill foreman:ui-design" in note, skill, "T-1715: the job skill, which routes to directions")
+        self.assertEqual("Skill sampo:ui-design" in note, skill, "T-1715: the job skill, which routes to directions")
         self.assertEqual(self.edit("web/site.css", tool="Write"), "", "a second UI edit in the task gets none")
         self.task(title="Second")
         self.assertIn("ui/design-direction.md", self.edit("web/index.html"), "a new task gets it again")
@@ -3006,7 +3021,7 @@ class Stop(HookCase):
         self.assertEqual(len(c.read_meta(self.project())["clauses"]["open"]), 3)
         self.assertIsNone(self.decision(self.stop("All done.")))  # sess-2's request, not sess-1's
         self.assertEqual(self.decision(self.stop("All done.", session="sess-2")), "block")
-        for prompt, env in (("/foreman:status " + ask, None), (ask.replace("CSV", "XML"), {"FOREMAN_WORKER_OF": "T-0001"}),
+        for prompt, env in (("/sampo:status " + ask, None), (ask.replace("CSV", "XML"), {"FOREMAN_WORKER_OF": "T-0001"}),
                             (" ".join(f"Fix the widget number {i} now." for i in range(13)), None)):
             self.hook("UserPromptSubmit", {"prompt": prompt, "session_id": "sess-1"}, env=env)
             self.assertIn("PDF", " ".join(c.read_meta(self.project())["clauses"]["open"]), prompt[:30])  # unchanged
@@ -3184,11 +3199,11 @@ class Stop(HookCase):
         self.fm("init")
         self.task()
         first = parse(self.stop("Continuing with the retry helper next."))["reason"]
-        self.assertIn("(load: Skill foreman:debug-test", first)
+        self.assertIn("(load: Skill sampo:debug-test", first)
         self.assertLessEqual(len(first), 160, first)
         again = parse(self.stop("Continuing with the retry helper next."))["reason"]
         self.assertIn("Sampo drive: ", again)
-        self.assertNotIn("foreman:debug-test", again)
+        self.assertNotIn("sampo:debug-test", again)
 
     def test_drive_does_not_push_an_unapproved_m_task_while_plans_keep_missing(self):
         # T-1061: under "slow" fm focus refuses the M task, so the drive pushing it spun the model
@@ -3241,7 +3256,7 @@ class Stop(HookCase):
         # say "keep working on stuff while tests run". Once per running set: work on what doesn't need it, then wait.
         self.fm("init")
         self.task()
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         p = self.stop("Waiting for the audit.")
         self.assertEqual(self.decision(p), "block")
         self.assertIn("a1", parse(p)["reason"])
@@ -3249,7 +3264,7 @@ class Stop(HookCase):
         again = parse(self.stop("Nothing else is independent of the audit."))
         self.assertIsNone(again.get("decision"), "one push per running set, never a loop")
         self.assertIn("a1", again.get("systemMessage", ""))
-        self.hook("SubagentStop", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStop", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         self.assertEqual(self.decision(self.stop("Audit is in.")), "block")
 
     def test_a_headless_run_waits_for_its_background_work_itself(self):
@@ -3260,7 +3275,7 @@ class Stop(HookCase):
         cached = os.path.join(self.home, "state", "claude-version")
         with open(cached, "w") as f:
             f.write("2.1.200\n")  # T-0372: before 2.1.292, claude -p didn't wait for background work itself
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         for env in ({"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"}, {"FOREMAN_DRIVE_TASK": "T-0001"}):
             with self.subTest(env=env):
                 p = self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "The suite is still running.",
@@ -3292,7 +3307,7 @@ class Stop(HookCase):
         with open(os.path.join(bin_dir, "claude"), "w") as f:
             f.write("#!/bin/sh\necho '2.1.295 (Claude Code)'\n")
         os.chmod(os.path.join(bin_dir, "claude"), 0o755)
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         p = self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "The suite is still running.",
                                "session_id": "sess-1"},
                       env={"CLAUDE_CODE_ENTRYPOINT": "sdk-cli", "PATH": bin_dir + os.pathsep + os.environ["PATH"]})
@@ -3378,12 +3393,12 @@ class Stop(HookCase):
         self.fm("init")
         side = self.task("Second fix", focus=False)
         self.task("Current work")
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         self.assertIn(f"Start {side}", parse(self.stop("Waiting on the review."))["reason"])
-        self.hook("SubagentStart", {"agent_id": "a2", "agent_type": "foreman:fm-reviewer"})  # the running set changes
+        self.hook("SubagentStart", {"agent_id": "a2", "agent_type": "sampo:fm-reviewer"})  # the running set changes
         self.assertNotIn(f"Start {side}", parse(self.stop("Waiting on both.")).get("reason", ""))
         self.task("Another current task")  # T-2513: a new active task doesn't offer the same stage of a task again
-        self.hook("SubagentStart", {"agent_id": "a3", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a3", "agent_type": "sampo:fm-reviewer"})
         again = [parse(self.stop("Waiting on all three.")).get("reason", "") for _ in range(2)]
         self.assertFalse(any(f"Start {side}" in r for r in again), again)
 
@@ -3392,12 +3407,12 @@ class Stop(HookCase):
         self.fm("autonomy", "full")
         cap = re.search(r"T-\d+", self.fm("capture", "Later thing", "--type", "FIX", "--tier", "S").stdout).group(0)
         self.task("Current work")
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         self.assertIn(f"Start {cap}", parse(self.stop("Waiting on the review."))["reason"])
         self.fm("task", "new", "Later thing", "--from", cap, "--type", "FIX", "--tier", "S", "--ac", "ok :: true",
                 "--step", "s")
         self.task("Next current task")
-        self.hook("SubagentStart", {"agent_id": "a2", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a2", "agent_type": "sampo:fm-reviewer"})
         again = [parse(self.stop("Waiting on both.")).get("reason", "") for _ in range(2)]
         self.assertTrue(any(f"Start {cap}" in r for r in again), again)
 
@@ -3410,7 +3425,7 @@ class Stop(HookCase):
         plan = self.task("Big feature", type_="FEATURE", tier="L", focus=False)
         active = self.task("Current work")
         self.fm("task", "set", after, f"depends_on={active}")
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         seen = []
         for _ in range(2):
             p = self.stop("Waiting for the review; nothing else to do.")
@@ -3439,7 +3454,7 @@ class Stop(HookCase):
             if b.id in out:
                 b.meta["builder"] = "worktree"
                 c.save_brief(p, b)
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-builder"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-builder"})
         reasons = [parse(self.stop("Waiting on the builders.")).get("reason", "") for _ in range(3)]
         self.assertFalse(any(reviewed in r for r in reasons), "a reviewed L task has nothing left to do from here")
         offered = next(r for r in reasons if small in r)
@@ -3493,7 +3508,7 @@ class Stop(HookCase):
         self.fm("autonomy", "full")
         self.task("Active work")
         self.task("Queued work", focus=False)
-        self.hook("SubagentStart", {"agent_id": "abuild1", "agent_type": "foreman:fm-builder", "session_id": "sess-1"})
+        self.hook("SubagentStart", {"agent_id": "abuild1", "agent_type": "sampo:fm-builder", "session_id": "sess-1"})
         self.hook("PostToolUse", {"tool_name": "SendMessage", "tool_input": {"to": "adesign1"}, "session_id": "sess-1",
                                   "tool_response": {"message": "Resuming agent adesign1", "resumedAgentId": "adesign1"}})
         self.hook("PostToolUse", {"tool_name": "Bash", "tool_input": {"command": "x", "run_in_background": True},
@@ -3580,7 +3595,7 @@ class Stop(HookCase):
         fresh = self.task("Not started", focus=False)
         self.fm("task", "evidence", started, "--step", "1", "--run", "true")
         self.task("Current work")
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         offered = [parse(self.stop("Waiting for the review.")).get("reason", "") for _ in range(2)]
         self.assertIn(fresh, offered[0])
         self.assertFalse(any(f"Start {started}" in r for r in offered), offered)
@@ -4047,12 +4062,12 @@ class Subagents(HookCase):
     def test_start_and_stop_are_recorded(self):
         self.fm("init")
         self.task()
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-recon"})
-        self.hook("SubagentStop", {"agent_id": "a1", "agent_type": "foreman:fm-recon", "stop_hook_active": False,
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-recon"})
+        self.hook("SubagentStop", {"agent_id": "a1", "agent_type": "sampo:fm-recon", "stop_hook_active": False,
                                    "agent_transcript_path": "/x/agent-a1.jsonl", "last_assistant_message": "found 3 things"})
         self.assertEqual([e["kind"] for e in self.events()][-2:], ["subagent_start", "subagent_stop"])
         ev = [e for e in c.ledger_tail(self.project()) if e["event"] == "subagent"][-1]
-        self.assertEqual(ev["data"]["agent_type"], "foreman:fm-recon")
+        self.assertEqual(ev["data"]["agent_type"], "sampo:fm-recon")
 
 
 class MessageDisplay(HookCase):

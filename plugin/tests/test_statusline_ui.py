@@ -65,7 +65,7 @@ class StatuslineUi(ForemanTestCase):
         self.assertEqual(lines[0], "OLD-LINE")
 
     def test_with_the_mod_on_foreman_is_a_chip_on_the_session_line(self):
-        self.settings(enabledPlugins={"foreman-ui@foreman": True})
+        self.settings(enabledPlugins={"sampo-ui@sampo": True})
         lines = [ANSI.sub("", l) for l in self.run_line()]
         self.assertEqual(len(lines), 1, lines)
         self.assertIn("⊖ T-0001 0/2", lines[0])

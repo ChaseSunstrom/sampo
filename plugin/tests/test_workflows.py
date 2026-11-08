@@ -1,4 +1,4 @@
-"""T-0787: the workflows Foreman ships (plugin/workflows/*.js, run as /foreman:<name>) load: a pure-literal meta first,
+"""T-0787: the workflows Foreman ships (plugin/workflows/*.js, run as /sampo:<name>) load: a pure-literal meta first,
 its name the file's, every phase() title declared in meta.phases, valid ES module syntax, and nothing that breaks resume
 (Date.now, Math.random, an argless new Date)."""
 import glob

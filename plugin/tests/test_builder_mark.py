@@ -30,7 +30,7 @@ class BuilderMark(ForemanTestCase):
         b = c.find_brief(self.p, "T-0001")
         b.meta["lane"] = os.path.join(self.tmp, "worktrees", f"agent-{AGENT}")
         c.save_brief(self.p, b)
-        self.pl = {"agent_type": "foreman:fm-builder", "agent_id": AGENT, "cwd": self.repo}
+        self.pl = {"agent_type": "sampo:fm-builder", "agent_id": AGENT, "cwd": self.repo}
 
     def returned(self):
         return c.find_brief(self.p, "T-0001").meta.get("builder_returned")

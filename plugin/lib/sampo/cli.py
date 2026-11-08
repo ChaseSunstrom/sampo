@@ -47,7 +47,7 @@ def out(args, data, text):
         print(re.sub(r"[\x7f-\x9f]", lambda m: f"\\u{ord(m.group()):04x}",
                      json.dumps(data, indent=2, ensure_ascii=False, default=str)))
     elif text is not None:
-        print(text)
+        print(c.as_loaded(text, c.ns()))  # T-2879: the names the session running this loaded
 
 
 # ---------------------------------------------------------------- project resolution
@@ -3269,7 +3269,7 @@ def _forge_brief(p, b, args):
     path = os.path.join(p.dir, "audits", f"{b.id}.forge.md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     c.write_atomic(path, "\n".join(body) + "\n")
-    return out(args, {"brief": path}, f"Forge brief: {path}\nRun one foreman:fm-reviewer with the prompt \"Read {path} "
+    return out(args, {"brief": path}, f"Forge brief: {path}\nRun one sampo:fm-reviewer with the prompt \"Read {path} "
                                       f"and do what it asks.\"; a forged pass becomes a stronger check before the close.")
 
 
@@ -3913,7 +3913,7 @@ def _focus_refusal(p, target):
     gaps = [] if target.status in ("active", "verifying") else c.plan_gaps(target, c.effective_autonomy(p))
     if gaps:
         raise c.PolicyError(f"{target.id} isn't planned enough to start: missing {', '.join(gaps)} "
-                            f"(sampo task set/ac/step, or /foreman:intake; sampo next says what's next)")
+                            f"(sampo task set/ac/step, or /sampo:intake; sampo next says what's next)")
     if c.held_elsewhere(target, p.lane):  # T-0134: one checkout works a task at a time
         where = target.meta.get("lane") or "the main checkout"
         raise c.PolicyError(f"{target.id} is held by {'lane ' if target.meta.get('lane') else ''}{where}: work on it "
@@ -6518,11 +6518,11 @@ def cmd_audit(args):
         c.write_atomic(briefs[0], "\n\n".join(blocks) + f"\n\nDiff: {path}\n" + lists)
     brief = briefs[0]
     big = b.tier == "L" and len(groups) == 1 and r.stdout.count("\n") > SPLIT_SUGGEST
-    how = (f"Run {len(briefs)} foreman:fm-reviewer subagents in parallel, one per brief, each with the prompt \"Read "
+    how = (f"Run {len(briefs)} sampo:fm-reviewer subagents in parallel, one per brief, each with the prompt \"Read "
            f"<brief> and do the review it describes.\": {', '.join(briefs)}; save each reply with sampo research add "
            f"{b.id}-review-N --from-agent <its output file>; record each lens with sampo task audit {b.id} <lens> …"
            if len(briefs) > 1 else
-           f"Run one foreman:fm-reviewer subagent with the prompt \"Read {brief} and do the review it describes.\"; "
+           f"Run one sampo:fm-reviewer subagent with the prompt \"Read {brief} and do the review it describes.\"; "
            f"save its reply with sampo research add {b.id}-review --from-agent <its output file>; record each lens with "
            f"sampo task audit {b.id} <lens> …" + (f" (a {r.stdout.count(chr(10))}-line L diff: sampo audit prep {b.id} --split "
                                                f"gives each lens group a fresh reviewer, in parallel)" if big else "")
@@ -6988,7 +6988,7 @@ def _build_parser(only=None):
     s.add_argument("path", nargs="?")
     s.add_argument("--sensitive", action="store_true")
 
-    s = add("state", cmd_state, tier=("Every task", 150), help="print STATE (also sampo status: the word /foreman:status uses, T-0393)",
+    s = add("state", cmd_state, tier=("Every task", 150), help="print STATE (also sampo status: the word /sampo:status uses, T-0393)",
             aliases=["status"])
     tiered.append((160, "Every task", "status"))
     s.add_argument("--brief", action="store_true")
@@ -7832,7 +7832,7 @@ def _build_parser(only=None):
     s.add_argument("text", nargs="*")
     s.add_argument("--task", help="recall for this task's title, request and scope")
     s.add_argument("-n", type=int, default=4)
-    s.add_argument("--corrections", action="store_true", help="the user's recent corrections (for /foreman:reflect)")
+    s.add_argument("--corrections", action="store_true", help="the user's recent corrections (for /sampo:reflect)")
     s.add_argument("--magnets", action="store_true", help="files the most FIX tasks touched (T-0613)")
     s.add_argument("--lessons", action="store_true", help="lessons by id: times shown, never recalled, recurred (T-0617)")
     s.add_argument("--retire", metavar="LESSON", help="with --lessons: leave this lesson (T-0123.1) out of recall and "
@@ -8068,7 +8068,12 @@ def _build_parser(only=None):
                    "is left for a person")
     s = add("migrate", lazy("sampo.homemove", "cmd_migrate"), tier=("Project and settings", 874), help="move the Sampo home "
             "and its siblings (foreman.draft, .evolve, .lanes) to the sampo names once, leaving symlinks at the old "
-            "paths, a backup of the record and a manifest; safe to rerun, resumes a half-done move (T-2746)")
+            "paths, a backup of the record and a manifest; safe to rerun, resumes a half-done move (T-2746). "
+            f"sampo migrate plugins: Claude Code's old plugin ids ({', '.join(c.old_plugin_ids() + c.old_plugin_ids('ui'))}) "
+            f"become {c.plugin_ids()[0]} and {c.plugin_ids('ui')[0]}, the marketplace re-added as {c.MARKET}, one write "
+            "per file, never both ids enabled, a copy of each file kept for --undo (T-3707)")
+    s.add_argument("what", nargs="?", choices=("home", "plugins"), default="home",
+                   help="home (the default): the folders; plugins: Claude Code's plugin and marketplace ids")
     s.add_argument("--undo", action="store_true", help="put the old layout back and check it against the manifest's hashes")
     s.add_argument("--dry-run", action="store_true", help="show the steps; change nothing")
     s = add("drill", lazy("sampo.drill", "cmd_drill"), tier=("Project and settings", 873), help="a scripted day in a temp "
@@ -8945,7 +8950,7 @@ def _build_parser(only=None):
     s.add_argument("--out", help="book: the HTML page to write")
     s = add("lane", lazy("sampo.lanes", "cmd_lane"), tier=("Running elsewhere", 1120), help="a git worktree beside the repo with its own active task: "
                                                        "new <id>, list, rm <id> (never discards uncommitted work); "
-                                                       "brief <id>: an S/M task for a foreman:fm-builder subagent; "
+                                                       "brief <id>: an S/M task for a sampo:fm-builder subagent; "
                                                        "merge <id>: bring a builder's finished commits in; "
                                                        "resume <id>: take back a stopped builder's work; "
                                                        "recover <id>: the one recovery for why its lane stopped (T-2354); "

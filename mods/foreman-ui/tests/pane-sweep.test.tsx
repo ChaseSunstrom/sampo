@@ -78,7 +78,7 @@ test('the pane fits every width and height: nothing wider than the pane, nothing
   for (const w of [30, 40, 60, 80, 120, 200])
     for (const h of [8, 12, 24, 40, 60]) {
       const ui = await $.ui.mount({
-        plugin: 'foreman-ui', surface: 'terminal', component: 'Pane', requestId: 'foreman',
+        plugin: 'sampo-ui', surface: 'terminal', component: 'Pane', requestId: 'foreman',
         props: { title: 'Sampo', isFocused: true, bodyColumns: w, placement: 'dock', scroll: { offset: 0, bodyRows: h }, view: {} },
       } as never)
       if (h >= 24 && !(await ui.find({ type: 'Text', text: /T-0007/ }))) bad.push(`${w}x${h} drew no task`) // the sweep sees a real pane

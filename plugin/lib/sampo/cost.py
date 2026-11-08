@@ -124,12 +124,12 @@ def _share(a, share):
     elif t in ("skill_listing", "agent_listing_delta"):
         rows = str(a.get("content") or "").splitlines() if t == "skill_listing" else a.get("addedLines") or []
         for row in map(str, rows):
-            add("skill listing" if t == "skill_listing" else "agent listing", len(row) + 1, row.startswith("- foreman:"))
+            add("skill listing" if t == "skill_listing" else "agent listing", len(row) + 1, row.startswith(tuple("- " + n for n in c.ns_names(""))))
     elif t == "output_style_instructions":
         style = a.get("style") if isinstance(a.get("style"), dict) else {}
-        add("output style", len(str(style.get("prompt") or "")), str(style.get("name")).startswith("foreman:"))
+        add("output style", len(str(style.get("prompt") or "")), str(style.get("name")).startswith(c.ns_names("")))
     elif t == "output_style":  # the reminder Claude Code renders each turn around the style's name
-        add("output style", len(str(a.get("style"))) + len(_STYLE_NOTE), str(a.get("style")).startswith("foreman:"))
+        add("output style", len(str(a.get("style"))) + len(_STYLE_NOTE), str(a.get("style")).startswith(c.ns_names("")))
     elif t == "instructions":
         for f in a.get("files") or []:
             add("rules", len(str(f.get("content") or "")), str(f.get("path") or "").endswith("rules/foreman.md"))
@@ -1400,7 +1400,7 @@ def yields(p, since):
 
 def note_skill(e, all_skills, named, loaded):
     """T-1702/T-1703: fold one skill_named (a hook's note named them) or slash (the user typed one) event into the
-    per-session `named` sets; a slash is a load, so it goes in `loaded` and comes back. A workflow (/foreman:review)
+    per-session `named` sets; a slash is a load, so it goes in `loaded` and comes back. A workflow (/sampo:review)
     or a typo is no skill. fm usage and fm doctor both count through here."""
     if not isinstance(e.get("skills"), list):
         return set()

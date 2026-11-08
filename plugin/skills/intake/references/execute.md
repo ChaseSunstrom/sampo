@@ -26,12 +26,12 @@ Small related requests (the same type, nearby files) are faster as one: `sampo b
 
 ## End of task
 1. FINAL checks for this task: full test suite / build, not just the new test. Record evidence.
-2. Audit (`audit.md`): S = self checklist; M = intent + the riskiest other lens; L = all five lenses via `foreman:fm-reviewer`. Verify every finding, fix or capture it, `sampo task audit ID <lens> "<how>" "<result>"`.
+2. Audit (`audit.md`): S = self checklist; M = intent + the riskiest other lens; L = all five lenses via `sampo:fm-reviewer`. Verify every finding, fix or capture it, `sampo task audit ID <lens> "<how>" "<result>"`.
 3. `sampo task done ID` (sampo lists anything missing, including audits older than the last edit).
-4. `/foreman:reflect` for M/L tasks or anything that caused back-and-forth. Anything you did by hand again (`sampo repeats` lists what recurs across tasks) → capture an S task to make it a project tool (below).
+4. `/sampo:reflect` for M/L tasks or anything that caused back-and-forth. Anything you did by hand again (`sampo repeats` lists what recurs across tasks) → capture an S task to make it a project tool (below).
 5. Triage the inbox: expand captured items into briefs (intake §2), fold them into the queue.
 6. Re-plan checkpoint after each phase group or structural change: re-read remaining briefs, update scope, approach and Execution prompts, re-order if dependencies changed (`sampo queue --replan`), log what changed in each brief.
-7. Show the queue in ≤ 10 lines and continue per autonomy (`/foreman:next`).
+7. Show the queue in ≤ 10 lines and continue per autonomy (`/sampo:next`).
 
 ## Project tools (for work that repeats)
 `sampo repeats` reports commands run 3+ times in 2+ tasks and steps that recur in 3+ tasks, each with a suggestion. Make the smallest tool that removes the repetition, in the project repo, as its own S task, then `sampo repeats dismiss "<shape or step>"` (also for one that isn't worth a tool). A new skill, agent or command file is always-on context, so creating one needs the user's yes (`sampo ask ID plugin`; editing an existing one doesn't):

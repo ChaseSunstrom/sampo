@@ -334,7 +334,7 @@ def _message(block, ctx):
     if cat == "brief":
         return (f"Sampo: no active task in this project, so {detail} can't be edited yet. One command starts a small "
                 f"task: sampo task new \"<title>\" --type FIX --tier S --ac \"<done when>\" --step \"<step>\" --focus "
-                f"(bigger work: /foreman:intake; sampo next says what's next).")
+                f"(bigger work: /sampo:intake; sampo next says what's next).")
     if cat == "state-direct":
         diff = re.search(r"/audits/(T-\d+)\.diff$", str(detail))  # T-0413
         return (f"Ward: blocked state-direct: {detail} is Sampo state. Change it through fm "

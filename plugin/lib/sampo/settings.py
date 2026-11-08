@@ -43,8 +43,9 @@ SHARED = {
                 "help": "default: green and red for pass and fail; cb: blue and orange, safe with colour blindness; "
                         "riso: risograph inks, green and fluorescent pink"},
 }
-PLUGIN = "foreman-ui"
-_MOD_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))), "mods", PLUGIN,
+PLUGIN = "sampo-ui"  # T-2879: the mod's plugin name; PLUGINS also holds the one installs had before (core.plugin_ids)
+PLUGINS = (PLUGIN, "foreman-ui")
+_MOD_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))), "mods", "foreman-ui",
                          ".claude-plugin", "plugin.json")
 _PLUGIN_RANGES = {"freshAt": (0, 100), "freshTokens": (0, None)}
 _LAYOUT_HELP = {"top": ("panels", "panels across the top"), "columns": ("columns", "panels per column"),
@@ -128,7 +129,7 @@ def mod_manifest():
         with open(os.path.join(claude_dir(), "plugins", "installed_plugins.json"), encoding="utf-8") as f:
             inst = json.load(f).get("plugins") or {}
         paths += [os.path.join(x.get("installPath") or "", ".claude-plugin", "plugin.json")
-                  for k, v in inst.items() if k.split("@")[0] == PLUGIN and isinstance(v, list) for x in v
+                  for k, v in inst.items() if k.split("@")[0] in PLUGINS and isinstance(v, list) for x in v
                   if isinstance(x, dict)]
     except (OSError, ValueError, AttributeError):
         pass
@@ -602,20 +603,25 @@ def claude_settings():
 
 
 def plugin_id(data):
-    """The mod's id as Claude Code names it (foreman-ui@<marketplace>)."""
-    for table in ("enabledPlugins", "pluginConfigs"):
-        t = data.get(table)
-        for k in t if isinstance(t, dict) else ():
-            if k.split("@")[0] == PLUGIN:
-                return k
-    return f"{PLUGIN}@foreman"
+    """The mod's id as Claude Code names it (sampo-ui@sampo; an old one, @foreman, on an install not moved yet by
+    sampo migrate plugins, T-3707)."""
+    keys = [k for table in ("enabledPlugins", "pluginConfigs") if isinstance(data.get(table), dict) for k in data[table]]
+    return next((k for name in PLUGINS for k in keys if k.split("@")[0] == name), f"{PLUGIN}@sampo")
+
+
+def _our_options(data):
+    """The mod's saved options under each of its ids, the old id's first (T-2879: a half-moved install has both)."""
+    pc = data.get("pluginConfigs")
+    return [cfg["options"] for name in reversed(PLUGINS) for k, cfg in (pc.items() if isinstance(pc, dict) else ())
+            if k.split("@")[0] == name and isinstance(cfg, dict) and isinstance(cfg.get("options"), dict)]
 
 
 def plugin_values(data):
-    pc = data.get("pluginConfigs")
-    cfg = pc.get(plugin_id(data)) if isinstance(pc, dict) else None
-    opts = cfg.get("options") if isinstance(cfg, dict) else None
-    return opts if isinstance(opts, dict) else {}
+    """The mod's options: the old id's entry as the base, the current one's over it, so no saved option is dropped."""
+    out = {}
+    for opts in _our_options(data):
+        out.update(opts)
+    return out
 
 
 def _guard_block(path, p=None):
@@ -669,8 +675,11 @@ def _write_plugin(data, pid, key, value, real, how):
     opts = cfg.setdefault("options", {}) if isinstance(cfg, dict) else None
     if not isinstance(opts, dict):
         raise SettingError(f"{real}: pluginConfigs isn't laid out as Claude Code writes it; {how}")
+    for k, v in plugin_values(data).items():  # T-2879: what the mod's other id saved comes along
+        opts.setdefault(k, v)
     if value is None:
-        opts.pop(key, None)
+        for o in _our_options(data):  # an unset holds under every id
+            o.pop(key, None)
     else:
         opts[key] = value
     core.write_atomic(real, json.dumps(data, indent=2, ensure_ascii=False) + "\n")

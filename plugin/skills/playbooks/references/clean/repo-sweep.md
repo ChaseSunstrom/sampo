@@ -9,7 +9,7 @@ method, not when a gate stays green.
   Raw request, and each part of it gets a step (UI, settings, environment are areas too).
 - Inventory first: `git ls-files | cut -d/ -f1-2 | sort | uniq -c` → the brief's **Coverage** section, one row per
   area: `area · files · method · found · fixed · captured`. Before/after numbers: files, lines, tool findings.
-- Big repos: one `foreman:fm-recon` per area in parallel (≤ 3), each returning candidates with `path:line` and the
+- Big repos: one `sampo:fm-recon` per area in parallel (≤ 3), each returning candidates with `path:line` and the
   evidence; the main thread verifies and removes.
 
 ## Areas and how each is checked
@@ -26,7 +26,7 @@ method, not when a gate stays green.
    go, undocumented ones get a line.
 5. **UI** — unused components, styles, assets and routes (no import, no reference); one style for one thing.
 6. **Stray files** — committed build output, logs, scratch, old scripts, files `.gitignore` should cover.
-7. **Sampo state** — `/foreman:tidy`: archive finished briefs, drop stale captured ones with a reason, merge
+7. **Sampo state** — `/sampo:tidy`: archive finished briefs, drop stale captured ones with a reason, merge
    duplicates.
 8. **Needs improving** — duplication and smells found on the way: fix the small ones here, capture the rest
    (`sampo capture --source discovered`) with the evidence.

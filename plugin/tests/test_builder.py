@@ -1,4 +1,4 @@
-"""Builder lanes (T-0234): an S/M task worked by a foreman:fm-builder subagent in its own git worktree (Agent isolation
+"""Builder lanes (T-0234): an S/M task worked by a sampo:fm-builder subagent in its own git worktree (Agent isolation
 "worktree"); the main thread reviews, merges, re-verifies and closes. At most `fm lane max` builders at once (2 by default)."""
 import json
 import os
@@ -47,7 +47,7 @@ class Brief(_Tasks):
         for part in ("Parse dates works", "python3 -c 'print(1)'", "build it", f"sampo focus {tid}", "never push"):
             self.assertIn(part.lower(), brief.lower())
         self.assertIn('isolation: "worktree"', res["agent"])
-        self.assertIn("foreman:fm-builder", res["agent"])
+        self.assertIn("sampo:fm-builder", res["agent"])
         self.assertIn("builder", self.fm("task", "show", tid).stdout)
 
     def test_the_first_lane_is_never_starved_by_moderate_load(self):

@@ -66,7 +66,7 @@ class Friction(ForemanTestCase):
             self.hook("PostToolUseFailure", {"tool_name": "Read", "tool_input": {"file_path": f"/tmp/scratch{i}.md"},
                                              "error": "File does not exist."})
         self.fm("task", "new", "Fix login", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "a", "--focus")
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer", "session_id": "sess-1"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer", "session_id": "sess-1"})
         self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Waiting for the audit.",
                            "session_id": "sess-1"})
         out = self.fm("friction").stdout

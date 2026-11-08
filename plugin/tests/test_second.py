@@ -281,7 +281,7 @@ class Debate(_Stubbed):
             brief = f.read()
         self.assertIn("the token is logged", brief)
         self.assertIn("CONFIRMED", brief)
-        self.assertIn("foreman:fm-reviewer", out)
+        self.assertIn("sampo:fm-reviewer", out)
 
     def test_an_unknown_review_is_refused(self):
         tid = json.loads(self.fm("capture", "x", "--json").stdout)["id"]

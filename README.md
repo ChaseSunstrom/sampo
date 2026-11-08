@@ -99,7 +99,7 @@ Or from inside Claude Code:
 
 ```
 /plugin marketplace add ChaseSunstrom/sampo
-/plugin install foreman@foreman
+/plugin install sampo@sampo
 ```
 
 <p align="center"><picture>
@@ -159,14 +159,14 @@ gh repo clone ChaseSunstrom/sampo ~/.claude/foreman && ~/.claude/foreman/install
 - `--local-models` / `--no-local-models`: pull the pinned Ollama embedding models (bge-m3, nomic-embed-text) for the moons funnel, or don't and don't ask. Needs Ollama installed; the installer never installs it.
 - `--no-mod`: skip the sampo-ui mod.
 - `--no-wiring`: don't touch `~/.claude`.
-- `--build`: open Claude Code on `/foreman:build` to rebuild from `BUILD_PROMPT.md`.
+- `--build`: open Claude Code on `/sampo:build` to rebuild from `BUILD_PROMPT.md`.
 - `--desktop`: also install Sampo Desktop from its newest release (the AppImage and a menu entry on Linux x86_64, the app in `~/Applications` on macOS).
 
 **What `install.sh` does:**
 
 1. Clones this repo to `~/.claude/foreman`, or fast-forwards it if it's clean and on `main`.
 2. Runs `setup-plugins.sh`. It installs the curated plugins that are missing, and installs language-server plugins only when the server is on your PATH. It reports conflicting or heavy plugins but never uninstalls anything.
-3. Registers this repo as a local plugin marketplace and installs `foreman@foreman`. The plugin loads in place, so edits under `plugin/` apply on `/reload-plugins`.
+3. Registers this repo as a local plugin marketplace and installs `sampo@sampo` (an install from before the marketplace was named `sampo` is moved by `sampo migrate plugins` instead). The plugin loads in place, so edits under `plugin/` apply on `/reload-plugins`.
 4. Asks whether to make `bypassPermissions` your default permission mode. That is Sampo's recommended mode, because its Ward is built for it. On a yes (or `--bypass`) it sets it, backing up `settings.json` and recording the original. With no terminal to ask on and no `--bypass`, your permission mode stays as it was.
 5. Wires Sampo into `~/.claude` with `sampo install-user` unless you pass `--no-wiring`. That adds:
    - a statusLine wrapper (your original line and claude-hud still render above the Sampo line);
@@ -215,8 +215,8 @@ Work runs in the order CLEAN → PERFORMANCE → SECURITY → FIX → FEATURE, a
 
 - **Open-ended requests** ("super improve it", "just get it done") get a brainstorm first. Several tool-less sub-agents each look through a different lens, then Claude checks every idea against the real code and queues the best. A brainstorm runs up to six short `claude -p` (Sonnet) sessions, which count against your plan's usage.
 - **Audits before done:** finished work is checked through independent lenses: intent, adversary, edge cases, operations and maintainability. Small tasks get a self-check; large ones get all five. A change that touches UI also gets a design read: an art director, an accessibility reviewer and a first-time user, with the task's screenshots.
-- **Review:** `/foreman:review [range | branch | T-0123]` runs one reviewer per lens over a diff, then two skeptics try to refute every finding, so only confirmed defects come back, with the `sampo task finding` lines to record them.
-- **Ideas:** `/foreman:ideas "<request>"` brainstorms with agents that read the code while they think, so each idea arrives marked new, partial or already built, with evidence and a ready intake block. Both workflows are multi-agent runs and cost more than a single pass.
+- **Review:** `/sampo:review [range | branch | T-0123]` runs one reviewer per lens over a diff, then two skeptics try to refute every finding, so only confirmed defects come back, with the `sampo task finding` lines to record them.
+- **Ideas:** `/sampo:ideas "<request>"` brainstorms with agents that read the code while they think, so each idea arrives marked new, partial or already built, with evidence and a ready intake block. Both workflows are multi-agent runs and cost more than a single pass.
 - **Docs stay current:** bigger tasks can't close until they record which docs they changed, and those docs must exist and match the code. Drift elsewhere is reported when a task closes (`sampo docs` shows it any time).
 - Long sessions compact earlier, since Sampo's state makes that cheap.
 
@@ -303,11 +303,11 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 | **Runs unattended** | Drive mode, full auto, one fresh session per task, budgeted nightly jobs | `sampo run` · `sampo night` |
 | **Learns a fix once** | A failure that was fixed before gets its fix offered next time, in any project | `sampo fix list` |
 | **Changes many spots** | Batches of exact replacements, applied all or none, inside the task's scope | `sampo edit` · `sampo sub` |
-| **Improves itself** | Rule changes backtested on your real sessions; self-improvement kept only when evals agree | `/foreman:improve` |
+| **Improves itself** | Rule changes backtested on your real sessions; self-improvement kept only when evals agree | `/sampo:improve` |
 | **Proves migrations, data and releases** | Migrations up, down, up on a throwaway database; data commands on a copy, invariants checked; the release built offline, run from a throwaway prefix, tagged by `sampo release V` in any repo | `sampo prove --migration`, `--data`, `--release` |
 | **Runs incidents** | `sampo capture --incident '<impact>' --signal CMD` opens an urgent FIX only when the harm signal is red, keeps a UTC timeline, closes only on the same signal green twice plus one follow-up, and leaves the signal for `sampo sentinel` | `sampo capture --incident` |
 | **Checks infra files** | Dockerfiles, compose, Terraform, Helm, Kubernetes, CI workflows, shell, systemd units: each through its own validator on a copy, offline; no validator installed, unproven | `sampo prove --infra` |
-| **Finds problems unasked** | Untested code, undeclared imports, SQL built from input, slow loops, flaky tests, stale docs, leaked keys: no model, worst first; proven on a copy | `sampo find --rank [--ladder]` (tools: trusted only), `sampo prove --capture N`/`--docs`, `/foreman:initiative` |
+| **Finds problems unasked** | Untested code, undeclared imports, SQL built from input, slow loops, flaky tests, stale docs, leaked keys: no model, worst first; proven on a copy | `sampo find --rank [--ladder]` (tools: trusted only), `sampo prove --capture N`/`--docs`, `/sampo:initiative` |
 | **Seeds itself** | Rune: generations toward one goal you write; a rewrite stays only if it closed more exam scenarios | `sampo rune step` |
 | **Stays light** | Only the Ward and write validators run in line; every hook call stays under its budget (the chart below) | `sampo doctor` |
 
@@ -412,14 +412,14 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 
 - `sampo backtest --rule/--fix/--card` shows how often a change would have fired on your real recent sessions before it ships; `sampo rule add … --moves corrections --by 30` makes a change a trial the digest grades later; `sampo adopt` learns from a repo's history of reverts and fixes.
 - `sampo friction` digests Sampo's own friction (`--minutes`: an estimate of the minutes it cost this week), and `sampo burden --by-verb` lists the verbs nobody calls. Lessons come back as tripwires on related work.
-- `/foreman:improve` builds candidates in a separate git worktree, runs the `claude plugin eval` suite against the live version, and only proposes changes that score at least as well. You approve every merge, and it can't edit its own Ward, permission settings, rules or eval suite without your authorization.
+- `/sampo:improve` builds candidates in a separate git worktree, runs the `claude plugin eval` suite against the live version, and only proposes changes that score at least as well. You approve every merge, and it can't edit its own Ward, permission settings, rules or eval suite without your authorization.
 
 </details>
 
 <details>
 <summary><b>Seeds itself</b></summary>
 
-- Rune runs generations toward one goal you write once (gen-0: your goals, MUST and NEVER lines). `sampo rune draft "<line>"` writes a whole gen-0 from one line to start from, carrying your standing intent; `sampo rune init` saves it and `/foreman:genesis` drives it.
+- Rune runs generations toward one goal you write once (gen-0: your goals, MUST and NEVER lines). `sampo rune draft "<line>"` writes a whole gen-0 from one line to start from, carrying your standing intent; `sampo rune init` saves it and `/sampo:genesis` drives it.
 - `sampo rune step` names the next action from the tower's files alone, so a killed session picks up where it stopped. gen-0 is sealed by its hash, and each generation's seed is checked against it word for word (`sampo rune drift`), then a cold reviewer on a stronger model reads only the generation's diff, exam lines, outcomes and friction (`sampo rune review`; each grounded finding becomes a task, a top gap or a dismissal with its reason), then Sampo hunts blind spots from inputs it didn't write (each class found becomes a rule with a check; each generation also seals a prediction of your next three steers and scores every real steer against it), then the gap map is redrawn against the current code and the next generation's Missions are ranked by expected value from it, the exam, survival and the review (empty coverage cells only break ties), then the whole project is swept (`sampo rune sweep`, which also turns red on a grant kind no earlier generation used); a rewrite is kept only if it closed more exam scenarios than its parent (`sampo rune select`), and three reverted generations in a row stop the tower and hand it back to you. `sampo rune exam` grades Rune itself: drafts from "make this great", from nothing and from "super improve this" on generated projects, scored against your gen-0 on a held-out third, beside a plain model.
 - Every generation also advances a Moons campaign (`sampo moons`, the moonshots). One catalogue grows toward 100 ideas on a six-tier ambition scale, from "a clever new check" up to "changes what building software means". The strongest model rates each idea without seeing its author's rating, and every extreme and massive idea gets a kill test first. Ideas are built in climbing order, smaller ones that unblock big ones first, and each generation must move at least one big idea forward a stage (`sampo moons rate|order`).
 - You shouldn't have to write steers. `sampo louhi steer` measures how well Sampo expands your raw words into a complete standing rule. A stronger model judges each expansion against the rule you actually ended up with. A clause only counts when the judge quotes the expansion's own words, and a third of the cases are held out. Each instruction-shaped message you send is expanded in the background and queued with that held-out score. If the score is under 70%, the expansion is also listed for you to read. A `steer:` correction on that task becomes a new case. The held-out rate is shown on the Rune page.
@@ -472,7 +472,7 @@ Set `palette: 'cb'` for a colourblind-safe ok/error pair (errors keep their ✗)
 - Finished calls are compact, so the chat scrolls far less: a passing command shows its description, one line of the command and a line count; a failure shows its failures in full; a diff shows four changed lines and a count of the rest; reads and searches sit on one line.
 - The `chat` setting `full` brings back the long rows.
 
-**Turns.** The working spinner names the Sampo step it's on. The line closing each turn says what the turn did (`4 tools · 2 edits +30 −4 · ✓ T-0012 step 3/5`). When Claude stops with Sampo work waiting, the prompt offers `/foreman:next` as ghost text (never while a question waits on you). The footer says when Sampo needs you and shows `full auto` and `drive off` as modes.
+**Turns.** The working spinner names the Sampo step it's on. The line closing each turn says what the turn did (`4 tools · 2 edits +30 −4 · ✓ T-0012 step 3/5`). When Claude stops with Sampo work waiting, the prompt offers `/sampo:next` as ghost text (never while a question waits on you). The footer says when Sampo needs you and shows `full auto` and `drive off` as modes.
 
 **Context.** The band carries a context meter. At 85% Sampo checkpoints the task once, so a `/compact` resumes at the exact step. When a task closes with context at 40% or more, the mod compacts right there: it keeps your standing requests and live decisions, drops finished work, and Sampo's resume note restores the exact point. The threshold is the mod's `freshAt` setting; 0 turns it off.
 
@@ -732,7 +732,7 @@ curl -fsSL https://raw.githubusercontent.com/ChaseSunstrom/sampo/main/plugin/tem
 
 <details><summary>Upgrading (formerly Foreman)</summary>
 
-**Upgrading.** Sampo was formerly Foreman, and nothing you have breaks: `fm` stays as an alias that works as before and prints one deprecation line a day; the plugin ids `foreman@foreman` and `foreman-ui@foreman`, the `/foreman:` commands, the `foreman:` agents, the `FOREMAN_*` variables and the `Foreman-Task` commit trailer keep working; and `~/.claude/foreman` is migrated once by `sampo migrate` (`sampo migrate --undo` restores it exactly). The renamed verbs keep their old spellings too: `code` is `sampo smith`, `genesis` is `sampo rune`, `exam` is `sampo louhi` and `guard` is `sampo ward`. The GitHub repo is ChaseSunstrom/sampo (GitHub forwards links that use its old name), and the install lines above use it.
+**Upgrading.** Sampo was formerly Foreman, and nothing you have breaks: `fm` stays as an alias that works as before and prints one deprecation line a day; the plugins `foreman` and `foreman-ui` are now `sampo@sampo` and `sampo-ui@sampo` in a marketplace named `sampo`; an install made before keeps working under its ids ending `@foreman`, and `sampo migrate plugins` moves it to `sampo@sampo` in one write per file, never both ids enabled (`--dry-run` shows it, `--undo` puts the files back byte for byte), the mod's options with it (the `/foreman:` commands become `/sampo:` and the `foreman:` agents `sampo:`; Sampo still reads the old names wherever they were saved; [INSTALL.md](INSTALL.md) has the details); the `FOREMAN_*` variables and the `Foreman-Task` commit trailer keep working; and `~/.claude/foreman` is migrated once by `sampo migrate` (`sampo migrate --undo` restores it exactly). The renamed verbs keep their old spellings too: `code` is `sampo smith`, `genesis` is `sampo rune`, `exam` is `sampo louhi` and `guard` is `sampo ward`. The GitHub repo is ChaseSunstrom/sampo (GitHub forwards links that use its old name), and the install lines above use it.
 
 </details>
 

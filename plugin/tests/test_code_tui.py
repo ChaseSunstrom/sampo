@@ -3109,7 +3109,7 @@ class SettingsScreen(unittest.TestCase):
         for k in ":set --surface plugin palette cb\n":
             app.key(k)
         with open(os.path.join(self.uhome, ".claude", "settings.json"), encoding="utf-8") as f:
-            self.assertEqual(json.load(f)["pluginConfigs"]["foreman-ui@foreman"]["options"], {"palette": "cb"})
+            self.assertEqual(json.load(f)["pluginConfigs"]["sampo-ui@sampo"]["options"], {"palette": "cb"})
         self.assertEqual(app.cfg["palette"], "default", "the pane's value only: the app's own is unchanged")
 
     def test_enter_on_a_row_starts_a_set_line_for_it_and_esc_closes(self):
@@ -3310,7 +3310,7 @@ class SettingsPreview(unittest.TestCase):
         app.key("k")
         self.assertIn('motion = "off"', self.file())
         with open(settings, encoding="utf-8") as f:
-            self.assertEqual(json.load(f)["pluginConfigs"]["foreman-ui@foreman"]["options"], {"motion": "off"})
+            self.assertEqual(json.load(f)["pluginConfigs"]["sampo-ui@sampo"]["options"], {"motion": "off"})
 
     def test_what_isnt_a_look_of_the_app_is_written_at_once(self):
         settings = os.path.join(self.uhome, ".claude", "settings.json")
@@ -3318,7 +3318,7 @@ class SettingsPreview(unittest.TestCase):
         self.set(app, "set --surface plugin motion reduced")
         self.assertIsNone(app.set_pending, "the pane's own value: nothing on this screen to preview")
         with open(settings, encoding="utf-8") as f:
-            self.assertEqual(json.load(f)["pluginConfigs"]["foreman-ui@foreman"]["options"], {"motion": "reduced"})
+            self.assertEqual(json.load(f)["pluginConfigs"]["sampo-ui@sampo"]["options"], {"motion": "reduced"})
 
     def test_a_value_it_would_refuse_is_refused_at_once_not_previewed(self):
         app = self.app()
@@ -3685,7 +3685,7 @@ class MotionVisuals(unittest.TestCase):
         if not os.path.exists(path):
             return {}
         with open(path, encoding="utf-8") as f:
-            return json.load(f)["pluginConfigs"]["foreman-ui@foreman"]["options"]
+            return json.load(f)["pluginConfigs"]["sampo-ui@sampo"]["options"]
 
     def test_the_hush_key_cycles_motion_on_the_screen_in_tui_toml_and_for_the_pane(self):
         from sampo import settings as ssettings
@@ -3773,7 +3773,7 @@ class MotionVisuals(unittest.TestCase):
         apart = sum((a - b) ** 2 for a, b in zip(tui()._rgb(night["accent"]), tui()._rgb(night["accent2"]))) ** 0.5
         self.assertGreater(apart, 150, "running and reading rows told apart (blue and sunflower, not two blues)")
         with open(os.path.join(root, ".claude-plugin", "marketplace.json"), encoding="utf-8") as f:
-            listed = next(p["version"] for p in json.load(f)["plugins"] if p["name"] == "foreman-ui")
+            listed = next(p["version"] for p in json.load(f)["plugins"] if p["name"] in ("sampo-ui", "foreman-ui"))
         self.assertEqual(listed, ssettings.mod_manifest()["version"], "a new option ships with a new version, both")
 
     def test_the_glyph_probe_writes_nothing_into_a_pipe(self):

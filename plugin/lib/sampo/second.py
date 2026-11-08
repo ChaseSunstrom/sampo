@@ -398,12 +398,12 @@ def cmd_second(args):
                                             + (", the top reading differs from the plan's (rival_split)" if split else ""))
                              + "".join(f"\n  {x}" for x in lines))
         if args.what == "debate":
-            if args.model:  # T-0293: a debate brief is for a foreman:fm-reviewer the main thread runs, not a child
-                raise cli.UsageError("fm second debate takes no --model: it writes a brief for a foreman:fm-reviewer")
+            if args.model:  # T-0293: a debate brief is for a sampo:fm-reviewer the main thread runs, not a child
+                raise cli.UsageError("fm second debate takes no --model: it writes a brief for a sampo:fm-reviewer")
             b = cli.need_brief(p, args.id)
             path = debate(p, b, args.review)
             return cli.out(args, {"brief": path},
-                             f"Debate brief: {path}\nRun one foreman:fm-reviewer subagent with the prompt \"Read {path} "
+                             f"Debate brief: {path}\nRun one sampo:fm-reviewer subagent with the prompt \"Read {path} "
                              f"and do the review it describes.\"; save its reply (fm research add {b.id}-debate "
                              f"--from-agent <its output file>) and record only the CONFIRMED findings as that lens.")
         captured, msg = session(p, args.exclude or os.environ.get("FOREMAN_SESSION_ID"), args.if_due, args.model or "sonnet",

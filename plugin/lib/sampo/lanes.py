@@ -363,7 +363,7 @@ def contract(id, base, main):
     rules = "\n".join(l for l in rules.splitlines() if not l.startswith("("))  # the note about this very copy
     for k, v in (("<ID>", id), ("<BASE>", base), ("<MAIN>", main)):
         rules = rules.replace(k, v)
-    return "## Your contract (foreman:fm-builder)\n" + rules
+    return "## Your contract (sampo:fm-builder)\n" + rules
 
 
 def stopped(p, briefs=None):
@@ -454,7 +454,7 @@ def _stall_limit():
     return limit if limit > 0 else 15
 
 
-AGENT_HEAD = 'Agent — subagent_type: "foreman:fm-builder", isolation: "worktree"'
+AGENT_HEAD = 'Agent — subagent_type: "sampo:fm-builder", isolation: "worktree"'
 RECOVERIES_MAX = 2  # T-2354: a lane that stops a third time is blocked for a person, not resumed again
 
 
@@ -978,7 +978,7 @@ def race(p, b, main, args):
         cli.mutate(p, b.id, lambda y: ([y.meta.pop(k, None) for k in ("race", "race_checks", "race_sides", "race_option", "race_design")],
                                          released and y.meta.__setitem__("status", "active")), "race_abort", {})  # T-2338: focused again
         raise
-    agent = 'Agent — subagent_type: "foreman:fm-builder", isolation: "worktree"'
+    agent = 'Agent — subagent_type: "sampo:fm-builder", isolation: "worktree"'
     racers = nids if design else [b.id, *nids]
     paths = {t: os.path.join(p.dir, "audits", f"{t}.builder.md") for t in racers}
     return cli.out(args, {"id": b.id, "race": nids[0], "sides": racers, "briefs": paths},
@@ -1916,7 +1916,7 @@ def brief_ready(p, args):
 
 
 def builder_brief(p, b, args, resume_branch=None, after=""):
-    """T-0234: a self-contained brief for one S/M task worked by a foreman:fm-builder subagent in its own worktree
+    """T-0234: a self-contained brief for one S/M task worked by a sampo:fm-builder subagent in its own worktree
     (Agent isolation "worktree"; its `fm focus` binds the task there), and the Agent call that launches it. The main
     thread reviews the branch, merges it, refocuses the task here, re-runs its criteria and closes it."""
     from sampo import budget

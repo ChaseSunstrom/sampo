@@ -80,7 +80,7 @@ class Help(ForemanTestCase):
         self.assertNotIn("usage:", self.fm("help", "notify", "me", "when", "done").stdout, "words past a name: a question")
 
     def test_status_is_state(self):
-        # T-0393: "status" is the word the rules and /foreman:status use; `fm status` was an invalid choice
+        # T-0393: "status" is the word the rules and /sampo:status use; `fm status` was an invalid choice
         self.fm("init")
         self.fm("capture", "something")  # T-0847: an empty project's status is one line on how to start
         p = self.fm("status", check=False)

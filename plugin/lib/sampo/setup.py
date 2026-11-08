@@ -28,8 +28,8 @@ COMPACT_PCT = "70"  # compact earlier than the default: PreCompact checkpoints a
 COMPACT_WINDOW = "200k"  # T-1796: a 1M window let every reply re-read ~380k tokens; 70% of 200k compacts near 140k
 ENV = {"CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": STOP_CAP, "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": COMPACT_PCT,
        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": COMPACT_WINDOW}
-OUTPUT_STYLE = "foreman:Sampo"  # plugin/output-styles/foreman.md; plugin styles are selected as <plugin>:<name>
-OUTPUT_STYLES = (OUTPUT_STYLE, "foreman:Foreman")  # T-2946: the id an install stored before the rename still counts
+OUTPUT_STYLE = "sampo:Sampo"  # plugin/output-styles/foreman.md; plugin styles are selected as <plugin>:<name>
+OUTPUT_STYLES = (OUTPUT_STYLE, "foreman:Sampo", "foreman:Foreman")  # T-2946, T-2879: ids installs stored before still count
 WHY = {"CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "drive mode: long queues aren't cut at 8 continuations",
        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "compact before long contexts degrade; Sampo state survives compaction",
        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "every reply re-reads the whole context: a 200k window keeps it small"}

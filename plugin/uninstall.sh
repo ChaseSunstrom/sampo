@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Remove Foreman from this machine.
-#   1. uninstall the foreman@foreman plugin and the local "foreman" marketplace
+#   1. uninstall the sampo plugin and its mod (under their foreman- names on an install from before T-2879)
+#      and the local "foreman" marketplace
 #   2. undo the ~/.claude wiring recorded in state/install-manifest.json (statusLine, deny rules, env,
 #      CLAUDE.md block, rules symlink, permission mode, plugin maps left empty by step 1)
 #   3. keep state/ unless you confirm (it is archived to backups/ before it is removed)
@@ -35,9 +36,15 @@ else
 fi
 
 say "Uninstalling the plugin and the local marketplace"
-run claude plugin uninstall foreman-ui@foreman --scope user >/dev/null 2>&1 || true
-run claude plugin uninstall foreman@foreman --scope user >/dev/null 2>&1 || say "  (foreman@foreman was not installed)"
-run claude plugin marketplace remove foreman >/dev/null 2>&1 || say "  (marketplace 'foreman' was not registered)"
+for m in sampo foreman; do  # T-2879/T-3707: the marketplace and plugin names now and before; an install has one id
+  for n in sampo foreman; do
+    run claude plugin uninstall "$n-ui@$m" --scope user >/dev/null 2>&1 || true
+    run claude plugin uninstall "$n@$m" --scope user >/dev/null 2>&1 && gone=1
+  done
+  run claude plugin marketplace remove "$m" >/dev/null 2>&1 && market=1
+done
+[ -n "${gone:-}" ] || say "  (the sampo plugin was not installed)"
+[ -n "${market:-}" ] || say "  (marketplace 'sampo' was not registered)"
 
 say "Undoing the ~/.claude wiring"  # after the plugin removal, so the maps it empties are cleaned up too
 if [ "$DRY" = 1 ]; then python3 "$HERE/bin/fm" uninstall-user --dry-run; else python3 "$HERE/bin/fm" uninstall-user; fi

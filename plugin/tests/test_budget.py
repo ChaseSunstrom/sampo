@@ -106,12 +106,12 @@ class Budget(ForemanTestCase):
             for i in range(2):
                 f.write(json.dumps({"type": "assistant", "timestamp": c.now(), "message": {
                     "id": f"m{i}", "usage": {"input_tokens": 1000, "output_tokens": 100}}}) + "\n")
-        self.hook("SubagentStop", {"agent_id": "a1", "agent_type": "foreman:fm-recon",
+        self.hook("SubagentStop", {"agent_id": "a1", "agent_type": "sampo:fm-recon",
                                    "agent_transcript_path": transcript})
         rec = self.spend()[-1]
-        self.assertEqual((rec["feature"], rec["tokens"]), ("subagent:foreman:fm-recon", 3000))
+        self.assertEqual((rec["feature"], rec["tokens"]), ("subagent:sampo:fm-recon", 3000))
         self.assertIn("3,000", self.fm("budget").stdout)  # counted and shown, never a cap (T-0320)
-        agent = {"tool_name": "Agent", "tool_input": {"subagent_type": "foreman:fm-recon", "prompt": "x"}}
+        agent = {"tool_name": "Agent", "tool_input": {"subagent_type": "sampo:fm-recon", "prompt": "x"}}
         self.assertEqual(self.hook("PreToolUse", agent).returncode, 0)
         self.usage(seven_day=(50, 6 * 86400))  # half the week used with a seventh of it gone: under 75% (T-0364)
         self.assertEqual(self.hook("PreToolUse", agent).returncode, 0)
@@ -141,7 +141,7 @@ class Budget(ForemanTestCase):
         self.assertIsNone(bud.subagent_pause(p))
         self.assertIsNone(bud.effective(p)[1], "no halved caps")
         self.assertIs(json.loads(self.fm("ui", "--json").stdout)["weekly_lean"], False, "the pane reads it")
-        agent = {"tool_name": "Agent", "tool_input": {"subagent_type": "foreman:fm-recon", "prompt": "x"}}
+        agent = {"tool_name": "Agent", "tool_input": {"subagent_type": "sampo:fm-recon", "prompt": "x"}}
         self.assertEqual(self.hook("PreToolUse", agent).returncode, 0, "the hook lets subagents run past 80% weekly")
         self.assertNotIn("halved", self.fm("budget").stdout)
         old = os.getcwd()

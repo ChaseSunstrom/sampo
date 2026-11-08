@@ -272,6 +272,94 @@ def _writable(path):
 MIRROR = ".sampo"  # T-3342: fm sync's in-repo mirror; repos from before the rename still hold it as .foreman
 MIRRORS = (MIRROR, ".foreman")
 MIRROR_DIRS = tuple(d + "/" for d in MIRRORS)
+NS = "sampo"  # T-2879: the plugin's name, so its namespace (/sampo:next, sampo:fm-builder) and its id's first part
+NAMESPACES = (NS, "foreman")  # the name installs had before T-2879: settings, logs and habits keep it, read for good
+MARKET = "sampo"  # T-3707: the marketplace's name; an install keeps the name it was added under (T-2879-probe)
+OLD_MARKET = "foreman"  # its name before: such an install has ids @foreman (the old plugin names, or sampo once the
+# marketplace's renames map ran), which sampo migrate plugins moves
+
+
+def plugin_ids(part=""):
+    """Every id this plugin (part "ui" or "design": its sibling) has had, the current first: NS@MARKET, then NS and
+    the old name @OLD_MARKET."""
+    p = "-" + part if part else ""
+    return (f"{NS}{p}@{MARKET}",) + tuple(f"{n}{p}@{OLD_MARKET}" for n in NAMESPACES)
+
+
+def old_plugin_ids(part=""):
+    """The ids sampo migrate plugins moves to plugin_ids(part)[0] (T-3707)."""
+    return plugin_ids(part)[1:]
+
+
+def ns_names(name):
+    """A skill's or agent's name under every namespace it has had, the current first (NAMESPACES); "" gives the prefixes."""
+    return tuple(f"{n}:{name}" for n in NAMESPACES)
+
+
+def installed_ids(part=""):
+    """The ids of this plugin (part: its sibling) Claude Code's install record holds, the current first; () when it
+    holds none or can't be read. T-2879: a disable or update hint names the one that is there."""
+    path = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"),
+                        "plugins", "installed_plugins.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            have = json.load(f).get("plugins") or {}
+    except (OSError, ValueError, AttributeError):
+        return ()
+    return tuple(i for i in plugin_ids(part) if i in have)
+
+
+def loaded_ns():
+    """In one of Sampo's plugin hooks: the name this session's Claude Code loaded Sampo under, read off its data folder
+    (CLAUDE_PLUGIN_DATA is …/plugins/data/<name>-<marketplace>); None anywhere else."""
+    base = os.path.basename(os.environ.get("CLAUDE_PLUGIN_DATA", "").rstrip("/"))
+    return next((pid.split("@")[0] for pid in plugin_ids() if base == pid.replace("@", "-")), None)
+
+
+def _ns_file(sid):
+    return os.path.join(state_dir(), "sessions", f"{sid}.keep.ns")  # .keep.: SessionStart's sweep leaves it
+
+
+def note_ns(sid, name):
+    """A hook's record of the name its session loaded Sampo under (loaded_ns), for the CLI that session runs."""
+    if not (sid and re.fullmatch(r"[\w-]{1,100}", sid)):
+        return
+    path = _ns_file(sid)
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == name:
+                return
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_atomic(path, name)
+    except OSError:
+        pass
+
+
+def ns(session=None):
+    """T-2879: the namespace a session loaded Sampo's commands, skills and agents under, so what Sampo tells it names
+    what it has: its hooks' record (note_ns), else this process's own (loaded_ns), else NS. A session started before
+    the move keeps foreman: until it restarts, though the install has moved."""
+    sid = session or session_id()
+    if sid and re.fullmatch(r"[\w-]{1,100}", sid):
+        try:
+            with open(_ns_file(sid), encoding="utf-8") as f:
+                got = f.read().strip()
+            if got in NAMESPACES:
+                return got
+        except OSError:
+            pass
+    return loaded_ns() or NS
+
+
+_NS_SPELLING = lazy(rf"(?<![\w-]){NS}:(?=[a-z])")
+
+
+def as_loaded(text, name):
+    """Text Sampo hands a session, its sampo: names in the namespace that session loaded (ns); plugin ids stay."""
+    return _NS_SPELLING.sub(name + ":", text) if name != NS and isinstance(text, str) else text
 _STATE_MARKER = ".foreman-state.json"
 PERMISSION_MODES = ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"]  # claude 2.1.280 --help
 ASK_TTL = 300  # seconds an `fm ask` the PreToolUse hook saw stays claimable by fm (it runs right after)
@@ -3501,17 +3589,17 @@ def brief_detail(b):
 # "design"/"ui"). Worded as the call to make. The hooks name each once a session (SessionStart re-arms); the body
 # loads only when invoked.
 SKILL_FOR = {
-    "FIX": "load: Skill foreman:debug-test; sampo playbooks show tdd-workflow",  # T-1701: the job skills
-    "FEATURE": "load: Skill foreman:intake, then its references/execute.md; sampo playbooks show tdd-workflow",
+    "FIX": "load: Skill sampo:debug-test; sampo playbooks show tdd-workflow",  # T-1701: the job skills
+    "FEATURE": "load: Skill sampo:intake, then its references/execute.md; sampo playbooks show tdd-workflow",
     # T-2072: the job skills wrap these stages' playbooks; the playbooks name stays for `fm playbooks route`
-    "CLEAN": "load: Skill foreman:refactor; foreman:playbooks (clean)",
-    "PERFORMANCE": "load: Skill foreman:performance; foreman:playbooks (perf: baseline first)",
-    "SECURITY": "load: Skill foreman:security-audit; foreman:playbooks (security)",
-    "RESEARCH": "load: Skill foreman:research",
-    "verifying": "run: sampo playbooks show verification-loop", "auditing": "run: the /foreman:review workflow",
-    "design": "load: Skill foreman:ui-design",  # T-1700: it routes to the directions skill and the ui playbooks
-    "ui": "load: Skill foreman:ui-design, or for a small change sampo playbooks show ui/INDEX",
-    "readme": "load: Skill foreman:readme-visuals (screenshots and diagrams, dark and light: sampo readme plan)",  # T-3703
+    "CLEAN": "load: Skill sampo:refactor; sampo:playbooks (clean)",
+    "PERFORMANCE": "load: Skill sampo:performance; sampo:playbooks (perf: baseline first)",
+    "SECURITY": "load: Skill sampo:security-audit; sampo:playbooks (security)",
+    "RESEARCH": "load: Skill sampo:research",
+    "verifying": "run: sampo playbooks show verification-loop", "auditing": "run: the /sampo:review workflow",
+    "design": "load: Skill sampo:ui-design",  # T-1700: it routes to the directions skill and the ui playbooks
+    "ui": "load: Skill sampo:ui-design, or for a small change sampo playbooks show ui/INDEX",
+    "readme": "load: Skill sampo:readme-visuals (screenshots and diagrams, dark and light: sampo readme plan)",  # T-3703
 }
 
 
@@ -3955,9 +4043,9 @@ def next_action(b, autonomy="standard", since=None):
     """The one next required action for a brief, with the procedure to use: the harness decides, not recall."""
     st, tid = stage(b, autonomy, since), b.id
     if st == "captured":
-        return f"{tid}: expand it into a planned brief (sampo task new \"<title>\" --from {tid} …; /foreman:intake §2)"
+        return f"{tid}: expand it into a planned brief (sampo task new \"<title>\" --from {tid} …; /sampo:intake §2)"
     if st == "planning":
-        return f"{tid}: plan is missing {', '.join(plan_gaps(b, autonomy))} (sampo task set/ac/step; /foreman:intake)"
+        return f"{tid}: plan is missing {', '.join(plan_gaps(b, autonomy))} (sampo task set/ac/step; /sampo:intake)"
     if st == "ready":
         return f"{tid}: sampo focus {tid}"
     finish = f"sampo task finish {tid} --audit \"<how>\"" + (" --lens … --docs … --lesson …" if b.tier != "S" else "")
@@ -3990,7 +4078,7 @@ def next_action(b, autonomy="standard", since=None):
         return f"{tid}: {'; '.join(b.audit_blockers(since))} (skills/intake/references/audit.md; sampo task audit)"
     if st == "closing":
         lesson = "" if b.tier == "S" or b.section("Lessons").strip() else " --lesson \"<what the next similar task should know>\""
-        return f"{tid}: sampo task done {tid}{lesson}, then /foreman:next"
+        return f"{tid}: sampo task done {tid}{lesson}, then /sampo:next"
     return f"{tid} is {st}"
 
 
@@ -4753,7 +4841,7 @@ def stuck_rung(b):
     if fails >= 3:
         return f"stuck, rung 3{why}: state two or more hypotheses, each with one probe (sampo task hypo {b.id} add …)"
     if fails >= 2:
-        return (f"stuck, rung 2{why}: fresh eyes — sampo whyred --suspects and sampo whyred on the failure, then foreman:fm-debugger "
+        return (f"stuck, rung 2{why}: fresh eyes — sampo whyred --suspects and sampo whyred on the failure, then sampo:fm-debugger "
                 f"with what's been ruled out (sampo task hypo {b.id} ruled --write, and name the file it writes)")
     return None
 
@@ -5117,7 +5205,7 @@ def _next_for(p, briefs=None):
         if not worked_in(p, briefs):
             return None, "idle", "queue is empty, repo new to Sampo: sampo adopt, sampo find --rank, then sampo prove" \
                 + waits  # short: the prompt hook's 400-character note still fits a skill hint beside it
-        return None, "idle", "queue is empty: FINAL VERIFY and REFLECT (/foreman:next)" + waits
+        return None, "idle", "queue is empty: FINAL VERIFY and REFLECT (/sampo:next)" + waits
     if b.status == "active" and b.meta.get("replan"):  # T-0603
         return b, "replan", (f"replan {b.id}: {b.meta['replan']} — re-read Steps and the Execution prompt, change what "
                              f"no longer holds, then sampo task log {b.id} \"replan: <what changed>\"")

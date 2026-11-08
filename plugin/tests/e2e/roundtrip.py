@@ -53,8 +53,10 @@ def main():
         os.makedirs(claude_dir)
         settings = (load(original) if original else None) or \
             {"permissions": {"defaultMode": "auto"}, "statusLine": {"type": "command", "command": "echo orig"}}
-        settings.get("enabledPlugins", {}).pop("foreman@foreman", None)
-        settings.get("extraKnownMarketplaces", {}).pop("foreman", None)
+        for m in ("sampo", "foreman"):  # T-3707: the marketplace and plugin names now and before
+            settings.get("extraKnownMarketplaces", {}).pop(m, None)
+            for n in ("sampo", "foreman"):
+                settings.get("enabledPlugins", {}).pop(f"{n}@{m}", None)
         with open(os.path.join(claude_dir, "settings.json"), "w") as f:
             json.dump(settings, f, indent=2)
         with open(os.path.join(claude_dir, "CLAUDE.md"), "w") as f:
@@ -94,7 +96,7 @@ def main():
         check("installed: CLAUDE.md block", "<!-- foreman:begin -->" in (read(os.path.join(claude_dir, "CLAUDE.md")) or ""))
         link = os.path.join(claude_dir, "rules", "foreman.md")
         check("installed: rules symlink", os.path.islink(link) and os.path.realpath(link).startswith(fhome))
-        check("installed: plugin foreman@foreman", "foreman@foreman" in plugin_ids())
+        check("installed: plugin sampo@sampo", "sampo@sampo" in plugin_ids())
 
         # ---- uninstall
         rc, out = run([os.path.join(fhome, "plugin", "uninstall.sh"), "--yes", "--purge-state"], env)
@@ -107,7 +109,7 @@ def main():
               (s2.get("permissions") or {}).get("defaultMode") == (orig_settings.get("permissions") or {}).get("defaultMode"))
         check("uninstalled: CLAUDE.md identical", read(os.path.join(claude_dir, "CLAUDE.md")) == orig_md)
         check("uninstalled: no rules symlink", not os.path.lexists(link))
-        check("uninstalled: plugin removed", "foreman@foreman" not in plugin_ids())
+        check("uninstalled: plugin removed", "sampo@sampo" not in plugin_ids())
         _, out = run(["claude", "plugin", "marketplace", "list"], env)
         check("uninstalled: marketplace removed", "foreman" not in out.lower().replace("foreman@", ""), out.strip()[-120:])
         backups = os.path.join(fhome, "backups")

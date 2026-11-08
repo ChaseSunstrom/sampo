@@ -112,7 +112,7 @@ class Risk(HookCase):
         self.spend(blocks=2)
         self.fm("risk", "set", "--day", "2", "--because", "test")
         self.task("Current work")
-        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "foreman:fm-reviewer"})
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
         r = self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Waiting for the review.",
                                "session_id": "sess-1"})
         reason = json.loads(r.stdout).get("reason", "")

@@ -599,7 +599,7 @@ def load(rel, root=ROOT, p=None):
     return text
 
 
-_STAGE = re.compile(r"\bforeman:playbooks \((\w+)")  # SKILL_FOR's "Skill foreman:playbooks (clean)": that stage's books
+_STAGE = re.compile(rf"\b(?:{'|'.join(c.NAMESPACES)}):playbooks \((\w+)")  # SKILL_FOR's "Skill sampo:playbooks (clean)"
 _TASK = re.compile(r"\bT-\d{4,}\b")
 _TRAILER = re.compile(r"(?mi)^Task:\s*(T-\d{4,})\b")
 _QUOTED = re.compile(r"`([^`\n]+)`|\"([^\"\n]+)\"|“([^”\n]+)”")
@@ -608,7 +608,7 @@ _VERIFY = re.compile(r"\s::\s+(.+)")  # a criterion's "done when … :: CMD", as
 
 def route(stage, root=ROOT):
     """(SKILL_FOR key, its hint, [book]) for a stage or task type (any case): the books its hint shows by name, and
-    for 'foreman:playbooks (X)' stage X's INDEX.md, else every playbook under references/X/. None: no such stage."""
+    for 'sampo:playbooks (X)' stage X's INDEX.md, else every playbook under references/X/. None: no such stage."""
     key = next((k for k in c.SKILL_FOR if k.lower() == stage.strip().lower()), None)
     if key is None:
         return None

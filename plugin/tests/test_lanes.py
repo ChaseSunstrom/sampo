@@ -622,7 +622,7 @@ class Lanes(ForemanTestCase):
         a, b, d = mk("Text a"), mk("Text b"), mk("Text d")
         text = self.fm("lane", "brief", "--ready").stdout
         for tid in (a, b):
-            self.assertRegex(text, rf'(?m)^  {tid}: Agent — subagent_type: "foreman:fm-builder"')
+            self.assertRegex(text, rf'(?m)^  {tid}: Agent — subagent_type: "sampo:fm-builder"')
         self.assertRegex(text, rf"(?m)^  {d}: not tried: no builder slot left \(2 of 2 out")
         self.assertIn("fm lane rm", text, "an unlaunched brief keeps its slot until it is removed")
 
@@ -812,12 +812,12 @@ class Lanes(ForemanTestCase):
         b.meta["lane"] = os.path.join(os.path.dirname(path), f"agent-{agent}")
         os.makedirs(b.meta["lane"], exist_ok=True)
         c.save_brief(p, b)
-        self.hook("SubagentStop", {"agent_type": "foreman:fm-builder", "agent_id": agent,
+        self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": agent,
                                    "last_assistant_message": "Branch x, commit y."})
         self.assertTrue(c.find_brief(c.find_project(self.repo), tid).meta.get("builder_returned"))
         r = self.fm("lane", "brief", nxt, check=False)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.hook("SubagentStart", {"agent_type": "foreman:fm-builder", "agent_id": agent})
+        self.hook("SubagentStart", {"agent_type": "sampo:fm-builder", "agent_id": agent})
         self.assertFalse(c.find_brief(c.find_project(self.repo), tid).meta.get("builder_returned"), "resumed: working")
 
     def test_too_many_unmerged_lanes_refuse_a_new_one_and_say_so(self):
@@ -1321,7 +1321,7 @@ class LaneRecovery(ForemanTestCase):
         self.fm("autonomy", "full")
         out = self.fm("next").stdout
         self.assertIn(f"fm lane recover {tid}", out)
-        self.assertIn('subagent_type: "foreman:fm-builder"', out)
+        self.assertIn('subagent_type: "sampo:fm-builder"', out)
         self.assertIn(f"{tid}.builder.md", out)
         self.assertNotIn("their Claude Code process ended", out)
         self.assertNotIn(f"fm lane resume {tid}", out)
@@ -1330,7 +1330,7 @@ class LaneRecovery(ForemanTestCase):
         tid, _ = self.stopped_builder()
         out = self.fm("next").stdout
         self.assertIn(f"fm lane recover {tid}", out)
-        self.assertNotIn('subagent_type: "foreman:fm-builder"', out, "standard names it; full launches it")
+        self.assertNotIn('subagent_type: "sampo:fm-builder"', out, "standard names it; full launches it")
         self.assertNotIn("their Claude Code process ended", out)
         self.assertNotIn(f"fm lane resume {tid}", out)
 
@@ -1361,7 +1361,7 @@ class LaneRecovery(ForemanTestCase):
         out = self.fm("lane", "recover", tid).stdout
         self.assertFalse(os.path.isdir(path))
         self.assertIn("wip.py", self.git("show", "--name-only", "--format=", f"foreman/{tid}"))
-        self.assertIn('subagent_type: "foreman:fm-builder"', out)
+        self.assertIn('subagent_type: "sampo:fm-builder"', out)
         p = c.find_project(self.repo)
         ev = [e for e in c.ledger_events(p, ["lane_recover"]) if e.get("task") == tid]
         self.assertEqual(len(ev), 1)
@@ -1422,7 +1422,7 @@ class LaneRecovery(ForemanTestCase):
         self.assertFalse(os.path.isdir(path))
         log = self.fm("task", "show", tid).stdout
         self.assertNotIn("forced", log.lower(), "never resumed with --force over a maybe-live process")
-        self.assertIn('subagent_type: "foreman:fm-builder"', r.stdout)
+        self.assertIn('subagent_type: "sampo:fm-builder"', r.stdout)
         ev = [e for e in c.ledger_events(c.find_project(self.repo), ["lane_recover"]) if e.get("task") == tid]
         self.assertEqual((ev[0]["data"]["cause"], ev[0]["data"]["agent_stopped"]), ("stalled", True))
         self.assertFalse(ev[0]["data"].get("forced"))
