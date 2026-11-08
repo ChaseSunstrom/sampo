@@ -4326,3 +4326,26 @@ class LockRetry(HookCase):  # T-3535: the Stop counters and the SessionStart hea
             self.assertEqual(f.read(), "X = 1\n")
         with open(os.path.join(fake, "empty.py")) as f:
             self.assertEqual(f.read(), "")
+
+    def test_the_heal_once_per_boot_not_every_session_start(self):
+        # T-3820: the heal lists and stats every tracked file; every SessionStart paid it (CPU p95 ~1.5-1.8x), though
+        # only a reboot leaves files empty
+        from sampo import hooks, py
+        self.fm("init")
+        boot = os.path.join(self.tmp, "boot_id")
+        calls = []
+        with open(boot, "w") as f:
+            f.write("boot-a\n")
+        with unittest.mock.patch.object(hooks, "BOOT_ID", boot), \
+                unittest.mock.patch.object(py, "heal", lambda root: calls.append(root) or ([], [])):
+            for n in range(3):
+                hooks.session_start({"session_id": f"s3820{n}", "cwd": self.repo, "source": "startup"})
+            self.assertEqual(len(calls), 1, "once in a boot")
+            with open(boot, "w") as f:
+                f.write("boot-b\n")
+            hooks.session_start({"session_id": "s3820b", "cwd": self.repo, "source": "startup"})
+            self.assertEqual(len(calls), 2, "a new boot heals again")
+        with unittest.mock.patch.object(hooks, "BOOT_ID", os.path.join(self.tmp, "none")), \
+                unittest.mock.patch.object(py, "heal", lambda root: calls.append(root) or ([], [])):
+            hooks.session_start({"session_id": "s3820c", "cwd": self.repo, "source": "startup"})
+        self.assertEqual(len(calls), 3, "no boot id: every session, as before")

@@ -504,15 +504,38 @@ def _profile_note(sid, new_folder=False):
         return ""
 
 
+BOOT_ID = "/proc/sys/kernel/random/boot_id"  # T-3820: the crash that empties files is a reboot
+
+
 def _heal_note():
     """T-3727: Sampo's own checkout after a crash: tracked files a reboot left empty come back from HEAD (nothing in
-    them to lose), and the session is told which. '' when none, or when the repo is none (an installed copy)."""
+    them to lose), and the session is told which. '' when none, or when the repo is none (an installed copy).
+    T-3820: once per boot (the kernel's boot id; every session where there is none): it lists and stats every tracked
+    file, which made each SessionStart ~1.5-1.8x the CPU; a boot that still has an empty file tries again."""
+    try:
+        with open(BOOT_ID, encoding="ascii") as f:
+            boot = f.read().strip()
+    except OSError:
+        boot = ""
+    mark = os.path.join(c.state_dir(), "healed-boot")
+    if boot:
+        try:
+            with open(mark, encoding="ascii") as f:
+                if f.read().strip() == boot:
+                    return ""
+        except OSError:
+            pass
     try:
         from sampo import py
         healed, failed = py.heal(os.path.dirname(c.PLUGIN_ROOT))
     except Exception:
         log_error("SessionStart", _tb())
         return ""
+    if boot and not failed:
+        try:
+            c.write_atomic(mark, boot)
+        except OSError:
+            pass
     names = lambda xs: ", ".join(xs[:8]) + (f", and {len(xs) - 8} more" if len(xs) > 8 else "")  # noqa: E731
     return " ".join(x for x in (
         f"Sampo restored {len(healed)} empty file{'s' * (len(healed) != 1)} from git HEAD (a crash emptied "
