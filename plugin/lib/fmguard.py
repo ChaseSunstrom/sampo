@@ -446,6 +446,13 @@ def _is_credential(path, ctx):
         return True
     # a design system's tokens (colours, spacing, durations) aren't auth tokens (JARVIS: design/tokens.json was refused)
     design = re.search(r"/(design|themes?|styles?|ui)/", path.lower()) or re.match(r"(design|theme|style)[._-]", stem.lower())
+    # T-3810: and a web asset folder's inside the project (plugin/web/live/board-tokens.json): what a page serves is
+    # no secret. Its review: only below the project root, so ~/.config/app/public/tokens.json stays one, and never
+    # under a dot folder (a dotfiles repo at ~ is a project too)
+    root = getattr(ctx, "project_root", None)
+    rel = os.path.relpath(path, root).lower() if not design and root and _under(path, root) else ""
+    design = design or (rel and not re.search(r"(^|/)\.", rel)
+                        and re.search(r"(^|/)(web|www|static|assets|public|css|s[ac]ss)/", rel))
     return bool(re.search(r"(^|[._-])tokens?([._-]|$)", stem.lower())) and not (design and stem.lower() != "token")
 
 

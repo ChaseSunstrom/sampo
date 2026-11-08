@@ -1679,10 +1679,12 @@ class ScratchNames(GuardCase):
     def test_design_tokens_are_not_credentials(self):
         # JARVIS 2026-10-09: /opt/jarvis/design/tokens.json (colours, durations) was refused as a credential mid-run
         for path in (f"{self.repo}/design/tokens.json", f"{self.repo}/src/theme/tokens.yaml",
-                     f"{self.repo}/design-tokens.json", f"{self.repo}/ui/styles/tokens.json"):
+                     f"{self.repo}/design-tokens.json", f"{self.repo}/ui/styles/tokens.json",
+                     f"{self.repo}/plugin/web/live/board-tokens.json", f"{self.repo}/static/css/tokens.json"):  # T-3810
             with self.subTest(path=path):
                 self.assertFalse(self.bash(f"echo x > {path}"))
-        for path in (f"{self.repo}/token.json", f"{self.home}/.config/app/tokens.json", f"{self.repo}/design/secrets.yaml",
+        for path in (f"{self.home}/.config/app/public/tokens.json", f"{self.repo}/.cache/web/tokens.json",  # T-3810
+                     f"{self.repo}/token.json", f"{self.home}/.config/app/tokens.json", f"{self.repo}/design/secrets.yaml",
                      f"{self.repo}/design/credentials.json", f"{self.repo}/tokens.json"):
             with self.subTest(path=path):
                 self.assertBlocked(self.bash(f"echo x > {path}"), "credentials")
