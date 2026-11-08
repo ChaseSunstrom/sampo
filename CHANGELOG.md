@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo lane land trains urgent lanes first, then performance and security fixes, then the user's own asks, then the rest (oldest first in each); sampo lane land --first T-1,T-2 puts lanes ahead, queued into a running land at its next train boundary; and each train's lanes close as soon as it lands them (lanes an earlier train merged close before the first train), so a long land no longer… (T-3796).
 - The plugin is now `sampo@sampo` (with `sampo-ui@sampo` and `sampo-design@sampo`) in a marketplace named `sampo`; it was still `foreman@foreman`. `sampo migrate plugins` moves an existing install in one write per file, so the old and new ids are never enabled together, and `--undo` restores the files byte for byte. install.sh runs it for you, and `sampo doctor` says when it's due. `/foreman:` commands become `/sampo:` (T-3707, T-2879)
 - The coverage recorder no longer counts sleep, nvidia-smi and similar programs run from the repo as reading the whole tree, reads --opt=path, file:// URLs with query or escapes as the paths they name, and keeps DevTools-driven browsers blind, so 3 more costly classes can be skipped when unchanged (T-3623)
 - Single-kind ledger readers (cost, night, outcomes, contract, graph, recall, ideas, rune, grants, mcp, playbooks, cli, hooks) decode only their kind's lines, about 3.7x less CPU per read on a 50k-line ledger (T-3586)
