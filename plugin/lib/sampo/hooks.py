@@ -2834,9 +2834,16 @@ def _guard_ctx(pl, fmguard):
                       allow=set(act.meta.get("allow") or []) if act else set(), task_id=act.id if act else None,
                       standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()),
                       confine=(p.lane, c.main_worktree(p.lane)) if p and getattr(p, "lane", None) and act
-                      and act.meta.get("builder") else None,
+                      and act.meta.get("builder") and not _visiting(pl, p.lane) else None,
                       unbriefed=p.root if p and not act and not _quiet() else None)  # T-0308: Bash writes too
     return ctx, p, act
+
+
+def _visiting(pl, lane):
+    """T-3802: a call with no agent_id in a subagent builder's worktree (agent-<id>, as Claude Code's worktree isolation
+    names it) is the main session that cd'd in, not the builder: only the subagent's own calls carry an agent_id. A
+    sampo lane new lane, which a headless builder works in with none, is never visited this way."""
+    return not pl.get("agent_id") and bool(re.fullmatch(r"agent-[\w-]{4,64}", os.path.basename(lane.rstrip("/"))))
 
 
 

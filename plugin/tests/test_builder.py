@@ -208,6 +208,23 @@ class Contract(_Tasks):
         main = self.hook("PreToolUse", {"tool_name": "Write", "tool_input": {"file_path": main_file, "content": "x"}})
         self.assertNotIn("blocked", main.stdout)  # the main thread isn't confined
 
+    def test_the_main_thread_in_a_subagent_builder_s_worktree_is_not_that_builder(self):
+        # T-3802: Claude Code moves the main session's cwd into a builder's .claude/worktrees/agent-<id> when it cd's
+        # there (to run the lane's tests, to merge main in); its next write elsewhere was refused as the builder's
+        # (2026-11-08, three times). Only the subagent's own calls carry an agent_id
+        tid = self.task("Sub")
+        self.fm("lane", "brief", tid)
+        wt = os.path.join(self.repo, ".claude", "worktrees", "agent-a1b2c3d4")
+        git(self.repo, "worktree", "add", "-q", "-b", "worktree-agent-a1b2c3d4", wt)
+        self.fm("focus", tid, cwd=wt)
+        main_file = os.path.join(self.repo, "x.py")
+
+        def said(**extra):
+            return self.hook("PreToolUse", {"tool_name": "Write", "cwd": wt, **extra,
+                                            "tool_input": {"file_path": main_file, "content": "x"}}).stdout
+        self.assertNotIn("blocked confine", said(), "the main thread, visiting")
+        self.assertIn("blocked confine", said(agent_id="a1b2c3d4", agent_type="sampo:fm-builder"), "the builder")
+
     def test_lane_merge_and_cache_only_removal(self):
         # T-0377: on Foreman's own repo the guard refuses `git merge` (a tree write over core), so a reviewed branch
         # lands through fm, each file it changes judged as its task's write; and python caches don't hold a lane
