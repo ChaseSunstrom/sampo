@@ -2706,10 +2706,14 @@ class Brief:
 
     def edit_ac(self, n, text=None, verify=None):
         """T-0333: criterion n's text and/or verify command replaced; its checkbox stays as it was. T-0342: only while
-        it has no evidence (the T-0305 decision: an edit could weaken a failing check until it passes), and logged."""
+        it has no evidence (the T-0305 decision: an edit could weaken a failing check until it passes), and logged.
+        T-3823: the words of one with a verify command may change (logged): the check that holds it stays as it is
+        (typed evidence vouches for the words themselves, so those stay)."""
         mine = [ln for ln in self.evidence() if (m := _EV_RE.match(ln)) and (m.group(1), int(m.group(2))) == ("ac", n)]
         measured_nothing = bool(mine) and all(_NO_TEST.search(ln) for ln in mine)  # T-2606: no test ran, nothing weakens
-        if self.has_evidence(ac=n, checked=True) and not measured_nothing:
+        old = dict(self.verify_cmds()).get(n)
+        same_check = old is not None and verify in (None, old)
+        if self.has_evidence(ac=n, checked=True) and not measured_nothing and not same_check:
             raise PolicyError(f"{self.id} criterion {n} already has evidence, so its check stays as it is (an edit could "
                               f"weaken a failing one). Add a criterion (sampo task ac {self.id} add …), or drop the task "
                               f"with a reason and recreate it with the right check (sampo task new … --redo {self.id} keeps its "

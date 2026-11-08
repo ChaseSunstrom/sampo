@@ -89,6 +89,19 @@ class TaskErgonomics(ForemanTestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("already has evidence", r.stderr)
 
+    def test_ac_text_edit_of_a_checked_criterion_keeps_its_check(self):
+        # T-3823: the T-3699 builder couldn't correct "six panels" to nine; the check stays, so the words may change
+        tid = self.task(ac="six panels :: true")
+        self.fm("task", "evidence", tid, "--ac", "1", "--run", "true")
+        self.fm("task", "ac", tid, "edit", "1", "--text", "nine panels")
+        self.assertIn("nine panels — verify with `true`", self.brief(tid).section("Acceptance criteria"))
+        self.assertIn("criterion 1 text: six panels → nine panels", self.brief(tid).section("Log"))
+        for change in (["--text", "nine panels :: false"], ["--verify", "false"]):
+            r = self.fm("task", "ac", tid, "edit", "1", *change, check=False)
+            self.assertNotEqual(r.returncode, 0, change)
+            self.assertIn("already has evidence", r.stderr)
+        self.assertIn("verify with `true`", self.brief(tid).section("Acceptance criteria"))
+
     def test_a_small_tasks_steps_close_on_its_passing_criteria(self):
         tid = json.loads(self.fm("task", "new", "Small change", "--type", "FIX", "--tier", "S", "--ac", "works :: true",
                                  "--step", "write the test", "--step", "change it", "--json").stdout)["id"]
