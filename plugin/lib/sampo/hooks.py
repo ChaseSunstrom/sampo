@@ -5188,7 +5188,8 @@ def lanes_free(briefs, p=None):
     except Exception:
         done = set()
     done |= {b.id for b in briefs if b.meta.get("builder_returned")}  # T-3145
-    out = [b for b in briefs if b.meta.get("builder") and b.status not in c.CLOSED]
+    out = [b for b in briefs if b.meta.get("builder") and b.status not in c.CLOSED
+           and slanes._stop(b)[0] != "merged"]  # T-3847: a merged lane waits on its close, not a slot or a merge
     return sum(1 for b in out if b.id not in done) < cap and len(out) - sum(1 for b in out if b.id not in done) \
         < slanes.UNMERGED_MAX and not c.host_strain()  # T-0465: a strained host takes no builder lane
 

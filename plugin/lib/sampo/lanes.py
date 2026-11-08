@@ -1812,7 +1812,8 @@ def _batch_refusal(err):
 def _slots(p, briefs, exclude=None):
     """T-3135, T-3145: the builders out, as (working, waiting). A lane whose builder returned (commits, clean tree, no
     live builder) or said so waits on a merge, not a slot. `exclude` leaves one task out (its own brief)."""
-    out = [x.id for x in briefs if x.meta.get("builder") and x.status not in c.CLOSED and x.id != exclude]
+    out = [x.id for x in briefs if x.meta.get("builder") and x.status not in c.CLOSED and x.id != exclude
+           and _stop(x)[0] != "merged"]  # T-3847: merged, open only for its close: no slot, no merge to wait on
     try:  # unreadable lanes count as working: the cap errs toward fewer builders
         done = set(c.finished_lanes(p, briefs, quiet_min=0))
     except Exception:

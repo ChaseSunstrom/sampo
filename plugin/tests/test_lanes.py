@@ -820,6 +820,22 @@ class Lanes(ForemanTestCase):
         self.hook("SubagentStart", {"agent_type": "sampo:fm-builder", "agent_id": agent})
         self.assertFalse(c.find_brief(c.find_project(self.repo), tid).meta.get("builder_returned"), "resumed: working")
 
+    def test_a_merged_lane_holds_no_slot_while_it_waits_for_its_close(self):
+        # T-3847: 2026-11-08, 22 'unmerged' lanes refused every builder; most were merged, open only for a hand close
+        from sampo import lanes as slanes
+        with mock.patch.object(slanes, "UNMERGED_MAX", 2):
+            p = c.find_project(self.repo)
+            for _ in range(2):
+                done, _path = self.finished_builder()
+                b = c.find_brief(p, done)
+                b.meta["lane_stop"] = f"merged {c.now()}"
+                c.save_brief(p, b)
+            tid = first(self.fm("task", "new", "Next", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                                "--step", "s", "--json").stdout)["id"]
+            self.fm("task", "set", tid, "approved=true")
+            self.assertEqual(slanes._slots(p, c.load_briefs(p), exclude=tid), ([], []))
+            slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))  # not refused
+
     def test_too_many_unmerged_lanes_refuse_a_new_one_and_say_so(self):
         from sampo import lanes as slanes
         with mock.patch.object(slanes, "UNMERGED_MAX", 2):
