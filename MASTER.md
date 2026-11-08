@@ -679,7 +679,7 @@ Each note below is one index line: the first words of its full note and a link t
 |---|---|
 | Python stdlib `sampo` (jq absent) | jq isn't installed |
 | captures are briefs with status `captured`; INBOX.md, STATE.md and registry.md are generated views | one record per item; the views are rebuilt from the briefs |
-| `sampo intake`, `sampo task log`, `sampo decide`, `sampo research add`, `sampo sensitive`, `sampo drive`, `sampo install-user/uninstall-user` added | the loop needed them and the prompt had none |
+| `sampo intake`, `sampo task log`, `sampo decide`, `sampo research add`, `sampo sensitive`, `sampo drive`, `sampo install-user` and `sampo uninstall-user` added | the loop needed them and the prompt had none |
 | per-repo opt-out uses `default` | see `local/PLAN.md` §1 |
 | task-tool mirroring dormant | see `local/PLAN.md` §1 |
 | statusLine wraps your original line plus claude-hud | see `local/PLAN.md` §1 |
