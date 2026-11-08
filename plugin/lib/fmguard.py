@@ -449,8 +449,11 @@ def _is_credential(path, ctx):
         return False  # T-0386: secrets.yaml.example is the placeholder copy, as .env.example is
     if re.search(r"(^|[._-])(secrets?|credentials?)([._-]|$)", stem.lower()):
         return True
-    # a design system's tokens (colours, spacing, durations) aren't auth tokens (JARVIS: design/tokens.json was refused)
-    design = re.search(r"/(design|themes?|styles?|ui)/", path.lower()) or re.match(r"(design|theme|style)[._-]", stem.lower())
+    # a design system's tokens (colours, spacing, durations) aren't auth tokens (JARVIS: design/tokens.json was refused);
+    # T-3908: nor is a UI source file named for them (gallery/Tokens.svelte): markup and styles, never a token store
+    if ext.lower() in (".svelte", ".vue", ".jsx", ".tsx", ".astro", ".css", ".scss", ".sass", ".less", ".html"):
+        return False
+    design =re.search(r"/(design|themes?|styles?|ui)/", path.lower()) or re.match(r"(design|theme|style)[._-]", stem.lower())
     # T-3810: and a web asset folder's inside the project (plugin/web/live/board-tokens.json): what a page serves is
     # no secret. Its review: only below the project root, so ~/.config/app/public/tokens.json stays one, and never
     # under a dot folder (a dotfiles repo at ~ is a project too)

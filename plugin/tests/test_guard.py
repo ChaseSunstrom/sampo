@@ -1787,6 +1787,17 @@ class ScratchNames(GuardCase):
             with self.subTest(path=path):
                 self.assertBlocked(self.bash(f"echo x > {path}"), "credentials")
 
+    def test_ui_component_named_tokens_is_not_a_credential(self):
+        # T-3908 (JARVIS 2026-11-08): deleting jarvis-web/src/routes/gallery/Tokens.svelte, a page that shows the
+        # design tokens, asked the owner for the credentials grant mid-merge
+        for name in ("Tokens.svelte", "TokenList.vue", "tokens.tsx", "Token.jsx", "tokens.astro", "tokens.css",
+                     "tokens.scss", "tokens.html"):
+            with self.subTest(name=name):
+                self.assertFalse(self.bash(f"rm {self.repo}/app/src/routes/gallery/{name}"))
+        for path in (f"{self.repo}/app/src/routes/gallery/tokens.json", f"{self.repo}/app/token"):
+            with self.subTest(path=path):
+                self.assertBlocked(self.bash(f"echo x > {path}"), "credentials")
+
     def test_secret_templates_are_not_credentials(self):
         # T-0386 (JARVIS builder, 2026-10-09): jarvis-core/config/secrets.yaml.example — the placeholder copy every
         # repo keeps beside the real file — was refused as a credential, as .env.example already isn't
