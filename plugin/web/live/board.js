@@ -36,14 +36,55 @@ const SampoBoard = (() => {
   }
   const plural = (n, one, many) => `${fmt(n)} ${n === 1 ? one : many || one + "s"}`;
 
-  function mLanes(s, b) {
-    const src = Array.isArray(b.lanes) ? b.lanes
+  // T-3730 All mode: every project's items at once, coloured and tagged by project
+  const PCOL = ["cyan", "yellow", "green", "pink", "violet", "orange"];  // board-tokens.json names, so both themes follow
+  function projColors(slugs) {  // a stable colour per slug (its hash), probing on to the next free one so a few projects differ
+    const out = {}, used = new Set();
+    for (const s of [...new Set(slugs)].sort()) {
+      let h = 5381;
+      for (let i = 0; i < s.length; i++) h = (Math.imul(h, 33) + s.charCodeAt(i)) >>> 0;
+      let i = h % PCOL.length, n = 0;
+      while (used.has(i) && n++ < PCOL.length) i = (i + 1) % PCOL.length;
+      used.add(i);
+      if (used.size >= PCOL.length) used.clear();
+      out[s] = PCOL[i];
+    }
+    return out;
+  }
+  const projTag = (name) => str(String(name || ""), 10);
+  function projectList(snap) {  // [{slug, name, tag, pc, sensitive}] for the chips; [] outside All mode
+    const s = obj(snap);
+    if (!s.all) return [];
+    const ps = arr(s.projects).map(obj).filter((p) => typeof p.slug === "string"), col = projColors(ps.filter((p) => !p.sensitive).map((p) => p.slug));
+    return ps.map((p) => ({slug: str(p.slug, 80), name: str(p.name, 24), tag: projTag(p.name), pc: col[p.slug] || "dim", sensitive: !!p.sensitive}));
+  }
+  function allCtx(s, hidden) {
+    if (!s.all) return null;
+    const list = projectList(s), by = new Map(list.map((p) => [p.slug, p])), off = new Set(arr(hidden));
+    return {vis: (x) => !off.has(obj(x).project) && !(by.get(obj(x).project) || {}).sensitive,
+      mark: (x) => {
+        const p = by.get(obj(x).project) || {};
+        return {proj: str(obj(x).project, 80), tag: p.tag || "", pc: p.pc || "cyan"};
+      }};
+  }
+  function spread(rows, n) {  // up to n rows, taking turns across projects so a busy one doesn't crowd the rest out
+    const g = new Map();
+    for (const r of rows) (g.get(obj(r).project) || g.set(obj(r).project, []).get(obj(r).project)).push(r);
+    const out = [], q = [...g.values()];
+    for (let i = 0; out.length < n && q.some((x) => i < x.length); i++) for (const x of q) if (i < x.length && out.length < n) out.push(x[i]);
+    return out;
+  }
+
+  function mLanes(s, b, A) {
+    let src = Array.isArray(b.lanes) ? b.lanes
       : arr(s.lanes).map((l) => ({task: obj(l).task, title: obj(l).title, state: obj(l).waiting ? "waiting" : "building",
         steps: obj(l).steps}));
-    const clusters = src.slice(0, 16).map((l) => {
+    if (A) src = src.filter(A.vis);
+    const shown = A ? spread(src, 16) : src.slice(0, 16);
+    const clusters = shown.map((l) => {
       l = obj(l);
       const files = arr(l.files), st = obj(l.steps);
-      return {task: str(l.task, 12), title: str(l.title, 80), state: LANE_STATES.includes(l.state) ? l.state : "building",
+      return {...(A ? A.mark(l) : {}), task: str(l.task, 12), title: str(l.title, 80), state: LANE_STATES.includes(l.state) ? l.state : "building",
         steps: {done: int(st.done), total: int(st.total)},
         nodes: files.slice(0, 24).map((f) => {
           const p = str(obj(f).path, 160), i = p.lastIndexOf("/");
@@ -54,14 +95,19 @@ const SampoBoard = (() => {
     return {clusters, more: Math.max(0, src.length - clusters.length)};
   }
 
-  function mTrain(b, lanes) {
-    const t = obj(b.train), rank = {waiting: 0, building: 1};
+  function mTrain(b, lanes, A) {
+    const ts = A ? arr(b.trains).map(obj).filter(A.vis) : [obj(b.train)], rank = {waiting: 0, building: 1};
     const waiting = lanes.clusters.filter((c) => c.state in rank).sort((x, y) => rank[x.state] - rank[y.state]).slice(0, 6)
-      .map((c) => ({task: c.task, title: c.title, state: c.state, files: c.nodes.length + c.more}));
-    return {known: !!b.train, waiting,
-      landed: arr(t.landed).slice(-8).map((x) => ({task: str(obj(x).task, 12), title: str(obj(x).title, 64), at: str(obj(x).at, 32)})),
-      landed24: int(t.landed_24h), trains24: int(t.trains_24h), left: int(t.left_out), running: !!t.running,
-      mpl: t.minutes_per_lane == null ? null : int(t.minutes_per_lane)};
+      .map((c) => ({task: c.task, title: c.title, state: c.state, files: c.nodes.length + c.more, tag: c.tag, pc: c.pc}));
+    const landed = [];
+    for (const t of ts) for (const x of arr(t.landed)) {
+      landed.push({...(A ? A.mark(t) : {}), task: str(obj(x).task, 12), title: str(obj(x).title, 64), at: str(obj(x).at, 32)});
+    }
+    if (A) landed.sort((x, y) => (x.at < y.at ? -1 : x.at > y.at ? 1 : 0));
+    const sum = (k) => ts.reduce((a, t) => a + int(t[k]), 0), mp = ts.filter((t) => t.minutes_per_lane != null);
+    return {known: A ? ts.length > 0 : !!b.train, waiting, landed: landed.slice(-8),
+      landed24: sum("landed_24h"), trains24: sum("trains_24h"), left: sum("left_out"), running: ts.some((t) => !!t.running),
+      mpl: mp.length ? Math.round(mp.reduce((a, t) => a + int(t.minutes_per_lane), 0) / mp.length) : null};
   }
 
   function mCpu(b) {
@@ -72,7 +118,15 @@ const SampoBoard = (() => {
     return out;
   }
 
-  function mLoop(s, b) {
+  function mLoop(s, b, A) {
+    if (A) {  // one compact words → brief row per project that has a task in focus
+      const loops = arr(b.loops).map(obj).filter(A.vis).slice(0, 6).map((l) => ({...A.mark(l), id: str(l.id, 12), words: str(l.words, 240),
+        title: str(l.title, 120), stage: str(l.stage, 16), choice: l.choice == null || !isFinite(l.choice) ? null : Math.min(100, int(l.choice)),
+        ok: arr(l.criteria).filter((x) => obj(x).ok).length, of: arr(l.criteria).length,
+        done: arr(l.steps).filter((x) => obj(x).done).length, steps: arr(l.steps).length,
+        list: arr(l.steps).slice(0, 12).map((x) => ({text: str(obj(x).text, 80), done: !!obj(x).done, current: !!obj(x).current}))}));
+      return loops.length ? {all: true, loops} : null;
+    }
     const l = b.loop ? obj(b.loop) : null, f = obj(s.focus);
     if (!l && !f.id) return null;
     if (!l) {
@@ -143,11 +197,11 @@ const SampoBoard = (() => {
       cpm: Math.round(calls / 5), loaded: models.filter((m) => m.loaded).length};
   }
 
-  function mSampo(s, b) {
-    const q = arr(s.queue);
+  function mSampo(s, b, A) {
+    const q = A ? arr(s.queue).filter(A.vis) : arr(s.queue);
     return {commands: arr(b.commands).slice(-12).map((x) => ({at: str(obj(x).at, 32), cmd: str(obj(x).cmd, 96), ok: obj(x).ok !== false})),
-      queue: q.slice(0, 8).map((x) => ({id: str(obj(x).id, 12), title: str(obj(x).title, 64), status: str(obj(x).status, 10),
-        tier: str(obj(x).tier, 2), type: str(obj(x).type, 10)})),
+      queue: (A ? spread(q, 8) : q.slice(0, 8)).map((x) => ({...(A ? A.mark(x) : {}), id: str(obj(x).id, 12), title: str(obj(x).title, 64),
+        status: str(obj(x).status, 10), tier: str(obj(x).tier, 2), type: str(obj(x).type, 10)})),
       queued: q.length,
       deps: arr(b.deps).slice(0, 40).map((d) => arr(d).slice(0, 4).map((x) => str(x, 12))).filter((d) => d.length > 1)};
   }
@@ -194,6 +248,7 @@ const SampoBoard = (() => {
         stat: d.known ? `${pct(d.now.busy, d.cores).toFixed(1)}%` : "", pct: d.known ? pct(d.now.busy, d.cores) : null}}),
     loop: (d) => {
       if (!d) return {label: "idle", foot: {text: "no task in focus", stat: ""}};
+      if (d.all) return {label: plural(d.loops.length, "loop"), foot: {text: d.loops.map((l) => `${l.tag} ${l.id}`).join(" · "), stat: ""}};
       const ok = d.criteria.filter((c) => c.ok).length, done = d.steps.filter((x) => x.done).length;
       return {label: d.stage || "focus",
         foot: {text: d.criteria.length ? `${d.id} · ${ok} of ${plural(d.criteria.length, "criterion", "criteria")} met` : `${d.id} · ${d.title}`,
@@ -217,11 +272,11 @@ const SampoBoard = (() => {
         : "no test run seen yet", stat: d.total ? `${d.done}/${d.total} checks passed` : "", pct: d.total ? pct(d.done, d.total) : null}}),
   };
 
-  function boardModel(snap, hist) {
-    const s = obj(snap), b = obj(s.board), h = arr(hist), prev = obj(h[h.length - 1]);
-    const data = {lanes: mLanes(s, b), cpu: mCpu(b), loop: mLoop(s, b), library: mLibrary(s, b, prev), models: mModels(s),
-      sampo: mSampo(s, b), state: mState(b), tests: mTests(b)};
-    data.train = mTrain(b, data.lanes);
+  function boardModel(snap, hist, hidden) {  // hidden: project slugs the chips turned off (All mode)
+    const s = obj(snap), b = obj(s.board), h = arr(hist), prev = obj(h[h.length - 1]), A = allCtx(s, hidden);
+    const data = {lanes: mLanes(s, b, A), cpu: mCpu(b), loop: mLoop(s, b, A), library: mLibrary(s, b, prev), models: mModels(s),
+      sampo: mSampo(s, b, A), state: mState(b), tests: mTests(b)};
+    data.train = mTrain(b, data.lanes, A);
     return {at: str(s.at, 32), panels: PANELS.map((P, i) => {
       const f = FOOT[P.key](data[P.key]);
       return {n: String(i + 1).padStart(2, "0"), key: P.key, name: P.name, what: P.what, accent: P.accent, label: f.label,
@@ -258,6 +313,12 @@ const SampoBoard = (() => {
       else hi = mid - 1;
     }
     return lo ? s.slice(0, lo) + "…" : "";
+  }
+  function fitWords(g, s, max, min = 1) {  // like fit, but ends on a whole word; "" when fewer than `min` words fit (never a stub like "Ben…")
+    if (g.measureText(s).width <= max) return s;
+    const cut = fit(g, s, max).replace(/…$/, ""), at = cut.lastIndexOf(" ");
+    const r = at > 0 && s[cut.length] !== " " ? cut.slice(0, at) + "…" : cut.length && s[cut.length] === " " ? cut + "…" : "";
+    return r.replace(/…$/, "").split(" ").length >= min ? r : "";
   }
   function box(g, x, y, w, h, col, fill = 0.08) {
     x = Math.round(x); y = Math.round(y); w = Math.round(w); h = Math.round(h);
@@ -447,7 +508,7 @@ const SampoBoard = (() => {
       mem.quiet = !C.length;
       if (!C.length) return waiting(g, w, h, T, "no builder lanes out");
       const n = C.length, cols = Math.max(1, Math.min(n, Math.round(Math.sqrt((n * w) / h)))), rows = Math.ceil(n / cols);
-      const cw = w / cols, ch = (h - 8) / rows, r = Math.max(10, Math.min(cw * 0.36, ch * 0.3, 70));
+      const cw = w / cols, ch = (h - 8) / rows, r = Math.max(8, Math.min(cw * 0.36, ch * 0.3, (ch - 38) / 2, 70));  // a hub, its pill above and its state below all fit one row
       const at = C.map((c, i) => {
         const row = Math.floor(i / cols), inRow = row === rows - 1 ? n - row * cols : cols, rnd = seed(c.task || String(i));
         return {x: (w - inRow * cw) / 2 + (i - row * cols + 0.5) * cw + (rnd() - 0.5) * cw * 0.12,
@@ -469,7 +530,7 @@ const SampoBoard = (() => {
       g.restore();
       let hotLeft = 48;
       C.forEach((c, i) => {
-        const {x, y, rnd} = at[i], k = col[c.state] || T.cyan, N = c.nodes.length, spin = rnd() * TAU;
+        const {x, y, rnd} = at[i], k = (c.pc && T[c.pc]) || col[c.state] || T.cyan, N = c.nodes.length, spin = rnd() * TAU;
         const glow = g.createRadialGradient(x, y, 0, x, y, r * 1.25);
         glow.addColorStop(0, rgba(k, 0.13));
         glow.addColorStop(1, rgba(k, 0));
@@ -522,10 +583,12 @@ const SampoBoard = (() => {
             txt(g, s, p.x + (right ? 6 : -6), p.y + 3, T.muted, 8, right ? "left" : "right");
           });
         }
-        pill(g, c.task || "lane", x, y - r - 8, k, rgba(k, 0.12), 8.5);
+        g.font = `500 8.5px ${FONT}`;
+        const full = (c.tag ? c.tag + " · " : "") + (c.task || "lane");  // whole words or the bare task: the colour already names the project
+        pill(g, g.measureText(full).width + 12 <= cw - 6 ? full : (c.task || "lane"), x, y - r - 8, k, rgba(k, 0.12), 8.5);
         if (y + r + 16 < h) {
           g.font = `400 8.5px ${FONT}`;
-          const s = c.steps.total ? `${c.state} · ${c.steps.done}/${c.steps.total}` : c.state;
+          const s = c.steps.total && g.measureText(`${c.state} · ${c.steps.done}/${c.steps.total}`).width <= cw - 8 ? `${c.state} · ${c.steps.done}/${c.steps.total}` : c.state;
           txt(g, fit(g, s, cw - 8), x, y + r + 14, T.dim, 8.5, "center");
         }
         mem.c.push({x, y, k, state: c.state, hot, ph: rnd() * TAU});
@@ -580,14 +643,16 @@ const SampoBoard = (() => {
       const rw = w - pad - rx0, rowH = Math.min(30, (h - 2 * pad) / Math.max(1, W.length)), top = fy - (rowH * W.length) / 2;
       const maxF = Math.max(1, ...W.map((x) => x.files));
       W.forEach((x, i) => {
-        const k = col[x.state] || T.cyan, y = Math.round(top + i * rowH), bh = Math.round(rowH - 6);
+        const k = (x.pc && T[x.pc]) || col[x.state] || T.cyan, y = Math.round(top + i * rowH), bh = Math.round(rowH - 6);
+        const nm = x.task, dot = x.tag ? 9 : 0;  // All mode: a dot in the project's colour, the chip bar names it
         box(g, pad, y, lw, bh, T.line, 0);
         g.fillStyle = rgba(T.ink, 0.025);
         g.fillRect(pad + 1, y + 1, lw - 2, bh - 2);
-        txt(g, x.task, pad + 7, y + bh / 2 + 3, k, 8.5, "left", 500);
+        if (dot) { g.fillStyle = k; g.beginPath(); g.arc(pad + 10, y + bh / 2, 2.5, 0, 6.2832); g.fill(); }
+        txt(g, nm, pad + 7 + dot + (dot ? 3 : 0), y + bh / 2 + 3, k, 8.5, "left", 500);
         g.font = `400 8px ${FONT}`;
-        const tw = g.measureText(x.task + "  ").width * 1.06;
-        if (bh >= 14) txt(g, fit(g, x.title, lw - 14 - tw), pad + 7 + tw, y + bh / 2 + 3, T.dim, 8);
+        const tw = g.measureText(nm + "  ").width * 1.06 + dot + (dot ? 3 : 0);
+        if (bh >= 14) txt(g, fitWords(g, x.title, lw - 14 - tw, 2), pad + 7 + tw, y + bh / 2 + 3, T.dim, 8);
         g.fillStyle = k;
         g.fillRect(pad, y + bh - 2, Math.max(4, Math.round((lw * Math.min(24, x.files)) / 24)), 2);
         const ty = fy - fh * 0.4 + (W.length > 1 ? (i * fh * 0.8) / (W.length - 1) : fh * 0.4);
@@ -637,8 +702,9 @@ const SampoBoard = (() => {
       }
       const L = d.landed.slice().reverse();
       for (let i = 0, y = by + 52; i < L.length && y < h - 6; i++, y += 15) {
-        txt(g, "✓", rx0 + 2, y, T.green, 9);
-        txt(g, L[i].task, rx0 + 16, y, T.muted, 8.5);
+        const lk = (L[i].pc && T[L[i].pc]) || T.green;
+        txt(g, "✓", rx0 + 2, y, lk, 9);
+        txt(g, L[i].task, rx0 + 16, y, L[i].pc ? lk : T.muted, 8.5);  // the task id always shows; the colour names the project
         txt(g, hm(L[i].at), rx0 + rw, y, T.dim, 8, "right");
       }
       if (!L.length) txt(g, "nothing landed yet", rx0 + 2, by + 52, T.dim, 8.5);
@@ -668,11 +734,58 @@ const SampoBoard = (() => {
     g.lineTo(x + s / 2, y);
     g.lineTo(x - s / 2, y + s);
   }
+  function loopAll(g, d, w, h, T, mem) {  // T-3730: a words >>> brief row per project, each in its own colour, over a mini stage track
+    const pad = 12, n = d.loops.length, rh = Math.min(150, (h - 2 * pad + 8) / n), bh = rh - 8, lab = bh >= 62, lw = Math.round(w * 0.36), cx = pad + lw + 34;
+    d.loops.forEach((l, i) => {
+      const k = T[l.pc] || T.pink, y = Math.round(pad + i * rh);
+      box(g, pad, y, lw, bh, k, 0.03);
+      g.fillStyle = rgba(k, 0.14);
+      g.fillRect(pad + 1, y + 1, lw - 2, 12);
+      txt(g, fit(g, `${l.tag} · YOU ASKED`, lw - 14), pad + 6, y + 10, k, 7, "left", 600);
+      g.font = `400 8.5px ${FONT}`;
+      hatch(g, pad + 1, y + 13, 8, bh - 14, rgba(T.line, 1));  // the page's gutter, as on the single-project board
+      const q = "“" + l.words + "”", ql = Math.max(1, Math.floor((bh - 20) / 11));
+      (ql === 1 ? [fitWords(g, q, lw - 22) || fit(g, q, lw - 22)] : wrap(g, q, lw - 22, ql)).forEach((s, j) => txt(g, s, pad + 15, y + 25 + j * 11, T.muted, 8.5));
+      mem.rows.push({x: pad + lw + 8, y: y + bh / 2});
+      const cw = w - pad - cx;
+      box(g, cx, y, cw, bh, k, 0.05);
+      g.font = `500 8.5px ${FONT}`;
+      txt(g, fit(g, `${l.id}.md`, cw * 0.5), cx + 6, y + 11, k, 8.5, "left", 500);
+      const meta = [l.of ? `${l.ok}/${l.of} met` : "", l.steps ? `${l.done}/${l.steps} steps` : ""].filter(Boolean).join(" · ");
+      g.font = `400 7.5px ${FONT}`;
+      if (meta) txt(g, fit(g, meta, cw * 0.45), cx + cw - 6, y + 11, T.dim, 7.5, "right");
+      g.font = `500 9px ${FONT}`;
+      const tiny = bh < 46, ty0 = tiny ? 22 : 25;  // many projects: one title line, the stage bar tucked under it
+      const tl = tiny ? [fitWords(g, l.title, cw - 12) || fit(g, l.title, cw - 12)] : wrap(g, l.title, cw - 12, Math.min(2, Math.max(1, Math.floor((bh - 30 - (lab ? 12 : 0)) / 12))));
+      tl.forEach((s, j) => txt(g, s, cx + 6, y + ty0 + j * 12, T.ink, 9, "left", 500));
+      let sy = y + 25 + tl.length * 12 + 6;
+      const cur = Math.max(0, l.list.findIndex((s) => s.current));  // room under the title: its steps, as the single board lists them
+      for (let j = Math.max(0, Math.min(cur - 1, l.list.length - 4)); j < l.list.length && sy < y + bh - (lab ? 26 : 12); j++, sy += 11) {
+        const s = l.list[j];
+        g.font = `400 8px ${FONT}`;
+        txt(g, fit(g, `${s.current ? "▸" : s.done ? "✓" : "·"} ${j + 1}. ${s.text}`, cw - 14), cx + 8, sy, s.current ? T.pink : s.done ? T.dim : T.muted, 8);
+      }
+      const si = STAGES.indexOf(l.stage), sw = (cw - 12) / STAGES.length;  // the stage track, this project's task lit
+      STAGES.forEach((s, j) => {
+        g.fillStyle = j < si ? rgba(k, 0.45) : j === si ? k : T.grid;
+        g.fillRect(Math.round(cx + 6 + j * sw), y + bh - (lab ? 21 : 6), Math.max(2, Math.round(sw) - 2), 3);
+        if (lab && (j === si || sw >= 52)) {  // room: name the stages, as the single-project track does
+          g.font = `400 7.5px ${FONT}`;
+          const x0 = Math.round(cx + 6 + j * sw), tw = g.measureText(s).width;
+          if (j === si) txt(g, s, Math.min(x0, cx + cw - 6 - tw), y + bh - 8, T.ink, 7.5);
+          else if (tw <= sw - 3) txt(g, s, x0, y + bh - 8, T.dim, 7.5);
+        }
+      });
+    });
+  }
   DRAW.loop = {  // 04: the words you typed, >>> into the brief they became, over the stage track
     base(g, d, w, h, T, mem) {
-      const pad = 14, wide = w >= 420, bot = h - 34;
       mem.chev = null;
       mem.caret = null;
+      mem.seg = null;
+      mem.rows = [];
+      if (d.all) return loopAll(g, d, w, h, T, mem);
+      const pad = 14, wide = w >= 420, bot = h - 34;
       let cx = pad;
       if (wide) {  // "you asked": a page with a hatched gutter, the words quoted
         const bw = Math.round(w * 0.34), bh = bot - pad;
@@ -741,6 +854,19 @@ const SampoBoard = (() => {
       mem.seg = si >= 0 ? {x: pad + si * sw, y: ty, w: sw - 2} : null;
     },
     live(g, d, w, h, t, T, mem) {
+      if (d.all) {  // each row's >>> pulses in its project's colour
+        g.lineWidth = 1.6;
+        (mem.rows || []).forEach((r, i) => {
+          for (let k = 0; k < 2; k++) {
+            g.strokeStyle = rgba(T[d.loops[i].pc] || T.pink, 0.2 + 0.8 * Math.max(0, Math.sin(t * 3 - k * 0.9 - i * 0.7)));
+            g.beginPath();
+            chevron(g, r.x + k * 7, r.y, 4);
+            g.stroke();
+          }
+        });
+        g.lineWidth = 1;
+        return;
+      }
       if (mem.chev) {  // >>> pulses left to right, the words flowing in
         g.lineWidth = 1.6;
         for (let k = 0; k < 3; k++) {
@@ -993,11 +1119,14 @@ const SampoBoard = (() => {
       d.queue.slice(0, rows).forEach((q, i) => {
         const y = qy + 27 + i * 15, k = sc[q.status] || T.muted;
         if (i % 2) { g.fillStyle = rgba(T.ink, 0.02); g.fillRect(pad + 1, y - 9, qw - 2, 15); }
-        txt(g, q.id, cId, y + 2, T.ink, 8.5);
+        const pk = q.pc && T[q.pc];
+        txt(g, q.id, cId, y + 2, pk || T.ink, 8.5);
         pill(g, q.status || "—", cSt, y - 1, k, rgba(k, 0.12), 7, "left");
         txt(g, q.tier, cTier, y + 2, T.dim, 8.5);
         g.font = `400 8.5px ${FONT}`;
-        txt(g, fit(g, q.title, pad + qw - 8 - cTi), cTi, y + 2, T.muted, 8.5);
+        const tg = q.tag ? q.tag + " " : "", tgw = tg ? g.measureText(tg).width + 2 : 0;
+        if (tg) txt(g, tg, cTi, y + 2, pk, 8.5, "left", 500);
+        txt(g, fit(g, q.title, pad + qw - 8 - cTi - tgw), cTi + tgw, y + 2, T.muted, 8.5);
       });
       if (!d.queue.length) txt(g, "the queue is empty", pad + qw / 2, qy + qh / 2 + 6, T.dim, 9, "center");
       mem.E = [];
@@ -1202,7 +1331,7 @@ const SampoBoard = (() => {
       mk("span", "bd-chip", head, String(i + 1).padStart(2, "0")).setAttribute("aria-hidden", "true");
       const h2 = mk("h2", "bd-t", head, P.name);
       h2.id = "bd-t-" + P.key;
-      mk("span", "bd-w", h2, " · " + P.what);
+      const wh = mk("span", "bd-w", h2, " · " + P.what);
       const label = mk("span", "bd-l", head, "");
       const box_ = mk("div", "bd-c", sec);
       const cv = mk("canvas", "", box_);
@@ -1215,7 +1344,7 @@ const SampoBoard = (() => {
       bar.setAttribute("aria-hidden", "true");
       const fill = mk("i", "", bar);
       const stat = mk("span", "bd-s", foot, "");
-      return {key: P.key, name: P.name, sec, box: box_, cv, ctx: cv.getContext("2d"), label, cap, bar, fill, stat,
+      return {key: P.key, name: P.name, sec, box: box_, cv, ctx: cv.getContext("2d"), label, cap, bar, fill, stat, h2, wh, full: "",
         w: 0, h: 0, sx: 1, sy: 1, vis: true, d: null, dk: "", base: null, off: null, mem: {}};
     });
     const byBox = new Map(panels.map((p) => [p.box, p]));
@@ -1302,7 +1431,7 @@ const SampoBoard = (() => {
     el.dataset.running = "0";
     if (win.ResizeObserver) {
       const ro = new win.ResizeObserver((ents) => {
-        for (const e of ents) size(byBox.get(e.target));
+        for (const e of ents) { const p = byBox.get(e.target); size(p); fitDom(p); }
         kick();
       });
       for (const p of panels) ro.observe(p.box);
@@ -1323,6 +1452,16 @@ const SampoBoard = (() => {
     if (doc.fonts && doc.fonts.load) doc.fonts.load(`500 10px ${FONT}`).then(invalidate, () => {});
     readTokens();
 
+    function fitDom(p) {  // words whole or none: the subtitle goes when it doesn't fit; the footer sheds its trailing " · " parts
+      p.wh.hidden = false;
+      p.wh.hidden = p.h2.scrollWidth > p.h2.clientWidth;
+      const segs = p.full.split(" · ");
+      let n = segs.length;
+      p.cap.textContent = p.full;
+      while (n > 1 && p.cap.scrollWidth > p.cap.clientWidth) p.cap.textContent = segs.slice(0, --n).join(" · ");
+      p.cap.title = n < segs.length ? p.full : "";
+    }
+
     function update(m) {
       const ps = arr(obj(m).panels);
       let changed = false;
@@ -1338,7 +1477,8 @@ const SampoBoard = (() => {
         }
         const f = obj(P.foot);
         if (p.label.textContent !== P.label) p.label.textContent = P.label || "";
-        if (p.cap.textContent !== f.text) p.cap.textContent = f.text || "";
+        p.full = f.text || "";
+        fitDom(p);
         if (p.stat.textContent !== f.stat) p.stat.textContent = f.stat || "";
         p.bar.hidden = f.pct == null;
         if (f.pct != null) p.fill.style.width = Math.max(0, Math.min(100, f.pct)) + "%";
@@ -1355,7 +1495,7 @@ const SampoBoard = (() => {
     };
   }
 
-  return {PANELS, KINDS, STAGES, TOKENS, DRAW, boardModel, mount};
+  return {PANELS, KINDS, STAGES, TOKENS, DRAW, boardModel, projectList, mount};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = SampoBoard;
 else window.SampoBoard = SampoBoard;  // a top-level const is no window property: live.js finds it here

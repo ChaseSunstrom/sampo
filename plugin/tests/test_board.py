@@ -339,6 +339,31 @@ class Model(SampoTestCase):
         self.assertEqual(out.returncode, 0, out.stderr[-2000:])
         self.assertEqual(json.loads(out.stdout), [])
 
+    def test_all_mode_draws_every_projects_lanes_and_loops_coloured_by_project_and_the_chips_filter(self):  # T-3730
+        base = json.loads(read_text(os.path.join(FIX, "snap-5.json")))
+        lane = lambda slug, t: dict(base["board"]["lanes"][0], task=t, project=slug)
+        loop = lambda slug, t: dict(base["board"]["loop"], id=t, project=slug)
+        snap = dict(base, project={"slug": "all", "name": "All projects"}, all=True, projects=[
+            {"slug": "shop-api", "name": "shop-api"}, {"slug": "notes-app", "name": "notes-app"},
+            {"slug": "vault-1", "name": "vault", "sensitive": True}],
+            board=dict(base["board"], lanes=[lane("shop-api", "T-1"), lane("notes-app", "T-2")],
+                       trains=[], loops=[loop("shop-api", "T-1"), loop("notes-app", "T-2")]))
+        lonely = dict(base)
+        got = self.run_model([[snap, []], [lonely, []]])
+        m = got[0]["m"]["panels"]
+        lanes = next(p for p in m if p["key"] == "lanes")
+        self.assertEqual(got[0]["bad"], 0)
+        clusters = lanes["data"]["clusters"]
+        self.assertEqual({c["proj"] for c in clusters}, {"shop-api", "notes-app"})
+        self.assertEqual(len({c["pc"] for c in clusters}), 2, "one colour per project")
+        self.assertTrue(all(c["tag"] for c in clusters))
+        loopp = next(p for p in m if p["key"] == "loop")
+        d = loopp["data"]
+        self.assertTrue(d["all"])
+        self.assertEqual({x["proj"] for x in d["loops"]}, {"shop-api", "notes-app"})
+        self.assertNotIn("vault", json.dumps(m), "a sensitive project is never drawn")
+        self.assertFalse((next(p for p in got[1]["m"]["panels"] if p["key"] == "loop")["data"] or {}).get("all"))
+
     def test_the_tokens_file_and_the_stylesheet_agree(self):
         tokens = json.loads(read_text(os.path.join(WEB, "board-tokens.json")))
         css = read_text(os.path.join(WEB, "board.css"))

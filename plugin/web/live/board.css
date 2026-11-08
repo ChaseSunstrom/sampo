@@ -47,7 +47,21 @@
 @media (min-width:700px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:1200px){.board{grid-template-columns:repeat(3,minmax(0,1fr))}}
 /* two columns and nine panels: the last one takes the full row rather than leaving an empty cell */
-@media (min-width:700px) and (max-width:1199px){.bd-p:last-child:nth-child(odd){grid-column:1/-1}}
+@media (min-width:700px) and (max-width:1199px){section.bd-p:last-of-type:nth-of-type(odd){grid-column:1/-1}}
+
+/* T-3730 All mode: a bar of project chips above the panels, each in its project's colour (set from board.js tokens) */
+.bd-chips{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 12px;background:var(--bd-bg);
+  font-size:9.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--bd-dim)}
+.bd-chips[hidden]{display:none}
+.bd-chips button{display:inline-flex;align-items:center;gap:6px;padding:3px 9px 2px;border:1px solid var(--pc,var(--bd-line));
+  border-radius:999px;background:transparent;color:var(--pc,var(--bd-muted));font:inherit;letter-spacing:inherit;
+  text-transform:inherit;cursor:pointer}
+.bd-chips button i{width:6px;height:6px;border-radius:50%;background:var(--pc,var(--bd-dim))}
+.bd-chips button[aria-pressed="true"]{background:color-mix(in srgb,var(--pc,var(--bd-muted)) 16%,transparent)}
+.bd-chips button[aria-pressed="false"]{opacity:.45}
+.bd-chips button[data-private]{border-style:dashed;opacity:.7;cursor:default}
+.bd-chips button[data-private] i{background:transparent;border:1px solid currentColor;box-sizing:border-box}
+.bd-chips button:focus-visible{outline:2px solid var(--bd-bracket);outline-offset:2px}
 
 .bd-p{position:relative;display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-width:0;margin:0;background:var(--bd-bg);
   --bd-a:var(--bd-cyan)}

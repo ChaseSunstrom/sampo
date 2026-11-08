@@ -526,6 +526,66 @@ class Serve(ForemanTestCase):
         sp = c.init_project(other, sensitive=True)
         self.assertEqual(self.req(f"/api/state?project={sp.slug}")[0], 404)
 
+    def _two_more(self):  # T-3730: an open project beside the server's own, and a sensitive one
+        other = os.path.join(self.tmp, "shop-api")
+        os.makedirs(other)
+        op = c.init_project(other, sensitive=False)
+        self.fm("task", "new", "Other work", "--type", "FIX", "--tier", "S", "--ac", "x :: true", "--step", "s", "--focus", cwd=other)
+        hush = os.path.join(self.tmp, "hushrepo")
+        os.makedirs(hush)
+        sp = c.init_project(hush, sensitive=True)
+        live._CACHE.clear()
+        return op, sp
+
+    def test_all_serves_every_open_project_tagged_a_sensitive_one_by_name_only(self):  # T-3730
+        self.login()
+        op, sp = self._two_more()
+        st, body, _ = self.req("/api/state?project=all")
+        self.assertEqual(st, 200)
+        s = json.loads(body)
+        self.assertEqual((s["project"]["slug"], s["all"]), ("all", True))
+        names = {x["slug"]: x for x in s["projects"]}
+        self.assertEqual(names[sp.slug], {"slug": sp.slug, "name": "hushrepo", "sensitive": True})
+        self.assertEqual({x["project"] for x in s["queue"]}, {self.p.slug, op.slug})
+        self.assertTrue(all(x["project"] for x in s["board"]["lanes"]))
+        for key in ("trains", "loops"):
+            self.assertTrue(all(x["project"] in (self.p.slug, op.slug) for x in s["board"][key]), key)
+        self.assertEqual({x["project"] for x in s["board"]["trains"]}, {self.p.slug, op.slug})
+        self.assertNotIn(sp.slug, json.dumps([s["queue"], s["lanes"], s["board"]]))  # a sensitive project adds no items
+        self.assertTrue({"models", "gpu", "stats", "events", "flows", "jobs", "at"} <= set(s))  # the machine-wide fields, once
+
+    def test_all_streams_and_an_unknown_slug_is_still_404(self):  # T-3730
+        self.login()
+        op, _ = self._two_more()
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        conn.request("GET", "/api/stream?project=all", headers={"Host": f"127.0.0.1:{self.port}", "Cookie": self.cookie})
+        r = conn.getresponse()
+        r.readline()
+        s = json.loads(r.readline().decode()[6:])
+        conn.close()
+        self.assertEqual((s["project"]["slug"], s["all"]), ("all", True))
+        self.assertIn(op.slug, {x["project"] for x in s["queue"]})
+        self.assertEqual(self.req("/api/state?project=al")[0], 404)
+
+    def test_all_builds_other_projects_at_most_every_ten_seconds(self):  # T-3730
+        op, _ = self._two_more()
+        n = {"train": 0}
+        from sampo import board as bd
+        real = bd.part_train
+
+        def counted(p):
+            n["train"] += p.slug == op.slug
+            return real(p)
+        with mock.patch("sampo.board.part_train", counted), mock.patch.object(live, "CACHE_S", 0):
+            live.snapshot_all(self.p)
+            live.snapshot_all(self.p)
+            live.snapshot_all(self.p)
+        self.assertEqual(n["train"], 1)  # the other project's slice came from its cache the 2nd and 3rd time
+        with mock.patch("sampo.board.part_train", counted), mock.patch.object(live, "CACHE_S", 0), \
+                mock.patch.object(live, "ALL_S", 0):
+            live.snapshot_all(self.p)
+        self.assertEqual(n["train"], 2)
+
     def test_no_slug_with_a_sensitive_newest_session_falls_back_to_the_servers_own(self):  # T-3024 review
         self.login()
         other = os.path.join(self.tmp, "hush2")

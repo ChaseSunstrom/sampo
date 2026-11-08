@@ -1470,6 +1470,12 @@ window.addEventListener("resize", () => { if (snap && window.innerWidth !== char
 
 function renderHead(s) {
   const p = obj(s.project), where = $("project");
+  if (s.all) {  // T-3730 All mode: one head for every project
+    where.replaceChildren(h("b", null, "all projects"), document.createTextNode(" · " + arr(s.projects).length));
+    setText($("clock"), clock(s.at, true));
+    age();
+    return;
+  }
   where.replaceChildren(h("b", null, str(p.slug) || "no project"),
     document.createTextNode(" · drive " + (p.drive ? "on" : "off") + (p.autonomy ? " · " + str(p.autonomy) + " autonomy" : "")));
   setText($("clock"), clock(s.at, true));
@@ -1504,7 +1510,7 @@ function take(s) {
   renderTicker(arr(s.events).map(obj).slice(0, 60), first);
   sceneTake(s, first);
   netIngest(s);
-  if (board) { board.update(window.SampoBoard.boardModel(s, boardPrev ? [boardPrev] : [])); boardPrev = s; }
+  if (board) { board.update(window.SampoBoard.boardModel(s, boardPrev ? [boardPrev] : [], [...boardOff])); boardPrev = s; renderChips(s); }
 }
 
 // ---------- the machine: sessions, projects, and the pick (kept in #project=SLUG) ----------
@@ -1630,6 +1636,11 @@ function renderMachine(m) {
   const first = machine === null;
   machine = m;
   const projects = arr(m.projects).map(obj).filter(p => SLUG.test(str(p.slug))).slice(0, 80);
+  if (first && board && !hashParts().project) {  // T-3730: more than one project with a live session or open work opens the Board in All
+    const live = new Set(arr(m.sessions).map(x => str(obj(x).project)));
+    const busy = projects.filter(p => live.has(str(p.slug)) || num(p.queue) > 0 || str(p.task));
+    if (busy.length > 1) { currentProject = "all"; load(); }  // the address stays as typed (empty): a pick in the rail still switches
+  }
   const names = new Map(projects.map(p => [str(p.slug), str(p.name) || str(p.slug)]));
   const sessions = arr(m.sessions).map(obj).filter(s => str(s.id)).slice(0, 40);
   sync($("sessions-list"), sessions, s => str(s.id), (el, s) => {
@@ -1764,6 +1775,43 @@ let view = "forge";
 const boardEl = $("board"), vBoard = $("view-board");
 const board = modern && boardEl && window.SampoBoard ? window.SampoBoard.mount(boardEl) : null;  // the forge look has no Board
 let boardPrev = null;  // the snapshot before: the library's kept-per-hour reads the change
+// T-3730: the chip bar on top of the Board. In All mode one chip per project filters it; in one project a single chip opens All.
+const boardOff = new Set();  // slugs the chips hid
+const chipsEl = board ? boardEl.insertBefore(h("div", "bd-chips"), boardEl.firstChild) : null;
+if (chipsEl) { chipsEl.setAttribute("role", "group"); chipsEl.setAttribute("aria-label", "Projects on the Board"); chipsEl.hidden = true; }
+function renderChips(s) {
+  if (!chipsEl) return;
+  const list = window.SampoBoard.projectList(s), cs = getComputedStyle(boardEl), kids = [];
+  if (!s.all) {
+    const n = arr(machine && machine.projects).length;
+    chipsEl.hidden = n < 2;
+    if (n < 2) return chipsEl.replaceChildren();
+    const b = h("button", null, "All projects · " + n);
+    b.type = "button"; b.dataset.project = "all"; b.setAttribute("aria-pressed", "false");
+    return chipsEl.replaceChildren(b);
+  }
+  chipsEl.hidden = false;
+  for (const p of list) {
+    const b = h("button", null, null);
+    b.type = "button"; b.dataset.chip = p.slug;
+    b.append(h("i"), document.createTextNode(p.name || p.slug));
+    b.style.setProperty("--pc", cs.getPropertyValue("--bd-" + p.pc).trim());
+    b.setAttribute("aria-pressed", boardOff.has(p.slug) ? "false" : "true");
+    b.title = p.sensitive ? (p.name || p.slug) + " · private, name only" : (p.name || p.slug);
+    if (p.sensitive) { b.disabled = true; b.dataset.private = "1"; }
+    kids.push(b);
+  }
+  chipsEl.replaceChildren(...kids);
+}
+if (chipsEl) chipsEl.addEventListener("click", ev => {
+  const b = ev.target.closest ? ev.target.closest("button") : null;
+  if (!b) return;
+  if (b.dataset.project) { location.hash = hashFor(b.dataset.project, view); return; }
+  const k = b.dataset.chip;
+  if (!k) return;
+  if (boardOff.has(k)) boardOff.delete(k); else boardOff.add(k);
+  if (snap) { board.update(window.SampoBoard.boardModel(snap, boardPrev ? [boardPrev] : [], [...boardOff])); renderChips(snap); }
+});
 let nflows = [], nsnap = null, nnodes = new Map(), nedges = [], npulses = [];
 const nseen = new Map(), nlitE = new Map(), nlitN = new Map(), nglowE = new Map(), ncnt = {pulses: 0, lit: 0, frames: 0}, nshown = {};
 let NW = 0, NH = 0, ndpr = 1, npainted = false, nlitTimer = 0, ncols = [[], [], []];

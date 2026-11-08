@@ -39,6 +39,7 @@ WEB = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), 
 CACHE_S = 1.5  # the snapshot is shared; the stream asks every 2 s
 SLOW_S = 30  # the stats read whole card and moon files
 STREAM_S = 2
+ALL_S = 10  # T-3730: the All view refreshes each other project's slice this often
 STREAMS_MAX = 8  # open streams at once: a thread each
 FLOW_S, CALL_S = 60, 300
 NET_TIMEOUT = 1.0
@@ -500,6 +501,57 @@ def snapshot(p):
     return _cached(("snap", p.dir), CACHE_S, build)
 
 
+def _slice(p):
+    """T-3730: what the All view draws of one project (queue, lanes, train, loop), kept ALL_S seconds."""
+    def build():
+        from sampo import board as bd
+        out = {"queue": queue(p)}
+        for name in ("lanes", "train", "loop"):
+            try:
+                out[name] = getattr(bd, "part_" + name)(p)
+            except Exception:
+                out[name] = [] if name == "lanes" else None
+        return out
+    return _cached(("slice", p.dir), ALL_S, build)
+
+
+def _tag(rows, slug):
+    return [{**r, "project": slug} for r in rows or []]
+
+
+def snapshot_all(default):
+    """T-3730: every open project at once. The machine-wide fields are the server's own project's snapshot (built once);
+    each other project adds its slice, cached ALL_S seconds. Items carry "project"; a sensitive project is its name
+    only, with no items."""
+    base = snapshot(default)
+    s = dict(base)
+    queue_, lanes_, rows, trains, loops = [], [], [], [], []
+    for p, meta in c.all_projects():
+        name = os.path.basename(p.root.rstrip("/")) or p.slug
+        if meta.get("sensitive"):
+            rows.append({"slug": p.slug, "name": name, "sensitive": True})
+            continue
+        rows.append({"slug": p.slug, "name": name, "sensitive": False})
+        if p.slug == default.slug:
+            b = base.get("board") or {}
+            sl = {"queue": base.get("queue"), "lanes": b.get("lanes"), "train": b.get("train"), "loop": b.get("loop")}
+        else:
+            sl = _slice(p)
+        queue_ += _tag(sl["queue"], p.slug)
+        lanes_ += _tag(sl["lanes"], p.slug)
+        if sl["train"]:
+            trains.append({**sl["train"], "project": p.slug})
+        if sl["loop"]:
+            loops.append({**sl["loop"], "project": p.slug})
+    s["project"] = {"slug": "all", "name": "All projects"}
+    s["all"] = True
+    s["projects"] = rows
+    s["queue"] = queue_
+    s["lanes"] = [{**r, "project": default.slug} for r in base.get("lanes") or []]
+    s["board"] = {**(base.get("board") or {}), "lanes": lanes_, "trains": trains, "loops": loops}
+    return s
+
+
 def machine():
     """T-3023: every registered project and every live session here; a sensitive project is its name and nothing else."""
     def build():
@@ -705,7 +757,8 @@ class Handler(settingsserve.Handler):
             return self._send(404, "not found")
         self._send(200, data, ctype=TYPES[ext] + ("; charset=utf-8" if ext in (".css", ".js", ".svg", ".json") else ""))
 
-    def _stream(self, p):
+    def _stream(self, p, snap=None):
+        snap = snap or snapshot
         srv = self.server
         with srv.once:
             if srv.streams >= STREAMS_MAX:
@@ -718,7 +771,7 @@ class Handler(settingsserve.Handler):
                 self.send_header(k, v)
             self.end_headers()
             while not srv.stop.is_set():
-                self.wfile.write(b"event: state\ndata: " + json.dumps(snapshot(p),ensure_ascii=False).encode() + b"\n\n")
+                self.wfile.write(b"event: state\ndata: " + json.dumps(snap(p), ensure_ascii=False).encode() + b"\n\n")
                 self.wfile.flush()
                 srv.stop.wait(STREAM_S)
         except (OSError, ValueError):
@@ -785,7 +838,11 @@ class Handler(settingsserve.Handler):
         if path in ("/api/state", "/api/stream", "/api/machine"):
             if path == "/api/machine":
                 return self._json(machine())
-            p = resolve(self.server.project, urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project", [""])[0])
+            slug = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query).get("project", [""])[0]
+            if slug == "all":  # T-3730
+                return self._json(snapshot_all(self.server.project)) if path == "/api/state" else self._stream(
+                    self.server.project, snapshot_all)
+            p = resolve(self.server.project, slug)
             if p is None:
                 return self._send(404, "unknown project")
             return self._json(snapshot(p)) if path == "/api/state" else self._stream(p)

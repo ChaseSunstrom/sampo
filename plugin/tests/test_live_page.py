@@ -180,6 +180,23 @@ class Stand(BaseHTTPRequestHandler):
         slug = (parse_qs(urlparse(self.path).query).get("project") or [""])[0]
         if path == "/api/machine":
             return self.send(200, json.dumps(srv.machine).encode(), TYPES[".json"])
+        if slug == "all" and srv.all_snaps:  # T-3730: the All snapshot (a test that wants it fills srv.all_snaps)
+            if path == "/api/state":
+                return self.send(200, json.dumps(srv.all_snaps[0]).encode(), TYPES[".json"])
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            try:
+                for _ in range(30):
+                    self.wfile.write(b"event: state\ndata: " + json.dumps(srv.all_snaps[-1]).encode() + b"\n\n")
+                    self.wfile.flush()
+                    if srv.stop.wait(0.7):
+                        return
+            except OSError:
+                pass
+            return
+        if slug == "all":  # no All fixture: the default project answers, so a page that opens in All still has its data
+            slug = ""
         if slug and slug != srv.snaps[0]["project"]["slug"] and (path in ("/api/state", "/api/stream")):
             if slug != srv.other["project"]["slug"]:
                 return self.send(404, b"", "text/plain")
@@ -230,6 +247,7 @@ def serve():
     srv.log, srv.posts, srv.token = [], [], secrets.token_hex(16)
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "live", "machine.json"), encoding="utf-8") as f:
         srv.machine = json.load(f)
+    srv.all_snaps = []
     srv.other = json.loads(json.dumps(srv.snaps[-1]))  # another project: its own slug and task at the anvil
     srv.other["project"] = {"slug": "other-1b2c3d", "drive": False, "autonomy": "standard"}
     srv.other["focus"] = {"id": "T-9001", "title": "The other project's task", "step": "1/2", "stage": "building"}
@@ -302,12 +320,14 @@ class Page(unittest.TestCase):
         sys.path.insert(0, os.path.join(PLUGIN, "lib"))
         self.last = snaps()[-1]
 
-    def watch(self, size, reduced, done, within=45, step=None, hash="", theme="forge", scheme=None, motion=False):
+    def watch(self, size, reduced, done, within=45, step=None, hash="", theme="forge", scheme=None, all_snaps=None,
+              motion=False):
         """Load the page at size, poll PROBE until done(got) or `within` s; (got, errors). step(b, got), if given, runs
         on every poll (it clicks, reloads); got["reqs"] lists the requests the server saw.
         A green run returns in about 8 s; the long ceiling is for a loaded machine (the gates run 16 at a time)."""
         from sampo import shot
         srv, errs = serve(), []
+        srv.all_snaps = all_snaps or []
         b = shot.shared(self.browser, size, reduced=reduced or not motion)  # T-3715: still frame unless motion=True (the CPU was the animation)
         try:
             b.on["Runtime.exceptionThrown"] = lambda p: errs.append("exception: " + json.dumps(p.get("exceptionDetails"))[:400])
@@ -895,6 +915,37 @@ class Page(unittest.TestCase):
             self.assertLessEqual(got["wide"], size[0], f"no sideways scroll {where}")
             self.assertIsNone(self.FORGE_WORDS.search(got["text"].replace("Forge look", "")), where)
             self.assertNotIn("/home/", got["text"], where)
+
+    def test_the_board_opens_in_all_when_two_projects_are_busy_with_chips_that_filter(self):  # T-3730
+        base = json.loads(json.dumps(snaps()[-1]))
+        lane = lambda slug, t: {"task": t, "title": "Task " + t, "state": "building", "steps": {"done": 1, "total": 3}, "more": 0,
+                                "files": [], "project": slug}
+        allsnap = dict(base, project={"slug": "all", "name": "All projects"}, all=True, projects=[
+            {"slug": "shop-api", "name": "shop-api", "sensitive": False}, {"slug": "notes-app", "name": "notes-app", "sensitive": False}],
+            board=dict(base["board"], lanes=[lane("shop-api", "T-1"), lane("notes-app", "T-2")], trains=[], loops=[]))
+        ctx = {"s": 0}
+
+        def step(b, got):
+            ev = lambda js: b.call("Runtime.evaluate", b.sid, expression=js, returnByValue=True)["result"].get("value")
+            chips = ev("document.querySelectorAll('#board .bd-chips button[data-chip]').length")
+            if ctx["s"] == 0 and chips == 2:
+                ctx["head"] = ev("document.getElementById('project').textContent")
+                ctx["shown"] = ev("getComputedStyle(document.querySelector('#board .bd-chips')).display")
+                ctx["colour"] = ev("document.querySelector('#board .bd-chips button').style.getPropertyValue('--pc')")
+                ev("document.querySelector('#board .bd-chips button[data-chip=\"shop-api\"]').click()")
+                ctx["s"] = 1
+            elif ctx["s"] == 1:
+                ctx["off"] = ev("document.querySelector('#board .bd-chips button[data-chip=\"shop-api\"]').getAttribute('aria-pressed')")
+                ctx["s"] = 2
+
+        got, errs = self.watch((1600, 1000), False, lambda g: ctx["s"] == 2, theme=None, all_snaps=[allsnap], step=step)
+        self.assertEqual(errs, [])
+        self.assertEqual(ctx["s"], 2, "two project chips drawn")
+        self.assertIn("all projects", ctx["head"])
+        self.assertEqual(ctx["shown"], "flex")
+        self.assertTrue(ctx["colour"], "each chip carries its project's colour")
+        self.assertEqual(ctx["off"], "false", "a pressed chip hides its project")
+        self.assertTrue([r for r in got["reqs"] if r.startswith("/api/state?project=all")], got["reqs"])
 
     def test_the_board_holds_still_when_asked_and_when_the_tab_is_hidden(self):  # T-3659
         got, errs = self.watch((1600, 1000), True, lambda g: g.get("board") and g["board"]["painted"] and self.back(g), theme=None)
