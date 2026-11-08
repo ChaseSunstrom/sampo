@@ -475,20 +475,25 @@ def _digest(path):
 def _cached(name, key, compute):
     """T-2298: the Result `compute` makes, reused from state/doctor-cache.json (JSON, never pickle) while `key` (the
     inputs' coarse stats plus the day) is unchanged. A missing, oversized, corrupt or odd cache recomputes; a hit takes
-    only status and detail, cleaned; a failed write is ignored."""
+    only status and detail, cleaned; a failed write is ignored. T-3521: the key is stored as its sha256: usage burn's
+    names every transcript, which took the file past the 64 KB read cap, so no entry ever hit; the file is read again
+    after the compute, so what another doctor wrote meanwhile (the model probe takes 20-70 s) is kept."""
     path = os.path.join(c.state_dir(), "doctor-cache.json")
-    key = json.loads(json.dumps([time.strftime("%Y-%m-%d"), _code_stamp(), key]))  # as JSON round-trips it, for the comparison
-    try:
-        with open(path, encoding="utf-8") as f:
-            cache = json.loads(f.read(65537))  # past 64 KB the cut text fails to parse: recompute
-    except (OSError, ValueError, RecursionError):
-        cache = None
-    cache = cache if isinstance(cache, dict) else {}
-    hit = cache.get(name)
+    key = hashlib.sha256(json.dumps([time.strftime("%Y-%m-%d"), _code_stamp(), key]).encode()).hexdigest()
+
+    def load():
+        try:
+            with open(path, encoding="utf-8") as f:
+                cache = json.loads(f.read(65537))  # past 64 KB the cut text fails to parse: recompute
+        except (OSError, ValueError, RecursionError):
+            cache = None
+        return cache if isinstance(cache, dict) else {}
+    hit = load().get(name)
     res = hit.get("result") if isinstance(hit, dict) and hit.get("key") == key else None
     if isinstance(res, list) and len(res) == 3 and res[1] in ("PASS", "WARN", "FAIL") and isinstance(res[2], str):
         return Result(name, res[1], c.fit(c.plain(res[2]), 2000))
     r = compute()
+    cache = load()
     cache[name] = {"key": key, "result": [r.name, r.status, r.detail]}
     try:
         c.write_atomic(path, json.dumps(cache))

@@ -3,6 +3,7 @@ Code's own transcripts, and which Sampo skills, playbooks and commands actually 
 import bisect
 import collections
 import datetime
+import itertools
 import json
 import os
 import re
@@ -55,13 +56,16 @@ def _human(n):
 
 
 _TS = re.compile(r'"timestamp":\s*"([^"]{19})')
+_BLOB = '{"type":"api-request-blob"'  # T-3521: a request's body, with no top-level timestamp: no reader here uses one
 
 
 def _entries(folder, since, need=None):
     """(file path, entry) for each transcript line on or after the cutoff. T-1116: a file not written since the
     cutoff is skipped unopened, and a line is parsed only when one of its timestamps reaches the cutoff (the newest
     counts: a nested older one can't hide the entry's own). T-3193: `need`, a substring a wanted line always holds,
-    skips the rest before any regex or parse."""
+    skips the rest before any regex or parse. T-3521: request blobs are skipped unparsed, and the line's last stamp (the
+    entry's own) is read first: only when it is older are all of them searched."""
+    cutoff = since[:19]
     try:
         cut = datetime.datetime.strptime(since[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
     except ValueError:
@@ -74,11 +78,13 @@ def _entries(folder, since, need=None):
                     continue
                 with open(path, encoding="utf-8", errors="replace") as f:
                     for line in f:
-                        if need and need not in line:
+                        if need and need not in line or line.startswith(_BLOB):
                             continue
-                        stamps = _TS.findall(line)
-                        if stamps and max(stamps) < since[:19]:
-                            continue
+                        last = _TS.match(line, max(line.rfind('"timestamp":'), 0))
+                        if not (last and last.group(1) >= cutoff):
+                            stamps = _TS.findall(line)
+                            if stamps and max(stamps) < cutoff:
+                                continue
                         try:
                             e = json.loads(line)
                         except ValueError:
@@ -137,13 +143,13 @@ def _share(a, share):
         share["all"] += len(json.dumps(a))
 
 
-def scan(folder, since, share=None, sidechains=True):
+def scan(folder, since, share=None, sidechains=True, entries=None):
     """(assistant messages [(ts, session, usage)], tool result chars by tool name) since the cutoff. A message's usage
     repeats on each of its content blocks: counted once per message id. A `share` Counter gets what entered the
     context: "all", and Sampo's part by source (T-1257). A subagent's replies carry its parent's session id:
-    `sidechains=False` leaves them out (T-1797)."""
+    `sidechains=False` leaves them out (T-1797). `entries`: _entries already read (T-3521: fm cost reads once)."""
     msgs, tools, names, fm_ids = {}, collections.Counter(), {}, {}
-    for path, e in _entries(folder, since):
+    for path, e in _entries(folder, since) if entries is None else entries:
         if not sidechains and f"{os.sep}subagents{os.sep}" in path:
             continue
         n = os.path.basename(path)
@@ -267,13 +273,13 @@ def _program(cmd):
     return "shell"
 
 
-def timing(folder, since):
+def timing(folder, since, entries=None):
     """(seconds to the model, {tool: seconds}, {shell program: seconds}) since the cutoff (T-0188). In each session the
     stretch between two entries goes to what ended it: a tool result to its tool, a reply to the model; a prompt ends
-    time spent waiting on the person, and a gap over IDLE_S is time away: neither counts."""
+    time spent waiting on the person, and a gap over IDLE_S is time away: neither counts. `entries` as scan's."""
     model, tools, shell = 0.0, collections.Counter(), collections.Counter()
     by_file = collections.defaultdict(list)
-    for path, e in _entries(folder, since):
+    for path, e in _entries(folder, since) if entries is None else entries:
         ts = str(e.get("timestamp") or "")
         try:
             t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
@@ -694,7 +700,18 @@ def cmd_cost(args):
     share = collections.Counter()
     if getattr(args, "sessions", False):  # a subagent's own context isn't its parent's per-turn figure
         return _sessions(scan(folder, _since(args.days), sidechains=False)[0], args, cli)
-    msgs, tools = scan(folder, _since(args.days), share)
+    since, spent = _since(args.days), [0.0, collections.Counter(), collections.Counter()]
+
+    def each_file():  # T-3521: one read of the transcripts for tokens and time (3.1 GB a week was parsed twice, 48-75 s
+        # under load), one file's entries held at a time (timing alone held the week's, and the GC walked them all)
+        for _, rows in itertools.groupby(_entries(folder, since), key=lambda r: r[0]):
+            rows = list(rows)
+            model, tool, shell = timing(folder, since, rows)
+            spent[0] += model
+            spent[1].update(tool)
+            spent[2].update(shell)
+            yield from rows
+    msgs, tools = scan(folder, since, share, entries=each_file())
     totals, by_task, by_session = collections.Counter(), collections.Counter(), collections.Counter()
     lines = _timelines(p, args.days)  # T-1083 review: each turn to its own session's task
     spans, retry = retry_windows(p, args.days), collections.Counter()
@@ -717,7 +734,7 @@ def cmd_cost(args):
         first.setdefault(sid, sum(usage.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens",
                                                                "cache_read_input_tokens")))
     base = sorted(first.values())[len(first) // 2] if first else 0
-    model_s, tool_s, shell_s = timing(folder, _since(args.days))
+    model_s, tool_s, shell_s = spent
     active = model_s + sum(tool_s.values())
     unex = unexplained_spend(p, msgs, args.days)
     unex_line = unexplained_line(unex)

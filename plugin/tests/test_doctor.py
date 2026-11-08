@@ -1167,6 +1167,28 @@ class ScanCache(ForemanTestCase):
         d.check_usage_burn()
         self.assertEqual(self.calls["burn"], 2)
 
+    def test_an_entry_written_while_another_computes_is_kept(self):
+        # T-3521: the model probe takes 20-70 s; a doctor in another lane writing meanwhile lost its entries to it
+        def slow():
+            d.check_unloaded_skills()  # another doctor's write, mid-compute
+            return d.Result("probe", "PASS", "ok")
+        d._cached("probe", [], slow)
+        d.check_unloaded_skills()
+        d._cached("probe", [], slow)
+        self.assertEqual(self.calls["events"], 1, "unloaded skills' entry survived the probe's write")
+
+    def test_the_code_stamp_follows_content_not_mtime(self):  # T-3521: a lane's checkout of main's doctor.py shares
+        src = os.path.join(self.tmp, "doctor_copy.py")
+        with open(src, "w") as f:
+            f.write("x = 1\n")
+        with unittest.mock.patch.object(d, "__file__", src):
+            first = d._code_stamp()
+            os.utime(src, (1, 1))
+            self.assertEqual(d._code_stamp(), first, "the same code checked out again")
+            with open(src, "a") as f:
+                f.write("y = 2\n")
+            self.assertNotEqual(d._code_stamp(), first, "an edited check")
+
     def test_another_checkout_of_the_same_code_reuses_the_cache(self):
         # T-3565: the key held doctor.py's mtime and the plugin's path, both different in a lane's checkout: a lane's
         # doctor and main's recomputed and rewrote doctor-cache.json for each other
@@ -1230,6 +1252,22 @@ class ScanCache(ForemanTestCase):
         self.grow(self.transcript)
         d.check_usage_burn()
         self.assertEqual(self.calls["burn"], 2)
+
+    def test_a_key_over_the_read_cap_still_hits_and_keeps_the_other_entries(self):
+        # T-3521: usage burn's key named every transcript of 2 days (785 of them): the file passed the 64 KB read cap,
+        # so it never parsed and every doctor run re-probed the model pins (20 s) and rescanned the transcripts
+        for i in range(600):
+            with open(os.path.join(self.cfg, "projects", "-p", f"{i:04d}-" + "x" * 120 + ".jsonl"), "w") as f:
+                f.write("{}\n")
+        d.check_unloaded_skills()
+        d.check_usage_burn()
+        self.assertLess(os.path.getsize(os.path.join(c.state_dir(), "doctor-cache.json")), 65536)
+        d.check_usage_burn()
+        d.check_unloaded_skills()
+        self.assertEqual(self.calls, {"burn": 1, "events": 1})
+        self.grow(self.transcript)
+        d.check_usage_burn()
+        self.assertEqual(self.calls["burn"], 2, "a changed transcript still recomputes")
 
     def test_unloaded_skills_reuses_its_result_until_events_change(self):
         events = os.path.join(c.state_dir(), "events.jsonl")

@@ -3,6 +3,7 @@ its rules, skill and agent listing lines and output style, read from the transcr
 import datetime
 import json
 import os
+import unittest
 
 from test_hooks import HookCase
 
@@ -67,6 +68,62 @@ class ForemanShare(HookCase):
         share = self.fm_json("cost", env={"CLAUDE_CONFIG_DIR": cfg})["foreman_share"]
         self.assertEqual(share["chars"]["fm output"], 300, "t2, t3 and t4 are fm alone; t1 runs tests, t5 is a loop")
         self.assertEqual(share["fm_verbs"], {"task show": 100, "focus": 100, "task set": 100})
+
+
+class OneRead(HookCase):
+    def test_cost_reads_the_transcripts_once_for_tokens_and_time(self):
+        # T-3521: scan and timing each parsed the week's transcripts (3.1 GB): 48-75 s under load
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+        from sampo import cost
+        self.fm("init")
+        cfg = os.path.join(self.tmp, "cfg")
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(folder)
+        t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=5)
+        at = lambda s: (t + datetime.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # noqa: E731
+        lines = [{"type": "assistant", "timestamp": at(0), "sessionId": "s1", "message": {
+                     "id": "m1", "usage": {"input_tokens": 10, "output_tokens": 5},
+                     "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}},
+                 {"type": "user", "timestamp": at(30), "message": {"content": [
+                     {"type": "tool_result", "tool_use_id": "t1", "content": "z" * 98}]}},
+                 {"type": "assistant", "timestamp": at(40), "sessionId": "s1", "message": {
+                     "id": "m2", "usage": {"input_tokens": 20}, "content": []}}]
+        with open(os.path.join(folder, "s1.jsonl"), "w") as f:
+            f.write("\n".join(json.dumps(x) for x in lines) + "\n")
+        reads, real = [], cost._entries
+        out = io.StringIO()
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}), \
+                mock.patch.object(cost, "_entries", lambda *a, **k: reads.append(a) or real(*a, **k)), \
+                contextlib.redirect_stdout(out):
+            cost.cmd_cost(argparse.Namespace(project=self.project().slug, days=7, json=True))
+        got = json.loads(out.getvalue())
+        self.assertEqual(len(reads), 1, "one pass over the transcripts")
+        self.assertEqual(got["messages"], 2)
+        self.assertEqual(got["tool_result_chars"], {"Bash": 100})
+        self.assertEqual(got["time"]["tools_s"], {"Bash": 30})
+        self.assertEqual(got["time"]["model_s"], 10)
+
+
+class LinePrefilter(unittest.TestCase):
+    def test_request_blobs_are_skipped_and_a_newer_nested_stamp_still_counts(self):
+        # T-3521: api-request-blob lines (a fifth of the bytes, no top-level timestamp) were parsed for nothing; the
+        # entry's own stamp, last on its line, is read first, and an older one there still falls back to every stamp
+        import tempfile
+        from sampo import cost
+        with tempfile.TemporaryDirectory() as d:
+            rows = [{"type": "api-request-blob", "sessionId": "s", "message": {"content": [
+                        {"timestamp": "2026-10-10T00:00:00.000Z"}]}},
+                    {"type": "user", "message": {"x": {"timestamp": "2026-10-10T00:00:00.000Z"}},
+                     "timestamp": "2026-09-01T00:00:00.000Z"},
+                    {"type": "assistant", "timestamp": "2026-10-11T00:00:00.000Z"},
+                    {"type": "system", "timestamp": "2026-09-01T00:00:00.000Z"}]
+            with open(os.path.join(d, "a.jsonl"), "w") as f:
+                f.write("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
+            got = [e["type"] for _, e in cost._entries(d, "2026-10-01T00:00:00")]
+        self.assertEqual(got, ["user", "assistant"])
 
 
 class SkillUsage(HookCase):
