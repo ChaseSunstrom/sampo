@@ -462,6 +462,46 @@ class IdeasLocal(Stubbed):  # T-2910: --model local answers every child through 
         self.assertIn("Haiku", said)
         self.assertEqual({k["model"] for k in self.manifest()["children"]}, {"haiku"})
 
+    def test_follow_ups_workers_timeout_paid_and_oracle(self):  # T-2952
+        import argparse
+        import concurrent.futures as cf
+        from unittest import mock
+        from sampo import cli, ideas, moonscale
+        pools, asks = [], []
+        real_pool, real_ask = cf.ThreadPoolExecutor, moonscale._ask
+
+        def pool(n, *a, **k):
+            pools.append(n)
+            return real_pool(n, *a, **k)
+
+        def ask(*a, **k):
+            asks.append(k)
+            return real_ask(*a, **k)
+        with mock.patch.object(cf, "ThreadPoolExecutor", side_effect=pool), \
+                mock.patch.object(moonscale, "_ask", side_effect=ask):
+            self.run_local(up=False)
+        self.assertEqual(pools[0], 2, "no local profile: one worker per lens, not one thread")
+        self.assertTrue(all(k.get("timeout") == 30 for k in asks), "args.timeout reaches every child")
+        self.assertGreater(max(k.get("paid", 0) for k in asks), 0, "the Haiku children so far count to the cap")
+        # cmd_oracle takes --model local
+        p = c.find_project(self.repo)
+        b = mock.Mock(title="t", type="FIX")
+        b.section.return_value = "text"
+        b.id = "T-1"
+        args = argparse.Namespace(id="T-1", model="local", timeout=7)
+        with mock.patch.object(cli, "resolve", return_value=p), mock.patch.object(cli, "need_brief", return_value=b), \
+                mock.patch.object(moonscale, "_ask", return_value=("## Examples\n- GIVEN a WHEN b THEN c", "jarvis")) as m, \
+                mock.patch.object(ideas, "run_child") as rc, mock.patch.object(cli, "mutate") as mut, \
+                mock.patch.object(cli, "out"):
+            ideas.cmd_oracle(args)
+        m.assert_called_once()
+        self.assertEqual((m.call_args.kwargs["feature"], m.call_args.kwargs["timeout"]), ("oracle", 7))
+        rc.assert_not_called()
+        mut.assert_called_once()  # the section was saved after the routed call
+
+    def test_file_map_hint_names_the_shard(self):  # T-2952
+        self.assertNotIn("add a MASTER.md File map row", read_text(os.path.join(os.path.dirname(__file__), "..", "lib", "sampo", "cli.py")))
+
     def test_a_sensitive_project_fails_closed_with_no_loopback(self):
         comp, said, err = self.run_local(sensitive=True, host="llm.example.com")  # an own profile, but not loopback
         comp.assert_not_called()

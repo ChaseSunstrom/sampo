@@ -624,7 +624,7 @@ def _paid(model):
     return model in ("haiku", "sonnet", rune.REVIEW_MODELS[-1])  # a local answer is free
 
 
-def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, profile=None):
+def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, profile=None, timeout=None):
     """(text, the model that answered): the local model first, else Haiku (cheap=False: the strongest review model).
     T-2994 writer: "haiku"/"sonnet" skip the local model and pay (same budget caps); "local" never pays.
     A sensitive project never goes to the cloud. Raises budget.BudgetError when the budget says no: today's cap, or the
@@ -648,7 +648,7 @@ def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, pr
     for prof in cands():
         try:
             r = models.complete(prof, [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-                                max_tokens=min(prof.get("max_out", 4096), prof.get("context", 4096)), timeout=TIMEOUT,
+                                max_tokens=min(prof.get("max_out", 4096), prof.get("context", 4096)), timeout=timeout or TIMEOUT,
                                 think=_THINK)
             if (r.get("text") or "").strip():
                 # a --think run books its rows under their own name, so coverage's "kept by model" is the A/B (T-2893)
@@ -676,7 +676,7 @@ def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, pr
         raise budget.BudgetError(f"budget: this moons run's {paid} paid calls cost about ${est * paid:.2f}; one more "
                                  f"passes the ${cap:.2f} per command cap; run it again, or raise it: fm budget set "
                                  "--run N --because \"<why>\"")
-    return ideas.run_child(feature, system, prompt, model, TIMEOUT, project=p.slug), model
+    return ideas.run_child(feature, system, prompt, model, timeout or TIMEOUT, project=p.slug), model
 
 
 def grow(p, target=None, batch=8, seed=0, max_calls=None, workers=None, think=None, local_only=False, keep=None):

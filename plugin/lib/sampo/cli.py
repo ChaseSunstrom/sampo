@@ -2222,7 +2222,7 @@ def _file_map_gaps(p, b):
     tag = "on disk but not in the map: "
     missing = next((x[len(tag):].split(", ") for x in res.detail.split("; ") if x.startswith(tag)), [])
     new = sorted(entries & set(missing))
-    return [f"file map: add a MASTER.md File map row for {', '.join(new)}"] if new else []
+    return [f"file map: add a docs/map shard row (full entry) and a MASTER.md index line for {', '.join(new)}"] if new else []
 
 
 DIRTY_CAP = 500
@@ -8475,8 +8475,10 @@ def _build_parser(only=None):
     s = add("oracle", lazy("sampo.ideas", "cmd_oracle"), tier=("Finding your way", 490), help="behaviour examples and ambiguities from the task's spec alone, "
                                                            "before the code is read (T-0226)")
     s.add_argument("id")
-    s.add_argument("--model", default="sonnet")
-    s.add_argument("--timeout", type=int, default=300)
+    s.add_argument("--model", default="sonnet", help="a claude model, or `local` (T-2952): the first usable own or "
+                   "loopback generative profile answers, Haiku if none does (a sensitive project: loopback only)")
+    s.add_argument("--timeout", type=int, default=300, help="seconds per model call (with --model local the worst case "
+                   "is candidates+1 times this)")
 
     s = add("mission", lazy("sampo.mission", "cmd_mission"), tier=("Finding your way", 450), help="the mission and brainstorm seeds for an open-ended "
                                                                "request, composed from the project (T-0375)")
@@ -8882,7 +8884,8 @@ def _build_parser(only=None):
     s.add_argument("--deepen", type=int, default=0, help="then a yes-and round for each of the K biggest idea categories")
     s.add_argument("--falsify", action="store_true", help="one more child: the quickest kill test for each idea (T-0606)")
     s.add_argument("--crossbreed", action="store_true", help="one more child: the top ideas combined (T-0628)")
-    s.add_argument("--timeout", type=int, default=300)
+    s.add_argument("--timeout", type=int, default=300, help="seconds per model call (with --model local the worst case "
+                   "is candidates+1 times this)")
 
     s = add("page", lazy("sampo.page", "cmd_page"), tier=("Running elsewhere", 1130),
             help="now (active task, queue, counts) and optionally a research catalogue as one HTML page for a claude.ai "

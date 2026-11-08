@@ -772,14 +772,15 @@ FALSIFY = ("You kill ideas fast. For each numbered idea, give the quickest obser
            "it isn't worth building. Output only lines `N: <one line>`.")
 
 
-def _child(args, p, system, prompt, detail):
+def _child(args, p, system, prompt, detail, feature="ideas"):
     """T-2910: one brainstorm child's text: --model local goes through moonscale's routing (the first usable own or
     loopback generative profile, else Haiku; a sensitive project never leaves loopback) and books the answering model
     in args.booked; any other model runs `claude -p`."""
     if args.model != "local":
-        return run_child("ideas", system, prompt, args.model, args.timeout, project=p.slug, detail=detail)
+        return run_child(feature, system, prompt, args.model, args.timeout, project=p.slug, detail=detail)
     from sampo import moonscale  # lazy: moonscale imports this module at the top
-    text, model = moonscale._ask(p, system, prompt, feature="ideas")
+    paid = sum(1 for b in list(args.booked) if moonscale._paid(b["model"]))  # T-2952: the Haiku children so far count to the cap
+    text, model = moonscale._ask(p, system, prompt, feature=feature, paid=paid, timeout=args.timeout)
     args.booked.append({"detail": detail, "model": model})  # list.append is atomic: the round's threads share it
     return text
 
@@ -796,7 +797,8 @@ def _local_round(lenses, pack, system, args):
             return _child(args, p, sys_text, lens_prompt(lens), lens), None
         except ValueError as e:  # a budget refusal, a sensitive project with no loopback model, an empty answer
             return None, str(e)
-    with ThreadPoolExecutor(max(1, min(len(lenses), (prof or {}).get("slots", 1)))) as ex:
+    # no local profile: Haiku answers, and a claude child has no slots, so one worker per lens
+    with ThreadPoolExecutor(max(1, min(len(lenses), prof.get("slots", 1) if prof else len(lenses)))) as ex:
         return list(ex.map(one, lenses))
 
 
@@ -1017,7 +1019,8 @@ def cmd_oracle(args):
                         ("Raw request", "Interpretation", "Acceptance criteria", "Non-goals") if b.section(name).strip())
     spec = f"Task: {b.title} ({b.type})\n\n{spec or b.title}\n"
     try:
-        text_out = run_child("oracle", ORACLE, spec, args.model, args.timeout, project=p.slug, detail=b.id)
+        args.proj, args.booked = p, []
+        text_out = _child(args, p, ORACLE, spec, b.id, feature="oracle")
     except ValueError as e:
         raise cli.UsageError(str(e))
     parts = {k: [] for k in ("Examples", "Ambiguities", "Misreadings")}
