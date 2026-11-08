@@ -2865,11 +2865,39 @@ def undo_point(root, tid=None):
 _WAIT_LOOP = c.lazy(r"(?<![\w-])(?:until|while|for)\s.*?(?<![\w-])sleep\s+(?:(\d+(?:\.\d+)?)([smhd]?)|\$)", re.S)
 
 
+def _loop_text(cmd):
+    """T-3725: cmd with the bodies of heredocs that cat or tee only save blanked (a script written isn't run by
+    writing it), unless the command runs that file by name later. A miss errs toward refusing."""
+    lines, out, i = cmd.split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        i += 1
+        m = re.search(r"<<-?\s*(['\"]?)(\w+)\1", line)
+        if not m:
+            continue
+        body = []
+        while i < len(lines) and lines[i].strip() != m.group(2):
+            body.append(lines[i])
+            i += 1
+        head = line[:m.start()]
+        saved = re.search(r"(?:^|[;&|(]\s*)(?:cat|tee)\b[^;&|]*$", head)
+        target = saved and re.search(r"(?:>>?|\btee\s+(?:-a\s+)?)\s*([^\s;&|<>]+)", head)
+        runs = target and re.search(  # in a command's place, alone or after a shell (an argument, as to docker run -d,
+            r"(?:^|[;&|(])\s*(?:(?:sh|bash|zsh|dash|source|\.|nohup|exec|time)\s+(?:-\S+\s+)*)?\S*?"  # isn't run here)
+            + re.escape(os.path.basename(target.group(1))) + r"(?![\w.-])", "\n".join(lines[i:]), re.M)
+        out += [] if target and not runs else body
+    return "\n".join(out)
+
+
 def _wait_loop(pl):
     """T-0426 (JARVIS: `until grep -q … log; do sleep 20; done` held the session 10 minutes): a foreground loop that
     sleeps 5 s or more between checks leaves the session idle until it ends."""
     ti = pl.get("tool_input") or {}
-    m = _WAIT_LOOP.search(ti.get("command") or "") if pl.get("tool_name") == "Bash" else None
+    text = _loop_text(ti.get("command") or "") if pl.get("tool_name") == "Bash" else ""
+    m = _WAIT_LOOP.search(text)
+    while m and _quoted_text(text, m.start()):  # T-3725: quoted data (a title, a commit message) names a loop
+        m = _WAIT_LOOP.search(text, m.start() + 1)
     if not m or ti.get("run_in_background") or (
             m.group(1) and float(m.group(1)) * {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2)] < 5):
         return None

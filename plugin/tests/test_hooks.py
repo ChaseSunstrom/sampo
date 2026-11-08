@@ -2013,6 +2013,28 @@ class PreToolUse(HookCase):
         poll = 'for i in $(seq 1 110); do grep -q "^EXIT" f.log && break; sleep 5; done; tail f.log'
         self.assertEqual(self.pre("Bash", {"command": poll}).returncode, 2)
 
+    def test_a_loop_only_saved_or_quoted_is_no_wait(self):
+        # T-3725 (2026-11-07): a yeerr session writing gluetun's front script (cd D && cat > yeerr-vpn.sh <<'EOF' …
+        # while true; do … sleep 5 … EOF) was refused 3 times, and so was a task title naming such a loop: neither runs
+        from sampo import hooks
+        wait = lambda cmd: hooks._wait_loop({"tool_name": "Bash", "tool_input": {"command": cmd}})  # noqa: E731
+        body = "#!/bin/sh\n# runs until a file is uploaded\nwhile true; do\n  check || exit 1\n  sleep 5\ndone\n"
+        for ok in (f"cat > s.sh <<'EOF'\n{body}EOF",
+                   f"cd /tmp/d && cat > s.sh <<'EOF'\n{body}EOF\nchmod +x s.sh && docker compose up -d",
+                   f"mkdir -p d; tee d/s.sh >/dev/null <<'EOF'\n{body}EOF",
+                   f"cat > s.sh <<'EOF'\n{body}EOF\ndocker run -d --entrypoint /bin/sh img /g/s.sh && sleep 3",  # detached
+                   'sampo task new "a loop: while true; do x; sleep 5; done is refused" --type FIX',
+                   "git commit -m 'until ready, sleep 30 between checks'"):
+            with self.subTest(ok=ok[:40]):
+                self.assertIsNone(wait(ok))
+        for bad in ("while true; do curl -s x; sleep 30; done",
+                    f"cat > s.sh <<'EOF'\n{body}EOF\nsh s.sh",  # saved, then run here
+                    f"bash <<'EOF'\n{body}EOF",  # fed to a shell
+                    f"cat > s.sh <<'EOF'\necho hi\nEOF\nuntil test -f done; do sleep 20; done",  # the line's own loop
+                    'bash -c "while true; do x; sleep 9; done"'):  # a quoted script still runs
+            with self.subTest(bad=bad[:40]):
+                self.assertIsNotNone(wait(bad))
+
     def test_a_process_match_on_its_own_command_is_refused(self):
         # T-1839 (2026-10-28, idle for hours; the user: "fix that so it doesn't happen"): a background
         # `while pgrep -f "plugin/bin/fm check"; do sleep 20; done` found its own shell, whose command line holds the
