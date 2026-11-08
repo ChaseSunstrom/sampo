@@ -82,10 +82,18 @@ class KnownVars(GuardCase):
         for cmd in ("S=/tmp/x; (sort -S 1M a > $S/out &); ls", "S=/tmp/x; (cp a /tmp/S/b; cat a > $S/out &)",
                     f"S=/tmp/x; pkill -x app; sleep 1; ($S/app >> $S/app.log 2>&1 &); cd {self.repo} && fm next",
                     "S=/tmp/x && rm -rf $S/std && cp -r std $S/std; ls | head",  # its replay: S= can't fail
-                    "S=/tmp/x; true && curl -so $S/a https://e && ls | head"):  # T-0355: ; then an && chain, piped
+                    "S=/tmp/x; true && curl -so $S/a https://e && ls | head",  # T-0355: ; then an && chain, piped
+                    # T-3803: a value spelled like the name (tier=S) or quoted text naming it sets nothing (2026-11-08:
+                    # a sampo task set ID tier=S | tail after a heredoc to $S/… was refused as a write to the project)
+                    "S=/tmp/x; echo > $S/a; sampo task set T-1 tier=S | tail -1",
+                    "S=/tmp/x; cat > $S/a <<'EOF'\nx\nEOF\nsampo x --kind=S | cat",
+                    "S=/tmp/x; sed -i 's|^h = 1|S = 2|' $S/a.py; echo x | cat"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(g.check("Bash", {"command": cmd}, ctx))
         self.assertIsNotNone(g.check("Bash", {"command": "S=/tmp/x; read S; (cat a > $S/out &)"}, ctx))
+        for cmd in ('S=/tmp/x; read "S"; (cat a > $S/out &)', "S=/tmp/x; for S in a; do :; done; echo > $S/a | cat"):
+            with self.subTest(cmd=cmd):  # T-3803: a quoted or loop name is still a second setting
+                self.assertIsNotNone(g.check("Bash", {"command": cmd}, ctx))
 
     def test_cd_inside_an_and_segment_of_a_list(self):  # T-0339
         self.run_table([

@@ -3663,7 +3663,10 @@ def _prefix_vars(shell, cmds, home=None):
         if env is None:
             return {}
     # T-0331: a word after - / or . (a flag like -S, a path segment like /tmp/S/) can't name a variable
-    counts = collections.Counter(re.findall(r"(?<![\w/.-])[A-Za-z_]\w*", re.sub(r"\$\w+|\$\{\w+\}", " ", full)))
+    # T-3803: nor a word right after = (tier=S, --x=S: a value sets no name), nor one inside quoted text (a sed
+    # script's 'S = 2'); a quoted plain word (read "S") is read unquoted, as bash reads it, so it still counts
+    counts = collections.Counter(re.findall(r"(?<![\w/.=-])[A-Za-z_]\w*", re.sub(r"\$\w+|\$\{\w+\}", " ", _mask_quotes(
+        _PLAIN_QUOTED.sub(r"\2", full)))))
 
     def set_first(k):  # T-0370 review: `echo > $S/x; S=/tmp/x` writes /x (S is unset there): no value before it is set
         a, r = re.search(rf"(?<![\w$]){k}=", full), re.search(rf"\$\{{?{k}\b", full)
