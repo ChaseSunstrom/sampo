@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The risk budget forgives a guard block only when it was a likely false refusal: an rm outside the project, a destructive git call or a piped shell, rewritten with the same program; credentials, system, self-authorize and confine blocks always cost their point, and a session is forgiven at most three times a day, so an agent can't clear its points by following each blocked attempt with a… (T-3812).
 - The Ward's downloaded-data exception (curl … | python3 -c reading json from stdin) now allows sed that only prints (sed -n '…p', s/// with only g, p, I flags; no -i, -f, w or e) and docker's read-only verbs (port, ps, inspect, logs, images, version, info, top), or docker exec running such a tool, elsewhere on the line; docker cp, run, compose and exec of anything else still make it refu… (T-3807).
 - sampo task set ID --section A --file a --section B --file b fills both sections, each from its own file, as its help said; only the last --file was kept before (T-3805).
 - The Ward no longer confines the main session as a builder when it has cd'd into a subagent builder's worktree (.claude/worktrees/agent-<id>) to run its tests or merge main in: there only the subagent's own calls, which carry an agent_id, are confined; lanes made by sampo lane new stay confined as before (T-3802).
