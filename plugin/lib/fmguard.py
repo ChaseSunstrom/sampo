@@ -910,12 +910,24 @@ _IFS_FOR_READ = lazy(r"(?<![\w$])IFS=(?:\$?'[^'\n]*'|\"[^\"\n]*\"|[^\s;&|'\"])*[
 _READ_REDEFINED = lazy(r"\b(?:alias|enable|function)\b|\bread\s*\(")
 _NAME_COMPUTED = lazy(  # a variable name built by an expansion: declare $'\x49FS=/', export "$n=/", (( $n = 1 ))
     r"(?:^|[;&|({`\n]|\$\(|\b(?:then|do|else|elif)\s)\s*(?:builtin\s+|command\s+)?(?:"  # at command position
-    r"(?:declare|typeset|local|export|readonly|read|mapfile|readarray|getopts|let)\b[^;&|\n]*?\s[^\s=;&|]*[$`'\"\\]"
+    # T-3799: a redirection's target (read n <<< "$a", read l < "$f") is input, never a name the builtin sets
+    r"(?:declare|typeset|local|export|readonly|read|mapfile|readarray|getopts|let)\b[^;&|\n]*?(?<![<>])\s(?![<>])"
+    r"[^\s=;&|<>]*[$`'\"\\]"
     r"|(?:declare|typeset|local)\b[^;&|\n]*\s-\w*n"
     # T-3223: printf's -v is an option only before its format: never past a quote or an expansion (command -v inside
     # "$(…)" among its arguments isn't one); a first word an expansion, brace or backtick could make -v counts too
     r"|printf\b[^;&|\n$`'\"]*[\"']?-v[\"']?\s*\S*[$`'\"\\]|printf\s+[^\s;&|]*[$`{])"
     r"|\(\(\s*(?:[^()]*,\s*)?\$\{?\w+\}?\s*(?:[-+*/%^|&]|<<|>>)?=(?!=)|\$\{![^}]*=")  # (( $n = 1 )), not (( a == b ))
+_PLAIN_QUOTED = lazy(r"(['\"])([^\s'\"`$\\;&|()<>{}#]+)\1")
+
+
+def _name_computed(text):
+    """_NAME_COMPUTED on text with its quoted data masked (a quote after declare may build a name), or with each quoted
+    plain word ("-v", 'x') read as bash reads it, its quotes removed. T-3799: a line with a $( ) inside double quotes
+    used to stay unmasked, which alone kept printf "-v" "$(…)" visible; masked, its -v would hide."""
+    return _NAME_COMPUTED.search(_mask_quotes(text)) or _NAME_COMPUTED.search(_mask_quotes(_PLAIN_QUOTED.sub(r"\2", text)))
+
+
 _UNQUOTED = lazy(r"\$[\w{@*#?!$(-]|`")
 _RUNS_HERE = lazy(  # T-0590: code this shell runs that the line doesn't show: eval text, a sourced file
     # T-1473 review: after any keyword, !, a case pattern's ) or prefix assignments too (if eval, a=b . f)
@@ -937,7 +949,7 @@ def _ifs_unreadable(cmd):
     hidden = _RUNS_HERE.search(rest) or _EVAL_WORD.search(_mask_quotes(_strip_heredocs(rest)))
     data = _ifs_data(cmd) if plain else None
     if data is not None:  # T-0698: IFS only in data, unless eval or source beside it may run it here
-        return why if _RUNS_HERE.search(data) or _NAME_COMPUTED.search(_mask_quotes(_strip_heredocs(data))) else None
+        return why if _RUNS_HERE.search(data) or _name_computed(_strip_heredocs(data)) else None
     if plain and hidden:  # T-0590: eval or source may set IFS out of sight
         return why
     scoped = rest if _READ_REDEFINED.search(rest) else _IFS_FOR_READ.sub(" read", rest)
@@ -949,7 +961,7 @@ def _ifs_unreadable(cmd):
         # T-1473: \$ and \` are literal characters, except in text eval or source runs again (review: eval "…\$IFS…")
         live = text if hidden else re.sub(r"\\.", "", text)
         split = plain or "$" in live or "`" in live
-    elif _NAME_COMPUTED.search(bare):  # ponytail: a computed name is refused only beside an expansion that splits
+    elif _name_computed(_strip_heredocs(scoped)):  # ponytail: a computed name is refused only beside an expansion that splits
         split = plain or _UNQUOTED.search(bare)
     else:
         return None
@@ -3310,7 +3322,48 @@ def _mask_quotes(text):
     is a literal, never a branch (a jq filter or sed script made the whole line read as branchy). A # comment is
     blanked to its line's end too (its review: a quote in a comment paired with one in a later comment hid a ||).
     Escapes and comments as _strip_comments reads them; unchanged (fails closed) under $'…', an unclosed quote or a
-    substitution inside double quotes, whose own quotes don't pair with the outer ones."""
+    backtick or ${…} operator inside double quotes, whose own quotes don't pair with the outer ones. T-3799: a $( … )
+    inside double quotes is code: kept, with its own quotes masked the same way (unpaired: unchanged, as before)."""
+    got = _masked(text)
+    return text if got is None else got
+
+
+def _subst_end(text, k):
+    """T-3799: the index just past the ) closing the $( whose body starts at k, read with its own quotes, escapes and
+    nested parentheses; None when nothing closes it, or (its review) where a ) or quote may not be what it looks
+    like: a case pattern's ), a heredoc body, a # comment (_subst_bodies reads those; this reading stays simple)."""
+    depth, q, i = 1, None, k
+    while i < len(text):
+        ch = text[i]
+        word = i == k or not re.match(r"[\w$-]", text[i - 1])  # a word starts here
+        if q is None and (text.startswith("<<", i) or ch == "#" and (i == k or text[i - 1] in " \t\n;&|(")
+                          or word and re.match(r"case(?![\w-])", text[i:])):
+            return None
+        if ch == "\\" and q != "'":
+            i += 2
+            continue
+        if q == '"' and text.startswith("$(", i):
+            j = _subst_end(text, i + 2)
+            if j is None:
+                return None
+            i = j
+            continue
+        if q:
+            q = None if ch == q else q
+        elif ch in "'\"":
+            q = ch
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if not depth:
+                return i + 1
+        i += 1
+    return None
+
+
+def _masked(text):
+    """_mask_quotes' reading, or None where it fails closed."""
     out, q, i = [], None, 0
     while i < len(text):
         ch = text[i]
@@ -3319,10 +3372,17 @@ def _mask_quotes(text):
             i += 2
             continue
         if q is None and text.startswith("$'", i):  # T-1473: only a real $'…' (unescaped, unquoted) fails closed
-            return text
-        if q == '"' and (ch == "`" or text.startswith("$(", i) or (text.startswith("${", i)
-                                                                    and not re.match(r"\$\{\w+\}", text[i:]))):
-            return text
+            return None
+        if q == '"' and text.startswith("$(", i):  # T-3799: code the quotes run, its own quotes masked
+            j = _subst_end(text, i + 2)
+            inner = _masked(text[i + 2:j - 1]) if j else None
+            if inner is None:
+                return None
+            out.append("$(" + inner + ")")
+            i = j
+            continue
+        if q == '"' and (ch == "`" or (text.startswith("${", i) and not re.match(r"\$\{\w+\}", text[i:]))):
+            return None
         if q is None and ch == "#" and (i == 0 or text[i - 1] in " \t\n;&|(<>"):
             j = text.find("\n", i)
             j = len(text) if j < 0 else j
@@ -3335,7 +3395,7 @@ def _mask_quotes(text):
             q = None if q else (ch if ch in "'\"" else None)
             out.append(ch)
         i += 1
-    return text if q else "".join(out)
+    return None if q else "".join(out)
 
 
 # `done` ends the loop only where a command starts (`echo done` is an argument)
@@ -3759,7 +3819,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     holds = _literals_hold(cmds, shell, {**_DCWD.get("lits", {}), **lits})
     if not depth:  # the whole line's, for a sampo call read nested; none where they may not hold
         _DCWD["holds"] = holds
-        _DCWD["lits"] = lits if holds and not _NAME_COMPUTED.search(_mask_quotes(shell)) else {}
+        _DCWD["lits"] = lits if holds and not _name_computed(shell) else {}
     # T-1921: an && chain headed by a plain `cd /abs &&` runs nothing where it starts (a failed cd stops it all)
     head = top[1] and re.match(r"\s*cd[ \t]+(/[^\s;&|<>()'\"`$*?\[\]{}\\!#~]*)[ \t]*&&", shell)
     rest, prev = shell[head.end():] if head else "", None
@@ -4058,7 +4118,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         fm_call = _fm_argv(argv)
         # review: a nameref (declare -n r=V) makes $r V's value, while the line literal r=V reads as the name V
         if (computed or fm_call) and fm_lits is None:
-            fm_lits = {**_DCWD.get("lits", {}), **({} if _NAME_COMPUTED.search(_mask_quotes(shell)) else lits)} \
+            fm_lits = {**_DCWD.get("lits", {}), **({} if _name_computed(shell) else lits)} \
                 if _DCWD.get("holds") and holds else {}
         fm_vals = _fm_values({**fm_lits, **known}) if computed or fm_call else {}
         if computed and fm_elsewhere is None:  # review: sampo named other than as a command run here (read C <<<

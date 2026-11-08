@@ -77,7 +77,32 @@ class IfsReview2(GuardCase):
             ("rm${IFS}-rf ~", "rm-outside"),
             ("sed -n \"$(($(grep -n 'out = S(x' f | cut -d: -f1) + 1))p\" f", None),
             ("n=x; (( $n = 1 )); echo $n", "system"),
+            # T-3799: a $( ) inside double quotes no longer leaves the line unmasked, so a grep pattern's '|let x' is
+            # data (a live session, 2026-11-08); a read's here-string or < file is its input, not a name it sets
+            ('grep -n "const userRow\\|let users\\|users = await" a.js | head; sed -n "$(grep -n \'add("click"\' a.js '
+             '| cut -d: -f1),+5p" a.js', None),
+            ('for a in x:1 y:2; do IFS=: read n port <<< "$a"; K=$(sh -c "grep -o \'<K>[^<]*\' c.xml | cut -d\'>\' '
+             '-f2"); echo "$n $K"; done', None),
+            ('read -r first < "$f"; echo "$first"', None),
+            ('read "$n" <<< x; echo $v', "system"),  # a computed name is still one
+            ('echo "$(IFS=m; echo "r${IFS}")"', "system"),  # the substitution's own code is still read
         ], lambda cmd: self.bash(cmd.replace("{", "{{").replace("}", "}}")))
+
+    def test_a_substitution_inside_double_quotes_is_masked_as_code(self):  # T-3799
+        from fmguard import _mask_quotes
+        line = 'sed -n "$(grep -n \'a|b\' f | cut -d: -f1),+5p" f; echo "x|y"'
+        got = _mask_quotes(line)
+        self.assertEqual(len(got), len(line))
+        self.assertIn("$(grep -n '___' f | cut -d: -f1)", got)  # its pipe is code, its own quoted data is masked
+        self.assertTrue(got.endswith('echo "___"'))
+        self.assertEqual(_mask_quotes('echo "$(echo \'x"'), 'echo "$(echo \'x"')  # unpaired: unchanged, as before
+        # its review: a case pattern's ), a heredoc or a comment in the body may end it early and flip the quotes
+        # after it, masking a later IFS=, eval or computed name: such a line stays unmasked, as before
+        for line in ('echo "$(case x in x) echo \'"\';; esac)" ; IFS=: ; echo $y \\\'',
+                     'echo "$(cat <<E\n)\nE\n)"; eval $y', 'echo "$(echo a # )\n)"; eval $y'):
+            with self.subTest(line=line):
+                self.assertEqual(_mask_quotes(line), line)
+        self.assertBlocked(self.bash('echo "$(case x in x) echo \'"\';; esac)" ; IFS=: ; echo $y \\\''), "system")
 
 
 class IfsInValue(GuardCase):
