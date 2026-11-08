@@ -231,6 +231,17 @@ def _pct(text, what):
     return v
 
 
+def suite_trend(path, n=7):
+    """T-3757: [(day, CPU s)] the test suite costs, estimated per day from the baseline the merge train and the
+    post-merge verify keep (every test class's usual, summed), the last n days; [] when there is none."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            days = json.load(f).get("days") or {}
+        return [(str(k), round(float(v), 1)) for k, v in sorted(days.items())][-n:]
+    except (OSError, ValueError, AttributeError, TypeError):
+        return []
+
+
 def cap(pct):
     """CPUQuota on this session's scope (pct of the machine; None lifts it), recorded in state/cpu.json."""
     d = own_scope()  # never FOREMAN_CGROUP: the cap is for the scope this process is in, nothing else
@@ -274,13 +285,15 @@ def cmd_cpu(args):
         raise c.PolicyError(f"sampo cpu reads cgroup v2 CPU accounting, which this session hasn't "
                             f"({d or 'no /proc/self/cgroup'}): Linux with a systemd session only")
     try:
-        g = goal(cli.resolve(args, create=False))
+        p = cli.resolve(args, create=False)
+        g, trend = goal(p), suite_trend(os.path.join(p.dir, "test-cpu.json"))
     except Exception:  # noqa: BLE001 — outside a project the default goal
-        g = GOAL
+        g, trend = GOAL, []
     cpu_max = (_read(os.path.join(d, "cpu.max")) or "").strip()
     rec = _state()[1].get("cap")
     rec = rec if isinstance(rec, dict) and rec.get("scope") == d else None
-    data = dict(got, scope=d, machine_cores=ncores(), goal_pct=g, cpu_max=cpu_max, limit_cores=limit(cpu_max), cap=rec)
+    data = dict(got, scope=d, machine_cores=ncores(), goal_pct=g, cpu_max=cpu_max, limit_cores=limit(cpu_max), cap=rec,
+                tests_trend=[{"day": k, "cpu_s": v} for k, v in trend])
     lines = [f"{os.path.basename(d)}: " + (
         f"{got['cores']:.2f} cores, {got['pct']:.1f}% of the machine's {ncores()} over {got['secs']:.1f} s "
         f"({'over' if got['pct'] > g else 'within'} the {g:g}% goal)" if got["cores"] is not None
@@ -289,4 +302,7 @@ def cmd_cpu(args):
                  + (f", set by sampo cpu cap {rec['pct']:g} at {rec['at']}" if rec else ""))
     rows = list(got["kinds"].items()) + ([("short-lived (unsampled)", got["unsampled"])] if got["unsampled"] else [])
     lines += [f"  {k:<24} {v:5.2f} cores" for k, v in rows]
+    if trend:  # T-3757: a cost that creeps in under the train's margins shows here day by day
+        lines.append(f"test suite: about {trend[-1][1]:,.0f} CPU s a full run ("
+                     + " · ".join(f"{k[5:]} {v:,.0f}" for k, v in trend) + ")")
     return cli.out(args, data, "\n".join(lines))

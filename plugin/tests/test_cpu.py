@@ -110,6 +110,17 @@ class Meter(Base):
         self.assertNotEqual(missing.returncode, 0)
         self.assertIn("cgroup", missing.stderr + missing.stdout)
 
+    def test_sampo_cpu_shows_the_test_suites_cpu_by_day(self):  # T-3757
+        self.fm("init")
+        self.put(self.cg, "cgroup.procs", f"{os.getpid()}\n")
+        pdir = c.find_project(self.repo, create=False).dir
+        with open(os.path.join(pdir, "test-cpu.json"), "w") as f:
+            json.dump({"classes": {}, "days": {"2026-11-05": 1500.4, "2026-11-06": 1650, "2026-11-07": 2900}}, f)
+        text = self.fm("cpu", "--window", "0.1", env={"FOREMAN_CGROUP": self.cg}).stdout
+        self.assertIn("test suite: about 2,900 CPU s a full run (11-05 1,500 · 11-06 1,650 · 11-07 2,900)", text)
+        got = json.loads(self.fm("cpu", "--window", "0.1", "--json", env={"FOREMAN_CGROUP": self.cg}).stdout)
+        self.assertEqual(got["tests_trend"][-1], {"day": "2026-11-07", "cpu_s": 2900.0})
+
     def test_the_self_check_reports_the_ten_minute_average_over_the_goal_only(self):
         self.fm("init")
         p = c.find_project(self.repo)

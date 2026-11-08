@@ -40,6 +40,7 @@ START_ENV = ("PYTHON", "LC_", "LANG", "TZ")
 _LOCK = threading.Lock()
 _SERVER = {}  # pid -> (socket path, process), or (None, None) when it couldn't start: one try per test process
 SHARED = "FOREMAN_FORK_SERVER"  # T-3572: run.py's server, which its classes call through: JSON [its LIB, its socket]
+SPENT = [0.0]  # T-3757: the CPU s this process's forked calls took, as the server measured each one ending
 _BASE_PATH = []  # the server's sys.path after its script folder: what a fresh `python3 SCRIPT` has after its own
 
 
@@ -233,10 +234,11 @@ def _read(sel, key, calls, wake_w):
 
 def _reap(sel, calls):
     """Wait for every worker that ended and send its exit status to its client (T-3572: waited for, so a run's
-    rusage counts its forked calls the way it counts fresh ones)."""
+    rusage counts its forked calls the way it counts fresh ones), and its CPU s, which the client counts as its own
+    (T-3757: run.py holds each test class to its usual CPU)."""
     while True:
         try:
-            pid, status = os.waitpid(-1, os.WNOHANG)
+            pid, status, ru = os.wait4(-1, os.WNOHANG)
         except ChildProcessError:
             return
         if not pid:
@@ -245,7 +247,7 @@ def _reap(sel, calls):
         if conn is None:  # its client went first
             continue
         try:
-            _send(conn, {"code": os.waitstatus_to_exitcode(status)})
+            _send(conn, {"code": os.waitstatus_to_exitcode(status), "cpu": ru.ru_utime + ru.ru_stime})
         except OSError:
             pass
         _drop(sel, conn)
@@ -341,7 +343,9 @@ def run(script, args, cwd=None, env=None, input=None, timeout=None):
             _send(conn, {"script": script, "args": list(args), "cwd": cwd, "env": env,
                          **files, "stdin": files["stdin"] if input is not None else os.devnull, "ppid": os.getpid()})
             pid = _recv(conn)["pid"]
-            code = _recv(conn)["code"]
+            done = _recv(conn)
+            code = done["code"]
+            SPENT[0] += float(done.get("cpu") or 0)
         except socket.timeout:
             if pid:
                 try:

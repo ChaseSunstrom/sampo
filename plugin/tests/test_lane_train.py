@@ -48,6 +48,14 @@ class TrainCase(ForemanTestCase):
 
 
 class Train(TrainCase):
+    def test_gate_runs_hold_tests_to_the_projects_cpu_baseline(self):  # T-3757
+        seen = os.path.join(self.tmp, "cpu-env")
+        self.fm("check", "add", f'echo "$SAMPO_CPU_BASE $SAMPO_CPU_GATE" >> {seen}')
+        self.train(self.lane(1, "a.txt"))
+        base, gate = open(seen).read().split()[:2]
+        self.assertTrue(base.endswith(os.sep + "test-cpu.json") and os.path.isabs(base), base)
+        self.assertEqual(gate, "1")
+
     def test_a_breaking_lane_is_named_and_left_out_within_the_gate_budget(self):
         ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt"), self.lane(3, "c.txt"), self.lane(4, "BREAK")]
         r = self.train(*ids)

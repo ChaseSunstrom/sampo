@@ -18,7 +18,7 @@ import tempfile
 import time
 
 from sampo import core as c
-from sampo.lanes import CriterionRed, _git, _ref_ok, _verify, pm_record, pm_rerun_cmd, pm_wait
+from sampo.lanes import CriterionRed, _git, _ref_ok, _verify, cpu_env, pm_record, pm_rerun_cmd, pm_wait
 
 SKIPPED = "probe skipped"  # the note a held green run leaves; the report counts by it (T-3596)
 PROBE_JOBS = 3 # T-3531: pre-filter probes at once
@@ -239,7 +239,8 @@ def _probe(p, main, base, b, tip, notes, tests=True):
             cwd, cmd, _ = c.normalize_verify(wt, cmd)  # T-3411's cwd fix first: the nice wrapper would hide it
             if shutil.which("nice"):  # the probe yields to whatever else the machine runs
                 cmd = "nice -n 10 bash -c " + shlex.quote(cmd)
-            code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True)  # T-3614: ahead of lane runs
+            code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True,  # T-3614: ahead of lane runs
+                                      env=cpu_env(p))  # T-3757: a CPU rise is red here too
             return code, set(_red(out))
 
         def again(classes):  # the red classes alone where the runner names them (pm_rerun_cmd), else cmd again
@@ -440,7 +441,7 @@ def _run(p, main, ids):
         if line is None or key in passed:
             return passed.get(key), False
         t0 = time.monotonic()
-        code, out = c.run_command(wt, line, c.load_scaled(1800), priority=True)  # T-3614: ahead of lane runs
+        code, out = c.run_command(wt, line, c.load_scaled(1800), priority=True, env=cpu_env(p))  # T-3614, T-3757
         row = {"cmd": cmd, "exit": code, "s": round(time.monotonic() - t0, 1), **({"affected": mods} if mods else {})}
         if code:
             row.update(failing=_red(out), tail=out.rstrip().splitlines()[-15:], out=out)

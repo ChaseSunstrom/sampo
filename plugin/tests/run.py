@@ -31,6 +31,10 @@ try:
     import fcntl
 except ImportError:  # Windows: no flock, so no slot pool; classes run as before
     fcntl = None
+try:
+    import resource
+except ImportError:  # Windows: the run's own CPU goes uncounted
+    resource = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -46,7 +50,8 @@ def child_env(tmp):
 OPERATOR_SWITCHES = {"LOAD_GATE", "LOAD_WAIT", "FULL_GATE", "SENTINEL", "SENTINEL_RUN", "SENTINEL_TREE", "NO_BACKGROUND",
                      "SLOT", "SLOTS", "SLOT_PRIORITY", "NO_SUITE_SLOT", "GATE_HELD", "GATE_WAIT", "SLOW_GATE", "INHIBITED",
                      "DRIVE_TASK", "QUIET", "NO_NET", "NO_LINK", "CONFINE", "SMOKE_RUNNER", "UI_CACHE_S", "NO_TEST_CACHE",
-                     "FAST"}  # T-3571: SAMPO_FAST=0 sends every call past sampo-fast; test_fast_equiv needs it on
+                     "FAST",  # T-3571: SAMPO_FAST=0 sends every call past sampo-fast; test_fast_equiv needs it on
+                     "CPU_BASE", "CPU_GATE", "CPU_FLOOR_S"}  # T-3757: the train's CPU baseline is never a test's
 
 
 SLOT_ENV = "SAMPO_SLOT"  # T-3252: set in a class's children, so a run.py inside a slot never waits on its parent's pool
@@ -327,6 +332,11 @@ STATE = ".sampo/"  # Sampo's synced task state: every sampo call writes it, no t
 PRUNE_S = 14 * 86400  # a repo's cache unused this long (a removed lane's) is deleted
 KEEP = 3  # T-3593: records kept per class, newest first: main's code beside the lanes' that changed what it reads
 COVERED = {}  # T-3593: job id -> what its processes recorded (runcover.py's lines), filled by _run_one
+CPU = {}  # T-3757: job id -> the CPU s its processes took (BOOT's file), filled by _run_one
+BUDGETS = {}  # T-3757: class id -> its CPU_BUDGET_S, a costly new class's declared cost
+CPU_BASE, CPU_GATE = "SAMPO_CPU_BASE", "SAMPO_CPU_GATE"  # T-3757: the train's baseline file; =1 fails a rise
+CPU_FLOOR = "SAMPO_CPU_FLOOR_S"  # T-3757: the absolute margin, 20 CPU s; a new class may take 4.5x it, a run 6x
+CPU_RATIO, CPU_SUM_RATIO, CPU_KEEP, CPU_UNSEEN_DAYS = 2.0, 1.5, 9, 14
 GIT_STATE = "\0git"  # tree()'s key for HEAD and the tags (a recorded "g": git run on the repo); no path is named so,
 # nor any of its other "\0" keys (T-3691)
 
@@ -340,8 +350,9 @@ def cache_path(repo):
 
 
 def load_cache(path):
-    """(generation, {class id: [[digest, tests, [path, ...]], ...]}): per class up to KEEP records of a whole green
-    run, each the paths it read and their digest then (T-3593); (0, {}) when missing or corrupt. The generation goes up
+    """(generation, {class id: [[digest, tests, [path, ...], cpu?], ...]}): per class up to KEEP records of a whole green
+    run, each the paths it read and their digest then (T-3593), and the CPU s it took when known (T-3757); (0, {}) when
+    missing or corrupt. The generation goes up
     each time a run finds the cache wrong and drops it (T-3502). On disk the paths are indexes into one table."""
     try:
         with open(path) as f:
@@ -349,7 +360,7 @@ def load_cache(path):
         table = d.get("paths", [])
         # ponytail: whole file parsed and indexes resolved each run (~0.1-0.3 s at the full suite's ~1500 classes x 3);
         # store the indexes as strings and decode only the named classes' if that shows in a profile
-        recs = {c: [[v[0], int(v[1]), [table[i] for i in v[2]]] for v in vs] for c, vs in d["classes"].items()}
+        recs = {c: [[v[0], int(v[1]), [table[i] for i in v[2]], *v[3:4]] for v in vs] for c, vs in d["classes"].items()}
         return int(d["gen"]), recs
     except Exception:  # a corrupt cache, or T-3502's keys, only costs reruns
         return 0, {}
@@ -384,7 +395,7 @@ def save_cache(path, new, gen):
         for c, v in new.items():
             recs[c] = [v] + [r for r in recs.pop(c, []) if r[0] != v[0]][:KEEP - 1]  # newest last: the cap keeps them
         index = {}
-        recs = {c: [[r[0], r[1], [index.setdefault(p, len(index)) for p in r[2]]] for r in vs]
+        recs = {c: [[r[0], r[1], [index.setdefault(p, len(index)) for p in r[2]], *r[3:4]] for r in vs]
                 for c, vs in list(recs.items())[-20000:]}
         _write_json(path, {"gen": gen, "paths": list(index), "classes": recs})
     folder = os.path.dirname(path)
@@ -394,6 +405,105 @@ def save_cache(path, new, gen):
             with contextlib.suppress(OSError):
                 if q not in (path, path + ".lock") and time.time() - os.lstat(q).st_mtime > PRUNE_S:
                     os.unlink(q)
+
+
+def _floor():
+    try:
+        return max(0.0, float(os.environ.get(CPU_FLOOR) or 20))
+    except ValueError:
+        return 20.0
+
+
+def _median(xs):
+    xs = sorted(xs)
+    return xs[len(xs) // 2] if xs else None
+
+
+def _sn(x):
+    """A CPU sample as (CPU s, the jobs it ran in, or None when not known): a split class's jobs each pay the
+    interpreter and its fixtures again, so a sample compares only with samples of the same split."""
+    if isinstance(x, (list, tuple)) and len(x) == 2:
+        return float(x[0]), (int(x[1]) if isinstance(x[1], (int, float)) else None)
+    return float(x), None
+
+
+def cpu_over(hist, now, budgets=None):
+    """T-3757: [(class, CPU s now, its usual or None, why)] for each class in `now` ({class: sample}) over its margin
+    against `hist` ({class: [samples of its last green runs]}); a sample is CPU s or [CPU s, jobs], and the median of
+    the samples with the same number of jobs is the usual. Over CPU_RATIO times its usual and the floor more; a class
+    the baseline has never seen, once the baseline has any class, over 4.5 floors and its own CPU_BUDGET_S (`budgets`)
+    (with an empty baseline nothing is new: the first green run seeds it); one seen only at another split is not
+    compared. And when the compared classes took CPU_SUM_RATIO times their usual together and 6 floors more, each of
+    them that grew by a quarter (all of them if none did): a rise spread too thin for any one class still fails."""
+    budgets, floor, out, usual, spent = budgets or {}, _floor(), [], {}, {}
+    for cid, x in sorted(now.items()):
+        s, n = _sn(x)
+        spent[cid] = s
+        h = [_sn(y) for y in hist.get(cid) or () if isinstance(y, (int, float, list, tuple))]
+        same = [hs for hs, hn in h if n is None or hn is None or hn == n]
+        if same:
+            usual[cid] = m = _median(same)
+            if s > CPU_RATIO * m and s - m > floor:
+                out.append((cid, s, m, f"{s / m:.1f}x its usual" if m else "its usual was 0"))
+        elif not h and hist and s > max(4.5 * floor, budgets.get(cid) or 0):
+            cap = max(4.5 * floor, budgets.get(cid) or 0)
+            out.append((cid, s, None, f"a new class over {cap:g} CPU s"
+                        + ("" if budgets.get(cid) else " (a CPU_BUDGET_S on the class declares more)")))
+    tot, base = sum(spent[c] for c in usual), sum(usual.values())
+    if base > 0 and tot > CPU_SUM_RATIO * base and tot - base > 6 * floor:
+        named = {c for c, *_ in out}
+        why = f"the run's {len(usual)} known classes took {tot:.0f} CPU s, {tot / base:.1f}x their usual {base:.0f}"
+        grew = [c for c in usual if spent[c] > 1.25 * usual[c]] or list(usual)
+        out += [(c, spent[c], usual[c], why) for c in sorted(grew) if c not in named]
+    return out
+
+
+def load_cpu(path):
+    """T-3757: the baseline: {"classes": {class: [CPU s of its last CPU_KEEP green runs]}, "seen": {class: day},
+    "days": {day: the suite's estimate}}; empty when missing or corrupt."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return {"classes": {c: [list(_sn(x)) for x in v][-CPU_KEEP:] for c, v in d.get("classes", {}).items()
+                            if isinstance(v, list)},
+                "seen": {c: str(v) for c, v in (d.get("seen") or {}).items()},
+                "days": {k: float(v) for k, v in (d.get("days") or {}).items()}}
+    except Exception:  # a corrupt baseline only costs a comparison
+        return {"classes": {}, "seen": {}, "days": {}}
+
+
+def record_cpu(path, now):
+    """T-3757: a green run's {class: sample} added to the baseline under its lock, each class's last CPU_KEEP kept; a
+    class unseen for CPU_UNSEEN_DAYS (renamed, deleted) dropped; today's estimate of the whole suite (every class's
+    usual, summed) kept per day, the last 90."""
+    today = time.strftime("%Y-%m-%d")
+    old = time.strftime("%Y-%m-%d", time.localtime(time.time() - CPU_UNSEEN_DAYS * 86400))
+    with _cache_lock(path):
+        d = load_cpu(path)
+        for cid, x in now.items():
+            s, n = _sn(x)
+            d["classes"][cid] = (d["classes"].get(cid, []) + [[round(s, 2), n]])[-CPU_KEEP:]
+            d["seen"][cid] = today
+        gone = [c for c in d["classes"] if d["seen"].get(c, today) < old]
+        for cid in gone:
+            d["classes"].pop(cid, None)
+            d["seen"].pop(cid, None)
+        d["days"][today] = round(sum(_median([s for s, _ in v]) for v in d["classes"].values() if v), 1)
+        d["days"] = dict(sorted(d["days"].items())[-90:])
+        _write_json(path, d)
+
+
+def class_cpu(results, owner):
+    """T-3757: {class: [CPU s, jobs]} of the classes whose every job ran green and reported its CPU."""
+    got, bad = {}, set()
+    for job, code, *_ in results:
+        cid = owner(job)
+        if code != 0 or job not in CPU:
+            bad.add(cid)
+        else:
+            s, n = got.get(cid, (0.0, 0))
+            got[cid] = (s + CPU[job], n + 1)
+    return {cid: [round(s, 2), n] for cid, (s, n) in got.items() if cid not in bad}
 
 
 def drop_cache(path):
@@ -736,6 +846,8 @@ def classes(patterns, k, hit=None, names=(), ids=None, parts=None, whole=None):
             if (not k or any(x in t.id() for x in k)) and (not names or any(x in t.id() for x in names)):
                 hit.update(x for x in (*k, *names) if x in t.id())
                 cid = f"{type(t).__module__}.{type(t).__name__}"
+                if isinstance(getattr(type(t), "CPU_BUDGET_S", None), (int, float)):  # T-3757
+                    BUDGETS[cid] = float(type(t).CPU_BUDGET_S)
                 counts[cid] = counts.get(cid, 0) + 1
                 if parts is not None and t.id() not in parts.setdefault(cid, []):  # an imported TestCase is walked twice
                     parts[cid].append(t.id())
@@ -767,10 +879,102 @@ TMP_PREFIX = "fmtest-"  # not fm-: fm tidy reads ~/.claude/projects/-tmp-fm-* as
 
 # T-2034: a class dies with run.py, even a SIGKILLed one (a Bash timeout): its own session kept it alive, and one
 # orphan spun a core for a day. Like -m unittest after that; off Linux the prctl is a no-op.
-BOOT = ("import ctypes, os, signal, sys, unittest\n"
-        "try:\n    ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG\nexcept Exception:\n    pass\n"
-        "if sys.argv[1] != '0' and os.getppid() != int(sys.argv[1]):\n    os._exit(1)  # run.py was gone before the prctl\n"
-        "unittest.main(module=None, argv=['python -m unittest', *sys.argv[2:]])\n")
+# T-3757: with RUNPY_CPU set, the class runs under a small parent of its own, a child subreaper: whatever the class
+# orphans (a killed browser's renderers) reparents to it and is reaped as it ends, and what is still running when the
+# class exits is killed and reaped. Its file then gets the class's CPU: the class, all of those, its forked fm calls.
+# Without fork or the prctl (not Linux) the class counts itself and the children it waited for.
+BOOT = """\
+import ctypes, os, signal, sys, unittest
+try:
+    ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+except Exception:
+    pass
+if sys.argv[1] != '0' and os.getppid() != int(sys.argv[1]):
+    os._exit(1)  # run.py was gone before the prctl
+_cpu = os.environ.pop('RUNPY_CPU', '')
+if _cpu:
+    import atexit, resource, time
+    def _forked():
+        f = sys.modules.get('forkcli')
+        return f.SPENT[0] if f is not None and hasattr(f, 'SPENT') else 0.0
+    def _put(path, secs):
+        try:
+            with open(path, 'w') as out:
+                out.write(repr(secs))
+        except OSError:
+            pass
+    try:
+        ctypes.CDLL(None).prctl(36, 1)  # PR_SET_CHILD_SUBREAPER
+        kid = os.fork()
+    except Exception:
+        kid = None
+    if kid:
+        import faulthandler
+        faulthandler.disable()
+        def _abort(*_):  # run.py's timeout: the class's stack
+            try:
+                os.kill(kid, signal.SIGABRT)
+            except OSError:
+                pass
+        signal.signal(signal.SIGABRT, _abort)
+        code = 1
+        while True:
+            try:
+                pid, status = os.wait()
+            except ChildProcessError:
+                break
+            if pid == kid:
+                code = os.waitstatus_to_exitcode(status)
+                break
+        end = time.time() + 5
+        while time.time() < end:
+            kids = []
+            for t in os.listdir('/proc/self/task'):
+                try:
+                    with open(f'/proc/self/task/{t}/children') as f:
+                        kids += [int(x) for x in f.read().split()]
+                except (OSError, ValueError):
+                    pass
+            if not kids:
+                break
+            for k in kids:
+                try:
+                    os.kill(k, signal.SIGKILL)
+                except OSError:
+                    pass
+            time.sleep(0.02)
+            try:
+                while os.waitpid(-1, os.WNOHANG)[0]:
+                    pass
+            except ChildProcessError:
+                break
+        me, them = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+        try:
+            with open(_cpu + '.fork') as f:
+                forked = float(f.read())
+        except (OSError, ValueError):
+            forked = 0.0
+        _put(_cpu, me.ru_utime + me.ru_stime + them.ru_utime + them.ru_stime + forked)
+        if code < 0:  # the class died of a signal: so does its parent, so run.py reads the same negative code
+            try:
+                signal.signal(-code, signal.SIG_DFL)
+            except (OSError, ValueError):
+                pass  # SIGKILL and SIGSTOP can't be caught, so they need no reset
+            os.kill(os.getpid(), -code)
+        os._exit(code if code >= 0 else 1)
+    if kid == 0:
+        try:
+            ctypes.CDLL(None).prctl(1, signal.SIGKILL)  # dies with its subreaper too
+        except Exception:
+            pass
+        atexit.register(lambda: _put(_cpu + '.fork', _forked()))
+    else:
+        def _alone():
+            me, them = resource.getrusage(resource.RUSAGE_SELF), resource.getrusage(resource.RUSAGE_CHILDREN)
+            _put(_cpu, me.ru_utime + me.ru_stime + them.ru_utime + them.ru_stime + _forked())
+        atexit.register(_alone)
+unittest.main(module=None, argv=['python -m unittest', *sys.argv[2:]])
+"""
 
 
 SANDBOX = []  # T-3222: run.py --sandbox, once its job sandbox is known to work here
@@ -817,6 +1021,7 @@ def _run_one(cid, k, timeout, deadline, slot):
     argv, env =[sys.executable, "-X", "faulthandler", "-c", BOOT, "0" if SANDBOX else str(os.getpid()), "-q", cid,
                  *extra], child_env(tmp)
     env[SLOT_ENV] = "none" if slot is None else str(slot)  # T-3442: with no slot too, its runs never queue again
+    env["RUNPY_CPU"] = os.path.join(tmp, ".runcpu")  # T-3757: what the class's processes cost, written as it exits
     if COVER_PY:  # T-3593: its processes append the repo files they read here, the venv's python first on PATH
         env["RUNPY_COVER"] = os.path.join(tmp, ".runcover")
         env["PATH"] = os.path.dirname(COVER_PY[0]) + os.pathsep + env.get("PATH", os.defpath)
@@ -842,6 +1047,8 @@ def _run_one(cid, k, timeout, deadline, slot):
             with contextlib.suppress(OSError), open(os.path.join(tmp, ".runcover"), encoding="utf-8",
                                                     errors="surrogateescape") as f:
                 COVERED[cid] = f.read()
+        with contextlib.suppress(OSError, ValueError), open(os.path.join(tmp, ".runcpu")) as f:
+            CPU[cid] = float(f.read())
         shutil.rmtree(tmp, ignore_errors=True)
     m = re.search(r"Ran (\d+) tests?", err)
     return cid, p.returncode, err, int(m.group(1)) if m else 0, time.time() - t0  # killed: negative
@@ -997,6 +1204,11 @@ def main():
     incr = (_env(CACHE_FULL) or "0") != "0"
     for k in (CACHE_FULL, "FOREMAN_" + CACHE_FULL[len("SAMPO_"):]):
         os.environ.pop(k, None)
+    # T-3757: the train's gate and the post-merge verify name a baseline; out of the environment too, so no class or
+    # child run compares or records. Not for -k or a shard (part of the suite).
+    cpu_base, cpu_gate = os.environ.pop(CPU_BASE, ""), os.environ.pop(CPU_GATE, "") not in ("", "0")
+    cpu_base = "" if a.k or a.shard else cpu_base
+    hist, cached_cpu, cpu_red = (load_cpu(cpu_base)["classes"] if cpu_base else {}), {}, []
     skip, drawn, got = {}, set(), None
     if not (a.k or (_env(NO_CACHE) or "0") != "0" or _env(SLOT_ENV)):
         got = tree()
@@ -1004,9 +1216,15 @@ def main():
         cache, value = cache_path(got[2]), values(*got[:2])
         COVERED.clear()
         gen, recs = load_cache(cache)
-        hits = {c: r[1] for c in todo for r in recs.get(c, ())[::-1] if r[0] == digest(r[2], value)} if a.names or incr else {}
+        rec = {c: r for c in todo for r in recs.get(c, ())[::-1] if r[0] == digest(r[2], value)} if a.names or incr else {}
+        hits = {c: r[1] for c, r in rec.items()}
         drawn = {c for c in hits if random.random() < SAMPLE}
         skip = {c: n for c, n in hits.items() if c not in drawn}
+        if cpu_base:  # T-3757: a cached class costs what it cost then; one over its margin runs, so it is measured
+            known = {c: rec[c][3] for c in skip if len(rec[c]) > 3}
+            over = {c for c, *_ in cpu_over(hist, known, BUDGETS)}
+            skip = {c: n for c, n in skip.items() if c not in over}
+            cached_cpu = {c: s for c, s in known.items() if c in skip}
         todo = [c for c in todo if c not in skip]
         if skip:
             sys.stderr.write(f"run.py: skipped {len(skip)} classes green at the same code; "
@@ -1052,7 +1270,18 @@ def main():
                              f"wrong, dropped" + (f"; running the {len(skip)} classes it skipped\n" if skip else "\n"))
             more = plan(list(skip), parts, whole, times)
             results += list(ex.map(go, more))
-            todo, skip, got = todo + more, {}, None
+            todo, skip, got, cached_cpu = todo + more, {}, None, {}
+        now = class_cpu(results, owner)
+        if cpu_base and (redo := [c for c, *_ in cpu_over(hist, {**cached_cpu, **now}, BUDGETS) if c in now]):
+            # T-3757: a busy machine inflates CPU time too, so a class over its margin runs once more and the lower
+            # count stands
+            again = class_cpu(list(ex.map(go, [r[0] for r in results if owner(r[0]) in redo])), owner)
+            now.update({c: min(now[c], again[c], key=lambda x: x[0]) for c in redo if c in again})
+        over = cpu_over(hist, {**cached_cpu, **now}, BUDGETS) if cpu_base else []
+        if over and not cpu_gate:  # the post-merge verify: what landed is shown, and becomes the new usual
+            sys.stderr.write("".join(f"run.py: CPU over its margin, not gated: {c} took {s:.1f} CPU s, {why}\n"
+                                     for c, s, _, why in over))
+        cpu_red = over if cpu_gate else []
     if got:  # T-3502: each class that ran whole and green, none skipped, recorded with what it read (T-3593)
         size, ran, cov = {}, {}, {}
         for t in set(ids):
@@ -1067,7 +1296,7 @@ def main():
         if again and again[0] == got[0]:
             base, after = shared(*got[:2]), values(*again[:2])
             paths = {c: sorted(base.union(*(covered(t, *got[:2]) for t in cov[c]))) for c in new}
-            new = {c: [digest(paths[c], value), n, paths[c]] for c, n in new.items()}
+            new = {c: [digest(paths[c], value), n, paths[c], *([now[c]] if c in now else [])] for c, n in new.items()}
             new = {c: r for c, r in new.items() if digest(r[2], after) == r[0]}
             if new:
                 save_cache(cache, new, gen)
@@ -1085,6 +1314,8 @@ def main():
         if new:
             save_times(new)
     failed = [r for r in results if r[1] != 0]
+    if cpu_base and not failed and not cpu_red and now:  # T-3757: a green run is the next usual
+        record_cpu(cpu_base, now)
     ci = os.environ.get("GITHUB_ACTIONS")  # T-1223: a run's log needs a login; its annotations are public
     for cid, _, err, _, _ in failed:
         if err == NOT_STARTED:
@@ -1102,19 +1333,24 @@ def main():
     slow = slowest(results, 3)
     if skipped():
         sys.stderr.write(f"\nleft out (FOREMAN_SKIP_TESTS): {', '.join(sorted(skipped()))}")
-    names = [r[0] for r in failed]  # T-2319: the last line says which classes, since tails cut the ==== blocks above
+    for cid, s, usual, why in cpu_red:  # T-3757: a red class like any other, so the train's probes narrow to it
+        sys.stderr.write(f"\n==== {cid}\nrun.py: CPU over its margin (T-3757): {s:.1f} CPU s, {why}"
+                         + (f" ({usual:.1f} s)" if usual is not None else "") + "\n")
+    names = [r[0] for r in failed] + [c for c, *_ in cpu_red if c not in {r[0] for r in failed}]
     said = ", ".join(names[:5]) + (f", +{len(names) - 5} more" if len(names) > 5 else "")
     sys.stderr.write("".join(f"\n  failed class: {n}" for n in names) + ("\n" if names else ""))  # T-3397: all of them, one per line
+    me = resource.getrusage(resource.RUSAGE_SELF) if resource else None
+    spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     sys.stderr.write(f"\nRan {total} tests in {time.time() - t0:.1f}s ({len(todo)} jobs, {a.j} at a time; "
-                     f"slowest: {slow}){cached}\n\n"
-                     f"{f'FAILED ({len(failed)} classes: {said})' if failed else 'OK' if total or skip else 'NO TESTS RAN'}\n")
+                     f"slowest: {slow}; cpu {spent:.1f} s){cached}\n\n"
+                     f"{f'FAILED ({len(names)} classes: {said})' if names else 'OK' if total or skip else 'NO TESTS RAN'}\n")
     # T-2944: stopped at its own deadline with nothing really failed: exit 124 and say so last, so a caller (the
     # sentinel's re-verify) reads a busy machine, not a regression
     stopped = [r for r in failed if r[2] == NOT_STARTED or "the run's deadline" in r[2]]
-    if stopped and len(stopped) == len(failed):
+    if stopped and len(stopped) == len(failed) and not cpu_red:
         sys.stderr.write("run.py: stopped at its deadline\n")
         return 124
-    return 1 if failed or not (total or skip) else 0
+    return 1 if failed or cpu_red or not (total or skip) else 0
 
 
 if __name__ == "__main__":

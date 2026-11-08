@@ -2408,6 +2408,15 @@ def pm_cmd(main, uncached=False):
         if os.path.exists(os.path.join(main, "plugin", "tests", "run.py")) else "")
 
 
+def cpu_env(p, gate=True):
+    """T-3757: a gate run's environment: tests/run.py holds each test class's CPU to the project's baseline (the median
+    of its last green runs) and records a green run as the next usual; with `gate` (the train), a class over its margin
+    fails like a red test, so the train's probes leave out the lane that made it. Other test runners ignore both."""
+    env = {k: v for k, v in os.environ.items() if k not in ("FOREMAN_SKIP_TESTS", "SAMPO_CPU_GATE")}  # as run_command
+    env["SAMPO_CPU_BASE"] = os.path.join(p.dir, "test-cpu.json")
+    return {**env, "SAMPO_CPU_GATE": "1"} if gate else env
+
+
 UNCACHED_EVERY, UNCACHED_S = 6, 4 * 3600
 
 
@@ -2610,7 +2619,8 @@ def pm_verify(p, main, sha):
         full = _pm_uncached_due(p)
         if full:
             pm_set(p, sha, uncached=True)
-        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600))
+        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600),
+                                  env=cpu_env(p, gate=False))  # T-3757: what landed becomes the usual
         flaky =inherited = unrelated = []
         reds = pm_classes(out, code) if code and code != 124 else []
         files, reach = _pm_files(main, sha), reds
@@ -2780,7 +2790,7 @@ def _pm_green_at(p, main, sha, reds=None):
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         full = _pm_uncached_due(p)
-        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600))
+        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600), env=cpu_env(p, gate=False))
         if code:
             if reds is not None and code != 124:  # a timeout names nothing
                 reds.extend(k for k in pm_classes(out, code) if not k.startswith("suite exit"))
