@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-08T18:27:36Z",
- "rev": "525e41615",
+ "updated": "2026-11-08T21:59:29Z",
+ "rev": "c40d0bce0",
  "capabilities": [
   {
    "n": 1,
@@ -3785,7 +3785,7 @@
       {
        "id": "T-2878",
        "title": "Small-model uplift: go wild with the local models (jarvis qwen3.6-35b, qwen3.8-27b, the…",
-       "status": "active",
+       "status": "blocked",
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
@@ -3868,7 +3868,7 @@
       {
        "id": "T-2878",
        "title": "Small-model uplift: go wild with the local models (jarvis qwen3.6-35b, qwen3.8-27b, the…",
-       "status": "active",
+       "status": "blocked",
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
@@ -3994,7 +3994,7 @@
       {
        "id": "T-2878",
        "title": "Small-model uplift: go wild with the local models (jarvis qwen3.6-35b, qwen3.8-27b, the…",
-       "status": "active",
+       "status": "blocked",
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
@@ -4133,7 +4133,7 @@
       {
        "id": "T-2878",
        "title": "Small-model uplift: go wild with the local models (jarvis qwen3.6-35b, qwen3.8-27b, the…",
-       "status": "active",
+       "status": "blocked",
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
@@ -4190,7 +4190,7 @@
       {
        "id": "T-2878",
        "title": "Small-model uplift: go wild with the local models (jarvis qwen3.6-35b, qwen3.8-27b, the…",
-       "status": "active",
+       "status": "blocked",
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
@@ -49938,6 +49938,3923 @@
     "vuln"
    ],
    "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 8,
+   "found": 8,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 8,
+   "fixed": 7,
+   "tf_keyed": 4,
+   "tf_first": 2,
+   "readings_keyed": 2,
+   "readings_hit": 0,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 0,
+   "broken": 0,
+   "scenarios": 10,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 10,
+   "conf_missing": 0,
+   "brier_sum": 2.6215,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      8,
+      8
+     ]
+    },
+    "kind": {
+     "bug": [
+      1,
+      1
+     ],
+     "vuln": [
+      1,
+      1
+     ],
+     "untested": [
+      1,
+      1
+     ],
+     "slow": [
+      2,
+      2
+     ],
+     "docs": [
+      1,
+      1
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "dep": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 8,
+    "found": 8,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 7,
+    "tf_keyed": 4,
+    "tf_first": 2,
+    "readings_keyed": 2,
+    "readings_hit": 0,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 2.6215,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       8,
+       8
+      ]
+     },
+     "kind": {
+      "bug": [
+       1,
+       1
+      ],
+      "vuln": [
+       1,
+       1
+      ],
+      "untested": [
+       1,
+       1
+      ],
+      "slow": [
+       2,
+       2
+      ],
+      "docs": [
+       1,
+       1
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "dep": [
+       1,
+       1
+      ]
+     }
+    },
+    "brier": 0.2621,
+    "closed_share": 0.6
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 0.5633,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "bug-python-c18ee5",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "missing-tool-python-b5f04f",
+     "untested-python-06b3da",
+     "vuln-python-833288"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "bug-python-c18ee5",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "flaky-python-29d792",
+     "missing-tool-python-b5f04f",
+     "slow-python-c181d5",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "brier": 0.2621,
+   "closed_share": 0.6,
+   "model": "sonnet",
+   "at": "2026-11-08T18:36:48Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "bug",
+    "dep",
+    "docs",
+    "flaky",
+    "missing-tool",
+    "slow",
+    "untested",
+    "vague",
+    "vuln"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 8,
+   "found": 8,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 8,
+   "fixed": 7,
+   "tf_keyed": 4,
+   "tf_first": 2,
+   "readings_keyed": 2,
+   "readings_hit": 0,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 0,
+   "broken": 0,
+   "scenarios": 10,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 10,
+   "conf_missing": 0,
+   "brier_sum": 2.6215,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      8,
+      8
+     ]
+    },
+    "kind": {
+     "bug": [
+      1,
+      1
+     ],
+     "vuln": [
+      1,
+      1
+     ],
+     "untested": [
+      1,
+      1
+     ],
+     "slow": [
+      2,
+      2
+     ],
+     "docs": [
+      1,
+      1
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "dep": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 8,
+    "found": 8,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 7,
+    "tf_keyed": 4,
+    "tf_first": 2,
+    "readings_keyed": 2,
+    "readings_hit": 0,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 2.6215,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       8,
+       8
+      ]
+     },
+     "kind": {
+      "bug": [
+       1,
+       1
+      ],
+      "vuln": [
+       1,
+       1
+      ],
+      "untested": [
+       1,
+       1
+      ],
+      "slow": [
+       2,
+       2
+      ],
+      "docs": [
+       1,
+       1
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "dep": [
+       1,
+       1
+      ]
+     }
+    },
+    "brier": 0.2621,
+    "closed_share": 0.6
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 0.5633,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "bug-python-c18ee5",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "missing-tool-python-b5f04f",
+     "untested-python-06b3da",
+     "vuln-python-833288"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "bug-python-c18ee5",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "flaky-python-29d792",
+     "missing-tool-python-b5f04f",
+     "slow-python-c181d5",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "brier": 0.2621,
+   "closed_share": 0.6,
+   "model": "sonnet",
+   "at": "2026-11-08T18:36:52Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "bug",
+    "dep",
+    "docs",
+    "flaky",
+    "missing-tool",
+    "slow",
+    "untested",
+    "vague",
+    "vuln"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 8,
+   "found": 8,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 8,
+   "fixed": 7,
+   "tf_keyed": 4,
+   "tf_first": 2,
+   "readings_keyed": 2,
+   "readings_hit": 0,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 0,
+   "broken": 0,
+   "scenarios": 10,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 10,
+   "conf_missing": 0,
+   "brier_sum": 2.6215,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      8,
+      8
+     ]
+    },
+    "kind": {
+     "bug": [
+      1,
+      1
+     ],
+     "vuln": [
+      1,
+      1
+     ],
+     "untested": [
+      1,
+      1
+     ],
+     "slow": [
+      2,
+      2
+     ],
+     "docs": [
+      1,
+      1
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "dep": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 8,
+    "found": 8,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 7,
+    "tf_keyed": 4,
+    "tf_first": 2,
+    "readings_keyed": 2,
+    "readings_hit": 0,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 2.6215,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       8,
+       8
+      ]
+     },
+     "kind": {
+      "bug": [
+       1,
+       1
+      ],
+      "vuln": [
+       1,
+       1
+      ],
+      "untested": [
+       1,
+       1
+      ],
+      "slow": [
+       2,
+       2
+      ],
+      "docs": [
+       1,
+       1
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "dep": [
+       1,
+       1
+      ]
+     }
+    },
+    "brier": 0.2621,
+    "closed_share": 0.6
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 0.5633,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "bug-python-c18ee5",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "missing-tool-python-b5f04f",
+     "untested-python-06b3da",
+     "vuln-python-833288"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "bug-python-c18ee5",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "flaky-python-29d792",
+     "missing-tool-python-b5f04f",
+     "slow-python-c181d5",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "brier": 0.2621,
+   "closed_share": 0.6,
+   "model": "sonnet",
+   "at": "2026-11-08T18:37:19Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "bug",
+    "dep",
+    "docs",
+    "flaky",
+    "missing-tool",
+    "slow",
+    "untested",
+    "vague",
+    "vuln"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 29,
+   "found": 23,
+   "false_alarms": 3,
+   "exam_defects": 0,
+   "fixable": 47,
+   "fixed": 36,
+   "tf_keyed": 17,
+   "tf_first": 10,
+   "readings_keyed": 7,
+   "readings_hit": 3,
+   "missing_keyed": 2,
+   "missing_hit": 2,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 6,
+   "broken": 2,
+   "scenarios": 35,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 1,
+   "brier_n": 35,
+   "conf_missing": 0,
+   "brier_sum": 13.5004,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 1,
+   "lean_ok": 1,
+   "forecast_keyed": 1,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 1,
+   "breakage_flagged": 1,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      23,
+      29
+     ]
+    },
+    "kind": {
+     "bug": [
+      8,
+      8
+     ],
+     "vuln": [
+      5,
+      5
+     ],
+     "untested": [
+      0,
+      3
+     ],
+     "slow": [
+      5,
+      5
+     ],
+     "docs": [
+      2,
+      4
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "dep": [
+      1,
+      1
+     ],
+     "trigger": [
+      0,
+      1
+     ],
+     "fork": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 29,
+    "found": 23,
+    "false_alarms": 3,
+    "exam_defects": 0,
+    "fixable": 47,
+    "fixed": 36,
+    "tf_keyed": 17,
+    "tf_first": 10,
+    "readings_keyed": 7,
+    "readings_hit": 3,
+    "missing_keyed": 2,
+    "missing_hit": 2,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 6,
+    "broken": 2,
+    "scenarios": 35,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 1,
+    "brier_n": 35,
+    "conf_missing": 0,
+    "brier_sum": 13.5004,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 1,
+    "lean_ok": 1,
+    "forecast_keyed": 1,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 1,
+    "breakage_flagged": 1,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       23,
+       29
+      ]
+     },
+     "kind": {
+      "bug": [
+       8,
+       8
+      ],
+      "vuln": [
+       5,
+       5
+      ],
+      "untested": [
+       0,
+       3
+      ],
+      "slow": [
+       5,
+       5
+      ],
+      "docs": [
+       2,
+       4
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "dep": [
+       1,
+       1
+      ],
+      "trigger": [
+       0,
+       1
+      ],
+      "fork": [
+       1,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "none": 1,
+     "clean": 1,
+     "rank": 1
+    },
+    "brier": 0.3857,
+    "closed_share": 0.4571
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 2.0655,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "beyond-python-abbb7f",
+     "breakage-python-4fda61",
+     "bug-python-c18ee5",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "exists-python-8b16e1",
+     "fork-python-c62abd",
+     "lean-python-bdc968",
+     "missing-tool-python-b5f04f",
+     "package-python-e74004",
+     "proof-python-17a7ed",
+     "recur-python-863c1b",
+     "resume-python-a8a489",
+     "tool-build-python-b903a5",
+     "unsure-python-8fd2f1",
+     "vuln-python-833288"
+    ]
+   },
+   "proved_by_arm_findings": [
+    "clean-python-f2a10d app.py uniq_keep_order: README says any values are accepted, but unhashable values like lists raised TypeError; now falls back to an equality scan"
+   ],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "beyond-python-abbb7f",
+     "breakage-python-4fda61",
+     "bug-python-c18ee5",
+     "clean-python-f2a10d",
+     "correction-python-33364a",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "door-python-137e17",
+     "exists-python-8b16e1",
+     "flaky-python-29d792",
+     "forecast-python-051c89",
+     "fork-python-c62abd",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "lean-python-bdc968",
+     "missing-tool-python-b5f04f",
+     "none-python-b00c74",
+     "package-python-e74004",
+     "parts-python-7b3cd8",
+     "proof-python-17a7ed",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "recur-python-863c1b",
+     "resume-python-a8a489",
+     "slow-python-c181d5",
+     "tool-build-python-b903a5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "unsure-python-8fd2f1",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "none": 1,
+    "clean": 1,
+    "rank": 1
+   },
+   "lean": {
+    "scenarios": 1,
+    "mean": {
+     "hook_ms_per_call": 17.1,
+     "inject_chars_per_turn": 0.0,
+     "tokens": 857.0,
+     "wall_s": 9.1
+    },
+    "grown": [],
+    "over_plain": {}
+   },
+   "brier": 0.3857,
+   "closed_share": 0.4571,
+   "model": "sonnet",
+   "at": "2026-11-08T18:40:28Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "beyond",
+    "breakage",
+    "bug",
+    "clean",
+    "correction",
+    "dep",
+    "docs",
+    "door",
+    "exists",
+    "flaky",
+    "forecast",
+    "fork",
+    "goal",
+    "lanes",
+    "lean",
+    "missing-tool",
+    "none",
+    "package",
+    "parts",
+    "proof",
+    "race",
+    "rank",
+    "recur",
+    "resume",
+    "slow",
+    "tool-build",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "unsure",
+    "untested",
+    "vague",
+    "vuln",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 29,
+   "found": 23,
+   "false_alarms": 3,
+   "exam_defects": 0,
+   "fixable": 47,
+   "fixed": 36,
+   "tf_keyed": 17,
+   "tf_first": 10,
+   "readings_keyed": 7,
+   "readings_hit": 3,
+   "missing_keyed": 2,
+   "missing_hit": 2,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 6,
+   "broken": 2,
+   "scenarios": 35,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 1,
+   "brier_n": 35,
+   "conf_missing": 0,
+   "brier_sum": 13.5004,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 1,
+   "lean_ok": 1,
+   "forecast_keyed": 1,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 1,
+   "breakage_flagged": 1,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      23,
+      29
+     ]
+    },
+    "kind": {
+     "bug": [
+      8,
+      8
+     ],
+     "vuln": [
+      5,
+      5
+     ],
+     "untested": [
+      0,
+      3
+     ],
+     "slow": [
+      5,
+      5
+     ],
+     "docs": [
+      2,
+      4
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "dep": [
+      1,
+      1
+     ],
+     "trigger": [
+      0,
+      1
+     ],
+     "fork": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 29,
+    "found": 23,
+    "false_alarms": 3,
+    "exam_defects": 0,
+    "fixable": 47,
+    "fixed": 36,
+    "tf_keyed": 17,
+    "tf_first": 10,
+    "readings_keyed": 7,
+    "readings_hit": 3,
+    "missing_keyed": 2,
+    "missing_hit": 2,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 6,
+    "broken": 2,
+    "scenarios": 35,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 1,
+    "brier_n": 35,
+    "conf_missing": 0,
+    "brier_sum": 13.5004,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 1,
+    "lean_ok": 1,
+    "forecast_keyed": 1,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 1,
+    "breakage_flagged": 1,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       23,
+       29
+      ]
+     },
+     "kind": {
+      "bug": [
+       8,
+       8
+      ],
+      "vuln": [
+       5,
+       5
+      ],
+      "untested": [
+       0,
+       3
+      ],
+      "slow": [
+       5,
+       5
+      ],
+      "docs": [
+       2,
+       4
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "dep": [
+       1,
+       1
+      ],
+      "trigger": [
+       0,
+       1
+      ],
+      "fork": [
+       1,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "none": 1,
+     "clean": 1,
+     "rank": 1
+    },
+    "brier": 0.3857,
+    "closed_share": 0.4571
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 2.0655,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "beyond-python-abbb7f",
+     "breakage-python-4fda61",
+     "bug-python-c18ee5",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "exists-python-8b16e1",
+     "fork-python-c62abd",
+     "lean-python-bdc968",
+     "missing-tool-python-b5f04f",
+     "package-python-e74004",
+     "proof-python-17a7ed",
+     "recur-python-863c1b",
+     "resume-python-a8a489",
+     "tool-build-python-b903a5",
+     "unsure-python-8fd2f1",
+     "vuln-python-833288"
+    ]
+   },
+   "proved_by_arm_findings": [
+    "clean-python-f2a10d app.py uniq_keep_order: README says any values are accepted, but unhashable values like lists raised TypeError; now falls back to an equality scan"
+   ],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "beyond-python-abbb7f",
+     "breakage-python-4fda61",
+     "bug-python-c18ee5",
+     "clean-python-f2a10d",
+     "correction-python-33364a",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "door-python-137e17",
+     "exists-python-8b16e1",
+     "flaky-python-29d792",
+     "forecast-python-051c89",
+     "fork-python-c62abd",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "lean-python-bdc968",
+     "missing-tool-python-b5f04f",
+     "none-python-b00c74",
+     "package-python-e74004",
+     "parts-python-7b3cd8",
+     "proof-python-17a7ed",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "recur-python-863c1b",
+     "resume-python-a8a489",
+     "slow-python-c181d5",
+     "tool-build-python-b903a5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "unsure-python-8fd2f1",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "none": 1,
+    "clean": 1,
+    "rank": 1
+   },
+   "lean": {
+    "scenarios": 1,
+    "mean": {
+     "hook_ms_per_call": 17.1,
+     "inject_chars_per_turn": 0.0,
+     "tokens": 857.0,
+     "wall_s": 9.1
+    },
+    "grown": [],
+    "over_plain": {}
+   },
+   "brier": 0.3857,
+   "closed_share": 0.4571,
+   "model": "sonnet",
+   "at": "2026-11-08T18:40:34Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "beyond",
+    "breakage",
+    "bug",
+    "clean",
+    "correction",
+    "dep",
+    "docs",
+    "door",
+    "exists",
+    "flaky",
+    "forecast",
+    "fork",
+    "goal",
+    "lanes",
+    "lean",
+    "missing-tool",
+    "none",
+    "package",
+    "parts",
+    "proof",
+    "race",
+    "rank",
+    "recur",
+    "resume",
+    "slow",
+    "tool-build",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "unsure",
+    "untested",
+    "vague",
+    "vuln",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 29,
+   "found": 25,
+   "false_alarms": 6,
+   "exam_defects": 0,
+   "fixable": 47,
+   "fixed": 39,
+   "tf_keyed": 17,
+   "tf_first": 11,
+   "readings_keyed": 7,
+   "readings_hit": 3,
+   "missing_keyed": 2,
+   "missing_hit": 2,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 4,
+   "broken": 2,
+   "scenarios": 35,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 35,
+   "conf_missing": 0,
+   "brier_sum": 13.5292,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 1,
+   "lean_ok": 1,
+   "forecast_keyed": 1,
+   "forecast_type": 1,
+   "forecast_overlap": 100,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 1,
+   "breakage_flagged": 1,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      25,
+      29
+     ]
+    },
+    "kind": {
+     "bug": [
+      8,
+      8
+     ],
+     "vuln": [
+      5,
+      5
+     ],
+     "untested": [
+      1,
+      3
+     ],
+     "slow": [
+      5,
+      5
+     ],
+     "docs": [
+      3,
+      4
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "dep": [
+      1,
+      1
+     ],
+     "trigger": [
+      0,
+      1
+     ],
+     "fork": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 29,
+    "found": 25,
+    "false_alarms": 6,
+    "exam_defects": 0,
+    "fixable": 47,
+    "fixed": 39,
+    "tf_keyed": 17,
+    "tf_first": 11,
+    "readings_keyed": 7,
+    "readings_hit": 3,
+    "missing_keyed": 2,
+    "missing_hit": 2,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 2,
+    "scenarios": 35,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 35,
+    "conf_missing": 0,
+    "brier_sum": 13.5292,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 1,
+    "lean_ok": 1,
+    "forecast_keyed": 1,
+    "forecast_type": 1,
+    "forecast_overlap": 100,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 1,
+    "breakage_flagged": 1,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       25,
+       29
+      ]
+     },
+     "kind": {
+      "bug": [
+       8,
+       8
+      ],
+      "vuln": [
+       5,
+       5
+      ],
+      "untested": [
+       1,
+       3
+      ],
+      "slow": [
+       5,
+       5
+      ],
+      "docs": [
+       3,
+       4
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "dep": [
+       1,
+       1
+      ],
+      "trigger": [
+       0,
+       1
+      ],
+      "fork": [
+       1,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "untested": 2,
+     "ambiguous": 2,
+     "clean": 2
+    },
+    "brier": 0.3865,
+    "closed_share": 0.4857
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 0.2055,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "beyond-python-abbb7f",
+     "breakage-python-4fda61",
+     "bug-python-c18ee5",
+     "correction-python-33364a",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "exists-python-8b16e1",
+     "flaky-python-29d792",
+     "forecast-python-051c89",
+     "lean-python-bdc968",
+     "missing-tool-python-b5f04f",
+     "package-python-e74004",
+     "proof-python-17a7ed",
+     "recur-python-863c1b",
+     "resume-python-a8a489",
+     "tool-build-python-b903a5",
+     "unsure-python-8fd2f1"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "beyond-python-abbb7f",
+     "breakage-python-4fda61",
+     "bug-python-c18ee5",
+     "clean-python-f2a10d",
+     "correction-python-33364a",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "door-python-137e17",
+     "exists-python-8b16e1",
+     "flaky-python-29d792",
+     "forecast-python-051c89",
+     "fork-python-c62abd",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "lean-python-bdc968",
+     "missing-tool-python-b5f04f",
+     "none-python-b00c74",
+     "package-python-e74004",
+     "parts-python-7b3cd8",
+     "proof-python-17a7ed",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "recur-python-863c1b",
+     "resume-python-a8a489",
+     "slow-python-c181d5",
+     "tool-build-python-b903a5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "unsure-python-8fd2f1",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "untested": 2,
+    "ambiguous": 2,
+    "clean": 2
+   },
+   "lean": {
+    "scenarios": 1,
+    "mean": {
+     "hook_ms_per_call": 8.0,
+     "inject_chars_per_turn": 0.0,
+     "tokens": 2089.0,
+     "wall_s": 14.4
+    },
+    "grown": [],
+    "over_plain": {}
+   },
+   "brier": 0.3865,
+   "closed_share": 0.4857,
+   "model": "haiku",
+   "at": "2026-11-08T18:47:18Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "beyond",
+    "breakage",
+    "bug",
+    "clean",
+    "correction",
+    "dep",
+    "docs",
+    "door",
+    "exists",
+    "flaky",
+    "forecast",
+    "fork",
+    "goal",
+    "lanes",
+    "lean",
+    "missing-tool",
+    "none",
+    "package",
+    "parts",
+    "proof",
+    "race",
+    "rank",
+    "recur",
+    "resume",
+    "slow",
+    "tool-build",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "unsure",
+    "untested",
+    "vague",
+    "vuln",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 29,
+   "found": 25,
+   "false_alarms": 6,
+   "exam_defects": 0,
+   "fixable": 47,
+   "fixed": 39,
+   "tf_keyed": 17,
+   "tf_first": 11,
+   "readings_keyed": 7,
+   "readings_hit": 3,
+   "missing_keyed": 2,
+   "missing_hit": 2,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 4,
+   "broken": 2,
+   "scenarios": 35,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 35,
+   "conf_missing": 0,
+   "brier_sum": 13.5292,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 1,
+   "lean_ok": 1,
+   "forecast_keyed": 1,
+   "forecast_type": 1,
+   "forecast_overlap": 100,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 1,
+   "breakage_flagged": 1,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      25,
+      29
+     ]
+    },
+    "kind": {
+     "bug": [
+      8,
+      8
+     ],
+     "vuln": [
+      5,
+      5
+     ],
+     "untested": [
+      1,
+      3
+     ],
+     "slow": [
+      5,
+      5
+     ],
+     "docs": [
+      3,
+      4
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "dep": [
+      1,
+      1
+     ],
+     "trigger": [
+      0,
+      1
+     ],
+     "fork": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 29,
+    "found": 25,
+    "false_alarms": 6,
+    "exam_defects": 0,
+    "fixable": 47,
+    "fixed": 39,
+    "tf_keyed": 17,
+    "tf_first": 11,
+    "readings_keyed": 7,
+    "readings_hit": 3,
+    "missing_keyed": 2,
+    "missing_hit": 2,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 2,
+    "scenarios": 35,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 35,
+    "conf_missing": 0,
+    "brier_sum": 13.5292,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 1,
+    "lean_ok": 1,
+    "forecast_keyed": 1,
+    "forecast_type": 1,
+    "forecast_overlap": 100,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 1,
+    "breakage_flagged": 1,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       25,
+       29
+      ]
+     },
+     "kind": {
+      "bug": [
+       8,
+       8
+      ],
+      "vuln": [
+       5,
+       5
+      ],
+      "untested": [
+       1,
+       3
+      ],
+      "slow": [
+       5,
+       5
+      ],
+      "docs": [
+       3,
+       4
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "dep": [
+       1,
+       1
+      ],
+      "trigger": [
+       0,
+       1
+      ],
+      "fork": [
+       1,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "untested": 2,
+     "ambiguous": 2,
+     "clean": 2
+    },
+    "brier": 0.3865,
+    "closed_share": 0.4857
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 0.2055,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "beyond-python-abbb7f",
+     "breakage-python-4fda61",
+     "bug-python-c18ee5",
+     "correction-python-33364a",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "exists-python-8b16e1",
+     "flaky-python-29d792",
+     "forecast-python-051c89",
+     "lean-python-bdc968",
+     "missing-tool-python-b5f04f",
+     "package-python-e74004",
+     "proof-python-17a7ed",
+     "recur-python-863c1b",
+     "resume-python-a8a489",
+     "tool-build-python-b903a5",
+     "unsure-python-8fd2f1"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "beyond-python-abbb7f",
+     "breakage-python-4fda61",
+     "bug-python-c18ee5",
+     "clean-python-f2a10d",
+     "correction-python-33364a",
+     "dep-python-abb7b4",
+     "docs-python-084209",
+     "door-python-137e17",
+     "exists-python-8b16e1",
+     "flaky-python-29d792",
+     "forecast-python-051c89",
+     "fork-python-c62abd",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "lean-python-bdc968",
+     "missing-tool-python-b5f04f",
+     "none-python-b00c74",
+     "package-python-e74004",
+     "parts-python-7b3cd8",
+     "proof-python-17a7ed",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "recur-python-863c1b",
+     "resume-python-a8a489",
+     "slow-python-c181d5",
+     "tool-build-python-b903a5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "unsure-python-8fd2f1",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "untested": 2,
+    "ambiguous": 2,
+    "clean": 2
+   },
+   "lean": {
+    "scenarios": 1,
+    "mean": {
+     "hook_ms_per_call": 8.0,
+     "inject_chars_per_turn": 0.0,
+     "tokens": 2089.0,
+     "wall_s": 14.4
+    },
+    "grown": [],
+    "over_plain": {}
+   },
+   "brier": 0.3865,
+   "closed_share": 0.4857,
+   "model": "haiku",
+   "at": "2026-11-08T18:47:23Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "beyond",
+    "breakage",
+    "bug",
+    "clean",
+    "correction",
+    "dep",
+    "docs",
+    "door",
+    "exists",
+    "flaky",
+    "forecast",
+    "fork",
+    "goal",
+    "lanes",
+    "lean",
+    "missing-tool",
+    "none",
+    "package",
+    "parts",
+    "proof",
+    "race",
+    "rank",
+    "recur",
+    "resume",
+    "slow",
+    "tool-build",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "unsure",
+    "untested",
+    "vague",
+    "vuln",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 19,
+   "found": 14,
+   "false_alarms": 1,
+   "exam_defects": 0,
+   "fixable": 28,
+   "fixed": 20,
+   "tf_keyed": 12,
+   "tf_first": 6,
+   "readings_keyed": 5,
+   "readings_hit": 1,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 4,
+   "broken": 2,
+   "scenarios": 18,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 18,
+   "conf_missing": 0,
+   "brier_sum": 9.8873,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      14,
+      19
+     ]
+    },
+    "kind": {
+     "vuln": [
+      4,
+      4
+     ],
+     "untested": [
+      1,
+      3
+     ],
+     "slow": [
+      5,
+      5
+     ],
+     "bug": [
+      3,
+      3
+     ],
+     "docs": [
+      0,
+      2
+     ],
+     "trigger": [
+      0,
+      1
+     ],
+     "fork": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 19,
+    "found": 14,
+    "false_alarms": 1,
+    "exam_defects": 0,
+    "fixable": 28,
+    "fixed": 20,
+    "tf_keyed": 12,
+    "tf_first": 6,
+    "readings_keyed": 5,
+    "readings_hit": 1,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 2,
+    "scenarios": 18,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 18,
+    "conf_missing": 0,
+    "brier_sum": 9.8873,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       14,
+       19
+      ]
+     },
+     "kind": {
+      "vuln": [
+       4,
+       4
+      ],
+      "untested": [
+       1,
+       3
+      ],
+      "slow": [
+       5,
+       5
+      ],
+      "bug": [
+       3,
+       3
+      ],
+      "docs": [
+       0,
+       2
+      ],
+      "trigger": [
+       0,
+       1
+      ],
+      "fork": [
+       1,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "rank": 1
+    },
+    "brier": 0.5493,
+    "closed_share": 0.2222
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 1.058,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "clean-python-f2a10d",
+     "fork-python-c62abd",
+     "untested-python-06b3da",
+     "vuln-python-833288"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "clean-python-f2a10d",
+     "door-python-137e17",
+     "fork-python-c62abd",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "none-python-b00c74",
+     "parts-python-7b3cd8",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "slow-python-c181d5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "rank": 1
+   },
+   "brier": 0.5493,
+   "closed_share": 0.2222,
+   "model": "sonnet",
+   "at": "2026-11-08T18:48:48Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "clean",
+    "door",
+    "fork",
+    "goal",
+    "lanes",
+    "none",
+    "parts",
+    "race",
+    "rank",
+    "slow",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "untested",
+    "vague",
+    "vuln",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 19,
+   "found": 14,
+   "false_alarms": 1,
+   "exam_defects": 0,
+   "fixable": 28,
+   "fixed": 20,
+   "tf_keyed": 12,
+   "tf_first": 6,
+   "readings_keyed": 5,
+   "readings_hit": 1,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 4,
+   "broken": 2,
+   "scenarios": 18,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 18,
+   "conf_missing": 0,
+   "brier_sum": 9.8873,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      14,
+      19
+     ]
+    },
+    "kind": {
+     "vuln": [
+      4,
+      4
+     ],
+     "untested": [
+      1,
+      3
+     ],
+     "slow": [
+      5,
+      5
+     ],
+     "bug": [
+      3,
+      3
+     ],
+     "docs": [
+      0,
+      2
+     ],
+     "trigger": [
+      0,
+      1
+     ],
+     "fork": [
+      1,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 19,
+    "found": 14,
+    "false_alarms": 1,
+    "exam_defects": 0,
+    "fixable": 28,
+    "fixed": 20,
+    "tf_keyed": 12,
+    "tf_first": 6,
+    "readings_keyed": 5,
+    "readings_hit": 1,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 2,
+    "scenarios": 18,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 18,
+    "conf_missing": 0,
+    "brier_sum": 9.8873,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       14,
+       19
+      ]
+     },
+     "kind": {
+      "vuln": [
+       4,
+       4
+      ],
+      "untested": [
+       1,
+       3
+      ],
+      "slow": [
+       5,
+       5
+      ],
+      "bug": [
+       3,
+       3
+      ],
+      "docs": [
+       0,
+       2
+      ],
+      "trigger": [
+       0,
+       1
+      ],
+      "fork": [
+       1,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "rank": 1
+    },
+    "brier": 0.5493,
+    "closed_share": 0.2222
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 1.058,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "clean-python-f2a10d",
+     "fork-python-c62abd",
+     "untested-python-06b3da",
+     "vuln-python-833288"
+    ]
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "clean-python-f2a10d",
+     "door-python-137e17",
+     "fork-python-c62abd",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "none-python-b00c74",
+     "parts-python-7b3cd8",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "slow-python-c181d5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "vuln-python-833288",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "rank": 1
+   },
+   "brier": 0.5493,
+   "closed_share": 0.2222,
+   "model": "sonnet",
+   "at": "2026-11-08T18:48:53Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "clean",
+    "door",
+    "fork",
+    "goal",
+    "lanes",
+    "none",
+    "parts",
+    "race",
+    "rank",
+    "slow",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "untested",
+    "vague",
+    "vuln",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 16,
+   "found": 11,
+   "false_alarms": 5,
+   "exam_defects": 0,
+   "fixable": 25,
+   "fixed": 19,
+   "tf_keyed": 11,
+   "tf_first": 7,
+   "readings_keyed": 4,
+   "readings_hit": 0,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 4,
+   "broken": 2,
+   "scenarios": 14,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 14,
+   "conf_missing": 0,
+   "brier_sum": 10.0404,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      11,
+      16
+     ]
+    },
+    "kind": {
+     "slow": [
+      5,
+      5
+     ],
+     "bug": [
+      3,
+      3
+     ],
+     "vuln": [
+      3,
+      3
+     ],
+     "untested": [
+      0,
+      2
+     ],
+     "docs": [
+      0,
+      2
+     ],
+     "trigger": [
+      0,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 16,
+    "found": 11,
+    "false_alarms": 5,
+    "exam_defects": 0,
+    "fixable": 25,
+    "fixed": 19,
+    "tf_keyed": 11,
+    "tf_first": 7,
+    "readings_keyed": 4,
+    "readings_hit": 0,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 2,
+    "scenarios": 14,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 14,
+    "conf_missing": 0,
+    "brier_sum": 10.0404,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       11,
+       16
+      ]
+     },
+     "kind": {
+      "slow": [
+       5,
+       5
+      ],
+      "bug": [
+       3,
+       3
+      ],
+      "vuln": [
+       3,
+       3
+      ],
+      "untested": [
+       0,
+       2
+      ],
+      "docs": [
+       0,
+       2
+      ],
+      "trigger": [
+       0,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "ambiguous": 1,
+     "none": 1,
+     "rank": 2,
+     "door": 1
+    },
+    "brier": 0.7172,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 1.8868,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "door-python-137e17",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "none-python-b00c74",
+     "parts-python-7b3cd8",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "slow-python-c181d5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "vague-python-25bbe3",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "ambiguous": 1,
+    "none": 1,
+    "rank": 2,
+    "door": 1
+   },
+   "brier": 0.7172,
+   "closed_share": 0.0,
+   "model": "opus",
+   "at": "2026-11-08T18:51:15Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "door",
+    "goal",
+    "lanes",
+    "none",
+    "parts",
+    "race",
+    "rank",
+    "slow",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "vague",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 16,
+   "found": 11,
+   "false_alarms": 5,
+   "exam_defects": 0,
+   "fixable": 25,
+   "fixed": 19,
+   "tf_keyed": 11,
+   "tf_first": 7,
+   "readings_keyed": 4,
+   "readings_hit": 0,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 4,
+   "broken": 2,
+   "scenarios": 14,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 14,
+   "conf_missing": 0,
+   "brier_sum": 10.0404,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      11,
+      16
+     ]
+    },
+    "kind": {
+     "slow": [
+      5,
+      5
+     ],
+     "bug": [
+      3,
+      3
+     ],
+     "vuln": [
+      3,
+      3
+     ],
+     "untested": [
+      0,
+      2
+     ],
+     "docs": [
+      0,
+      2
+     ],
+     "trigger": [
+      0,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 16,
+    "found": 11,
+    "false_alarms": 5,
+    "exam_defects": 0,
+    "fixable": 25,
+    "fixed": 19,
+    "tf_keyed": 11,
+    "tf_first": 7,
+    "readings_keyed": 4,
+    "readings_hit": 0,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 2,
+    "scenarios": 14,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 14,
+    "conf_missing": 0,
+    "brier_sum": 10.0404,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       11,
+       16
+      ]
+     },
+     "kind": {
+      "slow": [
+       5,
+       5
+      ],
+      "bug": [
+       3,
+       3
+      ],
+      "vuln": [
+       3,
+       3
+      ],
+      "untested": [
+       0,
+       2
+      ],
+      "docs": [
+       0,
+       2
+      ],
+      "trigger": [
+       0,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "ambiguous": 1,
+     "none": 1,
+     "rank": 2,
+     "door": 1
+    },
+    "brier": 0.7172,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 1.8868,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "door-python-137e17",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "none-python-b00c74",
+     "parts-python-7b3cd8",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "slow-python-c181d5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "vague-python-25bbe3",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "ambiguous": 1,
+    "none": 1,
+    "rank": 2,
+    "door": 1
+   },
+   "brier": 0.7172,
+   "closed_share": 0.0,
+   "model": "opus",
+   "at": "2026-11-08T18:51:20Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "door",
+    "goal",
+    "lanes",
+    "none",
+    "parts",
+    "race",
+    "rank",
+    "slow",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "vague",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 18,
+   "found": 12,
+   "false_alarms": 4,
+   "exam_defects": 0,
+   "fixable": 30,
+   "fixed": 21,
+   "tf_keyed": 12,
+   "tf_first": 6,
+   "readings_keyed": 4,
+   "readings_hit": 1,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 5,
+   "broken": 2,
+   "scenarios": 19,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 1,
+   "brier_n": 19,
+   "conf_missing": 0,
+   "brier_sum": 12.82,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 1,
+   "forecast_type": 1,
+   "forecast_overlap": 100,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      12,
+      18
+     ]
+    },
+    "kind": {
+     "untested": [
+      0,
+      3
+     ],
+     "slow": [
+      5,
+      5
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "bug": [
+      3,
+      3
+     ],
+     "vuln": [
+      3,
+      3
+     ],
+     "docs": [
+      0,
+      2
+     ],
+     "trigger": [
+      0,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 18,
+    "found": 12,
+    "false_alarms": 4,
+    "exam_defects": 0,
+    "fixable": 30,
+    "fixed": 21,
+    "tf_keyed": 12,
+    "tf_first": 6,
+    "readings_keyed": 4,
+    "readings_hit": 1,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 5,
+    "broken": 2,
+    "scenarios": 19,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 1,
+    "brier_n": 19,
+    "conf_missing": 0,
+    "brier_sum": 12.82,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 1,
+    "forecast_type": 1,
+    "forecast_overlap": 100,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       12,
+       18
+      ]
+     },
+     "kind": {
+      "untested": [
+       0,
+       3
+      ],
+      "slow": [
+       5,
+       5
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "bug": [
+       3,
+       3
+      ],
+      "vuln": [
+       3,
+       3
+      ],
+      "docs": [
+       0,
+       2
+      ],
+      "trigger": [
+       0,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "ambiguous": 1,
+     "none": 1,
+     "clean": 1,
+     "rank": 1
+    },
+    "brier": 0.6747,
+    "closed_share": 0.0526
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 1.1116,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "forecast-python-051c89"
+    ]
+   },
+   "proved_by_arm_findings": [
+    "clean-python-f2a10d app.py uniq_keep_order: README says it accepts any values, but unhashable items like lists raised TypeError because it used a set; fixed with an equality-scan fallback"
+   ],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "clean-python-f2a10d",
+     "correction-python-33364a",
+     "door-python-137e17",
+     "flaky-python-29d792",
+     "forecast-python-051c89",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "none-python-b00c74",
+     "parts-python-7b3cd8",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "slow-python-c181d5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "ambiguous": 1,
+    "none": 1,
+    "clean": 1,
+    "rank": 1
+   },
+   "brier": 0.6747,
+   "closed_share": 0.0526,
+   "model": "sonnet",
+   "at": "2026-11-08T18:53:12Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "clean",
+    "correction",
+    "door",
+    "flaky",
+    "forecast",
+    "goal",
+    "lanes",
+    "none",
+    "parts",
+    "race",
+    "rank",
+    "slow",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "untested",
+    "vague",
+    "watch"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s52-040",
+   "agent": "plain",
+   "keyed": 18,
+   "found": 12,
+   "false_alarms": 4,
+   "exam_defects": 0,
+   "fixable": 30,
+   "fixed": 21,
+   "tf_keyed": 12,
+   "tf_first": 6,
+   "readings_keyed": 4,
+   "readings_hit": 1,
+   "missing_keyed": 1,
+   "missing_hit": 1,
+   "rank_keyed": 1,
+   "rank_hit": 0,
+   "false_done": 5,
+   "broken": 2,
+   "scenarios": 19,
+   "errors": 0,
+   "reasked": 0,
+   "proved_by_arm": 1,
+   "brier_n": 19,
+   "conf_missing": 0,
+   "brier_sum": 12.82,
+   "false_proofs": 0,
+   "watch_keyed": 5,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 3,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 1,
+   "forecast_type": 1,
+   "forecast_overlap": 100,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {
+    "lang": {
+     "python": [
+      12,
+      18
+     ]
+    },
+    "kind": {
+     "untested": [
+      0,
+      3
+     ],
+     "slow": [
+      5,
+      5
+     ],
+     "flaky": [
+      1,
+      1
+     ],
+     "bug": [
+      3,
+      3
+     ],
+     "vuln": [
+      3,
+      3
+     ],
+     "docs": [
+      0,
+      2
+     ],
+     "trigger": [
+      0,
+      1
+     ]
+    }
+   },
+   "holdout": {
+    "keyed": 18,
+    "found": 12,
+    "false_alarms": 4,
+    "exam_defects": 0,
+    "fixable": 30,
+    "fixed": 21,
+    "tf_keyed": 12,
+    "tf_first": 6,
+    "readings_keyed": 4,
+    "readings_hit": 1,
+    "missing_keyed": 1,
+    "missing_hit": 1,
+    "rank_keyed": 1,
+    "rank_hit": 0,
+    "false_done": 5,
+    "broken": 2,
+    "scenarios": 19,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 1,
+    "brier_n": 19,
+    "conf_missing": 0,
+    "brier_sum": 12.82,
+    "false_proofs": 0,
+    "watch_keyed": 5,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 3,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 1,
+    "forecast_type": 1,
+    "forecast_overlap": 100,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {
+     "lang": {
+      "python": [
+       12,
+       18
+      ]
+     },
+     "kind": {
+      "untested": [
+       0,
+       3
+      ],
+      "slow": [
+       5,
+       5
+      ],
+      "flaky": [
+       1,
+       1
+      ],
+      "bug": [
+       3,
+       3
+      ],
+      "vuln": [
+       3,
+       3
+      ],
+      "docs": [
+       0,
+       2
+      ],
+      "trigger": [
+       0,
+       1
+      ]
+     }
+    },
+    "false_by_kind": {
+     "ambiguous": 1,
+     "none": 1,
+     "clean": 1,
+     "rank": 1
+    },
+    "brier": 0.6747,
+    "closed_share": 0.0526
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 0,
+    "fixed": 0,
+    "tf_keyed": 0,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 0,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 0,
+    "conf_missing": 0,
+    "brier_sum": 0,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": null,
+    "closed_share": null
+   },
+   "cost": 1.1116,
+   "closed": {
+    "train": [],
+    "holdout": [
+     "forecast-python-051c89"
+    ]
+   },
+   "proved_by_arm_findings": [
+    "clean-python-f2a10d app.py uniq_keep_order: README says it accepts any values, but unhashable items like lists raised TypeError because it used a set; fixed with an equality-scan fallback"
+   ],
+   "answered": {
+    "holdout": [
+     "ambiguous-python-da5e63",
+     "clean-python-f2a10d",
+     "correction-python-33364a",
+     "door-python-137e17",
+     "flaky-python-29d792",
+     "forecast-python-051c89",
+     "goal-python-994177",
+     "lanes-python-72d971",
+     "none-python-b00c74",
+     "parts-python-7b3cd8",
+     "race-python-051c0b",
+     "rank-python-650e20",
+     "slow-python-c181d5",
+     "tool-find-python-3a9ae0",
+     "tool-grant-python-97a95f",
+     "trigger-python-bc506a",
+     "untested-python-06b3da",
+     "vague-python-25bbe3",
+     "watch-python-f919ae"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "false_by_kind": {
+    "ambiguous": 1,
+    "none": 1,
+    "clean": 1,
+    "rank": 1
+   },
+   "brier": 0.6747,
+   "closed_share": 0.0526,
+   "model": "sonnet",
+   "at": "2026-11-08T18:53:17Z",
+   "gen": 4,
+   "split": "holdout",
+   "kinds": [
+    "ambiguous",
+    "clean",
+    "correction",
+    "door",
+    "flaky",
+    "forecast",
+    "goal",
+    "lanes",
+    "none",
+    "parts",
+    "race",
+    "rank",
+    "slow",
+    "tool-find",
+    "tool-grant",
+    "trigger",
+    "untested",
+    "vague",
+    "watch"
+   ],
+   "author": "self"
   }
  ],
  "coverage": {
@@ -52554,20 +56471,20 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 863,
+ "unproven": 847,
  "unproven_kinds": {
-  "meaning-notes": 401,
-  "meaning-user": 239,
-  "research-uncited": 32,
-  "perf-typed": 98,
-  "typed": 58,
+  "meaning-notes": 404,
+  "meaning-user": 210,
+  "research-uncited": 33,
+  "perf-typed": 114,
+  "typed": 61,
   "red": 86,
   "perf-noise": 1,
+  "data": 9,
+  "ui-unshot": 35,
   "docs": 69,
-  "data": 8,
-  "infra": 4,
-  "tui-unshot": 8,
-  "ui-unshot": 35
+  "tui-unshot": 7,
+  "infra": 3
  },
  "next": {
   "stage": "sweep",
@@ -57095,769 +61012,5 @@
    "covered": 0,
    "clauses": 0
   }
- },
- "kalevala": {
-  "towers": [
-   {
-    "name": "aspect-1-initiative",
-    "aspect": "1. Initiative",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.2,
-    "spend": 4.2094,
-    "missions": 1,
-    "restarted": 1793931533.4482346,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "build",
-     "gen": 1,
-     "action": "Mission 1 (initiative-session-default): finish T-3887",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-10-beyond-code",
-    "aspect": "10. Beyond code",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.4,
-    "spend": 1.0627,
-    "missions": 1,
-    "restarted": 1793931533.599455,
-    "stuck": false,
-    "state": "unscored",
-    "paused": "merged into aspect-1-initiative: both write before/after",
-    "stage": {
-     "stage": "intake",
-     "gen": 1,
-     "action": "Mission 1 (beyond-exam): 0 of 4 briefs intaken; fm intake --source genesis the next line of its block, then add its id to the Task: line at once",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-11-self-triggerin",
-    "aspect": "11. Self-triggering",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.2,
-    "spend": 3.8463,
-    "missions": 1,
-    "restarted": 1793931533.615896,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "build",
-     "gen": 1,
-     "action": "Mission 1 (trigger-exam): finish T-3888",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-12-staying-lean-a",
-    "aspect": "12. Staying lean and safe",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.3,
-    "spend": 4.3306,
-    "missions": 1,
-    "restarted": 1793931533.6324291,
-    "stuck": false,
-    "state": "unscored",
-    "paused": "merged into aspect-1-initiative: both write before/after",
-    "stage": {
-     "stage": "intake",
-     "gen": 1,
-     "action": "Mission 1 (lean-exam): 0 of 1 briefs intaken; fm intake --source genesis the next line of its block, then add its id to the Task: line at once",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-13-genesis-as-a-f",
-    "aspect": "13. Genesis as a feature",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.1,
-    "spend": 1.3531,
-    "missions": 1,
-    "restarted": 1793931533.653407,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "build",
-     "gen": 1,
-     "action": "Mission 1 (genesis-exam): finish T-3891",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-2-exhaustive-thin",
-    "aspect": "2. Exhaustive thinking",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.1,
-    "spend": 4.0742,
-    "missions": 1,
-    "restarted": 1793931533.4659588,
-    "stuck": false,
-    "state": "unscored",
-    "paused": "merged into aspect-13-genesis-as-a-f: both write pane/status",
-    "stage": {
-     "stage": "intake",
-     "gen": 1,
-     "action": "Mission 1 (thinking-exam): 0 of 1 briefs intaken; fm intake --source genesis the next line of its block, then add its id to the Task: line at once",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-3-anticipation",
-    "aspect": "3. Anticipation",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 10.9,
-    "spend": 4.2879,
-    "missions": 1,
-    "restarted": 1793931533.4823616,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "build",
-     "gen": 1,
-     "action": "Mission 1 (anticipation-exam): finish T-3898",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-4-goal-to-finish",
-    "aspect": "4. Goal to finish",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 10.9,
-    "spend": 5.0231,
-    "missions": 1,
-    "restarted": 1793931533.498627,
-    "stuck": false,
-    "state": "unscored",
-    "paused": "merged into aspect-13-genesis-as-a-f: both write pane/status",
-    "stage": {
-     "stage": "intake",
-     "gen": 1,
-     "action": "Mission 1 (goal-exam): 0 of 1 briefs intaken; fm intake --source genesis the next line of its block, then add its id to the Task: line at once",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-5-getting-the-too",
-    "aspect": "5. Getting the tools it lacks",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.0,
-    "spend": 7.7072,
-    "missions": 1,
-    "restarted": 1793931533.5147183,
-    "stuck": false,
-    "state": "unscored",
-    "paused": "merged into aspect-13-genesis-as-a-f: both write pane/status",
-    "stage": {
-     "stage": "intake",
-     "gen": 1,
-     "action": "Mission 1 (tools-exam): 0 of 1 briefs intaken; fm intake --source genesis the next line of its block, then add its id to the Task: line at once",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-6-verifying-anyth",
-    "aspect": "6. Verifying anything",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.6,
-    "spend": 1.6758,
-    "missions": 0,
-    "restarted": 1793931533.5309632,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (verify-exam), #6 Verifying anything, #8: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-verify-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-7-self-repair-and",
-    "aspect": "7. Self-repair and self-improvement",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.2,
-    "spend": 6.1315,
-    "missions": 0,
-    "restarted": 1793931533.5478654,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (self-repair-exam), #7 Self-repair, #6: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-self-repair-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-8-calibrated-judg",
-    "aspect": "8. Calibrated judgment",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.2,
-    "spend": 5.261,
-    "missions": 0,
-    "restarted": 1793931533.564637,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (judgment-exam), #8 Calibrated judgment, #6: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-judgment-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "aspect-9-orchestration",
-    "aspect": "9. Orchestration",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.3,
-    "spend": 3.0065,
-    "missions": 0,
-    "restarted": 1793931533.5831509,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (orch-exam), #9, #6: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-orch-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "docs",
-    "aspect": "Docs",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.3,
-    "spend": 2.4294,
-    "missions": 0,
-    "restarted": 1793931533.702301,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (docs-exam), #6, #1, #10: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-docs-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "ecosystem",
-    "aspect": "Ecosystem",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.1,
-    "spend": 3.0816,
-    "missions": 0,
-    "restarted": 1793931533.719695,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (eco-exam), #1, #5, #10: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-eco-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "efficiency",
-    "aspect": "efficiency",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.1,
-    "spend": 3.0858,
-    "missions": 0,
-    "restarted": 1793931533.8684084,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (eff-exam), #12, #6, #9: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-eff-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "memory",
-    "aspect": "memory",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.1,
-    "spend": 3.303,
-    "missions": 0,
-    "restarted": 1793931533.8521452,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (memory-exam), #7, #3, #8: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-memory-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "model-layer",
-    "aspect": "Model layer",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 12.1,
-    "spend": 3.8693,
-    "missions": 0,
-    "restarted": 1793931533.8181958,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (models-exam), #12, #9, #6: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-models-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "multi-user",
-    "aspect": "Multi-user",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.9,
-    "spend": 3.2538,
-    "missions": 0,
-    "restarted": 1793931533.7360594,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (multi-exam), #6, #9, #8: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-multi-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "observability",
-    "aspect": "Observability",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.9,
-    "spend": 3.1088,
-    "missions": 0,
-    "restarted": 1793931533.7521343,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (obs-exam), #6, #1, #7: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-obs-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "onboarding",
-    "aspect": "Onboarding",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.9,
-    "spend": 2.9481,
-    "missions": 0,
-    "restarted": 1793931533.6698582,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (onboard-exam), #1, #6, #13: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-onboard-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "performance",
-    "aspect": "Performance",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.8,
-    "spend": 3.5332,
-    "missions": 0,
-    "restarted": 1793931533.785,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (perf-exam), #6, #1, #12: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-perf-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "portability",
-    "aspect": "Portability",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.7,
-    "spend": 3.3846,
-    "missions": 0,
-    "restarted": 1793931533.8017423,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (port-exam), #6, #1, #13: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-port-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "problem-solving",
-    "aspect": "problem solving",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.6,
-    "spend": 3.6205,
-    "missions": 0,
-    "restarted": 1793931533.8357482,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (solve-exam), #6, #1, #2: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-solve-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "security",
-    "aspect": "Security",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.6,
-    "spend": 4.3796,
-    "missions": 0,
-    "restarted": 1793931533.7684891,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (sec-exam), #6, #1, #12: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-sec-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   },
-   {
-    "name": "ux",
-    "aspect": "UX",
-    "sealed": true,
-    "generation": 1,
-    "drift": null,
-    "closed": null,
-    "delta": null,
-    "idle_h": 11.7,
-    "spend": 2.5544,
-    "missions": 0,
-    "restarted": 1793931533.686116,
-    "stuck": false,
-    "state": "unscored",
-    "paused": null,
-    "stage": {
-     "stage": "mission",
-     "gen": 1,
-     "action": "Mission 1 (ux-exam), #6, #10, #13: fm mission, then fm ideas --rounds 4 --deepen 3 --falsify --crossbreed --seen-latest 6; file it as gen-1/mission-ux-exam.md",
-     "kind": "ok"
-    },
-    "trend": []
-   }
-  ],
-  "gens": [],
-  "acts": [
-   {
-    "act": "restart",
-    "tower": "aspect-8-calibrated-judg",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/aspect-8-calibrated-judg/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/aspect-8-calibrated-judg/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/aspect-8-calibrated-judg-1794113488795391938/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/aspect-8-calibrated-judg/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/aspect-8-calibrated-judg-1794113488795391938",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "aspect-9-orchestration",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/aspect-9-orchestration/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/aspect-9-orchestration/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/aspect-9-orchestration-1794113488801678804/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/aspect-9-orchestration/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/aspect-9-orchestration-1794113488801678804",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "docs",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/docs/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/docs/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/docs-1794113488807545677/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/docs/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/docs-1794113488807545677",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "ecosystem",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/ecosystem/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/ecosystem/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/ecosystem-1794113488813369860/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/ecosystem/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/ecosystem-1794113488813369860",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "efficiency",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/efficiency/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/efficiency/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/efficiency-1794113488823661289/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/efficiency/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/efficiency-1794113488823661289",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "memory",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/memory/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/memory/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/memory-1794113488829631104/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/memory/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/memory-1794113488829631104",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "model-layer",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/model-layer/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/model-layer/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/model-layer-1794113488835366366/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/model-layer/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/model-layer-1794113488835366366",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "multi-user",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/multi-user/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/multi-user/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/multi-user-1794113488841252450/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/multi-user/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/multi-user-1794113488841252450",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "observability",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/observability/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/observability/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/observability-1794113488847037133/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/observability/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/observability-1794113488847037133",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "onboarding",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/onboarding/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/onboarding/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/onboarding-1794113488852882487/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/onboarding/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/onboarding-1794113488852882487",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "performance",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/performance/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/performance/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/performance-1794113488858658099/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/performance/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/performance-1794113488858658099",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "portability",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/portability/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/portability/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/portability-1794113488864368952/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/portability/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/portability-1794113488864368952",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "problem-solving",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/problem-solving/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/problem-solving/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/problem-solving-1794113488870686668/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/problem-solving/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/problem-solving-1794113488870686668",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "security",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/security/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/security/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/security-1794113488876578852/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/security/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/security-1794113488876578852",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "restart",
-    "tower": "ux",
-    "reason": "no new generation in 50.5h: restarted, its next step runs first",
-    "undo": "mv ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/ux/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/ux/gen-0.md.replaced && cp -r ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/ux-1794113488882420895/gen-0.md ~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/towers/ux/gen-0.md",
-    "snapshot": "~/.claude/foreman/state/projects/foreman-4a056f/research/genesis/kalevala/snapshots/ux-1794113488882420895",
-    "at": "2026-11-08T04:51:28Z"
-   },
-   {
-    "act": "merge",
-    "tower": "aspect-10-beyond-code",
-    "reason": "merged into aspect-1-initiative: both write before/after; paused, not deleted",
-    "undo": "fm kalevala resume aspect-10-beyond-code",
-    "at": "2026-11-08T07:11:26Z"
-   },
-   {
-    "act": "merge",
-    "tower": "aspect-12-staying-lean-a",
-    "reason": "merged into aspect-1-initiative: both write before/after; paused, not deleted",
-    "undo": "fm kalevala resume aspect-12-staying-lean-a",
-    "at": "2026-11-08T07:11:26Z"
-   },
-   {
-    "act": "merge",
-    "tower": "aspect-2-exhaustive-thin",
-    "reason": "merged into aspect-13-genesis-as-a-f: both write pane/status; paused, not deleted",
-    "undo": "fm kalevala resume aspect-2-exhaustive-thin",
-    "at": "2026-11-08T07:21:18Z"
-   },
-   {
-    "act": "merge",
-    "tower": "aspect-4-goal-to-finish",
-    "reason": "merged into aspect-13-genesis-as-a-f: both write pane/status; paused, not deleted",
-    "undo": "fm kalevala resume aspect-4-goal-to-finish",
-    "at": "2026-11-08T07:35:26Z"
-   },
-   {
-    "act": "merge",
-    "tower": "aspect-5-getting-the-too",
-    "reason": "merged into aspect-13-genesis-as-a-f: both write pane/status; paused, not deleted",
-    "undo": "fm kalevala resume aspect-5-getting-the-too",
-    "at": "2026-11-08T07:35:26Z"
-   }
-  ],
-  "halted": null,
-  "rounds": 13,
-  "spent_today": 94.5214,
-  "share": 50.0
  }
 }
