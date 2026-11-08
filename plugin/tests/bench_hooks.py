@@ -63,10 +63,12 @@ def load_per_core():
         return 0.0
 
 
-def within(wall_p95, cpu_p95, budget, load):
+def within(wall_p95, cpu_p95, budget, load, cpu_p50=None):
     """T-0805: a quiet machine judges wall time (what the user waits); a busy one (load per core above 1) judges the
-    hook's own CPU time, which load doesn't inflate but a code regression (more imports, more work) does."""
-    return (cpu_p95 if load > 1 else wall_p95) <= budget
+    hook's own CPU time, which a code regression (more imports, more work) raises. T-3821: by its median when given:
+    load inflates CPU time's tail too (one commit at load 2.3 per core: SessionStart CPU p95 404, then 106 ms)."""
+    busy = cpu_p50 if cpu_p50 is not None else cpu_p95
+    return (busy if load > 1 else wall_p95) <= budget
 
 
 def _scratch_project(tmp):
@@ -128,7 +130,7 @@ def run_bench(runs=30, only=None):  # only: a predicate on fixture names (T-2359
             p95, cpu95, load = times[at], cpus[at], load_per_core()
             results[name] = {"p50": round(statistics.median(times), 1), "p95": round(p95, 1), "cpu_p95": round(cpu95, 1),
                              "cpu_p50": round(statistics.median(cpus), 1),  # T-3131: the gate's steady basis
-                             "budget": budget, "load": round(load, 2), "ok": within(p95, cpu95, budget, load),
+                             "budget": budget, "load": round(load, 2), "ok": within(p95, cpu95, budget, load, statistics.median(cpus)),
                              "exit_codes": sorted(codes)}
     return results
 

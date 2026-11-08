@@ -18,6 +18,14 @@ class Verdict(unittest.TestCase):
         self.assertTrue(ok(wall_p95=400, cpu_p95=30, budget=150, load=4.0), "busy: CPU time decides")
         self.assertFalse(ok(wall_p95=400, cpu_p95=200, budget=150, load=4.0), "a real regression shows in CPU time")
 
+    def test_a_busy_machine_judges_the_cpu_median(self):
+        # T-3821: two runs of one commit at load 2.2-2.4 per core: SessionStart CPU p95 404 then 106 ms (budget 150);
+        # the spike left a good lane out of a merge train. The median holds; a regression moves it
+        ok = bench_hooks.within
+        self.assertTrue(ok(wall_p95=900, cpu_p95=404, budget=150, load=2.3, cpu_p50=95), "a spike alone passes")
+        self.assertFalse(ok(wall_p95=900, cpu_p95=404, budget=150, load=2.3, cpu_p50=180), "a slower median fails")
+        self.assertFalse(ok(wall_p95=400, cpu_p95=30, budget=150, load=0.3, cpu_p50=20), "quiet: wall p95 still decides")
+
 
 class ScriptBudget(unittest.TestCase):  # T-1777
     def test_the_script_case_is_a_hook_plus_the_guards_time_box(self):

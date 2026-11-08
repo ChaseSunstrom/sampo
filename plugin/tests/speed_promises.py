@@ -104,7 +104,7 @@ def check(promises, runs, timer):
 
 def hook_check(runs=5, labels=None):
     """Hook rows: bench_hooks.run_bench times each fixture in its own scratch project, and each row is judged against its
-    budget here (bench_hooks.within: wall p95, or CPU p95 on a busy box). labels: the paths to time (default all)."""
+    budget here (bench_hooks.within: wall p95, or the CPU median on a busy box). labels: the paths to time (default all)."""
     want = [p for p in HOOK_PROMISES if labels is None or p in labels]
     fixtures = {HOOK_PROMISES[p] for p in want}
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as home, scrubbed_environ(home):
@@ -115,7 +115,8 @@ def hook_check(runs=5, labels=None):
         r = res[HOOK_PROMISES[p]]
         budget = budgets[p]
         rows.append({"path": p, "p95_ms": r["p95"], "cpu_p95_ms": r["cpu_p95"], "budget_ms": budget, "load": r["load"],
-                     "ok": bench_hooks.within(r["p95"], r["cpu_p95"], budget, r["load"]), "window": 1})
+                     "ok": bench_hooks.within(r["p95"], r["cpu_p95"], budget, r["load"], r.get("cpu_p50")),
+                     "window": 1})
     return rows
 
 
