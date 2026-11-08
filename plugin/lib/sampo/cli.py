@@ -8203,7 +8203,9 @@ def _build_parser(only=None):
     b.add_argument("--days", type=int, default=14, help="--coverage: session-log days to read (default 14)")
     b.add_argument("--cmds", metavar="FILE", help="--coverage: one command per line instead of the session logs")
     b.add_argument("--tests", metavar="CMD", help="--mutate: the test command (default: run.py -p 'test_guard*.py')")
-    b.add_argument("--module", metavar="FILE", help="--mutate: the module to mutate (default fmguard.py)")
+    b.add_argument("--module", metavar="FILE", help="--mutate: the module to mutate (default fmguard.py); with --flip, any "
+                                                    "module, run against the tests that import it (T-3273)")
+    b.add_argument("--func", metavar="NAME", help="--mutate --flip --module: only this function's flips (T-3273)")
     b.add_argument("--max", type=int, default=40, help="--mutate: mutants run, sampled evenly (default 40)")
     b.add_argument("--only", metavar="CATEGORY", help="--mutate: only this category's sites")
     b.add_argument("--timeout", type=int, default=300, help="--mutate: seconds per mutant (default 300)")

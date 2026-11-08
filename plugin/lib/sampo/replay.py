@@ -252,6 +252,41 @@ def mutate_extras(plugin_root):
     return [(src, os.path.join("site", "bench_safety.py"))] if os.path.isfile(src) else []
 
 
+def _cmd_flip_module(args, cli, root):
+    """T-3273: fm bench guard --mutate --module X --flip [--func F]: flip comparisons, booleans and constants in any module
+    (every function, or F) and run only the tests that import it (or --tests) at idle priority; survivors are flips no
+    test notices, and the exit is 1 when there are any."""
+    import shlex
+    import sys
+    from sampo import modmutate as mm
+    module = os.path.abspath(args.module)
+    try:
+        name = mm.module_name(module, root)
+    except ValueError as e:
+        raise cli.UsageError(str(e))
+    if args.tests:
+        cmd = shlex.split(args.tests)
+    else:
+        found = mm.tests_for(module, root)
+        if not found:
+            raise cli.UsageError(f"no test under {os.path.join(root, 'tests')} imports {name}: name one with --tests")
+        cmd = mm.test_cmd([f[:-len(".py")] for f in found])  # the runner takes test names, not files
+    rel = os.path.join("plugin", os.path.relpath(module, root))
+    try:
+        res = mm.run(module, rel, root, "plugin", cmd, func=args.func, limit=args.max, timeout=args.timeout,
+                     log=lambda m: print(m, file=sys.stderr, flush=True))
+    except (ValueError, OSError, SyntaxError) as e:
+        raise cli.UsageError(str(e))
+    s = res["survived"]
+    where = f"function {args.func}" if args.func else "every function"
+    lines = [f"Flips in {name} ({where}): {res['tried']} of {res['total']} mutants, {res['killed']} killed, "
+             f"{len(s)} survived"]
+    lines += [f"  survived: {os.path.basename(module)}:{m['line']} {c.fit(m['stmt'], 110)}" for m in s]
+    cli.out(args, {**res, "survivors": len(s)}, "\n".join(lines))
+    if s:
+        raise SystemExit(1)
+
+
 def cmd_mutate(args, cli):
     """Drop (or --weaken) one rule site of the guard at a time and run its tests on each; survivors are untested rules."""
     import shlex
@@ -262,6 +297,14 @@ def cmd_mutate(args, cli):
     if getattr(args, "project", None):
         cli.resolve(args)  # -p is checked like the other bench commands
     root = _checkout_plugin(os.getcwd()) or c.PLUGIN_ROOT  # T-1121: a lane mutates its own guard, not the main one's
+    # T-3273: --module X --flip on any module but the guard flips every function of X (--func: one) against its tests
+    flipped = (bool(args.module) and getattr(args, "flip", False)
+               and os.path.abspath(args.module) != os.path.join(root, "lib", "fmguard.py"))
+    if getattr(args, "func", None) and not flipped:
+        raise cli.UsageError("--func needs --module and --flip (not fmguard.py): it names the function whose comparisons, "
+                             "booleans and constants flip")
+    if flipped:
+        return _cmd_flip_module(args, cli, root)
     module = args.module or os.path.join(root, "lib", "fmguard.py")
     rel = os.path.join("plugin", "lib", "fmguard.py") if not args.module else os.path.join("plugin", "lib", os.path.basename(module))
     cmd = shlex.split(args.tests) if args.tests else [sys.executable, os.path.join("plugin", "tests", "run.py"), "-p", "test_guard*.py"]

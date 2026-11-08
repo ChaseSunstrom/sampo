@@ -216,6 +216,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmmoonshot` (`sampo moons [status|rate|order|check]`, T-2626, MOONSHOT.md part… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmotion` (`sampo motion check [PATH]`, T-1624: the Motion Score… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmmutate` (T-1066: mutation tests for the guard, one ast mutant per rule site… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmmodmutate` (T-3273: `sampo bench guard --mutate --module X --flip [--func F]` flips comparisons, booleans and constants in any module's functions, runs the tests that import it, niced, and lists the survivors… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmnew` (`sampo new [list] | NAME [DIR] [--force] | check PATH... [--run]`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmnight` (T-2607: each tick records the trigger kinds it could not watch with… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmoffice` (T-1406: `sampo check office FILE`, a stdlib asserter for… [→ files-lib-3](docs/map/files-lib-3.md)

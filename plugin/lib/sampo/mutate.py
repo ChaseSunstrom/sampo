@@ -153,6 +153,14 @@ def run(module, rel, tree_root, dest, cmd, cats, weaken=False, only=None, limit=
     if only:
         ms = [m for m in ms if only in m["category"].split(",")]
     total, ms = len(ms), sample(ms, limit)
+    killed, survived = run_each(ms, module, rel, tree_root, dest, cmd, text, timeout, log, extra)
+    return {"total": total, "tried": len(ms), "killed": killed, "survived": survived, "not_mutated": not_mutated}
+
+
+def run_each(ms, module, rel, tree_root, dest, cmd, text, timeout=300, log=None, extra=()):
+    """(killed, survived) for the mutants ms of module (text is its source): tree_root copied to dest in a temp dir, the
+    unmutated module written at rel there and cmd run once as the baseline (it must pass), then each mutant written and
+    cmd run. T-3273: shared with modmutate.run. The real tree is never written."""
     killed, survived = 0, []
     with tempfile.TemporaryDirectory(prefix="fm-mutate-") as tmp:
         shutil.copytree(tree_root, os.path.join(tmp, dest), ignore=shutil.ignore_patterns("__pycache__"))
@@ -180,4 +188,4 @@ def run(module, rel, tree_root, dest, cmd, cats, weaken=False, only=None, limit=
             if log:
                 log(f"mutant {i}/{len(ms)} {os.path.basename(module)}:{m['line']} {m['category']}: "
                     f"{'survived' if rc == 0 else 'killed'} ({time.monotonic() - t0:.0f} s)")
-    return {"total": total, "tried": len(ms), "killed": killed, "survived": survived, "not_mutated": not_mutated}
+    return killed, survived
