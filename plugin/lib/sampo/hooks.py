@@ -3122,13 +3122,18 @@ def _self_match(pl):
             continue
         try:
             hit = re.search(pat, cmd)
+            elsewhere = hit and not re.search(pat, pat)  # T-3543: it can't match itself, so it hit other text
         except re.error:
-            hit = pat in cmd
+            hit, elsewhere = pat in cmd, False
         if hit:
-            return ("deny", f"Sampo: `{m.group(0).strip()}` matches this command's own shell (its command line holds "
-                            "the pattern), so a wait on it never ends and a kill hits itself. Wait on the PID "
-                            "(`while kill -0 PID`), bracket one letter (`pgrep -f '[f]m check'`), or run the job itself "
-                            "with run_in_background.")
+            text = re.sub(r"[`\n]", " ", hit.group(0)[:60]) if elsewhere else ""  # quoted in backticks below
+            fix = (f"The pattern can't match itself, but this command also holds `{text}` (an "
+                   "echo, a path): reword that text, run the lines from a script file, or wait on the PID "
+                   "(`while kill -0 PID`)." if elsewhere else
+                   "Wait on the PID (`while kill -0 PID`), bracket one letter (`pgrep -f '[f]m check'`), or run the "
+                   "job itself with run_in_background.")
+            return ("deny", f"Sampo: `{cmd[m.start(1) - 5:m.end()]}` matches this command's own shell (its command "
+                            f"line is this whole command), so a wait on it never ends and a kill hits itself. {fix}")
     return None
 
 

@@ -2087,12 +2087,26 @@ class PreToolUse(HookCase):
                     {"command": "until ! pgrep -af fm.check; do sleep 30; done", "run_in_background": True},
                     {"command": 'pgrep -af "[t]2878|fm check"'},  # one unbracketed alternative still matches
                     {"command": "bash -c 'while pgrep -f \"fm check\"; do sleep 1; done'"},  # quoted, but run
-                    {"command": "pgrep --full 'npm run dev'"}, {"command": "cd /x\npgrep -f 'cd /x'"}):
+                    {"command": "pgrep --full 'npm run dev'"}, {"command": "cd /x\npgrep -f 'cd /x'"},
+                    {"command": "pgrep -f 'fm ui --json'"}, {"command": "pkill -f 'fm ui --json'"}):
             with self.subTest(cmd=bad["command"]):
                 p = self.pre("Bash", bad)
                 self.assertEqual(p.returncode, 2, p.stdout)
                 self.assertIn("kill -0", p.stdout)
+                self.assertIn("bracket one letter", p.stdout)  # T-3543: an unbracketed one still gets that advice
+        # T-3543 (filed twice as an over-refusal): a bracketed pattern whose plain text sits elsewhere in the command
+        # still matches the shell, whose command line is the whole command; the refusal names that text, not "bracket"
+        for cmd, text in (("pgrep -fc '[f]m ui --json'; echo \"fm ui --json starts\"", "fm ui --json"),
+                          ("bash -n $S/run_train.sh; pgrep -f \"[r]un_train.sh\" | head -2", "run_train.sh"),
+                          ("bash -n $S/run_train.sh; pgrep -f 'run_train\\.sh'", "run_train.sh"),  # escaped, not bracketed
+                          ("echo 'fm`ui'; pgrep -f '[f]m.ui'", "fm ui")):  # a backtick in it can't break the quote
+            with self.subTest(cmd=cmd):
+                p = self.pre("Bash", {"command": cmd})
+                self.assertEqual(p.returncode, 2, p.stdout)
+                self.assertIn(f"also holds `{text}`", p.stdout)
+                self.assertNotIn("bracket one letter", p.stdout)
         for ok in ('while pgrep -f "[f]m check" >/dev/null; do sleep 20; done',  # the bracket can't match itself
+                   "pgrep -f '[f]m ui --json'", "pkill -f '[f]m ui --json'", "ps aux | grep '[f]m ui'",  # T-3543
                    "pgrep -fx 'python3 serve.py'",  # -x: the whole command line must equal it
                    "pgrep -x node", "while kill -0 4242 2>/dev/null; do sleep 20; done", "ps -eo pid,args | grep fm",
                    "git commit -m \"refuse a pgrep -f 'fm check' that matches itself\"",  # a mention runs nothing
