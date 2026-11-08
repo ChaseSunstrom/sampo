@@ -3613,13 +3613,15 @@ def task_new(p, args):
 
 
 def _section_pairs(args):
-    """T-1124: [(section, text)] in the order given: each --section takes its own --text (or the one --file)."""
+    """T-1124: [(section, text)] in the order given: each --section takes its own --text, or (T-3805) its own --file."""
     secs, texts = args.section or [], list(args.text or [])
     if isinstance(secs, str):  # a caller building its own Namespace
         secs, texts = [secs], [texts] if isinstance(texts, str) else texts
-    if args.file and len(secs) == 1 and not texts:
-        with open(args.file, encoding="utf-8") as f:
-            texts = [f.read()]
+    files = [args.file] if isinstance(args.file, str) else list(args.file or [])
+    if files and not texts and len(files) == len(secs):
+        for path in files:
+            with open(path, encoding="utf-8") as f:
+                texts.append(f.read())
     if len(texts) != len(secs):
         raise UsageError(f"each --section needs its own --text: {len(secs)} section(s), {len(texts)} text(s)")
     return list(zip(secs, texts))
@@ -7211,7 +7213,7 @@ def _build_parser(only=None):
                    "Acceptance criteria, Non-goals, Approach, Risks and rollback, Execution prompt, Docs impact); "
                    "repeatable: each --section takes the --text (or --file) given after it (T-1124)")
     t.add_argument("--text", action="append")
-    t.add_argument("--file")
+    t.add_argument("--file", action="append")  # T-3805: one per --section, as --text
     t = tadd("step")
     t.add_argument("id")
     t.add_argument("action", choices=["add", "current", "done", "edit", "rm"])

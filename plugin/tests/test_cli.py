@@ -1809,6 +1809,14 @@ class SetLists(ForemanTestCase):
         r = self.fm("task", "set", tid, "--section", "Interpretation", "--section", "Approach", "--text", "x", check=False)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("--text", r.stdout + r.stderr)
+        # T-3805: --file pairs the same way (its help said so; four pairs failed with '0 text(s)')
+        one, two = os.path.join(self.repo, "one.txt"), os.path.join(self.repo, "two.txt")
+        for path, text in ((one, "third"), (two, "fourth")):
+            with open(path, "w") as f:
+                f.write(text)
+        self.fm("task", "set", tid, "--section", "Interpretation", "--file", one, "--section", "Non-goals", "--file", two)
+        b = c.find_brief(c.find_project(self.repo), tid)
+        self.assertEqual((b.section("Interpretation").strip(), b.section("Non-goals").strip()), ("third", "fourth"))
 
 
 class BareFm(ForemanTestCase):
