@@ -2644,6 +2644,34 @@ class PostMergeVerify(ForemanTestCase):
         self.assertEqual(len(read_text(runs).splitlines()), 1, "one suite run stands for all three")
         self.assertEqual(slanes.pm_records(self.p)[shas[0]].get("covered_by"), shas[2])
 
+    def test_a_flaky_red_on_the_newest_still_settles_every_older_pending_one(self):
+        # T-3800: one class red inside the full suite at HEAD but green alone fell back to a full suite per merge,
+        # oldest first (2026-11-07: six suites queued, 30-80 min each under load)
+        runs = os.path.join(self.tmp, "runs.txt")
+        os.environ["FM_POSTMERGE_CMD"] = f"echo run >> {runs}; echo 'FAIL: test_x (test_mod.Cls.test_x)'; exit 1"
+        os.environ["FM_POSTMERGE_RERUN"] = "true"  # green alone
+        self.addCleanup(os.environ.pop, "FM_POSTMERGE_RERUN", None)
+        shas = [self.land(n) for n in ("a", "b", "n")]
+        slanes.pm_run(self.p, self.repo)
+        self.assertEqual([self.state(s) for s in shas], ["green"] * 3)
+        self.assertEqual(len(read_text(runs).splitlines()), 1, "one suite run stands for all three")
+        self.assertEqual(slanes.pm_records(self.p)[shas[0]].get("covered_by"), self.git("rev-parse", "HEAD"))
+
+    def test_a_red_newest_is_narrowed_to_its_first_merge_with_the_red_classes_alone(self):
+        # T-3800: red alone too: the red classes alone find the first merge they fail on; the ones before it are
+        # covered without a full suite each, and only that merge gets its own full verify
+        runs, reruns = os.path.join(self.tmp, "runs.txt"), os.path.join(self.tmp, "reruns.txt")
+        os.environ["FM_POSTMERGE_CMD"] = f"echo run >> {runs}; " + self.RED
+        os.environ["FM_POSTMERGE_RERUN"] = f"echo rerun >> {reruns}; ! ls bad*.txt >/dev/null 2>&1"
+        self.addCleanup(os.environ.pop, "FM_POSTMERGE_RERUN", None)
+        a, b, bad, n = self.land("a"), self.land("b"), self.land("x", bad=True), self.land("n")
+        slanes.pm_run(self.p, self.repo)
+        self.assertEqual([self.state(a), self.state(b)], ["green", "green"])
+        self.assertTrue(slanes.pm_records(self.p)[a].get("covered_by"))
+        self.assertEqual(self.state(bad), "reverted")
+        self.assertNotEqual(self.state(n), "reverted", "the newest merge isn't blamed for an older one's red")
+        self.assertEqual(read_text(runs).count("run"), 3, "the HEAD run, x's own verify, then n's: none for a or b")
+
     def test_merges_requeued_after_a_revert_are_still_settled_by_the_newest(self):
         # T-3456: after one revert every pending record carried after_reverts, which skipped the probe: 20 merges
         # ran oldest first on trees without the slot-pool fix and their false reds reverted good merges again

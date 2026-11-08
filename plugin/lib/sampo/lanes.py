@@ -2733,27 +2733,46 @@ def pm_run(p, main):
             probed.add(newest)
             head = _git(main, "rev-parse", "HEAD").stdout.strip()
             if head and _pm_claim(p, todo[0]):  # holds the queue (other runners stop at the oldest) while HEAD runs
+                reds, cut = [], None
                 try:
-                    green = _pm_green_at(p, main, head)
+                    green = _pm_green_at(p, main, head, reds)
+                    # T-3800: a red HEAD run is narrowed the way a merge's own verify is (T-3216), not answered with
+                    # a full suite per merge: its red classes alone at HEAD (green: flaky, the run stands), else alone
+                    # on the pending merges to the first one they fail on. A requeued merge's tree is rebuilt with
+                    # reverts, so those keep the oldest-first walk.
+                    again = pm_rerun_cmd(main, reds) if not green and reds else ""
+                    if again and not any(recs[s].get("after_reverts") for s in todo):
+                        if _pm_cmd_green_at(main, head, again):
+                            green = True
+                            c.log_event(p, "postmerge_flaky", data={"sha": head, "classes": reds, "covers": len(todo)})
+                        else:
+                            cut = _pm_first_red(main, todo, again)
                 finally:
                     pm_set(p, todo[0], state="pending")
                 if green:
                     _pm_cover(p, main, todo, head)
                     continue
+                if cut:  # the merges before the first red one passed those classes and the rest of HEAD's suite
+                    _pm_cover(p, main, todo[:cut], todo[cut - 1], how=f"{', '.join(reds)} green there, the rest of "
+                                                                      f"the suite green on {head[:9]}")
+                    continue
         if not todo or not pm_verify(p, main, todo[0]):  # a red newest: oldest first finds whose red it is
             return
 
 
-def _pm_green_at(p, main, sha):
+def _pm_green_at(p, main, sha, reds=None):
     """T-3446: the full suite on sha in a throwaway worktree; True only on a clean pass (a probe: no merge's record, but
-    an uncached pass is recorded for fm ship, T-3666)."""
+    an uncached pass is recorded for fm ship, T-3666). `reds` (a list) gets a red run's failing classes (T-3800)."""
     tmp = tempfile.mkdtemp(prefix="fm-verify-")
     wt = os.path.join(tmp, "wt")
     try:
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         full = _pm_uncached_due(p)
-        if c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600))[0]:
+        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600))
+        if code:
+            if reds is not None and code != 124:  # a timeout names nothing
+                reds.extend(k for k in pm_classes(out, code) if not k.startswith("suite exit"))
             return False
         if full:
             pm_full_pass(p, main, sha, pm_cmd(main, uncached=True))
@@ -2763,9 +2782,37 @@ def _pm_green_at(p, main, sha):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _pm_cover(p, main, todo, newest):
+def _pm_cmd_green_at(main, sha, cmd):
+    """T-3800: True when `cmd` (the red classes alone) passes on sha's tree, in a throwaway worktree."""
+    tmp = tempfile.mkdtemp(prefix="fm-verify-")
+    wt = os.path.join(tmp, "wt")
+    try:
+        if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
+            return False
+        c.wait_for_load(f"lane verify {sha[:9]}")  # as pm_verify's alone-rerun waits
+        return not c.run_command(wt, cmd, c.load_scaled(900))[0]
+    finally:
+        _git(main, "worktree", "remove", "--force", wt)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _pm_first_red(main, todo, cmd):
+    """T-3800: the index in todo (pending merges, oldest first) of the first one `cmd` fails on, by bisection; None when
+    the newest passes it (the red is in something after it), 0 when the oldest already fails (its own verify decides
+    whose red it is)."""
+    if _pm_cmd_green_at(main, todo[-1], cmd):
+        return None
+    lo, hi = -1, len(todo) - 1  # hi fails; lo passes (-1: before the oldest, never run)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if _pm_cmd_green_at(main, todo[mid], cmd) else (lo, mid)
+    return hi
+
+
+def _pm_cover(p, main, todo, newest, how=None):
     """T-3446: a green suite on newest verifies every pending merge in its history: not one a live runner took
-    meanwhile, nor one reverted by hand (its effect isn't in newest's tree)."""
+    meanwhile, nor one reverted by hand (its effect isn't in newest's tree). T-3800: `how` says what stood for the
+    full suite when a red at HEAD was narrowed past these merges."""
     from sampo import cli
     for s in todo:
         if s != newest and (_git(main, "merge-base", "--is-ancestor", s, newest).returncode or _pm_reverted(main, s)):
@@ -2774,9 +2821,10 @@ def _pm_cover(p, main, todo, newest):
         if not r or not (r["state"] == "pending" or (r["state"] == "running" and _pm_dead(r))):
             continue
         pm_set(p, s, state="green", covered_by=newest)
-        cli.mutate(p, r["task"], lambda x, s=s: (
-            x.append_log(f"verified: the full suite is green on {newest[:9]}, which contains {s[:9]}"),
-            x.meta.update(lane_verified=s)), "lane_verified", {"sha": s})
+        said = f"verified: {how}, on {newest[:9]}, which contains {s[:9]}" if how else \
+            f"verified: the full suite is green on {newest[:9]}, which contains {s[:9]}"
+        cli.mutate(p, r["task"], lambda x, s=s, said=said: (x.append_log(said), x.meta.update(lane_verified=s)),
+                   "lane_verified", {"sha": s})
 
 
 def recovery_after(p, b):
