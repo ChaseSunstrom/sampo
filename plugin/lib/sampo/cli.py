@@ -7589,6 +7589,12 @@ def _build_parser(only=None):
                                           "a fix that came with the repo, so it is offered as one, not as a hint)")
     s.add_argument("--do", help="add: what gets past it")
     s.add_argument("--run", help="add: the command that does")
+    s = add("flakes", lazy("sampo.flake_forecast", "cmd_flakes"), tier=("Finding your way", 245), help="which tests will likely "
+            "flake (fail count and recency from the flake ledger, load or chance) and, with --red NAME ..., which of a red run's "
+            "tests are known flakes and which are new (T-3286)")
+    s.add_argument("--red", nargs="+", metavar="NAME", help="the failing test names of a red run, exactly as the gate prints "
+                   "them (e.g. test_hooks.Stop.test_x): known flakes (2+ fails, a failure in 30 days) or new")
+    s.add_argument("--top", type=int, default=10, help="how many forecast rows to print (default 10)")
 
     s = add("dream", lazy("sampo.recall", "cmd_dream"), tier=("Reports", 1010), help="the day's repeated failures as tripwire candidates with their "
                                                           "counterfactual (T-0665)")

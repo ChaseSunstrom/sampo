@@ -176,6 +176,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmevolve` (`sampo evolve`: one bench-gated generation revising or ablating one… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmexam` (T-2524: kind package, #10 beside beyond, Python only (PY_ONLY: draw… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmextras`… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmflake_forecast` (`sampo flakes [--red NAME …] [--top N] [--json]`, T-3286: which tests will likely flake, ranked by fail rate from flakes.json and tagged load or chance; `--red` splits a red run's failures into known flakes and new ones) [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmfind` (`sampo find [PATH] [--rank] [--capture N] [--json]`, T-2121… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmfixes` (T-1032: known fixes, `sampo fix list|add|rm`: a failed Bash command… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmflow` (T-1639: `sampo flow FILE`, a journey of goto/click/type/expect/wait… [→ files-lib-2](docs/map/files-lib-2.md)

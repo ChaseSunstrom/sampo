@@ -15,6 +15,7 @@ import time
 from dataclasses import asdict, dataclass
 
 from sampo import core as c
+from sampo import flake_forecast
 from sampo import py
 from sampo import serve
 from sampo import setup
@@ -667,9 +668,9 @@ def check_flaky_rates(p, top=3):
         flaky = None
     rows = []
     for name, e in (flaky if isinstance(flaky, dict) else {}).items():
-        if isinstance(e, dict) and type(e.get("fails")) is int and type(e.get("passes")) is int \
-                and e["fails"] > 0 and e["fails"] + e["passes"] > 0:
-            rows.append((e["fails"] / (e["fails"] + e["passes"]), -e["fails"], str(name)[:100], e))
+        k = flake_forecast.counts(e) if isinstance(e, dict) else None  # T-3286: the counts rule, shared with sampo flakes
+        if k:
+            rows.append((k[0] / (k[0] + k[1]), -k[0], str(name)[:100], e))
     if not rows:
         return Result("flaky tests", "PASS", "no flaky test with a fail rate")
     rows.sort(key=lambda r: (-r[0], r[1], r[2]))  # worst rate, then most fails, then name
