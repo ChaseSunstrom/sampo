@@ -2,6 +2,7 @@
 # T-2288: fm prove --migration: up, down, up again on a throwaway sqlite file, schema compared each time
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from unittest import mock
@@ -1423,6 +1424,26 @@ class ReleaseProof(ForemanTestCase):
                 write(root, files)
                 code, d = self.prove(root)
                 self.assertEqual((code, d.get("verdict")), (0, "pass"), d)
+
+
+class TaskProveRunner(ForemanTestCase):
+    """T-3808: a changed tests-folder file that holds no TestCase and isn't test_*.py (run.py, forkcli.py) is code under
+    change: task prove leaves it at its start version, so a run.py change's proof is red on the start tree."""
+
+    def test_runner_is_code_not_a_test(self):
+        self.fm("init")
+        os.makedirs(os.path.join(self.repo, "tests"), exist_ok=True)
+        write(self.repo, {"tests/run.py": "def shards():\n    return 1\n"})
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "runner"], check=True)
+        self.fm("task", "new", "Shards", "--type", "FIX", "--tier", "S", "--ac", "s :: true", "--step", "s", "--focus")
+        # test_runner imports run: before the fix, prove copied the new run.py onto the start tree, so red passed there
+        write(self.repo, {"tests/run.py": "def shards():\n    return 4\n",
+                          "tests/test_runner.py": "import run\nassert run.shards() == 4\n"})
+        r = self.fm("task", "prove", "T-0001", "--run", "python3 tests/test_runner.py", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("proved", r.stdout)
+        self.assertIn("kept at its start version: tests/run.py", r.stdout)
 
 
 if __name__ == "__main__":

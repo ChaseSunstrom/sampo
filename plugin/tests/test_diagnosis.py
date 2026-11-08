@@ -55,14 +55,15 @@ class Prove(Base):
         self.assertIn("proved", r.stdout)  # run.py is test_run.py's subject: kept, though test_run.py imports it
         self.assertIn("kept at its start version: tests/run.py", r.stdout)
         self.assertNotIn("shard_case", r.stdout.split("kept at")[1])
-        # review: a changed helper a new test imports (and a new one) comes over, or red fails for the wrong reason:
-        # here red passes only when both did, so a dropped copy reads "proved"
+        # review: a changed helper (holds no TestCase: code) stays at its start version (T-3808: a copy passed the red
+        # run); a new one a new test imports still comes over
         self.write("tests/helpers.py", "X = 2\n")
         self.write("tests/test_helper.py", "import sys\nfrom shard_case import ARGS\nfrom helpers import X\n"
                                            "sys.exit(0 if X == 2 and ARGS else 1)\n")
         r = self.fm("task", "prove", "T-0001", "--run", "python3 tests/test_helper.py", check=False)
-        self.assertIn("passes without the change too", r.stdout)
-        self.assertNotIn("helpers", r.stdout.split("kept at")[1])
+        self.assertIn("proved", r.stdout)
+        self.assertIn("kept at its start version: tests/helpers.py", r.stdout)
+        self.assertNotIn("shard_case", r.stdout.split("kept at")[1])
 
 
 class ProofFirst(Base):

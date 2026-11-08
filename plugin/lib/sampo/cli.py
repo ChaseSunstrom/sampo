@@ -2646,6 +2646,15 @@ def task_prove_hunks(p, b, args):
     return 0 if complete else 1
 
 
+def _has_testcase(root, f):
+    """T-3808: whether a changed file holds a unittest TestCase class (a class statement, not a mention; read bounded)."""
+    try:
+        with open(os.path.join(root, f), errors="replace") as fh:
+            return bool(re.search(r"(?m)^\s*class\s+\w+\s*\([^)]*\bTestCase\b", fh.read(1 << 20)))
+    except OSError:
+        return False
+
+
 def task_prove(p, args):
     """T-0059: run a test on the tree the task started from with only this task's test files brought over (it must
     fail there) and on the current tree (it must pass). Both runs are recorded, so red→green holds for FIX tasks."""
@@ -2665,9 +2674,12 @@ def task_prove(p, args):
     base = b.meta.get("base")
     if not base:
         raise UsageError(f"{b.id} has no start commit on record: prove needs the tree the task started from")
-    tests = [f for f in smap.changed(p.root, base) if smap._TEST.search(f) and os.path.isfile(os.path.join(p.root, f))]
+    changed = [f for f in smap.changed(p.root, base) if smap._TEST.search(f) and os.path.isfile(os.path.join(p.root, f))]
+    named = [f for f in changed if c.TESTISH.search(os.path.basename(f))]
+    # T-3808: a tests-folder file is a test when it's named as one or holds a TestCase; run.py and forkcli.py are code
+    tests = [f for f in changed if f in named or _has_testcase(p.root, f)]
+    code = [f for f in changed if f not in tests]
     kept = []  # T-3107: no changed test file: the check runs on the start tree as it was; T-1919: tests-folder files the start tree has, not test-named (run.py): code under change stays there
-    named = [f for f in tests if c.TESTISH.search(os.path.basename(f))]
     subjects = {re.sub(r"^test_|_test$|\.(?:test|spec)$", "", os.path.splitext(os.path.basename(f))[0]) for f in named}
     src = "\n".join(pathlib.Path(p.root, f).read_text(errors="replace") for f in named)
 
@@ -2688,6 +2700,12 @@ def task_prove(p, args):
                     continue
                 os.makedirs(os.path.dirname(os.path.join(wt, f)), exist_ok=True)
                 shutil.copy2(os.path.join(p.root, f), os.path.join(wt, f))
+            for f in code:  # T-3808: code the start tree has stays at its start version (a copy would pass the red run); a new one a test imports comes over
+                if os.path.lexists(os.path.join(wt, f)):
+                    kept.append(f)
+                elif needed(f):
+                    os.makedirs(os.path.dirname(os.path.join(wt, f)), exist_ok=True)
+                    shutil.copy2(os.path.join(p.root, f), os.path.join(wt, f))
             if not tests:  # T-3107: no anchor: a path the command names must exist at the start tree
                 import shlex
                 try:
@@ -2728,7 +2746,7 @@ def task_prove(p, args):
                     f"not test-named: code under change). If the new tests need its new code, record the red run in "
                     f"the Regression test section instead")
     out(args, {"proved": proved, "red": red[0], "green": green[0], "tests": tests, "kept": kept},
-        f"{b.id}: {verdict}\n  start tree + {len(tests) - len(kept)} test file(s): {c.run_result(*red)}"
+        f"{b.id}: {verdict}\n  start tree + {len([f for f in tests if f not in kept])} test file(s): {c.run_result(*red)}"
         f"\n  current tree: "
         f"{c.run_result(*green)}")
     return 0 if proved else 1
