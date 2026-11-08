@@ -117,6 +117,11 @@ try:
     if AGENT:
         from sampo import agents
 except Exception as exc:  # broken install: never block unless this is the guard
+    try:  # T-3727: a module a crash emptied is restored from HEAD now (the next call imports it whole); this call
+        from sampo import py  # still runs as committed, below
+        py.crash_heal(PLUGIN)
+    except Exception:
+        pass
     # T-2532: every event runs as last committed (Stop, SessionStart and the rest too, not silently off)
     if not committed_library():
         if not TOOL_EVENT:

@@ -474,7 +474,24 @@ def _profile_note(sid, new_folder=False):
         return ""
 
 
+def _heal_note():
+    """T-3727: Sampo's own checkout after a crash: tracked files a reboot left empty come back from HEAD (nothing in
+    them to lose), and the session is told which. '' when none, or when the repo is none (an installed copy)."""
+    try:
+        from sampo import py
+        healed, failed = py.heal(os.path.dirname(c.PLUGIN_ROOT))
+    except Exception:
+        log_error("SessionStart", _tb())
+        return ""
+    names = lambda xs: ", ".join(xs[:8]) + (f", and {len(xs) - 8} more" if len(xs) > 8 else "")  # noqa: E731
+    return " ".join(x for x in (
+        f"Sampo restored {len(healed)} empty file{'s' * (len(healed) != 1)} from git HEAD (a crash emptied "
+        f"{'it' if len(healed) == 1 else 'them'}): {names(healed)}." if healed else "",
+        f"Still empty, HEAD's copy is unreadable: {names(failed)}; run sampo doctor --repair." if failed else "") if x)
+
+
 def session_start(pl):
+    healed_note = _heal_note()
     sid = pl.get("session_id")
     if sid and re.fullmatch(r"[\w-]{1,100}", sid):  # a new or compacted context: the next prompt restates the state,
         folder = os.path.join(c.state_dir(), "sessions")  # and one-shot notes (outline, thrash, tripwires) re-arm
@@ -657,6 +674,8 @@ def session_start(pl):
         out["additionalContext"] += "\n\n" + prof
     if repo_note:  # after the budgeted context, so the queue never pushes it out
         out["additionalContext"] += "\n\n" + repo_note
+    if healed_note:
+        out["additionalContext"] += "\n\n" + healed_note
     if pl.get("source") == "compact":
         try:
             note = _requests_note(p, sid, cap=min(REQUEST_TEXT_CAP, 9000 - len(out["additionalContext"])))

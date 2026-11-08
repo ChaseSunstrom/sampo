@@ -90,6 +90,134 @@ def target(v):
     return None if os.path.realpath(exe) == os.path.realpath(sys.executable) else exe
 
 
+def _git(root, *args):
+    """git's stdout (bytes) in root, or None on any failure; GIT_* variables ignored."""
+    import subprocess
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    try:
+        r = subprocess.run(["git", "-C", root, *args], capture_output=True, timeout=20, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout if r.returncode == 0 else None
+
+
+def heal(root, dry=False):
+    """T-3727: a crash right after git wrote files leaves some empty on disk (ext4 drops data no fsync forced) while
+    its commits stay whole. Restore from HEAD every tracked file that is empty here, staged as HEAD has it and
+    non-empty in HEAD: nothing is lost, as the file holds nothing. A file emptied on purpose is staged (or empty in
+    HEAD too) and stays. Only a repo's top folder. Returns (restored paths, paths git could not give back); dry: the
+    paths it would restore, writing nothing.
+    ponytail: a file emptied on purpose and left unstaged looks like crash damage; it is refilled from HEAD (a
+    `git checkout` does the same). Content filters (autocrlf) are not applied to the blob written back."""
+    root = os.path.realpath(root)
+    top = _git(root, "rev-parse", "--show-toplevel")
+    if top is None or os.path.realpath(top.decode("utf-8", "replace").strip()) != root:
+        return [], []
+    staged, head = _git(root, "ls-files", "-s", "-z"), _git(root, "ls-tree", "-r", "-z", "HEAD")
+    if staged is None or head is None:
+        return [], []
+    want = {}
+    for rec in head.split(b"\0"):
+        meta, _, path = rec.partition(b"\t")
+        if path and meta.split()[:2] and meta.split()[1] == b"blob":
+            want[path] = meta.split()[2]
+    healed, failed = [], []
+    for rec in staged.split(b"\0"):
+        meta, _, path = rec.partition(b"\t")
+        bits = meta.split()
+        if len(bits) != 3 or bits[2] != b"0" or bits[0] not in (b"100644", b"100755") or want.get(path) != bits[1]:
+            continue
+        full = os.path.join(root, os.fsdecode(path))
+        try:
+            st = os.lstat(full)
+        except OSError:
+            continue  # missing is a deletion, the user's to judge
+        if st.st_size or not os.path.isfile(full) or os.path.islink(full):
+            continue
+        rel = os.fsdecode(path)
+        size = _git(root, "cat-file", "-s", os.fsdecode(bits[1]))
+        if dry and size and size.strip() != b"0":
+            healed.append(rel)
+            continue
+        blob = _git(root, "cat-file", "blob", os.fsdecode(bits[1])) if size and size.strip() != b"0" and not dry else None
+        if not blob:
+            if size is None or size.strip() != b"0":
+                failed.append(rel)  # HEAD's blob unreadable too (a crash's empty object)
+            continue
+        tmp = full + ".heal.tmp"
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o755 if bits[0] == b"100755" else 0o644)
+            with os.fdopen(fd, "wb") as f:
+                f.write(blob)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, 0o755 if bits[0] == b"100755" else 0o644)
+            os.replace(tmp, full)
+            healed.append(rel)
+        except OSError:
+            failed.append(rel)
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    return healed, failed
+
+
+FSYNC = "objects,reference,index"
+
+
+def fsync_ok(root):
+    """Whether root's own git config makes git fsync loose objects, refs and the index (core.fsync)."""
+    got = (_git(root, "config", "--local", "--get", "core.fsync") or b"").decode("utf-8", "replace")
+    parts = {p.strip() for p in got.replace(" ", "").split(",") if p.strip()}
+    for alias, more in (("objects", ("loose-object", "pack")), ("committed", ("loose-object", "pack", "reference")),
+                        ("added", ("loose-object", "pack", "reference", "index")),
+                        ("all", ("loose-object", "pack", "reference", "index"))):
+        if alias in parts:
+            parts |= set(more)
+    return {"loose-object", "reference", "index"} <= parts
+
+
+def ensure_fsync(root):
+    """Set core.fsync so a crash can't leave empty objects, refs or index. True when it changed something; False
+    when already right or root is no repo."""
+    if fsync_ok(root) or _git(root, "rev-parse", "--git-dir") is None:
+        return False
+    return _git(root, "config", "--local", "core.fsync", FSYNC) is not None
+
+
+def empty_modules(plugin):
+    """Sampo's own .py files that are empty on disk (an empty __init__.py is normal): the ones whose emptiness
+    breaks an import. [paths]"""
+    out = []
+    for sub in ("lib", os.path.join("lib", "sampo")):
+        try:
+            for e in os.scandir(os.path.join(plugin, sub)):
+                if e.name.endswith(".py") and e.name != "__init__.py" and e.is_file() and e.stat().st_size == 0:
+                    out.append(e.path)
+        except OSError:
+            pass
+    return sorted(out)
+
+
+def crash_heal(plugin, err=None):
+    """bin/sampo, before it imports anything of Sampo's: if a module is empty, restore it (and any other empty tracked
+    file) from HEAD and say so; the paths still empty come back, with the one fix said on err. []: nothing wrong."""
+    err = err or sys.stderr
+    if not empty_modules(plugin):
+        return []
+    root = os.path.dirname(plugin)
+    healed, _ = heal(root)
+    if healed:
+        print("sampo: restored from git HEAD (a crash emptied them): " + ", ".join(healed), file=err)
+    left = empty_modules(plugin)
+    for path in left:
+        rel = os.path.relpath(path, root)
+        print("sampo: %s is empty on disk and git has no content for it. Fix: git -C %s checkout HEAD -- %s"
+              % (rel, root, rel), file=err)
+    return left
+
+
 def lane_reexec(me):
     """T-2843: run from inside a lane (a git worktree of this checkout), the main install's fm hands over to the lane's own
     plugin/bin/<same name>, so PLUGIN_ROOT is the lane (fm lib check lints its cards; writes land in it). Once (SAMPO_LANE_CHILD).

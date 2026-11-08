@@ -1651,3 +1651,100 @@ class McpTransport(unittest.TestCase):  # T-3346
         long = self.run_with({"mcpServers": {"x" * 200 + "\x1b[31m": {"type": "sse"}}})
         self.assertNotIn("\x1b", long.detail)
         self.assertNotIn("x" * 61, long.detail)
+
+
+class CrashHeal(unittest.TestCase):
+    """T-3727: a reboot right after a checkout leaves files empty on disk while git's commits are intact; Sampo
+    restores each from HEAD, unasked, and only those with nothing to lose."""
+    def setUp(self):
+        from sampo import py
+        self.py = py
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = git_repo(os.path.realpath(self._tmp.name))
+        for name, text in (("a.py", "A = 1\n"), ("sub/b.py", "B = 2\n"), ("keep.txt", "keep\n"), ("empty.txt", "")):
+            self.write(name, text)
+        self.write("run.sh", "#!/bin/sh\n")
+        os.chmod(os.path.join(self.root, "run.sh"), 0o755)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "files")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def git(self, *a):
+        return subprocess.run(["git", "-C", self.root, *a], capture_output=True, text=True, check=True).stdout
+
+    def write(self, rel, text):
+        path = os.path.join(self.root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+
+    def read(self, rel):
+        with open(os.path.join(self.root, rel)) as f:
+            return f.read()
+
+    def test_empty_tracked_files_come_back_from_head_and_only_those(self):
+        for rel in ("a.py", "sub/b.py", "run.sh"):
+            open(os.path.join(self.root, rel), "w").close()
+        self.write("keep.txt", "my edit\n")  # an edit is not damage
+        healed, failed = self.py.heal(self.root)
+        self.assertEqual((sorted(healed), failed), (["a.py", "run.sh", "sub/b.py"], []))
+        self.assertEqual((self.read("a.py"), self.read("sub/b.py")), ("A = 1\n", "B = 2\n"))
+        self.assertTrue(os.access(os.path.join(self.root, "run.sh"), os.X_OK), "the mode comes back too")
+        self.assertEqual(self.read("keep.txt"), "my edit\n")
+        self.assertEqual(self.py.heal(self.root), ([], []), "a second run finds nothing")
+        self.assertEqual(self.git("status", "--porcelain").strip(), "M keep.txt")
+
+    def test_a_file_emptied_on_purpose_is_left_alone(self):
+        open(os.path.join(self.root, "keep.txt"), "w").close()
+        self.git("add", "keep.txt")  # staged empty: the user's act
+        open(os.path.join(self.root, "empty.txt"), "w").close()  # empty in HEAD too
+        self.assertEqual(self.py.heal(self.root), ([], []))
+        self.assertEqual(self.read("keep.txt"), "")
+
+    def test_a_missing_file_a_non_repo_and_another_repos_root_are_left_alone(self):
+        os.remove(os.path.join(self.root, "a.py"))
+        self.assertEqual(self.py.heal(self.root), ([], []))
+        self.assertEqual(self.py.heal(os.path.join(self.t(), "nowhere")), ([], []))
+        self.assertEqual(self.py.heal(os.path.join(self.root, "sub")), ([], []), "only a repo's top")
+
+    def t(self):
+        return os.path.realpath(self._tmp.name)
+
+    def test_a_blob_git_cannot_read_is_named_not_invented(self):
+        open(os.path.join(self.root, "a.py"), "w").close()
+        blob = self.git("rev-parse", "HEAD:a.py").strip()
+        os.remove(os.path.join(self.root, ".git", "objects", blob[:2], blob[2:]))
+        open(os.path.join(self.root, ".git", "objects", blob[:2], blob[2:]), "w").close()  # a crash's empty object
+        healed, failed = self.py.heal(self.root)
+        self.assertEqual((healed, failed), ([], ["a.py"]))
+        self.assertEqual(self.read("a.py"), "")
+
+    def test_doctor_reports_then_repair_restores(self):
+        open(os.path.join(self.root, "a.py"), "w").close()
+        r = d.check_integrity([self.root], [], current=None)
+        self.assertEqual(r.status, "FAIL")
+        self.assertIn("a.py", r.detail)
+        self.assertIn("doctor --repair", r.detail)
+        moved = d.repair([self.root])
+        self.assertIn((os.path.join(self.root, "a.py"), "restored from HEAD"), moved)
+        self.assertEqual(self.read("a.py"), "A = 1\n")
+        self.assertEqual(d.check_integrity([self.root], [], current=None).status, "PASS")
+
+    def test_fsync_is_set_and_doctor_checks_it(self):
+        patch = unittest.mock.patch.object(c, "foreman_home", return_value=self.root)  # Sampo's own repo, not a fixture
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.assertFalse(self.py.fsync_ok(self.root))
+        r = d.check_integrity([self.root], [], current=None)
+        self.assertEqual(r.status, "WARN", r.detail)
+        self.assertIn("core.fsync", r.detail)
+        self.assertTrue(self.py.ensure_fsync(self.root))
+        self.assertFalse(self.py.ensure_fsync(self.root), "already set: no rewrite")
+        self.assertTrue(self.py.fsync_ok(self.root))
+        self.assertEqual(d.check_integrity([self.root], [], current=None).status, "PASS")
+        self.git("config", "core.fsync", "none")
+        self.assertFalse(self.py.fsync_ok(self.root))
+        d.repair([self.root])
+        self.assertTrue(self.py.fsync_ok(self.root), "doctor --repair sets it")

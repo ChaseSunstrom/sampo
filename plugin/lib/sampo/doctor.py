@@ -1973,6 +1973,15 @@ def check_integrity(roots, projects, current=None):
                                       f"--repair moves them aside, and git rewrites any the working files still hold)"))
         for line in _config_damage(root):
             bad.append((current is None or root in mine, line))
+        from sampo import py  # T-3727: files a crash emptied after a checkout, and Sampo's own repo's fsync
+        gone = py.heal(root, dry=True)[0]
+        if gone:
+            bad.append((current is None or root in mine, f"{len(gone)} tracked file{'s' * (len(gone) != 1)} empty in "
+                        f"{root} but not in HEAD ({', '.join(gone[:5])}{', …' if len(gone) > 5 else ''}; a crash after "
+                        f"a checkout; fm doctor --repair restores them from HEAD)"))
+        if root == c.foreman_home() and not py.fsync_ok(root):
+            bad.append((False, f"{root}: git core.fsync is not set, so a crash can leave empty objects "
+                               f"(fm doctor --repair sets it)"))
     for p in projects:
         here = current is None or bool(current) and p.slug == current.slug
         for path in sorted(glob.glob(os.path.join(p.dir, "tasks", "*.md"))):
@@ -2007,8 +2016,14 @@ def check_routing(path=None):
 
 def repair(roots):
     """Move every zero-byte loose object into Sampo's quarantine (never deleted): [(from, to or the error)]."""
+    from sampo import py  # T-3727: empty tracked files come back from HEAD; Sampo's repo fsyncs from now on
     stamp, moved = time.strftime("%Y%m%d-%H%M%S"), []
     for root in roots:
+        healed, failed = py.heal(root)
+        moved += [(os.path.join(root, p), "restored from HEAD") for p in healed]
+        moved += [(os.path.join(root, p), "not restored: HEAD's copy is unreadable") for p in failed]
+        if root == c.foreman_home() and py.ensure_fsync(root):
+            moved.append((os.path.join(root, ".git", "config"), f"core.fsync={py.FSYNC}"))
         for path in _empty_objects(root) or []:
             dest = os.path.join(c.state_dir(), "quarantine", f"git-objects-{stamp}",
                                 re.sub(r"\W+", "-", root).strip("-"), os.path.basename(os.path.dirname(path))

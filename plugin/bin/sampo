@@ -11,6 +11,11 @@ try:  # T-0368: below Python 3.12.7, re-run under a supported one
     py.reexec()
 except Exception:
     pass
+try:  # T-3727: a crash can leave a module empty; restore it from git HEAD or name it and the one fix
+    if py.crash_heal(os.path.dirname(LIB)):
+        sys.exit(1)
+except Exception:  # py itself is unusable (empty): the import below says what it can
+    pass
 version = None
 if sys.argv[1:] == ["--version"] and os.path.basename(sys.argv[0]) == "sampo":  # T-3692: cli's own line, without
     try:  # importing cli (~40 ms of CPU in a fresh process); under another name (fm), cli says that name back

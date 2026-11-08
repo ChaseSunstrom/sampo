@@ -193,6 +193,9 @@ def cmd_install(args):
         s, new_s, m, new_m, md, new_md, link, actions = plan_install(P)
     except SetupError as e:
         raise _usage(str(e))
+    if not args.dry_run:  # T-3727: a crash must not leave empty git objects in Sampo's own repo
+        from sampo import py
+        py.ensure_fsync(c.foreman_home())
     if not actions:
         print("Sampo is already wired into ~/.claude; nothing to do.")
         return

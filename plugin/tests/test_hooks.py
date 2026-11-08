@@ -4263,3 +4263,26 @@ class LockRetry(HookCase):  # T-3535: the Stop counters and the SessionStart hea
             hooks.session_start({"session_id": "s3535", "cwd": self.repo, "source": "startup"})
         self.assertEqual(len(calls), 2, "one retry")
         self.assertEqual((c.read_meta(self.project()).get("session") or {}).get("id"), "s3535")
+
+    def test_session_start_restores_files_a_crash_emptied_and_says_which(self):
+        # T-3727: a reboot after a checkout leaves tracked files empty; the next start restores them, unasked
+        from sampo import hooks
+        self.fm("init")
+        fake = os.path.join(self.repo, "plugin")  # Sampo's "install": a repo whose plugin/ folder is c.PLUGIN_ROOT
+        os.makedirs(fake)
+        for name, text in (("core.py", "X = 1\n"), ("cli.py", "Y = 2\n"), ("empty.py", "")):
+            with open(os.path.join(fake, name), "w") as f:
+                f.write(text)
+        for args in (["add", "-A"], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]):
+            subprocess.run(["git", *args], cwd=self.repo, capture_output=True)
+        for name in ("core.py", "cli.py"):
+            open(os.path.join(fake, name), "w").close()
+        with unittest.mock.patch.object(c, "PLUGIN_ROOT", fake):
+            out = hooks.session_start({"session_id": "s3727", "cwd": self.repo, "source": "startup"})
+        ctx = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("restored 2 empty files from git HEAD", ctx)
+        self.assertIn("plugin/core.py", ctx)
+        with open(os.path.join(fake, "core.py")) as f:
+            self.assertEqual(f.read(), "X = 1\n")
+        with open(os.path.join(fake, "empty.py")) as f:
+            self.assertEqual(f.read(), "")

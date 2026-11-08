@@ -117,6 +117,19 @@ class Install(SetupCase):
         self.assertTrue(m["statusline_hud"])
         self.assertTrue(any(b.startswith("settings.json.") for b in os.listdir(os.path.join(self.fhome, "backups"))))
 
+    def test_install_sets_core_fsync_on_sampos_repo_but_not_on_a_dry_run(self):
+        # T-3727: a crash must not leave empty git objects; temp repo only
+        subprocess.run(["git", "init", "-q", self.fhome], check=True)
+        get = lambda: subprocess.run(["git", "-C", self.fhome, "config", "--local", "--get", "core.fsync"],  # noqa: E731
+                                     capture_output=True, text=True).stdout.strip()
+        self.assertEqual(self.run_fm("install-user", "--dry-run").returncode, 0)
+        self.assertEqual(get(), "")
+        p = self.run_fm("install-user")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertEqual(get(), "objects,reference,index")
+        self.assertEqual(self.run_fm("install-user").returncode, 0, "a second run changes nothing")
+        self.assertEqual(get(), "objects,reference,index")
+
     def test_install_no_longer_sets_the_output_style_and_takes_back_its_own(self):
         # T-1279: the rules carry the reply format; the style's per-turn reminder cost 2.7% of the context
         self.run_fm("install-user")

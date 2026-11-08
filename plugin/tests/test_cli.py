@@ -5,6 +5,7 @@ import subprocess
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import unittest
@@ -1975,3 +1976,50 @@ class SelfRunningLine(ForemanTestCase):  # T-2364: what ran by itself, in fm sta
         self.assertEqual(sd["self_running"]["fired"], {"ci-red": 1})
         view = json.loads(self.fm("ui", "--json").stdout)
         self.assertTrue(any(s["text"].startswith("Self-running:") for s in view["signals"]), view["signals"])
+
+
+class EmptyModule(unittest.TestCase):
+    """T-3727: a crash can leave one of Sampo's own modules empty on disk; bin/sampo heals it from HEAD or names the
+    file and the one fix, never an AttributeError traceback."""
+    def setUp(self):
+        import tempfile
+        from helpers import PLUGIN, git_repo
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = git_repo(os.path.realpath(self._tmp.name), "inst")
+        self.cli = os.path.join(self.root, "plugin", "lib", "sampo", "cli.py")
+        os.makedirs(os.path.dirname(self.cli))
+        os.makedirs(os.path.join(self.root, "plugin", "bin"))
+        shutil.copy(os.path.join(PLUGIN, "lib", "sampo", "py.py"), os.path.dirname(self.cli))
+        shutil.copy(os.path.join(PLUGIN, "bin", "sampo"), os.path.join(self.root, "plugin", "bin"))
+        with open(self.cli, "w") as f:
+            f.write("def main():\n    print('ran')\n    return 0\n")
+        open(os.path.join(os.path.dirname(self.cli), "__init__.py"), "w").close()
+        subprocess.run(["git", "-C", self.root, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.root, "commit", "-qm", "install"], check=True)
+        self.bin = os.path.join(self.root, "plugin", "bin", "sampo")
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_bin(self):
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("GIT_", "FOREMAN_", "SAMPO_"))}
+        return subprocess.run([sys.executable, self.bin], capture_output=True, text=True, env=env, timeout=60)
+
+    def test_an_empty_module_is_restored_and_named(self):
+        open(self.cli, "w").close()
+        r = self.run_bin()
+        self.assertEqual((r.returncode, r.stdout), (0, "ran\n"), r.stderr)
+        self.assertIn("plugin/lib/sampo/cli.py", r.stderr)
+        self.assertIn("restored", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_a_module_empty_in_head_too_is_named_with_the_one_fix(self):
+        with open(self.cli, "w"):
+            pass
+        subprocess.run(["git", "-C", self.root, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.root, "commit", "-qm", "empty"], check=True)
+        r = self.run_bin()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("plugin/lib/sampo/cli.py is empty", r.stderr)
+        self.assertIn("git -C", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
