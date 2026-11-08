@@ -75,7 +75,8 @@ if ! py_ok; then
     say "Installing Python 3.13 with uv (found: $have; Sampo needs 3.12.7+)"
     uv python install 3.13 --default
     uv python update-shell   # later shells, and so the hooks, find it too
-    export PATH="$(uv python dir --bin):$PATH"
+    uvbin=$(uv python dir --bin) || die "uv installed Python 3.13 but can't name its folder (uv python dir --bin)"
+    export PATH="$uvbin:$PATH"
   fi
   hash -r
   py_ok || die "python3 on PATH is still $(python3 --version 2>&1); put the new one's folder ahead of it on PATH and rerun"
