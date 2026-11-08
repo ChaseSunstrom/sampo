@@ -55,7 +55,8 @@ sys.exit(0 if unittest.TextTestRunner(verbosity=0).run(suite).wasSuccessful() el
 '''
 
 
-class MintFromRepo(ForemanTestCase):
+class _MintRepo(ForemanTestCase):
+    """The fixture repo (setUp), write(), git() and mint(): no tests of its own (T-3815), so a subclass shares them."""
     def setUp(self):
         super().setUp()
         self.fm("init")
@@ -78,6 +79,7 @@ class MintFromRepo(ForemanTestCase):
     def mint(self, *args):
         return self.fm_json("exam", "gen", "--from-repo", self.repo, "--n", "6", "--seed", "3", *args)
 
+class MintFromRepo(_MintRepo):
     def test_keeps_caught_mutants_drops_and_counts_missed_ones(self):
         # the <=/>= swaps at the clamp bounds are never tested at x == lo or x == hi, so the suite stays green: missed
         r = self.mint()
@@ -162,7 +164,7 @@ class MintFromRepo(ForemanTestCase):
         self.assertIn("red", r["minted"]["reason"])
 
 
-class MintWithUntrackedDeps(MintFromRepo):  # T-2987: real projects keep their deps out of git (.venv, node_modules)
+class MintWithUntrackedDeps(_MintRepo):  # T-2987: real projects keep their deps out of git (.venv, node_modules)
     def setUp(self):
         super().setUp()
         lib = os.path.join(self.repo, ".venv", "lib")

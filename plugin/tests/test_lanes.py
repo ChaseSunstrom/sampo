@@ -1103,9 +1103,8 @@ class BuilderContractOneSource(unittest.TestCase):
         self.assertNotIn("<ID>", text)
 
 
-class BoardLanes(ForemanTestCase):
-    """T-0961: the merge base is on disk before git merge runs (a merge that dies midway still measures the task from
-    there) and a failed merge leaves the old one; one git runner (fmcore's) behind fmlanes, fmsecrets, fmmap, fmbench."""
+class _LaneRepo(ForemanTestCase):
+    """git(), lane() and base(); no tests of its own (T-3815), so AndonClear shares them without rerunning BoardLanes."""
 
     def git(self, root, *args):
         return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, check=True).stdout
@@ -1123,6 +1122,10 @@ class BoardLanes(ForemanTestCase):
     def base(self):
         from sampo import core as c
         return c.load_briefs(c.find_project(self.repo))[0].meta.get("base")
+
+class BoardLanes(_LaneRepo):
+    """T-0961: the merge base is on disk before git merge runs (a merge that dies midway still measures the task from
+    there) and a failed merge leaves the old one; one git runner (fmcore's) behind fmlanes, fmsecrets, fmmap, fmbench."""
 
     def test_the_base_is_saved_before_git_merge_runs(self):
         from sampo import cli
@@ -3156,7 +3159,7 @@ class VerifyTimeout(ForemanTestCase):  # T-3418
         self.assertIn("is red", msg)
 
 
-class AndonClear(BoardLanes):
+class AndonClear(_LaneRepo):
     """T-3704: an agent answers an andon with `sampo lane andon`, a rename: no rm for Claude Code to ask about."""
 
     def test_the_andon_verb_clears_and_reads_as_answered(self):

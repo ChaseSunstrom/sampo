@@ -55,9 +55,10 @@ class Blast(Base):
         self.assertNotIn("co-change: app/session.py", before)
 
 
-class BlastInPlan(Base):
-    """T-2277: fm focus writes the blast line into an M/L task's Risks once."""
-    AP = "Approach (options → choice → why)"
+class _BlastPlan(Base):
+    """plan() and risks(), no tests of their own (T-3815): BlastInPlan and BlastReach share them without rerunning
+    each other's tests."""
+    AP ="Approach (options → choice → why)"
 
     def plan(self, tid_title, scope, tier="M"):
         self.fm("task", "new", tid_title, "--type", "FEATURE", "--tier", tier, *(["--scope", scope] if scope else []))
@@ -71,6 +72,10 @@ class BlastInPlan(Base):
     def risks(self):
         from sampo import core as c
         return c.find_brief(c.find_project(self.repo), "T-0003").section("Risks and rollback")
+
+
+class BlastInPlan(_BlastPlan):
+    """T-2277: fm focus writes the blast line into an M/L task's Risks once."""
 
     def test_names_neighbours_and_past_fixes_once(self):
         tid = self.plan("Touch the session", "app/session.py")
@@ -110,11 +115,9 @@ class BlastInPlan(Base):
         self.assertNotIn("Blast radius", self.risks())
 
 
-class BlastReach(BlastInPlan):
+class BlastReach(_BlastPlan):
     """T-2336: the line reaches plans with no scope (files named in the text), a graph a few commits old, and says
     'unknown' for files with no history."""
-    test_names_neighbours_and_past_fixes_once = test_empty_scope_glob_or_unbuilt_graph_skips = \
-        test_no_graph_skips_and_focus_does_not_build_one = None  # the parent's tests run once, in their own class
 
     def named(self, text):
         tid = self.plan("Touch the session", None)

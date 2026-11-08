@@ -1331,26 +1331,32 @@ class LangCheck:
 
 
 class ExamPython(LangCheck, ForemanTestCase):
+    """reruns: LangCheck's check in this one language; each toolchain is its own run (T-3815)."""
     LANG = "python"
 
 
 class ExamJs(LangCheck, ForemanTestCase):
+    """reruns: LangCheck's check in this one language; each toolchain is its own run (T-3815)."""
     LANG = "js"
 
 
 class ExamTs(LangCheck, ForemanTestCase):
+    """reruns: LangCheck's check in this one language; each toolchain is its own run (T-3815)."""
     LANG = "ts"
 
 
 class ExamRust(LangCheck, ForemanTestCase):
+    """reruns: LangCheck's check in this one language; each toolchain is its own run (T-3815)."""
     LANG = "rust"
 
 
 class ExamRuby(LangCheck, ForemanTestCase):
+    """reruns: LangCheck's check in this one language; each toolchain is its own run (T-3815)."""
     LANG = "ruby"
 
 
 class ExamC(LangCheck, ForemanTestCase):
+    """reruns: LangCheck's check in this one language; each toolchain is its own run (T-3815)."""
     LANG = "c"
 
 

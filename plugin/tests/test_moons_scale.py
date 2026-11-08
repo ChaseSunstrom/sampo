@@ -514,6 +514,15 @@ class _Funnel(_Moons):
                 mock.patch.object(models, "embed", side_effect=self.embed):
             return self.ms.funnel(self.p, **kw), judge
 
+    def fates(self):
+        return {k: (e["stage"], e["verdict"]) for k, e in self.ms.fate(self.p).items()}
+
+    def events(self):
+        with open(os.path.join(self.ms._dir(self.p), self.ms.FUNNEL)) as f:
+            return f.read().splitlines()
+
+
+class EmbedStage(_Funnel):
     def test_the_embed_stage_has_its_own_profile_the_best_ranked_embedding_model(self):  # T-2893
         import http.server
         import threading
@@ -563,14 +572,6 @@ class _Funnel(_Moons):
             self.assertEqual(self.ms._embedder(self.p)["model"], "bge-m3:567m", "loopback is fine for a sensitive project")
         with mock.patch.dict(os.environ, {"MOONS_EMBED": ""}):
             self.assertIsNone(self.ms._embedder(self.p), "an empty MOONS_EMBED turns it off")
-
-    def fates(self):
-        return {k: (e["stage"], e["verdict"]) for k, e in self.ms.fate(self.p).items()}
-
-    def events(self):
-        with open(os.path.join(self.ms._dir(self.p), self.ms.FUNNEL)) as f:
-            return f.read().splitlines()
-
 
 class Embed(_Moons):
     def test_embed_posts_the_openai_shape_and_orders_by_index(self):

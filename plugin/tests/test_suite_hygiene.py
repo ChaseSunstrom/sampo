@@ -28,6 +28,35 @@ def unbound(src):
                                     and isinstance(n.ctx, ast.Load) and n.id not in bound]
 
 
+def inherited_tests(src):
+    """T-3815: "line Class(Base)" for each class that runs a test_ method its module-local base (directly or through
+    another) defines, unless its docstring says 'reruns:' why. A test the class defines itself, or sets to None in its
+    body (`test_x = None`, or the locals().update idiom that nulls the base's tests), is not run again. A base with no
+    tests of its own is free to share."""
+    classes = {n.name: n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.ClassDef)}
+
+    def tests(name, seen=()):
+        cls = classes.get(name)
+        if cls is None or name in seen:
+            return set()
+        own = {f.name for f in cls.body if isinstance(f, ast.FunctionDef) and f.name.startswith("test_")}
+        return own | set().union(*(tests(b.id, seen + (name,)) for b in cls.bases if isinstance(b, ast.Name)))
+
+    found = []
+    for name, cls in classes.items():
+        hidden = {f.name for f in cls.body if isinstance(f, ast.FunctionDef)}
+        for st in cls.body:
+            if isinstance(st, ast.Assign) and isinstance(st.value, ast.Constant) and st.value.value is None:
+                hidden |= {t.id for t in st.targets if isinstance(t, ast.Name)}
+            if isinstance(st, ast.Expr) and "locals().update" in ast.unparse(st):
+                hidden |= {n for b in cls.bases if isinstance(b, ast.Name) for n in tests(b.id)}
+        bases = [b.id for b in cls.bases if isinstance(b, ast.Name) and tests(b.id) - hidden]
+        reruns = any(line.strip().startswith("reruns:") for line in (ast.get_docstring(cls) or "").splitlines())
+        if bases and not reruns:
+            found.append(f"{cls.lineno} {name}({', '.join(bases)})")
+    return found
+
+
 class SuiteHygiene(unittest.TestCase):
     def test_tests_never_see_the_machines_real_load(self):
         # T-0744: under load (a finish's full run beside other work) host_strain() turned lanes and ambient runs off,
@@ -61,6 +90,27 @@ class SuiteHygiene(unittest.TestCase):
             for cls in (n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)):
                 found += [f"{os.path.relpath(path, HERE)}:{fn.lineno} {cls.name}.{fn.name}" for fn in cls.body
                           if isinstance(fn, ast.FunctionDef) and fn.name in inherited]
+        self.assertEqual(found, [])
+
+    def test_inherited_test_methods_run_only_where_the_docstring_says_reruns(self):
+        # T-3815: a subclass that inherits another class's test_ methods runs them again (238 runs in the suite, most
+        # wanting only the base's setUp); a deliberate rerun under another fixture says 'reruns:' why in its docstring
+        self.maxDiff = None
+        self.assertEqual(inherited_tests("class A(T):\n    def test_x(self):\n        pass\nclass B(A):\n    pass\n"),
+                         ["4 B(A)"])
+        self.assertEqual(inherited_tests("class H(T):\n    def setUp(self):\n        pass\n"
+                                         "class B(H):\n    def test_y(self):\n        pass\n"), [])
+        self.assertEqual(inherited_tests('class A(T):\n    def test_x(self):\n        pass\n'
+                                         'class B(A):\n    """reruns: under a fault."""\n'), [])
+        self.assertEqual(inherited_tests("class A(T):\n    def test_x(self):\n        pass\n"
+                                         "class M(A):\n    pass\nclass C(M):\n    pass\n"), ["4 M(A)", "6 C(M)"])
+        self.assertEqual(inherited_tests("class A(T):\n    def test_x(self):\n        pass\nclass B(A):\n    test_x = None\n"), [])
+        self.assertEqual(inherited_tests("class A(T):\n    def test_x(self):\n        pass\n"
+                                         "class B(A):\n    locals().update({n: None for n in dir(A)})\n"), [])
+        found = []
+        for path in sorted(glob.glob(os.path.join(HERE, "**", "*.py"), recursive=True)):
+            with open(path, encoding="utf-8") as f:
+                found += [f"{os.path.relpath(path, HERE)}:{x}" for x in inherited_tests(f.read())]
         self.assertEqual(found, [])
 
 

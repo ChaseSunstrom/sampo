@@ -12,7 +12,9 @@ from sampo import core as c
 SIG = "test -f healthy.flag"  # red until the fix writes the flag
 
 
-class Incident(ForemanTestCase):
+class _IncidentRepo(ForemanTestCase):
+    """setUp, open(), brief() and fix(); no tests of its own (T-3815), so IncidentSentinel shares them without rerunning
+    Incident's tests."""
     def setUp(self):
         super().setUp()
         self.fm("init")
@@ -30,6 +32,7 @@ class Incident(ForemanTestCase):
             f.write("ok\n")
         c.log_event(self.p, "touched", task=self.brief().id, data={"file": os.path.join(self.repo, "healthy.flag")})
 
+class Incident(_IncidentRepo):
     def test_a_passing_signal_opens_nothing(self):
         self.fix_flag = open(os.path.join(self.repo, "healthy.flag"), "w").close()
         r = self.open(check=False)
@@ -88,7 +91,7 @@ class Incident(ForemanTestCase):
         self.assertIn("no open incident", r.stderr + r.stdout)
 
 
-class IncidentSentinel(Incident):
+class IncidentSentinel(_IncidentRepo):
     def finish(self):
         return self.fm("task", "finish", self.brief().id, "--audit", "self", "--result", "ok", check=False)
 

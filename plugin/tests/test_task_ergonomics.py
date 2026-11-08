@@ -9,7 +9,9 @@ from helpers import ForemanTestCase
 from sampo import core as c
 
 
-class TaskErgonomics(ForemanTestCase):
+class _TaskRepo(ForemanTestCase):
+    """setUp, task() and brief(); no tests of its own (T-3815), so SplitVerify shares them without rerunning
+    TaskErgonomics' tests."""
     def setUp(self):
         super().setUp()
         self.fm("init")
@@ -22,6 +24,9 @@ class TaskErgonomics(ForemanTestCase):
 
     def brief(self, tid):
         return c.find_brief(c.find_project(self.repo), tid)
+
+
+class TaskErgonomics(_TaskRepo):
 
     def test_a_task_command_without_an_id_means_the_active_task(self):
         tid = self.task()
@@ -237,7 +242,7 @@ class ScopeWords(ForemanTestCase):
         self.assertEqual(c.find_brief(c.find_project(self.repo), cid).meta["scope"], ["e.py", "f.py"])
 
 
-class SplitVerify(TaskErgonomics):
+class SplitVerify(_TaskRepo):
     """T-2789: one core.split_verify; every entry point takes 'TEXT :: CMD' and 'TEXT — verify with `CMD`', last ' :: '."""
 
     def test_split_verify(self):

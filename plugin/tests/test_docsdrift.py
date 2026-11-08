@@ -10,7 +10,9 @@ from test_prove import cli, write
 from sampo import docs
 
 
-class DocsDrift(ForemanTestCase):
+class _Repo(ForemanTestCase):
+    """The fixture repo with drift in it, and kinds(); no tests of its own (T-3815), so TaskDocsDrift shares it without
+    rerunning DocsDrift's tests."""
     def setUp(self):
         super().setUp()
         files = {
@@ -33,6 +35,8 @@ class DocsDrift(ForemanTestCase):
     def kinds(self, findings):
         return sorted((f["file"], f["kind"], f["detail"]) for f in findings)
 
+
+class DocsDrift(_Repo):
     def test_scan_reports_drift_only(self):
         found = self.kinds(docs.scan(self.repo))
         self.assertEqual(found, [
@@ -82,7 +86,7 @@ class DocsDrift(ForemanTestCase):
         self.assertEqual(self.fm("docs", "--strict", cwd=self.repo).returncode, 0)
 
 
-class TaskDocsDrift(DocsDrift):
+class TaskDocsDrift(_Repo):
     """T-0035: a doc's old drift must not hold up the task that touched it; drift it added must."""
 
     def setUp(self):

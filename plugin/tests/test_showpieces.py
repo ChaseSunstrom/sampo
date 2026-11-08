@@ -105,6 +105,7 @@ class OneFile:
 
 
 class City(OneFile, ForemanTestCase):
+    """reruns: OneFile's checks on this figure: every showpiece is held to them (T-1654)."""
     FIG = "city"
 
     def setUp(self):
@@ -335,6 +336,7 @@ class OneFileBrowser:
 
 
 class CityBrowser(OneFileBrowser, unittest.TestCase):
+    """reruns: OneFileBrowser's headless checks on this figure: every showpiece is held to them (T-1654)."""
     FIG = "city"
 
     @staticmethod
@@ -359,7 +361,8 @@ TASKS = [  # fixture: what fmpage.graph_tasks reads from fm state (id, title, st
 
 class Graph(OneFile, ForemanTestCase):
     """T-1654: fm page graph, the task graph as a one-file 3D page: tasks as nodes in layers by what they wait on,
-    depends_on as edges, status as colour, held to the city's checks (OneFile)."""
+    depends_on as edges, status as colour, held to the city's checks (OneFile).
+    reruns: OneFile's checks on this figure, as the other showpieces run them (T-1654)."""
     FIG = "graph"
 
     def setUp(self):
@@ -625,6 +628,7 @@ class Graph(OneFile, ForemanTestCase):
 
 
 class GraphBrowser(OneFileBrowser, unittest.TestCase):
+    """reruns: OneFileBrowser's headless checks on this figure: every showpiece is held to them (T-1654)."""
     FIG = "graph"
 
     @staticmethod

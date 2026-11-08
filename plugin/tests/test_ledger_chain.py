@@ -17,7 +17,8 @@ def h(raw):
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
-class Chain(ForemanTestCase):
+class _Chain(ForemanTestCase):
+    """setUp, lines(), put() and verify(); no tests of its own (T-3815), so Cap shares them without rerunning Chain's."""
     def setUp(self):
         super().setUp()
         self.fm("init")
@@ -34,6 +35,7 @@ class Chain(ForemanTestCase):
     def verify(self, *args):
         return self.fm("verify-ledger", *args, check=False)
 
+class Chain(_Chain):
     def test_ledger_events_reads_every_month(self):
         # a report over a window reads the months fm tidy rolled into archive/, not just the live file's tail
         os.makedirs(os.path.join(self.p.dir, "archive"), exist_ok=True)
@@ -455,7 +457,7 @@ class Chain(ForemanTestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
-class Cap(Chain):
+class Cap(_Chain):
     """T-3403: log_event caps list and string fields before hashing."""
     def test_caps_lists_and_strings_and_chain_holds(self):
         c.log_event(self.p, "x", data={"files": list(range(500)), "short": [1], "s": "a" * 50000,

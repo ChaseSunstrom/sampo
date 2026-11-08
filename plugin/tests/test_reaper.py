@@ -163,7 +163,7 @@ class Timeout(_Stubbed):
 
 
 class TimeoutWithoutProc(Timeout):
-    """T-1284: the timeouts and the interrupt as macOS runs them, with no /proc: the registry's ps calls are
+    """reruns: Timeout's tests with no /proc (T-3815), as macOS runs them (T-1284): the registry's ps calls are
     subprocesses of their own, which the interrupt test's patched communicate must not count as children."""
     def setUp(self):
         super().setUp()
@@ -263,7 +263,7 @@ class Hook(_Stubbed):
 
 
 class SweepWithoutProc(Sweep):
-    """T-1249: the sweep as macOS runs it, with no /proc: ps gives each helper's start time and command line."""
+    """reruns: Sweep's tests with no /proc (T-3815), as macOS runs it (T-1249): ps gives each helper's start time and command line."""
     def setUp(self):
         super().setUp()
         self.addCleanup(setattr, self.fmideas, "PROC", getattr(self.fmideas, "PROC", "/proc"))
