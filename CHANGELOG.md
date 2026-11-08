@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- SessionStart restores crash-emptied files once per boot instead of listing and statting every tracked file at each session start, so a session start costs ~40% less (T-3820).
 - The Ward keeps a variable set once on the line (S=<scratch folder>) known when a later word only spells its name as a value (tier=S, --kind=S) or inside quoted text (a sed script's 'S = 2'), so a scratch write through $S/… is no longer refused as a project edit; a quoted name a builtin really sets (read "S", declare "S=…") still makes it unknown (T-3803).
 - fm doctor times hooks only on a calm machine (under 0.5 load per CPU, the SLO row's own bar), so a merge train's doctor gate no longer fails on hook p95 timings a loaded machine inflates (it left two good lanes out on 2026-11-08); and test_doctor stops running Checks' 36 tests a second time under PermissionMode (T-3814).
 - A criterion's verify warning (run.py names no test, -k matches none, a pipe hides the exit status) now ends the command's own result line too, from sampo task new --ac (after --focus as well), task ac add and task ac edit, so a caller reading only the last line sees it (T-3813).
