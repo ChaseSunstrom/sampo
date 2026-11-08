@@ -1266,6 +1266,29 @@ class DataTools(GuardCase):
                 self.assertBlocked(g.check("Bash", {"command": cmd}, ctx), "pipe-shell")
 
 
+    def test_sed_that_prints_and_docker_s_read_verbs_write_nothing(self):
+        # T-3807: a live session's line set P=$(docker port c 8686 | head -1 | cut -d: -f2) and K=$(docker exec c sed
+        # -n 's:.*<K>\(.*\)</K>.*:\1:p' /config/config.xml) before curl … | python3 -c 'json.load(sys.stdin)': refused,
+        # though neither writes a file python could import
+        ctx = self.ctx()
+        py = "python3 -c \"import json,sys;print(json.load(sys.stdin))\""
+        get = f"curl -s https://e/api | {py}"
+        for cmd in (f"P=$(docker port c 8686 | head -1 | cut -d: -f2); {get}",
+                    f"K=$(docker exec c sed -n 's:.*<K>\\(.*\\)</K>.*:\\1:p' /config/config.xml); {get}",
+                    f"K=$(sed -n '3,5p' f); {get}", f"K=$(sed -nE '/^a/p;$q' f); {get}",
+                    f"K=$(docker ps --format '{{{{.Names}}}}'); {get}", f"L=$(docker logs --tail 5 c); {get}",
+                    f"K=$(docker exec -i -u app c cat /etc/hostname); {get}"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(g.check("Bash", {"command": cmd}, ctx))
+        for cmd in (f"sed -i 's/a/b/' json.py; {get}", f"sed -n 's/a/b/w json.py' f; {get}", f"sed -n 's/a/b/e' f; {get}",
+                    f"sed -f prog.sed f; {get}", f"sed -n 'w json.py' f; {get}", f"sed -n '1e touch json.py' f; {get}",
+                    f"docker cp c:/x json.py; {get}", f"docker run -v $PWD:/w img touch /w/json.py; {get}",
+                    f"docker exec c touch /w/json.py; {get}", f"docker exec c sh -c 'echo > /w/json.py'; {get}",
+                    f"docker compose up -d; {get}"):
+            with self.subTest(cmd=cmd):  # pipe-shell, or system where the guard already reads sed's e and -f as code
+                self.assertIn(getattr(g.check("Bash", {"command": cmd}, ctx), "category", None), ("pipe-shell", "system"))
+
+
 class DataPythonAfter(GuardCase):
     def test_data_python_ignores_what_runs_after(self):
         # T-0414 (JARVIS): a data-reading python -c was refused for any other command on the line, even ones that run

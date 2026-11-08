@@ -2997,7 +2997,16 @@ def _top(shell):
 
 
 _DATA_TOOLS = {"curl", "wget", "head", "tail", "echo", "printf", "jq", "cat", "wc", "grep", "cut", "tr", "sleep", "true",
-               "nvidia-smi"}  # T-0397: a GPU query (its -f/--filename, which logs to a file, voids it)
+               "nvidia-smi",  # T-0397: a GPU query (its -f/--filename, which logs to a file, voids it)
+               "sed", "docker"}  # T-3807: sed printing (_sed_prints), docker's read-only verbs (_docker_reads)
+_SED_FLAGS = {"-n", "--quiet", "--silent", "-E", "-r", "--regexp-extended", "-s", "--separate", "-u", "--unbuffered",
+              "-z", "--null-data"}
+# one sed command that prints and writes nothing: an address (a line, $, /re/, a range) then p, d, = or q, or an s///
+# whose flags are only g, p, I and a count (w FILE and e write and run)
+_SED_ADDR = r"(?:\d+|\$|/(?:\\.|[^/\\])*/)"
+_SED_SAFE = lazy(rf"\s*(?:{_SED_ADDR}(?:\s*,\s*{_SED_ADDR})?\s*)?(?:[pd=]|q\d*|s(?P<d>[^\s\\\n])(?:\\.|(?!(?P=d)).)*"
+                 rf"(?P=d)(?:\\.|(?!(?P=d)).)*(?P=d)[gpI\d]*)\s*")
+_DOCKER_READS = {"port", "ps", "inspect", "logs", "images", "version", "info", "top"}
 # flags that write no file; T-0397: -k -i -I -v (stdout or stderr only) and a timeout fused to them (-sSm5)
 _CURL_SAFE = lazy(r"-[sSLfkiIv]*m\d+(?:\.\d+)?|-[sSLfkiIv]+|--(?:silent|show-error|location|fail|compressed|insecure|"
                         r"include|head|verbose|(?:max-time|connect-timeout)=\d+(?:\.\d+)?)")
@@ -3031,6 +3040,10 @@ def _writes_nothing(x, cwds):
     name, args = os.path.basename(a[0]), a[1:]
     if name == "printf" and _setter(name, args):
         return False
+    if name == "sed":
+        return _sed_prints(args)
+    if name == "docker":
+        return _docker_reads(x, args, cwds)
     if name == "curl":  # value flags: a header or agent, a -w format (not %output{file}), -o only to /dev/null; T-3683:
         i = 0  # -b reads cookies (a string or a jar it only reads; -c is the jar it writes)
         while i < len(args):
@@ -3062,6 +3075,49 @@ def _writes_nothing(x, cwds):
             i += 1
         return bool(outs) and all(o == "-" for o in outs)
     return True
+
+
+def _sed_prints(args):
+    """T-3807: sed with print-only flags (no -i, no -f script file) and every script a ;-list of _SED_SAFE commands;
+    the files after it are read only."""
+    scripts, i, named = [], 0, False
+    while i < len(args):
+        w = args[i]
+        if w in ("-e", "--expression"):
+            scripts.append(args[i + 1] if i + 1 < len(args) else "")
+            named, i = True, i + 2
+            continue
+        if w.startswith("--expression="):
+            scripts.append(w.partition("=")[2])
+            named = True
+        elif w.startswith("-") and w != "-":
+            if w not in _SED_FLAGS and not re.fullmatch(r"-[nErsuz]+", w):
+                return False
+        elif not named and not scripts:
+            scripts.append(w)  # the first operand is the script; the rest are files
+        i += 1
+    return bool(scripts) and all(all(_SED_SAFE.fullmatch(part) for part in s.split(";")) for s in scripts)
+
+
+def _docker_reads(x, args, cwds):
+    """T-3807: docker port, ps, inspect, logs, images, version, info or top, which print and write no host file; or
+    docker exec into a container running a data tool that writes nothing there either (a bind mount can reach the
+    host, so the inner command is judged as if it ran here)."""
+    if not args:
+        return False
+    if args[0] in _DOCKER_READS:
+        return True
+    if args[0] != "exec":
+        return False
+    i = 1
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] in ("-u", "--user", "-w", "--workdir", "-e", "--env"):
+            i += 2
+        elif re.fullmatch(r"-[itd]+|--interactive|--tty|--detach|--(?:user|workdir|env)=.*", args[i]):
+            i += 1
+        else:
+            return False
+    return i + 1 < len(args) and _writes_nothing(Cmd(args[i + 1:], [], x.piped), cwds)
 
 
 def _shadowed(cwds, mods):
