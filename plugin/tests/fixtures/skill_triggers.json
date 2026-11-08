@@ -94,5 +94,10 @@
     "I am about to report where work stands, what is left?",
     "Give me a summary of what's left in at most 25 lines",
     "Report where the work stands and what's left"
+  ],
+  "readme-visuals": [
+    "Add screenshots of the app and an architecture diagram to the README",
+    "The README needs visuals: app screenshots in dark and light",
+    "Make the docs page show the real app and a flow diagram"
   ]
 }

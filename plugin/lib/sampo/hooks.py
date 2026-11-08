@@ -1819,7 +1819,7 @@ def user_prompt_submit(pl):
     # doesn't fit waits rather than cutting the Next line. A UI request's note first: it isn't asked for again.
     room = lambda extra: len("Sampo: " + ". ".join(parts) + ".") + extra <= PROMPT_BUDGET
     ui = c.ui_request(text)
-    ui_note = f"{'Design' if ui == 'design' else 'UI'} request: {c.SKILL_FOR[ui]}" if ui else ""
+    ui_note = f"{ {'design': 'Design', 'readme': 'README'}.get(ui, 'UI')} request: {c.SKILL_FOR[ui]}" if ui else ""
     if ui_note and room(len(ui_note) + 2) and _skill_once(sid, c.SKILL_FOR[ui]):
         parts.append(ui_note)
     if not same:
@@ -2456,7 +2456,7 @@ def _pre_tool_use(raw):
                     ("lessons", lambda: _tripwire_note(pl, p, act)), ("steps", lambda: _step_note(pl, p, act)),
                     ("ambient", lambda: _ambient_note(p)), ("bus", lambda: _bus_note(pl)),
                     ("cards", lambda: _card_note(pl, p, act)), ("test-first", lambda: _test_first_note(pl, p, act)),
-                    ("design", lambda: _design_note(pl, p, act)),
+                    ("design", lambda: _design_note(pl, p, act)), ("readme", lambda: _readme_note(pl, p, act)),
                     ("gates", lambda: _gates_note(pl, p)), ("closing", lambda: _closing_note(pl, p)))
         off = c.ablated()  # T-1375: a bench arm's features switched off (never the guard, which spoke above)
         note = " ".join(_said_once(pl, list(filter(None, [made, saved, slow, warn]
@@ -2602,6 +2602,28 @@ def _design_note(pl, p, act):
     return (f"Sampo: design direction: {act.id} edits UI and no DESIGN.md has a ## Direction. Pick a direction and "
             f"write it before more UI (playbook ui/design-direction.md{'; load: Skill foreman:ui-design' if skill else ''}"
             "). A nudge, not a block.")
+
+
+_README = c.lazy(r"(?i)readme(\.(md|mdx|rst|txt))?$")  # T-2020: compiled on first use, never at a hook's import
+_HAS_IMAGE = c.lazy(r"(?i)!\[[^\]]*\]\(|<img\b|<picture\b")
+
+
+def _readme_note(pl, p, act):
+    """T-3703: a task's first edit of a README that shows no image gets one note naming the readme-visuals skill. The
+    name test comes before any read; the marker is set only when the note goes out. Never blocks."""
+    if not p or not act or pl.get("tool_name") not in FILE_TOOLS:
+        return None
+    path = _edit_path(pl)
+    if not path or not _README.fullmatch(os.path.basename(path)) or not _in_project(path, p) \
+            or _card_injected(p, act.id, ":readme-visuals"):
+        return None
+    from sampo import design  # ~7 ms, after the name test: regular files only, never blocks on a FIFO
+    text, _ = design._read(path)  # None for a README not written yet: it has no image either
+    if text and _HAS_IMAGE.search(text):
+        return None
+    _card_mark(p, act.id, ":readme-visuals")
+    return (f"Sampo: README visuals: {act.id} edits a README with no image. Show the product: load: Skill "
+            "foreman:readme-visuals (sampo readme plan, shots, diagram, check). A nudge, not a block.")
 
 
 def _said_once(pl, parts):

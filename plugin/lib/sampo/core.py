@@ -3326,10 +3326,22 @@ _UI = lazy(r"(?i)(?<![\w-])(?<!fm )(?<!sampo )(ui|ux)(?![\w-]| tests?\b| --)|\b(
                  r"three\.?js|r3f)\b|(?<!fm )(?<!sampo )\bmotion\b")  # T-1700: animation, motion and 3D reach the ui-design skill
 
 
+_README_RX = []  # T-3703: routing.json's readme_words as one pattern, built on first use
+
+
+def _readme_rx():
+    if not _README_RX:
+        words = [w for w in routing().get("readme_words") or [] if w.strip()]
+        _README_RX.append(re.compile(r"(?i)(?<![\w-])(?:" + "|".join(map(re.escape, words)) + r")(?![\w-])")
+                          if words else None)
+    return _README_RX[0]
+
+
 def ui_request(text):
-    """T-1697: "design" for a request for a new look, "ui" for a smaller change to a screen, else "" (SKILL_FOR keys)."""
-    t = text or ""
-    return "design" if _DESIGN.search(t) else "ui" if _UI.search(t) else ""
+    """T-1697: "design" for a request for a new look, "ui" for a smaller change to a screen, else "" (SKILL_FOR keys).
+    T-3703: "readme" first, for a README or docs page (routing.json's readme_words): its figures."""
+    t, rx = text or "", _readme_rx()
+    return "readme" if rx and rx.search(t) else "design" if _DESIGN.search(t) else "ui" if _UI.search(t) else ""
 
 
 def is_broad(text):
@@ -3499,6 +3511,7 @@ SKILL_FOR = {
     "verifying": "run: sampo playbooks show verification-loop", "auditing": "run: the /foreman:review workflow",
     "design": "load: Skill foreman:ui-design",  # T-1700: it routes to the directions skill and the ui playbooks
     "ui": "load: Skill foreman:ui-design, or for a small change sampo playbooks show ui/INDEX",
+    "readme": "load: Skill foreman:readme-visuals (screenshots and diagrams, dark and light: sampo readme plan)",  # T-3703
 }
 
 
@@ -4123,8 +4136,9 @@ def routing_problem(r):
             return f"{key} must map stage names to lists of strings"
     if any(not re.fullmatch(r"[\w:.-]+", x) for k in ("builtin_skills", "lens_builtin") for x in sum((r.get(k) or {}).values(), [])):
         return "builtin_skills must be plain skill names"
-    if not strs(r.get("ui_words", [])):
-        return "ui_words must be a list of strings"
+    for key in ("ui_words", "readme_words"):
+        if not strs(r.get(key, [])):
+            return f"{key} must be a list of strings"
     groups = r.get("review_groups", [])
     if not isinstance(groups, list) or not all(strs(g) and g for g in groups):
         return "review_groups must be a list of non-empty lists of lens names"

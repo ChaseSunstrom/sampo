@@ -41,6 +41,14 @@
     "user interface",
     "ui design"
   ],
+  "readme_words": [
+    "readme",
+    "docs page",
+    "documentation page",
+    "docs site",
+    "architecture diagram",
+    "flow diagram"
+  ],
   "builtin_skills": {
     "SECURITY": [
       "security-review"

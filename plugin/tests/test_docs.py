@@ -7,7 +7,7 @@ import unittest
 from helpers import PLUGIN, busy_factor, read_text, read_json, read_doc
 
 SKILLS = ["intake", "next", "resume", "status", "capture", "tidy", "doctor", "reflect", "improve", "playbooks", "brainstorm",
-          "directions", "design-extract", "ui-design", "genesis", "initiative"]
+          "directions", "design-extract", "ui-design", "genesis", "initiative", "readme-visuals"]
 # everything else Claude may start itself when the user asks in plain words; design-extract: the 2,000-character
 # listing has no room for it, so Claude reaches its verbs through the directions skill and the UI playbooks (T-1507)
 # T-1705: the rules map these plain words to the fm verbs, not the skills; initiative: no listing room left (T-2123)
@@ -162,7 +162,8 @@ class Skills(unittest.TestCase):
         for name in os.listdir(os.path.join(PLUGIN, "workflows")):
             text = read_text(os.path.join(PLUGIN, "workflows", name))
             total += sum(len(m) for m in re.findall(r"(?m)^\s*(?:description|whenToUse): '([^']*)'", text))
-        self.assertLessEqual(total, 2200, "Foreman's part of the skill listing")  # T-1700/T-1701/T-2072: the job skills
+        self.assertLessEqual(total, 2300, "Foreman's part of the skill listing")  # T-1700/T-1701/T-2072: the job skills
+        # T-3703: readme-visuals (+110): a README gets its figures unasked
 
     def test_the_rules_carry_the_reply_format_and_stay_small(self):
         # T-1279: the rules ride once a session; the output style's reminder rode every turn
@@ -183,7 +184,8 @@ class Skills(unittest.TestCase):
         from sampo import doctor
         self.assertEqual(fm_mention_problems("`fm nosuch` `fm lane nosuch ID` `fm lane brief ID` `fm task hypo ID add`"),
                          ["fm nosuch", "fm lane nosuch"], "the checker itself")
-        jobs = ("debug-test", "release", "research", "refactor", "performance", "security-audit", "write-docs")
+        jobs = ("debug-test", "release", "research", "refactor", "performance", "security-audit", "write-docs",
+                "readme-visuals")
         for name in jobs:
             with self.subTest(skill=name):
                 meta, body = frontmatter(os.path.join(PLUGIN, "skills", name, "SKILL.md"))

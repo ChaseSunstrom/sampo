@@ -6957,7 +6957,25 @@ def _build_parser(only=None):
     s.add_argument("--type", choices=["icon", "spot", "card", "scene", "figure"],
                    help="the gates' type (default: a square viewBox of 64 or less is an icon, else a card)")
     s.add_argument("--out", metavar="DIR", help="save each work's renders here as NAME-light.png and NAME-dark.png")
-    s = add("new", lazy("sampo.new", "cmd_new"), tier=("Finding your way", 385), help="strict-by-default templates: a web "
+    s = add("readme", lazy("sampo.readme", "cmd_readme"), tier=("Every task", 168), help="a README's figures (T-3703): "
+            "plan (the figures the repo calls for: its pages, API routes, commands, services); shots (start the app, "
+            "screenshot each route at desktop and phone, dark and light, a page showing private text refused; PNGs "
+            "in docs/assets/screens/ and <picture> snippets); diagram SPEC.json (nodes, edges, groups as a dark and "
+            "light SVG laid out by rank, in the repo's tokens or the Board look); check [README] (files, alt text, "
+            "pairs, size budgets, private SVG text)")
+    s.add_argument("action", choices=["plan", "shots", "diagram", "check"])
+    s.add_argument("target", nargs="?", metavar="SPEC.json|README", help="diagram: the spec; check: the README "
+                   "(default: the repo's)")
+    s.add_argument("--root", metavar="DIR", help="the repo (default: the git checkout around the working folder)")
+    s.add_argument("--cmd", help="shots: the command that starts the app, run in the repo; stopped afterwards")
+    s.add_argument("--url", help="shots: where the app answers (default: the first local URL --cmd prints)")
+    s.add_argument("--routes", metavar="R[,R…]", help="shots: paths or #/hash routes (default: the plan's pages)")
+    s.add_argument("--wait-for", metavar="TEXT", help="shots: wait until each page shows TEXT")
+    s.add_argument("--timeout", type=int, default=60, metavar="S", help="shots: seconds for the app to answer")
+    s.add_argument("--out", metavar="DIR", help="shots: docs/assets/screens/; diagram: docs/assets/diagrams/")
+    s.add_argument("--brief", nargs="?", const="", metavar="ID", help="plan: write the figures into the task's brief "
+                   "(default: the active one)")
+    s = add("new",lazy("sampo.new", "cmd_new"), tier=("Finding your way", 385), help="strict-by-default templates: a web "
             "page, a 3D scene, a sampo code panel (list; NAME [DIR] copies one; check PATH holds a copy to its rules)")
     s.add_argument("words", nargs="*", metavar="list|NAME [DIR]|check PATH", help="web, scene or panel; a panel lands "
                    "in sampo code's tui/ folder unless DIR is given. check runs the file for a panel (.py): one sampo code "
