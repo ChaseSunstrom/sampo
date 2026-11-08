@@ -8033,7 +8033,11 @@ def _build_parser(only=None):
     g.add_argument("--classes", action="store_true", help="today's refusals by class: count and whether it repeated (T-2992)")
     s.add_argument("--why", help="--reject: why it's a dead end")
 
-    s = add("triggers", lazy("sampo.triggers", "cmd_triggers"), tier=("Reports", 1031),
+    s = add("gatemap", lazy("sampo.gatemap", "cmd_gatemap"), tier=("Reports", 1045),
+            help="the self-change gates a change will hit, from past refusals, with the smallest fix each (T-3278)")
+    s.add_argument("files", nargs="*", help="repo-relative paths (default: this worktree's git diff)")
+
+    s = add("triggers",lazy("sampo.triggers", "cmd_triggers"), tier=("Reports", 1031),
             help="each trigger that files tasks: fired, done, dropped, open and precision; a mostly-dropped one files "
                  "at low priority (T-2276)")
     s.add_argument("--days", type=int, default=30, help="count captures from the last N days (default 30)")

@@ -181,6 +181,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmflow` (T-1639: `sampo flow FILE`, a journey of goto/click/type/expect/wait… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmforesight` (T-2554: `_requests(p, clean=True)` leaves out briefs a Genesis… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmfriction` (`sampo friction`: the self-improvement digest and trigger… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmgatemap` (`sampo gatemap [FILES] [--json]`, T-3278: the self-change gates a change will hit, learned from past refusals, with the smallest fix each; the shim for `sampo.gatemap`) [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmgenesis`… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmkalevala` (`sampo kalevala [start|status|step [--dry-run] [--k N]]`, T-3081: one Rune tower per aspect with open coverage plus problem solving, memory, efficiency, each sealed from the root gen-0; `step` runs each tower's next spec/seed/select as a job, at most K at once from the local slots, inside Kalevala's share of the day budget, thinnest first [→ files-lib-2](docs/map/files-lib-2.md))
 - `fmbisecthunk` (`sampo bisect --hunks`, T-3269: the shim for `sampo.bisecthunk`; `culprit_hunks` reverts each hunk of the first bad commit alone in a throwaway worktree and names the hunks whose revert makes the check pass [→ files-lib-2](docs/map/files-lib-2.md))
