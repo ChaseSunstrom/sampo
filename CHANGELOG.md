@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The user's direction leads the profile every agent starts with: a user memory marked lead: true comes before the seed lines, so the session and subagent digests, which keep only about the first eight items, always carry it (T-3846).
 - Kalevala's towers climb past their first step: a tower's spec reads the root's exam run instead of writing one (which a tower may not do, so all 26 towers had failed it since 2026-11-06), a failed step keeps its reason and sampo kalevala status shows it, and a round where every tower fails becomes a FIX task (T-3841).
 - sampo task ac edit corrects the words of a criterion that already has evidence when its verify command stays the same (logged), so a brief can say what was built; a changed check is still refused (T-3823).
 - The merge train's hook bench judges a busy machine by each hook's CPU median instead of its p95, which load inflates (one commit measured 404 then 106 ms), so a load spike no longer leaves a good lane out while a slower hook still fails (T-3821).
