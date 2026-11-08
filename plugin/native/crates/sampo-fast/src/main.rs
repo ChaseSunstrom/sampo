@@ -41,7 +41,7 @@ const MIRRORS: [(&str, &str); 31] = [
     ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "08b8f3abe964"),
     ("hooks._outward_denial", "1e6d4418ddd5"), ("hooks._event", "debcc448ac4d"), ("hooks._rev", "7ee872410ee6"),
     ("hooks._cwd", "5dfb7c01da10"), ("budget.check_subagent", "4575be89ca9a"),
-    ("budget.subagent_pause", "50158870729a"), ("budget.rate_limits", "295d742b9f04"),
+    ("budget.subagent_pause", "ac9deb5a8204"), ("budget.rate_limits", "295d742b9f04"),
     ("budget._recent_snaps", "fa6247e38a3c"), ("core.mirror_env", "e3ea72852a4e"), ("core.state_dir", "097be350d697"),
     ("core.foreman_home", "c516b6005ee9"), ("core.state_fallbacks", "5ad5949d011c"), ("core.gettempdir", "c30d095e6f0f"),
     ("core._marker_default", "cb40c01d2be1"), ("core._private", "7cfbfb951235"), ("core._writable", "3b299266b366"),
@@ -239,6 +239,10 @@ fn word(s: &str) -> Option<bool> {
 
 /// budget.check_subagent: no pause; a pace near the bar is Python's (weekly_lean needs the project).
 fn agent_ok(state: &Path) -> Option<()> {
+    // T-3902: a horizon in budget.json (budget set --until) makes the weekly pace Python's: this file mirrors only the floor
+    if fs::read(state.join("budget.json")).is_ok_and(|b| b.windows(7).any(|w| w == b"\"until\"")) {
+        return None;
+    }
     let (five, week, gone) = rate_limits(state)?;
     if five.unwrap_or(0.0) >= 90.0 {
         return None;

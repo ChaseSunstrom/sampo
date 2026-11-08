@@ -1,5 +1,6 @@
 """fm budget (T-0227): every child run and subagent records what it cost, and caps refuse what would overspend —
 bounded use, not avoidance."""
+import datetime
 import json
 import os
 import time
@@ -197,3 +198,83 @@ class Budget(ForemanTestCase):
                 self.assertIsNone(got, windows)
             else:
                 self.assertIn(paused, got or "", windows)
+
+    def week(self, used, now, days=4):
+        return {"seven_day": {"used_percentage": used, "resets_at": int(now + days * 86400)}}
+
+    def test_usage_samples_keep_one_row_per_ten_minutes_in_a_bounded_ring(self):
+        # T-3902: the statusline's readings persist under the project's state: one row per 10 min, the newest kept
+        now = 1_800_000_000.0
+        for k in range(3):  # three readings in ten minutes: one row, the first
+            bud.note_snapshot(self.week(40 + k, now), now=now + 60 * k)
+        self.assertEqual([r["used"] for r in bud.samples()], [40])
+        self.assertTrue(os.path.exists(os.path.join(c.state_dir(), "usage-samples.jsonl")))
+        old = bud.SAMPLE_KEEP
+        self.addCleanup(setattr, bud, "SAMPLE_KEEP", old)
+        bud.SAMPLE_KEEP = 4
+        for k in range(1, 9):
+            bud.note_snapshot(self.week(40 + k, now), now=now + 600 * k)
+        self.assertEqual([r["used"] for r in bud.samples()], [45, 46, 47, 48], "the ring keeps the newest four")
+        bud.note_snapshot({"seven_day": {"used_percentage": 99, "resets_at": 1}}, now=now + 9000)  # a reset past
+        self.assertEqual(bud.samples()[-1]["used"], 48, "no reading of a week already reset is sampled")
+
+    def test_budget_set_until_sets_the_horizon(self):
+        self.assertIsNone(bud.horizon(), "no horizon: the 75% floor applies")
+        future = int(time.time()) + 4 * 86400
+        self.fm("budget", "set", "--until", str(future))
+        self.assertEqual(bud.horizon(), float(future))
+        self.fm("budget", "set", "--until", "2099-11-11 07:00 UTC")
+        self.assertEqual(bud.horizon(), datetime.datetime(2099, 11, 11, 7, tzinfo=datetime.timezone.utc).timestamp())
+        self.assertNotEqual(self.fm("budget", "set", "--until", "2001-01-01 00:00 UTC", check=False).returncode, 0,
+                            "a past horizon says so")
+        self.assertNotEqual(self.fm("budget", "set", "--until", "soon", check=False).returncode, 0)
+        self.assertIn("2099-11-11 07:00 UTC", self.fm("budget").stdout)
+        self.assertEqual(bud.caps(), bud.DEFAULTS, "the horizon is not a cap")
+        self.fm("budget", "set", "--day", "12", "--because", "a bench")
+        self.assertIsNotNone(bud.horizon(), "setting a cap keeps the horizon")
+        self.fm("budget", "set", "--until", "off")
+        self.assertIsNone(bud.horizon())
+        self.fm("budget", "set", "--until", "reset")
+        self.assertIsNone(bud.horizon(), "reset follows the week's reset: no snapshot, no horizon")
+        self.usage(seven_day=(60, 4 * 86400))
+        self.assertLess(abs(bud.horizon() - (time.time() + 4 * 86400)), 5, "reset: the week's reset of the snapshot")
+
+    def test_with_a_horizon_the_recent_rate_paces_subagents_not_the_floor(self):
+        # T-3902: at 60% of the week with 4 days left, the 75% floor would not wait; the rate over 1.5x the allowance does
+        now = time.time()
+        bud.set_horizon(float(int(now + 4 * 86400)))  # the week's reset: 96 h left, allowance (100-60)/96 = 0.42 %/h
+        self.usage(seven_day=(60, 4 * 86400))
+        bud.note_snapshot(self.week(50, now, 4), now=now - 2 * 3600)
+        bud.note_snapshot(self.week(60, now, 4), now=now)  # 10 points in 2 h: 5 %/h, over 1.5x the allowance
+        self.assertIn("weekly usage 60%", bud.subagent_pause() or "", "holds under the floor")
+        pace = json.loads(self.fm("budget", "--json").stdout)["pace"]
+        self.assertTrue(pace["hold"])
+        self.assertAlmostEqual(pace["rate"], 5.0, places=1)
+        self.assertAlmostEqual(pace["allowance"], 0.417, places=2)
+        self.assertGreater(pace["projected"], 100)
+        agent = {"tool_name": "Agent", "tool_input": {"subagent_type": "sampo:fm-recon", "prompt": "x"}}
+        self.assertEqual(self.hook("PreToolUse", agent).returncode, 2, "the hook waits too: Python decides with a horizon")
+        open(os.path.join(c.state_dir(), "usage-samples.jsonl"), "w").close()  # a flat hour: the rate falls back
+        bud.note_snapshot(self.week(60, now, 4), now=now - 2 * 3600)
+        bud.note_snapshot(self.week(60, now, 4), now=now)
+        self.assertIsNone(bud.subagent_pause(), "released when the rate falls under 1.5x the allowance")
+        self.assertIsNone(bud.degrade())
+
+    def test_the_floor_does_not_wait_with_a_horizon_on_a_steady_week(self):
+        now = time.time()
+        bud.set_horizon(float(int(now + 4 * 86400)))
+        self.usage(seven_day=(78, 4 * 86400))  # over the floor, but the rate is flat: no hold
+        bud.note_snapshot(self.week(78, now - 3600, 4), now=now - 3600)
+        bud.note_snapshot(self.week(78, now, 4), now=now)
+        self.assertIsNone(bud.subagent_pause())
+        bud.set_horizon(now - 60)  # a horizon already past: the floor again
+        self.assertIn("weekly usage 78%", bud.subagent_pause() or "")
+
+    def test_an_unknown_rate_never_holds(self):
+        now = time.time()
+        bud.set_horizon(float(int(now + 4 * 86400)))
+        self.usage(seven_day=(60, 4 * 86400))
+        self.assertIsNone(bud.subagent_pause(), "no samples yet")
+        bud.note_snapshot(self.week(60, now, 4), now=now)
+        self.assertIsNone(bud.subagent_pause(), "one sample has no rate")
+        self.assertIsNone(json.loads(self.fm("budget", "--json").stdout)["pace"]["rate"])

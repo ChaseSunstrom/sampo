@@ -11,13 +11,19 @@ import glob
 import json
 import math
 import os
+import re
 import threading
 import time
 
 from sampo import core as c
 
 DEFAULTS = {"day": 15.0, "run": 6.0}  # USD per day, USD per command
-PACE_FLOOR = 75  # weekly usage % below which subagents never wait for the pace (T-0364)
+PACE_FLOOR = 75  # weekly usage % below which subagents never wait for the pace (T-0364), when no horizon is set
+SAMPLE_EVERY = 600  # T-3902: one weekly-usage sample per 10 min, from the statusline's snapshots
+SAMPLE_KEEP = 1008  # the samples ring: a week of them (state/usage-samples.jsonl)
+RATE_SPAN = 3 * 3600  # the recent burn rate: the last 3 h of this week's samples
+PACE_HOLD = 1.5  # with a horizon, optional work waits while the recent rate is over this many times the allowance
+_SAMPLE_LOCK = threading.Lock()
 
 
 class BudgetError(ValueError):  # a ValueError: callers already turn those into a clean refusal
@@ -44,12 +50,69 @@ def caps():
     return out
 
 
+def _raw():
+    """budget.json as written (the caps and the horizon); {} when unreadable or not an object."""
+    try:
+        with open(_path("budget.json"), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def set_caps(**new):
     cur = caps()
     cur.update({k: v for k, v in new.items() if v is not None and k in DEFAULTS})
     os.makedirs(c.state_dir(), exist_ok=True)
-    c.write_atomic(_path("budget.json"), json.dumps(cur))
+    c.write_atomic(_path("budget.json"), json.dumps(dict(_raw(), **cur)))  # the horizon stays
     return cur
+
+
+def _num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def parse_until(text, now=None):
+    """T-3902: `budget set --until`: an epoch or an ISO time (UTC when it says so, else local), 'reset' (the week's reset
+    as the newest snapshot has it), or 'off' (None). A time already past is refused."""
+    now = now or time.time()
+    t = str(text or "").strip()
+    if t.lower() in ("off", "none"):
+        return None
+    if t.lower() == "reset":
+        return "reset"
+    try:
+        if re.fullmatch(r"\d+(\.\d+)?", t):
+            at = float(t)
+        else:
+            at = datetime.datetime.fromisoformat(re.sub(r"\s*(UTC|GMT|Z)$", "+00:00", t, flags=re.I)).timestamp()
+    except (ValueError, OverflowError):
+        raise BudgetError(f"budget: --until is a time like 2026-11-11 07:00 UTC, an epoch, 'reset' or 'off', not {t!r}")
+    if not math.isfinite(at) or at <= now:
+        raise BudgetError(f"budget: the horizon {t!r} is not in the future")
+    return at
+
+
+def set_horizon(until):
+    """T-3902: the usage horizon in budget.json: an epoch, 'reset', or None to clear it. Not a cap: it changes no limit."""
+    data = _raw()
+    if until is None:
+        data.pop("until", None)
+    else:
+        data["until"] = until
+    os.makedirs(c.state_dir(), exist_ok=True)
+    c.write_atomic(_path("budget.json"), json.dumps(data))
+
+
+def horizon(now=None):
+    """T-3902: the usage horizon's epoch, or None: no horizon set, a horizon already past (the 75% floor again), or
+    'reset' with no weekly reading to take the reset from."""
+    now = now or time.time()
+    at = _raw().get("until")
+    if at == "reset":
+        w = forecast(now).get("seven_day")
+        at = w["resets_at"] if w else None
+    return float(at) if _num(at) and at > now else None
 
 
 def _today():
@@ -200,6 +263,71 @@ def forecast(now=None):
     return {}
 
 
+def samples():
+    """T-3902: the weekly usage samples, oldest first: {ts, used, resets} (the newest SAMPLE_KEEP; bad rows skipped)."""
+    rows = []
+    for e in c.tail_jsonl(_path("usage-samples.jsonl"), SAMPLE_KEEP):
+        if isinstance(e, dict) and all(_num(e.get(k)) for k in ("ts", "used", "resets")):
+            rows.append(e)
+    return rows
+
+
+def note_snapshot(rate_limits_obj, now=None):
+    """T-3902: the statusline's snapshot adds this week's reading to the samples ring under the project's state: one row
+    per SAMPLE_EVERY (a reading within that of the last row is not kept), the newest SAMPLE_KEEP kept. A reading of a
+    week already reset, or with no reset time, is not a sample."""
+    now = now or time.time()
+    w = rate_limits_obj.get("seven_day") if isinstance(rate_limits_obj, dict) else None
+    if not isinstance(w, dict):
+        return
+    used, resets = w.get("used_percentage"), w.get("resets_at")
+    if not _num(used) or not _num(resets) or not 0 < resets - now <= WINDOWS["seven_day"]:
+        return
+    path = _path("usage-samples.jsonl")
+    with _SAMPLE_LOCK:
+        last = c.tail_jsonl(path, 1)
+        prev = last[-1].get("ts") if last and isinstance(last[-1], dict) else None
+        if _num(prev) and 0 <= now - prev < SAMPLE_EVERY:
+            return
+        os.makedirs(c.state_dir(), exist_ok=True)
+        c.append_line(path, json.dumps({"ts": round(now, 1), "used": used, "resets": int(resets)}) + "\n")
+        with open(path, "rb") as f:
+            lines = f.read().splitlines()
+        if len(lines) > SAMPLE_KEEP:  # the ring: the newest rows only
+            c.write_atomic(path, b"\n".join(lines[-SAMPLE_KEEP:]).decode("utf-8") + "\n")
+
+
+def weekly_rate(now=None):
+    """T-3902: this week's burn rate over the last RATE_SPAN, in % per hour: the change between its oldest and newest
+    samples in that span. None when there are fewer than two of them, or they are under 15 min apart (a 1% step over a
+    shorter span can't tell a rate)."""
+    now = now or time.time()
+    rows = [e for e in samples() if e["ts"] >= now - RATE_SPAN]  # no upper bound: a row stamped a tick ahead (rounding) still counts
+    if not rows:
+        return None
+    same = [e for e in rows if e["resets"] == rows[-1]["resets"]]
+    span = same[-1]["ts"] - same[0]["ts"]
+    if len(same) < 2 or span < 900:
+        return None
+    return max(0.0, (same[-1]["used"] - same[0]["used"]) * 3600 / span)
+
+
+def pace(week, now=None):
+    """T-3902: the weekly pace against the horizon, or None (no horizon, or no weekly reading). allowance: the % per hour
+    left for the hours to the horizon; rate: the recent burn (weekly_rate); projected: the % at the horizon at that rate;
+    hold: the rate is over PACE_HOLD times the allowance (an unknown rate never holds), or the week is full."""
+    now = now or time.time()
+    until = horizon(now)
+    if until is None or not _num(week):
+        return None
+    hours = (until - now) / 3600
+    allowance = max(0.0, 100 - week) / hours
+    rate = weekly_rate(now)
+    return {"used": week, "rate": None if rate is None else round(rate, 3), "allowance": round(allowance, 3),
+            "projected": None if rate is None else round(week + rate * hours, 1), "until": until,
+            "hold": week >= 100 or (rate is not None and rate > PACE_HOLD * allowance)}
+
+
 def weekly_lean(p=None):
     """T-3049: whether weekly usage leans the project (p, else the one holding the cwd): False once the user turned its
     pace off (sampo drive on --pace off: "remove the weekly usage 80% lean on this project specifically"); the 5-hour
@@ -225,11 +353,18 @@ def usage_high(p=None):
 def subagent_pause(p=None):
     """Why subagents should wait, or None (T-0320): the 5-hour window at 90%+, or weekly usage ahead of the week's
     pace — more than 10 points past the share of the week gone by, never before 75% (the user, T-0364: "the budget
-    stuff shouldn't matter until 75% usage") and never past 90%. Unknown usage never pauses."""
+    stuff shouldn't matter until 75% usage") and never past 90%. Unknown usage never pauses. T-3902: with a horizon
+    (budget set --until) the weekly part is the recent rate against the allowance to it instead: it holds while the
+    rate is over PACE_HOLD times the allowance, and releases when it falls under, with no 75% floor."""
     u = rate_limits()
     if u.get("five_hour", 0) >= 90:
         return f"5-hour usage {u['five_hour']:g}%"
     week, gone = u.get("seven_day"), u.get("week_gone")
+    if horizon() is not None:
+        pc = pace(week)
+        if pc and pc["hold"] and weekly_lean(p):
+            return f"weekly usage {week:g}%, {pc['rate'] or 0:g}%/h recent rate over the {pc['allowance']:g}%/h allowance"
+        return None
     if week is not None and week >= max(PACE_FLOOR, min(90, 100 * gone + 10 if gone is not None else 80)) \
             and weekly_lean(p):  # the project lookup only once past the bar
         return f"weekly usage {week:g}%" + (f" with {100 * gone:.0f}% of the week gone" if gone is not None else "")
@@ -314,6 +449,10 @@ def cmd_budget(args):
     from sampo import cli
     p = cli.resolve(args)
     if args.action == "set":
+        if getattr(args, "until", None) is not None:  # T-3902: the horizon (not a cap: no decision to record)
+            set_horizon(parse_until(args.until))
+            if args.day is None and args.run is None:
+                return cli.out(args, {"until": horizon()}, "horizon: " + _horizon_text())
         cur = caps()
         new = {"day": args.day, "run": args.run}
         bad = [k for k, v in new.items() if v is not None and not (math.isfinite(v) and v >= 0)]
@@ -341,10 +480,40 @@ def cmd_budget(args):
         f["runs"] += e.get("runs") or 0
         f["tokens"] += e.get("tokens") or 0
     pause = subagent_pause(p)
+    week = rate_limits().get("seven_day")
+    pc = pace(week)  # T-3902: the weekly pace against the horizon, when one is set
     lines = [f"today: ${usd:.2f} of ${cur['day']:.2f} · per command ≤ ${cur['run']:.2f}" + (f" (halved: {high})" if high else ""),
-             f"subagents: {tokens:,} tokens today · " + (f"waiting: {pause}" if pause else "running (usage on pace)")]
+             f"subagents: {tokens:,} tokens today · " + (f"waiting: {pause}" if pause else "running (usage on pace)"),
+             f"weekly: {_pace_text(week, pc)}",
+             f"horizon: {_horizon_text()}"]
     lines += [f"  {k}: ${v['usd']:.2f} over {v['runs']} run(s)" + (f", {v['tokens']:,} tokens" if v["tokens"] else "")
               for k, v in sorted(by.items(), key=lambda kv: -kv[1]["usd"] - kv[1]["tokens"] / 1e6)]
     cli.out(args, {"today_usd": usd, "today_subagent_tokens": tokens, "caps": cur, "halved": high,
-                     "subagents_paused": pause, "by_feature": by},
+                     "subagents_paused": pause, "by_feature": by, "week": week, "pace": pc,
+                     "horizon": horizon(), "samples": len(samples())},
               "\n".join(lines))
+
+
+def _when(at):
+    return datetime.datetime.fromtimestamp(at, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _horizon_text():
+    """The horizon as the user set it (T-3902): the time, 'the weekly reset' (its time as the snapshot has it), or none."""
+    if _raw().get("until") == "reset":
+        at = horizon()
+        return f"the weekly reset ({_when(at)})" if at else "the weekly reset (no reading yet)"
+    at = horizon()
+    return _when(at) if at else ("none" if _raw().get("until") is None else "past, the 75% floor applies")
+
+
+def _pace_text(week, pc):
+    """T-3902: used %, the last 3 h's rate, the allowance to the horizon and the projection there, and the state."""
+    if week is None:
+        return "no reading yet (a statusline snapshot supplies it)"
+    if pc is None:
+        return f"{week:g}% used · no horizon, so the 75% floor applies (sampo budget set --until TIME)"
+    rate = "unknown (under two samples 15 min apart)" if pc["rate"] is None else f"{pc['rate']:g}%/h"
+    proj = "" if pc["projected"] is None else f" · projected {pc['projected']:g}% at {_when(pc['until'])}"
+    return (f"{week:g}% used · last 3 h {rate} · allowance {pc['allowance']:g}%/h to {_when(pc['until'])}{proj} · "
+            + ("hold: optional work waits" if pc["hold"] else "release: optional work runs"))

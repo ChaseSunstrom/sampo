@@ -143,6 +143,11 @@ def snapshot(c, data, p):
     except Exception:  # never fail the line
         pass
     c.write_atomic(os.path.join(c.state_dir(), "sessions", f"{sid}.json"), json.dumps(snap) + "\n")
+    try:  # T-3902: this reading joins the weekly usage samples (one per 10 min) that the horizon's pace reads
+        from sampo import budget
+        budget.note_snapshot(data.get("rate_limits"))
+    except Exception:  # never fail the line
+        pass
 
 
 # ---------------------------------------------------------------- the default layout

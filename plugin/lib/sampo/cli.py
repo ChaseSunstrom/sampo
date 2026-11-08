@@ -8433,6 +8433,8 @@ def _build_parser(only=None):
     s.add_argument("--day", type=float, help="set: USD per day for everything sampo spawns")
     s.add_argument("--run", type=float, help="set: USD per command")
     s.add_argument("--because", help="set: why a cap goes up (recorded as a costly decision)")
+    s.add_argument("--until", help="set: the weekly usage horizon (T-3902): a time like 2026-11-11 07:00 UTC, an epoch, "
+                                   "'reset' (the week's reset) or 'off'; with it the pace paces optional work, not the 75%% floor")
     s.add_argument("--days", type=int, default=1, help="show: spend over this many days")
 
     s = add("cpu", lazy("sampo.cpu", "cmd_cpu"), tier=("Project and settings", 774),
