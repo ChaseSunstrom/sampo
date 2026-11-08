@@ -5637,24 +5637,19 @@ def cmd_sentinel(args):
 
 def first_bad(p, cmd, good, bad, timeout):
     """The first commit between good and bad where cmd fails (git bisect run in a throwaway worktree), or None."""
-    import subprocess
-    import tempfile
+    from sampo import bisecthunk
     if not good or not bad or good == bad:
         return None
-    with tempfile.TemporaryDirectory(prefix="fm-bisect-") as t:
-        wt = os.path.join(t, "wt")
-        c._git(p.root, "worktree", "add", "--detach", "-q", wt, bad, timeout=120)
-        if not os.path.isdir(wt):
+    with bisecthunk.scratch_worktree(p.root, bad, "fm-bisect-") as wt:
+        if wt is None:
             return None
         try:
             c._git(wt, "bisect", "start", bad, good, timeout=60)
-            run = subprocess.run(["git", "-C", wt, "bisect", "run", "sh", "-c", cmd], capture_output=True,
-                                 text=True, timeout=max(60, timeout * 20))
-            m = re.search(r"^([0-9a-f]{40}) is the first '?bad'? commit", run.stdout, re.M)  # newer git quotes it
-            c._git(wt, "bisect", "reset", timeout=60)
+            _, out = bisecthunk.run_group(["git", "bisect", "run", "sh", "-c", cmd], wt, max(60, timeout * 20),
+                                          capture=True)  # a timeout gives no output: no first bad commit
         finally:
-            c._git(p.root, "worktree", "remove", "--force", wt, timeout=60)
-            c._git(p.root, "worktree", "prune", timeout=30)
+            c._git(wt, "bisect", "reset", timeout=60, fail=None)  # its refs/bisect live in the shared repo
+    m = re.search(r"^([0-9a-f]{40}) is the first '?bad'? commit", out, re.M)  # newer git quotes it
     return m.group(1) if m else None
 
 
@@ -5778,9 +5773,17 @@ def cmd_bisect(args):
     subject = c.plain(c._git(p.root, "log", "-1", "--format=%s", sha, timeout=10).strip())[:120]
     files = c._git(p.root, "show", "--name-only", "--format=", sha, timeout=10).split()
     shown, left = c.more(files, 12, "--json")
-    return out(args, {"sha": sha, "subject": subject, "files": files},
-               f"First bad commit: {sha[:10]} {subject}\n  files: {', '.join(shown + [left] if left else shown) or '(none)'}\n  "
-               f"git show {sha[:10]} for the diff")
+    payload = {"sha": sha, "subject": subject, "files": files}
+    text = (f"First bad commit: {sha[:10]} {subject}\n  files: {', '.join(shown + [left] if left else shown) or '(none)'}\n  "
+            f"git show {sha[:10]} for the diff")
+    if args.hunks:  # T-3269: which of its hunks breaks the check, each reverted alone
+        from sampo import bisecthunk
+        found = bisecthunk.culprit_hunks(p.root, sha, args.run, args.timeout)
+        payload.update(hunks=found["hunks"], hunks_total=found["total"], hunks_tested=found["tested"],
+                       hunks_skipped=found["skipped"], unreverted=found["unreverted"], passes_at_sha=found["passes_at_sha"],
+                       fails_at_parent=found["fails_at_parent"], error=found["error"])
+        text += "\n" + bisecthunk.report(found)
+    return out(args, payload, text)
 
 
 def _bisect(p, r, timeout):
@@ -7560,6 +7563,8 @@ def _build_parser(only=None):
     s.add_argument("--run", required=True, metavar="CMD")
     s.add_argument("--good", metavar="REF", help="a commit where it passed (default: the active task's start)")
     s.add_argument("--timeout", type=int, default=120, help="seconds per run")
+    s.add_argument("--hunks", action="store_true", help="also name which hunk of that commit breaks the check: each "
+                                                       "reverted alone (T-3269)")
     s = add("fix", lazy("sampo.fixes", "cmd_fix"), tier=("Finding your way", 240), help="known fixes: what got past an obstacle, offered the next time any "
                                                      "session meets it (list, add, rm)")
     s.add_argument("action", nargs="?", default="list", choices=["list", "add", "rm", "trust"])
