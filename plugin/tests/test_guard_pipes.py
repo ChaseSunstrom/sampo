@@ -143,6 +143,12 @@ class EvalVarsAndComputedNames(GuardCase):
             ("V=$(ls target/voltc-*); $V check tests/run/x.volt --std std", None),
             ("S=/tmp/x; $S/voltc build ../blink", None),
             ("eval \"$(ssh-agent -s)\"", None),
+            # T-3795: a name the line sets once to a literal is that literal, not every dangerous command too (yeerr's
+            # dissent resolves read as init 6, 2026-11-08); an unknown one still is
+            ('R="sampo task dissent T-1 resolve"; $R 6 "adopted: the threat model is written down"', None),
+            ("q=ls; $q 6", None),
+            ("X=$(cat f); $X 6", "system"),
+            ("q=init; $q 6", "system"),
         ], lambda cmd: self.bash(cmd.replace("{", "{{").replace("}", "}}")))
 
 

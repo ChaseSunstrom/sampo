@@ -4154,7 +4154,8 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             for t in _shell_c(args) + ([" ".join(args)] if args else []):  # T-0668 (review): or be bash -c, or eval
                 for x in _readings(t, {**lits, **known}):
                     found += check_bash(x, ctx, depth + 1)
-            names += _COMPUTED_AS  # or be any dangerous command
+            if val is None or re.search(r"(?<![\w$])IFS=", cmd):  # T-3795: a value set once on the line is that value
+                names += _COMPUTED_AS  # or be any dangerous command
         for nm in names:
             if nm == "rm" != name and not _rm_opts_only(args):  # GNU rm stops at an option it doesn't know
                 continue                                      # (-fwrapv, -Wno-unused…): nothing is deleted
