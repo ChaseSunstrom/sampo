@@ -326,7 +326,8 @@ STATE = ".sampo/"  # Sampo's synced task state: every sampo call writes it, no t
 PRUNE_S = 14 * 86400  # a repo's cache unused this long (a removed lane's) is deleted
 KEEP = 3  # T-3593: records kept per class, newest first: main's code beside the lanes' that changed what it reads
 COVERED = {}  # T-3593: job id -> what its processes recorded (runcover.py's lines), filled by _run_one
-GIT_STATE = "\0git"  # tree()'s key for HEAD and the tags (a recorded "g": git run on the repo); no path is named so
+GIT_STATE = "\0git"  # tree()'s key for HEAD and the tags (a recorded "g": git run on the repo); no path is named so,
+# nor any of its other "\0" keys (T-3691)
 
 
 def _cache_base():
@@ -409,7 +410,9 @@ def _git(cwd, *args, data=None):
 def tree():
     """T-3502: (repo root, {path: "mode blob"}, the repo's shared git folder) of the files as they are on disk: the
     index's, a modified or untracked file hashed again; GIT_STATE: HEAD and the tags, hashed. None outside git. T-3593: the cache is the git folder's,
-    so every worktree of the repo (a lane's, a train's scratch tree) reads and adds to one."""
+    so every worktree of the repo (a lane's, a train's scratch tree) reads and adds to one. T-3691: "\\0HEAD" HEAD's
+    commit, "\\0ref:HEAD" its branch's full name, "\\0ref:refs/remotes/X/HEAD" a remote's default branch (both with
+    the tags' and remote branches' names)."""
     try:
         repo = _git(HERE, "rev-parse", "--show-toplevel").strip()
         common = os.path.realpath(os.path.join(repo, _git(repo, "rev-parse", "--git-common-dir").strip()))
@@ -433,8 +436,18 @@ def tree():
             head = _git(repo, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD")  # not every ref: a lane's commit
         except subprocess.CalledProcessError:  # no commit yet                       moves one, review
             head = ""
-        tags = _git(repo, "for-each-ref", "--format=%(objectname) %(refname)", "refs/tags")
+        rows = [ln.split(" ", 2) for ln in _git(repo, "for-each-ref", "--format=%(symref) %(objectname) %(refname)",
+                                                "refs/tags", "refs/remotes").splitlines() if ln]
+        tags = "".join(f"{o} {r}\n" for _, o, r in rows if r.startswith("refs/tags/"))
         blobs[GIT_STATE] = hashlib.sha1((head + tags).encode()).hexdigest()
+        # T-3691: a short ref name's ambiguity (abbrev-ref, --short) rides on these names: the mark (not refs/heads,
+        # which every lane adds to)
+        mark = hashlib.sha1("".join(r + "\n" for _, _, r in rows).encode()).hexdigest()[:12]
+        h = head.split("\n")
+        blobs["\0HEAD"] = h[0] if head else ""
+        blobs["\0ref:HEAD"] = f"{h[1]} {mark}" if head else os.urandom(8).hex()  # unborn: abbrev-ref fails, rerun
+        blobs.update(("\0ref:" + r, f"{s} {mark}") for s, _, r in rows
+                     if r.startswith("refs/remotes/") and r.endswith("/HEAD"))
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return None
     return repo, blobs, common
@@ -508,6 +521,11 @@ def covered(text, repo, blobs):
         kind, _, p = ln.partition(" ")
         if kind in ("*", "g"):  # a child it couldn't follow; "g": that child was git on the repo
             out.add("*" if kind == "*" else GIT_STATE)
+            continue
+        if kind in ("r", "h"):  # T-3691: git on a repo read a ref or a path at HEAD: this tree's, else unbounded
+            top, _, name = p.partition("\0")
+            out.update((("\0ref:" + name) if kind == "r" else "\0HEAD" + (":" + name if name else ""),)
+                       if os.path.join(top, "") in roots else ("*", GIT_STATE))
             continue
         qual = None
         if kind == "c":
@@ -611,6 +629,23 @@ def _units(repo, rel, blob):
     return _UNITS[sha]
 
 
+_HEADS = {}  # T-3691: commit -> {path: "mode type object"} of its tree, for every values() of this run
+
+
+def _at_head(repo, commit, path):
+    """T-3691: what `git show HEAD:path` prints rides on: path's entry in the commit's tree ('' when absent, '-' with
+    no commit); a git that fails gives a value no record has (rerun)."""
+    if not commit:
+        return "-"
+    if commit not in _HEADS:
+        try:
+            rows = _git(repo, "ls-tree", "-r", "-t", "-z", "--full-tree", commit).split("\0")
+            _HEADS[commit] = {name: meta for meta, _, name in (ln.partition("\t") for ln in rows if ln)}
+        except (OSError, subprocess.SubprocessError):
+            return os.urandom(8).hex()
+    return _HEADS[commit].get(path, "")
+
+
 def values(repo, blobs):
     """T-3593: what a recorded path is worth in a tree: a file its mode and blob ('' when gone), a folder ('x/') the
     names in it, '?x' whether x is a file, a folder or absent, '*' the whole tree's files (Sampo's task state left
@@ -621,13 +656,15 @@ def values(repo, blobs):
 
     def value(p):
         if p not in memo:
-            if p == "*":
+            if p[:1] == "\0":  # T-3691: git's own state (tree()); a path at HEAD its entry in HEAD's tree
+                memo[p] = _at_head(repo, blobs.get("\0HEAD", ""), p[6:]) if p.startswith("\0HEAD:") else blobs.get(p, "")
+            elif p == "*":
                 memo[p] = hashlib.sha1("".join(f"{f}\0{b}\0" for f, b in sorted(blobs.items())
-                                               if not f.startswith(STATE) and f != GIT_STATE).encode("utf-8", "surrogateescape")).hexdigest()
+                                               if not f.startswith(STATE) and f[:1] != "\0").encode("utf-8", "surrogateescape")).hexdigest()
             elif p.endswith("/") or p.startswith("?"):
                 if not kids:
                     for f in blobs:
-                        parts = f.split("/") if f != GIT_STATE else []
+                        parts = f.split("/") if f[:1] != "\0" else []
                         for i, name in enumerate(parts):
                             kids.setdefault("/".join(parts[:i]) + "/" if i else "./", set()).add(name)
                 q = p[1:]

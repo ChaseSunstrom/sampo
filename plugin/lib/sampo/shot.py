@@ -237,6 +237,8 @@ class Browser:
 
     def send(self, method, session=None, **params):
         """Ask without waiting for the answer (it is skipped when it comes); its id."""
+        if "url" in params:  # T-3691: run.py's test recorder judges each page whether it may load the repo's files
+            sys.audit("sampo.page", params["url"])
         self.n += 1
         os.write(self.feed, json.dumps({"id": self.n, "method": method, "params": params,
                                         **({"sessionId": session} if session else {})}).encode() + b"\0")

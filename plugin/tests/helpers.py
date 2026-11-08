@@ -223,6 +223,8 @@ def devtools(browser, url, profile, init, media, at, expr, timeout=60, until=Non
 
     def call(method, session=None, **params):
         nonlocal buf, n
+        if "url" in params:  # T-3691: run.py's recorder judges each page whether it may load the repo's files
+            sys.audit("sampo.page", params["url"])
         n += 1
         os.write(feed, json.dumps({"id": n, "method": method, "params": params,
                                    **({"sessionId": session} if session else {})}).encode() + b"\0")

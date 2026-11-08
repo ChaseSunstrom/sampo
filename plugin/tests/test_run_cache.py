@@ -3,6 +3,8 @@ when one fails; the full gate, -k runs, nested runs and FOREMAN_NO_TEST_CACHE=1 
 what the class read when it passed: runcover.py records every file its processes open or run, every folder they list,
 and the whole tree when a child escapes it; a change outside those skips the class, a class with no record runs."""
 import contextlib
+import hashlib
+import inspect
 import io
 import json
 import re
@@ -11,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -276,6 +279,76 @@ class Coverage(unittest.TestCase):
         self.assertEqual(lane[0], wt)
         self.assertEqual(lane[2], self.tree()[2])
 
+    def commit(self, *args):
+        git(self.d, "-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "x", *args)
+
+    def test_the_branch_name_key_moves_with_the_name_alone(self):  # T-3691: git rev-parse --abbrev-ref HEAD
+        key = "\0ref:HEAD"
+        self.assertFalse(self.changes([key], lambda: self.commit("--allow-empty")), "a commit on the same branch")
+        self.assertFalse(self.changes([key], lambda: self.edit("plugin/lib/mod.py")))
+        self.assertFalse(self.changes([key], lambda: git(self.d, "branch", "lane")), "another lane's branch")
+        self.assertTrue(self.changes([key], lambda: git(self.d, "checkout", "-q", "-b", "side")))
+        self.assertTrue(self.changes([key], lambda: git(self.d, "tag", "side")), "now ambiguous: --abbrev-ref says heads/side")
+        self.assertTrue(self.changes([key], lambda: git(self.d, "update-ref", "refs/remotes/side/HEAD", "HEAD")),
+                        "a remote ref the short name could mean too")
+        self.assertTrue(self.changes([key], lambda: git(self.d, "checkout", "-q", "--detach")))
+        self.assertFalse(self.changes([key], lambda: self.commit("--allow-empty")), "detached: still HEAD")
+
+    def test_a_remote_s_default_branch_key_moves_with_its_target(self):  # T-3691: symbolic-ref --short origin/HEAD
+        key, sha = "\0ref:refs/remotes/origin/HEAD", git(self.d, "rev-parse", "HEAD").strip()
+        git(self.d, "update-ref", "refs/remotes/origin/main", sha)
+        git(self.d, "update-ref", "refs/remotes/origin/dev", sha)
+        self.assertTrue(self.changes([key], lambda: git(self.d, "symbolic-ref", "refs/remotes/origin/HEAD",
+                                                        "refs/remotes/origin/main")), "appears")
+        self.commit("--allow-empty")
+        self.assertFalse(self.changes([key], lambda: git(self.d, "update-ref", "refs/remotes/origin/main", "HEAD")),
+                         "its branch moving")
+        self.assertTrue(self.changes([key], lambda: git(self.d, "symbolic-ref", "refs/remotes/origin/HEAD",
+                                                        "refs/remotes/origin/dev")))
+        self.assertTrue(self.changes([key], lambda: git(self.d, "symbolic-ref", "-d", "refs/remotes/origin/HEAD")), "goes")
+
+    def test_head_s_commit_and_what_a_path_is_in_it(self):  # T-3691: git rev-parse HEAD, git show HEAD:path
+        self.assertTrue(self.changes(["\0HEAD"], lambda: self.commit("--allow-empty")))
+        self.assertFalse(self.changes(["\0HEAD"], lambda: git(self.d, "tag", "v1")))
+        key = "\0HEAD:plugin/lib/mod.py"
+        self.assertFalse(self.changes([key], lambda: self.edit("plugin/lib/mod.py")), "not committed: HEAD's is the same")
+        self.edit("docs/guide.md")
+        self.assertFalse(self.changes([key], lambda: self.commit("docs/guide.md")), "another file's commit")
+        self.assertTrue(self.changes([key], lambda: self.commit("plugin/lib/mod.py")))
+        self.edit("plugin/lib/units.py")
+        self.assertTrue(self.changes(["\0HEAD:plugin/lib"], lambda: self.commit("plugin/lib/units.py")), "a folder's tree")
+        self.edit("plugin/lib/new.py")
+        git(self.d, "add", "plugin/lib/new.py")
+        self.assertTrue(self.changes(["\0HEAD:plugin/lib/new.py"], self.commit), "appears")
+        self.assertTrue(self.changes([key], lambda: (git(self.d, "rm", "-q", "plugin/lib/mod.py"), self.commit())), "goes")
+        bad = dict(self.tree()[1], **{"\0HEAD": "0" * 40})
+        self.assertNotEqual(run.values(self.d, bad)(key), run.values(self.d, bad)(key), "a commit git can't list: unknown")
+
+    def test_git_s_keys_are_not_files(self):  # T-3691
+        def move():
+            git(self.d, "checkout", "-q", "-b", "other")
+            self.commit("--allow-empty")
+            git(self.d, "update-ref", "refs/remotes/origin/main", "HEAD")
+            git(self.d, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+        self.assertFalse(self.changes(["*", "./", "plugin/", "?docs/x"], move))
+
+    def test_the_git_state_key_is_head_and_the_tags_as_before(self):  # T-3691: a record saved before still matches
+        git(self.d, "tag", "v1")
+        git(self.d, "update-ref", "refs/remotes/origin/main", "HEAD")
+        head = git(self.d, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD")
+        tags = git(self.d, "for-each-ref", "--format=%(objectname) %(refname)", "refs/tags")
+        self.assertEqual(self.tree()[1][run.GIT_STATE], hashlib.sha1((head + tags).encode()).hexdigest())
+
+    def test_git_s_bounded_reads_in_this_repo_are_their_own_keys(self):  # T-3691
+        d = self.d
+        text = "\n".join([f"r {d}\0HEAD", f"r {d}\0refs/remotes/origin/HEAD", f"h {d}\0plugin/lib/mod.py", f"h {d}\0"])
+        with mock.patch.object(run, "HERE", self.here):
+            blobs = self.tree()[1]
+            self.assertEqual(run.covered(text, d, blobs),
+                             {"\0ref:HEAD", "\0ref:refs/remotes/origin/HEAD", "\0HEAD:plugin/lib/mod.py", "\0HEAD"})
+            for ln in (f"r {d}/docs\0HEAD", "h /elsewhere\0x", f"r {d}x\0HEAD"):
+                self.assertEqual(run.covered(ln, d, blobs), {"*", run.GIT_STATE}, "another repo's: " + ln)
+
     def test_outside_git_there_is_no_tree(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.object(run, "HERE", d):
             self.assertIsNone(run.tree())
@@ -283,6 +356,14 @@ class Coverage(unittest.TestCase):
 
 MOD_C = ("def f():\n    def inner():\n        return 1\n    return inner()\n\n\ndef g():\n    return 2\n\n\n"
          "class K:\n    def m(self):\n        return (lambda: 3)()\n")
+HELPERS = """import os, sys
+
+
+def devtools(browser, url):  # helpers.devtools' part the recorder sees: a browser started, then told its page
+    pid = os.posix_spawn(browser, [browser, '--headless', '--remote-debugging-pipe', 'about:blank'], dict(os.environ))
+    os.waitpid(pid, 0)
+    sys.audit('sampo.page', url)
+"""
 
 
 class Recorder(unittest.TestCase):
@@ -292,7 +373,7 @@ class Recorder(unittest.TestCase):
     def setUpClass(cls):
         cls.d = os.path.realpath(tempfile.mkdtemp())
         scratch(cls.d, {"lib/mod_a.py": "A = 1\n", "lib/mod_b.py": "B = 1\n", "data.txt": "x\n", "folder/f.txt": "y\n",
-                        "lib/mod_c.py": MOD_C,
+                        "lib/mod_c.py": MOD_C, "lib/helpers.py": HELPERS,
                         "bin/tool": "#!/bin/sh\ntrue\n", "bin/sleep": "#!/bin/sh\ntrue\n",
                         "bin/pytool": "#!/usr/bin/env python3\nimport sys\nsys.path.insert(0, '.')\nimport mod_b\n"})
         for name in ("tool", "pytool", "sleep"):
@@ -307,16 +388,20 @@ class Recorder(unittest.TestCase):
         shutil.rmtree(cls.d, True)
         shutil.rmtree(cls.cache, True)
 
-    def record(self, code):
-        """What a script in the repo running `code` (and its children) recorded, as covered() reads it."""
+    def record(self, code, raw=False, held=None):
+        """What a script in the repo running `code` (and its children) recorded, as covered() reads it (raw: the
+        file's text; held: what the file holds before)."""
         out = os.path.join(tempfile.mkdtemp(), "cover")
         self.addCleanup(shutil.rmtree, os.path.dirname(out), True)
+        if held is not None:
+            with open(out, "w") as f:
+                f.write(held)
         with open(os.path.join(self.d, "probe.py"), "w") as f:
             f.write("import os, subprocess, sys, tempfile\nsys.path.insert(0, 'lib')\n" + code)
         subprocess.run([self.py, "probe.py"], cwd=self.d, check=True, timeout=120, capture_output=True,
                        env=dict(os.environ, RUNPY_COVER=out, RUNPY_COVER_ROOTS=os.pathsep.join(run._roots(self.d))))
         with open(out) as f:
-            return run.covered(f.read(), self.d, self.blobs)
+            return f.read() if raw else run.covered(f.read(), self.d, self.blobs)
 
     def test_the_venv_python_is_this_python_with_the_recorder_outside_tmp_and_made_once(self):
         self.assertIsNotNone(self.py)
@@ -370,6 +455,38 @@ class Recorder(unittest.TestCase):
         self.assertNotIn("lib/mod_c.py::g", got)
 
     @unittest.skipUnless(MON, "sys.monitoring needs Python 3.12")
+    def test_a_line_the_file_holds_is_not_written_again_one_it_lacks_always_is(self):  # T-3691
+        """A fork server's calls each wrote all it had run (84% of what classes recorded); each process now skips
+        what the file already holds, and still writes what its parent ran since, and its own reads."""
+        child = ("import os, sys\nsys.path.insert(0, 'lib')\nimport mod_c\nmod_c.f()\n"
+                 "def call(code):\n    if os.fork() == 0:\n        os.environ['RUNPY_COVER'] = os.environ['LATER']\n"
+                 "        exec(code)\n        os._exit(0)\n    os.wait()\n"
+                 "call('open(\"data.txt\").read()')\ncall('open(\"data.txt\").read()')\nmod_c.K().m()\n"
+                 "call('os.listdir(\"folder\")')\n")
+        text = self.record("e = {k: v for k, v in os.environ.items() if k != 'RUNPY_COVER'}\n"
+                           f"subprocess.run([sys.executable, '-c', {child!r}], env=dict(e, LATER=os.environ['RUNPY_COVER']),"
+                           " check=True)\nsubprocess.run([sys.executable, '-c', 'import mod_a'], cwd='lib', check=True)\n"
+                           "subprocess.run([sys.executable, '-c', 'import mod_a'], cwd='lib', check=True)\n", raw=True)
+        lines = text.split("\n")
+        mod_c = os.path.join(self.d, "lib", "mod_c.py")
+        for ln in (f"c {mod_c} f", f"m {mod_c}", f"f {os.path.join(self.d, 'data.txt')}",
+                   f"m {os.path.join(self.d, 'lib', 'mod_a.py')}"):
+            self.assertEqual(lines.count(ln), 1, ln)
+        self.assertIn(f"c {mod_c} K.m", lines, "what the parent ran after its first call reaches its next one")
+        self.assertIn(f"d {os.path.join(self.d, 'folder')}", lines)
+
+    def test_a_line_half_written_is_not_one_the_file_holds(self):  # T-3691: a sibling's write read mid-way
+        data = os.path.join(self.d, "data.txt")
+        text = self.record("open('data.txt').read()\n", raw=True, held=f"f {data}.bak\nf {data}")
+        self.assertIn(f"f {data}", text.split("\n")[1:])
+
+    def test_a_file_too_big_to_read_back_is_written_to_as_if_empty(self):  # T-3691: HELD_MAX bounds _held's read
+        data = os.path.join(self.d, "data.txt")
+        pad = "x" * (runcover.HELD_MAX + 1)
+        text = self.record("open('data.txt').read()\n", raw=True, held=f"f {data}\n{pad}\n")
+        self.assertEqual(text.split("\n").count(f"f {data}"), 2, "unread past the bound, the line is written again")
+
+    @unittest.skipUnless(MON, "sys.monitoring needs Python 3.12")
     def test_the_monitoring_tool_id_is_not_the_flight_recorder_s(self):  # T-3603: debug.py's _RECORDER holds 4
         r = subprocess.run([self.py, "-c", "import sys; print(sys.monitoring.get_tool(3), sys.monitoring.get_tool(4))"],
                            capture_output=True, text=True, check=True, env=dict(os.environ, RUNPY_COVER=os.devnull))
@@ -383,6 +500,42 @@ class Recorder(unittest.TestCase):
                             " os.stat in os.supports_dir_fd, os.lstat in os.supports_dir_fd)"],
                            capture_output=True, text=True, check=True, env=dict(os.environ, RUNPY_COVER=os.devnull))
         self.assertEqual(r.stdout.split(), ["True"] * 4, "rmtree keeps its fd-based, symlink-safe walk")
+
+    def test_it_starts_once_though_site_runs_its_pth_twice(self):  # T-3691: a venv seeing system packages does
+        r = subprocess.run([self.py, "-c", "import os, posix, runcover; f = os.lstat; runcover.setup(runcover.PY)\n"
+                            "print(os.lstat.__wrapped__ is posix.lstat, os.lstat is f)"],
+                           capture_output=True, text=True, check=True, env=dict(os.environ, RUNPY_COVER=os.devnull))
+        self.assertEqual(r.stdout.split(), ["True", "True"], "every stat and audit event was judged twice")
+
+    def test_a_path_asked_again_is_judged_once(self):  # T-3691: the guard stats the same paths thousands of times
+        out = os.path.join(tempfile.mkdtemp(), "cover")
+        self.addCleanup(shutil.rmtree, os.path.dirname(out), True)
+        code = ("import os, runcover\nask = lambda: (os.path.exists('data.txt'), os.path.isdir('/nowhere'), os.stat('lib'))\n"
+                "ask()\nn = [0]\nf = runcover._inside\n"
+                "runcover._inside = lambda *a: (n.__setitem__(0, n[0] + 1), f(*a))[1]\n"
+                "for _ in range(500):\n    ask()\nprint(n[0])\nos.path.isdir('folder')\nprint(n[0])\n")
+        r = subprocess.run([self.py, "-c", code], cwd=self.d, capture_output=True, text=True, check=True,
+                           env=dict(os.environ, RUNPY_COVER=out, RUNPY_COVER_ROOTS=os.pathsep.join(run._roots(self.d))))
+        self.assertEqual(r.stdout.split(), ["0", "1"], "judged on the first ask only")
+
+    def test_a_path_asked_again_is_recorded_again_where_the_answer_or_the_file_changed(self):  # T-3691: the memo
+        other, mine = (os.path.join(tempfile.mkdtemp(), name) for name in ("other", "cover"))
+        for p in (other, mine):
+            self.addCleanup(shutil.rmtree, os.path.dirname(p), True)
+        outside = os.path.dirname(other)
+        text = self.record(
+            f"os.path.exists('data.txt')\nos.chdir('lib')\nos.path.exists('data.txt')\nos.chdir('..')\n"  # another folder
+            f"os.path.isdir({outside!r})\nos.environ['RUNPY_COVER_ROOTS'] += os.pathsep + {outside!r} + os.sep\n"
+            f"os.path.isdir({outside!r})\n"  # a repo named later
+            f"os.environ['RUNPY_COVER'] = {other!r}\nos.path.exists('data.txt')\n"  # another record file
+            f"os.environ = dict(os.environ, RUNPY_COVER={mine!r})\nos.path.exists('data.txt')\n",  # a plain dict
+            raw=True).split("\n")
+        self.assertIn(f"s {os.path.join(self.d, 'data.txt')}", text)
+        self.assertIn(f"s {os.path.join(self.d, 'lib', 'data.txt')}", text)
+        self.assertIn(f"s {outside}", text)
+        for p in (other, mine):
+            with open(p) as f:
+                self.assertIn(f"s {os.path.join(self.d, 'data.txt')}", f.read().split("\n"), p)
 
     def test_a_forked_child_s_reads_and_one_that_execs_this_python(self):
         got = self.record("pid = os.fork()\nif pid == 0:\n    import mod_b\n    os._exit(0)\nos.waitpid(pid, 0)\n")
@@ -461,8 +614,88 @@ class Recorder(unittest.TestCase):
             with self.subTest(arg):
                 self.assertIn("*", self.record(b + shot % ("'http://127.0.0.1:1/', " + arg)))
         for args in ("'--headless', '--remote-debugging-pipe', 'about:blank'", "'--headless', 'http://127.0.0.1:1/'"):
-            with self.subTest(args):  # pages loaded later by devtools, or none to judge
+            with self.subTest(args):  # pages loaded later by a devtools no hook hears (not helpers'), or none to judge
                 self.assertIn("*", self.record(b + f"subprocess.run([t, {args}], check=True)\n"))
+
+    def assertBounded(self, code, keys=()):
+        got = self.record(code + "\n")
+        self.assertNotIn("*", got)
+        self.assertEqual({p for p in got if p[:1] == "\0"}, set(keys))
+
+    def test_git_asked_where_the_repo_is_its_branch_or_a_file_at_head_keys_on_that_alone(self):  # T-3691
+        for args, keys in (("'-c', 'core.quotePath=false', '-C', os.getcwd(), 'rev-parse', '--path-format=absolute',"
+                            " '--git-common-dir'", ()),
+                           ("'rev-parse', '--show-toplevel'", ()),
+                           ("'--no-pager', 'rev-parse', '-q', '--is-inside-work-tree', '--show-prefix'", ()),
+                           ("'-C', 'lib', 'remote', 'get-url', 'origin'", ()),  # .git/config: '*' never held it
+                           ("'-C', '.', 'rev-parse', '--abbrev-ref', 'HEAD'", ("\0ref:HEAD",)),
+                           ("'rev-parse', '--symbolic-full-name', 'HEAD'", ("\0ref:HEAD",)),
+                           ("'symbolic-ref', '--short', 'refs/remotes/origin/HEAD'", ("\0ref:refs/remotes/origin/HEAD",)),
+                           ("'symbolic-ref', '-q', 'HEAD'", ("\0ref:HEAD",)),
+                           ("'show', 'HEAD:lib/mod_a.py'", ("\0HEAD:lib/mod_a.py",)),
+                           ("'-C', 'lib', 'show', 'HEAD:lib/mod_a.py'", ("\0HEAD:lib/mod_a.py",)),
+                           ("'rev-parse', '--verify', 'HEAD'", ("\0HEAD",)),
+                           ("'rev-parse', 'HEAD'", ("\0HEAD",))):
+            with self.subTest(args):
+                self.assertBounded(f"subprocess.run(['git', {args}], capture_output=True)", keys)
+
+    def test_git_reading_more_or_another_way_is_still_the_whole_tree(self):  # T-3691: never lose a needed rerun
+        for args in ("'status'", "'-C', 'lib', 'log'", "'ls-files'", "'--git-dir=.git', 'rev-parse', '--abbrev-ref', 'HEAD'",
+                     "'--work-tree', '.', 'rev-parse', 'HEAD'", "'-c', 'core.abbrev=12', 'rev-parse', '--abbrev-ref', 'HEAD'",
+                     "'--namespace', 'x', 'rev-parse', '--abbrev-ref', 'HEAD'", "'--paginate', 'show', 'HEAD:data.txt'",
+                     "'show', 'HEAD:../x'", "'show', 'HEAD~1:lib/mod_a.py'", "'show', 'HEAD:./lib/mod_a.py'",
+                     "'show', 'HEAD:lib//mod_a.py'", "'show', 'HEAD:lib/'", "'show', '--stat', 'HEAD:lib/mod_a.py'",
+                     "'show', 'HEAD:lib/mod_a.py', 'HEAD:data.txt'", "'show', 'HEAD'", "'show', 'main:data.txt'",
+                     "'rev-parse', '--short', 'HEAD'", "'rev-parse', 'HEAD~1'", "'rev-parse', '--abbrev-ref', 'main'",
+                     "'rev-parse', '--abbrev-ref', 'HEAD', 'HEAD'", "'-C', '.git', 'rev-parse', '--abbrev-ref', 'HEAD'",
+                     "'symbolic-ref', '-d', 'refs/remotes/origin/HEAD'", "'symbolic-ref', 'refs/remotes/a/b/HEAD'",
+                     "'symbolic-ref', 'HEAD', 'refs/heads/main'", "'remote', '-v'", "'remote', 'get-url', '--all', 'origin'"):
+            with self.subTest(args):
+                self.assertLessEqual({"*", run.GIT_STATE},
+                                     self.record(f"subprocess.run(['git', {args}], capture_output=True)\n"))
+        for code in ("subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True,"
+                     " env=dict(os.environ, GIT_DIR='.git'))",
+                     "subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True,"
+                     " env=dict(os.environ, GIT_CONFIG_PARAMETERS=\"'core.abbrev'='12'\"))",
+                     "t = os.path.join('lib', 'inner')\nsubprocess.run(['git', 'init', '-q', t], check=True)\n"  # its own repo
+                     "subprocess.run(['git', '-C', t, 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True)",
+                     "t = tempfile.mkdtemp()\nsubprocess.run(['git', 'init', '-q', t], check=True)\nos.symlink(t, 'lnk')\n"
+                     "subprocess.run(['git', '-C', 'lnk', 'rev-parse', '--abbrev-ref', 'HEAD'], capture_output=True)",
+                     "subprocess.run(['git', '-C', 'nowhere', 'rev-parse', 'HEAD'], capture_output=True)"):
+            with self.subTest(code):
+                self.assertLessEqual({"*", run.GIT_STATE}, self.record(code + "\n"))
+
+    def test_a_browser_a_helper_drives_counts_by_the_pages_it_is_sent(self):  # T-3691: helpers.headless_chrome's probe
+        b = "t = os.path.join(tempfile.mkdtemp(), 'chromium')\nos.symlink('/bin/true', t)\nimport helpers\n"
+        for url in ("'about:blank'", "'http://127.0.0.1:1/'", "'HTTPS://example.test/'", "'data:text/html,hi'"):
+            with self.subTest(url):
+                self.assertNotIn("*", self.record(b + f"helpers.devtools(t, {url})\n"))
+        for url in ("'file://' + os.path.abspath('data.txt')", "'data.txt'", "'FILE:///x'", "'chrome://version'",
+                    "'file://' + tempfile.mkdtemp() + '/x.html'"):  # a page outside the repo loads the repo's files
+            with self.subTest(url):
+                self.assertIn("*", self.record(b + f"helpers.devtools(t, {url})\n"))
+        self.assertIn("*", self.record(b + "subprocess.run([t, '--headless', '--remote-debugging-pipe', 'about:blank'])\n"),
+                      "a browser no helper told the recorder about")
+
+    def test_the_browser_drivers_tell_each_page_they_load(self):  # T-3691: what lets their browser be followed
+        import helpers
+        from sampo import shot
+        for name, fn in (("helpers.py", helpers.devtools), ("shot.py", shot.Browser.__init__)):
+            self.assertIn((name, fn.__qualname__), runcover.DRIVERS)
+            self.assertIn("os.posix_spawn(", inspect.getsource(fn), "the frame the recorder knows the browser by")
+        self.assertIn('sys.audit("sampo.page", params["url"])', inspect.getsource(helpers.devtools))
+        r, w = os.pipe()
+        self.addCleanup(os.close, r)
+        self.addCleanup(os.close, w)
+        with mock.patch.object(sys, "audit") as audit:
+            shot.Browser.send(types.SimpleNamespace(n=0, feed=w), "Page.navigate", "s", url="file:///x.html")
+            shot.Browser.send(types.SimpleNamespace(n=0, feed=w), "Page.enable", "s")
+        audit.assert_called_once_with("sampo.page", "file:///x.html")
+
+    def test_a_quiet_program_s_name_on_a_script_is_judged_as_any_program(self):  # T-3691: a stub reads what it likes
+        self.assertIn("*", self.record("t = os.path.join(tempfile.mkdtemp(), 'cat')\nwith open(t, 'w') as f:\n"
+                                       "    f.write('#!/bin/sh\\nexec /bin/cat data.txt\\n')\nos.chmod(t, 0o755)\n"
+                                       "subprocess.run([t], check=True, capture_output=True)\n"))
 
 
 def fake_classes(cids, tests=1, matched=None):
