@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Kalevala's towers climb past their first step: a tower's spec reads the root's exam run instead of writing one (which a tower may not do, so all 26 towers had failed it since 2026-11-06), a failed step keeps its reason and sampo kalevala status shows it, and a round where every tower fails becomes a FIX task (T-3841).
 - sampo task ac edit corrects the words of a criterion that already has evidence when its verify command stays the same (logged), so a brief can say what was built; a changed check is still refused (T-3823).
 - The merge train's hook bench judges a busy machine by each hook's CPU median instead of its p95, which load inflates (one commit measured 404 then 106 ms), so a load spike no longer leaves a good lane out while a slower hook still fails (T-3821).
 - sampo lane land names, before its first train, each lane whose close will be refused for a missing line (DOCS, NUMBERS, LESSON, why not caught), so the line can be added while the gates run, and each hand close's progress line says why, not only the final report hours later (T-3819).
