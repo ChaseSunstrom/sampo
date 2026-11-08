@@ -696,7 +696,8 @@ def palette(root):
     out = {"source": source}
     for theme in ("dark", "light"):
         roles = {k: h for k, (_, h) in design.token_roles(tokens, theme == "dark").items()} if tokens else {}
-        if "bg" not in roles or "text" not in roles:
+        if "bg" not in roles or "text" not in roles or design.contrast(  # T-3853: roles mixed from many sheets
+                design.parse_colour(roles["bg"]), design.parse_colour(roles["text"])) < 4.5:  # can read white on white
             out[theme], out["source"] = dict(BOARD[theme]), "the Board look"
             continue
         bg, ink = roles["bg"], roles["text"]
@@ -752,7 +753,8 @@ def layout(spec):
         cw, ch = swap(m - GAP_IN, total_c)  # content box in screen px
         if u.startswith("g:"):
             g = groups[u[2:]]
-            head = _w(f"{len(units):02d}", HEAD) + 22 + _w(_cut(g.get("label") or g["id"], 28).upper(), HEAD, 0.9) + \
+            # the kit's chrome keeps 76 px beside chip, title and sub (whole glyphs): 32 here, the sub's " · " and 2 PAD
+            head = _w(f"{len(units):02d}", HEAD) + 32 + _w(_cut(g.get("label") or g["id"], 28).upper(), HEAD, 0.9) + \
                 (_w(" · " + _cut(g.get("sub") or "", 40), HEAD) if g.get("sub") else 0) + 2 * PAD
             pw, ph = max(cw + 2 * PAD, head), ch + HEADER + PAD
             off = ((pw - cw) / 2, HEADER)

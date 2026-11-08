@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 631" width="880" height="631" role="img" aria-label="What it does: a table of 9 rows (Sampo, So that); its text follows">
+<title>What it does: a table of 9 rows (Sampo, So that); its text follows</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#3A4556}.i{fill:#0F1722}.m{fill:#5B6679}.b{font-weight:600;fill:#0F1722}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#2F62E0}.l{fill:#2F62E0}</style>
+<rect x="0.5" y="0.5" width="879" height="630" rx="12" fill="#FFFFFF" stroke="#0F1722" stroke-opacity=".12"/>
+<path d="M0.5 40V12.5A12 12 0 0 1 12.5 0.5H867.5A12 12 0 0 1 879.5 12.5V40Z" fill="#F6F7F9"/>
+<line x1="0.5" y1="40" x2="879.5" y2="40" stroke="#0F1722" stroke-opacity=".12"/>
+<text x="16" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">SAMPO</text>
+<text x="173.343" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">SO THAT</text>
+<text x="16" y="68" font-size="14" xml:space="preserve"><tspan class="b">Finds the work</tspan></text>
+<text x="173.3" y="68" font-size="14" xml:space="preserve"><tspan class="c">sampo find</tspan> ranks bugs, untested code, slow paths and stale docs with no model; <tspan class="c">sampo scout</tspan> files</text>
+<text x="173.3" y="89" font-size="14" xml:space="preserve">work nobody asked for. Plain words work too.</text>
+<line x1="16" y1="108" x2="864" y2="108" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="16" y="136" font-size="14" xml:space="preserve"><tspan class="b">Plans before it</tspan></text>
+<text x="16" y="157" font-size="14" xml:space="preserve"><tspan class="b">edits</tspan></text>
+<text x="173.3" y="136" font-size="14" xml:space="preserve">Every request becomes a brief: type, size, what done means and the command that proves it. No brief,</text>
+<text x="173.3" y="157" font-size="14" xml:space="preserve">no edit.</text>
+<line x1="16" y1="176" x2="864" y2="176" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="16" y="204" font-size="14" xml:space="preserve"><tspan class="b">Builds in parallel</tspan></text>
+<text x="173.3" y="204" font-size="14" xml:space="preserve">Each task gets a lane: its own git worktree and a builder agent that writes the failing test first. <tspan class="c">sampo</tspan></text>
+<text x="173.3" y="225" font-size="14" xml:space="preserve"><tspan class="c">lane max</tspan> sets how many run at once.</text>
+<line x1="16" y1="244" x2="864" y2="244" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="16" y="272" font-size="14" xml:space="preserve"><tspan class="b">Lands in one</tspan></text>
+<text x="16" y="293" font-size="14" xml:space="preserve"><tspan class="b">gate run</tspan></text>
+<text x="173.3" y="272" font-size="14" xml:space="preserve">The merge train takes up to 8 finished lanes, runs the tests they reach once, names a red run&#x27;s</text>
+<text x="173.3" y="293" font-size="14" xml:space="preserve">culprit and lands the rest.</text>
+<line x1="16" y1="312" x2="864" y2="312" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="16" y="340" font-size="14" xml:space="preserve"><tspan class="b">Proves it</tspan></text>
+<text x="173.3" y="340" font-size="14" xml:space="preserve">Evidence is a command Sampo ran and recorded, never a sentence. Nothing closes without its audits.</text>
+<line x1="16" y1="359" x2="864" y2="359" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="16" y="387" font-size="14" xml:space="preserve"><tspan class="b">Ships it</tspan></text>
+<text x="173.3" y="387" font-size="14" xml:space="preserve">Green work fast-forwards main; <tspan class="c">sampo ship</tspan> pushes it and <tspan class="c">sampo ci-watch</tspan> turns a red CI run into</text>
+<text x="173.3" y="408" font-size="14" xml:space="preserve">a fix task.</text>
+<line x1="16" y1="427" x2="864" y2="427" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="16" y="455" font-size="14" xml:space="preserve"><tspan class="b">Improves itself</tspan></text>
+<text x="173.3" y="455" font-size="14" xml:space="preserve">Kalevala runs a Rune tower per aspect that rewrites its own process each generation, kept only</text>
+<text x="173.3" y="476" font-size="14" xml:space="preserve">when it scores better on the exam.</text>
+<line x1="16" y1="495" x2="864" y2="495" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="16" y="523" font-size="14" xml:space="preserve"><tspan class="b">Guards bypass</tspan></text>
+<text x="16" y="544" font-size="14" xml:space="preserve"><tspan class="b">mode</tspan></text>
+<text x="173.3" y="523" font-size="14" xml:space="preserve">A fail-closed Ward stops wide deletes, force-pushes, credential reads and <tspan class="c">curl | sh</tspan>, and</text>
+<text x="173.3" y="544" font-size="14" xml:space="preserve">snapshots work before git throws it away.</text>
+<line x1="16" y1="563" x2="864" y2="563" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="16" y="591" font-size="14" xml:space="preserve"><tspan class="b">Stays cheap</tspan></text>
+<text x="173.3" y="591" font-size="14" xml:space="preserve">A rule before a local model, a local model before a cloud one; only the tests a change reaches; hooks</text>
+<text x="173.3" y="612" font-size="14" xml:space="preserve">under their time budget; <tspan class="c">sampo budget</tspan> caps spend.</text>
+</svg>

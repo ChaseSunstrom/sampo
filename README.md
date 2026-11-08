@@ -8,52 +8,83 @@
 
 <p align="center"><i>formerly Foreman</i></p>
 
-<p align="center"><b>The discipline layer for coding agents.</b><br>
-Claude Code, Codex, Gemini CLI, opencode, or its own <code>sampo smith</code> on any model.<br>
-It plans before it edits, proves its work with commands it really ran, keeps to one task at a time<br>
-and works through the queue, while a Ward stops the commands you'd never want run in bypass mode.</p>
+<p align="center"><b>Sampo does the work on its own.</b><br>
+It finds what your repo needs, plans it, builds it in parallel lanes, proves it,<br>
+lands it through a merge train and ships it, without you prompting, waiting or checking.<br>
+The discipline layer for coding agents: Claude Code, Codex, Gemini CLI, opencode, or its own <code>sampo smith</code> on any model.</p>
 
 <p align="center"><a href="https://github.com/ChaseSunstrom/sampo/actions/workflows/test.yml"><img src="https://github.com/ChaseSunstrom/sampo/actions/workflows/test.yml/badge.svg" alt="tests"></a></p>
 
 <p align="center">
   <a href="#quick-start"><b>Install</b></a> ·
   <a href="#how-it-works"><b>How it works</b></a> ·
-  <a href="#the-Ward"><b>The Ward</b></a> ·
+  <a href="#kalevala-it-improves-itself"><b>Kalevala</b></a> ·
+  <a href="#the-ward"><b>The Ward</b></a> ·
   <a href="#features"><b>Features</b></a> ·
-  <a href="#smith-any-model-sampos-loop"><b>Any model</b></a> ·
   <a href="MASTER.md"><b>Docs</b></a> ·
   <a href="https://chasesunstrom.github.io/sampo/"><b>Site</b></a>
 </p>
 
-<p align="center">
-  <img src="demo/live.svg" width="960" alt="Claude Code 2.1.301 with the sampo-ui mod, working a real Sampo fix in a copy of this repo: the chat reads as a tree, each call a compact branch under the prompt with its diff or result; a scout subagent finds the parser; Claude writes the test and the fix, sampo task prove shows the test fails without the change, and the task closes; the live tree above the prompt shows the session and its subagent with their latest calls and time bars, and the Sampo pane beside it shows the work bar, the stage rail and steps, the Activity lanes, the Agents graph, History and the Today charts">
-</p>
-<p align="center"><sub>A real session in a copy of this repo: one typed request, then about two minutes of Claude working through Sampo (sped up while the model thinks). Its fix is in Sampo now (T-1213). <a href="demo/live.mp4">MP4</a></sub></p>
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screens/board-dark.png">
+  <img src="docs/assets/screens/board-light.png" width="960" alt="The live Board, nine numbered panels: four builder lanes and the files they hold, a merge train running at the gate, CPU by kind of work against a 10% goal, the task in focus from the words asked to its brief and steps, the card and moon library, which models each job calls, the queue and its dependency graph, Sampo's state folder and latest decision, and a cell per test module">
+</picture></p>
+<p align="center"><sub>The live Board (<code>sampo watch --web</code>) on Sampo's own project, fed here the snapshot the test suite keeps (<code>plugin/tests/fixtures/live/snap-5.json</code>) so no private state shows.</sub></p>
 
-## Why
-
-Coding agents are fast. Left alone, they also edit before they understand, say "tests pass" without running them, chase new ideas mid-task, lose their place after a compaction, and in bypass mode will run the one command you'd never type.
-
-Sampo is the mill that produces by itself, on every job site, whichever agent works it: Claude Code, Codex, Gemini CLI, opencode, or `sampo smith` on a model of your choice.
+## What it does
 
 <p align="center"><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="demo/figures/why-dark.svg">
-  <source media="(prefers-color-scheme: light)" srcset="demo/figures/why-light.svg">
-  <img src="demo/figures/why-dark.svg" width="880" alt="Why: a table of 7 rows (Sampo, So that); its text follows">
+  <source media="(prefers-color-scheme: dark)" srcset="demo/figures/what-it-does-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="demo/figures/what-it-does-light.svg">
+  <img src="demo/figures/what-it-does-dark.svg" width="880" alt="What it does: a table of 9 rows (Sampo, So that); its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
 | Sampo | So that |
 |---|---|
-| **Plans first** | Every request becomes a brief before any edit: type, size, what "done" means and the command that proves it. No task, no edit. |
-| **Proves it** | Evidence is a command sampo ran and recorded, never a sentence. A fix needs a test that failed first. Nothing closes without its audits. |
-| **Guards bypass mode** | A fail-closed Ward stops wide deletes, force-pushes, credential reads and `curl \| sh`, and saves uncommitted work before git throws it away. |
-| **Stays on task** | One active task. New ideas go to the inbox instead of being chased; `NOW:` switches on purpose. |
-| **Never loses its place** | State lives on disk, so after `/compact` or in a new session Claude resumes at the exact step. A revert reopens the step it undid. |
-| **Keeps going** | Drive mode works the whole queue, then finds its own next work. `sampo run` and `sampo serve` keep it going headless. |
-| **Learns** | Your corrections and Sampo's own friction become lessons, tripwires and fixes. |
+| **Finds the work** | `sampo find` ranks bugs, untested code, slow paths and stale docs with no model; `sampo scout` files work nobody asked for. Plain words work too. |
+| **Plans before it edits** | Every request becomes a brief: type, size, what done means and the command that proves it. No brief, no edit. |
+| **Builds in parallel** | Each task gets a lane: its own git worktree and a builder agent that writes the failing test first. `sampo lane max` sets how many run at once. |
+| **Lands in one gate run** | The merge train takes up to 8 finished lanes, runs the tests they reach once, names a red run's culprit and lands the rest. |
+| **Proves it** | Evidence is a command Sampo ran and recorded, never a sentence. Nothing closes without its audits. |
+| **Ships it** | Green work fast-forwards main; `sampo ship` pushes it and `sampo ci-watch` turns a red CI run into a fix task. |
+| **Improves itself** | Kalevala runs a Rune tower per aspect that rewrites its own process each generation, kept only when it scores better on the exam. |
+| **Guards bypass mode** | A fail-closed Ward stops wide deletes, force-pushes, credential reads and `curl \| sh`, and snapshots work before git throws it away. |
+| **Stays cheap** | A rule before a local model, a local model before a cloud one; only the tests a change reaches; hooks under their time budget; `sampo budget` caps spend. |
 
 </details>
+
+## How it works
+
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/loop-dark.svg">
+  <img src="docs/assets/diagrams/loop-light.svg" width="960" alt="The loop in five numbered panels: your words, sampo find and sampo scout become a T-NNNN brief; the brief fans out to three lanes, each a builder in its own worktree; the lanes feed one merge train; green work goes to task finish and sampo ship; lessons from the ship feed the next round of finding">
+</picture></p>
+
+Every request, however terse, goes round the same loop, and so does work nobody asked for:
+
+- **Brief.** Intake turns words or findings into a brief: its type, its size (S, M or L), what done means with the command that proves it, and the steps.
+- **Build.** `sampo lane brief` hands each task to a builder in its own worktree; edits wait for the brief, and every command passes the Ward.
+- **Land.** `sampo lane land` merges finished lanes through the train below; each landed task closes through `sampo task finish`'s checks.
+- **Learn.** Lessons, fixes and decisions are recorded, and the next queued task starts by itself.
+
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/merge-train-dark.svg">
+  <img src="docs/assets/diagrams/merge-train-light.svg" width="860" alt="Lanes and the merge train: four lanes, each a worktree on its own foreman/T-NNNN branch, merge in order in a scratch integration worktree and run the gates once; red names the culprit from the gate's own output and parks it while the rest land; green fast-forwards main, closes each task and runs the full suite in the background">
+</picture></p>
+
+Builders never touch each other's files, and finished lanes land together: the train merges them in a scratch worktree (never main), runs only the tests the batch reaches, and a red run parks its culprit, not the batch.
+
+## Kalevala: it improves itself
+
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/diagrams/kalevala-dark.svg">
+  <img src="docs/assets/diagrams/kalevala-light.svg" width="880" alt="Kalevala: towers for initiative, efficiency, self-repair and 23 more aspects, each from a sealed gen-0, and the shared moons, lessons and steers all feed one generation: a seed of up to eight missions, built as tasks in lanes, critiqued and scored on Louhi's seeded exam, selected only if it beats its parent, then reviewed and swept">
+</picture></p>
+
+Sampo is built by Sampo, and so is the way it builds. Kalevala runs one Rune tower per aspect (26 here), each climbing generation after generation unattended and rewriting its own seed, missions and lenses.
+
+A rewrite stays only if it closes more exam scenarios than its parent, and what one tower learns, every tower reads. `sampo kalevala status` lists the towers, `sampo kalevala step` runs the next round, `sampo rune step` names one tower's next action.
 
 <details><summary>The names</summary>
 
@@ -76,17 +107,6 @@ Sampo builds itself, so its own history is the plainest measure: tasks closed a 
   <img src="demo/figures/chart-tests-dark.svg" width="410" alt="Test functions in the suite over time, from git grep at each date">
 </picture></p>
 
-## How it works
-
-<p align="center"><img src="site/assets/diagrams/loop.svg" width="880" alt="The Sampo loop: capture, expand, ground, plan (understand), execute (build), verify (prove), reflect and record (learn), then the next queued task starts by itself"></p>
-
-Every request, however terse, goes round the same loop:
-
-- **Understand.** Intake turns your words into a **brief**: its type, its size (S, M or L), what done means with the command that proves it, and the steps.
-- **Build.** Edits wait for the brief, and every command passes the Ward.
-- **Prove.** A task closes only with fresh evidence and its audits.
-- **Learn.** Lessons and decisions are recorded, then the next queued task starts by itself.
-
 ## Quick start
 
 ```bash
@@ -105,7 +125,7 @@ Or from inside Claude Code:
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/quick-start-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/quick-start-light.svg">
-  <img src="demo/figures/quick-start-dark.svg" width="880" alt="Quick start: a table of 3 rows (Then, How); its text follows">
+  <img src="demo/figures/quick-start-dark.svg" width="880" alt="Quick start: a table of 4 rows (Then, How); its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
@@ -114,10 +134,14 @@ Or from inside Claude Code:
 | **Ask for something** | `fix the login timeout on slow wifi`, in plain words. That's the whole interface. |
 | **Watch it first** | `sampo demo` runs the real `sampo` and Ward hook on a seeded bug in a throwaway repo: no model calls, nothing left behind. |
 | **See where things stand** | Bare `sampo` in a project says what's next; `sampo help` answers "can it…?" in plain words; `sampo which NEED` searches past fixes, your tools, MCP servers, binaries, skills and plugins at once, and says which hits need a grant. |
+| **Let it run** | Say `FULL AUTO`: it works the whole queue, then finds its own next work. `sampo watch --web` opens the Board; `sampo lane max` sets how many builders run at once. |
 
 </details>
 
-Starting a page, a 3D scene or an `sampo smith` panel? Start from a template that already passes the check that keeps it strict:
+<details>
+<summary><b>Templates and new tools</b></summary>
+
+Starting a page, a 3D scene or a `sampo smith` panel? Start from a template that already passes the check that keeps it strict:
 
 ```bash runnable
 sampo help can scaffold an mcp server   # the commands whose help answers it, or a plain no
@@ -128,14 +152,12 @@ sampo design lint site                          # still clean: no generic-design
 
 Nothing found for a missing tool or skill? Build it: `sampo new tool NAME` writes `tools/NAME.py` and a `tests/test_NAME.py` that fails until it works; `sampo new skill NAME` writes a project skill in the listing's format.
 
-<p align="center">
-  <img src="demo/demo.svg" width="860" alt="sampo demo: Sampo refuses an edit made before any task exists and an rm -rf ~, records a failing test, the fix and a passing test, refuses to close the task until the audit is given, then closes and commits it">
-</p>
+</details>
 
 <details>
 <summary><b>More ways to install, requirements and flags</b></summary>
 
-The first session puts `sampo` on your PATH (`~/.local/bin/fm`, made when nothing is there and repaired after an update; anyone else's `sampo` stays). `sampo doctor` fails with the line to add to your shell profile when a new terminal still can't find it. `eval "$(sampo complete --shell bash)"` in your `~/.bashrc` (or `--shell zsh`) gives tab completion for commands, options and live task ids. `sampo demo --pace 1` plays the demo at the speed above.
+The first session puts `sampo` on your PATH (`~/.local/bin/fm`, made when nothing is there and repaired after an update; anyone else's `sampo` stays). `sampo doctor` fails with the line to add to your shell profile when a new terminal still can't find it. `eval "$(sampo complete --shell bash)"` in your `~/.bashrc` (or `--shell zsh`) gives tab completion for commands, options and live task ids. `sampo demo --pace 1` plays the demo slowly enough to follow.
 
 The plugin-system install changes nothing outside the plugin: the hooks and the Ward run, and the first session reads Sampo's rules from the plugin. Say "finish setting up Sampo" later to add the rest (status line, deny rules, the bypass question, `sampo` in your shell). `sampo uninstall-user` undoes it.
 
@@ -224,7 +246,10 @@ Work runs in the order CLEAN → PERFORMANCE → SECURITY → FIX → FEATURE, a
 
 ## The Ward
 
-<p align="center"><img src="site/assets/diagrams/guard.svg" width="880" alt="The Ward: every command passes the Ward hook first; tests, builds and in-scope edits run; commands that would discard uncommitted work are snapshotted first; dangerous ones are refused with how to grant them"></p>
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/assets/diagrams/guard-dark.svg">
+  <img src="site/assets/diagrams/guard-light.svg" width="880" alt="The Ward: every command passes the Ward hook first; tests, builds and in-scope edits run; commands that would discard uncommitted work are snapshotted first; dangerous ones are refused with how to grant them">
+</picture></p>
 
 Sampo is built for bypass mode (no tool-call prompts), which the installer offers to turn on. What still stops a dangerous command is Sampo's Ward hook, plus 20 deny rules for the truly catastrophic cases.
 
@@ -308,7 +333,7 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 | **Runs incidents** | `sampo capture --incident '<impact>' --signal CMD` opens an urgent FIX only when the harm signal is red, keeps a UTC timeline, closes only on the same signal green twice plus one follow-up, and leaves the signal for `sampo sentinel` | `sampo capture --incident` |
 | **Checks infra files** | Dockerfiles, compose, Terraform, Helm, Kubernetes, CI workflows, shell, systemd units: each through its own validator on a copy, offline; no validator installed, unproven | `sampo prove --infra` |
 | **Finds problems unasked** | Untested code, undeclared imports, SQL built from input, slow loops, flaky tests, stale docs, leaked keys: no model, worst first; proven on a copy | `sampo find --rank [--ladder]` (tools: trusted only), `sampo prove --capture N`/`--docs`, `/sampo:initiative` |
-| **Seeds itself** | Rune: generations toward one goal you write; a rewrite stays only if it closed more exam scenarios | `sampo rune step` |
+| **Improves itself, per aspect** | Kalevala: a Rune tower per aspect, generations toward one goal you write; a rewrite stays only if it closed more exam scenarios | `sampo kalevala status` · `sampo rune step` |
 | **Stays light** | Only the Ward and write validators run in line; every hook call stays under its budget (the chart below) | `sampo doctor` |
 
 </details>
@@ -402,7 +427,7 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 
 - `sampo edit` takes a batch of exact replacements on stdin (JSON, or `@@ file` / `<<<` old / `===` new / `>>>` blocks) and applies them all or none: each old text must be there once (or be marked `all`), each file inside the task's scope, and each one the Ward would let an Edit write.
 - `sampo sub PATTERN REPL --glob G` previews a regex change as per-file counts and writes it with `--apply`. The third edit of one file in a row says so, once.
-- `sampo lane max N` lets up to six builders work at once on an unattended run.
+- `sampo lane max N` sets how many builders work at once (1 to 100); `sampo lane land` lands every finished lane through merge trains of 8.
 - When the session that launched a builder ends, `sampo next` names the stopped builder and `sampo lane resume ID` takes it back: its uncommitted files (secret-looking ones left out) become a WIP commit on its branch, the worktree is freed, and a new builder brief merges that branch first. It refuses a builder that may still run, or one recorded on another host, unless you give `--force "<why>"`.
 
 </details>
@@ -417,12 +442,13 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 </details>
 
 <details>
-<summary><b>Seeds itself</b></summary>
+<summary><b>Improves itself, per aspect (Rune and Kalevala)</b></summary>
 
 - Rune runs generations toward one goal you write once (gen-0: your goals, MUST and NEVER lines). `sampo rune draft "<line>"` writes a whole gen-0 from one line to start from, carrying your standing intent; `sampo rune init` saves it and `/sampo:genesis` drives it.
 - `sampo rune step` names the next action from the tower's files alone, so a killed session picks up where it stopped. gen-0 is sealed by its hash, and each generation's seed is checked against it word for word (`sampo rune drift`), then a cold reviewer on a stronger model reads only the generation's diff, exam lines, outcomes and friction (`sampo rune review`; each grounded finding becomes a task, a top gap or a dismissal with its reason), then Sampo hunts blind spots from inputs it didn't write (each class found becomes a rule with a check; each generation also seals a prediction of your next three steers and scores every real steer against it), then the gap map is redrawn against the current code and the next generation's Missions are ranked by expected value from it, the exam, survival and the review (empty coverage cells only break ties), then the whole project is swept (`sampo rune sweep`, which also turns red on a grant kind no earlier generation used); a rewrite is kept only if it closed more exam scenarios than its parent (`sampo rune select`), and three reverted generations in a row stop the tower and hand it back to you. `sampo rune exam` grades Rune itself: drafts from "make this great", from nothing and from "super improve this" on generated projects, scored against your gen-0 on a held-out third, beside a plain model.
 - Every generation also advances a Moons campaign (`sampo moons`, the moonshots). One catalogue grows toward 100 ideas on a six-tier ambition scale, from "a clever new check" up to "changes what building software means". The strongest model rates each idea without seeing its author's rating, and every extreme and massive idea gets a kill test first. Ideas are built in climbing order, smaller ones that unblock big ones first, and each generation must move at least one big idea forward a stage (`sampo moons rate|order`).
 - You shouldn't have to write steers. `sampo louhi steer` measures how well Sampo expands your raw words into a complete standing rule. A stronger model judges each expansion against the rule you actually ended up with. A clause only counts when the judge quotes the expansion's own words, and a third of the cases are held out. Each instruction-shaped message you send is expanded in the background and queued with that held-out score. If the score is under 70%, the expansion is also listed for you to read. A `steer:` correction on that task becomes a new case. The held-out rate is shown on the Rune page.
+- Kalevala runs one tower per aspect together: each area of the coverage map with a gap, plus problem solving, memory and efficiency (`sampo kalevala start`). Moons, exam scenarios and your steers stay shared, so a gain in one tower reaches every other. Each round (`sampo kalevala step`) first restarts a tower that stopped climbing and pauses one that drifted; `sampo kalevala watch` shows which are stalled.
 - With 10 or more tasks done and the queue drained, `sampo scout` offers Rune once (by itself under full autonomy). It waits on your own yes whatever the autonomy, and a no is never asked again. The site's Rune page shows every generation live (`sampo rune live on`).
 
 </details>
@@ -440,13 +466,26 @@ Only the Ward (on tool calls that can change something) and the write validators
 
 </details>
 
-## Seeing what's going on
+## Where you see it
 
-<p align="center"><img src="site/assets/diagrams/architecture.svg" width="880" alt="How the pieces fit: Claude Code, other agents, Smith and headless runs call Sampo's hooks and the sampo CLI, which keep state on disk; the sampo-ui pane, the status line, Sampo Desktop and MCP clients read sampo's JSON"></p>
+**In Claude Code**, the `sampo-ui` mod draws Sampo live: the band above the prompt with the task, its stage rail and step bar and a live tree of every call; compact rows in the chat; `/fm` for the dashboard; a true-color status line below.
 
-- **In Claude Code**, the `sampo-ui` mod draws Sampo live: a card above the prompt with the task, a stage rail and a step bar; an animated row for each tool call; `/fm` for a dashboard with live charts; a true-color status line below the prompt.
-- **Sampo Desktop** shows every project, agent session and device in one window.
-- **Other agents** (Codex, Gemini CLI, opencode) run the same Ward and context, and `sampo mcp` serves the project read-only to any MCP client.
+<p align="center"><img src="docs/assets/screens/claude-code.png" width="960" alt="Claude Code with the sampo-ui mod, mid-task on a seeded bug: the chat as a tree of compact rows (a failing assert, the one-line diff, the new test), the band showing FIX small T-0001 verifying with its stage rail and step bar, a live tree of this session's calls with time bars, and the status line with model, context, spend and the task"></p>
+<p align="center"><sub>A real session, recorded by <code>demo/record_live.py</code> in a throwaway repo (<a href="demo/live.mp4">the whole 30-second run, MP4</a>).</sub></p>
+
+**In a terminal**, `sampo smith` runs the same loop on any model and draws it: the stations from plan to close, each check, what changed, time and tokens per call.
+
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screens/smith-tui-dark.svg">
+  <img src="docs/assets/screens/smith-tui-light.svg" width="880" alt="sampo smith tui after a closed run adding a --json flag to todo.py: plan and three steps checked off on the track, the activity log, three passing checks, the changed files as bars, a time chart per step and tokens per call">
+</picture></p>
+
+**Everywhere else**, every view reads the same `sampo … --json`: the Board above, Sampo Desktop for every project and session in one window, and `sampo mcp` for any MCP client. Other agents (Codex, Gemini CLI, opencode) run the same Ward and context.
+
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="site/assets/diagrams/architecture-dark.svg">
+  <img src="site/assets/diagrams/architecture-light.svg" width="880" alt="How the pieces fit: Claude Code, other agents, Smith and headless runs call Sampo's hooks and the sampo CLI, which keep state on disk; the sampo-ui pane, the status line, Sampo Desktop and MCP clients read sampo's JSON">
+</picture></p>
 
 <details>
 <summary><b>The sampo-ui mod in detail</b></summary>
@@ -767,13 +806,13 @@ python3 plugin/tests/run.py                                     # unit + behavio
 python3 plugin/tests/bench_hooks.py --runs 50                   # hook latency
 python3 plugin/tests/e2e/roundtrip.py                           # install/uninstall/reinstall in a sandbox HOME
 python3 plugin/tests/e2e/scenarios.py                           # live §12 scenarios (uses claude -p; costs tokens)
-python3 demo/record.py [--mp4]                                  # re-record the demo above (demo/demo.cast, .svg, .mp4)
+python3 demo/record.py [--mp4]                                  # re-record sampo demo (demo/demo.cast, .svg, .mp4)
 python3 demo/record_live.py [--from-cast]                       # re-record Claude Code + the mod (demo/live.*; a Sonnet turn)
 ```
 
 `sampo release-check` also runs every fence marked `bash runnable` in this file and MASTER.md, each in a throwaway home with stdin closed and a timeout. That is hygiene, not a sandbox: a runnable fence is trusted like the tests and can still reach any file and the network. Mark a fence runnable only when it needs nothing but `sampo` and the shell.
 
-The README's diagrams are hand-written SVGs in `site/assets/diagrams/`, each on its own dark tile so they read on light and dark pages alike.
+The README's figures are real: `sampo readme diagram docs/assets/diagrams/NAME.json` draws each diagram from its spec as a dark and a light SVG in the Board look; the Board is the live page (`plugin/web/live`) fed the test fixture `plugin/tests/fixtures/live/snap-5.json`, never this machine's state, the terminal from `sampo smith tui --events demo/examples/feature.jsonl --snapshot`, the Claude Code still from `demo/record_live.py`'s video; `sampo readme check README.md` holds them to their files, pairs, sizes and private text. The Ward and architecture diagrams are hand-drawn tiles in `site/assets/diagrams/`.
 
 ```
 BUILD_PROMPT.md       the spec Sampo was built from
@@ -786,8 +825,9 @@ reset-claude.sh       optional: reset Claude Code's behavior layer before instal
 release.py            thin wrapper over `sampo release VERSION [--push]` (--push needs the task's publish grant)
 .claude-plugin/       local marketplace "sampo"
 plugin/               the Sampo plugin (sampo, hooks, skills, rules, agents, tests, evals)
-demo/                 the README's recordings (Claude Code with the mod; sampo demo) and the scripts that make them
-site/                 the project site; site/assets/diagrams holds the README's diagrams
+demo/                 the recordings (Claude Code with the mod; sampo demo), the table figures and the scripts that make them
+docs/assets/          the README's screens and diagrams (each diagram's spec beside it)
+site/                 the project site; site/assets/diagrams holds the hand-drawn diagrams
 local/ state/ backups/   machine-specific, gitignored
 ```
 

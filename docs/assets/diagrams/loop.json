@@ -1,0 +1,142 @@
+{
+  "title": "A request to shipped code, unattended",
+  "direction": "LR",
+  "groups": [
+    {
+      "id": "find",
+      "label": "Find",
+      "sub": "asked or not"
+    },
+    {
+      "id": "brief",
+      "label": "Brief"
+    },
+    {
+      "id": "build",
+      "label": "Build",
+      "sub": "lanes"
+    },
+    {
+      "id": "land",
+      "label": "Land"
+    },
+    {
+      "id": "ship",
+      "label": "Ship"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "ask",
+      "label": "your words",
+      "sub": "FIX: · FEATURE: · plain",
+      "group": "find"
+    },
+    {
+      "id": "find",
+      "label": "sampo find",
+      "sub": "bugs, gaps, slow code",
+      "group": "find"
+    },
+    {
+      "id": "scout",
+      "label": "sampo scout",
+      "sub": "work nobody asked for",
+      "group": "find"
+    },
+    {
+      "id": "brief",
+      "label": "T-NNNN brief",
+      "sub": "done-when :: command",
+      "group": "brief"
+    },
+    {
+      "id": "l1",
+      "label": "lane T-0041",
+      "sub": "test first, then fix",
+      "group": "build"
+    },
+    {
+      "id": "l2",
+      "label": "lane T-0042",
+      "sub": "builder agent",
+      "group": "build"
+    },
+    {
+      "id": "l3",
+      "label": "lane T-0043",
+      "sub": "own worktree",
+      "group": "build"
+    },
+    {
+      "id": "train",
+      "label": "merge train",
+      "sub": "one gate run",
+      "group": "land"
+    },
+    {
+      "id": "finish",
+      "label": "task finish",
+      "sub": "evidence, audits",
+      "group": "ship"
+    },
+    {
+      "id": "ship",
+      "label": "sampo ship",
+      "sub": "push, watch CI",
+      "group": "ship"
+    }
+  ],
+  "edges": [
+    {
+      "from": "ask",
+      "to": "brief"
+    },
+    {
+      "from": "find",
+      "to": "brief"
+    },
+    {
+      "from": "scout",
+      "to": "brief"
+    },
+    {
+      "from": "brief",
+      "to": "l1"
+    },
+    {
+      "from": "brief",
+      "to": "l2"
+    },
+    {
+      "from": "brief",
+      "to": "l3"
+    },
+    {
+      "from": "l1",
+      "to": "train"
+    },
+    {
+      "from": "l2",
+      "to": "train"
+    },
+    {
+      "from": "l3",
+      "to": "train"
+    },
+    {
+      "from": "train",
+      "to": "finish",
+      "label": "green"
+    },
+    {
+      "from": "train",
+      "to": "ship"
+    },
+    {
+      "from": "ship",
+      "to": "scout",
+      "label": "lessons · the next round"
+    }
+  ]
+}

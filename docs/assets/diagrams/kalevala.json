@@ -1,0 +1,130 @@
+{
+  "title": "Kalevala: every aspect climbs on its own",
+  "direction": "TB",
+  "groups": [
+    {
+      "id": "towers",
+      "label": "Kalevala",
+      "sub": "a Rune tower per aspect"
+    },
+    {
+      "id": "shared",
+      "label": "Shared",
+      "sub": "every gain, every tower"
+    },
+    {
+      "id": "gen",
+      "label": "A generation"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "t1",
+      "label": "initiative",
+      "sub": "gen-0 sealed",
+      "group": "towers"
+    },
+    {
+      "id": "t2",
+      "label": "efficiency",
+      "sub": "gen-0 sealed",
+      "group": "towers"
+    },
+    {
+      "id": "t3",
+      "label": "self-repair",
+      "sub": "gen-0 sealed",
+      "group": "towers"
+    },
+    {
+      "id": "t4",
+      "label": "+ 23 more",
+      "sub": "memory, UX, docs",
+      "group": "towers"
+    },
+    {
+      "id": "moons",
+      "label": "moons",
+      "sub": "ideas worth forging",
+      "group": "shared"
+    },
+    {
+      "id": "steers",
+      "label": "lessons · steers",
+      "sub": "all you ever said",
+      "group": "shared"
+    },
+    {
+      "id": "seed",
+      "label": "seed",
+      "sub": "≤ 8 missions, ranked by value",
+      "group": "gen"
+    },
+    {
+      "id": "build",
+      "label": "build",
+      "sub": "each mission a task, in lanes",
+      "group": "gen"
+    },
+    {
+      "id": "exam",
+      "label": "critique · Louhi exam",
+      "sub": "seeded repos, six languages",
+      "group": "gen"
+    },
+    {
+      "id": "select",
+      "label": "select",
+      "sub": "kept only if it beats its parent",
+      "group": "gen"
+    },
+    {
+      "id": "review",
+      "label": "review · sweep",
+      "sub": "a cold reader, a stronger model",
+      "group": "gen"
+    }
+  ],
+  "edges": [
+    {
+      "from": "t1",
+      "to": "seed"
+    },
+    {
+      "from": "t2",
+      "to": "seed"
+    },
+    {
+      "from": "t3",
+      "to": "seed"
+    },
+    {
+      "from": "t4",
+      "to": "seed"
+    },
+    {
+      "from": "moons",
+      "to": "seed"
+    },
+    {
+      "from": "steers",
+      "to": "seed"
+    },
+    {
+      "from": "seed",
+      "to": "build"
+    },
+    {
+      "from": "build",
+      "to": "exam"
+    },
+    {
+      "from": "exam",
+      "to": "select"
+    },
+    {
+      "from": "select",
+      "to": "review"
+    }
+  ]
+}

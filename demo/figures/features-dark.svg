@@ -1,7 +1,7 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1160" width="880" height="1160" role="img" aria-label="Features: a table of 14 rows (What you get, Try); its text follows">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1181" width="880" height="1181" role="img" aria-label="Features: a table of 14 rows (What you get, Try); its text follows">
 <title>Features: a table of 14 rows (What you get, Try); its text follows</title>
 <style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#B4BDCE}.i{fill:#E8ECF4}.m{fill:#8893A7}.b{font-weight:600;fill:#E8ECF4}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#7AA2FF}.l{fill:#7AA2FF}</style>
-<rect x="0.5" y="0.5" width="879" height="1159" rx="12" fill="#131822" stroke="#FFFFFF" stroke-opacity=".12"/>
+<rect x="0.5" y="0.5" width="879" height="1180" rx="12" fill="#131822" stroke="#FFFFFF" stroke-opacity=".12"/>
 <path d="M0.5 40V12.5A12 12 0 0 1 12.5 0.5H867.5A12 12 0 0 1 879.5 12.5V40Z" fill="#10141C"/>
 <line x1="0.5" y1="40" x2="879.5" y2="40" stroke="#FFFFFF" stroke-opacity=".12"/>
 <text x="16" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em"></text>
@@ -87,13 +87,17 @@
 <text x="599.9" y="984" font-size="14" xml:space="preserve"><tspan class="c">--capture N</tspan>/<tspan class="c">--docs</tspan>,</text>
 <text x="599.9" y="1005" font-size="14" xml:space="preserve"><tspan class="c">/sampo:initiative</tspan></text>
 <line x1="16" y1="1024" x2="864" y2="1024" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="1052" font-size="14" xml:space="preserve"><tspan class="b">Seeds itself</tspan></text>
-<text x="164.2" y="1052" font-size="14" xml:space="preserve">Rune: generations toward one goal you write; a rewrite</text>
-<text x="164.2" y="1073" font-size="14" xml:space="preserve">stays only if it closed more exam scenarios</text>
-<text x="599.9" y="1052" font-size="14" xml:space="preserve"><tspan class="c">sampo rune step</tspan></text>
-<line x1="16" y1="1092" x2="864" y2="1092" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="1120" font-size="14" xml:space="preserve"><tspan class="b">Stays light</tspan></text>
-<text x="164.2" y="1120" font-size="14" xml:space="preserve">Only the Ward and write validators run in line; every hook</text>
-<text x="164.2" y="1141" font-size="14" xml:space="preserve">call stays under its budget (the chart below)</text>
-<text x="599.9" y="1120" font-size="14" xml:space="preserve"><tspan class="c">sampo doctor</tspan></text>
+<text x="16" y="1052" font-size="14" xml:space="preserve"><tspan class="b">Improves</tspan></text>
+<text x="16" y="1073" font-size="14" xml:space="preserve"><tspan class="b">itself, per</tspan></text>
+<text x="16" y="1094" font-size="14" xml:space="preserve"><tspan class="b">aspect</tspan></text>
+<text x="164.2" y="1052" font-size="14" xml:space="preserve">Kalevala: a Rune tower per aspect, generations toward one</text>
+<text x="164.2" y="1073" font-size="14" xml:space="preserve">goal you write; a rewrite stays only if it closed more exam</text>
+<text x="164.2" y="1094" font-size="14" xml:space="preserve">scenarios</text>
+<text x="599.9" y="1052" font-size="14" xml:space="preserve"><tspan class="c">sampo kalevala status</tspan> · <tspan class="c">sampo</tspan></text>
+<text x="599.9" y="1073" font-size="14" xml:space="preserve"><tspan class="c">rune step</tspan></text>
+<line x1="16" y1="1113" x2="864" y2="1113" stroke="#FFFFFF" stroke-opacity=".07"/>
+<text x="16" y="1141" font-size="14" xml:space="preserve"><tspan class="b">Stays light</tspan></text>
+<text x="164.2" y="1141" font-size="14" xml:space="preserve">Only the Ward and write validators run in line; every hook</text>
+<text x="164.2" y="1162" font-size="14" xml:space="preserve">call stays under its budget (the chart below)</text>
+<text x="599.9" y="1141" font-size="14" xml:space="preserve"><tspan class="c">sampo doctor</tspan></text>
 </svg>

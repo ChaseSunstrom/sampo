@@ -1,0 +1,135 @@
+{
+  "title": "Lanes and the merge train",
+  "direction": "TB",
+  "groups": [
+    {
+      "id": "lanes",
+      "label": "Lanes",
+      "sub": "a worktree and branch per task"
+    },
+    {
+      "id": "train",
+      "label": "Merge train"
+    },
+    {
+      "id": "red",
+      "label": "Red"
+    },
+    {
+      "id": "green",
+      "label": "Green"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "l1",
+      "label": "lane T-0041",
+      "sub": "foreman/T-0041",
+      "group": "lanes"
+    },
+    {
+      "id": "l2",
+      "label": "lane T-0042",
+      "sub": "foreman/T-0042",
+      "group": "lanes"
+    },
+    {
+      "id": "l3",
+      "label": "lane T-0043",
+      "sub": "foreman/T-0043",
+      "group": "lanes"
+    },
+    {
+      "id": "l4",
+      "label": "lane T-0044",
+      "sub": "foreman/T-0044",
+      "group": "lanes"
+    },
+    {
+      "id": "merge",
+      "label": "merge in order",
+      "sub": "up to 8 lanes, in a scratch worktree",
+      "group": "train"
+    },
+    {
+      "id": "gate",
+      "label": "gates, once",
+      "sub": "the tests the batch reaches",
+      "group": "train"
+    },
+    {
+      "id": "blame",
+      "label": "name the culprit",
+      "sub": "from the gate's own output",
+      "group": "red"
+    },
+    {
+      "id": "park",
+      "label": "culprit parked",
+      "sub": "the rest land; it waits for a new commit",
+      "group": "red"
+    },
+    {
+      "id": "ff",
+      "label": "main fast-forwards",
+      "sub": "to the gated tip",
+      "group": "green"
+    },
+    {
+      "id": "close",
+      "label": "each task closes",
+      "sub": "sampo task finish's checks",
+      "group": "green"
+    },
+    {
+      "id": "verify",
+      "label": "full suite",
+      "sub": "in the background",
+      "group": "green"
+    }
+  ],
+  "edges": [
+    {
+      "from": "l1",
+      "to": "merge"
+    },
+    {
+      "from": "l2",
+      "to": "merge"
+    },
+    {
+      "from": "l3",
+      "to": "merge"
+    },
+    {
+      "from": "l4",
+      "to": "merge"
+    },
+    {
+      "from": "merge",
+      "to": "gate"
+    },
+    {
+      "from": "gate",
+      "to": "blame",
+      "label": "red"
+    },
+    {
+      "from": "blame",
+      "to": "park"
+    },
+    {
+      "from": "gate",
+      "to": "ff",
+      "label": "green"
+    },
+    {
+      "from": "ff",
+      "to": "close"
+    },
+    {
+      "from": "ff",
+      "to": "verify"
+    }
+  ]
+}

@@ -191,6 +191,21 @@ class Diagram(SampoTestCase):
         self.assertIn("#fafaf7", light)
         self.assertNotIn(readme.BOARD["dark"]["bg"].lower(), dark)
 
+    def test_tokens_that_put_light_text_on_a_light_ground_give_the_board_look(self):  # T-3853: white on white
+        write(self.repo, "DESIGN.md", "# DESIGN.md: demo\n\n## Tokens\n\n| Token | Kind | Light | Dark | Source |\n"
+                                      "|---|---|---|---|---|\n| `--bg` | colour | `#fafaf7` #fafaf7 | `#ffffff` #ffffff | x |\n"
+                                      "| `--text` | colour | `#1c1a24` #1c1a24 | `#eef0fa` #eef0fa | x |\n")
+        self.assertIn("the Board look", self.draw().stdout)
+        dark, light = (x.decode().lower() for x in self.files())
+        self.assertIn(readme.BOARD["dark"]["bg"].lower(), dark)
+        self.assertIn(readme.BOARD["light"]["bg"].lower(), light)
+
+    def test_a_panel_as_wide_as_its_header_shows_the_whole_sub(self):  # T-3853: "up to 8 lanes a r…"
+        self.draw({"groups": [{"id": "g", "label": "Merge train", "sub": "up to 8 lanes a run"}],
+                   "nodes": [{"id": "a", "label": "x", "group": "g"}]})
+        for svg in self.files():
+            self.assertIn(" · up to 8 lanes a run<", svg.decode())
+
     def test_a_bad_spec_is_named(self):
         got = self.draw(dict(SPEC, edges=[{"from": "ui", "to": "nowhere"}]), check=False)
         self.assertNotEqual(got.returncode, 0)

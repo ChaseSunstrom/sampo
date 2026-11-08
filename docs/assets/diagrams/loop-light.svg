@@ -1,0 +1,113 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1441.4 345" width="1441.4" height="345" role="img" aria-labelledby="t d" font-family="ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace">
+<title id="t">A request to shipped code, unattended</title><desc id="d">your words → T-NNNN brief; sampo find → T-NNNN brief; sampo scout → T-NNNN brief; T-NNNN brief → lane T-0041; T-NNNN brief → lane T-0042; T-NNNN brief → lane T-0043; lane T-0041 → merge train; lane T-0042 → merge train; lane T-0043 → merge train; merge train → task finish (green); merge train → sampo ship; sampo ship → sampo scout (lessons · the next round)</desc>
+<rect width="1441.4" height="345" rx="10" fill="#f6f7f9"/>
+<text x="28" y="42" font-size="16" font-weight="700" fill="#0f1722">A request to shipped code, unattended</text>
+<rect x="28.5" y="66.5" width="233.9" height="220" rx="6" fill="#ffffff" stroke="#d5dce7"/>
+<rect x="42" y="75" width="23.6" height="16" rx="2" fill="#0A749B"/>
+<text x="47" y="87" font-size="11" font-weight="700" fill="#f6f7f9">01</text>
+<text x="75.6" y="87" font-size="11" font-weight="700" letter-spacing=".9" fill="#0f1722">FIND<tspan font-weight="400" letter-spacing="0" fill="#46526A"> · asked or not</tspan></text>
+<path d="M28 96L262.9 96" fill="none" stroke="#d5dce7" stroke-width="1"/>
+<path d="M25 73V63H35M255.9 63H265.9V73M265.9 280V290H255.9M35 290H25V280" fill="none" stroke="#0A7EA8" stroke-width="1.5"/>
+<rect x="355.4" y="127.5" width="213.4" height="98" rx="6" fill="#ffffff" stroke="#d5dce7"/>
+<rect x="368.9" y="136" width="23.6" height="16" rx="2" fill="#936602"/>
+<text x="373.9" y="148" font-size="11" font-weight="700" fill="#f6f7f9">02</text>
+<text x="402.5" y="148" font-size="11" font-weight="700" letter-spacing=".9" fill="#0f1722">BRIEF</text>
+<path d="M354.9 157L569.3 157" fill="none" stroke="#d5dce7" stroke-width="1"/>
+<path d="M351.9 134V124H361.9M562.3 124H572.3V134M572.3 219V229H562.3M361.9 229H351.9V219" fill="none" stroke="#9A6A00" stroke-width="1.5"/>
+<rect x="661.8" y="66.5" width="213.4" height="220" rx="6" fill="#ffffff" stroke="#d5dce7"/>
+<rect x="675.3" y="75" width="23.6" height="16" rx="2" fill="#C42A5C"/>
+<text x="680.3" y="87" font-size="11" font-weight="700" fill="#f6f7f9">03</text>
+<text x="708.9" y="87" font-size="11" font-weight="700" letter-spacing=".9" fill="#0f1722">BUILD<tspan font-weight="400" letter-spacing="0" fill="#46526A"> · lanes</tspan></text>
+<path d="M661.3 96L875.7 96" fill="none" stroke="#d5dce7" stroke-width="1"/>
+<path d="M658.3 73V63H668.3M868.7 63H878.7V73M878.7 280V290H868.7M668.3 290H658.3V280" fill="none" stroke="#C42A5C" stroke-width="1.5"/>
+<rect x="968.2" y="127.5" width="165.7" height="98" rx="6" fill="#ffffff" stroke="#d5dce7"/>
+<rect x="981.7" y="136" width="23.6" height="16" rx="2" fill="#0A8053"/>
+<text x="986.7" y="148" font-size="11" font-weight="700" fill="#f6f7f9">04</text>
+<text x="1015.3" y="148" font-size="11" font-weight="700" letter-spacing=".9" fill="#0f1722">LAND</text>
+<path d="M967.7 157L1134.3 157" fill="none" stroke="#d5dce7" stroke-width="1"/>
+<path d="M964.7 134V124H974.7M1127.3 124H1137.3V134M1137.3 219V229H1127.3M974.7 229H964.7V219" fill="none" stroke="#0A8656" stroke-width="1.5"/>
+<rect x="1226.8" y="97" width="186.1" height="159" rx="6" fill="#ffffff" stroke="#d5dce7"/>
+<rect x="1240.3" y="105.5" width="23.6" height="16" rx="2" fill="#5A45D0"/>
+<text x="1245.3" y="117.5" font-size="11" font-weight="700" fill="#f6f7f9">05</text>
+<text x="1274" y="117.5" font-size="11" font-weight="700" letter-spacing=".9" fill="#0f1722">SHIP</text>
+<path d="M1226.3 126.5L1413.4 126.5" fill="none" stroke="#d5dce7" stroke-width="1"/>
+<path d="M1223.3 103.5V93.5H1233.3M1406.4 93.5H1416.4V103.5M1416.4 249.5V259.5H1406.4M1233.3 259.5H1223.3V249.5" fill="none" stroke="#5A45D0" stroke-width="1.5"/>
+<path d="M246.9 125.5C308.9 125.5 308.9 186.5 370.9 186.5" fill="none" stroke="#0a7ea8" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M370.9 186.5 L362.9 190.5 L362.9 182.5Z" fill="#0a7ea8"/>
+<path d="M246.9 186.5C308.9 186.5 308.9 186.5 370.9 186.5" fill="none" stroke="#0a7ea8" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M370.9 186.5 L362.9 190.5 L362.9 182.5Z" fill="#0a7ea8"/>
+<path d="M246.9 247.5C308.9 247.5 308.9 186.5 370.9 186.5" fill="none" stroke="#0a7ea8" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M370.9 186.5 L362.9 190.5 L362.9 182.5Z" fill="#0a7ea8"/>
+<path d="M553.3 186.5C615.3 186.5 615.3 125.5 677.3 125.5" fill="none" stroke="#9a6a00" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M677.3 125.5 L669.3 129.5 L669.3 121.5Z" fill="#9a6a00"/>
+<path d="M553.3 186.5C615.3 186.5 615.3 186.5 677.3 186.5" fill="none" stroke="#9a6a00" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M677.3 186.5 L669.3 190.5 L669.3 182.5Z" fill="#9a6a00"/>
+<path d="M553.3 186.5C615.3 186.5 615.3 247.5 677.3 247.5" fill="none" stroke="#9a6a00" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M677.3 247.5 L669.3 251.5 L669.3 243.5Z" fill="#9a6a00"/>
+<path d="M859.7 125.5C921.7 125.5 921.7 186.5 983.7 186.5" fill="none" stroke="#c42a5c" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M983.7 186.5 L975.7 190.5 L975.7 182.5Z" fill="#c42a5c"/>
+<path d="M859.7 186.5C921.7 186.5 921.7 186.5 983.7 186.5" fill="none" stroke="#c42a5c" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M983.7 186.5 L975.7 190.5 L975.7 182.5Z" fill="#c42a5c"/>
+<path d="M859.7 247.5C921.7 247.5 921.7 186.5 983.7 186.5" fill="none" stroke="#c42a5c" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M983.7 186.5 L975.7 190.5 L975.7 182.5Z" fill="#c42a5c"/>
+<path d="M1118.3 186.5C1180.3 186.5 1180.3 156 1242.3 156" fill="none" stroke="#0a8656" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M1242.3 156 L1234.3 160 L1234.3 152Z" fill="#0a8656"/>
+<rect x="1159.8" y="162.2" width="41" height="16" rx="3" fill="#f6f7f9" stroke="#d5dce7"/>
+<text x="1180.3" y="174.2" font-size="10" text-anchor="middle" fill="#0f1722">green</text>
+<path d="M1118.3 186.5C1180.3 186.5 1180.3 217 1242.3 217" fill="none" stroke="#0a8656" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M1242.3 217 L1234.3 221 L1234.3 213Z" fill="#0a8656"/>
+<path d="M1319.9 240.5C1319.9 317 145.4 317 145.4 271" fill="none" stroke="#5a45d0" stroke-opacity=".8" stroke-width="1.5"/>
+<path d="M145.4 271 L149.4 279 L141.4 279Z" fill="#5a45d0"/>
+<rect x="653.3" y="292.7" width="158.8" height="16" rx="3" fill="#f6f7f9" stroke="#d5dce7"/>
+<text x="732.7" y="304.7" font-size="10" text-anchor="middle" fill="#0f1722">lessons · the next round</text>
+<rect x="44" y="102" width="202.9" height="47" rx="4" fill="#f6f7f9" stroke="#0a7ea8" stroke-width="1.25"/>
+<circle cx="60" cy="118.5" r="7" fill="#0a7ea8" opacity=".18"/>
+<circle cx="60" cy="118.5" r="3.5" fill="#0a7ea8"/>
+<text x="78" y="122" font-size="13" font-weight="600" fill="#0f1722">your words</text>
+<text x="78" y="137" font-size="11" fill="#46526a">FIX: · FEATURE: · plain</text>
+<rect x="44" y="163" width="202.9" height="47" rx="4" fill="#f6f7f9" stroke="#0a7ea8" stroke-width="1.25"/>
+<circle cx="60" cy="179.5" r="7" fill="#0a7ea8" opacity=".18"/>
+<circle cx="60" cy="179.5" r="3.5" fill="#0a7ea8"/>
+<text x="78" y="183" font-size="13" font-weight="600" fill="#0f1722">sampo find</text>
+<text x="78" y="198" font-size="11" fill="#46526a">bugs, gaps, slow code</text>
+<rect x="44" y="224" width="202.9" height="47" rx="4" fill="#f6f7f9" stroke="#0a7ea8" stroke-width="1.25"/>
+<circle cx="60" cy="240.5" r="7" fill="#0a7ea8" opacity=".18"/>
+<circle cx="60" cy="240.5" r="3.5" fill="#0a7ea8"/>
+<text x="78" y="244" font-size="13" font-weight="600" fill="#0f1722">sampo scout</text>
+<text x="78" y="259" font-size="11" fill="#46526a">work nobody asked for</text>
+<rect x="370.9" y="163" width="182.4" height="47" rx="4" fill="#f6f7f9" stroke="#9a6a00" stroke-width="1.25"/>
+<circle cx="386.9" cy="179.5" r="7" fill="#9a6a00" opacity=".18"/>
+<circle cx="386.9" cy="179.5" r="3.5" fill="#9a6a00"/>
+<text x="404.9" y="183" font-size="13" font-weight="600" fill="#0f1722">T-NNNN brief</text>
+<text x="404.9" y="198" font-size="11" fill="#46526a">done-when :: command</text>
+<rect x="677.3" y="102" width="182.4" height="47" rx="4" fill="#f6f7f9" stroke="#c42a5c" stroke-width="1.25"/>
+<circle cx="693.3" cy="118.5" r="7" fill="#c42a5c" opacity=".18"/>
+<circle cx="693.3" cy="118.5" r="3.5" fill="#c42a5c"/>
+<text x="711.3" y="122" font-size="13" font-weight="600" fill="#0f1722">lane T-0041</text>
+<text x="711.3" y="137" font-size="11" fill="#46526a">test first, then fix</text>
+<rect x="677.3" y="163" width="182.4" height="47" rx="4" fill="#f6f7f9" stroke="#c42a5c" stroke-width="1.25"/>
+<circle cx="693.3" cy="179.5" r="7" fill="#c42a5c" opacity=".18"/>
+<circle cx="693.3" cy="179.5" r="3.5" fill="#c42a5c"/>
+<text x="711.3" y="183" font-size="13" font-weight="600" fill="#0f1722">lane T-0042</text>
+<text x="711.3" y="198" font-size="11" fill="#46526a">builder agent</text>
+<rect x="677.3" y="224" width="182.4" height="47" rx="4" fill="#f6f7f9" stroke="#c42a5c" stroke-width="1.25"/>
+<circle cx="693.3" cy="240.5" r="7" fill="#c42a5c" opacity=".18"/>
+<circle cx="693.3" cy="240.5" r="3.5" fill="#c42a5c"/>
+<text x="711.3" y="244" font-size="13" font-weight="600" fill="#0f1722">lane T-0043</text>
+<text x="711.3" y="259" font-size="11" fill="#46526a">own worktree</text>
+<rect x="983.7" y="163" width="134.7" height="47" rx="4" fill="#f6f7f9" stroke="#0a8656" stroke-width="1.25"/>
+<circle cx="999.7" cy="179.5" r="7" fill="#0a8656" opacity=".18"/>
+<circle cx="999.7" cy="179.5" r="3.5" fill="#0a8656"/>
+<text x="1017.7" y="183" font-size="13" font-weight="600" fill="#0f1722">merge train</text>
+<text x="1017.7" y="198" font-size="11" fill="#46526a">one gate run</text>
+<rect x="1242.3" y="132.5" width="155.1" height="47" rx="4" fill="#f6f7f9" stroke="#5a45d0" stroke-width="1.25"/>
+<circle cx="1258.3" cy="149" r="7" fill="#5a45d0" opacity=".18"/>
+<circle cx="1258.3" cy="149" r="3.5" fill="#5a45d0"/>
+<text x="1276.3" y="152.5" font-size="13" font-weight="600" fill="#0f1722">task finish</text>
+<text x="1276.3" y="167.5" font-size="11" fill="#46526a">evidence, audits</text>
+<rect x="1242.3" y="193.5" width="155.1" height="47" rx="4" fill="#f6f7f9" stroke="#5a45d0" stroke-width="1.25"/>
+<circle cx="1258.3" cy="210" r="7" fill="#5a45d0" opacity=".18"/>
+<circle cx="1258.3" cy="210" r="3.5" fill="#5a45d0"/>
+<text x="1276.3" y="213.5" font-size="13" font-weight="600" fill="#0f1722">sampo ship</text>
+<text x="1276.3" y="228.5" font-size="11" fill="#46526a">push, watch CI</text>
+</svg>

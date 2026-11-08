@@ -2075,7 +2075,7 @@ def _hex(c):
     return "#%02x%02x%02x" % _rgb(c)
 
 
-def to_svg(cv, cfg, title="fm code tui"):
+def to_svg(cv, cfg, title="sampo smith tui"):
     """The canvas as an SVG terminal window: each run of one style is one text element, fitted to its cells."""
     theme = cfg.get("theme") or THEME
     screen = theme.get("screen", {})

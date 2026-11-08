@@ -1086,10 +1086,12 @@ class ReadmeShape(unittest.TestCase):  # T-2052
             srcs = [s for s in re.findall(r'src="([^"]+)"', text) if not s.startswith("http")]
             for src in srcs:
                 self.assertTrue(os.path.exists(os.path.join(self.root, src)), f"{doc}: missing {src}")
-            diagrams = [s for s in srcs if s.startswith("site/assets/diagrams/")]
+            # T-3853: hand-drawn tiles in site/, and the ones sampo readme diagram draws from a spec in docs/assets/
+            diagrams = [s for s in srcs if s.startswith(("site/assets/diagrams/", "docs/assets/diagrams/"))]
             self.assertGreaterEqual(len(diagrams), 3 if doc == "README.md" else 1, doc)
-        for name in os.listdir(os.path.join(self.root, "site", "assets", "diagrams")):
-            path = os.path.join(self.root, "site", "assets", "diagrams", name)
+        folders = [os.path.join(self.root, *d) for d in (("site", "assets", "diagrams"), ("docs", "assets", "diagrams"))]
+        for path in (os.path.join(d, n) for d in folders if os.path.isdir(d) for n in os.listdir(d) if n.endswith(".svg")):
+            name = os.path.basename(path)
             text = read_text(path)
             svg = ET.fromstring(text)
             self.assertTrue(svg.findtext(ns + "title"), f"{name}: screen readers need a title")
