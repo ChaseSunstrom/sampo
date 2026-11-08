@@ -4,7 +4,8 @@ It lives in the state folder (state/profile/, git-ignored; never a repo, never t
 seed.md is the user's own lines, imported once from the <!-- sampo-profile:begin/end --> block of Claude's CLAUDE.md
 when present (`sampo profile edit` changes it); profile.md (0600) is built from the seed plus Claude's auto-memories
 (<claude config>/projects/*/memory/*.md): every memory typed user or feedback, and any other memory whose name recurs in
-two or more projects (a fact about one project is that project's, not the user's), ranked seed, user, feedback,
+two or more projects (a fact about one project is that project's, not the user's), ranked: a user memory marked
+`lead: true` (the user's direction, T-3846) first, then seed, user, feedback,
 recurring, newest first, deduped by name and text. No model call. A fresh install has no profile and injects nothing.
 
 Privacy: everything written is scrubbed (secrets, the user's private terms, home paths, every IPv4, emails and
@@ -197,6 +198,8 @@ def memories():
                 continue
             folders.setdefault(key, set()).add(d)
             rank = {"user": 1, "feedback": 2}.get(kind.group(1).lower() if kind else "", 3)
+            if rank == 1 and re.search(r"(?m)^\s*lead:\s*true\s*$", head):  # T-3846: the user's direction leads, ahead
+                rank = 0                                                     # of the seed and the digests' cut
             try:
                 mt = os.stat(f).st_mtime
             except OSError:
@@ -232,7 +235,8 @@ def build():
     """(profile text, item count): the seed's items, then the memories', scrubbed, deduped, cut to FULL_MAX."""
     lines, keys = [], set()
     size = len(HEAD) + 1
-    for text in seed_items() + [m[3] for m in memories()]:
+    mem = memories()
+    for text in [m[3] for m in mem if m[0] == 0] + seed_items() + [m[3] for m in mem if m[0]]:
         line = "- " + c.fit(" ".join(scrub(text).split()), 300)
         k = re.sub(r"\W+", "", line.lower())[:60]
         if k in keys:

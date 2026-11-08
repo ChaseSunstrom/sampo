@@ -169,6 +169,19 @@ class Profile(SampoTestCase):
         self.assertIn("autonomy", brief.lower())
         self.assertRegex(brief, r" · \+\d+ more$")
 
+    def test_the_direction_leads_the_profile_and_both_digests(self):
+        # T-3846: the user's direction (T-3839) was item 10, after the cut every digest makes at about eight
+        from sampo import profile
+        self.built()
+        d = os.path.join(self.cc, "projects", "-home-alice-app", "memory")
+        with open(os.path.join(d, "direction.md"), "w") as f:
+            f.write("---\nname: direction\ndescription: The user's direction: do everything on its own, fast, cheap, "
+                    "high quality\nmetadata:\n  type: user\n  lead: true\n---\n\nBody.\n")
+        self.fm("profile", "rebuild", env=self.env)
+        self.assertTrue(profile.items()[0].startswith("The user's direction"), profile.items()[:2])
+        for d in (profile.digest(), profile.digest(short=True)):
+            self.assertTrue(d.split("\n", 1)[1].startswith("The user's direction"), d)
+
     def test_the_mcp_resource_and_tool_carry_the_profile(self):
         self.built()
         self.fm("init")
