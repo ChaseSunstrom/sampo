@@ -266,6 +266,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmsettingsserve` (T-1659: `sampo settings serve`: the settings schema as a… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmsetup` [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmshade` (T-1846: a GLSL ES fragment-shader subset compiled to Python and run… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmshape` (T-3275: `sampo shape FILE`, the companions a new file is owed (its test module, its alias module, a shared MASTER line) learned from how past adds went, with drafts; `--write` creates only the missing stubs…
 - `fmshot` (T-1636: `sampo shot URL|FILE...`, a viewport shot, frames in real… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmsmallcards`… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmcallcards` (T-3160: `sampo card`, calling cards: verified generators run confined… [→ files-lib-3](docs/map/files-lib-3.md)

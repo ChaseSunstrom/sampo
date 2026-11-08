@@ -7502,6 +7502,9 @@ def _build_parser(only=None):
     s.add_argument("--dry", action="store_true", help="list what it would capture; capture nothing")
     s = add("impact", lazy("sampo.map", "cmd_impact"), tier=("Finding your way", 360), help="likely tests and dependents of a path")
     s.add_argument("path")
+    s = add("shape", lazy("sampo.shape", "cmd_shape"), tier=("Finding your way", 365), help="companions a new file is owed (its test, alias, MASTER line), learned from past adds, with drafts")
+    s.add_argument("file")
+    s.add_argument("--write", action="store_true", help="create the missing stub files (never overwrites one)")
     s = add("share", lazy("sampo.recall", "cmd_share"), tier=("Project and settings", 800), help="opt in: share this project's lessons and recall other projects' "
                                                          "(paths, URLs, emails, file names, task ids and the project "
                                                          "name are removed; other names in the prose are not)")
