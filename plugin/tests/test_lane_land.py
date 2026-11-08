@@ -109,6 +109,19 @@ class CloseFields(LandCase):
         self.assertNotEqual(self.fm("task", "finish", tid, "--audit", "x", check=False).returncode, 0)
         self.assertNotIn(f"({tid})", self.log())
 
+    def test_close_fields_before_noticed_reads_the_close_block_under_a_trailing_noticed(self):
+        # T-3920: fm-builder ends every report with a Noticed: line; the close block sits above it (28 tasks hand-filled)
+        from sampo import lanes
+        block = "CHANGELOG: Does a thing (T-0007).\nTITLE: Does a thing (T-0007)\nDOCS: none: internal\n"
+        for tail in ("Noticed: one thing worth a task\n", "**Noticed:**\n- one thing\n- another\n", "Noticed: none\n"):
+            got = lanes.close_fields(f"Done.\n\n{block}\n{tail}", tail=True)
+            self.assertEqual(got.get("changelog"), "Does a thing (T-0007).", tail)
+            self.assertEqual(got.get("title"), "Does a thing (T-0007)", tail)
+            self.assertEqual(got.get("docs"), "none: internal", tail)
+            self.assertEqual(got.get("id"), "T-0007", tail)
+        quoted = f"The brief said:\nCHANGELOG: Quoted only (T-0009).\nDone.\n\nNoticed: none\n"
+        self.assertEqual(lanes.close_fields(quoted, tail=True), {}, "a line quoted earlier is not the close")
+
     def test_what_reaches_a_commit_or_the_changelog_is_one_capped_line_with_no_link_or_other_id(self):
         from sampo import lanes
         line = lambda v, k="changelog": lanes.close_line(v, k, "T-0007")  # noqa: E731

@@ -1494,6 +1494,8 @@ def reviewer_findings(msg, cap=30):
 CLOSE_FIELDS = "Close fields"  # T-3500: the brief section a builder's report lines land in
 CLOSE_KEYS = ("changelog", "title", "lesson", "numbers", "docs")
 _CLOSE_LINE = re.compile(r"(?m)^[ \t>*_`-]*(CHANGELOG|TITLE|LESSON|NUMBERS|DOCS)[*_`]*[ \t]*:[*_`]*[ \t]*(\S.*?)[ \t*_`]*$")
+_NOTICED = re.compile(r"(?i)^[ \t>*_`-]*Noticed[*_`]*[ \t]*:")  # T-3920: a builder's trailing Noticed line
+_BULLET = re.compile(r"^\s*[-*]\s")
 
 
 def close_fields(text, tail=False):
@@ -1504,6 +1506,10 @@ def close_fields(text, tail=False):
     text = str(text or "")
     if tail:
         lines = text.rstrip().splitlines()
+        # T-3920: a builder's report ends with its Noticed: line (and bullets under it), above which sits the close block
+        noticed = [i for i, ln in enumerate(lines) if _NOTICED.match(ln)]
+        if noticed and all(not ln.strip() or _BULLET.match(ln) for ln in lines[noticed[-1] + 1:]):
+            lines = lines[:noticed[-1]]
         n = len(lines)
         while n and (_CLOSE_LINE.match(lines[n - 1]) or not lines[n - 1].strip()):
             n -= 1
