@@ -1452,6 +1452,26 @@ def _body(path):
     return body
 
 
+TOWER_GAP = 3600  # T-3504: at most one tower-update push an hour (FOREMAN_TOWER_GAP overrides, for tests)
+
+
+def _lines(path):
+    import collections
+    try:
+        with open(path, encoding="utf-8") as f:
+            # timestamps, commit ids and plain counters are normalized out: a change in only those is not a change
+            return collections.Counter(re.sub(r"\d+", "0", re.sub(r"\b[0-9a-f]{7,40}\b", "x", x)) for x in f)
+    except OSError:
+        return None
+
+
+def _real_change(out, dest):
+    """Whether the new export differs from main's in more than timestamps, commit ids and counters."""
+    names = {os.path.relpath(os.path.join(d, x), out) for d, _, xs in os.walk(out) for x in xs}
+    names |= {x for x in (os.listdir(dest) if os.path.isdir(dest) else ()) if re.fullmatch(r"moons-catalogue(-\d+)?\.json", x)}
+    return any(_lines(os.path.join(out, n)) != _lines(os.path.join(dest, n)) for n in names)
+
+
 def _record(p, result, digest=None, sha=None, stats_day=None):
     with c.lock(p.dir):
         meta = c.read_meta(p)
@@ -1661,14 +1681,25 @@ def publish(p, settle=False):
                 tail = "".join(f"; {x}" for x in (note, why) if x)
                 if old == new and not fresh and not cards:
                     return _record(p, "up to date" + tail, digest, stats_day=day)
+                skip = ""  # T-3504: a tower push only for a real change, and at most once an hour
                 if old != new:
+                    if not _real_change(out, dest):
+                        skip = "skipped: only timestamps, commit ids and counters changed"
+                    else:
+                        last = git(wt, "log", "-1", "--format=%ct", "--grep", "tower update", base, ok=True).strip()
+                        gap = int(os.environ.get("FOREMAN_TOWER_GAP", TOWER_GAP))
+                        if last.isdigit() and time.time() - int(last) < gap:
+                            skip = f"skipped: last tower update {(time.time() - int(last)) / 60:.0f} min ago (at most one per {gap // 60} min)"
+                if skip and not fresh and not cards:  # a throttled change keeps its old hash: the next kick retries it
+                    return _record(p, skip + tail, None if "min ago" in skip else digest, stats_day=day)
+                if old != new and not skip:
                     for x in os.listdir(dest) if os.path.isdir(dest) else ():  # a shard the catalogue no longer has
                         if re.fullmatch(r"moons-catalogue(-\d+)?\.json", x):
                             os.remove(os.path.join(dest, x))
                     shutil.copytree(out, dest, dirs_exist_ok=True)
                 git(wt, "add", "--", "site/genesis", *([STATS] if fresh else []), *([CARDS] if cards else []))
-                git(wt, "commit", "-q", "-m", "Genesis: tower update (fm genesis live)" if old != new
-                    else "Site: daily data refresh (fm genesis live)")
+                git(wt, "commit", "-q", "-m", "Genesis: tower update (sampo genesis live)" if old != new and not skip
+                    else "Site: daily data refresh (sampo genesis live)")
                 sha = git(wt, "rev-parse", "HEAD").strip()
                 touched = [f for f in git(wt, "diff", "--name-only", "-z", base, sha).split("\0") if f]
                 stray = [f for f in touched if not f.startswith(("site/genesis/", CARDS + "/")) and f != STATS]

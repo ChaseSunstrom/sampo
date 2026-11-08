@@ -373,6 +373,8 @@ class GenesisLive(ForemanTestCase):
     def setUp(self):
         import subprocess
         super().setUp()
+        os.environ["FOREMAN_TOWER_GAP"] = "0"  # T-3504: the hourly gap is off unless a test sets it
+        self.addCleanup(os.environ.pop, "FOREMAN_TOWER_GAP", None)
         self.fm("init")
         self.fm("genesis", "init", "--file", "-", input=GEN0_CAPS)
         self.fm("genesis", "put", "gap-map.md", "--file", "-", input=GAPS)
@@ -619,6 +621,33 @@ class GenesisLive(ForemanTestCase):
         self.assertTrue(rune.kick(p))
         os.utime(pending, (0, 0))  # a waiter that died: its leftover doesn't block the next change
         self.assertTrue(rune.kick(p))
+
+    def test_push_only_for_a_real_change_and_at_most_hourly(self):  # T-3504
+        self.granted()
+        self.fm("genesis", "live", "on")
+        self.assertEqual(self.fm_json("genesis", "publish")["result"], "pushed")
+        self.assertIn("(sampo genesis live)", self.git("log", "-1", "--format=%s", "main", at=self.origin))
+        main = self.git("rev-parse", "main", at=self.origin).strip()
+        os.environ["FOREMAN_TOWER_GAP"] = "3600"
+        self.fm("genesis", "put", "gen-1/seed.md", "--file", "-", input="# Seed\nA real change.\n")
+        r = self.fm_json("genesis", "publish")["result"]
+        self.assertRegex(r, r"^skipped: last tower update \d+ min ago")
+        self.assertEqual(self.git("rev-parse", "main", at=self.origin).strip(), main)
+        os.environ["FOREMAN_TOWER_GAP"] = "0"  # the gap passed: the held change goes out
+        self.assertEqual(self.fm_json("genesis", "publish")["result"], "pushed")
+        # counters and ids alone are not a change
+        from sampo import rune
+        import collections
+        a, b = os.path.join(self.tmp, "a"), os.path.join(self.tmp, "b")
+        for d, t in ((a, '{"rev": "4f33ca9db", "n": 889, "at": "2026-11-06T18:28:10Z"}\n'),
+                     (b, '{"rev": "5a77ed1f5", "n": 891, "at": "2026-11-06T18:33:16Z"}\n')):
+            os.makedirs(d)
+            with open(os.path.join(d, "genesis.json"), "w") as f:
+                f.write(t)
+        self.assertFalse(rune._real_change(a, b))
+        with open(os.path.join(b, "genesis.json"), "w") as f:
+            f.write('{"rev": "5a77ed1f5", "n": 891, "at": "2026-11-06T18:33:16Z", "new": "x"}\n')
+        self.assertTrue(rune._real_change(a, b))
 
     def test_failed_publish_shows_in_status_and_the_next_one_retries(self):
         self.granted()
