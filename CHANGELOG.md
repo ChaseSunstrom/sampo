@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- sampo lane land names, before its first train, each lane whose close will be refused for a missing line (DOCS, NUMBERS, LESSON, why not caught), so the line can be added while the gates run, and each hand close's progress line says why, not only the final report hours later (T-3819).
+- The Ward no longer refuses a design-tokens file in a project's web asset folder (plugin/web/live/board-tokens.json, static/css/tokens.json) as a credential; tokens.json at a repo root, under a dot folder or anywhere in ~/.config still is one (T-3810).
 - The Ward no longer refuses a line just because a double-quoted $( ) sits on it: the substitution is read as code with its own quoted text masked, so a quoted grep pattern like "|let users" beside sed -n "$(grep …)p" is data, and a read's here-string or < file (IFS=: read n port <<< "$a") is its input, not a name it sets; a substitution holding a case pattern, heredoc or comment still ke… (T-3799).
 - The plugin is now sampo@sampo (with sampo-ui@sampo and sampo-design@sampo) in a marketplace named sampo; it was still foreman@foreman. sampo migrate plugins moves an existing install in one write per file, so the old and new ids are never enabled together, and --undo restores the files byte for byte. install.sh runs it for you, sampo doctor says when it's due, and /foreman: commands bec… (T-3707).
 - `sampo readme` gives any project's README real figures: `plan` proposes them from the repo, `shots` screenshots the running app at desktop and phone in light and dark (a page showing private text is refused), `diagram` draws dark and light SVGs from a spec in the project's own colours or the Board look, and `check` holds every image to its file, alt text, pair and size; the `readme-visu… (T-3703).
