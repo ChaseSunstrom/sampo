@@ -346,6 +346,63 @@ class KalevalaStep(ForemanTestCase):
         self.assertEqual(argv("fm genesis select 2", gen=2)[-5:], ["genesis", "select", "2", "--tower", "memory"])
         self.assertEqual(argv("fm genesis spec", gen=1)[-4:], ["genesis", "spec", "--tower", "memory"])
 
+    def test_a_tower_spec_reuses_the_root_exam_and_writes_no_scenario(self):
+        # T-3841: every tower's first step is genesis spec, and a tower job may not write exam scenarios (T-3081), so all
+        # 26 towers failed it on 2026-11-06 and no Kalevala round ran after; the step tests' fake runner never ran one
+        from sampo import louhi
+        p = self.project()
+        run = os.path.join(louhi.root(p), "s0-001")
+        os.makedirs(run)
+        scen = [{"id": f"b{i}", "kind": "bug", "split": "holdout" if i % 3 == 0 else "train"} for i in range(6)]
+        with open(os.path.join(run, "run.json"), "w") as f:
+            json.dump({"run": "s0-001", "seed": 0, "per_kind": 6, "langs": ["rust"], "scenarios": scen}, f)
+        train = os.path.join(louhi.root(p), "s0-002")  # newer, same kinds, nothing held out: never the one graded
+        os.makedirs(train)
+        with open(os.path.join(train, "run.json"), "w") as f:
+            json.dump({"run": "s0-002", "seed": 1, "scenarios": [dict(x, split="train") for x in scen]}, f)
+        res = self.fm_json("genesis", "--tower", "memory", "spec", env={"FOREMAN_TOWER_READONLY_EXAM": "1"})
+        self.assertEqual(res["run"], "s0-001", res)
+        self.assertEqual((res["total"], res["held"]), (6, 2))
+        self.assertIn(os.path.join("towers", "memory"), res["path"])
+        self.assertEqual(louhi.runs(p), ["s0-001", "s0-002"], "no exam run written")
+        self.assertEqual(res["langs"], ["rust"], "the run's own languages, which the coverage report parses back")
+        spec = read_text(res["path"])
+        self.assertIn("| Bugs | bug | 6 | 2 |", spec)
+        self.assertIn("(the root's, read only; seed 0, 6 per kind, rust): a third", spec)
+        from sampo import rune
+        with mock.patch.dict(os.environ, {"FOREMAN_TOWER_READONLY_EXAM": "1"}), \
+                mock.patch.object(rune, "_TOWER", "memory"), mock.patch.object(rune, "put", side_effect=ValueError("no")):
+            with self.assertRaises(ValueError):
+                rune.spec(p)
+        self.assertTrue(os.path.isfile(os.path.join(run, "run.json")), "a refused put never removes the shared run")
+        for r in (run, train):
+            os.remove(os.path.join(r, "run.json"))  # no run covers its kinds: refused, and the shared folder stays
+        r = self.fm("genesis", "--tower", "efficiency", "spec", env={"FOREMAN_TOWER_READONLY_EXAM": "1"}, check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no exam run", r.stderr + r.stdout)
+        self.assertTrue(os.path.isdir(run))
+
+    def test_a_failed_step_keeps_its_reason_and_status_shows_it(self):
+        # T-3841: the manifest kept 26 failures as 'rc 1' and nothing else, so nobody learned the spec step's refusal
+        from sampo import kalevala
+        res = kalevala.step(self.project(), runner=lambda argv, cwd, env: (1, "fm: exam scenarios are read-only"))
+        failed = [r for r in res["results"] if r["status"] == "failed"]
+        self.assertTrue(failed, res)
+        self.assertTrue(all(r["why"] == "fm: exam scenarios are read-only" for r in failed), failed)
+        self.assertIn("last step: spec failed: fm: exam scenarios are read-only", self.fm("kalevala", "status").stdout)
+        ok = kalevala.step(self.project(), runner=lambda argv, cwd, env: 0)  # an exit code alone still works
+        self.assertTrue(all("why" not in r for r in ok["results"] if r["status"] == "ran"), ok)
+
+    def test_a_round_where_every_job_fails_is_captured_once(self):
+        # T-3841: 26 of 26 towers failed and nothing became work for two days
+        from sampo import kalevala
+        boom = lambda argv, cwd, env: (1, "fm: boom")  # noqa: E731
+        kalevala.step(self.project(), runner=boom)
+        kalevala.step(self.project(), runner=boom)
+        caps = [b for b in c.load_briefs(self.project()) if b.title.startswith("Kalevala: every tower's step failed")]
+        self.assertEqual(len(caps), 1, [b.title for b in c.load_briefs(self.project())])
+        self.assertIn("fm: boom", caps[0].section("Raw request"))
+
     def test_at_most_k_towers_run_at_once(self):
         import threading
         import time

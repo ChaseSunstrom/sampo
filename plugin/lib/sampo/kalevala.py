@@ -1,6 +1,7 @@
 """Kalevala (T-3050, T-3081): one Rune tower per aspect, run together. Each tower is rune's --tower home
 (research/genesis/towers/NAME: its own gen-0, docs and steers); Kalevala's own state, its manifest and its generations,
 sits in research/genesis/kalevala. Moons, exam scenarios and the user's steers stay shared at the root."""
+import collections
 import concurrent.futures
 import contextlib
 import fcntl
@@ -211,7 +212,10 @@ def _stage(p, name):
 
 
 def _run(argv, cwd, env):
-    return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=JOB_TIMEOUT).returncode
+    """(exit code, a failure's last output lines): T-3841, 26 towers failed with only 'rc 1' kept and nobody saw why."""
+    r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=JOB_TIMEOUT)
+    tail = [ln for x in (r.stdout, r.stderr) for ln in (x or "").strip().splitlines()[-2:]]  # a reason on either stream
+    return r.returncode, "" if r.returncode == 0 else " | ".join(tail)
 
 
 def _held(p, name):
@@ -233,10 +237,12 @@ def _headroom(p, runnable, k):
 def _job(p, name, st, argv, env, runner):
     at = c.now()
     try:
-        rc = runner(argv, p.root, env)
-    except Exception:  # a timeout or a missing interpreter fails this tower's step; the others go on
-        rc = -1
-    return {"tower": name, "stage": st["stage"], "status": "ran" if rc == 0 else "failed", "rc": rc, "at": at}
+        got = runner(argv, p.root, env)  # an exit code, or (exit code, why)
+        rc, why = got if isinstance(got, tuple) else (got, "")
+    except Exception as e:  # a timeout or a missing interpreter fails this tower's step; the others go on
+        rc, why = -1, f"{type(e).__name__}: {e}"
+    row = {"tower": name, "stage": st["stage"], "status": "ran" if rc == 0 else "failed", "rc": rc, "at": at}
+    return dict(row, why=c.fit(c.plain(why), 300)) if rc and why else row
 
 
 def step(p, k=None, runner=None, dry_run=False):
@@ -298,8 +304,25 @@ def step(p, k=None, runner=None, dry_run=False):
         m["rounds"] = m.get("rounds", 0) + 1
         m["steps"] = (m.get("steps", []) + done)[-MAX_STEPS:]
         _save(p, m)
+    _all_failed(p, done)
     return {"dry_run": False, "k": width, "est": est, "share": round(share(), 4), "spent": spent_today(),
             "results": done, "queued": queued, "rounds": m["rounds"]}
+
+
+def _all_failed(p, done):
+    """T-3841: a round whose every job failed is work: one open FIX names the commonest reason (all 26 towers failed
+    their first step on 2026-11-06 and nothing said so for two days)."""
+    failed = [r for r in done if r["status"] == "failed"]
+    if not failed or len(failed) < sum(r["status"] in ("ran", "failed") for r in done):
+        return None
+    why = collections.Counter(r.get("why") or f"exit {r['rc']}" for r in failed).most_common(1)[0][0]
+    try:
+        from sampo import eco
+        return eco.capture_once(p, f"Kalevala: every tower's step failed in a round\n{len(failed)} tower job(s) failed"
+                                   f" ({', '.join(sorted({r['stage'] for r in failed}))}); the commonest reason: {why}",
+                                "FIX", "kalevala")[0]
+    except Exception:  # noqa: BLE001 — a capture that fails never fails the round; the manifest still has each why
+        return None
 
 
 AGENT = "foreman"  # the exam lines Kalevala reads are the ones fm exam grade stamps for this agent
@@ -740,8 +763,11 @@ def cmd_kalevala(args):
         shown = acts(p)[-ACTS_SHOWN:]
         r = {"halted": m.get("halted"), "towers": tower_rows(p), "acts": shown}
         lines = [f"halted: {m['halted']} (fm kalevala resume)"] if m.get("halted") else []
+        last = {s.get("tower"): s for s in m.get("steps") or ()}  # T-3841: each tower's newest step, and why it failed
         lines += [f"{t['name']}: {t['aspect']} (sealed: {t['sealed']})"
-                  + (f" PAUSED: {t['paused']}" if t.get("paused") else "") for t in r["towers"]]
+                  + (f" PAUSED: {t['paused']}" if t.get("paused") else "")
+                  + (f" · last step: {s['stage']} {s['status']}" + (f": {s['why']}" if s.get("why") else "")
+                     if (s := last.get(t["name"])) else "") for t in r["towers"]]
         lines += [f"{a['act']} {a['tower'] or ''}: {a['reason']}\n    undo: {a['undo']}" for a in shown]
         return scli.out(args, r, "\n".join(lines) or "no towers yet: sampo kalevala start")
     if action == "pause":

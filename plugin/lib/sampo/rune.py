@@ -1969,13 +1969,21 @@ def spec(p, per_kind=9):
     if not want:
         raise ValueError("no §2 capability maps to an exam kind: end a capability's line with 'Exam: bug, docs.'")
     langs = facts(p)["langs"]
-    meta = louhi.gen(p, per_kind=per_kind, langs=langs, kinds=want)
+    shared = os.environ.get("FOREMAN_TOWER_READONLY_EXAM") == "1"  # T-3841: a Kalevala tower reads the root's exam
+    meta = _shared_exam(p, want) if shared else louhi.gen(p, per_kind=per_kind, langs=langs, kinds=want)
+    if shared:  # the run's own draw, so the coverage report reads the languages it really has (T-2225's parse)
+        langs, per_kind = [x for x in meta.get("langs") or () if x in louhi.LANGS] or langs, meta.get("per_kind") or per_kind
     for r in rows:
-        mine = [s for s in meta["scenarios"] if s["kind"] in r["kinds"]]
-        r["scenarios"], r["holdout"] = len(mine), sum(s["split"] == "holdout" for s in mine)
+        mine = [s for s in meta["scenarios"] if s.get("kind") in r["kinds"]]
+        r["scenarios"], r["holdout"] = len(mine), sum(s.get("split") == "holdout" for s in mine)
     unmapped = [r["name"] for r in rows if not r["kinds"]]
-    text = (f"# Spec\n\nExam run `{meta['run']}` (seed {meta['seed']}, {per_kind} per kind, {', '.join(langs)}): a third of "
-            "each kind is held out and read only to grade a capability done.\n\n| # | Capability | Kinds | Scenarios | Held out |\n"
+    absent = [k for k in want if k not in {s.get("kind") for s in meta["scenarios"]}]
+    whose = "the root's, read only; " if shared else ""
+    head = (f"Exam run `{meta['run']}` ({whose}seed {meta.get('seed')}, {per_kind} "
+            f"per kind, {', '.join(langs)}): a third of each kind is held out and read only to grade a capability done.")
+    if absent:  # T-3841: a shared run may lack some kinds; a cold read failed two towers on rows it couldn't add up
+        head += f" Kinds the run has none of (their rows count less): {', '.join(absent)}."
+    text = (f"# Spec\n\n{head}\n\n| # | Capability | Kinds | Scenarios | Held out |\n"
             "|---|---|---|---|---|\n" + "".join(f"| {r['n']} | {r['name']} | {', '.join(r['kinds']) or '—'} | {r['scenarios']} | "
                                                f"{r['holdout']} |\n" for r in rows)
             + (f"\nNo exam kind yet (give each its own scenarios or an 'Exam:' line): {', '.join(unmapped)}\n" if unmapped else "")
@@ -1983,11 +1991,32 @@ def spec(p, per_kind=9):
     try:
         path = put(p, "spec.md", text)
     except ValueError:  # T-2166 review: a refused read leaves no orphan run behind; a retry renders afresh
-        import shutil
-        shutil.rmtree(os.path.join(louhi.root(p), meta["run"]), ignore_errors=True)
+        if not shared:  # the root's run is every tower's: never removed for one tower's refusal
+            import shutil
+            shutil.rmtree(os.path.join(louhi.root(p), meta["run"]), ignore_errors=True)
         raise
     return {"run": meta["run"], "langs": langs, "rows": rows, "unmapped": unmapped, "total": len(meta["scenarios"]),
-            "held": sum(s["split"] == "holdout" for s in meta["scenarios"]), "path": path}
+            "held": sum(s.get("split") == "holdout" for s in meta["scenarios"]), "path": path}
+
+
+def _shared_exam(p, want):
+    """T-3841: a tower's exam: the root's run covering most of `want`, newest first on a tie; a tower never writes one
+    (T-3081), so every tower's spec failed while it tried."""
+    from sampo import louhi
+    best, most = None, (0, False)
+    for run in reversed(louhi.runs(p)):
+        try:
+            meta = louhi.load(p, run)
+            scen = [s for s in meta.get("scenarios") or () if isinstance(s, dict)]
+        except Exception:  # noqa: BLE001 — one unreadable or malformed run never stops the tower
+            continue
+        score = (len(set(want) & {s.get("kind") for s in scen}), any(s.get("split") == "holdout" for s in scen))
+        if score[0] and score > most:  # most kinds, then one with held-out scenarios, then the newest
+            best, most = dict(meta, run=run, scenarios=scen), score
+    if not best:
+        raise ValueError(f"no exam run covers {', '.join(want)}: the root makes one by hand (fm exam gen) for the "
+                         "towers to read")
+    return best
 
 
 def _kinds(name, text):
