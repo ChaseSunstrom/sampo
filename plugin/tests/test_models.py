@@ -940,7 +940,8 @@ class OllamaThreads(Base):  # T-3588: llama.cpp's CPU threads busy-poll while th
         r = m.complete(prof, msgs, tools=[TOOL], max_tokens=99, schema={"type": "object"})
         self.assertEqual([s[:2] for s in f.seen], [("GET", "/api/ps"), ("POST", "/api/chat")])
         body = f.seen[1][3]
-        self.assertEqual(body["options"], {"num_predict": 99, "num_thread": m.GPU_THREADS, "temperature": 0.2})
+        self.assertEqual(body["options"], {"num_predict": 99, "num_thread": m.GPU_THREADS, "temperature": 0.2,
+                                           "num_ctx": prof["context"]})  # T-3753: the profile's context goes along
         self.assertEqual((body["model"], body["stream"], body["think"], body["format"]),
                          ("m1", False, False, {"type": "object"}))
         self.assertEqual(body["tools"], [TOOL])
@@ -958,6 +959,21 @@ class OllamaThreads(Base):  # T-3588: llama.cpp's CPU threads busy-poll while th
         self.assertNotIn("think", f.seen[1][3], "thinking on is the model's default: think true 400s without thinking")
         m.complete(prof, msgs[:1])
         self.assertEqual([s[:2] for s in f.seen[2:]], [("POST", "/api/chat")], "the ps verdict is reused for PS_TTL")
+
+    def test_a_profile_context_is_sent_as_num_ctx(self):
+        # T-3753: with no num_ctx Ollama serves its 2048/4096 default and cuts the prompt (a SWE-bench run's 8.6k-token
+        # first prompt on gpu-qwen9, 2026-11-07); the profile's declared context goes with every native call
+        msgs = [{"role": "user", "content": "hi"}]
+        f = self.ollama(self.VRAM)
+        m.complete({**self.profile(f, key=False), "context": 32768}, msgs)
+        self.assertEqual(f.seen[1][3]["options"]["num_ctx"], 32768)
+        f = self.ollama(self.VRAM)
+        m.complete({**self.profile(f, key=False), "context": 32768, "body": {"options": {"num_ctx": 8192}}}, msgs)
+        self.assertEqual(f.seen[1][3]["options"]["num_ctx"], 8192, "a profile body's own num_ctx wins")
+        for ctx in (None, 0, "32k", True):
+            f = self.ollama(self.VRAM)
+            m.complete({**self.profile(f, key=False), "context": ctx}, msgs)
+            self.assertNotIn("num_ctx", f.seen[1][3]["options"], ctx)
 
     def test_a_model_seen_wholly_in_vram_stays_native_after_an_eviction(self):
         from unittest import mock

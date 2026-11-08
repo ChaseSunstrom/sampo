@@ -490,7 +490,7 @@ def _gpu_ollama(profile):
     return root if fits else None
 
 
-def _native(body):
+def _native(body, context=None):
     """T-3588: complete()'s OpenAI-shaped chat body as Ollama's /api/chat takes it: max_tokens and the sampling extras
     as options with num_thread (a profile body's own options win), tool call arguments as objects, thinking off as
     think false (on is the model's default: think true is a 400 on a model without thinking, which /v1 ignored), a
@@ -504,8 +504,9 @@ def _native(body):
         elif x.get("role") == "tool" and x.get("tool_call_id") in names:
             x = dict(x, tool_name=names[x["tool_call_id"]])
         msgs.append(x)
+    ctx = {"num_ctx": context} if type(context) is int and context > 0 else {}  # T-3753: else Ollama cuts at 2048/4096
     out = {"model": body["model"], "messages": msgs, "stream": False,
-           "options": {"num_predict": body["max_tokens"], "num_thread": GPU_THREADS,
+           "options": {"num_predict": body["max_tokens"], "num_thread": GPU_THREADS, **ctx,
                        **{k: body[k] for k in SAMPLING if k in body}, **_of(body.get("options"), dict)}}
     if _of(body.get("chat_template_kwargs"), dict).get("enable_thinking") is False:
         out["think"] = False
@@ -1338,7 +1339,7 @@ def complete(profile, messages, tools=None, max_tokens=2048, timeout=120, think=
     # no native shape here: /v1.
     root = None if any(isinstance(x.get("content"), list) for x in body["messages"]) else _gpu_ollama(profile)
     if root:
-        r = _post(root + "/api/chat", _native(body), headers, timeout, key)
+        r = _post(root + "/api/chat", _native(body, profile.get("context")), headers, timeout, key)
         if isinstance(r.get("message"), dict):
             r = {"choices": [{"message": r["message"], "finish_reason": r.get("done_reason")}],
                  "usage": {"prompt_tokens": r.get("prompt_eval_count", 0), "completion_tokens": r.get("eval_count", 0)}}
