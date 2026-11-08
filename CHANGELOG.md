@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- fm doctor times hooks only on a calm machine (under 0.5 load per CPU, the SLO row's own bar), so a merge train's doctor gate no longer fails on hook p95 timings a loaded machine inflates (it left two good lanes out on 2026-11-08); and test_doctor stops running Checks' 36 tests a second time under PermissionMode (T-3814).
 - A criterion's verify warning (run.py names no test, -k matches none, a pipe hides the exit status) now ends the command's own result line too, from sampo task new --ac (after --focus as well), task ac add and task ac edit, so a caller reading only the last line sees it (T-3813).
 - The risk budget forgives a guard block only when it was a likely false refusal: an rm outside the project, a destructive git call or a piped shell, rewritten with the same program; credentials, system, self-authorize and confine blocks always cost their point, and a session is forgiven at most three times a day, so an agent can't clear its points by following each blocked attempt with a… (T-3812).
 - The Ward's downloaded-data exception (curl … | python3 -c reading json from stdin) now allows sed that only prints (sed -n '…p', s/// with only g, p, I flags; no -i, -f, w or e) and docker's read-only verbs (port, ps, inspect, logs, images, version, info, top), or docker exec running such a tool, elsewhere on the line; docker cp, run, compose and exec of anything else still make it refu… (T-3807).
