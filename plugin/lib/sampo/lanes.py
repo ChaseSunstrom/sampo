@@ -642,10 +642,10 @@ def _recovery_line(p, briefs, full):
             + (" A guard refused; only the user grants it: " + "; ".join(grants) + "." if grants else ""))
 
 
-def awaiting_merge(p, briefs):
+def awaiting_merge(p, briefs, quiet_min=30):
     """T-2038 and T-2354: finished lanes (commits, clean tree, quiet) that only wait on fm lane merge. One whose last
     merge conflicted or was refused is a recovery or a grant (recovery_line), not another merge to try."""
-    done = c.finished_lanes(p, briefs)
+    done = c.finished_lanes(p, briefs, quiet_min)
     if not done:
         return []
     cause = stop_causes(p, briefs)  # every lane, so finished_lanes' cache keeps one key

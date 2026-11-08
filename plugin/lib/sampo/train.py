@@ -753,7 +753,7 @@ def _land(p, main, batch):
             late = set()
             if set(jump) - seen:
                 now = c.load_briefs(p)
-                late = (set(lanes.awaiting_merge(p, now)) - seen) & set(jump)
+                late = (set(lanes.awaiting_merge(p, now, 0)) - seen) & set(jump)  # T-3824: named, so finished
                 sort(b for b in now if b.id in late)
                 seen |= late
             front = [t for t in jump if t in ready]

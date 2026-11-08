@@ -4905,7 +4905,8 @@ def finished_lanes(p, briefs, quiet_min=30):
     from sampo import bus
     lanes = [b for b in briefs if b.meta.get("lane") and b.status not in CLOSED and os.path.isdir(b.meta["lane"])
              and not b.meta.get("lane_spike")  # T-2340: a spike's code is never merged
-             and bus.proc_state(b.meta.get("builder_proc")) != "alive"]
+             # T-3824: builder_proc is the launching session, alive long after its builder returned (T-3145)
+             and (b.meta.get("builder_returned") or bus.proc_state(b.meta.get("builder_proc")) != "alive")]
     if not lanes or p.lane:  # only the main checkout merges; no lane costs no git call
         return []
     main = main_worktree(p.root) or p.root
@@ -4919,9 +4920,13 @@ def finished_lanes(p, briefs, quiet_min=30):
     except ValueError:
         ttl = 60
 
+    def returned(b, ct):  # T-3824: a builder that returned after its last commit is done; no quiet wait
+        at = parse_ts(b.meta.get("builder_returned") or "")
+        return bool(at) and at.timestamp() >= ct
+
     def done(facts):
         return [b.id for b in lanes if (facts.get(b.id) or {}).get("ct") is not None and facts[b.id].get("clean")
-                and time.time() - facts[b.id]["ct"] >= quiet_min * 60]
+                and (time.time() - facts[b.id]["ct"] >= quiet_min * 60 or returned(b, facts[b.id]["ct"]))]
     facts = {}
     try:
         with open(cache) as f:

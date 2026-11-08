@@ -241,6 +241,22 @@ class Land(LandCase):
         self.assertEqual(steps, [f"closed {early}", f"train 1: {a}", f"closed {a}", f"train 2: {b}", f"closed {b}"],
                          r.stderr)
 
+    def test_a_returned_or_first_lane_lands_without_the_quiet_wait(self):
+        # T-3824: a lane waited 30 minutes past its last commit even after its builder returned, and --first dropped
+        # two finished lanes as "not finished" minutes after their commit
+        a, b, d = (self.lane(n, f"{n}.txt") for n in (1, 2, 3))  # committed just now
+        self.audited(a, b, d)
+        p = c.find_project(self.repo)
+        x = c.find_brief(p, a)
+        x.meta["builder_returned"] = c.now()
+        from sampo import bus  # its builder_proc is the launching session, alive: the return still counts (T-3145)
+        x.meta["builder_proc"] = f"{bus.host_id()}|{os.getpid()}|{bus._proc(os.getpid())[1]}"
+        c.save_brief(p, x)
+        r = self.land("--first", b)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "1.txt")), "returned: lands at once\n" + r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "2.txt")), "--first: lands at once\n" + r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "3.txt")), "neither: still waits for quiet")
+
     def test_a_close_gap_is_named_before_any_train_and_on_the_hand_close_line(self):
         # T-3819: 2026-11-08, 56 merged tasks were left for a hand close with each reason only in the final report,
         # hours later; most lacked a DOCS line the land can't make up
