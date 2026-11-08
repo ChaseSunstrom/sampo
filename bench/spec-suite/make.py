@@ -21,6 +21,17 @@ import tempfile
 import hard  # round 2, beside this file
 import impossible  # round 3 (T-1377)
 
+
+def _load_queue():
+    """Round 4 (T-3340), bench/spec-suite/queue_suite.py, loaded by path: its name would clash with the stdlib's queue."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("spec_queue", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                                               "queue_suite.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 EPOCH = 1767225600  # 2026-01-01T00:00:00Z; commit i is stamped i minutes later
 VERIFY = "python3 -m unittest {tests}"
 TIMEOUT = 120  # seconds per test run
@@ -1322,6 +1333,10 @@ def commits(suite="easy"):
             tree.update(files)
             yield message.strip(), files
         return
+    if suite == "queue":  # T-3340: one base commit; the tasks' hidden tests live beside the repo, never in it
+        yield (hard.BASE_MESSAGE.strip() + "\n\nQUEUE.md lists the requests to work through.",
+               {path: text.lstrip("\n") for path, text in _load_queue().base_files().items()})
+        return
     yield BASE_MESSAGE.strip(), {path: text.lstrip("\n") for path, text in BASE_FILES.items()}
     for t in impossible.TASKS if suite == "impossible" else TASKS:  # T-1377: round 3 on round 1's base
         yield t["message"].strip(), {f"kit/{t['name']}.py": t["solution"].lstrip("\n"),
@@ -1433,6 +1448,105 @@ def check_impossible():
     return 1 if problems else 0
 
 
+def _apart(root, hidden):
+    """Whether HIDDEN is out of the arm's reach from ROOT: neither inside it, nor holding it, nor in the same folder."""
+    r, h = os.path.realpath(root), os.path.realpath(hidden)
+    return not (h == r or h.startswith(r + os.sep) or r.startswith(h + os.sep) or os.path.dirname(h) == os.path.dirname(r))
+
+
+def _write_hidden(root, q, hidden=None):
+    """The queue's hidden tests, written outside the arm's tree (T-3340): to HIDDEN, or by default a fresh private temp
+    folder (a sub-folder of mkdtemp, so never in ROOT's own folder); refused when not apart from ROOT. The runner copies
+    a file onto the arm's final tree only after the arm has finished."""
+    hidden = os.path.abspath(hidden) if hidden else os.path.join(tempfile.mkdtemp(prefix="spec-hidden-"), "hidden")
+    if not _apart(root, hidden):
+        sys.exit(f"make.py: the hidden tests folder {hidden} must not be inside, around or beside the repo {root}")
+    _write(hidden, {t["hidden"]: t["tests"].lstrip("\n") for t in q.TASKS})
+    return hidden
+
+
+def _dir_bytes(root):
+    out = {}
+    for base, _, names in os.walk(root):
+        for n in names:
+            with open(os.path.join(base, n), "rb") as f:
+                out[os.path.relpath(os.path.join(base, n), root)] = f.read()
+    return out
+
+
+def check_queue():
+    """T-3340: build the queue into a temp folder and prove each of its 12 tasks: the hidden test fails on the base,
+    passes with the task's solution (an impossible task fails every attempt), and fails with the naive variant; the
+    base's own suite passes; no hidden test is in the repo; a second build gives the same commits and the same hidden
+    bytes."""
+    q = _load_queue()
+    base = {p: t.lstrip("\n") for p, t in q.base_files().items()}
+    problems, failed = [], 0
+    with tempfile.TemporaryDirectory(prefix="spec-suite-") as tmp:
+        repo = os.path.join(tmp, "ledger")
+        shas = build(repo, "queue")
+        hidden = _write_hidden(repo, q, os.path.join(tmp, "vault", "hidden"))
+        hidden_files = _dir_bytes(hidden)
+
+        def attempt(t, files):
+            """The hidden test's exit code on the base with FILES (edits on the base) applied."""
+            _git(repo, "checkout", "-q", "-f", shas[0])
+            _git(repo, "clean", "-fdq")
+            _write(repo, {rel: _apply(base.get(rel), change, f"{t['name']} {rel}") for rel, change in files.items()})
+            _write(repo, {t["hidden"]: t["tests"].lstrip("\n")})
+            code, out = _unittest(repo, "tests." + os.path.splitext(os.path.basename(t["hidden"]))[0])
+            return code, out
+
+        def fails(code):
+            return code not in (0, 5, 124)  # a test failure or an import error, not "no tests" or a timeout
+
+        for t in q.TASKS:
+            impossible_task = t["kind"] == "impossible"
+            why = []
+            code, out = attempt(t, {})
+            why += [] if fails(code) else [f"its hidden test doesn't fail on the base (exit {code})"]
+            code, out = attempt(t, t["files"])
+            if impossible_task:
+                why += [] if fails(code) else ["an attempt passes an impossible task's hidden test"]
+            else:
+                why += [] if code == 0 else [f"its solution fails its hidden test (exit {code}): {out.strip()[-300:]}"]
+            code, out = attempt(t, t["naive"]["files"])
+            why += [] if fails(code) else [f"its naive variant ({t['naive']['what']}) doesn't fail (exit {code})"]
+            print(f"{'FAIL' if why else 'ok':4}  {t['id']} {t['name']:10} " + ("; ".join(why) if why else
+                  f"{t['kind']}: fails on the base, " + ("no attempt passes, " if impossible_task else "passes with its solution, ")
+                  + f"naive ({t['naive']['what']}) fails"))
+            problems += [f"{t['id']} {t['name']}: {w}" for w in why]
+            failed += bool(why)
+        _git(repo, "checkout", "-q", "-f", shas[0])
+        _git(repo, "clean", "-fdq")
+        code, out = 1, ""
+        for _ in range(3):  # the base holds a deliberately flaky test (numbering): one pass of three tries is enough
+            code, out = _unittest(repo, *shlex.split(q.VERIFY)[3:])
+            if code == 0:
+                break
+        print(f"{'FAIL' if code else 'ok':4}  {'base tests':14} " + (out.strip()[-400:] if code else "pass on the base"))
+        problems += [f"the base's tests: exit {code}"] if code else []
+        tracked = _git(repo, "ls-tree", "-r", "--name-only", "HEAD")
+        leaked = [p for p in tracked.splitlines() if "test_q_" in p]
+        print(f"{'FAIL' if leaked else 'ok':4}  {'hidden apart':14} " + (f"in the repo: {leaked}" if leaked else
+                                                                       f"{len(hidden_files)} hidden files, none in the repo"))
+        problems += [f"hidden tests in the repo: {leaked}"] if leaked else []
+        solutions = [p for p in tracked.splitlines() if os.path.basename(p) in ("queue_suite.py", "hard.py", "make.py")]
+        reach = not _apart(repo, hidden) or bool(solutions)
+        print(f"{'FAIL' if reach else 'ok':4}  {'answers apart':14} " + (f"reachable: hidden {hidden}, repo files {solutions}" if reach
+              else "the hidden folder is not under, around or beside the repo, and the repo holds no solution file"))
+        problems += ["answers are reachable from the repo"] if reach else []
+        again = build(os.path.join(tmp, "again"), "queue")
+        same = again == shas and _dir_bytes(_write_hidden(os.path.join(tmp, "again"), q,
+                                                          os.path.join(tmp, "vault2", "hidden"))) == hidden_files
+        print(f"{'ok' if same else 'FAIL':4}  {'reproducible':14} " + ("a second build gives the same commits and hidden "
+              "files" if same else "a second build gives other commits or hidden files"))
+        problems += [] if same else ["the build isn't reproducible"]
+    print(f"spec suite (queue): {len(q.TASKS) - failed} of {len(q.TASKS)} tasks fail-to-pass with their naive variants "
+          "caught (casekeys is impossible: scored apart, outside the pass-rate denominator)" + (f"; {len(problems)} problem(s)" if problems else ""))
+    return 1 if problems else 0
+
+
 def check(suite="easy"):
     """Build into a temp folder and prove each task fail-to-pass: its hidden tests fail at the parent and pass at
     its commit; the base's own tests and the whole suite pass; a second build gives the same commits. The hard
@@ -1491,17 +1605,24 @@ def check(suite="easy"):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("dir", nargs="?", help="a new or empty folder to build the repo in")
+    ap.add_argument("--hidden", help="queue suite: the folder for the hidden tests (outside DIR; default a fresh temp folder)")
     ap.add_argument("--check", action="store_true", help="build into a temp folder and prove each task fail-to-pass")
-    ap.add_argument("--suite", choices=("easy", "hard", "impossible"), default="easy",
+    ap.add_argument("--suite", choices=("easy", "hard", "impossible", "queue"), default="easy",
                     help="easy: round 1, kit (default); hard: round 2, ledger, graded by its whole suite; impossible: "
                          "round 3, tasks no change can do (T-1377)")
     args = ap.parse_args(argv)
     if args.check == bool(args.dir):
         ap.error("give DIR or --check")
     if args.check:
+        if args.suite == "queue":
+            return check_queue()
         return check_impossible() if args.suite == "impossible" else check(args.suite)
     root = os.path.abspath(args.dir)
     shas = build(root, args.suite)
+    if args.suite == "queue":
+        hidden = _write_hidden(root, _load_queue(), args.hidden)
+        print(f"built {root}: base {shas[0][:10]}; {len(_load_queue().TASKS)} hidden tests in {hidden} (outside the repo)")
+        return 0
     verify = hard.VERIFY if args.suite == "hard" else VERIFY
     print(f"built {root}: base {shas[0][:10]} and {len(shas) - 1} task commits")
     print(f"next: cd {shlex.quote(root)} && fm bench build --commits {shas[0][:10]}..HEAD "

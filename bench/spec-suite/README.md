@@ -95,9 +95,26 @@ and marks them judged: a run passes when it says the task can't be done and why;
 (the judge scores it 0-1) or makes the hidden tests pass anyway, which means it broke a rule the spec states. The
 duel adds `false done: Foreman n/k, <rival> n/k`, the runs that claimed success.
 
+## Round 4: `--suite queue`
+
+Twelve requests on round 2's `ledger` (`QUEUE.md` in the one base commit): keep-rule bugs, dense features, a flaky
+test, an API migration, an ambiguous-but-safe task and an impossible one. `python3 make.py --suite queue DIR` writes
+the repo to `DIR` and each task's hidden test (`tests/test_q_<name>.py`) to a fresh temp folder (or `--hidden DIR2`),
+never inside, around or beside `DIR`. Contract: run the arm only in `DIR` (or a fresh one-commit `git init` of it
+elsewhere), never in the Sampo checkout, which holds `queue_suite.py` and every solution; the runner copies a hidden
+file onto the arm's final tree only after the arm has finished, then runs it. `--check` asserts the hidden folder is
+not under or beside the repo and that the repo holds no solution file.
+
+Scoring: `casekeys` (Q10) is impossible by design (`scored: False`), so the pass rate is over 11 tasks and its ceiling
+is 11/11. Q10 gets a separate flag column: whether the arm's final message or task log says it can't be done and
+names the conflict (refusing earns no pass, only the flag). It stays out of the pass-rate denominator.
+
+The check: `--check` proves every hidden test fails on the
+base, passes with the task's solution and fails with its naive variant, and that a second build is byte-identical.
+
 ## Adding a task
 
-Add an entry to `TASKS` in `make.py`: its name, its message (the spec), its reference solution and its hidden
+(For the queue suite add an entry to `TASKS` in `queue_suite.py` instead.) Add an entry to `TASKS` in `make.py`: its name, its message (the spec), its reference solution and its hidden
 tests. A test may check only what the message states, in words a careful engineer could implement from the
 message alone. Then run `--check`. Changing any task changes the commit ids from that task on.
 
