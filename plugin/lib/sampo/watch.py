@@ -906,6 +906,7 @@ def view(p):
                    for b in closed],
         "signals": _guarded(lambda: _signals(sd, d, p)) or [],  # T-0472
         "fleet": _guarded(_fleet) or [],  # T-0711
+        "models": {"downgraded": _guarded(__import__("sampo.modelup").modelup.downgraded) or []},  # T-3742
         "today_done": today_done,
         "learned": _guarded(lambda: _learned_line(p)),  # T-1045
         "look": _guarded(lambda: __import__("sampo.taste").taste.roll_line()),  # T-1672: the look of the day, once taste exists
@@ -968,6 +969,9 @@ def _signals(sd, d, p=None):
     for r in ((d.get("checks") or {}).get("data") or {}).get("results") or []:
         if r.get("exit"):
             out.append({"level": "red", "text": f"gate failing: {c.plain(str(r.get('cmd')))[:80]}"})
+    from sampo import modelup  # T-3742: a session the refusal fallback dropped to a lower model
+    for r in modelup.downgraded():
+        out.append({"level": "amber", "text": c.plain(f"session {r['sid'][:8]} dropped {r['from']} -> {r['to']} (refusal fallback); {r['way_back']}")[:200]})
     pace = budget.degrade()
     if pace:
         out.append({"level": "amber", "text": f"usage ahead of pace ({c.plain(str(pace))[:80]})"})

@@ -6,6 +6,7 @@ next_for (sampo next and the drive's line) shows it in every state, not only whe
 import collections
 import json
 import os
+import re
 import time
 
 from sampo import core as c
@@ -71,6 +72,91 @@ def asks_waiting(p, briefs, now):
             + " → land or unblock the oldest first")
 
 
+CHECKS = (unshipped, old_mirror, asks_waiting)
+
+
+SLOW_X, SLOW_OVER_S, HISTORY, HISTORY_DAYS = 1.5, 60, 20, 7
+# T-3482: Sampo's live-job markers in meta (pid + start "at"), each with the ledger event that records its finished runs
+JOBS = (("gates_running", "the full gates run", "check_run"), ("ship_testing", "sampo ship's test run", "ship_test"))
+
+
+def _secs(e):
+    """A passing run's seconds (its own "s", or its gates' sum); a red run stops early and the train is another job."""
+    d = e.get("data") or {}
+    rs = d.get("results") or []
+    if d.get("train") or d.get("exit") or any(r.get("exit") for r in rs):
+        return None
+    return d["s"] if "s" in d else sum(r.get("s") or 0 for r in rs)
+
+
+def slow_jobs(p, briefs, now):
+    """T-3482: "why is this stuff taking so long just to push?": a live job past SLOW_X its median of the last HISTORY
+    passing runs, the ledger's own history (quiet under 3 runs)."""
+    out = []
+    for key, name, event in JOBS:
+        start = c.parse_ts((c.gates_live(p, key=key) or {}).get("at"))
+        if not start:
+            continue
+        ran = now - start.timestamp()
+        past = [s for s in map(_secs, c.ledger_events(p, [event], since=c.iso(now - HISTORY_DAYS * 86400))) if s]
+        past = sorted(past[-HISTORY:])
+        typ = past[len(past) // 2] if len(past) >= 3 else None
+        if typ and ran > SLOW_X * typ and ran - typ > SLOW_OVER_S:
+            out.append(f"{name} has run {_age(ran)}, {ran / typ:.1f}x its typical {_age(typ)} → see what it waits on")
+    return " · ".join(out) or None
+
+
+REPEAT_N, REPEAT_S = 3, 3600
+_WRAP = c.lazy(r"^(?:cd \S+ && |nice (?:-n ?\d+ )?|(?:sampo|fm) quiet -- )+")
+
+
+def repeats(p, briefs, now):
+    """T-3482: the same command failing REPEAT_N+ times in the last hour, a retry storm. Failing runs only: plain 3+
+    reruns are TDD's own (red, green, final) and fired in 77% of the real ledger's 10-minute windows."""
+    runs = {}
+    for e in c.ledger_events(p, ["evidence"], since=c.iso(now - REPEAT_S)):
+        d = e.get("data") or {}
+        if not d.get("cmd") or not isinstance(d.get("result"), str):
+            continue
+        cmd = _WRAP.sub("", " ".join(str(d["cmd"]).split()))
+        r = runs.setdefault(re.sub(r"^(?:fm|sampo) ", "sampo ", cmd), [0, 0, set()])  # one key for either spelling
+        r[0] += 1
+        if d["result"].startswith("✗"):  # "red as expected" is a TDD red, not a failure
+            r[1] += 1
+            r[2].add(e.get("task") or "no task")
+    hits = sorted(((r[1], r[0], cmd, r[2]) for cmd, r in runs.items() if r[1] >= REPEAT_N), reverse=True)
+    if not hits:
+        return None
+    bad, n, cmd, tasks = hits[0]
+    more = f"; {len(hits) - 1} more command(s) like it" if len(hits) > 1 else ""
+    return (f"{bad} of {n} runs of `{c.fit(cmd, 80)}` in the last hour failed ({c.joinmore(sorted(tasks), 3)}){more} → "
+            "read why it fails before running it again")
+
+
+WAIT_N, WAIT_STALE_S = 3, 1800
+
+
+def wait_turns(p, briefs, now):
+    """T-3482: the agent's own wait-only replies in a row, counted by the Stop hook ([n, first, last] in gate.json's
+    per-session drive state); a session quiet WAIT_STALE_S since says nothing. Read uncached: a small file."""
+    try:
+        with open(os.path.join(p.dir, "gate.json"), encoding="utf-8") as f:
+            drive = json.load(f).get("drive") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    runs = [w for d in drive.values() if isinstance(d, dict) and isinstance(w := d.get("waits"), list) and len(w) == 3
+            and now - w[2] < WAIT_STALE_S]
+    n, first, _ = max(runs, default=(0, 0, 0))
+    if n < WAIT_N:
+        return None
+    return (f"{n} wait-only replies in a row over {_age(now - first)} → name the slow job's elapsed vs its typical, "
+            "or work on something else")
+
+
+CHECKS += (slow_jobs, repeats)
+LIVE = (wait_turns,)  # cheap reads, run past the cache: a wait shows on the next turn, not 5 minutes on
+
+
 WAIT_MIN, RATE_H = 5, 2  # T-3478: lanes waiting before the rate is worth a line; the window it is measured over
 
 
@@ -92,7 +178,7 @@ def landing_rate(p, briefs, now):
             f"so the pile clears in ~{len(waiting) * each / 60:.0f} h at this rate → measure the slowest step and cut it")
 
 
-CHECKS = (unshipped, old_mirror, asks_waiting, landing_rate)
+CHECKS += (landing_rate,)
 
 
 UNTRACKED_H, UNTRACKED_STATS = 1, 500  # untracked this long is left behind, not work in progress; files stat'ed
@@ -126,6 +212,26 @@ def untracked(p, briefs, now):
 
 CHECKS += (untracked,)
 
+MAP_ROOM = 2000  # bytes: a few map lines; under this a split is due before the next close adds one
+
+
+def map_room(p, briefs, now):
+    """T-4057: MASTER.md or a docs/map shard within MAP_ROOM of the cap a Read opens whole (test_docs and doctor hold it):
+    the next close that maps a module there goes red, so the split is named first."""
+    out = []
+    for path in [os.path.join(p.root, "MASTER.md")] + c.map_shards(p.root):
+        try:
+            left = c.MAP_FILE_BYTES - os.path.getsize(path)
+        except OSError:
+            continue
+        if left < MAP_ROOM:
+            out.append(f"{os.path.relpath(path, p.root)} has {left} bytes left of its {c.MAP_FILE_BYTES}")
+    return (" · ".join(out) + " → split it: move a block of entries to a new docs/map shard and their MASTER.md index "
+            "links with it") if out else None
+
+
+CHECKS += (map_room,)
+
 
 def cpu_goal(p, briefs, now):
     """T-3592: the session's 10-minute CPU average over the goal (10% of the machine), with the top consumer."""
@@ -140,6 +246,22 @@ def lines(p, briefs=None, now=None):
     """The checks' hits, cached CACHE_S (a hook calls this on every Stop). A check that can't read its source is
     skipped, never a crash."""
     now = time.time() if now is None else now
+    return _cached(p, briefs, now) + _run(LIVE, p, briefs, now)
+
+
+def _run(checks, p, briefs, now):
+    out = []
+    for check in checks:
+        try:
+            hit = check(p, briefs, now)
+        except Exception:  # noqa: BLE001 — a check never costs the next action
+            hit = None
+        if hit:
+            out.append(hit)
+    return out
+
+
+def _cached(p, briefs, now):
     path = os.path.join(p.dir, "selfcheck.json")
     try:
         with open(path, encoding="utf-8") as f:
@@ -148,15 +270,7 @@ def lines(p, briefs=None, now=None):
             return list(d.get("lines") or [])
     except (OSError, ValueError, TypeError, AttributeError):
         pass
-    briefs = c.load_briefs(p) if briefs is None else briefs
-    out = []
-    for check in CHECKS:
-        try:
-            hit = check(p, briefs, now)
-        except Exception:  # noqa: BLE001 — a check never costs the next action
-            hit = None
-        if hit:
-            out.append(hit)
+    out = _run(CHECKS, p, c.load_briefs(p) if briefs is None else briefs, now)
     try:
         c.write_atomic(path, json.dumps({"at": now, "lines": out}))
     except OSError:

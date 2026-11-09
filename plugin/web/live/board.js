@@ -111,7 +111,8 @@ const SampoBoard = (() => {
   }
 
   function mCpu(b) {
-    const c = obj(b.cpu), now = obj(c.now), out = {known: !!b.cpu, kinds: KINDS, goal: num(c.goal_pct, 10) || 10,
+    // T-4076: known once there is a reading: a fresh server's first snapshot has none (now: null), not 0.0 cores
+    const c = obj(b.cpu), now = obj(c.now), out = {known: !!b.cpu && !!c.now, kinds: KINDS, goal: num(c.goal_pct, 10) || 10,
       cores: Math.max(1, int(c.cores)), minutes: arr(c.minutes).slice(-30).map((r) => [int(arr(r)[0])].concat(
         KINDS.map((_, i) => r2(arr(r)[i + 1])))), now: {busy: r2(now.busy)}};
     for (const k of KINDS) out.now[k] = r2(now[k]);
@@ -239,7 +240,8 @@ const SampoBoard = (() => {
         hot += c.nodes.filter((x) => x.hot).length;
       }
       return {label: plural(d.clusters.length + d.more, "lane"),
-        foot: {text: LANE_STATES.filter((k) => n[k]).map((k) => `${k} ${n[k]}`).join(" · ") || "no builder lanes out",
+        foot: {text: (LANE_STATES.filter((k) => n[k]).map((k) => `${k} ${n[k]}`).join(" · ") || "no builder lanes out") +
+          (d.more ? ` · +${fmt(d.more)} more` : ""),  // T-4076: the label counts every lane; say the undrawn ones
           stat: files ? `${hot} hot of ${plural(files, "file")}` : ""}};
     },
     train: (d) => ({label: d.running ? "train running" : "foreman/build",
@@ -337,6 +339,8 @@ const SampoBoard = (() => {
   function waiting(g, w, h, T, say) {
     txt(g, say, w / 2, h / 2, T.dim, 10, "center");
   }
+  // T-4078: a panel with no data: nothing read yet (its data key is still "") or a snapshot with nothing in focus
+  const idle = (dk) => dk ? "no task in focus" : "waiting for the first snapshot";
   function seed(s) {  // mulberry32 seeded from a string: a layout holds still from one snapshot to the next
     let a = 2166136261;
     for (let i = 0; i < s.length; i++) a = Math.imul(a ^ s.charCodeAt(i), 16777619);
@@ -952,7 +956,7 @@ const SampoBoard = (() => {
         if (d.grew[k]) txt(g, `+${fmt(d.grew[k])}`, pad + 102, y, T.green, 8);
       });
       // kept per hour, the last 24
-      const peak = Math.max(1, ...d.hourly), bw = (w - 2 * pad) / 24;
+      const top = Math.max(0, ...d.hourly), peak = Math.max(1, top), bw = (w - 2 * pad) / 24;
       hline(g, pad, w - pad, hy1, T.line);
       d.hourly.forEach((v, i) => {
         const bh = Math.round(((hy1 - hy0 - 10) * v) / peak);
@@ -960,7 +964,8 @@ const SampoBoard = (() => {
         g.fillStyle = i === 23 ? T.ink : rgba(T.cyan, 0.4 + (0.45 * i) / 23);
         g.fillRect(Math.round(pad + i * bw + 1), hy1 - bh, Math.max(1, Math.round(bw) - 2), bh);
       });
-      txt(g, `kept / hour · peak ${fmt(peak)}`, pad, hy0 + 2, T.dim, 8);
+      txt(g, `kept / hour · peak ${fmt(top)}`, pad, hy0 + 2, T.dim, 8);
+      if (!top) txt(g, "nothing kept in 24 h", w / 2, (hy0 + hy1) / 2 + 3, T.dim, 9, "center");  // T-4076: not a blank box
       txt(g, "−24 h", pad, h - 9, T.dim, 8);
       txt(g, "now", w - pad, h - 9, T.dim, 8, "right");
       if (!d.total) txt(g, "nothing kept yet", gx, gy + 3, T.dim, 9, "center");
@@ -1409,7 +1414,7 @@ const SampoBoard = (() => {
           o.setTransform(p.sx, 0, 0, p.sy, 0, 0);
           p.mem.quiet = !p.d;
           if (p.d) R.base(o, p.d, p.w, p.h, T, p.mem);
-          else waiting(o, p.w, p.h, T, "no task in focus");
+          else waiting(o, p.w, p.h, T, idle(p.dk));
           p.base = off;
         }
         g.setTransform(1, 0, 0, 1, 0, 0);
@@ -1522,7 +1527,7 @@ const SampoBoard = (() => {
     };
   }
 
-  return {PANELS, KINDS, STAGES, TOKENS, DRAW, boardModel, projectList, mount};
+  return {PANELS, KINDS, STAGES, TOKENS, DRAW, boardModel, projectList, mount, idle};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = SampoBoard;
 else window.SampoBoard = SampoBoard;  // a top-level const is no window property: live.js finds it here

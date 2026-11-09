@@ -362,6 +362,42 @@ _NS_SPELLING = lazy(rf"(?<![\w-]){NS}:(?=[a-z])")
 def as_loaded(text, name):
     """Text Sampo hands a session, its sampo: names in the namespace that session loaded (ns); plugin ids stay."""
     return _NS_SPELLING.sub(name + ":", text) if name != NS and isinstance(text, str) else text
+
+
+_SKILL_HINT = lazy(r"\bSkill (?:sampo|foreman):([\w-]+)")
+
+
+def _skills_file(sid):
+    return os.path.join(state_dir(), "sessions", f"{sid}.keep.skills")  # .keep.: SessionStart's sweep leaves it
+
+
+def note_skills(sid):
+    """T-3851: the skills Sampo has as a session's Claude Code process starts, the list that session can load."""
+    if not (sid and re.fullmatch(r"[\w-]{1,100}", sid)):
+        return
+    try:
+        names = sorted(n for n in os.listdir(os.path.join(PLUGIN_ROOT, "skills")) if not n.startswith("."))
+        os.makedirs(os.path.dirname(_skills_file(sid)), exist_ok=True)
+        write_atomic(_skills_file(sid), "\n".join(names) + "\n")
+    except OSError:
+        pass
+
+
+def skill_fallback(text, sid):
+    """T-3851: a hint naming a skill that landed after the session started (absent from note_skills' list) also names
+    its SKILL.md to Read. Unchanged when the session has no list (it started before this) or knows every name."""
+    if not isinstance(text, str) or "Skill " not in text or not (sid and re.fullmatch(r"[\w-]{1,100}", sid)):
+        return text
+    try:
+        with open(_skills_file(sid), encoding="utf-8") as f:
+            known = set(f.read().split())
+    except OSError:
+        return text
+
+    def one(m):
+        path = os.path.join(PLUGIN_ROOT, "skills", m.group(1), "SKILL.md")
+        return f"{m.group(0)} (or Read {path})" if m.group(1) not in known and os.path.isfile(path) else m.group(0)
+    return _SKILL_HINT.sub(one, text)
 _STATE_MARKER = ".foreman-state.json"
 PERMISSION_MODES = ["acceptEdits", "auto", "bypassPermissions", "default", "dontAsk", "plan"]  # claude 2.1.280 --help
 ASK_TTL = 300  # seconds an `fm ask` the PreToolUse hook saw stays claimable by fm (it runs right after)
@@ -1184,6 +1220,9 @@ def result_exit(result):
     """T-0750: the exit code in a run_result string ("exit 0 · …" or "✗ exit 1 · …"), or None for a typed result."""
     m = re.match(r"(?:✗ )?exit (\d+)", str(result or ""))
     return int(m.group(1)) if m else None
+
+
+MAP_FILE_BYTES = 90000  # T-2915: one Read opens MASTER.md or a docs/map shard whole under this
 
 
 def map_shards(root, kind=""):
@@ -5117,6 +5156,9 @@ def next_for(p, briefs=None, checks=True):
     briefs = briefs if briefs is not None else load_briefs(p)
     if b is None or b.status not in ("active", "verifying"):  # T-1841: its lane folder went; it's still active there
         action = "".join(stranded_note(s) + " · " for s in stranded(briefs, p.lane)) + action
+    if not p.lane:  # T-3928: after a restart nobody announced, sampo recover comes first until it has run
+        from sampo import recover
+        action = recover.next_lead(p) + action
     idle_now = b is None or b.status not in ("active", "verifying")
     try:  # T-2354: lanes that stopped before their merge, each with the one recovery for its cause
         from sampo import lanes as slanes
@@ -6328,9 +6370,11 @@ def scope_reason_covers(b, touches, outside):
 
 
 def scope_drift(b, files):
-    """Files this task edited outside its scope globs (T-0055); .sampo/ (or .foreman/) is Sampo's own mirror."""
+    """Files this task edited outside its scope globs (T-0055); .sampo/ (or .foreman/) is Sampo's own mirror, and
+    .fm-scratch/ a builder's git-ignored drafts (T-4059: fm-builder.md sends its edit batches and probes there)."""
     scope = b.meta.get("scope") or []
-    return [f for f in files if scope and not f.startswith(MIRROR_DIRS) and not any(glob_match(f, s) for s in scope)]
+    return [f for f in files if scope and not f.startswith(MIRROR_DIRS + (".fm-scratch/",))
+            and not any(glob_match(f, s) for s in scope)]
 
 
 _VERIFY_OF = lazy(r"— verify with `((?:(?!— verify with `).)+)`\s*$")  # T-2839: the last one, not a quoted one

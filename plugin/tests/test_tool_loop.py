@@ -2,6 +2,7 @@
 fm task finish refuses the task while the miss is unresolved. Resolved only by run evidence, never by a typed line."""
 import json
 import os
+import subprocess
 import time
 import unittest
 from unittest import mock
@@ -24,6 +25,9 @@ class MissLoop(ForemanTestCase):
         self.hook("PostToolUseFailure", {"tool_name": "Bash", "tool_input": {"command": cmd}, "error": err,
                                          "session_id": sid})
         time.sleep(1.05)  # timestamps are whole seconds and a run counts only when strictly later than the miss
+
+    def git(self, *a):
+        subprocess.run(["git", "-C", self.repo, *a], check=True, capture_output=True)
 
     def passed(self, cmd, sid="s1"):
         self.hook("PostToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": sid,
@@ -181,6 +185,33 @@ class MissLoop(ForemanTestCase):
         with open(os.path.join(self.repo, "gizmo.py"), "w") as f:
             f.write("X = 1\n")
         self.refused()
+
+    def test_a_module_the_project_already_tracks_is_a_wrong_runner_not_a_miss(self):
+        # T-4061: python3 -m unittest plugin.tests.test_x from the root can't import plugin/tests/helpers.py; 16 of 18
+        # logged misses were this repo's own modules, each blocking a close until that exact command passed
+        os.makedirs(os.path.join(self.repo, "tests"))
+        with open(os.path.join(self.repo, "tests", "helpers.py"), "w") as f:
+            f.write("X = 1\n")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "helpers")
+        self.miss("python3 -m unittest tests.test_x", "ModuleNotFoundError: No module named 'helpers'")
+        self.assertEqual(c.ledger_events(self.p, ["capability_miss"]), [], "tracked before the run: no miss")
+        self.closes()
+
+    def test_a_miss_logged_for_a_module_tracked_at_the_tasks_start_does_not_block(self):
+        os.makedirs(os.path.join(self.repo, "lib", "pkg"))
+        with open(os.path.join(self.repo, "lib", "pkg", "__init__.py"), "w") as f:
+            f.write("")
+        self.git("add", "-A")
+        self.git("commit", "-qm", "pkg")
+        self.fm("task", "new", "Use pkg", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s",
+                "--focus")
+        self.tid = c.load_briefs(self.p)[-1].id
+        for name in ("pkg", "gizmolib"):  # as an older hook logged it; gizmolib isn't the project's
+            c.log_event(self.p, "capability_miss", task=self.tid, data={"name": name, "cmd": f"python3 -m {name}",
+                                                                         "kind": "module"})
+        from sampo import miss
+        self.assertEqual([m["name"] for m in miss.open_misses(self.p, c.find_brief(self.p, self.tid))], ["gizmolib"])
 
     def test_a_miss_logged_on_another_task_or_none_does_not_block_this_one(self):
         c.log_event(self.p, "capability_miss", task="T-9999", data={"name": "gizmo", "cmd": "gizmo", "kind": "command"})

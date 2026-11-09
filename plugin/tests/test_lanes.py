@@ -572,6 +572,16 @@ class Lanes(ForemanTestCase):
             self.assertIn(f'effort: "{effort}"', agent)
             self.assertIn('model: "sonnet"', agent, "T-1796: every builder runs on Sonnet; Opus M lanes were 22% of usage")
 
+    def test_a_research_brief_tells_the_builder_to_file_its_note_in_state(self):  # T-3953: T-3933's note was lost
+        mk = lambda t, ty: first(self.fm("task", "new", t, "--type", ty, "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                         "--step", "s", "--json").stdout)["id"]
+        r, f = mk("Survey the options", "RESEARCH"), mk("Fix the thing", "FIX")
+        text = lambda tid: open(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"]).read()  # noqa: E731
+        got = text(r)
+        self.assertIn("## Filing your note", got)
+        self.assertIn(f"sampo research add {r}-note", got, "into state: a .fm-scratch note dies with the worktree")
+        self.assertNotIn("## Filing your note", text(f))
+
     def test_brief_records_the_model_and_model_flag_overrides(self):
         # T-2291: the named model is recorded on the brief; --model overrides the history's suggestion
         mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",

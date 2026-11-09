@@ -31,6 +31,9 @@ PAYLOADS = {
     "PostToolUseFailure": {"session_id": "spar", "tool_name": "Bash", "tool_input": {"command": "false"},
                            "error": "exit 1"},
     "PreCompact": {"session_id": "spar", "trigger": "auto"},
+    "PostModelSwitch": {"session_id": "spar", "from_model": "claude-opus-5-5", "to_model": "claude-sonnet-5-5",
+                        "source": "refusal_fallback"},  # T-3742
+    "PreModelSwitch": {"session_id": "spar", "from_model": "claude-opus-5-5", "to_model": "claude-sonnet-5-5"},
     "Stop": {"session_id": "spar", "stop_hook_active": False},
     "TaskCompleted": {"session_id": "spar", "task_id": "T-0001"},
     "SubagentStart": {"session_id": "spar", "agent_type": "fm-builder"},

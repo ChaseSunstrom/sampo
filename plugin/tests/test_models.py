@@ -9,6 +9,7 @@ import unittest
 
 import helpers  # noqa: F401  (puts plugin/lib on sys.path)
 from sampo import models as m
+from sampo import modelup as mu
 
 KEYS = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY", "GEMINI_API_KEY", "FM_TEST_KEY",
         "TYPESAFE_BASE_URL", "TYPESAFE_API_KEY", "TYPESAFE_MODEL", "LLM_API_KEY",  # T-2494: the user's env never leaks in
@@ -766,6 +767,87 @@ class Profiles(Base):
         os.environ["OPENAI_API_KEY"] = "k"
         self.write_models({"profiles": {"mine": {"base_url": "http://h/v1", "model": "x"}}})
         self.assertEqual([p["name"] for p in m.profiles()], ["mine", "ollama", "openai"])
+
+
+class Newest(unittest.TestCase):  # T-3742: the newest, most capable model by default
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._old = os.environ.get("FOREMAN_HOME")
+        os.environ["FOREMAN_HOME"] = self.home = os.path.join(self._tmp.name, "fh")
+        os.makedirs(self.home)
+        self.addCleanup(lambda: os.environ.__setitem__("FOREMAN_HOME", self._old) if self._old else os.environ.pop("FOREMAN_HOME", None))
+
+    def test_target_alias(self):
+        m = mu
+        t = m.target_model
+        self.assertEqual(t(None), "best")
+        for cur in ("opus", "default", "inherit", "claude-opus-4-8", "claude-fable-5-1", "best"):
+            self.assertEqual(t(cur), "best", cur)
+        self.assertEqual(t("claude-sonnet-4-6"), "sonnet")
+        self.assertEqual(t("claude-haiku-4-5-20251001"), "haiku")
+        for kept in ("sonnet", "haiku", "opus[1m]", "opusplan", "arn:aws:bedrock:us-east-1:1:x"):
+            self.assertEqual(t(kept), kept, "a deliberate choice stays")
+        self.assertEqual(t("claude-opus-4-8[1m]"), "opus[1m]")
+        self.assertEqual(t("claude-opus-4-8", pin="claude-opus-4-1"), "claude-opus-4-1", "a pin wins")
+
+    def test_settings_default_on_and_off_and_pin(self):
+        m = mu
+        self.assertTrue(m.newest_on())
+        self.assertIsNone(m.pinned())
+        m.set_newest(False)
+        self.assertFalse(m.newest_on())
+        m.set_newest(True)
+        m.set_pin("sonnet")
+        self.assertEqual(m.pinned(), "sonnet")
+        self.assertEqual(m.apply_newest({"model": "opus"}), {"model": "sonnet", "switchModelsOnFlag": True})
+        m.set_pin(None)
+        self.assertIsNone(m.pinned())
+
+    def test_apply_newest_is_idempotent_and_off_changes_nothing(self):
+        m = mu
+        s = m.apply_newest({"model": "claude-opus-4-8", "theme": "dark"})
+        self.assertEqual(s, {"model": "best", "theme": "dark", "switchModelsOnFlag": True})
+        self.assertEqual(m.apply_newest(dict(s)), s)
+        self.assertEqual(m.apply_newest({"switchModelsOnFlag": False}), {"model": "best", "switchModelsOnFlag": True})
+        m.set_newest(False)
+        self.assertEqual(m.apply_newest({"model": "claude-opus-4-8"}), {"model": "claude-opus-4-8"})
+
+    def test_rank_orders_family_then_version(self):
+        m = mu
+        r = m.model_rank
+        self.assertGreater(r("claude-fable-5-1"), r("claude-opus-5"))
+        self.assertGreater(r("claude-opus-5"), r("claude-opus-4-8"))
+        self.assertGreater(r("claude-opus-4-1"), r("claude-sonnet-5"))
+        self.assertGreater(r("claude-sonnet-4"), r("claude-haiku-5"))
+        self.assertIsNone(r("gpt-5"))
+
+    def test_codex_takes_the_top_listed_model_unless_pinned_or_off(self):
+        m = mu
+        cx = os.path.join(self._tmp.name, ".codex")
+        os.makedirs(cx)
+        cfg = os.path.join(cx, "config.toml")
+        with open(cfg, "w") as f:
+            f.write('model = "gpt-5"\n[projects."/x"]\ntrust_level = "trusted"\n')
+        with open(os.path.join(cx, "models_cache.json"), "w") as f:
+            json.dump({"models": [{"slug": "gpt-5", "priority": 3, "visibility": "list"},
+                                  {"slug": "gpt-6", "priority": 1, "visibility": "list"},
+                                  {"slug": "gpt-7-hidden", "priority": 0, "visibility": "hide"}]}, f)
+        self.assertEqual(m.codex_newest(cx), "gpt-5 -> gpt-6")
+        self.assertEqual(helpers.read_text(cfg), 'model = "gpt-6"\n[projects."/x"]\ntrust_level = "trusted"\n')
+        self.assertIsNone(m.codex_newest(cx), "second run: nothing to change")
+        m.set_pin("gpt-5", codex=True)
+        with open(cfg, "w") as f:
+            f.write('model = "gpt-5"\n')
+        self.assertIsNone(m.codex_newest(cx), "pinned")
+        m.set_pin(None, codex=True)
+        m.set_newest(False)
+        self.assertIsNone(m.codex_newest(cx), "off")
+        m.set_newest(True)
+        self.assertIsNone(m.codex_newest(os.path.join(self._tmp.name, "nope")), "no Codex here")
+        with open(os.path.join(cx, "models_cache.json"), "w") as f:
+            f.write("{not json")
+        self.assertIsNone(m.codex_newest(cx), "an odd cache changes nothing")
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import time
 import unittest
 from unittest import mock
@@ -53,6 +54,32 @@ class SupplyDelta(ForemanTestCase):
         self.assertEqual(doctor.check_supply(self.claude).status, "FAIL", "held: a second run doesn't let it through")
         doctor.check_supply(self.claude, accept=True)
         self.assertEqual(doctor.check_supply(self.claude).status, "PASS")
+
+    def test_a_committed_change_in_sampos_own_checkout_is_accepted_and_a_dirty_one_held(self):  # T-4086
+        # T-3742's PreModelSwitch hook landed through a reviewed merge; the FAIL turned build red and 18 lanes waited
+        own = os.path.join(self.home, "plugin")
+        shutil.copytree(self.plugin, own)
+        write(os.path.join(self.claude, "plugins", "installed_plugins.json"),
+              {"plugins": {"p@m": [{"installPath": self.plugin, "version": "1.0"}],
+                           "sampo@sampo": [{"installPath": own, "version": "1.0"}]}})
+        git = lambda *a: subprocess.run(["git", "-C", self.home, *a], capture_output=True, text=True, check=True)  # noqa: E731
+        git("init", "-q")
+        git("add", "plugin")
+        git("commit", "-qm", "base")
+        doctor.check_supply(self.claude, accept=True)
+        hook = {"hooks": dict(STOP["hooks"], PreModelSwitch=[{"hooks": [{"type": "command", "command": "true"}]}])}
+        write(os.path.join(own, "hooks", "hooks.json"), hook)
+        r = doctor.check_supply(self.claude)
+        self.assertEqual(r.status, "FAIL", "uncommitted in Sampo's checkout: held")
+        self.assertIn("sampo@sampo adds hook PreModelSwitch", r.detail)
+        git("add", "plugin")
+        git("commit", "-qm", "T-3742 merged")
+        r = doctor.check_supply(self.claude)
+        self.assertEqual(r.status, "PASS", r.detail)
+        self.assertIn("sampo@sampo", r.detail, "says what it took")
+        self.assertEqual(doctor.check_supply(self.claude).status, "PASS", "the commit is the new baseline")
+        self.hooks(hook)  # a third-party plugin's same change is still held
+        self.assertIn("p@m adds hook PreModelSwitch", doctor.check_supply(self.claude).detail)
 
     def test_a_skill_body_edit_passes_the_capability_check(self):
         write(os.path.join(self.plugin, "skills", "s", "SKILL.md"), "---\nname: s\ndescription: d\n---\nfixed typo\n")

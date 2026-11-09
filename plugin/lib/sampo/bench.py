@@ -1144,6 +1144,9 @@ def cmd_bench(args):
         return replay.cmd_guard(args)
     if args.bench_cmd not in ("build", "list", "show", "compare", "models", "hygiene", "scorecard"):
         c.refuse_if_paused()  # T-0591: the commands that run claude sessions
+    if args.bench_cmd == "tbench":  # T-3747: no claude session, no project: a model in a container
+        from sampo import benchtb
+        return benchtb.cmd(args)
     p = cli.resolve(args)
     if args.bench_cmd == "seed-review":
         return seed_review(p, args)

@@ -56,6 +56,7 @@ FLOW_OF = {"cards_grow": ("card grow", "write"), "moons_grow": ("moon grow", "wr
 CALL_KINDS = ((r"grow|card|write", "write"), (r"funnel|judge|moon", "judge"), (r"embed", "embed"), (r"train", "train"),
               (r"plan", "plan"), (r"review|audit", "review"))  # T-3014: the calling verb's spark colour; else act
 _CACHE, _LOCK = {}, threading.Lock()
+_STALE = {}  # T-4071: key -> the one thread refreshing it
 
 
 def _cached(key, ttl, fn):
@@ -67,6 +68,25 @@ def _cached(key, ttl, fn):
     with _LOCK:
         _CACHE[key] = (time.monotonic(), val)
     return val
+
+
+def _stale(key, ttl, fn, empty):
+    """T-4071: the last value at once (`empty` before the first), refreshed by one background thread once older than
+    ttl: a reader never waits on a slow fn, and readers arriving together never each run it."""
+    with _LOCK:
+        hit = _CACHE.get(key)
+        if (not hit or time.monotonic() - hit[0] >= ttl) and key not in _STALE:
+            def run():
+                try:
+                    val = fn()
+                except Exception:  # an optional collector: keep what the page had, retry after ttl
+                    val = hit[1] if hit else empty
+                with _LOCK:
+                    _CACHE[key] = (time.monotonic(), val)
+                    _STALE.pop(key, None)
+            _STALE[key] = threading.Thread(target=run, daemon=True, name="live-stale")
+            _STALE[key].start()
+    return hit[1] if hit else empty
 
 
 def _get_json(url):
@@ -466,7 +486,9 @@ def spend_today():
     return [round(x, 2) for x in hrs]
 
 
-def stats(p):
+def stats(p, wait=True):
+    """The card and moon totals read every card and moon (12.8 s here): wait=False (the live page) serves the last ones
+    and refreshes them in the background (T-4071)."""
     def slow():
         from sampo import moonscale, smallcards
         cov, st = smallcards.coverage(), moonscale.status(p)
@@ -475,7 +497,8 @@ def stats(p):
                 "moons": {"candidates": st["total"], "stages": st["stages"], "pace": moonscale.pace(p)},
                 "spend": spend_today(), "bench": []}  # ponytail: the bench table is a model read away; the page shows none until a cheap one exists
     from sampo import louhi
-    return dict(_cached(("stats", p.dir), SLOW_S, slow), closed_today=len(_closed_today(p)),
+    key = ("stats", p.dir)
+    return dict(_cached(key, SLOW_S, slow) if wait else _stale(key, SLOW_S, slow, {}), closed_today=len(_closed_today(p)),
                 gap=_cached(("gap", p.dir), 30, lambda: louhi.gap_series(p)))  # T-3930: the models panel's trend
 
 
@@ -486,7 +509,8 @@ def board(p):
 
 
 COLLECTORS = {"project": project, "focus": focus, "queue": queue, "closed_today": closed_today, "lanes": lanes, "jobs": jobs,
-              "models": models, "gpu": gpu, "flows": flows, "events": events, "stats": stats, "board": board}
+              "models": models, "gpu": gpu, "flows": flows, "events": events,
+              "stats": lambda p: stats(p, wait=False), "board": board}
 EMPTY = {"project": {}, "focus": None, "gpu": None, "stats": {}, "board": {}}  # every other field's empty is []
 
 
@@ -901,12 +925,32 @@ def _url(server):
     return f"http://127.0.0.1:{server.server_address[1]}/?t={server.token}"
 
 
+RELOAD_S = 30  # T-3852: how often the server looks for new code of its own
+
+
+def _code_id():
+    """The committed plugin tree's id: changes when a merge changes Sampo's code ('' outside git)."""
+    return (c._git(c.PLUGIN_ROOT, "rev-parse", "HEAD:./", timeout=10, fail="") or "").strip()
+
+
+def _again(argv, port):
+    """argv for the re-exec, pinned to the port it serves, so an open tab reconnects (its cookie outlives it, T-3021)."""
+    return argv if any(a == "--port" or a.startswith("--port=") for a in argv) else [*argv, "--port", str(port)]
+
+
 def serve(server, stop=None):
-    """Answer requests until `stop` is set; a spent token is replaced and live.url rewritten. No idle timeout."""
+    """Answer requests until `stop` is set; a spent token is replaced and live.url rewritten. No idle timeout.
+    T-3852: returns with server.reload set once the committed plugin code changed, for cmd_live to re-exec."""
     stop = server.stop = stop or server.stop
-    server.timeout = 0.5
+    server.timeout, server.reload = 0.5, False
+    code, looked = _code_id(), time.monotonic()
     try:
         while not stop.is_set():
+            if time.monotonic() - looked >= RELOAD_S:
+                looked = time.monotonic()
+                if code and _code_id() not in ("", code):
+                    server.reload = True
+                    break
             server.handle_request()
             with server.once:
                 if server.token is None:
@@ -944,5 +988,8 @@ def cmd_live(args):
             os.remove(url_path(p))
         except OSError:
             pass
+    if server.reload and not os.environ.get("FOREMAN_NO_BACKGROUND"):  # T-3852: same pid (systemd's unit), new code
+        print("new code: restarting", flush=True)
+        os.execv(sys.executable, [sys.executable, *_again(sys.argv, server.server_address[1])])
     print("stopped", flush=True)
     return 0

@@ -129,6 +129,18 @@ class Gatemap(ForemanTestCase):
         self.assertIn("docs", rows)
         self.assertNotIn("docs", {r["gate"] for r in gatemap.predict([self.friction], p=self.p)})  # on main already
 
+    def test_a_stale_local_main_does_not_make_an_existing_module_new(self):
+        # T-4060: ship pushes the work branch to origin/main and the local main stays where it was cloned, before
+        # plugin/lib/sampo/ existed; every module there then owed a new module's shim, MASTER bullet and map line
+        from sampo import gatemap
+        old = self.git("rev-list", "--max-parents=0", "HEAD")
+        self.git("update-ref", "refs/remotes/origin/main", "HEAD")  # what ship pushed
+        self.git("checkout", "-qb", "work")
+        self.git("update-ref", "refs/heads/main", old)  # the local main: before friction.py was added
+        self.commit_file("plugin/lib/sampo/brandnew3.py", "x = 1\n")
+        self.assertNotIn("docs", {r["gate"] for r in gatemap.predict([self.friction], p=self.p)})
+        self.assertIn("docs", {r["gate"] for r in gatemap.predict(["plugin/lib/sampo/brandnew3.py"], p=self.p)})
+
     def test_a_shim_owes_no_test_file_and_a_deleted_file_owes_nothing(self):
         from sampo import gatemap
         self.commit_file("plugin/lib/fmshim.py", "import sys\nfrom sampo import gatemap\nsys.modules[__name__] = gatemap\n")

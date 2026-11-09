@@ -286,7 +286,7 @@ def _day(iso):
     return f"{d.strftime('%b')} {d.day}"
 
 
-def _chart_top(w, title, sub, big, big_label, th):
+def _chart_top(w, title, sub, big, big_label):
     """(elements, dy): the title, the subtitle wrapped clear of the headline figure, and how far it pushed the plot."""
     room = w - 40 - max(width([(big, "b")], 22), width([(big_label, "")], 11.5)) - 18
     lines = wrap([(sub, "")], room, 11.5)
@@ -311,7 +311,7 @@ def chart_columns(c, th, w=CHART_W, h=CHART_H):
     total = sum(v for _, v in pts)
     out = _open(w, h, f"{c['title']}: {total} in {len(pts)} days, measured {c['measured'][:10]}", th)
     top, dy = _chart_top(w, c["title"], f"{c['sub']} · measured {c['measured'][:10]}", fnum(total),
-                         f"in {len(pts)} days", th)
+                         f"in {len(pts)} days")
     out += top
     x0, x1, y0, y1 = 48, w - 20, 74 + dy, h - 36
     ts = ticks(max(v for _, v in pts) or 1)
@@ -332,7 +332,7 @@ def chart_area(c, th, w=CHART_W, h=CHART_H):
     pts = c["points"]
     last = pts[-1][1]
     out = _open(w, h, f"{c['title']}: {last} on {pts[-1][0]}, measured {c['measured'][:10]}", th)
-    top, dy = _chart_top(w, c["title"], f"{c['sub']} · measured {c['measured'][:10]}", fnum(last), c["unit"], th)
+    top, dy = _chart_top(w, c["title"], f"{c['sub']} · measured {c['measured'][:10]}", fnum(last), c["unit"])
     out += top
     x0, x1, y0, y1 = 52, w - 24, 74 + dy, h - 36
     ts = ticks(max(v for _, v in pts))
@@ -355,8 +355,7 @@ def chart_area(c, th, w=CHART_W, h=CHART_H):
 def chart_bars(c, th, w=CHART_W):
     """Horizontal bars: points are [label, value, mark]; mark is a budget tick (hooks) or None; pct scales 0..1."""
     pts, pct = c["points"], c.get("pct")
-    head, dy = _chart_top(w, c["title"], f"{c['sub']} · measured {c['measured'][:10]}", c["big"], c["big_label"],
-                          th)
+    head, dy = _chart_top(w, c["title"], f"{c['sub']} · measured {c['measured'][:10]}", c["big"], c["big_label"])
     row, top = 24, 74 + dy
     h = top + row * len(pts) + 30
     out = _open(w, h, f"{c['title']}, measured {c['measured'][:10]}: " +
@@ -394,8 +393,15 @@ DRAW = {"columns": chart_columns, "area": chart_area, "bars": chart_bars}
 
 
 # ---- measuring (--refresh only)
+class RefreshError(Exception):
+    """A chart that can't be measured: main prints it and exits 1."""
+
+
 def _git(root, *args):
-    return subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, check=True).stdout
+    got = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True)
+    if got.returncode:
+        raise RefreshError(f"git {args[0]} failed: {got.stderr.strip()[-200:]}")
+    return got.stdout
 
 
 def measure_closed(root, today, days=30):
@@ -415,8 +421,10 @@ def measure_closed(root, today, days=30):
 
 
 def measure_tests(root, today, every=4):
-    start = datetime.date.fromisoformat(_git(root, "log", "--reverse", "--format=%ad", "--date=short")
-                                        .splitlines()[0])
+    days = _git(root, "log", "--reverse", "--format=%ad", "--date=short").splitlines()
+    if not days:
+        raise RefreshError("tests: git log has no commits, so there are no points")
+    start = datetime.date.fromisoformat(days[0])
     pts, d = [], start + datetime.timedelta(days=every)
     while True:
         d = min(d, today)
@@ -434,24 +442,37 @@ def measure_tests(root, today, every=4):
 
 def measure_hooks(root, runs=15):
     load = os.getloadavg()[0]
-    got = json.loads(subprocess.run([sys.executable, os.path.join(root, "plugin", "tests", "bench_hooks.py"),
-                                     "--json", "--runs", str(runs)], capture_output=True, text=True).stdout)
-    got = got.get("bench", got)
-    pts = [[k, round(v["p95"], 1), v["budget"]] for k, v in got.items()]
+    run = subprocess.run([sys.executable, os.path.join(root, "plugin", "tests", "bench_hooks.py"),
+                          "--json", "--runs", str(runs)], capture_output=True, text=True)
+    try:
+        got = json.loads(run.stdout)
+        got = got.get("bench", got)
+        pts = [[k, round(v["p95"], 1), v["budget"]] for k, v in got.items()]
+    except (ValueError, AttributeError, KeyError, TypeError):
+        pts = []
+    if run.returncode or not pts:
+        raise RefreshError(f"bench_hooks.py failed (exit {run.returncode}): {run.stderr.strip()[-200:] or 'no timings'}")
     ok = sum(p[1] <= p[2] for p in pts)
     return {"kind": "bars", "title": "Hook time per call, p95",
             "sub": f"ms, bench_hooks.py × {runs}, load {load:.0f} on {os.cpu_count()} CPUs", "points": pts,
             "big": f"{ok} of {len(pts)}", "big_label": "under budget (the tick)"}
 
 
-NAMES = {"majority": "always the commonest", "bm25": "BM25 nearest briefs", "jeff-sampo-decide": "Sampo's own (Jeff)"}
+NAMES = {"majority": "always the commonest", "bm25": "BM25 nearest briefs", "jeff-sampo-decide": "Sampo's own model",
+         "jeff-triage": "Sampo triage model", "jeff": "Sampo base model", "kev:4b-q8_0": "local 4B, kev",
+         "tev1:4b": "local 4B, tev1", "d3:4b": "local 4B, d3", "kev:9b-q4_K_M": "local 9B, kev",
+         "kev:0.8b-q8_0": "local 0.8B, kev"}
 
 
 def measure_models(root):
+    """Points are [name, accuracy, None, is_sampo's own]; NAMES gives every backend a plain name."""
     agg, when = {}, ""
-    sys.path.insert(0, os.path.join(root, "plugin", "lib"))
+    # T-3956: Sampo's code comes from this script's repo when the measured root has none (a test's temp root)
+    sys.path[:0] = [os.path.join(root, "plugin", "lib"), os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                                                                        "plugin", "lib")]
     from sampo import core  # T-3064: the bench rows live in the project's state, not the repo
-    with open(core.bench_path(core.find_project(root)), encoding="utf-8") as f:
+    p = core.find_project(root)  # no project (a temp root): the repo's own copy, bench_path's first fallback too
+    with open(core.bench_path(p) if p else os.path.join(root, core.BENCH_REL), encoding="utf-8") as f:
         for line in f:
             r = json.loads(line)
             if r.get("arm") != "loo" or r.get("use") != "intake-type" or r.get("accuracy") is None:
@@ -467,6 +488,8 @@ def measure_models(root):
         s, n, _ = max(runs.values(), key=lambda x: x[2])  # each backend's latest run
         if n >= 500:
             pts.append([NAMES.get(backend, backend), round(s / n, 3), None, backend == "jeff-sampo-decide"])
+    if not pts:
+        raise RefreshError("models: no backend has n >= 500 held-out cases in research/models/bench.jsonl")
     pts.sort(key=lambda p: -p[1])
     best = pts[0]
     return {"kind": "bars", "pct": True, "title": "Picking a task's type", "measured": when,
@@ -477,19 +500,21 @@ def measure_models(root):
 def refresh(root, data=None, names=()):
     """data with the named charts (all when none are named) measured again; the rest kept as they were."""
     today = datetime.date.today()
+    yesterday = today - datetime.timedelta(days=1)  # today is partway through: it would read as a zero day
     now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
-    how = {"closed": lambda: measure_closed(root, today), "tests": lambda: measure_tests(root, today),
+    how = {"closed": lambda: measure_closed(root, yesterday), "tests": lambda: measure_tests(root, today),
            "hooks": lambda: measure_hooks(root), "models": lambda: measure_models(root)}
     charts = dict((data or {}).get("charts", {}))
     for name in names or how:
         c = charts[name] = how[name]()
+        if not c["points"]:
+            raise RefreshError(f"{name}: no points")
         c.setdefault("measured", now)
-        c["source"] = c["sub"]
     return {"charts": {k: charts[k] for k in how if k in charts}}
 
 
 # ---- the run
-def figures(root, text, data):
+def figures(text, data):
     """{relative path: bytes} for every figure README.md and data.json call for."""
     out = {}
     for t in tables(text):
@@ -517,9 +542,13 @@ def main(argv=None):
         with open(data_path, encoding="utf-8") as f:
             data = json.load(f)
     if a.refresh is not None:
-        data = refresh(a.root, data, a.refresh)
+        try:
+            data = refresh(a.root, data, a.refresh)
+        except (RefreshError, OSError) as e:
+            print(f"refresh failed: {e}", file=sys.stderr)
+            return 1
     new = wrapped(text)
-    want = figures(a.root, new, data)
+    want = figures(new, data)
     stale = ["README.md (a table without its picture)"] if new != text else []
     if data is None:
         stale.append("demo/figures/data.json (missing: run with --refresh)")

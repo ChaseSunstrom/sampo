@@ -159,6 +159,20 @@ class Table(unittest.TestCase):
         self.assertIn("hook MessageDisplay: p95 300 ms over its 100 ms budget", sp.report(list(rows.values())))
         self.assertEqual(run.call_args.args[0], 5)
 
+    def test_a_hook_row_under_cpu_pressure_is_judged_as_the_bench_judges_it(self):
+        # T-4056: main's CI went red twice on 'hook default: p95 182 ms over its 150 ms budget' and passed on a rerun:
+        # run_bench judged the contended runner by CPU time (T-4029), hook_check rejudged it by wall time
+        got = {"Stop": {"p50": 120, "p95": 182, "cpu_p95": 90, "cpu_p50": 80, "budget": 150, "load": 0.8,
+                        "pressure": 35.0, "ok": True, "exit_codes": [0]},
+               "MessageDisplay": {"p50": 20, "p95": 40, "cpu_p95": 30, "budget": 100, "load": 0.8, "pressure": 35.0,
+                                  "ok": True, "exit_codes": [0]}}
+        with mock.patch.object(bench_hooks, "run_bench", return_value=got):
+            rows = {r["path"]: r for r in sp.hook_check(5)}
+        self.assertTrue(rows["hook default"]["ok"], rows["hook default"])
+        got["Stop"].update(cpu_p50=170, cpu_p95=190)
+        with mock.patch.object(bench_hooks, "run_bench", return_value=got):
+            self.assertFalse(sp.hook_check(5)[0]["ok"], "a regression in CPU time still fails")
+
 
 class Cpu(unittest.TestCase):
     def test_a_sleeping_child_costs_no_cpu_and_a_busy_one_does(self):

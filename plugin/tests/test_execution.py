@@ -225,6 +225,40 @@ class BoardClose(Base):
         from sampo import cli
         self.assertRegex(cli._landed(self.p, c.find_brief(self.p, "T-0001")), r"^Landed: committed [0-9a-f]+ · ")
 
+    def test_a_close_in_its_own_lane_commits_what_it_wrote(self):
+        # T-4049: four lane closes on 2026-11-09 left their CHANGELOG line uncommitted, each needing a hand commit
+        git = lambda *a: subprocess.run(["git", "-C", self.repo, *a], capture_output=True, text=True,  # noqa: E731
+                                        check=True).stdout
+        self.committed("x.py", "A = 1\n")
+        self.task()
+        git("checkout", "-qb", "foreman/T-0001")
+        self.write("x.py", "A = 2\n")
+        self.finish("--changelog", "x is 2")
+        self.assertEqual(git("status", "--porcelain", "--", "x.py"), "")
+        self.assertEqual(git("log", "-1", "--format=%s").strip(), "T-0001: close")
+        git("checkout", "-q", "-")  # off its lane branch, a close without --commit still commits nothing
+        self.fm("task", "new", "Two", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s", "--focus")
+        self.write("y.py", "B = 1\n")
+        self.fm("task", "finish", "T-0002", "--audit", "self", "--run", "true")
+        self.assertIn("y.py", git("status", "--porcelain"))
+
+    def test_a_lane_close_takes_its_changelog_line_or_is_refused(self):
+        # T-4054: T-4037, T-4045 and T-4051 closed in their lanes with no CHANGELOG line; the land refused them later
+        git = lambda *a: subprocess.run(["git", "-C", self.repo, *a], capture_output=True, text=True,  # noqa: E731
+                                        check=True).stdout
+        self.committed("CHANGELOG.md", "# Log\n\n## Unreleased\n\n")
+        self.task()
+        git("checkout", "-qb", "foreman/T-0001")
+        self.write("x.py", "A = 2\n")
+        p = self.fm("task", "finish", "T-0001", "--audit", "self", "--run", "true", check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("--changelog", p.stderr)
+        self.assertNotEqual(self.fm_json("task", "show", "T-0001")["status"], "done")
+        self.finish("--changelog", "Parsers parse")
+        with open(os.path.join(self.repo, "CHANGELOG.md"), encoding="utf-8") as f:
+            self.assertIn("- Parsers parse (T-0001).\n", f.read())
+        self.assertEqual(git("status", "--porcelain"), "")
+
     def test_a_doc_the_finish_names_is_committed_though_another_task_touched_it(self):  # T-2251
         self.committed("CHANGELOG.md", "# Log\n")
         self.task()

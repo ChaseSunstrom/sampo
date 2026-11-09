@@ -93,7 +93,6 @@ class Charts(ForemanTestCase):
         charts = data["charts"]
         self.assertGreaterEqual(len(charts), 4)
         for name, c in charts.items():
-            self.assertTrue(c["source"], name)
             self.assertRegex(c["measured"], r"^\d{4}-\d\d-\d\d", name)
             self.assertGreaterEqual(len(c["points"]), 2, name)
             for theme in ("dark", "light"):
@@ -101,6 +100,71 @@ class Charts(ForemanTestCase):
                     svg = f.read()
                 self.assertIn(c["measured"][:10], svg, name)
                 self.assertIn('role="img"', svg, name)
+
+
+class Refresh(ForemanTestCase):
+    """T-3956: --refresh names a failure and exits 1 instead of a traceback."""
+
+    def setUp(self):
+        super().setUp()
+        self.rf = load()
+        self.root = tempfile.mkdtemp(dir=self.tmp)
+        os.makedirs(os.path.join(self.root, "research", "models"))
+        os.makedirs(os.path.join(self.root, "plugin", "tests"))
+        with open(os.path.join(self.root, "README.md"), "w") as f:
+            f.write("# T\n")
+
+    def refresh(self, chart):
+        return subprocess.run([sys.executable, SCRIPT, "--root", self.root, "--refresh", chart],
+                              capture_output=True, text=True, timeout=120)
+
+    def test_no_backend_at_500_names_the_failure(self):
+        with open(os.path.join(self.root, "research", "models", "bench.jsonl"), "w") as f:
+            f.write(json.dumps({"arm": "loo", "use": "intake-type", "accuracy": 0.5, "n": 10, "backend": "x",
+                                "run": "r", "at": "2026-11-01T00:00Z"}) + "\n")
+        got = self.refresh("models")
+        self.assertEqual(got.returncode, 1, got.stdout)
+        self.assertIn("500", got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+
+    def test_a_failed_bench_names_the_failure(self):
+        with open(os.path.join(self.root, "plugin", "tests", "bench_hooks.py"), "w") as f:
+            f.write("import sys\nsys.exit(3)\n")
+        got = self.refresh("hooks")
+        self.assertEqual(got.returncode, 1, got.stdout)
+        self.assertIn("bench_hooks", got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+
+    def test_empty_points_name_the_failure(self):
+        subprocess.run(["git", "init", "-q", self.root], check=True)  # no commits: nothing to count
+        got = self.refresh("tests")
+        self.assertEqual(got.returncode, 1, got.stdout)
+        self.assertIn("git log failed", got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+
+    def test_the_per_day_window_ends_yesterday(self):
+        import datetime
+        from unittest import mock
+        seen = []
+        with mock.patch.object(self.rf, "measure_closed", lambda root, end: seen.append(end) or
+                               {"kind": "columns", "sub": "s", "points": [["2026-01-01", 1]]}):
+            self.rf.refresh(self.root, None, ["closed"])
+        self.assertEqual(seen, [datetime.date.today() - datetime.timedelta(days=1)])
+
+
+class Names(ForemanTestCase):
+    def test_models_chart_and_hooks_claim_read_plainly(self):
+        with open(os.path.join(FIGS, "data.json"), encoding="utf-8") as f:
+            charts = json.load(f)["charts"]
+        for label, *_ in charts["models"]["points"]:
+            self.assertNotRegex(label, r"[:_]|^jeff$|^jeff-", label)  # no raw backend id
+        self.assertEqual(len({p[0] for p in charts["models"]["points"]}), len(charts["models"]["points"]))
+        with open(os.path.join(REPO, "README.md"), encoding="utf-8") as f:
+            text = f.read()
+        hooks = text.index("chart-hooks-dark.svg")
+        self.assertEqual(text.count("<details>", 0, hooks), text.count("</details>", 0, hooks))  # not inside one
+        self.assertNotIn("about 20 ms", text)
+        self.assertIn("p95", text[text.rindex("hooks tank", 0, hooks):hooks])
 
 
 class Check(ForemanTestCase):

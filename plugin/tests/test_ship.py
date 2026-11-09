@@ -318,6 +318,24 @@ class Ship(ForemanTestCase):
         self.assertIn("add b", r.stdout)
         self.assertNotRegex(r.stdout, r"\badd a\b", "a word: a hash ending in 'add' before 'add b' reads as 'add a'")
 
+    def test_a_merge_that_changes_nothing_is_skipped_not_a_refusal(self):  # T-4087
+        # the rebuilt T-3482 merge 0c9ebfa1 (2026-11-09) changed nothing against its first parent and stopped every ship
+        self.grant()
+        self.assertEqual(self.ship("--test", "true").returncode, 0)
+        self.grant()
+        sh(self.repo, "branch", "side", "HEAD~1")
+        tree = sh(self.repo, "rev-parse", "HEAD^{tree}").strip()
+        merge = sh(self.repo, "commit-tree", tree, "-p", "HEAD", "-p", "side", "-m", "empty merge").strip()
+        sh(self.repo, "merge", "-q", "--ff-only", merge)
+        with open(os.path.join(self.repo, "c.txt"), "w") as f:
+            f.write("c\n")
+        sh(self.repo, "add", "c.txt")
+        sh(self.repo, "commit", "-qm", "add c")
+        r = self.ship("--test", "true")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.main_log()[:3], ["add c", "add b", "add a"], "the empty merge adds no commit to main")
+        self.assertEqual(sh(self.repo, "worktree", "list").count("\n"), 1, "the scratch worktree is gone")
+
     def test_a_named_commit_ships_alone(self):
         self.grant()
         first = sh(self.repo, "rev-parse", "HEAD~1").strip()

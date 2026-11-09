@@ -15,7 +15,7 @@ import time
 
 from sampo import core as c
 
-CC_TESTED = "2.1.304"  # the Claude Code version Foreman was last adapted to (README says the same)
+CC_TESTED = "2.1.319"  # the Claude Code version Sampo was last adapted to (README says the same)
 MAX_CAPTURES = 3
 MAX_OPEN = 5
 GAP_S = 1800

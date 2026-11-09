@@ -162,6 +162,32 @@ class RoundI(ForemanTestCase):
         self.assertIn(os.path.realpath(other), ok.stdout + ok.stderr)  # named, so it gets committed there
         self.assertIn("not committed", ok.stdout + ok.stderr)
 
+    def test_edits_gone_or_committed_in_another_repo_are_not_named(self):
+        # T-4039: a recovered lane's close named 6 'not committed' files in the main checkout: they were edits in a
+        # builder worktree removed since (its path under the checkout), and the checkout was clean
+        import os
+        import subprocess
+        from sampo import core as c
+        self.fm("init")
+        other = os.path.join(self.tmp, "desktop")
+        git = lambda *a: subprocess.run(["git", "-C", other, *a], check=True, capture_output=True)  # noqa: E731
+        os.makedirs(other)
+        git("init", "-q")
+        with open(os.path.join(other, "conf.json"), "w") as f:
+            f.write("{}\n")
+        git("add", "-A")
+        git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "base")
+        self.fm("task", "new", "Small", "--type", "FIX", "--tier", "S", "--ac", "works :: python3 -c 'print(1)'",
+                "--step", "build", "--focus")
+        p = c.find_project(self.repo)
+        for f in (os.path.join(other, "conf.json"), os.path.join(other, "wt", "agent-1", "gone.py")):
+            c.log_event(p, "touched", task="T-0001", data={"file": f, "tool": "Edit"})
+        self.fm("task", "set", "T-0001", "--section", "Regression test", "--text", "none: test")
+        ok = self.fm("task", "finish", "T-0001", "--run", "python3 -c 'print(0)'", "--audit", "self",
+                     "--commit", "Fix it", check=False)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        self.assertNotIn("another repo", ok.stdout + ok.stderr)
+
     def test_a_red_step_closes_when_the_same_command_passed_later(self):
         # T-0165: step 1 holds the intended red run, step 2 the same command passing; T-0164 needed a third run
         import os

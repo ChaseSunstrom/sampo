@@ -40,6 +40,31 @@ class Snapshot(ForemanTestCase):
         self.assertEqual(set(pace["per_hour"]), {"1h", "6h", "24h"})
         json.dumps(pace)
 
+    def test_the_snapshot_never_waits_on_the_slow_stats_and_two_clients_compute_them_once(self):  # T-4071
+        gate, calls = threading.Event(), []
+
+        def slow(p):  # moonscale.status read 569k rows: 12.8 s a snapshot, past 120 s with clients piling up
+            calls.append(1)
+            gate.wait(10)
+            return {"total": 7, "stages": {}}
+        with mock.patch("sampo.moonscale.status", side_effect=slow):
+            got = []
+            ts = [threading.Thread(target=lambda: got.append(live.snapshot(self.p)["stats"])) for _ in range(2)]
+            t0 = time.monotonic()
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join(5)
+            self.assertLess(time.monotonic() - t0, 5, "a snapshot waited on the slow stats")
+            self.assertEqual(len(got), 2)
+            self.assertNotIn("moons", got[0])  # not there yet: the page shows them on a later snapshot
+            refresh = live._STALE[("stats", self.p.dir)]  # gone from the map once it's done
+            gate.set()
+            refresh.join(10)
+            self.assertEqual(len(calls), 1, "two clients each read every moon")
+            live._CACHE.pop(("snap", self.p.dir))
+            self.assertEqual(live.snapshot(self.p)["stats"]["moons"]["candidates"], 7)
+
     def test_a_builder_lane_carries_its_steps_done_of_total_and_stage(self):  # T-3083
         b = c.load_briefs(self.p)[0]
         with mock.patch.object(live, "_briefs", return_value=[b]):
@@ -332,6 +357,24 @@ class JobProgress(ForemanTestCase):  # T-3044: the loops the page shows write do
         self.assertEqual(len({x["t0"] for x in seen}), 1, "one rate over the whole run: an inner end doesn't restart it")
         self.assertEqual(inner, ["kept 0/2 · grow"] * 3, "review: the keep count shows while the inner bar runs too")
         self.assertIsNone(self._prog())
+
+
+class Reload(ForemanTestCase):
+    def test_it_reloads_when_its_code_changes(self):
+        # T-3852: merged live-page work (T-3659, T-3662) stayed invisible for hours, until a hand restart
+        self.fm("task", "new", "Serve it", "--type", "FEATURE", "--tier", "S", "--ac", "x :: true", "--step", "s", "--focus")
+        server, _ = live.make(c.find_project(self.repo))
+        ids = iter(["a", "a"])
+        with mock.patch.object(live, "_code_id", lambda: next(ids, "b")), mock.patch.object(live, "RELOAD_S", 0):
+            t = threading.Thread(target=live.serve, args=(server,), daemon=True)
+            t.start()
+            t.join(10)
+        self.assertFalse(t.is_alive(), "serve returns once its code changed")
+        self.assertTrue(server.reload)
+        argv = ["/x/bin/sampo", "watch", "--web"]
+        self.assertEqual(live._again(argv, 4321), argv + ["--port", "4321"], "the same port, so open tabs reconnect")
+        self.assertEqual(live._again(argv + ["--port", "4321"], 4321), argv + ["--port", "4321"])
+        self.assertEqual(live._again(argv + ["--port=9"], 4321), argv + ["--port=9"])
 
 
 class Serve(ForemanTestCase):

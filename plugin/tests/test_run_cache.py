@@ -403,8 +403,10 @@ class Recorder(unittest.TestCase):
                 f.write(held)
         with open(os.path.join(self.d, "probe.py"), "w") as f:
             f.write("import os, subprocess, sys, tempfile\nsys.path.insert(0, 'lib')\n" + code)
-        subprocess.run([self.py, "probe.py"], cwd=self.d, check=True, timeout=120, capture_output=True,
-                       env=dict(os.environ, RUNPY_COVER=out, RUNPY_COVER_ROOTS=os.pathsep.join(run._roots(self.d))))
+        r = subprocess.run([self.py, "probe.py"], cwd=self.d, timeout=120, capture_output=True, text=True,
+                           env=dict(os.environ, RUNPY_COVER=out, RUNPY_COVER_ROOTS=os.pathsep.join(run._roots(self.d))))
+        # T-4058: macOS CI saw only "exit status 1"; the probe's own error says which step failed there
+        self.assertEqual(r.returncode, 0, f"probe.py failed:\n{code}\n{r.stderr[-1500:]}")
         with open(out) as f:
             return f.read() if raw else run.covered(f.read(), self.d, self.blobs)
 

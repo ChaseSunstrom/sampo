@@ -2,8 +2,11 @@
 import json
 import os
 import re
+import shutil
+import tempfile
 import unittest
 
+from e2e import sync_evals
 from helpers import PLUGIN, busy_factor, read_text, read_json, read_doc
 
 SKILLS = ["intake", "next", "resume", "status", "capture", "tidy", "doctor", "reflect", "improve", "playbooks", "brainstorm",
@@ -16,10 +19,9 @@ READ_ONLY_TOOLS = {"Read", "Grep", "Glob", "WebFetch", "WebSearch"}
 EDITING_AGENTS = {"fm-builder.md": {"Edit", "Write", "Bash"},  # T-0234: the exceptions, worktree-bound
                   "fm-reproducer.md": {"Edit", "Write", "Bash"}}  # T-0608
 HOOK_EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure", "PreCompact",
-               "Stop", "TaskCompleted", "SubagentStart", "SubagentStop", "MessageDisplay", "Notification", "SessionEnd", "PermissionRequest"}
+               "Stop", "TaskCompleted", "SubagentStart", "SubagentStop", "MessageDisplay", "Notification", "SessionEnd", "PermissionRequest",
+               "PostModelSwitch", "PreModelSwitch"}
 OWN_REFERENCES = {"language.md", "planning.md", "execute.md", "delegate.md", "audit.md"}
-
-
 def frontmatter(path):
     text = read_text(path, encoding="utf-8")
     m = re.match(r"^---\n(.*?)\n---\n(.*)$", text, re.S)
@@ -513,17 +515,23 @@ class PluginFiles(unittest.TestCase):
 
     def test_eval_cases_embed_the_current_rules(self):
         """Eval runs use a temp HOME where ~/.claude/rules/foreman.md isn't installed; each case carries the rules instead."""
-        rules = read_text(os.path.join(PLUGIN, "rules", "foreman.md"))
         root = os.path.join(PLUGIN, "evals")
-        cases = [d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "prompt.md"))]
-        self.assertGreaterEqual(len(cases), 5)
-        for case in cases:
-            with self.subTest(case=case):
-                text = read_text(os.path.join(root, case, "prompt.md"))
-                m = re.search(r"^append_system_prompt: \|\n((?:  .*\n|\n)*)", text, re.M)
-                self.assertIsNotNone(m, "append_system_prompt block missing (run tests/e2e/sync_evals.py)")
-                embedded = "\n".join(l[2:] for l in m.group(1).rstrip("\n").split("\n"))
-                self.assertEqual(embedded.strip(), rules.strip())
+        self.assertGreaterEqual(len([d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "prompt.md"))]), 5)
+        self.assertEqual(sync_evals.stale(PLUGIN), [], sync_evals.FIX)
+
+    def test_a_stale_eval_case_is_named_with_the_fix(self):
+        # T-4051: a rules edit left five cases stale; the red was five 8 KB diffs that never said how to fix them
+        plugin = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, plugin)
+        os.makedirs(os.path.join(plugin, "rules"))
+        with open(os.path.join(plugin, "rules", "foreman.md"), "w") as f:
+            f.write("# Rules\n- new line\n")
+        for case, body in (("fresh", "  # Rules\n  - new line\n"), ("stale", "  # Rules\n"), ("bare", None)):
+            os.makedirs(os.path.join(plugin, "evals", case))
+            with open(os.path.join(plugin, "evals", case, "prompt.md"), "w") as f:
+                f.write("---\n" + ("append_system_prompt: |\n" + body if body else "") + "---\nhi\n")
+        self.assertEqual(sync_evals.stale(plugin), ["bare", "stale"])
+        self.assertIn("plugin/tests/e2e/sync_evals.py", sync_evals.FIX)
 
     def test_build_command_still_present(self):
         self.assertTrue(os.path.exists(os.path.join(PLUGIN, "commands", "build.md")))

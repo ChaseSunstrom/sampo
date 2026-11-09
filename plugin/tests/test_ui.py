@@ -555,3 +555,18 @@ class UiView(ForemanTestCase):
             f.write("# Grounded slate\n")
         os.utime(note, (c.time.time() + 5,) * 2)
         self.assertTrue(json.loads(self.fm("ui", "--json").stdout)["brainstorm"]["grounded"])
+
+    def test_a_refusal_fallback_shows_in_the_band_and_pane_with_the_way_back(self):  # T-3742
+        self.assertEqual(self.fm_json("ui")["models"]["downgraded"], [])
+        self.hook("PostModelSwitch", {"session_id": "s-down", "from_model": "claude-fable-5-1",
+                                      "to_model": "claude-opus-5", "source": "auto"})
+        v = self.fm_json("ui")
+        down = v["models"]["downgraded"]
+        self.assertEqual([(d["sid"], d["from"], d["to"]) for d in down], [("s-down", "claude-fable-5-1", "claude-opus-5")])
+        self.assertEqual(down[0]["way_back"], "/model best")
+        texts = [s["text"] for s in v["signals"] if "claude-opus-5" in s["text"]]
+        self.assertEqual(len(texts), 1)
+        self.assertIn("/model best", texts[0])
+        self.hook("PostModelSwitch", {"session_id": "s-down", "from_model": "claude-opus-5",
+                                      "to_model": "claude-fable-5-1", "source": "command"})
+        self.assertEqual(self.fm_json("ui")["models"]["downgraded"], [], "back up: the notice goes")

@@ -115,7 +115,8 @@ def hook_check(runs=5, labels=None):
         r = res[HOOK_PROMISES[p]]
         budget = budgets[p]
         rows.append({"path": p, "p95_ms": r["p95"], "cpu_p95_ms": r["cpu_p95"], "budget_ms": budget, "load": r["load"],
-                     "ok": bench_hooks.within(r["p95"], r["cpu_p95"], budget, r["load"], r.get("cpu_p50")),
+                     "ok": bench_hooks.within(r["p95"], r["cpu_p95"], budget, r["load"], r.get("cpu_p50"),
+                                              r.get("pressure", 0.0)),  # T-4056: as run_bench judged it (T-4029)
                      "window": 1})
     return rows
 

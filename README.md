@@ -169,7 +169,7 @@ The plugin-system install changes nothing outside the plugin: the hooks and the 
 gh repo clone ChaseSunstrom/sampo ~/.claude/foreman && ~/.claude/foreman/install.sh
 ```
 
-**Requirements:** Linux, macOS or WSL (not native Windows), `git`, and Python 3.12.7 or newer as `python3`. Claude Code (`claude`, tested on 2.1.304; the pane needs 2.1.299 or later) is optional: without it the installer skips the Claude Code plugin and settings, puts `sampo` on your PATH and wires Codex, Gemini CLI or opencode if it finds them (or points you at `sampo smith`). When Python is older or missing, the installer gets it with Homebrew on macOS or with `uv` elsewhere (no sudo; `python3` goes in `~/.local/bin`).
+**Requirements:** Linux, macOS or WSL (not native Windows), `git`, and Python 3.12.7 or newer as `python3`. Claude Code (`claude`, tested on 2.1.319; the pane needs 2.1.299 or later) is optional: without it the installer skips the Claude Code plugin and settings, puts `sampo` on your PATH and wires Codex, Gemini CLI or opencode if it finds them (or points you at `sampo smith`). When Python is older or missing, the installer gets it with Homebrew on macOS or with `uv` elsewhere (no sudo; `python3` goes in `~/.local/bin`).
 
 **Flags:**
 
@@ -454,18 +454,15 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 
 </details>
 
-<details>
-<summary><b>Stays light</b></summary>
+**Stays light.** Only the Ward (on tool calls that can change something) and the write validators (after a write) run synchronously; everything else that records runs async or once per turn, and nothing is injected unless it changes what Claude should do next.
 
-Only the Ward (on tool calls that can change something) and the write validators (after a write) run synchronously; everything else that records runs async or once per turn, and nothing is injected unless it changes what Claude should do next. `sampo doctor` reports each hook's p95 latency, and the pane's hooks tank shows it live (about 20 ms here).
+`sampo doctor` reports each hook's p95 latency, and the pane's hooks tank shows it live; the chart below is each hook's p95 time per call against its budget.
 
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/chart-hooks-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/chart-hooks-light.svg">
   <img src="demo/figures/chart-hooks-dark.svg" width="560" alt="Each hook's p95 time per call against its budget, from plugin/tests/bench_hooks.py">
 </picture></p>
-
-</details>
 
 ## Where you see it
 
@@ -833,6 +830,7 @@ python3 plugin/tests/bench_hooks.py --runs 50                   # hook latency
 python3 plugin/tests/e2e/roundtrip.py                           # install/uninstall/reinstall in a sandbox HOME
 python3 plugin/tests/e2e/scenarios.py                           # live §12 scenarios (uses claude -p; costs tokens)
 python3 demo/record.py [--mp4]                                  # re-record sampo demo (demo/demo.cast, .svg, .mp4)
+python3 demo/readme_figures.py [--check|--refresh]              # redraw the README's figures; --check exits 1 on a stale one; --refresh measures the charts again
 python3 demo/record_live.py [--from-cast]                       # re-record Claude Code + the mod (demo/live.*; a Sonnet turn)
 ```
 

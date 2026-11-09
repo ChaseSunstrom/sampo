@@ -570,7 +570,7 @@ def check_briefs(p):
     return Result("briefs", "PASS", f"{p.slug}: {len(briefs)} brief(s) parse; STATE matches")
 
 
-MAP_FILE_BYTES, MAP_LINE_CHARS = 90000, 2000  # T-2915: one Read opens a file under the first and shows a line under the second
+MAP_FILE_BYTES, MAP_LINE_CHARS = c.MAP_FILE_BYTES, 2000  # T-2915: one Read opens a file under the first and shows a line under the second
 
 
 def map_shape(home):
@@ -1995,6 +1995,18 @@ def check_worktree_base(settings):
                                            "branch, not yours (fm install-user sets head)")
 
 
+def check_model_alias(settings):
+    """T-3742: with models.newest on, `model` is an alias Claude Code re-resolves each session (best, else a pin) and
+    switchModelsOnFlag skips its one-time refusal-fallback question; a full id or an old alias pins an old model."""
+    from sampo import modelup
+    s = settings or {}
+    want = modelup.apply_newest(s)
+    if want == s:
+        return Result("model", "PASS", "model stays an alias" if modelup.newest_on() else "models.newest is off")
+    return Result("model", "WARN", f"model is {s.get('model')!r}, switchModelsOnFlag {s.get('switchModelsOnFlag')!r}: "
+                                   f"newest-and-best wants {want['model']!r} and true (fm doctor --repair; fm models newest off to opt out)")
+
+
 def check_plugins():
     from sampo import plugins as splugins
     found = splugins.check()
@@ -2562,7 +2574,7 @@ def _check_supply(claude, accept):
     skip = lambda v: v.get("skipped") if isinstance(v, dict) else None  # T-1434: None in an entry recorded before it
     dep = lambda v: v.get("deps") if isinstance(v, dict) else None  # T-1459: likewise
     big = lambda v: v.get("large") if isinstance(v, dict) else None  # T-1446: likewise
-    changed, added, held, upgraded = [], [], [], False
+    changed, added, held, upgraded, own, took = [], [], [], False, None, []
     for k in sorted(set(now) - set(errors)):
         was, cur = seen.get(k), now[k]
         if k in seen and sha(was) == sha(cur) and skip(was) in (None, skip(cur)) and dep(was) in (None, dep(cur)) \
@@ -2574,6 +2586,11 @@ def _check_supply(claude, accept):
             if isinstance(new, dict) and (not isinstance(old, dict) or all(new.get(x) == v for x, v in old.items())):
                 seen[k], upgraded = cur, True
                 continue
+        own = _own_committed(claude) if own is None else own
+        if k in own:  # T-4086: Sampo's own checkout, the change committed (a land's merge, a task's close): taken
+            seen[k], upgraded = cur, True
+            took.append(k)
+            continue
         # review: the delta is read even when the hashes match (they skip the 4,001st file on, FIFOs, devices)
         (changed if k in seen else added).append(k)
         held += [f"{c.plain(k)[:60]} {d}" for d in _capability_delta(was, cur, k)]
@@ -2590,8 +2607,28 @@ def _check_supply(claude, accept):
                       else "") + (f" ({note})" if note else "") + " — review what it runs, then fm doctor --accept-supply")
     if not (changed or added or gone):
         return Result("supply chain", "WARN" if errors else "PASS",
-                      f"{len(now)} plugin(s) and MCP server(s) unchanged" + (f"; {unchecked}" if errors else ""))
+                      f"{len(now)} plugin(s) and MCP server(s) unchanged" + (f"; {unchecked}" if errors else "")
+                      + (f"; took the committed change of Sampo's own {_ids(took)}" if took else ""))
     return Result("supply chain", "WARN", note + " — expected (an update you ran)? fm doctor --accept-supply")
+
+
+def _own_committed(claude):
+    """T-4086: ids of the plugins installed from Sampo's own git checkout (FOREMAN_HOME) whose install trees are clean:
+    their change arrived as a commit (a land's merge, a task's close), gated there, so the supply check takes it as the
+    baseline instead of holding the build red; an uncommitted edit there is still held."""
+    home = os.path.realpath(c.foreman_home())
+    if c.git_root(home) != home:
+        return set()
+    plugins = _load_json(os.path.join(claude, "plugins", "installed_plugins.json")) or {}
+    plugins = plugins.get("plugins") if isinstance(plugins, dict) else None
+    out = set()
+    for pid, installs in (plugins if isinstance(plugins, dict) else {}).items():
+        roots = [os.path.realpath(i["installPath"]) for i in (installs if isinstance(installs, list) else [installs])
+                 if isinstance(i, dict) and isinstance(i.get("installPath"), str) and i["installPath"]]
+        if roots and all(r.startswith(home + os.sep) and c._git(home, "status", "--porcelain", "--", r, timeout=30,
+                                                                  fail=None) == "" for r in roots):
+            out.add(pid)
+    return out
 
 
 def _ids(ids, extra=lambda k: ""):
@@ -3093,7 +3130,7 @@ def run_all(full=False, accept_supply=False):
                                     os.path.join(PLUGIN, "settings.json"), os.path.join(PLUGIN, "hooks", "hooks.json")]),
                check_hook_scripts(), check_state_dir(home, c.state_dir()), check_pinned_clock(), check_lock_probe(c.state_dir()), check_disk(), check_env(settings, manifest),
                check_serve(serve.states()), check_hook_events(), check_plugins(), check_mod_release(home),
-               check_supply(claude, accept_supply), check_mcp_transport(claude, c.git_root(os.getcwd())), check_worktree_base(settings),
+               check_supply(claude, accept_supply), check_mcp_transport(claude, c.git_root(os.getcwd())), check_worktree_base(settings), check_model_alias(settings),
                check_subagent_effort(settings), check_fm_link(),
                check_invisible_text(instruction_files()), check_rule_conflicts(rule_files(c.git_root(os.getcwd())))]
     t_bench = time.perf_counter()  # T-2279: the bench runs outside any check_*; its whole cost is charged to "hook latency"
@@ -3103,9 +3140,12 @@ def run_all(full=False, accept_supply=False):
             raise _NoBench
         load = busy()
         bench, sizes = _bench_and_injection(bench_runs(load))
+        if not load and any(not v.get("ok", True) for v in bench.values()):
+            # T-4098: a p95 of 5 runs is near their max, so one burst (a merge train's own suite beside it) trips it and
+            # parked a tests-only lane twice; measure again with twice the runs and judge that: a real slowdown repeats
+            bench, sizes = _bench_and_injection(bench_runs(load) * 2)
         load = load or busy()  # T-1219: a burst that began during the bench made its timings, not the hooks, slow
         meas = measured(None if load else bench, sizes)  # T-2358: the ratchet's latency only from an unloaded bench
-        # ponytail: 5 runs here and at fm ship (one estimator, near a max of 5): noisy; more runs if the band trips
         results += [check_hook_latency(bench, load), check_hook_exit_codes(bench), check_injection_budgets(sizes)]
         for r in results[-3:]:
             r.ms = None  # the three share one bench: counted once, on the first
@@ -3209,11 +3249,22 @@ def _fix_fsck():
         return f"no lock removed: {e}"
 
 
+def _fix_model():
+    from sampo import setup
+    return setup.fix_model() or "nothing to change"
+
+
+def _recheck_model():
+    from sampo import setup
+    return check_model_alias(setup._load(setup.paths()["settings"], {})).status == "PASS"
+
+
 # result name -> (the repair a flag already performs, whether the check now passes); nothing here is new behaviour
 FIXERS = {
     "views": (_fix_views, lambda: all(views_match(p) for p, _ in c.all_projects())),
     "integrity": (_fix_integrity, _recheck_integrity),
     "state dir": (_fix_state_dir, lambda: c.state_dir() == os.path.join(c.foreman_home(), "state")),
+    "model": (_fix_model, _recheck_model),
     "fsck": (_fix_fsck, lambda: check_fsck().status == "PASS"),  # T-1667: only its stale locks
 }
 
@@ -3295,6 +3346,8 @@ def cmd_doctor(args):
                     c.regen_views(p, mirror=False)
                 fixed.append(p.slug)
         print(f"Views regenerated in {', '.join(fixed)}." if fixed else "Views match the briefs everywhere.")
+        from sampo import setup  # T-3742: models.newest keeps `model` an alias
+        print("Models: " + (setup.fix_model() or "settings already keep the newest alias (or models.newest is off)."))
         return None
     results = run_all(full=args.full, accept_supply=getattr(args, "accept_supply", False))
     p = c.find_project(os.getcwd())

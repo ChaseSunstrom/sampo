@@ -138,21 +138,21 @@ def _as_loaded(raw):
     Holds the hook's output from here; the function it returns writes it out. T-3707: called in _run's handler branch,
     not run(): sampo-fast mirrors run() and answers PreToolUse itself, and a guard answer names no skill. No
     contextlib: the hot events import none (test_bench_hooks.HotPathImports)."""
-    name = c.loaded_ns()
-    if name:
-        m = _SID.search(raw[:4096])
-        if m:
-            c.note_ns(m.group(1), name)
-    if name in (None, c.NS):
-        return lambda: None
+    name, m = c.loaded_ns(), _SID.search(raw[:4096])
+    sid = m.group(1) if m else None
+    if name and sid:
+        c.note_ns(sid, name)
     import io
     saved, held = (sys.stdout, sys.stderr), (io.StringIO(), io.StringIO())
     sys.stdout, sys.stderr = held
+    # T-3851: every session's output, so a hint naming a skill that landed after the session started names its file
+    fix = ((lambda t: c.as_loaded(c.skill_fallback(t, sid), name)) if name not in (None, c.NS)
+           else (lambda t: c.skill_fallback(t, sid)))
 
     def done():
         sys.stdout, sys.stderr = saved
-        sys.stdout.write(c.as_loaded(held[0].getvalue(), name))
-        sys.stderr.write(c.as_loaded(held[1].getvalue(), name))
+        sys.stdout.write(fix(held[0].getvalue()))
+        sys.stderr.write(fix(held[1].getvalue()))
     return done
 
 
@@ -585,6 +585,8 @@ def session_start(pl):
             bus.record_pid(sid)
         except Exception:
             log_error("SessionStart", _tb())
+        if pl.get("source") in (None, "startup", "resume"):  # T-3851: a new process lists its skills now
+            c.note_skills(sid)
         if pl.get("source") == "resume":  # T-2900: a new process; the old one's agents and shells died with it
             for key in _running(sid):
                 _event({"kind": "bg_done", "session_id": sid, "id": key})
@@ -603,6 +605,7 @@ def session_start(pl):
         c.log_event(p, "orphans_reaped", data={"count": reaped}, session=sid)
     if _oneoff():
         return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": ONEOFF_NOTE}}
+    _touch_seen(p, sid, walk=True)  # T-4058: the pid found here, once, so no tool call walks for it
     env_file = os.environ.get("CLAUDE_ENV_FILE")
     if env_file and sid:
         lines = f"export FOREMAN_SESSION_ID={sid}\nexport FOREMAN_PROJECT={p.slug}\n"
@@ -752,6 +755,10 @@ def session_start(pl):
         out["additionalContext"] += "\n\n" + repo_note
     if healed_note:
         out["additionalContext"] += "\n\n" + healed_note
+    if not os.environ.get("FOREMAN_WORKER_OF"):  # T-3928: what a restart nobody announced interrupted, in one line
+        from sampo import recover
+        if reboot := recover.note(p):
+            out["additionalContext"] += "\n\n" + reboot
     if pl.get("source") == "compact":
         try:
             note = _requests_note(p, sid, cap=min(REQUEST_TEXT_CAP, 9000 - len(out["additionalContext"])))
@@ -3654,11 +3661,30 @@ def _question_answer(pl, p, ok):
 SEEN_EVERY_S = 60  # T-3389: how often a tool call may move the session's liveness stamp
 
 
-def _touch_seen(p, sid):
+def _procfs():
+    return os.path.isdir("/proc")
+
+
+def _seen_pid(mark, walk):
+    """T-4058: the claude pid a session marker names: the one it already holds (SessionStart removes it and, walking,
+    writes it again, so a new process or /clear never inherits it), else the process chain's. A tool call walks only
+    where /proc makes that cheap: without it each ancestor is a ps (up to 12), so it writes 0, unknown."""
+    try:
+        with open(mark) as f:
+            pid = int(f.read(40).split()[0])
+        if pid > 0:
+            return pid
+    except (OSError, ValueError, IndexError):
+        pass
+    return (_claude_pid() or 0) if walk or _procfs() else 0
+
+
+def _touch_seen(p, sid, walk=False):
     """T-3389: liveness from tool calls, not only prompts. A per-session marker file's mtime gates it (one stat per call,
     no meta.json parse); a marker a minute old is touched and, if this session owns the meta slot, the slot's stamp is
     refreshed under a lock that is never waited for. ponytail: the slot names one session (the last to prompt), so a
-    non-owner's marker only throttles itself; readers still see the owner's stamp, not a non-owner's marker."""
+    non-owner's marker only throttles itself; readers still see the owner's stamp, not a non-owner's marker. walk:
+    SessionStart's call, which may walk the process chain for the pid wherever it runs (T-4058)."""
     if not sid or not re.fullmatch(r"[\w-]{1,100}", sid) or os.environ.get("FOREMAN_WORKER_OF") \
             or os.environ.get("FOREMAN_DRIVE_TASK"):  # T-3422: a claude -p worker or lane runner is no session of its own
         return
@@ -3672,7 +3698,7 @@ def _touch_seen(p, sid):
         os.makedirs(os.path.dirname(mark), exist_ok=True)
         # T-3422: '<claude pid> <project slug>' (atomic: no reader sees it empty): a reader tells a resume (same process)
         # from another session, and another project's from this one's
-        c.write_atomic(mark, f"{_claude_pid() or 0} {p.slug}")
+        c.write_atomic(mark, f"{_seen_pid(mark, walk)} {p.slug}")
         if (c.read_meta(p).get("session") or {}).get("id") != sid:
             return
         with c.lock(p.dir, timeout=0):
@@ -4138,6 +4164,10 @@ def _capability_miss(p, sid, err, act=None, cmd="", name=None, kind=None):
         name = next((x for x in m.groups() if x), "") if m else ""
     if not re.fullmatch(r"[A-Za-z0-9_.+-]{1,64}", name):
         return None
+    if m is not None and m.lastindex == 3:  # T-4061: the project's own module: the command ran it wrong, no tool is missing
+        from sampo import miss
+        if miss.own_module(p.root, name):
+            return None
     seen = {e.get("session_id") for e in c.ledger_tail(p, 1500)
             if e.get("event") == "capability_miss" and (e.get("data") or {}).get("name") == name}
     if sid in seen and not act:
@@ -4233,7 +4263,22 @@ def post_tool_use_failure(pl):
 
 # ---------------------------------------------------------------- PreCompact
 
+def post_model_switch(pl):  # T-3742: a refusal fallback is recorded for the band and the switch back
+    from sampo import modelup
+    return modelup.on_switch(pl)
+
+
+def pre_model_switch(pl):
+    from sampo import modelup
+    return modelup.pre_switch(pl)
+
+
 def pre_compact(pl):
+    try:
+        from sampo import modelup
+        modelup.on_compact(pl)
+    except Exception:
+        log_error("PreCompact", _tb())
     p = c.find_project(_cwd(pl))
     if p:
         with c.lock(p.dir, timeout=LOCK_SLOW):
@@ -4323,9 +4368,26 @@ def stop(pl):
     """T-2192: claude -p returns only the last message, so a hold there would bury the answer an earlier message gave
     (s31-006's Rust sessions fixed the planted bugs, then ended on a retro): every hold in print mode says so."""
     out = _stop(pl)
+    try:
+        from sampo import modelup
+        modelup.after_stop(pl)
+    except Exception:
+        log_error("Stop", _tb())
     if out and out.get("decision") == "block" and _headless():
         out["reason"] += PRINT_LAST
     return out
+
+
+_WAIT_ONLY = c.lazy(r"(?i)^\W*(?:still\s+)?waiting\b|\bwaiting\s+(?:on|for)\b")
+
+
+def _count_wait(d, msg):
+    """T-3482: short wait-only replies in a row as [n, first, last] for selfcheck.wait_turns; any other reply resets."""
+    if len(msg) < 300 and _WAIT_ONLY.search(msg):
+        w = d.get("waits") or [0, time.time(), 0]
+        d["waits"] = [w[0] + 1, w[1], time.time()]
+    else:
+        d.pop("waits", None)
 
 
 def _stop(pl):
@@ -4376,6 +4438,7 @@ def _stop(pl):
         g = _read_gate(p)
         _scan_notices(pl, g)
         d0 = g["drive"].get(sid) or {}
+        _count_wait(g["drive"].setdefault(sid, {"count": 0}), msg)
         # T-0147: a turn ending on purpose for a mod reload isn't held by the nudges; the resumed turn records evidence
         reload_due = sd["drive"] and _ui_changed(sid, _turn_began(p, sid, d0), d0.get("ui_mtime"))
         oneoff = _oneoff()  # T-0775: only its own background work holds a one-off headless session
@@ -5519,6 +5582,7 @@ def session_end(pl):
 HANDLERS = {
     "SessionStart": session_start, "UserPromptSubmit": user_prompt_submit, "PostToolUse": post_tool_use, "PostToolUseValidate": post_tool_validate,
     "PostToolUseFailure": post_tool_use_failure, "PreCompact": pre_compact, "Stop": stop,
+    "PostModelSwitch": post_model_switch, "PreModelSwitch": pre_model_switch,
     "TaskCompleted": task_completed, "SubagentStart": subagent_start, "SubagentStartContext": subagent_context,
     "SubagentStop": subagent_stop, "MessageDisplay": message_display, "Notification": notification, "SessionEnd": session_end,
     "PermissionRequest": permission_request,

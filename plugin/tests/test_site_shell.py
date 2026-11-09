@@ -115,7 +115,8 @@ class Features(unittest.TestCase):
         import pages as P
         readme = read_text(os.path.join(ROOT, "README.md"))
         features = readme.split("\n## Features\n", 1)[1].split("\n## ", 1)[0]  # the feature list; other summaries are details
-        named = re.findall(r"(?m)^#{2,3} (.+)$", readme) + re.findall(r"<summary><b>(.+?)</b></summary>", features)
+        named = re.findall(r"(?m)^#{2,3} (.+)$", readme) + re.findall(r"<summary><b>(.+?)</b></summary>", features) + \
+            re.findall(r"(?m)^\*\*(.+?)\.\*\* ", features)  # T-3956: a feature left open (its chart shows) leads in bold
         slugs = {p["slug"] for p in P.PAGES}
         for name in named:
             with self.subTest(heading=name):

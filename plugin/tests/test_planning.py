@@ -197,6 +197,8 @@ class CalibrationLedger(Base):
         self.assertEqual(c.find_brief(self.p, t).meta["plan0_scope"], ["src/"])
         scope = type("B", (), {"meta": {"scope": b.meta["plan0_scope"]}})
         self.assertEqual(c.scope_drift(scope, ["src/a/b.py", "src/c.py", "lib/x.py"]), ["lib/x.py"])
+        # T-4059: a builder's .fm-scratch/ drafts (git-ignored, never committed) are not edits of the change
+        self.assertEqual(c.scope_drift(scope, [".fm-scratch/edits.json", ".fm-scratch/a/probe.py"]), [])
         self.assertFalse(outcomes.missed(dict(outside=2)))
         self.assertTrue(outcomes.missed(dict(outside=3)))
 

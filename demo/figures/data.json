@@ -6,6 +6,10 @@
    "sub": "each task id's first commit, git log",
    "points": [
     [
+     "2026-10-09",
+     109
+    ],
+    [
      "2026-10-10",
      0
     ],
@@ -115,19 +119,14 @@
     ],
     [
      "2026-11-06",
-     143
+     148
     ],
     [
      "2026-11-07",
-     68
-    ],
-    [
-     "2026-11-08",
-     0
+     74
     ]
    ],
-   "measured": "2026-11-08T06:23Z",
-   "source": "each task id's first commit, git log"
+   "measured": "2026-11-08T17:26Z"
   },
   "tests": {
    "kind": "area",
@@ -282,19 +281,19 @@
    "sub": "held-out projects, research/models/bench.jsonl",
    "points": [
     [
-     "Sampo's own (Jeff)",
+     "Sampo's own model",
      0.836,
      null,
      true
     ],
     [
-     "kev:4b-q8_0",
+     "local 4B, kev",
      0.81,
      null,
      false
     ],
     [
-     "tev1:4b",
+     "local 4B, tev1",
      0.805,
      null,
      false
@@ -306,7 +305,7 @@
      false
     ],
     [
-     "d3:4b",
+     "local 4B, d3",
      0.783,
      null,
      false
@@ -318,33 +317,32 @@
      false
     ],
     [
-     "kev:9b-q4_K_M",
+     "local 9B, kev",
      0.707,
      null,
      false
     ],
     [
-     "jeff-triage",
+     "Sampo triage model",
      0.654,
      null,
      false
     ],
     [
-     "jeff",
+     "Sampo base model",
      0.6,
      null,
      false
     ],
     [
-     "kev:0.8b-q8_0",
+     "local 0.8B, kev",
      0.354,
      null,
      false
     ]
    ],
    "big": "84%",
-   "big_label": "Sampo's own (Jeff)",
-   "source": "held-out projects, research/models/bench.jsonl"
+   "big_label": "Sampo's own model"
   }
  }
 }

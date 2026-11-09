@@ -4,8 +4,11 @@ mirror's last pass) writes <host> or <private> in their place."""
 import hashlib
 import json
 import os
+import subprocess
+import tempfile
+import unittest
 
-from helpers import ForemanTestCase, read_text
+from helpers import PRIVATE_TERMS, ForemanTestCase, read_text
 
 from sampo import core as c
 
@@ -57,3 +60,19 @@ class PrivateTerms(ForemanTestCase):
         self.assertTrue(c.has_private("a wombatcorp here", ["WOMBATCORP"]), "terms passed in, any case")
         os.remove(os.path.join(c.state_dir(), c.PRIVATE_TERMS))
         self.assertEqual(c.redact_local("llm.home.example-private.test"), "llm.home.example-private.test")
+
+
+class TrackedTree(unittest.TestCase):
+    def test_no_tracked_file_holds_a_private_term(self):
+        # T-4096: a test carried the JARVIS login for 9 h until fm ship's scan refused it (T-3931); the tracked tree is
+        # scanned here, so a gate run before any merge finds it. The term itself is never printed. CI: a made-up one
+        root = os.path.dirname(c.PLUGIN_ROOT)
+        needles = sorted({max(t.removeprefix("*.").split("*"), key=len) for t in PRIVATE_TERMS})
+        with tempfile.NamedTemporaryFile("w", suffix=".txt") as f:  # 0600, so no term shows in ps as argv
+            f.write("\n".join(needles) + "\n")
+            f.flush()
+            r = subprocess.run(["git", "-C", root, "grep", "-l", "-z", "-I", "-i", "-F", "-f", f.name],
+                               capture_output=True, text=True, timeout=300)
+        self.assertIn(r.returncode, (0, 1), "git grep failed")
+        hits = [p for p in r.stdout.split("\0") if p and c.has_private(read_text(os.path.join(root, p)), PRIVATE_TERMS)]
+        self.assertEqual(hits, [], "these tracked files name one of the user's private terms (sampo private list)")

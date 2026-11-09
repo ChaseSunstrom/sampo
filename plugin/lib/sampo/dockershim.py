@@ -1,4 +1,4 @@
-"""T-3746: the docker-exec tool shim. A Container is one `sampo-bench-*` container; its read, search, edit, write and run
+"""T-3746 (T-3747: build, rmi, copy_in for Terminal-Bench): the docker-exec tool shim. A Container is one `sampo-bench-*` container; its read, search, edit, write and run
 return the same result text Smith's own tools do, so a Smith run can work inside it (bench_swe, and Terminal-Bench's
 adapter). Nothing here touches a container or image that isn't ours: every name starts with PREFIX, and prune() removes
 only those.
@@ -64,6 +64,24 @@ def prune():
     if ids:
         docker("rm", "-f", *ids, timeout=120)
     return len(ids)
+
+
+def _ours(tag):
+    if not tag.startswith(PREFIX):
+        raise ValueError(f"{tag!r}: the bench only builds and removes images named {PREFIX}*")
+    return tag
+
+
+def build(tag, context, timeout=1800):
+    """T-3747: build image `tag` (sampo-bench-*) from a folder; DockerError when it fails or takes too long."""
+    code, out = docker("build", "-t", _ours(tag), context, timeout=timeout)
+    if code:
+        raise DockerError(f"docker build {tag} failed ({code}): {out.strip()[-500:]}")
+
+
+def rmi(tag):
+    """T-3747: remove image `tag` (sampo-bench-* only); its exit code."""
+    return docker("rmi", "-f", _ours(tag), timeout=120)[0]
 
 
 def cap(text, n=OUT_CAP):
@@ -149,6 +167,12 @@ class Container:
         code, out = self.exec((f"mkdir -p {shlex.quote(d)} && " if d else "") + f"cat > {shlex.quote(rel)}",
                               stdin=text, seconds=60)
         return code == 0, out
+
+    def copy_in(self, src, dest):
+        """T-3747: docker cp a host file or folder to `dest` in the container; OSError when it fails."""
+        code, out = docker("cp", src, f"{self.name}:{dest}", timeout=120)
+        if code:
+            raise OSError(f"copy to {dest}: {out.strip()[-200:]}")
 
     def edit(self, path, old, new):
         from sampo import smith

@@ -3975,15 +3975,49 @@ def _session_arm(agent, base, key, work, model, budget, timeout, request=None):
 
 LOCAL = ("smith",)  # T-2908: fm code on a local model profile; not in SESSIONS (long.py and rune read those as Claude sessions)
 SMITH_T, SMITH_LOAD, SMITH_STEPS = 900, 300, 40  # T-2908: a scenario's seconds, extra for a remote endpoint's model load, turns
+SMITH_MARGIN = 60  # T-4083: seconds of the scenario's clock Smith leaves itself to stop and write its trail
 FAILURE_CLASSES = ("malformed", "wrong_tool", "loop", "false_done", "timeout", "refused",
                    "budget", "plan_refused", "no_plan", "finish_refused")  # T-2926: the last four are how a run ends
+# T-3485 (T-3483 part 2): each failure class -> what answers it in Smith (fm code), where, and its state: closed (built),
+# building (a task is on it) or open (nothing yet, the task that will). The taxonomy prints it beside each class, so a
+# class that keeps hitting with its scaffold closed says the scaffold needs work, and an open one says what to build.
+SCAFFOLDS = {
+    "malformed": {"scaffold": "a reply fm code can't read is repaired (REPAIRS turns, then field by field); an action "
+                              "with wrong arguments gets the error back as its result",
+                  "where": "smith.slot, Session.do", "status": "closed", "task": "T-1765"},
+    "wrong_tool": {"scaffold": "an unknown action's result lists the actions Smith has",
+                   "where": "Session.do", "status": "closed", "task": None},
+    "loop": {"scaffold": "the third identical action hands one turn to --planner (else --escalate), else the actor is "
+                         "told; the next turn thinks",
+             "where": "Session.loop_break", "status": "closed", "task": "T-2966"},
+    "false_done": {"scaffold": "a done with no edit while a verify fails is refused with the failure, twice; the close "
+                               "runs every criterion's verify",
+                   "where": "Session.early_done, smith._finish", "status": "closed", "task": "T-3180"},
+    "timeout": {"scaffold": "--deadline: each turn tells the model the time left, the last tenth asks it to finish, and "
+                            "past it Smith stops itself with a resumable trail; the exam passes its wall clock less "
+                            "SMITH_MARGIN",
+                "where": "Session.phase", "status": "closed", "task": "T-4083"},
+    "refused": {"scaffold": "a guard's or Smith's refusal comes back as the action's result, with its reason",
+                "where": "Session.do", "status": "closed", "task": None},
+    "budget": {"scaffold": "--reason: thinking off once a state exists, on for low confidence, a failed check or a "
+                           "loop break; the budget arm caps it",
+               "where": "Session.reason_kw", "status": "closed", "task": "T-3006"},
+    "plan_refused": {"scaffold": "a plan the gate refuses goes back to the planner once with the refusal text",
+                     "where": "smith._replan", "status": "closed", "task": "T-3016"},
+    "no_plan": {"scaffold": "an unreadable plan is repaired (REPAIRS turns, then field by field), then re-planned once "
+                            "with the problem",
+                "where": "smith.slot, smith._plan_problem", "status": "closed", "task": "T-1765"},
+    "finish_refused": {"scaffold": "a local model writes the close's notes and lenses before fm task finish",
+                       "where": "smith._finish (CLOSE_PROMPT)", "status": "closed", "task": "T-2937"},
+}
 _MALFORMED = re.compile(r"field by field|weren't a JSON object|needs \w+ as ")
 # T-2926: an end's text -> its class, in order (models.py and smith.py word these)
 _ENDS = (("budget", re.compile(r"reasoning used the whole budget")),
          ("plan_refused", re.compile(r"fm (?:task new|focus) refused the plan")),
          ("no_plan", re.compile(r"gave no valid plan")),
          ("finish_refused", re.compile(r"fm task (?:finish|set [\w ]+) refused")),  # T-2948: smith's _finish also ends on a refused set
-         ("loop", re.compile(r"used all \d+ turns")))
+         ("loop", re.compile(r"used all \d+ turns")),
+         ("timeout", re.compile(r"out of time \(--deadline")))  # T-4083: Smith stopped itself on its clock
 EVENTS_CAP = 2 << 20  # bytes of one scenario's event log kept
 
 
@@ -3994,6 +4028,18 @@ def _per_fix(res, tokens):
     res["tokens"] = sum(tokens)
     res["fix_rate"] = round(done / res["scenarios"], 4) if res.get("scenarios") else None
     res["tokens_per_fix"] = round(res["tokens"] / done) if done else None
+
+
+def _smith_argv(request, model, t, planner=None, reason=None, small=False):
+    """fm code's argv for one exam scenario; T-4083: --deadline is the scenario's clock less SMITH_MARGIN, so Smith
+    stops itself with a trail before the exam's kill."""
+    from sampo import smithbench
+    return [sys.executable, smithbench.FM, "code", request, "--json", "--max-steps", str(SMITH_STEPS), "--model", model,
+            "--deadline", str(t - SMITH_MARGIN),
+            *(["--planner", planner] if planner else []),  # T-2945: split planning from acting
+            *(["--reason", reason] if reason else []),  # T-3006: how the model reasons on this arm
+            *(["--small"] if small else []),  # T-2878: small-model mode's controls
+            "--stale-ok", "exam scenario: a throwaway copy in its own Smith home (T-2908)"]
 
 
 def _smith_arm(base, key, work, model, request, events, planner=None, reason=None, small=False):
@@ -4013,11 +4059,7 @@ def _smith_arm(base, key, work, model, request, events, planner=None, reason=Non
             for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "base"]):
                 subprocess.run(["git", "-c", "user.name=exam", "-c", "user.email=exam@localhost", *a], cwd=wt, env=env,
                                capture_output=True, timeout=60)
-        argv = [sys.executable, smithbench.FM, "code", request or key["request"], "--json", "--max-steps", str(SMITH_STEPS), "--model", model,
-                *(["--planner", planner] if planner else []),  # T-2945: split planning from acting
-                *(["--reason", reason] if reason else []),  # T-3006: how the model reasons on this arm
-                *(["--small"] if small else []),  # T-2878: small-model mode's controls
-                "--stale-ok", "exam scenario: a throwaway copy in its own Smith home (T-2908)"]
+        argv = _smith_argv(request or key["request"], model, t, planner, reason, small)
         proc = subprocess.Popen(argv, cwd=wt, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:
@@ -4224,6 +4266,18 @@ def failure_classes(events):
     return {k: v for k, v in n.items() if v}
 
 
+def taxonomy_text(res):
+    """T-2908: the taxonomy as text; T-3485: each class with its scaffold's state, task and where it lives."""
+    def row(k, v):
+        r = v.get("scaffold") or SCAFFOLDS.get(k) or {}
+        how = f" · {r['status']}{', ' + r['task'] if r.get('task') else ''}: {c.fit(r.get('where') or r['scaffold'], 70)}" \
+            if r else ""
+        return f"  {k:<14} {v['count']:>3} in {v['scenarios']} scenarios ({v['rate']:.0%}){how}"
+    return (f"{res['run']} {res['agent']} {res['model'] or ''}: {res['scenarios']} scenarios\n"
+            "ends: " + ", ".join(f"{k} {v}" for k, v in res["ends"].items()) + "\n"
+            + "\n".join(row(k, v) for k, v in res["classes"].items()))
+
+
 def taxonomy(p, run, agent="smith"):
     """T-2908: the failure classes over a run's answered scenarios: {run, agent, model, scenarios, classes: {class:
     {count, scenarios, rate}}} with every class listed, most common first. rate: the share of scenarios it hit."""
@@ -4239,7 +4293,7 @@ def taxonomy(p, run, agent="smith"):
     if not per:
         raise ValueError(f"no Smith event logs from {agent!r} in {run} (fm exam run {run} --agent smith --model PROFILE)")
     classes = {k: {"count": sum(x.get(k, 0) for x in per), "scenarios": sum(k in x for x in per),
-                   "rate": sum(k in x for x in per) / len(per)} for k in FAILURE_CLASSES}
+                   "rate": sum(k in x for x in per) / len(per), "scaffold": SCAFFOLDS[k]} for k in FAILURE_CLASSES}
     try:
         with open(os.path.join(answers, "model"), encoding="utf-8") as f:
             model = f.read().strip()
@@ -5133,9 +5187,7 @@ def cmd_exam(args):
             return 1 if res.get("ungraded") else 0
         if action == "taxonomy":  # T-2908: Smith's failure classes from a run's event logs
             res = taxonomy(p, args.run, args.agent or "smith")
-            return cli.out(args, res, f"{res['run']} {res['agent']} {res['model'] or ''}: {res['scenarios']} scenarios\n"
-                           "ends: " + ", ".join(f"{k} {v}" for k, v in res["ends"].items()) + "\n" + "\n".join(
-                f"  {k:<14} {v['count']:>3} in {v['scenarios']} scenarios ({v['rate']:.0%})" for k, v in res["classes"].items()))
+            return cli.out(args, res, taxonomy_text(res))
         if action == "gap":  # T-3930: local profiles against the Claude reference on the same run and held-out split
             if args.trend:
                 tr = gap_trend(p)

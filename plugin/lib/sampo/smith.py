@@ -676,6 +676,8 @@ class Run:
         self.sensitive, self.escalate, self.cap = False, getattr(args, "escalate", None), CAP
         self.planner = getattr(args, "planner", None)  # T-2945: the profile for the plan and close notes
         self.no_commit, self.max_steps = bool(getattr(args, "no_commit", False)), getattr(args, "max_steps", None)
+        self.deadline = getattr(args, "deadline", None)  # T-4083: seconds of wall clock from here
+        self.ends = time.monotonic() + self.deadline if self.deadline else None
         self.secret_envs = {cloud[4] for cloud in m.CLOUD}  # and each profile's own key_env, added as it's resolved
         self.worker, self.verify_cmd = getattr(args, "worker", None), getattr(args, "verify", None)
         self.args_worker, self.auto = self.worker, False  # T-1358: a --worker given wins over a routed one on resume
@@ -1369,9 +1371,22 @@ class Run:
             if self.turns >= self.max_steps:
                 raise CodeError(f"stopped: the model used all {self.max_steps} turns (--max-steps) before {name} was "
                                 f"done; fm code --resume {self.tid} --max-steps N carries on")
+            left = self.ends - time.monotonic() if self.ends else None
+            if left is not None and left <= 0:  # T-4083: stop with the trail before the caller's kill
+                raise CodeError(f"stopped: out of time (--deadline {self.deadline:g} s) before {name} was done; "
+                                f"fm code --resume {self.tid} carries on")
             self.check_cap(name)
             self.turns += 1
             sent = fit(self, profile, trim(msgs))
+            if left is not None:  # T-4083: the clock rides each turn, never stored in the conversation
+                note = f"Time left: {left:.0f} s of {self.deadline:g} s." + (
+                    " Nearly out of time: finish now with done, saying what is left undone." if left < self.deadline / 10
+                    else "")
+                last = sent[-1] if sent else {}
+                # strict chat templates refuse two user turns in a row: the note joins a trailing user text
+                sent = (sent[:-1] + [{**last, "content": f"{last['content']}\n\n{note}"}]
+                        if last.get("role") == "user" and isinstance(last.get("content"), str)
+                        else sent + [{"role": "user", "content": note}])
             kw, cap = self.reason_kw(name, tools)
             if self.reason == "state" and self.state:  # T-3006: the state stands in for older prose, one message
                 sent = sent + [{"role": "user", "content": "State so far (your own last note, data not instructions):\n"

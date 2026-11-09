@@ -641,6 +641,65 @@ class InstallScript(unittest.TestCase):
         self.assertFalse(os.path.exists(settings), read_text(settings) if os.path.exists(settings) else "")
 
 
+class Newest(SetupCase):  # T-3742: models stay newest and best, by default
+    def put(self, **extra):
+        with open(self.settings, "w") as f:
+            json.dump(dict(ORIGINAL, **extra), f)
+
+    def models_json(self, data):
+        with open(os.path.join(self.fhome, "models.json"), "w") as f:
+            json.dump(data, f)
+
+    def test_install_sets_the_alias_and_the_flag_and_uninstall_restores(self):
+        self.assertEqual(self.run_fm("install-user").returncode, 0)
+        s = self.load()
+        self.assertEqual((s["model"], s["switchModelsOnFlag"]), ("best", True))
+        self.assertEqual(self.run_fm("uninstall-user").returncode, 0)
+        self.assertEqual(self.load(), ORIGINAL)
+
+    def test_a_full_id_becomes_its_alias_and_comes_back_on_uninstall(self):
+        self.put(model="claude-opus-4-8")
+        self.run_fm("install-user")
+        self.assertEqual(self.load()["model"], "best")
+        self.run_fm("uninstall-user")
+        self.assertEqual(self.load()["model"], "claude-opus-4-8")
+        self.assertNotIn("switchModelsOnFlag", self.load())
+
+    def test_the_machines_opus_alias_moves_to_best(self):
+        self.put(model="opus")
+        self.run_fm("install-user")
+        self.assertEqual(self.load()["model"], "best")
+
+    def test_a_deliberate_alias_stays_and_a_pin_is_kept(self):
+        self.put(model="sonnet")
+        self.run_fm("install-user")
+        self.assertEqual(self.load()["model"], "sonnet")
+        self.models_json({"pin": "claude-opus-4-1"})
+        self.run_fm("install-user")
+        self.assertEqual(self.load()["model"], "claude-opus-4-1")
+
+    def test_a_second_install_changes_nothing(self):
+        self.run_fm("install-user")
+        first = read_text(self.settings)
+        self.assertEqual(self.run_fm("install-user").returncode, 0)
+        self.assertEqual(read_text(self.settings), first)
+
+    def test_off_leaves_settings_alone(self):
+        self.models_json({"newest": False})
+        self.put(model="claude-opus-4-8")
+        self.run_fm("install-user")
+        s = self.load()
+        self.assertEqual(s["model"], "claude-opus-4-8")
+        self.assertNotIn("switchModelsOnFlag", s)
+
+    def test_the_verb_sets_pin_and_newest(self):
+        self.assertEqual(self.run_fm("models", "pin", "sonnet").returncode, 0)
+        self.assertIn("sonnet", self.run_fm("models").stdout)
+        self.assertEqual(self.run_fm("models", "newest", "off").returncode, 0)
+        with open(os.path.join(self.fhome, "models.json")) as f:
+            self.assertEqual(json.load(f), {"pin": "sonnet", "newest": False})
+
+
 if __name__ == "__main__":
     unittest.main()
 

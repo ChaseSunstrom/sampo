@@ -36,6 +36,18 @@ def _data(e):
     return e.get("data") if isinstance(e.get("data"), dict) else {}
 
 
+def own_module(root, name, rev=None):
+    """T-4061: name is a module the project already tracks (NAME.py or NAME/__init__.py anywhere in it), in the index
+    or, with rev, in that commit or tree: its import failed because of how the command ran (python3 -m unittest
+    plugin.tests.test_x from the root can't see plugin/tests/helpers.py), not because a capability is missing. Only a
+    file tracked before the run counts, so a stub added afterwards resolves nothing."""
+    if not re.fullmatch(r"[A-Za-z_]\w*", name or ""):
+        return False
+    out = c._git(root, *(("ls-tree", "-r", "--name-only", rev) if rev else ("ls-files",)), timeout=30, fail="")
+    return any(f.rsplit("/", 1)[-1] == f"{name}.py" or f == f"{name}/__init__.py" or f.endswith(f"/{name}/__init__.py")
+               for f in out.splitlines())
+
+
 def _present(p, name, kind):
     """Is the missing tool there now: a command on PATH, a Python module findable (top-level only: nothing imports),
     a node module under the project's node_modules."""
@@ -70,9 +82,13 @@ def open_misses(p, b):
         t = c._TS_TAIL.search(line)
         if m and t and c._RAN_MARK in line:
             passes.append((t.group(1), int(m.group(2)) if m.group(1) == "step" else None, key(m.group(3))))
-    out = []
+    out, base = [], None
     for (name, k), (i, miss) in sorted(latest.items(), key=lambda kv: kv[1][0]):
         ts, d, done, kind = str(miss.get("ts") or ""), _data(miss), False, _data(miss).get("kind") or "command"
+        if kind == "module":  # T-4061: tracked at the task's start, so the run was wrong, not the project
+            base = base or c.task_base(p.root, b) or ""
+            if base and own_module(p.root, name, base):
+                continue
         for e in evs[i + 1:]:
             x, ev = _data(e), e.get("event")
             if ev == "miss_resolved":

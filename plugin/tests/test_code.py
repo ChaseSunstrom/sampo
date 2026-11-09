@@ -712,6 +712,19 @@ class Review(CodeCase):
         self.assertIn("seed the bug", self.last_commit())  # --no-commit came back from the journal
         self.assertEqual(len(f.seen), 3)
 
+    def test_a_deadline_stops_the_run_itself_with_a_resume_hint(self):
+        # T-4083: a slow profile hit the exam's wall clock and was killed with no trail (louhi's 'timeout' class)
+        f = self.serve("openai", plan(), *[call("run", cmd="sleep 1")] * 8)
+        t0 = time.monotonic()
+        r = self.code("fix add", "--model", "fake", "--no-commit", "--deadline", "2", check=False)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("out of time", r.stdout + r.stderr)
+        self.assertIn("--resume", r.stdout + r.stderr)
+        self.assertLess(time.monotonic() - t0, 8, "it stops itself, long before the script runs out")
+        self.assertLess(len(f.seen), 9)
+        self.assertIn("Time left:", json.dumps(f.seen[-1]), "each turn carries the time left")
+        self.assertEqual(self.task()["status"], "active", "resumable")
+
     def test_trim_keeps_the_last_six_results_whole(self):
         from sampo import smith
         msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "plan"}]

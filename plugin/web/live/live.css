@@ -427,7 +427,7 @@ main{display:grid;grid-template-rows:minmax(320px,1fr) auto auto var(--deck-h);g
     --night:#F6F7F9;--night-2:#EEF0F4;--plate:#FFFFFF;--plate-bg:#FFFFFF;--log-bg:#FFFFFF;
     --ink:#0F1722;--ash:#3A4556;--muted:#5B6679;
     --brass:#2F62E0;--brass-2:#2F62E0;--rule:rgba(15,23,34,.16);--rule-soft:rgba(15,23,34,.09);
-    --blue:#2F62E0;--gold:#A15C00;--green:#0E8A5F;--violet:#6D3FD0;--orange:#C2410C;--red:#C62828;--hot:#0F1722;
+    --blue:#2F62E0;--gold:#A15C00;--green:#0a8656;--violet:#6D3FD0;--orange:#C2410C;--red:#C62828;--hot:#0F1722;
     --hair:rgba(15,23,34,.07);--hover:rgba(15,23,34,.045);--track:rgba(15,23,34,.10);--on-accent:#FFFFFF;
     --shadow:0 1px 2px rgba(15,23,34,.08);
     --k-amber:#8A5300;--k-violet:#6D3FD0;--k-green:#0A7A53;--k-orange:#B23A07;--k-blue:#2F62E0;--k-red:#C62828;--k-pale:#3A4556;--k-other:#5B6679;--k-dflt:#6B5A2A;

@@ -162,7 +162,7 @@ class Typos(ForemanTestCase):
     def test_guessed_verbs_name_the_real_one_and_run_nothing(self):
         # T-3612: the other top unknown_word guesses in events.jsonl; each named the wrong verb by spelling
         self.fm("init")
-        for argv, home in ((["models"], "code models"), (["models", "list"], "code models"),
+        for argv, home in ((["models", "list"], "code models"),  # T-3742: bare `models` is a verb now
                            (["where"], "wiring"), (["task", "scope", "T-1"], "task set ID scope+=a,b"),
                            (["scope"], "task set ID scope+=a,b"), (["lane", "awaiting"], "next"),
                            (["affected"], "check --affected"), (["task", "approve", "T-1"], "task set ID approved=true")):

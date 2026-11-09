@@ -764,6 +764,21 @@ class Timing(ForemanTestCase):
         self.assertIsNone(by["hook exit codes"].ms)
         self.assertIsNone(by["injection budgets"].ms)
 
+    def test_an_over_budget_bench_is_measured_again_before_it_fails(self):  # T-4098
+        over = {"SessionStart": {"p95": 190, "budget": 150, "ok": False}}
+        fine = {"SessionStart": {"p95": 70, "budget": 150, "ok": True}}
+        for second, want in ((fine, "PASS"), (over, "FAIL")):
+            seen = []
+
+            def bench(runs, _second=second):
+                seen.append(runs)
+                return (over if len(seen) == 1 else _second), {}
+            rs = self._run_stubbed({"FOREMAN_DOCTOR_BENCH": "1"}, busy=lambda: False, _bench_and_injection=bench,
+                                   check_hook_latency=d.check_hook_latency)
+            self.assertEqual({r.name: r for r in rs}["hook latency"].status, want, "a burst passes, a slowdown fails")
+            self.assertEqual(len(seen), 2, "measured again")
+            self.assertGreater(seen[1], seen[0], "with more runs")
+
     def test_unmeasured_rows_are_none_and_briefs_and_views_are_timed(self):  # T-2279
         rs = {r.name: r for r in self._run_stubbed({"FOREMAN_DOCTOR_BENCH": "0"})}
         self.assertIsNone(rs["hook latency"].ms)
@@ -779,6 +794,41 @@ class Timing(ForemanTestCase):
         self.assertRegex(self.fm("doctor", "-v", check=False, env={"HOME": self.tmp}).stdout,
                          r"slowest: .+ \d+ ms, .+ \d+ ms, .+ \d+ ms")
         self.assertNotIn("slowest:", self.fm("doctor", check=False, env={"HOME": self.tmp}).stdout)
+
+    def test_model_alias(self):  # T-3742
+        ok = {"model": "best", "switchModelsOnFlag": True}
+        self.assertEqual(d.check_model_alias(ok).status, "PASS")
+        for bad in ({}, {"model": "opus", "switchModelsOnFlag": True}, {"model": "claude-opus-4-8", "switchModelsOnFlag": True},
+                    {"model": "best"}, {"model": "best", "switchModelsOnFlag": False}):
+            r = d.check_model_alias(bad)
+            self.assertEqual((r.name, r.status), ("model", "WARN"), bad)
+            self.assertIn("best", r.detail)
+        self.assertIn("model", d.FIXERS)
+
+    def test_repair_writes_the_alias_and_leaves_a_pin_and_off_alone(self):  # T-3742
+        claude = os.path.join(self.tmp, ".claude")
+        os.makedirs(claude)
+        path = os.path.join(claude, "settings.json")
+
+        def write(s):
+            with open(path, "w") as f:
+                json.dump(s, f)
+
+        def run_repair():
+            p = self.fm("doctor", "--repair", check=False, env={"HOME": self.tmp})
+            with open(path) as f:
+                return json.load(f), p
+        write({"model": "claude-opus-4-8", "theme": "dark"})
+        s, p = run_repair()
+        self.assertEqual(s, {"model": "best", "theme": "dark", "switchModelsOnFlag": True}, p.stdout)
+        with open(os.path.join(self.home, "models.json"), "w") as f:
+            json.dump({"pin": "claude-opus-4-1"}, f)
+        s, _ = run_repair()
+        self.assertEqual(s["model"], "claude-opus-4-1")
+        with open(os.path.join(self.home, "models.json"), "w") as f:
+            json.dump({"newest": False}, f)
+        write({"model": "opus"})
+        self.assertEqual(run_repair()[0], {"model": "opus"})
 
 
 if __name__ == "__main__":

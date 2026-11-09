@@ -112,6 +112,19 @@ class WhyNotCaught(Base):
         self.assertFalse([b for b in c.load_briefs(self.p) if b.meta.get("source") == "followup"])
         self.assertIn("the catch landed with it: tests/test_x.py", r.stdout)
 
+    def test_no_followup_when_the_test_was_committed_without_an_edit_record(self):
+        # T-4055: T-4037, T-4045 and T-3956 added their catching tests by script or merge (no touched record); each
+        # close still captured a 'Catch it earlier' task (T-4050, T-4052, T-4053), all dropped as covered
+        self.fm("task", "new", "Fix it", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "s", "--focus")
+        self.fm("task", "set", "T-0001", "--section", "Regression test", "--text", "none: a typo")
+        os.makedirs(os.path.join(self.repo, "tests"), exist_ok=True)
+        self.write("tests/test_y.py", "def test_y():\n    assert True\n")
+        self.commit("the catching test")
+        r = self.fm("task", "finish", "T-0001", "--audit", "self", "--run", "true", "--docs", "none: internal",
+                    "--lesson", "none: trivial", "--why-not-caught", "no test feeds an empty CSV")
+        self.assertFalse([b.title for b in c.load_briefs(self.p) if b.meta.get("source") == "followup"])
+        self.assertIn("the catch landed with it: tests/test_y.py", r.stdout)
+
 
 class NewWork(Base):
     def test_no_followup_when_the_why_says_the_work_was_new(self):  # T-1763

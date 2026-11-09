@@ -109,14 +109,22 @@ def learn(p, gates=None):
 
 
 def _base(p):
-    """The merge-base with main (or master): the diff base a lane's change is measured from. HEAD when neither exists."""
-    return next((b for b in (c._git(p.root, "merge-base", "HEAD", ref, timeout=5, fail="").strip() for ref in ("main", "master"))
-                 if b), "HEAD")
+    """The diff base a lane's change is measured from: the closest of its merge-bases with main or master, local or
+    remote, and (from a lane) the main checkout's HEAD. T-4060: the closest, because a local main is often stale (ship
+    pushes the work branch to origin/main) and a stale base made every module since read as new. HEAD when none."""
+    refs = ["origin/main", "main", "origin/master", "master"]
+    main = c.main_worktree(p.root)
+    if main and os.path.realpath(main) != os.path.realpath(p.root):
+        refs.append(c._git(main, "rev-parse", "HEAD", timeout=5).strip())
+    bases = {b for b in (c._git(p.root, "merge-base", "HEAD", r, timeout=5, fail="").strip() for r in refs if r) if b}
+    return min(bases, key=lambda b: int(c._git(p.root, "rev-list", "--count", f"{b}..HEAD", timeout=10,
+                                                fail="").strip() or 10 ** 9), default="HEAD")
 
 
 def _new_since(p, f, base):
-    """True when f is not in the base: a module committed on this branch is new to the change too."""
-    return c._git(p.root, "cat-file", "-e", f"{base}:{f}", proc=True).returncode != 0
+    """True when f is not in the base: a module committed on this branch is new to the change too. A git that timed
+    out (124) or couldn't run (127) says nothing about the file (T-4060: load made the old 2 s default read as new)."""
+    return c._git(p.root, "cat-file", "-e", f"{base}:{f}", timeout=10, proc=True).returncode not in (0, 124, 127)
 
 
 def _shim(p, f):

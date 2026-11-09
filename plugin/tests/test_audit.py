@@ -235,3 +235,28 @@ class DesignLens(HookCase):
         lenses, text = self.brief()
         self.assertEqual(lenses, list(c.DEFAULT_LENSES))
         self.assertNotIn("## design", text)
+
+    def test_a_merged_lanes_prep_diffs_its_own_merge_not_an_empty_one(self):  # T-3972: T-2878's diff was 0 lines
+        self.prep()
+
+        def git(*a, cwd=None):
+            return subprocess.run(["git", "-C", cwd or self.repo, *a], check=True, capture_output=True, text=True).stdout
+        lane = os.path.join(self.tmp, "lane-x")
+        git("worktree", "add", "-q", "-b", "foreman/x", lane)
+        with open(os.path.join(lane, "lane_work.py"), "w") as f:
+            f.write("x = 1\n")
+        git("add", "lane_work.py", cwd=lane)
+        git("commit", "-qm", "lane work", cwd=lane)
+        git("merge", "-q", "--no-ff", "--no-edit", "foreman/x")  # the train's merge
+        self.write("later_work.py", "y = 2\n")  # another task's work after it
+        git("add", "later_work.py")
+        git("commit", "-qm", "later")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        b.meta["lane_branch"] = "foreman/x"
+        c.save_brief(p, b)
+        self.fm("audit", "prep", self.tid, "--json")
+        with open(os.path.join(p.dir, "audits", f"{self.tid}.diff")) as f:
+            diff = f.read()
+        self.assertIn("lane_work.py", diff, "the lane's own change, not merge-base HEAD..tip (empty once merged)")
+        self.assertNotIn("later_work.py", diff, "not the work merged after it")

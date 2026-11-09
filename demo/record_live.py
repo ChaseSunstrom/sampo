@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Record Claude Code itself, with the foreman-ui mod, fixing a seeded bug through Foreman (T-0903): the band above the
+"""Record Claude Code itself, with the foreman-ui mod, fixing a seeded bug through Sampo (T-0903): the band above the
 prompt, the animated tool rows, the step bar and the status line, as a user sees them.
 
-A throwaway repo (calc.add subtracts) and a Foreman state of its own (FOREMAN_STATE, so the task is T-0001 and nothing
+A throwaway repo (calc.add subtracts) and a Sampo state of its own (FOREMAN_STATE, so the task is T-0001 and nothing
 of yours is touched) under /tmp/fm-live-<time>; Claude Code runs in shot.py's tmux harness (its own server) with the
 mod from this checkout; the request is typed in, and the coloured screen is captured until the task is done. Writes
 demo/live.cast (each capture a full redraw, waits squeezed to MAX_GAP s), demo/live.svg (svg-term-cli via npx; GitHub
@@ -54,14 +54,14 @@ def only_foreman(path=os.path.expanduser("~/.claude/settings.json")):
 
 NOTICE = re.compile(r"Your login expires in|Your \w+ plan includes|clau\.de/api-credits|tmux focus-events off"
                     r"|hooks\.json: unknown keys|\w\" in hooks\.\w+\[\d+\]"
-                    r"|You've used \d+% of your|hooks\.\w+\[\d+\] and \d+ more ignored")  # Claude Code's notices, not Foreman's;
+                    r"|You've used \d+% of your|hooks\.\w+\[\d+\] and \d+ more ignored")  # Claude Code's notices, not Sampo's;
 # T-4008: the usage one names your time zone; the hooks one counts the hooks of the plugins only_foreman turned off
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # every CSI, not shot._SGR's colours alone: a cast event opens with \x1b[H\x1b[2J
 
 
 def quiet(s, sep="\n"):
     """T-2055: blank each startup notice (an installed but disabled plugin's hooks.json warning still prints; the login
-    expiry, plan promo and tmux tip are account or harness noise): its characters up to the Foreman panel's │ become
+    expiry, plan promo and tmux tip are account or harness noise): its characters up to the Sampo panel's │ become
     spaces, so the panel beside it and the screen's layout hold."""
     out = []
     for x in s.split(sep):
@@ -179,7 +179,7 @@ def main():
     try:
         for _ in range(60):  # the folder-trust question, then an idle prompt
             text = grab()
-            if "trust this folder" in text.lower():  # T-1034: only a folder Foreman made, never a clone's own hooks
+            if "trust this folder" in text.lower():  # T-1034: only a folder Sampo made, never a clone's own hooks
                 if not shot.answer_trust(repo, wait=2):
                     raise SystemExit(f"record_live: not trusting {repo} (it has its own Claude Code config)")
                 time.sleep(1.5)
@@ -239,7 +239,7 @@ def write(frames, a):
     events.append([round(t + 4, 3), "o", ""])  # hold the last screen
     events = thin(events, a.max_frames)
     with open(cast, "w", encoding="utf-8") as f:
-        f.write(json.dumps({"version": 2, "width": COLS, "height": ROWS, "title": "Foreman in Claude Code",
+        f.write(json.dumps({"version": 2, "width": COLS, "height": ROWS, "title": "Sampo in Claude Code",
                             "env": {"TERM": "xterm-256color"}}) + "\n" + "".join(json.dumps(e) + "\n" for e in events))
     print(f"{len(frames)} screens, {t:.0f} s → {cast}")
     render(events, a)

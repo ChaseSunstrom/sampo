@@ -250,7 +250,8 @@ class CaptureAndIntake(ForemanTestCase):
         self.assertIn("invalid choice", p.stderr)
         self.fm("task", "ac", "T-0001", "add", "fast", "--verify", "true")  # review: an option after the word
         self.assertIn("verify with `true`", c.find_brief(c.find_project(self.repo), "T-0001").section("Acceptance criteria"))
-        for typo in ("DONE", "3", "--json"):  # review: an action in capitals, a number, an option alone stay errors
+        for typo in ("DONE", "3", "--json", "list", "show"):  # review: an action in capitals, a number, an option alone
+            # stay errors; T-4067: so does a verb another task subcommand has (`step ID list` filed a step 'list')
             self.assertNotEqual(self.fm("task", "step", "T-0001", typo, check=False).returncode, 0, typo)
         self.assertEqual(len(c.find_brief(c.find_project(self.repo), "T-0001").steps()), 1)
 
@@ -259,9 +260,9 @@ class CaptureAndIntake(ForemanTestCase):
         self.assertEqual(p.returncode, 2)
         self.assertIn("did you mean kalevala", p.stderr)
         self.assertIn('(or: sampo which "kalevalaa")', p.stderr)
-        p = self.fm("models", check=False)
+        p = self.fm("gizmos", check=False)  # T-3742: models is a verb now
         self.assertEqual(p.returncode, 2)
-        self.assertIn('sampo which "models"', p.stderr)
+        self.assertIn('sampo which "gizmos"', p.stderr)
 
     def test_an_action_synonym_is_its_action_and_two_bare_words_refuse(self):  # T-2540
         # `fm task step T-1 remove 4` added a step named "remove" and dropped the 4

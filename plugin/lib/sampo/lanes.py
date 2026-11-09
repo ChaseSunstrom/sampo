@@ -510,7 +510,8 @@ def recovery_text(cause, tid, detail=""):
 
 def stop_mark(p, tid, kind, arg="", log="", tip=""):
     """Where the lane's last `fm lane merge` ended (conflict, refused, guard + its category, merged), on the brief: a busy
-    ledger can't push it out of a tail. Reset when the lane is taken back; fm task unblock clears it too. `log`: a line
+    ledger can't push it out of a tail. Reset when the lane is taken back; fm task unblock clears it on a blocked task
+    (it refuses a done one: there, a new lane commit lifts a park that names its tip, T-3994). `log`: a line
     for the brief's Log (T-3500: why sampo lane land parked it). `tip`: the lane commit that verdict judged (T-3994)."""
     from sampo import cli
     stamp = f"{kind} {c.now()} {arg}".strip()
@@ -2085,6 +2086,10 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         parts += ["## Behaviour lock", f"This is a CLEAN task: right after `fm focus {b.id}`, before your first edit, "
                   f"run `fm check --evidence {b.id} --step 1` (the behaviour lock the close checks; --affected records "
                   f"no evidence).", ""]
+    if b.type == "RESEARCH":  # T-3953: a note left in .fm-scratch dies with the worktree (T-3933's was rebuilt by hand)
+        parts += ["## Filing your note", "Write your note to a file outside the repo, then file it in Sampo's state "
+                  f"before you report: `sampo research add {b.id}-note --file <that file>`. A note under .fm-scratch "
+                  "or anywhere git ignores is lost when an unchanged worktree is cleaned up.", ""]
     warns = hot_files(p, b)
     if warns:
         parts += ["## Warning", *warns, ""]

@@ -107,6 +107,38 @@ def _link_state(P):
 
 # ---------------------------------------------------------------- install
 
+def _model_step(new_s, new_m, actions):
+    """T-3742: models.newest keeps `model` an alias and switchModelsOnFlag true; the manifest remembers what was there."""
+    from sampo import modelup
+    want = modelup.apply_newest(new_s)
+    for key, tag in (("model", "model"), ("switchModelsOnFlag", "flag")):
+        if want.get(key) != new_s.get(key):
+            new_m.setdefault(tag + "_original", {"had": key in new_s, "value": new_s.get(key)})
+            new_m[tag + "_set"] = want[key]
+            actions.append(f"{key} = {want[key]!r} (was {new_s[key]!r})" if key in new_s else f"{key} = {want[key]!r}")
+            new_s[key] = want[key]
+
+
+def fix_model():
+    """Re-apply models.newest to settings.json (and Codex) now; what it did, or ''. Used by `sampo models` and doctor."""
+    from sampo import modelup
+    P = paths()
+    s = _load(P["settings"], None)
+    out = []
+    if s is not None:
+        new_s, new_m, actions = copy.deepcopy(s), _load(P["manifest"], {}), []
+        _model_step(new_s, new_m, actions)
+        if new_s != s:
+            c.write_atomic(P["settings"], json.dumps(new_s, indent=2) + "\n")
+            if os.path.exists(P["manifest"]):
+                c.write_atomic(P["manifest"], json.dumps(new_m, indent=2) + "\n")
+            out += actions
+    cx = modelup.codex_newest()
+    if cx:
+        out.append(f"codex model {cx}")
+    return "; ".join(out)
+
+
 def plan_install(P):
     s = _load(P["settings"], None)
     m = _load(P["manifest"], {})
@@ -158,6 +190,7 @@ def plan_install(P):
         new_s["worktree"] = dict(wt or {}, baseRef="head")
         new_m["worktree_baseRef_set"] = True
         actions.append("worktree.baseRef = head (builder lanes start from your current branch, not the remote's)")
+    _model_step(new_s, new_m, actions)
     if new_m.get("outputStyle_set"):  # T-1279: older installs chose the style; the rules carry the format now
         new_m.pop("outputStyle_set")
         if new_s.get("outputStyle") in OUTPUT_STYLES:  # a style the user changed to since is left alone
@@ -365,6 +398,14 @@ def cmd_uninstall(args):
         if not wt and m.get("worktree_created"):
             new_s.pop("worktree")
         actions.append("worktree.baseRef removed")
+    for key, tag in (("model", "model"), ("switchModelsOnFlag", "flag")):  # T-3742: only what is still ours
+        was = m.get(tag + "_original")
+        if was and new_s.get(key) == m.get(tag + "_set"):
+            if was.get("had"):
+                new_s[key] = was.get("value")
+            else:
+                new_s.pop(key, None)
+            actions.append(f"{key} restored")
     if m.get("outputStyle_set") and new_s.get("outputStyle") in OUTPUT_STYLES:
         new_s.pop("outputStyle")
         actions.append("outputStyle removed")

@@ -96,6 +96,37 @@ class DiffGates(ForemanTestCase):
         self.assertIn("1 untracked file gone since the start (not counted as this task's edits): notes/scratch.md",
                       p.stderr)  # left out, never silently
 
+    def test_a_new_modules_owed_companions_are_in_its_scope(self):
+        # T-4080: T-3273, T-3275, T-3276 and T-3285 were left for hand closes for the fm alias, the MASTER.md line and
+        # the docs/map shard every new module is owed (sampo shape learns them from earlier adds)
+        for stem in ("alpha", "beta", "gamma"):
+            self.write(f"lib/sampo/{stem}.py")
+            self.write(f"lib/fm{stem}.py", f"from sampo.{stem} import *\n")
+            with open(os.path.join(self.repo, "MASTER.md"), "a") as f:
+                f.write(f"- `{stem}`\n")
+            subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+            subprocess.run(["git", "-C", self.repo, "commit", "-qm", f"add {stem}"], check=True)
+        self.task("--scope", "lib/sampo/delta.py,CHANGELOG.md")
+        self.touch("lib/sampo/delta.py")
+        self.touch("lib/fmdelta.py", "from sampo.delta import *\n")
+        self.touch("MASTER.md", "- `alpha`\n- `beta`\n- `gamma`\n- `delta`\n")
+        self.touch("docs/map/files-lib-1.md", "- `delta`\n")
+        self.touch("setup.cfg")
+        p = self.finish()
+        self.assertIn("edited outside scope [lib/sampo/delta.py, CHANGELOG.md]: setup.cfg;", p.stderr)
+        self.fm("task", "set", "T-0001", "scope+=setup.cfg")
+        self.assertEqual(self.fm("task", "done", "T-0001", check=False).returncode, 0)
+
+    def test_scope_set_with_spaces_names_each_path(self):
+        # T-4080: T-3285's scope= 'a.py b.py ...' was stored as one path, so its close refused every file it named
+        self.task()
+        self.fm("task", "set", "T-0001", "scope=src/a.py src/b.py, docs/c.md")
+        scope = json.loads(self.fm("task", "show", "T-0001", "--json").stdout)["scope"]
+        self.assertEqual(scope, ["src/a.py", "src/b.py", "docs/c.md"])
+        self.fm("task", "set", "T-0001", "scope+=d.py e.py")
+        scope = json.loads(self.fm("task", "show", "T-0001", "--json").stdout)["scope"]
+        self.assertEqual(scope, ["src/a.py", "src/b.py", "docs/c.md", "d.py", "e.py"])
+
     def test_security_sensitive_change_needs_the_adversary_lens(self):
         self.task()
         self.touch("auth/login.py")

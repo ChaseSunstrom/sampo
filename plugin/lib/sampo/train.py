@@ -789,6 +789,22 @@ def _park_kind(why):
     return "refused", ""
 
 
+def announce_skills(root, before, after):
+    """T-3851: a session lists its skills when it starts, so each SKILL.md a train added between `before` and `after`
+    is told to every live session once (the bus), with its description and the file to Read. The names sent."""
+    from sampo import bus, plugins
+    added = (c._git(root, "diff", "--name-only", "--no-renames", "--diff-filter=A", before, after, "--", "plugin/skills", timeout=30,
+                    fail="") or "").split("\n") if before and after and before != after else []
+    sent = []
+    for rel in (f for f in added if re.fullmatch(r"plugin/skills/[\w-]+/SKILL\.md", f)):
+        path, name = os.path.join(root, rel), rel.split("/")[2]
+        desc = c.fit(c.plain(plugins._frontmatter(path).get("description") or ""), 200)
+        bus.send("all", f"New Sampo skill {c.NS}:{name} landed: {desc} Sessions started before it can't load it by "
+                        f"name: Read {path}")
+        sent.append(name)
+    return sent
+
+
 def land(p, main, batch=None):
     """T-3500: every finished lane waiting on a merge (lanes.awaiting_merge) through `train`, `batch` at a time (one
     that conflicts with the branch is parked before any criteria or gate run); each landed lane is removed and its task
@@ -919,6 +935,7 @@ def _land(p, main, batch):
         ids, ready = ready[:batch], ready[batch:]
         print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
         tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts
+        head0 = c._git(main, "rev-parse", "HEAD", timeout=10).strip()  # T-3851: the skills this train adds
         try:
             got = train(p, main, ids)
         except c.PolicyError as e:
@@ -935,6 +952,11 @@ def _land(p, main, batch):
         landed += got["merged"]
         parked += got["left_out"]
         close(got["merged"])
+        if got["merged"]:
+            try:  # a note to the sessions never costs the land
+                announce_skills(main, head0, c._git(main, "rev-parse", "HEAD", timeout=10).strip())
+            except Exception as e:
+                print(f"sampo lane land: new skills not announced: {c.fit(c.plain(str(e)), 160)}", file=sys.stderr)
         if got["merged"]:  # T-3849: reaches the remote per train, the grant kept for the next
             shipped = _ship(p, True) or shipped
         if ready and _code_stamp() != stamp:  # T-3973: the train changed Sampo itself: the rest runs on the new code
@@ -970,19 +992,27 @@ def _brief_hash(b):
     return hashlib.sha1("\0".join(f"{h}\1{t}" for h, t in b.sections if h.strip() != "Log").encode()).hexdigest()[:12]
 
 
-# ponytail: a refusal caused outside the brief and tip (a gate rule fixed on main) is retried after this long; key on the
-# gate's inputs if stale refusals matter
+# ponytail: a refusal caused outside the brief, the tip and Sampo's own code (a tool on PATH, the machine) is retried
+# after this long
 REFUSAL_TTL_S = 6 * 3600
 
 
+def _code_id():
+    """T-4080: the committed tree of the Sampo code running this land, '' outside git: a gate rule fixed on main
+    changes a close's answer (T-3701 and T-3671 waited 6 h after T-4061 and T-4062 fixed their refusals)."""
+    lib = os.path.dirname(os.path.dirname(os.path.abspath(c.__file__)))
+    return (c._git(lib, "rev-parse", "HEAD:./", timeout=10, fail="") or "").strip()[:12]
+
+
 def _refused_before(b, tip):
-    """The reason the last land's close was refused when the brief and the lane tip are as they were then, else None."""
+    """The reason the last land's close was refused when the brief, the lane tip and Sampo's code are as they were
+    then, else None."""
     for line in reversed(b.section("Log").splitlines()):
-        if m := re.search(r"^- (\S+) land: close refused: (.*) @ (\w+) (\w*)$", line):
+        if m := re.search(r"^- (\S+) land: close refused: (.*) @ (\w+) (\w*)(?: (\w+))? ?$", line):
             at = c.parse_ts(m.group(1))
             if not at or time.time() - at.timestamp() > REFUSAL_TTL_S:
                 return None
-            return m.group(2) if (m.group(3), m.group(4)) == (_brief_hash(b), tip) else None
+            return m.group(2) if (m.group(3), m.group(4), m.group(5) or "") == (_brief_hash(b), tip, _code_id()) else None
     return None
 
 
@@ -1032,7 +1062,7 @@ def _close(p, main, tid):
     if rc:
         why = _why(err or out) + ("; its lane is kept" if path else "")
         nb = cli.need_brief(p, tid)  # after the refusal: it may have touched the brief, and the hash must match then
-        nb.append_log(f"land: close refused: {c.fit(' '.join(why.split()), 400)} @ {_brief_hash(nb)} {sha}")
+        nb.append_log(f"land: close refused: {c.fit(' '.join(why.split()), 400)} @ {_brief_hash(nb)} {sha} {_code_id()}")
         c.save_brief(p, nb)
         return why, ""
     done = cli.need_brief(p, tid)

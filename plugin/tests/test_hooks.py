@@ -677,6 +677,40 @@ class UserPromptSubmit(HookCase):
         self.fm("task", "set", feat, "--section", "Docs impact", "--text", "none: a test")
         self.assertIn("/sampo:review", ups("go on"), "the audit stage names the review workflow")
 
+    def test_a_skill_hint_falls_back_to_its_file_for_a_session_older_than_the_skill(self):
+        # T-3851: parlor's session (started 10:50) never listed readme-visuals (landed 19:59), so 'load: Skill
+        # sampo:readme-visuals' named a skill it couldn't load
+        import contextlib
+        import io
+        from sampo import hooks
+        root = os.path.join(self.tmp, "plug")
+
+        def skill(name):
+            path = os.path.join(root, "skills", name, "SKILL.md")
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w") as f:
+                f.write(f"---\nname: {name}\ndescription: d\n---\n")
+            return path
+        skill("old-one")
+        text = "load: Skill sampo:new-one; then Skill sampo:old-one, Skill sampo:gone"
+        with unittest.mock.patch.object(c, "PLUGIN_ROOT", root):
+            c.note_skills("s3851")  # the session starts with old-one only
+            new = skill("new-one")  # then new-one lands
+            self.assertEqual(c.skill_fallback(text, "s3851"), f"load: Skill sampo:new-one (or Read {new}); then Skill "
+                             "sampo:old-one, Skill sampo:gone")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf), unittest.mock.patch.object(c, "loaded_ns", lambda: "foreman"):
+                done = hooks._as_loaded('{"session_id": "s3851"}')
+                print(text)
+                done()
+            self.assertIn(f"Skill foreman:new-one (or Read {new})", buf.getvalue(), "an old plugin name too")
+            self.assertEqual(c.skill_fallback(text, "s-older"), text, "a session with no list: unchanged")
+            c.note_skills("s-newer")
+            self.assertEqual(c.skill_fallback(text, "s-newer"), text, "a session started after it knows it")
+        self.hook("SessionStart", {"session_id": "s-start", "source": "startup", "cwd": self.repo})
+        with open(c._skills_file("s-start")) as f:
+            self.assertIn("debug-test", f.read().split(), "a new session's list is recorded as it starts")
+
     def test_a_skill_hint_that_does_not_fit_waits_for_a_turn_with_room(self):
         # T-1697 review: a long step plus a work request's note left no room, and the state was recorded as told, so
         # the next turn said nothing and the hint was lost for the session
@@ -2566,10 +2600,38 @@ class OtherSessionMarkers(HookCase):
         p = self.project()
         mark = os.path.join(c.state_dir(), "sessions", "pid-sess.seen")
         from sampo import hooks
-        with unittest.mock.patch("sampo.hooks._claude_pid", return_value=777):
+        with unittest.mock.patch("sampo.hooks._claude_pid", return_value=777), \
+                unittest.mock.patch("sampo.hooks._procfs", return_value=True):
             hooks._touch_seen(p, "pid-sess")
         with open(mark) as f:
             self.assertEqual(f.read(), f"777 {p.slug}")
+
+    def test_a_refresh_reuses_the_marker_s_pid_and_no_procfs_never_walks_on_a_tool_call(self):
+        # T-4058: macOS has no /proc, so each ancestor bus._chain reads is a ps: a tool call spawned up to 12 of them
+        self.fm("init")
+        p = self.project()
+        from sampo import hooks
+        mark = self.mark("reuse-sess", 300, pid=4242)
+        with unittest.mock.patch("sampo.hooks._claude_pid", return_value=777):
+            hooks._touch_seen(p, "reuse-sess")
+        with open(mark) as f:
+            self.assertEqual(f.read(), f"4242 {p.slug}", "the pid the marker names (SessionStart wrote it)")
+        walked = unittest.mock.Mock(return_value=777)
+        with unittest.mock.patch("sampo.hooks._claude_pid", walked), \
+                unittest.mock.patch("sampo.hooks._procfs", return_value=False):
+            hooks._touch_seen(p, "new-sess")
+            self.assertFalse(walked.called, "no /proc: a tool call writes the pid as unknown")
+            hooks._touch_seen(p, "start-sess", walk=True)  # SessionStart pays for the walk
+        with open(os.path.join(c.state_dir(), "sessions", "new-sess.seen")) as f:
+            self.assertEqual(f.read(), f"0 {p.slug}")
+        with open(os.path.join(c.state_dir(), "sessions", "start-sess.seen")) as f:
+            self.assertEqual(f.read(), f"777 {p.slug}")
+
+    def test_session_start_writes_this_session_s_marker(self):
+        self.fm("init")
+        self.hook("SessionStart", {"session_id": "fresh-sess", "source": "startup"})
+        with open(os.path.join(c.state_dir(), "sessions", "fresh-sess.seen")) as f:
+            self.assertTrue(f.read().endswith(" " + self.project().slug))
 
     def test_a_marker_from_another_project_is_no_other_session_here(self):
         # T-3422 review: markers are global; a session working in project Y must not read as live in X
@@ -4213,6 +4275,140 @@ class NotificationAndEnd(HookCase):
 
     def test_unknown_event_is_harmless(self):
         self.assertEqual(self.hook("SomethingNew", {}).returncode, 0)
+
+
+FABLE, OPUS5 = "claude-fable-5-1", "claude-opus-5"
+
+
+class ModelSwitchBack(ForemanTestCase):  # T-3742: a refusal fallback is recorded and the session switched back up
+    def setUp(self):
+        super().setUp()
+        self.bin = os.path.join(self.tmp, "fakebin")
+        os.makedirs(self.bin)
+        self.log, self.pane = os.path.join(self.tmp, "tmux.log"), os.path.join(self.tmp, "pane.txt")
+        tmux = os.path.join(self.bin, "tmux")
+        with open(tmux, "w") as f:  # never a real pane: this answers capture-pane from a file and logs every call
+            f.write(f'#!/bin/sh\necho "$@" >> "{self.log}"\nif [ "$1" = capture-pane ]; then cat "{self.pane}"; fi\n')
+        os.chmod(tmux, 0o755)
+        self.idle()
+        self.env = {"PATH": self.bin + os.pathsep + os.environ["PATH"]}
+        sd = os.path.join(self.home, "state", "sessions")
+        os.makedirs(sd, exist_ok=True)
+        with open(os.path.join(sd, "sess-1.json"), "w") as f:
+            json.dump({"tmux_pane": "%7", "model": "Opus 5"}, f)
+
+    def idle(self, prompt="❯ "):
+        with open(self.pane, "w") as f:
+            f.write(f"some output\n\n{prompt}\n  ? for shortcuts\n")
+
+    def sent(self):
+        return read_text(self.log).splitlines() if os.path.exists(self.log) else []
+
+    def keys(self):
+        return [ln for ln in self.sent() if ln.startswith("send-keys")]
+
+    def switch(self, to, frm, source="auto", env=None):
+        return self.hook("PostModelSwitch", {"from_model": frm, "to_model": to, "source": source}, env=env or self.env)
+
+    def stop(self, n=1, env=None, **extra):
+        for _ in range(n):
+            self.hook("Stop", dict({"stop_hook_active": False, "last_assistant_message": "ok"}, **extra), env=env or self.env)
+
+    def test_registered(self):
+        with open(os.path.join(os.path.dirname(HOOK), "hooks.json")) as f:
+            events = json.load(f)["hooks"]
+        self.assertIn("PostModelSwitch", events)
+        self.assertIn("PreModelSwitch", events)
+
+    def test_never_on_the_refusals_own_turn_then_one_model_best(self):
+        self.assertEqual(self.switch(OPUS5, FABLE).returncode, 0)
+        self.stop()
+        self.assertEqual(self.keys(), [], "the refusal's own turn")
+        self.stop()
+        self.assertEqual(self.keys(), ["send-keys -t %7 -l /model best", "send-keys -t %7 Enter"])
+        self.stop(3)
+        self.assertEqual(len(self.keys()), 2, "once, not every stop")
+
+    def test_a_half_typed_prompt_is_never_typed_over(self):
+        self.switch(OPUS5, FABLE)
+        self.stop()
+        self.idle("❯ fix the thing")
+        self.stop()
+        self.assertEqual(self.keys(), [])
+        self.idle()
+        self.stop()
+        self.assertEqual(len(self.keys()), 2)
+
+    def test_a_compaction_ends_the_wait(self):
+        self.switch(OPUS5, FABLE)
+        self.hook("PreCompact", {"trigger": "auto"}, env=self.env)
+        self.stop()
+        self.assertEqual(len(self.keys()), 2)
+
+    def test_a_manual_switch_up_or_a_non_refusal_switch_is_left_alone(self):
+        self.switch(OPUS5, FABLE)
+        self.switch(FABLE, OPUS5, source="command")
+        self.stop(3)
+        self.assertEqual(self.keys(), [])
+        self.switch("claude-sonnet-5", OPUS5, source="command")  # the user chose it
+        self.stop(3)
+        self.assertEqual(self.keys(), [])
+
+    def test_one_repeat_refusal_stops_it(self):
+        self.switch(OPUS5, FABLE)
+        self.stop(2)
+        self.assertEqual(len(self.keys()), 2)
+        self.switch(FABLE, OPUS5, source="command")  # our /model best landed
+        self.switch(OPUS5, FABLE)  # refused again
+        self.stop(4)
+        self.assertEqual(len(self.keys()), 2, "no second /model best")
+
+    def test_the_transcript_entry_detects_it_without_the_hook(self):
+        tr = os.path.join(self.tmp, "t.jsonl")
+        with open(tr, "w") as f:
+            f.write(json.dumps({"type": "assistant", "message": {"model": FABLE}}) + "\n")
+            f.write(json.dumps({"type": "system", "subtype": "model_refusal_fallback", "originalModel": FABLE,
+                                "fallbackModel": OPUS5, "requestId": "r1"}) + "\n")
+            f.write(json.dumps({"type": "assistant", "message": {"model": OPUS5}}) + "\n")
+        self.stop(transcript_path=tr)
+        self.assertEqual(self.keys(), [])
+        self.stop(transcript_path=tr)
+        self.assertEqual(len(self.keys()), 2)
+
+    def test_a_transcript_whose_session_already_resumed_up_is_not_a_downgrade(self):
+        tr = os.path.join(self.tmp, "t.jsonl")
+        with open(tr, "w") as f:
+            f.write(json.dumps({"type": "system", "subtype": "model_refusal_fallback", "originalModel": FABLE,
+                                "fallbackModel": OPUS5}) + "\n")
+            f.write(json.dumps({"type": "assistant", "message": {"model": FABLE}}) + "\n")
+        self.stop(3, transcript_path=tr)
+        self.assertEqual(self.keys(), [])
+
+    def test_a_headless_session_gets_set_model_in_its_sdk_inbox(self):
+        inbox = os.path.join(self.home, "state", "models", "sdk")
+        os.makedirs(inbox)
+        line = os.path.join(inbox, "sess-1.jsonl")
+        with open(line, "w"):
+            pass
+        env = dict(self.env, CLAUDE_CODE_ENTRYPOINT="sdk-cli", FOREMAN_BENCH="1")
+        self.switch(OPUS5, FABLE, env=env)
+        self.stop(env=env)
+        self.assertEqual(read_text(line), "")
+        self.stop(env=env)
+        sent = [json.loads(ln) for ln in read_text(line).splitlines()]
+        self.assertEqual([s["request"] for s in sent], [{"subtype": "set_model", "model": "best"}])
+        self.assertEqual(sent[0]["type"], "control_request")
+        self.assertEqual(self.keys(), [], "headless: not tmux")
+        self.stop(env=env)
+        self.assertEqual(len(read_text(line).splitlines()), 1)
+
+    def test_pre_model_switch_allows_only_our_own_switch(self):
+        pl = {"from_model": OPUS5, "to_model": FABLE, "source": "command"}
+        self.assertIsNone(parse(self.hook("PreModelSwitch", pl, env=self.env)))
+        self.switch(OPUS5, FABLE)
+        self.stop(2)
+        out = parse(self.hook("PreModelSwitch", pl, env=self.env))
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "allow")
 
 
 if __name__ == "__main__":

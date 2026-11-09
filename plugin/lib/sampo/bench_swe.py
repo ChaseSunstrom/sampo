@@ -415,19 +415,26 @@ def table(model, results):
     return "\n".join(out)
 
 
-def runs_cmd(args):
-    """sampo bench runs: every saved bench-swe run, bare and sampo side by side with the delta."""
-    from sampo import cli
-    base, shown, data = os.path.join(core.state_dir(), "bench-swe"), [], []
+def saved_runs():
+    """[(row, text)] for every saved bench-swe run."""
+    base, out = os.path.join(core.state_dir(), "bench-swe"), []
     for d in sorted(os.listdir(base)) if os.path.isdir(base) else []:
         try:
             with open(os.path.join(base, d, "summary.json"), encoding="utf-8") as f:
                 s = json.load(f)
         except (OSError, ValueError):
             continue
-        data.append({"run": d, "model": s.get("model"), "compare": compare(s.get("results", []))})
-        shown.append(f"{d}\n{table(s.get('model'), s.get('results', []))}")
-    return cli.out(args, data, "\n\n".join(shown) or "no bench swe runs yet (sampo bench swe)")
+        out.append(({"suite": "swe", "run": d, "model": s.get("model"), "compare": compare(s.get("results", []))},
+                    f"{d}\n{table(s.get('model'), s.get('results', []))}"))
+    return out
+
+
+def runs_cmd(args):
+    """sampo bench runs: every saved bench swe and tbench run (T-3747), bare and sampo side by side with the delta."""
+    from sampo import benchtb, cli
+    got = saved_runs() + benchtb.saved_runs()
+    return cli.out(args, {"runs": [row for row, _ in got]}, "\n\n".join(text for _, text in got)
+                   or "no bench swe or tbench runs yet (sampo bench swe, sampo bench tbench)")
 
 
 def _keep_trajectory(out_dir, iid, harness, traj):

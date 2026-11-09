@@ -103,6 +103,16 @@ class CloseFields(LandCase):
         self.fm("task", "finish", tid, "--commit", "again", check=False)
         self.assertEqual(self.log().count(f"one gate run ({tid})"), 1, "added once")
 
+    def test_a_changelog_field_of_none_adds_no_line(self):  # T-4075: T-4073's 'none: …' became a CHANGELOG bullet
+        for i, none in enumerate(("none: a repair, no code change", "None")):
+            tid = self.task()
+            self.fm("task", "set", tid, "--section", "Close fields", "--text", f"CHANGELOG: {none}\nDOCS: none: x")
+            with open(os.path.join(self.repo, f"w{i}.txt"), "w") as f:
+                f.write("w\n")
+            self.fm("task", "finish", tid, "--audit", "self review of the diff", "--commit", "work")
+            self.assertEqual(self.brief(tid).status, "done")
+            self.assertNotIn(f"({tid})", self.log(), none)
+
     def test_a_refused_close_adds_no_changelog_line(self):
         tid = self.task(ac="false")
         self.fm("task", "set", tid, "--section", "Close fields", "--text", f"CHANGELOG: x ({tid}).")
@@ -282,6 +292,23 @@ class Land(LandCase):
         self.assertEqual(sorted(touches), ["a.txt"])
         self.assertEqual(risky, [])
 
+    def test_a_lane_merged_into_another_lane_is_judged_on_its_own_work(self):  # T-4062
+        a = self.lane(1, "a.txt", when=OLD)
+        self.lane(2, "b.txt", when=OLD)
+        with open(os.path.join(self.repo, "risky.py"), "w") as f:  # another task's exec code lands on main first
+            f.write("import subprocess\nsubprocess.run('x', shell=True)\n")
+        self.git("add", "risky.py")
+        self.git("commit", "-qm", "another task's exec code")
+        main = self.git("rev-parse", "--abbrev-ref", "HEAD")
+        self.git("merge", "-q", "--no-edit", main, cwd=os.path.join(self.tmp, "lane1"))  # lane1 catches up
+        self.git("merge", "-q", "--no-edit", "foreman/lane1", cwd=os.path.join(self.tmp, "lane2"))  # lane2 takes it in
+        self.git("merge", "-q", "--no-ff", "--no-edit", "foreman/lane2")  # only lane2's merge is on main's line
+        from sampo import cli
+        p = c.find_project(self.repo)
+        touches, risky, _ = cli._task_files(p, c.find_brief(p, a))
+        self.assertEqual(sorted(touches), ["a.txt"])
+        self.assertEqual(risky, [])
+
     def test_a_lane_not_merged_is_judged_as_before(self):  # T-3968
         a = self.lane(1, "a.txt", when=OLD)
         with open(os.path.join(self.repo, "later.py"), "w") as f:
@@ -433,6 +460,12 @@ class Land(LandCase):
         c.save_brief(p, b)
         r = self.land()
         self.assertNotIn("no retry", r.stderr)
+        self.assertRegex(self.land().stderr, rf"left for a hand close {d}: .*no retry")
+        b = c.find_brief(p, d)  # T-4080: Sampo's own code changed since (T-4061 fixed T-3671's cause; it waited 6 h)
+        b.set_section("Log", re.sub(r"(?m)^(- \S+ land: close refused: .* @ \w+ \w*) \w+$", r"\1 0000beef",
+                                    b.section("Log")))
+        c.save_brief(p, b)
+        self.assertNotIn("no retry", self.land().stderr)
         b = c.find_brief(p, d)
         b.set_section("Approach", b.section("Approach") + "\nchanged\n")
         c.save_brief(p, b)

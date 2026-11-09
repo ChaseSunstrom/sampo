@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import time
+import types
 
 from helpers import ForemanTestCase
 
@@ -102,6 +103,20 @@ class SelfCheck(ForemanTestCase):
             os.remove(os.path.join(self.repo, rel))
         self.assertIsNone(selfcheck.untracked(self.p, [], time.time()))
 
+    def test_a_map_file_near_its_read_cap_is_named_before_a_close_goes_red(self):
+        # T-4057: files-lib-3.md reached 89,990 of 90,000 bytes; the next module mapped there turned test_docs red
+        self.assertIsNone(selfcheck.map_room(self.p, [], time.time()), "no MASTER.md, nothing to say")
+        os.makedirs(os.path.join(self.repo, "docs", "map"))
+        for rel, size in (("MASTER.md", 80000), ("docs/map/files-lib-9.md", c.MAP_FILE_BYTES - 500)):
+            with open(os.path.join(self.repo, rel), "w") as f:
+                f.write("x" * size)
+        hit = selfcheck.map_room(self.p, [], time.time())
+        self.assertTrue(hit.startswith("docs/map/files-lib-9.md has 500 bytes left of its 90000"), hit)
+        self.assertNotIn("MASTER.md has", hit, "10 KB of room is plenty")
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        self.assertIsNone(selfcheck.map_room(types.SimpleNamespace(root=root), [], time.time()),
+                          "Sampo's own map keeps 2 KB of room in every file")
+
     def ask(self, words, hours, **kw):
         tid = first(self.fm("capture", words, "--json", *kw.get("args", ())).stdout)["id"]
         b = c.find_brief(self.p, tid)
@@ -150,3 +165,79 @@ class SelfCheck(ForemanTestCase):
         self.assertIn("self-check: 2 of the user's asks", self.fm("next").stdout)
         note = self.hook("UserPromptSubmit", {"prompt": "hi", "session_id": "sess-1"}).stdout
         self.assertNotIn("self-check:", note, "the prompt note's 400 characters stay for the task and its next step")
+
+
+class SelfCheckBehaviour(ForemanTestCase):
+    """T-3482: what the user asked next, "why is this stuff taking so long just to push?" and "you need to be aware of
+    everything and all of your behavior": a job past its typical time, a command failing over and over, and the agent's
+    own wait-only turns, each from data Sampo records."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def gates(self, *totals, train=False):
+        for s in totals:
+            c.log_event(self.p, "check_run", data={"results": [{"cmd": "a", "exit": 0, "s": s * 0.4},
+                                                               {"cmd": "b", "exit": 0, "s": s * 0.6}],
+                                                   **({"train": ["T-1"]} if train else {})})
+
+    def test_a_live_job_past_1_5x_its_typical_time_is_named_with_both(self):
+        now = time.time()
+        self.gates(900, 840, 960, 3000)  # minutes 15, 14, 16 and one slow outlier: the median is 16 min
+        self.gates(60, 60, 60, train=True)  # the lane train's gate runs are another job
+        c.log_event(self.p, "check_run", data={"results": [{"cmd": "a", "exit": 1, "s": 5}]})  # a red run stops early
+        c.update_meta(self.p, gates_running={"pid": os.getpid(), "at": c.iso(now - 41 * 60), "root": self.repo})
+        self.assertEqual(selfcheck.slow_jobs(self.p, [], now),
+                         "the full gates run has run 41 min, 2.6x its typical 16 min → see what it waits on")
+        c.update_meta(self.p, gates_running={"pid": os.getpid(), "at": c.iso(now - 20 * 60), "root": self.repo})
+        self.assertIsNone(selfcheck.slow_jobs(self.p, [], now), "1.25x: within its usual spread")
+        c.update_meta(self.p, gates_running={"pid": 2 ** 22 + 7, "at": c.iso(now - 90 * 60), "root": self.repo})
+        self.assertIsNone(selfcheck.slow_jobs(self.p, [], now), "a marker whose process is gone isn't a running job")
+
+    def test_the_ships_test_run_is_timed_against_its_own_history(self):
+        now = time.time()
+        c.update_meta(self.p, ship_testing={"pid": os.getpid(), "at": c.iso(now - 30 * 60), "root": "/tmp/x"})
+        self.assertIsNone(selfcheck.slow_jobs(self.p, [], now), "no recorded ship: no typical, nothing said")
+        for s in (600, 660, 540):
+            c.log_event(self.p, "ship_test", data={"cmd": "python3 plugin/tests/run.py", "exit": 0, "s": s})
+        self.assertEqual(selfcheck.slow_jobs(self.p, [], now),
+                         "sampo ship's test run has run 30 min, 3.0x its typical 10 min → see what it waits on")
+
+    def evidence(self, task, cmd, ok):
+        c.log_event(self.p, "evidence", task=task, data={"step": 1, "cmd": cmd, "result": (
+            "exit 0 · Ran 3 tests" if ok else "✗ exit 1 · FAILED (failures=1)")})
+
+    def test_a_command_failing_three_times_in_an_hour_is_a_retry_storm(self):
+        self.evidence("T-1", "python3 plugin/tests/run.py test_x", True)
+        self.evidence("T-1", "python3 plugin/tests/run.py test_x", True)
+        self.evidence("T-1", "python3 plugin/tests/run.py test_x", True)  # TDD's own reruns pass: not a storm
+        c.log_event(self.p, "evidence", task="T-1", data={"cmd": "python3 plugin/tests/run.py test_x",
+                                                          "result": "red as expected (exit 1) · FAILED"})
+        self.assertIsNone(selfcheck.repeats(self.p, [], time.time()))
+        self.evidence("T-2", "nice -n 10 python3 plugin/tests/run.py   test_y", False)
+        self.evidence("T-2", "python3 plugin/tests/run.py test_y", False)
+        self.evidence("T-3", "sampo quiet -- python3 plugin/tests/run.py test_y", False)
+        self.evidence("T-3", "python3 plugin/tests/run.py test_y", True)
+        now = time.time()
+        self.assertEqual(selfcheck.repeats(self.p, [], now),
+                         "3 of 4 runs of `python3 plugin/tests/run.py test_y` in the last hour failed (T-2, T-3) → "
+                         "read why it fails before running it again")
+        self.assertIsNone(selfcheck.repeats(self.p, [], now + 3605), "an hour later: quiet")
+
+    def stop(self, msg):
+        return self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": msg})
+
+    def test_wait_only_replies_in_a_row_are_counted_and_any_other_reply_resets(self):
+        self.assertEqual(selfcheck.lines(self.p), [], "cached quiet before the waits")
+        for msg in ("Waiting on the ship's test run.", "Still waiting.", "The gates are running; waiting for them."):
+            self.stop(msg)
+        hit = selfcheck.wait_turns(self.p, [], time.time())
+        self.assertTrue(hit and hit.startswith("3 wait-only replies in a row over 0 min → name the slow job's elapsed"),
+                        hit)
+        self.assertIn("self-check: 3 wait-only replies", self.fm("next").stdout, "live, not behind the 5-minute cache")
+        self.assertIsNone(selfcheck.wait_turns(self.p, [], time.time() + selfcheck.WAIT_STALE_S + 1),
+                          "a session gone quiet since says nothing")
+        self.stop("Waiting on the build. " + "x" * 400)  # a long reply did work besides
+        self.assertIsNone(selfcheck.wait_turns(self.p, [], time.time()))

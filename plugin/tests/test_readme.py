@@ -3,6 +3,7 @@ private string), draws dark and light SVG diagrams from a spec, and checks a REA
 is named when a prompt or an edit is about a README."""
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -78,6 +79,17 @@ class Plan(SampoTestCase):
         brief = c.find_brief(c.find_project(self.repo), tid)
         self.assertIn("screenshot", brief.section("Figures"))
         self.assertIn("#/watch", brief.section("Figures"))
+
+
+class Recording(unittest.TestCase):
+    def test_tested_on_version_is_the_recorded_claude_code_version(self):  # T-3956: the two drifted before
+        root = os.path.dirname(PLUGIN)
+        with open(os.path.join(root, "demo", "live.cast"), encoding="utf-8") as f:
+            header, first = json.loads(f.readline()), json.loads(f.readline())
+        recorded = re.search(r"Claude Code\S*\s+v(\d+\.\d+\.\d+)", re.sub(r"\x1b\[[0-9;]*m", "", first[2])).group(1)
+        with open(os.path.join(root, "README.md"), encoding="utf-8") as f:
+            self.assertIn(f"tested on {recorded}", f.read())
+        self.assertNotIn("Foreman", header["title"])
 
 
 class Privacy(unittest.TestCase):

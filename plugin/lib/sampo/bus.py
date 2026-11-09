@@ -518,7 +518,12 @@ def _claim(data, p, me, task, rel, sym, seconds, advisory=False):
     nobody's edit."""
     data[f"{p.slug}:{rel}::{sym}@{me}" + (f"#{task}" if task else "")] = {
         "session": me, "task": task, "project": p.slug, "file": rel, "symbol": sym, "until": time.time() + seconds,
-        "advisory": advisory}
+        "advisory": advisory, "boot": _boot()}  # T-3928: a lease of an older boot is dropped by sampo recover
+
+
+def _boot():
+    from sampo import recover
+    return recover.boot()
 
 
 def preclaim(p, task_id, files, seconds=LEASE_S):

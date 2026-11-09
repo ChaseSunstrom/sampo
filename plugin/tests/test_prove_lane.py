@@ -46,6 +46,20 @@ class ProveLane(ForemanTestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("uncommitted", r.stdout + r.stderr)
 
+    def test_a_start_point_recorded_late_in_a_lane_is_its_fork_not_its_head(self):
+        # T-4069: a focus that kept no start point had evidence record HEAD, the fix commit: prove then carried no test
+        from sampo import core as c
+        p = c.find_project(self.lane)
+        b = c.find_brief(p, self.tid)
+        b.meta.pop("base", None)
+        b.meta.pop("base_tree", None)
+        c.save_brief(p, b)
+        self.fm("task", "evidence", self.tid, "--run", "python3 test_app.py", cwd=self.lane)
+        self.assertEqual(c.find_brief(p, self.tid).meta.get("base"), self.git("rev-parse", "HEAD").strip(),
+                         "the main checkout's HEAD, where the lane forked")
+        r = self.prove()
+        self.assertIn("proved: fails without the change", r.stdout, r.stdout + r.stderr)
+
     def test_a_merged_lane_proves_from_the_main_tree(self):
         self.git("merge", "--ff-only", "foreman/lane")
         r = self.prove()

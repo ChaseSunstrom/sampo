@@ -45,6 +45,27 @@ class Bus(Base):
         self.assertIn("freeze the API", self.note("sess-3")[1].get("additionalContext", ""))
         self.assertIn("freeze the API", self.note("sess-2")[1].get("additionalContext", ""))
 
+    def test_a_new_skill_reaches_live_sessions_once(self):
+        # T-3851: a session lists its skills when it starts; a skill a land adds is told to every live session once
+        import subprocess
+        from sampo import train
+        git = lambda *a: subprocess.run(["git", "-C", self.repo, *a], capture_output=True, text=True,  # noqa: E731
+                                        check=True).stdout.strip()
+        before = git("rev-parse", "HEAD")
+        path = os.path.join(self.repo, "plugin", "skills", "readme-visuals", "SKILL.md")
+        os.makedirs(os.path.dirname(path))
+        with open(path, "w") as f:
+            f.write("---\nname: readme-visuals\ndescription: Use whenever a README is drafted: screenshots, diagrams.\n"
+                    "---\nbody\n")
+        git("add", "plugin")
+        git("commit", "-qm", "skill")
+        self.assertEqual(train.announce_skills(self.repo, before, git("rev-parse", "HEAD")), ["readme-visuals"])
+        ctx = self.note("sess-7")[1].get("additionalContext", "")
+        for want in ("sampo:readme-visuals", path, "screenshots, diagrams"):
+            self.assertIn(want, ctx)
+        self.assertNotIn("readme-visuals", self.note("sess-7")[1].get("additionalContext", ""), "once")
+        self.assertEqual(train.announce_skills(self.repo, before, before), [], "nothing added: nothing sent")
+
     def test_a_send_without_its_text_says_how_instead_of_crashing(self):
         p = self.fm("bus", "send", "sess-2", check=False)
         self.assertNotIn("Traceback", p.stderr)

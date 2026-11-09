@@ -606,6 +606,9 @@ def _pick(root, wt, sha, tower):
         _git(wt, "checkout", "--ours", "--", *bad)
         _git(wt, "add", "--", *bad)
         r = c._git(wt, "-c", "core.editor=true", "commit", "-q", "--no-edit", "--allow-empty", timeout=60, proc=True)
+    if r.returncode and not bad and "is now empty" in r.stderr + r.stdout:
+        # T-4087: a pick main already holds (or a merge that changed nothing) adds nothing: skipped, not a refusal
+        r = c._git(wt, "cherry-pick", "--skip", timeout=60, proc=True)
     if r.returncode:
         _git(wt, "cherry-pick", "--abort", ok=True)
     return r
@@ -716,6 +719,7 @@ def ship(p, args):
             env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}  # GIT_DIR from a hook: not the user's repo
             tested = _git(wt, "rev-parse", "HEAD^{tree}").strip()  # T-2642: the tree the suite runs on is the tree pushed
             c.update_meta(p, ship_testing={"pid": os.getpid(), "at": c.now(), "root": os.path.realpath(wt)})
+            t0 = time.monotonic()
             env.setdefault("PYTHONUNBUFFERED", "1")
             env[c.SLOT_PRIORITY] = env.get(c.SLOT_PRIORITY) or "1"  # T-3614: its runs take freed CPU slots first
             log = os.path.join(tmp, "test.log")  # T-2255: a file, not a pipe: a background process holding it can't hang the ship
@@ -738,6 +742,9 @@ def ship(p, args):
             finally:
                 if (c.read_meta(p).get("ship_testing") or {}).get("pid") == os.getpid():
                     c.update_meta(p, ship_testing=None)
+            # T-3482: its typical time, for selfcheck.slow_jobs while a later ship's run is live
+            c.log_event(p, "ship_test", data={"cmd": c.fit(shlex.join(test), 200), "exit": failed,
+                                              "s": round(time.monotonic() - t0, 1)})
             if failed and _rerun_red(wt, tail, failed, env) is not None:
                 failed = 0  # T-3435: green alone is a flake; the baseline capture and the verdict get the rerun's
             from sampo import cli  # the shipped tree is vouchable, so the run files (or clears) what fm check would

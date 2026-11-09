@@ -208,12 +208,10 @@ console.log(JSON.stringify(out));
 """
 
 
-DRAWN = r"""
-const B = require(process.argv[1]);
-const fs = require("fs");
+CTX = r"""
 // a 2D context that records what a real canvas would throw on (negative radii, stops off [0, 1]) or draw nowhere (NaN)
 function ctx() {
-  const st = {ops: 0, bad: []}, o = {};
+  const st = {ops: 0, bad: [], texts: []}, o = {};
   let px = 10;
   const check = (k, a) => {
     if (a.some((x) => typeof x === "number" && !isFinite(x))) st.bad.push(k + " got a non-finite number");
@@ -228,6 +226,7 @@ function ctx() {
         check(k, a);
         return {addColorStop(u, c) { if (!(u >= 0 && u <= 1)) st.bad.push("a gradient stop off [0, 1]"); }};
       };
+      if (k === "fillText") return (t, ...a) => { st.ops++; check(k, a); st.texts.push(String(t)); };
       return (...a) => { st.ops++; check(k, a); };
     },
     set(_, k, v) {
@@ -239,6 +238,11 @@ function ctx() {
   });
   return {g, st};
 }
+"""
+DRAWN = r"""
+const B = require(process.argv[1]);
+const fs = require("fs");
+""" + CTX + r"""
 const sizes = [[120, 80], [360, 230], [430, 260], [520, 300], [760, 360]];
 const out = [];
 JSON.parse(fs.readFileSync(process.argv[2], "utf8")).forEach(([snap, hist], ci) => {
@@ -258,6 +262,17 @@ JSON.parse(fs.readFileSync(process.argv[2], "utf8")).forEach(([snap, hist], ci) 
   }
 });
 console.log(JSON.stringify(out));
+"""
+
+
+TEXTS = r"""
+const B = require(process.argv[1]);
+const fs = require("fs");
+""" + CTX + r"""
+const [snap, key, w, h] = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const p = B.boardModel(snap, []).panels.find((x) => x.key === key), {g, st} = ctx();
+B.DRAW[key].base(g, p.data, w, h, B.TOKENS, {});
+console.log(JSON.stringify(st.texts));
 """
 
 
@@ -325,6 +340,29 @@ class Model(SampoTestCase):
         self.assertTrue(t["sampo"]["commands"])
         self.assertEqual(by(empty)["loop"], None)
 
+    def test_the_lanes_footer_names_the_lanes_not_drawn_and_an_empty_hour_chart_says_so(self):  # T-4076
+        lanes = next(p for p in self.run_model([[big_snapshot(), []]])[0]["m"]["panels"] if p["key"] == "lanes")
+        self.assertEqual(len(lanes["data"]["clusters"]), 16)
+        self.assertIn("+34 more", lanes["foot"]["text"], "50 lanes out, 16 drawn: the rest are named")
+        snap = json.loads(read_text(os.path.join(FIX, "snap-5.json")))
+        snap["board"]["library"]["hourly"] = [0] * 24
+        src = os.path.join(self.tmp, "case.json")
+        with open(src, "w") as f:
+            json.dump([snap, "library", 520, 300], f)
+        out = subprocess.run([shutil.which("node") or "node", "-e", TEXTS, os.path.join(WEB, "board.js"), src],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        texts = json.loads(out.stdout)
+        self.assertIn("kept / hour · peak 0", texts, "nothing kept is peak 0, not 1")
+        self.assertIn("nothing kept in 24 h", texts, "a blank chart says why it is blank")
+
+    def test_a_fresh_servers_first_snapshot_has_no_cpu_reading_and_says_so(self):  # T-4076 QA round 2: read 0.0
+        snap = json.loads(read_text(os.path.join(FIX, "snap-5.json")))
+        snap["board"]["cpu"] = dict(snap["board"]["cpu"], now=None, minutes=[])  # cpu_part before its second read
+        cpu = next(p for p in self.run_model([[snap, []]])[0]["m"]["panels"] if p["key"] == "cpu")
+        self.assertEqual(cpu["foot"]["text"], "no CPU reading yet")
+        self.assertFalse(cpu["data"]["known"])
+
     def test_every_panel_draws_empty_typical_and_huge_data_at_every_size_without_a_fault(self):
         node = shutil.which("node")
         if not node:
@@ -363,6 +401,20 @@ class Model(SampoTestCase):
         self.assertEqual({x["proj"] for x in d["loops"]}, {"shop-api", "notes-app"})
         self.assertNotIn("vault", json.dumps(m), "a sensitive project is never drawn")
         self.assertFalse((next(p for p in got[1]["m"]["panels"] if p["key"] == "loop")["data"] or {}).get("all"))
+
+    def test_the_loop_panel_waits_until_the_first_snapshot_and_the_live_green_is_the_boards(self):
+        # T-4078: on a cold server the loop panel said 'no task in focus' before anything was read (sampo shot, 1600
+        # light, 2026-11-09); sampo critique found the near-duplicate greens #0A8656 and #0E8A5F
+        node = shutil.which("node") or self.skipTest("no node to run the page's code")
+        js = ("const B = require(process.argv[1]); "
+              "console.log(JSON.stringify([B.idle(''), B.idle('null')]))")
+        out = subprocess.run([node, "-e", js, os.path.join(WEB, "board.js")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        self.assertEqual(json.loads(out.stdout), ["waiting for the first snapshot", "no task in focus"],
+                         "before any update (dk '') it waits; after one with no focus (dk 'null') it says so")
+        css = read_text(os.path.join(WEB, "live.css"))
+        self.assertIn("--green:#0a8656", css.lower())
+        self.assertNotIn("#0e8a5f", css.lower())
 
     def test_the_tokens_file_and_the_stylesheet_agree(self):
         tokens = json.loads(read_text(os.path.join(WEB, "board-tokens.json")))

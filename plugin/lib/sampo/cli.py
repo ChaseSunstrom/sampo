@@ -688,6 +688,14 @@ def cmd_surprise(args):
     return out(args, rec, f"Surprise logged{f' on {task}' if task else ''}: sampo friction and sampo recall will bring it back.")
 
 
+def _late_base(root):
+    """T-2334: a task with no start point gets HEAD. T-4069: in a lane, where the lane forked from the main checkout:
+    the lane's own commits are the task's change (its HEAD, the fix itself, left prove no test file to carry)."""
+    main = c.main_worktree(root)
+    fork = main and c._git(root, "merge-base", "HEAD", c.git_head(main) or "HEAD", timeout=10, fail="").strip()
+    return fork or c.git_head(root)
+
+
 def cmd_task(args):
     p = resolve(args)
     sub = args.task_cmd
@@ -854,7 +862,7 @@ def cmd_task(args):
         # T-2334: a task made active without fm focus (fm task set status=active) or whose focus timed out on git has
         # no start point to tell its files apart; HEAD now, not a snapshot (one now would hide the edits made so far)
         cur = need_brief(p, args.id)  # T-2525: an open task only: one after a closed task's commit gives an empty diff
-        late = None if cur.meta.get("base") or cur.status in c.CLOSED or not c.git_root(p.root) else c.git_head(p.root)
+        late = None if cur.meta.get("base") or cur.status in c.CLOSED or not c.git_root(p.root) else _late_base(p.root)
 
         def record(b):
             if late and not b.meta.get("base"):
@@ -1386,10 +1394,19 @@ def _task_finish(p, args):
     stops it before the audits; the failing runs stay recorded."""
     b = need_brief(p, args.id)
     claims = parse_claims(getattr(args, "claim", None))  # a bad tag stops it before anything runs
+    lane = c._git(p.root, "rev-parse", "--abbrev-ref", "HEAD").strip() == (b.meta.get("lane_branch") or f"foreman/{b.id}")
+    if lane and not args.commit:  # T-4049: in its own lane, the close commits what it wrote
+        args.commit = f"{b.id}: close"
     if b.status == "dropped":  # T-0679 chaos test
         raise c.PolicyError(f"{b.id} is dropped: reopen it first (sampo task set {b.id} status=planned)")
     from sampo import lanes as slanes  # T-3500: what the builder's report recorded, where this call gives nothing
     fields = slanes.close_fields(b.section(slanes.CLOSE_FIELDS))
+    if getattr(args, "changelog", None):
+        fields["changelog"] = args.changelog
+    if lane and not fields.get("changelog") and _keeps_changelog(p):  # T-4054: the land refuses it later
+        raise c.PolicyError(f"{b.id} not finished, nothing ran: a lane close needs its CHANGELOG line, or the land "
+                            f"refuses it later: pass --changelog \"<what changed, for the user>\" (or a CHANGELOG: line "
+                            f"in its Close fields)")
     for k in ("lesson", "numbers", "docs"):
         if fields.get(k) and not getattr(args, k, None):
             setattr(args, k, fields[k])
@@ -1540,11 +1557,14 @@ def _task_finish(p, args):
         f"claim ({t}): {c.fit(x, 90)}" for t, x, _ in claims if t != "checked"]
     rc = cmd_task(args)
     why = (getattr(args, "why_not_caught", None) or "").strip()
-    caught = next((f for f in c.task_touches(p, b.id) if c.TESTISH.search(f)), None) if why else None
+    # T-1763: 'none …', 'new …' or 'n/a' work had nothing earlier to catch: skipped before anything is read or printed
+    why = "" if re.match(r"(?i)\s*(?:none|new|n/?a)\b", why) else why
+    # T-4055: the task's whole change (edits, scripted writes, commits, lane merges), not only the Edit-tool records
+    caught = next((f for f in sorted(_task_files(p, need_brief(p, b.id))[0]) if c.TESTISH.search(f)), None) \
+        if why else None
     if not rc and caught:  # T-1009: the close added the catching test; a follow-up would only be dropped
         print(f"{b.id}: the catch landed with it: {caught}")
-    elif not rc and why and not re.match(r"(?i)\s*(?:none|new|n/?a)\b", why):  # T-0598: the catch that was missing
-        # is its own task; T-1763: 'new …' or 'n/a' work had nothing earlier to catch
+    elif not rc and why:  # T-0598: the catch that was missing is its own task
         title = _title(f"Catch it earlier ({b.id}): {why}")  # T-3517: the source id is in the title
         from sampo import eco
         with c.lock(p.dir):
@@ -1611,12 +1631,24 @@ def _task_finish(p, args):
     return rc
 
 
+def _keeps_changelog(p):
+    """T-4054: the project's CHANGELOG.md has the '## Unreleased' heading _changelog_line writes under."""
+    try:
+        with open(os.path.join(p.root, "CHANGELOG.md"), encoding="utf-8") as f:
+            return "## Unreleased\n" in f.read()
+    except OSError:
+        return False
+
+
 def _changelog_line(p, b, fields):
     """T-3500: the CHANGELOG line the task's Close fields carry, under '## Unreleased' (its '### Everything else' when
     there is one), once: a CHANGELOG.md that has the task's own line (a bullet ending in (ID)) is left alone, as is a
     project without the heading or a line lanes.close_line refuses (a URL, a link, another task's id)."""
     from sampo import lanes as slanes
-    line = slanes.close_line(fields.get("changelog"), "changelog", b.id)[0] if fields.get("changelog") else ""
+    raw = fields.get("changelog") or ""
+    if re.match(r"\s*none\b", raw, re.I):  # T-4075: 'none: <why>' means no line, as DOCS and Docs impact read it
+        return
+    line = slanes.close_line(raw, "changelog", b.id)[0] if raw else ""
     path = os.path.join(p.root, "CHANGELOG.md")
     try:
         with open(path, encoding="utf-8") as f:
@@ -2137,12 +2169,19 @@ def _merged_lane_tip(p, b):
 def _lane_merge(p, base, tip):
     """T-4026: (from, to) for a merged lane's own change: the merge on HEAD's first-parent line that brought tip in,
     against its first parent. base..tip also held whatever the lane merged in from the build branch (a lane catching
-    up), so other tasks' files read as this one's. A lane fast-forwarded in has no merge of its own: base..tip."""
+    up), so other tasks' files read as this one's. A lane fast-forwarded in has no merge of its own: base..tip.
+    T-4062: a lane merged into another lane has no merge on HEAD's line at all: it is diffed from the newest commit of
+    that line it holds (the build it caught up with, or its fork point). Not bounded by base: a lane's recorded base
+    can be newer than its fork (T-3334's was 126 commits past the build it caught up with)."""
     line = (c._git(p.root, "rev-list", "--first-parent", "--ancestry-path", f"{tip}..HEAD", timeout=60, fail="")
             or "").split()
     m = line[-1] if line else ""
     if m and c._git(p.root, "merge-base", "--is-ancestor", tip, m + "^1", proc=True).returncode != 0:
         return m + "^1", m
+    if not line:
+        mine = set((c._git(p.root, "rev-list", tip, timeout=60, fail="") or "").split())
+        trunk = (c._git(p.root, "rev-list", "--first-parent", "HEAD", timeout=60, fail="") or "").split()
+        return next((x for x in trunk if x in mine), base), tip
     return base, tip
 
 
@@ -2200,12 +2239,34 @@ def _adversary_gaps(p, b, lenses, risky):
             if r.startswith("audit missing: adversary")]
 
 
+def _owed_companions(p, b, outside):
+    """T-4080: the files in outside that a file the task's scope names and the task added is owed, by how earlier files
+    of its shape were added (sampo shape: its fm alias, test, MASTER.md line; with MASTER.md its docs/map shards):
+    adding the file adds them. T-3273, T-3275, T-3276 and T-3285 were left for hand closes for them."""
+    base = c.task_base(p.root, b)
+    named = [s for s in b.meta.get("scope") or [] if not any(ch in s for ch in "*?[")]
+    if not base or not named:
+        return set()
+    had = set((c._git(p.root, "ls-tree", "-r", "--name-only", base, "--", *named, timeout=30, fail="") or "").splitlines())
+    from sampo import shape
+    owed = set()
+    for f in [f for f in named if f not in had][:3]:  # ponytail: 3 new files, one git log each; more if a task adds more
+        stem = os.path.splitext(os.path.basename(f))[0]
+        owed |= {o["template"].replace("<stem>", stem) for o in shape.owed(p.root, f) or []}
+    if "MASTER.md" in owed:
+        owed |= {f for f in outside if f.startswith("docs/map/")}
+    return owed & set(outside)
+
+
 def _scope_gaps(p, b, touches):
     """Edits outside the task's scope that no later 'scope:' reason covers (T-0055): done() refuses them, and finish
     asks before any check runs (T-3550: T-3163's close ran its gates, then was refused for one file)."""
     if not b.meta.get("scope"):
         return []
     outside = c.scope_drift(b, list(touches))
+    if outside:
+        owed = _owed_companions(p, b, outside)
+        outside = [f for f in outside if f not in owed]
     if not outside or c.scope_reason_covers(b, touches, outside):
         return []
     latest = max(outside, key=lambda f: touches.get(f, ""))  # T-0168: a reason counts after this edit
@@ -2448,9 +2509,15 @@ def _commit_task(p, b, message, dry=False, stack=False, check=None, with_=None):
     for e in c.ledger_tail(p, c.TASK_WINDOW):
         f = (e.get("data") or {}).get("file") if e.get("event") == "touched" and e.get("task") == b.id else None
         if f and not f.startswith(p.root.rstrip("/") + "/") and (r := c.git_root(os.path.dirname(f))):
-            elsewhere.setdefault(r, set()).add(f)
-    for r, fs in elsewhere.items() if not dry else ():
-        print(f"{b.id}: {len(fs)} edited file(s) in {r} not committed (another repo): commit them there.")
+            elsewhere.setdefault(r, set()).add(os.path.realpath(f))
+    for r in list(elsewhere) if not dry else ():  # T-4039: only what that repo still shows uncommitted, not a removed
+        st = c._git(r, "status", "--porcelain", "-z", "-uall", "--no-renames", "--",  # worktree's edits or committed ones
+                    *sorted(elsewhere[r]), timeout=30)
+        n = sum(len(e) > 3 for e in st.split("\0"))
+        if n:
+            print(f"{b.id}: {n} edited file(s) in {r} not committed (another repo): commit them there.")
+        else:
+            del elsewhere[r]
     if not files:
         if not dry:
             print(f"{b.id}: nothing to commit{' here' if elsewhere else ''}.")
@@ -3782,7 +3849,7 @@ def task_set(p, args):
         op = k[-1] if k[-1:] in ("+", "-") and k[:-1] in LIST_FIELDS else ""  # T-3377: scope+=a,b appends; scope-=a removes
         if op:
             k = k[:-1]
-            items = _check_deps(p, args.id, _list_value(v)) if k == "depends_on" and op == "+" else _list_value(v)  # T-3420
+            items = _check_deps(p, args.id, _list_value(v)) if k == "depends_on" and op == "+" else _list_value(v, k == "scope")  # T-3420
             changes[k] = (changes.get(k) or ([("=", [])] if k in changes else [])) + [(op, items)]  # resolved in apply(), under the lock
             continue
         if k not in EDITABLE:
@@ -3837,7 +3904,7 @@ def task_set(p, args):
                 raise UsageError(f"{k} is fixed once work has started (sampo focus); the close scores it as planned")
         if k == "priority" and v not in ("normal", "urgent"):
             raise UsageError("priority must be normal or urgent")
-        changes[k] = [("=", _check_deps(p, args.id, _list_value(v)) if k == "depends_on" else _list_value(v))] \
+        changes[k] = [("=", _check_deps(p, args.id, _list_value(v)) if k == "depends_on" else _list_value(v, k == "scope"))] \
             if k in LIST_FIELDS else (v == "true" if k in ("explore", "approved") else v)
     pairs = _section_pairs(args)
 
@@ -3924,10 +3991,13 @@ def _filled(b, result=None):
     return result
 
 
-def _list_value(v):
-    """T-0810: a,b or [a, b] or ["a","b"]: the items, without one pair of brackets or the quotes around each."""
+def _list_value(v, paths=False):
+    """T-0810: a,b or [a, b] or ["a","b"]: the items, without one pair of brackets or the quotes around each. paths: split
+    on spaces too, as --scope does (T-4080: T-3285's scope='a.py b.py' was stored as one path)."""
     v = v.strip()
     v = v[1:-1] if v.startswith("[") and v.endswith("]") else v
+    if paths:
+        return _scope_paths([v])
     return [x.strip().strip("'\"").strip() for x in v.split(",") if x.strip().strip("'\"").strip()]
 
 
@@ -6511,7 +6581,11 @@ def cmd_audit(args):
     branch, upto = b.meta.get("lane_branch"), "working tree, untracked files included"
     if branch and not args.base and c._git(p.root, "rev-parse", "--verify", "-q", f"refs/heads/{branch}", fail=None):
         # T-0718: a builder's work is on its branch: from where it left main, not main's own commits since
-        base, tree, upto = c._git(p.root, "merge-base", "HEAD", branch).strip() or base, branch, f"branch {branch}"
+        tip = _merged_lane_tip(p, b)
+        if tip:  # T-3972: once merged, merge-base HEAD branch is the tip: an empty diff; judge its own merge (T-3968)
+            (base, tree), upto = _lane_merge(p, base, tip), f"merged lane {branch} at {tip[:9]}"
+        else:
+            base, tree, upto = c._git(p.root, "merge-base", "HEAD", branch).strip() or base, branch, f"branch {branch}"
     pairs = [(base, tree)]
     # T-1296: edits not yet committed in this checkout belong to the task as well, but only while it is this
     # checkout's own task (T-1579: a lane task's review shouldn't carry whatever the main checkout is working on)
@@ -7419,6 +7493,8 @@ def _build_parser(only=None):
     t.add_argument("--skip-affected", metavar="WHY", help="T-1117: close without the linked tests' verdict (a runner "
                                                          "sampo can't read, a known-red suite), logged with WHY")
     t.add_argument("--lesson")
+    t.add_argument("--changelog", metavar="LINE", help="the CHANGELOG line, written under Unreleased (else the Close "
+                                                       "fields' CHANGELOG:); a close in the task's lane needs one (T-4054)")
     t.add_argument("--ablate", action="store_true", help="T-1067: revert each hunk alone against the linked tests and "
                                                          "report the ones no test notices (slow)")
     t.add_argument("--timeout", type=float, default=600)
@@ -7650,6 +7726,9 @@ def _build_parser(only=None):
     s.add_argument("--type", default="note", choices=["note", "steer", "stop"])
     s.add_argument("--wake", action="store_true",
                    help="wake an idle session: its watcher prints the mail, else one line typed into its tmux pane")
+    s = add("recover", lazy("sampo.recover", "cmd_recover"), tier=("Running elsewhere", 1295),
+            help="after a restart nobody announced: restart the interrupted lands, trains and runs with their own arguments, "
+                 "abort a half-done merge, drop old locks and leases, snapshot dead builders' lanes (T-3928)")
     s = add("lease", lazy("sampo.bus", "cmd_lease"), tier=("Running elsewhere", 1300), help="function-level edit leases between sessions (T-0708)")
     s.add_argument("action", nargs="?", default="list", choices=["list", "take", "drop"])
     s.add_argument("target", nargs="*", help="FILE[::SYMBOL]...")
@@ -8195,6 +8274,10 @@ def _build_parser(only=None):
             help="what the user had to point out: logged misses by class and per day (T-3126)")
     s.add_argument("--days", type=int, default=30, help="how far back to count")
     s.add_argument("--sweep", action="store_true", help="ask the local model about recent unmatched questions first")
+    s.add_argument("--why", action="store_true", help="a cause, a causal chain to a structural root and a detector for "
+                                                      "each miss; roots clustered; remotes merged (T-3931)")
+    s.add_argument("--local", action="store_true", help="why: this project only, no conductor remotes")
+    s.add_argument("--no-capture", action="store_true", help="why: do not file one detector task per root")
 
     s = add("sync", lazy("sampo.sync", "cmd_sync"), tier=("Project and settings", 790),
             help="opt-in mirror of this project's briefs, decisions and research in the repo (.sampo/)")
@@ -8365,7 +8448,8 @@ def _build_parser(only=None):
     b.add_argument("--keep-images", action="store_true", help="keep the images this run pulled (default: remove)")
     b.add_argument("--harness", choices=("bare", "sampo", "both"), default="both",
                    help="bare: the model alone in a minimal loop (control); sampo: Smith with everything Sampo adds")
-    b = bsp.add_parser("runs", help="saved bench swe runs: bare and sampo side by side with the delta (T-3746)")
+    b = bsp.add_parser("runs", help="saved bench swe and tbench runs: bare and sampo side by side with the delta "
+                                    "(T-3746, T-3747)")
     b.add_argument("--json", action="store_true")
     b.add_argument("-p", "--project", default=argparse.SUPPRESS)
     b = bsp.add_parser("seed-review", help="bench a reviewer on planted one-line bugs (T-0646)")
@@ -8403,6 +8487,18 @@ def _build_parser(only=None):
     b.add_argument("case", help="the case id")
     b.add_argument("--budget", type=float, help="USD per session (default: the run's own, else 3)")
     b.add_argument("--timeout", type=int, default=30, help="minutes per session")
+    b = bsp.add_parser("tbench", help="Terminal-Bench tasks through Sampo's own agent in docker: any model profile, "
+                                      "the task's own tests grade it (T-3747)")
+    b.add_argument("--json", action="store_true")
+    b.add_argument("-p", "--project", default=argparse.SUPPRESS)
+    b.add_argument("--model", help="the model profile (default: the first local one)")
+    b.add_argument("--n", type=int, default=20, help="tasks to run (default 20)")
+    b.add_argument("--category", help="only this category's tasks")
+    b.add_argument("--only", nargs="+", metavar="ID", help="only these task ids")
+    b.add_argument("--tasks", metavar="DIR", help="a task set folder (default: fetched once into ~/.cache/claude-ops/bench)")
+    b.add_argument("--max-steps", type=int, default=40, help="model turns per task (default 40)")
+    b.add_argument("--harness", choices=("bare", "sampo", "both"), default="both",
+                   help="bare: the model alone (the control); sampo: with Sampo's agent; both (default): each task twice")
     b = bsp.add_parser("hygiene", help="cases that pass or fail the same in every saved run: they tell no version "
                                         "from another (T-0656)")
     b.add_argument("--json", action="store_true")
@@ -9095,6 +9191,9 @@ def _build_parser(only=None):
                    "as research or answered, and its last step can't end with nothing changed")
     s.add_argument("--max-steps", type=int, help="model turns for the whole run (default 40; a resume keeps the "
                                                  "run's own unless given)")
+    s.add_argument("--deadline", type=float, metavar="SECONDS", help="the run's wall clock from its start: each turn "
+                   "tells the model the time left, the last tenth asks it to finish, and past it the run stops itself "
+                   "with a --resume hint (T-4083: a caller's kill leaves no trail)")
     s.add_argument("--max-usd", type=float, metavar="USD", help="stop the run once it has spent this many dollars "
                    "(priced calls only: a claude CLI's own count, or a models.json profile's price); claude turns get "
                    "--max-budget-usd with what is left; a resume keeps the run's own unless given")
@@ -9384,6 +9483,10 @@ def _build_parser(only=None):
             help="shorten big Bash outputs for the model (head, failure lines, tail; full text in a file)")
     s.add_argument("state", nargs="?", choices=["on", "off", "shadow", "status"],
                    help="shadow: record what it would cut (sampo compact-output shows the total), never shorten")
+    s = add("models", lazy("sampo.modelup", "cmd_models"), tier=("Project and settings", 831),
+            help="keep models newest and best (models.newest, on): status, newest on|off, pin NAME|off [--codex]")
+    s.add_argument("words", nargs="*", help="status | newest on|off | pin NAME|off")
+    s.add_argument("--codex", action="store_true", help="pin the Codex model instead of Claude's")
     s = add("uninstall-user", lazy("sampo.setup", "cmd_uninstall"), tier=("Internal (hooks and installer)", 1340), help="undo install-user from the manifest")
     s.add_argument("--dry-run", action="store_true")
     by_title = {}
@@ -9534,7 +9637,10 @@ def _task_shape(parser, argv):
         rest[1] = ACT_SYNONYMS[rest[1]]
     lone = (len(rest) > 1 and not rest[1].startswith("-") and not rest[1].isdigit()  # an option or a step number
             and not (len(rest) > 2 and not rest[2].startswith("-")))  # T-2540: a second bare word is unquoted text
-    verbish = sub == "ac" and re.fullmatch(r"[a-z]+", rest[1] if len(rest) > 1 else "")  # T-3372: `ac ID list` is a verb, never a criterion: argparse refuses it, naming the verbs
+    word = rest[1] if len(rest) > 1 else ""  # T-4067: `step ID list` filed a step 'list'; any task verb is a verb
+    verbish = re.fullmatch(r"[a-z]+", word) and (sub == "ac" or word in set(tsub.choices) | {
+        x for s in tsub.choices.values() for a in s._actions if not a.option_strings and a.choices for x in a.choices})
+    # T-3372: `ac ID list` is a verb, never a criterion: argparse refuses it, naming the verbs
     if acts and "add" in acts and lone and not verbish and _TASK_ID.match(rest[0]) and rest[1] not in acts and (
             " " in rest[1] or not difflib.get_close_matches(rest[1].lower(), acts)):
         rest = [rest[0], "add"] + rest[1:]  # review: a one-word typo stays an error; T-1903: a lone word nothing resembles is one
@@ -9661,7 +9767,9 @@ def main(argv=None):
         _sync_in(args)
     stop = _stack_dumps(args.cmd) if args.cmd in LONG_VERBS else None
     try:
-        rc = args.fn(args)
+        from sampo import recover  # T-3928: a long job journals itself, so a reboot that kills it is found again
+        with recover.around(args, argv):
+            rc = args.fn(args)
         return rc if isinstance(rc, int) else 0  # evidence --run / check pass on the command's exit code
     except c.PolicyError as e:
         print(f"sampo: refused: {e}", file=sys.stderr)
