@@ -22,7 +22,7 @@ export type FmLane = { id: string; type: string; tier: string; title: string; st
   files?: string[] } // T-3701: the files its leases hold (at most 12), for the LANES picture's dots
 /** T-3701: the merge train for the MERGE picture: whether one runs now (its lock held), the lanes landed in the last day
  * (ids, newest last, at most 12, landed_at when each landed, and how many), the lanes parked (a conflict or a refusal) in that day */
-export type FmTrain = { running: boolean; landed: string[]; landed_at?: string[]; landed_24h: number; parked: number }
+export type FmTrain = { running: boolean; landed: string[]; landed_at?: string[]; landed_24h: number; parked: number; branch?: string }
 /** T-3701: who called which model in the last five minutes (calls n, hot: in the last minute), for the MODELS picture */
 export type FmFlow = { from: string; to: string; n: number; hot: number }
 /** T-3701: the live page Board's slow parts (cache/board.json, read again at most every 30 s) for the pane's LIBRARY,

@@ -362,6 +362,7 @@ class UiView(ForemanTestCase):
         v = json.loads(self.fm("ui", "--json").stdout)
         self.assertEqual((v["train"]["running"], v["train"]["landed"], v["train"]["landed_24h"], v["train"]["parked"]),
                          (False, ["T-0900"], 1, 1))
+        self.assertEqual(v["train"]["branch"], "main")  # T-4008: the branch it lands on, the repo's, not foreman/build
         self.assertRegex(v["train"]["landed_at"][0], r"^\d{4}-\d\d-\d\dT\d\d:\d\d")  # when it landed: the list's time column
         lane_row = next(x for x in v["lanes"]["building"] if x["id"] == tid)
         self.assertEqual(lane_row["files"], ["src/app.py", "src/util.py"])  # a symbol's lease names its file
@@ -418,6 +419,22 @@ class UiView(ForemanTestCase):
             watch._board_extras(p)  # a refresh already started: no second one
         self.assertEqual(run.call_count, 1)
         self.assertEqual(run.call_args[0][0][-2:], ["ui", "--board-cache"])
+
+    def test_a_sampo_command_shows_on_the_next_poll_not_the_next_board_cache(self):
+        # T-4008: the SAMPO panel said "no sampo commands seen yet" for the 30 s board.json lives, while they ran
+        from sampo import core as c
+        self.fm("ui", "--board-cache")
+        p = c.find_project(self.repo)
+        with open(os.path.join(c.state_dir(), "events.jsonl"), "a") as f:
+            for i, (cmd, kind) in enumerate([("ls && sampo task show T-0001", "tool"), ("sampo nope", "tool_fail"),
+                                             ("git status", "tool")]):
+                f.write(json.dumps({"ts": f"2030-01-01T00:00:0{i}Z", "kind": kind, "tool": "Bash", "project": p.slug,
+                                    "target": cmd}) + "\n")
+            f.write(json.dumps({"ts": "2030-01-01T00:00:09Z", "kind": "tool", "tool": "Bash", "project": "other-1",
+                                "target": "sampo state"}) + "\n")
+        v = json.loads(self.fm("ui", "--json").stdout)
+        self.assertEqual([(x["cmd"], x["ok"]) for x in v["board"]["commands"]],
+                         [("sampo task show T-0001", True), ("sampo nope", False)])
 
     def test_the_board_cache_keeps_the_cpu_by_kind_a_minute_a_bar(self):
         # T-3701: the pane's CPU panel as the web Board's: the cores each kind uses now, and a bar a minute of the last

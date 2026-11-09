@@ -469,9 +469,9 @@ Only the Ward (on tool calls that can change something) and the write validators
 
 ## Where you see it
 
-**In Claude Code**, the `sampo-ui` mod draws Sampo live: the band above the prompt with the task, its stage rail and step bar and a live tree of every call; compact rows in the chat; `/fm` for the dashboard; a true-color status line below.
+**In Claude Code**, the `sampo-ui` mod draws Sampo live: the Board pane beside the chat (`/fm`), ten panels sized to the dock (lanes, merge train, CPU, loop, library, models, commands, state, sessions, tests); a live tree of this session's calls; compact chat rows; a true-color status line.
 
-<p align="center"><img src="docs/assets/screens/claude-code.png" width="960" alt="Claude Code with the sampo-ui mod, mid-task on a seeded bug: the chat as a tree of compact rows (a failing assert, the one-line diff, the new test), the band showing FIX small T-0001 verifying with its stage rail and step bar, a live tree of this session's calls with time bars, and the status line with model, context, spend and the task"></p>
+<p align="center"><img src="docs/assets/screens/claude-code.png" width="960" alt="Claude Code with the sampo-ui mod, mid-task on a seeded bug: the chat as a tree of compact rows (the one-line diff, the evidence, the new test), the Board pane beside it with FIX T-0001 verifying in its header and its ten panels in a two-column grid (the merge train into main, the CPU by kind, the loop's brief, the models called, the sampo commands run, the state folder, the session), a live tree of this session's calls with time bars, and the status line with model, context, spend and the task"></p>
 <p align="center"><sub>A real session, recorded by <code>demo/record_live.py</code> in a throwaway repo (<a href="demo/live.mp4">the whole 30-second run, MP4</a>).</sub></p>
 
 **In a terminal**, `sampo smith` runs the same loop on any model and draws it: the stations from plan to close, each check, what changed, time and tokens per call.

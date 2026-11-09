@@ -51,6 +51,8 @@ def start(a, cmd=None):
            "-e", f"FOREMAN_STATE={own}" if own else "FOREMAN_ONEOFF=1"]
     if getattr(a, "view", None):  # T-3701: the mod draws a recorded view: FOREMAN_FM is a stub that answers `ui` with it
         env += ["-e", f"FOREMAN_FM={stub_fm(a.view)}"]
+    elif getattr(a, "fm", None):  # T-4008: the demo recorder's view from its own checkout's Sampo, not the installed one
+        env += ["-e", f"FOREMAN_FM={a.fm}"]
     # T-2055: settings = a JSON string for --settings (the demo recorder turns off every non-Sampo plugin with it)
     tmux("new-session", "-d", "-s", SESSION, "-x", str(a.cols), "-y", str(a.rows), "-c", os.path.abspath(a.dir), *env,
          cmd or f"claude --plugin-dir {MOD}" + (f" --model {a.model}" if getattr(a, "model", None) else "")

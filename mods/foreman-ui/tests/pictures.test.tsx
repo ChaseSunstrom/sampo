@@ -59,16 +59,16 @@ test('canvas: lines and curves reach both ends; a trapezoid fills between its ed
 })
 
 const MERGE = { waiting: [{ id: 'T-0023', title: 'Tidy the date helpers', color: 0xffaa00, frac: 1 }, { id: 'T-0024', title: 'Cache the view', color: 0x9d8cff, frac: 0.5 }],
-  landed: [{ id: 'T-0015', at: '2026-01-02T08:05:00Z' }, { id: 'T-0016', at: '2026-01-02T09:41:00Z' }], landed24: 2, running: false }
+  landed: [{ id: 'T-0015', at: '2026-01-02T08:05:00Z' }, { id: 'T-0016', at: '2026-01-02T09:41:00Z' }], landed24: 2, running: false, branch: 'main' }
 /** an ISO time as this machine's HH:MM: what a landed row and a state entry show */
 const local = (iso: string) => { const t = new Date(iso); return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}` }
 
-test('MERGE TRAIN: lane boxes pour into the gate, out into foreman/build; what landed, a ✓ and its time a row; packets while a train runs', () => {
+test('MERGE TRAIN: lane boxes pour into the gate, out into the branch it lands on; what landed, a ✓ and its time a row; packets while a train runs', () => {
   setPalette('default')
   const still = mergePicture(70, 16, MERGE)
   expect(still.live).toBeNull() // no train: a still picture
   const text = textOf(decode(still.cells))
-  for (const s of [' T-0023 ', 'Tidy the date helpers', 'gate', 'foreman/build', '2 landed · 24 h', `✓ T-0016`, local('2026-01-02T09:41:00Z'), '✓ T-0015'])
+  for (const s of [' T-0023 ', 'Tidy the date helpers', 'gate', 'main', '2 landed · 24 h', `✓ T-0016`, local('2026-01-02T09:41:00Z'), '✓ T-0015'])
     expect([s, text.includes(s)]).toEqual([s, true])
   expect(text.indexOf('✓ T-0016')).toBeLessThan(text.indexOf('✓ T-0015')) // the newest first
   expect(text).not.toContain('GATES')
@@ -77,7 +77,11 @@ test('MERGE TRAIN: lane boxes pour into the gate, out into foreman/build; what l
   const span = (k: 0 | 1) => new Set(gold.map(g => g[k])).size
   expect([span(0) >= 8, span(1) >= 4]).toEqual([true, true]) // the gate: a funnel about as wide as it is tall, outlined in gold
   const tight = textOf(decode(mergePicture(43, 15, MERGE).cells)) // a panel 43 wide: titles on two lines, whole words
-  for (const s of ['Tidy the', 'date helpers', 'foreman/build', '2 landed · 24 h']) expect([s, tight.includes(s)]).toEqual([s, true])
+  for (const s of ['Tidy the', 'date helpers', 'main', '2 landed · 24 h']) expect([s, tight.includes(s)]).toEqual([s, true])
+  // T-4008: the repo's branch, never foreman/build in every repo ('build' when unknown); an empty train in whole words
+  expect(textOf(decode(mergePicture(70, 16, { ...MERGE, branch: undefined }).cells))).not.toContain('foreman/build')
+  const none = textOf(decode(mergePicture(43, 15, { ...MERGE, waiting: [] }).cells))
+  expect([none.includes('no lanes'), none.includes('…')]).toEqual([true, false])
   const many = { ...MERGE, landed: Array.from({ length: 9 }, (_, i) => ({ id: `T-00${30 + i}`, at: '2026-01-02T09:00:00Z' })), landed24: 9 }
   expect(textOf(decode(mergePicture(70, 14, many).cells))).toMatch(/\+\d more/) // more than its rows: the last says how many
   const run = mergePicture(70, 16, { ...MERGE, running: true })
@@ -355,13 +359,25 @@ test('a dock too short for all ten: the panels the state makes relevant first, o
   world(on, BUSY)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   // lanes building and waiting, a train, a task, models called: LANES, MERGE, LOOP, MODELS lead; the rest after
+  // T-4008: whole rows only: the pictures grow to fill the dock, so no panel is cut at its foot (the README's recording)
   const top = await $.ui.mount(PANE(76, 40))
-  expect(await pics(top)).toEqual(['panel-lanes-pic', 'panel-merge-pic', 'panel-loop-pic'])
+  expect(await pics(top)).toEqual(['panel-lanes-pic', 'panel-merge-pic'])
   expect(await top.find({ key: 'panel-tests-head' })).toBeDefined() // off screen: its chrome, no picture drawn
   await top.unmount()
   const down = await $.ui.mount(PANE(76, 40, 'terminal', 40)) // scrolled a screen down
-  expect(await pics(down)).toEqual(['panel-loop-pic', 'panel-models-pic', 'panel-cpu-pic', 'panel-library-pic'])
+  expect(await pics(down)).toEqual(['panel-loop-pic', 'panel-models-pic', 'panel-cpu-pic'])
   await down.unmount()
+})
+
+test('an empty panel says what it lacks once: in its picture, not again in its foot', async ($, on) => {
+  // T-4008: the README's recording read "no builder lanes out" twice in one panel
+  world(on, { ...TASK, active: null, cpu: null, board: {} }) // no lanes, no task, no CPU reading, no test run
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount(PANE(90, 200))
+  for (const k of ['lanes', 'tests', 'cpu', 'loop']) expect([k, !!(await ui.find({ key: `panel-${k}-head` }))]).toEqual([k, true])
+  for (const t of [/no builder lanes out/, /no test run seen yet/, /no CPU reading yet/, /no task in focus/]) // drawn in the picture
+    expect([String(t), await ui.find({ type: 'Text', text: t })]).toEqual([String(t), undefined])
+  await ui.unmount()
 })
 
 test('off the terminal each panel is its words; a session starts on the page the store kept', async ($, on) => {

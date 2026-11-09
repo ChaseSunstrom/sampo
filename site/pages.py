@@ -954,9 +954,9 @@ PAGES = [
           "chat (<code>/fm</code>): the Board's panels in a grid that fits the dock, the ones that matter now first."
           "</li><li><strong>Compact rows</strong> in the chat: a mark, a bold label and the one line that matters."
           "</li><li><strong>The status line</strong> under the prompt: model, context, spend and the task.</li></ul>"),
-         ("raw", '<img class="shot" src="../assets/docs/claude-code.png" width="1546" height="890" loading="lazy" '
-                 'alt="Claude Code with the sampo-ui mod, mid-task: the chat as a tree of compact rows, the band with the '
-                 'task, its stage rail and step bar, and the status line">'),
+         ("raw", '<img class="shot" src="../assets/docs/claude-code.png" width="1816" height="1688" loading="lazy" '
+                 'alt="Claude Code with the sampo-ui mod, mid-task: the chat as a tree of compact rows, the Board pane '
+                 'beside it with the task in its header and its ten panels in a grid, and the status line">'),
          ("text", "In a terminal", "<p><code>sampo smith</code> runs the same loop on any model and draws it: the "
           "stations from plan to close, each check, what changed, and the time and tokens of every call.</p>"),
          ("raw", '<figure class="dia">' + themed("smith-tui", "sampo smith after a closed run: the plan and its steps "

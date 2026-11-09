@@ -240,7 +240,7 @@ function picture(input: string, cols: number, rows: number, draw: (cv: Canvas) =
 // steps along the bottom edge) pouring a curve into the gate, a funnel labelled above; out of the gate a band into
 // foreman/build and what landed in the last day, and under the box the lanes landed, a ✓ and the time each.
 export type MergeIn = { waiting: { id: string; title: string; color: number; frac: number }[]; landed: { id: string; at: string }[]
-  landed24: number; running: boolean }
+  landed24: number; running: boolean; branch?: string }
 const words = (s: string, n: number) => {
   let out = ''
   for (const w of s.split(/\s+/).filter(Boolean).slice(0, 3)) {
@@ -261,7 +261,7 @@ export function mergePicture(cols: number, rows: number, d: MergeIn): Picture {
   return picture(`merge ${cols}x${rows} ${JSON.stringify(d)}`, cols, rows, cv => {
     const W = cols, H = rows * 2, edge = mix(C.line, C.dim, 0.5)
     // right to left: the build's box as wide as its words, the gate three columns before it, the lanes the rest
-    const name = W >= 40 ? 'foreman/build' : 'build'
+    const name = fit(d.branch || 'build', W >= 40 ? 18 : 7) // T-4008: the branch it lands on, not foreman/build in every repo
     const said = W >= 40 ? `${d.landed24} landed · 24 h` : `${d.landed24} landed`
     const RW = clamp(Math.max(name.length, said.length) + 2, 9, 20), bx = W - RW
     const gw = clamp(Math.round(W * 0.14), 6, 14), gx1 = bx - 2, gx0 = gx1 - gw // the gate about as wide as it is tall
@@ -295,7 +295,7 @@ export function mergePicture(cols: number, rows: number, d: MergeIn): Picture {
       for (let c = 0; c < LW - 2; c++) cv.write(2 + c, r + bh - 1, c < bar ? '━' : '─', c < bar ? l.color : edge, inside)
     })
     if (more > 0) cv.write(2, Math.min(rows - 1, top + n * bh), `+${more} more`, C.dim)
-    if (!d.waiting.length) cv.write(1, Math.floor(rows / 2), fit('no lanes waiting', gx0 - 2), C.dim)
+    if (!d.waiting.length) cv.write(1, Math.floor(rows / 2), words('no lanes waiting', gx0 - 2), C.dim) // T-4008: whole words, never 'waiti…'
     // out of the gate into the build: a band to the box, the lanes landed under it, newest first
     const L = d.landed.slice().reverse()
     const br = clamp(Math.floor(rows / 2) - 2, 0, Math.max(0, rows - 4 - Math.min(L.length || 1, 4)))

@@ -1755,14 +1755,20 @@ export const register: Register = (on, options) => {
       const layout = gridRows(ORDER.length, ncol, W, gapX), nrow = layout.length // a short last row widens: no empty slot
       // a picture's rows: as many as let every row of panels fit the dock (with the head and the controls), 12 to 24:
       // under 12 a picture says too little, so a short dock scrolls
-      const PH = Math.max(12, Math.min(24, Math.floor((H - headRows - 3 - (nrow - 1)) / nrow) - 2))
-      const used = headRows + 1 + nrow * (PH + 2) + (nrow - 1)
+      // T-4008: a dock too short for every row shows whole rows at the top: as many as fit with 12-row pictures, the
+      // pictures grown to fill the dock and the lines left over above the grid, so no panel is cut at the dock's foot
+      const fitAll = Math.floor((H - headRows - 2) / nrow) - 3 // every row and the controls
+      const fit = fitAll >= 12 ? nrow : Math.max(1, Math.floor((H - headRows) / 15))
+      const PH = fit === nrow ? Math.min(24, fitAll) : Math.max(12, Math.min(24, Math.floor((H - headRows) / fit) - 3))
+      const gapHead = fit === nrow ? 1 : Math.max(1, H - headRows - fit * (PH + 3) + 1)
+      const used = headRows + gapHead + nrow * (PH + 2) + (nrow - 1)
       const hot = new Set<string>([...(ln.merging.length || train?.running ? ['merge'] : []), ...(ln.building.length ? ['lanes'] : []),
         ...(a ? ['loop'] : []), ...(flows.some(f => f.hot) ? ['models'] : [])])
       const order = used + 2 <= H ? [...ORDER] : [...ORDER.filter(k => hot.has(k)), ...ORDER.filter(k => !hot.has(k))]
       const off = e.props.scroll?.offset ?? 0
       let pw = 0 // the width of the panel being drawn: its row's share
-      const note = (...lines: string[]) => () => notePicture(pw, PH, lines.filter(Boolean))
+      // T-4008: a note's first line is what its panel lacks; the foot doesn't say it again
+      const note = (...lines: string[]) => Object.assign(() => notePicture(pw, PH, lines.filter(Boolean)), { says: lines[0] })
       const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
       type Panel = { name: string; what: string; label: string; caption: string; stat: string; pic: () => Picture; twin: string[] }
       const panel = (k: (typeof ORDER)[number]): Panel => {
@@ -1770,7 +1776,7 @@ export const register: Register = (on, options) => {
           const L = [...ln.building.map(l => ({ l, state: 'building' })), ...ln.merging.map(l => ({ l, state: 'waiting' }))]
           const held = L.reduce((t, x) => t + (x.l.files?.length ?? 0), 0)
           return { name: 'LANES', what: 'builders and the files they hold', label: plural(L.length, 'lane').toUpperCase(),
-            caption: L.length ? `building ${ln.building.length} · waiting ${ln.merging.length}` : 'no builder lanes out', stat: held ? `${held} files held` : '',
+            caption: L.length ? `building ${ln.building.length} · waiting ${ln.merging.length}` : '', stat: held ? `${held} files held` : '',
             pic: () => lanesPicture(pw, PH, L.map(({ l, state }) => ({ id: l.id, title: l.title, color: spin(l.id), done: l.steps_done, total: l.steps_total,
               files: l.files ?? [], state, next: l.id === ln.merging[0]?.id }))),
             twin: L.map(({ l, state }) => `◉ ${l.id} ${state} ${l.steps_done}/${l.steps_total} · ${l.title}`) }
@@ -1778,8 +1784,8 @@ export const register: Register = (on, options) => {
         if (k === 'merge') {
           const landed = train?.landed ?? ln.closing.map(l => l.id)
           const d = { waiting: ln.merging.map(l => ({ id: l.id, title: l.title, color: typeNum(l.type), frac: l.steps_total ? l.steps_done / l.steps_total : 1 })),
-            landed: landed.map((id, i) => ({ id, at: train?.landed_at?.[i] ?? '' })), landed24: train?.landed_24h ?? landed.length, running: !!train?.running }
-          return { name: 'MERGE TRAIN', what: 'finished lanes into one build', label: train?.running ? 'TRAIN RUNNING' : 'FOREMAN/BUILD',
+            landed: landed.map((id, i) => ({ id, at: train?.landed_at?.[i] ?? '' })), landed24: train?.landed_24h ?? landed.length, running: !!train?.running, branch: train?.branch }
+          return { name: 'MERGE TRAIN', what: 'finished lanes into one build', label: train?.running ? 'TRAIN RUNNING' : (train?.branch || 'build').toUpperCase(),
             caption: `${train?.landed_24h ?? ln.closing.length} landed in 24 h${train?.parked ? ` · ${train.parked} parked` : ''}`,
             stat: `${ln.merging.length} waiting`, pic: () => mergePicture(pw, PH, d),
             twin: [`${ln.merging.length} waiting → gates → build · ${train?.landed_24h ?? ln.closing.length} landed`, ...ln.merging.map(l => `▣ ${l.id} ${l.title}`)] }
@@ -1877,7 +1883,7 @@ export const register: Register = (on, options) => {
       const grid: RenderElement[] = []
       let at = 0
       for (let r = 0; r < nrow; r++) {
-        const y = headRows + 1 + r * (PH + 3) // the row's first line in the tree: under the top bar and a blank line
+        const y = headRows + gapHead + r * (PH + 3) // the row's first line in the tree: under the top bar and its gap
         const shown = y + PH + 2 > off && y < off + H
         const widths = layout[r]!
         grid.push(
@@ -1902,7 +1908,7 @@ export const register: Register = (on, options) => {
                 <Box key={key} flexDirection="column" width={pw} flexShrink={0}>
                   {panelHead(ui, e, { key, n, name: P.name, what: P.what, label: P.label, color, width: pw })}
                   {body}
-                  {panelFoot(ui, e, { key, caption: P.caption, stat: P.stat, color, width: pw })}
+                  {panelFoot(ui, e, { key, caption: (P.pic as { says?: string }).says === P.caption ? '' : P.caption, stat: P.stat, color, width: pw })}
                 </Box>
               )
             })}
@@ -1912,7 +1918,7 @@ export const register: Register = (on, options) => {
       return (
         <Box flexDirection="column" key="fm-pane" paddingX={1}>
           {boardHead}
-          <Box key="gap-head" height={1} flexShrink={0} />
+          <Box key="gap-head" height={gapHead} flexShrink={0} />
           {grid}
           <Box key="gap-controls" height={Math.max(1, H - used - 1)} flexShrink={0} />
           {controls}

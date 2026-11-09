@@ -14,8 +14,9 @@ import time
 from sampo import core as c
 from sampo import cpu
 from sampo import live
+from sampo.watch import COMMANDS_MAX, commands as part_commands  # T-4008: the pane's poll reads it too
 
-FILES_MAX, COMMANDS_MAX, MINUTES_MAX, LANDED_MAX, TREE_MAX = 24, 12, 30, 8, 12
+FILES_MAX, MINUTES_MAX, LANDED_MAX, TREE_MAX = 24, 30, 8, 12
 KINDS = ("tests", "claude", "models", "hooks", "other")
 HOT_S = 600  # a leased file written in the last ten minutes is hot
 TICK_S = 10  # the CPU ring reads /proc at most this often
@@ -23,7 +24,6 @@ DAY_S = 86400
 PARKED = {"conflict", "refused"}  # lane_stop kinds that park a lane until someone acts
 GROWS = {"cards_grow": "cards", "moons_grow": "moons"}
 MODELS = re.compile(r"ollama|llama-server|llama_server|\bvllm\b|\bjeff\b", re.I)  # local model servers and their runners
-SAMPO_CMD = re.compile(r"(?:^|\s)(?:\S*/)?(?:sampo|fm)\s+(\S.*)")
 SLOW = {"train": 30, "library": 30, "state": 10, "deps": 5, "tests": 10, "commands": 3}  # seconds a part is kept
 
 
@@ -148,22 +148,6 @@ def part_library(p):
             hourly[h] += kept
         recent.append({"grid": GROWS[e["event"]], "at": e["ts"], "kept": kept})
     return {"calling": len(callcards.cards()[0]), "hourly": hourly, "recent": recent[-6:]}
-
-
-def part_commands(p):
-    """This project's newest COMMANDS_MAX sampo commands (from the hook's tool events), oldest first: each its time,
-    the command from sampo on (the rest of a chain or pipe dropped) and whether it failed."""
-    out = []
-    for e in c.tail_jsonl(os.path.join(c.state_dir(), "events.jsonl"), 1500):
-        if not isinstance(e, dict) or e.get("project") != p.slug or e.get("tool") != "Bash" \
-                or e.get("kind") not in ("tool", "tool_fail"):
-            continue
-        m = SAMPO_CMD.search(str(e.get("target") or "").split("\n", 1)[0])
-        if m:
-            rest = re.split(r"\s*(?:&&|\|\||;|\|)\s*", m.group(1), maxsplit=1)[0]
-            out.append({"at": str(e.get("ts") or ""), "cmd": _t("sampo " + rest, 96),
-                        "ok": e.get("kind") == "tool" and e.get("ok") is not False})
-    return out[-COMMANDS_MAX:]
 
 
 def part_deps(p):

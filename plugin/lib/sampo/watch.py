@@ -628,10 +628,44 @@ def _train(p, briefs):
     landed = [e for e in c.ledger_events(p, ["lane_merge"], c.iso(now - 86400)) if e.get("task")]
     parked = sum(1 for b in briefs if b.meta.get("lane") and (lambda k: k[0] in ("conflict", "refused") and now - k[1] < 86400)(slanes._stop(b)))
     return {"running": running, "landed": [c.plain(str(e["task"]))[:16] for e in landed[-12:]],
-            "landed_at": [str(e.get("ts") or "")[:25] for e in landed[-12:]], "landed_24h": len(landed), "parked": parked}
+            "landed_at": [str(e.get("ts") or "")[:25] for e in landed[-12:]], "landed_24h": len(landed), "parked": parked,
+            "branch": _branch(p.root)}
+
+
+def _branch(root):
+    """T-4008: the branch a train lands on, the main checkout's, read from .git/HEAD without git ('' when detached or
+    unreadable): the pane named foreman/build in every repo."""
+    try:
+        with open(os.path.join(root, ".git", "HEAD"), encoding="utf-8") as f:
+            head = f.read().strip()
+    except OSError:  # a worktree's .git is a file: the pane runs from the main checkout
+        return ""
+    return c.plain(head.removeprefix("ref: refs/heads/"))[:60] if head.startswith("ref: refs/heads/") else ""
 
 
 BOARD_CACHE_S = 30  # T-3701: how often the Board's slow parts are read again for the pane
+COMMANDS_TAIL = 120  # T-4008: the events.jsonl lines the 2 s poll reads for the newest sampo commands
+COMMANDS_MAX = 12
+SAMPO_CMD = re.compile(r"(?:^|\s)(?:\S*/)?(?:sampo|fm)\s+(\S.*)")
+
+
+def commands(p, tail=1500):
+    """The Board's SAMPO part: this project's newest COMMANDS_MAX sampo commands (from the hook's tool events), oldest
+    first: each its time, the command from sampo on (the rest of a chain or pipe dropped, redacted) and whether it
+    failed. T-4008: here, not in sampo.board, so the 2 s poll reads the newest without importing board (live, urllib)."""
+    out, terms = [], None
+    for e in c.tail_jsonl(os.path.join(c.state_dir(), "events.jsonl"), tail):
+        if not isinstance(e, dict) or e.get("project") != p.slug or e.get("tool") != "Bash" \
+                or e.get("kind") not in ("tool", "tool_fail"):
+            continue
+        m = SAMPO_CMD.search(str(e.get("target") or "").split("\n", 1)[0])
+        if m:
+            terms = c.private_terms() if terms is None else terms
+            rest = re.split(r"\s*(?:&&|\|\||;|\|)\s*", m.group(1), maxsplit=1)[0]
+            cmd = c.redact_local(c.redact(c.plain(" ".join(("sampo " + rest).split()))), terms)
+            out.append({"at": str(e.get("ts") or ""), "cmd": c.fit(cmd, 96),
+                        "ok": e.get("kind") == "tool" and e.get("ok") is not False})
+    return out[-COMMANDS_MAX:]
 BOARD_COUNTS_S = 600  # T-3701: … and the card and moon totals, which read every card and moon
 
 
@@ -651,6 +685,11 @@ def _board_extras(p):
             kept = json.load(f)
     except (OSError, ValueError):
         age, kept = None, {}
+    if isinstance(kept, dict):  # T-4008: a sampo command shows within a poll, not up to BOARD_CACHE_S later
+        with contextlib.suppress(Exception):
+            seen = kept.get("commands") or []
+            rows = sorted(seen + [x for x in commands(p, COMMANDS_TAIL) if x not in seen], key=lambda x: str(x.get("at") or ""))
+            kept["commands"] = rows[-COMMANDS_MAX:]
     if (age is None or not 0 <= age < BOARD_CACHE_S) and not os.environ.get("FOREMAN_NO_BACKGROUND"):
         mark = path + ".building"
         try:
@@ -683,7 +722,7 @@ def board_cache(p):
         was = {}
     out = {"at": c.iso(now)}
     for name, fn in (("library", board.part_library), ("state", board.part_state), ("tests", board.part_tests),
-                     ("commands", board.part_commands)):
+                     ("commands", commands)):
         try:
             out[name] = fn(p)
         except Exception:  # one part down leaves the rest

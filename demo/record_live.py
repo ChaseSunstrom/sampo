@@ -6,8 +6,9 @@ A throwaway repo (calc.add subtracts) and a Foreman state of its own (FOREMAN_ST
 of yours is touched) under /tmp/fm-live-<time>; Claude Code runs in shot.py's tmux harness (its own server) with the
 mod from this checkout; the request is typed in, and the coloured screen is captured until the task is done. Writes
 demo/live.cast (each capture a full redraw, waits squeezed to MAX_GAP s), demo/live.svg (svg-term-cli via npx; GitHub
-plays it inline) and demo/live.mp4 (shot.py's renderer + ffmpeg). Your home folder, user name and account e-mail are
-replaced before anything is written. A real model turn: it costs a little usage (default --model sonnet).
+plays it inline), demo/live.mp4 (shot.py's renderer + ffmpeg) and the README's still, docs/assets/screens/
+claude-code.png (the last screen with a task in focus). Your home folder, user name and account e-mail are replaced
+before anything is written. A real model turn: it costs a little usage (default --model sonnet).
 
     python3 demo/record_live.py [--model sonnet] [--max 600] [--no-svg]
     python3 demo/record_live.py --repo . --request "FIX: …" [--dry]   (T-0979: a real task in a clone of a repo)"""
@@ -29,7 +30,10 @@ spec = importlib.util.spec_from_file_location("shot", os.path.join(ROOT, "mods",
 shot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(shot)
 
-COLS, ROWS = 170, 46
+# T-4008: wide enough for a two-column dock (84+ inside) and tall enough for all five rows of its ten panels at
+# 12-row pictures: the README shows the whole grid, not the two panels a 46-row dock has room for
+COLS, ROWS = 200, 88
+STILL = os.path.join(ROOT, "docs", "assets", "screens", "claude-code.png")
 REQUEST = "FIX: calc.add(2, 3) returns -1 instead of 5"
 BUG = "def add(a, b):\n    return a - b\n"
 MAX_GAP = 1.2  # seconds a still screen is held at most (the model thinking), so the video stays watchable
@@ -49,7 +53,9 @@ def only_foreman(path=os.path.expanduser("~/.claude/settings.json")):
 
 
 NOTICE = re.compile(r"Your login expires in|Your \w+ plan includes|clau\.de/api-credits|tmux focus-events off"
-                    r"|hooks\.json: unknown keys|\w\" in hooks\.\w+\[\d+\]")  # Claude Code's startup notices, not Foreman's
+                    r"|hooks\.json: unknown keys|\w\" in hooks\.\w+\[\d+\]"
+                    r"|You've used \d+% of your|hooks\.\w+\[\d+\] and \d+ more ignored")  # Claude Code's notices, not Foreman's;
+# T-4008: the usage one names your time zone; the hooks one counts the hooks of the plugins only_foreman turned off
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")  # every CSI, not shot._SGR's colours alone: a cast event opens with \x1b[H\x1b[2J
 
 
@@ -106,6 +112,8 @@ def seed(work):
         f.write(BUG)
     with open(os.path.join(repo, "README.md"), "w") as f:
         f.write("# calc\n\nA tiny calculator. `add(a, b)` should return the sum.\n")
+    with open(os.path.join(repo, ".gitignore"), "w") as f:  # T-4008: as a real repo has; else the close names a .pyc
+        f.write("__pycache__/\n")
     for cmd in (["init", "-q", "-b", "main"], ["add", "."], ["-c", "user.email=demo@example.com", "-c", "user.name=demo",
                                                             "commit", "-qm", "seed"]):
         subprocess.run(["git", "-C", repo, *cmd], check=True)
@@ -152,7 +160,11 @@ def main():
     repo, scrub = (clone(work, a.repo) if a.repo else seed(work)), scrubber()
     os.environ["FOREMAN_STATE"] = os.path.join(work, "state")  # shot.start hands it to the session alone
     shot.CLEAN["DISABLE_AUTOUPDATER"] = "1"  # its banner ("Auto-update failed…") is this machine's, not the product's
-    shot.start(argparse.Namespace(dir=repo, cols=COLS, rows=ROWS, model=a.model, settings=only_foreman()))
+    # T-4008: your account's weekly usage is yours, not the demo's: its economy toast and halved caps stay out
+    subprocess.run([sys.executable, os.path.join(ROOT, "plugin", "bin", "sampo"), "drive", "on", "--pace", "off"], cwd=repo,
+                   check=True, capture_output=True)
+    shot.start(argparse.Namespace(dir=repo, cols=COLS, rows=ROWS, model=a.model, settings=only_foreman(),
+                                  fm=os.path.join(ROOT, "plugin", "bin", "fm")))  # T-4008: the dock from this tree
     frames, t0 = [], time.time()
 
     def grab():
@@ -256,6 +268,15 @@ def render(events, a):
                         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", mp4],
                        check=True)
         print(f"video → {mp4} ({os.path.getsize(mp4) // 1024} KB)")
+        # T-4008: the README's still, from the same screens (it was cut by hand once, then went stale for months): the
+        # last screen with a task in focus (the session tree's "· step"), as a palette PNG like the one it replaces
+        pick = next((ev for ev in reversed(events) if "· step " in ANSI.sub("", ev[2])), events[-1])
+        png = os.path.join(d, "still.png")
+        shot.render(shot._OSC.sub("", pick[2][len("\x1b[H\x1b[2J"):].replace("\r\n", "\n")), png, cols=COLS, rows=ROWS)
+        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", png, "-vf",
+                        "split[a][b];[a]palettegen=max_colors=256:stats_mode=single[p];[b][p]paletteuse=dither=none", STILL],
+                       check=True)
+        print(f"still → {STILL} ({os.path.getsize(STILL) // 1024} KB)")
 
 
 if __name__ == "__main__":
