@@ -93,6 +93,9 @@ def jobs(p):
     from sampo import louhi
     if not meta.get("sensitive") and moonscale._local(False) and louhi.bench_due(p):  # T-3093: free: once a Rune generation
         out.append(("model bench", ["exam", "models", "run", "--night"], 0.0))  # T-3487: its own exam lock; it runs beside a grow
+    gap_run = None if meta.get("sensitive") or budget.degrade(p) else louhi.gap_pending(p)
+    if gap_run:  # T-3930: Haiku on the held-out split a local profile answered, at most weekly (reused inside 7 days)
+        out.append(("frontier gap", ["exam", "gap", gap_run, "--ref"], budget.estimate("exam-arm", 3, 0.5)))
     if not meta.get("sensitive") and moonscale._local(False):  # T-2912: free: the local model's next-request guess
         out.append(("next request", ["outcomes", "--predictions", "--ask-local"], 0.0))
     smoke = meta.get("smoke") or {}

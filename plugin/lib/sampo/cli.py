@@ -8758,8 +8758,11 @@ def _build_parser(only=None):
                    "(exit 1), green is fixed (exit 0), a missing saved test can't be re-checked (exit 1)")
     s = add("exam", lazy("sampo.louhi", "cmd_exam"), tier=("Finding your way", 456), help="a seeded exam of throwaway repos in six "
             "languages with planted defects and hidden keys; agents answer, scores go to the Genesis exam.jsonl (T-2079)")
-    s.add_argument("action", nargs="?", choices=("status", "gen", "run", "grade", "check", "scorecard", "long", "runs", "steer", "models", "taxonomy", "loop"),
-                   help="loop --run RUN [--model PROFILE] [--rounds N]: each round answers the next unseen holdout scenarios on the "
+    s.add_argument("action", nargs="?", choices=("status", "gen", "run", "grade", "check", "scorecard", "long", "runs", "steer", "models", "taxonomy", "loop", "gap"),
+                   help="gap [RUN] [--ref [--sonnet]] [--trend]: each local profile's held-out pass rate beside a Claude reference "
+                        "arm's on the same run (--ref runs or reuses it, Haiku, Sonnet with --sonnet; reused within 7 days), rows "
+                        "saved with the git revision; --trend: the last 14 runs per profile with the commits between and the "
+                        "paired credit (T-3930); loop --run RUN [--model PROFILE] [--rounds N]: each round answers the next unseen holdout scenarios on the "
                         "smith arm per local profile and appends its failure classes to research/local-loop.jsonl (T-3484); "
                         "taxonomy RUN: Smith's failure classes with counts and rates from a --agent smith run's event logs "
                         "(run it with --model PROFILE; T-2908); scorecard: each gen-0 §2 capability's held-out pass rate from graded runs; exit 1 unless all "
@@ -8829,6 +8832,9 @@ def _build_parser(only=None):
                    help="long run: a session arm for capability N, which a free or Haiku arm shows regressing")
     s.add_argument("--budget", type=float, help="run: USD cap per session (default none: gen-0 puts no cap on proving; "
                                                 "the timeout stops a runaway)")
+    s.add_argument("--ref", action="store_true", help="gap: run (or reuse, within 7 days) the Claude reference arm")
+    s.add_argument("--sonnet", action="store_true", help="gap --ref: the Sonnet reference too (weekly)")
+    s.add_argument("--trend", action="store_true", help="gap: each profile's gap over the last 14 runs, the commits between")
     s.add_argument("--request", help="run: session arms get these words instead of each scenario's request")
     s.add_argument("--planner", help="run --agent smith: this profile asks the plan and close notes, --model acts (T-2945)")
     s.add_argument("--reason", help="run --agent smith: state|off|native|budget|bias|schema, how the model reasons; the "

@@ -1753,6 +1753,10 @@ def bench_night(p, **kw):
         c.append_line(path, json.dumps(row) + "\n")
         return {"skipped": str(e), "rows": [row]}
     apply_promotion(p)
+    try:  # T-3930: a gap row per profile from the exam lines saved so far; the reference arm costs usage, so it never runs here
+        gap_save(p)
+    except (OSError, ValueError):
+        pass
     return res
 
 
@@ -4246,6 +4250,221 @@ def taxonomy(p, run, agent="smith"):
             "classes": dict(sorted(classes.items(), key=lambda kv: -kv[1]["rate"]))}
 
 
+# ---------------------------------------------------------------- the frontier gap (T-3930)
+GAP_FILE = os.path.join("research", "gap.jsonl")  # one row per local profile and exam run: its distance from the Claude reference
+GAP_REF_DAYS, GAP_TREND = 7, 14  # a reference arm's line is reused this long; runs the trend shows per profile
+_REF = re.compile(r"haiku|sonnet|opus", re.I)
+
+
+def _gap_lines(p):
+    from sampo import rune
+    out = []
+    for raw in (rune._doc(rune.home(p), "exam.jsonl") or "").splitlines():
+        try:
+            x = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(x, dict) and x.get("run") and x.get("agent") and x.get("model") and isinstance(x.get("closed"), dict) \
+                and isinstance(x.get("answered"), dict):
+            out.append(x)
+    return sorted(out, key=lambda x: str(x.get("at") or ""))
+
+
+def _held(x):
+    ids = [i for i in x["answered"].get("holdout") or [] if isinstance(i, str)]
+    return ids, {i for i in x["closed"].get("holdout") or [] if i in ids}
+
+
+def _share(n, d):  # the share as a percentage, one decimal
+    return round(100.0 * n / d, 1) if d else None
+
+
+def _is_ref(x, model=None):  # a Claude (foreman arm) line that answered held-out scenarios, on `model` when given
+    return x["agent"] == "foreman" and bool(_held(x)[0]) and (model is None or model.lower() in str(x["model"]).lower())
+
+
+def _fresh(x, now=None):
+    age = c.age_days(x.get("at"))
+    return age is not None and age < GAP_REF_DAYS
+
+
+def ref_due(p, run, model, now=None):
+    """True when no Claude exam line on `model` graded this run in the last GAP_REF_DAYS days."""
+    return not any(x["run"] == run and _is_ref(x, model) and _fresh(x) for x in _gap_lines(p))
+
+
+def local_ids(p, run):
+    """The held-out ids the newest local-profile line answered in this run: the set the reference must answer too."""
+    for x in reversed(_gap_lines(p)):
+        if x["run"] == run and x["agent"] in LOCAL and _held(x)[0]:
+            return _held(x)[0]
+    return []
+
+
+def gap_ref(p, run, model="haiku", budget=None, runner=None, ids=None):
+    """The reference arm: Claude on the held-out scenarios a profile answered (`ids`; the run's whole held-out split
+    when none) through the same runner the profiles used (run_agent, the foreman arm), reused when one graded the run
+    within a week. {reused, model, n, cost?}."""
+    if not ref_due(p, run, model):
+        return {"reused": True, "model": model}
+    res = (runner or run_agent)(p, run, "foreman", split="holdout", model=model, budget=budget,
+                                **({"ids": set(ids), "limit": len(ids)} if ids else {}))
+    return {"reused": False, "model": model, "n": len(ids or []), "cost": (res or {}).get("cost")}
+
+
+def gap_pending(p):
+    """The newest run a local profile answered held-out, when no Claude Haiku reference graded ANY run in the last week
+    (the weekly bound holds across runs), else None (the night's reference step costs usage, so its spend limit decides)."""
+    lines = _gap_lines(p)
+    if any(_is_ref(x, "haiku") and _fresh(x) for x in lines):
+        return None
+    return next((x["run"] for x in reversed(lines) if x["agent"] in LOCAL and _held(x)[0]), None)
+
+
+def gap_rows(p, run=None, have=None):
+    """The table, from saved exam lines: for every run a Claude reference graded, each local (smith) profile's newest
+    held-out line beside the reference's, both over the held-out scenarios BOTH answered (n of them): pass %, gap in
+    points (reference minus profile), counts, per-kind gaps and the profile's top failure classes. Rows whose
+    (run, profile, time) are in `have` are skipped before the costly taxonomy. Nothing runs here."""
+    lines = _gap_lines(p)
+    rows = []
+    for rid in dict.fromkeys(x["run"] for x in lines):
+        if run and rid != run:
+            continue
+        refs = {}  # newest per reference model family
+        for x in lines:
+            m = _REF.search(str(x["model"]))
+            if x["run"] == rid and m and _is_ref(x):
+                refs[m[0].lower()] = x
+        if not refs:
+            continue
+        order = sorted(refs.items(), key=lambda kv: kv[0] != "haiku")  # Haiku first, then the others
+        try:
+            kind = {s["id"]: s["kind"] for s in load(p, rid)["scenarios"]}
+        except ValueError:
+            continue
+        latest = {}
+        for x in lines:
+            if x["run"] == rid and x["agent"] in LOCAL and _held(x)[0]:
+                latest[str(x["model"])] = x
+        for prof, x in sorted(latest.items()):
+            if have and (rid, prof, x.get("at")) in have:
+                continue
+            ids, got = _held(x)
+            pick = next(((m, r, set(ids) & set(_held(r)[0])) for m, r in order if set(ids) & set(_held(r)[0])), None)
+            if not pick:  # no reference answered any scenario this profile did: no honest comparison
+                continue
+            _, ref, common = pick
+            rgot = _held(ref)[1] & common
+            got = got & common
+            kinds = {}
+            for k in sorted({kind.get(i, "?") for i in common}):
+                a = {i for i in common if kind.get(i) == k}
+                pa, pb = _share(len(got & a), len(a)), _share(len(rgot & a), len(a))
+                kinds[k] = {"pass": pa, "ref": pb, "gap": round(pb - pa, 1), "n": len(a)}
+            try:
+                tax = taxonomy(p, rid, "smith")
+                classes = [[k, v["count"]] for k, v in tax["classes"].items() if v["count"]][:3] if tax["model"] == prof else []
+            except (ValueError, OSError):
+                classes = []
+            pa, pb = _share(len(got), len(common)), _share(len(rgot), len(common))
+            rows.append({"at": x.get("at"), "run": rid, "profile": prof, "ref_model": str(ref["model"]), "pass": pa, "ref_pass": pb,
+                         "gap": round(pb - pa, 1), "n": len(common), "found": x.get("found", 0), "keyed": x.get("keyed", 0),
+                         "fixed": x.get("fixed", 0), "fixable": x.get("fixable", 0), "kinds": kinds, "classes": classes,
+                         "closed": sorted(got), "answered": sorted(common), "ref_at": ref.get("at"),
+                         "vs_other": {m: _share(len(_held(r)[1] & set(ids)), len(set(ids) & set(_held(r)[0])))
+                                      for m, r in order if r is not ref and set(ids) & set(_held(r)[0])}})
+    return rows
+
+
+def gap_append(p, rows):
+    path = os.path.join(p.root, GAP_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    for r in rows:
+        c.append_line(path, json.dumps(r) + "\n")
+    return rows
+
+
+def gap_load(p):
+    try:
+        with open(os.path.join(p.root, GAP_FILE), encoding="utf-8", errors="replace") as f:
+            return [r for r in (_json_line(ln) for ln in f) if isinstance(r, dict) and r.get("profile")]
+    except OSError:
+        return []
+
+
+def gap_save(p, run=None):
+    """Append the table's rows not saved yet (keyed by run, profile and the local line's time), each with the project's
+    git revision. Returns the rows it added; a second call adds none."""
+    have = {(r.get("run"), r["profile"], r.get("at")) for r in gap_load(p)}
+    rev = c._git(p.root, "rev-parse", "--short=12", "HEAD", timeout=5).strip()
+    return gap_append(p, [dict(r, rev=rev) for r in gap_rows(p, run, have=have)])
+
+
+def gap_credit(a, b):
+    """Did the change between two gap rows of one profile help? Only rows on the same run (the same seeds, the same
+    reference arm) pair; then an exact McNemar test on the held-out scenarios both answered, one run never decides."""
+    if a.get("run") != b.get("run"):
+        return "unpaired: different exam runs"
+    ids = set(a.get("answered") or []) & set(b.get("answered") or [])
+    was, now = set(a.get("closed") or []) & ids, set(b.get("closed") or []) & ids
+    wins, losses = len(now - was), len(was - now)
+    pv = _mcnemar(wins, losses)
+    word = "credited" if wins > losses and pv < 0.05 else "hurt" if losses > wins and pv < 0.05 else "not credited"
+    return f"{word}: {wins} won, {losses} lost of {len(ids)} paired (p={pv:.2f})"
+
+
+def gap_trend(p, n=GAP_TREND):
+    """{profile: {rows: the last n saved rows, each with the commits since the row before it and the paired credit}}."""
+    by = {}
+    for r in sorted(gap_load(p), key=lambda r: str(r.get("at") or "")):
+        by.setdefault(r["profile"], []).append(r)
+    out = {}
+    for prof, rs in by.items():
+        rs = rs[-n:]
+        for i, r in enumerate(rs):
+            prev = rs[i - 1] if i else None
+            if prev and prev.get("rev") and r.get("rev") and prev["rev"] != r["rev"]:
+                log = c._git(p.root, "log", "--format=%s", "-n", "8", f"{prev['rev']}..{r['rev']}", timeout=5)
+                r["commits"] = [x for x in log.splitlines() if x]
+            else:
+                r["commits"] = []
+            r["credit"] = gap_credit(prev, r) if prev and (r["commits"] or prev.get("rev") != r.get("rev")) else ""
+        out[prof] = {"rows": rs}
+    return out
+
+
+def gap_series(p):
+    """The live page's models panel: {profile: [{at, gap, rev}]}, the last GAP_TREND rows each."""
+    by = {}
+    for r in sorted(gap_load(p), key=lambda r: str(r.get("at") or "")):  # no git here: the live page polls this
+        if isinstance(r.get("gap"), (int, float)):
+            by.setdefault(r["profile"], []).append({"at": r.get("at"), "gap": r["gap"], "rev": r.get("rev")})
+    return {k: v[-GAP_TREND:] for k, v in by.items()}
+
+
+def gap_text(rows):
+    if not rows:
+        return "no reference arm graded a run a local profile answered: sampo exam gap RUN --ref (a Claude run, costs usage)"
+    out = []
+    for r in rows:
+        out.append(f"{r['profile']} on {r['run']} ({r['n']} held-out both answered): {r['pass']}% vs {r['ref_model']} {r['ref_pass']}%: gap {r['gap']} points; "
+                   f"{r['fixed']}/{r['fixable']} fixed, {r['found']}/{r['keyed']} found"
+                   + (f"; top failures {', '.join(f'{k} {n}' for k, n in r['classes'])}" if r["classes"] else ""))
+        out += [f"    {k}: {v['pass']}% vs {v['ref']}% (gap {v['gap']})" for k, v in r["kinds"].items()]
+    return "\n".join(out)
+
+
+def trend_text(tr):
+    out = []
+    for prof, d in sorted(tr.items()):
+        out.append(f"{prof}: " + " -> ".join(f"{r.get('gap')}" for r in d["rows"]) + " points behind")
+        for r in d["rows"]:
+            if r.get("credit") or r.get("commits"):
+                out.append(f"    {str(r.get('rev') or '')[:7]} {r['gap']}: {r.get('credit') or ''} <- " + c.joinmore(r["commits"], 4, "; "))
+    return "\n".join(out) or "no gap rows yet: sampo exam gap RUN"
+
+
 LOOP_N = 3  # T-3484: holdout scenarios a profile answers per round
 LOOP_FILE = os.path.join("research", "local-loop.jsonl")  # one row per round, profile and failure class; a skipped round says why
 
@@ -4917,6 +5136,19 @@ def cmd_exam(args):
             return cli.out(args, res, f"{res['run']} {res['agent']} {res['model'] or ''}: {res['scenarios']} scenarios\n"
                            "ends: " + ", ".join(f"{k} {v}" for k, v in res["ends"].items()) + "\n" + "\n".join(
                 f"  {k:<14} {v['count']:>3} in {v['scenarios']} scenarios ({v['rate']:.0%})" for k, v in res["classes"].items()))
+        if action == "gap":  # T-3930: local profiles against the Claude reference on the same run and held-out split
+            if args.trend:
+                tr = gap_trend(p)
+                return cli.out(args, tr, trend_text(tr))
+            run = args.run or next((x["run"] for x in reversed(_gap_lines(p)) if x["agent"] in LOCAL and _held(x)[0]), None)
+            ids = local_ids(p, run) if run else []
+            refs = [gap_ref(p, run, m, budget=args.budget, ids=ids) for m in ("haiku", *(("sonnet",) if args.sonnet else ()))] \
+                if args.ref and run else []
+            rows = gap_rows(p, run) if run else []
+            saved = gap_save(p, args.run)
+            return cli.out(args, {"rows": rows, "ref": refs, "saved": len(saved)}, gap_text(rows) + "".join(
+                f"\nreference {r['model']}: " + ("reused (graded within 7 days)" if r["reused"] else
+                                                 f"ran on the held-out split, ${r.get('cost') or 0:.2f}") for r in refs))
         if action == "loop":  # T-3484: the holdout loop, rows appended to research/local-loop.jsonl
             rows = exam_loop(p, [args.model] if args.model else None, args.rounds, run=args.run)
             skipped = [r for r in rows if "skipped" in r]

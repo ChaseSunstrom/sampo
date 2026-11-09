@@ -194,6 +194,8 @@ const SampoBoard = (() => {
     return {agents: agents.map((name) => ({name})), models: ms,
       links: L.filter((l) => at.has(l.m)).slice(0, 24).map((l) => ({a: agents.indexOf(l.a), m: at.get(l.m), n: l.n, kind: l.kind})),
       gpu: s.gpu ? {name: str(gpu.name, 40), used: int(gpu.used_mb), total: int(gpu.total_mb), util: Math.min(100, int(gpu.util_pct))} : null,
+      gap: Object.entries(obj(obj(s.stats).gap)).slice(0, 5).map(([name, rows]) =>  // T-3930: points behind the Claude reference
+        ({name: str(name, 24), pts: arr(rows).map((r) => num(obj(r).gap, NaN)).filter(isFinite).slice(-14)})).filter((x) => x.pts.length > 0),
       cpm: Math.round(calls / 5), loaded: models.filter((m) => m.loaded).length};
   }
 
@@ -1015,9 +1017,34 @@ const SampoBoard = (() => {
   const GROUP_COL = (T) => ({claude: T.orange, jeff: T.violet, ollama: T.cyan});
   DRAW.models = {  // 06: agents → the models they call, each line as thick as its calls; the GPU underneath
     base(g, d, w, h, T, mem) {
-      const pad = 14, gc = GROUP_COL(T), y1 = h - pad - (d.gpu ? 28 : 0);
+      const pad = 14, gc = GROUP_COL(T), gh = d.gap.length ? 54 : 18, y1 = h - pad - (d.gpu ? 28 : 0) - gh;
       mem.L = [];
       mem.quiet = !d.links.length;
+      {  // the frontier gap: one line per local profile, points behind Claude per run (lower is closer; below 0 beats Claude)
+        const top = h - pad - (d.gpu ? 28 : 0) - gh + 12, bot = top + Math.max(4, gh - 22), x0 = pad + 4, x1 = w - pad - 60;
+        txt(g, "GAP TO CLAUDE", pad, top - 4, T.orange, 7.5, "left", 600);
+        if (!d.gap.length) txt(g, "no gap yet: first paid reference run pending", pad + 78, top - 4, T.dim, 7.5);
+        else {
+          const all = d.gap.flatMap((s) => s.pts), hi = Math.max(10, ...all), lo = Math.min(0, ...all), cols = [T.cyan, T.orange, T.violet, T.green, T.pink];
+          const Y = (v) => bot - (bot - top) * (v - lo) / (hi - lo), zero = Y(0);  // 0 is Claude: nothing draws below the box
+          g.strokeStyle = T.grid;
+          g.beginPath();
+          g.moveTo(x0, zero + 0.5);
+          g.lineTo(x1, zero + 0.5);
+          g.stroke();
+          d.gap.forEach((s, k) => {
+            g.strokeStyle = g.fillStyle = cols[k % cols.length];
+            const X = (i) => (s.pts.length > 1 ? x0 + (x1 - x0) * i / (s.pts.length - 1) : x1);
+            g.beginPath();
+            s.pts.forEach((v, i) => g[i ? "lineTo" : "moveTo"](X(i), Y(v)));
+            g.stroke();
+            g.beginPath();
+            g.arc(X(s.pts.length - 1), Y(s.pts[s.pts.length - 1]), 2, 0, TAU);
+            g.fill();
+            txt(g, `${fit(g, s.name, 40)} ${s.pts[s.pts.length - 1]}`, x1 + 6, Y(s.pts[s.pts.length - 1]) + 3, cols[k % cols.length], 7.5);
+          });
+        }
+      }
       if (d.gpu) {
         const gy = h - pad - 14, half = (w - 2 * pad - 70) / 2;
         txt(g, "GPU", pad, gy + 10, T.orange, 8.5, "left", 600);

@@ -474,7 +474,9 @@ def stats(p):
                           "grid_ui": cov["ui"].get("grid", 0)},
                 "moons": {"candidates": st["total"], "stages": st["stages"], "pace": moonscale.pace(p)},
                 "spend": spend_today(), "bench": []}  # ponytail: the bench table is a model read away; the page shows none until a cheap one exists
-    return dict(_cached(("stats", p.dir), SLOW_S, slow), closed_today=len(_closed_today(p)))
+    from sampo import louhi
+    return dict(_cached(("stats", p.dir), SLOW_S, slow), closed_today=len(_closed_today(p)),
+                gap=_cached(("gap", p.dir), 30, lambda: louhi.gap_series(p)))  # T-3930: the models panel's trend
 
 
 def board(p):
