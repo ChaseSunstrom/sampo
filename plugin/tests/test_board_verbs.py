@@ -104,8 +104,8 @@ class BoardVerbs(ForemanTestCase):
         p = subprocess.run([sys.executable, FM, "release-check"], cwd=self.repo, env=e, capture_output=True, text=True,
                            timeout=300)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("fm doctor", p.stdout)
-        self.assertIn("fm demo", p.stdout)
+        self.assertIn("sampo doctor", p.stdout)
+        self.assertIn("sampo demo", p.stdout)
         self.assertEqual(sorted(os.listdir(self.home)), before, "the user's Foreman home is never touched")
 
     def test_release_check_child_env_keeps_only_the_bench_switch(self):

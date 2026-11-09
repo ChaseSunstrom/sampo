@@ -887,6 +887,117 @@ def check_release_age(root):
     return Result("release age", "PASS", f"{n} unreleased entr{'y' if n == 1 else 'ies'}, {since}")
 
 
+STALE_DAYS = 21  # T-3989: a recording this old whose depicted code changed since is due a re-record
+RECORDED = ("demo", "docs/assets/screens")  # where recordings live; the scripts that make them (*.py) aren't ones
+# T-3989: each recording (first glob that matches): the code it shows (None: an input log or a chart drawn from data,
+# read for retired names only) and how to make it again. A file under RECORDED that no glob matches is flagged.
+RECORDINGS = [
+    ("demo/demo.*", "plugin/lib/sampo/demo.py", "python3 demo/record.py --mp4"),
+    ("demo/code-tui.jsonl", None, "edit its events (sampo smith tui --events plays them)"),
+    ("demo/code-tui*", "plugin/lib/sampo/smithtui.py", "sampo smith tui --record demo/code-tui.mp4 --events "
+     "demo/code-tui.jsonl and sampo smith tui --tour --snapshot demo/code-tui-tour.svg"),
+    ("demo/live.*", "mods/foreman-ui", "python3 demo/record_live.py"),
+    ("demo/examples/*", None, "edit its events (the site draws each one's last screen)"),
+    ("demo/figures/*", None, "python3 demo/readme_figures.py --refresh"),
+    ("docs/assets/screens/board-*", "plugin/web/live", "sampo readme shots of plugin/web/live fed "
+     "plugin/tests/fixtures/live/snap-5.json (README, Testing)"),
+    ("docs/assets/screens/claude-code.png", "mods/foreman-ui", "a still from python3 demo/record_live.py's video"),
+    ("docs/assets/screens/smith-tui-*", "plugin/lib/sampo/smithtui.py", "sampo smith tui --events "
+     "demo/examples/feature.jsonl --snapshot docs/assets/screens/smith-tui-dark.svg (and -light)"),
+]
+_PIXELS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4")
+
+
+def _recording_text(path):
+    """A recording's words: a cast's output joined, an SVG's text with each element a word apart (svg-term places
+    words by x, with no spaces between them), terminal colour codes dropped. '' for pixels."""
+    if path.endswith(_PIXELS):
+        return ""
+    raw = _read(path) or ""
+    if path.endswith(".cast"):
+        out = []
+        for line in raw.splitlines()[1:]:
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(e, list) and len(e) > 2 and isinstance(e[2], str):
+                out.append(e[2])
+        raw = "".join(out)
+    elif path.endswith(".svg"):
+        import html
+        raw = html.unescape(re.sub(r"<[^>]+>", " ", raw))
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", raw)
+
+
+def recording_problems(root, age=True, now=None):
+    """T-3989: (lines, aged) for the stale recordings in a Sampo checkout. lines: one whose text shows a name Sampo
+    retired (fm, the old product name, an old verb from cli.RENAMES), or that no RECORDINGS glob maps; both hold for a
+    tree whatever the date. aged (with age): one older than STALE_DAYS whose depicted code has commits since, unless
+    it has uncommitted changes (a re-record not yet committed). Each line ends with how to make it again. ([], [])
+    outside a Sampo checkout."""
+    import fnmatch
+    if not os.path.isdir(os.path.join(root, "plugin", "lib", "sampo")):
+        return [], []
+    from sampo import cli
+    renamed = {}
+    for new, olds in cli.RENAMES.items():
+        renamed.setdefault(olds[0], new)  # code is smith now; genesis is rune (its first new name)
+    r = _run(["git", "-C", root, "ls-files", "-z", "--", *RECORDED], timeout=30)
+    files = [f for f in r.stdout.split("\0") if f and not f.endswith(".py")] if r.returncode == 0 else []
+    last, aged = {}, []
+    if age and files:
+        st = _run(["git", "-C", root, "status", "--porcelain", "-z", "--", *RECORDED], timeout=30)
+        fresh = {e[3:] for e in st.stdout.split("\0") if len(e) > 3} if st.returncode == 0 else set()
+        log = _run(["git", "-C", root, "log", "--format=@%ct", "--name-only", "--", *RECORDED], timeout=60)
+        at = None
+        for line in log.stdout.splitlines() if log.returncode == 0 else []:
+            if line.startswith("@"):
+                at = int(line[1:])
+            elif line and at is not None:
+                last.setdefault(line, at)  # newest first: the first commit seen is the file's last
+        for f in fresh:
+            last.pop(f, None)
+    now = time.time() if now is None else now
+    out, times = [], {}
+    for f in files:
+        hit = next((x for x in RECORDINGS if fnmatch.fnmatch(f, x[0])), None)
+        if hit is None:
+            out.append(f"{f}: no doctor.RECORDINGS entry says what it shows")
+            continue
+        _, module, remake = hit
+        said = []
+        for m in re.finditer(r"\b(fm|sampo)\s+([a-z][\w-]*)|\b(Sampo|Foreman)\b", _recording_text(os.path.join(root, f))):
+            prog, verb, name = m.groups()
+            if name:
+                if name != "Sampo":  # the product's old name
+                    said.append(f"`{name}` (now `Sampo`)")
+            elif prog != "sampo" or verb in renamed:
+                said.append(f"`{prog} {verb}` (now `sampo {renamed.get(verb, verb)}`)")
+        if said:
+            out.append(f"{f} shows {c.joinmore(list(dict.fromkeys(said)), 3, ', ')}: {remake}")
+            continue
+        if module and f in last and now - last[f] >= STALE_DAYS * 86400:
+            if module not in times:
+                g = _run(["git", "-C", root, "log", "-1", "--format=%ct", "--", module], timeout=30)
+                times[module] = int(g.stdout.strip() or 0) if g.returncode == 0 else 0
+            if times[module] > last[f]:  # no day or commit counts: scout keys a finding on its text
+                aged.append(f"{f} (recorded {time.strftime('%Y-%m-%d', time.gmtime(last[f]))}) is over {STALE_DAYS} "
+                            f"days old and {module} changed since: {remake}")
+    return out, aged
+
+
+def check_recordings(root):
+    """T-3989: recording_problems as a doctor line. A retired name or an unmapped file FAILs (a lane that renames a verb
+    re-records in the same change); age only WARNs, since sampo check runs the doctor and a gate must not turn red
+    with the calendar. Scout files either into the inbox (scout.WORK_WARNS), so sampo next works it."""
+    bad, aged = recording_problems(root)
+    if bad or aged:
+        return Result("recordings", "FAIL" if bad else "WARN", c.joinmore(bad + aged, 3, "; "))
+    return Result("recordings", "PASS", "every recording current" if os.path.isdir(
+        os.path.join(root, "plugin", "lib", "sampo")) else "not a Sampo checkout")
+
+
 def check_anergy():
     """T-2563: permission prompts approved by reflex (5+, median within 2 s, every one read-only): the allow rule that
     would retire each. Advisory: Sampo never applies a rule; the user does."""
@@ -978,9 +1089,11 @@ def check_git_hygiene(repo):
     # T-0382: --no-renames, or a staged rename that also adds a secret (R, not A or M) is never scanned
     staged = [f for f in _run(["git", "-C", repo, "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=AM",
                                "-z"]).stdout.split("\0") if f]
-    # T-3892: only the lines the change adds (a new file: all of them), so a file that already held one isn't blocked
+    # T-3892: only the lines the change adds (a new file: all of them), so a file that already held one isn't blocked;
+    # T-3989: decoded with errors="replace", so a staged video can't crash the doctor
     added = lambda p: "\n".join(l[1:] for l in _run(["git", "-C", repo, "diff", "--cached", "-U0", "--no-renames", "--",
-                                                       p]).stdout.splitlines() if l[:1] == "+" and l[:4] != "+++ ")
+                                                       p], errors="replace").stdout.splitlines()
+                                if l[:1] == "+" and l[:4] != "+++ ")
     secrets = [p for p in staged if (lambda t: c.redact(t) != t)(added(p))]
     bad = [f"ignored but tracked: {', '.join(tracked)}"] if tracked else []
     bad += [f"secret-like content staged in: {', '.join(secrets)}"] if secrets else []
@@ -3053,6 +3166,7 @@ def run_all(full=False, accept_supply=False):
     results.append(check_idle_stops(here))
     results.append(check_usage_burn())
     results.append(check_release_age(here.root if here else os.getcwd()))  # T-2597
+    results.append(check_recordings(here.root if here else os.getcwd()))  # T-3989
     results.append(check_version_skew(c.all_projects()))
     home_p = c.find_project(home)  # T-1998: its active task's in-scope core edits aren't a warning
     tree = os.path.dirname(os.path.abspath(PLUGIN))  # T-3529: the running code's own docs (a lane's, a train's), not the home's

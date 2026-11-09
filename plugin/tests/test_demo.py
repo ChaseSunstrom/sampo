@@ -72,7 +72,7 @@ class DemoNext(ForemanTestCase):
         tmpdir = os.path.join(self.tmp, "tmpdir")
         os.makedirs(tmpdir)
         out = self.fm("demo", env={"TMPDIR": tmpdir}).stdout
-        self.assertIn("fm init in your repo", out)  # not a project yet
+        self.assertIn("sampo init in your repo", out)  # not a project yet
         self.fm("init")
         self.fm("capture", "Add a dark theme")
         out = self.fm("demo", env={"TMPDIR": tmpdir}).stdout

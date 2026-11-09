@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Record `fm demo --pace 1` for the README (T-0902): through a pseudo-terminal into demo/demo.cast (asciinema v2,
+"""Record `sampo demo --pace 1` for the README (T-0902): through a pseudo-terminal into demo/demo.cast (asciinema v2,
 playable with `asciinema play demo/demo.cast`), then render demo/demo.svg (animated; GitHub plays it inline) with
 svg-term-cli via npx. `--mp4` also makes demo/demo.mp4 for sharing elsewhere: svg-term stills every 1/FPS s, shot by
 a headless Chromium (CHROME, or Playwright's), joined by ffmpeg. Re-run after the demo changes:
@@ -19,9 +19,9 @@ import termios
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FM = os.path.join(os.path.dirname(HERE), "plugin", "bin", "fm")
+FM = os.path.join(os.path.dirname(HERE), "plugin", "bin", "sampo")
 COLS, ROWS = 100, 36
-TYPED = "fm demo --pace 1"
+TYPED = "sampo demo --pace 1"  # T-3989: the name a user types; doctor.check_recordings flags a retired one
 
 
 def record(path):
@@ -51,9 +51,9 @@ def record(path):
             events.append([round(time.time() - t0, 3), "o", data.decode("utf-8", "replace")])
     _, status = os.waitpid(pid, 0)
     if os.waitstatus_to_exitcode(status):
-        sys.exit(f"fm demo failed: {''.join(e[2] for e in events)[-500:]}")
+        sys.exit(f"sampo demo failed: {''.join(e[2] for e in events)[-500:]}")
     events.append([round(events[-1][0] + 4, 3), "o", ""])  # hold the last screen
-    header = {"version": 2, "width": COLS, "height": ROWS, "timestamp": int(time.time()), "title": "fm demo",
+    header = {"version": 2, "width": COLS, "height": ROWS, "timestamp": int(time.time()), "title": "sampo demo",
               "env": {"TERM": "xterm-256color", "SHELL": "/bin/bash"}}
     with open(path, "w", encoding="utf-8") as f:
         f.write(json.dumps(header) + "\n" + "".join(json.dumps(e) + "\n" for e in events))

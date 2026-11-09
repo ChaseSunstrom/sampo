@@ -12,6 +12,7 @@
 ### Everything else
 
 - Merge trains, lane merges, ship and sampo check no longer wait 60 s for a machine that has been busy for 5 minutes: they go ahead at once with the longer timeout, and only a short spike is waited out (T-3961).
+- `sampo doctor` now checks the recordings in `demo/` and `docs/assets/screens/`. It fails when one shows a retired name (`fm`, Foreman, a renamed verb such as `sampo code`), warns when one is over 21 days old with its code changed since, and names the command that remakes it; Sampo's scout files either as work. `sampo demo` now prints `sampo` commands, and its recording, the Sampo Code video and the tour SVG are re-recorded from today's code (T-3989).
 - the hook latency bench counts load against the cores the session's CPU cap leaves (cgroup cpu.max), so a capped session's throttled wall time no longer turns the land's base red (T-4018).
 - Ward: a brief refusal whose write target is in the project only because a cd may have failed now names that cd and says to chain it with && (T-3713).
 - A merge train no longer throws its green work away when the main checkout has uncommitted changes to files it merged: it sets them aside, fast-forwards and puts them back, keeping one that no longer applies as a named stash with the landed files in place; and a close now commits the CHANGELOG line it writes, which it used to leave uncommitted whenever another lane's merge had changed the file (T-4007).

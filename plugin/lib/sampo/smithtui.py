@@ -214,7 +214,7 @@ class State:
 
     def _on_start(self, e):
         if int(e.get("schema") or 1) > SCHEMA:
-            raise NewerStream(f"fm code's event stream is schema {e.get('schema')}; this TUI reads {SCHEMA}: update Smith")
+            raise NewerStream(f"sampo smith's event stream is schema {e.get('schema')}; this TUI reads {SCHEMA}: update Smith")
         if e.get("resume") and self.plan:  # fm code --resume sends no plan again: the screen keeps the run's
             self.task, self.status = e.get("task") or self.task, "running"
             return
@@ -722,7 +722,7 @@ def _runner_found():
 def setup_checks(root):
     """T-1333: (what, ok, key, fix) for what a first run needs: fm on PATH, a runner, this folder as a project."""
     from sampo import core
-    return [("fm on PATH", bool(shutil.which("fm")), "l", "link it"),
+    return [("sampo on PATH", bool(shutil.which("sampo") or shutil.which("fm")), "l", "link it"),
             ("a runner", _runner_found(), "m", "pick one"),
             ("this folder is a project", bool(root and core.find_project(root)), "i", "make it one")]
 
@@ -737,7 +737,7 @@ def agent_state(st):
 
 def title_text(st):
     """T-1310: the terminal title: the run's state and task, printable characters only (a task's text is the run's)."""
-    words = f"fm code: {st.status} {st.task or ''}".strip() if st is not None and st.status else "fm code"
+    words = f"sampo smith: {st.status} {st.task or ''}".strip() if st is not None and st.status else "sampo smith"
     return "".join(ch for ch in words if ch.isprintable())[:80]
 
 
@@ -1452,8 +1452,8 @@ def _overlay(cv, cfg, title, note, w=None, h=None):
     return box(cv, y, x, h, w, title, cfg, focused=True, note=note)
 
 
-CLI = {"new": 'fm code "…"', "resume": "fm code --resume", "model": "fm code --model M", "settings": "fm settings",
-       "hush": "fm settings set motion off", "diff": "git diff"}  # T-1348: the command line behind a key, where one is
+CLI = {"new": 'sampo smith "…"', "resume": "sampo smith --resume", "model": "sampo smith --model M", "settings": "sampo settings",
+       "hush": "sampo settings set motion off", "diff": "git diff"}  # T-1348: the command line behind a key, where one is
 CONFIRM_S = 2.0  # T-1348: q or s during a live run waits this long for the second press
 WIDE_ABOVE, WIDE_COLUMN = 160, ["plan", "verify"]  # T-1347: a third column's panels, from this many columns
 TIP_SKIP = {"stop", "up", "down", "focus", "expand", "follow", "help", "quit"}  # too plain to need a tip
@@ -1482,7 +1482,8 @@ def _help_view(cv, st, app, cfg):
     two = cv.w >= 90
     gap = lambda bs: [line for b in bs if b for line in b + [[]]][:-1]
     cols = [gap(blocks[:2]), gap(blocks[2:])] if two else [[line for b in blocks for line in b]]
-    iy, ix, ih, iw = _overlay(cv, cfg, "Keys", "any key closes", 88 if two else 46, max(map(len, cols)) + 4)
+    # T-3989: 94 wide, so a column holds `sampo settings set motion off` under its key (88 cut it to "…o…")
+    iy, ix, ih, iw = _overlay(cv, cfg, "Keys", "any key closes", 94 if two else 46, max(map(len, cols)) + 4)
     for c, lines in enumerate(cols):
         x = ix + c * (iw // 2)
         for i, segs in enumerate(lines[:ih - 1]):
@@ -1634,7 +1635,7 @@ def _history_row(item):
             "undone": (" UNDONE ", "chip_warn")}.get(  # T-1352
         item["status"], (" ···· ", "chip_todo"))
     when = time.strftime("%b %d %H:%M", time.localtime(item["ts"])) if item.get("ts") else ""
-    again = [(f"  fm code --resume {item['task']}", "accent")] if item["status"] == "stopped" else []  # T-1338
+    again = [(f"  sampo smith --resume {item['task']}", "accent")] if item["status"] == "stopped" else []  # T-1338
     return [chip, ("  " + pad(item["task"] or "—", 8), "strong"), ("  " + pad(when, 12), "dim")] + again + [
         ("  " + item["request"], "text")]
 
@@ -1675,7 +1676,7 @@ def _deck_view(cv, st, app, cfg):
     cw, ch = (iw - (cols - 1)) // cols, CARD_H
     app.deck_cols = cols
     if not app.items:
-        cv.line(iy, ix, [("no Sampo projects yet: fm init in a repository makes one", "dim")], ix + iw)
+        cv.line(iy, ix, [("no Sampo projects yet: sampo init in a repository makes one", "dim")], ix + iw)
         return
     rows = max(1, ih // ch)
     top = max(0, app.item_index // cols - rows + 1)
@@ -2518,7 +2519,7 @@ class App:
             hits = [f for f in self.tracked() if f.startswith(part)][:3]
             return "Tab completes: " + ", ".join(hits) if hits else "no tracked file starts " + part
         if self.asking:  # T-1770
-            return "Enter asks it beside the run, read-only (fm code --ask): the answer lands in Activity"
+            return "Enter asks it beside the run, read-only (sampo smith --ask): the answer lands in Activity"
         runner = self.opts.get("model") or self.opts.get("worker") or "the default runner"
         return f"Enter starts a run in {os.path.basename(self.root.rstrip(os.sep)) or self.root} with {runner}"
 
@@ -2780,7 +2781,7 @@ class App:
         except (OSError, subprocess.SubprocessError) as e:
             out = f"couldn't run fm pr {tid}: {e}"
         self.view_lines, self.view_marks = out.splitlines() or ["(no output)"], {}
-        self.view_title = f"fm pr {tid} · Enter posts it to its PR (needs the publish grant)"
+        self.view_title = f"sampo pr {tid} · Enter posts it to its PR (needs the publish grant)"
         self.view_scroll, self.view_opened, self.view_back, self.mode = 0, self.clock(), "main", "diff"
         self.view_post = tid
         return None
@@ -2788,7 +2789,7 @@ class App:
     def run_next(self, nxt):
         """T-1762: a failure's next command, one key away: a resume carries the run on here; a read-only fm command's
         output opens in a view; anything else is named for the user's own shell (it may need their answer)."""
-        if nxt.startswith(("fm code --resume", "sampo code --resume")):
+        if nxt.startswith(("fm code --resume", "sampo code --resume", "sampo smith --resume")):
             return self.resume()
         if not self.READ_ONLY_NEXT.fullmatch(nxt):
             self.message = f"run it in your shell: {nxt}"
@@ -3080,7 +3081,7 @@ class App:
             try:
                 from sampo import taste
                 taste.calibrate(self.look_answers, self.look_round)
-                self.message = f"taste: {len(self.look_answers)} answers recorded (fm looks shows the ranking)"
+                self.message = f"taste: {len(self.look_answers)} answers recorded (sampo looks shows the ranking)"
             except Exception as e:  # a busy lock, a full disk: said in the status bar, the app stays up
                 self.message = f"taste: not recorded: {e}"
         return None
@@ -3091,7 +3092,7 @@ class App:
         from sampo import eco
         self.backlog_p = core.find_project(self.root)
         if not self.backlog_p:
-            self.message = "backlog: this folder is not a Sampo project (fm init makes it one)"
+            self.message = "backlog: this folder is not a Sampo project (sampo init makes it one)"
             return
         self.items, self.item_index, self.mode = eco.swipe_list(self.backlog_p), 0, "backlog"
         self.backlog_undo, self.backlog_kept = [], set()  # T-1871: u takes back the newest answer given in this view
@@ -4510,7 +4511,7 @@ def _toml_key(k):
 def print_config(cfg, path=None, profiles=()):
     """The config as tui.toml text that loads back the same: a starting point to edit. T-1656: `profiles`
     (fmsettings.profile_list) follow as [profile.NAME] tables, as written."""
-    out = [f"# fm code tui's settings{f': {path}' if path else ''}. Delete what you don't change.",
+    out = [f"# sampo smith tui's settings{f': {path}' if path else ''}. Delete what you don't change.",
            f"theme = {_toml(cfg.get('preset', 'night'))}  # {', '.join(PRESETS)}; [colors] changes single styles",
            f"motion = {_toml(cfg.get('motion', 'full'))}  # full; reduced: colours change, nothing moves; off",
            f"palette = {_toml(cfg.get('palette', 'default'))}  # default; cb: pass blue, fail orange; riso: "
@@ -4547,12 +4548,12 @@ def replay_file(path, cfg, plain, out=sys.stdout):
     """fm code tui --events FILE: the run on the screen, or (plain) its Activity lines; 0 for a closed run, 1 for
     another, 2 when FILE can't be read."""
     if not os.path.isfile(path):
-        print(f"fm code tui: can't read {path}: no such file (fm code … --json > FILE records a run)", file=sys.stderr)
+        print(f"sampo smith tui: can't read {path}: no such file (sampo smith … --json > FILE records a run)", file=sys.stderr)
         return 2
     app = App(cfg, spawn=lambda *a, **k: None)
     app.replay(path)
     if app.message.startswith("can't read"):
-        print(f"fm code tui: {app.message}", file=sys.stderr)
+        print(f"sampo smith tui: {app.message}", file=sys.stderr)
         return 2
     if not plain:
         run_screen(app)
@@ -4653,7 +4654,7 @@ def record(events, path, size=(120, 34), fps=20, seconds=None, cfg=None, hold=2.
     """A run's events played back as a video (mp4, or gif by its name): frames drawn at their instant, put to PNG by
     rsvg-convert and joined by ffmpeg. For the README, the site and a bug report."""
     if not (shutil.which("ffmpeg") and shutil.which("rsvg-convert")):
-        raise RuntimeError("fm code tui --record needs ffmpeg and rsvg-convert on PATH")
+        raise RuntimeError("sampo smith tui --record needs ffmpeg and rsvg-convert on PATH")
     from sampo import core
     import tempfile
     cfg = cfg or DEFAULTS
@@ -4702,7 +4703,7 @@ SAMPLE_RUN = [  # T-1311: a short run every theme draws in the gallery
 TOUR_GAP, TOUR_HOLD = 2.0, 3.0
 TOUR_RUN = [dict(e, ts=1760000000.0 + 9 * i) for i, e in enumerate(SAMPLE_RUN + [  # timed, so Time charts it
     {"event": "closed", "text": "T-0001 closed; committed 4f2a9c1", "task": "T-0001", "tokens": [3300, 220]}])]
-TOUR = {0: "fm code works one task to proof. The header names the request and the model; the bar below, the state.",
+TOUR = {0: "sampo smith works one task to proof. The header names the request and the model; the bar below, the state.",
         1: "The track: a station per stage (the plan, each step, the checks, the close), lit as the run gets there.",
         3: "Checks: each criterion runs its own command. Red before the fix shows the test can fail.",
         4: "Activity: every action, under the step it serves. Enter opens a line, / searches them.",
@@ -4743,7 +4744,7 @@ def tour_svg(path, size=(110, 32), cfg=None):
         app.feed(e)
         app.tour[1] = i + 1
         svg = to_svg(render(app.state, size[0], size[1], cfg, app, t=1000.0 + i * TOUR_GAP + 0.9), cfg,
-                     title="fm code tui --tour")
+                     title="sampo smith tui --tour")
         head, body = svg.split(">", 1)
         body = body.rsplit("</svg>", 1)[0]
         frames.append(body if not frames else re.sub(r"<style>.*?</style>", "", body, flags=re.S))
@@ -4910,7 +4911,7 @@ def main(args, words, home=False):
     if getattr(args, "print_config", False):
         print(print_config(cfg, config_path(), settings.profiles()["profiles"]), end="")
     for e in problems:
-        print(f"fm code tui: {e}", file=sys.stderr)
+        print(f"sampo smith tui: {e}", file=sys.stderr)
     if getattr(args, "print_config", False):
         return 2 if errors else 0
     if getattr(args, "chaos", None) is not None:  # T-1546: the chaos twin, headless
@@ -4919,7 +4920,7 @@ def main(args, words, home=False):
         print(f"chaos: {got['frames']} frames, {got['keys']} keys, {got['events']} events, {got['resizes']} resizes "
               f"in {args.chaos:g} s (seed {got['seed']}): "
               + ("no crash" if not crash else f"crashed at step {crash['step']} in {crash['mode']} at "
-                 f"{crash['size'][0]}x{crash['size'][1]}: {crash['error']}\n{crash['trace']}\nreplay: fm code tui "
+                 f"{crash['size'][0]}x{crash['size'][1]}: {crash['error']}\n{crash['trace']}\nreplay: sampo smith tui "
                  f"--chaos {args.chaos:g} --seed {got['seed']}"))
         return 1 if crash else 0
     if getattr(args, "tour", False):  # T-1309: the sample run with captions: on the screen, as lines, or as an SVG
@@ -4937,7 +4938,7 @@ def main(args, words, home=False):
     if out:
         src = getattr(args, "events", None)
         if not src:
-            print("fm code tui --snapshot/--record needs --events FILE (fm code … --json > FILE records one)",
+            print("sampo smith tui --snapshot/--record needs --events FILE (sampo smith … --json > FILE records one)",
                   file=sys.stderr)
             return 2
         with open(src, encoding="utf-8") as f:
@@ -4947,13 +4948,13 @@ def main(args, words, home=False):
             try:
                 print(snapshot(events, out, (int(w), int(h)), cfg))
             except RuntimeError as e:  # T-1546: a .png with no rsvg-convert
-                print(f"fm code tui: {e}", file=sys.stderr)
+                print(f"sampo smith tui: {e}", file=sys.stderr)
                 return 2
             return 0
         try:
             print(record(events, out, (int(w), int(h)), cfg=cfg))
         except (RuntimeError, subprocess.CalledProcessError) as e:
-            print(f"fm code tui: {e}", file=sys.stderr)
+            print(f"sampo smith tui: {e}", file=sys.stderr)
             return 2
         return 0
     if getattr(args, "events", None):  # T-1363: a recorded run alone replays: on the screen, else as Activity lines
@@ -5000,7 +5001,7 @@ def main(args, words, home=False):
         lambda: app.start([" ".join(words)])) if words else None
     if getattr(args, "plain", False) or not sys.stdout.isatty() or not sys.stdin.isatty():
         if not first:
-            print('fm code tui --plain needs a request: fm code tui --plain "fix the login bug"', file=sys.stderr)
+            print('sampo smith tui --plain needs a request: sampo smith tui --plain "fix the login bug"', file=sys.stderr)
             return 2
         first()
         return run_plain(app)

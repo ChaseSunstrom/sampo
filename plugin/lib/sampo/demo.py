@@ -1,5 +1,5 @@
-"""fm demo (T-0870): Sampo at work in under a minute, with no model calls. A throwaway git repo with a seeded bug, a
-Sampo home of its own, and the real fm CLI and PreToolUse guard hook playing Claude's part with canned moves: an edit
+"""sampo demo (T-0870): Sampo at work in under a minute, with no model calls. A throwaway git repo with a seeded bug, a
+Sampo home of its own, and the real sampo CLI and the Ward's PreToolUse hook playing Claude's part with canned moves: an edit
 refused for want of a task, the task planned, rm -rf ~ refused, a red test recorded, the fix, a green test, a close
 refused for a missing audit and then made. Everything lives in one temp folder, deleted at the end (Ctrl-C too)."""
 import json
@@ -14,7 +14,7 @@ import time
 from sampo import core as c
 
 PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
-FM = os.path.join(PLUGIN, "bin", "fm")
+FM = os.path.join(PLUGIN, "bin", "sampo")  # T-3989: its messages say sampo, as a user sees them
 HOOK = os.path.join(PLUGIN, "hooks", "hook")
 TEST = "python3 -m unittest -q test_calc"
 BUG = "def add(a, b):\n    return a - b\n"
@@ -72,11 +72,11 @@ def _run(cmd, env, cwd, stdin=None):
 
 
 def _fm(env, repo, *args, ok=True):
-    line = "fm " + " ".join(f'"{a}"' if " " in a else a for a in args)
+    line = "sampo " + " ".join(f'"{a}"' if " " in a else a for a in args)
     _out("  $ " + line if PACE else "  " + _c("2", "$ ") + _c("36", line), 0.4, typed=True)
     p = _run([sys.executable, FM, *args], env, repo)
     if (p.returncode == 0) != ok:
-        raise Off(f"fm {args[0]} {args[1] if len(args) > 1 else ''} exited {p.returncode}: "
+        raise Off(f"sampo {args[0]} {args[1] if len(args) > 1 else ''} exited {p.returncode}: "
                   f"{(p.stderr or p.stdout).strip()[-400:]}")
     return p
 
@@ -115,8 +115,8 @@ def demo(work):
         if _run(cmd, env, repo).returncode:
             raise Off(f"{' '.join(cmd)} failed: is git installed?")
     _run([sys.executable, FM, "init"], env, repo)
-    _out(_c("1", "Sampo demo") + ": no model is called; the real fm and guard hook run in a throwaway repo and Sampo "
-         "home.", 0.5)
+    _out(_c("1", "Sampo demo") + ": no model is called; the real sampo CLI and the Ward's hook run in a throwaway repo "
+         "and a Sampo home of its own.", 0.5)
     _say(1, "The repo has a bug: calc.add(2, 3) returns -1. Claude tries to edit calc.py before any task exists.")
     show("  " + _c("1;31", "Refused") + ": " + _hook(env, repo, "Edit", {"file_path": os.path.join(repo, "calc.py"),
                                                     "old_string": "a - b", "new_string": "a + b"}))
@@ -137,13 +137,13 @@ def demo(work):
     show("  " + _c("32", "green") + ": the test passes now.")
     _say(6, "Claude tries to close the task without saying how it checked its work.")
     p = _fm(env, repo, "task", "finish", "T-0001", ok=False)
-    show("  " + _c("33", "not finished") + ": " + (p.stderr or p.stdout).strip().splitlines()[0].removeprefix("fm: "))
+    show("  " + _c("33", "not finished") + ": " + (p.stderr or p.stdout).strip().splitlines()[0].removeprefix("sampo: ").removeprefix("fm: "))
     _say(7, "With the audit, a lesson and a commit message, the close goes through.")
     p = _fm(env, repo, "task", "finish", "T-0001", "--audit", "self checklist: diff read, test red then green",
             "--result", "pass", "--docs", "none: a demo", "--lesson", "a test that failed first is the proof",
             "--why-not-caught", "none: the bug was seeded", "--commit", "Fix add() subtracting (T-0001)")
     if "T-0001 done" not in p.stdout:
-        raise Off("fm task finish exited 0 without closing T-0001: " + p.stdout.strip()[-400:])
+        raise Off("sampo task finish exited 0 without closing T-0001: " + p.stdout.strip()[-400:])
     show("  " + _c("1;32", "closed") + ": " + "\n  ".join(p.stdout.strip().splitlines()))
     if os.path.exists(os.path.join(work, "claude-called")):
         raise Off("claude was called")
@@ -217,7 +217,7 @@ def cmd_release_check(args):
                                timeout=300, stdin=subprocess.DEVNULL)
             ok = p.returncode == 0
             bad += not ok
-            print(f"{'PASS' if ok else 'FAIL'}  fm {verb}" + ("" if ok else f" (exit {p.returncode}):\n"
+            print(f"{'PASS' if ok else 'FAIL'}  sampo {verb}" + ("" if ok else f" (exit {p.returncode}):\n"
                   + "\n".join("  " + ln for ln in (p.stdout + p.stderr).strip().splitlines()[-15:])))
         fails = run_fences()
         bad += bool(fails)
@@ -225,7 +225,7 @@ def cmd_release_check(args):
               f"like tests: a throwaway home, not a sandbox)" + "".join(f"\n  {x}" for x in fails))
     finally:
         shutil.rmtree(work, ignore_errors=True)
-    print(f"fm release-check: {'OK' if not bad else 'FAILED'} (a temporary HOME, deleted)")
+    print(f"sampo release-check: {'OK' if not bad else 'FAILED'} (a temporary HOME, deleted)")
     return 1 if bad else 0
 
 
@@ -240,12 +240,12 @@ def cmd_demo(args):
         print("\nStopped.")
         return 130
     except (Off, OSError, subprocess.TimeoutExpired) as e:
-        print(f"\nfm demo: Sampo didn't do what the demo expects: {e}", file=sys.stderr)
+        print(f"\nsampo demo: Sampo didn't do what the demo expects: {e}", file=sys.stderr)
         return 1
     finally:
         shutil.rmtree(work, ignore_errors=True)
     here = c.find_project(os.getcwd())  # T-0919: run inside a project, end on that project's own next step
     print("\nThe demo's repo and Sampo home are deleted: nothing was left behind. " + (
         f"Back in this project ({here.slug}), next: {c.next_for(here)[2].split(' — ')[0]}" if here else
-        "To start for real: fm init in your repo, or just give Claude a request."))
+        "To start for real: sampo init in your repo, or just give Claude a request."))
     return 0

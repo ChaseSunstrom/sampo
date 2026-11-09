@@ -244,6 +244,15 @@ class ScoutProbes(ForemanTestCase):
             found = scout.probe_doctor(p, {})
         self.assertEqual([x.title for x in found], ["Fix the doctor's footprint check"])
 
+    def test_a_stale_recording_warn_is_a_finding_and_other_warns_are_not(self):  # T-3989
+        p = self._p()
+        rows = {"ok": True, "results": [{"name": "recordings", "status": "WARN", "detail": "demo/live.mp4 is 30 days old"},
+                                        {"name": "release age", "status": "WARN", "detail": "40 entries"}]}
+        done = subprocess.CompletedProcess([], 0, json.dumps(rows), "")
+        with unittest.mock.patch.object(scout.subprocess, "run", return_value=done):
+            found = scout.probe_doctor(p, {})
+        self.assertEqual([x.title for x in found], ["Fix the doctor's recordings check"])
+
     def test_brainstorm_is_due_when_nothing_is_queued_and_none_ran_this_week(self):
         p = self._p()
         found = scout.probe_brainstorm(p, {})

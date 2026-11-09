@@ -234,7 +234,7 @@ class Keys(unittest.TestCase):
         app = tui().App(tui().DEFAULTS, spawn=lambda *a, **k: None)
         app.key("?")
         text = tui().render(app.state, 140, 44, tui().DEFAULTS, app).text()
-        for cli in ("fm code --resume", "fm settings set motion off", "git diff"):
+        for cli in ("sampo smith --resume", "sampo settings set motion off", "git diff"):
             self.assertIn(cli, text)
 
 
@@ -501,11 +501,11 @@ class Waiting(unittest.TestCase):
         st = tui().State()
         st.status, st.task = "running", "T-0001 fix \x1b]0;pwn\x07add‮"
         title = tui().title_text(st)
-        self.assertTrue(title.startswith("fm code: running"), title)
+        self.assertTrue(title.startswith("sampo smith: running"), title)
         self.assertIn("T-0001 fix", title)
         self.assertFalse(any(not ch.isprintable() for ch in title), repr(title))
-        self.assertEqual(tui().title_text(tui().State()), "fm code: idle")
-        self.assertEqual(tui().title_text(None), "fm code")
+        self.assertEqual(tui().title_text(tui().State()), "sampo smith: idle")
+        self.assertEqual(tui().title_text(None), "sampo smith")
 
     def test_the_header_names_the_runs_containment(self):  # T-1760 (T-1402)
         T = tui()
@@ -565,8 +565,8 @@ class Waiting(unittest.TestCase):
                 return ["q"]
         tui()._loop(IO(), app)
         text = "".join(out)
-        self.assertIn("\x1b]0;fm code: blocked\x07", text)
-        self.assertIn("\a", text.replace("\x1b]0;fm code: blocked\x07", ""))
+        self.assertIn("\x1b]0;sampo smith: blocked\x07", text)
+        self.assertIn("\a", text.replace("\x1b]0;sampo smith: blocked\x07", ""))
 
 
 class Views(unittest.TestCase):
@@ -2596,7 +2596,7 @@ class Reopen(unittest.TestCase):  # T-1338
             f.write(json.dumps({"event": "start", "request": "fix add", "ts": 100}) + "\n")
         T, app = self.app(os.path.join(d, "place.json"), code_dir=d)
         row = "".join(t for t, _ in T._history_row(T.history(d)[0]))
-        self.assertIn("fm code --resume T-0007", row)
+        self.assertIn("sampo smith --resume T-0007", row)
         app.show_home()
         app.key("\n")  # opens "new"
         app.item_index = next(i for i, it in enumerate(app.items) if it.get("kind") == "run")
@@ -2830,7 +2830,7 @@ class Command(CodeCase):
     def test_tour_plain_prints_the_captions_and_a_tour_svg_is_written(self):  # T-1309
         r = self.code("tui", "--tour", "--plain", check=False)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("▶ fm code works one task to proof", r.stdout)
+        self.assertIn("▶ sampo smith works one task to proof", r.stdout)
         self.assertIn("rm -rf ~", r.stdout)
         self.assertIn("▶ Closed and committed", r.stdout)
         svg = os.path.join(self.tmp, "tour.svg")
@@ -4077,7 +4077,7 @@ class Tour(unittest.TestCase):  # T-1309
         app.start_tour()
         app.poll()
         self.assertEqual(len(app.state.log) >= 0 and app.tour[1], 1)
-        self.assertTrue(app.caption.startswith("fm code works one task to proof"), app.caption)
+        self.assertTrue(app.caption.startswith("sampo smith works one task to proof"), app.caption)
         self.assertGreaterEqual(app.fps(now[0]), 4, "the next event comes on time")
         now[0] += tui().TOUR_GAP * 7
         app.poll()

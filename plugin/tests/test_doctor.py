@@ -544,6 +544,10 @@ class Checks(_TmpDir):
             f.write("API_KEY = 'sk-ant-api03-abcdefghijklmnopqrstu'\n")  # pragma: allowlist secret
         subprocess.run(["git", "-C", repo, "add", "moved.txt"], check=True)
         self.assertIn("moved.txt", d.check_git_hygiene(repo).detail)
+        with open(os.path.join(repo, "clip.mp4"), "wb") as f:  # T-3989: a staged video crashed the doctor (utf-8 decode)
+            f.write(b"\x00\x00\x00\x18ftypmp42\xb0\xff\xfe")
+        subprocess.run(["git", "-C", repo, "add", "clip.mp4"], check=True)
+        self.assertIn("moved.txt", d.check_git_hygiene(repo).detail)
         subprocess.run(["git", "-C", repo, "commit", "-qm", "already there"], check=True)
         with open(os.path.join(repo, "moved.txt"), "a") as f:  # T-3892: only what the change adds is scanned
             f.write("one more line\n")

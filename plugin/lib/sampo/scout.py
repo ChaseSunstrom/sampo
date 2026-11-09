@@ -23,6 +23,7 @@ CACHE_S = 12 * 3600
 SOURCES_STALE_S = 7 * 86400
 _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 SLOW_GAP_S = 6 * 3600  # the drain asks for the slow probes at most this often
+WORK_WARNS = {"recordings"}  # T-3989: doctor WARNs that are Sampo's own work (a stale recording), filed like a FAIL
 
 FIND_DAY = 3  # T-2124: fm find leads filed per project per day, across runs
 PROVEN = {"dep", "docs", "secret"}  # kinds whose finding is its own proof; the rest wait for a failing test (T-2122)
@@ -241,7 +242,8 @@ def probe_doctor(p, ctx):
     rows = json.loads(r.stdout)["results"]  # a broken answer is a probe error (logged), never "nothing found"
     out = []
     for row in rows if isinstance(rows, list) else []:
-        if isinstance(row, dict) and row.get("status") == "FAIL":
+        if isinstance(row, dict) and (row.get("status") == "FAIL" or row.get("status") == "WARN"
+                                      and row.get("name") in WORK_WARNS):
             detail = c.plain(str(row.get("detail", "")))
             key = "doctor:" + str(row.get("name")) + ":" + hashlib.sha1(detail.encode()).hexdigest()[:8]
             out.append(Finding(key, f"Fix the doctor's {row.get('name')} check", "FIX", "S", c.fit(detail, 300),

@@ -836,6 +836,8 @@ python3 demo/record.py [--mp4]                                  # re-record samp
 python3 demo/record_live.py [--from-cast]                       # re-record Claude Code + the mod (demo/live.*; a Sonnet turn)
 ```
 
+A recording never changes with the code it shows, so `sampo doctor` checks them: its recordings line fails when one under `demo/` or `docs/assets/screens/` shows a retired name (`fm`, the old product name, a renamed verb such as `sampo code`) or when no entry in `doctor.RECORDINGS` says what a new one shows, and warns when one is over 21 days old and the code it shows has changed since (a warning, so the gates never turn red with the calendar). Each line ends with the command that makes the recording again, and Sampo's scout files either one as work.
+
 `sampo release-check` also runs every fence marked `bash runnable` in this file and MASTER.md, each in a throwaway home with stdin closed and a timeout. That is hygiene, not a sandbox: a runnable fence is trusted like the tests and can still reach any file and the network. Mark a fence runnable only when it needs nothing but `sampo` and the shell.
 
 The README's figures are real: `sampo readme diagram docs/assets/diagrams/NAME.json` draws each diagram from its spec as a dark and a light SVG in the Board look; the Board is the live page (`plugin/web/live`) fed the test fixture `plugin/tests/fixtures/live/snap-5.json`, never this machine's state, the terminal from `sampo smith tui --events demo/examples/feature.jsonl --snapshot`, the Claude Code still from `demo/record_live.py`'s video; `sampo readme check README.md` holds them to their files, pairs, sizes and private text. The Ward and architecture diagrams are hand-drawn tiles in `site/assets/diagrams/`.
