@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-08",
+ "generated": "2026-11-09",
  "totals": {
-  "tasks_done": 620,
-  "evidence": 3669,
-  "proofs": 341,
-  "commits": 490,
-  "gate_runs": 308,
-  "subagents": 1811,
-  "lanes_merged": 375,
-  "findings": 529,
-  "guard_blocks": 653,
-  "captures": 988,
-  "lessons_shown": 1360
+  "tasks_done": 719,
+  "evidence": 4069,
+  "proofs": 397,
+  "commits": 529,
+  "gate_runs": 337,
+  "subagents": 2034,
+  "lanes_merged": 450,
+  "findings": 590,
+  "guard_blocks": 768,
+  "captures": 1134,
+  "lessons_shown": 1489
  },
  "daily": [
   {
@@ -93,71 +93,82 @@
   },
   {
    "day": "2026-11-08",
-   "FEATURE": 0,
-   "FIX": 6,
-   "CLEAN": 0,
+   "FEATURE": 14,
+   "FIX": 40,
+   "CLEAN": 1,
+   "PERFORMANCE": 23,
+   "SECURITY": 6,
+   "RESEARCH": 4,
+   "lanes": 104,
+   "evidence": 459
+  },
+  {
+   "day": "2026-11-09",
+   "FEATURE": 3,
+   "FIX": 13,
+   "CLEAN": 4,
    "PERFORMANCE": 2,
-   "SECURITY": 1,
-   "RESEARCH": 2,
-   "lanes": 45,
-   "evidence": 122
+   "SECURITY": 0,
+   "RESEARCH": 0,
+   "lanes": 16,
+   "evidence": 63
   }
  ],
  "tiers": {
-  "S": 338,
-  "M": 264,
-  "L": 18
+  "S": 384,
+  "M": 313,
+  "L": 22
  },
  "types": {
-  "FEATURE": 228,
-  "FIX": 272,
-  "CLEAN": 36,
-  "PERFORMANCE": 49,
-  "SECURITY": 19,
-  "RESEARCH": 16
+  "FEATURE": 245,
+  "FIX": 319,
+  "CLEAN": 41,
+  "PERFORMANCE": 72,
+  "SECURITY": 24,
+  "RESEARCH": 18
  },
  "guard": {
-  "brief": 360,
-  "core": 154,
-  "system": 46,
-  "state-direct": 33,
-  "rm-outside": 18,
+  "brief": 405,
+  "core": 178,
+  "system": 72,
+  "state-direct": 43,
+  "rm-outside": 21,
+  "credentials": 16,
   "pipe-shell": 14,
-  "credentials": 12,
-  "plugin": 7
+  "plugin": 8
  },
  "findings": {
   "lenses": {
-   "edge": 161,
-   "adversary": 117,
-   "self": 68,
-   "intent": 59,
-   "design": 51,
-   "maintainer": 42
+   "edge": 177,
+   "adversary": 127,
+   "self": 77,
+   "intent": 73,
+   "design": 53,
+   "maintainer": 48
   },
   "severity": {
-   "LOW": 298,
-   "MEDIUM": 195,
-   "HIGH": 36
+   "LOW": 327,
+   "MEDIUM": 224,
+   "HIGH": 39
   }
  },
  "subagents": {
   "fm-builder": 1112,
-  "general-purpose": 438,
-  "fm-reviewer": 207,
-  "fm-recon": 40,
-  "Plan": 8,
-  "claude-code-guide": 4
+  "general-purpose": 483,
+  "fm-reviewer": 208,
+  "sampo:fm-builder": 167,
+  "fm-recon": 41,
+  "Plan": 8
  },
  "gate_seconds": {
-  "runs": 308,
-  "median": 361.0
+  "runs": 337,
+  "median": 369.6
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 132,
+  "searches": 178,
   "queued": 3,
   "refused": 0
  },
@@ -275,16 +286,16 @@
   "hardware": 8
  },
  "code": {
-  "model_tests": 89,
+  "model_tests": 90,
   "endpoints": 9,
-  "tests": 7839
+  "tests": 8185
  },
  "calibration": {
-  "scored": 30,
-  "pending": 454,
+  "scored": 28,
+  "pending": 500,
   "brier": {
-   "stated": 0.15416666666666667,
-   "base": 0.18750689655172412
+   "stated": 0.11357142857142857,
+   "base": 0.13732222222222223
   },
   "bars": {
    "research": 70,
@@ -309,11 +320,11 @@
     {
      "lo": 80,
      "hi": 94,
-     "n": 4,
+     "n": 2,
      "held": 0,
      "pct": 0,
-     "stated": 86,
-     "gap": 86
+     "stated": 88,
+     "gap": 88
     }
    ],
    "ship": [
@@ -351,30 +362,35 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 5,
-     "held": 5,
-     "pct": 100
+     "n": 11,
+     "held": 10,
+     "pct": 91
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 39,
-     "held": 39,
-     "pct": 100
+     "n": 69,
+     "held": 66,
+     "pct": 96
     }
    ]
   }
  },
  "proof": {
-  "n": 819,
+  "n": 748,
   "counts": {
-   "meaning-notes": 404,
-   "meaning-user": 256,
-   "research-uncited": 36,
-   "perf-typed": 95,
-   "typed": 56,
-   "red": 86,
-   "perf-noise": 1
+   "meaning-notes": 389,
+   "research-uncited": 33,
+   "meaning-user": 106,
+   "perf-typed": 116,
+   "typed": 63,
+   "red": 87,
+   "perf-noise": 1,
+   "docs": 69,
+   "ui-unshot": 33,
+   "tui-unshot": 7,
+   "infra": 3,
+   "data": 6
   },
   "history": [
    {
@@ -408,6 +424,10 @@
    {
     "day": "2026-11-08",
     "n": 819
+   },
+   {
+    "day": "2026-11-09",
+    "n": 748
    }
   ]
  },
@@ -415,50 +435,50 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1065,
-    "precision": 0.787,
+    "fired": 1129,
+    "precision": 0.791,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 325,
-    "precision": 0.779,
+    "fired": 335,
+    "precision": 0.771,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 211,
-    "precision": 0.768,
+    "fired": 206,
+    "precision": 0.773,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 88,
+    "fired": 103,
     "precision": 0.421,
     "route": "inbox"
    },
    {
     "trigger": "genesis-review",
     "fired": 70,
-    "precision": 0.236,
+    "precision": 0.364,
     "route": "inbox"
    },
    {
     "trigger": "ci",
-    "fired": 39,
+    "fired": 40,
     "precision": 0.368,
+    "route": "inbox"
+   },
+   {
+    "trigger": "ci-red",
+    "fired": 36,
+    "precision": 0.857,
     "route": "inbox"
    },
    {
     "trigger": "baseline",
     "fired": 33,
     "precision": 0.697,
-    "route": "inbox"
-   },
-   {
-    "trigger": "ci-red",
-    "fired": 32,
-    "precision": 0.833,
     "route": "inbox"
    },
    {
@@ -480,15 +500,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "friction",
+    "trigger": "foresight-cochange",
     "fired": 7,
-    "precision": 0.0,
+    "precision": 0.2,
     "route": "inbox"
    },
    {
-    "trigger": "foresight-cochange",
-    "fired": 6,
-    "precision": 0.2,
+    "trigger": "friction",
+    "fired": 7,
+    "precision": 0.0,
     "route": "inbox"
    },
    {
@@ -504,27 +524,27 @@
     "route": "inbox"
    },
    {
+    "trigger": "predicted",
+    "fired": 3,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
+    "trigger": "foresight-date",
+    "fired": 2,
+    "precision": 0.0,
+    "route": "inbox"
+   },
+   {
     "trigger": "night",
     "fired": 2,
     "precision": 1.0,
     "route": "inbox"
    },
    {
-    "trigger": "predicted",
-    "fired": 2,
-    "precision": null,
-    "route": "inbox"
-   },
-   {
     "trigger": "did-not-hold",
     "fired": 1,
     "precision": 1.0,
-    "route": "inbox"
-   },
-   {
-    "trigger": "foresight-date",
-    "fired": 1,
-    "precision": 0.0,
     "route": "inbox"
    },
    {
@@ -542,9 +562,9 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 181,
-    "hit": 0.436,
-    "base_hit": 0.37,
+    "n": 195,
+    "hit": 0.446,
+    "base_hit": 0.385,
     "lead": [
      true,
      0.005908966064453125,
@@ -552,10 +572,10 @@
      4
     ],
     "muted": false,
-    "shown_n": 112,
-    "shown_hit": 0.446,
-    "overlap": 0.096,
-    "base_overlap": 0.092
+    "shown_n": 125,
+    "shown_hit": 0.464,
+    "overlap": 0.092,
+    "base_overlap": 0.088
    }
   ],
   "lean": [
@@ -612,6 +632,174 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-08",
+   "text": "Adopt a two-rung Haiku-then-Sonnet ladder for exam-style plain sessions (21/35 pass at $0.060 per pass vs all-Sonnet 16/35 at $0.129, and 17/35 at $0.187 for Sonnet given a second try); drop the Opus ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "Pace new subagents to the Wednesday 07:00 UTC horizon (budget set --until 2026-11-11T07:00Z): in-flight builders finish, new ones start when the recent rate falls under the allowance; optional passes ",
+   "later": null,
+   "confidence": 75,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "T-1331: a re-brainstorm round past the 8 newest ideas.md gave 71 new titles, 0 confirmed and at most 2 plausible gaps after grounding 14 against code: dry for fm code at this depth (research t1331-rou",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "Recommendation: route the ideas lenses and deepen rounds through moonscale's local-first routing (_generative/_local/_ask) instead of claude -p for every child, as the Mission's Approaches choose; shi",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "budget raised: day 100 \u2192 130",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "Parked T-3926 at a one-way, ambiguous step: implement sampo safe / safe off (cli verb reusing serve.panic_stop and c.set_panic; land/train stop at a clean point; snapshot via a temp GIT_INDEX_FILE + c",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3919: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "Snapshot before a one-way step: drop the gpu-lfm3 line from models.json; check mimo answers",
+   "later": null,
+   "confidence": 90,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "budget raised: day 40 \u2192 100",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "Accepted the supply chain delta that made the base red (land stopped 07:52 UTC): sampo@sampo and sampo-ui@sampo are this repo's own plugins under the T-3707 name (same hooks as foreman@foreman); the o",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3901: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3899: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3896: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3894: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3893: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3889: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3885: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3873: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3868: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3866: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3865: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3864: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3863: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-08",
+   "text": "read T-3862: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
   {
    "date": "2026-11-08",
    "text": "read T-3850: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
@@ -1843,205 +2031,10 @@
    "later": null,
    "confidence": null,
    "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Moons at scale (standing rule): the Moons catalogue grows toward 10,000 candidate moons, every one about what Sampo can do for its user, never internal plumbing or untestable fiction. Generation runs ",
-   "later": {
-    "date": "2026-11-04",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Never interrupt the user mid-run: no AskUserQuestion and no fm ask permission prompt while the standing core yes and trust cover the work; options go on an artifact, picks are made with fm decide, and",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "hints go quiet after QUIET_AFTER=6 ignored showings",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Moonshots must be wild: the cold reviewer scores wildness 1-5, an extreme or massive below 4 counts as xhigh, the generation brief carries six wild lenses, the reviewer's anti-patterns and the wild-5 ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2857: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "No mid-run questions: options go on an artifact, the pick is made with fm decide and named in the report, and the work keeps going; only logins, secrets and fm ask grants reach the user",
-   "later": {
-    "date": "2026-11-04",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Route M lanes to haiku (provisional)",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Work in progress is published, not held: the picker artifact is republished as each render or page lands, and finished reports go up as artifacts with the link in the reply",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "No mid-run questions: options go on an artifact, the pick is made with fm decide and named in the report, and the work keeps going; only logins, secrets and fm ask grants reach the user",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "T-2788 pick: the illustrated forge (12-forge-illustrated) becomes Sampo's theme everywhere: super-improved, then carried through the logo and its variants, tokens, every site page, the README header, ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "read T-2832: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "read T-2831: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "T-2788: two forge versions side by side for the user to compare: 11-forge-photoreal (photoreal render) and 12-forge-illustrated (stylized, heavily animated, drawn in the anvil logo's own style)",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "T-2788 rendering: the anvil forge goes photoreal (11-forge-photoreal): CC0 scanned PBR materials, path-traced lighting baked offline on the local GPU, live volumetric fire, sparks, haze and flicker li",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "T-2788 direction: the anvil is the rune-carved rock of 9's logo (angular pitted stone, deep-carved runes glowing in the fire colours, a hot seam), one object with the anvil; nothing round as the hero ",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "read T-2824: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "T-2788 direction: completely redesigned fiery forge with an anvil as the hero (10-anvil-forge); no mill or quern anywhere; flames in many colours (blue-white core and blue gas flame, gold, orange, red",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "T-2788 direction: the fiery forge of direction 2, remade with far more detail (9-fiery-forge); the forge and its fire fill the page, with the Sampo forged in it; the logo is a detailed forged quern in",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "read T-2817: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "T-2788 direction: the fiery forge of direction 2, remade with far more detail (9-fiery-forge); the forge and its fire are the scene, with the Sampo forged in it; the logo follows (detailed forged quer",
-   "later": {
-    "date": "2026-11-03",
-    "how": "revisited"
-   },
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "T-2788 direction: remake direction 2 (Ilmarinen's forge) with the Sampo relic itself as the hero, realistic forged materials and much more motion; read 'the more artifact direction' as the mythical ar",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Sampo's look is direction 1, Kirjokansi, remade better: the brass astrolabe under the turning sky, more animated and fluid, the instrument lit and blended into the sky (never a pasted object on the ba",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "read T-2805: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-03",
-   "text": "Sampo's look is one world fused from three directions, not parts of each: Kirjokansi (brass astrolabe, turning sky, engraved type), Ilmarinen's forge (heat as the 'running now' signal, fire, struck me",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
   }
  ],
  "louhi": {
-  "trials": 178,
+  "trials": 191,
   "runs": [
    {
     "run": "s0-001",
@@ -2273,6 +2266,13 @@
     "scenarios": 176,
     "keyed": 192,
     "found": 79
+   },
+   {
+    "run": "s52-040",
+    "trials": 13,
+    "scenarios": 272,
+    "keyed": 246,
+    "found": 194
    }
   ],
   "agents": [
@@ -2299,6 +2299,17 @@
     "brier": 0.144
    },
    {
+    "agent": "plain",
+    "trials": 23,
+    "scenarios": 325,
+    "keyed": 287,
+    "found": 211,
+    "false_alarms": 59,
+    "fixable": 419,
+    "fixed": 317,
+    "brier": 0.468
+   },
+   {
     "agent": "oracle",
     "trials": 21,
     "scenarios": 1807,
@@ -2308,17 +2319,6 @@
     "fixable": 2896,
     "fixed": 2896,
     "brier": 0.0
-   },
-   {
-    "agent": "plain",
-    "trials": 10,
-    "scenarios": 53,
-    "keyed": 41,
-    "found": 17,
-    "false_alarms": 21,
-    "fixable": 41,
-    "fixed": 26,
-    "brier": null
    },
    {
     "agent": "empty",
