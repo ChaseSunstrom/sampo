@@ -257,6 +257,20 @@ def cmd_lane(args):
         if args.id or p.lane:
             raise cli.UsageError("fm lane recover --all takes no task id, and runs from the main checkout")
         return recover_all(p, main, args)
+    more = list(getattr(args, "more", None) or [])
+    if args.action == "merge" and (more or getattr(args, "all", False)):  # T-3119: several lanes, one train
+        if p.lane:
+            raise c.PolicyError(f"sampo lane merge runs from the main checkout ({main}), not from inside a lane")
+        ids = ([args.id] if args.id else []) + more
+        if getattr(args, "all", False):
+            if ids:
+                raise cli.UsageError("fm lane merge --all takes no task ids")
+            ids = awaiting_merge(p, c.load_briefs(p))
+            if not ids:
+                raise cli.UsageError("no finished lane awaits a merge")
+        from sampo import train
+        args.id = " ".join(ids)
+        return train.cmd(p, args, main)
     if not args.id:
         raise cli.UsageError(f"fm lane {args.action} needs a task id")
     if p.lane:  # T-0234 review: a lane (a builder's above all) doesn't hand itself back or start others

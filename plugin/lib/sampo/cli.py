@@ -9166,6 +9166,8 @@ def _build_parser(only=None):
                                                        "new <id>, list, rm <id> (never discards uncommitted work); "
                                                        "brief <id>: an S/M task for a sampo:fm-builder subagent; "
                                                        "merge <id>: bring a builder's finished commits in; "
+                                                       "merge ID ID …|--all: several (every finished lane) as one train, "
+                                                       "each lane checked in its own process, a red one bisected out (T-3119); "
                                                        "resume <id>: take back a stopped builder's work; "
                                                        "recover <id>: the one recovery for why its lane stopped (T-2354); "
                                                        "stats: builder landing rate by brief size (T-2368); "
@@ -9185,7 +9187,7 @@ def _build_parser(only=None):
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon", "accept"])
     s.add_argument("--all", action="store_true", help="recover: every lane stopped before its merge, one launch line each "
-                                                      "or the reason it's left (T-3922)")
+                                                      "or the reason it's left (T-3922); merge: every finished lane (T-3119)")
     s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),
                    help="accept: one audit of the lane (its lens, how it was done, the result); repeat per lens (T-3922)")
     s.add_argument("--bg", action="store_true", help="land: start it detached (log in the state's land.log) and return at "
@@ -9203,6 +9205,7 @@ def _build_parser(only=None):
                                                           "choice first (default 2) (T-2339)")
     s.add_argument("id", nargs="?", help="the task id; max: how many builders may be out at once (1 up to the "
                                          "ceiling in lanes.BUILDERS_MAX)")
+    s.add_argument("more", nargs="*", help="merge: more task ids; with the first they land as one train (T-3119)")
     s.add_argument("--confidence", metavar="N", help="race: whole percent, 0-100, that the original side wins; a bet in "
                                                      "the calibration ledger (T-2337)")
     s.add_argument("--spike", action="store_true", help="new: a throwaway lane sampo lane merge refuses (T-0732)")

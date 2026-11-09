@@ -9,16 +9,22 @@ import re
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
+import threading
 import time
 import unittest
 import unittest.mock
 from unittest import mock
 
+import test_lane_train as tlt
 from helpers import CALM_HOST, ForemanTestCase, read_text, valid_m_plan
 
 from sampo import core as c
 from sampo import lanes as slanes
+from sampo import train
+
+OLD = "2026-01-01T00:00:00"  # a lane quiet this long counts as finished (core.finished_lanes)
 
 first =lambda text: json.JSONDecoder().raw_decode(text)[0]  # --focus prints its own lines after the JSON
 
@@ -3249,6 +3255,88 @@ class AndonClear(_LaneRepo):
         text = open(os.path.join(PLUGIN, "agents", "fm-builder.md"), encoding="utf-8").read()
         self.assertIn("sampo lane andon", text)
         self.assertNotIn("delete the file", text)
+
+
+class MergeTrain(tlt.TrainCase):
+    """T-3119: `sampo lane merge A B C` is a train (one gate run on the combined tree, one merge commit per lane in order),
+    `merge --all` trains every finished lane, each lane's pre-check runs in its own process, one bench at a time."""
+
+    def merges(self):
+        return self.git("log", "--merges", "--reverse", "--format=%s").splitlines()
+
+    def test_several_ids_land_as_one_train_with_a_merge_commit_per_lane_in_order(self):
+        ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt"), self.lane(3, "c.txt")]
+        r = self.fm("lane", "merge", *ids)
+        self.assertEqual(self.gate_runs(), 1, r.stdout)
+        self.assertEqual([m.split(":")[0] for m in self.merges()], [f"Merge {t}" for t in ids])
+        for tid in ids:
+            self.assertIn("in merge train", self.fm("task", "show", tid).stdout)
+            self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), tid)
+
+    def test_a_red_lane_stays_out_named_and_a_conflicting_later_lane_leaves_with_its_files(self):
+        ids = [self.lane(1, "same.txt", "one\n"), self.lane(2, "BREAK"), self.lane(3, "same.txt", "three\n"),
+               self.lane(4, "d.txt")]
+        r = self.fm("lane", "merge", *ids)
+        self.assertEqual(self.merges() and [m.split(":")[0] for m in self.merges()], [f"Merge {ids[0]}", f"Merge {ids[3]}"])
+        out = r.stdout + r.stderr
+        self.assertIn(f"left out {ids[1]}", out)
+        self.assertIn(f"left out {ids[2]}: conflicts with an earlier lane in the train: same.txt", out)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "BREAK")))
+
+    def test_all_trains_the_finished_lanes_only_with_one_gate_run(self):
+        done = [self.lane(1, "a.txt", when=OLD), self.lane(2, "b.txt", when=OLD)]
+        fresh = self.lane(3, "c.txt")  # committed just now: still being built
+        os.environ["FM_STALL_CACHE_S"] = "0"
+        self.addCleanup(os.environ.pop, "FM_STALL_CACHE_S", None)
+        self.fm("lane", "merge", "--all")
+        self.assertEqual(self.gate_runs(), 1)
+        self.assertEqual(len(self.merges()), 2)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "c.txt")), fresh)
+
+    def test_a_merge_of_one_id_is_still_the_single_lane_merge(self):
+        tid = self.lane(1, "a.txt")
+        self.assertNotIn("Train:", self.fm("lane", "merge", tid).stdout)
+
+    def test_each_lanes_check_runs_in_its_own_process_and_two_checks_overlap(self):
+        burn = ("import os, sys, time\nt = time.time()\nwhile time.process_time() < 1: pass\n"
+                "open(sys.argv[1], 'w').write('%d %f %f' % (os.getpid(), t, time.time()))\n")
+        script = os.path.join(self.tmp, "burn.py")
+        with open(script, "w") as f:
+            f.write(burn)
+        argvs = [[sys.executable, script, os.path.join(self.tmp, f"burn{i}")] for i in (1, 2)]
+        t0 = time.monotonic()
+        train._fan(argvs, self.tmp, 2)
+        spent = time.monotonic() - t0
+        (p1, s1, e1), (p2, s2, e2) = (map(float, open(a[2]).read().split()) for a in argvs)
+        self.assertNotIn(os.getpid(), (p1, p2))
+        self.assertNotEqual(p1, p2)
+        self.assertLess(max(s1, s2), min(e1, e2), "the two 1 s burns ran at the same time")
+        self.assertLess(spent, 2.0, "two 1 s CPU burns cost less than their sum")
+
+    def test_the_trains_lane_check_is_a_child_process(self):
+        seen = os.path.join(self.tmp, "who")
+        tid = self.lane(1, "a.txt", ac=f"ps -o args= -p $PPID > {seen}")
+        self.fm("lane", "merge", tid, self.lane(2, "b.txt"))
+        self.assertIn("sampo.train", open(seen).read(), "the criterion's parent is the lane's own check process")
+
+    def test_no_two_benches_run_at_once_though_checks_do(self):
+        from sampo import selfgate
+        live, worst = [0], [0]
+        guard = threading.Lock()
+
+        def bench(plugin):
+            with guard:
+                live[0] += 1
+                worst[0] = max(worst[0], live[0])
+            time.sleep(0.03)
+            with guard:
+                live[0] -= 1
+            return {}, {}
+        with mock.patch.object(selfgate, "_bench", bench):
+            ts = [threading.Thread(target=selfgate._paired, args=("base", "new")) for _ in range(3)]
+            [t.start() for t in ts]
+            [t.join(30) for t in ts]
+        self.assertEqual(worst[0], 1)
 
 
 if __name__ == "__main__":

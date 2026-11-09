@@ -263,12 +263,18 @@ def _paired(base, new, cache=None):
     comes and goes lands on both; a hook's rise holds when it shows in HOLD pairs (a one-off spike doesn't).
     T-3176: with a cache the base's PAIRS benches are reused (or kept after a fresh run); the branch always runs."""
     old = (cache or {}).get("bench")
-    if isinstance(old, list) and len(old) == PAIRS:
-        runs = [(a, _bench(new)) for a in old]
-    else:
-        runs = [(_bench(base), _bench(new)) for _ in range(PAIRS)]
-        if cache is not None:
-            cache["bench"], cache["load"] = [a for a, _ in runs], _load_pc()
+    # T-3119: a timing bench never runs beside another (parallel lane checks would skew each other's p95); every
+    # other check runs at once. ponytail: one machine-wide lock, any process; a stuck holder times out after an hour
+    try:
+        with c.lock(os.path.join(c.state_dir(), "bench"), timeout=3600):
+            if isinstance(old, list) and len(old) == PAIRS:
+                runs = [(a, _bench(new)) for a in old]
+            else:
+                runs = [(_bench(base), _bench(new)) for _ in range(PAIRS)]
+                if cache is not None:
+                    cache["bench"], cache["load"] = [a for a, _ in runs], _load_pc()
+    except c.LockTimeout as e:  # the gate's own refusal ("couldn't run"), not a crash
+        raise RuntimeError(f"another hook bench held the bench lock for an hour: {e}") from None
     seen = [_slower(a[0], z[0]) for a, z in runs]
     rows = {k: next(s[k] for s in seen if k in s) for k in {k for s in seen for k in s}
             if sum(k in s for s in seen) >= HOLD}

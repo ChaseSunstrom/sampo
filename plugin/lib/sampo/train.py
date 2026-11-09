@@ -9,6 +9,7 @@ changes reach (_affected_gate); the full suite then runs on the landed merges in
 import concurrent.futures
 import contextlib
 import hashlib
+import json
 import os
 import re
 import shlex
@@ -322,6 +323,71 @@ def _none(head, left):
     return e
 
 
+def _check(p, main, base, b, tip, probe_tests):
+    """(why this lane can't land or '', notes): the lane's own acceptance commands re-run in its worktree, as `lane merge`
+    does, then conflicts and red tests against the base (T-3474), all before any gate run."""
+    from sampo import cli
+    seen = []
+    try:
+        try:
+            _verify(b)
+        except CriterionRed as e:  # T-3629: red once, green on a rerun is a load flake, as _probe treats it
+            _verify(b, only=e.n)  # that criterion alone: the others passed
+            seen.append((b.id, f"flaky (red once, green on a rerun): {str(e).splitlines()[0][:160]}"))
+    except (c.PolicyError, cli.UsageError) as e:
+        return str(e).splitlines()[0], seen
+    return _probe(p, main, base, b, tip, seen, probe_tests), seen
+
+
+MARK = "SAMPO-CHECK "  # the line a lane's check process prints its result on (its stdout holds the criteria's own too)
+
+
+def _child_argv(p, main, base, tid, tip, probe_tests):
+    """T-3119: the command line of one lane's check process: `python -m sampo.train JSON`, run in the main checkout."""
+    arg = json.dumps({"project": [p.slug, p.root, p.dir, p.lane], "main": main, "base": base, "id": tid, "tip": tip,
+                      "tests": bool(probe_tests)})
+    return [sys.executable, "-m", "sampo.train", arg]
+
+
+def _fan(argvs, cwd, jobs, timeout=7200):
+    """T-3119: run each command line in its own process, `jobs` at once; the finished processes in the order given.
+    The threads here only wait on their processes, so no check's work holds this interpreter's GIL. A process over
+    `timeout` seconds is killed (rc 124)."""
+    lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, PYTHONPATH=lib + os.pathsep + os.environ.get("PYTHONPATH", ""))
+
+    def one(argv):
+        try:
+            return subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, errors="replace",
+                                  timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(argv, 124, "", f"timed out after {timeout}s")
+    with concurrent.futures.ThreadPoolExecutor(max(1, jobs)) as ex:
+        return list(ex.map(one, argvs))
+
+
+def _child_result(r):
+    """(why or '', notes) from a lane's finished check process; its stderr passes on (the criteria's reuse lines)."""
+    if r.stderr:
+        sys.stderr.write(r.stderr)
+    for line in reversed(r.stdout.splitlines()):
+        if line.startswith(MARK):
+            got = json.loads(line[len(MARK):])
+            return got["why"], [tuple(x) for x in got["seen"]]
+    tail = (r.stderr.strip().splitlines() or ["no output"])[-1]
+    return f"its check process ended with exit {r.returncode} and no result: {c.fit(tail, 200)}", []
+
+
+def _main(arg):
+    """T-3119: the lane's check process: read the lane's task here, check it, print the result on one MARK line."""
+    from sampo import cli
+    a = json.loads(arg)
+    p = c.Project(*a["project"])
+    why, seen = _check(p, a["main"], a["base"], cli.need_brief(p, a["id"]), a["tip"], a["tests"])
+    print(MARK + json.dumps({"why": why, "seen": seen}))
+    return 0
+
+
 def train(p, main, ids=None):
     """Land the named `ids` (a bare train would land lanes nobody picked) through one gate run, one train at a time.
     Returns a dict: merged, left_out [(id, why)], gate_runs, probes, tip, branch. Raises PolicyError when nothing can
@@ -358,20 +424,6 @@ def _run(p, main, ids):
             tip = _git(main, "rev-parse", "--verify", f"{br}^{{commit}}").stdout.strip()
             rows.append((b, tip, _held(p, b, main, tip)))
 
-    def check(row):  # (why it can't land or '', its own notes): lanes run at once, so each keeps its own notes
-        b, tip, why = row
-        seen = []
-        if not why:  # as `lane merge` does: the lane's own acceptance commands re-run in its worktree
-            try:
-                try:
-                    _verify(b)
-                except CriterionRed as e:  # T-3629: red once, green on a rerun is a load flake, as _probe treats it
-                    _verify(b, only=e.n)  # that criterion alone: the others passed
-                    seen.append((b.id, f"flaky (red once, green on a rerun): {str(e).splitlines()[0][:160]}"))
-            except (c.PolicyError, cli.UsageError) as e:
-                why = str(e).splitlines()[0]
-        return why or _probe(p, main, base, b, tip, seen, probe_tests), seen  # T-3474: conflicts (and red tests), before any gate run
-
     # T-3770: when the gate is the suite the affected template runs (T-3544), it runs every lane's affected tests on the
     # merged tree, and a red one bisects on its red classes alone (T-3602): a probe per lane ran them all twice (the
     # 2026-11-07 trains: probes 55.8 and 71.8 min against gates of 14.9 and 10.1). The probes' test runs stay for a
@@ -379,13 +431,18 @@ def _run(p, main, ids):
     probe_tests = os.environ.get("FOREMAN_TRAIN_PROBES", "") not in ("", "0") or not cli.suite_gate(
         p.root, c.read_meta(p).get("affected") or "", checks)
 
-    # T-3531: PROBE_JOBS lanes at once, each in its own scratch tree (one on a host over 2x its CPUs); map keeps the
-    # candidate order, so the left-out list and notes read as a serial run's
+    # T-3531: PROBE_JOBS lanes at once, each in its own scratch tree (one on a host over 2x its CPUs); results keep the
+    # candidate order, so the left-out list and notes read as a serial run's. T-3119: each lane's check is its own
+    # process (its own interpreter, no GIL shared), the lane's criteria and probe tests under it
     t0 = time.monotonic()  # T-3596: the phases' minutes, in the result and the report line
-    with concurrent.futures.ThreadPoolExecutor(1 if c.host_strain(2.0) else PROBE_JOBS) as ex:
-        for (b, tip, _), (why, seen) in zip(rows, list(ex.map(check, rows))):
-            notes += seen
-            left.append((b.id, why)) if why else cands.append((b, tip))
+    outs = iter(_fan([_child_argv(p, main, base, b.id, tip, probe_tests) for b, tip, why in rows if not why], main,
+                     1 if c.host_strain(2.0) else PROBE_JOBS))
+    for b, tip, why in rows:
+        seen = []
+        if not why:
+            why, seen = _child_result(next(outs))
+        notes += seen
+        left.append((b.id, why)) if why else cands.append((b, tip))
     t1 = time.monotonic()
     if not cands:
         raise _none("nothing to merge: ", left)
@@ -1044,4 +1101,8 @@ def accept(p, b, main, args):
     pid, log = started
     lines.append(f"  land started in the background (pid {pid}, log {log}); it trains {b.id} first.")
     return cli.out(args, {"id": b.id, "queued": True, "land": "started", "pid": pid, "log": log}, "\n".join(lines))
+
+
+if __name__ == "__main__":  # T-3119: a lane's check process (see _child_argv)
+    sys.exit(_main(sys.argv[1]))
 
