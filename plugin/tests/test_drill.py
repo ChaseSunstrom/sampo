@@ -85,6 +85,17 @@ class Drill(ForemanTestCase):
         self.assertIn("fm status", drill.crash("fm status", 1, "", "Traceback (most recent call last):\n  x\n"))
 
 
+class BriefWrites(unittest.TestCase):
+    def test_no_sampo_module_opens_a_brief_for_writing_directly(self):  # T-3811 mtime gate: write_atomic only
+        import glob
+        import re
+        pat = re.compile(r"""open\(\s*(brief|bpath|brief_path)\w*\s*,\s*["']w""")
+        lib = os.path.join(os.path.dirname(os.path.abspath(drill.__file__)), "*.py")
+        bad = [f"{os.path.basename(p)}:{n}" for p in glob.glob(lib)
+               for n, ln in enumerate(open(p, encoding="utf-8"), 1) if pat.search(ln)]
+        self.assertEqual(bad, [])
+
+
 class StateErrors(ForemanTestCase):
     def setUp(self):
         super().setUp()

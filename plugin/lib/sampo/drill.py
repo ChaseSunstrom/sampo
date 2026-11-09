@@ -143,8 +143,7 @@ def _plant(day, f, saved):
         brief = _brief_path(day, "T-0003")
         with open(brief) as fh:
             text = fh.read()
-        with open(brief, "w") as fh:
-            fh.write(re.sub(r"(?m)^status: .*$", "status: done", text, count=1))
+        c.write_atomic(brief, re.sub(r"(?m)^status: .*$", "status: done", text, count=1))
         with open(path, encoding="utf-8", errors="replace") as fh:
             keep = [ln for ln in fh.read().splitlines(True) if '"task_done"' not in ln]
         with open(path, "w") as fh:
@@ -159,8 +158,8 @@ def _plant(day, f, saved):
         brief = _brief_path(day, "T-0002")
         with open(brief) as fh:
             text = fh.read()
-        with open(brief, "w") as fh:  # a hand edit: the lane a crash left named after its folder went
-            fh.write(text.replace("\nallow:", f"\nlane: {path}\nlane_branch: foreman/drill-gone\nallow:", 1))
+        # a hand edit: the lane a crash left named after its folder went
+        c.write_atomic(brief, text.replace("\nallow:", f"\nlane: {path}\nlane_branch: foreman/drill-gone\nallow:", 1))
     elif k == "corrupt state":
         try:
             with open(path) as fh:
