@@ -1252,7 +1252,7 @@ def bench_models(p, decision=None, embedders=None, cap=BENCH_CAP, serving=None, 
     gens = [x for x in generators if not sensitive or models.is_loopback(urllib.parse.urlsplit(x["base_url"]).hostname or "")]
     if gens:
         rows += bench_generation(p, gens, k, grow_fn=grow_fn, funnel_fn=funnel_fn, smith_fn=smith_fn, stamp=stamp)
-    path = os.path.join(p.root, BENCH)
+    path = c.bench_path(p)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     for r in rows:
         c.append_line(path, json.dumps(r) + "\n")
@@ -1404,7 +1404,7 @@ def loo_models(p, rows=None, contestants=None, thresholds=LOO_THRS, seed=LOO_SEE
             out.append(fmt(tot, {"project": "pooled", "projects": len(ds), "classes": classes, "scope": _scope(len(ds)),
                                  "majority_share": round(sum(share[x] * v[0] for x, v in projs.items()) / (tot[0] or 1), 3), "delta": round(sum(ds) / len(ds), 4),
                                  "delta_lb": round(lb, 4), "adopt": ok}))
-    path = os.path.join(p.root, BENCH)
+    path = c.bench_path(p)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     for r in out:
         c.append_line(path, json.dumps(r) + "\n")
@@ -1455,7 +1455,7 @@ def adopt_models(p, res):
 def _loo_runs(p):
     """The leave-one-project-out run ids in BENCH, oldest first."""
     try:
-        with open(os.path.join(p.root, BENCH), encoding="utf-8") as f:
+        with open(c.bench_path(p), encoding="utf-8") as f:
             rs = [json.loads(x) for x in f if x.strip()]
     except (OSError, ValueError):
         return []
@@ -1466,7 +1466,7 @@ def flip_report(p, a, b):
     """T-2976: each change between loo runs `a` and `b` (ids in BENCH): a (use, contestant) that adopts in one and not the
     other is a FLIP; a pooled row whose delta_lb or coverage moved by 0.01 or more is a CHANGE; else 'no change'."""
     try:
-        with open(os.path.join(p.root, BENCH), encoding="utf-8") as f:
+        with open(c.bench_path(p), encoding="utf-8") as f:
             rs = [r for r in (json.loads(x) for x in f if x.strip()) if isinstance(r, dict) and r.get("arm") == "loo"
                   and r.get("project") == "pooled"]
     except (OSError, ValueError):
@@ -1491,7 +1491,7 @@ def flip_report(p, a, b):
 def bench_show(p, limit=40):
     """The latest run's table as text; says how many held-out rows each cut left out and how many table rows are cut."""
     try:
-        with open(os.path.join(p.root, BENCH), encoding="utf-8") as f:
+        with open(c.bench_path(p), encoding="utf-8") as f:
             allr = [r for r in (json.loads(x) for x in f if x.strip()) if isinstance(r, dict) and r.get("run")
                     and r.get("arm") not in ("loo", "verifier", "skipped")]  # T-2976/T-2977: those rows have their own reports
     except (OSError, ValueError):
@@ -1562,7 +1562,7 @@ def noise_ceiling(p, use, ids):
 
 def _bench_rows(p):
     try:
-        with open(os.path.join(p.root, BENCH), encoding="utf-8") as f:
+        with open(c.bench_path(p), encoding="utf-8") as f:
             return [r for r in (json.loads(x) for x in f if x.strip()) if isinstance(r, dict)]
     except (OSError, ValueError):
         return []
@@ -1748,7 +1748,7 @@ def bench_night(p, **kw):
     except ExamBusy as e:
         row = {"run": time.strftime("m%Y%m%d-%H%M%S") + f"{time.time_ns() // 1_000_000 % 1000:03d}", "at": c.now(),
                "arm": "skipped", "use": "*", "backend": "*", "why": c.fit(str(e), 160), "gen": gen}
-        path = os.path.join(p.root, BENCH)
+        path = c.bench_path(p)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         c.append_line(path, json.dumps(row) + "\n")
         return {"skipped": str(e), "rows": [row]}

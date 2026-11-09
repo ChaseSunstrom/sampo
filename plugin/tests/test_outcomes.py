@@ -261,6 +261,13 @@ class TrackRecord(Base):
         line = outcomes.survival_lines(self.p, outs)[0]
         self.assertIn("of 2 closes, 1 finished the window: 0 lost (0%), 1 survived; 1 still in it (0 lost so far)", line)
 
+    def test_no_held_count_includes_a_close_inside_its_window(self):  # T-3067
+        old, fresh = self.done("Old"), self.done("Fresh")
+        self.age(old, 31)
+        self.assertIn("1 of 1 settled closes held; 1 still in the 30-day window",
+                      self.fm("outcomes", "--readme").stdout)
+        self.assertIn("1 of 1 past the 30-day window held, 1 still in it", self.fm("outcomes").stdout)
+
     def test_track_record_and_would_do_differently_in_digest_and_focus(self):
         self.done("First", "FEATURE", "true", "--differently", "write the failing test before the parser")
         self.fm("task", "new", "Second", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s",

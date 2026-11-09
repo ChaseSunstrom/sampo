@@ -742,10 +742,15 @@ def build(out):
             stats.update(json.load(f))
     sys.path.insert(0, os.path.join(ROOT, "plugin", "lib"))
     from sampo import louhi
-    mdir, rows, frozen = os.path.join(ROOT, "research", "models"), [], {}  # T-3093: the model bench, tolerant of absent files
-    for name in ("bench.jsonl", "frozen.json"):
+    from sampo import core
+    rows, frozen = [], {}  # T-3093: the model bench, tolerant of absent files
+    try:  # T-3064: the bench rows live in the project's state, not the repo (copied over once if only the repo has them)
+        bench = core.bench_path(core.find_project(ROOT))
+    except AttributeError:
+        bench = os.path.join(ROOT, "state", core.BENCH_REL)
+    for name, path in (("bench.jsonl", bench), ("frozen.json", os.path.join(ROOT, "research", "models", "frozen.json"))):
         try:
-            with open(os.path.join(mdir, name), encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 if name == "frozen.json":
                     frozen = (json.load(f) or {}).get("ids") or {}
                 else:

@@ -93,7 +93,7 @@ class LouhiModels(ForemanTestCase):
                                   embedders=[self.srv.profile("nomic", "openai")], **kw)
 
     def rows(self):
-        with open(os.path.join(self.p.root, louhi.BENCH)) as f:
+        with open(os.path.join(self.p.dir, louhi.BENCH)) as f:
             return [json.loads(x) for x in f]
 
     def test_run_writes_one_row_per_backend_and_use_from_held_out_tasks_only(self):
@@ -262,7 +262,7 @@ class LouhiLoo(ForemanTestCase):
         return louhi.loo_models(self.p, rows=rows, contestants=cons)
 
     def rows(self):
-        with open(os.path.join(self.p.root, louhi.BENCH)) as f:
+        with open(os.path.join(self.p.dir, louhi.BENCH)) as f:
             return [json.loads(x) for x in f]
 
     def test_each_project_is_held_out_whole_and_rows_carry_coverage_and_a_wilson_bound_per_contestant(self):
@@ -398,6 +398,53 @@ def _oks(hits, ids, p, flat=False, right=None):
     return {t: [int(t in right), None if p is None else p if flat or t in right else round(1 - p, 3)] for t in ids}
 
 
+class BenchMigrates(ForemanTestCase):  # T-3064: the bench moved to the state dir; an old copy is carried over, once
+    ROW = '{"use": "x", "n": 1}\n'
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        self.root_copy = os.path.join(self.p.root, c.BENCH_REL)
+        self.state_copy = os.path.join(self.p.dir, c.BENCH_REL)
+
+    def git(self, *a):
+        import subprocess
+        subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=self.repo, capture_output=True, check=True)
+
+    def test_a_root_copy_is_copied_and_kept(self):
+        os.makedirs(os.path.dirname(self.root_copy), exist_ok=True)
+        with open(self.root_copy, "w") as f:
+            f.write(self.ROW)
+        self.assertEqual(c.bench_path(self.p), self.state_copy)
+        self.assertEqual(read_text(self.state_copy), self.ROW)
+        self.assertTrue(os.path.exists(self.root_copy))
+
+    def test_a_copy_deleted_in_history_is_restored_from_the_commit_before(self):
+        os.makedirs(os.path.dirname(self.root_copy), exist_ok=True)
+        with open(self.root_copy, "w") as f:
+            f.write(self.ROW)
+        self.git("add", "-f", c.BENCH_REL)
+        self.git("commit", "-qm", "add bench")
+        self.git("rm", "-q", c.BENCH_REL)
+        self.git("commit", "-qm", "drop bench")
+        self.assertFalse(os.path.exists(self.root_copy))
+        c.bench_path(self.p)
+        self.assertEqual(read_text(self.state_copy), self.ROW)
+
+    def test_neither_gives_an_empty_read_and_an_existing_state_copy_is_never_overwritten(self):
+        self.assertFalse(os.path.exists(c.bench_path(self.p)))
+        self.assertEqual(louhi.bench_show(self.p).count('"use"'), 0)
+        os.makedirs(os.path.dirname(self.state_copy), exist_ok=True)
+        with open(self.state_copy, "w") as f:
+            f.write("mine\n")
+        os.makedirs(os.path.dirname(self.root_copy), exist_ok=True)
+        with open(self.root_copy, "w") as f:
+            f.write(self.ROW)
+        c.bench_path(self.p)
+        self.assertEqual(read_text(self.state_copy), "mine\n")
+
+
 class ModelBenchVisible(ForemanTestCase):  # T-3093: the Models section, the per-generation rerun, the promotion rule
     IDS = [f"T-{i:04d}" for i in range(1, 261)]
 
@@ -407,11 +454,12 @@ class ModelBenchVisible(ForemanTestCase):  # T-3093: the Models section, the per
         self.p = c.find_project(self.repo)
 
     def write(self, rows, frozen=None):
-        path = os.path.join(self.p.root, louhi.BENCH)
+        path = os.path.join(self.p.dir, louhi.BENCH)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.writelines(json.dumps(r) + "\n" for r in rows)
         if frozen:
+            os.makedirs(os.path.join(self.p.root, os.path.dirname(louhi.FROZEN)), exist_ok=True)
             with open(os.path.join(self.p.root, louhi.FROZEN), "w") as f:
                 json.dump({"gen": 4, "ids": frozen}, f)
 
@@ -518,7 +566,7 @@ class ModelBenchVisible(ForemanTestCase):  # T-3093: the Models section, the per
             done.set()
             t.join()
         self.assertNotIn("skipped", res)
-        rows = [json.loads(x) for x in open(os.path.join(self.p.root, louhi.BENCH))]
+        rows = [json.loads(x) for x in open(os.path.join(self.p.dir, louhi.BENCH))]
         self.assertTrue(rows and all(r["arm"] != "skipped" for r in rows), "the round ran beside the grow")
 
     def test_a_busy_exam_lock_is_a_skipped_row_and_the_generation_stays_due(self):
@@ -529,7 +577,7 @@ class ModelBenchVisible(ForemanTestCase):  # T-3093: the Models section, the per
         with louhi._exam_lock(self.p):  # another bench run holds it (flock is per open file, so this thread is refused too)
             res = louhi.bench_night(self.p, decision=[], embedders=[])
         self.assertIn("another bench run", res["skipped"])
-        rows = [json.loads(x) for x in open(os.path.join(self.p.root, louhi.BENCH))]
+        rows = [json.loads(x) for x in open(os.path.join(self.p.dir, louhi.BENCH))]
         self.assertEqual([(r["arm"], r["gen"]) for r in rows], [("skipped", 4)])
         self.assertTrue(louhi.bench_due(self.p), "a skip leaves the generation due")
         self.assertEqual(louhi.models_view(rows)["uses"], {})

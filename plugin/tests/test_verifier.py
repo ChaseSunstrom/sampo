@@ -95,7 +95,7 @@ class Lake2(Lake):
         r = self.fm("exam", "models", "--verifier", "--json")
         out = json.loads(r.stdout)
         self.assertIn("pooled", out)
-        with open(os.path.join(p.root, "research", "models", "bench.jsonl")) as f:
+        with open(os.path.join(p.dir, "research", "models", "bench.jsonl")) as f:
             bench = [json.loads(x) for x in f]
         self.assertTrue([b for b in bench if b.get("use") == "verifier"])
         self.assertTrue(os.path.exists(os.path.join(p.dir, "research", "models", "verifier.json")) or out["pooled"]["auc"] is None)
@@ -129,7 +129,7 @@ class Shadow(SampoTestCase):
             f.write("{}")
         self.fm("exam", "models", "--verifier")  # this machine's lake here has no closes with both outcomes
         self.assertFalse(os.path.exists(wp))
-        with open(os.path.join(self.p.root, v.BENCH)) as f:
+        with open(os.path.join(self.p.dir, v.BENCH)) as f:
             self.assertTrue(all(json.loads(x).get("run") for x in f))
 
     def test_shadow_logs_a_score_and_changes_no_outcome(self):
@@ -141,13 +141,27 @@ class Shadow(SampoTestCase):
         self.assertIsInstance(ev[0]["data"]["score"], float)
         self.assertEqual(c.find_brief(self.p, tid).status, "done")
 
-    def test_live_advises_the_missing_evidence_and_never_blocks_the_close(self):  # models advise, proof decides
+    def decide_live(self, **trained):
         with open(os.path.join(self.p.dir, "decisions.md"), "w") as f:
             f.write("| Date | Decision | Why | Revisit |\n|---|---|---|---|\n"
                     "| 2026-11-04 | model-live: verifier: exam s30-001 beat today's false-done rate | why |  |\n")
+        with open(os.path.join(self.p.dir, v.WEIGHTS), "w") as f:
+            json.dump(dict(v.train(planted()), threshold=0.9, trained=trained), f)
+
+    def test_a_weak_pooled_auc_keeps_it_shadow_even_with_a_live_decision_row(self):  # T-3073
+        for t in ({"auc": 0.55, "projects": 5}, {"auc": 0.9, "projects": 2}, {}):
+            self.decide_live(**t)
+            tid, r = self.close()
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertNotIn("close score", r.stdout + r.stderr)
+            self.assertFalse(self.events()[-1]["data"]["live"])
+
+    def test_live_advises_the_missing_evidence_and_never_blocks_the_close(self):  # models advise, proof decides
+        self.decide_live(auc=0.7, projects=3)
         tid, r = self.close()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("close score", r.stdout + r.stderr)
         self.assertIn("tests_passed", r.stdout + r.stderr)
+        self.assertIn("pooled held-out AUC 0.7, advice only", r.stdout + r.stderr)
         self.assertEqual(c.find_brief(self.p, tid).status, "done")
         self.assertTrue(self.events()[-1]["data"]["live"])

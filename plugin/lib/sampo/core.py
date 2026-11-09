@@ -1554,6 +1554,35 @@ def write_atomic(path, text):
         raise
 
 
+BENCH_REL = os.path.join("research", "models", "bench.jsonl")
+
+
+def bench_path(p):
+    """T-3064: the model bench lives in the project's state (p.dir), not the repo. When the state copy is missing it is
+    copied once: from the repo's root copy (written before the move; never deleted), else from the commit before the
+    one that deleted it. Nothing found: the path, still missing (readers see an empty bench). Never overwrites."""
+    path = os.path.join(p.dir, BENCH_REL)
+    if os.path.exists(path):
+        return path
+    try:
+        old = os.path.join(p.root, BENCH_REL)
+        data = None
+        if os.path.isfile(old):
+            with open(old, "rb") as f:
+                data = f.read()
+        else:
+            g = lambda *a: subprocess.run(["git", "-C", p.root, *a], capture_output=True, timeout=30)
+            sha = g("log", "-1", "--format=%H", "--diff-filter=D", "--", BENCH_REL.replace(os.sep, "/")).stdout.decode().strip()
+            if sha:
+                shown = g("show", f"{sha}^:{BENCH_REL.replace(os.sep, '/')}")
+                data = shown.stdout if shown.returncode == 0 else None
+        if data:
+            write_atomic(path, data)
+    except Exception:  # a convenience: a failed copy leaves the bench empty, never breaks the reader
+        pass
+    return path
+
+
 _HELD = {}  # T-3613: (thread, directory) -> projects whose views wait for that lock's release
 
 

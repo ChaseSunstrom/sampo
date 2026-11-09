@@ -16,8 +16,9 @@ FEATURES = ("criteria", "criteria_verified", "steps", "steps_done", "evidence", 
     "type_" + t.lower() for t in TYPES)
 USE = "verifier"
 WEIGHTS = os.path.join("research", "models", "verifier.json")  # in the project's state dir
-BENCH = os.path.join("research", "models", "bench.jsonl")  # in the project's root, beside the model bench
+BENCH = os.path.join("research", "models", "bench.jsonl")  # in the project's state dir (T-3064: not committed), beside the model bench
 FALSE_ALARM = 0.10
+LIVE_AUC, LIVE_PROJECTS = 0.65, 3  # T-3073: advice only until the held-out AUC over this many projects passes this
 ITERS, LR, L2 = 300, 0.5, 0.01
 FALSE = ("reverted", "regret")  # a close later reverted or fixed counts as false; "settling" is not yet known
 
@@ -170,13 +171,24 @@ def evaluate(rows):
             "today": round(sum(1 for y in ys if not y) / len(ys), 4) if ys else None, "rows": len(ys)}
 
 
+def gate_open(model):
+    """T-3073: may the head be live at all: its pooled held-out AUC, over LIVE_PROJECTS+ projects, passes LIVE_AUC."""
+    t = (model or {}).get("trained") or {}
+    return (t.get("projects") or 0) >= LIVE_PROJECTS and (t.get("auc") or 0) > LIVE_AUC
+
+
+def auc_note(model):
+    t = (model or {}).get("trained") or {}
+    return f"pooled held-out AUC {t['auc']}" if t.get("auc") is not None else "pooled held-out AUC unmeasured"
+
+
 def ask(tid, s, model, feats):
     """The fixed ask: the features whose weight pulls the score up and that this close is furthest under typical."""
     x = _x(feats)
     gap = sorted(((model["w"][i] * (model["mu"][i] - x[i]) / model["sd"][i], k) for i, k in enumerate(FEATURES)), reverse=True)
     want = [f"{k} (has {feats.get(k) or 0})" for g, k in gap[:3] if g > 0 and model["w"][FEATURES.index(k)] > 0]
     return (f"{tid}: close score {s:.2f} is under {model.get('threshold', 0):.2f}: closes like this were reverted or fixed "
-            f"later. Record more evidence, then finish again: " + (", ".join(want) or "more passing runs and audits"))
+            f"later ({auc_note(model)}, advice only). Record more evidence, then finish again: " + (", ".join(want) or "more passing runs and audits"))
 
 
 def run(p):
@@ -186,7 +198,7 @@ def run(p):
     rows = [r for r in lake.collect()[0] if not r.get("canary")]
     res = evaluate(rows)
     stamp = c.now()
-    path = os.path.join(p.root, BENCH)
+    path = c.bench_path(p)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     for name, m in list(res["projects"].items()) + [("pooled", res["pooled"])]:
         c.append_line(path, json.dumps({"arm": "verifier", "use": USE, "backend": "logistic", "heldout": name,
@@ -194,7 +206,8 @@ def run(p):
     model = train(rows)
     if model:
         model["threshold"] = res["threshold"]  # the pooled held-out scores' 10% false-alarm cut, not the head's own training rows
-        model["trained"] = {"rows": res["rows"], "at": stamp}
+        model["trained"] = {"rows": res["rows"], "at": stamp, "auc": res["pooled"].get("auc"),
+                            "projects": sum(m.get("auc") is not None for m in res["projects"].values())}
         c.write_atomic(os.path.join(p.dir, WEIGHTS), json.dumps(model, indent=2, sort_keys=True) + "\n")
     wp = os.path.join(p.dir, WEIGHTS)
     if model is None and os.path.exists(wp):
@@ -219,9 +232,9 @@ def close_score(p, b):
         s = score(model, feats)
         thr = model.get("threshold")
         from sampo import models
-        live = bool(models.live(p, USE))
+        live = bool(models.live(p, USE)) and gate_open(model)  # T-3073: a decision row alone can't make a weak head live
         low = thr is not None and s < thr
-        c.log_event(p, "close_score", b.id, {"score": round(s, 4), "threshold": thr, "live": live, "low": low,
+        c.log_event(p, "close_score", b.id, {"score": round(s, 4), "threshold": thr, "live": live, "low": low, "auc": (model.get("trained") or {}).get("auc"),
                                               "features": feats})
         return ask(b.id, s, model, feats) if live and low else None
     except (OSError, ValueError, KeyError, TypeError, ZeroDivisionError):

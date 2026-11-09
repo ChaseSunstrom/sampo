@@ -58,10 +58,10 @@ class ContextTax(_CardCase):
         notes += [self.edit("app.py") for _ in range(3)]
         self.new_task("Third")
         notes += [self.edit("app.py") for _ in range(2)]
-        self.assertEqual(sum(POINTER in n for n in notes), 1, "the pointer was already in the context")
+        self.assertEqual(sum(POINTER in n for n in notes), 0, "T-3078: a card's notes come once per session, no pointer")
         self.start("compact")
         self.new_task("Fourth")
-        self.assertIn(POINTER, self.edit("app.py"), "after a compaction it's no longer in the context")
+        self.assertNotIn(POINTER, self.edit("app.py"))
         self.ran_tests()
         self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Done."})
         used = {"SessionStart": -self.long_paths}

@@ -449,7 +449,9 @@ NAMES = {"majority": "always the commonest", "bm25": "BM25 nearest briefs", "jef
 
 def measure_models(root):
     agg, when = {}, ""
-    with open(os.path.join(root, "research", "models", "bench.jsonl"), encoding="utf-8") as f:
+    sys.path.insert(0, os.path.join(root, "plugin", "lib"))
+    from sampo import core  # T-3064: the bench rows live in the project's state, not the repo
+    with open(core.bench_path(core.find_project(root)), encoding="utf-8") as f:
         for line in f:
             r = json.loads(line)
             if r.get("arm") != "loo" or r.get("use") != "intake-type" or r.get("accuracy") is None:

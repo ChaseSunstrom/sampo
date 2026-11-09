@@ -235,6 +235,29 @@ class SessionStart(HookCase):
     def run_ss(self, source="startup"):
         return self.hook("SessionStart", {"source": source}, env={"CLAUDE_ENV_FILE": self.env_file})
 
+    def test_an_unchanged_optional_note_is_injected_once_per_few_starts(self):  # T-3078
+        self.fm("init")
+        self.task("Fix login")
+        self.fm("capture", "a thing worth a line in the inbox")
+        first, second = (self.ctx_of(self.run_ss()) for _ in range(2))
+        self.assertIn("Inbox:", first)
+        self.assertNotIn("Inbox:", second, "the same line, a start later")
+        self.assertIn("Active:", second)  # the head and focus are never held back
+        self.assertIn("Inbox:", self.ctx_of(self.run_ss("compact")), "a compaction lost the context: all of it again")
+
+    def test_a_replay_of_95_starts_injects_30_percent_fewer_chars(self):  # T-3078
+        from sampo import hooks
+        self.fm("init")
+        core = 1100  # the head, Next, queue and mandate lines, which every start keeps
+        notes = ["Inbox: 12 — T-1 a; T-2 b; T-3 c.", "Watch: " + "usage burn: " + "x" * 330 + ".",
+                 "Setup changed (CC 1 → 2): " + "y" * 200, "Other live sessions: " + "z" * 150]
+        without = 95 * (core + sum(map(len, notes)))
+        with_ = 0
+        for i in range(95):
+            todays = notes[:3] + ([notes[3] + str(i // 40)] if i % 3 == 0 else [])
+            with_ += core + sum(map(len, hooks._start_seen(todays)))
+        self.assertLessEqual(with_, 0.7 * without, (with_, without))
+
     def test_an_unattended_one_request_run_gets_the_layout_and_test_command_not_the_queue(self):
         # T-1231: "queue is empty: FINAL VERIFY and REFLECT" told a one-request run nothing; the agent spent turns on ls
         self.fm("init")

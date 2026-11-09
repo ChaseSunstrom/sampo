@@ -1,5 +1,6 @@
 # Machine-specific; never committed (see BUILD_PROMPT.md §2.11)
 state/
+research/models/bench.jsonl
 models.json
 tui.projects/
 local/

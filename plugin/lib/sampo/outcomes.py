@@ -250,13 +250,20 @@ def cmd_outcomes(args):
         return 1 if getattr(args, "none", False) and (n["calls"] or n["prompts"]) else 0
     outs = outcomes(p)
     if getattr(args, "readme", False):  # T-0960: the one sentence a README publishes
-        held = sum(o["fate"] == "held" for o in outs.values())
+        settled = [o for o in outs.values() if o.get("window_done")]  # T-3067: a close in its window isn't a hold yet
+        held = sum(o["fate"] == "held" for o in settled)
         ungraded = sum(1 for b in c.load_briefs(p, include_archive=True) if b.id in outs and not b.meta.get("verified"))
-        return cli.out(args, {"held": held, "closed": len(outs), "ungraded": ungraded},
-                         f"{held} of {len(outs)} closed tasks held; {ungraded} ungraded.")
+        left = len(outs) - len(settled)
+        return cli.out(args, {"held": held, "settled": len(settled), "closed": len(outs), "in_window": left,
+                              "ungraded": ungraded},
+                         f"{held} of {len(settled)} settled closes held"
+                         + (f"; {left} still in the {SURVIVE_DAYS}-day window" if left else "") + f"; {ungraded} ungraded.")
     bad = {t: o for t, o in outs.items() if o["fate"] != "held"}
     fates = collections.Counter(o["fate"] for o in bad.values())
-    lines = [f"{len(outs)} finished task(s): {len(outs) - len(bad)} held"
+    held_past = sum(o["fate"] == "held" and bool(o.get("window_done")) for o in outs.values())
+    past = sum(bool(o.get("window_done")) for o in outs.values())
+    lines = [f"{len(outs)} finished task(s): {held_past} of {past} past the {SURVIVE_DAYS}-day window held"
+             + (f", {len(outs) - past} still in it" if past < len(outs) else "")
              + "".join(f", {n} {k}" for k, n in fates.most_common())]
     lines += [f"- {t} {o['fate']}: {c.fit(c.joinmore(o['by'], 3), 140)}" for t, o in sorted(bad.items())[-20:]]
     if getattr(args, "atlas", False):  # T-0620

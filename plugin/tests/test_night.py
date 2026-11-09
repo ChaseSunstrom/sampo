@@ -395,8 +395,8 @@ class NightMoons(ForemanTestCase):  # T-2916: zero-dollar Moons jobs on the loca
             self.assertEqual(got["model bench"], (["exam", "models", "run", "--night"], 0.0))
             self.assertIn("model bench", night.NAMES)
             row = {"run": "m1", "arm": "decision", "backend": "kev", "use": "intake-type", "gen": 0, "n": 5, "errors": 0}
-            os.makedirs(os.path.join(self.p.root, "research", "models"))
-            with open(os.path.join(self.p.root, louhi.BENCH), "w") as f:
+            os.makedirs(os.path.join(self.p.dir, "research", "models"))
+            with open(os.path.join(self.p.dir, louhi.BENCH), "w") as f:
                 f.write(json.dumps(row) + "\n")
             self.assertNotIn("model bench", names(), "this generation has its run")
             os.makedirs(os.path.join(rune.home(self.p), "gen-1"))

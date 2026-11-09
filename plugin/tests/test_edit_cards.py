@@ -59,11 +59,8 @@ class EditCards(_CardCase):
         self.assertEqual(len(self.injected()), 1)
         self.assertEqual(self.edit("README.md"), "", "no card matches a markdown file")
         self.fm("task", "new", "Second", "--type", "FIX", "--tier", "S", "--ac", "x :: true", "--step", "s", "--focus")
-        pointer = self.edit("app.py")
-        self.assertNotIn("Mutable default arguments", pointer, "a new task in the same session gets only a pointer")
-        self.assertTrue(pointer.startswith("Sampo: stack card python") and "sampo lib show python Sampo: " in pointer + " Sampo: ", pointer)
-        self.assertNotIn("\n- ", pointer, "one line, not the bullets")
-        self.assertEqual(self.edit("app.py"), "", "the pointer comes once per card per task")
+        self.assertEqual(self.edit("app.py"), "", "T-3078: shown once per session, no repeat pointer for a later task")
+        self.assertEqual(self.edit("app.py"), "")
         self.fm("task", "new", "Third", "--type", "FIX", "--tier", "S", "--ac", "x :: true", "--step", "s", "--focus")
         self.assertIn("Mutable default arguments", self.edit("app.py", sid="sess-2"), "a new session gets the full note again")
 

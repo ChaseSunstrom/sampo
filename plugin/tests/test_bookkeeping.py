@@ -12,6 +12,18 @@ from sampo import core as c
 OK = {"stdout": "3 passed", "stderr": "", "interrupted": False}
 
 
+class VerifierGate(ForemanTestCase):
+    def test_close_holds_verifier_is_shadow_until_auc_over_three_projects_passes_065(self):  # T-3073
+        from sampo import verifier as v
+        at = lambda auc, n: v.gate_open({"trained": {"auc": auc, "projects": n}})  # noqa: E731
+        self.assertFalse(at(0.55, 5))
+        self.assertFalse(at(0.9, 2))
+        self.assertFalse(at(0.65, 3))
+        self.assertTrue(at(0.66, 3))
+        self.assertFalse(v.gate_open({}))
+        self.assertIn("pooled held-out AUC 0.55", v.auc_note({"trained": {"auc": 0.55}}))
+
+
 class StepEvidence(HookCase):
     def ran(self, cmd, env=None, out=OK):
         self.hook("PostToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_response": out}, env=env)

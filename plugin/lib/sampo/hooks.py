@@ -736,7 +736,8 @@ def session_start(pl):
     except Exception:
         log_error("SessionStart", _tb())
     budget = max(600, CTX_BUDGET - len(tail))
-    out = {"hookEventName": "SessionStart", "additionalContext": session_context(p, sd, other_note, sid, budget)}
+    out = {"hookEventName": "SessionStart", "additionalContext": session_context(p, sd, other_note, sid, budget,
+                                                                              dedupe=pl.get("source") in (None, "startup"))}
     if _headless():
         layout = None if sd["active"] or sd["queue"] or sd["paused"] else _layout_note(p)
         if layout:  # T-1231: one request, nothing queued: the map, not the queue (and any other session's note)
@@ -882,7 +883,37 @@ def _grants_note(meta):
                          if c.trusted() else ""))
 
 
-def session_context(p, sd, other_note=None, sid=None, budget=None):
+START_REPEAT = 5  # T-3078: an unchanged optional start note comes back at most every this many starts
+
+
+def _start_seen(notes, every=START_REPEAT):
+    """T-3078: the notes of this start (optional lines: the Watch pointer, setup, away and other-session notes) that
+    weren't shown at one of the last `every`-1 starts, word for word; the rest stay out of the context (a new
+    session pays for a note only when it changed or has been away a while). A seen map in state: {sha1: start no.}.
+    ponytail: unlocked read-modify-write, two starts at once may show a note twice; any failure shows them all."""
+    path = os.path.join(c.state_dir(), "start-seen.json")
+    try:
+        try:
+            with open(path, encoding="utf-8") as f:
+                seen = json.load(f)
+        except (OSError, ValueError):
+            seen = {}
+        n = int(seen.get("n") or 0) + 1 if isinstance(seen, dict) else 1
+        marks = {k: v for k, v in ((seen or {}).get("marks") or {}).items() if isinstance(v, int) and n - v < every}
+        keep = []
+        for text in notes:
+            h = c.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+            if h not in marks:
+                keep.append(text)
+                marks[h] = n
+        c.write_atomic(path, json.dumps({"n": n, "marks": marks}))
+        return keep
+    except Exception:
+        log_error("SessionStart", _tb())
+        return list(notes)
+
+
+def session_context(p, sd, other_note=None, sid=None, budget=None, dedupe=False):
     a = sd["active"]
     head = [f"Sampo project {p.slug} ({p.root}). Drive: {'on' if sd['drive'] else 'off'}"
             + (", paused" if sd["paused"] else "") + "."
@@ -936,6 +967,10 @@ def session_context(p, sd, other_note=None, sid=None, budget=None):
             log_error("SessionStart", _tb())
     if watch:
         tail.append("Watch: " + "; ".join(watch) + ".")
+    if other_note:
+        tail.append(other_note)
+    if dedupe:  # T-3078: the Inbox, foresight, Watch and setup/away lines an unchanged start already carried
+        tail = _start_seen(tail)
     if sd["cycles"]:
         tail.append("Dependency cycles: " + "; ".join("↔".join(x) for x in sd["cycles"])[:150] + ".")
     if sd["sensitive"]:
@@ -946,8 +981,6 @@ def session_context(p, sd, other_note=None, sid=None, budget=None):
         tail.append(f"Sampo's rules aren't wired into ~/.claude: read {rules} once now. To load them every session "
                     "(plus the status line and deny rules), the user can say \"finish setting up Sampo\" "
                     "(sampo install-user; undo: sampo uninstall-user).")
-    if other_note:
-        tail.append(other_note)
     try:
         from sampo import map as smap
         mapped = [x for x in [smap.compact(p)] if x]
@@ -2625,8 +2658,7 @@ def _card_note(pl, p, act):
         skey = f"session:{sid}" if isinstance(sid, str) and sid else None  # T-1193: the note is shown once per session
         for name in fresh:
             if skey and _card_injected(p, skey, name):
-                _card_mark(p, act.id, name)  # the pointer comes once per card per task
-                notes.append(f"Sampo: stack card {name}: its notes were shown earlier this session; sampo lib show {name}")
+                _card_mark(p, act.id, name)  # T-3078: shown once per session, no repeat pointer for a later task
                 continue
             note = slib.card_avoid(name)
             if note:

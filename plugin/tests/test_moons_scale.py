@@ -555,7 +555,7 @@ class EmbedStage(_Funnel):
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         url, real = f"http://127.0.0.1:{srv.server_address[1]}", models.embedding_profiles
-        bench = os.path.join(self.p.root, "research", "models")
+        bench = os.path.join(self.p.dir, "research", "models")
         os.makedirs(bench)
         with open(os.path.join(bench, "bench.jsonl"), "w") as f:
             for name, rec in (("weak-embed", 0.5), ("bge-m3:567m", 0.9)):

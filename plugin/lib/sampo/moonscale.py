@@ -1007,7 +1007,7 @@ def _embedder(p):
             return None
     best = {}
     try:
-        with open(os.path.join(p.root, "research", "models", "bench.jsonl"), encoding="utf-8") as f:
+        with open(c.bench_path(p), encoding="utf-8") as f:
             for line in f:
                 try:
                     x = json.loads(line)

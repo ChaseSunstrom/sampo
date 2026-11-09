@@ -145,6 +145,6 @@ class BoardVerbs(ForemanTestCase):
         b.meta.pop("verified", None)
         c.save_brief(self.p, b)
         out = self.fm("outcomes", "--readme").stdout.strip()
-        self.assertEqual(out, "2 of 2 closed tasks held; 1 ungraded.")
+        self.assertEqual(out, "0 of 0 settled closes held; 2 still in the 30-day window; 1 ungraded.")  # T-3067
         self.assertEqual(json.loads(self.fm("outcomes", "--readme", "--json").stdout),
-                         {"held": 2, "closed": 2, "ungraded": 1})
+                         {"held": 0, "settled": 0, "closed": 2, "in_window": 2, "ungraded": 1})
