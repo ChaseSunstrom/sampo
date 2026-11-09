@@ -823,8 +823,11 @@ def bind(b):
 
 
 def meaning_unproven(b):
-    """T-2393: [(clause, why)] of bind(b) with no green, failable check behind it."""
-    return [(part, why) for part, _, why in bind(b) if why]
+    """T-2393: [(clause, why)] of bind(b) with no green, failable check behind it. T-4015: a clause that only restates
+    the title (its tag aside) is the task's summary, not a separate ask, as unchecked_clauses has it at plan time."""
+    title = set(_tokens(b.title))
+    return [(part, why) for part, _, why in bind(b)
+            if why and not set(_tokens(re.sub(r"^\s*[A-Z]+[!?]?:\s*", "", part))) <= title]
 
 
 def unchecked_clauses(b):

@@ -177,11 +177,38 @@ class CloseGates(ForemanTestCase):
         started, real = [], cli.subprocess.Popen
         env = {k: v for k, v in os.environ.items() if k not in ("FOREMAN_SENTINEL", "FOREMAN_NO_BACKGROUND")}
         # subprocess is shared: only the sentinel's own start is faked, git and the rest run for real
-        fake = lambda argv, **kw: (started.append(argv) or mock.Mock(pid=1)) if "sentinel" in argv else real(argv, **kw)
+        late = mock.Mock(side_effect=cli.subprocess.TimeoutExpired("check", 1))  # T-4015: past the close's short wait
+        fake = lambda argv, **kw: (started.append(argv) or mock.Mock(pid=1, wait=late)) if "sentinel" in argv \
+            else real(argv, **kw)
         with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(c, "host_strain", lambda: False), \
                 mock.patch.object(cli.subprocess, "Popen", fake):
             self.assertEqual(cli._sentinel(self.p), "started")
         self.assertEqual(started[0][:3], ["nice", "-n", "10"])
+
+    def test_quick_gates_are_waited_for_and_slow_ones_left_running(self):
+        # T-4015: on a two-file repo the gates take seconds, yet the close said "still running" and the session
+        # reported a result it never saw; a close waits up to SENTINEL_WAIT_S when the last full run was that quick
+        from sampo import cli
+        from unittest import mock
+        real = cli.subprocess.Popen
+        env = {k: v for k, v in os.environ.items() if k not in ("FOREMAN_SENTINEL", "FOREMAN_NO_BACKGROUND")}
+
+        def run(wait):
+            fake = lambda argv, **kw: mock.Mock(pid=1, wait=wait) if "sentinel" in argv else real(argv, **kw)  # noqa: E731
+            with mock.patch.dict(os.environ, env, clear=True), mock.patch.object(c, "host_strain", lambda: False), \
+                    mock.patch.object(cli, "_full_pass", lambda p: False), mock.patch.object(cli, "_pm_covers", lambda p: False), \
+                    mock.patch.object(cli.subprocess, "Popen", fake):
+                return cli._sentinel(self.p)
+        self.assertEqual(run(mock.Mock(return_value=0)), "green")  # no full run on record: a short wait is the probe
+        self.assertEqual(run(mock.Mock(return_value=1)), "red")
+        late = mock.Mock(side_effect=cli.subprocess.TimeoutExpired("check", cli.SENTINEL_WAIT_S))
+        self.assertEqual(run(late), "started")
+        c.log_event(self.p, "check_run", data={"results": [{"cmd": "python3 tests/run.py", "exit": 0, "s": 600.0}]})
+        for _ in range(cli.SENTINEL_CLOSES):
+            c.log_event(self.p, "task_done", task="T-0009")
+        slow = mock.Mock(return_value=0)
+        self.assertEqual(run(slow), "started")  # a 10-minute suite is never waited on
+        slow.assert_not_called()
 
     def test_only_one_sentinel_runs_at_a_time(self):
         from sampo import cli

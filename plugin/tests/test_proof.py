@@ -456,6 +456,17 @@ class Meaning(ForemanTestCase):  # T-2393 (Mission 7, #6): each clause of the re
         self.assertEqual(got["Add a CSV export but"], (1, ""))
         self.assertEqual(got["DONE-WHEN: the repor"][0], 1)  # the user's own done-when line, checked by the same criterion
 
+    def test_an_s_fix_close_asks_for_nothing_it_does_not_require(self):  # T-4015: the demo relayed two nags
+        title = "calc.add(2, 3) returns -1 instead of 5"
+        out = self.fm("task", "new", title, "--type", "FIX", "--tier", "S", "--raw", f"FIX: {title}",
+                      "--ac", "add(2, 3) is 5 :: true", "--step", "s", "--focus", "--json").stdout
+        tid = json.JSONDecoder().raw_decode(out)[0]["id"]
+        self.fm("task", "set", tid, "--section", "Regression test", "--text", "none: a fixture")
+        r = self.fm("task", "finish", tid, "--audit", "self", "--run", "true")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("what would have caught", r.stdout)  # only an M/L fix needs --why-not-caught
+        self.assertNotIn("meaning unproven", r.stdout)  # the request only restates the title: the summary, not an ask
+
     def test_meaning_kind_lists_the_unbound_clause_in_fm_proof(self):
         tid = self.new()
         self.fm("task", "finish", tid, "--audit", "self", "--run", "true")

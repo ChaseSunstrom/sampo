@@ -1557,8 +1557,7 @@ def _task_finish(p, args):
                 c.log_event(p, "capture", task=f.id, data={"source": "followup", "from": b.id}, session=session())
             c.regen_views(p)
         print(f"{b.id}: captured {f.id} — catch it earlier: {c.fit(why, 80)}")
-    elif not rc and b.type == "FIX" and not why and not b.section("Why not caught").strip():
-        print(f"{b.id}: what would have caught this earlier? (--why-not-caught next time; M/L fixes need it)")
+    # T-4015: no why-not-caught nudge on an S fix: only M/L need one, and they are refused without it
     if not rc:  # T-3500: after the close's checks, so the audits they judged still cover the tree
         _changelog_line(p, b, fields)
     if args.commit and not rc:
@@ -1593,6 +1592,10 @@ def _task_finish(p, args):
     if not rc and not getattr(args, "json", False):
         if started == "started":
             print("Full gates: running in the background (a red result becomes an urgent baseline task)")
+        elif started == "green":
+            print("Full gates: green")
+        elif started == "red":
+            print("Full gates: red: the failure is an urgent baseline task (sampo next)")
         done = c.find_brief(p, b.id)
         if done and done.status == "done" and done.red_green():  # T-1541: a close proved red then green
             try:
@@ -1963,10 +1966,29 @@ def _sentinel(p):
         return "ran"
     import shutil
     low = ["nice", "-n", "10"] if shutil.which("nice") else []  # T-1463: never ahead of the next task's own runs
-    pr = subprocess.Popen(low + ["sh", "-c", 'echo $$ > "$1"; "$2" check; rm -f "$1"', "sentinel", pidf, argv[0]],
+    pr = subprocess.Popen(low + ["sh", "-c", 'echo $$ > "$1"; "$2" check; rc=$?; rm -f "$1"; exit $rc', "sentinel",
+                                 pidf, argv[0]],
                           cwd=p.root, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, start_new_session=True)
-    return "started" if pr.pid else None
+    if not pr.pid:
+        return None
+    took = _full_run_s(events)
+    if took is None or took <= SENTINEL_WAIT_S:  # T-4015: quick gates (or none timed yet) are waited for, a bounded time
+        try:
+            return "green" if pr.wait(timeout=SENTINEL_WAIT_S) == 0 else "red"
+        except subprocess.TimeoutExpired:
+            pass  # slower than its last run: it carries on in the background
+    return "started"
+
+
+def _full_run_s(events):
+    """T-4015: seconds the newest timed full sampo check took (its gates' sum), None when none is in events: a train's
+    check_run times only its affected gate and a lane_verified none, so neither says how long the full gates take."""
+    for e in reversed(events):
+        d = e.get("data") or {}
+        if e.get("event") == "check_run" and "train" not in d and d.get("results"):
+            return sum(float(r.get("s") or 0) for r in d["results"] if isinstance(r, dict))
+    return None
 
 
 def _pm_covers(p):
@@ -1992,6 +2014,7 @@ def _unlink(path):
 
 
 SENTINEL_CLOSES, SENTINEL_MIN = 3, 60
+SENTINEL_WAIT_S = 20  # T-4015: gates whose last full run took this long or less are waited for, so the close reports them
 
 
 def _ledger_head(p):
