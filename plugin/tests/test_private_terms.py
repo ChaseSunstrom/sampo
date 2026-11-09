@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 import unittest
 
-from helpers import PRIVATE_TERMS, ForemanTestCase, read_text
+from helpers import PRIVATE_TERMS, PRIVATE_TERMS_REAL, ForemanTestCase, read_text
 
 from sampo import core as c
 
@@ -65,7 +65,9 @@ class PrivateTerms(ForemanTestCase):
 class TrackedTree(unittest.TestCase):
     def test_no_tracked_file_holds_a_private_term(self):
         # T-4096: a test carried the JARVIS login for 9 h until fm ship's scan refused it (T-3931); the tracked tree is
-        # scanned here, so a gate run before any merge finds it. The term itself is never printed. CI: a made-up one
+        # scanned here, so a gate run before any merge finds it. The term itself is never printed
+        if not PRIVATE_TERMS_REAL:  # T-4100: CI has only the made-up term, which these tests use on purpose
+            self.skipTest("no private term is configured here (sampo private add)")
         root = os.path.dirname(c.PLUGIN_ROOT)
         needles = sorted({max(t.removeprefix("*.").split("*"), key=len) for t in PRIVATE_TERMS})
         with tempfile.NamedTemporaryFile("w", suffix=".txt") as f:  # 0600, so no term shows in ps as argv

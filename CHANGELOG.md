@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- the tracked-tree private-term test skips where only the tests' made-up term is configured, as in CI, which it had turned red on main (T-4100).
 - fm doctor measures an over-budget hook bench again with twice the runs and fails only if it is still over, so a burst beside a merge train's own suite no longer parks a lane that never touched a hook (T-4098).
 - The README now opens with the live Board, shown on Sampo's own fixture data, and adds Claude Code with the mod, the Smith TUI, and drawn diagrams of the loop, lanes and merge train, and Kalevala, each dark and light; `sampo readme diagram` falls back to the Board look when a repo's colours would be unreadable, and no longer cuts panel subtitles (T-3853).
 - After a crash or reboot leaves tracked files empty on disk, Sampo now restores them from git HEAD at session start and in sampo doctor --repair, keeps sampo and its hook working when one of its own modules is empty (it restores it or names the file and the one git command), and sampo setup turns on core.fsync so git no longer leaves empty objects (T-3727).

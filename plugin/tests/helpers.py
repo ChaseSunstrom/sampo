@@ -57,6 +57,7 @@ from sampo import core as _core  # noqa: E402
 # (and from the state path itself: state_dir() could move state to a fallback); none (CI): a made-up one
 PRIVATE_TERMS = _core.private_terms(os.environ.get("FOREMAN_STATE") or os.path.join(_core.foreman_home(), "state")) \
     or ["*.home.example-private.test"]
+PRIVATE_TERMS_REAL = PRIVATE_TERMS != ["*.home.example-private.test"]  # T-4100: the tests themselves use the made-up one
 
 
 def valid_m_plan():
