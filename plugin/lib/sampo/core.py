@@ -14,6 +14,8 @@ import sys
 import time
 from collections import Counter, defaultdict
 
+LOADED_NS = time.time_ns()  # T-4045: when this process loaded Sampo's code; a source newer than it may not be what runs
+
 
 class _Later:
     """T-2023: a standard module imported on first attribute use: a hook that runs no process skips subprocess

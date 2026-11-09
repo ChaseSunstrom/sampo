@@ -426,7 +426,7 @@ def verb_docs(folder=None):
 def _kept(name, files, build, folder=None):
     """build(), kept as JSON in the package's __pycache__ (or folder) while files keep their mtime and size, as a .pyc
     is (T-3667, T-3677). A missing, stale or unreadable file, or one another user owns or others can write, is built
-    again; nothing is written where bytecode isn't."""
+    again; nothing is written where bytecode isn't, nor when a .py in files is newer than this process's code (T-4045)."""
     path = os.path.join(folder or os.path.join(SOURCES, "__pycache__"), f"{name}.{sys.implementation.cache_tag}.json")
     try:
         stamp = [sys.version] + [[f, st.st_mtime_ns, st.st_size] for f, st in ((f, os.stat(f)) for f in files)]
@@ -441,7 +441,8 @@ def _kept(name, files, build, folder=None):
     except (OSError, ValueError, AttributeError, KeyError, TypeError):
         pass
     data = build()
-    if not sys.dont_write_bytecode:
+    # T-4045: a .py changed after this process loaded its code: build() saw the old module, so it isn't kept
+    if not sys.dont_write_bytecode and all(m < c.LOADED_NS for f, m, _ in stamp[1:] if f.endswith(".py")):
         try:
             c.write_atomic(path, json.dumps({"stamp": stamp, "data": data}))
         except OSError:

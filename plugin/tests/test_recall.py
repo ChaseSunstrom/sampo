@@ -551,9 +551,9 @@ class KeptVerbDocs(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(text)
 
-            def docs(folder=kept):
+            def docs(folder=kept, loaded=time.time_ns() + 10 ** 15):  # the code loaded after every write here
                 with mock.patch.object(cli, "_PARSER", None), mock.patch.object(c, "PLUGIN_ROOT", d), \
-                        mock.patch.object(recall, "SOURCES", src), \
+                        mock.patch.object(recall, "SOURCES", src), mock.patch.object(c, "LOADED_NS", loaded), \
                         mock.patch.object(cli, "_build_parser", wraps=cli._build_parser) as built:
                     return recall.verb_docs(folder), built.call_count
 
@@ -575,6 +575,14 @@ class KeptVerbDocs(unittest.TestCase):
             with mock.patch.object(sys, "dont_write_bytecode", True):
                 self.assertEqual(docs(os.path.join(d, "none"))[1], 1)
             self.assertFalse(os.path.exists(os.path.join(d, "none")), "nothing written where bytecode isn't")
+            # T-4045: a process that imported cli before a merge rewrote it built the old verbs under the new files'
+            # stamp, kept for good (T-3742's lane lost 'move' until the file was deleted)
+            write(os.path.join(src, "a.py"), "x = 333\n")
+            before = os.stat(os.path.join(src, "a.py")).st_mtime_ns - 1
+            fresh = os.path.join(d, "fresh")
+            self.assertEqual([docs(fresh, before)[1], docs(fresh, before)[1]], [1, 1], "built, never kept")
+            self.assertFalse(os.path.exists(fresh), "nothing written from code older than its source")
+            self.assertEqual([docs(fresh)[1], docs(fresh)[1]], [1, 0], "a process loaded after the change keeps it")
 
 
 class KeptPlaybooks(unittest.TestCase):
