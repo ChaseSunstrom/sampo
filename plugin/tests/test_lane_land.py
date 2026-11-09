@@ -523,5 +523,88 @@ class FreshProcess(unittest.TestCase):
         self.assertRegex(out + err, r"\d+\.\d+")
 
 
+class Restart(LandCase):
+    """T-3973: a land that merged a change to Sampo's own modules goes on as a fresh process on the new code."""
+    def two(self):
+        ids = [self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2)]
+        self.audited(*ids)
+        for tid in ids:
+            self.returned(tid, f"Lane {tid}")
+        return ids
+
+    def stamps(self, *seq):  # the code stamp as _land reads it: one per call, the last one repeated
+        from unittest import mock
+        n = []
+        return mock.patch("sampo.train._code_stamp", side_effect=lambda: seq[min(len(n.append(0) or n) - 1, len(seq) - 1)])
+
+    def cmd(self, background=True):
+        """cmd_land run here with os.execv patched: (the execv mock, what it printed)."""
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+
+        from sampo import train
+        if background:
+            os.environ.pop("FOREMAN_NO_BACKGROUND", None)
+            self.addCleanup(os.environ.__setitem__, "FOREMAN_NO_BACKGROUND", "1")
+        out = io.StringIO()
+        with mock.patch("os.execv") as ex, contextlib.redirect_stdout(out):
+            train.cmd_land(self.p, argparse.Namespace(batch=1, first=None, bg=False, json=False), self.repo)
+        return ex, out.getvalue()
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)  # the close runs `sampo` from the cwd: the test's repo, not this checkout
+        self.p = c.find_project(self.repo)
+
+    def test_changed_modules_with_lanes_still_ready_restart_the_land_and_exec_a_fresh_one(self):
+        from sampo import train
+        a, b = self.two()
+        x = self.brief(b)
+        x.meta["allow"] = ["publish"]
+        c.save_brief(self.p, x)
+        from unittest import mock
+        with self.stamps("old", "new"), mock.patch("sampo.train._sampo", return_value=(0, "shipped", "")):
+            got = train.land(self.p, self.repo, 1)
+        self.assertTrue(got["restart"])
+        self.assertIn("publish", self.brief(b).meta.get("allow") or [], "a restart never spends the grant: its successor ships")
+        self.assertEqual((got["trains"], got["closed"]), (1, [a]))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "2.txt")), "the second lane waits for the new code")
+        self.assertEqual(train.first_ids(self.p), [b], "the lanes still ready keep their order for the restarted land")
+        d = self.lane(3, "3.txt", when=OLD)  # b still waits, d too: the next land's cmd_land execs after its train
+        self.audited(d)
+        self.returned(d, "Lane 3")
+        with self.stamps("old", "new"):
+            ex, out = self.cmd()
+        self.assertIn("Restarting on new code", out)
+        argv = ex.call_args.args[1]
+        self.assertEqual(argv[-4:], ["lane", "land", "--batch", "1"], "the same land, its batch kept")
+        self.assertNotIn("--first", argv)
+        self.assertEqual((self.brief(b).status, self.brief(d).status == "done"), ("done", False), "d waits for the exec")
+
+    def test_no_change_or_nothing_left_never_restarts_and_no_background_skips_the_exec(self):
+        from sampo import train
+        a, b = self.two()
+        with self.stamps("old"):  # unchanged: both lanes land, no restart
+            got = train.land(self.p, self.repo, 1)
+        self.assertEqual((got["restart"], got["trains"]), (False, 2))
+        c_ = self.lane(3, "3.txt", when=OLD)
+        self.audited(c_)
+        self.returned(c_, "Lane 3")
+        with self.stamps("old", "new"):  # changed by the last train: nothing ready, so nothing to restart for
+            self.assertFalse(train.land(self.p, self.repo, 1)["restart"])
+        d = self.lane(4, "4.txt", when=OLD)
+        e = self.lane(5, "5.txt", when=OLD)
+        self.audited(d, e)
+        for tid in (d, e):
+            self.returned(tid, f"Lane {tid}")
+        with self.stamps("old", "new"):  # FOREMAN_NO_BACKGROUND is set (the tests'): said, never exec'd
+            ex, out = self.cmd(background=False)
+        ex.assert_not_called()
+        self.assertIn("restarts on new code", out)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -831,8 +831,16 @@ def land_key(b):
     return (b.priority != "urgent", kind, c.id_num(b.id))
 
 
+def _code_stamp():
+    """T-3973: path, mtime and size of every Sampo module on disk: a change means a train merged new code for this land."""
+    d = os.path.join(c.PLUGIN_ROOT, "lib", "sampo")
+    return tuple((f, s.st_mtime_ns, s.st_size) for f in sorted(os.listdir(d)) if f.endswith(".py")
+                 for s in [os.stat(os.path.join(d, f))])
+
+
 def _land(p, main, batch):
     from sampo import lanes
+    stamp = _code_stamp()  # the code this process loaded
     briefs = c.load_briefs(p)
     branch = _git(main, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() or "HEAD"
 
@@ -842,7 +850,7 @@ def _land(p, main, batch):
     # a land cut short (or a train by hand) left these merged and open: they only need their close
     landed = [b.id for b in briefs if b.status not in c.CLOSED and b.meta.get("lane") and lanes._stop(b)[0] == "merged"
               and (t := tip(b)) and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode]
-    parked, ready, trains, stopped = [], [], 0, ""
+    parked, ready, trains, stopped, restart = [], [], 0, "", False
     closed, hand, shipped = [], [], None
     by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
 
@@ -909,15 +917,20 @@ def _land(p, main, batch):
         close(got["merged"])
         if got["merged"]:  # T-3849: reaches the remote per train, the grant kept for the next
             shipped = _ship(p, True) or shipped
-    close(left)
+        if ready and _code_stamp() != stamp:  # T-3973: the train changed Sampo itself: the rest runs on the new code
+            restart = True
+            first_ids(p, ready)  # the restarted land trains them in this order, not re-sorted
+            break
+    if not restart:  # a restart's leftovers close under the new code (it finds them merged and open again)
+        close(left)
     for tid, why in parked:
         kind, arg = _park_kind(why)
         lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}", tip=tested.get(tid, ""))
-    last = _ship(p, False) if landed else None  # the land's last ship spends the grant
+    last = _ship(p, False) if landed and not restart else None  # the land's last ship spends the grant: a restart's successor does
     shipped = last if last and not last[1].startswith("nothing to ship") else shipped or last
     grant, ship = shipped or (None, "")
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
-            "stopped": stopped, "ship": ship, "ship_grant": grant, "lines": closed}
+            "stopped": stopped, "restart": restart, "ship": ship, "ship_grant": grant, "lines": closed}
 
 
 def _close_gaps(b):
@@ -1035,6 +1048,7 @@ def cmd_land(p, args, main):
         return cli.out(args, {"land": "started", "pid": pid, "log": log},
                        f"land started in the background (pid {pid}, log {log}); it trains the finished lanes.")
     got = land(p, main, args.batch)
+    go = got["restart"] and not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked()
     lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {len(got['closed'])} closed, "
              f"{len(got['hand'])} left for a hand close, {len(got['parked'])} parked."
              if got["landed"] or got["parked"] or got["stopped"] else "Land: no finished lane waits on a merge."]
@@ -1045,7 +1059,16 @@ def cmd_land(p, args, main):
     lines += [f"  parked {t}: {w}" for t, w in got["parked"]]
     lines += [f"Stopped: {got['stopped']}"] if got["stopped"] else []
     lines += [f"Ship ({got['ship_grant']}'s grant): {c.fit(c.plain(got['ship']), 300)}"] if got["ship_grant"] else []
-    return cli.out(args, got, "\n".join(lines))
+    lines += ["Restarting on new code: a train merged changes to Sampo's modules; the lanes still waiting land under them."
+              if go else "The land restarts on new code: a train merged changes to Sampo's modules (run sampo lane land "
+                         "again for the lanes still waiting)."] * bool(got["restart"])
+    rv = cli.out(args, got, "\n".join(lines))
+    if go:  # the lock is released: the same pid and log carry on under the new code (--first ids persist in first_ids)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(sys.executable, [sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "lane", "land",
+                                  *(["--batch", str(args.batch)] if args.batch else [])])
+    return rv
 
 
 def spawn_land(p, main):

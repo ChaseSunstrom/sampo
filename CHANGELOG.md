@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo lane land now restarts itself on the new code after a train merges changes to Sampo's own modules (same pid and log, batch and ready-lane order kept), so the remaining lanes train and close under the merged logic instead of hours-stale code (T-3973).
 - The Stop drive now says a waiting merge lands and offers only planning, an unknown verb hints `sampo which`, builders are told to append tests with Edit and never read /tmp, and Smith closes a step on a green verify after its edits and is told never to import Sampo's modules in a one-liner (T-3129).
 - Retrieval accuracy now counts an abstention wrong over every brief, the leave-one-project-out majority baseline is the held-out project's own top-class share (never under 1/k) with one-project results labelled, a flapping exam grade is named in the generation's line, a docs check flags a numeric claim with no run, and the 12B, small-model-cards and loop-break claims are corrected to the… (T-3133).
 - `sampo move OLD NEW` renames a Sampo module with its shim and test, rewrites its imports, dotted uses, paths and test names across code, tests and docs (a dry run by default, --apply to write, --alias to keep the old path), then proves every module still imports in a fresh interpreter and rolls back on a failure (T-3274).
