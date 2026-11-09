@@ -250,6 +250,20 @@ class Lease(Base):
         self.assertNotIn("c.py", out, "another session's lease isn't the drop's result")
         self.assertIn("c.py", self.fm("lease", "list").stdout)
 
+    def test_an_edit_in_a_nested_def_leases_the_outer_def_and_a_method_its_own(self):  # T-3948
+        path = os.path.join(self.repo, "f.py")
+        src = ("def outer():\n    def inner():\n        k = 2\n    return inner\n\n"
+               "class C:\n    def m(self):\n        def h():\n            z = 9\n")
+        with open(path, "w") as f:
+            f.write(src)
+        for new in ("k = 2", "z = 9"):
+            self.hook("PostToolUse", {"tool_name": "Edit", "session_id": "sess-a", "tool_response": {},
+                                      "tool_input": {"file_path": path, "old_string": "x", "new_string": new}})
+        self.assertEqual(sorted(v["symbol"] for v in bus._leases().values()), ["m", "outer"])
+        out = self.fm("lease", "drop", env={"CLAUDE_CODE_SESSION_ID": "sess-a"}).stdout
+        self.assertIn("dropped: f.py::outer", out)
+        self.assertNotIn("::inner", out)
+
     def test_closing_a_task_releases_its_leases_at_once_and_leaves_another_tasks(self):  # T-3398
         a = {"CLAUDE_CODE_SESSION_ID": "sess-a"}
         self.fm("lease", "take", "a.py", env=a)

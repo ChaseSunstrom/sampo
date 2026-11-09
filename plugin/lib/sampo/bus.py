@@ -431,17 +431,23 @@ def _indent(s):
     return len(s) - len(s.lstrip())
 
 
-def enclosing(text, region):
+def enclosing(text, region, outer=False):
     """The innermost definition around a region, by indentation: its name, or None at top level.
+    outer=True: the outermost function instead (a method is its own lease, not its class; T-3948).
     ponytail: indentation, not a parser; a language whose bodies aren't indented gets file-free edits."""
     lines = text.split("\n")
     a = region[0]
     want = next((_indent(lines[i]) for i in range(a, min(region[1] + 1, len(lines))) if lines[i].strip()), 0)
+    found = None
     for i in range(min(a, len(lines) - 1), -1, -1):
         m = _DEF.match(lines[i])
         if m and (len(m.group(1)) < want or i == a):
-            return m.group(2)
-    return None
+            if not outer:
+                return m.group(2)
+            if found and re.search(r"\bclass\b", lines[i]):
+                break  # the class around a method isn't the lease
+            found, want = m.group(2), len(m.group(1))
+    return found
 
 
 def span(text, name):
@@ -476,7 +482,7 @@ def after_edit(pl, p, path):
     else:
         text = _lines(path) or ""
         names = {n for _, new in _edits(tool, pl.get("tool_input") or {})
-                 if (r := _region(text, new)) and (n := enclosing(text, r))}
+                 if (r := _region(text, new)) and (n := enclosing(text, r, outer=True))}
     if not names:
         return
     act = c.active_brief(c.load_briefs(p), p.lane)
