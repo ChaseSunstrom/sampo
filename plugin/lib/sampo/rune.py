@@ -4064,7 +4064,7 @@ def _close_gaps(p, n, sealed):
     c.regen_views(p)
 
 
-def score_steer(p, text, cite=None):
+def score_steer(p, text, cite=None, task=None):
     """T-2505 (user steer 2026-11-01, part 5): a recorded user steer against the newest sealed prediction: overlap =
     shared words over the smaller side's words, a hit at 0.3+; one row in gen-N/prediction-score.jsonl, and a miss
     files one anticipation (#3) gap. None when no prediction is sealed, or (T-2756) when this gen already scored
@@ -4087,7 +4087,8 @@ def score_steer(p, text, cite=None):
         c.append_line(os.path.join(home(p), f"gen-{n}", "prediction-score.jsonl"), json.dumps(row))
     if not row["hit"]:
         key = f"genesis-anticipation {n}:{hashlib.sha1((cite or text).encode()).hexdigest()[:10]}"
-        b, new = eco.capture_once(p, f"FEATURE: anticipation gap (#3): the user's steer wasn't among gen-{n}'s sealed "
+        src = f" ({task})" if task and re.fullmatch(r"T-\d{4,}", str(task)) else ""  # T-3517
+        b, new = eco.capture_once(p, f"FEATURE: anticipation gap (#3){src}: the user's steer wasn't among gen-{n}'s sealed "
                                      f"predictions: {row['steer']} (nearest: {row['nearest'] or 'none'}, overlap "
                                      f"{row['overlap']})\n{key}", "FEATURE", "genesis-anticipation", key=key)
         if new and b is not None and b.status == "captured":  # T-2863: input to the next prediction, not work to run

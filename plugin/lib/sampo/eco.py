@@ -14,6 +14,27 @@ import time
 from sampo import core as c
 
 
+_SRC = re.compile(r" \(T-\d{4,}\)")
+
+
+def open_rule(p, title, source):
+    """T-3517: the open brief of the same auto-captured rule (same filer, same title but for a ' (T-NNNN)' source id),
+    or None. A title without a source id has no rule to join."""
+    if not _SRC.search(title):
+        return None
+    rule = _SRC.sub("", title, 1)[:70]
+    return next((b for b in c.load_briefs(p) if b.status not in c.CLOSED and b.meta.get("source") == source
+                 and _SRC.search(b.title) and _SRC.sub("", b.title, 1)[:70] == rule), None)
+
+
+def join_rule(p, b, title, text):
+    """Log a repeat of b's rule onto b (the new source id is in title) instead of filing another."""
+    b.append_log(f"again: {c.fit(c.defang(c.plain(title)), 120)}")
+    c.save_brief(p, b)
+    c.log_event(p, "capture_joined", task=b.id, data={"why": "same rule"})
+    return b
+
+
 def capture_once(p, text, type_, source, key=None, trigger=None, bound=None, trial_key=None):
     """(brief, new): text captured into p's inbox, unless an open brief has its title (or, with key, any brief's raw
     request holds key) — a sweep, adopt or canary run twice asks once. trigger (default: source) names what fired it;
@@ -44,6 +65,8 @@ def capture_once(p, text, type_, source, key=None, trigger=None, bound=None, tri
         for b in c.load_briefs(p, include_archive=bool(key)):                   # never text inside a quoted issue
             if line.search(b.section("Raw request")) if key else (b.status not in c.CLOSED and b.title == title):
                 return b, False
+        if (j := open_rule(p, title, source)):  # T-3517: a repeat of an open auto-captured rule joins it
+            return join_rule(p, j, title, text), False
         if held:  # T-2355: the firing joins the trigger's newest open capture instead of filing another; a muted
             # trigger joins its newest capture even when closed, so a mute files nothing after its first
             muted = row["route"] == "muted"

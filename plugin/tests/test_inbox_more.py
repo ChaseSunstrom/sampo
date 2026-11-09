@@ -669,3 +669,20 @@ class PostBack(_Inbox):
                     cmd, 0, "  origin/main\n", "")), contextlib.redirect_stdout(io.StringIO()) as out:
                 eco.cmd_inbox(cli.build_parser().parse_args(["inbox", "ticket", "--post", tid]))
         self.assertIn("Posted", out.getvalue())
+
+
+class RuleCaptureTests(_Inbox):  # T-3517
+    def test_an_auto_captured_rule_names_its_source_and_a_repeat_joins_the_open_one(self):
+        rule = "FEATURE: anticipation gap (#3){}: the user's steer wasn't among gen-4's sealed predictions: x"
+        a, new_a = eco.capture_once(self.p, rule.format(" (T-3401)"), "FEATURE", "genesis-anticipation", key="k1")
+        b, new_b = eco.capture_once(self.p, rule.format(" (T-3402)"), "FEATURE", "genesis-anticipation", key="k2")
+        self.assertTrue(new_a)
+        self.assertFalse(new_b)
+        self.assertEqual(a.id, b.id)
+        self.assertIn("T-3401", a.title)
+        self.assertIn("T-3402", c.find_brief(self.p, a.id).section("Log"))
+        self.assertEqual(len(c.load_briefs(self.p)), 1)
+        # another rule (gen-5) files its own
+        other, new_o = eco.capture_once(self.p, rule.format(" (T-3403)").replace("gen-4", "gen-5"), "FEATURE",
+                                        "genesis-anticipation", key="k3")
+        self.assertTrue(new_o)

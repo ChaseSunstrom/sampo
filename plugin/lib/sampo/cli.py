@@ -1545,10 +1545,16 @@ def _task_finish(p, args):
         print(f"{b.id}: the catch landed with it: {caught}")
     elif not rc and why and not re.match(r"(?i)\s*(?:none|new|n/?a)\b", why):  # T-0598: the catch that was missing
         # is its own task; T-1763: 'new …' or 'n/a' work had nothing earlier to catch
+        title = _title(f"Catch it earlier ({b.id}): {why}")  # T-3517: the source id is in the title
+        from sampo import eco
         with c.lock(p.dir):
-            f = _create(p, _title(f"Catch it earlier: {why}"), "FEATURE", "S", "captured",
-                        raw=f"{b.id} ({b.title}) wasn't caught before it shipped: {why}", source="followup")
-            c.log_event(p, "capture", task=f.id, data={"source": "followup", "from": b.id}, session=session())
+            f = eco.open_rule(p, title, "followup")
+            if f:  # the same rule is already open: this source joins it
+                eco.join_rule(p, f, title, why)
+            else:
+                f = _create(p, title, "FEATURE", "S", "captured",
+                            raw=f"{b.id} ({b.title}) wasn't caught before it shipped: {why}", source="followup")
+                c.log_event(p, "capture", task=f.id, data={"source": "followup", "from": b.id}, session=session())
             c.regen_views(p)
         print(f"{b.id}: captured {f.id} — catch it earlier: {c.fit(why, 80)}")
     elif not rc and b.type == "FIX" and not why and not b.section("Why not caught").strip():
@@ -4766,7 +4772,7 @@ def cmd_decide(args):
     if cites and c.STEER.search("cites: " + cites):  # T-2505: each recorded steer is scored against the sealed prediction
         try:
             from sampo import rune
-            sc = rune.score_steer(p, f"{args.decision} {cites}", cite=cites)
+            sc = rune.score_steer(p, f"{args.decision} {cites}", cite=cites, task=args.task)
             if sc:
                 note += (f" Predicted (overlap {sc['overlap']} with: {sc['nearest']})." if sc["hit"] else
                          f" Not predicted (nearest overlap {sc['overlap']}): filed as an anticipation gap.")
