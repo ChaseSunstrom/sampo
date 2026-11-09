@@ -288,7 +288,7 @@ def cmd_ask(args):
             + [f"failed: {x['question']} — {x['error']}" for x in failed]))
         unverified = sum(n.get("not_found") or 0 for n in notes)
         if unverified:
-            print(f"fm: {unverified} claim(s) quote words that aren't on the cited page: treat them as unverified",
+            print(f"sampo: {unverified} claim(s) quote words that aren't on the cited page: treat them as unverified",
                   file=sys.stderr)
         return 1 if failed else 0
     q = (args.question or "").strip()
@@ -297,7 +297,7 @@ def cmd_ask(args):
     res, text, count = _ask(p, args, q)
     cli.out(args, res, text)
     if count["not found"]:
-        print(f"fm: {count['not found']} claim(s) quote words that aren't on the cited page: treat them as unverified",
+        print(f"sampo: {count['not found']} claim(s) quote words that aren't on the cited page: treat them as unverified",
               file=sys.stderr)
 
 

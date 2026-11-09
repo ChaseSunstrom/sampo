@@ -705,7 +705,7 @@ def note_own(p, text, who, at=None):
     it happened, if not now (see _recurring). Returns the FIX id when this call filed one."""
     sig = failure_signature(text)
     # no doctor or hook line starts "fm: refused" today; the guard holds if a caller ever feeds one (refusals are rules)
-    if not sig or not who or sig.startswith("fm: refused"):
+    if not sig or not who or sig.startswith(("sampo: refused", "fm: refused")):
         return None
     path = os.path.join(p.dir, "failures.jsonl")
     try:

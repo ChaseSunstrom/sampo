@@ -97,7 +97,7 @@ def mutate(p, tid, fn, event, data=None):
                 from sampo import bus
                 bus.release(p, b.id, preclaim=True)
             except Exception as e:  # the status changed already; a lease left to expire must not make that look failed
-                print(f"fm: warning: leases of {b.id} not released: {e}", file=sys.stderr)
+                print(f"sampo: warning: leases of {b.id} not released: {e}", file=sys.stderr)
         c.log_event(p, event, task=b.id, data=data or {}, session=session())
         after = c.stage(b)
         if after != before:  # pane splits read these instead of proxy events
@@ -355,7 +355,7 @@ def _near(p, args, text, type_):
         from sampo import models
         models.shadow(p, "dedupe", f"{_title(text)} || {same[1]}", "different" if args.anyway else "same")
     if same and not args.anyway:
-        print(f"fm: near-duplicate of open {same[0]} ({c.fit(c.plain(same[1]), 80)}): add --anyway to keep both, or "
+        print(f"sampo: near-duplicate of open {same[0]} ({c.fit(c.plain(same[1]), 80)}): add --anyway to keep both, or "
               f"sampo task log {same[0]} '<note>' to add to it", file=sys.stderr)
         if getattr(args, "json", False):
             out(args, {"refused": "near-duplicate", "of": same[0], "title": same[1]}, None)
@@ -601,7 +601,7 @@ def task_assume(p, args):
         problems = c.lint_verify(args.run, p.root)
         if problems:  # a check that can't fail proves nothing: verified, but never cold-read (and it says so)
             proof = ""
-            print(f"fm: {args.id}: assumption {n}: {problems[0]}; no cold read ran, so the plan gate still counts it open",
+            print(f"sampo: {args.id}: assumption {n}: {problems[0]}; no cold read ran, so the plan gate still counts it open",
                   file=sys.stderr)
     elif src is not None:
         how, proof = _assume_source(p, src)
@@ -612,7 +612,7 @@ def task_assume(p, args):
             pct < c.confidence_bar(cur, "research") or "(low)" in this[3].lower()):
         cold, why = _cold_read(p, this[3], proof)  # T-2338: only an assumption under the research bar is asked
         if not cold:
-            print(f"fm: {args.id}: assumption {n} is verified, but a cold reader didn't agree it holds ({why}); the plan "
+            print(f"sampo: {args.id}: assumption {n} is verified, but a cold reader didn't agree it holds ({why}); the plan "
                   "gate still counts it open", file=sys.stderr)
     def mark(b):
         if not b.mark_assumption(n, status, how, cold=cold):  # review: removed since the check above
@@ -783,7 +783,7 @@ def cmd_task(args):
                 from sampo import steer
                 steer.correction(p, b, args.text.strip()[6:].strip())
             except Exception as e:  # the log is kept whatever the case store does
-                print(f"fm: warning: steer case not saved: {e}", file=sys.stderr)
+                print(f"sampo: warning: steer case not saved: {e}", file=sys.stderr)
         return out(args, c.brief_summary(b), f"{b.id}: logged.")
     if sub == "hypo":
         return task_hypo(p, args)
@@ -871,7 +871,7 @@ def cmd_task(args):
                                    **({"s": took} if took is not None and not code else {}),
                                    **({"inconclusive": True} if args.inconclusive else {})})
         for w in _evidence_notes(b, args.step, result, tried):
-            print(f"fm: warning: {w}", file=sys.stderr)
+            print(f"sampo: warning: {w}", file=sys.stderr)
         out(args, dict(c.brief_summary(b), exit=code), (shown + "\n" if shown else "") + f"{b.id}: evidence recorded"
             + (f" ({result})" if ran else "")
             + (" as inconclusive: it never counts as passing; a sharper check is next." if args.inconclusive else "."))
@@ -951,7 +951,7 @@ def cmd_task(args):
                 if areas:
                     logged.update(areas=areas, title=" ".join(b.title.split())[:120])  # not a list: a title cut at 120 characters
             except Exception as e:
-                print(f"fm: kalevala's registry skipped for this close: {e}", file=sys.stderr)
+                print(f"sampo: kalevala's registry skipped for this close: {e}", file=sys.stderr)
             # T-1061: the plan as it was at first focus (scope, predictions) against what happened
             if b.meta.get("plan0_at") and b.meta.get("plan0_scope"):
                 logged["outside"] = len(c.scope_drift(types.SimpleNamespace(meta={"scope": b.meta["plan0_scope"]}), files))
@@ -974,7 +974,7 @@ def cmd_task(args):
             from sampo import trials
             trials.register_fix(p, b)
         except Exception as e:  # the task is done already; a missing trial must not make that look failed
-            print(f"fm: warning: self-fix trial not registered: {e}", file=sys.stderr)
+            print(f"sampo: warning: self-fix trial not registered: {e}", file=sys.stderr)
         if b.meta.get("batch"):
             _settle_batch(p, b, done=True)
         chose = " ".join(b.section("Decision").split()) if b.type == "RESEARCH" else ""
@@ -986,12 +986,12 @@ def cmd_task(args):
             recall.share_lesson(p, b, lesson or next((x.lstrip("- ").strip() for x in
                                                         b.section("Lessons").splitlines() if x.strip()), ""))
         except Exception as e:  # the task is done already; a derived index must not make that look failed
-            print(f"fm: warning: tripwires not updated: {e}", file=sys.stderr)
+            print(f"sampo: warning: tripwires not updated: {e}", file=sys.stderr)
         try:
             from sampo import playbooks
             playbooks.record_use(p, b)  # T-1834: the books this task loaded, with the share followed
         except Exception as e:
-            print(f"fm: warning: playbook use not recorded: {e}", file=sys.stderr)
+            print(f"sampo: warning: playbook use not recorded: {e}", file=sys.stderr)
         warns = _close_warnings(p, b, files)  # T-0672: seen, never a refusal
         if gone:  # T-3550: left out of its edits, never silently
             shown, left = c.more(gone, 8)
@@ -999,9 +999,9 @@ def cmd_task(args):
                          f"as this task's edits): {', '.join(shown + [left] if left else shown)}")
         if warns:  # T-0956: the verdict first, then the details
             kinds = dict.fromkeys(_warning_kind(w) for w in warns)
-            print(f"fm: {len(warns)} warning{'' if len(warns) == 1 else 's'}: {', '.join(kinds)}", file=sys.stderr)
+            print(f"sampo: {len(warns)} warning{'' if len(warns) == 1 else 's'}: {', '.join(kinds)}", file=sys.stderr)
         for w in warns:
-            print(f"fm: warning: {w}", file=sys.stderr)
+            print(f"sampo: warning: {w}", file=sys.stderr)
         grade, why = b.grade()
         guessed = b.unverified() if b.tier in ("M", "L") else []  # T-0254: a warning, not a gate
         own = {a.n for a in b.acceptance() if c.verify_of(a.text) and any(  # T-0900: proven by its own command
@@ -1118,7 +1118,7 @@ def cmd_task(args):
             try:
                 saved = c.snapshot(p.root, f"sampo task drop {cur.id}", timeout=30)
             except RuntimeError as e:
-                print(f"fm: warning: {cur.id}'s work wasn't saved before the drop ({e})", file=sys.stderr)
+                print(f"sampo: warning: {cur.id}'s work wasn't saved before the drop ({e})", file=sys.stderr)
         if saved:
             line = f"work at drop saved: {saved[0]} (restore: {c.restore_line(c.git_root(p.root), saved[0])})"
             prev = change
@@ -1130,7 +1130,7 @@ def cmd_task(args):
                 from sampo import cost
                 cost.eval_case(p, b)
             except Exception as e:  # the block is recorded already; a case is a bonus
-                print(f"fm: warning: no eval case written ({type(e).__name__})", file=sys.stderr)
+                print(f"sampo: warning: no eval case written ({type(e).__name__})", file=sys.stderr)
         if status == "dropped" and b.meta.get("batch"):  # T-0257: a dropped batch hands its members back
             _settle_batch(p, b, done=False)
         if status == "dropped":
@@ -1145,7 +1145,7 @@ def _boundary(p):
         from sampo import selfaware
         selfaware.boundary(p)
     except Exception as e:  # the task is closed already; a missing guess must not make that look failed
-        print(f"fm: warning: no predicted captures at this boundary ({type(e).__name__})", file=sys.stderr)
+        print(f"sampo: warning: no predicted captures at this boundary ({type(e).__name__})", file=sys.stderr)
 
 
 def _repro(b):
@@ -1228,7 +1228,7 @@ def _refuse_unrunnable(p, cmds):
         notes = []
         why = c.unrunnable(cmd, p.root, notes)
         for note in notes:  # T-1145: a test named before it is written is the test-first flow: keep it, say so
-            print(f"fm: note: {note}: write it before the step runs, or fix the name "
+            print(f"sampo: note: {note}: write it before the step runs, or fix the name "
                   f"(sampo task ac ID edit N --verify …)", file=sys.stderr)
         if why:
             raise UsageError(f"verify `{cmd}` can't run: {why}. Fix it before adding it: a criterion with evidence "
@@ -1265,17 +1265,17 @@ def _lint_verify(p, cmds):
     for cmd in filter(None, cmds):
         note = _slow_verify_note(p, cmd)
         if note:
-            print(f"fm: note: {note}", file=sys.stderr)
+            print(f"sampo: note: {note}", file=sys.stderr)
         if cmd.lstrip().startswith("typed:"):  # T-0333: fm task finish runs a verify; a typed check is evidence
-            print(f"fm: warning: verify `{cmd}` is a typed check, not a command, and sampo task finish would run it: "
+            print(f"sampo: warning: verify `{cmd}` is a typed check, not a command, and sampo task finish would run it: "
                   f"leave --verify off and record it with sampo task evidence ID --ac N CMD RESULT", file=sys.stderr)
             continue
         note = c.normalize_verify(p.root, cmd)[2]  # T-3411
         if note:
-            print(f"fm: note: verify `{cmd}` {note}", file=sys.stderr)
+            print(f"sampo: note: verify `{cmd}` {note}", file=sys.stderr)
         problems = c.lint_verify(cmd, p.root)
         if problems:
-            print(f"fm: warning: verify command `{cmd}`: {'; '.join(problems)}", file=sys.stderr)
+            print(f"sampo: warning: verify command `{cmd}`: {'; '.join(problems)}", file=sys.stderr)
             warned += problems
     return warned
 
@@ -1354,7 +1354,7 @@ def _close_advice(p, b):
     score prints the missing evidence as advice; the close lands either way."""
     from sampo import verifier
     if low := verifier.close_score(p, b):
-        print(f"fm: advice: {low}", file=sys.stderr)
+        print(f"sampo: advice: {low}", file=sys.stderr)
 
 
 def task_finish(p, args):
@@ -1601,7 +1601,7 @@ def _task_finish(p, args):
             try:
                 print(f"Title card: {write_card(p, done)}")
             except OSError as e:
-                print(f"fm: warning: no title card ({e.strerror or e})", file=sys.stderr)
+                print(f"sampo: warning: no title card ({e.strerror or e})", file=sys.stderr)
         from sampo import eco
         src = done and done.status == "done" and eco.closing_sha(done) and eco.ticket_source(done)
         if src:  # T-1870: outward, so named here and never done unasked
@@ -2945,7 +2945,7 @@ def _task_each(args, ids):
             ok.append(tid)
         except (UsageError, c.PolicyError, c.LockTimeout, KeyError, ValueError, OSError) as e:  # a busy lock or a
             said = e.args[0] if isinstance(e, KeyError) and e.args else e  # brief that won't parse fails one, not all
-            print(f"fm: task {args.task_cmd} {tid}: {said}", file=sys.stderr)
+            print(f"sampo: task {args.task_cmd} {tid}: {said}", file=sys.stderr)
             failed.append({"id": tid, "error": str(said)})
     done = {"drop": "dropped", "defer": "deferred", "unblock": "unblocked"}[args.task_cmd]
     out(args, {"ok": ok, "failed": failed}, f"{len(ok)} of {len(ids)} {done}.")
@@ -3956,7 +3956,7 @@ def task_step(p, args):
     b, _ = mutate(p, args.id, done, "step_done", {"step": n, "evidence": ev})
     from sampo import doors as sdoors
     for rel in sdoors.drift(p, b.id, n):  # T-2342: the step's Undo line restores the snapshot's copy of these
-        print(f"fm: warning: {rel} differs from its snapshot taken at focus (the step changed it, or something else did); "
+        print(f"sampo: warning: {rel} differs from its snapshot taken at focus (the step changed it, or something else did); "
               f"step {n}'s Undo line restores the snapshot's copy over it", file=sys.stderr)
     s = c.brief_summary(b)
     nxt = f" Next: step {s['step']['n']}/{s['step']['of']} {s['step']['text']}" if s["step"] else " All steps done."
@@ -4780,10 +4780,10 @@ def cmd_decide(args):
             raise UsageError(f"{e}, or `pending T-NNNN` while its task builds the enforcement")
     cites = getattr(args, "cites", None) or ""
     if re.search(r"steer|user", cites, re.I) and not c.STEER.search("cites: " + cites):
-        print(f"fm: warning: --cites {c.plain(cites)[:60]!r} doesn't read as a user steer ('user steer …' or "
+        print(f"sampo: warning: --cites {c.plain(cites)[:60]!r} doesn't read as a user steer ('user steer …' or "
               "\"the user's steer …\"), so no check is asked of this rule", file=sys.stderr)
     elif cites and c.STEER.search("cites: " + cites) and not getattr(args, "check", None):  # T-2465: said now, not later
-        print("fm: warning: a rule from a user steer was recorded with no --check, so sampo doctor and the sweep will "
+        print("sampo: warning: a rule from a user steer was recorded with no --check, so sampo doctor and the sweep will "
               "flag it: record it again with --check CMD --revisited '<words from this rule>'", file=sys.stderr)
     conf = getattr(args, "confidence", None)
     if conf is not None and not (str(conf).isdecimal() and 0 <= int(conf) <= 100):  # T-2337
@@ -5655,7 +5655,7 @@ def cmd_sentinel(args):
             cmds.pop(cmd, None)
             checks.pop(cmd, None)
     if refused:
-        print(f"fm: warning: {len(refused)} stored check(s) the guard refuses weren't rerun: "
+        print(f"sampo: warning: {len(refused)} stored check(s) the guard refuses weren't rerun: "
               + "; ".join(c.fit(x, 60) for x in refused[:3]), file=sys.stderr)
     for cmd, tid in list(cmds.items())[:args.max]:
         code, output = c.run_command(p.root, cmd, args.timeout)
@@ -9609,7 +9609,7 @@ def main(argv=None):
         return main(["next"])
     args = parser.parse_args(_options_first(parser, argv) or ["help"])  # bare fm elsewhere: the tiers, not a usage error
     if os.environ.get("FOREMAN_WORKER_OF") and not _worker_may(args):
-        print(f"fm: refused: this is a worker of a sampo code run ({os.environ['FOREMAN_WORKER_OF']}), which only reads "
+        print(f"sampo: refused: this is a worker of a sampo code run ({os.environ['FOREMAN_WORKER_OF']}), which only reads "
               f"Sampo's state; `fm {' '.join(argv[:2])}` would change it, and that is the user's to do (or sampo code's "  # not a list: the verb words
               "own harness's)", file=sys.stderr)
         return 2
@@ -9620,16 +9620,16 @@ def main(argv=None):
         rc = args.fn(args)
         return rc if isinstance(rc, int) else 0  # evidence --run / check pass on the command's exit code
     except c.PolicyError as e:
-        print(f"fm: refused: {e}", file=sys.stderr)
+        print(f"sampo: refused: {e}", file=sys.stderr)
         print("Next: sampo next", file=sys.stderr)  # T-2653: the one required action, which names what the refusal waits on
         return 2
     except c.LockTimeout as e:
         import shlex
-        print(f"fm: {e} (another sampo or hook is writing; retry)", file=sys.stderr)
-        print(f"Next: fm {shlex.join(argv)}", file=sys.stderr)  # T-2653: the same command again
+        print(f"sampo: {e} (another sampo or hook is writing; retry)", file=sys.stderr)
+        print(f"Next: sampo {shlex.join(argv)}", file=sys.stderr)  # T-2653: the same command again
         return 3
     except (UsageError, KeyError) as e:
-        print(f"fm: {e.args[0] if e.args else e}", file=sys.stderr)
+        print(f"sampo: {e.args[0] if e.args else e}", file=sys.stderr)
         if getattr(e, "then", None):  # T-1334: the one command to run next, when the error knows it
             print(f"Next: {e.then}", file=sys.stderr)
         return 1
@@ -9637,23 +9637,23 @@ def main(argv=None):
         if not any(a == e.filename or a.endswith(f"={e.filename}") for a in argv):  # T-1189: only a file named on
             # the command line (--file X or --file=X) is the caller's mistake; any other is a real error
             if isinstance(e, PermissionError) and e.filename and c.in_state(e.filename):  # T-1669: a state file's mode, not a bug: named
-                print(f"fm: can't open {e.filename}: permission denied; restore its permissions (sampo fsck lists "
+                print(f"sampo: can't open {e.filename}: permission denied; restore its permissions (sampo fsck lists "
                       "unreadable state)", file=sys.stderr)
                 print("Next: sampo fsck", file=sys.stderr)  # T-2653
                 return 4
             raise
-        print(f"fm: can't read {e.filename}: {e.strerror.lower()}", file=sys.stderr)
+        print(f"sampo: can't read {e.filename}: {e.strerror.lower()}", file=sys.stderr)
         return 1
     except c.CorruptState as e:
-        print(f"fm: {e}", file=sys.stderr)
+        print(f"sampo: {e}", file=sys.stderr)
         print("Next: sampo fsck", file=sys.stderr)  # T-2653
         return 4
     except (json.JSONDecodeError, UnicodeDecodeError) as e:  # a file that doesn't parse
-        print(f"fm: state looks corrupt: {e} (sampo fsck names corrupt state files)", file=sys.stderr)
+        print(f"sampo: state looks corrupt: {e} (sampo fsck names corrupt state files)", file=sys.stderr)
         print("Next: sampo fsck", file=sys.stderr)  # T-2653
         return 4
     except ValueError as e:  # T-3194: a bad argument or the verb's own bug, never the user's state
-        print(f"fm: {args.cmd} failed: {type(e).__name__}: {e}", file=sys.stderr)
+        print(f"sampo: {args.cmd} failed: {type(e).__name__}: {e}", file=sys.stderr)
         print(f"Next: sampo {args.cmd} --help", file=sys.stderr)
         return 1
     finally:

@@ -698,7 +698,7 @@ def capture(p, found, n, root, proof=None):
         opened = open_finders(p)
         n = min(n, OPEN_CAP - opened)
         if n <= 0 and any(not f.get("held") for f in found):
-            print(f"fm: {opened} finder tasks (from fm find, fm prove or the scout) are open, at most {OPEN_CAP} at "
+            print(f"sampo: {opened} finder tasks (from fm find, fm prove or the scout) are open, at most {OPEN_CAP} at "
                   "once: finish or drop some before filing more", file=sys.stderr)
         for key, f in keyed(found, root, home):
             key = f.get("key") or key  # fm prove keyed the whole scan: a twin's number comes from all of it

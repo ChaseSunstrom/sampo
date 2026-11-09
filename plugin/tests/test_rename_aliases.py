@@ -134,6 +134,16 @@ class RenameAliases(SampoTestCase):
             bad += [f"{rel}:{line}: {what}" for line, what in old_names(tree, old)]
         self.assertEqual(bad, [])
 
+    def test_sampo_prints_its_own_name_not_fm(self):  # T-4020: "fm: refused: …" showed the old name in every chat
+        r = self.fm("focus", "T-9999", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(r.stderr.startswith("sampo: "), r.stderr)
+        old = re.compile(r"""(?:print|write)\(\s*f?["']fm: |["']Next: fm |"text": "fm: """)
+        root = os.path.dirname(PLUGIN)
+        bad = [f"{rel}:{text.count(chr(10), 0, m.start()) + 1}" for rel, text in sources(root)
+               if rel.startswith("plugin/") and "/tests/" not in rel for m in old.finditer(text)]
+        self.assertEqual(bad, [])
+
     def test_completion_and_help_teach_the_sampo_names(self):  # T-2775
         from sampo import cli
         words = lambda *w: self.fm("complete", "--", *w).stdout.split()  # noqa: E731

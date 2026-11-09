@@ -36,7 +36,7 @@ class Bulk(ForemanTestCase):
             self.fm("task", "block", tid, "waits on the API")
         r = self.fm("task", "unblock", "T-0002..T-0004", "the API is back", check=False)
         self.assertEqual(r.returncode, 1, r.stderr)  # one failed, the rest went through
-        self.assertIn("fm: task unblock T-0002: T-0002 is deferred, not blocked", r.stderr)
+        self.assertIn("sampo: task unblock T-0002: T-0002 is deferred, not blocked", r.stderr)
         self.assertIn("2 of 3 unblocked.", r.stdout)
         self.assertEqual(self.status("T-0002", "T-0003", "T-0004"), ["deferred", "captured", "captured"])
         self.assertIn("unblocked: the API is back", c.find_brief(self.p, "T-0004").section("Log"))
@@ -61,7 +61,7 @@ class Bulk(ForemanTestCase):
         r = self.fm("task", "defer", "T-0002..T-0004", check=False)
         self.assertEqual((r.returncode, "Traceback" in r.stderr, "2 of 3 deferred." in r.stdout), (1, False, True),
                          r.stdout + r.stderr)
-        self.assertIn("fm: task defer T-0003: ", r.stderr)
+        self.assertIn("sampo: task defer T-0003: ", r.stderr)
         self.assertEqual(self.status("T-0002", "T-0004"), ["deferred"] * 2)
 
     def test_task_ids_dedupes_keeps_order_and_caps(self):

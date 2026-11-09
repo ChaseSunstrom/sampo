@@ -1158,7 +1158,7 @@ def _lane_focus(p, sid):
                 proc.stderr.close()
     act = c.active_brief_fast(p, p.lane)
     if not act or act.id != tid:
-        why = c.fit(re.sub(r"^fm: (refused: )?", "", c.plain((err.strip().splitlines() or [""])[0])), 200) if err \
+        why = c.fit(re.sub(r"^(?:sampo|fm): (refused: )?", "", c.plain((err.strip().splitlines() or [""])[0])), 200) if err \
             else None
         return None, _lane_hint(p.lane, branch, hits, f" Sampo tried: sampo focus {tid} here refused: {why}" if why else
                                 f" Sampo tried, but sampo focus {tid} didn't finish in time here."), tasks

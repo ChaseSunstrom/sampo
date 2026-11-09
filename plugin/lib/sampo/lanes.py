@@ -937,7 +937,7 @@ def race(p, b, main, args):
             raise cli.UsageError(str(e))
         bar = outcomes.bars(p)["race"]
         if stated >= bar:  # the plan is sure enough to skip the race: it still runs, but the bet is on record
-            print(f"fm: note: {stated}% is at or above the race bar ({bar}%): this plan could skip the race",
+            print(f"sampo: note: {stated}% is at or above the race bar ({bar}%): this plan could skip the race",
                   file=sys.stderr)
     b = c.find_brief(p, b.id)
     if b.meta.get("race") or b.meta.get("race_of"):  # said first: a second race is not a slot problem
@@ -1019,7 +1019,7 @@ def race(p, b, main, args):
                            base=outcomes.base_rate(outcomes.outcomes(p), outcomes._first_finish(p), b.type,
                                                      b.tier))
         except Exception as e:
-            print(f"fm: warning: the race bet was not recorded ({c.fit(str(e), 80)})", file=sys.stderr)
+            print(f"sampo: warning: the race bet was not recorded ({c.fit(str(e), 80)})", file=sys.stderr)
     quiet = argparse.Namespace(**{**vars(args), "json": True})
     try:
         with contextlib.redirect_stdout(io.StringIO()):  # the briefs' own output; the launch lines follow
@@ -1073,7 +1073,7 @@ def _checks(p, x):
 
 def _say(msg):
     """T-2339: a race's phases take minutes; one stderr line each (stdout stays the verb's answer)."""
-    print(f"fm: race: {msg}", file=sys.stderr, flush=True)
+    print(f"sampo: race: {msg}", file=sys.stderr, flush=True)
 
 
 def _fails_on_base(p, x, main, checks):
@@ -2016,7 +2016,7 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
             f"{len(working)} builders are still working ({', '.join(working)}), the cap is {cap}: wait for one to "
             f"return (fm lane max N raises the cap, up to {BUILDERS_MAX})"))
     if len(waiting) >= UNMERGED_MAX and b.priority == "urgent":  # T-3964: urgent work trains first and drains the pile
-        print(f"fm: {b.id} is urgent: briefed past the unmerged cap ({len(waiting)} finished lanes wait, the cap is "
+        print(f"sampo: {b.id} is urgent: briefed past the unmerged cap ({len(waiting)} finished lanes wait, the cap is "
               f"{UNMERGED_MAX})", file=sys.stderr)
     elif len(waiting) >= UNMERGED_MAX:
         raise _batch_refusal(c.PolicyError(f"{len(waiting)} finished lanes wait unmerged ({', '.join(waiting[:8])}…): merge some "
@@ -2211,7 +2211,7 @@ def _verify(b, p=None, only=None):
         c.wait_for_load(f"fm lane merge {b.id}")  # T-2797: a gate that can only time out waits; then a longer one
     for n, cmd in cmds:
         if cmd in passed:
-            print(f"fm: criterion {n} passed on this lane tree ({tree[:9]}) before: reused", file=sys.stderr)
+            print(f"sampo: criterion {n} passed on this lane tree ({tree[:9]}) before: reused", file=sys.stderr)
             continue
         cap = c.load_scaled(1200)  # T-3418: 600 timed out whole-module criteria at load 20 (load_scaled only stretches past 1/CPU)
         code, out = c.run_command(wt, cmd, cap)

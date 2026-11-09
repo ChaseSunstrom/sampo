@@ -258,7 +258,7 @@ def lane_reexec(me):
             if st.st_uid != os.getuid() or st.st_mode & 0o022:
                 return
         os.environ["SAMPO_LANE_CHILD"] = "1"
-        sys.stderr.write("fm: running the lane's own plugin at %s\n" % d)
+        sys.stderr.write("sampo: running the lane's own plugin at %s\n" % d)
         sys.stderr.flush()
         os.execv(sys.executable, [sys.executable, cand] + sys.argv[1:])
     except Exception:  # fail closed: any doubt runs the main install as before

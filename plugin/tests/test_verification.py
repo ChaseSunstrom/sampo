@@ -100,7 +100,7 @@ class NotVerified(Base):
         r = self.fm("task", "finish", "T-0001", "--audit", "self check", "--run", "python3 tests/test_a.py")
         out = r.stdout + r.stderr
         self.assertIn("lib/b.py", out)
-        self.assertNotIn("lib/a.py", out.split("fm: warning: not verified")[1] if "fm: warning: not verified" in out else "")
+        self.assertNotIn("lib/a.py", out.split("sampo: warning: not verified")[1] if "sampo: warning: not verified" in out else "")
 
     def test_a_passing_gate_run_covers_the_files_its_paths_match(self):
         # T-0736: the full suite is a gate, so a passing run of it verifies every file it covers
@@ -115,7 +115,7 @@ class NotVerified(Base):
         self.write("tools/t.py", "T = 2\n")
         r = self.fm("task", "finish", "T-0001", "--audit", "self check", "--run", "python3 -c 'print(1)'")
         out = r.stdout + r.stderr  # T-0956: past the verdict line, which names the kind too
-        warned = out.split("fm: warning: not verified")[1] if "fm: warning: not verified" in out else ""
+        warned = out.split("sampo: warning: not verified")[1] if "sampo: warning: not verified" in out else ""
         self.assertNotIn("lib/a.py", warned)
         self.assertIn("tools/t.py", warned)
 

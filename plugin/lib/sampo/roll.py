@@ -170,5 +170,5 @@ def cmd_roll(args, cli):
                 "\n".join(section(look)) + f"\n\ndesign roll: seed {look['seed']}, {look['title']} {tail}")
         return 0
     except (ValueError, OSError, cli.c.LockTimeout) as e:
-        print(f"fm: design roll: {e}", file=sys.stderr)
+        print(f"sampo: design roll: {e}", file=sys.stderr)
         return 2

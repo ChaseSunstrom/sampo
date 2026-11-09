@@ -135,8 +135,8 @@ class BoardClose(Base):
         self.task()
         self.write("x.py", "A = 1\nbreakpoint()\n" + ">" * 7 + " theirs\n")
         err = self.finish().stderr.splitlines()
-        warns = [i for i, ln in enumerate(err) if ln.startswith("fm: warning: ")]
-        verdict = [i for i, ln in enumerate(err) if ln.startswith(f"fm: {len(warns)} warnings: ")]
+        warns = [i for i, ln in enumerate(err) if ln.startswith("sampo: warning: ")]
+        verdict = [i for i, ln in enumerate(err) if ln.startswith(f"sampo: {len(warns)} warnings: ")]
         self.assertTrue(warns and verdict and verdict[0] < warns[0], err)
         self.assertIn("debug scaffolding", err[verdict[0]])
         self.assertIn("conflict marker", err[verdict[0]])

@@ -176,7 +176,7 @@ def cmd_glance(args):
     try:
         line = glance(p)
     except Exception as e:  # a bar shows the error, never a trace
-        line = {"v": 1, "project": p.slug, "text": "fm: error", "class": "error",
+        line = {"v": 1, "project": p.slug, "text": "sampo: error", "class": "error",
                 "tooltip": c.redact(f"state unreadable ({type(e).__name__}: {e}); run fm doctor")[:300]}
     print(json.dumps(line, ensure_ascii=True))  # escaped: no U+2028 a line reader could split on
 

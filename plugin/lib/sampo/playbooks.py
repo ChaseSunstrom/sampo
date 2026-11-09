@@ -436,7 +436,7 @@ def record_use(p, b, root=ROOT):
         if got:
             c.log_event(p, "playbook_use", task=b.id, data={"books": got})
     except Exception as e:
-        print(f"fm: warning: playbook use not recorded: {e}", file=sys.stderr)
+        print(f"sampo: warning: playbook use not recorded: {e}", file=sys.stderr)
 
 
 def unused(root=ROOT, days=REACH_DAYS, p=None):

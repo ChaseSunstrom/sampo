@@ -776,13 +776,13 @@ def cmd_motion(args):
     samples = getattr(args, "samples", None)
     for flag, v, verb in (("--to", args.to, "compile"), ("--out", args.out, "compile"), ("--samples", samples, "verify")):
         if act != verb and v is not None:
-            print(f"fm: motion {act}: {flag} is for {verb} (fm motion {verb} [PATH] {flag} …)", file=sys.stderr)
+            print(f"sampo: motion {act}: {flag} is for {verb} (fm motion {verb} [PATH] {flag} …)", file=sys.stderr)
             return 2
     if not path:
         root = core.git_root(os.getcwd()) or os.getcwd()
         path = os.path.join(root, "motion.toml")
         if not os.path.lexists(path):
-            print(f"fm: motion {act}: no motion.toml at {root} (fm motion {act} PATH names another)", file=sys.stderr)
+            print(f"sampo: motion {act}: no motion.toml at {root} (fm motion {act} PATH names another)", file=sys.stderr)
             return 2
     label = os.path.basename(path)
     try:
@@ -809,7 +809,7 @@ def cmd_motion(args):
             return 0
         got = check(path)
     except (OSError, ValueError, RecursionError) as e:
-        print(f"fm: motion {act}: {e or 'nested too deep'}", file=sys.stderr)
+        print(f"sampo: motion {act}: {e or 'nested too deep'}", file=sys.stderr)
         return 2
     n, m = len(got["problems"]), len(got["motions"])
     text = "\n".join(_report(got["problems"], label)

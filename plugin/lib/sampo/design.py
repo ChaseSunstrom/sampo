@@ -1684,7 +1684,7 @@ def xray(args, cli):
     from sampo import shot
 
     def fail(msg):
-        print(f"fm: design xray: {msg}", file=sys.stderr)
+        print(f"sampo: design xray: {msg}", file=sys.stderr)
         return 2
     if len(args.paths) != 1:
         return fail("takes one page: an HTML file, or http(s) on localhost")
@@ -2021,7 +2021,7 @@ def _design_tokens(args, cli):
                   text + (f"\nskipped: {gone}" if gone else ""))
         return 0
     except (ValueError, OSError, cli.c.LockTimeout) as e:  # OSError: the write (read-only, --out a directory)
-        print(f"fm: design {act}: {e}", file=err)
+        print(f"sampo: design {act}: {e}", file=err)
         return 2
 
 
@@ -2030,7 +2030,7 @@ def cmd_design(args):
     from sampo import cli
     if args.action == "roll":  # T-1648
         if args.paths:
-            print("fm: design roll takes no paths", file=sys.stderr)
+            print("sampo: design roll takes no paths", file=sys.stderr)
             return 2
         from sampo import roll
         return roll.cmd_roll(args, cli)
@@ -2056,7 +2056,7 @@ def cmd_design(args):
                 for k, (name, text) in enumerate(zip(names, briefs), 1):
                     core.write_atomic(os.path.join(args.out, f"variant-{k}-{name}.md"), text)
         except (ValueError, OSError) as e:
-            print(f"fm: design diverge: {e}", file=sys.stderr)
+            print(f"sampo: design diverge: {e}", file=sys.stderr)
             return 2
         cli.out(args, {"variants": [{"look": n_, "brief": t} for n_, t in zip(names, briefs)], "out": args.out},
                   (f"wrote {len(briefs)} variant briefs to {args.out}: {', '.join(names)}" if args.out
@@ -2075,19 +2075,19 @@ def cmd_design(args):
         return 0
     if args.action == "check":  # T-1645: the gates DESIGN.md opts into
         if len(args.paths) > 1:
-            print("fm: design check takes one project root", file=sys.stderr)
+            print("sampo: design check takes one project root", file=sys.stderr)
             return 2
         root = args.paths[0] if args.paths else "."
         try:
             got = trial(root, check_gates(root), getattr(args, "wrong", None), getattr(args, "why", None))
         except ValueError as e:
-            print(f"fm: design check: {e}", file=sys.stderr)
+            print(f"sampo: design check: {e}", file=sys.stderr)
             return 1
         cli.out(args, got, render_gates(got))
         return 1 if blocks(got) else 0
     if not args.paths and not (args.action == "tokens" and getattr(args, "clear", False)):  # check's defaults to the
         # project root; tokens --clear forgets the saved pane palette and names no file (T-1717)
-        print(f"fm: design {args.action}: needs an argument (fm design -h)", file=sys.stderr)
+        print(f"sampo: design {args.action}: needs an argument (fm design -h)", file=sys.stderr)
         return 2
     if args.action == "xray":  # T-1652
         return xray(args, cli)
@@ -2095,7 +2095,7 @@ def cmd_design(args):
         return _design_tokens(args, cli)
     missing = [p for p in args.paths if not os.path.exists(p)]
     if missing:
-        print(f"fm: design lint: no such file or directory: {', '.join(missing)}", file=sys.stderr)
+        print(f"sampo: design lint: no such file or directory: {', '.join(missing)}", file=sys.stderr)
         return 2
     src, names = getattr(args, "tokens", None), []  # T-1874: report only, the exit stays the lint's
     tokens = src or _default_out(args.paths[0])
@@ -2103,11 +2103,11 @@ def cmd_design(args):
         names = list(read_design(tokens))
     except ValueError as e:  # no DESIGN.md or no ## Tokens in it: nothing to say, unless --tokens named it
         if src:
-            print(f"fm: design lint: --tokens: {e}", file=sys.stderr)
+            print(f"sampo: design lint: --tokens: {e}", file=sys.stderr)
             return 2
     found, linted, skipped, empty, texts = run(args.paths)
     if empty:
-        print(f"fm: design lint: no UI files under {', '.join(empty)} (it reads {' '.join(sorted(EXTS))})",
+        print(f"sampo: design lint: no UI files under {', '.join(empty)} (it reads {' '.join(sorted(EXTS))})",
               file=sys.stderr)
         return 2
     n = len(linted)

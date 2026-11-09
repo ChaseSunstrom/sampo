@@ -586,5 +586,5 @@ def cmd_sandbox(args):
     except ValueError as e:
         raise cli.UsageError(f"sampo sandbox run: {e}")
     except Unavailable as e:
-        print(f"fm: not run: the job sandbox isn't available here: {e}", file=sys.stderr)
+        print(f"sampo: not run: the job sandbox isn't available here: {e}", file=sys.stderr)
         return 3

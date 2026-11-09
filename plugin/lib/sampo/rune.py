@@ -195,7 +195,7 @@ def put(p, name, text):
         try:  # T-2359: the generation's lean start; never fails a put
             record_lean(p, int(m[1]))
         except Exception as e:
-            print(f"fm: lean start for gen {m[1]} not recorded: {c.fit(c.plain(str(e)), 120)}", file=sys.stderr)
+            print(f"sampo: lean start for gen {m[1]} not recorded: {c.fit(c.plain(str(e)), 120)}", file=sys.stderr)
     return path
 
 

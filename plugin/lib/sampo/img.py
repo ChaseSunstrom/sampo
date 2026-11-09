@@ -283,24 +283,24 @@ def cmd_img(args):
     try:
         if args.action == "info":
             if len(args.paths) != 1:
-                print("fm: img info takes one PATH", file=sys.stderr)
+                print("sampo: img info takes one PATH", file=sys.stderr)
                 return 2
             d = info(args.paths[0])
             cli.out(args, d, f"{d['path']}: {d['width']}x{d['height']} {d['mode']} {d['depth']}-bit"
                                + (", interlaced" if d["interlaced"] else ""))
             return 0
         if len(args.paths) != 2:
-            print("fm: img diff takes two paths, A and B", file=sys.stderr)
+            print("sampo: img diff takes two paths, A and B", file=sys.stderr)
             return 2
         tol = getattr(args, "tol", 0) or 0
         if not 0 <= tol <= 255:
-            print(f"fm: img diff --tol is 0 to 255, not {tol}", file=sys.stderr)
+            print(f"sampo: img diff --tol is 0 to 255, not {tol}", file=sys.stderr)
             return 2
         a, b = (load(p) for p in args.paths)
         if args.out and os.path.exists(args.out) and any(os.path.samefile(args.out, p) for p in args.paths):
             raise ValueError(f"--out {args.out} is one of the images it compares")
     except (OSError, ValueError) as e:
-        print(f"fm: img: {e}", file=sys.stderr)
+        print(f"sampo: img: {e}", file=sys.stderr)
         return 2
     if (a.width, a.height) != (b.width, b.height):
         cli.out(args, {"changed": None, "sizes": [[a.width, a.height], [b.width, b.height]], "out": None},
@@ -312,7 +312,7 @@ def cmd_img(args):
         try:
             save(args.out, a.width, a.height, d.pop("image"))
         except OSError as e:
-            print(f"fm: img: can't write {args.out}: {e}", file=sys.stderr)
+            print(f"sampo: img: can't write {args.out}: {e}", file=sys.stderr)
             return 2
     text = "identical" if not d["changed"] else \
         f"{d['changed']} of {d['total']} pixels changed ({100 * d['changed'] / d['total']:.2f}%) in " \

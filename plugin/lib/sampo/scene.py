@@ -1676,12 +1676,12 @@ def cmd_scene(args):
     from sampo import core
     for flag in sorted({t.partition("=")[0] for t in cli._ARGV} & set(_READS)):
         if args.action not in _READS[flag].split():
-            print(f"fm: scene: {args.action} doesn't read {flag} (only {', '.join(_READS[flag].split())} do)",
+            print(f"sampo: scene: {args.action} doesn't read {flag} (only {', '.join(_READS[flag].split())} do)",
                   file=sys.stderr)
             return 2
     if args.action == "sketchbook":  # T-1784
         if args.path:
-            print(f"fm: scene: sketchbook takes no FILE (got {args.path}); write it with --out", file=sys.stderr)
+            print(f"sampo: scene: sketchbook takes no FILE (got {args.path}); write it with --out", file=sys.stderr)
             return 2
         try:
             text = sketchbook_html(sketch_cards())
@@ -1691,13 +1691,13 @@ def cmd_scene(args):
         try:
             core.write_atomic(out, text)
         except OSError as e:
-            print(f"fm: scene: can't write {out}: {e}", file=sys.stderr)
+            print(f"sampo: scene: can't write {out}: {e}", file=sys.stderr)
             return 1
         print(f"wrote {out}: {text.count('<figure class=')} shaders; open it in a browser with WebGL2")
         return 0
     if args.action in ("metaballs", "terrain", "airlock", "bench", "lookbook", "gallery"):  # T-1848..T-1852, T-1873
         if args.path:
-            print(f"fm: scene: {args.action} takes no FILE (got {args.path}); write it with --out", file=sys.stderr)
+            print(f"sampo: scene: {args.action} takes no FILE (got {args.path}); write it with --out", file=sys.stderr)
             return 2
         try:
             if args.action == "gallery":
@@ -1711,7 +1711,7 @@ def cmd_scene(args):
                 text = json.dumps(scene, indent=2) + "\n"
                 out = _write_out(args, text)
         except (OSError, ValueError) as e:
-            print(f"fm: scene: {args.action}: {e}", file=sys.stderr)
+            print(f"sampo: scene: {args.action}: {e}", file=sys.stderr)
             return 2
         if args.action == "gallery":
             return cli.out(args, {"out": args.out, "size": [w, h], "scenes": said}, "\n".join(
@@ -1723,7 +1723,7 @@ def cmd_scene(args):
         return cli.out(args, {"out": args.out, "vertices": sum(len(g.get("vertices", ())) for g in gs),
                                 "triangles": tris}, f"wrote {args.out}: {what}" + f", {tris} triangles" * bool(tris)) or 0
     if not args.path:
-        print(f"fm: scene: {args.action} needs FILE", file=sys.stderr)
+        print(f"sampo: scene: {args.action} needs FILE", file=sys.stderr)
         return 2
     if args.action == "shade":  # T-1846: a fragment shader run per pixel on the CPU, no browser or GPU
         import re
@@ -1748,7 +1748,7 @@ def cmd_scene(args):
             rgb, notes = shade.render(src, w, h, sets, args.time, first)
             img.save(args.out, w, h, rgb, "rgb")
         except (OSError, ValueError) as e:
-            print(f"fm: scene: {e}", file=sys.stderr)
+            print(f"sampo: scene: {e}", file=sys.stderr)
             return 2
         said = f"wrote {args.out}: {w}x{h} of {args.path}"
         said += f"; preview defaults for {', '.join(notes['defaulted'])}" * bool(notes["defaulted"])
@@ -1761,7 +1761,7 @@ def cmd_scene(args):
         try:
             found = [p for path in paths for p in shader_problems(path, validator)]
         except (OSError, UnicodeDecodeError) as e:
-            print(f"fm: scene: {e}", file=sys.stderr)
+            print(f"sampo: scene: {e}", file=sys.stderr)
             return 2
         cli.out(args, {"checked": paths, "problems": found, "compiled": bool(validator)},
                   "\n".join([f"✗ {x}" for x in found] + [
@@ -1772,20 +1772,20 @@ def cmd_scene(args):
         try:
             found = gltf_problems(args.path)
         except OSError as e:
-            print(f"fm: scene: {e}", file=sys.stderr)
+            print(f"sampo: scene: {e}", file=sys.stderr)
             return 2
         cli.out(args, {"problems": found}, "\n".join([f"✗ {x}" for x in found] + [
             f"{'✗' if found else '✓'} {args.path}: {len(found)} problem(s)"]))
         return 1 if found else 0
     if args.action == "soak":  # T-1530: a real browser when there is one; skipped with the reason when not
         if not 1 <= args.seconds <= 600:
-            print(f"fm: scene: soak: --seconds {args.seconds}: 1 to 600", file=sys.stderr)
+            print(f"sampo: scene: soak: --seconds {args.seconds}: 1 to 600", file=sys.stderr)
             return 2
         try:
             got = soak(args.path, find_three(os.path.dirname(os.path.abspath(args.path)), os.getcwd()),
                        args.seconds, args.budget_ms)
         except (OSError, ValueError, RuntimeError, TimeoutError) as e:
-            print(f"fm: scene: soak: {e}", file=sys.stderr)
+            print(f"sampo: scene: soak: {e}", file=sys.stderr)
             return 2
         if "skipped" in got:
             cli.out(args, got, f"skipped: {got['skipped']}")
@@ -1802,7 +1802,7 @@ def cmd_scene(args):
             text = json.dumps(scene, indent=2) + "\n"
             out = _write_out(args, text, "the file it imports")
         except (OSError, ValueError) as e:
-            print(f"fm: scene: import: {e}", file=sys.stderr)
+            print(f"sampo: scene: import: {e}", file=sys.stderr)
             return 2
         note = f"left out: {'; '.join(left)}" if left else "nothing left out"
         if not out:  # stdout is the scene, so the note goes to stderr
@@ -1830,7 +1830,7 @@ def cmd_scene(args):
             from sampo import img
             img.save(args.out, w, h, rgb, "rgb")
         except (OSError, ValueError) as e:
-            print(f"fm: scene: {e}", file=sys.stderr)
+            print(f"sampo: scene: {e}", file=sys.stderr)
             return 2
         return cli.out(args, {"out": args.out, "frames": args.frames, "size": [w, h]},
                          f"wrote {args.out}: {args.frames} turns of {args.path}, {w}x{h}") or 0
@@ -1844,7 +1844,7 @@ def cmd_scene(args):
             compile_three(scene, hud=hud)
         out = _write_out(args, text, "the scene it compiles")
     except (OSError, ValueError) as e:
-        print(f"fm: scene: {e}", file=sys.stderr)
+        print(f"sampo: scene: {e}", file=sys.stderr)
         return 2
     if out:
         cli.out(args, {"out": args.out, "bytes": len(text.encode())}, f"wrote {args.out}")

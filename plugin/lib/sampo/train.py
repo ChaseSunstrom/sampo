@@ -717,7 +717,7 @@ def _ship(p, keep):
 
 def _why(text):
     """A refusal's own lines (its Next: hint aside) as one line."""
-    lines = (ln.strip().removeprefix("fm: ").removeprefix("refused: ").removeprefix("- ") for ln in text.splitlines())
+    lines = (ln.strip().removeprefix("fm: ").removeprefix("sampo: ").removeprefix("refused: ").removeprefix("- ") for ln in text.splitlines())
     return c.fit("; ".join(ln for ln in lines if ln and not ln.startswith("Next:")), 400) or "no reason given"
 
 

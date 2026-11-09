@@ -874,7 +874,7 @@ def cmd_ideas(args):
     deepen = max(0, getattr(args, "deepen", 0) or 0)
     pace = budget.degrade(p) if deepen else None
     if pace:  # T-0449: optional rounds go first; the caps below still refuse what's over one
-        print(f"fm: optional work is dropped ({pace}): --deepen dropped (0 rounds); the lenses still run",
+        print(f"sampo: optional work is dropped ({pace}): --deepen dropped (0 rounds); the lenses still run",
               file=sys.stderr)
         deepen = 0
     runs = len(lenses) * max(1, args.rounds) + deepen
@@ -889,7 +889,7 @@ def cmd_ideas(args):
     with open(os.path.join(out_dir, "status.json"), "w", encoding="utf-8") as f:  # T-0124: the dashboard's progress
         json.dump({"lenses": lenses, "rounds": max(1, args.rounds), "started": c.now()}, f)
     if len(pack.split()) > PACK_WORDS:
-        print(f"fm: warning: the pack is {len(pack.split())} words; every lens and round pays for it (aim for "
+        print(f"sampo: warning: the pack is {len(pack.split())} words; every lens and round pays for it (aim for "
               f"≤ {PACK_WORDS})", file=sys.stderr)
     results, titles, seen, by_round, rounds, lens_yield = [], [], [], [], 0, dict.fromkeys(lenses, 0)
     if getattr(args, "seen_latest", None):  # T-2559: the newest earlier runs that left an ideas.md, this one excluded
@@ -949,7 +949,7 @@ def cmd_ideas(args):
         bred = [t for t in (_crossbreed(titles[known:], system, args, p) if getattr(args, "crossbreed", False)
                             and titles[known:] else []) if _is_new(t, seen)]
     except ValueError as e:  # an optional pass that fails leaves the catalogue as it is
-        print(f"fm: {e}", file=sys.stderr)
+        print(f"sampo: {e}", file=sys.stderr)
     titles += bred
     cats, thin = coverage(results)
     near = recall.nearest_done(p, titles[known:])  # T-0208: what may already be built, before grounding
