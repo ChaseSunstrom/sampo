@@ -7675,6 +7675,13 @@ def _build_parser(only=None):
     s.add_argument("--convert", action="store_true", help="with --apply: rewrite the residual lines with a cheap child")
     s.add_argument("--model", default="haiku")
     s.add_argument("--timeout", type=int, default=180)
+    s = add("move", lazy("sampo.movemod", "cmd_move"), tier=("Finding your way", 641),
+            help="rename a Sampo module and rewrite its imports, paths, tests and shim; a fresh process "
+                 "imports every module as proof (T-3274); dry run unless --apply")
+    s.add_argument("old")
+    s.add_argument("new")
+    s.add_argument("--apply", action="store_true", help="git mv and rewrite (default: a dry run that writes nothing)")
+    s.add_argument("--alias", action="store_true", help="with --apply: leave a sys.modules shim at the old path")
     s = add("card", lazy("sampo.callcards", "cmd_card"), tier=("Finding your way", 645),
             help="calling cards: verified generators called by name with typed inputs, run confined, applied only "
                  "when their checker passes (list, show, call NAME key=value..., test [NAME], rank \"<task>\", "
