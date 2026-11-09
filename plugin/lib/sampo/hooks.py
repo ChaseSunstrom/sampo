@@ -3654,6 +3654,19 @@ def _touch_seen(p, sid):
         log_error("PostToolUse", _tb())
 
 
+_SAMPO_RUN = c.lazy(r"(?:^|[\s;&|(])(?:\S*/)?(?:sampo|fm)\s+\S")
+_REFUSAL = c.lazy(r"(?m)^(?:sampo|fm): (?:refused: |\S+ not finished\b|\S+ can't be marked done\b)")
+
+
+def _refused(tool, ti, resp):
+    """T-4021: a sampo command whose own output is a refusal, though its exit said 0 (a '| tail' hid it): the SAMPO
+    panel counted it ok. Only the command's text decides; a grep that prints a refusal line is not one."""
+    if tool != "Bash" or not isinstance(ti, dict) or not isinstance(resp, dict) \
+            or not _SAMPO_RUN.search(str(ti.get("command") or "").split("\n", 1)[0]):
+        return False
+    return bool(_REFUSAL.search(f"{resp.get('stdout') or ''}\n{resp.get('stderr') or ''}"[:20000]))
+
+
 def post_tool_use(pl, ok=True):
     tool, ti = pl.get("tool_name", ""), pl.get("tool_input") or {}
     p = c.find_project(_cwd(pl))
@@ -3661,6 +3674,8 @@ def post_tool_use(pl, ok=True):
         _touch_seen(p, pl.get("session_id"))
     rec = {"session_id": pl.get("session_id"), "kind": "tool" if ok else "tool_fail", "tool": tool,
            "target": _target(ti)[:120], "ms": pl.get("duration_ms"), "ok": ok, "project": p.slug if p else None}
+    if ok and _refused(tool, ti, pl.get("tool_response")):
+        rec["ok"] = False  # kind stays "tool": the call itself succeeded; only the panel's verdict reads ok
     if pl.get("agent_type"):
         rec["agent_type"] = pl["agent_type"]
     book = str(ti.get("file_path") or "") if tool == "Read" and isinstance(ti, dict) else ""

@@ -2674,6 +2674,19 @@ class PostToolUse(HookCase):
         ev = self.events()[-1]
         self.assertEqual((ev["kind"], ev["ok"]), ("tool_fail", False))
 
+    def test_a_piped_sampo_refusal_is_not_an_ok_command(self):  # T-4021: '| tail' hid the exit, the panel showed ✓
+        self.fm("init")
+        out = "sampo: T-0001 not finished, nothing ran:\n  - audit missing\n"
+        for text, ok in ((out, False), ("sampo: refused: T-0001 is planned\nNext: sampo next\n", False),
+                         ("fm: refused: x\n", False), ("sampo: warning: playbook use not recorded\nT-0001 updated.\n", True)):
+            self.hook("PostToolUse", {"tool_name": "Bash", "tool_input": {"command": "sampo task finish T-0001 2>&1 | tail"},
+                                      "tool_response": {"stdout": text, "stderr": "", "interrupted": False}})
+            ev = self.events()[-1]
+            self.assertEqual((ev["kind"], ev["ok"]), ("tool", ok), text)
+        self.hook("PostToolUse", {"tool_name": "Bash", "tool_input": {"command": "grep refused log"},
+                                  "tool_response": {"stdout": out, "stderr": ""}})
+        self.assertIs(self.events()[-1]["ok"], True)  # only a sampo command's own refusal counts
+
 
 class PreCompact(HookCase):
     def test_checkpoints_active_task_and_never_blocks(self):
