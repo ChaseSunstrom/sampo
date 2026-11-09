@@ -38,6 +38,17 @@ class DiffGates(ForemanTestCase):
             self.fm("task", "audit", "T-0001", lens, "checked", "ok")
         return self.fm("task", "done", "T-0001", check=False)
 
+    def test_widening_an_unscoped_task_keeps_what_it_already_edited(self):
+        # T-4037: T-3281 had no scope (every edit counts); scope+=CHANGELOG.md made it only that, and its finish
+        # refused every file it had edited
+        self.task()
+        self.touch("src/app.py")
+        self.touch("setup.cfg")
+        self.fm("task", "set", "T-0001", "scope+=CHANGELOG.md")
+        scope = json.loads(self.fm("task", "show", "T-0001", "--json").stdout)["scope"]
+        self.assertEqual(sorted(scope), ["CHANGELOG.md", "setup.cfg", "src/app.py"])
+        self.assertNotIn("edited outside scope", self.finish().stderr)
+
     def test_edits_outside_scope_need_a_reason(self):
         self.task("--scope", "src/**")
         self.touch("src/app.py")

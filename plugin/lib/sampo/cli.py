@@ -3848,6 +3848,8 @@ def task_set(p, args):
         for k in LIST_FIELDS & changes.keys():  # T-3377: resolve =, +=, -= in order against the list as saved now
             if changes[k] is not None:
                 cur = list(b.meta.get(k) or [])
+                if k == "scope" and not cur and changes[k][0][0] == "+":  # T-4037: unscoped, every edit counted:
+                    cur = sorted(_task_files(p, b)[0])  # widening keeps them (T-3281's close refused them all)
                 for op, items in changes[k]:
                     cur = list(items) if op == "=" else cur + [x for x in items if x not in cur] if op == "+" else \
                         [x for x in cur if x not in items]
