@@ -24,7 +24,7 @@ from sampo import serve
 STALE_H = 12  # a statusline snapshot older than this says nothing about tonight's usage
 JOB_TIMEOUT = 3 * 3600  # seconds one night job may take
 _LEASE = None  # T-0921: the open lock file of a running night
-NAMES = ("scout", "dream", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds")
+NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds")
 
 
 GENERATORS = ("moons grow", "moons funnel")  # T-3296: the bulk CPU users; they take the project lock only briefly per row
@@ -72,6 +72,7 @@ def jobs(p):
     from sampo import outside
     meta, out = c.read_meta(p), [("scout", ["scout", "--slow"], 0.0)]  # T-0950: free to look: work nobody asked for
     out.append(("dream", ["dream"], 0.0))  # T-0665: free: the day's failures as tripwire candidates
+    out.append(("spar", ["spar", "--capture", "--budget", "120"], 0.0))  # T-3281: free: hook fuzz, idle priority, crashes filed as FIX
     out.append(("cold files", ["map", "--cold", "--capture"], 0.0))  # T-0660: free: hot files nobody has read
     from sampo import replay
     if os.path.realpath(p.root) == os.path.realpath(replay.repo_root()) and replay.load_cases()[0]:

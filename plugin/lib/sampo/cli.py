@@ -8270,6 +8270,14 @@ def _build_parser(only=None):
                    help="home (the default): the folders; plugins: Claude Code's plugin and marketplace ids")
     s.add_argument("--undo", action="store_true", help="put the old layout back and check it against the manifest's hashes")
     s.add_argument("--dry-run", action="store_true", help="show the steps; change nothing")
+    s = add("spar", lazy("sampo.spar", "cmd_spar"), tier=("Project and settings", 875), help="the nightly hook fuzz: "
+            "mutated payloads (malformed, huge, unicode, missing fields) through the hooks in a temp home until the "
+            "budget runs out; each distinct traceback is one crash; --capture files each as a FIX (T-3281)")
+    s.add_argument("--seed", type=int, help="the run's seed (default: random; the report and each FIX name it)")
+    s.add_argument("--replay", type=int, metavar="K", help="with --seed: rerun mutants 0..K in a fresh sandboxed day and "
+                   "say whether K still crashes")
+    s.add_argument("--budget", type=float, default=120.0, help="seconds before the run stops (default 120)")
+    s.add_argument("--capture", action="store_true", help="file each crash as a FIX with its reproducer, once per signature")
     s = add("drill", lazy("sampo.drill", "cmd_drill"), tier=("Project and settings", 873), help="a scripted day in a temp "
             "home with faults planted mid-day (torn ledger and journal, stale lock, broken lane, corrupt state file, "
             "unreadable file); passes only when sampo fsck or sampo verify-ledger finds each or the day heals it, and "
