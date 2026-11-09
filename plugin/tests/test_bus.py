@@ -447,7 +447,7 @@ class Conductor(Base):
             self.conductor("send", "jarvis", "use the new parser")
             self.assertEqual(len(calls), 1, calls)
             self.assertEqual(calls[0][0], "dev@192.0.2.7")
-            self.assertIn("bus send all 'use the new parser'", calls[0][1])
+            self.assertIn("bus -- send all 'use the new parser'", calls[0][1])  # T-3955: the words after --
             self.assertNotIn("steer", calls[0][1], "a send is not a steer")
             with self.assertRaises(cli.UsageError) as ctx:
                 self.conductor("send", "nobody", "hi")
@@ -481,9 +481,30 @@ class Conductor(Base):
             self.assertIn("matches 2", str(amb.exception))
             self.conductor("steer", "freeze the API")
             self.assertEqual(len(calls), 1, "steer still reaches each remote")
-            self.assertIn("bus send all", calls[0])
+            self.assertIn("-- send all", calls[0])
             self.assertIn("--type steer", calls[0])
         self.assertIn("freeze the API", self.note("sess-bbbb02")[1].get("additionalContext", ""))
+
+    def test_a_remote_send_or_steer_of_dash_led_text_reaches_the_remote_parser_as_text(self):  # T-3955
+        import shlex
+        import subprocess
+        from unittest import mock
+        from sampo import cli
+        self.fm("conductor", "remote", "add", "jarvis", "dev@192.0.2.7")
+        calls = []
+
+        def ssh(r, command, timeout=20):
+            calls.append(command)
+            return subprocess.CompletedProcess([], 0, "", "")
+        with mock.patch.object(bus, "_ssh", ssh):
+            self.conductor("send", "jarvis", "-x fix it")
+            self.conductor("steer", "--type stop now")
+        self.assertEqual(len(calls), 2, calls)
+        for command, kind, text in zip(calls, ("note", "steer"), ("-x fix it", "--type stop now")):
+            argv = shlex.split(command)[1:]  # what the remote's sampo gets
+            self.assertIn("--", argv, command)
+            got = cli.build_parser().parse_args(argv)
+            self.assertEqual((got.action, got.words, got.type), ("send", ["all", text], kind), command)
 
     def test_the_real_parser_takes_send_and_an_unknown_name_exits_non_zero_listing_the_known(self):  # T-3932
         p = self.fm("conductor", "send", "nosuch-name", "x", check=False)

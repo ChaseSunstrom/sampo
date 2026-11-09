@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Conductor send and steer put the remote text after --, so a message that starts with a dash is no longer read as an option by the remote bus (T-3955).
 - Merge trains, lane merges, ship and sampo check no longer wait 60 s for a machine that has been busy for 5 minutes: they go ahead at once with the longer timeout, and only a short spike is waited out (T-3961).
 - `sampo doctor` now checks the recordings in `demo/` and `docs/assets/screens/`. It fails when one shows a retired name (`fm`, Foreman, a renamed verb such as `sampo code`), warns when one is over 21 days old with its code changed since, and names the command that remakes it; Sampo's scout files either as work. `sampo demo` now prints `sampo` commands, and its recording, the Sampo Code video and the tour SVG are re-recorded from today's code (T-3989).
 - the hook latency bench counts load against the cores the session's CPU cap leaves (cgroup cpu.max), so a capped session's throttled wall time no longer turns the land's base red (T-4018).

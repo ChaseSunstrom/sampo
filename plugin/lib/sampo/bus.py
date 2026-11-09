@@ -784,7 +784,7 @@ def cmd_conductor(args):
         r = remotes().get(name)
         if r:
             try:
-                ok = not _ssh(r, f"{r.get('fm') or REMOTE_FM} bus send all {shlex.quote(text)}").returncode
+                ok = not _ssh(r, f"{r.get('fm') or REMOTE_FM} bus -- send all {shlex.quote(text)}").returncode  # T-3955: after --, a dash-led text is text
             except (OSError, subprocess.SubprocessError):
                 ok = False
             if not ok:
@@ -808,7 +808,7 @@ def cmd_conductor(args):
         reached = []
         for name, r in remotes().items():  # the user's own machines, added by them
             try:
-                ok = not _ssh(r, f"{r.get('fm') or REMOTE_FM} bus send all {shlex.quote(text)} --type steer").returncode
+                ok = not _ssh(r, f"{r.get('fm') or REMOTE_FM} bus --type steer -- send all {shlex.quote(text)}").returncode
             except (OSError, subprocess.SubprocessError):
                 ok = False
             reached.append(name) if ok else None
