@@ -79,12 +79,36 @@ def load_per_core(cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
         return 0.0
 
 
-def within(wall_p95, cpu_p95, budget, load, cpu_p50=None):
+def within(wall_p95, cpu_p95, budget, load, cpu_p50=None, pressure=0.0):
     """T-0805: a quiet machine judges wall time (what the user waits); a busy one (load per core above 1) judges the
     hook's own CPU time, which a code regression (more imports, more work) raises. T-3821: by its median when given:
-    load inflates CPU time's tail too (one commit at load 2.3 per core: SessionStart CPU p95 404, then 106 ms)."""
+    load inflates CPU time's tail too (one commit at load 2.3 per core: SessionStart CPU p95 404, then 106 ms).
+    T-4029: CPU pressure (the share of the last 10 s some task waited for a CPU) at PRESSURE_BUSY or more is busy too:
+    the 1-minute load lags, and read under 1 a core at 51% pressure while the land stopped on a red base bench."""
     busy = cpu_p50 if cpu_p50 is not None else cpu_p95
-    return (busy if load > 1 else wall_p95) <= budget
+    return (busy if load > 1 or pressure >= PRESSURE_BUSY else wall_p95) <= budget
+
+
+PRESSURE_BUSY = 10.0  # percent; an idle desktop reads 0-2
+
+
+def cpu_pressure(cgroup="/proc/self/cgroup", root="/sys/fs/cgroup", system="/proc/pressure/cpu"):
+    """T-4029: PSI's 'some avg10' for CPU, the higher of this process's cgroup and the machine's; 0 without PSI."""
+    files = [system]
+    try:
+        with open(cgroup, encoding="utf-8") as f:
+            files.append(os.path.join(root, (f.read().strip().partition("::")[2] or "/").lstrip("/"), "cpu.pressure"))
+    except OSError:
+        pass
+    got = 0.0
+    for path in files:
+        try:
+            with open(path, encoding="utf-8") as f:
+                some = next(ln for ln in f if ln.startswith("some "))
+            got = max(got, float(some.split("avg10=")[1].split()[0]))
+        except (OSError, StopIteration, IndexError, ValueError):
+            pass
+    return got
 
 
 def _scratch_project(tmp):
@@ -143,10 +167,11 @@ def run_bench(runs=30, only=None):  # only: a predicate on fixture names (T-2359
             cpus.sort()
             budget = BUDGET_MS.get(name, BUDGET_MS.get(event, BUDGET_MS["default"]))
             at = min(len(times) - 1, int(len(times) * 0.95))
-            p95, cpu95, load = times[at], cpus[at], load_per_core()
+            p95, cpu95, load, pressure = times[at], cpus[at], load_per_core(), cpu_pressure()
             results[name] = {"p50": round(statistics.median(times), 1), "p95": round(p95, 1), "cpu_p95": round(cpu95, 1),
                              "cpu_p50": round(statistics.median(cpus), 1),  # T-3131: the gate's steady basis
-                             "budget": budget, "load": round(load, 2), "ok": within(p95, cpu95, budget, load, statistics.median(cpus)),
+                             "budget": budget, "load": round(load, 2), "pressure": pressure,
+                             "ok": within(p95, cpu95, budget, load, statistics.median(cpus), pressure),
                              "exit_codes": sorted(codes)}
     return results
 
@@ -218,8 +243,10 @@ def main():
         for k, v in res.items():
             print(f"{k:<24}{v['p50']:>8}{v['p95']:>8}{v['budget']:>8}  {v['exit_codes']}{'' if v['ok'] else '  OVER BUDGET'}")
         busy = max((v["load"] for v in res.values()), default=0)
-        if busy > 1:
-            print(f"machine busy (load {busy:.1f} per core): judged by each hook's CPU time, not wall time (T-0805)")
+        psi = max((v["pressure"] for v in res.values()), default=0)
+        if busy > 1 or psi >= PRESSURE_BUSY:
+            print(f"machine busy (load {busy:.1f} per core, CPU pressure {psi:.0f}%): judged by each hook's CPU time, "
+                  "not wall time (T-0805, T-4029)")
     return 0 if all(v["ok"] for v in res.values()) else 1
 
 

@@ -895,7 +895,7 @@ def _land(p, main, batch):
             got = train(p, main, ids)
         except c.PolicyError as e:
             if not hasattr(e, "left"):  # a red base, a moved branch: no later batch would land either
-                stopped = str(e).splitlines()[0]
+                stopped = str(e)  # T-4029: with the red gate's own lines, so nobody reruns it to learn them
                 break
             got = {"merged": [], "left_out": e.left}
         except c.LockTimeout:

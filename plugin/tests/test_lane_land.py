@@ -169,6 +169,20 @@ class Land(LandCase):
         self.assertIsNone(c.active_brief_fast(p), "land leaves the main checkout free")
         self.assertNotIn("Ship", out, "no publish grant: nothing ships")
 
+    def test_a_red_base_stop_keeps_the_gates_own_lines(self):  # T-4029: six stops in a day named only the bench
+        self.fm("check", "add", "test ! -e SLOW || { echo 'PreToolUse:Bash  172.7  150  OVER BUDGET'; false; }")
+        with open(os.path.join(self.repo, "SLOW"), "w") as f:
+            f.write("x\n")
+        self.git("add", "SLOW")
+        self.git("commit", "-qm", "red base")
+        a = self.lane(1, "a.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane one")
+        out = self.land(check=False).stdout
+        self.assertIn("Stopped: the base", out)
+        self.assertRegex(out, r"Stopped: the base .*\n(    .*\n)*    .*OVER BUDGET",
+                         "the red gate's own lines in the stop, so nobody reruns it to learn which hook")
+
     def test_a_close_commits_the_changelog_line_it_wrote_when_an_earlier_merge_also_changed_it(self):  # T-4007
         a, b = self.lane(1, "a.txt", when=OLD), self.lane(2, "b.txt", when=OLD)
         one = os.path.join(self.tmp, "lane1")

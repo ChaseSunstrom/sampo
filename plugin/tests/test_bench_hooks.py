@@ -26,6 +26,28 @@ class Verdict(unittest.TestCase):
         self.assertFalse(ok(wall_p95=900, cpu_p95=404, budget=150, load=2.3, cpu_p50=180), "a slower median fails")
         self.assertFalse(ok(wall_p95=400, cpu_p95=30, budget=150, load=0.3, cpu_p50=20), "quiet: wall p95 still decides")
 
+    def test_cpu_pressure_judges_by_cpu_time_where_the_load_average_lags(self):
+        # T-4029: the land stopped six times in a day on a red base bench that passed at once by hand; the 1-minute
+        # load read under 1 a core while CPU pressure (tasks waiting for a CPU) stood at 51%
+        ok = bench_hooks.within
+        self.assertTrue(ok(wall_p95=400, cpu_p95=60, budget=150, load=0.9, cpu_p50=50, pressure=51), "contended")
+        self.assertFalse(ok(wall_p95=400, cpu_p95=60, budget=150, load=0.9, cpu_p50=50, pressure=2), "quiet: wall")
+        self.assertFalse(ok(wall_p95=400, cpu_p95=200, budget=150, load=0.9, cpu_p50=180, pressure=51), "a regression")
+
+    def test_cpu_pressure_is_the_higher_of_the_cgroup_and_the_machine_and_none_reads_zero(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as root:
+            os.makedirs(os.path.join(root, "app.scope"))
+            for rel, text in (("self.cgroup", "0::/app.scope\n"), ("system", "some avg10=40.00 avg60=9.00 avg300=1.00 total=9\n"),
+                              ("app.scope/cpu.pressure", "some avg10=12.50 avg60=3.00 avg300=1.00 total=1\n"
+                                                         "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")):
+                with open(os.path.join(root, rel), "w") as f:
+                    f.write(text)
+            cg, system, none = (os.path.join(root, n) for n in ("self.cgroup", "system", "none"))
+            self.assertEqual(bench_hooks.cpu_pressure(cg, root, system), 40.0)
+            self.assertEqual(bench_hooks.cpu_pressure(cg, root, none), 12.5)
+            self.assertEqual(bench_hooks.cpu_pressure(none, root, none), 0.0)  # no PSI (macOS, an old kernel)
+
 
 class CappedScope(unittest.TestCase):  # T-4018
     def test_load_counts_against_the_cores_a_cgroup_cap_leaves(self):
