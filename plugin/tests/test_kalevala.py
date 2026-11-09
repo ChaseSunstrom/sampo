@@ -632,6 +632,7 @@ class KalevalaStep(ForemanTestCase):
         self.assertFalse(r.get("error"))
 
     def test_a_grow_refused_by_the_store_exits_nonzero(self):
+        from sampo import moonscale
         release = threading.Event()
         t = self.hold_store(release)
         try:
@@ -639,7 +640,7 @@ class KalevalaStep(ForemanTestCase):
         finally:
             release.set()
             t.join()
-        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(r.returncode, moonscale.BUSY_EXIT, r.stdout + r.stderr)  # T-3929: busy, not a failure; still nonzero
         self.assertIn("another funnel", r.stderr)
 
 

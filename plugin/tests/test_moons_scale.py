@@ -1090,9 +1090,9 @@ class StoreLock(_Funnel):
     def test_a_second_funnel_or_families_exits_naming_the_holder_and_judges_nothing(self):  # T-2986
         self.seed(moon("Lint the lint", "lint twice", "lint once"))
         with self.ms.store_lock(self.p):
-            for verb in ("funnel", "families"):
+            for verb, code in (("funnel", 75), ("families", 1)):  # T-3929: the night's funnel exits 75 (busy), not a failure
                 r = self.fm("moons", verb, check=False)
-                self.assertEqual(r.returncode, 1, r.stderr)
+                self.assertEqual(r.returncode, code, r.stderr)
                 self.assertIn(f"another funnel holds the moons store (pid {os.getpid()})", r.stderr)
             self.assertEqual(self.fm("moons", "funnel", "--status").returncode, 0)  # read-only: no lock
         self.assertEqual(self.fm("moons", "funnel", "--max-calls", "0", check=False).returncode, 0)  # released

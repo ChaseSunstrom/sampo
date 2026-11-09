@@ -4435,10 +4435,10 @@ def _cmd_genesis(args):
                                                args.local_only, args.keep)
                     except moonscale.Busy as e:
                         print(e, file=sys.stderr)
-                        return 1
+                        return moonscale.BUSY_EXIT  # T-3929: fm night counts this as busy, not a failure
                     if r.get("stopped") == "busy":  # a refused store: grow returns its error, not a grow result
                         print(r["error"], file=sys.stderr)
-                        return 1
+                        return moonscale.BUSY_EXIT
                     return scli.out(args, r, moonscale.grow_line(r))
                 if getattr(args, "status", False) and verb != "funnel":  # T-2865 review: families --status rewrote families.json
                     raise scli.UsageError("--status is the funnel's (sampo moons funnel --status)")
@@ -4455,7 +4455,7 @@ def _cmd_genesis(args):
                             return scli.out(args, r, moonscale.families_line(r))
                     except moonscale.Busy as e:
                         print(e, file=sys.stderr)
-                        return 1
+                        return moonscale.BUSY_EXIT if verb == "funnel" else 1  # T-3929: the night's funnel job
                 if verb == "promote":
                     r = moonscale.promote(p, 3 if args.max is None else args.max)
                     return scli.out(args, r, moonscale.promote_line(r))

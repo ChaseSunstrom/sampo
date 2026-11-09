@@ -1,7 +1,11 @@
 """Unattended checks (T-0298): fm bench stranger — a newcomer session from the README alone, its stumbles captured as
 self items (T-0244); fm night — budgeted background work while the user is away, refused at high usage (T-0236)."""
+import contextlib
+import io
 import json
 import os
+import subprocess
+from types import SimpleNamespace
 from unittest import mock
 
 from helpers import ForemanTestCase, read_text
@@ -423,6 +427,63 @@ class NightMoons(ForemanTestCase):  # T-2916: zero-dollar Moons jobs on the loca
         self.fm("sensitive", "on")
         with mock.patch.object(self.ms, "_local", return_value={"name": "jarvis"}):
             self.assertEqual(self.names(), {})
+
+
+class NightStops(ForemanTestCase):  # T-3929: a $0 night runs its free jobs; a busy moons store is neither spend nor a failure
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        from sampo import budget
+        budget.set_caps(day=5.0)
+        sessions = os.path.join(c.state_dir(), "sessions")  # usage known and low
+        os.makedirs(sessions, exist_ok=True)
+        with open(os.path.join(sessions, "s.json"), "w") as f:
+            json.dump({"rate_limits": {"seven_day": {"used_percentage": 10}}}, f)
+
+    def night(self, jobs, codes=None, spend=None, max_usd=0.0):
+        """cmd_night in-process over fake jobs: each child exits with codes[key] and spends spend[key] (keys: argv[1])."""
+        from sampo import budget, night
+        p = c.find_project(self.repo, create=False)
+        codes, spend = codes or {}, spend or {}
+
+        def child(argv, **kw):
+            key = argv[3]
+            if spend.get(key):
+                budget.record("stub", usd=spend[key], runs=1, project=p.slug, detail="stub")
+            return subprocess.CompletedProcess(argv, codes.get(key, 0), "", f"{key} said\n")
+        buf = io.StringIO()
+        with mock.patch("sampo.night.jobs", return_value=jobs), mock.patch.object(night.subprocess, "run", side_effect=child), \
+                mock.patch("sampo.cli.resolve", return_value=p), contextlib.redirect_stdout(buf):
+            night.cmd_night(SimpleNamespace(max_usd=max_usd, only=None, dry_run=False, json=True))
+        return json.loads(buf.getvalue())
+
+    def test_a_zero_limit_runs_every_free_job_and_skips_only_the_paid_one(self):
+        jobs = [("scout", ["stub", "a"], 0.0), ("moons grow", ["stub", "b"], 0.0),
+                ("second session", ["stub", "paid"], 0.5), ("compost", ["stub", "c"], 0.0)]
+        res = self.night(jobs)
+        self.assertEqual([j["name"] for j in res["ran"]], ["scout", "moons grow", "compost"])
+        self.assertEqual([s["name"] for s in res["skipped"]], ["second session"])
+        self.assertEqual(res["stopped"], "")
+
+    def test_a_paid_job_past_the_limit_is_skipped_and_the_free_ones_still_run(self):
+        jobs = [("paid", ["stub", "paid"], 0.1), ("paid two", ["stub", "paid2"], 0.1), ("free", ["stub", "free"], 0.0)]
+        res = self.night(jobs, spend={"paid": 0.5}, max_usd=0.5)  # the first paid job costs more than its estimate
+        self.assertEqual([j["name"] for j in res["ran"]], ["paid", "free"])
+        self.assertIn("paid two", [s["name"] for s in res["skipped"]])
+
+    def test_two_busy_moons_exits_in_a_row_never_trip_the_breaker(self):  # the store is held by another funnel
+        jobs = [("moons grow", ["stub", "grow"], 0.0), ("moons funnel", ["stub", "funnel"], 0.0),
+                ("model bench", ["stub", "bench"], 0.0)]
+        res = self.night(jobs, codes={"grow": 75, "funnel": 75})
+        self.assertEqual([j["name"] for j in res["ran"]], ["moons grow", "moons funnel", "model bench"])
+        self.assertEqual([j["busy"] for j in res["ran"]], [True, True, False])  # logged as busy
+        self.assertEqual(res["stopped"], "")
+
+    def test_two_real_failures_in_a_row_still_trip_the_breaker(self):
+        jobs = [("a", ["stub", "x"], 0.0), ("b", ["stub", "y"], 0.0), ("c", ["stub", "z"], 0.0)]
+        res = self.night(jobs, codes={"x": 1, "y": 1})
+        self.assertEqual([j["name"] for j in res["ran"]], ["a", "b"])
+        self.assertIn("in a row", res["stopped"])
 
 
 class StrangerGuards(ForemanTestCase):

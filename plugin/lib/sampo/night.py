@@ -615,18 +615,23 @@ def cmd_night(args):
     if args.dry_run:
         return cli.out(args, {"jobs": plan, "skipped": skipped, "limit": limit, "note": note}, "\n".join([head] + rows))
     ran, stopped, t0 = [], "", c.now()
+    from sampo.moonscale import BUSY_EXIT as BUSY  # T-3929: a moons store another run holds is busy, not a failure
     for j in plan:  # one at a time; before each, the real spend so far and the usage now (review)
         night_usd = budget.spent()[0] - start
-        if night_usd >= limit and ran:
+        if night_usd > limit and ran:  # the spend stop: real spend past the limit ends the night
             stopped = f"spend ${night_usd:.2f} reached the limit ${limit:.2f}"
             break
+        if j["usd"] > 0 and night_usd >= limit and ran:  # T-3929: at the limit a paid job waits; a free one still runs
+            skipped.append(j)
+            continue
         if budget.usage_high(p):
             stopped = f"usage climbed ({budget.usage_high(p)})"
             break
         if c.panicked():
             stopped = c.PAUSED
             break
-        if len(ran) >= serve.FAILS_MAX and all(x["exit"] for x in ran[-serve.FAILS_MAX:]):  # T-0434: the breaker
+        real = [x["exit"] for x in ran if x["exit"] != BUSY]  # T-3929: a busy exit neither trips nor resets the breaker
+        if len(real) >= serve.FAILS_MAX and all(real[-serve.FAILS_MAX:]):  # T-0434: the breaker
             stopped = f"{serve.FAILS_MAX} jobs failed in a row"
             break
         if j["name"] == "kalevala rounds":  # T-3082: the rounds run here until the night's limit or a halt stops them
@@ -641,7 +646,9 @@ def cmd_night(args):
             code, tail = r.returncode, (r.stdout + r.stderr).strip().splitlines()[-1:]
         except (OSError, subprocess.TimeoutExpired) as e:
             code, tail = 124, [str(e)]
-        ran.append({"name": j["name"], "exit": code, "tail": c.fit(c.plain(" ".join(tail)), 160)})
+        if code == BUSY:  # T-3929: logged as busy; the next job still runs and the breaker never counts it
+            tail = ["busy: " + " ".join(tail)]
+        ran.append({"name": j["name"], "exit": code, "busy": code == BUSY, "tail": c.fit(c.plain(" ".join(tail)), 160)})
     if not stopped and ran and budget.spent()[0] - start > limit:
         stopped = f"spend ${budget.spent()[0] - start:.2f} passed the limit ${limit:.2f} in the last job"
     closed = [e["task"] for e in c.ledger_tail(p, 5000, kinds=("task_done",)) if e.get("event") == "task_done" and e.get("task")
@@ -650,5 +657,5 @@ def cmd_night(args):
         c.log_event(p, "night", data={"ran": ran, "skipped": [s["name"] for s in skipped], "limit": limit,
                                       "stopped": stopped, "closed": closed}, session=cli.session())
     cli.out(args, {"ran": ran, "skipped": skipped, "limit": limit, "stopped": stopped, "note": note},
-              "\n".join([head] + [f"  {'✓' if x['exit'] == 0 else '✗'} {x['name']}: {x['tail']}" for x in ran]
+              "\n".join([head] + [f"  {'·' if x.get('busy') else '✓' if x['exit'] == 0 else '✗'} {x['name']}: {x['tail']}" for x in ran]
                         + [f"  skipped {s['name']}" for s in skipped] + ([f"  stopped: {stopped}"] if stopped else [])))

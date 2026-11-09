@@ -107,6 +107,7 @@ class Busy(Exception):
 
 _HELD = threading.local()  # T-3081: the store dirs this thread holds; see store_lock
 LOCK_WAIT = 5.0  # T-3081 review: grow polls this long for a store another funnel holds, then refuses (Kalevala's towers wait on it)
+BUSY_EXIT = 75  # T-3929: EX_TEMPFAIL: a grow or funnel refused because another run holds the store; fm night logs it busy, not failed
 
 
 @contextlib.contextmanager
