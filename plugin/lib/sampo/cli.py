@@ -6842,6 +6842,11 @@ class _Parser(argparse.ArgumentParser):
                 pass
         if len(choices) > 12:  # T-1170: every command's name is 2 KB of output for one typo
             message = message.replace(bad.group(0), f"unknown '{bad.group(1)}' ({_prog()} help lists them)")
+        if bad and words and bad.group(1) == words[0]:  # T-3115: an unknown top-level verb: every real one is at which
+            if bad.group(1) not in FOLDED:  # a folded verb's new home is the one answer, never widened to spellings
+                near = near and difflib.get_close_matches(bad.group(1), choices, n=3) or near
+            hint = f'sampo which "{" ".join(words[:3])}"'  # not a list: the first words of what was typed, as a query
+            super().error(message + (f" — did you mean {' or '.join(near)}?" if near else "") + f" (or: {hint})")
         super().error(message + (f" — did you mean {near[0]}?" if near else ""))
 
 

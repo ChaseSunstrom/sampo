@@ -5076,6 +5076,13 @@ def next_for(p, briefs=None, checks=True):
         done, recovery = finished_lanes(p, briefs), ""
     if done:
         merge = f"builder lane(s) finished, their work waits on a merge: {merge_hint(done)} (review the branch first)"
+        try:
+            from sampo import train as strain
+            if strain.landing(p):  # a land under way takes these: a second `sampo lane land` would race it
+                merge = (f"a land is under way: it trains these {len(done)} lanes; review each branch and record its "
+                         "audits (sampo task audit)")
+        except Exception:  # a lock that can't be read never costs the next action
+            pass
         action = merge + " · " + action if idle_now else action + " · " + merge
     if recovery:
         action = recovery + " · " + action if idle_now else action + " · " + recovery

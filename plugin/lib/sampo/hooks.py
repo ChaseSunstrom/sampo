@@ -5074,7 +5074,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     # T-3163: the engine prints this reason in the terminal, so it is one line naming the one next action; the riders
     # (merges, andons, decisions) wait in sampo next and the drive's rules in the session's own context
     tid, first = work["id"], f"{work['id']} is next"
-    rest, hint, extras = [], "", []
+    rest, hint, extras, nst = [], "", [], None
     try:
         first = c.next_action(wb, sd.get("autonomy") or "standard")  # next_for may name another (a waiting one)
         nb, nst, action = c.next_for(p, briefs)
@@ -5097,6 +5097,9 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
                 rest, hint = [], ""
     except Exception:
         log_error("Stop", _tb())
+    if nst != "captured" and _merge_waits(p):  # T-3109: a merge waits for a quiet window: no close or suite run starves it
+        first, rest, hint = ("a merge waits for a quiet window: let it land and only plan (sampo task plan; no close, no "
+                             "suite run)", [], "")
     if full and waiting:  # full autonomy: what waits on the user is for the final report
         extras.append([f"; waiting on the user: {c.joinmore(waiting, 3)}"])
     queued = _queue_line(p, briefs) if full else ""
@@ -5121,6 +5124,17 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     _event({"kind": "drive", "session_id": sid, "project": p.slug, "task": work["id"]})
     d.update(count=d.get("count", 0) + 1, marks=_marks(p))
     return reason
+
+
+def _merge_waits(p):
+    """T-3109: a land runs and the host is over the load bar: the merge waits for load (60 s at most, T-3144), and a
+    close's suite would slow it. A land alone (it runs for hours) is not a reason to hold the drive."""
+    try:
+        from sampo import train as strain
+        return bool(strain.landing(p) and c.host_strain() is not None)
+    except Exception:  # a lock that can't be read never traps the drive
+        log_error("Stop", _tb())
+    return False
 
 
 def _line(head, *extras):

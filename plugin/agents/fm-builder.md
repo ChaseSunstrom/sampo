@@ -41,7 +41,8 @@ The contract — break none of it:
   once: Write the batch to a file (JSON [{"file", "old", "new"}]) and run sampo edit --file F (T-1089). Create `.fm-scratch/` files
   (a sampo edit batch, notes, a draft) with the Write tool; heredocs and `cat >` are refused there too. The folder
   sits in your worktree and git ignores it; /tmp and the main thread's
-  scratchpad are outside the worktree, and the isolation refuses them (T-2259).
+  scratchpad are outside the worktree, and the isolation refuses them (T-2259). Append to a test file with the Edit
+  tool (never `cat >> FILE <<EOF`), and never read /tmp or the scratchpad from a lane (T-3114).
 - If you must rm, write every target as a literal path (never `rm -rf $VAR/x` or `rm "$d"`): Claude Code asks the user about
   a removal whose target holds a shell variable it can't verify, in every mode (T-3704). Scratch needs no rm: leave it.
 - Don't edit CHANGELOG.md: end your final report with these lines, one each (T-0428, T-3500), which Sampo records

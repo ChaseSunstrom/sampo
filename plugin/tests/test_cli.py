@@ -254,6 +254,15 @@ class CaptureAndIntake(ForemanTestCase):
             self.assertNotEqual(self.fm("task", "step", "T-0001", typo, check=False).returncode, 0, typo)
         self.assertEqual(len(c.find_brief(c.find_project(self.repo), "T-0001").steps()), 1)
 
+    def test_an_unknown_verb_names_the_nearest_verbs_and_the_which_hint(self):  # T-3115
+        p = self.fm("kalevalaa", check=False)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("did you mean kalevala", p.stderr)
+        self.assertIn('(or: sampo which "kalevalaa")', p.stderr)
+        p = self.fm("models", check=False)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn('sampo which "models"', p.stderr)
+
     def test_an_action_synonym_is_its_action_and_two_bare_words_refuse(self):  # T-2540
         # `fm task step T-1 remove 4` added a step named "remove" and dropped the 4
         self.fm("task", "new", "x", "--type", "FIX", "--tier", "S", "--step", "one", "--step", "two")

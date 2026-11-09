@@ -3163,6 +3163,24 @@ class Stop(HookCase):
         self.fm("task", "evidence", tid, "--step", "1", "pytest -k repro", "1 failed as expected")
         self.assertIsNone(self.decision(self.stop("Step 1 is done.")))
 
+    def test_drive_says_a_waiting_merge_lands_and_offers_only_planning(self):
+        # T-3109: a land under way (its lock held) while the host is over the load bar: no close or suite run
+        self.fm("init")
+        tid = self.task()
+        p = self.project()
+
+        def again(load):
+            env = {"FOREMAN_HOST": f"load={load},cpus=16,mem_mb=8000"}
+            self.read_a_file(env=env)
+            return parse(self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Going on.",
+                                            "session_id": "sess-1"}, env=env))["reason"]
+        self.assertIn(f"{tid} step 1/2", again(40))  # no land: as today, however loaded
+        with c.lock(os.path.join(p.dir, "land")):  # a land holds its lock (T-3500)
+            reason = again(40)
+            self.assertIn("a merge waits for a quiet window: let it land and only plan", reason)
+            self.assertNotIn("step 1/2", reason)
+            self.assertIn(f"{tid} step 1/2", again(4))  # a land on an idle host: the normal offer
+
     def test_drive_blocks_while_work_remains(self):
         self.fm("init")
         tid = self.task()

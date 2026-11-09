@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The Stop drive now says a waiting merge lands and offers only planning, an unknown verb hints `sampo which`, builders are told to append tests with Edit and never read /tmp, and Smith closes a step on a green verify after its edits and is told never to import Sampo's modules in a one-liner (T-3129).
 - Conductor send and steer put the remote text after --, so a message that starts with a dash is no longer read as an option by the remote bus (T-3955).
 - Small-model mode works where it is advertised: a model profile's "small": true now turns it on (a non-boolean is refused by name), an exam row and line say "small" and name the planner, so a --small arm and a plain one of the same model read apart, and sampo code --resume of a --small run stays small and remembers an edit made before the crash, instead of refusing its finish as early do… (T-3974).
 - a close waits up to 20 s for full gates whose last timed run was that quick and prints green or red, so a small repo's session reports the result instead of 'still running'; an S fix close no longer nudges for --why-not-caught, and a request clause that only restates the title is no longer listed as meaning unproven (T-4015).

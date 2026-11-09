@@ -206,6 +206,27 @@ class EndToEnd(CodeCase):
         self.assertEqual((kinds[0], kinds[-1]), ("start", "end"))
         return f
 
+    def test_a_green_verify_after_the_steps_edits_closes_the_step_and_the_prompts_say_so(self):
+        # T-3124: no done call; the red run before the edit leaves the step open, the green one after it closes it
+        # T-3125: the system text bars importing Sampo's modules in a one-liner
+        f = self.serve("openai", plan(),
+                       call("run", cmd="python3 test_calc.py"),
+                       call("edit", file="calc.py", old="a - b", new="a + b"),
+                       call("run", cmd="python3 test_calc.py"))
+        r = self.code("make calc.add add instead of subtract", "--model", "fake", "--no-commit")
+        self.assertIn("return a + b", self.calc())
+        self.assertEqual(self.task()["status"], "done", r.stdout)
+        self.assertEqual(len(f.seen), 4, "plan, red run, edit, green run: the step closed itself, no done turn")
+        self.assertIn("The step is done when you call done, or when a verify command passes after your edits", f.said(1))
+        self.assertIn("never import Sampo's modules in a python3 -c one-liner", f.said(1))
+
+    def test_a_green_verify_before_any_edit_leaves_the_step_open(self):  # T-3124
+        green = dict(PLAN, criteria=[{"text": "it holds", "verify": "true"}])
+        f = self.serve("openai", plan(green), call("run", cmd="true"),
+                       call("write", file="notes.txt", content="x\n"), call("done", summary="noted"))
+        self.code("note it", "--model", "fake", "--no-commit", check=False)
+        self.assertEqual(f.script, [], "the green run before the write didn't end the step: the write and done were asked for")
+
     def test_openai_shape_fixes_the_seeded_bug(self):
         self.run_fix("openai")
 

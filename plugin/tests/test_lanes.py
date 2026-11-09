@@ -921,6 +921,20 @@ class Lanes(ForemanTestCase):
         self.assertIn("sampo lane land (3 lanes", out)  # T-3500: the land runs the trains and closes each
         self.assertNotIn("sampo lane merge", out)
 
+    def test_next_names_no_land_beside_a_running_land(self):
+        # T-3129: with the land lock held, next and the drive say a land is under way; without it, the hint as before
+        self.finished_builder()
+        p = c.find_project(self.repo)
+        self.assertIn("sampo lane merge", self.fm("next").stdout)
+        with c.lock(os.path.join(p.dir, "land")):
+            out = self.fm("next").stdout
+            self.assertIn("a land is under way: it trains these 1 lanes", out)
+            self.assertNotIn("sampo lane merge", out)
+            self.assertNotIn("sampo lane land", out)
+            stop = self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Waiting.",
+                                      "session_id": "sess-1"}).stdout
+            self.assertNotIn("sampo lane land", stop)
+
     def test_the_drive_names_a_finished_lane_for_merge_once(self):
         tid, _ = self.finished_builder()
         stop = lambda: self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Waiting.",

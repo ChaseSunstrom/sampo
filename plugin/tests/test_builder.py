@@ -37,6 +37,8 @@ class Agent(ForemanTestCase):
         flat = " ".join(text.split())
         self.assertIn("Create `.fm-scratch/` files", flat)  # T-2294: the Write tool, not a heredoc
         self.assertIn("heredocs and `cat >` are refused there", flat)
+        self.assertIn("Append to a test file with the Edit tool", flat)  # T-3114
+        self.assertIn("never read /tmp or the scratchpad from a lane", flat)
 
 
 class Brief(_Tasks):
