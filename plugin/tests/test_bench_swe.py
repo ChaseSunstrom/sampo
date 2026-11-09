@@ -26,7 +26,13 @@ if a[0] == "run":
     print("cid123"); sys.exit(0)
 if a[0] == "exec":
     i = a.index("-w"); cmd = a[i + 3:]
-    p = subprocess.run(cmd, cwd=root, stdin=sys.stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    secs = None
+    if cmd[0] == "timeout":  # GNU timeout is the container's: the host (macOS) may have none, so the fake keeps the limit
+        secs, cmd = float(cmd[3]), cmd[4:]
+    try:
+        p = subprocess.run(cmd, cwd=root, stdin=sys.stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=secs)
+    except subprocess.TimeoutExpired:
+        sys.exit(124)
     sys.stdout.buffer.write(p.stdout); sys.exit(p.returncode)
 sys.exit(0)
 '''

@@ -132,7 +132,7 @@ class Run(unittest.TestCase):
         repo = make_repo(self.tmp, [base("1\n"), base("2\n")])
         r.run(repo, "HEAD~1", builders=BUILDERS)
         self.assertEqual([l for l in git(repo, "worktree", "list", "--porcelain").splitlines()
-                          if l.startswith("worktree ")], [f"worktree {repo}"])
+                          if l.startswith("worktree ")], [f"worktree {os.path.realpath(repo)}"])  # macOS: /var is /private/var
         self.assertEqual(os.listdir(self.scratch), [])
 
     def test_a_failing_builder_raises_naming_it(self):

@@ -223,6 +223,7 @@ class Project(SampoTestCase):
 
 
 class Cards(SampoTestCase):
+    @confined  # its data.allowed check runs in the confined generator: unconfined (macOS) the call stops before it
     def test_a_bad_field_is_refused_before_anything_runs(self):
         r = callcards.call("panel-gate", {"out": "g", "title": "t", "data": {"gate": "p"}}, self.repo)
         self.assertIn(r["status"], ("bad_input", "generator_failed"), r)

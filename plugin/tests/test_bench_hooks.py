@@ -122,6 +122,21 @@ class Modules(unittest.TestCase):  # T-3139
         self.assertFalse(os.path.exists(bad))
 
 
+# a meta path finder that notes the first importer of each heavy module: up to three frames outside importlib
+WHO = """class _Who:
+    def find_spec(self, name, path=None, target=None):
+        if name in HEAVY and name not in first:
+            f, at = sys._getframe(1), []
+            while f and len(at) < 3:
+                if "importlib" not in f.f_code.co_filename and "<frozen" not in f.f_code.co_filename:
+                    at.append(f.f_code.co_filename.rsplit("/", 1)[-1] + ":" + str(f.f_lineno))
+                f = f.f_back
+            first[name] = "<".join(at)
+        return None
+sys.meta_path.insert(0, _Who())
+"""
+
+
 class HotPathImports(unittest.TestCase):  # T-3577
     """PreToolUse and PostToolUse run on every tool call of every agent: a Bash allow and an edit's PostToolUse load
     none of these (each costs a hook 0.5-3 ms of CPU; tempfile brings shutil and its compression modules)."""
@@ -138,9 +153,11 @@ class HotPathImports(unittest.TestCase):  # T-3577
             repo, env = bench_hooks._scratch_project(t)
             site, out = os.path.join(t, "site"), os.path.join(t, "loaded")
             os.makedirs(site)
-            with open(os.path.join(site, "sitecustomize.py"), "w") as f:  # what the hook's process had at exit
-                f.write(f"import atexit, sys\natexit.register(lambda: open({out!r}, 'a').write("
-                        f"' '.join(m for m in {self.HEAVY!r} if m in sys.modules) + '\\n'))\n")
+            with open(os.path.join(site, "sitecustomize.py"), "w") as f:  # what the hook's process had at exit, each
+                # with where it was first imported (the CI runner's macOS has only this message to go on)
+                f.write(f"import atexit, sys\nHEAVY, first = {self.HEAVY!r}, {{}}\n" + WHO
+                        + f"atexit.register(lambda: open({out!r}, 'a').write("
+                        f"' '.join(m + '@' + first.get(m, '?') for m in HEAVY if m in sys.modules) + '\\n'))\n")
             env.update(PYTHONPATH=site, FOREMAN_NO_BACKGROUND="1")
             for name in ("PreToolUse:Bash", "PostToolUse"):
                 event = name.split(":")[0]

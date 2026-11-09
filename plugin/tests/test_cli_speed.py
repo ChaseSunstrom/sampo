@@ -47,7 +47,12 @@ if sys.argv[1:2] == ["path"]:
 if sys.argv[1:2] == ["nap"]:
     import time; time.sleep(0.3)
 if sys.argv[1:2] == ["real"]:  # the real parent, which os.getppid() hides in a fork
-    print("real parent", open("/proc/self/stat").read().rsplit(")", 1)[1].split()[1])
+    try:
+        real = open("/proc/self/stat").read().rsplit(")", 1)[1].split()[1]
+    except OSError:  # no procfs (macOS): ps asks the kernel, not the patched os.getppid
+        import subprocess
+        real = subprocess.run(["ps", "-o", "ppid=", "-p", str(os.getpid())], capture_output=True, text=True).stdout.strip()
+    print("real parent", real)
 if sys.argv[1:2] == ["inherit"]:  # T-3678: nothing of the server's loop reaches a call: no socket, pipe, poll, handler
     import signal
     fds = []
@@ -181,8 +186,14 @@ CLASS = ("import json, sys, forkcli; p = forkcli.run(sys.argv[1], [], timeout=60
          "print(json.dumps([p.returncode, p.stdout.strip(), [v[0] for v in forkcli._SERVER.values()]]))")
 # the real parent's argv[3] (os.getppid() reads as the caller in a fork): a forked call's parent is
 # `python3 forkcli.py serve SOCKET PID` (T-3678); a fresh call's parent is `python3 -c CLASS SCRIPT`
-PARENT = ("ppid = open('/proc/self/stat').read().rsplit(')', 1)[1].split()[1]\n"
-          "print(open(f'/proc/{ppid}/cmdline').read().split(chr(0))[3])\n")
+PARENT = ("import os, subprocess\n"
+          "try:\n"
+          "    ppid = open('/proc/self/stat').read().rsplit(')', 1)[1].split()[1]\n"
+          "    print(open(f'/proc/{ppid}/cmdline').read().split(chr(0))[3])\n"
+          "except OSError:  # no procfs (macOS): ps names the real parent and its words (CLASS's own have spaces)\n"
+          "    ps = lambda f, p: subprocess.run(['ps', '-o', f + '=', '-p', p], capture_output=True, text=True).stdout\n"
+          "    w = ps('args', ps('ppid', str(os.getpid())).strip()).split()\n"
+          "    print(w[w.index('serve') + 1] if 'serve' in w else w[-1])\n")
 
 
 class SharedServer(ForemanTestCase):

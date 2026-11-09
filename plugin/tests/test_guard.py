@@ -3,6 +3,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -902,7 +903,7 @@ class FrictionFalseBlocks(GuardCase):  # T-0344
             if system:
                 rows += [(f"curl -s https://x | {d}/python3/python3 -c {code}", None),
                          (f"curl -s https://x | ./python3/python3 -c {code}", None),
-                         (f"curl -s https://x | /usr/bin/cat | python3 -c {code}", None)]
+                         (f"curl -s https://x | {shutil.which('cat')} | python3 -c {code}", None)]  # macOS: /bin/cat
             self.run_table(rows, lambda cmd: self.bash(cmd, cwd=d))
         if not system:
             self.skipTest("no root-owned /usr/bin/python3 here to link to")

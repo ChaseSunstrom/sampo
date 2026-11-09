@@ -200,6 +200,7 @@ class Slots(ForemanTestCase):
         self.assertEqual(seen, ["0"])
 
 
+@unittest.skipUnless(hasattr(os, "sched_getscheduler"), "scheduler policies (SCHED_IDLE) are Linux only")
 class Idle(unittest.TestCase):
     def on_thread(self, fn):  # sched_setscheduler(0) changes the calling thread only: the test process stays normal
         out = []

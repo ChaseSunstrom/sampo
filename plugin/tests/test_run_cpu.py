@@ -216,6 +216,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(r.returncode, 1, r.stderr)
         self.assertIn("failed class: test_burn.Burn", r.stderr)
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "orphans are found through Linux's child subreaper")
     def test_an_orphan_the_class_left_burning_counts_toward_it(self):
         r = self.go(0.0, "test_orphan", SAMPO_CPU_BASE=self.base)
         self.assertEqual(r.returncode, 0, r.stderr)

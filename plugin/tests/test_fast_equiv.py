@@ -138,6 +138,8 @@ class Base(SampoTestCase):
                     load = rows[-1].get("load") if rows else None
                     data = [([k for k in r if k != "fast"], {k: v for k, v in r.items() if k not in VOLATILE})
                             for r in rows]
+                elif f.endswith(".last"):  # hooks.log.last: "<epoch seconds> <digest>"; the two runs may straddle a second
+                    data = re.sub(rb"^\d+ ", b"{t} ", data)
                 else:  # a log line's time
                     data = re.sub(rb"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", b"{ts}", data)
                 out[os.path.relpath(path, home)] = data

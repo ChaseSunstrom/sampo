@@ -31,7 +31,7 @@ class EarlyDone(CodeCase):
         self.assertEqual(len(early(self)), 3)
 
     def test_an_edit_made_through_run_counts_as_an_edit(self):
-        self.serve("openai", plan(PLAN), call("run", cmd="sed -i 's/a - b/a * b/' calc.py"),
+        self.serve("openai", plan(PLAN), call("run", cmd="perl -pi -e 's/a - b/a * b/' calc.py"),
                    *[call("done", summary="edited") for _ in range(4)])
         self.code("fix add", "--model", "fake", check=False)
         self.assertEqual(early(self), [], "the tree changed, so done was not refused for lack of an edit")

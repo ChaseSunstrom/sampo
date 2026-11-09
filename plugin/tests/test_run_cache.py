@@ -21,6 +21,8 @@ sys.path.insert(0, os.path.dirname(__file__))
 import run  # noqa: E402
 import runcover  # noqa: E402
 
+TRUE = shutil.which("true") or "/bin/true"  # macOS keeps true in /usr/bin only
+
 NESTED = ("SAMPO_SLOT", "FOREMAN_SLOT", "SAMPO_SLOTS", "FOREMAN_SLOTS", "SAMPO_NO_TEST_CACHE", "FOREMAN_NO_TEST_CACHE",
           "SAMPO_CACHE_FULL", "FOREMAN_CACHE_FULL")  # T-3638: a verify's opt-in in the caller's env must not skip a plain run
 
@@ -117,8 +119,11 @@ class Coverage(unittest.TestCase):
 
     def test_a_file_whose_name_is_not_utf8_is_hashed_and_saved(self):  # T-3651: the 05:20 ship crashed in digest()
         bad = os.fsdecode(b"bad\xff.txt")  # Python holds the stray byte as the surrogate '\udcff'
-        with open(os.path.join(self.d, bad), "w") as f:
-            f.write("x\n")
+        try:
+            with open(os.path.join(self.d, bad), "w") as f:
+                f.write("x\n")
+        except OSError as e:  # APFS (macOS) refuses a name that isn't UTF-8 (EILSEQ): such a file can't exist there
+            self.skipTest(f"this file system refuses the name: {e.strerror}")
         blobs = self.tree()[1]
         self.assertIn(bad, blobs)
         paths = sorted([bad, "./", "*", "?" + bad])
@@ -602,10 +607,10 @@ class Recorder(unittest.TestCase):
         """T-3623: sleep, nvidia-smi and a one-shot browser run from a test's working folder (the repo) without reading it."""
         for name in sorted(runcover.QUIET):
             with self.subTest(name):
-                t = f"t = os.path.join(tempfile.mkdtemp(), {name!r})\nos.symlink('/bin/true', t)\n"
+                t = f"t = os.path.join(tempfile.mkdtemp(), {name!r})\nos.symlink({TRUE!r}, t)\n"
                 self.assertNotIn("*", self.record(t + "subprocess.run([t], check=True)\n"))
         self.assertIn("*", self.record("subprocess.run(['./bin/sleep', '0'])\n"), "a program of the repo's own")
-        b = "t = os.path.join(tempfile.mkdtemp(), 'chromium')\nos.symlink('/bin/true', t)\n"
+        b = f"t = os.path.join(tempfile.mkdtemp(), 'chromium')\nos.symlink({TRUE!r}, t)\n"
         shot = "subprocess.run([t, '--headless', '--dump-dom', %s], check=True)\n"
         self.assertNotIn("*", self.record(b + shot % "'http://127.0.0.1:1/'"))
         for arg in ("'data.txt'", "'file://' + os.path.abspath('data.txt')", "'file://localhost' + os.path.abspath('data.txt')",
@@ -666,7 +671,7 @@ class Recorder(unittest.TestCase):
                 self.assertLessEqual({"*", run.GIT_STATE}, self.record(code + "\n"))
 
     def test_a_browser_a_helper_drives_counts_by_the_pages_it_is_sent(self):  # T-3691: helpers.headless_chrome's probe
-        b = "t = os.path.join(tempfile.mkdtemp(), 'chromium')\nos.symlink('/bin/true', t)\nimport helpers\n"
+        b = f"t = os.path.join(tempfile.mkdtemp(), 'chromium')\nos.symlink({TRUE!r}, t)\nimport helpers\n"
         for url in ("'about:blank'", "'http://127.0.0.1:1/'", "'HTTPS://example.test/'", "'data:text/html,hi'"):
             with self.subTest(url):
                 self.assertNotIn("*", self.record(b + f"helpers.devtools(t, {url})\n"))

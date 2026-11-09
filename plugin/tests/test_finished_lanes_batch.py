@@ -38,7 +38,7 @@ def per_lane(p, briefs, quiet_min):
 
 class FinishedLanesBatch(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        self.tmp = os.path.realpath(tempfile.mkdtemp())  # git names real paths (macOS: /var is /private/var)
         self.addCleanup(subprocess.run, ["rm", "-rf", self.tmp])
         os.environ["FM_STALL_CACHE_S"] = "60"
         self.addCleanup(os.environ.pop, "FM_STALL_CACHE_S", None)

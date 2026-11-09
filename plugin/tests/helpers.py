@@ -418,11 +418,15 @@ class SampoTestCase(unittest.TestCase):
         return {"PYTHONPATH": slow}
 
     def claude_stand_in(self):
-        """A process named claude (python under that name) that runs the command after its -c code."""
+        """A process named claude that runs this python with its arguments: a shell script, whose shell stays the
+        parent as npm's claude does (a link named claude to python reads as Python on macOS, whose framework
+        python re-runs itself as Python.app's)."""
         path = os.path.join(self.tmp, "stand-in", "claude")
         if not os.path.exists(path):
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            os.symlink(sys.executable, path)
+            with open(path, "w") as f:
+                f.write("#!/bin/sh\n'" + sys.executable.replace("'", "'\\''") + "' \"$@\"\n")
+            os.chmod(path, 0o755)
         return path
 
 

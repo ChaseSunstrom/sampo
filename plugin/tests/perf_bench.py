@@ -30,8 +30,7 @@ MODULES = ("test_core", "test_guard", "test_capture", "test_hooks")
 
 
 def load1():
-    with open("/proc/loadavg") as f:
-        return float(f.read().split()[0])
+    return os.getloadavg()[0]  # portable: macOS has no /proc/loadavg
 
 
 def cli_ms(calls):
