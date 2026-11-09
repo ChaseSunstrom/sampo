@@ -56,9 +56,25 @@ EOF
 '''
 
 
-def load_per_core():
+def load_per_core(cgroup="/proc/self/cgroup", root="/sys/fs/cgroup"):
+    """The machine's load over the cores this process may use: T-4018, a cgroup capped at 4 of 16 cores runs
+    throttled at a machine load of 0.46 a core, so its cpu.max (the tightest up the tree) is the divisor."""
+    cores = os.cpu_count() or 1
     try:
-        return os.getloadavg()[0] / (os.cpu_count() or 1)
+        with open(cgroup, encoding="utf-8") as f:
+            path = f.read().strip().partition("::")[2] or "/"  # cgroup v2's one line
+    except OSError:
+        path = None
+    while path:
+        try:
+            with open(os.path.join(root, path.lstrip("/"), "cpu.max"), encoding="utf-8") as f:
+                quota, period = f.read().split()
+            cores = min(cores, int(quota) / int(period)) if quota != "max" else cores
+        except (OSError, ValueError, ZeroDivisionError):
+            pass
+        path = None if path == "/" else os.path.dirname(path)
+    try:
+        return os.getloadavg()[0] / max(cores, 0.01)
     except OSError:
         return 0.0
 

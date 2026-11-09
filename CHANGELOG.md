@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- the hook latency bench counts load against the cores the session's CPU cap leaves (cgroup cpu.max), so a capped session's throttled wall time no longer turns the land's base red (T-4018).
 - Ward: a brief refusal whose write target is in the project only because a cd may have failed now names that cd and says to chain it with && (T-3713).
 - A merge train no longer throws its green work away when the main checkout has uncommitted changes to files it merged: it sets them aside, fast-forwards and puts them back, keeping one that no longer applies as a named stash with the landed files in place; and a close now commits the CHANGELOG line it writes, which it used to leave uncommitted whenever another lane's merge had changed the file (T-4007).
 - The live page's POST /api/act now refuses any request a proxy has marked Forwarded or X-Forwarded-*, and one test attacks each act (drive, checkpoint, pause, note) with no token, a stale token, another Origin, a forwarded Host or port and proxy headers, then runs it for the user (T-3063).

@@ -27,6 +27,25 @@ class Verdict(unittest.TestCase):
         self.assertFalse(ok(wall_p95=400, cpu_p95=30, budget=150, load=0.3, cpu_p50=20), "quiet: wall p95 still decides")
 
 
+class CappedScope(unittest.TestCase):  # T-4018
+    def test_load_counts_against_the_cores_a_cgroup_cap_leaves(self):
+        # a session capped at 4 of 16 cores: machine load 7.4 is 0.46 a core, yet the scope ran throttled (wall p95
+        # 398 ms, CPU p95 101 ms) and the land stopped on a red base; against the 4 cores it may use, the load is busy
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as root:
+            for rel, quota in (("user.slice", "max 100000"), ("user.slice/app.scope", "400000 100000")):
+                os.makedirs(os.path.join(root, rel))
+                with open(os.path.join(root, rel, "cpu.max"), "w") as f:
+                    f.write(quota + "\n")
+            with open(os.path.join(root, "self.cgroup"), "w") as f:
+                f.write("0::/user.slice/app.scope\n")
+            with mock.patch.object(os, "getloadavg", return_value=(7.4, 7, 7)), \
+                    mock.patch.object(os, "cpu_count", return_value=16):
+                self.assertAlmostEqual(bench_hooks.load_per_core(os.path.join(root, "self.cgroup"), root), 1.85)
+                self.assertAlmostEqual(bench_hooks.load_per_core(os.path.join(root, "none"), root), 7.4 / 16)  # no cgroup
+
+
 class ScriptBudget(unittest.TestCase):  # T-1777
     def test_the_script_case_is_a_hook_plus_the_guards_time_box(self):
         # the bench's 37 KB script never finishes inside the guard's CPU box (a full read took 124 s), so the case
