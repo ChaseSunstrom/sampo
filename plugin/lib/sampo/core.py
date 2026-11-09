@@ -969,6 +969,24 @@ def pump(stream, sink, on_line=None, idle=None, on_idle=None):
 
 _UNITTEST_HEAD = lazy(r"\A[ \t]*python3?[ \t]+-m[ \t]+unittest[ \t]+([^\n;&|<>$`()\\]+)\Z")
 _UNITTEST_NAME = lazy(r"(plugin\.tests\.|plugin/tests/)?(test\w*(?:\.\w+)*?)(\.py)?")
+_ABS_PATH = lazy(r"(?:^|[\s'\"=])/")
+
+
+def _this_tree(root, cmd):
+    """T-4033: a stored verify naming the main checkout by absolute path (`git -C /main …`, `grep … /main/CHANGELOG.md`)
+    judged a lane by main: red until the lane landed, so the land parked it (T-3133, T-3134). Run in a linked worktree,
+    such a path reads the same entry of that tree; one whose top entry this tree lacks (main's untracked state) stays."""
+    if not (root and cmd and _ABS_PATH.search(cmd) and os.path.isfile(os.path.join(root, ".git"))):
+        return cmd
+    main = main_worktree(root)
+    if not main or main == os.path.realpath(root):
+        return cmd
+
+    def here(m):
+        rest = m.group(1) or ""
+        top = rest.lstrip("/").split("/")[0]
+        return root + rest if not top or os.path.lexists(os.path.join(root, top)) else m.group(0)
+    return re.sub(re.escape(main) + r"(/[^\s'\";|&)]*)?(?=[\s'\";|&)]|\Z)", here, cmd)
 
 
 def normalize_verify(root, cmd):
@@ -979,6 +997,7 @@ def normalize_verify(root, cmd):
     <names> [-k PATTERN]` (the gates' runner; a name matches by substring of the test id); else, for plain names, the
     folder holding test_X.py becomes the cwd (exact unittest semantics, any project). Anything else (other flags,
     discover, a module the root has) is returned as it came."""
+    cmd = _this_tree(root, cmd)  # T-4033
     m = _UNITTEST_HEAD.match(cmd or "")
     if not m or not root:
         return root, cmd, None

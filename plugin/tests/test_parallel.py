@@ -204,7 +204,10 @@ class Parallel(ForemanTestCase):
             f.write("x\n")
         subprocess.run(["git", "-C", path, "add", "work-T-0001.txt"], check=True)
         subprocess.run(["git", "-C", path, "commit", "-qm", "work T-0001"], check=True)
-        self.fm("check", "add", f"git -C {self.repo} checkout -q -b other")
+        move = os.path.join(self.tmp, "move-main.sh")  # outside both trees: T-4033 points a lane's own main paths at the lane
+        with open(move, "w") as f:
+            f.write(f"git -C {self.repo} checkout -q -b other\n")
+        self.fm("check", "add", f"sh {move}")
         how = serve._integrate_lane(c.find_project(self.repo), "T-0001", path)
         self.assertIn("kept", how)
         self.assertNotIn("work T-0001", self.git("log", "other", "--format=%s"))

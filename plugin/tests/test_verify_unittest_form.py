@@ -2,6 +2,7 @@
 stored verify (lane merge, finish, re-verify) it runs from the repo root, so run_command rewrites the bare form."""
 # map-links: plugin/lib/sampo/core.py plugin/lib/sampo/cli.py plugin/lib/sampo/lanes.py
 import os
+import subprocess
 import unittest
 from unittest import mock
 
@@ -95,6 +96,36 @@ class MergeRefusal(ForemanTestCase):
                 slanes._verify(b)
         self.assertIn("python3 -m unittest test_exam.X", str(e.exception))
         self.assertIn("first error: ERROR: test_exam (unittest.loader._FailedTest)", str(e.exception))
+
+
+class MainPathInALane(ForemanTestCase):
+    """T-4033: a verify naming the main checkout by absolute path judged a lane by main (T-3133, T-3134: red after
+    merge until the lane landed, so the land parked it); in a linked worktree it reads that tree's own copy."""
+
+    def setUp(self):
+        super().setUp()
+        _touch(self.repo, "CHANGELOG.md", "old\n")
+        subprocess.run(["git", "-C", self.repo, "add", "CHANGELOG.md"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "log"], check=True)
+        self.lane = os.path.join(self.tmp, "app.lanes", "T-1")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "lane", self.lane], check=True)
+        _touch(self.lane, "CHANGELOG.md", "old\nthe lane's line (T-1)\n")
+        _touch(self.repo, "state/x.json", "{}")  # main's own untracked state: no copy in the lane
+
+    def test_a_lane_runs_a_main_path_check_against_its_own_tree(self):
+        code, _ = c.run_command(self.lane, f"grep -q 'T-1' {self.repo}/CHANGELOG.md")
+        self.assertEqual(code, 0)
+        code, _ = c.run_command(self.lane, f"git -C {self.repo} rev-parse --abbrev-ref HEAD | grep -qx lane")
+        self.assertEqual(code, 0)
+
+    def test_only_paths_this_tree_has_are_rewritten(self):
+        for cmd, want in ((f"cat {self.repo}/state/x.json", f"cat {self.repo}/state/x.json"),
+                          (f"ls {self.repo}.lanes", f"ls {self.repo}.lanes"),
+                          (f"test -s '{self.repo}/CHANGELOG.md'", f"test -s '{self.lane}/CHANGELOG.md'"),
+                          (f"cd {self.repo} && true", f"cd {self.lane} && true")):
+            self.assertEqual(c.normalize_verify(self.lane, cmd)[1], want, cmd)
+        cmd = f"grep -q x {self.repo}/CHANGELOG.md"
+        self.assertEqual(c.normalize_verify(self.repo, cmd), (self.repo, cmd, None))  # main runs it as written
 
 
 if __name__ == "__main__":
