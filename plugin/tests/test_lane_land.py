@@ -253,6 +253,21 @@ class Land(LandCase):
         self.assertEqual(sorted(touches), ["a.txt"])
         self.assertEqual(risky, [])
 
+    def test_a_lane_that_merged_the_build_branch_in_is_judged_on_what_its_merge_brought(self):  # T-4026
+        a = self.lane(1, "a.txt", when=OLD)
+        with open(os.path.join(self.repo, "risky.py"), "w") as f:  # another task's exec code lands on main first
+            f.write("import subprocess\nsubprocess.run('x', shell=True)\n")
+        self.git("add", "risky.py")
+        self.git("commit", "-qm", "another task's exec code")
+        lane = os.path.join(self.tmp, "lane1")
+        self.git("merge", "-q", "--no-edit", self.git("rev-parse", "--abbrev-ref", "HEAD"), cwd=lane)  # catch up
+        self.git("merge", "-q", "--no-ff", "--no-edit", "foreman/lane1")  # the train's merge
+        from sampo import cli
+        p = c.find_project(self.repo)
+        touches, risky, _ = cli._task_files(p, c.find_brief(p, a))
+        self.assertEqual(sorted(touches), ["a.txt"])
+        self.assertEqual(risky, [])
+
     def test_a_lane_not_merged_is_judged_as_before(self):  # T-3968
         a = self.lane(1, "a.txt", when=OLD)
         with open(os.path.join(self.repo, "later.py"), "w") as f:

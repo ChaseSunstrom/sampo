@@ -2134,16 +2134,29 @@ def _merged_lane_tip(p, b):
     return tip
 
 
+def _lane_merge(p, base, tip):
+    """T-4026: (from, to) for a merged lane's own change: the merge on HEAD's first-parent line that brought tip in,
+    against its first parent. base..tip also held whatever the lane merged in from the build branch (a lane catching
+    up), so other tasks' files read as this one's. A lane fast-forwarded in has no merge of its own: base..tip."""
+    line = (c._git(p.root, "rev-list", "--first-parent", "--ancestry-path", f"{tip}..HEAD", timeout=60, fail="")
+            or "").split()
+    m = line[-1] if line else ""
+    if m and c._git(p.root, "merge-base", "--is-ancestor", tip, m + "^1", proc=True).returncode != 0:
+        return m + "^1", m
+    return base, tip
+
+
 def _task_files(p, b):
     """({file: when touched}, the security-sensitive ones, the untracked files gone since the start, not counted):
     edits made outside Claude since the task's base count."""
     touches, gone = c.task_touches(p, b.id), set()
     base = c.task_base(p.root, b) if c.git_root(p.root) else None
     tip = _merged_lane_tip(p, b) if base else None
+    lo, hi = _lane_merge(p, base, tip) if tip else (base, None)
     if base:  # R1: edits made through the shell or outside Claude count too
         from sampo import map as smap
         # T-3968: a lane already merged is judged on its own commits; later merges by others aren't its change
-        changed = sorted(set((c._git(p.root, "diff", "--name-only", "--no-renames", base, tip, timeout=60, fail="") or "")
+        changed = sorted(set((c._git(p.root, "diff", "--name-only", "--no-renames", lo, hi, timeout=60, fail="") or "")
                              .splitlines())) if tip else smap.changed(p.root, base)
         theirs = set(_theirs(p, b, changed))  # T-1968: another task's edits are its to answer for (scope, audit)
         # T-3550: a file untracked at the start and removed since (another task, a shell rm) is no edit of this task's:
@@ -2160,7 +2173,7 @@ def _task_files(p, b):
                     touches[f] = c.iso(os.path.getmtime(os.path.join(p.root, f)))
                 except OSError:  # deleted
                     touches[f] = c.now()
-    diff = (c._git(p.root, "diff", base, tip, timeout=300, fail=None) if tip else c.task_diff(p.root, base)) if base else None
+    diff = (c._git(p.root, "diff", lo, hi, timeout=300, fail=None) if tip else c.task_diff(p.root, base)) if base else None
     risky = c.sensitive(list(touches), diff or "")
     recorded = b.meta.get("base_tree") or b.meta.get("base")  # never focused: no start point, as before
     if diff is None and recorded and c.git_root(p.root):  # T-0078 review: what can't be read isn't passed as clean
