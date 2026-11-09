@@ -831,6 +831,22 @@ def land_key(b):
     return (b.priority != "urgent", kind, c.id_num(b.id))
 
 
+def _stale_affected(b, sha, main):
+    """T-3963: the note for a lane whose newest `sampo check --affected` run came before its own last commit (a merge of
+    main's branch is not its work), else None. 2026-11-08 left out three lanes whose scans and exit-code tests only the
+    rerun would have reached. Such a lane trains after the fresh ones (a review-fix commit postdates a 15-minute run,
+    and nobody is scheduled to rerun it); one that never recorded a run is not stale (no tests may link to its files)."""
+    runs = [t for l in b.evidence() if "--affected (affected tests only): " in l  # the label, in its sampo and older fm forms
+            and (m := c._TS_TAIL.search(l)) and (t := c.parse_ts(m.group(1)))]
+    if not runs or not sha:
+        return None
+    last = _git(main, "log", "-1", "--no-merges", "--format=%ct", sha).stdout.strip()
+    if last and max(t.timestamp() for t in runs) < float(last):
+        return (f"its newest affected run predates the lane tip {sha[:9]}: rerun sampo check --affected --evidence "
+                f"{b.id} in its lane after the last commit")
+    return None
+
+
 def _code_stamp():
     """T-3973: path, mtime and size of every Sampo module on disk: a change means a train merged new code for this land."""
     d = os.path.join(c.PLUGIN_ROOT, "lib", "sampo")
@@ -850,7 +866,7 @@ def _land(p, main, batch):
     # a land cut short (or a train by hand) left these merged and open: they only need their close
     landed = [b.id for b in briefs if b.status not in c.CLOSED and b.meta.get("lane") and lanes._stop(b)[0] == "merged"
               and (t := tip(b)) and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode]
-    parked, ready, trains, stopped, restart = [], [], 0, "", False
+    parked, ready, trains, stopped, stale, restart = [], [], 0, "", set(), False
     closed, hand, shipped = [], [], None
     by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
 
@@ -873,9 +889,13 @@ def _land(p, main, batch):
                 parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
             else:
                 ready.append(b.id)
+                if why := _stale_affected(b, tip(b), main):  # T-3963: trains after the fresh ones, still lands
+                    stale.add(b.id)
+                    print(f"sampo lane land: {b.id}: {why}", file=sys.stderr, flush=True)
                 if gaps := _close_gaps(b):  # T-3819: said before the trains, so the lines are added while they run
                     print(f"sampo lane land: {b.id} lands but its close will be refused: {'; '.join(gaps)} (add the "
                           "lines to its Close fields before its train ends)", file=sys.stderr, flush=True)
+        ready.sort(key=lambda t: t in stale)  # stable: fresh lanes first, each group in land order
     left = list(landed)  # merged and open (a train by hand, a land cut short): closed after the trains (T-3884)
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)

@@ -32,6 +32,21 @@ class AffectedRules(ForemanTestCase):
                                                "test_rename_aliases", "test_redefinitions", "test_suite_hygiene"})
 
 
+class SubprocessTestsAreLinked(ForemanTestCase):
+    """T-3963: 2026-11-08's train left out T-3929 (night.py, moonscale.py: test_kalevala asserts the grow exit code by
+    running the CLI) and T-3324 (hooks.py: test_breaker runs the hook as a subprocess and counts its log lines). No
+    import or name links such a test to the module it drives, so the test names it on a map-links line."""
+
+    def test_a_test_that_drives_a_module_through_a_subprocess_is_linked_to_it(self):
+        from helpers import PLUGIN
+        from sampo import map as smap
+        root = os.path.dirname(PLUGIN)
+        for test, mods in (("test_kalevala", ("night", "moonscale")), ("test_breaker", ("hooks",))):
+            linked = smap._marked(root, f"plugin/tests/{test}.py")
+            for mod in mods:
+                self.assertIn(f"plugin/lib/sampo/{mod}.py", linked, f"{test} drives {mod} in a subprocess")
+
+
 class AffectedLaneBase(ForemanTestCase):
     """T-3696: a lane that merged main's branch answers only for its own changes. From the task's start commit, every
     file main changed since counted as the lane's: T-3603's lane picked 104 test modules where its own 6 files pick 21."""

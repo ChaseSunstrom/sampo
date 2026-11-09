@@ -292,6 +292,24 @@ class Land(LandCase):
         self.assertIn("later.py", touches)
         self.assertTrue(risky)
 
+    def test_a_lane_whose_affected_run_predates_its_tip_trains_after_the_fresh_ones(self):
+        # T-3963: 2026-11-08's train left out three lanes whose builders' affected runs came before their last commit
+        stale, fresh, none = (self.lane(1, "a.txt", when=OLD), self.lane(2, "b.txt", when=OLD),
+                              self.lane(3, "d.txt", when=OLD))
+        p = c.find_project(self.repo)
+        for tid, ts in ((stale, "2025-06-01T00:00:00Z"), (fresh, "2026-06-01T00:00:00Z")):
+            b = c.find_brief(p, tid)
+            b.add_evidence(c.AFFECTED_LABEL + "python3 -m pytest -q x", "✓ ok", step=1, ts=ts, ran=True)
+            c.save_brief(p, b)
+        r = self.land("--batch", "1")
+        self.assertRegex(r.stderr, rf"(?m)^sampo lane land: {stale}: .*affected run predates the lane tip.*"
+                                   rf"sampo check --affected --evidence {stale}")
+        self.assertNotRegex(r.stderr, rf"{fresh}: its newest|{none}: its newest")
+        order = re.findall(r"train \d+: (T-\d+)", r.stderr)
+        self.assertEqual(order, [fresh, none, stale], "the stale lane trains last, and still trains")
+        self.assertIn(" 0 parked", r.stdout)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")), "landed")
+
     def test_a_lane_closed_in_place_is_landed(self):  # T-3907: finish inside the lane left a done task, branch unmerged
         a = self.lane(1, "a.txt", when=OLD)
         p = c.find_project(self.repo)

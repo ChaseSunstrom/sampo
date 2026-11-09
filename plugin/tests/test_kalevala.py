@@ -1,5 +1,6 @@
 """Kalevala part 1 (T-3053): many Rune towers in one project. Each tower is its own home (research/genesis/towers/NAME);
 the root tower behaves as before; moons, exam scenarios and the user's steers stay at the root for every tower."""
+# map-links: plugin/lib/sampo/night.py plugin/lib/sampo/moonscale.py
 import contextlib
 import io
 import json

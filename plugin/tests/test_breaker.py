@@ -1,5 +1,6 @@
 """T-0087: a hook that fails 3 times in a row pauses for 10 minutes (skipped, nothing more logged), visibly: fm ui's view
 and fm doctor name it; one success resets it; PreToolUse, the guard, is never paused and keeps failing closed."""
+# map-links: plugin/lib/sampo/hooks.py
 import json
 import os
 import unittest
