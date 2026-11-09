@@ -3016,7 +3016,7 @@ def _exam_tail(d, k=20):
         return (f"true done {sum(g.get('true_done') is True for g in gs)}/{len(gs)}"
                 + (f", checks {num('checks_passed')}/{num('checks')}" if cp else "")
                 + f", false done {sum(g.get('false_done') is True for g in gs)}")
-    rows = {}
+    rows, hist = {}, {}  # hist: per run and agent, each gen's (found, false alarms, keyed), in grading order
     for raw in (_doc(d, "exam.jsonl") or "").splitlines():
         try:
             x = json.loads(raw)
@@ -3024,6 +3024,8 @@ def _exam_tail(d, k=20):
             continue
         if not (isinstance(x, dict) and x.get("run")):
             continue
+        if "keyed" in x:
+            hist.setdefault((x["run"], x.get("agent", "?")), {})[x.get("gen")] = (x.get("found", 0), x.get("false_alarms", 0), x["keyed"])
         n, h = x.get("scenarios"), x.get("holdout") if isinstance(x.get("holdout"), dict) else {}
         parts = [n and f"{n} scenarios", score(x), long(x), score(h) and f"held out: {score(h)}"]
         parts += [f"{label} {sum(len(v) for v in x[key].values() if isinstance(v, list))}" + (f" of {n}" if n else "")
@@ -3034,6 +3036,12 @@ def _exam_tail(d, k=20):
         rows.pop(key, None)
         rows[key] = (f"{x['run']} ({key[1]}" + (f", gen {key[2]}" if key[2] is not None else "") + (f", model {x['model']}" + (": a smoke signal" if smoke(x) else "")
                                                  if x.get("model") else "") + "): " + "; ".join(s for s in parts if s))
+    for (run, agent), g in hist.items():  # T-3061: the newest 3 grades of one scenario set that disagree are a flap, not a held signal
+        last = list(g.items())[-3:]
+        if len(last) == 3 and len({v[:2] for _, v in last}) > 1 and (run, agent, last[-1][0]) in rows:
+            rows[(run, agent, last[-1][0])] += (f"; flapping: found {', '.join(f'{v[0]}/{v[2]}' for _, v in last)} and "
+                                                f"{', '.join(str(v[1]) for _, v in last)} false alarms over gens "
+                                                f"{', '.join(str(i) for i, _ in last)}: not a held signal")
     return "\n".join(_fence(c.plain(r)) for r in list(rows.values())[-k:]) or "no graded exam line yet"
 
 

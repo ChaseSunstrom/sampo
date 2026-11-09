@@ -143,9 +143,10 @@ class LouhiModels(ForemanTestCase):
             self.assertEqual((r["arm"], r["n"]), ("retrieval", len(self.held)))
             self.assertEqual(r["answered"] + r["abstained"], r["n"])
             self.assertEqual(r["coverage"], round(r["answered"] / r["n"], 3))
-            self.assertLessEqual(r["accuracy_all"], r["coverage"])
+            # T-3068: accuracy has the same denominator as the majority baseline (every brief, an abstain is wrong)
+            self.assertLessEqual(r["accuracy"], r["coverage"])
             if name == "bm25":  # the two kinds of request share no words (the fake embedder's letter counts blur them)
-                self.assertEqual((r["accuracy"], r["accuracy_all"]), (1.0, r["coverage"]))
+                self.assertEqual((r["accuracy"], r["accuracy_answered"]), (r["coverage"], 1.0))
             self.assertIn((name, "intake-tier"), by)
         self.assertEqual(louhi._vote(["FIX"] * 4 + ["FEATURE"] * 3), "FIX")
         self.assertIsNone(louhi._vote(["FIX"] * 3 + ["FEATURE"] * 3))  # split: abstain
@@ -282,6 +283,22 @@ class LouhiLoo(ForemanTestCase):
         self.assertLess(pooled[0.5]["wilson_lb"], 1.0)
         self.assertEqual(pooled[0.95]["coverage"], 0.0)  # conf 0.9 abstains over 0.95
         self.assertEqual(self.rows()[-1]["arm"], "loo")  # written to the bench file
+
+    def test_majority_share_is_the_held_out_projects_own_top_class_and_a_one_project_result_says_so(self):
+        # T-3071: type is 50/50 here (k=2), tier all S (k=1): the baseline is never under 1/k, never impossible for a majority class
+        rows, truth = _pool()
+        res = self.loo(rows, good=_model(truth))
+        for r in res["rows"]:
+            self.assertEqual(r["majority_share"], 0.5 if r["use"] == "intake-type" else 1.0, r)
+            self.assertGreaterEqual(r["majority_share"], 1 / r["classes"])
+            if r["project"] == "pooled":
+                self.assertEqual(r["scope"], "3 projects")
+        one = [r for r in rows if r["project"] != "c"]  # two projects: one held out at a time, still two
+        self.assertEqual({r["scope"] for r in self.loo(one, good=_model(truth))["rows"] if r["project"] == "pooled"}, {"2 projects"})
+        skew = [{**r, "type": "FIX"} if r["project"] == "a" else r for r in rows]  # a is all FIX: its own share is 1.0
+        a = [r for r in self.loo(skew, good=_model(truth))["rows"] if r["project"] == louhi._lake_h("a") and r["use"] == "intake-type"]
+        self.assertEqual({r["majority_share"] for r in a}, {1.0})
+        self.assertEqual(louhi._scope(1), "one project")
 
     def test_a_contestant_that_wins_on_two_projects_and_loses_the_held_out_third_is_not_adopted(self):
         rows, truth = _pool(lose_on="c")

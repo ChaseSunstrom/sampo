@@ -1002,8 +1002,8 @@ def _retrieval_rows(base, name, held, train, near, note):
         ans = [(t, v) for t, v in votes if v is not None]
         n, hit = len(votes), sum(t == v for t, v in ans)
         rows.append({**base, "use": use, "backend": name, "n": n, "answered": len(ans), "abstained": n - len(ans),
-                     "coverage": round(len(ans) / n, 3) if n else None, "accuracy": round(hit / len(ans), 3) if ans else None,
-                     "accuracy_all": round(hit / n, 3) if n else None, "note": note})
+                     "coverage": round(len(ans) / n, 3) if n else None, "accuracy": round(hit / n, 3) if n else None,  # T-3068: abstain wrong, the majority's denominator
+                     "accuracy_answered": round(hit / len(ans), 3) if ans else None, "note": note})
     return rows
 
 
@@ -1027,8 +1027,8 @@ def _bm25(texts):
 
 def _bench_retrieval(p, data, stamp, profiles, timeout_of):
     """T-2975: k-NN vote (RETRIEVAL_K, abstain under RETRIEVAL_NEED) from the train split's raw requests: BM25 (recall's
-    tokens and formula) and, per embedder, cosine over its vectors. accuracy is on answered rows, accuracy_all counts an
-    abstain wrong."""
+    tokens and formula) and, per embedder, cosine over its vectors. accuracy counts an abstain wrong (every brief, like the
+    majority baseline; T-3068), accuracy_answered is on answered rows only."""
     from sampo import models
     train, held = data["train-raw"], {u: data[u][0] for u in BENCH_USES}
     base = {**stamp, "arm": "retrieval", "brier": None, "p50_ms": None, "p95_ms": None, "errors": 0}
@@ -1280,6 +1280,10 @@ def _majority(train, use):
     return lambda text: (top, 1.0)
 
 
+def _scope(k):
+    return "one project" if k == 1 else f"{k} projects"  # T-3071: a one-project result says so
+
+
 def _bm25_vote(train, use):
     attr = "type" if use == "intake-type" else "tier"
     pool = [r for r in train if r.get(attr)][-RETRIEVAL_TRAIN:]
@@ -1359,9 +1363,12 @@ def loo_models(p, rows=None, contestants=None, thresholds=LOO_THRS, seed=LOO_SEE
         acc = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0, 0, 0, 0, 0]))  # n, ans, hits, d, path_ok, errs
         have = [bool((r.get("path") or {}).get(use)) for r in rows if r.get(attr)]  # which baseline the gain is against
         basis = "path" if have and all(have) else "majority" if not any(have) else "mixed"
+        share, classes = {}, len({r[attr] for r in rows if r.get(attr)}) or 1
         for proj in held_p:
             train = [r for k in sorted(by) if k != proj for r in by[k]]
             held = [r for r in by[proj] if r.get(attr)][:per]
+            cnt = collections.Counter(r[attr] for r in held)  # T-3071: the project's own top class, never under 1/k
+            share[proj] = max(max(cnt.values(), default=0) / (len(held) or 1), 1 / classes)
             top = _majority(train, use)("")[0]
             for name, make in contestants.items():
                 predict = make(train, use)
@@ -1391,9 +1398,11 @@ def loo_models(p, rows=None, contestants=None, thresholds=LOO_THRS, seed=LOO_SEE
             ds = []
             for proj, v in sorted(projs.items(), key=lambda kv: _lake_h(kv[0])):
                 ds.append(v[3] / v[0])
-                out.append(fmt(v, {"project": _lake_h(proj), "delta": round(ds[-1], 4)}))
+                out.append(fmt(v, {"project": _lake_h(proj), "delta": round(ds[-1], 4), "classes": classes,
+                                   "majority_share": round(share[proj], 3), "scope": _scope(1)}))
             lb, ok = _gate(ds, seed)
-            out.append(fmt(tot, {"project": "pooled", "projects": len(ds), "delta": round(sum(ds) / len(ds), 4),
+            out.append(fmt(tot, {"project": "pooled", "projects": len(ds), "classes": classes, "scope": _scope(len(ds)),
+                                 "majority_share": round(sum(share[x] * v[0] for x, v in projs.items()) / (tot[0] or 1), 3), "delta": round(sum(ds) / len(ds), 4),
                                  "delta_lb": round(lb, 4), "adopt": ok}))
     path = os.path.join(p.root, BENCH)
     os.makedirs(os.path.dirname(path), exist_ok=True)

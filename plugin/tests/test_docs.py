@@ -74,6 +74,33 @@ class Judgment(unittest.TestCase):  # T-2344: #2 and #8 described where a reader
                     self.assertTrue(word in text or word.replace("fm ", "sampo ") in text)
 
 
+CLAIM = re.compile(r"\d+ (?:of|in) \d+|\d+/\d+|\d+%")
+CITED = re.compile(r"T-\d{3,}|unproven|research/\S+|\bs\d+-\d{3}\b|\bm\d{8}-\d+|\(run [^)]+\)")  # a pointer, not the word "run"
+
+
+def uncited_claims(text):
+    """T-3072: the lines of CHANGELOG's newest section that state 'N of M', 'N in M', 'N/M' or 'N%' and cite no T-id,
+    run or exam, nor say 'unproven'."""
+    new = text.split("\n## ", 2)[1] if text.count("\n## ") >= 1 else text  # the section after the title
+    return [x for x in new.splitlines() if CLAIM.search(x) and not CITED.search(x)]
+
+
+class ChangelogClaims(unittest.TestCase):
+    def test_a_number_claim_with_no_run_or_task_cited_is_flagged(self):  # T-3072, T-3074, T-3075
+        doc = "# C\n\n## Unreleased\n- the 12B fixed 3 of 8.\n- fixed 0/3 in the exam (T-3072).\n- 4 of 10 loops: unproven.\n- hit 50% on the exam.\n- its first run read 22 of 23.\n- 2 of 5 (run s31-039).\n- 3/4 (research/x.md).\n\n## 1.0\n- old 9 of 9\n"
+        self.assertEqual(uncited_claims(doc), ["- the 12B fixed 3 of 8.", "- hit 50% on the exam.", "- its first run read 22 of 23."])
+
+    def test_the_real_changelogs_newest_section_cites_or_disowns_every_number_claim(self):
+        text = read_doc(os.path.join(os.path.dirname(PLUGIN), "CHANGELOG.md"))
+        self.assertEqual([x[:120] for x in uncited_claims(text)], [])
+        # the three corrected claims name what was measured
+        self.assertIn("0 to 3 of 8 scenarios fixed once served 32k of context with reasoning off is withdrawn", text)
+        self.assertIn("s28-021 found 7, fixed 2", text)  # the 12B's measured exam lines, with run ids
+        self.assertNotIn("now about 1 in 6", text)
+        self.assertIn("3,137", text)
+        self.assertRegex(text, r"(?i)loops?[^\n]*unproven until")
+
+
 class LiteRules(unittest.TestCase):  # T-1264
     def test_the_one_file_rules_fit_40_lines_need_no_fm_and_cover_the_loop(self):
         text = read_text(os.path.join(PLUGIN, "templates", "CLAUDE.lite.md"))

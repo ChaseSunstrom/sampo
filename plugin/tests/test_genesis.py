@@ -1431,6 +1431,22 @@ class GenesisDraft(ForemanTestCase):
         self.assertIsNone(r["plain"]["checks_same"])
         self.assertEqual(r["state"], "level")  # missing partial credit never breaks a tie
 
+    def test_a_scenario_set_whose_last_three_grades_disagree_reads_flapping(self):
+        # T-3061: s32-015 went 3/3, then 2/3 with 2 false alarms, then 3/3 on the same 3 scenarios: no held signal
+        from sampo import rune
+        self.fm("genesis", "init", "--file", "-", input="go\n\n## 2. The capability spec\n\n1. **Correctness.** Fixes. Exam: bug.\n\n## 3. The tower\n")
+        for gen, found, fa in ((2, 3, 0), (3, 2, 2), (4, 3, 0)):
+            rune.exam_line(self.p, {"run": "s32-015", "agent": "finders", "gen": gen, "scenarios": 3, "keyed": 3,
+                                    "found": found, "false_alarms": fa, "fixed": 0, "fixable": 3})
+        for gen in (2, 3, 4):  # a steady one beside it
+            rune.exam_line(self.p, {"run": "s40", "agent": "finders", "gen": gen, "scenarios": 3, "keyed": 3,
+                                    "found": 2, "false_alarms": 0, "fixed": 0, "fixable": 3})
+        lines = rune._exam_tail(rune.home(self.p)).splitlines()
+        flap = [x for x in lines if x.startswith("s32-015 (finders, gen 4)")][0]
+        self.assertIn("flapping: found 3/3, 2/3, 3/3 and 0, 2, 0 false alarms over gens 2, 3, 4: not a held signal", flap)
+        self.assertFalse(any("flapping" in x for x in lines if x.startswith("s40")))
+        self.assertFalse(any("flapping" in x for x in lines if x.startswith("s32-015 (finders, gen 2)")))
+
     def test_the_cold_reads_exam_tail_carries_the_numbers_critiques_cite(self):
         # T-2366: Mission 3's critique failed reads on per-kind recall, ranking, exam defects and long-tier results the tail left out
         from sampo import rune
