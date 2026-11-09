@@ -934,7 +934,9 @@ class Run:
             if name in ("edit", "write"):
                 res = self.edit(arg("file"), arg("old"), arg("new")) if name == "edit" else \
                     self.write(arg("file"), arg("content"))
-                self.edited = self.edited or not res.startswith(("error", "refused"))  # T-3180
+                if not self.edited and not res.startswith(("error", "refused")):  # T-3180
+                    self.edited = True
+                    self.log(kind="edited")  # T-3974: a resume knows an edit landed before the crash
                 return res, False
             if name == "run":
                 return self.run_cmd(arg("cmd")), False
@@ -3895,7 +3897,7 @@ def _journal_start(run, profile):
                      "planner": run.planner and run.planner["name"],
                      "max_steps": run.max_steps, "worker": run.worker, "worker_timeout": run.worker_timeout,
                      "verify": run.verify_cmd, "own_plan": run.own_plan, "max_usd": run.max_usd,
-                     "context": run.context})
+                     "context": run.context, "small": run.small})
     if run.usd:  # what planning spent, before there was a journal to say it
         run.log(kind="spend", usd=run.usd)
 
@@ -4190,6 +4192,7 @@ def _load(run, tid, ended=False):
     run.worker_timeout = run.worker_timeout or opts.get("worker_timeout")
     run.verify_cmd = run.verify_cmd or opts.get("verify")
     run.own_plan = bool(opts.get("own_plan"))  # an older journal's plan is fenced: the safe reading
+    run.small = run.small or opts.get("small") is True  # T-3974: a resumed --small run stays small
     for r in recs[1:]:
         k = r.get("kind")
         if k == "msg":
@@ -4197,6 +4200,8 @@ def _load(run, tid, ended=False):
             run.turns += r["msg"].get("role") == "assistant"
         elif k == "phase_done":
             run.done.add(r["phase"])
+        elif k == "edited":  # T-3974: else the resumed run's early-done check counts no edit
+            run.edited = True
         elif k == "baseline":
             run.baseline = r["text"]
         elif k == "harness":  # T-3181: what the harness ran before turn 1, and the baseline after any fix it applied

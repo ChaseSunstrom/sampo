@@ -6,6 +6,7 @@ answered, and a change plan's last step can't end with nothing changed."""
 import json
 import os
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -206,6 +207,9 @@ class SmallMode(CodeCase):
         refused = [json.loads(ln) for ln in journal_text(self).splitlines() if '"early_done"' in ln]
         self.assertEqual(len(refused), 1)
         self.assertIn("no file has changed", f.said(4))
+        recs = [json.loads(ln) for ln in journal_text(self).splitlines()]
+        self.assertIs(recs[0]["options"]["small"], True)  # T-3974: a resume stays small
+        self.assertEqual(sum(r["kind"] == "edited" for r in recs), 1)  # once, at the first edit that landed
 
     def test_the_exam_arm_passes_small_and_records_it(self):
         script = "import json,sys\nprint(json.dumps({'event':'answer','text':' '.join(sys.argv)}))\n"
@@ -221,6 +225,23 @@ class SmallMode(CodeCase):
                                        os.path.join(tmp, "e.jsonl"), small=True)
             self.assertIn("--small", ans["notes"][0])
             self.assertTrue(ans["small"])
+
+
+class Resume(unittest.TestCase):  # T-3974: a resumed --small run kept neither small nor an edit made before the crash
+    def load(self, *recs):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "T-0001.jsonl"), "w", encoding="utf-8") as f:
+                f.write("".join(json.dumps(r) + "\n" for r in recs))
+            run = smith.Run(types.SimpleNamespace(escalate=None, max_steps=None), tmp, tmp)
+            smith._load(run, "T-0001")
+            return run
+
+    def test_a_resumed_small_run_is_small_and_an_edit_before_the_crash_counts(self):
+        start = {"kind": "start", "task": "T-0001", "plan": {}, "request": "fix add", "options": {"small": True}}
+        run = self.load(start, {"kind": "edited"})
+        self.assertEqual((run.small, run.edited), (True, True))
+        run = self.load(dict(start, options={}))  # an older journal: neither
+        self.assertEqual((run.small, run.edited), (False, False))
 
 
 if __name__ == "__main__":  # T-3688: run as a script, as the brief's verify does, it ran nothing before

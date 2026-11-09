@@ -1065,6 +1065,12 @@ class ExamAuthors(ForemanTestCase):
         os.remove(os.path.join(answers, "model"))  # answers from before the stamp name their model at the regrade
         self.assertEqual(self.fm_json("exam", "grade", run, "--agent", "foreman", "--model", "haiku")["model"], "haiku")
         self.assertIn("model haiku", self.fm("exam").stdout)  # the exam line says it too
+        for name, text in (("small", "on"), ("planner", "opus")):  # T-3974: the arm's own stamps reach its row and line
+            c.write_atomic(os.path.join(answers, name), text)
+        r = self.fm_json("exam", "grade", run, "--agent", "foreman", "--model", "haiku")
+        self.assertEqual((r.get("small"), r.get("planner")), (True, "opus"))  # a --small arm and a plain one now differ
+        self.assertIn("planner opus", self.fm("exam").stdout)
+        self.assertIn(", small", self.fm("exam").stdout)
         self.assertNotEqual(self.fm("exam", "grade", run, "--agent", "foreman", "--model", "opus", check=False).returncode,
                             0)  # a named stamp is a fact: a regrade never rewrites it
         self.assertIn("session arm", self.fm("exam", "grade", run, "--agent", "oracle", "--model", "haiku",

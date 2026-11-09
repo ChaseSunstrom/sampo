@@ -295,6 +295,10 @@ def _profile(name, d, where):
         if not isinstance(d["ctx_variant"], bool):
             bad("ctx_variant must be true or false")
         p["ctx_variant"] = d["ctx_variant"]
+    if "small" in d:  # T-3974: small-model mode on for this profile (smith reads profile["small"] is True)
+        if not isinstance(d["small"], bool):
+            bad("small must be true or false")
+        p["small"] = d["small"]
     if "body" in d:  # T-2893: extras merged into the OpenAI request (never over its own keys)
         if not isinstance(d["body"], dict):
             bad("body must be an object")

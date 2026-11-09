@@ -910,6 +910,13 @@ class Extras(Base):  # T-2893: a profile's body extras, its reasoning switch, an
         p = m._profile("x", {"model": "a", "body": {"a": 1}, "think": False, "slots": 2, "max_out": 9000}, "t")
         self.assertEqual((p["body"], p["think"], p["slots"], p["max_out"]), ({"a": 1}, False, 2, 9000))
 
+    def test_a_profile_keeps_a_boolean_small_and_refuses_any_other(self):  # T-3974: smith reads profile["small"]
+        self.assertIs(m._profile("x", {"model": "a", "small": True}, "t")["small"], True)
+        self.assertNotIn("small", m._profile("x", {"model": "a"}, "t"))
+        with self.assertRaises(m.ModelError) as e:
+            m._profile("x", {"model": "a", "small": "yes"}, "t")
+        self.assertIn("small must be true or false", str(e.exception))
+
 
 class Purposes(unittest.TestCase):  # T-3744: a job goes to a model made for it before scores are compared
     def test_purposes_are_checked(self):

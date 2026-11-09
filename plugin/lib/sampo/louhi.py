@@ -4677,12 +4677,14 @@ def grade(p, run, agent):
             except (OSError, ValueError, AttributeError, TypeError):
                 pass
         _per_fix(res, toks)
-    for name in ("request", "model", "reason"):
+    for name in ("request", "model", "planner", "reason", "small"):  # T-3974: planner and small, so the arm is told apart
         try:
             with open(os.path.join(_answers(p, run, agent), name), encoding="utf-8") as f:
                 res[name] = f.read()
         except OSError:
             pass
+    if "small" in res:
+        res["small"] = res["small"] == "on"
     line = dict(res, at=c.now(), gen=gen, split=splits.pop() if len(splits) == 1 else "all",
                 kinds=sorted({s["kind"] for s in answered}),
                 author="+".join(sorted({s.get("author", "self") for s in answered})))
@@ -4722,6 +4724,10 @@ def summary(r):
     if r.get("reason"):  # T-3006: the arm, its yield and what a fix cost
         parts.append(f"reason {c.plain(str(r['reason']))[:12]}"
                      + (f" ({r['tokens_per_fix']} tokens/fix)" if r.get("tokens_per_fix") is not None else ""))
+    if r.get("planner"):  # T-3974: the split run's planner
+        parts.append(f"planner {c.plain(str(r['planner']))[:40]}")
+    if r.get("small"):  # T-3974: small-model mode, so a --small and a plain arm of one model read apart
+        parts.append("small")
     if r.get("broken"):
         parts.append(f"{r['broken']} broken")
     h = r.get("holdout") or {}
