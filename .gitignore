@@ -18,3 +18,6 @@ _site/
 plugin/native/sampo-fast
 plugin/native/target/
 plugin/native/sampo-fast.sha256
+# machine-local Claude Code settings and agent worktrees (T-4130)
+.claude/settings.local.json
+.claude/worktrees/
