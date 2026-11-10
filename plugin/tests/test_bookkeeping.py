@@ -146,6 +146,22 @@ class FinishGaps(HookCase):
         r = self.fm("task", "ac", "T-0001", "edit", "1", "--verify", "true", check=False)
         self.assertNotEqual(r.returncode, 0, "a check that ran and failed stays as it is (T-0342)")
 
+    def test_measured_nothing_reads_the_criterions_own_command_and_allows_only_a_check_already_run(self):  # T-4113
+        # T-4111: the criterion named test_louhi_loo (no such module); the right command's passes were recorded under it
+        self.fm("init")
+        self.fm("task", "new", "t", "--type", "FIX", "--tier", "S", "--ac", "ok :: python3 plugin/tests/run.py test_nope",
+                "--step", "s", "--focus")
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, "T-0001")
+        b.add_evidence("python3 plugin/tests/run.py test_nope", c.run_result(1, "run.py: no test matches test_nope"),
+                       ac=1, ran=True)
+        b.add_evidence("python3 plugin/tests/run.py test_real", c.run_result(0, "Ran 1 tests in 0.1s\nOK"), ac=1, ran=True)
+        c.save_brief(p, b)
+        r = self.fm("task", "ac", "T-0001", "edit", "1", "--verify", "true", check=False)
+        self.assertNotEqual(r.returncode, 0, "only a check already run under it may replace it")
+        self.fm("task", "ac", "T-0001", "edit", "1", "--verify", "python3 plugin/tests/run.py test_real")
+        self.assertIn("test_real", c.find_brief(p, "T-0001").section("Acceptance criteria"))
+
     def test_a_failed_affected_run_reruns_its_command_not_its_label(self):  # T-2596
         self.fm("init")
         self.fm("task", "new", "t", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "s", "--focus")

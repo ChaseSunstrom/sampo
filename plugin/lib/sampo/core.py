@@ -2820,8 +2820,14 @@ class Brief:
         T-3823: the words of one with a verify command may change (logged): the check that holds it stays as it is
         (typed evidence vouches for the words themselves, so those stay)."""
         mine = [ln for ln in self.evidence() if (m := _EV_RE.match(ln)) and (m.group(1), int(m.group(2))) == ("ac", n)]
-        measured_nothing = bool(mine) and all(_NO_TEST.search(ln) for ln in mine)  # T-2606: no test ran, nothing weakens
         old = dict(self.verify_cmds()).get(n)
+        cmd = lambda ln: (re.search(r"`([^`]*)`", ln) or [None, None])[1]  # noqa: E731
+        own = [ln for ln in mine if cmd(ln) == old]
+        # T-2606: no test ran, nothing weakens. T-4113: judged on the criterion's own runs; runs of other commands
+        # recorded under it (the right check, run while this one named no test) may only be swapped in, not 'true'
+        others = {cmd(ln) for ln in mine if cmd(ln) != old}
+        measured_nothing = bool(mine) and all(_NO_TEST.search(ln) for ln in own or mine) and (
+            not own or not others or verify in others)
         same_check = old is not None and verify in (None, old)
         if self.has_evidence(ac=n, checked=True) and not measured_nothing and not same_check:
             raise PolicyError(f"{self.id} criterion {n} already has evidence, so its check stays as it is (an edit could "
