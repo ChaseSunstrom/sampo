@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-09",
+ "generated": "2026-11-10",
  "totals": {
-  "tasks_done": 719,
-  "evidence": 4069,
-  "proofs": 397,
-  "commits": 529,
-  "gate_runs": 337,
+  "tasks_done": 809,
+  "evidence": 4276,
+  "proofs": 450,
+  "commits": 610,
+  "gate_runs": 360,
   "subagents": 2034,
-  "lanes_merged": 450,
+  "lanes_merged": 487,
   "findings": 590,
-  "guard_blocks": 768,
-  "captures": 1134,
-  "lessons_shown": 1489
+  "guard_blocks": 787,
+  "captures": 1186,
+  "lessons_shown": 1564
  },
  "daily": [
   {
@@ -104,33 +104,33 @@
   },
   {
    "day": "2026-11-09",
-   "FEATURE": 3,
-   "FIX": 13,
-   "CLEAN": 4,
-   "PERFORMANCE": 2,
-   "SECURITY": 0,
-   "RESEARCH": 0,
-   "lanes": 16,
-   "evidence": 63
+   "FEATURE": 29,
+   "FIX": 66,
+   "CLEAN": 7,
+   "PERFORMANCE": 7,
+   "SECURITY": 1,
+   "RESEARCH": 2,
+   "lanes": 53,
+   "evidence": 270
   }
  ],
  "tiers": {
-  "S": 384,
-  "M": 313,
-  "L": 22
+  "S": 431,
+  "M": 355,
+  "L": 23
  },
  "types": {
-  "FEATURE": 245,
-  "FIX": 319,
-  "CLEAN": 41,
-  "PERFORMANCE": 72,
-  "SECURITY": 24,
-  "RESEARCH": 18
+  "FEATURE": 271,
+  "FIX": 372,
+  "CLEAN": 44,
+  "PERFORMANCE": 77,
+  "SECURITY": 25,
+  "RESEARCH": 20
  },
  "guard": {
-  "brief": 405,
-  "core": 178,
-  "system": 72,
+  "brief": 412,
+  "core": 187,
+  "system": 75,
   "state-direct": 43,
   "rm-outside": 21,
   "credentials": 16,
@@ -161,14 +161,14 @@
   "Plan": 8
  },
  "gate_seconds": {
-  "runs": 337,
-  "median": 369.6
+  "runs": 360,
+  "median": 378.5
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 178,
+  "searches": 186,
   "queued": 3,
   "refused": 0
  },
@@ -286,13 +286,13 @@
   "hardware": 8
  },
  "code": {
-  "model_tests": 90,
+  "model_tests": 95,
   "endpoints": 9,
-  "tests": 8185
+  "tests": 8380
  },
  "calibration": {
   "scored": 28,
-  "pending": 500,
+  "pending": 506,
   "brier": {
    "stated": 0.11357142857142857,
    "base": 0.13732222222222223
@@ -362,35 +362,35 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 11,
-     "held": 10,
-     "pct": 91
+     "n": 18,
+     "held": 17,
+     "pct": 94
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 69,
-     "held": 66,
-     "pct": 96
+     "n": 111,
+     "held": 106,
+     "pct": 95
     }
    ]
   }
  },
  "proof": {
-  "n": 748,
+  "n": 787,
   "counts": {
-   "meaning-notes": 389,
-   "research-uncited": 33,
-   "meaning-user": 106,
-   "perf-typed": 116,
-   "typed": 63,
-   "red": 87,
+   "meaning-notes": 398,
+   "research-uncited": 35,
+   "meaning-user": 111,
+   "perf-typed": 121,
+   "typed": 75,
+   "red": 88,
    "perf-noise": 1,
-   "docs": 69,
+   "docs": 91,
    "ui-unshot": 33,
-   "tui-unshot": 7,
-   "infra": 3,
-   "data": 6
+   "tui-unshot": 8,
+   "data": 6,
+   "infra": 3
   },
   "history": [
    {
@@ -428,6 +428,10 @@
    {
     "day": "2026-11-09",
     "n": 748
+   },
+   {
+    "day": "2026-11-10",
+    "n": 787
    }
   ]
  },
@@ -435,14 +439,14 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1129,
-    "precision": 0.791,
+    "fired": 1150,
+    "precision": 0.798,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 335,
-    "precision": 0.771,
+    "fired": 359,
+    "precision": 0.708,
     "route": "inbox"
    },
    {
@@ -453,7 +457,7 @@
    },
    {
     "trigger": "steer",
-    "fired": 103,
+    "fired": 106,
     "precision": 0.421,
     "route": "inbox"
    },
@@ -465,19 +469,19 @@
    },
    {
     "trigger": "ci",
-    "fired": 40,
+    "fired": 41,
     "precision": 0.368,
     "route": "inbox"
    },
    {
     "trigger": "ci-red",
-    "fired": 36,
-    "precision": 0.857,
+    "fired": 38,
+    "precision": 0.875,
     "route": "inbox"
    },
    {
     "trigger": "baseline",
-    "fired": 33,
+    "fired": 34,
     "precision": 0.697,
     "route": "inbox"
    },
@@ -562,20 +566,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 195,
-    "hit": 0.446,
-    "base_hit": 0.385,
+    "n": 201,
+    "hit": 0.458,
+    "base_hit": 0.393,
     "lead": [
      true,
-     0.005908966064453125,
-     16,
+     0.0035986900329589844,
+     17,
      4
     ],
     "muted": false,
-    "shown_n": 125,
-    "shown_hit": 0.464,
-    "overlap": 0.092,
-    "base_overlap": 0.088
+    "shown_n": 130,
+    "shown_hit": 0.485,
+    "overlap": 0.096,
+    "base_overlap": 0.091
    }
   ],
   "lean": [
@@ -632,6 +636,41 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-10",
+   "text": "read T-4104: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-09",
+   "text": "read T-4097: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-09",
+   "text": "read T-4095: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-09",
+   "text": "Recommendation: build on the substrate Sampo already runs (bus, second/rival, Kalevala towers, leases) rather than a new orchestration layer, cheapest first, each piece with its A/B: a Haiku tripwire ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-09",
+   "text": "Recommendation: give LFM3-1.7B the cheap structured jobs it was built for (purposes tools, structured, agent): on Sampo's own probe it picked the right tool 20 of 20 (args right 19), produced valid an",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-08",
    "text": "Adopt a two-rung Haiku-then-Sonnet ladder for exam-style plain sessions (21/35 pass at $0.060 per pass vs all-Sonnet 16/35 at $0.129, and 17/35 at $0.187 for Sonnet given a second try); drop the Opus ",
@@ -1996,41 +2035,6 @@
    "later": null,
    "confidence": null,
    "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "T-2851 andon: 12's art ports through one repeatable transform (art colour tokens, easing tokens, generated classes, no-preference blocks, finite loops resting after the last input and waking on the ne",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2877: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Moon bulk generation runs on jarvis (qwen3.8-27b) now that the user supplied LLM_API_KEY; Haiku stays the fallback. llama-swap serves no embeddings model (404), so dedupe stays on shingles until one i",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "The Sampo rename's outward steps are approved and applied: the old-link Pages redirect site, the marketplace listing to sampo@sampo (with existing foreman@foreman installs carried over, never broken),",
-   "later": null,
-   "confidence": null,
-   "kind": "outward"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Moons at scale (standing rule), now enforced: the write rules, the grid, the cheap-first funnel, families and the cost split are built and tested (T-2868, T-2869)",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
   }
  ],
  "louhi": {
