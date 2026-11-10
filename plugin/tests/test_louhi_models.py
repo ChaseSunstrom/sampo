@@ -1,5 +1,6 @@
 """T-2887: sampo louhi models, the decision arm (intake type and tier from held-out closed tasks, through systemone
 backends) and the embedding arm (title to brief recall). Fake servers only; no live model."""
+import collections
 import http.server
 import json
 import os
@@ -283,6 +284,27 @@ class LouhiLoo(ForemanTestCase):
         self.assertLess(pooled[0.5]["wilson_lb"], 1.0)
         self.assertEqual(pooled[0.95]["coverage"], 0.0)  # conf 0.9 abstains over 0.95
         self.assertEqual(self.rows()[-1]["arm"], "loo")  # written to the bench file
+
+    def test_a_contestant_that_is_down_gets_no_rows_and_is_reported_down_after_three_straight_failures(self):
+        # T-4111: jeff-serve was not running; its 159/159 errors were written as coverage 0, over the last real numbers
+        rows, truth = _pool()
+        calls = collections.Counter()
+
+        def dead(train, use):
+            def predict(text):
+                calls[use] += 1
+                raise models.ModelError("connection refused")
+            return predict
+
+        def flaky(train, use):  # fails on some rows only: still scored, its errors counted
+            good = _model(truth)(train, use)
+            return lambda text: (_ for _ in ()).throw(models.ModelError("x")) if text.endswith(" 3") else good(text)
+        res = self.loo(rows, good=_model(truth), dead=dead, flaky=flaky)
+        self.assertEqual(res["down"], ["dead"])
+        self.assertNotIn("dead", {r["backend"] for r in res["rows"]})
+        self.assertEqual(dict(calls), {"intake-type": 3})  # stops calling it for the run: no 120 s timeout per row
+        fl = [r for r in res["rows"] if r["backend"] == "flaky" and r["project"] == "pooled" and r["use"] == "intake-type"]
+        self.assertTrue(fl and all(r["errors"] == 3 for r in fl), fl)
 
     def test_majority_share_is_the_held_out_projects_own_top_class_and_a_one_project_result_says_so(self):
         # T-3071: type is 50/50 here (k=2), tier all S (k=1): the baseline is never under 1/k, never impossible for a majority class

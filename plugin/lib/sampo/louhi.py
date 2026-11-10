@@ -1261,6 +1261,7 @@ def bench_models(p, decision=None, embedders=None, cap=BENCH_CAP, serving=None, 
 
 # ---------------------------------------------------------------- leave-one-project-out (T-2976)
 LOO_THRS = (0.0, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95)  # abstain thresholds: an answer under one falls back to today's path
+LOO_DOWN = 3  # T-4111: straight failures, none answered, before a contestant counts as down for the whole run
 LOO_MIN_PROJECTS, LOO_MIN_ROWS, LOO_BOOT, LOO_SEED, LOO_Q = 3, 5, 1000, 2976, 0.05  # a project under LOO_MIN_ROWS only trains
 _lake_h = lambda x: hashlib.sha256(str(x).encode()).hexdigest()[:12]  # noqa: E731  # rows name a project by this hash, never its path
 
@@ -1358,9 +1359,11 @@ def loo_models(p, rows=None, contestants=None, thresholds=LOO_THRS, seed=LOO_SEE
     per = max(1, cap // len(held_p)) if cap and held_p else None
     run, stamp, out = _new_run("m"), {"at": c.now(), "arm": "loo"}, []
     stamp["run"] = run
+    down = set()  # T-4111: failed its first LOO_DOWN calls with none answered: not scored, so its last real rows stand
     for use in BENCH_USES:
         attr = "type" if use == "intake-type" else "tier"
         acc = collections.defaultdict(lambda: collections.defaultdict(lambda: [0, 0, 0, 0, 0, 0]))  # n, ans, hits, d, path_ok, errs
+        fails, worked = collections.Counter(), set()
         have = [bool((r.get("path") or {}).get(use)) for r in rows if r.get(attr)]  # which baseline the gain is against
         basis = "path" if have and all(have) else "majority" if not any(have) else "mixed"
         share, classes = {}, len({r[attr] for r in rows if r.get(attr)}) or 1
@@ -1371,12 +1374,19 @@ def loo_models(p, rows=None, contestants=None, thresholds=LOO_THRS, seed=LOO_SEE
             share[proj] = max(max(cnt.values(), default=0) / (len(held) or 1), 1 / classes)
             top = _majority(train, use)("")[0]
             for name, make in contestants.items():
+                if name in down:
+                    continue
                 predict = make(train, use)
                 for r in held:
                     try:
                         got = predict(r["text"])
+                        worked.add(name)
                     except (models.ModelError, ValueError, *models._TRANSPORT):
                         got = None
+                        fails[name] += 1
+                        if name not in worked and fails[name] >= LOO_DOWN:
+                            down.add(name)
+                            break
                     pth = (r.get("path") or {}).get(use) or top
                     for thr in thresholds:
                         lab, src = models.resolve_use(use, r["text"], lambda _t, g=got: g, lambda pth=pth: pth, thr)
@@ -1388,6 +1398,8 @@ def loo_models(p, rows=None, contestants=None, thresholds=LOO_THRS, seed=LOO_SEE
                         a[4] += pth == r[attr]
                         a[5] += got is None
         for (name, thr), projs in sorted(acc.items()):
+            if name in down:
+                continue
             base = {**stamp, "use": use, "backend": name, "thr": thr, "baseline": basis, "held": sum(v[0] for v in projs.values())}
             tot = [sum(v[i] for v in projs.values()) for i in range(6)]
             fmt = lambda t, extra: {**base, **extra, "n": t[0], "answered": t[1],  # noqa: E731
@@ -1408,7 +1420,7 @@ def loo_models(p, rows=None, contestants=None, thresholds=LOO_THRS, seed=LOO_SEE
     os.makedirs(os.path.dirname(path), exist_ok=True)
     for r in out:
         c.append_line(path, json.dumps(r) + "\n")
-    return {"run": run, "rows": out, "adopt": _verdicts(out)}
+    return {"run": run, "rows": out, "adopt": _verdicts(out), "down": sorted(down)}
 
 
 def _verdicts(rows):
@@ -5134,6 +5146,7 @@ def cmd_exam(args):
                 prev = _loo_runs(p)
                 res = loo_models(p, contestants=cons, cap=args.limit or BENCH_CAP)
                 msg = [f"{res['run']}: {len(res['rows'])} rows written to {BENCH}"] + [
+                    f"down, not scored (its last real rows stand): {', '.join(res['down'])}"] * bool(res["down"]) + [
                     f"{u}: {'ADOPT' if v['adopt'] else 'shadow'} {v['backend']} thr={v['thr']} ({v['why']})"
                     for u, v in res["adopt"].items()]
                 if getattr(args, "adopt", False):
