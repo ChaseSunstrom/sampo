@@ -1,8 +1,11 @@
 """T-0808: run.py takes test module names positionally, so fm check affected can hand it {names}."""
+import atexit
 import contextlib
 import os
 import re
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -10,10 +13,15 @@ sys.path.insert(0, os.path.dirname(__file__))
 import run  # noqa: E402
 
 
+_CACHE = tempfile.mkdtemp(prefix="run-test-cache-")  # T-4268: a run's record never lands in the real run-cache folder
+atexit.register(shutil.rmtree, _CACHE, True)
+
+
 def in_process(**env):
     """T-3572: env for run.main() called in this process: no fork server of its own (it would outlive the call until
-    the class exits) and no FOREMAN_FORK_SERVER left behind for the class's later tests."""
-    return mock.patch.dict(os.environ, {"FOREMAN_FORK_CLI": "0", **env})
+    the class exits) and no FOREMAN_FORK_SERVER left behind for the class's later tests. T-4268: its own cache folder
+    (run.main writes the run's record there)."""
+    return mock.patch.dict(os.environ, {"FOREMAN_FORK_CLI": "0", "XDG_CACHE_HOME": _CACHE, **env})
 
 
 def nested(args, seed=None, env=None):
@@ -28,7 +36,9 @@ def nested(args, seed=None, env=None):
             with open(p, "w") as f:
                 json.dump(seed, f)
         r = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "run.py"), *args],
-                           capture_output=True, text=True, timeout=300, env=dict(os.environ, FM_TEST_TIMES=p, FOREMAN_NO_TEST_CACHE="1", **(env or {})))
+                           capture_output=True, text=True, timeout=300,
+                           env=dict(os.environ, FM_TEST_TIMES=p, FOREMAN_NO_TEST_CACHE="1", XDG_CACHE_HOME=d,  # T-4268: its record too
+                                    **(env or {})))
         return r, (json.load(open(p)) if os.path.exists(p) else None)
 
 
@@ -578,7 +588,9 @@ class PerTestJobs(unittest.TestCase):
                 with open(victim) as f:
                     self.assertEqual(f.read(), "mine")
                 self.assertEqual(run.load_times(), {"a.B": 1.0})
-        self.assertIn(str(getattr(os, "getuid", lambda: 0)()), os.path.basename(run.times_path()))
+        if run._common():  # T-4268: the repo's file, shared by its worktrees (no git: the legacy temp file)
+            self.assertTrue(run.times_path().endswith(".times.json"), run.times_path())
+        self.assertIn(str(getattr(os, "getuid", lambda: 0)()), os.path.basename(run.legacy_times_path()))
 
     def test_times_round_trip_and_a_corrupt_file_is_empty(self):
         import tempfile

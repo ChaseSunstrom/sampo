@@ -5550,7 +5550,7 @@ def _cmd_check(args):
     c.wait_for_load("sampo check")  # T-2797: gates that can only time out wait; the run limit then scales with the load
     base_timeout = args.timeout if args.timeout > 0 else None
     before = _last_check_results(p, act.id if act else None)
-    results, notes, skipped, reruns = [], {}, {}, []
+    results, notes, skipped, reruns, run_ids = [], {}, {}, [], {}  # run_ids: gate -> the id its run.py stamps (T-4268)
     for cmd in _gate_order(p, checks):  # T-0047: timed; a failure is rerun once (flaky) and compared with the last run before the task
         gate_skip = None if args.fresh else _paths_unchanged(p, cmd, check_paths.get(cmd), tree)
         if gate_skip:  # T-0126: recorded as a pass carrying its real run's time and tree
@@ -5559,9 +5559,10 @@ def _cmd_check(args):
             continue
         guard_stored(p, act, cmd)  # T-0901 review: a stored gate (fm smoke set cmd adds one too)
         t0 = time.monotonic()
+        run_ids[cmd] = c.new_run_id(cmd)  # T-4268: its record is the one stamped with this id, never another gate's
         gate_timeout = _gate_deadline(cmd, base_timeout)
         code, output = c.run_command(p.root, cmd, gate_timeout, env=env, priority=not p.lane,
-                                     niced=bool(p.lane))  # T-3614; T-4197: a lane's gates yield to the user's session
+                                     niced=bool(p.lane), run_id=run_ids[cmd])  # T-3614; T-4197: a lane's gates yield to the user's session
         if code == 124 and (hl := c.host_load()):  # T-3174: a timeout says the load it ran under
             output += f"\n(load {hl[0] / hl[1]:.1f} per CPU, deadline {gate_timeout:g}s)"
         slow = time.monotonic() - t0 > _slow_gate()  # a slow gate isn't rerun whole: its failure costs enough already
@@ -5647,6 +5648,7 @@ def _cmd_check(args):
         lines.append(f"{'✗' if code else '✓'} {cmd} → {c.run_result(code, output)} ({secs:.1f} s)"
                      + (f" — {notes[cmd]}" if cmd in notes else ""))
         lines += c.class_lines(c.failed_classes(output)) if code else []  # T-3397: every one, after the summary line
+        lines += _named(p.root, cmd, run_ids.get(cmd), code, output)  # T-4268: what run.py recorded, if the output lost it
         names = c.failing_tests(output) if code else []  # T-1884: the failing test and how, not the summary's tail
         tail = ([f"failing: {', '.join(names[:5])}" + (f" (+{len(names) - 5} more)" if names[5:] else "")]
                 + c.failure_excerpt(output, names[0], 600).splitlines()[-10:] if names
@@ -5661,6 +5663,19 @@ def _cmd_check(args):
                            for cmd, code, _, s in results], "failed": failed, "wrote": wrote, "wrote_paths": wrote_paths, "skipped_tests": skip},
         "\n".join(lines))
     return 1 if failed else 0
+
+
+def _record_lines(root, cmd, run_id, n=12):
+    """T-4268: the failed tests in the record the gate's own run.py left (stamped `run_id`), indented, at most n lines
+    (a timed-out or piped check still says what failed, a red gate which assertion); [] when there is none."""
+    got = c.record_lines(root, cmd, run_id)
+    return ["    " + x for x in got[:n]] + ([f"    ({len(got) - n} more: python3 plugin/tests/run.py --last)"] if got[n:] else [])
+
+
+def _named(root, cmd, run_id, code, output):
+    """T-4268: the record's lines for a red gate whose output names no failed class (killed at its deadline, piped
+    through tail); [] for a green gate or one whose output already names them."""
+    return _record_lines(root, cmd, run_id) if code and not c.failed_classes(output) else []
 
 
 def _gate_deadline(cmd, timeout):
@@ -6466,9 +6481,11 @@ def _check_affected(p, args):
                     f"gates: sampo check\n! {_left_out(skip)}" if skip else
                     f"No tests linked to the {len(changed)} changed file(s); run the full gates: sampo check") + note
                    + sd_fail) or int(bool(sd_fail))
+    run_id = c.new_run_id(cmd)  # T-4268: the record its run.py leaves is stamped with this id
     code, output = c.run_command(p.root, cmd, c.load_scaled(args.timeout if args.timeout > 0 else None),
-                                 env=_skip_env(skip), niced=bool(p.lane))  # T-4197: a lane's affected tests
+                                 env=_skip_env(skip), niced=bool(p.lane), run_id=run_id)  # T-4197: a lane's affected tests
     exit_code = code or int(bool(sd_fail))
+    named = _named(p.root, cmd, run_id, code, output)  # a deadline or a pipe lost the names: the record has them
     if args.evidence:  # T-1747: recorded as what it is, never as the full gates (close still needs fm check)
         result = c.run_result(exit_code, output)
         if code and (every := c.failed_classes(output)):  # T-3397: the names first, they survive the cut
@@ -6483,6 +6500,7 @@ def _check_affected(p, args):
                "hubs": hubs, "self_docs": sd_json},
         f"{'✗' if code else '✓'} affected tests only ({len(tests)}): {cmd} → {c.run_result(code, output)}"
         + "".join("\n" + l for l in c.class_lines(c.failed_classes(output))) * bool(code)  # T-3397: every one
+        + "".join("\n" + l for l in named)
         + "".join(f"\n  hub {f}: " + (f"{len(i['tests'])} test(s) by {', '.join((i['symbols'] or [])[:6]) or 'its path'}"
                                       if i["tests"] is not None else f"all {i['linked']} linked (change not mappable)")
                   for f, i in hubs.items())

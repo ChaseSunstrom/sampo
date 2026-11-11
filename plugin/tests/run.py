@@ -59,6 +59,7 @@ SLOT_ENV = "SAMPO_SLOT"  # T-3252: set in a class's children, so a run.py inside
 OPERATOR_SWITCHES.add("NO_JOIN")  # T-4267: a run's own switch, never a test's
 OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is never a test's
 OPERATOR_SWITCHES.add("TOWER_GAP")  # T-3504: the tower-update push gap; a test that needs it sets it itself
+OPERATOR_SWITCHES.add("TEST_RUN_ID")  # T-4268: the check's id for its gate's record; a nested run in a class never gets it
 OPERATOR_SWITCHES.add("BENCH_MIN_FREE_GB")  # T-3747: the operator's disk budget for bench builds; the low-disk test sets its own
 # T-4239: a land's ship pin, caps and line stamp are the land's (its gate runs these tests inside it), never a test's
 OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND_STAMP"})
@@ -315,30 +316,54 @@ def keeps_whole(t):
             or any(hasattr(m, n) for n in ("setUpModule", "tearDownModule")))
 
 
-def times_path():
-    return os.environ.get("FM_TEST_TIMES") or os.path.join(
+def legacy_times_path():
+    """T-3166's file: one per tree in the temp folder, lost on a reboot. T-4268: only read, never written."""
+    return os.path.join(
         tempfile.gettempdir(), f"fmtest-times-{getattr(os, 'getuid', lambda: 0)()}-{hashlib.sha1(os.fsencode(HERE)).hexdigest()[:10]}.json")
 
 
-def load_times():
-    """T-3166: seconds each job took the last time it ran ({job id: s}); {} when there is none yet."""
+def times_path():
+    """T-4268: the repo's own file in the shared run-cache folder, so a worktree made today schedules by the repo's
+    history; the legacy temp file outside git."""
+    if env := os.environ.get("FM_TEST_TIMES"):
+        return env
+    common = _common()
+    return os.path.join(_cache_dir(), repo_id(common) + ".times.json") if common else legacy_times_path()
+
+
+def _read_times(path):
     try:
-        with open(times_path()) as f:
+        with open(path) as f:
             if os.fstat(f.fileno()).st_uid != getattr(os, "getuid", lambda: 0)():  # someone else's file in a shared /tmp
                 return {}
             d = json.load(f)
         return {k: float(v) for k, v in d.items()}
+    except FileNotFoundError:
+        return None
     except Exception:  # OverflowError, RecursionError ...: times only order the jobs
         return {}
 
 
+def load_times():
+    """T-3166: seconds each job took the last time it ran ({job id: s}); {} when there is none yet. T-4268: while the
+    shared file is missing, the legacy temp file's."""
+    got = _read_times(times_path())
+    if got is None and not os.environ.get("FM_TEST_TIMES"):
+        got = _read_times(legacy_times_path())
+    return got or {}
+
+
 def save_times(new):
     """Merged into the file's, so a run of a few modules keeps the rest's; capped, newest kept."""
-    d = load_times()
-    for k, v in new.items():
-        d.pop(k, None)
-        d[k] = round(v, 2)
-    _write_json(times_path(), dict(list(d.items())[-20000:]))
+    path = times_path()
+    with _cache_lock(path):  # T-4268: every worktree of the repo writes this file: the read-merge-write is one step
+        d = load_times()
+        for k, v in new.items():
+            d.pop(k, None)
+            d[k] = round(v, 2)
+        with contextlib.suppress(OSError):
+            os.makedirs(os.path.dirname(path), exist_ok=True)  # the shared folder may not exist yet
+        _write_json(path, dict(list(d.items())[-20000:]))
 
 
 def _write_json(path, d):
@@ -380,8 +405,225 @@ def _cache_base():
     return os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache")
 
 
+def _cache_dir():
+    return os.path.join(_cache_base(), "sampo", "run-cache")
+
+
+def repo_id(common):
+    return hashlib.sha1(os.fsencode(common)).hexdigest()[:16]
+
+
 def cache_path(repo):
-    return os.path.join(_cache_base(), "sampo", "run-cache", hashlib.sha1(os.fsencode(repo)).hexdigest()[:16] + ".json")
+    return os.path.join(_cache_dir(), repo_id(repo) + ".json")
+
+
+_COMMON = {}
+
+
+def _where():
+    """(this worktree's root, the repo's shared git folder as tree() names it: the same for every worktree), read
+    without hashing the tree; None outside git."""
+    if HERE not in _COMMON:
+        try:
+            repo = _git(HERE, "rev-parse", "--show-toplevel").strip()
+            _COMMON[HERE] = (os.path.realpath(repo),
+                             os.path.realpath(os.path.join(repo, _git(repo, "rev-parse", "--git-common-dir").strip())))
+        except (OSError, subprocess.SubprocessError):
+            _COMMON[HERE] = None
+    return _COMMON[HERE]
+
+
+def _common():
+    """The repo's shared git folder; None outside git."""
+    return (_where() or (None, None))[1]
+
+
+# T-4268: one JSON per run under <repo id>.runs/, named by end time then pid (a whole-suite run's with its worktree's
+# hash): what ran, on which tree, which classes failed and how; `run.py --last` prints the newest one written from this
+# worktree. Green runs too: "this selection was green here".
+KEEP_RUNS, KEEP_WHOLE = 200, 100  # the newest runs, and beyond them the newest whole-suite run of up to 100 worktrees
+TEXT_MAX, FAILS_MAX, PER_CLASS, NOT_RUN_MAX = 2000, 60, 10, 50
+RUN_NAME = re.compile(r"(\d{20})-(\d+)(?:-w([0-9a-f]{8}))?\.json")
+RUN_TEMP = re.compile(r"\d{20}-\d+(?:-w[0-9a-f]{8})?\.json\.\d+")  # _write_json's temp file, left by a crash
+TEMP_S = 3600
+RUN_ID_ENV = "SAMPO_TEST_RUN_ID"  # T-4268: the check's id for its gate; the record carries it, no class or child run gets it
+
+
+def runs_dir(common):
+    return os.path.join(_cache_dir(), repo_id(common) + ".runs")
+
+
+def tree_id(blobs):
+    """The files' content alone (not HEAD or the tags, not Sampo's state, which every sampo call rewrites): a commit of
+    what was tested is still that tree."""
+    return hashlib.sha1("".join(f"{p}\0{b}\n" for p, b in sorted(blobs.items()) if p[:1] != "\0" and not p.startswith(STATE)
+                                ).encode(errors="surrogateescape")).hexdigest()[:16]
+
+
+def failures(cid, err):
+    """[{class, test, first, text}] for a failed class's output: one per FAIL:/ERROR: block, `first` the exception's
+    line (else the block's last), `text` the block's last TEXT_MAX characters; output with no block (an import error,
+    a kill) is one entry with its last line."""
+    out = []
+    for name, block in re.findall(r"(?m)^(?:FAIL|ERROR): (\w+) \([^\n]*\)\n-+\n(.*?)(?=\n=+\n|\n-+\nRan |\Z)", err, re.S):
+        lines = [x for x in block.splitlines() if x.strip()]
+        exc = next((x for x in lines if re.match(r"(?:[\w.]+\.)?\w*(?:Error|Exception|Failure|Interrupt)\b", x)), None)
+        out.append({"class": cid, "test": name, "first": (exc or (lines[-1] if lines else "")).strip()[:300],
+                    "text": block.strip()[-TEXT_MAX:]})
+    if not out:
+        tail = [x.strip() for x in err.splitlines() if x.strip() and not set(x.strip()) <= set("-=~^")]
+        out.append({"class": cid, "test": "", "first": (tail[-1] if tail else "no output")[:300],
+                    "text": err.strip()[-TEXT_MAX:]})
+    return out[:PER_CLASS]
+
+
+def fail_entries(results, owner, cpu_red):
+    """The failures() of each failed job, each under its class (owner: a split class's job is one test of it), then a
+    class entry for each CPU-over-margin red class."""
+    out = []
+    for job, _, err, _, _ in results:
+        cid = owner(job)
+        for f in failures(cid, err):
+            if not f["test"] and job != cid and job.startswith(cid + "."):
+                f["test"] = job[len(cid) + 1:]  # a kill or an import error of one test's job: that test
+            out.append(f)
+    return out + [{"class": c, "test": "", "first": f"CPU over its margin (T-3757): {s:.1f} CPU s, {why}", "text": "",
+                   "own": True} for c, s, _, why in cpu_red]
+
+
+def _redactor():
+    """Sampo's redactor, imported only now (a failure to write down) from the lib beside the tests folder; None for a
+    copy of run.py alone (test_check_paths), where nothing is known to be safe to keep."""
+    lib = os.path.join(os.path.dirname(HERE), "lib")
+    if not os.path.isdir(os.path.join(lib, "sampo")):
+        return None
+    try:
+        if lib not in sys.path:
+            sys.path.insert(0, lib)
+        from sampo import core
+        return core.redact
+    except Exception:
+        return None
+
+
+def safe_entries(entries, redact):
+    """The entries as they may be written: failure text through `redact`; with none (or one that raises), the class and
+    test names only. A line run.py made itself (`own`, the CPU margin) is kept."""
+    out = []
+    for e in entries:
+        e = dict(e)
+        own = e.pop("own", False)
+        if not own:
+            try:
+                e["first"], e["text"] = ((redact(e.get("first", ""))[:300], redact(e.get("text", ""))) if redact
+                                         else ("", ""))
+            except Exception:
+                e["first"], e["text"] = "", ""
+        out.append(e)
+    return out
+
+
+def record_run(common, rec):
+    """The run's record written whole under its own name (atomic), then the folder pruned."""
+    folder = runs_dir(common)
+    with contextlib.suppress(OSError):
+        os.makedirs(folder, exist_ok=True)
+    wt = rec.get("worktree")
+    tag = f"-w{hashlib.sha1(os.fsencode(wt)).hexdigest()[:8]}" if rec.get("whole") and wt else ""
+    _write_json(os.path.join(folder, f"{time.time_ns():020d}-{os.getpid()}{tag}.json"), rec)
+    prune_runs(folder)
+
+
+def prune_runs(folder):
+    """Records past the newest KEEP_RUNS removed, except the newest whole-suite one of each worktree (a pile of -k runs
+    must not push out the one red full run); a crashed write's temp file over an hour old removed. Only names this
+    module makes: a folder beside them (running/) or a file another writer adds is left alone."""
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    recs = sorted(n for n in names if RUN_NAME.fullmatch(n))
+    keep, wholes = set(recs[-KEEP_RUNS:]), set()
+    for n in reversed(recs):
+        w = RUN_NAME.fullmatch(n).group(3)
+        if w and w not in wholes and len(wholes) < KEEP_WHOLE:
+            wholes.add(w)
+            keep.add(n)
+    now = time.time()
+    for n in names:
+        with contextlib.suppress(OSError):
+            q = os.path.join(folder, n)
+            if (n in recs and n not in keep) or (RUN_TEMP.fullmatch(n) and now - os.lstat(q).st_mtime > TEMP_S):
+                os.unlink(q)
+
+
+def last_record(common, tree=None, worktree=None, whole=None, run_id=None):
+    """The newest record that matches every filter given, or None: `tree` its content id at the start or the end of
+    the run, `worktree` the path it was written from, `whole` a whole-suite run, `run_id` the check's id."""
+    folder = runs_dir(common)
+    try:
+        names = sorted((n for n in os.listdir(folder) if RUN_NAME.fullmatch(n)), reverse=True)
+    except OSError:
+        return None
+    if whole:  # the names say it: no need to read the others
+        names = [n for n in names if RUN_NAME.fullmatch(n).group(3)]
+    for n in names:
+        try:
+            with open(os.path.join(folder, n)) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):  # half-written or removed by a run beside this one: the next
+            continue
+        if (isinstance(rec, dict)
+                and (tree is None or (tree and tree in (rec.get("tree"), rec.get("tree_end"))))
+                and (worktree is None or rec.get("worktree") == worktree)
+                and (not whole or rec.get("whole"))
+                and (run_id is None or rec.get("run_id") == run_id)):
+            return rec
+    return None
+
+
+def record_lines(rec):
+    """`red at <time>: <class>.<test>: <first>` per failure, or `green at <time> (N tests, M more green in the cache;
+    selection: <what was asked>)`."""
+    at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(rec.get("t") or 0))
+    if rec.get("ok"):
+        bits = [f"{rec.get('ran', 0)} tests"] + ([f"{rec['cached']} more green in the cache"] if rec.get("cached") else [])
+        return [f"green at {at} ({', '.join(bits)}{'; selection: ' + rec['selection'] if rec.get('selection') else ''})"]
+    out = [f"red at {at}: {f['class']}{'.' + f['test'] if f.get('test') else ''}{': ' + f['first'] if f.get('first') else ''}"
+           for f in rec.get("failed") or []]
+    if rec.get("not_run"):
+        out.append(f"red at {at}: stopped at its deadline, {rec.get('n_not_run') or len(rec['not_run'])} classes not run")
+    return out or [f"red at {at}: no failure line recorded"]
+
+
+def show_last(a):
+    """--last: print the newest record written from this worktree (no tree read), its short tree id after it; --same-tree
+    the newest of this content (reads the tree), --any-tree of the repo, --run-id the one stamped by that check's id.
+    Runs nothing, takes no slot. A green selection is followed by the worktree's newest whole-suite run when that is red."""
+    where = _where()
+    rec, what = None, "this worktree"
+    if where and a.run_id:
+        rec, what = last_record(where[1], run_id=a.run_id), f"run id {a.run_id}"
+    elif where and a.any_tree:
+        rec, what = last_record(where[1]), "any worktree of this repo"
+    elif where and a.same_tree:
+        got = tree()
+        rec, what = (last_record(where[1], tree=tree_id(got[1])) if got else None), "this tree's content"
+    elif where:
+        rec = last_record(where[1], worktree=where[0])
+    if not rec:
+        sys.stderr.write(f"run.py: no record of a run for {what}\n")
+        return 3
+    if a.json:
+        print(json.dumps(rec, indent=1))
+        return 0
+    out = record_lines(rec) + [f"tree {rec['tree'][:12]}" if rec.get("tree") else "tree not read (found by worktree path)"]
+    if rec.get("ok") and not rec.get("whole") and rec.get("worktree"):
+        old = last_record(where[1], worktree=rec["worktree"], whole=True)
+        if old and not old.get("ok"):
+            out += [f"{x} (newest whole-suite run)" for x in record_lines(old)[:5]]
+    print("\n".join(out))
+    return 0
 
 
 def load_cache(path):
@@ -439,7 +681,10 @@ def save_cache(path, new, gen):
             q = os.path.join(folder, name)
             with contextlib.suppress(OSError):
                 if q not in (path, path + ".lock") and time.time() - os.lstat(q).st_mtime > PRUNE_S:
-                    os.unlink(q)
+                    if name.endswith(".runs") and os.path.isdir(q) and not os.path.islink(q):
+                        shutil.rmtree(q, ignore_errors=True)  # T-4268: a repo's run records, unused as long
+                    else:
+                        os.unlink(q)
 
 
 def _floor():
@@ -1485,6 +1730,15 @@ def parse(argv=None):
                          "across N jobs; biggest-first order keeps the slices even)")
     ap.add_argument("--sandbox", action="store_true", help="run each class in Sampo's job sandbox (T-3222): the repo "
                     "read-only, only its own temp folder writable, no network; plain, with a note, where it can't run")
+    ap.add_argument("--last", action="store_true", help="print the newest record of a run written from this worktree (red: "
+                    "each failed test and its first line; green: its test count, and the selection it ran) and run "
+                    "nothing, reading no tree (T-4268); exit 3 when none")
+    ap.add_argument("--same-tree", action="store_true", help="with --last: the newest record of a run on this tree's "
+                    "content now, from any worktree (reads the tree)")
+    ap.add_argument("--any-tree", action="store_true", help="with --last: the newest record of any worktree of this repo")
+    ap.add_argument("--run-id", metavar="ID", help="with --last: the record stamped with this id (the check's, "
+                    "SAMPO_TEST_RUN_ID), of any worktree")
+    ap.add_argument("--json", action="store_true", help="with --last: the whole record as JSON")
     ap.add_argument("names", nargs="*", help="test module names (T-0808: fm check affected's {names}); with -k, only "
                                              "their tests that match a -k (T-1994)")
     a = ap.parse_intermixed_args(argv)  # names may sit on either side of -k
@@ -1513,6 +1767,11 @@ def main():
         pass
     a = parse()
     ap = a
+    if a.last:  # T-4268: a reader: no slot, no sweep, no test
+        return show_last(a)
+    run_id = _env(RUN_ID_ENV)  # T-4268: the check's id for this gate: kept for the record, out of every class's environment
+    for k in (RUN_ID_ENV, "FOREMAN_" + RUN_ID_ENV[len("SAMPO_"):]):
+        os.environ.pop(k, None)
     if any(re.search(r"\s", k) for k in a.k + a.names):  # T-0357: '-k "a or b"' matched nothing and failed only at the end
         ap.error("-k matches a substring of test ids; repeat -k for each pattern (-k test_guard -k test_cli)")
     if a.sandbox:
@@ -1556,6 +1815,7 @@ def main():
     skip, drawn, got, ident, joined = {}, set(), None, {}, {}
     if not (a.k or (_env(NO_CACHE) or "0") != "0" or _env(SLOT_ENV)):
         got = tree()
+    rtree, end_tree = got, None  # T-4268: the tree the cache read, for the record: a run that read none records no content id
     if got:
         cache, value = cache_path(got[2]), values(*got[:2])
         COVERED.clear()
@@ -1684,7 +1944,7 @@ def main():
             cov.setdefault(owner(job), []).append(COVERED.get(job))  # None: a job nothing recorded for
         new = {c: n for c, (ok, n) in ran.items()
                if ok and None not in cov[c] and n == size.get(c) == len(parts.get(c, ()))}
-        again = tree() if new else None  # a file edited while the run ran: its class ran the old code or the new
+        again = end_tree = tree() if new else None  # a file edited while the run ran: its class ran the old code or the new
         if again and again[0] == got[0]:
             base, after = shared(*got[:2]), values(*again[:2])
             paths = {c: sorted(base.union(*(covered(t, *got[:2]) for t in cov[c]))) for c in new}
@@ -1736,6 +1996,25 @@ def main():
     real = [r for r in failed if r not in stopped]
     names = [r[0] for r in real] + [c for c, *_ in cpu_red if c not in {r[0] for r in real}]
     said = ", ".join(names[:5]) + (f", +{len(names) - 5} more" if len(names) > 5 else "")
+    try:  # T-4268: the run's record, red or green, for `run.py --last` and the check's naming of what failed; never the
+        # run's result (not for a test's own run.py in a slot, nor outside git)
+        if not _env(SLOT_ENV) and (where := _where()):
+            entire = not (a.names or a.k or a.p or a.shard or skipped())  # else a selection: its green says less
+            sel = " ".join(sys.argv[1:]) + (f" (left out: {', '.join(sorted(skipped()))})" if skipped() else "")
+            end_tree = end_tree or (tree() if rtree else None)  # the tree after the run: a test may leave a file
+            ents = fail_entries(real, owner, cpu_red)
+            ents = safe_entries(ents, _redactor() if any(e["text"] or e["first"] for e in ents if not e.get("own")) else None)
+            made = {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "t": round(time.time(), 3),
+                    "worktree": where[0], "tree": tree_id(rtree[1]) if rtree else "",
+                    "tree_end": tree_id(end_tree[1]) if end_tree else "", "run_id": run_id or "",
+                    "argv": sys.argv[1:], "whole": entire, "selection": "" if entire else sel.strip(),
+                    "ok": not failed and not cpu_red and bool(total or skip), "ran": total, "cached": sum(skip.values()),
+                    "n_failed": len(names), "n_not_run": len(stopped),
+                    "failed": ents[:FAILS_MAX],
+                    "not_run": [r[0] for r in stopped][:NOT_RUN_MAX]}
+            record_run(where[1], {**made, "lines": record_lines(made)})  # the lines too: a caller prints them as they are
+    except Exception as e:
+        sys.stderr.write(f"run.py: the run's record was not written (T-4268): {repr(e)[:200]}\n")
     sys.stderr.write("".join(f"\n  failed class: {n}" for n in names) + ("\n" if names else ""))  # T-3397: all of them, one per line
     me = resource.getrusage(resource.RUSAGE_SELF) if resource else None
     spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's

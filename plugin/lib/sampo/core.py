@@ -1407,11 +1407,12 @@ def nice_argv(argv, level=NICE_LANE):
     return [nice, "-n", str(level), *argv] if nice else list(argv)
 
 
-def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False):
+def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None):
     """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). stdin is
     /dev/null unless a caller hands it one it knows won't block (T-1766). priority: its tests/run.py takes freed CPU
     slots ahead of lane runs (T-3614), unless SAMPO_SLOT_PRIORITY is already set (=0 opts out). niced: the command
-    starts at nice 10 (T-4197), after normalize_verify has read it."""
+    starts at nice 10 (T-4197), after normalize_verify has read it. run_id: stamped on the record its tests/run.py
+    leaves (T-4268), so the caller reads that run's record and no other."""
     stdin = subprocess.DEVNULL if stdin is None else stdin
     root, cmd, _ = normalize_verify(root, cmd)  # T-3411
     if root and os.path.isdir(root):
@@ -1420,6 +1421,8 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         env = {k: v for k, v in os.environ.items() if k != "FOREMAN_SKIP_TESTS"}
     if priority and not env.get(SLOT_PRIORITY):
         env = {**env, SLOT_PRIORITY: "1"}
+    if run_id:
+        env = {**env, RUN_ID_ENV: str(run_id)}
     if timeout:  # T-3338: tests/run.py ends its own run under the timeout, naming what was slow, not killed unnamed
         env = {**env, "FM_RUN_DEADLINE": str(max(1, int(timeout) - min(30, int(timeout) // 10)))}
     try:  # its own process group, so a timeout kills the servers and workers it started too; no stdin to wait on
@@ -4966,6 +4969,35 @@ def class_lines(names, indent="    ", n=50):
     """T-3397: the failing names one per line (the first n, then a note), for a gate's printed result."""
     shown, note = more(list(names), n, "sampo check --json")
     return [indent + x for x in shown] + ([indent + "(+" + note + ")"] if note else [])
+
+
+RUN_ID_ENV = "SAMPO_TEST_RUN_ID"  # T-4268: the id a gate's tests/run.py stamps on its record (run.py pops it at start)
+_RUN_PY = lazy(r"(?<![\w.-])tests/run\.py(?![\w.])")  # not `pytest tests/test_run.py`; lazy: LazyPatterns (T-2020)
+
+
+def new_run_id(cmd):
+    """T-4268: a fresh id for a gate that runs tests/run.py (the id its record will carry), else None."""
+    return os.urandom(8).hex() if cmd and _RUN_PY.search(cmd) else None
+
+
+def record_lines(root, cmd, run_id=None):
+    """T-4268: `red at <time>: <class>.<test>: <first line>` for each failure in the record the gate's own tests/run.py
+    left (the one stamped `run_id`, `run.py --last --run-id`, nothing run), for a gate whose own output lost its names
+    (killed at its deadline, piped through tail). [] for no id, a command that isn't run.py, no record or a green one:
+    never another gate's record."""
+    import subprocess
+    run_py = os.path.join(root or "", "plugin", "tests", "run.py")
+    if not run_id or not _RUN_PY.search(cmd or "") or not os.path.isfile(run_py):
+        return []
+    try:
+        r = subprocess.run([sys.executable, run_py, "--last", "--json", "--run-id", str(run_id)], cwd=root,
+                           capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
+        rec = json.loads(r.stdout) if r.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return []
+    if not isinstance(rec, dict) or rec.get("ok"):
+        return []
+    return [redact(str(x))[:400] for x in (rec.get("lines") or [])[:50]]
 
 
 def failure_excerpt(output, test, most=700):

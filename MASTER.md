@@ -429,7 +429,7 @@ The notes below are grouped; each group folds. `sampo outline MASTER.md` lists t
 | [Dev loop and install](#dev-loop-and-install) | Edit, reload, test; the shell, time travel, MCP, plugin workflows, integrations, install and health checks, plugins, Claude Code and portability notes | 15 |
 | [Tasks, batches and backlog](#tasks-batches-and-backlog) | Batches, capture nudges, inbox and backlog tools, waits, many ids at once, tours, away and todo, queue preview and ranking | 15 |
 | [Lanes and builders](#lanes-and-builders) | Linked worktrees, defect classes, merge-prone files, changed text still found elsewhere, stalled and dropped builders, claims, racing builders, cut-off lane repair, overlapping lanes | 10 |
-| [Evidence, gates and verification](#evidence-gates-and-verification) | Evidence, gate runs and reuse, affected tests, close gates, hunk proofs, audits, second reads, test claims, print-mode holds, recurring failures | 19 |
+| [Evidence, gates and verification](#evidence-gates-and-verification) | Evidence, gate runs and reuse, affected tests, close gates, hunk proofs, audits, second reads, test claims, print-mode holds, recurring failures, run records | 20 |
 | [Guard and security](#guard-and-security) | The guard's reads, scripts, oracle, mutation and ratchets; credentials, stored commands, install checks, approvals, outbound, sandbox | 19 |
 | [Hooks, notes and steering](#hooks-notes-and-steering) | What the hooks say and when: steering as data, session map, tripwires, write validators, outside text, breakers, postures | 11 |
 | [Recall, lessons and self-improvement](#recall-lessons-and-self-improvement) | Recall, lessons, taste, trials, drafts, friction, evolve, scout, backtests, repeated work, forge, outside view | 24 |
@@ -515,6 +515,7 @@ Each note below is one index line: the first words of its full note and a link t
 - Evidence and gates: `sampo task evidence ID --step N --run "<cmd>"` runs the… [→ ops-1](docs/map/ops-1.md)
 - Affected tests per runner (T-1131, T-1135)… [→ ops-1](docs/map/ops-1.md)
 - Auto-evidence: a Bash command that is exactly an acceptance criterion's verify… [→ ops-1](docs/map/ops-1.md)
+- Run records (T-4268): every `tests/run.py` run leaves one JSON record in the shared run cache, and `python3 plugin/tests/run.py --last` prints the failed classes and first failure lines of this tree's newest run without running anything. [→ ops-1](docs/map/ops-1.md)
 - Cheaper runs: `sampo check` reuses the newest full run when it was on the exact… [→ ops-1](docs/map/ops-1.md)
 - Verification memory: a FIX task can't be done without red→green proof, a… [→ ops-1](docs/map/ops-1.md)
 - Recurring failures (T-2272): a failure signature recorded under 3+ distinct… [→ ops-1](docs/map/ops-1.md)
