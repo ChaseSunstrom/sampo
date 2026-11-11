@@ -282,6 +282,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmsplit` (`sampo task split`, `sampo task capsule`: a task's files partitioned… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmstack` (`sampo task finish --commit … --stack`: one commit per step group… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsteer`… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmsteermeter` (T-4181: `sampo steers [--all --tick]`, a local model reads each user message with the agent's… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmstories` (T-1640: `sampo stories CHART`, a component's state matrix: a JSON… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsync` (`sampo sync`) [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmtaste` (T-1537: `sampo looks`, the taste ledger in state/taste/looks.json… [→ files-lib-4](docs/map/files-lib-4.md)

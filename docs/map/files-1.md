@@ -54,6 +54,7 @@ Full entries for [MASTER.md](../../MASTER.md) section 3 (File map); MASTER.md ke
 | `plugin/workflows/` | `/sampo:review` and `/sampo:ideas` multi-agent workflows (T-0787) | Claude | on invoke | — |
 | `plugin/templates/` | `brief.md` template; `mcp-server/` (sampo mcp new); `web/index.html` and `tui/panel.py` (sampo new, T-1519) and `tui/cost_meter.py` (a sample sampo smith extension) | Claude | by fm | — |
 | `plugin/themes/` | optional Sampo color theme (`/theme`) | Claude | on selection | — |
+| `plugin/data/` | data files code reads, not code: `steer-roots.json` (T-4181), the roots the steer meter names a skipped thought by; a new root is a row here | Claude | by `sampo steers` | — |
 | `plugin/web/` | `live/`: the live page `sampo watch --web` serves (index.html, live.css, live.js, three bundled OFL fonts; T-2999), and the Board kit (board.js, board.css, board-tokens.json; T-3659) | the user's browser | while `sampo watch --web` runs | — |
 | `plugin/observability/` | telegraf OTel input, Grafana dashboard, setup notes | Claude | manual | — |
 | `plugin/evals/` | `claude plugin eval` cases with the rules embedded (protected) | Claude | `claude plugin eval` | `--max-cost-usd` |

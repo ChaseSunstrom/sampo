@@ -1,0 +1,60 @@
+{
+  "_note": "T-4181: what the steer meter's local model is taught. roots: the thoughts an avoidable steer is filed under, one line each (a new root is a row here, no code; 'none' for a message not avoidable and 'new' for an avoidable one no root names are always allowed). avoidable / not_avoidable: the rules of the judgement. examples: short worked cases, generic on purpose (no names, hosts or keys); add one whenever the reader misjudges a kind of message.",
+  "roots": [
+    {"id": "R1", "name": "read alone", "means": "the message was read alone, not against the conversation history and the user's standing instructions"},
+    {"id": "R2", "name": "symptom only", "means": "a symptom was fixed, not its cause or its siblings (the same fault elsewhere)"},
+    {"id": "R3", "name": "stopped to ask", "means": "the agent stopped for confirmation or a decision when the user had already given the authority"},
+    {"id": "R4", "name": "assumed state", "means": "the agent acted on assumed or remembered state, not on the live state it could have checked"},
+    {"id": "R5", "name": "ignored a redirect", "means": "the agent carried on after the user rejected the approach or redirected it"},
+    {"id": "R6", "name": "internal work first", "means": "the agent did internal work while a complaint or question from the user was waiting"},
+    {"id": "R7", "name": "runs is not done", "means": "'it runs' or 'tests pass' was taken as done, with no check that it does what the user asked"},
+    {"id": "R8", "name": "not visible", "means": "the work was done locally but the user cannot see, reach or use it"}
+  ],
+  "avoidable": [
+    "the person says they should not have needed to say it, or that it goes without saying",
+    "the person repeats or re-asks something they already said or asked",
+    "the person asks why something is not done, not pushed, not visible or still slow",
+    "the person asks for a status or a link the assistant could have given unasked",
+    "the person re-grants an authority they already gave",
+    "the person corrects a scope their earlier messages already made clear",
+    "the person points out a sibling of a fault (the same thing elsewhere) that a careful pass would have caught"
+  ],
+  "not_avoidable": [
+    "a genuinely new wish",
+    "new information only the person has (a key, a fact about their hardware, their plans)",
+    "an answer to a question the assistant asked",
+    "a taste reaction to something shown for the first time"
+  ],
+  "examples": [
+    {"said": "I fixed the bug and all the tests pass.",
+     "message": "does it actually work on the real page? I should not have to ask that",
+     "reply": {"kind": "steer", "avoidable": true, "missed_thought": "check the real page, not only the tests", "root": "R7", "why": "it called tests passing done", "concern": "the fix works for real", "surface": "the page"}},
+    {"said": "Added the export button and moved the menu.",
+     "message": "I told you to keep the old menu layout, why did you move it?",
+     "reply": {"kind": "steer", "avoidable": true, "missed_thought": "the earlier instruction said to keep the layout", "root": "R1", "why": "a message already said it", "concern": "keep the old layout", "surface": "the menu"}},
+    {"said": "The report is generated.",
+     "message": "where is it? send me the link",
+     "reply": {"kind": "steer", "avoidable": true, "missed_thought": "give the link with the news that it is ready", "root": "R8", "why": "the user could not reach it", "concern": "being able to open the report", "surface": "the report"}},
+    {"said": "Fixed the date on the first page.",
+     "message": "the other pages show the wrong date too, it goes without saying to fix them all",
+     "reply": {"kind": "steer", "avoidable": true, "missed_thought": "search for the same fault on the sibling pages", "root": "R2", "why": "only the reported page was fixed", "concern": "no wrong dates anywhere", "surface": "the other pages"}},
+    {"said": "Shall I go ahead and merge this?",
+     "message": "yes, you have full authority, stop asking me",
+     "reply": {"kind": "steer", "avoidable": true, "missed_thought": "the authority was already given, so act", "root": "R3", "why": "it asked what it was allowed to do", "concern": "fewer questions", "surface": "none"}},
+    {"said": "Done, everything is committed.",
+     "message": "why is it still slow?",
+     "reply": {"kind": "steer", "avoidable": true, "missed_thought": "measure the speed before calling it done", "root": "R7", "why": "the slowness was the point of the work", "concern": "a fast page", "surface": "the page load"}},
+    {"said": "Which port should the server listen on?",
+     "message": "use 8080",
+     "reply": {"kind": "answer", "avoidable": false, "missed_thought": "", "root": "none", "why": "an answer to its question", "concern": "none", "surface": "none"}},
+    {"said": "I added the chart.",
+     "message": "now also add a dark theme",
+     "reply": {"kind": "new-request", "avoidable": false, "missed_thought": "", "root": "none", "why": "a new wish", "concern": "a dark theme", "surface": "the whole app"}},
+    {"said": "The model download is running.",
+     "message": "this machine only has 8 GB of memory, so keep the model small",
+     "reply": {"kind": "steer", "avoidable": false, "missed_thought": "", "root": "none", "why": "a fact only the person had", "concern": "fit in memory", "surface": "the model choice"}},
+    {"said": "Here is the new dashboard.",
+     "message": "the colours feel too dull, make them bolder",
+     "reply": {"kind": "steer", "avoidable": false, "missed_thought": "", "root": "none", "why": "a taste reaction to something just shown", "concern": "bolder colours", "surface": "the dashboard"}}
+  ]
+}

@@ -4409,6 +4409,11 @@ def _stop(pl):
         cost.sweep_detached(p)
     except Exception:
         log_error("Stop", _tb())
+    try:  # T-4181: the steer meter's tick, detached and bounded: the hook only spawns it, never reads or asks a model
+        from sampo import steermeter
+        steermeter.spawn_detached(p)
+    except Exception:
+        log_error("Stop", _tb())
     try:  # T-2090: fm genesis live: task progress and exam results reach the site's Genesis page too
         from sampo import rune
         rune.kick(p)

@@ -164,6 +164,13 @@ def cmd_state(args):
             if n:
                 print(f"Noisiest trigger: {n['trigger']} ({n['dropped']} of {n['done'] + n['dropped']} closed dropped); "
                       f"it files at low priority (sampo triggers)")
+            try:  # T-4181: the steer meter's week, once 20 messages were read; a rollup never costs the status
+                from sampo import steermeter
+                line = steermeter.status_line(p)
+                if line:
+                    print(line)
+            except Exception:
+                pass
 
 
 def cmd_proof(args):
@@ -8278,6 +8285,12 @@ def _build_parser(only=None):
                                                       "each miss; roots clustered; remotes merged (T-3931)")
     s.add_argument("--local", action="store_true", help="why: this project only, no conductor remotes")
     s.add_argument("--no-capture", action="store_true", help="why: do not file one detector task per root")
+
+    s = add("steers", lazy("sampo.steermeter", "cmd_steers"), tier=("Reports", 1033),
+            help="the steer meter: messages the user typed that the agent could have avoided, per 100 read by a local "
+                 "model, by root and with a trend (T-4181)")
+    s.add_argument("--all", action="store_true", help="add the machine-wide rate and each project's")
+    s.add_argument("--tick", action="store_true", help="read the unread messages now (bounded; the Stop hook spawns this)")
 
     s = add("sync", lazy("sampo.sync", "cmd_sync"), tier=("Project and settings", 790),
             help="opt-in mirror of this project's briefs, decisions and research in the repo (.sampo/)")
