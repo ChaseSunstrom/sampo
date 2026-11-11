@@ -133,6 +133,32 @@ class FinishedLanesBatch(unittest.TestCase):
                                                          "which lacks main's new commit)")
         self.assertEqual(self.calls(0)[0], sorted(per_lane(self.p, self.briefs, 0)))
 
+    def test_fresh_a_commit_inside_the_cache_window_counts_for_a_caller_that_asks_fresh(self):
+        # T-4265: accept (and a land's --first) had just seen the lane's fix; the answer cached seconds before it said
+        # "not a finished lane", three times in one night
+        self.assertNotIn("empty", self.calls(0)[0])
+        with open(os.path.join(self.paths["empty"], "fix.py"), "w") as f:
+            f.write("v = 5\n")
+        git(self.paths["empty"], "add", "-A")
+        git(self.paths["empty"], "commit", "-q", "-m", "the fix")
+        self.assertNotIn("empty", self.calls(0)[0], "the pane's 2 s asks keep the cached answer")
+        self.assertIn("empty", c.finished_lanes(self.p, self.briefs, quiet_min=0, fresh=True))
+        self.assertIn("empty", self.calls(0)[0], "the fresh read is what the cache now holds")
+
+    def test_fresh_awaiting_merge_hands_it_on(self):
+        from sampo import lanes
+        with mock.patch.object(c, "finished_lanes", return_value=[]) as asked:
+            lanes.awaiting_merge(self.p, self.briefs, 0, fresh=True)
+            lanes.awaiting_merge(self.p, self.briefs)
+        self.assertEqual([k.kwargs.get("fresh", False) for k in asked.call_args_list], [True, False])
+
+    def test_fresh_accept_and_the_lands_first_ask_fresh(self):
+        import inspect
+        from sampo import train
+        asks = [ln for ln in inspect.getsource(train).splitlines() if "awaiting_merge(" in ln and ", 0" in ln]
+        self.assertGreaterEqual(len(asks), 2, asks)  # accept, the land's late --first lookup, and any later such ask
+        self.assertTrue(all("fresh=True" in ln for ln in asks), asks)
+
 
 if __name__ == "__main__":
     unittest.main()

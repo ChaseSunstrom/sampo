@@ -922,7 +922,8 @@ def _land(p, main, batch):
             late = set()
             if set(jump) - seen:
                 now = c.load_briefs(p)
-                late = (set(lanes.awaiting_merge(p, now, 0)) - seen) & set(jump)  # T-3824: named, so finished
+                # T-3824: named, so finished; T-4265: read fresh, its fix may be seconds old
+                late = (set(lanes.awaiting_merge(p, now, 0, fresh=True)) - seen) & set(jump)
                 sort(b for b in now if b.id in late)
                 seen |= late
             front = [t for t in jump if t in ready]
@@ -1159,7 +1160,7 @@ def accept(p, b, main, args):
     lines = [f"accept {b.id}: {len(rows)} audit(s) recorded ({', '.join(sorted({lens for lens, _, _ in rows}))})."]
     lines += [f"  the close will be refused: {g} (add it to the brief's Close fields before the land closes it)"
               for g in _close_gaps(b)]
-    if b.id not in lanes.awaiting_merge(p, c.load_briefs(p), 0):
+    if b.id not in lanes.awaiting_merge(p, c.load_briefs(p), 0, fresh=True):  # T-4265: the review just saw its tip
         lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
                      "fm lane list says what it waits on")
         return cli.out(args, {"id": b.id, "queued": False, "audits": len(rows)}, "\n".join(lines))

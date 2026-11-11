@@ -5279,14 +5279,15 @@ def _index_stat(path):
     return [st.st_mtime_ns, st.st_size]
 
 
-def finished_lanes(p, briefs, quiet_min=30):
+def finished_lanes(p, briefs, quiet_min=30, fresh=False):
     """T-2038: ids of open tasks whose lane has commits the main checkout's branch lacks, a clean tree and no commit for
     `quiet_min` minutes and no live builder: the work waits on fm lane merge (T-1670 and T-1784 sat for days).
     Cached FM_STALL_CACHE_S seconds (60) per lane set and main commit: the pane asks every 2 s, a merge clears it.
     T-3585: a refresh asked git three questions per lane (257 processes, ~2.5 s of git CPU at 83 lanes). One worktree
     list now reads every tip and one log walk of the tips past main says which are ahead and when each was committed,
     kept per lane on (tip, main); a clean tree is kept on (tip, index), so an unchanged lane costs no git process. The
-    cache holds facts, not ids, so quiet_min 0 and 30 callers share it."""
+    cache holds facts, not ids, so quiet_min 0 and 30 callers share it. T-4265: `fresh` skips the 60 s answer (each
+    lane's facts are still kept on its tip): accept and a land's --first have just seen the lane's new commit."""
     from sampo import bus
     # T-3907: a done task still holding its lane was closed inside it; unmerged commits make it wait like any other
     lanes = [b for b in briefs if b.meta.get("lane") and b.status != "dropped" and os.path.isdir(b.meta["lane"])
@@ -5318,7 +5319,7 @@ def finished_lanes(p, briefs, quiet_min=30):
         with open(cache) as f:
             got = json.load(f)
         facts = {k: v for k, v in got["lanes"].items() if isinstance(v, dict)}
-        if got.get("key") == key and ttl > 0 and time.time() - os.stat(cache).st_mtime < ttl:
+        if not fresh and got.get("key") == key and ttl > 0 and time.time() - os.stat(cache).st_mtime < ttl:
             return done(facts)
     except (OSError, ValueError, AttributeError, KeyError, TypeError):
         pass
