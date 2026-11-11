@@ -5286,7 +5286,14 @@ def cmd_approve_reads(args):
 def cmd_pause(args):
     """T-0436: one flag for every project. It grants nothing, and lifting it only lets back what ran before, so
     either way it's no consent to guard."""
-    on = args.state == "on"
+    if args.state is None and not args.now:  # T-4132: typed to check, a bare pause paused every project
+        on, hard = c.panicked(), c.panicked(hard=True)
+        return out(args, {"paused": on, "hard": hard}, (
+            f"Paused everywhere{' (hard: sampo pause --now)' if hard else ''}: nothing unattended starts; "
+            "sampo pause off lifts it." if on else
+            "Not paused: the drive and the launchers run. sampo pause on pauses every project (--now also stops "
+            "what runs now)."))
+    on = args.state != "off"  # sampo pause --now alone still pauses: it is the documented "stop everything now"
     if args.now and not on:
         raise UsageError("--now goes with sampo pause on: sampo pause off lifts both")
     c.set_panic(on, hard=args.now)
@@ -8190,8 +8197,8 @@ def _build_parser(only=None):
                                                        "that only read (yours to turn on; T-0974)")
     s.add_argument("state", nargs="?", choices=["on", "off"])
 
-    s = add("pause", cmd_pause, tier=("Project and settings", 720), help="stop everything Sampo runs unattended, in every project (sampo pause off lifts it)")
-    s.add_argument("state", nargs="?", choices=["on", "off"], default="on")
+    s = add("pause", cmd_pause, tier=("Project and settings", 720), help="sampo pause on stops everything Sampo runs unattended, in every project (off lifts it; bare: only reports)")
+    s.add_argument("state", nargs="?", choices=["on", "off"], default=None)
     s.add_argument("--now", action="store_true", help="also stop what runs now: sampo sessions, serve units, sampo run's "
                    "session, leases (T-1821)")
 

@@ -27,7 +27,7 @@ class Panic(ServeCase):
 
     def test_panic_blocks_unattended(self):
         self.assertEqual(self.drive(), "block")
-        self.fm("pause")
+        self.fm("pause", "on")
         self.assertTrue(c.panicked())
         self.assertIsNone(self.drive())
         self.assertEqual(c.state_dict(c.find_project(self.repo))["autonomy"], "standard")  # tightened, not rewritten
@@ -50,7 +50,7 @@ class Panic(ServeCase):
         pack = os.path.join(self.tmp, "pack.md")
         with open(pack, "w") as f:
             f.write("a pack\n")
-        self.fm("pause")
+        self.fm("pause", "on")
         for args in (["session", "start", "do x"], ["ideas", "--pack", pack], ["research", "ask", "what is x?"],
                      ["bench", "run"], ["relate"], ["oracle", "will it work?"]):
             r = self.fm(*args, check=False, env=self.env())
@@ -66,7 +66,7 @@ class Panic(ServeCase):
 
     def test_panic_blocks_unattended_in_a_running_loop(self):
         fm = f"{sys.executable} {FM}"  # the user pauses while the first session runs
-        self.stub("claude", f'{fm} pause\n{fm} task block $FOREMAN_DRIVE_TASK "needs a key"\n')
+        self.stub("claude", f'{fm} pause on\n{fm} task block $FOREMAN_DRIVE_TASK "needs a key"\n')
         r = self.fm("run", check=False, env=self.env())
         self.assertNotEqual(r.returncode, 0)
         self.assertEqual(self.claude_runs(), 1, "the second task never starts")
@@ -100,7 +100,7 @@ class Panic(ServeCase):
         self.assertIn("1 sampo session", out)
         self.assertIn("1 sampo serve unit", out)
         self.assertIn("finish their turn", out)
-        self.fm("pause")  # a plain pause after it stays soft
+        self.fm("pause", "on")  # a plain pause after it stays soft
         self.assertFalse(c.panicked(hard=True))
         self.assertTrue(c.panicked())
 
@@ -150,8 +150,21 @@ class Panic(ServeCase):
         self.assertIn("fm pause --now", r.stderr)
         self.assertEqual(self.claude_runs(), 1)
 
+    def test_bare_pause_only_reports(self):
+        """T-4132: a bare `sampo pause`, typed to check, paused every project; it reports and changes nothing."""
+        out = self.fm("pause").stdout
+        self.assertFalse(c.panicked())
+        self.assertIn("Not paused", out)
+        self.assertIn("sampo pause on", out)
+        self.fm("pause", "on")
+        out = self.fm("pause").stdout
+        self.assertTrue(c.panicked())
+        self.assertIn("Paused", out)
+        self.assertIn("sampo pause off", out)
+        self.assertEqual(self.fm_json("pause"), {"paused": True, "hard": False})
+
     def test_panic_resume(self):
-        self.fm("pause")
+        self.fm("pause", "on")
         self.fm("pause", "off")
         self.assertFalse(c.panicked())
         self.assertEqual(self.drive(), "block")

@@ -1321,7 +1321,7 @@ class NoTaskGateRefusals(NoTaskGateKit, HookCase):
 
     def test_a_paused_project_is_not_closed_at_stop(self):
         act = self.first_task_session("True")
-        self.fm("pause")
+        self.fm("pause", "on")
         self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Done."}, env=self.HEADLESS)
         self.assertEqual(c.find_brief(self.project(), act.id).status, "active")
 
