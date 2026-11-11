@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A flaky test failure no longer empties the test cache: a class the cache has green that fails runs once more first, and each flake or drop leaves a line in the run-cache's events file (T-4274).
 - A failure whose text normalizes to digits only no longer gets the signature '0', and a stored fix keyed by digits is never matched (T-4141; built by the local 27B model through sampo code) (T-4141).
 - A headless replay session (a bench arm, the stranger, a louhi or long-run arm) runs on the highest quarter of the CPUs at nice 10, with everything it starts, and its Pythons are told that CPU count (T-4276).
 - sampo concerns: the user's asks folded from the steer meter into concerns (the local model says which message repeats an open one), linked to the tasks captured from them, and shown only by a checkable proof (T-4200).
