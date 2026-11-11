@@ -387,6 +387,8 @@ def _main(arg):
     a = json.loads(arg)
     if "ship" in a:  # T-4239: the land's detached ship
         return _ship_child(a["ship"])
+    if "accept" in a:  # T-4286: sampo lane accept's detached check of one lane
+        return _accept_check_child(a["accept"])
     p = c.Project(*a["project"])
     why, seen = _check(p, a["main"], a["base"], cli.need_brief(p, a["id"]), a["tip"], a["tests"])
     print(MARK + json.dumps({"why": why, "seen": seen}))
@@ -1194,12 +1196,7 @@ def _stale_affected(b, sha, main):
     main's branch is not its work), else None. 2026-11-08 left out three lanes whose scans and exit-code tests only the
     rerun would have reached. Such a lane trains after the fresh ones (a review-fix commit postdates a 15-minute run,
     and nobody is scheduled to rerun it); one that never recorded a run is not stale (no tests may link to its files)."""
-    runs = [t for l in b.evidence() if "--affected (affected tests only): " in l  # the label, in its sampo and older fm forms
-            and (m := c._TS_TAIL.search(l)) and (t := c.parse_ts(m.group(1)))]
-    if not runs or not sha:
-        return None
-    last = _git(main, "log", "-1", "--no-merges", "--format=%ct", sha).stdout.strip()
-    if last and max(t.timestamp() for t in runs) < float(last):
+    if _affected_state(b, sha, main)[0] == "stale":
         return (f"its newest affected run predates the lane tip {sha[:9]}: rerun sampo check --affected --evidence "
                 f"{b.id} in its lane after the last commit")
     return None
@@ -1260,6 +1257,9 @@ def _land(p, main, batch):
 
     def sort(bs):  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
         for b in sorted(bs, key=land_key):
+            if why := _check_hold(b, tip(b), main):  # T-4286: its check is running, red or cut off at this tip: left out
+                print(f"sampo lane land: {b.id}: {why}", file=sys.stderr, flush=True)
+                continue
             by[b.id], tested[b.id] = b, tip(b)
             r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tested[b.id] or "HEAD")
             if r.returncode == 1:
@@ -1548,6 +1548,299 @@ def spawn_land(p, main):
     return proc.pid, log
 
 
+# ---------------------------------------------------------------- the check accept starts (T-4286)
+
+CHECK_TRIES = 2  # a check cut off at its deadline is started once more (its green classes are cached), then reported
+CHECK_WALL_S = 4 * 3600  # a check process still running after this is killed and counts as cut off
+_SCRUBBED = ("FM_STALL", c.RUN_ID_ENV, "FOREMAN_TEST_RUN_ID")  # env prefixes a lane's check never inherits: a test's override, a nested run's id (the legacy name too)
+_CHECK_KEYS = ("check_state", "check_tip", "check_pid", "check_ticks", "check_log", "check_tries", "check_failed")
+
+
+def _scrub_env(env):
+    """T-4286: `env` without the FM_STALL-style overrides (a session that ran tests set them) and a run id."""
+    return {k: v for k, v in env.items() if not k.startswith(_SCRUBBED)}
+
+
+def _check_argv(b, since):
+    """T-4286: the lane's own check: the affected tests plus the repo-shape classes, its evidence on the task, its
+    result (exit, failed classes, cut_off) as JSON on stdout. `since`: a merge-commit tip's whole branch."""
+    return [os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "check", "--affected", "--hold", "--evidence", b.id, "--json",
+            *(["--since", since] if since else [])]
+
+
+def _lane_tip(main, b):
+    return _git(main, "rev-parse", "--verify", "-q",
+                f"{b.meta.get('lane_branch') or 'foreman/' + b.id}^{{commit}}").stdout.strip()
+
+
+def _spawn_check(p, b, main, *, tip, since, tries):
+    """T-4286: the detached, niced process that runs the lane's check (see _accept_check_child) in its own session,
+    its output in the state's check/ID.log; never waited on. (pid, log), or None when FOREMAN_NO_BACKGROUND is set
+    (the tests') or sampo is paused. The one function the tests replace: none starts a real check."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND") or c.panicked():
+        return None
+    d = os.path.join(p.dir, "check")
+    os.makedirs(d, exist_ok=True)
+    log = os.path.join(d, f"{b.id}.log")
+    arg = json.dumps({"accept": {"project": [p.slug, p.root, p.dir, p.lane], "main": main, "id": b.id, "tip": tip,
+                                 "tries": tries, "since": since, "argv": _check_argv(b, since)}})
+    lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = _scrub_env({**os.environ, "PYTHONPATH": lib + os.pathsep + os.environ.get("PYTHONPATH", "")})
+    with open(log, "w", encoding="utf-8") as out:  # one start's output: a retry replaces it
+        proc = subprocess.Popen(c.nice_argv([sys.executable, "-m", "sampo.train", arg]), cwd=b.meta.get("lane") or main,
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
+                                env=env)
+    return proc.pid, log
+
+
+def _affected_state(b, sha, main):
+    """T-4286: ('none' | 'stale' | 'fresh', the newest affected run's evidence line): a lane with no run, one whose
+    newest run came before its own last commit (a merge of main's branch is not its work), one with a run at its tip.
+    T-3963's stale test, and what sampo lane accept starts a check on."""
+    runs = [(t, l) for l in b.evidence() if "--affected (affected tests only): " in l  # the label, in its sampo and older fm forms
+            and (m := c._TS_TAIL.search(l)) and (t := c.parse_ts(m.group(1)))]
+    if not runs or not sha:
+        return "none", ""
+    t, line = max(runs, key=lambda x: x[0])
+    last = _git(main, "log", "-1", "--no-merges", "--format=%ct", sha).stdout.strip()
+    return ("stale" if last and t.timestamp() < float(last) else "fresh"), line
+
+
+def _held_classes(line):
+    """T-4286: whether an affected run's evidence line names every repo-shape class in its command (a --hold run's does)."""
+    cmd = line.split("` → ", 1)[0]
+    return all(n in cmd for n in c.REPO_SHAPE_CLASSES)
+
+
+def _run_passed(line):
+    """T-4286: whether an affected run's evidence line is a passing one (a failed run's result starts with the cross)."""
+    return not line.partition("` → ")[2].startswith("✗")
+
+
+def _clean_run(b, sha, main):
+    """T-4286, the one rule for what lets a lane skip its check: its newest affected run is at its tip (not before its
+    own last commit), passed, and its command held the four repo-shape classes. A failing line (a red check records
+    one too), or a run that did not hold the classes, is not it. Accept and the land's hold both read this."""
+    state, line = _affected_state(b, sha, main)
+    return state == "fresh" and _run_passed(line) and _held_classes(line)
+
+
+def _check_alive(m):
+    """T-4286: whether the check process a lane's meta names still runs (its pid and start time: a reused pid is not it)."""
+    pid, ticks = m.get("check_pid"), m.get("check_ticks")
+    return bool(pid) and (_ticks(pid) == int(ticks) if ticks else _ticks(pid) > 0)  # meta holds strings
+
+
+def _restartable(m):
+    """T-4286: a check that ended without a result, with tries left: sampo lane accept starts it again."""
+    return m.get("check_state") == "running" and not _check_alive(m) and int(m.get("check_tries") or 1) < CHECK_TRIES
+
+
+def _check_hold(b, sha, main):
+    """T-4286: why a lane waits on its check (running, red, cut off) at tip `sha`, else None: a check that never ran, or
+    one for an older tip, holds nothing, and a newer green run at the tip that held the repo-shape classes (_clean_run)
+    clears a red, cut-off or dead check. One rule: the land leaves such a lane out and accept says the same."""
+    m = b.meta
+    st = m.get("check_state")
+    if not st or m.get("check_tip") != sha or st == "green":
+        return None
+    if st == "running" and _check_alive(m):
+        return f"held: check running (pid {m.get('check_pid')}); it joins the land when green"
+    if _clean_run(b, sha, main):
+        return None
+    mine = f"sampo check --affected --hold --evidence {b.id}"
+    if st == "running":
+        return (f"held: its check ended without a result: sampo lane accept {b.id} starts it again" if _restartable(m) else
+                f"held: its check ended without a result twice: run {mine} in the lane")
+    if st == "red":
+        return (f"held: check red: {m.get('check_failed') or 'no failing class recorded'}; left out, no retry until the "
+                f"tip moves or a newer green run holds the repo-shape classes ({mine} in the lane)")
+    return f"held: its check was cut off twice at its deadline: run {mine} in the lane"
+
+
+def check_notes(briefs, main, ids=None):
+    """T-4286: {task id: 'checking' | 'check red: CLASSES' | 'check cut off'} for the lanes whose own check holds them at
+    their current tip (sampo lane list, sampo next): one git call per lane that has a check on record."""
+    out = {}
+    for b in briefs:
+        if (ids is not None and b.id not in ids) or b.meta.get("check_state") in (None, "", "green"):
+            continue
+        why = _check_hold(b, _lane_tip(main, b), main)
+        if why:
+            st = b.meta["check_state"]
+            out[b.id] = ("checking" if st == "running" and _check_alive(b.meta) else
+                         f"check red: {b.meta.get('check_failed') or '?'}" if st == "red" else
+                         "check cut off" if st == "cut_off" else
+                         "check ended: accept again" if _restartable(b.meta) else "check ended: run it in the lane")
+    return out
+
+
+def stop_check(b):
+    """T-4286: end the check process a lane's meta names (sampo lane rm): SIGTERM to that pid alone, once its start time
+    says it is still that process; its handler (_run_check) ends the check's own session first. Whether one was signalled."""
+    m = b.meta
+    if not _check_alive(m) or str(m.get("check_pid")) == str(os.getpid()):  # never this process
+        return False
+    with contextlib.suppress(OSError, ValueError):
+        os.kill(int(m["check_pid"]), signal.SIGTERM)
+        return True
+    return False
+
+
+def _add_audit_once(x, lens, how, result, tree):
+    """T-4286: one audit row per (lens, how, result, tree): accepting the same review twice records it once. Whether a
+    row was added. The text is cleaned the way Brief.add_audit cleans it, so the comparison is on what is stored."""
+    how_s = c.defang(c._unmarked(c.redact(str(how)).replace("`", "'").strip()))
+    res_s = c.defang(c._unmarked(c.redact(str(result)).replace("\n", " ").strip()))
+    head, mark = f"- (audit {lens}) `{how_s}` → {res_s}", (f" [tree {tree}]" if tree else "")
+    for line in x.evidence():
+        if line.startswith(head) and (line[len(head):].startswith(mark + " (") if mark else
+                                      not line[len(head):].startswith(" [tree ")):
+            return False
+    x.add_audit(lens, how, result, tree=tree)
+    return True
+
+
+def _queue(p, main, tid):
+    """T-3922: the lane queued first: ('running', None) into a running land at its next train boundary; else a detached
+    land starts and trains it first, ('started', (pid, log)), or ('not started', None) in the tests and when paused."""
+    first_ids(p, [tid])
+    if landing(p):
+        return "running", None
+    started = spawn_land(p, main)  # a land takes hours: never waited on
+    return ("started", started) if started else ("not started", None)
+
+
+def _set_check(p, tid, note=None, **meta):
+    """T-4286: the lane's check record in its task's meta (flat scalars; None removes one), `note` on its Log."""
+    def go(x):
+        for k, v in meta.items():
+            if v is None:
+                x.meta.pop(k, None)
+            else:
+                x.meta[k] = v
+        if note:
+            x.append_log(note)
+    from sampo import cli
+    cli.mutate(p, tid, go, "check", {k: v for k, v in meta.items() if k == "check_state"} | ({"note": note[:200]} if note else {}))
+
+
+class _ClaimLost(Exception):
+    """Another process claimed the lane's check between what the caller read and its own claim."""
+
+    def __init__(self, m):
+        super().__init__(f"check is running (pid {m.get('check_pid')}, log {m.get('check_log')})")
+        self.meta = dict(m)
+
+
+def _check_seen(m):
+    """What a caller saw of a lane's check: (state, tip, pid) as strings (meta holds strings once saved)."""
+    return tuple(str(m.get(k) or "") for k in ("check_state", "check_tip", "check_pid"))
+
+
+def _start_check(p, b, main, tip, since, tries):
+    """T-4286: start the lane's check (try number `tries`) and record it on the task; the started pid and log, or None.
+    The claim comes first, inside the project lock: check_state=running with this process's own pid, only if the task's
+    check is still what `b` showed (else _ClaimLost: another accept or the check's own retry got there), so two accepts
+    at once start one check. The spawn follows; a start that does not happen (or raises) gives the claim back."""
+    from sampo import cli
+    seen, me = _check_seen(b.meta), os.getpid()
+
+    def claim(x):
+        if _check_seen(x.meta) != seen:
+            raise _ClaimLost(x.meta)
+        x.meta.update(check_state="running", check_tip=tip, check_pid=me, check_ticks=_ticks(me), check_tries=tries)
+        for k in ("check_failed", "check_log"):
+            x.meta.pop(k, None)
+    cli.mutate(p, b.id, claim, "check", {"check_state": "running"})
+    try:
+        started = _spawn_check(p, b, main, tip=tip, since=since, tries=tries)
+    except BaseException:
+        _set_check(p, b.id, **dict.fromkeys(_CHECK_KEYS))
+        raise
+    if not started:
+        _set_check(p, b.id, **dict.fromkeys(_CHECK_KEYS))
+        return None
+    pid, log = started
+    _set_check(p, b.id, f"check started on {tip[:9]} (pid {pid}, try {tries}, log {log})", check_pid=pid,
+               check_ticks=_ticks(pid), check_log=log)
+    return started
+
+
+def _result_of(r):
+    """The JSON the lane's `sampo check --affected --json` printed (its last line that parses as an object), or None."""
+    for line in reversed((r.stdout or "").splitlines()):
+        if line.startswith("{"):
+            try:
+                got = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(got, dict):
+                return got
+    return None
+
+
+def _run_check(argv, cwd):
+    """(CompletedProcess, timed_out): the check in its own session, killed whole past CHECK_WALL_S."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=_scrub_env(os.environ), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
+    def stopped(signum, frame):  # sampo lane rm (stop_check): the check's own session ends with this process
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        os._exit(128 + signum)
+    try:
+        before = signal.signal(signal.SIGTERM, stopped)
+    except ValueError:  # not the main thread: no handler, the deadline still ends it
+        before = None
+    try:
+        out, _ = proc.communicate(timeout=CHECK_WALL_S)
+        return subprocess.CompletedProcess(argv, proc.returncode, out, ""), False
+    except subprocess.TimeoutExpired:
+        with contextlib.suppress(OSError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        out, _ = proc.communicate()
+        return subprocess.CompletedProcess(argv, 124, out, ""), True
+    finally:
+        if before is not None:
+            signal.signal(signal.SIGTERM, before)
+
+
+def _accept_check_child(a):
+    """T-4286: the lane's check process: run the check in the lane, then act on its result. Green: the lane is queued
+    first, the same call accept makes (a land not running is started). Red: left out, its failing classes (from the
+    run's record, via the check's JSON) on the task and no retry until the tip moves. Cut off (the deadline, a kill, no
+    result at all): started once more, then reported. A lane whose tip moved meanwhile is judged by none of it."""
+    from sampo import cli
+    p = c.Project(*a["project"])
+    b = cli.need_brief(p, a["id"])
+    main, tip, tries = a["main"], a["tip"], int(a.get("tries") or 1)
+    r, timed_out = _run_check(a["argv"], b.meta.get("lane") or main)
+    got = _result_of(r)
+    b = cli.need_brief(p, b.id)
+    if _lane_tip(main, b) != tip:
+        _set_check(p, b.id, f"check on {tip[:9]} discarded: the lane tip moved; sampo lane accept {b.id} checks the new one",
+                   **dict.fromkeys(_CHECK_KEYS))  # every key: a leftover tries or failed list would mislead the next one
+        return 0
+    if got is not None and r.returncode == 0 and not timed_out:
+        _set_check(p, b.id, f"check green on {tip[:9]}", check_state="green", check_pid=None, check_ticks=None,
+                   check_failed=None, accepted_at=round(time.time(), 1))
+        _queue(p, main, b.id)
+        return 0
+    if got is not None and not got.get("cut_off") and not timed_out:
+        failed = " ".join(str(x) for x in got.get("failed") or [])[:500]
+        _set_check(p, b.id, f"its lane's check is red: {failed or 'no failing class recorded'} (tip {tip[:9]}; no retry "
+                            "until the tip moves)", check_state="red", check_failed=failed, check_pid=None, check_ticks=None)
+        return 1
+    try:
+        if tries < CHECK_TRIES and _start_check(p, b, main, tip, a.get("since"), tries + 1):
+            return 1
+    except _ClaimLost:  # another process started this lane's check meanwhile: it reports
+        return 1
+    _set_check(p, b.id, f"check cut off {tries}x at its deadline on {tip[:9]}: run sampo check --affected --hold "
+                        f"--evidence {b.id} in the lane", check_state="cut_off", check_pid=None, check_ticks=None)
+    return 1
+
+
 # ---------------------------------------------------------------- sampo lane accept (T-3922)
 
 def accept(p, b, main, args):
@@ -1566,31 +1859,88 @@ def accept(p, b, main, args):
     path = b.meta.get("lane") or ""
     if not path or not os.path.isdir(path):
         raise c.PolicyError(f"{b.id} has no lane to accept (fm lane brief {b.id} starts a builder)")
+    tip = _lane_tip(main, b)
+    clean = _clean_run(b, tip, main)  # T-4286: a passing run at its tip that held the repo-shape classes (see there)
+    skip_check = bool(getattr(args, "no_check", False))
+    if skip_check and not clean:  # refused before anything is recorded
+        raise c.PolicyError(
+            f"{b.id} has no passing affected run at its tip that held the repo-shape classes "
+            f"({', '.join(c.REPO_SHAPE_CLASSES)}): --no-check would queue it without them. Run "
+            f"`sampo check --affected --hold --evidence {b.id}` in the lane (or drop --no-check: accept starts that check)")
     tree = c.worktree_id(path)
+    added = 0
     for lens, how, result in rows:
-        cli.mutate(p, b.id, lambda x, lens=lens, how=how, result=result: x.add_audit(lens, how, result, tree=tree),
-                   "audit", {"lens": lens, "how": how[:200], "result": result[:300]})
+        _, new = cli.mutate(p, b.id, lambda x, lens=lens, how=how, result=result: _add_audit_once(x, lens, how, result, tree),
+                            "audit", {"lens": lens, "how": how[:200], "result": result[:300]})
+        added += bool(new)
     b = cli.need_brief(p, b.id)
-    lines = [f"accept {b.id}: {len(rows)} audit(s) recorded ({', '.join(sorted({lens for lens, _, _ in rows}))})."]
+    lines = [f"accept {b.id}: {added} audit(s) recorded ({', '.join(sorted({lens for lens, _, _ in rows}))})"
+             + (f", {len(rows) - added} already on the brief" if added < len(rows) else "") + "."]
     lines += [f"  the close will be refused: {g} (add it to the brief's Close fields before the land closes it)"
               for g in _close_gaps(b)]
     if b.id not in lanes.awaiting_merge(p, c.load_briefs(p), 0, fresh=True):  # T-4265: the review just saw its tip
         lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
                      "fm lane list says what it waits on")
         return cli.out(args, {"id": b.id, "queued": False, "audits": len(rows)}, "\n".join(lines))
-    cli.mutate(p, b.id, lambda x: x.meta.__setitem__("accepted_at", round(time.time(), 1)), "accepted",
-               {"at": round(time.time(), 1)})  # T-4239: the start of its accept-to-live time
-    first_ids(p, [b.id])
-    if landing(p):
+    if not skip_check and (not clean or _check_hold(b, tip, main)):
+        # T-4286: no clean run at its tip, or its check holds it (running, red, cut off: what the land would skip it for):
+        # the lane's own check decides, then it queues; a hold is said as "held", never as queued
+        return _accept_check(p, b, main, args, tip, lines)
+
+    def accepted(x):  # T-4239: the start of its accept-to-live time; a check a newer green run cleared is green now
+        x.meta["accepted_at"] = round(time.time(), 1)
+        if x.meta.get("check_state") in ("running", "red", "cut_off") and x.meta.get("check_tip") == tip:
+            x.meta["check_state"] = "green"
+            for k in ("check_failed", "check_pid", "check_ticks"):
+                x.meta.pop(k, None)
+    cli.mutate(p, b.id, accepted, "accepted", {"at": round(time.time(), 1)})
+    how, started = _queue(p, main, b.id)
+    if how == "running":
         lines.append(f"  {b.id} queued first in the running land: it trains at the land's next train boundary.")
         return cli.out(args, {"id": b.id, "queued": True, "land": "running"}, "\n".join(lines))
-    started = spawn_land(p, main)  # none running: a detached land trains it first; a land takes hours, so never waited on
     if started is None:
         lines.append("  land not started in the background (FOREMAN_NO_BACKGROUND or paused): sampo lane land runs it here")
         return cli.out(args, {"id": b.id, "queued": True, "land": "not started"}, "\n".join(lines))
     pid, log = started
     lines.append(f"  land started in the background (pid {pid}, log {log}); it trains {b.id} first.")
     return cli.out(args, {"id": b.id, "queued": True, "land": "started", "pid": pid, "log": log}, "\n".join(lines))
+
+
+def _accept_check(p, b, main, args, tip, lines):
+    """T-4286: accept for a lane with no clean run at its tip (or one its check holds): the check running (said), held
+    red or cut off at this tip (said as `held: …`, the land's own words, no retry), else started detached (a dead one
+    once more, claimed first so two accepts start one); the lane queues when it is green."""
+    from sampo import cli
+    m = b.meta
+    st = m.get("check_state") if m.get("check_tip") == tip else None
+    tries = int(m.get("check_tries") or 1)
+
+    def running(meta):
+        lines.append(f"  {b.id}: check is running (pid {meta.get('check_pid')}, log {meta.get('check_log')}); the lane "
+                     "joins the land when it is green")
+        return cli.out(args, {"id": b.id, "queued": False, "check": "running", "pid": meta.get("check_pid")}, "\n".join(lines))
+    if st == "running" and _check_alive(m):
+        return running(m)
+    if why := _check_hold(b, tip, main):
+        if not _restartable(m):
+            lines.append(f"  {b.id}: {why}")
+            return cli.out(args, {"id": b.id, "queued": False, "check": st, "held": why,
+                                  "failed": m.get("check_failed") or ""}, "\n".join(lines))
+    since = None
+    if len(_git(main, "rev-list", "--parents", "-n", "1", tip).stdout.split()) > 2:  # T-4355: a merge tip has no diff of its own
+        since = m.get("base") or None
+    try:
+        started = _start_check(p, b, main, tip, since, tries + 1 if st == "running" else 1)
+    except _ClaimLost as e:  # another accept claimed it after this one read the task
+        return running(e.meta)
+    if not started:
+        lines.append(f"  check not started in the background (FOREMAN_NO_BACKGROUND or paused): run `sampo check --affected "
+                     f"--hold --evidence {b.id}` in the lane, then accept again")
+        return cli.out(args, {"id": b.id, "queued": False, "check": "not started"}, "\n".join(lines))
+    pid, log = started
+    lines.append(f"  check started in the background (pid {pid}, log {log}): the lane joins the land when it is green; a red "
+                 "one is left out with its failing classes named on the task")
+    return cli.out(args, {"id": b.id, "queued": False, "check": "started", "pid": pid, "log": log}, "\n".join(lines))
 
 
 if __name__ == "__main__":  # T-3119: a lane's check process (see _child_argv)

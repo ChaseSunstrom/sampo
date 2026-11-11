@@ -4980,22 +4980,33 @@ def new_run_id(cmd):
     return os.urandom(8).hex() if cmd and _RUN_PY.search(cmd) else None
 
 
-def record_lines(root, cmd, run_id=None):
-    """T-4268: `red at <time>: <class>.<test>: <first line>` for each failure in the record the gate's own tests/run.py
-    left (the one stamped `run_id`, `run.py --last --run-id`, nothing run), for a gate whose own output lost its names
-    (killed at its deadline, piped through tail). [] for no id, a command that isn't run.py, no record or a green one:
-    never another gate's record."""
+REPO_SHAPE_CLASSES = ("test_docs.PluginFiles", "test_left_out.LeftOut", "test_rename_aliases.RenameAliases",
+                      "test_run.EnvClassified")  # T-4286: the classes a lane's own change breaks that no linked test names
+
+
+def run_record(root, cmd, run_id=None):
+    """T-4268: the record the gate's own tests/run.py left (the one stamped `run_id`, `run.py --last --json --run-id`,
+    nothing run) as its dict (ok, failed [{class, test, first}], not_run, lines), else None: no id, a command that isn't
+    run.py, no record. Never another gate's record. T-4286: sampo lane accept reads a lane check's failing classes here."""
     import subprocess
     run_py = os.path.join(root or "", "plugin", "tests", "run.py")
     if not run_id or not _RUN_PY.search(cmd or "") or not os.path.isfile(run_py):
-        return []
+        return None
     try:
         r = subprocess.run([sys.executable, run_py, "--last", "--json", "--run-id", str(run_id)], cwd=root,
                            capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL)
         rec = json.loads(r.stdout) if r.returncode == 0 else None
     except (OSError, ValueError, subprocess.SubprocessError):
-        return []
-    if not isinstance(rec, dict) or rec.get("ok"):
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def record_lines(root, cmd, run_id=None):
+    """T-4268: `red at <time>: <class>.<test>: <first line>` for each failure in the record the gate's own tests/run.py
+    left, for a gate whose own output lost its names (killed at its deadline, piped through tail). [] for no record or
+    a green one."""
+    rec = run_record(root, cmd, run_id)
+    if not rec or rec.get("ok"):
         return []
     return [redact(str(x))[:400] for x in (rec.get("lines") or [])[:50]]
 
@@ -5619,6 +5630,13 @@ def next_for(p, briefs=None, checks=True, concerns=None):
                 merge = (f"a land is under way: it trains these {len(done)} lanes; review each branch and record its "
                          "audits (sampo task audit)")
         except Exception:  # a lock that can't be read never costs the next action
+            pass
+        try:  # T-4286: a lane whose own check (sampo lane accept) is running, red or cut off is said so
+            from sampo import train as strain
+            notes = strain.check_notes(briefs, main_worktree(p.root) or p.root, set(done))
+            if notes:
+                merge += " [" + "; ".join(f"{t} {n}" for t, n in sorted(notes.items())) + "]"
+        except Exception:
             pass
         action = merge + " · " + action if idle_now else action + " · " + merge
     if recovery:

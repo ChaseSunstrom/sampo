@@ -45,6 +45,15 @@ class LaneCase(ForemanTestCase):
         subprocess.run(["git", "-C", path, "commit", "-qm", f"lane {n}"], check=True, capture_output=True)
         return tid
 
+    def ran(self, tid):
+        """A lane's affected run at its tip (T-4286: accept starts the lane's own check when it has none)."""
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.add_evidence(c.AFFECTED_LABEL + "python3 plugin/tests/run.py x " + " ".join(c.REPO_SHAPE_CLASSES), "exit 0 · ok",
+                       step=1, ran=True)  # the four repo-shape classes held: it is a run accept lets queue
+        c.save_brief(p, b)
+        return tid
+
     def task(self, title):
         return first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
                              "--step", "s", "--json").stdout)["id"]
@@ -52,7 +61,7 @@ class LaneCase(ForemanTestCase):
 
 class Accept(LaneCase):
     def test_accept_records_both_audits_names_the_close_gap_and_trains_the_lane(self):
-        tid = self.lane(1, "a.txt")
+        tid = self.ran(self.lane(1, "a.txt"))
         r = self.fm("lane", "accept", tid, "--audit", "intent", "read the diff", "matches the brief", "--audit", "edge",
                     "empty input", "no crash")
         with open(json.loads(self.fm("task", "show", tid, "--json").stdout)["path"]) as f:
@@ -63,7 +72,7 @@ class Accept(LaneCase):
         self.assertIn("land not started in the background", r.stdout, "the harness runs no detached land: named, not run")
 
     def test_accept_with_no_land_running_starts_one_detached_and_does_not_wait(self):
-        tid = self.lane(1, "a.txt")
+        tid = self.ran(self.lane(1, "a.txt"))
         p = c.find_project(self.repo)
         b = cli.need_brief(p, tid)
         buf = io.StringIO()
@@ -75,7 +84,7 @@ class Accept(LaneCase):
         self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")), "returns at once: the land is not run here")
 
     def test_accept_queues_the_lane_first_in_a_running_land(self):
-        tid = self.lane(1, "a.txt")
+        tid = self.ran(self.lane(1, "a.txt"))
         p = c.find_project(self.repo)
         with c.lock(os.path.join(p.dir, "land"), timeout=0):  # a land is running: its lock is held
             r = self.fm("lane", "accept", tid, "--audit", "intent", "read the diff", "fine")

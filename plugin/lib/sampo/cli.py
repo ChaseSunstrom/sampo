@@ -6375,9 +6375,10 @@ def _hub_tests(p, m, base, changed, detail=None, tree=None):
     return picked
 
 
-def affected(p, b=None, skipped=None, since=None, detail=None, only=None):
+def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
     project's template; command None when no test is linked. fm check --affected and the ambient runner (T-0705).
+    `hold` (T-4286): the run always holds c.REPO_SHAPE_CLASSES, whatever files changed.
     Another open task's red-first test files are left out (T-1718); a dict passed as skipped gets them {module: task}.
     `only`: exactly these files as the changed ones (T-3533: fm ship's files main moved past the gated tree)."""
     from sampo import map as smap
@@ -6444,6 +6445,9 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None):
         cmds, tests = build([x for x in every if os.path.normpath(x) not in red])
     if skipped is not None:
         skipped.update(skip)
+    if hold and os.path.isfile(os.path.join(p.root, "plugin", "tests", "run.py")):  # T-4286: the four repo-shape classes
+        cmds = [*cmds, "python3 plugin/tests/run.py " + " ".join(c.REPO_SHAPE_CLASSES)]
+        tests = sorted({*tests, "plugin/tests/run.py"})
     return (" && ".join(cmds) if cmds else None), tests, changed
 
 
@@ -6462,7 +6466,8 @@ def _check_affected(p, args):
     """Only the tests linked (fm map) to files changed since the task started, with the project's template."""
     skip = {}  # T-1101: another open task's red-first test files, left out as the full gates leave them out
     hubs = {}  # T-3306: per changed hub file, the symbols and tests chosen
-    cmd, tests, changed = affected(p, skipped=skip, detail=hubs)
+    cmd, tests, changed = affected(p, skipped=skip, detail=hubs, since=getattr(args, "since", None),
+                                   hold=bool(getattr(args, "hold", False)))  # T-4286: sampo lane accept's own check
     act = c.active_brief(c.load_briefs(p), p.lane)
     if cmd:
         guard_stored(p, act, cmd)  # T-0901: the template is a stored command
@@ -6476,7 +6481,7 @@ def _check_affected(p, args):
     sd_json = None if sd is None else {"status": sd.status, "detail": sd.detail}
     if not tests:
         return out(args, {"tests": [], "changed": sorted(changed), "unrunnable": odd, "skipped_tests": skip, "hubs": hubs,
-                          "self_docs": sd_json},
+                          "self_docs": sd_json, "exit": int(bool(sd_fail)), "cut_off": False, "failed": []},  # T-4286
                    (f"all {len(skip)} linked test module(s) skipped (other lanes' red-first tests); run the full "
                     f"gates: sampo check\n! {_left_out(skip)}" if skip else
                     f"No tests linked to the {len(changed)} changed file(s); run the full gates: sampo check") + note
@@ -6486,6 +6491,9 @@ def _check_affected(p, args):
                                  env=_skip_env(skip), niced=bool(p.lane), run_id=run_id)  # T-4197: a lane's affected tests
     exit_code = code or int(bool(sd_fail))
     named = _named(p.root, cmd, run_id, code, output)  # a deadline or a pipe lost the names: the record has them
+    rec = c.run_record(p.root, cmd, run_id) if code else None  # T-4286: sampo lane accept reads these, never the text
+    held = {"run_id": run_id, "cut_off": code == 124 or bool(rec and rec.get("not_run")),
+            "failed": sorted({f["class"] for f in (rec or {}).get("failed") or [] if f.get("class")})}
     if args.evidence:  # T-1747: recorded as what it is, never as the full gates (close still needs fm check)
         result = c.run_result(exit_code, output)
         if code and (every := c.failed_classes(output)):  # T-3397: the names first, they survive the cut
@@ -6497,7 +6505,7 @@ def _check_affected(p, args):
             tree=c.worktree_id(p.root), ran=True),
             "evidence", {"step": args.step, "ac": args.ac, "cmd": "fm check --affected", "result": result[:200]})
     out(args, {"tests": tests, "exit": exit_code, "changed": sorted(changed), "skipped_tests": skip, "unrunnable": odd,
-               "hubs": hubs, "self_docs": sd_json},
+               "hubs": hubs, "self_docs": sd_json, **held},
         f"{'✗' if code else '✓'} affected tests only ({len(tests)}): {cmd} → {c.run_result(code, output)}"
         + "".join("\n" + l for l in c.class_lines(c.failed_classes(output))) * bool(code)  # T-3397: every one
         + "".join("\n" + l for l in named)
@@ -8328,6 +8336,11 @@ def _build_parser(only=None):
     s.add_argument("--affected", action="store_true", help="only the tests linked to files changed since the task "
                                                            "started (sampo map); the full gates still decide at the end")
     s.add_argument("--evidence", metavar="ID", help="record each result as evidence on this task")
+    s.add_argument("--since", metavar="REF", help="--affected: the files changed since REF, not since the task started "
+                                                  "(a merge-commit tip: the whole branch's files; T-4286)")
+    s.add_argument("--hold", action="store_true", help="--affected: always run the repo-shape classes (test_docs.PluginFiles, "
+                                                       "test_left_out.LeftOut, test_rename_aliases.RenameAliases, "
+                                                       "test_run.EnvClassified) too (T-4286)")
     g = s.add_mutually_exclusive_group()
     g.add_argument("--step", type=int)
     g.add_argument("--ac", type=int)
@@ -9439,7 +9452,8 @@ def _build_parser(only=None):
                                                        "given (T-3500); "
                                                        "andon: mark this lane's ANDON.md answered, moved aside, no rm (T-3704); "
                                                        "accept ID --audit LENS 'how' 'result' …: a reviewed lane's audits, "
-                                                       "its close's gaps named, then it lands first (T-3922); "
+                                                       "its close's gaps named, then it lands first (T-3922; T-4286: a lane with "
+                                                       "no run at its tip is checked first, detached); "
                                                        "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon", "accept"])
@@ -9447,6 +9461,9 @@ def _build_parser(only=None):
                                                       "or the reason it's left (T-3922); merge: every finished lane (T-3119)")
     s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),
                    help="accept: one audit of the lane (its lens, how it was done, the result); repeat per lens (T-3922)")
+    s.add_argument("--no-check", action="store_true", help="accept: don't start the lane's affected check; refused when the "
+                                                           "lane has no run at its tip that held the repo-shape classes "
+                                                           "(T-4286)")
     s.add_argument("--bg", action="store_true", help="land: start it detached (log in the state's land.log) and return at "
                                                      "once, never waited on (T-3922)")
     s.add_argument("--batch", type=int, metavar="N", help=f"land: lanes per train (default {c.TRAIN_BATCH}) (T-3500)")

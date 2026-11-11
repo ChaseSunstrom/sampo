@@ -234,6 +234,13 @@ def cmd_lane(args):
             if r["stalled_min"] is not None:
                 lines[i] += (f" — STALLED {r['stalled_min']} min: no edit, commit or event; stop its agent "
                              f"(TaskStop), then fm lane recover {tid} --agent-stopped")
+        from sampo import train as _train  # T-4286: a lane held by the check accept started says so
+        notes = _train.check_notes(briefs, main)
+        for i, r in enumerate(rows):
+            tid = r["tasks"][0]["id"] if r["tasks"] else None
+            r["check"] = notes.get(tid)
+            if r["check"]:
+                lines[i] += f" — {r['check']}"
         listed = {r["path"] for r in rows}
         for b in briefs:  # review: a task whose lane folder is gone is still held; say how to free it
             if b.meta.get("lane") and b.meta["lane"] not in listed and b.status not in c.CLOSED:
@@ -3136,6 +3143,8 @@ def remove(p, b, main, drop=None, keep=False):
         if r.returncode:
             raise cli.UsageError(f"git worktree remove failed: {r.stderr.strip()[:300]}")
     from sampo import bus
+    from sampo import train as _train
+    _train.stop_check(b)  # T-4286: the check sampo lane accept started for this lane ends with it (its own session only)
     bus.release(p, b.id)  # T-1068: its file claims end with the lane
     _git(main, "worktree", "prune")  # a folder deleted by hand leaves a registration that holds the branch (review)
     have = [x for x in branches if _ref_state(main, x) == "ok"]
@@ -3146,6 +3155,8 @@ def remove(p, b, main, drop=None, keep=False):
         for k in ("lane", "lane_branch", "builder", "builder_proc", "lane_passed"):  # the builder slot comes back too
             if not (k == "lane_branch" and x.meta.get(k) in kept):  # T-1071: an unmerged branch stays findable
                 x.meta.pop(k, None)
+        for k in _train._CHECK_KEYS:  # T-4286: a check of a lane that is gone claims nothing
+            x.meta.pop(k, None)
         if x.status in ("active", "verifying"):
             x.meta["status"] = "planned"  # not the main checkout's active task by accident
         x.append_log(f"lane removed: {path}" + (f" (cut off; kept in {wreck})" if wreck else "") + (f" (branch {', '.join(kept)} kept: not merged)" if kept else "")
