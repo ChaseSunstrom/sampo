@@ -258,16 +258,58 @@ MAP_ROOM = 2000  # bytes: a few map lines; under this a split is due before the 
 def map_room(p, briefs, now):
     """T-4057: MASTER.md or a docs/map shard within MAP_ROOM of the cap a Read opens whole (test_docs and doctor hold it):
     the next close that maps a module there goes red, so the split is named first."""
-    out = []
+    out, near = [], {}
     for path in [os.path.join(p.root, "MASTER.md")] + c.map_shards(p.root):
         try:
             left = c.MAP_FILE_BYTES - os.path.getsize(path)
         except OSError:
             continue
+        rel = os.path.relpath(path, p.root).replace(os.sep, "/")
         if left < MAP_ROOM:
-            out.append(f"{os.path.relpath(path, p.root)} has {left} bytes left of its {c.MAP_FILE_BYTES}")
+            out.append(f"{rel} has {left} bytes left of its {c.MAP_FILE_BYTES}")
+        elif left < MAP_LANES_ROOM:
+            near[rel] = left
+    adds = _lane_adds(p, briefs, near) if near else {}
+    for rel, left in near.items():  # T-4411: room on the trunk, none once the accepted lanes land
+        rows = adds.get(rel) or []
+        total = sum(n for _, n in rows)
+        if left - total < MAP_ROOM:
+            out.append(f"{rel} has {left} bytes left of its {c.MAP_FILE_BYTES} and {len(rows)} accepted lane(s) add "
+                       f"{total} ({', '.join(f'{i} {n}' for i, n in rows[:6])}{', …' if len(rows) > 6 else ''}): "
+                       "a train that carries them goes red")
     return (" · ".join(out) + " → split it: move a block of entries to a new docs/map shard and their MASTER.md index "
             "links with it") if out else None
+
+
+MAP_LANES_ROOM = 10000  # bytes: only a file with less than this left on the trunk has its waiting lanes added up
+
+
+def _lane_adds(p, briefs, rels):
+    """T-4411: {map file: [(task id, bytes its lane adds)]} for the accepted lanes still open: each branch's blob sizes
+    against its merge base with the trunk (three git calls a lane, only made when a file in `rels` is near its cap).
+    The cap is checked on the trunk's tree; what waits to land filled files-lib-1.md past it twice in one afternoon."""
+    def sizes(rev):
+        got = {}
+        for line in c._git(p.root, "ls-tree", "-l", rev, "--", *sorted(rels), timeout=10).splitlines():
+            head, _, path = line.partition("\t")
+            size = head.split()[-1] if head.split() else ""
+            if size.isdigit():
+                got[path] = int(size)
+        return got
+    out = {}
+    for b in briefs:
+        branch = b.meta.get("lane_branch")
+        if not branch or not b.meta.get("accepted_at") or b.status in c.CLOSED:
+            continue
+        base = c._git(p.root, "merge-base", "HEAD", branch, timeout=10).strip()
+        if not base:
+            continue
+        was, now = sizes(base), sizes(branch)
+        for rel in rels:
+            n = now.get(rel, 0) - was.get(rel, 0)
+            if n > 0:
+                out.setdefault(rel, []).append((b.id, n))
+    return out
 
 
 CHECKS += (map_room,)

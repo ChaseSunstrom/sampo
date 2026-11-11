@@ -7,6 +7,7 @@ import os
 import subprocess
 import time
 import types
+import unittest.mock
 
 from helpers import ForemanTestCase
 
@@ -116,6 +117,50 @@ class SelfCheck(ForemanTestCase):
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         self.assertIsNone(selfcheck.map_room(types.SimpleNamespace(root=root), [], time.time()),
                           "Sampo's own map keeps 2 KB of room in every file")
+
+    def a_shard_and_a_lane_branch(self, left, adds):
+        """A shard `left` bytes under its cap on the trunk and a branch `lane1` that adds `adds` bytes to it."""
+        os.makedirs(os.path.join(self.repo, "docs", "map"))
+        shard = os.path.join(self.repo, "docs", "map", "files-lib-9.md")
+        for path, size in ((os.path.join(self.repo, "MASTER.md"), 1000), (shard, c.MAP_FILE_BYTES - left)):
+            with open(path, "w") as f:
+                f.write("x" * size)
+        self.git("add", "-A")
+        self.git("commit", "-qm", "the map")
+        self.git("checkout", "-q", "-b", "lane1")
+        with open(shard, "a") as f:
+            f.write("y" * adds)
+        self.git("commit", "-qam", "a lane's map line")
+        self.git("checkout", "-q", "-")
+
+    def waiting(self, tid="T-0007", **meta):
+        return types.SimpleNamespace(id=tid, status="active", meta={"lane_branch": "lane1", **meta})
+
+    def test_waiting_lanes_that_fill_a_map_file_are_named_before_their_train(self):
+        # T-4411: 3 KB left on the trunk, four accepted lanes added 5 KB: two trains went red before anyone was told
+        self.a_shard_and_a_lane_branch(left=5000, adds=4000)
+        now = time.time()
+        self.assertIsNone(selfcheck.map_room(self.p, [], now), "5 KB of room on the trunk alone is plenty")
+        hit = selfcheck.map_room(self.p, [self.waiting(accepted_at=now)], now)
+        self.assertIn("docs/map/files-lib-9.md has 5000 bytes left of its 90000", hit)
+        self.assertIn("T-0007", hit)
+        self.assertIn("4000", hit)
+        self.assertIn("split it", hit)
+
+    def test_waiting_lanes_not_accepted_or_closed_or_small_are_not_counted(self):
+        self.a_shard_and_a_lane_branch(left=5000, adds=4000)
+        now = time.time()
+        self.assertIsNone(selfcheck.map_room(self.p, [self.waiting()], now), "not accepted: still being built")
+        done = self.waiting(accepted_at=now)
+        done.status = "done"
+        self.assertIsNone(selfcheck.map_room(self.p, [done], now), "closed: it landed or was dropped")
+        gone = types.SimpleNamespace(id="T-0008", status="active", meta={"lane_branch": "no-such", "accepted_at": now})
+        self.assertIsNone(selfcheck.map_room(self.p, [gone], now), "a branch git does not know adds nothing")
+
+    def test_waiting_lanes_cost_no_git_call_while_every_file_has_plenty_of_room(self):
+        self.a_shard_and_a_lane_branch(left=40000, adds=4000)
+        with unittest.mock.patch.object(c, "_git", side_effect=AssertionError("git was called")):
+            self.assertIsNone(selfcheck.map_room(self.p, [self.waiting(accepted_at=time.time())], time.time()))
 
     def ask(self, words, hours, **kw):
         tid = first(self.fm("capture", words, "--json", *kw.get("args", ())).stdout)["id"]
