@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code asks the model whether a request wants a change when a local planner answers it or plans it read-only, and asks again for a plan that makes the change; a second plan gets the slot's repairs, CLEAN and verifies that exit 1 on a match are allowed, and a run that still makes no change says so in a note and its closing event (T-4284).
 - sampo doctor, sampo ship's record and the hook benchmark no longer start a detached steer expansion (a paid model call) when run outside the tests: the scratch project they measure in turns background work off (T-4344).
 - sampo exam grade says where the points were lost: fixed, done and false done per scenario kind and per language, a row per scenario with its time to the first action and its turns, and 'nothing fixed in kind K' in words; the scorecard carries the newest run's kinds (T-4296).
 - sampo code now starts a local profile's calls with thinking off unless the exam kept native for that model; sampo exam grade keeps the arm that fixed more over a like-for-like pair (the stamped arm, the same sample, planner and request), never lets a smaller sample replace a larger record, and says what it kept, replaced or why no pair formed (T-4297).
