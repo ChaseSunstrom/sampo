@@ -10,7 +10,7 @@ import types
 import unittest
 from unittest import mock
 
-from test_code import CLOSE, PLAN, CodeCase, call, journal_text, plan
+from test_code import CLOSE, M_PLAN, PLAN, CodeCase, call, journal_text, plan
 
 from sampo import louhi, models, smith, smithbench
 
@@ -225,6 +225,165 @@ class SmallMode(CodeCase):
                                        os.path.join(tmp, "e.jsonl"), small=True)
             self.assertIn("--small", ans["notes"][0])
             self.assertTrue(ans["small"])
+
+
+M_ONE = dict(M_PLAN, readings=M_PLAN["readings"][:1])  # sound work, one reading and no ruled_out: only the M form fails
+RULED = "callers want a difference, so add would be renamed: ruled out, the tests call add for a sum"
+LADDER_M_ONE = ("FIX", "M", "Make calc.add add", "calc.add adds two numbers :: python3 test_calc.py", "1. edit calc.py",
+                "- the request means calc.add returns a sum",
+                "build | change the operator in calc.add | a caller relies on it\n"
+                "exists | call the builtin sum over both numbers | inputs aren't numbers\n"
+                "less | document that add subtracts | callers keep wrong totals", "1", "85",
+                "the failing test names the operator")
+
+
+class PlanForm(CodeCase):
+    """T-4282: a plan that is sound work in an imperfect form never ends the run (exam s8-041 goal-rust-ea4f63: 50,288
+    tokens and nothing built for 'Interpretation names 1 distinct reading'; s8-042 goal-ruby-f44b59 and s8-043
+    goal-c-e61e7e: 'fm focus refused the plan' for one named missing piece)."""
+
+    def go(self, *script, request="fix add", kind="openai"):
+        f = self.serve(kind, *script)
+        return f, self.code(request, "--model", "fake", check=False)
+
+    def test_m_form_one_reading_gets_one_targeted_question_and_the_plan_stays_m(self):
+        f, r = self.go(*[plan(M_ONE)] * 3, {"text": RULED}, FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("one reading needs ruled_out", f.said(3))  # the gap is the question
+        self.assertIn(M_ONE["readings"][0], f.said(3))
+        self.assertNotIn("the task's type", f.said(3))  # no field ladder for a plan that parsed
+        self.assertEqual((self.task()["tier"], self.task()["status"]), ("M", "done"), r.stdout + r.stderr)
+        self.assertIn("completed by one targeted question", r.stdout)
+
+    def test_m_form_after_the_field_ladder_gets_the_same_one_question(self):
+        f, r = self.go(*[{"text": "nope"}] * 3, *[{"text": a} for a in LADDER_M_ONE], {"text": RULED}, FIX_EDIT, DONE,
+                       CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("one reading needs ruled_out", f.said(3 + len(LADDER_M_ONE)))
+        self.assertEqual((self.task()["tier"], self.task()["status"]), ("M", "done"), r.stdout + r.stderr)
+
+    def test_m_form_still_unmet_files_the_plan_as_s_with_the_gap_and_the_run_goes_on(self):
+        f, r = self.go(*[plan(M_ONE)] * 3, {"text": "nope"}, FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.task()["tier"], self.task()["status"]), ("S", "done"), r.stdout + r.stderr)
+        self.assertIn("plan filed as S: its M form was not met: Interpretation names 1 distinct reading", r.stdout)
+        self.assertIn("return a + b", self.calc())
+        down = [e for e in map(json.loads, journal_events(self)) if e.get("downgrade")]
+        self.assertEqual(len(down), 1, down)
+
+    def test_m_form_question_that_fails_at_the_model_still_files_the_plan_as_s(self):
+        # past its script the fake answers 400: a dead targeted question is not a dead run
+        f = self.serve("openai", *[plan(M_ONE)] * 3)
+        r = self.code("fix add", "--model", "fake", "--dry-plan", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("plan filed as S", r.stdout)
+        self.assertEqual(len(f.seen), 4)
+
+    def test_m_form_rescue_leaves_a_plan_that_fails_an_s_rule_to_end_as_before(self):
+        no_verify = dict(M_ONE, criteria=[{"text": "calc.add adds", "verify": ""}])
+        f, r = self.go(*[plan(no_verify)] * 3, *[{"text": "nope"}] * 5)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no valid plan after 2 repairs, nor field by field", r.stderr + r.stdout)
+        self.assertNotIn("plan filed as S", r.stdout)
+        self.assertEqual(len(f.seen), 8)  # three JSON tries and five field questions, no targeted one
+
+    def test_focus_refusal_twice_for_a_clause_gets_one_targeted_question_and_the_task_starts(self):
+        f, r = self.go(plan(M_PLAN), plan(M_PLAN), {"text": "the test file is unchanged :: python3 test_calc.py"},
+                       FIX_EDIT, DONE, CLOSE, request="fix add, and keep the tests as they are", kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("a criterion for", f.said(2))
+        self.assertIn("keep the tests as they are", f.said(2))
+        self.assertEqual([self.task(t)["status"] for t in ("T-0001", "T-0002", "T-0003")],
+                         ["dropped", "dropped", "done"], r.stdout + r.stderr)
+        self.assertIn("the test file is unchanged", json.dumps(self.task("T-0003")))
+
+    def test_focus_refusal_whose_targeted_reply_fills_nothing_ends_with_the_refusal(self):
+        f, r = self.go(plan(M_PLAN), plan(M_PLAN), {"text": "nope"},
+                       request="fix add, and keep the tests as they are", kind="anthropic")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("refused the plan", r.stderr)
+        self.assertEqual(len(f.seen), 3)
+        self.assertEqual(self.task("T-0002")["status"], "planned")  # it stays to be looked at
+
+    def test_focus_refusal_for_a_one_way_step_asks_for_that_step_again(self):
+        # the repo itself is a door no snapshot covers, so focus can't write the Undo line on its own (doors.gate)
+        hard = dict(M_PLAN, steps=["delete ./", "fix calc.add"])
+        f, r = self.go(plan(hard), plan(hard), {"text": "read calc.py and leave every file where it is"},
+                       FIX_EDIT, DONE, DONE, CLOSE, kind="anthropic")
+        self.assertIn("Undo: line on step 1", f.said(2), r.stdout + r.stderr)
+        self.assertIn("delete ./", f.said(2))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task("T-0003")["status"], "done", r.stdout + r.stderr)
+
+    # review of T-4282 ------------------------------------------------------------------------------------------------
+    def test_focus_refusal_for_a_one_way_step_quotes_the_gate_in_the_question_and_the_new_step_keeps_the_limit(self):
+        hard = dict(M_PLAN, steps=["delete ./", "fix calc.add"])
+        f, r = self.go(plan(hard), plan(hard), {"text": "read calc.py and leave every file where it is"},
+                       FIX_EDIT, DONE, DONE, CLOSE, kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        asked = json.dumps(f.seen[2]["messages"][-1])  # the targeted question itself, not the refusal before it
+        self.assertIn("an Undo: line on step 1 (one-way, untracked data", asked)
+        self.assertIn("delete ./", asked)
+        self.assertIn("no Undo line can be written", asked, "the model is not led to invent a snapshot")
+        brief = json.dumps(self.task("T-0003"))
+        self.assertIn("read calc.py and leave every file where it is", brief)
+        self.assertIn(smith.STEP_LIMIT, brief, "the limit the gate asked for stays in the step the worker reads")
+        self.assertIn("step 1 reworded for the plan gate", r.stdout)
+
+    def downgrades(self, tid="T-0001"):
+        return [e for e in map(json.loads, journal_events(self, tid)) if e.get("downgrade")]
+
+    def test_m_form_downgrade_of_a_plan_the_replan_replaced_is_not_reported(self):
+        # the first plan is cut to S in the planner's hands; its verify already passes, so it is planned again, whole:
+        # the plan that stands was never downgraded, and no note, event or friction line says it was
+        passes = dict(M_ONE, criteria=[{"text": "calc.add adds two numbers", "verify": "true"}])
+        f, r = self.go(*[plan(passes)] * 3, {"text": "nope"}, plan(M_PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.task()["tier"], self.task()["status"]), ("M", "done"), r.stdout + r.stderr)
+        self.assertNotIn("plan filed as S", r.stdout)
+        self.assertEqual(self.downgrades(), [])
+
+    def test_m_form_downgrade_twice_over_a_replan_is_reported_once_for_the_plan_that_stands(self):
+        passes = dict(M_ONE, criteria=[{"text": "calc.add adds two numbers", "verify": "true"}])
+        f, r = self.go(*[plan(passes)] * 3, {"text": "nope"}, *[plan(M_ONE)] * 3, {"text": "nope"}, FIX_EDIT, DONE,
+                       CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual((self.task()["tier"], self.task()["status"]), ("S", "done"), r.stdout + r.stderr)
+        self.assertEqual(r.stdout.count("plan filed as S"), 1, r.stdout)
+        self.assertEqual(len(self.downgrades()), 1)
+
+
+NAMES_ITEM = dict(M_PLAN, title="Make parse_line() handle tabs", steps=["handle tabs in parse_line()"],
+                  criteria=[{"text": "parse_line() handles tabs", "verify": "python3 test_calc.py"}])
+
+
+class PlanFormRecord(CodeCase):
+    """Review of T-4282: through the second ask of T-4294 (items on record the plan doesn't name) the downgrade follows
+    the plan that stands."""
+    repo_seed = ("seed record", CodeCase.repo_seed[1] + (("PLAN.md", "# Plan\n\n- [ ] Make parse_line() handle tabs\n"),))
+
+    def dry(self, *script):
+        self.serve("openai", *script)
+        return self.code("continue", "--dry-plan", "--model", "fake", check=False)
+
+    def test_m_form_downgrade_of_a_plan_the_second_ask_replaced_is_not_reported(self):
+        r = self.dry(*[plan(M_ONE)] * 3, {"text": "nope"}, plan(NAMES_ITEM))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("FIX M Make parse_line() handle tabs", r.stdout)
+        self.assertNotIn("plan filed as S", r.stdout)
+
+    def test_m_form_downgrade_is_still_reported_when_the_second_ask_gives_no_plan(self):
+        r = self.dry(*[plan(M_ONE)] * 3, {"text": "nope"}, *[{"text": "nope"}] * 12)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("kept the first plan", r.stdout)
+        self.assertEqual(r.stdout.count("plan filed as S"), 1, r.stdout)
+
+
+def journal_events(case, tid="T-0001"):
+    """The run's kept events, one JSON line each (code/<task>.events.jsonl beside the project's tasks)."""
+    path = os.path.join(os.path.dirname(os.path.dirname(case.task(tid)["path"])), "code", f"{tid}.events.jsonl")
+    with open(path, encoding="utf-8") as fh:
+        return [x for x in fh.read().splitlines() if x.strip()]
 
 
 class Resume(unittest.TestCase):  # T-3974: a resumed --small run kept neither small nor an edit made before the crash

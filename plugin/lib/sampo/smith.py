@@ -650,7 +650,9 @@ def _ask(run, profile, messages, what):
 def slot(run, profile, messages, check, what, fields=()):
     """Ask for one JSON slot; on a bad answer quote the error back, at most REPAIRS times. Then (T-1765), given
     fields, the slot-format ladder: one plain-text question a field, the slot assembled from the answers and checked."""
-    err = None
+    err = v = None
+    if what == "plan":
+        run.form_gap = None  # T-4282: a new plan answer; _form_rescue says when this one was cut to S
     for _ in range(REPAIRS + 1):
         r = _ask(run, profile, messages, what)
         v = m.extract_json(r["text"])
@@ -662,6 +664,9 @@ def slot(run, profile, messages, check, what, fields=()):
             return v
         messages.append({"role": "user", "content": f"That is not a valid {what}: {err}. Reply with only the "
                                                     "corrected JSON object."})
+    if what == "plan" and _form_only(v, check):  # T-4282: it parsed and stands as an S plan: no ladder, one question
+        messages.pop()  # the targeted question takes the last repair's place
+        return _form_rescue(run, profile, messages, check, v)
     if fields:
         messages.pop()  # a field question takes the last repair's place
         v = {}
@@ -674,6 +679,8 @@ def slot(run, profile, messages, check, what, fields=()):
             messages.append({"role": "assistant", "content": r["text"]})
             v[key] = parse(_unlabel(r["text"], key))
         why = check(v)
+        if why and what == "plan" and _form_only(v, check):  # T-4282
+            v, why = _form_rescue(run, profile, messages, check, v), None
         if not why:
             run.emit("note", f"the {what} came field by field, after {REPAIRS} failed JSON repairs")
             return v
@@ -681,6 +688,66 @@ def slot(run, profile, messages, check, what, fields=()):
     raise CodeError(f"the model gave no valid {what} after {REPAIRS} repairs"
                     f"{', nor field by field' if fields else ''}: {err}",
                     then=None if run.tid else "fm code models")  # before a task: a stronger model is the way on
+
+
+M_FORM = ("readings", "ruled_out", "options", "choice", "confidence", "why")  # what only an M plan carries
+
+
+def _form_only(v, check):
+    """T-4282: whether a plan reply is sound work in an imperfect form: it fails its check as the M plan it says it is
+    and passes the same check as an S plan, so every S rule (type, title, criteria with a verify, steps, and small
+    mode's change rules) holds and only _m_gaps objects."""
+    return isinstance(v, dict) and v.get("tier") == "M" and bool(check(v)) and not check(dict(v, tier="S"))
+
+
+def _form_rescue(run, profile, messages, check, v):
+    """T-4282: a plan that only fails the M form (_form_only) never ends the run: exam s8-041 goal-rust-ea4f63 spent
+    50,288 tokens and built nothing for 'Interpretation names 1 distinct reading'. One targeted question for the piece
+    the gap names: when the readings are what's short and one reading stands, the reading ruled out and why, in plain
+    text; else the M fields to change, as a small JSON object. A reply that completes the form keeps the plan M.
+    Otherwise (a reply that doesn't, or a model call that fails) the plan comes back as tier S without its M fields
+    and the run goes on: the work is worth more than the field. The gap stays on the run (form_gap) until the planner
+    hands that plan on; _form_note then says it once, so a plan a later ask replaced is never counted as a downgrade.
+    The form rules themselves are core's and unchanged."""
+    gap = check(v)
+    rd = v.get("readings")
+    first = rd[0] if isinstance(rd, list) and rd and _plan_line(rd[0]) else None
+    try:
+        if first and gap.startswith(("one reading needs", "Interpretation names")):  # _m_gaps' and core's own lines
+            messages.append({"role": "user", "content": (
+                f"The plan's work stands; its form lacks one thing: {gap}. Leave the JSON aside. In plain text, reply "
+                f"with only one line: a different way to read the request than {first!r}, and why that reading "
+                "doesn't hold here.")})
+            r = _ask(run, profile, messages, "plan")
+            fixed = dict(v, readings=[first], ruled_out=_line(_unlabel(r["text"], "ruled_out")))
+        else:
+            messages.append({"role": "user", "content": (
+                f"The plan's work stands; its form lacks: {gap}. Reply with only a JSON object holding the fields to "
+                f"change, among {', '.join(M_FORM)}; the rest of the plan stays as it is.")})
+            r = _ask(run, profile, messages, "plan")
+            patch = m.extract_json(r["text"])
+            fixed = dict(v, **{k: patch[k] for k in M_FORM if k in patch}) if isinstance(patch, dict) else v
+        messages.append({"role": "assistant", "content": r["text"]})
+        left = check(fixed)
+        if not left:
+            run.emit("note", "the plan's M form was completed by one targeted question")
+            return fixed
+        gap = left
+    except m.ModelError as e:
+        messages.pop()  # the question that got no reply: the conversation stays user/assistant in turn
+        gap = f"{gap} (the targeted question got no reply: {_one_line(str(e), 120)})"
+    run.form_gap = gap
+    return dict({k: x for k, x in v.items() if k not in M_FORM}, tier="S")
+
+
+def _form_note(run):
+    """T-4282: the downgrade of the plan that stands, said once when the planner hands it on (_plan's end, a re-plan
+    after a gate refusal): a note that carries the gap (its downgrade key makes each one countable) and a friction
+    line. A plan cut to S and then replaced by a later ask leaves none."""
+    gap, run.form_gap = getattr(run, "form_gap", None), None
+    if gap:
+        run.emit("note", f"plan filed as S: its M form was not met: {gap}", downgrade=gap)
+        run_friction("plan filed as S", gap)
 
 
 # ---------------------------------------------------------------- the run
@@ -809,7 +876,7 @@ class Run:
         self.json = getattr(args, "json", False)
         self.tid = self.plan = self.request = self.journal = None
         self.done, self.msgs, self.turns, self.tokens = set(), {}, 0, [0, 0]
-        self.baseline = self.model_name = self.close_notes = self.gap_notes = self.plan_msgs = None
+        self.baseline = self.model_name = self.close_notes = self.gap_notes = self.plan_msgs = self.form_gap = None
         self.sensitive, self.escalate, self.cap = False, getattr(args, "escalate", None), CAP
         self.planner = getattr(args, "planner", None)  # T-2945: the profile for the plan and close notes
         self.no_commit, self.max_steps = bool(getattr(args, "no_commit", False)), getattr(args, "max_steps", None)
@@ -4128,7 +4195,7 @@ def _plan(run, profile, dry=False):
                         "or run it without --ask once the run in this tree ends", then=None)
     if tokens and not _shares(run.plan, tokens):  # T-4294: items are on record and the plan names none: asked once more
         run.emit("note", "the plan names none of the unfinished items on record: asked once more with them")
-        first, keep = run.plan, len(msgs)
+        first, keep, gap = run.plan, len(msgs), run.form_gap
         msgs.append({"role": "user", "content": f"{RECORD_HEAD}, again:\n{run.fence(record)}\nThe plan names none of "
                      "them. If the request is to continue or finish that work, plan them: one criterion each, the "
                      "last step ticking each in its file. If the request is about something else, give the same plan "
@@ -4137,7 +4204,7 @@ def _plan(run, profile, dry=False):
             run.plan = slot(run, profile, msgs, check, "plan", PLAN_FIELDS)
         except CodeError:  # the first plan was valid: a second ask that gives none never costs the run its plan
             del msgs[keep:]
-            run.plan = first
+            run.plan, run.form_gap = first, gap  # and what was said of its form
             run.emit("note", "the second ask gave no valid plan: kept the first plan")
         else:
             if is_answer(run.plan):
@@ -4152,6 +4219,7 @@ def _plan(run, profile, dry=False):
         if why and why.startswith("refused"):
             raise CodeError(why)
     run.plan_msgs = msgs
+    _form_note(run)
     pl = run.plan
     run.emit("plan", f"plan: {pl['type']} {pl['tier']} {pl['title']} (criteria: {len(pl['criteria'])}, "
                      f"steps: {len(pl['steps'])})", plan=pl)
@@ -4379,24 +4447,94 @@ def _replan(run, profile, tid, why, repaired, code):
     here); the corrected plan is checked like the first, and only then is the refused task dropped and the new one
     filed. A second refusal, or a failure that isn't the gate's (a timeout, a crash), ends the run as before."""
     msgs, then = getattr(run, "plan_msgs", None), f"fm task show {tid}" if tid else None
-    if repaired or not msgs or code == 124 or "refused" not in why.split(":", 1)[-1]:  # a --verify plan has no planner
-        raise CodeError(why, then=then)  # conversation; a timed-out task new may have made the task anyway
-    hint = ("Give each part of the request it names a criterion in the request's own words, with a check that fails "
-            "now.\n" if "a criterion for" in why else "")
-    msgs.append({"role": "user", "content": f"The plan gate refused this plan: {why}\n{hint}"
-                                            "Reply with only the corrected plan as a JSON object."})
-    run.plan = slot(run, run.planner or profile, msgs, getattr(run, "plan_check", check_plan), "plan", PLAN_FIELDS)
-    problem = "the planner answered instead of planning" if is_answer(run.plan) else _plan_problem(run)
-    if problem:  # the refused task stays, to be looked at
-        raise CodeError(f"{why}\nre-plan: {problem}", then=then)
+    if repaired > 1 or not msgs or code == 124 or "refused" not in why.split(":", 1)[-1]:  # a --verify plan has no
+        raise CodeError(why, then=then)  # planner conversation; a timed-out task new may have made the task anyway
+    if repaired:  # T-4282: refused again after the re-plan: one targeted question for the piece the gate names
+        fixed, how = _piece(run, run.planner or profile, msgs, why), "asked for the one piece it named"
+        if not fixed:
+            raise CodeError(why, then=then)
+        kept, run.plan = run.plan, fixed
+        problem = _plan_problem(run)
+        if problem:
+            run.plan = kept
+            raise CodeError(f"{why}\nthe piece asked for: {problem}", then=then)
+    else:
+        hint = ("Give each part of the request it names a criterion in the request's own words, with a check that "
+                "fails now.\n" if "a criterion for" in why else "")
+        msgs.append({"role": "user", "content": f"The plan gate refused this plan: {why}\n{hint}"
+                                                "Reply with only the corrected plan as a JSON object."})
+        run.plan = slot(run, run.planner or profile, msgs, getattr(run, "plan_check", check_plan), "plan", PLAN_FIELDS)
+        problem, how = "the planner answered instead of planning" if is_answer(run.plan) else _plan_problem(run), \
+            "re-planned once"
+        if problem:  # the refused task stays, to be looked at
+            raise CodeError(f"{why}\nre-plan: {problem}", then=then)
     if tid:
-        dc, _ = run.fm("task", "drop", tid, f"fm code: the plan gate refused it; re-planned once ({_one_line(why, 200)})")
+        dc, _ = run.fm("task", "drop", tid, f"fm code: the plan gate refused it; {how} ({_one_line(why, 200)})")
         if dc:
             run.emit("note", f"{tid} couldn't be dropped (exit {dc}): it stays beside the re-planned task")
+    _form_note(run)
     pl = run.plan
     run.emit("plan", f"re-plan: {pl['type']} {pl['tier']} {pl['title']} (criteria: {len(pl['criteria'])}, "
                      f"steps: {len(pl['steps'])})", plan=pl)
-    return _make_task(run, profile, repaired=True)
+    return _make_task(run, profile, repaired=repaired + 1)
+
+
+_GATE_CLAUSES = re.compile(r'a criterion for ((?:"[^"\n]*"(?:, )?)+)')  # core.plan_gaps' line (T-2951): up to 3 named
+_GATE_STEP = re.compile(r"an Undo: line on step (\d+)(?: \([^)\n]*\))?")  # core.door_gaps' line (T-2342), whole
+STEP_LIMIT = "every untracked file stays as it is"  # what a step reworded for the gate carries on to the worker
+
+
+def _piece(run, profile, msgs, why):
+    """T-4282: the plan with the one missing piece the plan gate named, filled by a targeted question each, or None when
+    the refusal names no such piece, a reply doesn't give one, or the model call fails (the refusal then ends the run as
+    before). The gate's own sentence is the question. A criterion for a part of the request (exam s8-042
+    goal-ruby-f44b59): one line 'what it means :: a check', added as a criterion that names the part in the request's
+    words. A one-way step with no way back (s8-043 goal-c-e61e7e): the gate's line whole, and that step again narrowed
+    to what the request needs; no Undo line is asked for, since the gate refuses only where no snapshot could be taken
+    and a model can't make one. The reworded step carries STEP_LIMIT, so the worker reads the limit too; the gate reads
+    the new step again at focus, and each command still meets Smith's guard when it runs. The plan is checked like any
+    other before it replaces the refused one."""
+    pl = dict(run.plan, criteria=list(run.plan["criteria"]), steps=list(run.plan["steps"]))
+    grp, step, asked, said = _GATE_CLAUSES.search(why), _GATE_STEP.search(why), 0, None
+
+    def one(question, key):
+        msgs.append({"role": "user", "content": f"The plan gate still refuses the plan, for one missing piece: "
+                                                f"{question}"})
+        r = _ask(run, profile, msgs, "plan")
+        msgs.append({"role": "assistant", "content": r["text"]})
+        return _line(_unlabel(r["text"], key))
+    try:
+        for clause in re.findall(r'"([^"\n]*)"', grp.group(1)) if grp else ():
+            said, sep, verify = one(
+                f'a criterion for this part of the request: "{clause}". Leave the JSON aside. In plain text, reply '
+                'with only one line: what that part means when it is done, then " :: ", then one shell command that '
+                "fails now and exits 0 only once it is done.", "criterion").partition("::")
+            said, verify = said.strip(), verify.strip().strip("`").strip()
+            if not (sep and said and verify) or "::" in verify or len(pl["criteria"]) >= 8:
+                return None
+            pl["criteria"].append({"text": f"{clause.strip(' .;,…')}: {said}", "verify": verify})
+            asked += 1
+        n = int(step.group(1)) if step else 0
+        if 1 <= n <= len(pl["steps"]):
+            old = pl["steps"][n - 1]
+            text = one(f"{step.group(0)}. Step {n} is {old!r}. No snapshot covers what it names, so no Undo line can be "
+                       "written for it and it can't run as it is. Leave the JSON aside. In plain text, reply with only "
+                       "that step again, one line, narrowed to what the request needs: it names each file it changes, "
+                       "and everything git doesn't track stays as it is.", "step")
+            if not text or text == old:
+                return None
+            pl["steps"][n - 1] = f"{text.rstrip(' .')} ({STEP_LIMIT})"  # the limit goes on in the step the worker reads
+            said = (f"step {n} reworded for the plan gate: {_one_line(old, 80)!r} -> {_one_line(text, 120)!r} "
+                    f"({STEP_LIMIT})")
+            asked += 1
+    except m.ModelError:
+        msgs.pop()
+        return None
+    if not asked or getattr(run, "plan_check", check_plan)(pl):
+        return None
+    if step and said:  # said only of a plan that goes on
+        run.emit("note", said, reworded=n)
+    return pl
 
 
 def _make_task(run, profile, repaired=False):
