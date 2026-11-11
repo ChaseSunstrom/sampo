@@ -1,6 +1,8 @@
 """T-2992: the standing-rule tests (self-docs, model rules, left-out, rename scan) run in every affected set, so a
 builder branch that misses a MASTER bullet or an fm shim fails in its own lane, not after the merge."""
+import json
 import os
+import shutil
 import subprocess
 
 from helpers import ForemanTestCase
@@ -98,3 +100,79 @@ class AffectedLaneBase(ForemanTestCase):
         _, tests, changed = cli.affected(c.find_project(self.repo, create=False))
         self.assertIn("src/theirs.py", changed)
         self.assertIn("tests/test_theirs.py", tests)
+
+
+class SelfDocsAffected(ForemanTestCase):
+    """T-4279: `sampo check --affected` runs the doctor's tree-only self docs check on the checked tree, so a docs/map
+    line over 2000 characters fails in the lane, not 15 minutes later at the train's doctor gate. A docs-only edit with
+    no linked test is checked too."""
+
+    def setUp(self):
+        super().setUp()
+        from sampo import doctor
+        self.fm("init")
+        self.fm("check", "affected", "python3 -m pytest -q {tests}")
+        real = os.path.dirname(os.path.abspath(doctor.PLUGIN))  # the running Sampo tree: its docs pass the check
+        for name in ("MASTER.md", "README.md", "install.sh"):
+            shutil.copyfile(os.path.join(real, name), os.path.join(self.repo, name))
+        shutil.copytree(os.path.join(real, "docs", "map"), os.path.join(self.repo, "docs", "map"))
+        for folder in ("rules", "agents"):
+            shutil.copytree(os.path.join(real, "plugin", folder), os.path.join(self.repo, "plugin", folder))
+        shutil.copytree(os.path.join(real, "plugin", "skills"), os.path.join(self.repo, "plugin", "skills"),
+                        ignore=shutil.ignore_patterns("playbooks", "__pycache__"))
+        os.makedirs(os.path.join(self.repo, "plugin", "lib", "sampo"), exist_ok=True)  # the marker of a Sampo tree
+        for rel, body in (("src/mine.py", "N = 1\n"), ("tests/test_mine.py", "# map-links: src/mine.py\nN = 1\n")):
+            os.makedirs(os.path.join(self.repo, os.path.dirname(rel)), exist_ok=True)
+            with open(os.path.join(self.repo, rel), "w", encoding="utf-8") as f:
+                f.write(body)
+        for args in (["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "seed"]):
+            subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True)
+        self.fm("task", "new", "docs edit", "--type", "FIX", "--tier", "S", "--ac", "a :: true", "--step", "s", "--focus")
+        self.shard = os.path.join(self.repo, "docs", "map", "files-1.md")
+        with open(self.shard, encoding="utf-8") as f:
+            self.original = f.read()
+
+    def write_shard(self, text):
+        with open(self.shard, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    def test_self_docs_fails_a_docs_only_edit_with_a_map_line_over_2000_characters(self):
+        self.write_shard(self.original + "- " + "x" * 2100 + "\n")
+        line = self.original.count("\n") + 1  # the appended line's number
+        r = self.fm("check", "--affected", check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn(f"✗ self docs: docs/map/files-1.md:{line} is over 2000 characters", r.stdout)
+
+    def test_self_docs_is_green_and_silent_once_the_line_is_fixed(self):
+        self.write_shard(self.original + "- " + "x" * 2100 + "\n")
+        self.assertEqual(self.fm("check", "--affected", check=False).returncode, 1)
+        self.write_shard(self.original + "- short line\n")
+        r = self.fm("check", "--affected", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("self docs", r.stdout)
+
+    def test_self_docs_fails_a_code_change_whose_linked_tests_pass(self):
+        """The case that parked three lanes: code and a map line changed together, the linked tests green."""
+        self.fm("check", "affected", "true {tests}")
+        with open(os.path.join(self.repo, "src", "mine.py"), "w", encoding="utf-8") as f:
+            f.write("N = 2\n")
+        self.write_shard(self.original + "- " + "x" * 2100 + "\n")
+        r = self.fm("check", "--affected", "--evidence", "T-0001", check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("tests/test_mine.py", r.stdout)
+        self.assertIn("✗ self docs: docs/map/files-1.md:", r.stdout)
+        shown = self.fm("task", "show", "T-0001").stdout
+        recorded = [l for l in shown.splitlines() if "self docs: docs/map/files-1.md:" in l]
+        self.assertEqual(len(recorded), 1, shown)  # the evidence names the line and is a failed run
+        self.assertIn("exit 1", recorded[0])
+        self.write_shard(self.original)
+        r = self.fm("check", "--affected", "--json", check=False)
+        self.assertEqual((json.loads(r.stdout)["exit"], r.returncode), (0, 0), r.stdout + r.stderr)
+
+    def test_self_docs_is_a_json_field_on_the_affected_check(self):
+        self.write_shard(self.original + "- " + "x" * 2100 + "\n")
+        r = self.fm("check", "--affected", "--json", check=False)
+        self.assertEqual(json.loads(r.stdout)["self_docs"]["status"], "FAIL", r.stdout)
+        self.write_shard(self.original)
+        r = self.fm("check", "--affected", "--json", check=False)
+        self.assertEqual(json.loads(r.stdout)["self_docs"]["status"], "PASS", r.stdout)

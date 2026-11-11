@@ -6425,6 +6425,17 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None):
     return (" && ".join(cmds) if cmds else None), tests, changed
 
 
+def _self_docs_affected(p):
+    """T-4279: the doctor's tree-only self docs check (a docs/map line over 2000 characters, a map file over its byte
+    limit, an fm verb the docs don't name) on the checked tree, so a lane's docs edit fails in its own affected run, not
+    at the train's doctor gate. Only a Sampo tree has one (plugin/lib/sampo); home and plugin are the checked tree's, not
+    the installed plugin's."""
+    if not os.path.isdir(os.path.join(p.root, "plugin", "lib", "sampo")):
+        return None
+    from sampo import doctor
+    return doctor.check_self_docs(p.root, os.path.join(p.root, "plugin"))
+
+
 def _check_affected(p, args):
     """Only the tests linked (fm map) to files changed since the task started, with the project's template."""
     skip = {}  # T-1101: another open task's red-first test files, left out as the full gates leave them out
@@ -6438,31 +6449,39 @@ def _check_affected(p, args):
                  and os.path.basename(f).rsplit(".", 1)[0] not in skip)
     note = (f"\n! {len(odd)} changed test file(s) this affected command can't run: {', '.join(odd[:5])}"
             f"{' …' if len(odd) > 5 else ''}; run their own suite") if odd else ""
+    sd = _self_docs_affected(p)  # T-4279: every affected run, a docs-only edit with no linked test included
+    sd_fail = f"\n✗ self docs: {sd.detail}" if sd is not None and sd.status == "FAIL" else ""  # the file and line named
+    sd_json = None if sd is None else {"status": sd.status, "detail": sd.detail}
     if not tests:
-        return out(args, {"tests": [], "changed": sorted(changed), "unrunnable": odd, "skipped_tests": skip, "hubs": hubs},
+        return out(args, {"tests": [], "changed": sorted(changed), "unrunnable": odd, "skipped_tests": skip, "hubs": hubs,
+                          "self_docs": sd_json},
                    (f"all {len(skip)} linked test module(s) skipped (other lanes' red-first tests); run the full "
                     f"gates: sampo check\n! {_left_out(skip)}" if skip else
-                    f"No tests linked to the {len(changed)} changed file(s); run the full gates: sampo check") + note) or 0
+                    f"No tests linked to the {len(changed)} changed file(s); run the full gates: sampo check") + note
+                   + sd_fail) or int(bool(sd_fail))
     code, output = c.run_command(p.root, cmd, c.load_scaled(args.timeout if args.timeout > 0 else None),
                                  env=_skip_env(skip), niced=bool(p.lane))  # T-4197: a lane's affected tests
+    exit_code = code or int(bool(sd_fail))
     if args.evidence:  # T-1747: recorded as what it is, never as the full gates (close still needs fm check)
-        result = c.run_result(code, output)
+        result = c.run_result(exit_code, output)
         if code and (every := c.failed_classes(output)):  # T-3397: the names first, they survive the cut
             result = result.replace(" · ", f" · {c.joinmore(every, 50)} · ", 1)
+        if sd_fail:
+            result = f"self docs: {sd.detail} · " + result
         mutate(p, args.evidence, lambda b: b.add_evidence(
             c.AFFECTED_LABEL + cmd, result[:600], step=args.step, ac=args.ac,
             tree=c.worktree_id(p.root), ran=True),
             "evidence", {"step": args.step, "ac": args.ac, "cmd": "fm check --affected", "result": result[:200]})
-    out(args, {"tests": tests, "exit": code, "changed": sorted(changed), "skipped_tests": skip, "unrunnable": odd,
-               "hubs": hubs},
+    out(args, {"tests": tests, "exit": exit_code, "changed": sorted(changed), "skipped_tests": skip, "unrunnable": odd,
+               "hubs": hubs, "self_docs": sd_json},
         f"{'✗' if code else '✓'} affected tests only ({len(tests)}): {cmd} → {c.run_result(code, output)}"
         + "".join("\n" + l for l in c.class_lines(c.failed_classes(output))) * bool(code)  # T-3397: every one
         + "".join(f"\n  hub {f}: " + (f"{len(i['tests'])} test(s) by {', '.join((i['symbols'] or [])[:6]) or 'its path'}"
                                       if i["tests"] is not None else f"all {i['linked']} linked (change not mappable)")
                   for f, i in hubs.items())
-        + (f"\n! {_left_out(skip)}" if skip else "") + note
+        + (f"\n! {_left_out(skip)}" if skip else "") + note + sd_fail
         + "\n(the full gates still decide before commit and done: sampo check)")
-    return 1 if code else 0
+    return 1 if exit_code else 0
 
 
 def _last_check_results(p, task):
