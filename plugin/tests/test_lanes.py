@@ -1191,6 +1191,19 @@ class LoadGates(ForemanTestCase):
         self.assertNotEqual(self.fm("lane", "brief", b, check=False, env={"FOREMAN_HOST": "load=40,cpus=16,mem_mb=8192"}
                                     ).returncode, 0, "no nice= (a host with no accounting): the load stands")
 
+    def test_niced_runq0_share_lets_a_lane_start_at_load_60_and_nice_0_runnable_threads_still_refuse(self):
+        # T-4277: 90 niced threads queued on 4 CPUs read as 40 of nice-0 load by CPU time; the run queue says 6
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        a, b = mk("Out one"), mk("Held two")
+        self.fm("lane", "brief", a)
+        r = self.fm("lane", "brief", b, check=False, env={"FOREMAN_HOST": "load=60,cpus=16,mem_mb=8192,runq0=0.1"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.fm("lane", "rm", b, check=False)
+        r = self.fm("lane", "brief", b, check=False, env={"FOREMAN_HOST": "load=60,cpus=16,mem_mb=8192,runq0=1"})
+        self.assertNotEqual(r.returncode, 0, "every runnable thread at nice 0: real strain")
+        self.assertIn("loaded", r.stderr)
+
     def test_niced_host_strain_discounts_niced_cpu_only_for_the_lane_gates_and_keeps_the_memory_hold(self):
         os.environ["FOREMAN_HOST"] = "load=40,cpus=16,mem_mb=8192,nice=0.9"
         self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
@@ -1211,7 +1224,8 @@ class LoadGates(ForemanTestCase):
                 mock.patch.object(c, "_wall", lambda: times["t"]), \
                 mock.patch.object(c.os, "getloadavg", lambda: (40.0, 40.0, 40.0)), \
                 mock.patch.object(c.os, "cpu_count", lambda: 16), \
-                mock.patch.object(c, "_mem_available_mb", lambda: 8192.0):
+                mock.patch.object(c, "_mem_available_mb", lambda: 8192.0), \
+                mock.patch.object(c, "run_queue_share", lambda proc=None, sample=True: None):  # T-4277: no real /proc
             self.assertIn("loaded", c.host_strain(nice_free=True), "first call: no sample yet, the load stands")
             times.update(t=1001.0, cpu=(1500.0, 590.0))
             self.assertIn("loaded", c.host_strain(nice_free=True), "a 1 s window is too short to trust")

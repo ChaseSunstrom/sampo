@@ -5377,7 +5377,7 @@ def lanes_free(briefs, p=None):
         live = [b for b in live if b.id not in dead]
     # T-0465: a strained host takes no builder lane; T-4158: Sampo's own niced gate runs aren't that strain
     return len(live) < cap and len(out) - len([b for b in out if b.id not in done]) \
-        < slanes.UNMERGED_MAX and not c.host_strain(nice_free=True)
+        < slanes.UNMERGED_MAX and not c.host_strain(nice_free=True, sample=False)  # T-4277: a hook never samples /proc
 
 
 def _economy(p=None):

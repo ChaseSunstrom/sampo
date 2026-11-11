@@ -960,23 +960,161 @@ def niced_share():
     return nice / busy if busy > 0 and 0 <= nice <= busy else None
 
 
-def host_strain(bar=None, nice_free=False):
+RUNQ_PASSES, RUNQ_GAP_S, RUNQ_CAP, RUNQ_CACHE_S = 3, 0.2, 20000, 30.0  # T-4277: /proc passes, their gap, the most threads
+# a pass reads (over it: no sample) and how long a sampled share serves the hook and the other gates. The cap is ten
+# times this machine's ~1,900 threads (a pass: 42-50 ms), so a hundred agents' threads still get a sample (~0.5 s a pass)
+PROC_ROOT = "/proc"  # T-4277: tests point the sampler at a fake tree
+
+
+def _pause(s):
+    time.sleep(s)
+
+
+def _runq_pass(proc):
+    """T-4277: one pass over proc/<pid>/task/<tid>/stat: (runnable threads, runnable at nice <= 0), or None when the
+    task folders are missing or hold more than RUNQ_CAP threads. The command name sits in parentheses and may hold
+    spaces and parentheses, so the fields are split after the LAST ')': state is then field 0 and nice field 16."""
+    try:
+        pids = [p for p in os.listdir(proc) if p.isdigit()]
+    except OSError:
+        return None
+    runnable = nice0 = seen = 0
+    for pid in pids:
+        try:
+            tids = os.listdir(os.path.join(proc, pid, "task"))
+        except OSError:
+            continue  # a process that exited meanwhile
+        for tid in tids:
+            seen += 1
+            if seen > RUNQ_CAP:
+                return None
+            try:
+                with open(os.path.join(proc, pid, "task", tid, "stat")) as f:
+                    text = f.read()
+            except OSError:
+                continue
+            fields = text[text.rfind(")") + 1:].split() if ")" in text else []
+            if len(fields) < 17 or fields[0] != "R":
+                continue
+            try:
+                if int(fields[16]) <= 0:
+                    nice0 += 1
+            except ValueError:
+                continue
+            runnable += 1
+    return runnable, nice0
+
+
+def _runq_sample(proc):
+    """T-4277: RUNQ_PASSES passes RUNQ_GAP_S apart, summed: (runnable, runnable at nice 0), or None when a pass failed
+    or the threads counted are none (no share to read)."""
+    total = nice0 = 0
+    for i in range(RUNQ_PASSES):
+        if i:
+            _pause(RUNQ_GAP_S)
+        got = _runq_pass(proc)
+        if got is None:
+            return None
+        total, nice0 = total + got[0], nice0 + got[1]
+    return (total, nice0) if total else None
+
+
+def run_queue_share(proc=None, sample=True):
+    """T-4277: the share (0..1) of the runnable threads that run at nice 0, or None. Niced threads keep the load average
+    up without taking more of the CPUs than they're given, so the load of work at nice 0 is the load times this share.
+    A share sampled in the last RUNQ_CACHE_S seconds (state/runq_share.json, written by every sampling caller) is reused.
+    sample=False (the hook's path) reads that cache only and never touches /proc; no fresh cache is None."""
+    path = os.path.join(state_dir(), "runq_share.json")
+    try:
+        with open(path) as f:
+            t, share = json.load(f)
+        if 0 <= _wall() - float(t) <= RUNQ_CACHE_S:
+            if share is None:  # review: a sample that gave nothing (over RUNQ_CAP threads) isn't redone by every caller
+                return None
+            if 0 <= float(share) <= 1:
+                return float(share)
+    except (OSError, ValueError, TypeError):
+        pass
+    if not sample:
+        _runq_refresh()
+        return None
+    got = _runq_sample(proc or PROC_ROOT)
+    share = got[1] / got[0] if got else None
+    try:
+        write_atomic(path, json.dumps([_wall(), share]))
+    except OSError:
+        pass
+    return share
+
+
+def _runq_refresh():
+    """T-4277 review: the hook's path reads only the cache and only the lane gates wrote it; a hook that reads 'loaded'
+    offers no lane, so no gate ran and the hook stayed on the CPU-time share for good. A stale cache starts one detached
+    sampler (at most one per RUNQ_CACHE_S, by a stamp file's time; none where background work is off), so the next
+    hook reads the run queue. True when it started one."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND"):
+        return False
+    stamp = os.path.join(state_dir(), "runq_share.stamp")
+    try:
+        with open(stamp) as f:
+            if 0 <= _wall() - float(f.read()) < RUNQ_CACHE_S:
+                return False
+    except (OSError, ValueError):
+        pass
+    try:
+        write_atomic(stamp, repr(_wall()))
+        subprocess.Popen([sys.executable, "-c", "import os, sys; os.nice(10); sys.path.insert(0, sys.argv[1]); "
+                          "from sampo import core; core._runq_refresh_main()",
+                          os.path.dirname(os.path.dirname(os.path.abspath(__file__)))],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    except OSError:
+        return False
+    return True
+
+
+def _runq_refresh_main():
+    """What _runq_refresh's detached process runs (at nice 10): one sample into the cache."""
+    run_queue_share()
+
+
+def _strain_share(fake, sample):
+    """T-4277: (weight of the load that is work at nice 0, how it was read) for the lane gates: a FOREMAN_HOST runq0= (the
+    run-queue share) or nice= (the niced CPU-time share) stands in; a fake host with only a load has none; else the
+    sampled run queue (run_queue_share), else the CPU-time share (niced_share); None when nothing reads."""
+    if "runq0" in fake:
+        return float(fake["runq0"]), "runq"
+    if "nice" in fake:
+        return 1 - float(fake["nice"]), "cpu"
+    if "load" in fake:
+        return None
+    share = run_queue_share(sample=sample)
+    if share is not None:
+        return share, "runq"
+    niced = niced_share()
+    return None if niced is None else (1 - niced, "cpu")
+
+
+def host_strain(bar=None, nice_free=False, sample=True):
     """T-0465: why this machine shouldn't take another lane (load over bar, default LOAD_BAR, times its CPUs, or under
-    512 MB available), or None. FOREMAN_HOST="load=…,cpus=…,mem_mb=…,nice=…" stands in for /proc in tests; unreadable:
-    None (never blocks). T-4158: nice_free (the lane gates) counts only the load of work at nice 0: the niced share of
-    CPU time (nice= in a fake host, else niced_share) is taken off the load, since Sampo's own nice-19 gate runs ask for
-    CPU only when nothing else wants it; without a share the whole load stands."""
+    512 MB available), or None. FOREMAN_HOST="load=…,cpus=…,mem_mb=…,nice=…,runq0=…" stands in for /proc in tests;
+    unreadable: None (never blocks). T-4158: nice_free (the lane gates) counts only the load of work at nice 0. T-4277:
+    that weight is the run queue's (_strain_share: runnable threads at nice 0, sampled, or cached for 30 s); the hook
+    passes sample=False and reads only the cache, so it never samples /proc. Without any share the whole load stands."""
     try:
         fake = dict(kv.split("=", 1) for kv in os.environ.get("FOREMAN_HOST", "").split(",") if "=" in kv)
         load = float(fake["load"]) if "load" in fake else os.getloadavg()[0]
         cpus = int(fake["cpus"]) if "cpus" in fake else (os.cpu_count() or 1)
         mem = float(fake["mem_mb"]) if "mem_mb" in fake else _mem_available_mb()
-        share = (float(fake["nice"]) if "nice" in fake else None if "load" in fake else niced_share()) if nice_free else None
+        got = _strain_share(fake, sample) if nice_free else None
     except (OSError, ValueError, StopIteration, KeyError):
         return None
     shown = f"{load:.1f}"
-    if share is not None and 0 < share <= 1:
-        load, shown = load * (1 - share), f"{load:.1f}, {share:.0%} of the CPU time niced"
+    if got is not None and 0 <= got[0] <= 1:
+        weight, how = got
+        shown = (f"{load * weight:.1f} from {load:.1f}, {weight:.0%} of the runnable threads at nice 0" if how == "runq"
+                 else f"{load * weight:.1f} from {load:.1f}, {1 - weight:.0%} of the CPU time niced")
+        load = load * weight
     if load > (LOAD_BAR if bar is None else bar) * cpus and not load_gate_off():  # T-2822: the memory hold below
         # still applies in a sandbox
         return f"the host is loaded ({shown} with {cpus} CPUs)"
