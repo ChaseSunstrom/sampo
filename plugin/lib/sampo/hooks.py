@@ -1123,14 +1123,24 @@ _LANE_BRANCH = c.lazy(r"foreman/(T-\d+)")
 LANE_FOCUS_S = 2.5  # T-3519 review: the lookup and its focus, well inside the PreToolUse hook's 5 s
 
 
-def _lane_dir(p, path):
+def _lane_dir(p, path, root=False):
     """T-3534: the lane folder a path lies inside, Sampo's <main>.lanes/X or Claude Code's <main>/.claude/worktrees/X;
     else None. The folder itself isn't inside: removing a lane is the main checkout's work. Review: .. is resolved first,
-    so <main>.lanes/../x is no lane."""
+    so <main>.lanes/../x is no lane. T-4340: root=True also reads the folder itself (a refusal's detail: a merge or
+    tree write at the lane's root, alone or followed by the guard's ' (…)' note); the caller only names it, never frees it."""
     main = c.read_meta(p).get("path") or ""
     bases = "|".join(re.escape(b) for b in (main + ".lanes", os.path.join(main, ".claude", "worktrees")))
-    m = main and re.match(rf"(?:{bases})/[^/]+(?=/)", os.path.normpath(path) + "/" * path.endswith("/"))
-    return m[0] if m else None
+
+    def at(s):
+        m = main and re.match(rf"(?:{bases})/[^/]+" + ("(?=/|$)" if root else "(?=/)"),
+                              os.path.normpath(s) + "/" * s.endswith("/"))
+        return m[0] if m else None
+    if not root or " (" not in path:
+        return at(path)
+    # T-4340 review: a folder's own name may hold " (": the whole path first, then without a trailing guard note; the
+    # one that is a folder is the lane, and a name that could be both is no lane (refused, not guessed)
+    found = {x for x in (at(path), at(path.split(" (", 1)[0])) if x and os.path.isdir(x)}
+    return found.pop() if len(found) == 1 else None
 
 
 def _lane_tasks(p, lane):
@@ -1142,8 +1152,16 @@ def _lane_tasks(p, lane):
         return None
     branch = "" if branch == "HEAD" else branch  # detached
     named = _LANE_BRANCH.fullmatch(branch)
-    return branch, [b.id for b in c.load_briefs(p) if b.status in c.RUNNABLE and (
-        named and b.id == named[1] or b.meta.get("lane") == lane or branch and b.meta.get("lane_branch") == branch)]
+
+    def mine(b):
+        rec = str(b.meta.get("lane") or "")
+        if rec == lane:
+            return True
+        # T-4340 review: by branch alone, only a task that records no lane or a folder that is gone: a task another
+        # live lane holds is not re-homed here (sampo focus there would pause it in that lane)
+        return bool(named and b.id == named[1] or branch and b.meta.get("lane_branch") == branch) and not (
+            rec and os.path.isdir(rec))
+    return branch, [b.id for b in c.load_briefs(p) if b.status in c.RUNNABLE and mine(b)]
 
 
 def _lane_hint(lane, branch, hits, why=""):
@@ -1159,22 +1177,44 @@ def _lane_hint(lane, branch, hits, why=""):
             f"\"<step>\" --focus).")
 
 
-def _lane_focus(p, sid):
+def _lane_looked(p, lane, tid, tried):
+    """T-4340: the refusal after Sampo's own `sampo focus` there left the lane without the task the guard reads: not
+    the focus command again (the advice just followed: a loop) but what the guard looked for, what the record holds
+    and what the focus said (tried)."""
+    b = next((x for x in c.load_briefs(p) if x.id == tid), None)
+    rec = (b.meta.get("lane") if b else None) or "none"
+    act = c.active_brief_fast(p, lane)
+    if act and act.id != tid:  # another task holds the lane: say which, not "none"
+        return (f" The guard looked for {tid} active in lane {lane}: {act.id} is active there instead (sampo task show "
+                f"{act.id}). Sampo tried: sampo focus {tid} here {tried}; repeating it won't help.")
+    return (f" The guard looked for the active task whose recorded lane is {lane} and found none: {tid} is "
+            f"{b.status if b else 'missing'} with lane {rec} (sampo task show {tid}). Sampo tried: sampo focus {tid} "
+            f"here {tried}; repeating it won't help.")
+
+
+def _lane_focus(p, sid, lane=None):
     """T-3519: an edit in a lane with no task active there focuses the lane's task first, by `sampo focus` itself: the
     one runnable task its branch foreman/T-N names, or whose brief records this lane's path or branch (fm lane new, or
     an earlier focus here that something knocked off). 113 of a day's 140 brief refusals were builders in such lanes.
     Only Sampo's lane folder and Claude Code's .claude/worktrees count; the focus runs as its own process group, killed
     at the deadline. Returns (note, hint, tasks): the note when it focused (the caller re-runs the guard); else None and
     the refusal's hint ("" when the lane has no task of its own); and _lane_tasks' answer, None when it's no lane (T-3534
-    review: the refusal reuses it, not a second git call and brief load)."""
+    review: the refusal reuses it, not a second git call and brief load). T-4340: lane= names the lane for the main
+    session, whose own cwd is the main checkout (p.lane None): the task is read and focused there, in that folder."""
     end = time.monotonic() + LANE_FOCUS_S * SLACK
-    tasks = _lane_tasks(p, p.lane) if _lane_dir(p, p.lane + "/") == p.lane else None
+    lane = lane or p.lane
+    tasks = _lane_tasks(p, lane) if _lane_dir(p, lane + "/") == lane else None
     if not tasks:
         return None, "", None
     branch, hits = tasks
     if len(hits) != 1:
-        return None, _lane_hint(p.lane, branch, hits) if hits else "", tasks
+        return None, _lane_hint(lane, branch, hits) if hits else "", tasks
     tid, err = hits[0], None
+    if lane != p.lane:  # a visit (the main session): never into a lane whose builder may still be out (T-4340 review)
+        from sampo import lanes as _lanes
+        if _lanes.builder_running(p, tid):
+            return None, (f" The lane's task is {tid}, and its builder is still running there: this session stays out "
+                          f"of the lane's files until the builder returns (sampo lane list shows it)."), tasks
     import fcntl
     with open(os.path.join(p.dir, "first-brief.lock"), "a") as lk:  # parallel edits focus it once
         while (left := end - time.monotonic()) > 0:
@@ -1183,10 +1223,10 @@ def _lane_focus(p, sid):
                 break
             except BlockingIOError:
                 time.sleep(0.02)
-        if left > 0 and c.active_brief_fast(p, p.lane):
+        if left > 0 and c.active_brief_fast(p, lane):
             return "", "", tasks
         if left > 0:  # SAMPO_LANE_CHILD: this plugin's own focus, as in-process (no hand-over to the lane's copy)
-            proc = subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "focus", tid], cwd=p.root,
+            proc = subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "focus", tid], cwd=lane,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                                     text=True, start_new_session=True,
                                     env=dict(os.environ, FOREMAN_SESSION_ID=sid or "", SAMPO_LANE_CHILD="1"))
@@ -1196,13 +1236,14 @@ def _lane_focus(p, sid):
                 c.kill_group(proc)  # its git children too; the flocks they held go with them
                 proc.wait()
                 proc.stderr.close()
-    act = c.active_brief_fast(p, p.lane)
+    act = c.active_brief_fast(p, lane)
     if not act or act.id != tid:
         why = c.fit(re.sub(r"^(?:sampo|fm): (refused: )?", "", c.plain((err.strip().splitlines() or [""])[0])), 200) if err \
             else None
-        return None, _lane_hint(p.lane, branch, hits, f" Sampo tried: sampo focus {tid} here refused: {why}" if why else
-                                f" Sampo tried, but sampo focus {tid} didn't finish in time here."), tasks
-    c.log_event(p, "auto_focus", task=tid, data={"lane": p.lane, "branch": branch}, session=sid)
+        if err is not None:  # T-4340: Sampo ran the focus: the advice would repeat it, so say what the guard read
+            return None, _lane_looked(p, lane, tid, f"refused: {why}" if why else "ran without error"), tasks
+        return None, _lane_hint(lane, branch, hits, f" Sampo tried, but sampo focus {tid} didn't finish in time here."), tasks
+    c.log_event(p, "auto_focus", task=tid, data={"lane": lane, "branch": branch}, session=sid)
     return f"Sampo focused {tid}, this lane's task, so this edit goes ahead (no sampo focus needed).", "", tasks
 
 
@@ -2309,8 +2350,8 @@ def _credential_read(pl):
     return guard.message(block, ctx) if block else None
 
 
-def _guard_decision(pl, guard):
-    ctx, p, act = _guard_ctx(pl, guard)
+def _guard_decision(pl, guard, lanes=()):
+    ctx, p, act = _guard_ctx(pl, guard, lanes)
     found = guard.findings(pl.get("tool_name", ""), pl.get("tool_input"), ctx)
     return ctx, p, act, found, guard.check(pl.get("tool_name", ""), pl.get("tool_input"), ctx, found)
 
@@ -2460,12 +2501,20 @@ def _pre_tool_use(raw):
     made, lane_hint, lane_tasks = None, "", None
     if block and block.category == "brief" and p:
         try:
+            visit = None
             if getattr(p, "lane", None):  # T-3519: the lane's own task before anything is made
                 made, lane_hint, lane_tasks = _lane_focus(p, pl.get("session_id"))
+            elif (visit := _lane_dir(p, str(block.detail), root=True)):  # T-4340: the main session in a lane's files
+                # review: focus (a side effect) only when the whole call is then confined to this one lane
+                if _guard_decision(pl, guard, (visit,))[4]:
+                    tks = _lane_tasks(p, visit)
+                    made, lane_hint, lane_tasks = None, (_lane_hint(visit, *tks) if tks and tks[1] else ""), tks
+                else:
+                    made, lane_hint, lane_tasks = _lane_focus(p, pl.get("session_id"), visit)
             if made is None and not lane_hint:  # review: a lane's hint is the answer; no new task beside its own
                 made = _first_brief(p, pl.get("session_id"), pl.get("transcript_path"))
             if made is not None:  # the whole guard again, with the task active: the edit goes ahead if nothing stops it
-                ctx, p, act, found, block = _guard_decision(pl, guard)
+                ctx, p, act, found, block = _guard_decision(pl, guard, (visit,) if visit else ())
         except Exception as e:
             log_error("PreToolUse", _tb())
             why = _state_error(e)
@@ -2916,7 +2965,9 @@ def _ambient_note(p):
     return ambient.note(p)
 
 
-def _guard_ctx(pl, fmguard):
+def _guard_ctx(pl, fmguard, lanes=()):
+    """T-4340: lanes are lane folders whose one open task is active there (just read or focused): the main session's
+    edits strictly inside them are briefed (fmguard.Ctx.briefed_lanes); nothing else about the call changes."""
     cwd, home = _cwd(pl), os.path.expanduser("~")
     p = act = None
     try:
@@ -2945,6 +2996,8 @@ def _guard_ctx(pl, fmguard):
                       confine=(p.lane, c.main_worktree(p.lane)) if p and getattr(p, "lane", None) and act
                       and act.meta.get("builder") and not _visiting(pl, p.lane) else None,
                       unbriefed=p.root if p and not act and not _quiet() else None)  # T-0308: Bash writes too
+    if lanes and ctx.unbriefed:
+        ctx.briefed_lanes = tuple(lanes)
     return ctx, p, act
 
 

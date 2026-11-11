@@ -3254,11 +3254,15 @@ class LaneAutoFocus(ForemanTestCase):
         self.fm("focus", tid, cwd=lane)  # its brief records the lane
         self.fm("task", "block", tid, "waits", cwd=lane)
         self.fm("task", "unblock", tid, cwd=lane)
+        other = self.planned("Second worktree work")  # T-4340: with one open task the main session's edit focuses it
+        self.fm("focus", other, cwd=lane)  # (test_lane_guard_agent); with two it is refused, and the hint names both
+        self.fm("task", "block", other, "waits", cwd=lane)
+        self.fm("task", "unblock", other, cwd=lane)
         p = self.hook("PreToolUse", {"tool_name": "Write", "cwd": self.repo,  # from the main checkout, into the lane
                                      "tool_input": {"file_path": os.path.join(lane, "x.py"), "content": "x"}})
         self.assertEqual(p.returncode, 2, p.stdout)
         self.assertIn(f"no active task in lane {lane}", p.stdout)
-        self.assertIn(f"The lane's task is {tid}: cd {lane} && sampo focus {tid}, then retry.", p.stdout)
+        self.assertIn(f"{tid}, {other}): cd {lane} && sampo focus ID", p.stdout)
         self.assertNotIn("sampo task new", p.stdout)
         p = self.hook("PreToolUse", {"tool_name": "Write", "cwd": self.repo,
                                      "tool_input": {"file_path": os.path.join(self.repo, "y.py"), "content": "y"}})
@@ -3357,6 +3361,19 @@ class LaneAutoFocus(ForemanTestCase):
             fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)  # raises if still held
         with c.lock(p.dir, timeout=0.5):
             pass
+
+    def test_a_single_unfocusable_task_is_refused_by_the_command_that_focuses_it_there(self):
+        """T-4340 review: the one-task refusal text (the lane's task, the exact command, retry) the two-task change of
+        test_a_refusal_in_a_lane_... no longer pins: reached when the focus can't finish, from the main session too."""
+        from sampo import core as c, hooks
+        tid = self.planned("Slow too")
+        lane = self.sampo_lane(tid)
+        with mock.patch.dict(os.environ, self.slow_start(5)), mock.patch.object(hooks, "LANE_FOCUS_S", 1.0):
+            note, hint, tasks = hooks._lane_focus(c.find_project(self.repo), "sess-1", lane)
+        self.assertIsNone(note)
+        self.assertEqual(tasks[1], [tid])
+        self.assertIn(f"The lane's task is {tid}: cd {lane} && sampo focus {tid}, then retry.", hint)
+        self.assertIn("didn't finish in time", hint)
 
 
 class ProtectedTouch(GuardCase):

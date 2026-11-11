@@ -1915,6 +1915,16 @@ def _slots(p, briefs, exclude=None):
     return [x.id for x in live if x.id not in dead], [i for i in out if i in done], [x.id for x in live if x.id in dead]
 
 
+def builder_running(p, tid):
+    """T-4340 review: whether task tid's builder may still be out, by the builder cap's own reading (_slots: briefed with
+    a builder, not closed or merged, its lane there or launched under 30 min ago, not returned or finished, not stalled)
+    and a builder_proc that has ended (stopped). A lane that has no builder (a recovery by sampo focus) is not running."""
+    b = next((x for x in c.load_briefs(p) if x.id == tid), None)
+    if not b or not b.meta.get("builder") or tid in stopped(p, [b]):
+        return False
+    return tid in _slots(p, [b])[0]
+
+
 def _lift(strain, working, waiting, dormant, bar=c.LOAD_BAR):
     """T-4153: what a host-strain refusal waits for, and which lanes are (not) behind it. `bar`: the load per CPU the
     refusing gate used (a brief's first lane lives under LANE_HARD_BAR); "finish the lanes that run" only when some run."""

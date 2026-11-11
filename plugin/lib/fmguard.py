@@ -149,6 +149,9 @@ class Ctx:
         self.confine_real = tuple(x and os.path.realpath(x) for x in confine) if confine else None
         self.unbriefed = unbriefed  # T-0308: the project's root while no task is active — writes inside wait for one
         self.lane = None  # T-3534: (lane folder, what to do there), set by the hook when a brief refusal's path is in one
+        # T-4340: lane folders (worktree tops) whose one task is active there, set by the hook: the session itself has
+        # no task, but a file strictly inside such a lane is that task's (the lane's root only for a merge in it)
+        self.briefed_lanes = ()
 
     @property
     def state_dirs(self):
@@ -184,8 +187,21 @@ def rule_id(category, detail):
     return f"{category}:{'-'.join([w for w in re.findall(r'[a-z]+', words) if w not in _FILLER][:4]) or path}"  # not a list: a path or word fragment, not a list
 
 
+_CLIMB = lazy(r"(?:^|[^\w.])\.\.(?:[^\w.]|$)")
+
+
 def findings(tool_name, tool_input, ctx):
     """Every (category, detail) a tool call touches, allowed or not."""
+    lanes = getattr(ctx, "briefed_lanes", ())
+    if lanes and _CLIMB.search(str(tool_input.get("file_path") or tool_input.get("notebook_path") or "")
+                               if tool_name in FILE_TOOLS else str(tool_input.get("command") or "")):
+        # T-4340 review: the guard reads a/link/../x as a/x, the kernel goes through the link first: a lane's freedom
+        # never reaches a call with a .. in it (the lexical path of a/link/../x is inside the lane, its real one isn't)
+        ctx.briefed_lanes = ()
+        try:
+            return findings(tool_name, tool_input, ctx)
+        finally:
+            ctx.briefed_lanes = lanes
     if tool_name in FILE_TOOLS:
         raw = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
         path = _resolve(_expand(raw, ctx), ctx.cwd)
@@ -858,9 +874,19 @@ def classify_write(path, ctx, real=True):
         root = getattr(ctx, "unbriefed", None)  # strictly inside: a checkout-wide git write (merge, pull) is no edit
         if root and _strictly_under(p, root) and "state-direct" not in cats and not any(  # a scratch dir holding the
                 _under(p, d) for d in [*ctx.scratch, os.path.join(ctx.home, ".claude", "projects")]  # project (/tmp)
-                if not _under(root, d)):  # doesn't make the project scratch
+                if not _under(root, d)) and not _in_briefed_lane(p, ctx):  # T-4340: this variant, as it is
             cats.append("brief")
     return list(dict.fromkeys(cats))
+
+
+def _in_briefed_lane(p, ctx):
+    """T-4340: whether path p lies strictly inside a lane the hook found its one task active in, outside any .git (the
+    worktree's pointer file, and whatever a .git folder under it holds, stay refused)."""
+    for d in getattr(ctx, "briefed_lanes", ()):
+        d = d.rstrip("/")
+        if _strictly_under(p, d) and ".git" not in p[len(d) + 1:].split("/"):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------- shell parsing
@@ -4220,7 +4246,9 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         # the work tree or git dir: bare is None when a builtin may set any name; at depth 0, so no outer text set one;
         # git typed bare, as the command word: a wrapper or assignment prefix (env ${a}_DIR=…, env -C DIR) may move it)
         lane = c.argv[:1] == ["git"] and argv == c.argv and not depth and not git_env and not lost and \
-            bare is not None and not any(n.startswith("GIT_") for n in bare) and _lane_merge(args, cwds)
+            bare is not None and not any(n.startswith("GIT_") for n in bare) and (
+                _lane_merge(args, cwds) or _briefed_lane_merge(args, cwds, ctx) and all(
+                    x.op in ("", "&&") for x in cmds[:idx + 1]))  # T-4340: no `cd L || true; git merge`, no `;` or | before it
         for target in c.redirs + ([] if bare_init else _write_targets(name, targs)) + git_env + _env_files(c.argv):
             how = classify_unlink if target in unlinks and not target.endswith("/") else _classify_made if \
                 target in touched else classify_write
@@ -4462,6 +4490,8 @@ def _git_writes(sub, rest):
         return _git_pos(rest[1:], ())[:1]
     if sub == "worktree" and rest[:1] == ["add"]:
         return _git_pos(rest[1:], ("-b", "-B", "--reason"))[:1]
+    if sub == "worktree" and rest[:1] in (["remove"], ["move"]):  # T-4340 review: the folder it deletes or moves is a write
+        return _git_pos(rest[1:], ("--reason",))[:2]
     if sub == "init":
         return _git_pos(rest, ("--template", "-b", "--initial-branch", "--object-format", "--ref-format",
                                "--separate-git-dir"))[:1] or ["."]
@@ -5183,7 +5213,7 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
     if len(data) <= _SCRIPT_LIMIT:  # over it: refused below, nothing to cache
         key = "|".join((p, digest, hashlib.sha256(repr(
             (ctx.home, ctx.foreman_home, ctx.project_root, ctx.cwd, cwd, depth, tuple(ctx.scratch), ctx.state_dir, tuple(ctx.state_fallbacks), ctx.confine,
-             ctx.unbriefed, kind, assume_x, _guard_hash())).encode()).hexdigest()[:16]))
+             ctx.unbriefed, tuple(getattr(ctx, "briefed_lanes", ())), kind, assume_x, _guard_hash())).encode()).hexdigest()[:16]))
     path = _script_cache_path(ctx)
     hit = None if nested or key is None else _cache_load(path).get(key)
     if hit and all(_file_digest(dp) == dd for dp, dd in hit.get("n", [])):  # the scripts it read, unchanged
@@ -5548,12 +5578,19 @@ _LANE_ROOT = lazy(r"(.+)\.lanes/[^/]+|(.+)/\.claude/worktrees/[^/]+")
 _LANE_MERGE_FLAGS = {"--no-edit", "--no-commit", "--no-ff", "--ff-only", "-q", "--quiet"}
 
 
+def _merge_branch(args):
+    """T-3537, T-4340: the one branch of `git merge BRANCH [--no-edit …]` when its words are only that and the flags that
+    change nothing about where it runs or what it writes (_LANE_MERGE_FLAGS); else None. Both lane exemptions read it."""
+    pos = [a for a in args[1:] if not a.startswith("-")]
+    return pos[0] if args[:1] == ["merge"] and len(pos) == 1 and set(args[1:]) - {pos[0]} <= _LANE_MERGE_FLAGS else None
+
+
 def _lane_merge(args, cwds):
     """T-3537: whether `git ARGS`, run in each of cwds, merges the build branch (the one its main checkout has out) into
     a lane: each cwd a lane's own root, <repo>.lanes/<ID> or <repo>/.claude/worktrees/<name>, whose .git file links
     into <repo>/.git/worktrees/. The lane lesson's step before re-review; it rewrites only that lane's checkout."""
-    pos = [a for a in args[1:] if not a.startswith("-")]
-    if args[:1] != ["merge"] or len(pos) != 1 or not cwds or not set(args[1:]) - {pos[0]} <= _LANE_MERGE_FLAGS:
+    pos = [_merge_branch(args)]
+    if pos[0] is None or not cwds:
         return False
     for d in cwds:
         real = os.path.realpath(d)
@@ -5573,6 +5610,14 @@ def _lane_merge(args, cwds):
                 os.path.join(repo, ".git", "worktrees")) or head != f"ref: refs/heads/{pos[0]}":
             return False
     return True
+
+
+def _briefed_lane_merge(args, cwds, ctx):
+    """T-4340: whether `git merge X` runs in a lane's own root that the hook found its one task active in (ctx.briefed_lanes:
+    a worktree's top, checked by the hook): a sibling branch merged into the lane's checkout by the session that has no
+    task of its own. Only the merge, only each cwd exactly that root (no -C, no subfolder), the same flags as _lane_merge."""
+    lanes = {os.path.realpath(d) for d in getattr(ctx, "briefed_lanes", ())}
+    return (_merge_branch(args) is not None and bool(cwds) and all(os.path.realpath(d) in lanes for d in cwds))
 
 
 def write_targets(cmd):
