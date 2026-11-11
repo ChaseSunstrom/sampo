@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Small test runs take an express slot beside a gate, and a non-priority run defers to a priority waiter for at most 300 s (T-4247).
 - Accepted XL, HUGE and GIANT as tiers wherever a tier is read, with one tier list and builders refusing big tasks (T-4220).
 - sampo code retries a transient model timeout with a longer timeout, once on cloud and three times on own or loopback endpoints, before the run stops (T-4205).
 - Open concerns order the queue: tasks linked to a concern the user raised come first, most-said first, and sampo next, queue and status name the concern (T-4201).
