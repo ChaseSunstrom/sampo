@@ -118,6 +118,32 @@ class Isolation(unittest.TestCase):  # T-3132
                     bench_hooks.PLUGIN = orig
 
 
+class NoBackground(unittest.TestCase):  # T-4344
+    """sampo doctor, sampo ship's record and the benchmark measure the UserPromptSubmit hook on an 8-word prompt. Run
+    outside the test harness, the hook then started a detached `fm exam steer expand`, a paid model call whose record
+    was deleted with the scratch state. A measurement starts no background work, whatever the caller's environment."""
+
+    def test_no_background_work_is_started_from_the_scratch_project_whatever_the_callers_environment(self):
+        import tempfile
+        from unittest import mock
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ):
+            os.environ.pop("FOREMAN_NO_BACKGROUND", None)  # as sampo doctor runs it for a user
+            _, env = bench_hooks._scratch_project(tmp)
+            self.assertEqual(env.get("FOREMAN_NO_BACKGROUND"), "1")
+            self.assertNotIn("FOREMAN_NO_BACKGROUND", os.environ, "the caller's own environment is left as it was")
+
+    def test_no_background_every_measurement_builds_its_environment_from_the_scratch_project(self):
+        import ast
+        with open(bench_hooks.__file__, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        runs_hook = [fn.name for fn in tree.body if isinstance(fn, ast.FunctionDef)
+                     and any(isinstance(n, ast.Name) and n.id == "HOOK" for n in ast.walk(fn))]
+        self.assertTrue(runs_hook, "no function runs the hook: this test reads the wrong names")
+        for fn in (x for x in tree.body if isinstance(x, ast.FunctionDef) and x.name in runs_hook):
+            calls = {n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+            self.assertIn("_scratch_project", calls, f"{fn.name} runs the hook with an environment of its own")
+
+
 class Modules(unittest.TestCase):  # T-3139
     def test_a_hook_run_records_the_plugin_files_its_process_imported(self):
         got = bench_hooks.hook_modules(only=lambda n: n == "Stop")

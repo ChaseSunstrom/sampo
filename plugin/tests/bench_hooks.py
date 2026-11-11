@@ -114,7 +114,9 @@ def cpu_pressure(cgroup="/proc/self/cgroup", root="/sys/fs/cgroup", system="/pro
 def _scratch_project(tmp):
     repo = os.path.join(tmp, "app")
     os.makedirs(os.path.join(repo, "src"))
-    env = dict(os.environ, FOREMAN_HOME=os.path.join(tmp, "fhome"))
+    # T-4344: no background work, whatever the caller's environment: the measured UserPromptSubmit prompt is long
+    # enough to start `fm exam steer expand` (a paid model call, recorded only in this scratch state, which is deleted)
+    env = dict(os.environ, FOREMAN_HOME=os.path.join(tmp, "fhome"), FOREMAN_NO_BACKGROUND="1")
     git_env = dict(env, GIT_AUTHOR_NAME="b", GIT_AUTHOR_EMAIL="b@x", GIT_COMMITTER_NAME="b", GIT_COMMITTER_EMAIL="b@x")
     for cmd in (["git", "init", "-q", "-b", "main", repo], ["git", "-C", repo, "commit", "-q", "--allow-empty", "-m", "i"]):
         subprocess.run(cmd, check=True, env=git_env)
