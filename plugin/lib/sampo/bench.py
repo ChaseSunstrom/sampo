@@ -21,6 +21,7 @@ import shlex
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -357,10 +358,44 @@ def _seed(plugin, wt, env):
         subprocess.run([fm, *args], cwd=wt, env=env, capture_output=True, timeout=60)
 
 
+REPLAY_NICE = 10  # T-4276: a replay session's priority: it yields to live work, and still moves beside a nice-19 gate
+NO_CLAUDE = 127  # the shell's "command not found", from CONFINE when claude can't be started
+# T-4276: started in front of claude (argv: the CPUs, the nice value, then claude's command): affinity and priority are
+# set in the session's own process before claude exists, so every process it ever starts inherits them (no window, and
+# no walking the tree afterwards: a pass over the running tree missed two of a session's suite runs)
+CONFINE = """import os, sys
+try:
+    os.sched_setaffinity(0, {int(x) for x in sys.argv[1].split(",")})
+    os.setpriority(os.PRIO_PROCESS, 0, max(os.getpriority(os.PRIO_PROCESS, 0), int(sys.argv[2])))
+except (AttributeError, OSError, ValueError):
+    pass
+try:
+    os.execvp(sys.argv[3], sys.argv[3:])
+except OSError as e:
+    sys.stderr.write(f"can't start claude: {e}")
+    sys.exit(%d)
+""" % NO_CLAUDE
+
+
+def replay_cpus():
+    """T-4276: the CPUs a headless replay session (a bench arm, an exam or long-run session) is held to, with
+    everything it starts: the highest quarter of the ones this process may use, at least two. None (nothing is
+    confined) with fewer than eight, or where the system has no CPU affinity. Measured 2026-11-11: a nightly bench
+    session ran two whole test suites of an older tree (no shared slot pool there) beside a land's gate; 27 of the 40
+    runnable processes were its, the load stood at 53 to 84 on 16 CPUs, and every lane check and merge train crawled."""
+    try:
+        mine = sorted(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        return None
+    return mine[-max(2, len(mine) // 4):] if len(mine) >= 8 else None
+
+
 def _session(wt, env, plugins, prompt, model, budget, timeout, resume=None, keep=False, settings=None, sid=None):
     """(claude's JSON result, error) for one headless turn with the plugin dirs given; `keep` keeps the session so a
     later turn can --resume it (T-0243); `settings`: a --settings JSON (T-0963's bare arm); `sid`: the session's id,
-    chosen by the caller so a turn killed by the timeout (no result) can still be resumed (T-2262)."""
+    chosen by the caller so a turn killed by the timeout (no result) can still be resumed (T-2262). T-4276: the session
+    runs on replay_cpus() at REPLAY_NICE, and PYTHON_CPU_COUNT tells every Python it starts (a test runner sizing its
+    jobs) that count, also on a tree older than the shared slot pool."""
     c.refuse_if_paused()  # T-0591
     if not plugins and not settings:
         raise ValueError("a bypass-mode session needs the guard: a plugin with it, or its hook as --settings")
@@ -372,13 +407,20 @@ def _session(wt, env, plugins, prompt, model, budget, timeout, resume=None, keep
         + (["--resume", resume] if resume else []) + (["--session-id", sid] if sid and not resume else []) \
         + (["--model", model] if model else [])
     error, res = None, {}
+    cpus = replay_cpus()
+    if cpus:
+        env = {**env, "PYTHON_CPU_COUNT": str(len(cpus))}
+        # -I: the launcher loads no code from the worktree or the session's environment (PYTHONPATH, a sitecustomize)
+        cmd = [sys.executable, "-I", "-c", CONFINE, ",".join(map(str, cpus)), str(REPLAY_NICE), *cmd]
     try:  # its own process group: a timeout takes the session's tools down with it
         pr = subprocess.Popen(cmd, cwd=wt, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                               stdin=subprocess.DEVNULL, start_new_session=True)
         try:
             so, se = pr.communicate(timeout=timeout * 60)
             res = _result_json(so)
-            if pr.returncode and not res:
+            if cpus and pr.returncode == NO_CLAUDE and se.startswith("can't start claude: "):
+                error = c.fit(se.strip(), 200)
+            elif pr.returncode and not res:
                 error = f"exit {pr.returncode}: {(se or so).strip()[-160:]}"
         except subprocess.TimeoutExpired:
             c.kill_group(pr)  # T-1094: a child that exited first no longer crashes the bench

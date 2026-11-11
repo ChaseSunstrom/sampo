@@ -3,9 +3,12 @@ request, a fresh Foreman state, the candidate plugin; graded by the task's own t
 import json
 import os
 import subprocess
+import unittest
+from unittest import mock
 
 from helpers import ForemanTestCase, read_text
 
+from sampo import bench
 from sampo import core as c
 
 STUB = r'''#!/usr/bin/env python3
@@ -18,7 +21,15 @@ with open(os.environ["STUB_LOG"], "a") as f:
     f.write(json.dumps({"args": args, "cwd": os.getcwd(), "state": os.environ.get("FOREMAN_STATE"),
                         "path": os.environ.get("PATH", "").split(os.pathsep)[0],
                         "creds": [k for k in ("GITHUB_TOKEN", "AWS_SECRET_ACCESS_KEY") if k in os.environ],
-                        "login": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")}) + "\n")
+                        "login": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN"),
+                        "cpus": sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else None,
+                        "cpu_count": os.environ.get("PYTHON_CPU_COUNT"), "nice": os.nice(0)}) + "\n")
+if os.environ.get("STUB_CHILD"):  # what the session starts: its CPUs as a child of its own sees them
+    import subprocess
+    seen = subprocess.run([sys.executable, "-c", "import os; print(sorted(os.sched_getaffinity(0)))"],
+                          capture_output=True, text=True).stdout
+    with open(os.environ["STUB_LOG"], "a") as f:
+        f.write(json.dumps({"child": json.loads(seen)}) + "\n")
 if os.environ.get("STUB_DIAG"):  # behave a little like a Foreman session: a task, and one guard block
     import subprocess
     subprocess.run(["fm", "task", "new", "Fix double", "--type", "FIX", "--tier", "S"], capture_output=True)
@@ -438,3 +449,72 @@ class Bench(ForemanTestCase):
         out = self.fm("bench", "compare", "nofix", "fix", env=self.env).stdout
         self.assertIn("0/1", out)
         self.assertIn("1/1", out)
+
+
+@unittest.skipUnless(hasattr(os, "sched_getaffinity"), "no CPU affinity on this system")
+class Cpus(ForemanTestCase):
+    """T-4276: a headless replay session is held to a few CPUs at a low priority, with everything it starts: a nightly
+    benchmark's sessions ran two whole test suites beside a land's gate (27 of 40 runnable processes were theirs)."""
+
+    def setUp(self):
+        super().setUp()
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "claude"), "w") as f:
+            f.write(STUB)
+        os.chmod(os.path.join(bindir, "claude"), 0o755)
+        self.log = os.path.join(self.tmp, "stub.log")
+        self.env = {**os.environ, "PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log}
+        self.env.pop("PYTHON_CPU_COUNT", None)
+        self.mine = sorted(os.sched_getaffinity(0))
+
+    def session(self, cpus, **env):
+        with mock.patch.object(bench, "replay_cpus", return_value=cpus):
+            got = bench._session(self.repo, {**self.env, **env}, ["plugin"], "hi", None, None, 1)
+        return got, [json.loads(l) for l in read_text(self.log).splitlines()] if os.path.exists(self.log) else []
+
+    def test_cpus_a_session_runs_on_its_cpus_at_a_low_priority_and_is_told_their_count(self):
+        (res, error), calls = self.session(self.mine[-1:])
+        self.assertIsNone(error)
+        self.assertEqual(res.get("result"), "done")
+        self.assertEqual(calls[0]["cpus"], self.mine[-1:])
+        self.assertEqual(calls[0]["cpu_count"], "1")  # Python's os.cpu_count() in everything the session starts
+        self.assertEqual(calls[0]["nice"], max(os.nice(0), bench.REPLAY_NICE))
+        self.assertEqual(calls[0]["args"][:2], ["-p", "hi"], "claude's own arguments are untouched")
+
+    def test_cpus_what_the_session_starts_stays_on_them(self):
+        _, calls = self.session(self.mine[-1:], STUB_CHILD="1")
+        self.assertEqual(calls[1], {"child": self.mine[-1:]})
+
+    def test_cpus_a_small_machine_confines_nothing(self):
+        mine, nice = set(os.sched_getaffinity(0)), os.nice(0)
+        (_, error), calls = self.session(None)
+        self.assertIsNone(error)
+        self.assertEqual((set(calls[0]["cpus"]), calls[0]["cpu_count"], calls[0]["nice"]), (mine, None, nice))
+
+    def test_cpus_a_missing_claude_is_still_cant_start(self):
+        for cpus in (None, self.mine[-1:]):
+            (res, error), calls = self.session(cpus, PATH=os.path.join(self.tmp, "none"))
+            self.assertEqual((res, calls), ({}, []))
+            self.assertTrue(error.startswith("can't start claude: "), error)
+
+    def test_cpus_the_launcher_loads_no_code_from_the_session_s_environment(self):
+        # a replay's environment and worktree are the replayed tree's: the launcher (python -c) must not import from them
+        planted, seen = os.path.join(self.tmp, "planted"), os.path.join(self.tmp, "seen")
+        os.makedirs(planted)
+        with open(os.path.join(planted, "sitecustomize.py"), "w") as f:
+            f.write(f"import json, sys\nwith open({seen!r}, 'a') as f:\n    f.write(json.dumps(sys.orig_argv[:3]) + '\\n')\n")
+        (_, error), calls = self.session(self.mine[-1:], PYTHONPATH=planted)
+        self.assertIsNone(error)
+        self.assertEqual(calls[0]["cpus"], self.mine[-1:])
+        ran = [json.loads(l) for l in read_text(seen).splitlines()]
+        self.assertTrue(ran, "the planted module is live: the stub claude, a plain Python, loaded it")
+        self.assertEqual([a for a in ran if "-c" in a], [], "the launcher ran code planted for it")
+
+    def test_cpus_the_highest_quarter_at_least_two_and_none_below_eight(self):
+        for have, want in ((range(16), [12, 13, 14, 15]), (range(8), [6, 7]), (range(0, 32, 2), [24, 26, 28, 30]),
+                           (range(11), [9, 10]), (range(7), None), (range(1), None)):
+            with mock.patch.object(os, "sched_getaffinity", return_value=set(have)):
+                self.assertEqual(bench.replay_cpus(), want, list(have))
+        with mock.patch.object(os, "sched_getaffinity", side_effect=OSError("no")):
+            self.assertIsNone(bench.replay_cpus())
