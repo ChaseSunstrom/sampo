@@ -294,6 +294,31 @@ class RepoShape(AcceptCase):
         plain, _, _ = cli.affected(self.p, since="HEAD")
         self.assertFalse(plain and "PluginFiles" in plain, "a plain affected run is unchanged")
 
+    def a_template_in_its_own_folder(self):
+        """A by-extension template that changes directory first (as the mod's runner does) and a changed test for it."""
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"), exist_ok=True)
+        with open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w") as f:
+            f.write("# the runner\n")
+        os.makedirs(os.path.join(self.repo, "sub"), exist_ok=True)
+        with open(os.path.join(self.repo, "sub", "a.test.ts"), "w") as f:
+            f.write("// a test\n")
+        self.fm("check", "affected", "python3 -m pytest -q {tests}")
+        self.fm("check", "affected", "--for", ".ts", "cd sub && true {tests}")
+
+    def test_a_template_that_changes_directory_leaves_the_held_classes_at_the_project_root(self):  # T-4409
+        self.a_template_in_its_own_folder()
+        cmd, _, _ = cli.affected(self.p, since="HEAD", hold=True)
+        self.assertIn("cd sub && true", cmd)
+        self.assertIn("PluginFiles", cmd.split("cd sub", 1)[1], "the held classes follow the template")
+        r = subprocess.run(cmd, shell=True, cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, "the command after the template ran in sub/: " + r.stderr.strip()[-200:])
+
+    def test_a_template_that_changes_directory_and_comes_last_is_joined_as_before(self):  # T-4409
+        self.a_template_in_its_own_folder()
+        cmd, _, _ = cli.affected(self.p, since="HEAD")
+        self.assertTrue(cmd.endswith("cd sub && true sub/a.test.ts"), cmd)
+        self.assertNotIn("(", cmd, "nothing follows it: no subshell")
+
 
 class MergeTip(AcceptCase):
     def merged_lane(self):

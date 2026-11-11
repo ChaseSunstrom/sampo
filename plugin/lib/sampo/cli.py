@@ -6448,7 +6448,13 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     if hold and os.path.isfile(os.path.join(p.root, "plugin", "tests", "run.py")):  # T-4286: the four repo-shape classes
         cmds = [*cmds, "python3 plugin/tests/run.py " + " ".join(c.REPO_SHAPE_CLASSES)]
         tests = sorted({*tests, "plugin/tests/run.py"})
+    # T-4409: a template that changes directory (cd mods/x && its runner) runs in a subshell when another command
+    # follows, so the next one starts at the project root; the last one, and one that stays put, are joined as before
+    cmds = [f"({x})" if n < len(cmds) - 1 and _CHDIR.search(x) else x for n, x in enumerate(cmds)]
     return (" && ".join(cmds) if cmds else None), tests, changed
+
+
+_CHDIR = re.compile(r"(?:^|&&|\|\||;)\s*(?:cd|pushd)\s")  # shell syntax: a command of the line that changes directory
 
 
 def _self_docs_affected(p):
