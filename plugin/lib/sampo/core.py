@@ -1314,7 +1314,7 @@ def judged(code, out):
     return code, out
 
 
-_NO_TEST = lazy(r"(?i)no test matches|Ran 0 tests(?![^\n]*more green in the cache)|no tests ran")  # T-2606: an evidence line whose run measured nothing
+_NO_TEST = lazy(r"(?i)no test matches|Ran 0 tests(?![^\n]*(more green in the cache|; joined [1-9]))|no tests ran")  # T-2606: an evidence line whose run measured nothing
 _NO_TESTS = lazy(r"(?m)^(=+ )?(Ran 0 tests in|collected 0 items\b|no tests ran\b|No tests found\b|"
                        r"0 examples, 0 failures)")
 # test runners' failure summaries: unittest, pytest, jest, cargo, go
@@ -1322,7 +1322,7 @@ _FAILED_SUMMARY = lazy(r"(?m)^(FAILED \((failures|errors)=\d|=+ .*\b\d+ (failed|
                              r"test result: FAILED\b|--- FAIL: |\s*\d+ failing\b)")
 # T-3502: run.py's "; N more green in the cache": classes that passed at this very code, not rerun
 _SOME_TESTS = lazy(r"Ran [1-9]\d* tests? in|collected [1-9]\d* items?|\b[1-9]\d* (passed|examples?)\b|"
-                   r"\b[1-9]\d* more green in the cache\b")
+                   r"\b[1-9]\d* more green in the cache\b|; joined [1-9]\d* \(")  # T-4267: run.py's "; joined N (...)": a run beside it ran them
 # T-1256: their pass summaries: unittest, pytest (full or -q), jest, cargo, go, mocha
 _PASSED_SUMMARY = lazy(r"(?m)^(OK( \([^)]*\))?\s*$|=+ (.*, )?\d+ passed\b.* =+\s*$|\d+ passed\b.* in [\d.]+m?s\b|"
                              r"Tests:\s+(\d+ \w+, )*\d+ passed\b|test result: ok\b|ok\s+\S+\s+[\d.]+s\s*$|PASS\s*$|"

@@ -93,6 +93,13 @@ class Ambient(HookCase):
         self.assertIn("test_calc", v["cmd"])
         self.assertEqual(v["tree"], c.worktree_tree(self.repo))
 
+    def test_the_ambient_run_is_niced_so_it_never_competes_with_a_gate(self):  # T-4267
+        self.fm("check", "affected", "python3 -c 'import os; open(\"nice.txt\", \"w\").write(str(os.nice(0)))' {names}")
+        self.fm("check", "ambient", "on")
+        self.edit(GOOD + "# touched\n")
+        with open(os.path.join(self.repo, "nice.txt")) as f:
+            self.assertEqual(int(f.read()), min(19, os.nice(0) + c.NICE_LANE), "ran at the lane gates' nice, over ours")
+
     def test_a_run_that_moves_the_tree_records_no_verdict(self):
         # T-3270: a test that writes a file changes the tree during its run: that run proves nothing about any tree
         self.fm("check", "ambient", "on")

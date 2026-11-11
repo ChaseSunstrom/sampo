@@ -23,6 +23,7 @@ import site
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import warnings
@@ -55,6 +56,7 @@ OPERATOR_SWITCHES = {"LOAD_GATE", "LOAD_WAIT", "FULL_GATE", "SENTINEL", "SENTINE
 
 
 SLOT_ENV = "SAMPO_SLOT"  # T-3252: set in a class's children, so a run.py inside a slot never waits on its parent's pool
+OPERATOR_SWITCHES.add("NO_JOIN")  # T-4267: a run's own switch, never a test's
 OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is never a test's
 OPERATOR_SWITCHES.add("TOWER_GAP")  # T-3504: the tower-update push gap; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("BENCH_MIN_FREE_GB")  # T-3747: the operator's disk budget for bench builds; the low-disk test sets its own
@@ -424,7 +426,7 @@ def save_cache(path, new, gen):
         if cur_gen != gen:
             return
         for c, v in new.items():
-            recs[c] = [v] + [r for r in recs.pop(c, []) if r[0] != v[0]][:KEEP - 1]  # newest last: the cap keeps them
+            recs[c] = [v] + [r for r in recs.pop(c, []) if r[0] != v[0]][:KEEP - 1]  # newest first: the cap keeps them
         index = {}
         recs = {c: [[r[0], r[1], [index.setdefault(p, len(index)) for p in r[2]], *r[3:4]] for r in vs]
                 for c, vs in list(recs.items())[-20000:]}
@@ -541,6 +543,274 @@ def drop_cache(path):
     """T-3502: the cache found wrong: emptied at the next generation, so a run that read it before can't save it back."""
     with _cache_lock(path):
         _write_json(path, {"gen": load_cache(path)[0] + 1, "classes": {}})
+
+
+NO_JOIN = "SAMPO_NO_JOIN"  # T-4267: =1 never joins a class another run is running, nor marks the ones this run runs
+POLL = 0.2  # T-4267: how often a waiter reads the owner's marker
+JOIN_MIN_S, JOIN_TIMES = 120, 3  # T-4267: a marker older than max(JOIN_MIN_S, JOIN_TIMES x the class's known time) is dead
+FLUSH_S = 2  # T-4267: a finished class waits at most this long for the one read of the tree that vouches for its green
+SWEEP_S = 3600  # T-4267: a finished or dead marker this old is no run's any more (a run takes only one made while it ran)
+DEFERRED = "run.py: deferred to a run beside this one (T-4267)\n"  # the result of a job another run's class took
+
+
+def proc_ticks(pid):
+    """T-4267: the process's start time in clock ticks (/proc/PID/stat field 22), so a recycled pid is told from the
+    process that made a marker; '' where there is no /proc or no such process."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rpartition(")")[2].split()[19]
+    except (OSError, IndexError, ValueError):
+        return ""
+
+
+def pid_alive(pid, ticks):
+    """T-4267: whether pid is the process that recorded ticks (its start time); without ticks, whether pid exists."""
+    if not isinstance(pid, int) or pid <= 0:  # os.kill(0, 0) is a whole process group
+        return False
+    if ticks:
+        return proc_ticks(pid) == ticks
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:  # not ours to signal: it exists
+        return True
+    return True
+
+
+def read_marker(path):
+    """T-4267: a marker's dict, None when there is none, {} when it can't be read (a dead one: markers are made whole)."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+class Joins:
+    """T-4267 (part A of T-4266): two runs never run one test class on the same inputs at once. A class's inputs
+    identity is the digest, on this tree, of the paths its newest cache record read (ident: class -> digest; a class
+    never green has none and runs as before). The first run to start the class makes a marker for (class, digest) in
+    the run-cache folder, shared by every worktree: its pid and start ticks, a time and a state (running, then green or
+    red once every job of the class is in). A run that finds a marker held by a live owner defers the class (start()
+    says no), runs its other classes, then wait()s: the owner's green is joined, not run; a red, dead or too-old owner,
+    or no marker, means it runs the class itself.
+    A join is a cache hit on a record made while this run ran, and held to the cache's rules (review): green is said
+    only once the owner has read its tree again and what the class read is unchanged (flush(); a file edited mid-run
+    makes it red: nobody else's), the marker carries the digest of what the class read (and the paths, when they are
+    not its last record's) and the waiter takes it only when they read the same in its own tree, the whole class ran,
+    and it finished after the waiter began (a plain full run takes no earlier result, so the cache is never asked);
+    the owner's CPU sample comes with it (cpu), so a gate with a baseline compares a joined class too. A finished
+    marker stays for the runs that were waiting; one a run left unfinished goes at its exit, and the next run sweeps
+    what is older than SWEEP_S. Two waiters replacing one stale marker at once can both run the class: a duplicate,
+    never a wrong result."""
+
+    def __init__(self, cache, ident, value, owner, jobs, times, want=None, paths=None, read=None, fresh=None, t0=None):
+        self.cache, self.ident, self.value, self.owner, self.times, self.want = cache, ident, value, owner, times, want
+        # paths: class -> what its newest record read (ident digests them); read(jobs): the sorted paths those jobs
+        # read in this run, None when nothing recorded it (without read: the record's); fresh(): the tree's values
+        # now, None when it can't be read (without fresh: nothing to read again)
+        self.paths, self.read, self.fresh = paths or {}, read, fresh
+        self.t0 = time.time() if t0 is None else t0
+        self.dir = os.path.join(os.path.dirname(cache), "running")
+        self.tag = os.path.basename(cache).partition(".")[0]
+        self.jobs = {}
+        for j in jobs:
+            self.jobs.setdefault(owner(j), []).append(j)
+        self.state, self.got, self.made = {}, {}, {}  # class -> mine/theirs/free; job -> result; class -> its marker
+        self.pend, self.cpu, self.flusher = {}, {}, None  # class -> its green not yet vouched for; joined class -> CPU
+        self.lock, self.flock = threading.Lock(), threading.Lock()
+        self.me = {"pid": os.getpid(), "ticks": proc_ticks(os.getpid())}
+        self._sweep()
+        atexit.register(self.close)
+
+    def path(self, c):
+        return os.path.join(self.dir, f"{self.tag}.{hashlib.sha1(c.encode('utf-8', 'surrogateescape')).hexdigest()[:12]}."
+                                      f"{self.ident[c][:24]}")
+
+    def limit(self, c):
+        return max(JOIN_MIN_S, JOIN_TIMES * self.times.get(c, 0))
+
+    def _sweep(self):
+        """Markers and claims' temp files older than SWEEP_S go, but a class a live run is still running."""
+        with contextlib.suppress(OSError):
+            for name in os.listdir(self.dir):
+                q = os.path.join(self.dir, name)
+                with contextlib.suppress(OSError):
+                    if time.time() - os.lstat(q).st_mtime > SWEEP_S:
+                        m = None if name.endswith(".new") else read_marker(q)
+                        if not (m and m.get("state") == "running" and pid_alive(m.get("pid"), m.get("ticks"))):
+                            os.unlink(q)
+
+    def _live(self, m, c):
+        """Whether the marker m is a run to wait for: running, its owner alive, younger than the class's limit."""
+        at = m.get("at") if isinstance(m.get("at"), (int, float)) else 0
+        return m.get("state") == "running" and pid_alive(m.get("pid"), m.get("ticks")) and time.time() - at < self.limit(c)
+
+    def _good(self, m, c):
+        """The tests of a green marker this run may take, else None: finished since this run began, the whole class,
+        and what the owner's class read reads the same in this tree."""
+        n, read, done = m.get("n"), m.get("paths", self.paths.get(c, [])), m.get("done")
+        if m.get("state") != "green" or not isinstance(done, (int, float)) or done < self.t0:
+            return None
+        if not isinstance(n, int) or isinstance(n, bool) or not self._fit(c, n):
+            return None
+        if not isinstance(read, list) or not all(isinstance(p, str) for p in read) or not isinstance(m.get("sum"), str):
+            return None
+        return n if digest(read, self.value) == m["sum"] else None
+
+    def _claim(self, c):
+        """'mine' (a marker made), 'theirs' (another's: running, or a green to take) or 'free' (no marker could be
+        made: run anyway)."""
+        path = self.path(c)
+        mine = {**self.me, "at": time.time(), "state": "running"}
+        temp = f"{path}.{os.getpid()}.new"  # the process's own: a name two shared let one publish the other's pid
+        for _ in range(3):
+            m = read_marker(path)
+            if m is not None:
+                if self._live(m, c) or self._good(m, c) is not None:
+                    return "theirs"
+                if read_marker(path) == m:  # the same stale one still: gone before the new one is made
+                    with contextlib.suppress(OSError):
+                        os.unlink(path)
+            try:
+                os.makedirs(self.dir, mode=0o700, exist_ok=True)
+                _write_json(temp, mine)
+                try:
+                    os.link(temp, path)  # whole content or none, and never over another's marker
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(temp)
+            except FileExistsError:
+                continue
+            except OSError:
+                return "free"
+            self.made[c] = mine
+            return "mine"
+        return "free"
+
+    def start(self, job):
+        """Whether to run this job: False when its class is another run's, which is deferred to wait()."""
+        c = self.owner(job)
+        with self.lock:
+            if c not in self.state:
+                self.state[c] = self._claim(c) if c in self.ident and c in self.jobs else "free"
+            return self.state[c] != "theirs"
+
+    def deferred(self):
+        with self.lock:
+            return {c for c, s in self.state.items() if s == "theirs"}
+
+    def _say(self, c, state, **more):
+        self.made[c] = {**self.made[c], "state": state, "done": time.time(), **more}
+        _write_json(self.path(c), self.made[c])
+
+    def done(self, res):
+        """A job's result: once every job of a class this run owns is in, its marker says red at once (a failure, a
+        skip, or nothing recorded what it read), or green after the next flush()."""
+        c = self.owner(res[0])
+        with self.lock:
+            self.got[res[0]] = res
+            if self.state.get(c) != "mine" or c not in self.made or not all(j in self.got for j in self.jobs[c]):
+                return
+            rs = [self.got[j] for j in self.jobs[c]]
+        green = all(r[1] == 0 and not re.search(r"\bskipped=\d", r[2]) for r in rs)
+        read = None if not green else list(self.paths.get(c, [])) if self.read is None else self.read(self.jobs[c])
+        with self.lock:
+            if read is None:
+                self._say(c, "red")
+                return
+            cpu = class_cpu(rs, self.owner).get(c)
+            self.pend[c] = {"n": sum(r[3] for r in rs), "read": read, **({"cpu": cpu} if cpu else {})}
+            later = self.fresh is not None and self.flusher is None
+            if later:
+                self.flusher = threading.Thread(target=self._later, daemon=True)
+                self.flusher.start()
+        if self.fresh is None:
+            self.flush()
+
+    def _later(self):
+        time.sleep(FLUSH_S)
+        with self.lock:
+            self.flusher = None  # a class finished from here on starts the next
+        self.flush()
+
+    def flush(self):
+        """Say green for the finished classes waiting for it: one read of the tree now vouches for all of them. A
+        class one of whose paths reads otherwise now than at the start (it ran the old code or the new), or a tree
+        that can't be read, is red: this run's result, nobody else's."""
+        with self.flock:
+            with self.lock:
+                pend, self.pend = self.pend, {}
+            if not pend:
+                return
+            now = self.fresh() if self.fresh else self.value
+            for c, d in pend.items():
+                total = digest(d["read"], self.value)
+                same = now is not None and (now is self.value or digest(d["read"], now) == total)
+                with self.lock:
+                    if c not in self.made:  # closed meanwhile
+                        continue
+                    if same:
+                        self._say(c, "green", n=d["n"], sum=total, **({"cpu": d["cpu"]} if "cpu" in d else {}),
+                                  **({} if d["read"] == self.paths.get(c, []) else {"paths": d["read"]}))
+                    else:
+                        self._say(c, "red")
+
+    def _fit(self, c, n):
+        return self.want is None or self.want.get(c) == n  # a run that ran part of the class is not the class's result
+
+    def take(self, classes):
+        """These deferred classes are this run's to run after all (a joined one over its CPU margin), unmarked."""
+        with self.lock:
+            for c in classes:
+                self.state[c] = "free"
+
+    def wait(self, end):
+        """Wait (at most until the epoch end) for every deferred class: {class: tests} of those joined, the owner's
+        green result taken (its CPU sample in self.cpu). A class not joined (a red, dead or old owner, no marker, a
+        green that reads otherwise here, the deadline) is this run's to run: start() now says yes."""
+        pend, joined = sorted(self.deferred()), {}
+        if pend:
+            sys.stderr.write(f"run.py: joining {len(pend)} class(es) a run beside this one is running: "
+                             f"{', '.join(pend[:3])}{', ...' if len(pend) > 3 else ''}\n")
+            sys.stderr.flush()
+        while pend:
+            late = time.time() >= end - 1
+            for c in list(pend):
+                m = read_marker(self.path(c))
+                if m and self._live(m, c) and not late:
+                    continue  # still running
+                n = self._good(m, c) if m else None
+                if n is not None:
+                    joined[c] = n
+                    if m.get("cpu") is not None:
+                        self.cpu[c] = m["cpu"]
+                else:  # runs it: marks it if it can, unmarked at the deadline
+                    with self.lock:
+                        self.state[c] = "free" if late else self._claim(c)
+                        if self.state[c] == "theirs":  # another waiter took it meanwhile, or its green came in
+                            continue
+                pend.remove(c)
+            if pend:
+                time.sleep(POLL)
+        return joined
+
+    def close(self):
+        """Say what is still to say, then remove the markers of the classes this process never finished (idempotent;
+        a marker another run replaced is not touched). A finished one stays for the runs waiting on it."""
+        self.flush()
+        with self.lock:
+            for c, mine in list(self.made.items()):
+                m = read_marker(self.path(c)) if mine.get("state") == "running" else None
+                if m is not None and m.get("state") == "running" and m.get("pid") == mine["pid"] \
+                        and m.get("ticks") == mine["ticks"]:
+                    with contextlib.suppress(OSError):
+                        os.unlink(self.path(c))
+                del self.made[c]
 
 
 def _git(cwd, *args, data=None):
@@ -1024,7 +1294,7 @@ def sandboxed(argv, tmp, env):
             sandbox.job_env(env, tmp))
 
 
-def run_one(cid, k, timeout=480, deadline=None, small=False):
+def run_one(cid, k, timeout=480, deadline=None, small=False, joins=None):
     """T-3252: the class runs in one of the machine's CPU slots; waiting for it counts against neither its timeout nor
     its recorded time, and the run's deadline still applies once it starts. T-4247: small (the run's selection is at
     most EXPRESS_CLASSES classes) lets it take an express slot; the seconds it waited are kept in WAITED."""
@@ -1032,7 +1302,12 @@ def run_one(cid, k, timeout=480, deadline=None, small=False):
     t = time.monotonic()
     with cpu_slot(wait, small=small) as slot:
         WAITED[cid] = WAITED.get(cid, 0.0) + time.monotonic() - t
-        return _run_one(cid, k, timeout, deadline, slot)
+        if joins and not joins.start(cid):  # T-4267: another run is running this class on these inputs: wait for it later
+            return cid, 0, DEFERRED, 0, 0.0
+        res = _run_one(cid, k, timeout, deadline, slot)
+        if joins:
+            joins.done(res)
+        return res
 
 
 def _run_one(cid, k, timeout, deadline, slot):
@@ -1250,7 +1525,7 @@ def main():
     cpu_base, cpu_gate = os.environ.pop(CPU_BASE, ""), os.environ.pop(CPU_GATE, "") not in ("", "0")
     cpu_base = "" if a.k or a.shard else cpu_base
     hist, cached_cpu, cpu_red = (load_cpu(cpu_base)["classes"] if cpu_base else {}), {}, []
-    skip, drawn, got = {}, set(), None
+    skip, drawn, got, ident, joined = {}, set(), None, {}, {}
     if not (a.k or (_env(NO_CACHE) or "0") != "0" or _env(SLOT_ENV)):
         got = tree()
     if got:
@@ -1267,6 +1542,8 @@ def main():
             skip = {c: n for c, n in skip.items() if c not in over}
             cached_cpu = {c: s for c, s in known.items() if c in skip}
         todo = [c for c in todo if c not in skip]
+        if (_env(NO_JOIN) or "0") == "0":  # T-4267: what a class would read, by its newest record, on this tree: its inputs' identity
+            ident = {c: digest(recs[c][0][2], value) for c in todo if recs.get(c)}
         if skip:
             sys.stderr.write(f"run.py: skipped {len(skip)} classes green at the same code; "
                              "FOREMAN_NO_TEST_CACHE=1 runs them\n")
@@ -1301,9 +1578,35 @@ def main():
     # T-3541: the whole suite (the gate: no names, -k or -p) waits for any other on the machine, at most half its deadline
     slot = suite_slot(t0 + dl / 2) if not (a.names or a.k or a.p) else contextlib.nullcontext()
     small = small_selection(owner(j) for j in todo)  # T-4247: at most two classes to run: they may take an express slot
+    # T-4267: a class another run is running on the same inputs is that run's: this one does its other classes, then waits
+    joins = None
+    if ident:
+        base = shared(*got[:2])
+
+        def read(jobs):  # what a class's jobs read in this run, as its cache record would name it; None: unrecorded
+            texts = [COVERED.get(j) for j in jobs]
+            return None if None in texts else sorted(base.union(*(covered(t, *got[:2]) for t in texts)))
+
+        def fresh():  # the tree's values now; None when it can't be read or is another repo's
+            again = tree()
+            return values(*again[:2]) if again and again[0] == got[0] else None
+        joins = Joins(cache, ident, value, owner, todo, times, {c: len(parts.get(c, ())) for c in ident},
+                      {c: recs[c][0][2] for c in ident}, read, fresh, t0)
     with slot, burn(a.load), concurrent.futures.ThreadPoolExecutor(max(1, a.j)) as ex:
-        go = lambda c: run_one(c, a.k or a.names, cap, end, small)  # noqa: E731  # T-1994: the class is in a named module, so -k alone
+        go = lambda c: run_one(c, a.k or a.names, cap, end, small, joins)  # noqa: E731  # T-1994: the class is in a named module, so -k alone
         results = list(ex.map(go, todo))
+        if joins:
+            theirs = joins.deferred()
+            results = [r for r in results if r[2] != DEFERRED]
+            if theirs:
+                joined = joins.wait(end)
+                if cpu_base:  # T-3757: a joined class costs what it cost its owner; one over its margin runs here, measured
+                    known = {c: joins.cpu[c] for c in joined if c in joins.cpu}
+                    over = {c for c, *_ in cpu_over(hist, known, BUDGETS)}
+                    joins.take(over)
+                    joined = {c: n for c, n in joined.items() if c not in over}
+                    cached_cpu.update({c: s for c, s in known.items() if c in joined})
+                results += list(ex.map(go, [j for j in todo if owner(j) in theirs and owner(j) not in joined]))
         for i, r in enumerate(results):  # T-3936: a cap-kill on a loaded host runs once more alone, the pool drained
             if r[1] < 0 and "killed (T-1808)" in r[2] and (lp := load_per_cpu()) > LOAD_BAR:
                 again = go(r[0])
@@ -1349,6 +1652,8 @@ def main():
             new = {c: r for c, r in new.items() if digest(r[2], after) == r[0]}
             if new:
                 save_cache(cache, new, gen)
+    if joins:
+        joins.close()  # the last greens said; the markers of classes it never finished go
     if not a.shard:
         seen = set(ids)
         # T-3338: a killed class (negative rc) counts as slow, so the next run splits it instead of killing it again
@@ -1379,6 +1684,7 @@ def main():
         print("\n".join(summary_notes(results, time.time() - t0, a.deadline)), flush=True)
     total = sum(r[3] for r in results)
     cached = f"; {sum(skip.values())} more green in the cache" if skip else ""  # T-3502: core._SOME_TESTS reads it
+    cached += f"; joined {len(joined)} ({sum(joined.values())} tests green in a run beside this one)" if joined else ""  # T-4267: so does it
     slow = slowest(results, 3)
     if skipped():
         sys.stderr.write(f"\nleft out (FOREMAN_SKIP_TESTS): {', '.join(sorted(skipped()))}")
@@ -1395,7 +1701,7 @@ def main():
     spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     sys.stderr.write(f"\nRan {total} tests in {time.time() - t0:.1f}s ({len(todo)} jobs, {a.j} at a time; "
                      f"slowest: {slow}; cpu {spent:.1f} s{waited_note(WAITED)}){cached}\n\n"
-                     f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip else 'NO TESTS RAN'}\n")
+                     f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip or joined else 'NO TESTS RAN'}\n")
     if stopped:
         sys.stderr.write(f"not run (deadline): {len(stopped)}\n" + "".join(f"  not run class: {r[0]}\n" for r in stopped))
     # T-2944: stopped at its own deadline with nothing really failed: exit 124 and say so last, so a caller (the
@@ -1403,7 +1709,7 @@ def main():
     if stopped and not names:
         sys.stderr.write("run.py: stopped at its deadline\n")
         return 124
-    return 1 if failed or cpu_red or not (total or skip) else 0
+    return 1 if failed or cpu_red or not (total or skip or joined) else 0
 
 
 if __name__ == "__main__":
