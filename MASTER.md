@@ -208,6 +208,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmmacros` (T-3922, `sampo.macros`): `sampo do NAME` runs a routine from `plugin/macros/*.json` (1 to 3 verb steps, none `do`; a bad file is skipped and named by `sampo do --list`), five lines or fewer; `sampo lane accept ID --audit LENS 'how' 'result'` records a reviewed lane's audits and queues it first into a land; `sampo lane recover --all` prints one launch line per recovered lane [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmlane_overlap` (T-3285): `sampo lane list` prints an OVERLAP line per pair of open lanes that add the same def or touch the same file (`scan()`) [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlanes` (`sampo lane`: git worktrees as lanes with their own active task; `sampo lane train` (sampo/train, T-3380) gates N lanes once… [→ files-lib-2](docs/map/files-lib-2.md)
+- `lane land` ship (T-4239: the land never waits for a ship; a detached, coalesced `sampo ship` of the newest head, marker with pid and start ticks, a snapshot at its own sha; HH:MM:SS on every land.log line, per-train gate and waiting minutes, ledger `land_train` and `ship_done`, `sampo status` accept-to-live median… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmledger` (`sampo verify-ledger`: the ledger's hash chain proved line by line… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlib` (T-0933: `sampo lib` — the stack library: card parsing and lint, stack… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlong`… [→ files-lib-2](docs/map/files-lib-2.md)

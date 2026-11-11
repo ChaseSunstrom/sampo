@@ -14,9 +14,12 @@ import os
 import re
 import shlex
 import shutil
+import signal
+import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from sampo import core as c
@@ -382,6 +385,8 @@ def _main(arg):
     """T-3119: the lane's check process: read the lane's task here, check it, print the result on one MARK line."""
     from sampo import cli
     a = json.loads(arg)
+    if "ship" in a:  # T-4239: the land's detached ship
+        return _ship_child(a["ship"])
     p = c.Project(*a["project"])
     why, seen = _check(p, a["main"], a["base"], cli.need_brief(p, a["id"]), a["tip"], a["tests"])
     print(MARK + json.dumps({"why": why, "seen": seen}))
@@ -713,7 +718,7 @@ def cmd(p, args, main):
         lines.append(f"The test gate ran {len(got['affected'])} affected test module(s), not the full suite "
                      "(FOREMAN_FULL_GATE=1 runs it); the full suite verifies the landed merges in the background.")
     lines.append("sampo check now reuses this pass while only CHANGELOG.md and the sync mirror change.")
-    if got["merged"] and (sh := _ship(p, False)):  # T-3849: a train by hand ships too, on a grant already given
+    if got["merged"] and (sh := _ship(p, False, main)):  # T-3849: a train by hand ships too, on a grant already given
         got["ship"] = sh[1]
         lines.append(f"Ship ({sh[0]}'s grant): {c.fit(c.plain(sh[1]), 300)}")
     return cli.out(args, got, "\n".join(lines))
@@ -735,41 +740,378 @@ def landing(p):
         return True
 
 
-def _sampo(argv):
+def _sampo(argv, env=None):
     """(exit code, stdout, stderr) of one sampo verb, the checks its command line runs, in a fresh process: a land
     outlives the trains it merges, so its own code would judge their verbs and docs as unknown (T-3970)."""
     r = subprocess.run([sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), *argv], capture_output=True,
-                       text=True)
+                       text=True, env=env)
     return r.returncode, r.stdout, r.stderr
 
 
-def _ship(p, keep):
+SHIPPED_AT = re.compile(r"\bmain at ([0-9a-f]{40})\b")  # release.ship's closing line: the commit it pushed
+
+
+def _grant_of(p):
+    """The task holding a publish grant, or None."""
+    return next((b for b in c.load_briefs(p) if "publish" in (b.meta.get("allow") or [])), None)
+
+
+def _give_back(p, tid):
+    """The grant a ship spent, held again for the land's next ship (a Log line says so); True when it was re-added."""
+    with c.lock(p.dir):
+        b = c.find_brief(p, tid)
+        if b is None or "publish" in (b.meta.get("allow") or []):
+            return False
+        b.meta["allow"] = [*(b.meta.get("allow") or []), "publish"]
+        b.append_log("publish grant kept for the land's next train (spent at its last ship)")
+        c.save_brief(p, b)
+    return True
+
+
+def _ship_end(p, tid, head, rc, out, t0, t1):
+    """T-4239: the record of one finished ship, as a ledger event (ship_done: head it read, sha it pushed, seconds, exit,
+    the failing tests a red run names from its own output) and the line a land or sampo status tells. (line, data)."""
+    sha = (SHIPPED_AT.findall(out) or [head])[-1]
+    red = _red(out) if rc else []
+    line = ((out.strip().splitlines() or ["shipped"])[-1] if not rc else
+            "refused: " + _why(out) + (f"; failing {c.joinmore(red, 8)}" if red else ""))
+    data = {"head": head, "sha": sha, "seconds": round(t1 - t0, 1), "exit": rc, "start": round(t0, 1),
+            "end": round(t1, 1), "red": red[:20]}
+    try:
+        c.log_event(p, "ship_done", task=tid, data=data)
+        c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps({**data, "grant": tid, "seen": False,
+                                                                           "line": c.fit(c.plain(line), 400)}))
+    except Exception:  # noqa: BLE001 — a record that can't be written never undoes a ship
+        pass
+    return line, data
+
+
+def _ship(p, keep, main=None):
     """T-3849: sampo ship on a publish grant someone already gave (never granted here): (grant id, one line) or None.
     keep=True (between a land's trains) gives a spent grant back with a Log line so the next train ships too; keep=False
     (the land's or a train's last ship) leaves it spent, spending it when nothing was left to push. A refusal is a
-    line, never an error: it never stops the land."""
+    line, never an error: it never stops the land. T-4239: in line, for a hand train and where nothing may run in the
+    background; a land starts _ship_request's detached ship instead. `main`: the head is read once and the ship
+    tests and pushes that snapshot."""
     from sampo import release
-    grant = next((b for b in c.load_briefs(p) if "publish" in (b.meta.get("allow") or [])), None)
+    grant = _grant_of(p)
     if not grant:
         return None
+    running = _ship_alive(p)
+    if running:  # review: never beside a detached ship (two pushes of one grant, a spent grant given back): join it, bounded
+        secs = float(os.environ.get("FOREMAN_LAND_SHIP_WAIT_S") or 1800)
+        print(f"sampo lane land: a ship is running (pid {running['pid']}); waiting up to {secs:g}s for it", file=sys.stderr,
+              flush=True)
+        if not _ship_wait(p, secs):
+            return grant.id, f"a ship is already running (pid {running['pid']}): not shipping beside it"
+        grant = _grant_of(p)  # the ship that ended may have spent it
+        if not grant:
+            return None
     print(f"sampo lane land: shipping on {grant.id}'s publish grant", file=sys.stderr, flush=True)
+    head, t0 = (c._git(main, "rev-parse", "HEAD", timeout=10).strip() if main else ""), time.time()
     try:
-        rc, out, err = _sampo(["ship", "--task", grant.id])
+        rc, out, err = _sampo(["ship", "--task", grant.id], env=dict(os.environ, FOREMAN_SHIP_AT=head) if head else None)
     except Exception as e:  # noqa: BLE001 — a failed ship is said, never stops the land
         rc, out, err = 1, "", f"{type(e).__name__}: {e}"
     line = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out)
+    _ship_end(p, grant.id, head, rc, out + err, t0, time.time())
     if rc:
         return grant.id, line
-    with c.lock(p.dir):
-        b = c.find_brief(p, grant.id)
-        held = "publish" in (b.meta.get("allow") or [])
-        if keep and not held:
-            b.meta["allow"] = [*(b.meta.get("allow") or []), "publish"]
-            b.append_log("publish grant kept for the land's next train (spent at its last ship)")
-            c.save_brief(p, b)
-    if held and not keep:
+    if keep:  # review: only this ship's own push (its own "main at" line) spent it; else someone else's spend stands
+        if SHIPPED_AT.search(out):
+            _give_back(p, grant.id)
+    elif "publish" in ((c.find_brief(p, grant.id) or grant).meta.get("allow") or []):  # nothing was left to push
         release._spend(p, grant.id, "sampo lane land")
     return grant.id, line
+
+
+# ---------------------------------------------------------------- the land's ship, detached (T-4239)
+
+def _ship_marker(p):
+    """The file holding the running ship's pid and start time: its presence with a live pid is "a ship is running"."""
+    return os.path.join(p.dir, "ship", "marker.json")
+
+
+def _ticks(pid):
+    """A process's start time in clock ticks (field 22 of /proc/PID/stat), the id a reused pid can't share; 0 when it
+    isn't running, is a zombie, or this host has no /proc."""
+    try:
+        with open(f"/proc/{int(pid)}/stat") as f:
+            rest = f.read().rsplit(")", 1)[1].split()
+        return 0 if rest[0] == "Z" else int(rest[19])
+    except (OSError, IndexError, ValueError):
+        return 0
+
+
+def _read_marker(p):
+    try:
+        with open(_ship_marker(p)) as f:
+            m = json.load(f)
+        return m if isinstance(m, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def _ship_alive(p):
+    """The running ship's marker (pid, ticks, started, want, ship_head, again, final, log), or None: no marker, or its
+    pid is gone, a zombie, or another process now (a dead ship's marker never blocks the next)."""
+    m = _read_marker(p)
+    if not m or not isinstance(m.get("pid"), int):
+        return None
+    if m.get("ticks"):
+        return m if _ticks(m["pid"]) == m["ticks"] else None
+    try:  # a host without /proc: the pid alone
+        os.kill(m["pid"], 0)
+        return m
+    except OSError:
+        return None
+
+
+def ship_last(p):
+    """The record of the newest finished land ship (head, sha, seconds, exit, end, line, seen), or None."""
+    try:
+        with open(os.path.join(p.dir, "ship-last.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _ship_request(p, main, final):
+    """T-4239: a land asks for a ship of the head it just landed, never waiting for it. A running ship (its marker holds a
+    live pid) is told to go again when it is done (N requests during one ship cost one more ship); else, with a publish
+    grant held, one detached niced `sampo ship` starts on its own tree. `final`: no train follows this request, so the
+    grant is spent at the last ship (the newest request decides). ("started"|"joined"|"failed", detail) or None (no
+    grant, nothing started)."""
+    head = c._git(main, "rev-parse", "HEAD", timeout=10).strip()
+    path = _ship_marker(p)
+    me = {"land_pid": os.getpid(), "land_ticks": _ticks(os.getpid())}  # the newest asker: the ship gives the grant back only while it lives
+    with c.lock(os.path.dirname(path), timeout=30):
+        m = _ship_alive(p)
+        if m:  # no grant check: the running ship spent it, and gives it back when it ends
+            m.update(want=head, again=head != m.get("ship_head"), final=final, **me)
+            c.write_atomic(path, json.dumps(m))
+            return "joined", m
+        with contextlib.suppress(OSError):  # a dead ship's marker
+            os.remove(path)
+        grant = _grant_of(p)
+        if not grant:
+            return None
+        log = os.path.join(p.dir, "ship.log")
+        lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        env = dict(os.environ, PYTHONPATH=lib + os.pathsep + os.environ.get("PYTHONPATH", ""))
+        arg = json.dumps({"ship": {"project": [p.slug, p.root, p.dir, p.lane], "main": main, "grant": grant.id}})
+        try:
+            with open(log, "a", encoding="utf-8") as out:
+                proc = subprocess.Popen(c.nice_argv([sys.executable, "-m", "sampo.train", arg]), cwd=main, env=env,
+                                        stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                        start_new_session=True)
+        except OSError as e:
+            return "failed", f"{type(e).__name__}: {e}"
+        threading.Thread(target=proc.wait, daemon=True).start()  # no zombie while this land lives
+        m = {"pid": proc.pid, "ticks": _ticks(proc.pid), "started": round(time.time(), 1), "want": head,
+             "ship_head": "", "again": False, "final": final, "grant": grant.id, "log": log, **me}
+        c.write_atomic(path, json.dumps(m))
+        return "started", m
+
+
+def _hms():
+    return time.strftime("%H:%M:%S")
+
+
+def _ship_run(main, grant, head, argv=None):
+    """(exit code, output) of one `sampo ship --task GRANT` pinned to `head` (SAMPO_SHIP_AT: it tests and pushes that
+    snapshot), every output line stamped into this process's own log; ended after SAMPO_SHIP_TIMEOUT_S (7200).
+    Review: the output goes to a file, never a pipe: a process that left the group and holds a pipe's write end keeps
+    the read loop waiting for an EOF that never comes (T-2255), so the cap would never fire. The deadline is
+    wait(timeout) then a group kill; whoever still holds the file writes into an unlinked file."""
+    env = dict(os.environ, FOREMAN_SHIP_AT=head)
+    limit = float(os.environ.get("FOREMAN_SHIP_TIMEOUT_S") or 7200)  # SAMPO_SHIP_TIMEOUT_S, mirrored by core
+    fd, path = tempfile.mkstemp(prefix="ship-run-", suffix=".log")
+    out, part, capped = [], "", False
+    try:
+        with os.fdopen(fd, "ab") as w, open(path, encoding="utf-8", errors="replace") as r:
+            proc = subprocess.Popen(argv or [sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "ship",
+                                             "--task", grant],
+                                    cwd=main, env=env, stdin=subprocess.DEVNULL, stdout=w, stderr=subprocess.STDOUT,
+                                    start_new_session=True)
+
+            def drain(last=False):
+                nonlocal part
+                part += r.read()
+                *lines, part = part.split("\n")
+                if last and part:
+                    lines.append(part)
+                    part = ""
+                for ln in lines:
+                    out.append(ln + "\n")
+                    del out[:-5000]
+                    print(f"{_hms()} {ln.rstrip()}", flush=True)
+            deadline = time.monotonic() + limit
+            rc = None
+            while rc is None:
+                try:
+                    rc = proc.wait(timeout=max(0.0, min(0.4, deadline - time.monotonic())))
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= deadline:
+                        capped = True
+                        with contextlib.suppress(OSError):
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        rc = proc.wait()
+                drain()
+            drain(last=True)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(path)
+    if capped:
+        out.append(f"timed out: the ship was ended after {limit:g}s\n")
+        rc = 124
+    return rc, "".join(out)
+
+
+def _land_alive(m):
+    """False only when the marker names the land that requested the ship and that process is gone (or its pid is another
+    process now: another start time); a marker without the land's identity reads alive."""
+    pid = m.get("land_pid")
+    return True if not pid else bool(m.get("land_ticks")) and _ticks(pid) == m.get("land_ticks")
+
+
+def _settle(p, grant, rc, out, m):
+    """Review: the grant after one detached ship (called under the marker lock). A ship that exited 0: the land's last
+    ship (final, and none to follow) spends a grant still held (nothing was pushed); any other gives it back, but only
+    when THIS ship's own push spent it (its output has its own "main at <sha>" line: a ship with no push of its own never
+    undoes a hand ship's spend) and only while a request is waiting (`again`) or the land that asked is still alive to
+    ask again (else it stays spent)."""
+    from sampo import release
+    if rc:
+        return
+    b = c.find_brief(p, grant)
+    if bool(m.get("final")) and not m.get("again"):
+        if b is not None and "publish" in (b.meta.get("allow") or []):
+            with contextlib.suppress(Exception):
+                release._spend(p, grant, "sampo lane land")
+    elif SHIPPED_AT.search(out) and (m.get("again") or _land_alive(m)):  # a request is waiting, or its land can still ask
+        _give_back(p, grant)
+
+
+def _ship_child(a):
+    """T-4239: the detached ship process (python -m sampo.train {"ship": ...}): ships the head the marker wants, writes
+    the ship_done event, settles the grant, and goes again when a later train asked, else clears the marker. The grant
+    is given back after a ship that is not the last (or that a later request will follow); the land's last ship leaves
+    it spent. A refusal or a red run is a line and an event, never an exception."""
+    p = c.Project(*a["project"])
+    main, grant = a["main"], a["grant"]
+    path = _ship_marker(p)
+    try:
+        while True:
+            with c.lock(os.path.dirname(path), timeout=30):
+                m = _read_marker(p) or {}
+                head = m.get("want") or c._git(main, "rev-parse", "HEAD", timeout=10).strip()
+                m.update(ship_head=head, again=False)
+                c.write_atomic(path, json.dumps(m))
+            print(f"{_hms()} ship of {head[:9]} on {grant}'s publish grant", flush=True)
+            t0 = time.time()
+            try:
+                rc, out = _ship_run(main, grant, head)
+            except Exception as e:  # noqa: BLE001 — never an exception out of the loop
+                rc, out = 1, f"{type(e).__name__}: {e}"
+            line, _ = _ship_end(p, grant, head, rc, out, t0, time.time())
+            print(f"{_hms()} {c.fit(c.plain(line), 300)}", flush=True)
+            with c.lock(os.path.dirname(path), timeout=30):
+                m = _read_marker(p) or {}
+                again = bool(m.get("again"))
+                _settle(p, grant, rc, out, m)
+                if again:
+                    continue
+                with contextlib.suppress(OSError):
+                    os.remove(path)
+                return 0
+    finally:
+        m = _read_marker(p)
+        if m and m.get("pid") == os.getpid():  # an escaped exception: the marker never outlives its ship
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+
+def _accepted(b):
+    """The epoch sampo lane accept queued a lane at (its brief's accepted_at), or None."""
+    try:
+        return float(b.meta.get("accepted_at")) if b is not None and b.meta.get("accepted_at") else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _train_times(p, land_id, n, got, by, wall):
+    """T-4239: one train's times: the summary row (lanes landed, minutes in the gate, minutes waiting: the train's wall
+    time minus its gate run, the probes, the merge and the queue before them) and, for a train that landed lanes, a
+    land_train ledger event (lanes, seconds, gate_s, wait_s, at, each lane's accept time)."""
+    gate = float((got.get("minutes") or {}).get("gate") or 0)
+    wait = max(0.0, round(wall / 60 - gate, 1))
+    row = {"train": n, "lanes": list(got["merged"]), "gate": gate, "waiting": wait, "seconds": round(wall, 1)}
+    if got["merged"]:
+        acc = {t: a for t in got["merged"] if (a := _accepted(by.get(t)))}
+        try:
+            c.log_event(p, "land_train", data={"land": land_id, "train": n, "lanes": list(got["merged"]),
+                                               "seconds": round(wall, 1), "gate_s": round(gate * 60, 1),
+                                               "wait_s": round(max(0.0, wall - gate * 60), 1),
+                                               "at": round(time.time(), 3), "accepted": acc})
+        except Exception:  # noqa: BLE001 — a record that can't be written never stops the land
+            pass
+    return row
+
+
+def last_land(p):
+    """T-4239: the newest land's trains from the ledger: {lanes, trains, gate, wait (minutes), live}: `live` is each
+    accepted lane's seconds from its accept to the end of the first successful ship that started after its train. None
+    when no land has recorded a train."""
+    evs = c.ledger_tail(p, 3000, ["land_train", "ship_done"])
+    trains = [e for e in evs if e.get("event") == "land_train"]
+    if not trains:
+        return None
+    lid = (trains[-1].get("data") or {}).get("land")
+    mine = [e["data"] for e in trains if (e.get("data") or {}).get("land") == lid]
+    ships = [e["data"] for e in evs if e.get("event") == "ship_done" and (e.get("data") or {}).get("exit") == 0]
+    live = []
+    for d in mine:
+        for acc in (d.get("accepted") or {}).values():
+            done = next((s for s in ships if s.get("start", 0) >= d.get("at", 0)), None)
+            if done and acc:
+                live.append(max(0.0, done["end"] - acc))
+    return {"land": lid, "lanes": sum(len(d.get("lanes") or []) for d in mine), "trains": len(mine),
+            "gate": round(sum(d.get("gate_s", 0) for d in mine) / 60, 1),
+            "wait": round(sum(d.get("wait_s", 0) for d in mine) / 60, 1), "live": live}
+
+
+def land_line(p):
+    """T-4239: sampo status's line about the newest land, or ''."""
+    got = last_land(p)
+    if not got:
+        return ""
+    tail = (f"accept-to-live median {statistics.median(got['live']) / 60:.1f} min" if got["live"] else
+            f"gate {got['gate']} min, waiting {got['wait']} min")
+    return f"Last land: {got['lanes']} lane(s) in {got['trains']} train(s); {tail}"
+
+
+def ship_line(p):
+    """T-4239: sampo status's line about a land ship that outlived its land: running (with its log), or how it ended
+    when no land has told it yet; '' otherwise."""
+    m = _ship_alive(p)
+    if m:
+        return f"Land ship running since {time.strftime('%H:%M:%S', time.localtime(m['started']))}: {m['log']}"
+    rec = ship_last(p)
+    if rec and not rec.get("seen"):
+        return (f"Land ship ended at {time.strftime('%H:%M:%S', time.localtime(rec['end']))} ({rec['grant']}'s grant): "
+                f"{rec['line']}")
+    return ""
+
+
+def _ship_wait(p, secs):
+    """True once no ship runs (waits at most `secs`: a land's last wait is bounded)."""
+    end = time.monotonic() + secs
+    while _ship_alive(p):
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.25)
+    return True
 
 
 def _why(text):
@@ -885,6 +1227,26 @@ def _land(p, main, batch):
     parked, ready, trains, stopped, stale, restart = [], [], 0, "", set(), False
     closed, hand, shipped = [], [], None
     by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
+    times, background, asked = [], not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked(), False
+    land_id = f"{os.getpid()}-{int(time.time())}"
+    if (rec := ship_last(p)) and not rec.get("seen"):  # T-4239: the end of a ship that outlived its land
+        print(f"sampo lane land: the earlier ship ended at {time.strftime('%H:%M:%S', time.localtime(rec['end']))} "
+              f"({rec['grant']}'s grant): {rec['line']}", file=sys.stderr, flush=True)
+        with contextlib.suppress(OSError):
+            c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps({**rec, "seen": True}))
+
+    def ship(final):  # T-4239: where nothing runs detached the ship is in line, as before; else it is asked for
+        nonlocal asked
+        if not background:
+            return _ship(p, not final, main)
+        got = _ship_request(p, main, final)
+        if got:
+            asked = True
+            kind, m = got
+            print(f"sampo lane land: ship {kind} " + (f"(pid {m['pid']}, log {m['log']})" if kind == "started" else
+                  f"for {m.get('want', '')[:9]}: the running ship goes again when it is done" if kind == "joined" else
+                  f"not started: {m}"), file=sys.stderr, flush=True)
+        return None
 
     def close(ids):  # T-3796: each lane closes once its train lands it, not after the whole pile has trained
         for tid in ids:
@@ -937,6 +1299,7 @@ def _land(p, main, batch):
         print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
         tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts
         head0 = c._git(main, "rev-parse", "HEAD", timeout=10).strip()  # T-3851: the skills this train adds
+        t_train = time.monotonic()
         try:
             got = train(p, main, ids)
         except c.PolicyError as e:
@@ -952,6 +1315,7 @@ def _land(p, main, batch):
         trains += 1
         landed += got["merged"]
         parked += got["left_out"]
+        times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train))
         close(got["merged"])
         if got["merged"]:
             try:  # a note to the sessions never costs the land
@@ -959,7 +1323,7 @@ def _land(p, main, batch):
             except Exception as e:
                 print(f"sampo lane land: new skills not announced: {c.fit(c.plain(str(e)), 160)}", file=sys.stderr)
         if got["merged"]:  # T-3849: reaches the remote per train, the grant kept for the next
-            shipped = _ship(p, True) or shipped
+            shipped = ship(False) or shipped  # T-4239: asked for, never waited on: the next train starts at once
         if ready and _code_stamp() != stamp:  # T-3973: the train changed Sampo itself: the rest runs on the new code
             restart = True
             first_ids(p, ready)  # the restarted land trains them in this order, not re-sorted
@@ -969,11 +1333,12 @@ def _land(p, main, batch):
     for tid, why in parked:
         kind, arg = _park_kind(why)
         lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}", tip=tested.get(tid, ""))
-    last = _ship(p, False) if landed and not restart else None  # the land's last ship spends the grant: a restart's successor does
+    last = ship(True) if landed and not restart else None  # the land's last ship spends the grant: a restart's successor does
     shipped = last if last and not last[1].startswith("nothing to ship") else shipped or last
-    grant, ship = shipped or (None, "")
+    grant, said = shipped or (None, "")
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
-            "stopped": stopped, "restart": restart, "ship": ship, "ship_grant": grant, "lines": closed}
+            "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
+            "train_times": times, "ship_asked": asked}
 
 
 def _close_gaps(b):
@@ -1075,8 +1440,41 @@ def _close(p, main, tid):
     return "", f"{title} — {(out.strip().splitlines() or ['closed'])[-1]}"
 
 
+class _Stamped:
+    """T-4239: a text stream that starts every line with its local time (HH:MM:SS), so land.log says when each thing
+    happened. Whole lines go to the stream in one write each; a partial line waits for its newline (flush ends it)."""
+
+    def __init__(self, raw):
+        self.raw, self.part = raw, ""
+
+    def write(self, s):
+        self.part += s
+        *whole, self.part = self.part.split("\n")
+        if whole:
+            self.raw.write("".join(f"{_hms()} {ln}\n" for ln in whole))
+            self.raw.flush()  # stdout and stderr share one log: their lines stay in the order they were said
+        return len(s)
+
+    def flush(self):
+        if self.part:
+            self.raw.write(f"{_hms()} {self.part}\n")
+            self.part = ""
+        self.raw.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.raw, name)
+
+
+def _stamp_output(args):
+    """T-4239: SAMPO_LAND_STAMP=1 (a detached land sets it) puts the time at the start of every line the land prints,
+    its traceback and the summary too; never on --json output, which a script reads."""
+    if os.environ.get("FOREMAN_LAND_STAMP") and not getattr(args, "json", False) and not isinstance(sys.stdout, _Stamped):
+        sys.stdout, sys.stderr = _Stamped(sys.stdout), _Stamped(sys.stderr)
+
+
 def cmd_land(p, args, main):
     from sampo import cli
+    _stamp_output(args)
     if args.batch is not None and args.batch < 1:
         raise cli.UsageError("--batch takes a whole number of lanes per train, 1 or more")
     first = [x.upper() for x in (getattr(args, "first", None) or "").replace(",", " ").split() if x]
@@ -1100,16 +1498,31 @@ def cmd_land(p, args, main):
                        f"land started in the background (pid {pid}, log {log}); it trains the finished lanes.")
     got = land(p, main, args.batch)
     go = got["restart"] and not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked()
+    wait = ""
+    if got.get("ship_asked") and not got["restart"]:  # T-4239: the land's last ship, awaited (bounded) with the lock released
+        secs = float(os.environ.get("FOREMAN_LAND_SHIP_WAIT_S") or 1800)  # SAMPO_LAND_SHIP_WAIT_S, mirrored by core
+        if _ship_wait(p, secs):
+            rec = ship_last(p)
+            if rec:
+                got["ship_grant"], got["ship"] = rec["grant"], rec["line"]
+                with contextlib.suppress(OSError):
+                    c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps({**rec, "seen": True}))
+        else:
+            wait = f"ship still running: {os.path.join(p.dir, 'ship.log')}"
+            got["ship"], got["ship_log"] = wait, os.path.join(p.dir, "ship.log")
     lines = [f"Land: {len(got['landed'])} lane(s) landed in {got['trains']} train(s): {len(got['closed'])} closed, "
              f"{len(got['hand'])} left for a hand close, {len(got['parked'])} parked."
              if got["landed"] or got["parked"] or got["stopped"] else "Land: no finished lane waits on a merge."]
+    lines += [f"  Train {t['train']}: {len(t['lanes'])} lane(s), gate {t['gate']} min, waiting {t['waiting']} min"
+              for t in got.get("train_times", [])]
     skipped = sum("no retry)" in w for _, w in got["hand"])
     lines += [f"  {skipped} refused close(s) not retried: brief and lane tip unchanged since the last land"] * bool(skipped)
     lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in got.pop("lines")]
     lines += [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in got["hand"]]
     lines += [f"  parked {t}: {w}" for t, w in got["parked"]]
     lines += [f"Stopped: {got['stopped']}"] if got["stopped"] else []
-    lines += [f"Ship ({got['ship_grant']}'s grant): {c.fit(c.plain(got['ship']), 300)}"] if got["ship_grant"] else []
+    lines += ([wait] if wait else [f"Ship ({got['ship_grant']}'s grant): {c.fit(c.plain(got['ship']), 300)}"]
+              if got["ship_grant"] else [])
     lines += ["Restarting on new code: a train merged changes to Sampo's modules; the lanes still waiting land under them."
               if go else "The land restarts on new code: a train merged changes to Sampo's modules (run sampo lane land "
                          "again for the lanes still waiting)."] * bool(got["restart"])
@@ -1130,7 +1543,8 @@ def spawn_land(p, main):
     log = os.path.join(p.dir, "land.log")
     with open(log, "a", encoding="utf-8") as out:  # ponytail: the log only appends; rotate it when it grows
         proc = subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "lane", "land"], cwd=main,
-                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True)
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
+                                env={**os.environ, "FOREMAN_LAND_STAMP": "1"})  # T-4239: every log line starts with its time
     return proc.pid, log
 
 
@@ -1164,6 +1578,8 @@ def accept(p, b, main, args):
         lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
                      "fm lane list says what it waits on")
         return cli.out(args, {"id": b.id, "queued": False, "audits": len(rows)}, "\n".join(lines))
+    cli.mutate(p, b.id, lambda x: x.meta.__setitem__("accepted_at", round(time.time(), 1)), "accepted",
+               {"at": round(time.time(), 1)})  # T-4239: the start of its accept-to-live time
     first_ids(p, [b.id])
     if landing(p):
         lines.append(f"  {b.id} queued first in the running land: it trains at the land's next train boundary.")

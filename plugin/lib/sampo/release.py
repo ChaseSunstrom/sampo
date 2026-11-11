@@ -472,7 +472,7 @@ def _suite(cmd):
     return shlex.join(out)
 
 
-def _verified(p, root, said, base, last):
+def _verified(p, root, said, base, last, at="HEAD"):
     """T-3666: the newest commit on HEAD's first-parent line that main and the last ship lack, whose tree the post-merge
     verify passed in full (lanes.pm_full_pass) with this ship's suite, in this environment, within the run cache's
     window: (sha, how to say the pass) or (None, None). The default fm check runs lint gates too: never the suite."""
@@ -484,7 +484,7 @@ def _verified(p, root, said, base, last):
               if _suite(x.get("cmd")) == _suite(said) and x.get("env") == c.env_id() and fresh(x.get("at"))}
     if not passes:
         return None, None
-    line = _git(root, "log", "--first-parent", "-n", "500", "--format=%H %T", "HEAD", f"^{base}",
+    line = _git(root, "log", "--first-parent", "-n", "500", "--format=%H %T", at, f"^{base}",
                 *([f"^{last}"] if last else []), ok=True).split()
     for sha, tree in zip(line[::2], line[1::2]):
         x = passes.get(tree)
@@ -619,7 +619,8 @@ def _pick(root, wt, sha, tower):
 def ship(p, args):
     """T-1943: fm ship — HEAD's commits the remote's main lacks (git cherry, by patch) or the named ones, cherry-picked
     onto the fetched main in a scratch worktree, their files compared, tested there, main re-checked, then pushed
-    behind the publish grant. The working tree is never touched; a failure pushes nothing and keeps the grant."""
+    behind the publish grant. The working tree is never touched; a failure pushes nothing and keeps the grant.
+    T-4239: HEAD is read once (SAMPO_SHIP_AT names the head instead): the ship tests and pushes that snapshot."""
     import shlex
     root, remote = p.root, args.remote or "origin"
     chance = getattr(args, "chance", None)
@@ -631,6 +632,17 @@ def ship(p, args):
             _err(f"--chance: {e}")
     if remote.startswith("-"):
         _err(f"--remote {remote!r} reads as a git option; name a remote or a URL")
+    # T-4239: the head this ship reads is fixed once (SAMPO_SHIP_AT: the head a land's detached ship was started on, else
+    # HEAD now): a land goes on merging while its ship runs, and every pick, ancestry and tree below reads this sha, so the
+    # ship tests and pushes the snapshot at it (a cherry-picked scratch tree), never a newer head
+    pin = os.environ.get("FOREMAN_SHIP_AT", "").strip()  # core.mirror_env: SAMPO_SHIP_AT arrives under this name
+    # review: read once, then gone from the env: the ship's own test run (os.environ minus GIT_*) runs suites that run
+    # `fm ship` in scratch repos, where this sha isn't a commit
+    os.environ.pop("FOREMAN_SHIP_AT", None)
+    os.environ.pop("SAMPO_SHIP_AT", None)
+    at = _git(root, "rev-parse", "--verify", "-q", "--end-of-options", f"{pin or 'HEAD'}^{{commit}}", ok=True).strip()
+    if not at:
+        _err(f"SAMPO_SHIP_AT {pin!r} isn't a commit here; nothing was pushed")
     _git(root, "fetch", "-q", remote, "main")
     base = _git(root, "rev-parse", "FETCH_HEAD").strip()
     picks = []
@@ -638,7 +650,7 @@ def ship(p, args):
         sha = "" if x.startswith("-") else _git(root, "rev-parse", "--verify", "-q", "--end-of-options", f"{x}^{{commit}}", ok=True).strip()
         picks.append(sha or _err(f"{x!r} isn't a commit here"))
     last = _git(root, "rev-parse", "--verify", "-q", SHIPPED, ok=True).strip()  # T-1945: main may hold these under another patch
-    if last and c._git(root, "merge-base", "--is-ancestor", last, "HEAD", timeout=60, proc=True).returncode:
+    if last and c._git(root, "merge-base", "--is-ancestor", last, at, timeout=60, proc=True).returncode:
         last = ""  # rebased or another branch: git cherry alone
     def _files(a, b):
         return set(_git(root, "diff", "--name-only", a, b).splitlines())
@@ -653,17 +665,17 @@ def ship(p, args):
                 return got
         return [ln[2:] for ln in _git(root, "cherry", base, upto, *([last] if last else [])).splitlines() if ln.startswith("+ ")]
     said = args.test or _git(root, "config", "--local", "--get", "foreman.shiptest", ok=True).strip()
-    target, full = "HEAD", None
+    target, full = at, None
     if not picks and not args.check and not getattr(args, "head", False):
         # T-3666: the newest commit the post-merge verify ran the whole suite on, so the ship needn't run it (~80 CPU-min)
         try:
-            target, full = _verified(p, root, said, base, last)
+            target, full = _verified(p, root, said, base, last, at)
         except Exception as e:  # a convenience: HEAD ships, tested, as before
             target, full = None, None
             print(f"post-merge verify reuse skipped: {c.fit(c.plain(str(e)), 120)}", flush=True)
         picks = _picks(target) if target else []
-        target, full = (target, full) if picks else ("HEAD", None)
-    picks = picks or _picks("HEAD")
+        target, full = (target, full) if picks else (at, None)
+    picks = picks or _picks(at)
     if not picks:
         print(f"nothing to ship: {remote} main already has HEAD's changes" + (f" after the last shipped commit {last[:8]}" if last else ""))
         return 0
@@ -680,7 +692,7 @@ def ship(p, args):
         _git(root, "config", "--local", "foreman.shiptest", args.test, ok=True)
     test = shlex.split(said) if said else [*FM, "check"]
     if full:
-        k = int(_git(root, "rev-list", "--count", "--first-parent", f"{target}..HEAD").strip() or 0)
+        k = int(_git(root, "rev-list", "--count", "--first-parent", f"{target}..{at}").strip() or 0)
         print(f"shipping {target[:9]}, the newest commit the post-merge verify passed in full; " + (
             f"{k} newer commit{'s' if k > 1 else ''} on the branch wait{'' if k > 1 else 's'} for the next verified one"
             if k else "it is HEAD"), flush=True)
@@ -717,7 +729,8 @@ def ship(p, args):
             from sampo import ambient
             c.wait_while(lambda: c.gates_live(p) or ambient.running(p),  # T-1978: never two suites at once
                          "a running fm check or ambient test run", "fm ship", out=sys.stdout)
-            print(f"testing {n} on {remote} main: {shlex.join(test)}", flush=True)
+            print(f"testing {n} on {remote} main, a snapshot of the head at {at[:9]} (a later head is never in it): "
+                  f"{shlex.join(test)}", flush=True)
             env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}  # GIT_DIR from a hook: not the user's repo
             tested = _git(wt, "rev-parse", "HEAD^{tree}").strip()  # T-2642: the tree the suite runs on is the tree pushed
             c.update_meta(p, ship_testing={"pid": os.getpid(), "at": c.now(), "root": os.path.realpath(wt)})

@@ -60,6 +60,8 @@ OPERATOR_SWITCHES.add("NO_JOIN")  # T-4267: a run's own switch, never a test's
 OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is never a test's
 OPERATOR_SWITCHES.add("TOWER_GAP")  # T-3504: the tower-update push gap; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("BENCH_MIN_FREE_GB")  # T-3747: the operator's disk budget for bench builds; the low-disk test sets its own
+# T-4239: a land's ship pin, caps and line stamp are the land's (its gate runs these tests inside it), never a test's
+OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND_STAMP"})
 CGROUP_ROOT = "/sys/fs/cgroup"
 
 
