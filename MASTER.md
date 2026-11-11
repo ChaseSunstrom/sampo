@@ -284,6 +284,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmsteer`… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsteermeter` (T-4181: `sampo steers [--all --tick]`, a local model reads each user message with the agent's… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmconcerns` (T-4200: `sampo concerns [show ID --proof … | answer ID "…" | split ID | fold]` (fold: the local model decides the rows booked before same_as, bounded, never while paused), the user's open asks folded from the steer meter's rows, shown only by a checkable proof… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmbig` (T-4221: `sampo big plan|check|expand ID [--dry-run] [--json]`, `sampo/big.py`. A big task (tier XL, HUGE or GIANT) starts only with a full plan: `core.plan_gaps` asks `big.gate_gaps`, so focus, lanes and `sampo next` refuse it until Design, Breakdown and Integration pass `big.analyse`. No model is called. [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmstories` (T-1640: `sampo stories CHART`, a component's state matrix: a JSON… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsync` (`sampo sync`) [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmtaste` (T-1537: `sampo looks`, the taste ledger in state/taste/looks.json… [→ files-lib-4](docs/map/files-lib-4.md)

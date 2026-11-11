@@ -4477,12 +4477,17 @@ def _users_words(b):
 def plan_gaps(b, autonomy="standard"):
     """What a brief still needs before work may start (fm focus refuses until this is empty)."""
     gaps = []
+    if is_big(b.tier):  # T-4221: a big task starts with a full plan whose structure code checks
+        from sampo import big
+        gaps += big.gate_gaps(b)
     # T-2335: a plan Foreman's own harness wrote (fm code's station plan, a hook's task from the raw request) has no
     # readings or options to gate: harness_plan says who wrote it, and the plan's own text is not checked
     own = bool(b.meta.get("harness_plan"))
     if at_least(b.tier, "M") and not own:
         gaps += [name for name, sec in (("Interpretation", "Interpretation"),
-                                         ("Approach", "Approach (options → choice → why)")) if not b.section(sec).strip()]
+                                         ("Approach", "Approach (options → choice → why)")) if not b.section(sec).strip()
+                 # T-4221: a big task's Design section holds its approach (the plan gate above checks it): never asked twice
+                 and not (name == "Approach" and is_big(b.tier) and b.section("Design").strip())]
     if not _started(b) and not own:  # a task already started (even if paused back to planned) isn't re-gated
         gaps += _content_gaps(b)
         if at_least(b.tier, "M") and b.meta.get("source") == "user" and not b.meta.get("batch") and _users_words(b):
@@ -4562,6 +4567,10 @@ def next_action(b, autonomy="standard", since=None):
     if st == "captured":
         return f"{tid}: expand it into a planned brief (sampo task new \"<title>\" --from {tid} …; /sampo:intake §2)"
     if st == "planning":
+        if is_big(b.tier):  # T-4221: the full plan comes before any other gap
+            from sampo import big
+            if line := big.next_line(b):
+                return line
         return f"{tid}: plan is missing {', '.join(plan_gaps(b, autonomy))} (sampo task set/ac/step; /sampo:intake)"
     if st == "ready":
         return f"{tid}: sampo focus {tid}"

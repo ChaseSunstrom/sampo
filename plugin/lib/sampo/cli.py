@@ -4347,7 +4347,7 @@ def cmd_quiet(args):
 
 def gates(type_, tier):
     """What fm task done checks for this type and tier: [(short, how)]."""
-    audits = " + ".join(" or ".join(sorted(g)) for g in c.REQUIRED_AUDITS[tier])
+    audits = " + ".join(" or ".join(sorted(g)) for g in c.REQUIRED_AUDITS.get(tier, c.REQUIRED_AUDITS["S"]))  # T-4221: as brief.audit_blockers reads it
     need = [("evidence", "every step and criterion has a check sampo ran (--run) or a typed one for what can't run here"),
             ("audits", f"{audits}, recorded after the last change (sampo audit prep ID); adversary as well when the "
                        f"change touches auth, crypto, secrets, exec or deserialization")]
@@ -8713,6 +8713,13 @@ def _build_parser(only=None):
                    "(sampo run, the subagent ledger), not an interactive session")
     s.add_argument("--tokens", help="stop after this many tokens (500k, 2M) used by this project's sessions since it began")
 
+    s = add("big", lazy("sampo.big", "cmd_big"), tier=("Every task", 171),
+            help="a big task (tier XL, HUGE or GIANT) starts only with a full plan: plan writes the Design, Breakdown "
+                 "and Integration skeleton, check lists what is wrong and how to fix it (exit 1), expand makes one "
+                 "child task per Breakdown block, linked, ordered and scoped; no model call (T-4221)")
+    s.add_argument("action", choices=["plan", "check", "expand"])
+    s.add_argument("id", metavar="ID", help="the big task")
+    s.add_argument("--dry-run", action="store_true", help="expand: list what it would make, make nothing")
     s = add("mandate", lazy("sampo.mandate", "cmd_mandate"), tier=("Project and settings", 772),
             help="a sweeping request kept as one standing record with an end date: sampo scout and sampo night read it; "
                  "once it ends, one decision and nothing more captured under it (T-1400)")
