@@ -4915,7 +4915,15 @@ def grade(p, run, agent):
         n["brier_n"], n["brier_sum"] = 1, ((50 if conf is None else conf) / 100 - int(_closed(n))) ** 2
         cost = ans.get("cost")
         defect_lines = [c.fit(c.plain(f"{s['id']} {f.get('file')} {f.get('symbol')}: {f.get('says')}"), 200) for f in proven]
-        return s["split"], s["id"], n, cost if isinstance(cost, (int, float)) else 0, defect_lines, recall
+        notes = [str(x) for x in ans.get("notes") or []]
+        first_s, turns = _pace(os.path.join(_answers(p, run, agent), f"{s['id']}.events.jsonl"))
+        row = {"id": s["id"], "kind": s.get("kind") or key["kind"], "lang": key["lang"],  # T-4296: where the points went
+               "fixable": n["fixable"], "fixed": n["fixed"], "done": bool(ans.get("done")), "false_done": n["false_done"],
+               "error": bool(ans.get("error")), "first_action_s": first_s, "turns": turns,
+               "ended": (c.fit(c.plain(str(ans["error"])), 160) if ans.get("error") else "done" if ans.get("done")
+                         else "not done"),
+               "note": c.fit(c.plain(notes[-1]), 160) if notes else ""}
+        return s["split"], s["id"], n, cost if isinstance(cost, (int, float)) else 0, defect_lines, recall, row
 
     def tally(into, lang, kind, hit):  # T-2233: {"lang": {lang: [found, keyed]}, "kind": {kind: [found, keyed]}}
         for axis, k in (("lang", lang), ("kind", kind)):
@@ -4933,14 +4941,21 @@ def grade(p, run, agent):
         try:
             return one(s)
         except Exception as e:  # not BaseException: Ctrl-C and SystemExit still stop the grade
-            return None, s["id"], f"{type(e).__name__}: {e}", 0, [], []
+            return None, s["id"], f"{type(e).__name__}: {e}", 0, [], [], None
 
     res["ungraded"] = []
+    res["by_kind"], res["by_lang"], res["rows"] = {}, {}, []  # T-4296: a kind at zero must not hide in the totals
     kinds = {s["id"]: s.get("kind") for s in answered}
-    for split, sid, n, cost, defect_lines, recall in _pool(safe, answered):
+    for split, sid, n, cost, defect_lines, recall, row in _pool(safe, answered):
         if split is None:  # n is the error text; counts nothing, so it is neither found nor fixed
             res["ungraded"].append(c.fit(c.plain(f"{sid}: {n}"), 200))
             continue
+        res["rows"].append(row)
+        for axis, k in (("by_kind", row["kind"]), ("by_lang", row["lang"])):
+            part = res[axis].setdefault(str(k), dict.fromkeys(KIND_COUNTS, 0))
+            part["scenarios"] += 1
+            for name in KIND_COUNTS[1:]:
+                part[name] += int(row[name])
         for hit in recall:
             tally(res["recall"], *hit)
             tally(res[split]["recall"], *hit)
@@ -4994,11 +5009,69 @@ def grade(p, run, agent):
             pass
     if "small" in res:
         res["small"] = res["small"] == "on"
+    res["rows"].sort(key=lambda x: x["id"])
     line = dict(res, at=c.now(), gen=gen, split=splits.pop() if len(splits) == 1 else "all",
                 kinds=sorted({s["kind"] for s in answered}),
                 author="+".join(sorted({s.get("author", "self") for s in answered})))
+    line.pop("rows")  # T-4296: a row per scenario stays in the grade's own output; the tower line keeps by_kind
     rune.exam_line(p, line)
     return res
+
+
+KIND_COUNTS = ("scenarios", "fixable", "fixed", "done", "false_done")  # T-4296: per scenario kind and per language
+
+
+def _pace(path):
+    """T-4296: (seconds from a run's start to its first action, its turns) from an answer's events file; each is None
+    when the file is missing or doesn't say. The first 'action' event's ts minus the first event's, and the last stats
+    event's turns. The resume runs that fixed nothing spent minutes before a first action, and no grade showed it."""
+    start = first = turns = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for raw in f:
+                try:
+                    e = json.loads(raw)
+                except ValueError:
+                    continue
+                if not isinstance(e, dict):
+                    continue
+                ts = e.get("ts")
+                ts = ts if isinstance(ts, (int, float)) and not isinstance(ts, bool) else None
+                if start is None and ts is not None:
+                    start = ts
+                if first is None and ts is not None and e.get("event") == "action":
+                    first = ts
+                if e.get("event") == "stats" and isinstance(e.get("turns"), int) and not isinstance(e["turns"], bool):
+                    turns = e["turns"]
+    except OSError:
+        return None, None
+    return (round(first - start, 1) if first is not None else None), turns
+
+
+def kinds_text(r):
+    """T-4296: the lines under a grade's totals. One per scenario kind when the run has more than one, then 'nothing
+    fixed in kind K (N scenarios, M said done)' for each kind with fixable items and none fixed: the resume kind fixed 0
+    of 24 in three arms and the totals (14, 18, 6 of 72) only read as a weak score. '' for a run of one kind (its
+    totals are that kind's) and for a line from before grades kept their kinds."""
+    by = r.get("by_kind")
+    by = {k: v for k, v in by.items() if isinstance(v, dict)} if isinstance(by, dict) else {}
+    if len(by) < 2:
+        return ""
+    out, zero = [], []
+    for k in sorted(by):
+        v = {name: v_ if isinstance(v_ := by[k].get(name), int) else 0 for name in KIND_COUNTS}
+        n, name = v["scenarios"], c.plain(str(k))[:40]
+        out.append(f"  {name}: {v['fixed']}/{v['fixable']} fixed in {n} scenario{'s' * (n != 1)}, {v['done']} said done"
+                   + (f", {v['false_done']} false done" if v["false_done"] else ""))
+        if v["fixable"] and not v["fixed"]:
+            zero.append(f"nothing fixed in kind {name} ({n} scenario{'s' * (n != 1)}, {v['done']} said done)")
+    return "\n".join(out + zero)
+
+
+def graded_text(r):
+    """A grade as text: the totals line, then the kinds under it (kinds_text) when there is more than one."""
+    under = kinds_text(r)
+    return summary(r) + (f"\n{under}" if under else "")
 
 
 def summary(r):
@@ -5211,7 +5284,7 @@ def cmd_exam(args):
                             request=args.request, jobs=1 if args.jobs is None else args.jobs,
                             planner=getattr(args, "planner", None), reason=getattr(args, "reason", None),
                             small=getattr(args, "small", False))
-            cli.out(args, res, summary(res))
+            cli.out(args, res, graded_text(res))  # T-4296: the totals, then each kind under them
             return 1 if res.get("ungraded") else 0
         if action == "taxonomy":  # T-2908: Smith's failure classes from a run's event logs
             res = taxonomy(p, args.run, args.agent or "smith")
@@ -5250,7 +5323,7 @@ def cmd_exam(args):
                                      "stamp is never rewritten")
                 c.write_atomic(f, new)
             res = grade(p, args.run, args.agent or "oracle")
-            cli.out(args, res, summary(res))
+            cli.out(args, res, graded_text(res))  # T-4296: the totals, then each kind under them
             return 1 if res.get("ungraded") else 0
         if action == "runs":  # T-2601
             rows = run_rows(p)
@@ -5267,6 +5340,9 @@ def cmd_exam(args):
             from sampo import rune
             res = rune.scorecard(p, args.agent or "foreman", args.bar)
             rows = res["rows"]
+            last = next((x for x in reversed(rune.exam_lines(p, res["agent"])) if isinstance(x.get("by_kind"), dict)), None)
+            res["newest_kinds"] = {"run": last.get("run"), "by_kind": last["by_kind"]} if last else None  # T-4296
+            under = kinds_text(last) if last else ""
             try:  # T-2273: §8 says how much of what closed no run here proved
                 got = c.unproven_summary(p)
                 res["unproven"], res["unproven_kinds"] = got["n"], got["counts"]
@@ -5285,6 +5361,7 @@ def cmd_exam(args):
                 + (f" ({', '.join(r['kinds'])})" if r["kinds"] else "") + (f": {r['why']}" if r.get("why") else "")
                 for r in rows)
                 + (f"\n  {c.unproven_line(res['unproven'], res['unproven_kinds'])}" if res["unproven"] else "")
+                + (f"\n  newest grade by kind ({c.plain(str(last.get('run')))[:40]}):\n{under}" if under else "")
                 + ("" if res["seen"] else f"\n  no graded held-out lines from {res['agent']!r}: fm exam run RUN --agent "
                                           f"{res['agent']} --split holdout"))
             return 0 if res["ok"] else 1
