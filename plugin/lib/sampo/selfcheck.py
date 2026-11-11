@@ -17,6 +17,19 @@ ASK_DAYS, ASK_H = 3, 2  # the user's asks from the last ASK_DAYS days, open ASK_
 OPEN = ("captured", "planned", "active", "verifying")  # deferred: the user said later; blocked: its own line says why
 
 
+class Hit(str):
+    """T-4118: a check's line that also acts (action: argv run detached, at the lowest priority) or tells the user
+    (tell; level: told again the same day only when it rises). A plain str only prints, as before."""
+    def __new__(cls, text, action=None, tell=False, level=0):
+        s = super().__new__(cls, text)
+        s.action, s.tell, s.level = list(action) if action else None, bool(tell), level
+        return s
+
+
+def _fm(*args):
+    return [os.path.join(c.PLUGIN_ROOT, "bin", "fm"), *args]
+
+
 def _age(secs):
     h = secs / 3600
     return f"{h:.0f} h" if h >= 1 else f"{secs / 60:.0f} min"
@@ -34,7 +47,8 @@ def unshipped(p, briefs, now):
     oldest = now - int(times[-1])
     if oldest < SHIP_H * 3600:
         return None
-    return f"{len(times)} landed commit(s) unshipped, the oldest {_age(oldest)} → sampo ship"
+    return Hit(f"{len(times)} landed commit(s) unshipped, the oldest {_age(oldest)} → sampo ship", tell=True,
+               level=int(oldest // (6 * 3600)))  # T-4118: told; again each 6 h it grows (T-4121 ships it)
 
 
 def old_mirror(p, briefs, now):
@@ -68,8 +82,8 @@ def asks_waiting(p, briefs, now):
     for made, b in rows[:3]:
         where = b.status + (": its lane waits on a merge" if b.meta.get("builder_returned") else "")
         shown.append(f"{b.id} ({_age(made * 86400)}, {where})")
-    return (f"{len(rows)} of the user's asks from the last {ASK_DAYS} days aren't landed; oldest: " + "; ".join(shown)
-            + " → land or unblock the oldest first")
+    return Hit(f"{len(rows)} of the user's asks from the last {ASK_DAYS} days aren't landed; oldest: " + "; ".join(shown)
+               + " → land or unblock the oldest first", tell=True, level=len(rows) // 5)
 
 
 CHECKS = (unshipped, old_mirror, asks_waiting)
@@ -103,7 +117,7 @@ def slow_jobs(p, briefs, now):
         typ = past[len(past) // 2] if len(past) >= 3 else None
         if typ and ran > SLOW_X * typ and ran - typ > SLOW_OVER_S:
             out.append(f"{name} has run {_age(ran)}, {ran / typ:.1f}x its typical {_age(typ)} → see what it waits on")
-    return " · ".join(out) or None
+    return Hit(" · ".join(out), tell=True) if out else None
 
 
 REPEAT_N, REPEAT_S = 3, 3600
@@ -172,7 +186,9 @@ def landing_rate(p, briefs, now):
     landed = {e.get("task") for e in c.ledger_events(p, ("lane_merge",), since=since)
               if str(e.get("ts", "")) >= since and not (e.get("data") or {}).get("undone")}
     if not landed:
-        return f"{len(waiting)} finished lanes wait and none landed in the last {RATE_H} h → {c.merge_hint(waiting)}"
+        # T-4118: starts a land (a second one returns at once: "a land is already running")
+        return Hit(f"{len(waiting)} finished lanes wait and none landed in the last {RATE_H} h → {c.merge_hint(waiting)}",
+                   action=_fm("lane", "land"))
     each = RATE_H * 60 / len(landed)
     return (f"{len(waiting)} finished lanes wait; {len(landed)} landed in the last {RATE_H} h (~{each:.0f} min each), "
             f"so the pile clears in ~{len(waiting) * each / 60:.0f} h at this rate → measure the slowest step and cut it")
@@ -242,6 +258,32 @@ def cpu_goal(p, briefs, now):
 CHECKS += (cpu_goal,)
 
 
+def usage_burn(p, briefs, now):
+    """T-4118: the usage-burn scan's run-out forecast (cost.burn_findings, state/burn.json, the last day): burn.json
+    said 'on pace to run out 93 h before its reset' for hours and nothing told the user (the steer audit, T-4115)."""
+    try:
+        with open(os.path.join(c.state_dir(), "burn.json"), encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if now - float(d.get("ts") or 0) > 86400:
+        return None
+    for row in d.get("found") or []:
+        if row and "run out" in str(row[0]):
+            return Hit(f"{row[0]} → {row[1]}" if len(row) > 1 else str(row[0]), tell=True)
+    return None
+
+
+def stale_beats(p, briefs, now):
+    """T-4118: a background job's heartbeat (fm run, the merge loop) past its next beat: it stopped without a word."""
+    from sampo import serve
+    late = serve.stale_beats(p, now)
+    return Hit("stale heartbeat: " + ", ".join(n for n, _ in late) + " → see whether it died", tell=True) if late else None
+
+
+CHECKS += (usage_burn, stale_beats)
+
+
 def lines(p, briefs=None, now=None):
     """The checks' hits, cached CACHE_S (a hook calls this on every Stop). A check that can't read its source is
     skipped, never a crash."""
@@ -273,6 +315,117 @@ def _cached(p, briefs, now):
     out = _run(CHECKS, p, c.load_briefs(p) if briefs is None else briefs, now)
     try:
         c.write_atomic(path, json.dumps({"at": now, "lines": out}))
+    except OSError:
+        pass
+    return out
+
+
+# T-4118: findings act or tell, with drive on or off (night.tick runs act: the Stop hook's sweep and the hourly timer).
+# An action runs detached at most once per ACT_BACKOFF_S and ACT_PER_DAY times a day per check; a tell, an action that
+# couldn't start, or one whose finding outlives ESCALATE_S reaches the user once a day per check, sooner only when its
+# level rises. State per check in selfcheck-act.json; a resolved check keeps only when it was last told.
+ACT_BACKOFF_S, ACT_PER_DAY, ESCALATE_S, TELL_EVERY_S = 1800, 3, 2 * 3600, 86400
+
+
+def alerts(p, now=None, keep=5):
+    """The last tells of the past day, oldest first, for the pane (fm ui --json alerts)."""
+    cut = (now or time.time()) - TELL_EVERY_S
+    rows = []
+    try:
+        with open(os.path.join(p.dir, "alerts.jsonl"), encoding="utf-8") as f:
+            for ln in f.readlines()[-50:]:
+                try:
+                    r = json.loads(ln)
+                    at = c.parse_ts(r["at"])
+                    if at and at.timestamp() >= cut:
+                        rows.append({"at": r["at"], "text": str(r["text"])[:300]})
+                except (ValueError, KeyError, TypeError):
+                    continue
+    except OSError:
+        return []
+    return rows[-keep:]
+
+
+def notify(p, text):
+    """The user's notify command (sampo notify), else a desktop notification where a display exists; always a row in
+    alerts.jsonl for the pane."""
+    try:
+        c.append_line(os.path.join(p.dir, "alerts.jsonl"), json.dumps({"at": c.now(), "text": c.plain(text)}) + "\n")
+    except OSError:
+        pass
+    if c.read_meta(p).get("notify"):
+        from sampo import serve
+        serve._notify(p, text)
+        return
+    import shutil
+    import subprocess
+    if os.environ.get("FOREMAN_NO_BACKGROUND"):
+        return  # tests: never a popup on the desktop running the suite
+    if shutil.which("notify-send") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        try:
+            subprocess.run(["notify-send", "Sampo", c.plain(text)[:300]], timeout=10, stdin=subprocess.DEVNULL,
+                           capture_output=True)
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+
+def _spawn(p, argv):
+    """argv detached at nice 19 (the desktop first), its pid, or None when it couldn't start."""
+    if os.environ.get("FOREMAN_NO_BACKGROUND"):
+        return None
+    import subprocess
+    try:
+        return subprocess.Popen(["nice", "-n", "19", *argv], cwd=p.root, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True).pid
+    except OSError:
+        return None
+
+
+def act(p, briefs=None, now=None, checks=None, spawn=_spawn, tell=notify):
+    """Each hit's action run, or the user told, per the rules above: [(check, 'act' | 'tell', text)]."""
+    now = time.time() if now is None else now
+    briefs = c.load_briefs(p) if briefs is None else briefs
+    path = os.path.join(p.dir, "selfcheck-act.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            st = json.load(f)
+    except (OSError, ValueError):
+        st = {}
+    out, seen = [], set()
+    for check in (CHECKS + LIVE if checks is None else checks):
+        try:
+            hit = check(p, briefs, now)
+        except Exception:  # noqa: BLE001 — a check never costs the sweep
+            hit = None
+        if not hit:
+            continue
+        k = getattr(check, "__name__", "check")
+        seen.add(k)
+        s = st.setdefault(k, {})
+        if s.get("first") is None:
+            s["first"] = now
+        say, action = getattr(hit, "tell", False), getattr(hit, "action", None)
+        if action:
+            day = [t for t in s.get("acted") or [] if now - t < 86400]
+            if (not day or now - day[-1] >= ACT_BACKOFF_S) and len(day) < ACT_PER_DAY:
+                pid = spawn(p, action)
+                day.append(now)
+                c.log_event(p, "self_act", data={"check": k, "cmd": c.plain(" ".join(action))[:200], "pid": pid})
+                out.append((k, "act", str(hit)))
+                say = say or pid is None
+            s["acted"] = day
+            say = say or (bool(day) and now - s["first"] >= ESCALATE_S)
+        level = getattr(hit, "level", 0)
+        if say and (now - (s.get("told") or 0) >= TELL_EVERY_S or level > s.get("level", -1)):
+            tell(p, str(hit))
+            s["told"], s["level"] = now, level
+            c.log_event(p, "self_tell", data={"check": k, "text": c.plain(str(hit))[:300]})
+            out.append((k, "tell", str(hit)))
+    for k, s in st.items():
+        if k not in seen:  # resolved: a new finding starts fresh; when it was last told still holds the day's limit
+            st[k] = {key: s[key] for key in ("told", "level") if key in s}
+    try:
+        c.write_atomic(path, json.dumps(st))
     except OSError:
         pass
     return out

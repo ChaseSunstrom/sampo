@@ -42,7 +42,7 @@
  "vetoes": [], "revisit": [], "recent": ["  10:15  ✓ T-0042 step 1: pytest tests/test_auth.py"],
  "skills": {"recent": [], "counts": {}, "suggested": [], "unread": []},
  "health": {"hook_p95_ms": 60, "guard_blocks": 0, "hook_errors": 0, "paused_hooks": []},
- "watch": [], "watch_now": [], "latency": [55, 60, 58], "palette_custom": {}, "weekly_lean": true,
+ "watch": [], "watch_now": [], "latency": [55, 60, 58], "palette_custom": {}, "weekly_lean": true, "alerts": [{"at": "2026-11-10T10:00:00Z", "text": "weekly usage is on pace to run out 93 h before its reset"}],
  "checks": {"at": "2026-01-01T10:15:00Z", "results": [{"cmd": "pytest", "exit": 1, "s": 2.1, "note": null}]},
  "genesis": {"gen": 1, "stage": "build", "kind": "ok", "action": "Mission 3 (initiative): finish T-0042", "command": "fm focus T-0042"},
  "demo": true

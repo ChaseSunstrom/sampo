@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- a self-check that finds something now acts or tells you, with drive on or off: finished lanes with no landing start a land; unshipped work, your asks waiting, slow jobs, usage on pace to run out and stale heartbeats reach you through your notify command, a desktop notification or a pane toast, once a day per check and again only when worse (T-4118).
 - fm task ac edit judges a criterion on runs of its own verify command: one that only ever matched no test can now take the right check even after that check's runs were recorded under it (only a check already run there may be swapped in) (T-4113).
 - fm exam models --loo no longer scores a backend that is down as abstaining: three straight failures with no answer mark it down for the run, it gets no rows and no more calls, and the run names it, so its last real numbers stand (T-4111).
 - a multi-line command (a heredoc run) is recorded as one evidence line, so its exit is read and it can close a step or a miss; the fix came from the JARVIS box's own Sampo session (T-4116).

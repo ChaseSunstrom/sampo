@@ -241,3 +241,91 @@ class SelfCheckBehaviour(ForemanTestCase):
                           "a session gone quiet since says nothing")
         self.stop("Waiting on the build. " + "x" * 400)  # a long reply did work besides
         self.assertIsNone(selfcheck.wait_turns(self.p, [], time.time()))
+
+
+class SelfAct(ForemanTestCase):
+    """T-4118: a finding acts or tells; the steer audit (T-4115) found every check ended as a line nobody acted on."""
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        self.spawned, self.told = [], []
+
+    def act(self, checks, now):
+        return selfcheck.act(self.p, briefs=[], now=now, checks=checks,
+                             spawn=lambda p, argv: self.spawned.append(argv) or 4242,
+                             tell=lambda p, text: self.told.append(text))
+
+    def test_act_runs_a_safe_action_once_backs_off_and_logs_it_with_drive_off(self):
+        c.update_meta(self.p, drive=False)
+
+        def landing(p, briefs, now):
+            return selfcheck.Hit("3 finished lanes wait", action=["fm", "lane", "land"])
+        t = 1_800_000_000
+        self.act((landing,), t)
+        self.act((landing,), t + 60)
+        self.assertEqual(self.spawned, [["fm", "lane", "land"]], "once, then backs off")
+        for i in range(1, 5):
+            self.act((landing,), t + i * selfcheck.ACT_BACKOFF_S + 1)
+        self.assertEqual(len(self.spawned), selfcheck.ACT_PER_DAY, "at most ACT_PER_DAY a day")
+        ev = [e for e in c.ledger_events(self.p, ("self_act",))]
+        self.assertTrue(ev and ev[0]["data"]["check"] == "landing" and ev[0]["data"]["pid"] == 4242, ev)
+
+    def test_tell_reaches_the_user_once_a_day_per_check_and_again_only_when_worse(self):
+        level = [1]
+
+        def asks(p, briefs, now):
+            return selfcheck.Hit(f"{level[0]} asks wait", tell=True, level=level[0])
+        t = 1_800_000_000
+        self.act((asks,), t)
+        self.act((asks,), t + 3600)
+        self.assertEqual(self.told, ["1 asks wait"])
+        level[0] = 2
+        self.act((asks,), t + 7200)
+        self.assertEqual(self.told, ["1 asks wait", "2 asks wait"], "worse: told again the same day")
+        self.act((asks,), t + 7200 + selfcheck.TELL_EVERY_S)
+        self.assertEqual(len(self.told), 3, "a day later: told again")
+        self.assertEqual(self.spawned, [], "a tell runs nothing")
+        self.act((lambda p, b, n: "only printed",), t)
+        self.assertEqual(len(self.told), 3, "a plain line only prints, as before")
+
+    def test_an_action_whose_finding_outlives_its_deadline_or_never_started_escalates(self):
+        def stuck(p, briefs, now):
+            return selfcheck.Hit("lanes wait", action=["fm", "lane", "land"])
+        t = 1_800_000_000
+        self.act((stuck,), t)
+        self.assertEqual(self.told, [], "acting first")
+        self.act((stuck,), t + selfcheck.ESCALATE_S + 1)
+        self.assertEqual(self.told, ["lanes wait"], "still there after its deadline: the user is told")
+        self.told.clear()
+        selfcheck.act(self.p, briefs=[], now=t, checks=(lambda p, b, n: selfcheck.Hit("x", action=["nope"]),),
+                      spawn=lambda p, argv: None, tell=lambda p, text: self.told.append(text))
+        self.assertEqual(self.told, ["x"], "an action that couldn't start escalates at once")
+
+    def test_the_first_checks_carry_their_action_or_tell(self):
+        b = types.SimpleNamespace(id="T-0009", status="planned", meta={"source": "user", "created": ago(5)},
+                                  section=lambda name: "make it fast")
+        hit = selfcheck.asks_waiting(self.p, [b], time.time())
+        self.assertTrue(isinstance(hit, selfcheck.Hit) and hit.tell, hit)
+        with open(os.path.join(c.state_dir(), "burn.json"), "w") as f:
+            json.dump({"ts": time.time(), "found": [["weekly usage is on pace to run out 93 h before its reset", "x"]]}, f)
+        hit = selfcheck.usage_burn(self.p, [], time.time())
+        self.assertTrue(isinstance(hit, selfcheck.Hit) and hit.tell and "93 h" in hit, hit)
+
+    def test_a_tell_is_a_row_the_pane_reads_back_for_a_day(self):
+        selfcheck.notify(self.p, "weekly usage runs out 93 h early")
+        rows = selfcheck.alerts(self.p)
+        self.assertEqual([r["text"] for r in rows], ["weekly usage runs out 93 h early"])
+        self.assertEqual(selfcheck.alerts(self.p, now=time.time() + 2 * 86400), [], "a day later it's gone")
+        from sampo import watch
+        self.assertEqual([r["text"] for r in watch.view(self.p)["alerts"]], ["weekly usage runs out 93 h early"])
+
+    def test_the_tick_runs_act_so_the_sweep_and_the_timer_both_do(self):
+        from sampo import night
+        ran, real = [], selfcheck.act
+        selfcheck.act = lambda p, **kw: ran.append(p.slug) or []
+        try:
+            night.tick(self.p, fetch_ci=False)
+        finally:
+            selfcheck.act = real
+        self.assertEqual(ran, [self.p.slug])

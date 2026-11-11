@@ -825,7 +825,7 @@ def _worktrees(p, briefs):
 def view(p):
     """The `fm ui --json` view model (v1; its TS twin is mods/foreman-ui/types/index.d.ts): one snapshot for a
     surface to render, built from gather() so it shows what fm watch shows."""
-    from sampo import doctor
+    from sampo import doctor, selfcheck
     d = gather(p)
     sd, act = d["sd"], d["active"]
     meta = c.read_meta(p)
@@ -938,6 +938,7 @@ def view(p):
         "latency": [round(ms) for ms in d["series"]],
         "palette_custom": _guarded(c.pane_palette) or {},  # T-1717: fm design tokens --to pane --save
         "weekly_lean": _guarded(lambda: _weekly_lean(p)) is not False,  # T-3049: false: the pane's economy mode ignores weekly usage here
+        "alerts": _guarded(lambda: selfcheck.alerts(p)) or [],  # T-4118: the day's tells, toasted once
         "checks": d["checks"] and {"at": d["checks"].get("ts"), "results": [
             {"cmd": c.plain(str(r.get("cmd")))[:200], "exit": r.get("exit"), "s": r.get("s"), "note": r.get("note")}
             for r in (d["checks"].get("data") or {}).get("results") or []]},

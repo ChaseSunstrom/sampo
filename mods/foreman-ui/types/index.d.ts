@@ -117,6 +117,7 @@ export type FmView = {
   latency?: number[] // the latest hook run times (ms), oldest first
   palette_custom?: Record<string, string> // T-1717: fm design tokens --to pane --save, checked: C's keys, #rrggbb
   weekly_lean?: boolean // T-3049: false: weekly usage never puts this project in economy mode
+  alerts?: { at: string; text: string }[] // T-4118: the self-checks' tells of the past day, oldest first
   checks?: FmChecks | null // the last fm check run
   today_done?: number // tasks closed as done today
   learned?: string | null // T-1045: what Sampo learned this week (fixes, rules, interventions per closed task)

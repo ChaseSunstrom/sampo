@@ -111,6 +111,8 @@ export function toasts(prev: FmView | null, next: FmView): string[] {
   for (const x of next.approvals ?? []) {
     if (!asked.has(`${x.task}:${x.allow.join(',')}`)) out.push(`⚠ ${x.task} needs your yes: ${x.allow.join(', ')}`)
   }
+  const told = new Set((prev.alerts ?? []).map(x => `${x.at}:${x.text}`)) // T-4118: a self-check's tell, once
+  for (const x of next.alerts ?? []) if (!told.has(`${x.at}:${x.text}`)) out.push(`⚠ ${x.text}`)
   return out
 }
 

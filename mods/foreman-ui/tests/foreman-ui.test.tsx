@@ -272,6 +272,12 @@ test('toasts: a step done, a task closed, a new approval; nothing on the first s
   // T-0001 wasn't open before (an old closed task edited again): no toast for it
 })
 
+test('toasts: a new self-check tell is a ⚠ toast once; the same one again is not (T-4118)', () => {
+  const told: FmView = { ...VIEW, alerts: [{ at: '2026-11-10T10:00:00Z', text: 'weekly usage runs out 93 h early' }] }
+  expect(toasts(VIEW, told)).toEqual(['⚠ weekly usage runs out 93 h early'])
+  expect(toasts(told, told)).toEqual([])
+})
+
 test('close-out card: the done toast carries the grade and the lenses (T-0473)', () => {
   expect(closeCard({ grade: 'strong', lenses: ['adversary', 'edge'] })).toBe(' · strong · adversary, edge')
   expect(closeCard({})).toBe('')

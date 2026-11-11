@@ -422,6 +422,11 @@ def tick(p, fetch_ci=None):
                     res["orders"] = [o["n"] for o in orders.run(p)]
             except Exception as e:  # an order file never costs the tick
                 res["notes"].append(f"standing orders: {c.fit(c.plain(str(e)), 120)}")
+            try:  # T-4118: findings act or tell, drive on or off (the sweep and the hourly timer both run the tick)
+                from sampo import selfcheck
+                res["acted"] = selfcheck.act(p)
+            except Exception as e:
+                res["notes"].append(f"self-checks: {c.fit(c.plain(str(e)), 120)}")
             try:  # T-2406: score the pending next-request prediction, make the next (local reads, never sensitive)
                 foresight.prediction_tick(p)
             except Exception as e:  # the book never costs the tick
