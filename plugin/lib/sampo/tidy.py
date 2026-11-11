@@ -494,7 +494,7 @@ def _prune_door_snapshots(p, apply, actions):
             return []
         briefs = {b.id: b for b in c.load_briefs(p, include_archive=True)}
         for n in os.listdir(d):
-            m = re.match(r"(T-\d+)-(?:step|verify)\d+(?:\.json)?$", n)
+            m = re.match(r"(T-\d+)-(?:step|verify)\d+(?:\.json|\.out)?$", n)  # T-4377: .out holds the outside paths' copies
             b = briefs.get(m.group(1)) if m else None
             if b and b.status in c.CLOSED and (c.age_days(b.meta.get("updated")) or 0) > WORK_SNAPSHOT_DAYS:
                 old[n] = os.path.join(d, n)

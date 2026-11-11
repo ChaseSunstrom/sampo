@@ -122,6 +122,20 @@ class Apply(TidyCase):
                          ["T-0002-step1", "T-0002-verify1", "T-0003-step1", "T-0003-verify1", "T-9999-step1", "T-9999-verify1"])
         self.assertFalse(os.path.exists(os.path.join(snaps, "T-0001-step1.json")))
 
+    def test_tidy_outside_copies_of_a_long_closed_task_go_with_its_other_snapshots(self):  # T-4377
+        for t in ("old closed", "still open"):
+            self.fm("task", "new", t, "--type", "FIX", "--tier", "S")
+        age(self.p, "T-0001", 15, status="done")
+        snaps = os.path.join(self.p.dir, "door-snapshots")
+        for tid in ("T-0001", "T-0002"):
+            os.makedirs(os.path.join(snaps, f"{tid}-verify1.out", "tmp"))
+            with open(os.path.join(snaps, f"{tid}-verify1.out", "tmp", "app_test"), "w") as f:
+                f.write("x")
+        os.makedirs(os.path.join(snaps, "T-0001-verify1.outer"))  # not a name the gate makes: left alone
+        self.assertIn("old_door_snapshots", self.kinds(self.tidy()))
+        self.tidy("--apply")
+        self.assertEqual(sorted(os.listdir(snaps)), ["T-0001-verify1.outer", "T-0002-verify1.out"])
+
     def test_apply_archives_and_loses_nothing(self):
         self.seed_rot()
         done_text = read_text(c.find_brief(self.p, "T-0004").path)

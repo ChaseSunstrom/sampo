@@ -251,41 +251,66 @@ def _size(path, cap):
 
 def _snapshot(p, tid, key, toks):
     """(Undo command, note) after a copy of the named paths that restores byte for byte, else (None, why not).
-    key: 'step3' or 'verify1'. A sidecar <snapshot>.json keeps each path's digest for drift()."""
+    key: 'step3' or 'verify1'. A sidecar <snapshot>.json keeps each path's digest for drift(). T-4377: a path outside
+    the repo is copied as well (it was refused unread: a planner's verify that removes its own /tmp binary ended the run
+    at the plan), under <snapshot>.out at its absolute place; the Undo command puts each one back in its own place with
+    an exact copy, never a tree copied over '/' (that would set the modes of the folders above it). A copy that fails
+    or does not verify leaves nothing behind."""
     import shutil
-    rroot, cap, rels = os.path.realpath(p.root), _cap(), []
+    rroot, cap, rels, outs = os.path.realpath(p.root), _cap(), [], []
+    snap = os.path.join(p.dir, "door-snapshots", f"{tid}-{key}")
+
+    def drop():
+        shutil.rmtree(snap, ignore_errors=True)
+        shutil.rmtree(snap + ".out", ignore_errors=True)
     try:
         for t in toks:
             full = _full(p.root, t)
             real = os.path.join(os.path.realpath(os.path.dirname(full)), os.path.basename(full))
-            if not _inside(real, rroot):
-                return None, f"{t} is outside the repo"
-            rels.append(os.path.relpath(real, rroot))
+            if _inside(real, rroot):
+                rels.append(os.path.relpath(real, rroot))
+            elif os.path.normpath(real) != real or not os.path.isabs(real):
+                return None, f"{t} is not a plain path (a copy is kept by the path's own name)"
+            else:
+                outs.append(real)
         total = count = 0
-        for rel in rels:
-            s, k, special = _size(os.path.join(rroot, rel), cap)
+        for name, path in [(rel, os.path.join(rroot, rel)) for rel in rels] + [(o, o) for o in outs]:
+            s, k, special = _size(path, cap)
             if special:
-                return None, f"{rel} holds a FIFO, socket or device, which a copy can't restore"
+                return None, f"{name} holds a FIFO, socket or device, which a copy can't restore"
             total, count = total + s, count + k
         if total > cap or count > FILES:
             return None, f"over the snapshot cap ({total // 1024} KB+, {count}+ entries; FM_DOOR_CAP bytes)"
-        snap = os.path.join(p.dir, "door-snapshots", f"{tid}-{key}")
-        shutil.rmtree(snap, ignore_errors=True)
-        for rel in rels:
-            os.makedirs(os.path.dirname(os.path.join(snap, rel)), exist_ok=True)
-            r = subprocess.run(["cp", "-a", "--", os.path.join(rroot, rel), os.path.join(snap, rel)],
-                               capture_output=True, timeout=120)
+        drop()
+        kept = [(o, os.path.join(snap + ".out", o.lstrip(os.sep))) for o in outs]
+        for src, dst in [(os.path.join(rroot, rel), os.path.join(snap, rel)) for rel in rels] + kept:
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            r = subprocess.run(["cp", "-a", "--", src, dst], capture_output=True, timeout=120)
             if r.returncode:
                 raise OSError("cp failed")
-        if not _same(rroot, snap, rels):
-            shutil.rmtree(snap, ignore_errors=True)
+        if not ((not rels or _same(rroot, snap, rels)) and all(_back(src, dst) for src, dst in kept)):
+            drop()
             return None, "the snapshot did not verify (restored hashes differ)"
-        with open(snap + ".json", "w") as f:
-            json.dump({"digests": {rel: _digest(os.path.join(rroot, rel)) for rel in rels}}, f)
-        return f"cp -a {shlex.quote(snap + '/.')} {shlex.quote(rroot + '/')}", \
-            f"{', '.join(toks)}: {total} bytes in {count} entries copied to {snap} and restored into a temp folder with matching hashes"
+        with open(snap + ".json", "w") as f:  # drift() joins a key on the repo: an absolute one stays itself
+            json.dump({"digests": {**{rel: _digest(os.path.join(rroot, rel)) for rel in rels},
+                                   **{o: _digest(o) for o in outs}}}, f)
+        undo = [f"cp -a {shlex.quote(snap + '/.')} {shlex.quote(rroot + '/')}"] if rels else []
+        undo += [f"cp -aT {shlex.quote(dst)} {shlex.quote(src)}" for src, dst in kept]
+        where = snap if not outs else f"{snap}.out" if not rels else f"{snap} and {snap}.out"
+        return " && ".join(undo), \
+            f"{', '.join(toks)}: {total} bytes in {count} entries copied to {where} and restored into a temp folder with matching hashes"
     except (OSError, subprocess.SubprocessError) as e:
+        drop()
         return None, f"no snapshot ({type(e).__name__})"
+
+
+def _back(src, dst):
+    """T-4377: the exact copy an outside path's Undo runs (cp -aT), made into a temp folder, gives back what the live
+    path holds now, by hash."""
+    with tempfile.TemporaryDirectory() as tmp:
+        again = os.path.join(tmp, "x")
+        r = subprocess.run(["cp", "-aT", "--", dst, again], capture_output=True, timeout=120)
+        return r.returncode == 0 and os.path.lexists(again) and _digest(again) == _digest(src)
 
 
 def drift(p, tid, n):

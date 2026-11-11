@@ -326,13 +326,96 @@ class DoorPark(DoorBase):
         self.fm("focus", tid, check=False, env={"FM_DOOR_CAP": "100"})
         self.assertEqual(self.waits(tid), "one-way and ambiguous: step 1: delete data/old.csv")
 
-    def test_a_path_outside_the_repo_cannot_be_snapshotted(self):
+    def test_a_verify_deleting_a_file_outside_the_repo_gets_a_copy_and_the_task_starts(self):
+        # T-4377, live (exam s8-048 goal-c-0b1e05): the planner's verify was 'gcc … -o /tmp/app_test && /tmp/app_test
+        # && rm -f /tmp/app_test'; sampo code's probe ran it, the tests failed before the rm, the binary stayed, and
+        # focus refused the plan for 'a verify that doesn't delete untracked data': the snapshot said 'outside the
+        # repo' without looking at the file
+        out = os.path.join(self.tmp, "app_test")
+        with open(out, "wb") as f:
+            f.write(b"\x7fELF left by a run whose tests failed")
+        tid = self.brief("edit it", verify=f"test -s {out} && rm -f {out}")
+        self.assertEqual(self.doors(tid)["verify 1"]["door"], "local", "still a door: the file is there and not git's")
+        self.fm("focus", tid)
+        self.assertIsNone(self.waits(tid))
+        b = c.find_brief(self.p, tid)
+        self.assertEqual(b.status, "active")
+        self.assertEqual(c.door_marked(b, "door_acs"), [1], "marked, and covered by its copy")
+        kept = os.path.join(self.p.dir, "door-snapshots", f"{tid}-verify1.out", out.lstrip("/"))
+        with open(kept, "rb") as f:
+            self.assertEqual(f.read(), b"\x7fELF left by a run whose tests failed")
+        self.assertIn(out, read_text(os.path.join(self.p.dir, "decisions.md")))
+
+    def test_the_undo_puts_an_outside_path_back_in_its_own_place(self):  # T-4377
         outside = os.path.join(self.tmp, "elsewhere.dat")
-        with open(outside, "w") as f:
-            f.write("x")
-        tid = self.brief(f"delete {outside}")
-        self.fm("focus", tid, check=False)
-        self.assertEqual(self.waits(tid), f"one-way and ambiguous: step 1: delete {outside}")
+        folder = os.path.join(self.tmp, "elsewhere.d")
+        os.makedirs(os.path.join(folder, "sub"))
+        for path, text in ((outside, "x\x00y"), (os.path.join(folder, "sub", "a.txt"), "keep me")):
+            with open(path, "w") as f:
+                f.write(text)
+        inside = self.data(text="in,side\n")
+        tmp_mode = os.stat(self.tmp).st_mode & 0o7777
+        tid = self.brief(f"delete {outside}", f"delete {folder}", f"delete data/old.csv and {outside}")
+        self.fm("focus", tid)
+        steps = [s.text for s in c.find_brief(self.p, tid).steps()]
+        for s in steps:
+            self.assertIn("Undo: cp -a", s)
+            self.assertTrue(c.undo_ok(s), s)
+        self.assertIsNone(self.waits(tid))
+        before = sorted(os.path.join(dp, n) for dp, _, fn in os.walk(self.repo) if ".git" not in dp for n in fn)
+        import shutil
+        os.remove(outside)
+        shutil.rmtree(folder)
+        subprocess.run(steps[1].split("Undo: ", 1)[1], shell=True, check=True, cwd=self.repo)  # the folder
+        self.assertEqual(read_text(os.path.join(folder, "sub", "a.txt")), "keep me")
+        self.assertEqual(os.listdir(folder), ["sub"], "put back as itself, not nested into itself")
+        with open(os.path.join(folder, "sub", "new.txt"), "w") as f:
+            f.write("made since")
+        subprocess.run(steps[1].split("Undo: ", 1)[1], shell=True, check=True, cwd=self.repo)  # over a folder that is there
+        self.assertEqual(sorted(os.listdir(os.path.join(folder, "sub"))), ["a.txt", "new.txt"])
+        self.assertEqual(os.listdir(folder), ["sub"])
+        os.remove(inside)
+        subprocess.run(steps[2].split("Undo: ", 1)[1], shell=True, check=True, cwd=os.path.dirname(self.repo))  # from any folder
+        self.assertEqual(read_text(outside), "x\x00y")
+        self.assertEqual(read_text(inside), "in,side\n")
+        after = sorted(os.path.join(dp, n) for dp, _, fn in os.walk(self.repo) if ".git" not in dp for n in fn)
+        self.assertEqual(after, before, "nothing of an outside copy lands in the repo")
+        self.assertEqual(os.stat(self.tmp).st_mode & 0o7777, tmp_mode, "a parent folder's mode is left alone")
+
+    def test_an_outside_still_refused_path_says_why(self):  # T-4377: what a copy can't cover parks as before
+        big = os.path.join(self.tmp, "big.dat")
+        with open(big, "w") as f:
+            f.write("x" * 400)
+        tid = self.brief(f"delete {big}")
+        self.assertNotEqual(self.fm("focus", tid, check=False, env={"FM_DOOR_CAP": "100"}).returncode, 0)
+        self.assertEqual(self.waits(tid), f"one-way and ambiguous: step 1: delete {big}")
+        self.assertIn("over the snapshot cap", read_text(os.path.join(self.p.dir, "decisions.md")))
+        pipe = os.path.join(self.tmp, "pipe")
+        os.mkfifo(pipe)
+        tid = self.brief(f"delete {pipe}")
+        self.fm("focus", tid, check=False, timeout=10)
+        self.assertEqual(self.waits(tid), f"one-way and ambiguous: step 1: delete {pipe}")
+        self.assertIn("FIFO", read_text(os.path.join(self.p.dir, "decisions.md")))
+        above = os.path.dirname(self.repo)
+        tid = self.brief(f"delete {above}", raw=f"Delete {above} and start over")
+        self.assertNotEqual(self.fm("focus", tid, check=False).returncode, 0)
+        self.assertEqual(self.waits(tid), f"one-way and ambiguous: step 1: delete {above}")
+        from sampo import doors as sdoors
+        odd = os.path.join(self.tmp, "kept.d", "..")  # a name that is not the path's own: no place to keep its copy by
+        os.makedirs(os.path.join(self.tmp, "kept.d"))
+        undo, why = sdoors._snapshot(self.p, "T-0001", "step9", [odd])
+        self.assertIsNone(undo)
+        self.assertIn("not a plain path", why)
+        if os.geteuid():  # root reads anything
+            locked = os.path.join(self.tmp, "locked.dat")
+            with open(locked, "w") as f:
+                f.write("x")
+            os.chmod(locked, 0)
+            tid = self.brief(f"delete {locked}")
+            self.fm("focus", tid, check=False)
+            self.assertEqual(self.waits(tid), f"one-way and ambiguous: step 1: delete {locked}")
+            self.assertFalse(os.path.lexists(os.path.join(self.p.dir, "door-snapshots", f"{tid}-step1.out")),
+                             "a copy that failed leaves nothing behind")
 
     def test_an_undo_line_the_user_adds_lifts_the_park(self):
         self.data(text="x" * 400)
