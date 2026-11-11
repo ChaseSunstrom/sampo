@@ -90,6 +90,10 @@ CHANGE_TYPES = ("FIX", "FEATURE", "PERFORMANCE", "SECURITY")
 # tier; then the turn is a forced edit (qwen3.8-27b on T-4132: 40 turns, 23 reads, 12 searches, 0 edits)
 EXPLORE_BUDGET, FORCE_TURNS, SCRATCH_CHARS = dict(zip(core.TIERS, (8, 10) + (12,) * (len(core.TIERS) - 2))), 3, 1600  # T-4220: a big tier explores like an L
 EXPLORING = ("read", "search", "run", "card")
+# T-4206: the budget goes on after an edit, as looks since the last progress (an edit that applied, a test run of
+# something edited, a run that changed a file); and when the turns run out with edits in the tree, the run carries on
+# once with at least this many more (T-4151: two test edits, then 13 runs that were greps and ls, 8 reads, step undone)
+CARRY_MIN = 8
 _CHANGE = re.compile(r"(?<![\w.])(?:fix|repair|make(?! sure)|add|implement|handle|change|rename|remove|update|speed up)"
                      r"(?![\w.(])", re.I)  # a word, not an identifier: calc.add, add() and make_page don't count
 SMALL_CHANGE = ("The request asks for a change ({word!r}: find what is wrong and fix it), so a {what} won't do: reply "
@@ -759,8 +763,13 @@ class Run:
         # result message, the result texts the last send cut, and the run's counts (stats())
         self.shown, self.cur, self.pending, self.cut = {"reads": {}, "searches": []}, None, None, set()
         self.facts = []  # the notes of earlier steps (a resume starts them again: the model re-reads what it needs)
-        self.count = {"reads": 0, "rereads": 0, "searches": 0, "notes": 0, "forced": 0, "first_edit": None}
+        self.count = {"reads": 0, "rereads": 0, "searches": 0, "notes": 0, "forced": 0, "first_edit": None,
+                      "looks": 0, "look_runs": 0, "forced_edit": 0, "forced_test": 0, "forced_source": 0, "carried": 0}
         self.explored, self.forced_turns, self.missing_used, self.look_next = 0, 0, False, False  # this step's budget
+        # T-4206: this step's state the forced turn names its move from: edits since the last test run, whether that run
+        # failed, the progress made so far, the verify commands that passed, and how the last run was judged
+        self.stale, self.red, self.progress, self.green, self.run_kind = False, False, 0, set(), None
+        self.carry_used = False  # the one carry-on a run gets when its turns run out with edits in the tree
         self.reported = False  # the stats event went out
 
     def fence(self, text):
@@ -986,6 +995,7 @@ class Run:
 
     def act(self, name, a):
         """(result text, step finished)."""
+        self.run_kind = None  # T-4206: set by a run judged by its effect, read by tally()
         if not isinstance(a, dict) or "_raw" in a:
             return "error: the action's arguments weren't a JSON object", False
         if name not in ("card", "read", "search", "edit", "write", "run", "done") and name in {
@@ -1022,13 +1032,20 @@ class Run:
                 self.step_edited = self.step_edited or ok  # T-3124
                 if ok and self.count["first_edit"] is None:
                     self.count["first_edit"] = self.turns  # T-4177: the turn the first edit landed on
+                if ok:  # T-4206: an edit that applied is progress, and what it changed is untested
+                    self.stale = True
+                    self.advance()
                 return res, False
             if name == "run":
-                res = self.run_cmd(arg("cmd"))
+                cmd = arg("cmd")
+                before = self.tree() if self.guided else None  # T-4206: a run is judged by what it did to the tree
+                res = self.run_cmd(cmd)
+                self.run_kind = self.judge_run(cmd, res, before) if self.guided else None
                 # T-3124: a green run of a verify command after this step's own edits closes the step (never one before an edit)
-                if (self.step_edited and res.startswith("exit 0") and self.plan
-                        and arg("cmd").strip() in {cr["verify"].strip() for cr in self.plan.get("criteria") or []}):
-                    return res + "\nThat verify command passes after your edits: this step is done.", True
+                if res.startswith("exit 0") and cmd.strip() in {cr["verify"].strip() for cr in self.verifies()}:
+                    self.green.add(cmd.strip())
+                    if self.step_edited:
+                        return res + "\nThat verify command passes after your edits: this step is done.", True
                 return res, False
             if name == "card":
                 return self.card(a), False
@@ -1123,16 +1140,18 @@ class Run:
         return self.small or self.own_endpoint
 
     def mode(self):
-        """"look" (the one targeted look a named missing fact earns), "forced" (the budget is spent and nothing has
-        been edited: the turn is an edit), or "". A research run, a plan that changes nothing and a step that has
-        edited are never forced. After FORCE_TURNS forced turns that didn't land an edit the model gets half the budget
-        again: an edit that failed to apply needs a look at the file. Only a guided run (small-model mode, or an own or
-        loopback profile) is held to the budget: a cloud run explores freely and gets just the seen-set note."""
+        """"look" (the one targeted look a named missing fact earns), "forced" (the budget is spent: the turn is the
+        move due, see due()), or "". A research run and a plan that changes nothing are never forced. The budget counts
+        the looks since the last progress (T-4206: an edit that applied, a test run of something edited, a run that
+        changed a file), so it runs after an edit too. After FORCE_TURNS forced turns that made no progress the model
+        gets half the budget again: an edit that failed to apply needs a look at the file. Only a guided run
+        (small-model mode, or an own or loopback profile) is held to the budget: a cloud run explores freely and gets
+        just the seen-set note."""
         if not self.guided:
             return ""
         if self.look_next:
             return "look"
-        if self.read_only or self.step_edited or not self.plan or self.plan.get("type") not in CHANGE_TYPES:
+        if self.read_only or not self.plan or self.plan.get("type") not in CHANGE_TYPES:
             return ""
         if self.explored < self.budget():
             return ""
@@ -1140,6 +1159,78 @@ class Run:
             self.explored, self.forced_turns, self.missing_used = self.budget() // 2, 0, False
             return ""
         return "forced"
+
+    def verifies(self):
+        """The plan's criteria that have a verify command."""
+        return [cr for cr in (self.plan or {}).get("criteria") or []
+                if isinstance(cr, dict) and isinstance(cr.get("verify"), str) and cr["verify"].strip()]
+
+    def next_verify(self):
+        """The verify command to run next: the first that has not passed yet, else the first."""
+        crit = [cr["verify"].strip() for cr in self.verifies()]
+        return next((c for c in crit if c not in self.green), crit[0] if crit else "")
+
+    def is_test(self, cmd):
+        """Whether the command runs one of the plan's verify commands: its words up to the first option are a run of
+        the command's words (so `python3 t.py -v` and `cd x && python3 t.py` are runs of `python3 t.py`)."""
+        words = cmd.split()
+        for cr in self.verifies():
+            head = []
+            for w in cr["verify"].split():
+                if w.startswith("-") and head:
+                    break
+                head.append(w)
+            if head and any(words[i:i + len(head)] == head for i in range(len(words) - len(head) + 1)):
+                return True
+        return False
+
+    def advance(self):
+        """T-4206: progress was made: the looks since the last progress start again."""
+        self.explored, self.forced_turns = 0, 0
+        self.progress += 1
+
+    def judge_run(self, cmd, res, before):
+        """T-4206: how a run of a guided step is counted, by its effect and not by the shell text: "test" (the plan's
+        verify command ran with edits made since the last run of it: progress), "changed" (the tree is not as it was
+        before it: progress, and the tests are stale) or "look" (a grep, an ls, a python -c that only prints, a repeat
+        of the test with nothing edited between, a refused run)."""
+        if res.startswith("refused"):
+            return "look"
+        if self.is_test(cmd):
+            kind = "test" if self.stale else "look"
+            self.red, self.stale = not res.startswith("exit 0"), False
+        elif self.tree() != before:
+            kind, self.stale = "changed", True
+        else:
+            kind = "look"
+        if kind != "look":
+            self.advance()
+        return kind
+
+    def due(self):
+        """The move a forced turn names, from the step's own state: "test" (edits since the last test run: run the
+        verify command), "source" (the last test run failed and nothing was edited since: edit the source), else
+        "edit" (nothing is edited or the tests pass: the edit, as T-4177 forced it)."""
+        if self.stale and self.next_verify():
+            return "test"
+        if self.red and self.step_edited and not self.stale:
+            return "source"
+        return "edit"
+
+    def carry_on(self, name):
+        """T-4206: the turns ran out. A guided run with edits in the tree (this run's own: the flag, or a tree that is not
+        the one it started with) carries on once with a fresh allowance for the step instead of stopping with the work
+        half done. A second run-out stops as before."""
+        if not self.guided or self.carry_used or not (
+                self.edited or (self.tree0 is not None and self.tree() != self.tree0)):
+            return False
+        more = max(CARRY_MIN, self.max_steps // 2)
+        self.carry_used, self.max_steps = True, self.max_steps + more
+        self.explored, self.forced_turns = 0, 0
+        self.count["carried"] += 1
+        self.log(kind="carry_on", phase=name, turns=more)
+        self.emit("note", f"  out of turns with edits in the tree: carrying on once, {more} more turns for {name}")
+        return True
 
     def lines(self):
         """The notes of what this step's model was shown: files by range with their outlines, searches with their top
@@ -1175,8 +1266,19 @@ class Run:
         return ("\n\nWhat earlier steps were shown (the harness kept these notes, so read again only what is not "
                 f"here; files may have changed since):\n{self.fence(text)}") if text else ""
 
-    def forced_note(self, text_mode):
-        miss = ("" if self.missing_used else
+    def forced_note(self, text_mode, kind="edit"):
+        if kind == "test":  # T-4206: one move, and the command to make it with
+            cmd = self.next_verify()
+            return (f"You have looked {self.explored} times since your last edit without running the test. This turn "
+                    f"is the test run: run `{cmd}` and read what it says; nothing else is offered. Reply with "
+                    + ('{"action": "run", "cmd": "' + cmd + '"}.' if text_mode else "run."))
+        if kind == "source":
+            return (f"The test fails and you have looked {self.explored} times since without editing the source. This "
+                    f"turn is the edit of the source (edit, or write to add a file), made from what you were shown; "
+                    f"read, search and run are not offered. What you saw:\n{self.fence(self.scratch() or '(nothing recorded)')}\n"
+                    "Reply with " + ('{"action": "edit", "file", "old", "new"}, {"action": "write", "file", "content"} '
+                                     'or {"action": "done", "summary"}.' if text_mode else "edit, write or done."))
+        miss =("" if self.missing_used else
                 ' If you lack one fact, name it with missing {"fact": "..."}: you then get one read or search for it.')
         acts = ('{"action": "edit", "file", "old", "new"}, {"action": "write", "file", "content"}, '
                 '{"action": "done", "summary"}' + ('' if self.missing_used else ', {"action": "missing", "fact"}')
@@ -1192,7 +1294,10 @@ class Run:
         return {"reads": c["reads"], "rereads": c["rereads"],
                 "reread_ratio": round(c["rereads"] / c["reads"], 3) if c["reads"] else 0.0,
                 "searches": c["searches"], "notes": c["notes"], "forced": c["forced"], "turns": self.turns,
-                "turns_to_first_edit": c["first_edit"]}
+                "turns_to_first_edit": c["first_edit"],
+                # T-4206: what the budget counted and forced, so a local-runs row can tell the stops apart
+                "looks": c["looks"], "look_runs": c["look_runs"], "forced_edit": c["forced_edit"],
+                "forced_test": c["forced_test"], "forced_source": c["forced_source"], "carried": c["carried"]}
 
     def report(self):
         """The stats event, once, and before the run's ending event (the last event of a stream is its end: the TUI and
@@ -1248,7 +1353,10 @@ class Run:
     def tally(self, name):
         """One action done: a look counts against the budget, a named fact's one look is spent."""
         if name in EXPLORING or name in {cd["name"] for cd in self.offered()}:
-            self.explored += 1
+            if name != "run" or self.run_kind in (None, "look"):  # T-4206: a run that changed a file or ran the test isn't
+                self.explored += 1
+                self.count["looks"] += 1
+                self.count["look_runs"] += name == "run" and self.run_kind == "look"
         self.look_next = False
         self.log(kind="counts", **self.count)  # a resume adds to these: the last record is the run's total so far
 
@@ -1664,10 +1772,12 @@ class Run:
         self.keep()  # T-4177: what the last step was shown stays in the notes
         self.cur, self.shown, self.pending, self.cut = name, {"reads": {}, "searches": []}, None, set()
         self.explored, self.forced_turns, self.missing_used, self.look_next = 0, 0, False, False
+        self.stale, self.red, self.run_kind = False, False, None  # T-4206: a step starts with nothing to test
         while True:
-            if self.turns - self.turn_base >= self.max_steps:  # T-4204: this process's turns, not the journal's
+            if self.turns - self.turn_base >= self.max_steps and not self.carry_on(name):  # T-4204: this process's turns
                 raise CodeError(f"stopped: the model used all {self.max_steps} turns (--max-steps) before {name} was "
-                                f"done; fm code --resume {self.tid} --max-steps N carries on")
+                                f"done" + (" (it carried on once already)" if self.carry_used else "")
+                                + f"; fm code --resume {self.tid} --max-steps N carries on")
             left = self.ends - time.monotonic() if self.ends else None
             if left is not None and left <= 0:  # T-4083: stop with the trail before the caller's kill
                 raise CodeError(f"stopped: out of time (--deadline {self.deadline:g} s) before {name} was done; "
@@ -1687,14 +1797,19 @@ class Run:
                         if last.get("role") == "user" and isinstance(last.get("content"), str)
                         else sent + [{"role": "user", "content": note}])
             mode, use = self.mode(), tools  # T-4177: the explore budget decides what this turn offers
+            due, progress = self.due() if mode == "forced" else "", self.progress
             if mode == "forced":
                 self.forced_turns += 1
                 self.count["forced"] += 1
-                note = self.forced_note(tools is None)
-                self.emit("forced", f"  explored {self.explored} times without an edit: forcing the edit", quiet=True,
-                          n=self.explored)
-                self.log(kind="forced", explored=self.explored)
-                if tools:
+                self.count[f"forced_{due}"] += 1  # T-4206: edit, test or source: the move this turn is
+                note = self.forced_note(tools is None, due)
+                self.emit("forced", f"  looked {self.explored} times without progress: forcing "
+                                    f"{ {'test': 'the test run', 'source': 'the edit of the source'}.get(due, 'the edit') }",
+                          quiet=True, n=self.explored, kind=due)
+                self.log(kind="forced", explored=self.explored, due=due)
+                if tools and due == "test":
+                    use = [t for t in tools if t["name"] == "run"]
+                elif tools:
                     use = [t for t in tools if t["name"] in ("edit", "write", "done")]
                     if not self.missing_used:
                         use = use + [self.missing_tool()]
@@ -1726,7 +1841,7 @@ class Run:
                 finished, ran = False, False
                 for tc in calls:
                     self.pending = None
-                    if tc["name"] == "missing" and mode == "forced" and not self.missing_used:
+                    if tc["name"] == "missing" and mode == "forced" and due != "test" and not self.missing_used:
                         result, fin = self.name_missing(tc["args"]), False
                     else:
                         result, fin = self.step(tc["name"], tc["args"])
@@ -1745,14 +1860,14 @@ class Run:
                     continue
                 act = v.pop("action")
                 self.pending = None
-                if act == "missing" and mode == "forced" and not self.missing_used:
+                if act == "missing" and mode == "forced" and due != "test" and not self.missing_used:
                     self.add(name, {"role": "user", "content": f"Result of {act}:\n{self.fence(self.name_missing(v))}"})
                     continue
                 result, finished = self.step(act, v)
                 self.tally(act)
                 self.add(name, {"role": "user", "content": f"Result of {act}:\n{self.fence(result)}"})
                 self.pin(f"Result of {act}:\n{self.fence(result)}")
-            if mode == "forced" and not self.step_edited and not finished and self.last_act and self.last_act[0] in (
+            if mode == "forced" and self.progress == progress and not finished and self.last_act and self.last_act[0] in (
                     "edit", "write"):  # the edit didn't apply: it needs a look at the file, then the edit again
                 self.explored, self.forced_turns = self.budget() // 2, 0
             if self.last_act is None:  # T-3006: a check-first bounce ran nothing: it counts as no action

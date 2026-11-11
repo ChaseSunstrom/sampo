@@ -196,9 +196,10 @@ class ForcedEdit(CodeCase):
         self.assertTrue(all("search" in tool_names(b) for b in ask.seen[1:]), "a question's run is never forced to edit")
 
     def test_forced_edit_a_step_that_already_edited_is_not_forced(self):
+        # T-4206: the budget restarts after an edit (it is a progress budget now); the first nine turns are free
         f, r = self.run_script(EDIT, *SEARCHES, call("done", summary="x"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertTrue(all("search" in tool_names(b) for b in f.seen[1:]), "after an edit the budget is off")
+        self.assertTrue(all("search" in tool_names(b) for b in f.seen[1:10]), "after an edit the budget restarts")
 
 
 class Carry(CodeCase):
