@@ -46,6 +46,18 @@ class ModelProbe(ForemanTestCase):
         self.stub()
         self.assertEqual(d.check_model_pins().status, "PASS")
 
+    def test_paused_skips_the_probe_and_is_not_cached(self):
+        """T-4196: the probe starts a claude child, which a pause refuses: the doctor died of it, every gate run with it."""
+        from sampo import core as c
+        log = self.stub(dead=["opus"])
+        c.set_panic(True)  # in this test's own home; no cleanup: one registered here runs after tearDown put the real
+        r = d.check_model_pins()  # FOREMAN_HOME back, and would lift the machine's real pause
+        self.assertEqual(r.status, "PASS")
+        self.assertIn("paused", r.detail)
+        self.assertEqual(self.calls(log), 0)
+        c.set_panic(False)
+        self.assertEqual(d.check_model_pins().status, "WARN")  # the skip was not cached for the day
+
     def test_quiet_without_claude(self):
         old = os.environ["PATH"]
         os.environ["PATH"] = os.path.join(self.tmp, "empty")

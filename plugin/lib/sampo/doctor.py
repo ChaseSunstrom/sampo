@@ -773,6 +773,8 @@ def check_model_pins(pins=None):
     call that fails or times out is a WARN naming the model and its pinning modules (a dead name or a login to check)."""
     if not shutil.which("claude"):
         return Result("model pins", "PASS", "claude isn't on PATH: no probe")
+    if c.panicked():  # T-4196: the probe is a claude child, which a pause refuses: the doctor died of it and every gate with it
+        return Result("model pins", "PASS", "paused: no probe (it starts a claude child); probed after sampo pause off")
     pins = pins or _pinned_models()
 
     def probe():
