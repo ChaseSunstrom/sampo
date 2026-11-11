@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Sampo's own test runs for a lane (lane verify, ship's test run, a lane's check) start at nice 10 so they no longer compete with the user's session or block new lanes at the load gate (T-4197).
 - sampo code retries a local model's all-reasoning reply once with thinking off, and says so, before the run stops (T-4210).
 - sampo pause now records who set it (agent or user) in the flag, so an agent may lift only its own pause and every surface, including a bare sampo pause, names who and when (T-4190).
 - The lane load gate no longer counts Sampo's own nice-19 gate runs as strain, and a lane stopped or silent for days is no longer a builder out, so briefs are issued while a land runs (T-4175).
