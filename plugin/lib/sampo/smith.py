@@ -86,6 +86,10 @@ NESTED = ("args", "arguments", "parameters", "input")
 # T-2878 small-model mode: the plan types that change files, and request words that ask for a change (qwen3.8-27b planned
 # 'Something is off in the paging; find and fix it.' as RESEARCH, closed it on a check already green, and edited nothing)
 CHANGE_TYPES = ("FIX", "FEATURE", "PERFORMANCE", "SECURITY")
+# T-4177: a step of a change plan may look (read, search, run, card) this many times before it has edited, by the plan's
+# tier; then the turn is a forced edit (qwen3.8-27b on T-4132: 40 turns, 23 reads, 12 searches, 0 edits)
+EXPLORE_BUDGET, FORCE_TURNS, SCRATCH_CHARS = {"S": 8, "M": 10, "L": 12}, 3, 1600
+EXPLORING = ("read", "search", "run", "card")
 _CHANGE = re.compile(r"(?<![\w.])(?:fix|repair|make(?! sure)|add|implement|handle|change|rename|remove|update|speed up)"
                      r"(?![\w.(])", re.I)  # a word, not an identifier: calc.add, add() and make_page don't count
 SMALL_CHANGE = ("The request asks for a change ({word!r}: find what is wrong and fix it), so a {what} won't do: reply "
@@ -217,6 +221,9 @@ EVENTS = {
     "worker": "worker, exit", "revert": "file, reason",
     "verify": "criterion, label (before|verify), cmd, exit, output (when it failed)",
     "early_done": "n: a done refused (no edit, a verify fails); the third stops the run",
+    "forced": "n: a turn forced to be the edit, after n looks in a step without one (T-4177)",
+    "stats": "reads, rereads, reread_ratio, searches, notes, forced, turns, turns_to_first_edit (null: none): what the "
+             "run looked at and how soon it edited, at its end however it ended (T-4177)",
     "changed": "step, files (dirty after the step), stat {path: [added, removed]}",
     "closed": "task, tokens, unproven (fm task finish's Not verified lines, T-2395)",
     "blocked": "task, reason, next (the command to run now)", "error": "task, next",
@@ -665,6 +672,13 @@ def slot(run, profile, messages, check, what, fields=()):
 
 # ---------------------------------------------------------------- the run
 
+def guided_profile(profile):
+    """T-4177: whether a profile gets the explore budget and forced edit: marked small, the user's own, or an endpoint on
+    this machine (models.profile_local, the rule the registry's "local" flag uses). resolve() leaves small unset for the
+    9B and 27B local profiles, which is where the read-forever loop was seen; the claude CLI and remote hosts are cloud."""
+    return profile.get("small") is True or bool(profile.get("own")) or m.profile_local(profile)
+
+
 class Run:
     def __init__(self, args, root, jdir):
         self.args, self.root, self.jdir = args, root, jdir
@@ -689,12 +703,20 @@ class Run:
         self.context = ""  # T-1374: what was piped on stdin
         self.reason = getattr(args, "reason", None)  # T-3006: one of REASONS, or None: as before
         self.small = bool(getattr(args, "small", False))  # T-2878: small-model mode (a profile's "small" turns it on too)
+        self.own_endpoint = False  # T-4177: the profile is the user's own or a loopback one (guided_profile)
         self.state, self.checked, self.bad_run, self.broke = None, False, False, False  # a resume starts the state again
         self.step_edited = False  # T-3124: an edit landed in this step
         self.early, self.edited, self.tree0 = 0, False, None  # T-3180: refused early dones; an edit landed; the tree at start
         self.nonce = secrets.token_hex(6)  # T-1394: the data envelope's tag, which no file can know ahead
         self.cards_offer = self.cards_session = None  # T-3160: the calling cards picked for this run, and their Session
         self.harness_text = None  # T-3181: what the harness ran before turn 1 (its facts, any fix it applied)
+        # T-4177: what this step's model was shown (reads by file, searches), the phase it is in, the entry awaiting its
+        # result message, the result texts the last send cut, and the run's counts (stats())
+        self.shown, self.cur, self.pending, self.cut = {"reads": {}, "searches": []}, None, None, set()
+        self.facts = []  # the notes of earlier steps (a resume starts them again: the model re-reads what it needs)
+        self.count = {"reads": 0, "rereads": 0, "searches": 0, "notes": 0, "forced": 0, "first_edit": None}
+        self.explored, self.forced_turns, self.missing_used, self.look_next = 0, 0, False, False  # this step's budget
+        self.reported = False  # the stats event went out
 
     def fence(self, text):
         """T-1394: text the repo or a tool wrote, in this run's data envelope, the '<' of every envelope-shaped tag in it
@@ -705,6 +727,8 @@ class Run:
     def emit(self, event, text, quiet=False, **data):
         """One event: a JSON line with --json (EVENTS lists them), else its text; a quiet one is JSON only. Each is
         also kept in code/<task>.events.jsonl, the history fm code tui replays (T-1283)."""
+        if event in ("closed", "blocked", "error", "answer"):
+            self.report()  # T-4177: the stats come just before the end, which stays a stream's last event
         rec = dict(data, event=event, text=text, ts=round(time.time(), 1))
         self.kept.append(core.redact_obj(rec))
         if self.journal:
@@ -932,9 +956,9 @@ class Run:
                 self.summary = arg("summary", default="") if isinstance(a.get("summary"), str) else ""
                 return "step finished", True
             if name == "read":
-                return self.read(arg("path"), arg("start", int, 1), arg("lines", int, READ_LINES)), False
+                return self.seen_read(arg("path"), arg("start", int, 1), arg("lines", int, READ_LINES)), False
             if name == "search":
-                return self.search(arg("pattern"), a.get("glob") if isinstance(a.get("glob"), str) else None), False
+                return self.seen_search(arg("pattern"), a.get("glob") if isinstance(a.get("glob"), str) else None), False
             if name in ("edit", "write"):
                 res = self.edit(arg("file"), arg("old"), arg("new")) if name == "edit" else \
                     self.write(arg("file"), arg("content"))
@@ -943,6 +967,8 @@ class Run:
                     self.edited = True
                     self.log(kind="edited")  # T-3974: a resume knows an edit landed before the crash
                 self.step_edited = self.step_edited or ok  # T-3124
+                if ok and self.count["first_edit"] is None:
+                    self.count["first_edit"] = self.turns  # T-4177: the turn the first edit landed on
                 return res, False
             if name == "run":
                 res = self.run_cmd(arg("cmd"))
@@ -957,6 +983,220 @@ class Run:
             return f"error: {e}", False
         return (f"error: no action {name!r}; the actions are read, search, edit, write, run"
                 + (", done and card" if self.offered() else " and done")), False
+
+    # -- what the model was shown (T-4177)
+    def holds(self, e):
+        """Whether the model still has entry e's text in front of it: its result message is among the newest
+        KEEP_RESULTS - 1 of this step's results (one more arrives with the answer) and the last send didn't cut it."""
+        msg = e.get("msg")
+        if not msg or msg in self.cut:
+            return False
+        results = [x.get("content") for x in self.msgs.get(self.cur) or [] if _is_result(x)]
+        return msg in results[-(KEEP_RESULTS - 1):]
+
+    def pin(self, content):
+        """The result message just added belongs to the entry the action recorded (None when it recorded none)."""
+        if self.pending is not None:
+            self.pending["msg"] = content
+            self.pending = None
+
+    def digest(self, full):
+        """What a file holds now, to tell a changed one from the one the model read; None for what read refuses."""
+        try:
+            if self.hidden(full) or not os.path.isfile(full) or os.path.getsize(full) > READ_BYTES:
+                return None
+            with open(full, "rb") as f:
+                return hashlib.sha1(f.read()).hexdigest()
+        except OSError:
+            return None
+
+    def seen_read(self, rel, start, lines):
+        """read(), but a range the model was already shown of a file unchanged since, and still holds, is a note
+        naming that excerpt's outline instead of its text. Every covered read counts as a reread, held or not."""
+        full = self.path(rel)
+        start, lines = max(start, 1), min(max(lines, 1), READ_MAX)
+        digest = self.digest(full)
+        self.count["reads"] += 1
+        old = self.shown["reads"].get(full, [])
+        for e in old:
+            if digest and e["digest"] == digest and e["start"] <= start and start + lines - 1 <= e["end"]:
+                self.count["rereads"] += 1
+                if self.holds(e):
+                    self.count["notes"] += 1
+                    return (f"you have this: {rel} lines {e['start']}-{e['end'] if e['end'] < 1 << 40 else 'end'} are "
+                            f"already in the conversation above, unchanged since you read them (outline: "
+                            f"{e['outline']}). Act on them: edit, or name the one fact you still lack.")
+        out = self.read(rel, start, lines)
+        if digest and not out.startswith(("refused", "error")):
+            more = re.search(r"… \(more after line (\d+);", out)
+            outline = ", ".join(f"L{n} {_one_line(t, 60)}" for n, t in re.findall(
+                r"^\s*(\d+)  (\s*(?:async\s+def|def|class|function|func|fn|struct|enum|impl|interface|trait)\b.*)$",
+                out, re.M)[:10]) or "no definitions"
+            self.pending = {"digest": digest, "start": start, "end": int(more.group(1)) if more else 1 << 60,
+                            "outline": outline}
+            self.shown["reads"][full] = [e for e in old if e["digest"] == digest] + [self.pending]
+        return out
+
+    def seen_search(self, pattern, glob):
+        """search(), but one that returns what an earlier search returned, text still held, is a note: a reworded
+        pattern with the same hits is no new information. An empty or failed search repeats only on its own pattern."""
+        out = self.search(pattern, glob)
+        digest, real = hashlib.sha1(out.encode("utf-8", "replace")).hexdigest(), not out.startswith(("no match", "error"))
+        self.count["searches"] += 1
+        old = self.shown["searches"]
+        for e in old:
+            if e["digest"] == digest and (real or e["key"] == (pattern, glob)):
+                if self.holds(e):
+                    self.count["notes"] += 1
+                    files = sorted({h.split(":", 1)[0] for h in out.splitlines() if ":" in h})[:8]
+                    return (f"you have this: this search gives the same result as your earlier {e['key'][0]!r}"
+                            + (f" ({len(out.splitlines())} lines in {', '.join(files)})" if real else "")
+                            + ", already in the conversation above. Act on it: edit, or name the one fact you still lack.")
+        gist = " | ".join(out.splitlines()[:3]) if real else "no match"  # not a list: the hits stay in the conversation
+        self.pending = {"digest": digest, "key": (pattern, glob), "top": _one_line(gist, 160)}
+        self.shown["searches"] = [e for e in old if e["digest"] != digest] + [self.pending]
+        return out
+
+    # -- the explore budget and the forced edit (T-4177)
+    def budget(self):
+        return EXPLORE_BUDGET.get(str((self.plan or {}).get("tier") or "S").upper()[:1], EXPLORE_BUDGET["S"])
+
+    @property
+    def guided(self):
+        """T-4177: small-model mode, or a profile that is the user's own or loopback (guided_profile): the explore
+        budget, the forced edit, the `missing` tool and the carried notes. The red-test scaffold and the playbook stay
+        on self.small."""
+        return self.small or self.own_endpoint
+
+    def mode(self):
+        """"look" (the one targeted look a named missing fact earns), "forced" (the budget is spent and nothing has
+        been edited: the turn is an edit), or "". A research run, a plan that changes nothing and a step that has
+        edited are never forced. After FORCE_TURNS forced turns that didn't land an edit the model gets half the budget
+        again: an edit that failed to apply needs a look at the file. Only a guided run (small-model mode, or an own or
+        loopback profile) is held to the budget: a cloud run explores freely and gets just the seen-set note."""
+        if not self.guided:
+            return ""
+        if self.look_next:
+            return "look"
+        if self.read_only or self.step_edited or not self.plan or self.plan.get("type") not in CHANGE_TYPES:
+            return ""
+        if self.explored < self.budget():
+            return ""
+        if self.forced_turns >= FORCE_TURNS:
+            self.explored, self.forced_turns, self.missing_used = self.budget() // 2, 0, False
+            return ""
+        return "forced"
+
+    def lines(self):
+        """The notes of what this step's model was shown: files by range with their outlines, searches with their top
+        hits, one line each."""
+        notes = []
+        for full, es in self.shown["reads"].items():
+            rel = os.path.relpath(full, self.root)
+            for e in es:
+                notes.append(f"- {rel} lines {e['start']}-{e['end'] if e['end'] < 1 << 40 else 'end'}: {e['outline']}")
+        notes += [f"- search {e['key'][0]!r}: {e['top']}" for e in self.shown["searches"] if "top" in e]
+        return [_one_line(n, 300) for n in notes]
+
+    def newest(self, notes):
+        """notes oldest first, the oldest dropped until what is left is at most SCRATCH_CHARS (about 400 tokens)."""
+        notes = list(notes)
+        while notes and len("\n".join(notes)) > SCRATCH_CHARS:
+            notes.pop(0)
+        return notes
+
+    def keep(self):
+        """A step starts: what the last one was shown joins the run's notes (T-4177: nothing needs re-reading after the
+        conversation is trimmed or the step changes), the oldest dropped first."""
+        self.facts = self.newest(self.facts + [n for n in self.lines() if n not in self.facts])
+
+    def scratch(self):
+        """What the run was shown, earlier steps first, as notes of at most SCRATCH_CHARS, the oldest dropped first.
+        (The harness keeps them, so trimming the conversation loses no fact.)"""
+        return "\n".join(self.newest(self.facts + [n for n in self.lines() if n not in self.facts]))
+
+    def carried(self):
+        """The step prompt's tail in a guided run: what earlier steps were shown ("" for the first step)."""
+        text = self.scratch() if self.guided else ""
+        return ("\n\nWhat earlier steps were shown (the harness kept these notes, so read again only what is not "
+                f"here; files may have changed since):\n{self.fence(text)}") if text else ""
+
+    def forced_note(self, text_mode):
+        miss = ("" if self.missing_used else
+                ' If you lack one fact, name it with missing {"fact": "..."}: you then get one read or search for it.')
+        acts = ('{"action": "edit", "file", "old", "new"}, {"action": "write", "file", "content"}, '
+                '{"action": "done", "summary"}' + ('' if self.missing_used else ', {"action": "missing", "fact"}')
+                ) if text_mode else "edit, write or done"
+        return (f"You have explored {self.explored} times in this step without a change. Exploring is over: this turn "
+                f"is the edit (or write, to add a file), made from what you were shown; read, search and run are not "
+                f"offered. What you saw:\n{self.fence(self.scratch() or '(nothing recorded)')}\n"
+                f"Reply with {acts}." + miss)
+
+    def stats(self):
+        """What the run looked at and how soon it edited: the numbers T-4168 compares a model before and after."""
+        c = self.count
+        return {"reads": c["reads"], "rereads": c["rereads"],
+                "reread_ratio": round(c["rereads"] / c["reads"], 3) if c["reads"] else 0.0,
+                "searches": c["searches"], "notes": c["notes"], "forced": c["forced"], "turns": self.turns,
+                "turns_to_first_edit": c["first_edit"]}
+
+    def report(self):
+        """The stats event, once, and before the run's ending event (the last event of a stream is its end: the TUI and
+        the run history read it so). A run that took no model turn has nothing to report."""
+        if self.reported or not self.turns:
+            return
+        self.reported = True
+        s = self.stats()  # not in the journal, whose last line is the run's end: the events file keeps it
+        self.emit("stats", f"looked {s['reads']} reads ({s['rereads']} repeats), first edit at turn "
+                           f"{s['turns_to_first_edit']}", quiet=True, **s)
+
+    def red_scaffold(self, step):
+        """A step that writes the failing test: the criterion's verify command and the nearest existing test (the one a
+        verify command already names) as a template, so the first action is writing the test. "" for any other step."""
+        if not self.small or (self.plan or {}).get("type") not in CHANGE_TYPES or not re.search(
+                r"\b(?:red|failing|fails?)\b.{0,40}\btests?\b|\btests?\b.{0,40}\b(?:red|fails?|failing)\b", step, re.I):
+            return ""
+        crit = [cr for cr in self.plan.get("criteria") or [] if isinstance(cr, dict) and cr.get("verify")]
+        if not crit:
+            return ""
+        near = ""
+        for cr in crit:
+            for tok in re.findall(r"[\w./-]+\.\w+", cr["verify"]):
+                try:
+                    if re.search(r"test", tok, re.I) and os.path.isfile(self.path(tok)) and not self.hidden(self.path(tok)):
+                        near = tok
+                        break
+                except (ValueError, OSError):  # a path out of the project: not a template
+                    continue
+            if near:
+                break
+        out = (f"\n\nScaffold for the failing test: the verify command is `{crit[0]['verify']}`; run it to see it fail "
+               "once the test is written.")
+        if near:
+            out += (f" The nearest existing test, {near} (its first lines), is the template to follow:\n"
+                    f"{self.fence(self.read(near, 1, 40))}")
+        return out + "\nYour first action is writing the test (edit or write), not reading more."
+
+    def missing_tool(self):
+        props = {"fact": {"type": "string", "description": "the one thing you need to know, and cannot edit without"}}
+        if self.reason == "state":
+            props["state"] = STATE_PROP
+        return {"name": "missing", "description": "You lack one fact for the edit: name it, and get one read or search.",
+                "parameters": {"type": "object", "required": ["fact"], "properties": props}}
+
+    def name_missing(self, a):
+        fact = a.get("fact") if isinstance(a, dict) else None
+        self.missing_used, self.look_next = True, True
+        self.log(kind="missing_fact", fact=_one_line(str(fact or ""), 200))
+        return ("Noted" + (f": {_one_line(str(fact), 200)}" if fact else "") + ". You get one read or search for it; "
+                "after that the edit is due.")
+
+    def tally(self, name):
+        """One action done: a look counts against the budget, a named fact's one look is spent."""
+        if name in EXPLORING or name in {cd["name"] for cd in self.offered()}:
+            self.explored += 1
+        self.look_next = False
+        self.log(kind="counts", **self.count)  # a resume adds to these: the last record is the run's total so far
 
     def read(self, rel, start, lines):
         full = self.path(rel)
@@ -1367,6 +1607,9 @@ class Run:
         self.state, self.checked, self.bad_run, self.broke = None, False, False, False  # T-3006: each step starts clean
         self.step_edited = False  # T-3124
         seen = {}  # T-2966: (action, target) -> times, this call of the step
+        self.keep()  # T-4177: what the last step was shown stays in the notes
+        self.cur, self.shown, self.pending, self.cut = name, {"reads": {}, "searches": []}, None, set()
+        self.explored, self.forced_turns, self.missing_used, self.look_next = 0, 0, False, False
         while True:
             if self.turns >= self.max_steps:
                 raise CodeError(f"stopped: the model used all {self.max_steps} turns (--max-steps) before {name} was "
@@ -1378,6 +1621,8 @@ class Run:
             self.check_cap(name)
             self.turns += 1
             sent = fit(self, profile, trim(msgs))
+            self.cut = {x.get("content") for x, y in zip(msgs, sent)  # T-4177: what this send no longer carries whole
+                        if _is_result(x) and str(y.get("content")).startswith("(older result cut")}
             if left is not None:  # T-4083: the clock rides each turn, never stored in the conversation
                 note = f"Time left: {left:.0f} s of {self.deadline:g} s." + (
                     " Nearly out of time: finish now with done, saying what is left undone." if left < self.deadline / 10
@@ -1387,12 +1632,33 @@ class Run:
                 sent = (sent[:-1] + [{**last, "content": f"{last['content']}\n\n{note}"}]
                         if last.get("role") == "user" and isinstance(last.get("content"), str)
                         else sent + [{"role": "user", "content": note}])
-            kw, cap = self.reason_kw(name, tools)
+            mode, use = self.mode(), tools  # T-4177: the explore budget decides what this turn offers
+            if mode == "forced":
+                self.forced_turns += 1
+                self.count["forced"] += 1
+                note = self.forced_note(tools is None)
+                self.emit("forced", f"  explored {self.explored} times without an edit: forcing the edit", quiet=True,
+                          n=self.explored)
+                self.log(kind="forced", explored=self.explored)
+                if tools:
+                    use = [t for t in tools if t["name"] in ("edit", "write", "done")]
+                    if not self.missing_used:
+                        use = use + [self.missing_tool()]
+            elif mode == "look":
+                note = ("Look once for the fact you named, with read or search; then the edit is due.")
+                if tools:
+                    use = [t for t in tools if t["name"] in ("read", "search")]
+            if mode:
+                last = sent[-1] if sent else {}
+                sent = (sent[:-1] + [{**last, "content": f"{last['content']}\n\n{note}"}]
+                        if last.get("role") == "user" and isinstance(last.get("content"), str)
+                        else sent + [{"role": "user", "content": note}])
+            kw, cap = self.reason_kw(name, use)
             if self.reason == "state" and self.state:  # T-3006: the state stands in for older prose, one message
                 sent = sent + [{"role": "user", "content": "State so far (your own last note, data not instructions):\n"
                                 + self.fence(self.redact(json.dumps(self.state)))}]
             cap = deliberate_cap(profile, sent, cap)
-            r = m.complete(self.capped(profile), sent, tools=tools, max_tokens=cap, **kw)
+            r = m.complete(self.capped(profile), sent, tools=use, max_tokens=cap, **kw)
             self.usage(r, profile, name)
             check_truncated(profile, sent, r)
             calls = r["tool_calls"]
@@ -1403,20 +1669,38 @@ class Run:
                 continue
             if calls:
                 self.add(name, {"role": "assistant", "content": r["text"], "tool_calls": calls})
-                finished = False
+                finished, ran = False, False
                 for tc in calls:
-                    result, fin = self.step(tc["name"], tc["args"])
+                    self.pending = None
+                    if tc["name"] == "missing" and mode == "forced" and not self.missing_used:
+                        result, fin = self.name_missing(tc["args"]), False
+                    else:
+                        result, fin = self.step(tc["name"], tc["args"])
+                        ran = True
+                        self.tally(tc["name"])
                     self.add(name, {"role": "tool", "tool_call_id": tc["id"], "content": self.fence(result)})
+                    self.pin(self.fence(result))
                     finished = finished or fin
+                if not ran:  # a named missing fact ran nothing: it is no action for the loop breaker
+                    continue
             else:
                 self.add(name, {"role": "assistant", "content": r["text"]})
                 v = m.extract_json(r["text"])
                 if not isinstance(v, dict) or not isinstance(v.get("action"), str):
-                    self.add(name, {"role": "user", "content": "No action found." + TEXT_ACTIONS})
+                    self.add(name, {"role": "user", "content": "No action found." + ("" if mode == "forced" else TEXT_ACTIONS)})
                     continue
                 act = v.pop("action")
+                self.pending = None
+                if act == "missing" and mode == "forced" and not self.missing_used:
+                    self.add(name, {"role": "user", "content": f"Result of {act}:\n{self.fence(self.name_missing(v))}"})
+                    continue
                 result, finished = self.step(act, v)
+                self.tally(act)
                 self.add(name, {"role": "user", "content": f"Result of {act}:\n{self.fence(result)}"})
+                self.pin(f"Result of {act}:\n{self.fence(result)}")
+            if mode == "forced" and not self.step_edited and not finished and self.last_act and self.last_act[0] in (
+                    "edit", "write"):  # the edit didn't apply: it needs a look at the file, then the edit again
+                self.explored, self.forced_turns = self.budget() // 2, 0
             if self.last_act is None:  # T-3006: a check-first bounce ran nothing: it counts as no action
                 continue
             seen[self.last_act] = seen.get(self.last_act, 0) + 1
@@ -3282,6 +3566,7 @@ def cmd_code(args):
                 profile = dict(profile, context=served, served=served)
             run.cap = CAP if profile.get("context", 0) >= SMALL_CONTEXT else CAP // 2
             run.small = run.small or profile.get("small") is True
+            run.own_endpoint = guided_profile(profile)  # T-4177: re-resolved on a resume too, so no journal option
         run.max_steps = run.max_steps or 40
         if run.reason and run.reason not in REASONS:
             raise cli.UsageError(f"--reason is one of {', '.join(REASONS)}")
@@ -3364,6 +3649,7 @@ def cmd_code(args):
         print(f"Next: {then}", file=sys.stderr)
         raise SystemExit(1)
     finally:
+        run.report()  # a stop that ended with no event of its own still reports
         if run.tid:  # T-1294: the run's leases end with it; T-1764: a model run's edits take them too, not only a worker's
             try:
                 from sampo import bus
@@ -4021,7 +4307,8 @@ def _drive(run, profile):
                         if n == 1 and run.harness_text else "")
         prompt = (f"{_task_text(run)}\n\nVerify results before any change:\n{run.fence(run.baseline)}\n\n{before_first}"
                   f"Now do step {n}" + (f": {step}" if run.own_plan else " of the plan's steps.")
-                  + " The step is done when you call done, or when a verify command passes after your edits.")
+                  + " The step is done when you call done, or when a verify command passes after your edits."
+                  + run.red_scaffold(step) + run.carried())
         if run.worker:  # T-1394: a worker CLI never saw ACT_PROMPT, so it hears what the envelope is here
             run.work(f"step:{n}", f"{prompt}\n\n{DATA_NOTE}")
         else:
@@ -4228,6 +4515,8 @@ def _load(run, tid, ended=False):
             run.done.add(r["phase"])
         elif k == "edited":  # T-3974: else the resumed run's early-done check counts no edit
             run.edited = True
+        elif k == "counts":  # T-4177: the stats go on from what the run counted before it was stopped
+            run.count.update({key: r[key] for key in run.count if key in r})
         elif k == "baseline":
             run.baseline = r["text"]
         elif k == "harness":  # T-3181: what the harness ran before turn 1, and the baseline after any fix it applied
