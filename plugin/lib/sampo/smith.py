@@ -4538,11 +4538,20 @@ def _verify_plan(run, dry):
     run.emit("plan", f"plan: {typ} S {run.plan['title']} (done when `{run.verify_cmd}` passes)", plan=run.plan)
 
 
+_NO_TASK = ": no active task in "  # how fmguard's brief refusal starts (pinned end to end by test_code's waits_for_its_task)
+
+
 def _plan_problem(run):
     """Why the plan's verify commands can't stand, or None: one the guard refuses; for FIX and FEATURE, one that
-    passes before any work (it proves nothing)."""
+    passes before any work (it proves nothing). T-4371: a verify the guard refuses only because no task exists yet
+    (it writes inside the repo: `rm -f test_app && sh ./test.sh`) is no problem of the plan; it waits for its task,
+    never run here: at focus the door gate snapshots what it would delete, and the guard meets it with the task."""
+    waits = set()
     for n, cr in enumerate(run.plan["criteria"], 1):
         why = run.guard("Bash", {"command": cr["verify"]})
+        if why and _NO_TASK in why[:60]:  # the guard's last category (brief): any other refusal is named before it
+            waits.add(n)
+            continue
         if why:
             return f"refused by Smith's guard: criterion {n}'s verify `{cr['verify']}`: {_one_line(why, 300)}"
         why = core.unrunnable(cr["verify"], run.root)  # T-1320: fm task new refuses it; the planner can do better
@@ -4554,6 +4563,8 @@ def _plan_problem(run):
     if run.plan["type"] not in (CHANGE_TYPES if small else ("FIX", "FEATURE")):
         return None
     for n, cr in enumerate(run.plan["criteria"], 1):
+        if n in waits:
+            continue
         code, _ = run_bounded(cr["verify"], run.root, VERIFY_TIMEOUT, run.env(), 200, confine=run.confine())
         if code == 0:
             return (f"Criterion {n}'s verify `{cr['verify']}` already passes before any work, so it proves nothing: "

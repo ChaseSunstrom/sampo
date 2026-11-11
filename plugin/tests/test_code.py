@@ -673,6 +673,30 @@ class Review(CodeCase):
         self.assertTrue(os.path.exists(os.path.join(self.fake_home, "keep")))
         self.assertNotEqual(self.fm("task", "show", "T-0001", check=False).returncode, 0)
 
+    def test_a_verify_that_writes_inside_the_repo_waits_for_its_task_and_the_run_closes(self):
+        # T-4371 (exam s8-047 goal-c-e61e7e, `rm -f test_app && sh ./test.sh`): asked before any task exists, the guard
+        # refuses every write inside the repo for want of a task; that is no refusal of the verify itself
+        own = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "rm -f built.tmp && python3 test_calc.py"}])
+        f = self.serve("openai", plan(own), *FIX)
+        r = self.code("fix add", "--model", "fake", check=False)
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+        self.assertNotIn("refused", f.said(1))
+
+    def test_a_verify_that_waits_for_its_task_is_not_run_before_the_task_exists(self):  # T-4371
+        from unittest import mock
+        sys.path.insert(0, os.path.join(PLUGIN, "lib"))
+        from sampo import smith
+        run = mock.Mock(plan=dict(PLAN, criteria=[{"text": "x", "verify": "rm -f data.db && python3 test_calc.py"}]),
+                        root=self.repo, small=False)
+        run.guard.return_value = ("Sampo: no active task in this project, so data.db can't be edited yet. One command "
+                                  "starts a small task: sampo task new …")
+        with mock.patch.object(smith, "run_bounded", return_value=(1, "")) as ran:
+            self.assertIsNone(smith._plan_problem(run))
+            ran.assert_not_called()  # focus's door gate snapshots what it deletes, and the guard meets it, first
+            run.guard.return_value = "Ward: blocked rm-outside: ~ is outside the project"
+            self.assertIn("refused by Smith's guard", smith._plan_problem(run))
+            ran.assert_not_called()
+
     def test_a_plan_focus_refuses_goes_back_to_the_planner_once(self):
         # T-3016: 3 of 15 local exam runs ended here (an M plan with no criterion for a clause of the request)
         kept = dict(M_PLAN, criteria=M_PLAN["criteria"] + [
