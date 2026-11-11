@@ -818,23 +818,75 @@ def wait_for_load(who, limit=None, out=None):
     return True
 
 
-def host_strain(bar=None):
+def _wall():
+    return time.time()
+
+
+def _mem_available_mb():
+    with open("/proc/meminfo") as f:
+        return next(int(x.split()[1]) for x in f if x.startswith("MemAvailable:")) / 1024
+
+
+def _cpu_times():
+    """T-4158: (busy jiffies, niced jiffies) from /proc/stat's first line, or None when unreadable. The kernel's nice
+    column is the time of tasks at a positive nice, Sampo's own gate runs (nice 19) among them."""
+    try:
+        with open("/proc/stat") as f:
+            v = [int(x) for x in f.readline().split()[1:9]]  # user nice system idle iowait irq softirq steal
+        return float(v[0] + v[1] + v[2] + v[5] + v[6] + v[7]), float(v[1])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+SAMPLE_MIN_S, SAMPLE_KEEP_S = 2.0, 600.0  # T-4158: a CPU-time window under 2 s is noise, one over 10 min is history
+
+
+def niced_share():
+    """T-4158: the share (0..1) of CPU time spent by niced tasks since a sample 2-600 s old, or None (no usable sample,
+    no nice accounting, unreadable /proc, a clock or counters that went backwards). No sleep, no subprocess: the
+    samples are the last calls' readings, kept in state/host_cpu.json (newest two, a new one once 5 s have passed)."""
+    now, cur = _wall(), _cpu_times()
+    if cur is None:
+        return None
+    path = os.path.join(state_dir(), "host_cpu.json")
+    try:
+        with open(path) as f:
+            old = [s for s in json.load(f) if isinstance(s, list) and len(s) == 3
+                   and all(isinstance(x, (int, float)) for x in s) and s[0] <= now]  # a clock that jumped back: dropped
+    except (OSError, ValueError, TypeError):
+        old = []
+    base = next((s for s in reversed(old) if SAMPLE_MIN_S <= now - s[0] <= SAMPLE_KEEP_S), None)
+    if not old or now - old[-1][0] >= 5:
+        try:
+            write_atomic(path, json.dumps((old + [[now, *cur]])[-2:]))
+        except OSError:
+            pass
+    if base is None:
+        return None
+    busy, nice = cur[0] - base[1], cur[1] - base[2]
+    return nice / busy if busy > 0 and 0 <= nice <= busy else None
+
+
+def host_strain(bar=None, nice_free=False):
     """T-0465: why this machine shouldn't take another lane (load over bar, default LOAD_BAR, times its CPUs, or under
-    512 MB available), or None. FOREMAN_HOST="load=…,cpus=…,mem_mb=…" stands in for /proc in tests; unreadable: None (never blocks)."""
+    512 MB available), or None. FOREMAN_HOST="load=…,cpus=…,mem_mb=…,nice=…" stands in for /proc in tests; unreadable:
+    None (never blocks). T-4158: nice_free (the lane gates) counts only the load of work at nice 0: the niced share of
+    CPU time (nice= in a fake host, else niced_share) is taken off the load, since Sampo's own nice-19 gate runs ask for
+    CPU only when nothing else wants it; without a share the whole load stands."""
     try:
         fake = dict(kv.split("=", 1) for kv in os.environ.get("FOREMAN_HOST", "").split(",") if "=" in kv)
         load = float(fake["load"]) if "load" in fake else os.getloadavg()[0]
         cpus = int(fake["cpus"]) if "cpus" in fake else (os.cpu_count() or 1)
-        if "mem_mb" in fake:
-            mem = float(fake["mem_mb"])
-        else:
-            with open("/proc/meminfo") as f:
-                mem = next(int(x.split()[1]) for x in f if x.startswith("MemAvailable:")) / 1024
+        mem = float(fake["mem_mb"]) if "mem_mb" in fake else _mem_available_mb()
+        share = (float(fake["nice"]) if "nice" in fake else None if "load" in fake else niced_share()) if nice_free else None
     except (OSError, ValueError, StopIteration, KeyError):
         return None
+    shown = f"{load:.1f}"
+    if share is not None and 0 < share <= 1:
+        load, shown = load * (1 - share), f"{load:.1f}, {share:.0%} of the CPU time niced"
     if load > (LOAD_BAR if bar is None else bar) * cpus and not load_gate_off():  # T-2822: the memory hold below
         # still applies in a sandbox
-        return f"the host is loaded ({load:.1f} with {cpus} CPUs)"
+        return f"the host is loaded ({shown} with {cpus} CPUs)"
     if mem < 512:
         return f"the host is low on memory ({mem:.0f} MB available)"
     return None

@@ -873,7 +873,7 @@ class Lanes(ForemanTestCase):
             tid = first(self.fm("task", "new", "Next", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
                                 "--step", "s", "--json").stdout)["id"]
             self.fm("task", "set", tid, "approved=true")
-            self.assertEqual(slanes._slots(p, c.load_briefs(p), exclude=tid), ([], []))
+            self.assertEqual(slanes._slots(p, c.load_briefs(p), exclude=tid), ([], [], []))
             slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))  # not refused
 
     def test_a_builder_stamp_with_no_lane_frees_its_slot_after_30_minutes(self):
@@ -893,10 +893,71 @@ class Lanes(ForemanTestCase):
                 b.meta["lane"] = lane
             c.save_brief(p, b)
             ids.append(tid)
-        working, _waiting = slanes._slots(p, c.load_briefs(p))
+        working, _waiting, _stalled = slanes._slots(p, c.load_briefs(p))
         self.assertNotIn(ids[0], working, "stamped 31 min ago and no lane: the launch never happened")
         self.assertIn(ids[1], working, "a builder just briefed may still be starting")
         self.assertIn(ids[2], working, "a lane: the builder is at work")
+
+    def age_brief(self, tid, hours=0.0, **meta):
+        """T-4175: a brief whose stamps are `hours` old (save_brief would touch `updated`, so write it as it is)."""
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        old = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - hours * 3600))
+        b.meta.update({"updated": old, "builder": old, **meta})
+        c.save_brief(p, b, touch=False)
+        return p
+
+    def second_task(self):
+        tid = first(self.fm("task", "new", "Next", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                            "--step", "s", "--json").stdout)["id"]
+        self.fm("task", "set", tid, "approved=true")
+        return tid
+
+    def test_stalled_a_lane_stopped_days_ago_is_not_a_builder_out(self):
+        # T-4153: T-3811 (stopped 2026-11-09) and T-3906 (2026-11-08) held 2 of 3 slots on 2026-11-10: no brief at load 36
+        tid, _path = self.stopped_builder()
+        stop = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 2 * 86400))
+        p = self.age_brief(tid, 48, lane_stop=f"conflict {stop} x.py")
+        working, waiting, stalled = slanes._slots(p, c.load_briefs(p))
+        self.assertEqual((working, waiting, stalled), ([], [], [tid]))
+        nxt = self.second_task()
+        # 1.9 per CPU: over LOAD_BAR but under the hard bar, which a first lane (no builder working) lives under
+        r = self.fm("lane", "brief", nxt, check=False, env={"FOREMAN_HOST": "load=30,cpus=16,mem_mb=8192"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_stalled_a_blocked_task_and_a_silent_lane_hold_no_slot_but_a_fresh_commit_does(self):
+        # T-4153: a blocked builder or one with no commit and no event for 6 h can't still be working
+        p = None
+        tids = {}
+        for name in ("blocked", "silent", "committed", "fresh"):
+            tid, path = self.stopped_builder(wip=f"{name}.py")
+            tids[name] = (tid, path)
+        p = self.age_brief(tids["blocked"][0], 1, status="blocked")
+        self.age_brief(tids["silent"][0], 7)
+        self.age_brief(tids["committed"][0], 7)
+        subprocess.run(["git", "-C", tids["committed"][1], "add", "committed.py"], check=True)
+        subprocess.run(["git", "-C", tids["committed"][1], "commit", "-qm", "built"], check=True)
+        with open(os.path.join(tids["committed"][1], "more.py"), "w") as f:
+            f.write("y = 1\n")  # a dirty tree: not a finished lane
+        working, waiting, stalled = slanes._slots(p, c.load_briefs(p))
+        self.assertEqual(sorted(stalled), sorted([tids["blocked"][0], tids["silent"][0]]))
+        self.assertEqual(sorted(working), sorted([tids["committed"][0], tids["fresh"][0]]),
+                         "a commit inside 6 h and a brief touched a minute ago are workers")
+        self.assertEqual(waiting, [])
+
+    def test_stalled_lanes_are_named_in_the_refusal_and_lane_list_and_it_never_says_finish_lanes_that_run(self):
+        tid, _path = self.stopped_builder()
+        self.age_brief(tid, 30)
+        nxt = self.second_task()
+        r = self.fm("lane", "brief", nxt, check=False, env={"FOREMAN_HOST": "load=60,cpus=16,mem_mb=8192"})  # 3.75: hard bar
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("stalled", r.stderr)
+        self.assertIn(tid, r.stderr)
+        self.assertIn("lower than", r.stderr, "it says what would lift it")
+        r = self.fm("lane", "new", nxt, check=False, env={"FOREMAN_HOST": "load=60,cpus=16,mem_mb=8192"})
+        self.assertNotIn("finish the lanes that run", r.stderr, "no lane runs: nothing to finish")
+        rows = json.loads(self.fm("lane", "list", "--json").stdout)["lanes"]
+        self.assertTrue([x for x in rows if x["tasks"] and x["tasks"][0]["id"] == tid][0]["dormant"])
 
     def test_too_many_unmerged_lanes_refuse_a_new_one_and_say_so(self):
         from sampo import lanes as slanes
@@ -1113,6 +1174,57 @@ class LoadGates(ForemanTestCase):
         self.assertIn(a, r.stderr)
         self.assertEqual(self.fm("lane", "brief", b, check=False,
                                  env={"FOREMAN_HOST": "load=11,cpus=8,mem_mb=8192"}).returncode, 0)  # 1.4 per CPU
+
+    def test_niced_load_of_sampos_own_gates_does_not_refuse_a_lane_but_the_same_load_at_nice_0_does(self):
+        # T-4158: a land train and a close ran their nice-19 gates at load 28-50 on 16 CPUs for 40 min: no brief issued
+        mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
+                                     "--step", "s", "--json").stdout)["id"]
+        a, b = mk("Out one"), mk("Held two")
+        self.fm("lane", "brief", a)
+        quiet = "load=40,cpus=16,mem_mb=8192,nice=0.92"  # 2.5 per CPU, 92% of the CPU time niced
+        r = self.fm("lane", "brief", b, check=False, env={"FOREMAN_HOST": quiet})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.fm("lane", "rm", b, check=False)
+        r = self.fm("lane", "brief", b, check=False, env={"FOREMAN_HOST": "load=40,cpus=16,mem_mb=8192,nice=0.05"})
+        self.assertNotEqual(r.returncode, 0, "the same load from nice-0 work is real strain")
+        self.assertIn("loaded", r.stderr)
+        self.assertNotEqual(self.fm("lane", "brief", b, check=False, env={"FOREMAN_HOST": "load=40,cpus=16,mem_mb=8192"}
+                                    ).returncode, 0, "no nice= (a host with no accounting): the load stands")
+
+    def test_niced_host_strain_discounts_niced_cpu_only_for_the_lane_gates_and_keeps_the_memory_hold(self):
+        os.environ["FOREMAN_HOST"] = "load=40,cpus=16,mem_mb=8192,nice=0.9"
+        self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
+        self.assertIsNone(c.host_strain(nice_free=True))
+        self.assertIn("loaded", c.host_strain(), "other callers (a gate's own pacing) still see all the load")
+        os.environ["FOREMAN_HOST"] = "load=40,cpus=16,mem_mb=100,nice=0.9"
+        self.assertIn("low on memory", c.host_strain(nice_free=True))
+
+    def test_niced_share_comes_from_the_delta_of_two_proc_stat_samples_and_falls_back_to_the_load(self):
+        # T-4158: no sleep to sample: the previous call's reading is the first sample
+        os.environ["FOREMAN_HOST"] = ""  # the real /proc path, with its readings faked
+        self.addCleanup(os.environ.__setitem__, "FOREMAN_HOST", CALM_HOST)
+        state = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, state, True)
+        times = {"t": 1000.0, "cpu": (1000.0, 100.0)}  # (busy jiffies, niced jiffies)
+        with mock.patch.dict(os.environ, {"FOREMAN_STATE": state}), \
+                mock.patch.object(c, "_cpu_times", lambda: times["cpu"]), \
+                mock.patch.object(c, "_wall", lambda: times["t"]), \
+                mock.patch.object(c.os, "getloadavg", lambda: (40.0, 40.0, 40.0)), \
+                mock.patch.object(c.os, "cpu_count", lambda: 16), \
+                mock.patch.object(c, "_mem_available_mb", lambda: 8192.0):
+            self.assertIn("loaded", c.host_strain(nice_free=True), "first call: no sample yet, the load stands")
+            times.update(t=1001.0, cpu=(1500.0, 590.0))
+            self.assertIn("loaded", c.host_strain(nice_free=True), "a 1 s window is too short to trust")
+            times.update(t=1010.0, cpu=(2000.0, 1090.0))  # 9 s on: 1000 busy, 990 of them niced
+            self.assertIsNone(c.host_strain(nice_free=True))
+            times.update(t=1020.0, cpu=(3000.0, 1100.0))  # the next 10 s: 1000 busy, 10 niced
+            self.assertIn("loaded", c.host_strain(nice_free=True))
+            times.update(t=1020.0 + 3 * 3600, cpu=(9000.0, 7000.0))  # a stale sample (hours old): never trusted
+            self.assertIn("loaded", c.host_strain(nice_free=True))
+            times.update(t=1000.0, cpu=(10.0, 0.0))  # the clock and the counters went backwards: no negative window
+            self.assertIn("loaded", c.host_strain(nice_free=True))
+            times["cpu"] = None  # /proc/stat unreadable
+            self.assertIn("loaded", c.host_strain(nice_free=True))
 
     def test_a_gate_scales_its_timeout_by_load_per_cpu_and_never_shrinks_it(self):
         for load, want in ((1, 600), (8, 600), (16, 1200), (28, 2100)):

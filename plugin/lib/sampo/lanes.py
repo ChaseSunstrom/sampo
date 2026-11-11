@@ -223,8 +223,13 @@ def cmd_lane(args):
                          + (f" — fm lane rm {tasks[0].id} frees it" if gone and tasks else "")
                          + (f" — ANDON: {c.fit(rows[-1]['andon'], 120)}" if andon else ""))
         idle = stalled(p, briefs)
+        dormant = set(_slots(p, briefs)[2])  # T-4153: stopped or silent for 6 h: no slot, no first-lane exemption lost
         for i, r in enumerate(rows):
             tid = r["tasks"][0]["id"] if r["tasks"] else None
+            r["dormant"] = tid in dormant
+            if r["dormant"]:
+                lines[i] += (f" — DORMANT: its builder is stopped or silent ({STALL_QUIET_H} h or a parked merge), "
+                             f"so it holds no builder slot; fm lane recover {tid} or fm lane rm {tid}")
             r["stalled_min"] = round(idle[tid]) if tid in idle else None
             if r["stalled_min"] is not None:
                 lines[i] += (f" — STALLED {r['stalled_min']} min: no edit, commit or event; stop its agent "
@@ -327,9 +332,9 @@ def cmd_lane(args):
     if args.action == "new":
         if c.panicked():
             raise c.PolicyError(c.PAUSED)
-        strain = c.host_strain()  # T-0465
+        strain = c.host_strain(nice_free=True)  # T-0465, T-4158
         if strain:
-            raise c.PolicyError(f"{strain}: no new lane until it eases; finish the lanes that run")
+            raise c.PolicyError(f"{strain}: " + _lift(strain, *_slots(p, c.load_briefs(p), exclude=b.id)))
         if b.status in c.CLOSED or b.status in ("active", "verifying") or b.meta.get("lane"):
             raise c.PolicyError(f"{b.id} is {b.meta.get('lane') and 'already in lane ' + b.meta['lane'] or b.status}: "
                                 f"a lane takes a task nobody is working on")
@@ -1902,7 +1907,61 @@ def _slots(p, briefs, exclude=None):
     except Exception:
         done = set()
     done |= {x.id for x in briefs if x.meta.get("builder_returned")}  # T-3145: the builder's own stop says so
-    return [i for i in out if i not in done], [i for i in out if i in done]
+    live = [x for x in briefs if x.id in out and x.id not in done]
+    dead = _stalled_ids(p, live)
+    return [x.id for x in live if x.id not in dead], [i for i in out if i in done], [x.id for x in live if x.id in dead]
+
+
+def _lift(strain, working, waiting, dormant, bar=c.LOAD_BAR):
+    """T-4153: what a host-strain refusal waits for, and which lanes are (not) behind it. `bar`: the load per CPU the
+    refusing gate used (a brief's first lane lives under LANE_HARD_BAR); "finish the lanes that run" only when some run."""
+    hl = c.host_load()
+    if "memory" in strain:
+        need = "at least 512 MB of memory is free"
+    else:
+        need = f"the load (work at nice 0) is lower than {bar:g} per CPU" + (f", {bar * hl[1]:.0f} here" if hl else "")
+    if working:
+        who = f"{len(working)} builder(s) working: {', '.join(working)}; finishing one eases it"
+    else:
+        who = "no builder is working, so this load is not the lanes'"
+    return (f"no new lane until {need}; {who}"
+            + (f"; {len(waiting)} finished lane(s) wait for a merge: {', '.join(waiting)}" if waiting else "")
+            + (f"; {len(dormant)} stalled lane(s) not counted (stopped or silent for {STALL_QUIET_H} h): "
+               f"{', '.join(dormant)}, fm lane recover or fm lane rm frees them" if dormant else ""))
+
+
+STALL_QUIET_H = 6  # T-4153: a lane with no commit and no brief change for this long has no working builder
+
+
+def _stalled_ids(p, live):
+    """T-4153: of the lanes whose builder may be out, the ids whose builder can't be: its last merge or land parked
+    the lane (conflict, refused, guard) over 30 min ago and no commit came since, the task is blocked, or neither a
+    commit of the lane's own nor a change of the brief (the builder's evidence, steps and logs touch it) in 6 hours.
+    T-3811 and T-3906, stopped days earlier, held 2 of 3 slots and voided the first lane's exemption from the load
+    gate. An unreadable clock or lane leaves the lane working: the cap errs toward fewer builders."""
+    now, out, main_head = time.time(), set(), None
+    for x in live:
+        try:
+            at = _stop(x)[1]
+            if x.status == "blocked" or (at and now - at > 1800 and parked(x)):
+                out.add(x.id)
+                continue
+            seen = [t.timestamp() for t in (c.parse_ts(str(x.meta.get("updated") or "")),
+                                            c.parse_ts(str(x.meta.get("builder") or ""))) if t]
+            if not seen or now - max(seen) < STALL_QUIET_H * 3600:
+                continue  # the brief itself moved lately (or has no stamp to judge by)
+            lane = x.meta.get("lane")
+            if lane and os.path.isdir(lane):  # a commit of the lane's own counts; the base's don't
+                main_head = main_head or _git(c.main_worktree(p.root) or p.root, "rev-parse", "HEAD", timeout=10).stdout.strip()
+                if not main_head:
+                    continue
+                last = _git(lane, "log", "-1", "--format=%ct", "HEAD", "--not", main_head, timeout=10).stdout.strip()
+                if last and now - float(last) < STALL_QUIET_H * 3600:
+                    continue
+            out.add(x.id)
+        except (ValueError, OSError, TypeError):
+            continue
+    return out
 
 
 def brief_ready(p, args):
@@ -1919,7 +1978,7 @@ def brief_ready(p, args):
     briefs = c.load_briefs(p)
     by_id = {x.id: x for x in briefs}
     autonomy = c.effective_autonomy(p)
-    working, _waiting = _slots(p, briefs)
+    working, _waiting, _stalled = _slots(p, briefs)
     cap = builders_cap(p)
     free = max(0, cap - len(working))
     limit = free if args.limit is None else min(free, args.limit)
@@ -2023,7 +2082,7 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         raise cli.UsageError(f"{b.id} has no criterion with a verify command: a builder needs checks it can run "
                                f"(fm task ac {b.id} add \"…\" --verify \"<cmd>\")")
     briefs = c.load_briefs(p)
-    working, waiting = _slots(p, briefs, exclude=b.id)  # T-3135, T-3145: a lane whose builder returned waits on a merge
+    working, waiting, dormant = _slots(p, briefs, exclude=b.id)  # T-3135, T-3145: a lane whose builder returned waits on a merge
     out = working + waiting
     cap = builders_cap(p)
     if len(working) >= cap:  # T-3293: every refusal from here on holds for the whole batch (_batch)
@@ -2038,9 +2097,10 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
                                    f"first (fm lane merge ID)"))
     # T-2797: five lanes and a design agent drove load to 3.5 per core: gates timed out. T-3243: but the first lane is
     # never starved by moderate load (Sampo's own sweeps and fills held 1.7-3.7 per CPU for three hours, nothing built)
-    if strain := c.host_strain(None if working else LANE_HARD_BAR):
-        raise _batch_refusal(c.PolicyError(f"{strain}: no new lane until it eases; "
-                                   f"{len(out)} builder(s) out{': ' + ', '.join(out) if out else ''}"))
+    # T-4158: Sampo's own nice-19 gate runs (a land train, a close) held it at 2-3 per CPU for 40 min: only work at nice 0 counts
+    bar = LANE_HARD_BAR if not working else c.LOAD_BAR
+    if strain := c.host_strain(bar, nice_free=True):
+        raise _batch_refusal(c.PolicyError(f"{strain}: {_lift(strain, working, waiting, dormant, bar)}"))
     try:
         budget.check_subagent()
     except budget.BudgetError as e:

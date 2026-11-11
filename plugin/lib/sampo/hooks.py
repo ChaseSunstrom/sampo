@@ -5341,8 +5341,13 @@ def lanes_free(briefs, p=None):
     done |= {b.id for b in briefs if b.meta.get("builder_returned")}  # T-3145
     out = [b for b in briefs if b.meta.get("builder") and b.status not in c.CLOSED
            and slanes._stop(b)[0] != "merged"]  # T-3847: a merged lane waits on its close, not a slot or a merge
-    return sum(1 for b in out if b.id not in done) < cap and len(out) - sum(1 for b in out if b.id not in done) \
-        < slanes.UNMERGED_MAX and not c.host_strain()  # T-0465: a strained host takes no builder lane
+    live = [b for b in out if b.id not in done]
+    if p:  # T-4153: a lane whose builder stopped days ago holds no slot (the gate brief applies the same rule)
+        dead = slanes._stalled_ids(p, live)
+        live = [b for b in live if b.id not in dead]
+    # T-0465: a strained host takes no builder lane; T-4158: Sampo's own niced gate runs aren't that strain
+    return len(live) < cap and len(out) - len([b for b in out if b.id not in done]) \
+        < slanes.UNMERGED_MAX and not c.host_strain(nice_free=True)
 
 
 def _economy(p=None):
