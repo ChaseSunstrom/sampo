@@ -1781,8 +1781,12 @@ def _result_of(r):
 
 
 def _run_check(argv, cwd):
-    """(CompletedProcess, timed_out): the check in its own session, killed whole past CHECK_WALL_S."""
-    proc = subprocess.Popen(argv, cwd=cwd, env=_scrub_env(os.environ), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    """(CompletedProcess, timed_out): the check in its own session, killed whole past CHECK_WALL_S. T-4410: with
+    SAMPO_LANE_CHILD set, so the trunk's sampo checks the lane's tree itself (py.lane_reexec would hand over to the
+    lane's own copy, which may not know --hold or may carry a check bug the trunk has fixed); the tests it runs are
+    the lane's either way."""
+    proc = subprocess.Popen(argv, cwd=cwd, env={**_scrub_env(os.environ), "SAMPO_LANE_CHILD": "1"},
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
     def stopped(signum, frame):  # sampo lane rm (stop_check): the check's own session ends with this process
         with contextlib.suppress(OSError):
@@ -1836,8 +1840,13 @@ def _accept_check_child(a):
             return 1
     except _ClaimLost:  # another process started this lane's check meanwhile: it reports
         return 1
-    _set_check(p, b.id, f"check cut off {tries}x at its deadline on {tip[:9]}: run sampo check --affected --hold "
-                        f"--evidence {b.id} in the lane", check_state="cut_off", check_pid=None, check_ticks=None)
+    if got is None and not timed_out:  # T-4410: it ended on its own (a usage error, a crash): nothing was cut off
+        last = next((x.strip() for x in reversed((r.stdout or "").splitlines()) if x.strip()), "no output")
+        what = f"check gave no result {tries}x on {tip[:9]} (exit {r.returncode}): {c.redact(last)[:200]}"
+    else:
+        what = f"check cut off {tries}x at its deadline on {tip[:9]}"
+    _set_check(p, b.id, f"{what}: run sampo check --affected --hold --evidence {b.id} in the lane",
+               check_state="cut_off", check_pid=None, check_ticks=None)
     return 1
 
 
