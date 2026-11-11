@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-10",
+ "generated": "2026-11-11",
  "totals": {
-  "tasks_done": 809,
-  "evidence": 4276,
-  "proofs": 450,
-  "commits": 610,
-  "gate_runs": 360,
-  "subagents": 2034,
-  "lanes_merged": 487,
+  "tasks_done": 814,
+  "evidence": 4353,
+  "proofs": 459,
+  "commits": 615,
+  "gate_runs": 364,
+  "subagents": 2046,
+  "lanes_merged": 491,
   "findings": 590,
-  "guard_blocks": 787,
-  "captures": 1186,
-  "lessons_shown": 1564
+  "guard_blocks": 803,
+  "captures": 1265,
+  "lessons_shown": 1574
  },
  "daily": [
   {
@@ -112,28 +112,50 @@
    "RESEARCH": 2,
    "lanes": 53,
    "evidence": 270
+  },
+  {
+   "day": "2026-11-10",
+   "FEATURE": 0,
+   "FIX": 3,
+   "CLEAN": 1,
+   "PERFORMANCE": 0,
+   "SECURITY": 0,
+   "RESEARCH": 0,
+   "lanes": 2,
+   "evidence": 18
+  },
+  {
+   "day": "2026-11-11",
+   "FEATURE": 1,
+   "FIX": 0,
+   "CLEAN": 0,
+   "PERFORMANCE": 0,
+   "SECURITY": 0,
+   "RESEARCH": 0,
+   "lanes": 2,
+   "evidence": 59
   }
  ],
  "tiers": {
-  "S": 431,
+  "S": 435,
   "M": 355,
-  "L": 23
+  "L": 24
  },
  "types": {
-  "FEATURE": 271,
-  "FIX": 372,
-  "CLEAN": 44,
+  "FEATURE": 272,
+  "FIX": 375,
+  "CLEAN": 45,
   "PERFORMANCE": 77,
   "SECURITY": 25,
   "RESEARCH": 20
  },
  "guard": {
-  "brief": 412,
-  "core": 187,
-  "system": 75,
+  "brief": 419,
+  "core": 191,
+  "system": 77,
   "state-direct": 43,
   "rm-outside": 21,
-  "credentials": 16,
+  "credentials": 18,
   "pipe-shell": 14,
   "plugin": 8
  },
@@ -154,21 +176,21 @@
  },
  "subagents": {
   "fm-builder": 1112,
-  "general-purpose": 483,
+  "general-purpose": 486,
   "fm-reviewer": 208,
-  "sampo:fm-builder": 167,
+  "sampo:fm-builder": 176,
   "fm-recon": 41,
   "Plan": 8
  },
  "gate_seconds": {
-  "runs": 360,
-  "median": 378.5
+  "runs": 364,
+  "median": 380.2
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 186,
+  "searches": 195,
   "queued": 3,
   "refused": 0
  },
@@ -288,11 +310,11 @@
  "code": {
   "model_tests": 95,
   "endpoints": 9,
-  "tests": 8380
+  "tests": 8389
  },
  "calibration": {
   "scored": 28,
-  "pending": 506,
+  "pending": 516,
   "brier": {
    "stated": 0.11357142857142857,
    "base": 0.13732222222222223
@@ -362,16 +384,23 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 18,
-     "held": 17,
-     "pct": 94
+     "n": 31,
+     "held": 30,
+     "pct": 97
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 111,
-     "held": 106,
-     "pct": 95
+     "n": 140,
+     "held": 130,
+     "pct": 93
+    },
+    {
+     "lo": 95,
+     "hi": 100,
+     "n": 1,
+     "held": 1,
+     "pct": 100
     }
    ]
   }
@@ -379,17 +408,17 @@
  "proof": {
   "n": 787,
   "counts": {
-   "meaning-notes": 398,
+   "meaning-notes": 400,
    "research-uncited": 35,
-   "meaning-user": 111,
+   "meaning-user": 112,
    "perf-typed": 121,
    "typed": 75,
-   "red": 88,
+   "red": 89,
    "perf-noise": 1,
-   "docs": 91,
-   "ui-unshot": 33,
+   "docs": 90,
+   "ui-unshot": 32,
    "tui-unshot": 8,
-   "data": 6,
+   "data": 5,
    "infra": 3
   },
   "history": [
@@ -432,6 +461,10 @@
    {
     "day": "2026-11-10",
     "n": 787
+   },
+   {
+    "day": "2026-11-11",
+    "n": 787
    }
   ]
  },
@@ -439,8 +472,8 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1150,
-    "precision": 0.798,
+    "fired": 1161,
+    "precision": 0.799,
     "route": "inbox"
    },
    {
@@ -451,13 +484,13 @@
    },
    {
     "trigger": "self",
-    "fired": 206,
+    "fired": 221,
     "precision": 0.773,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 106,
+    "fired": 125,
     "precision": 0.421,
     "route": "inbox"
    },
@@ -475,8 +508,8 @@
    },
    {
     "trigger": "ci-red",
-    "fired": 38,
-    "precision": 0.875,
+    "fired": 39,
+    "precision": 0.778,
     "route": "inbox"
    },
    {
@@ -566,20 +599,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 201,
-    "hit": 0.458,
-    "base_hit": 0.393,
+    "n": 207,
+    "hit": 0.449,
+    "base_hit": 0.386,
     "lead": [
      true,
-     0.0035986900329589844,
-     17,
-     4
+     0.005311012268066406,
+     18,
+     5
     ],
     "muted": false,
-    "shown_n": 130,
-    "shown_hit": 0.485,
-    "overlap": 0.096,
-    "base_overlap": 0.091
+    "shown_n": 133,
+    "shown_hit": 0.474,
+    "overlap": 0.095,
+    "base_overlap": 0.09
    }
   ],
   "lean": [
@@ -636,6 +669,160 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-11",
+   "text": "read T-4187: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4186: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4184: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4178: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4176: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4172: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4170: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4167: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4166: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4159: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4156: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4136: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4133: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "read T-4129: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "read T-4126: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "read T-4117: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "read T-4114: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "T-4105, T-4106, T-4107 stay separate from T-4109 rather than one batch: T-4105's one-call classifier at capture is the seam the steward's tier-1 heads plug into, and shipping it first gives the user J",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "read T-4112: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "read T-4110: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "model-shadow: intake-type: live agreement 160/280 under the floor 0.96",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-10",
+   "text": "model-live: intake-type: exam m20261110-081044128: kev:4b-q8_0 at confidence >= 0.7 beat the train majority by +0.041, lower bound +0.010 over 9 held-out projects",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-10",
    "text": "read T-4104: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
@@ -1881,160 +2068,6 @@
    "later": null,
    "confidence": null,
    "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-3012: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-3009: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-3000: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "T-2971 (L) approved without the user, per their standing 'decide everything, ask nothing': the distilled actor is built as an expert-iteration loop on local-model runs verified by tests",
-   "later": null,
-   "confidence": 70,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Sampo's trained models learn only from outcomes, user-written text and labels, and local-model traces graded by tests, never from Claude-written text or Claude's own decisions as labels: intake type i",
-   "later": null,
-   "confidence": 85,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Recommendation: build Sampo's own model family generic across every Sampo project in this order \u2014 the training lake (T-2974), a retrieval baseline decider (T-2975), leave-one-project-out measurement a",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "model brainstorm slate: lake, retrieval baseline, LOO adoption, decider heads, close verifier, scenario minting, then the distilled actor; the user is away and asked not to be asked",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2972: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Recommendation: keep all eight gen-4 not-yet items open; seven blockers hold on fresh readings, and the one whose unblock condition is now met (the theme port, T-2852 closed) moves to gen-5's build li",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Local profiles serve 32k context with reasoning off as the default for Smith (T-2935/T-2938 make it automatic); small-model scaffolds for plan and close (T-2936, T-2937) come next; below ~9B, plan wit",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Gen-4's Mission 8 spikes M-02's slice (sampo regen on Sampo's own leaf modules, the local 27B first, Haiku second) rather than M-26's kill test",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Filed gen-4's Missions 2-8 past rune step's 'build: Mission 1, focus T-2910' line instead of stopping there; the main thread builds the eight tasks in parallel lanes",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "The gen-4 Mission brainstorms ran without their --deepen rounds: sampo ideas dropped them on its own because today's risk budget is spent (8 of 6: 6 destructive blocks, 1 failed close); the lens round",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Gen-4 Mission 1 (exhaustive thinking) reuses brainstorm-20261102-184150, the fm ideas run already made for this same gen-4 seed row (542 ideas, 4 rounds, deepen 3, cross-bred, kill tests); Missions 2-",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2905: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2902: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Moon growth runs both endpoint slots with reasoning off; reasoning on stays an A/B sample (32 rows) judged by the funnel",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2892: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "T-2852 andon: the section pages' shell and section language live in a new site/sections.css (linked after style.css, hash-versioned); bespoke components stay in style.css; genesis.css keeps the tower'",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2889: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2882: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-2881: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
   }
  ],
  "louhi": {
