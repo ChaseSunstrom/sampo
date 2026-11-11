@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo check --affected also runs the doctor's tree-only self docs check on the checked tree, so a docs/map line over 2000 characters fails in the lane's own run and names its file and line (T-4279).
 - sampo check's gate loop keeps the gates' environment: every gate after the first still leaves out other tasks' red-first tests, and a gate after an environment failure runs instead of crashing (T-4285).
 - A flaky test failure no longer empties the test cache: a class the cache has green that fails runs once more first, and each flake or drop leaves a line in the run-cache's events file (T-4274).
 - A failure whose text normalizes to digits only no longer gets the signature '0', and a stored fix keyed by digits is never matched (T-4141; built by the local 27B model through sampo code) (T-4141).
