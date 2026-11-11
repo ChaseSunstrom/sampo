@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code repairs a plan the plan gate refuses for a part of the request by asking the planner which of its criteria covers that part, for one new criterion, or whether the part asks for nothing to be made; a mapped part is bounded to half the request and recorded on the task, and no plan refusal ends the run while a repair round is left (T-4363).
 - sampo code no longer ends a run at the plan when a verify writes inside the repo (rm -f of its own build product): the guard's refusal for want of a task is not a refusal of the verify, which waits for its task and is first run once the task is focused (T-4371).
 - a lone slash between two words of a step ('Releasing / Decision') no longer reads as the filesystem root at the door gate, so sampo focus stops refusing such a plan for a missing Undo line; a slash after a destroy verb or a place word still names the root (T-4370).
 - sampo code asks the model whether a request wants a change when a local planner answers it or plans it read-only, and asks again for a plan that makes the change; a second plan gets the slot's repairs, CLEAN and verifies that exit 1 on a match are allowed, and a run that still makes no change says so in a note and its closing event (T-4284).
