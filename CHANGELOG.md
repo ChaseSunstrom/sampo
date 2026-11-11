@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- The lane load gate no longer counts Sampo's own nice-19 gate runs as strain, and a lane stopped or silent for days is no longer a builder out, so briefs are issued while a land runs (T-4175).
+- A bare sampo pause only reports whether Sampo is paused; sampo pause on pauses every project, and sampo pause --now still stops everything (T-4132).
 - A standing steer meter: a local model reads each of the user's messages with the agent's words before it and books kind, avoidable or not, root, the missed thought, the concern and where the user would see it resolved; sampo steers shows avoidable steers per 100 messages by root; compaction summaries, machine blocks and same-text twins are left out (T-4181).
 - sampo code now holds every own or local-endpoint model to an explore budget, a forced edit and carried notes, not only --small runs, and keeps what a model was shown so it stops reading in circles (T-4177).
 - a self-check that finds something now acts or tells you, with drive on or off: finished lanes with no landing start a land; unshipped work, your asks waiting, slow jobs, usage on pace to run out and stale heartbeats reach you through your notify command, a desktop notification or a pane toast, once a day per check and again only when worse (T-4118).
