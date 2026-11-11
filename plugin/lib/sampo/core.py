@@ -2497,11 +2497,46 @@ DEFAULT_LENSES = ("intent", "adversary", "edge", "operator", "maintainer")  # wh
 # design (T-1501): advisory, never required; fm audit prep adds it only when the diff touches UI (ui_paths)
 AUDIT_LENSES = ("self",) + DEFAULT_LENSES + ("design",)
 # Per tier: each set is satisfied by one audit with any lens in it (skills/intake/references/audit.md).
+# T-4220: the tiers, one list every reader takes. XL, HUGE and GIANT are big: a builder never takes one, its children do.
+TIERS = ("S", "M", "L", "XL", "HUGE", "GIANT")
+BIG_TIERS = ("XL", "HUGE", "GIANT")
+
+
+def canonical_tier(t):
+    """The canonical name for any case of a tier, or "" when it is none (T-4220)."""
+    t = str(t or "").strip().upper()
+    return t if t in TIERS else ""
+
+
+def tier_rank(t):
+    """S 0 … GIANT 5. "" is 0 (no tier reads as S); an unknown name reads as L, the conservative floor (T-4220)."""
+    if not str(t or "").strip():
+        return 0
+    return TIERS.index(canonical_tier(t) or "L")
+
+
+def is_big(x):
+    """True for XL, HUGE or GIANT: a tier name, or any object with a .tier (T-4220)."""
+    return canonical_tier(x if isinstance(x, str) else getattr(x, "tier", "")) in BIG_TIERS
+
+
+def at_least(t, floor):
+    """True when tier t is floor or bigger: an L gate covers the big tiers too (T-4220)."""
+    return tier_rank(t) >= tier_rank(floor)
+
+
+def big_refusal(b):
+    """Why a builder never takes a big task, and the way forward (T-4220): its children are the builder's work."""
+    return f"{b.id} is {b.tier}: a big task runs through its children: sampo big expand {b.id}"
+
+
 REQUIRED_AUDITS = {
     "S": [{"self"}],  # the five-lens checklist; a single other lens covers less
     "M": [{"intent"}, {"adversary", "edge", "operator", "maintainer"}],
     "L": [{"intent"}, {"adversary"}, {"edge"}, {"operator"}, {"maintainer"}],
 }
+for _big in BIG_TIERS:
+    REQUIRED_AUDITS[_big] = REQUIRED_AUDITS["L"]  # a big task is reviewed like L
 
 
 @record
@@ -2618,7 +2653,7 @@ class Brief:
     # --- fields
     id = property(lambda self: self.meta.get("id", ""))
     type = property(lambda self: str(self.meta.get("type", "")).upper())
-    tier = property(lambda self: self.meta.get("tier", ""))
+    tier = property(lambda self: canonical_tier(self.meta.get("tier", "")) or self.meta.get("tier", ""))  # T-4220
     status = property(lambda self: self.meta.get("status", ""))
     priority = property(lambda self: self.meta.get("priority", "normal"))
 
@@ -3159,7 +3194,7 @@ class Brief:
 
     def docs_gap(self):
         """M/L changes say which docs they updated (or why none): out-of-date docs are the drift T-0013 targets."""
-        return self.tier in ("M", "L") and not self.section("Docs impact").strip()
+        return at_least(self.tier, "M") and not self.section("Docs impact").strip()
 
     # --- resume
     def set_resume_auto(self, text):
@@ -3527,7 +3562,7 @@ def rank_inbox(briefs, concerns=None):
         value = SOURCE_VALUE.get(b.meta.get("source"), 1) + 2 * wanted[b.id] + min(int(age_days(b.meta.get("created")) or 0) / 7, 2)
         value += title_tilt(learned, b.title)  # T-1664: fm inbox prefer's choices, at most 2 either way
         return (0 if b.priority == "urgent" else 1, concern_rank((concerns or {}).get(b.id)), RANK.get(b.type, 99),
-                -value / TIER_EFFORT.get(b.tier, 2), id_num(b.id))  # T-4201: a task the user's ask made comes first
+                -value / TIER_EFFORT.get("L" if is_big(b) else b.tier, 2), id_num(b.id))  # T-4201: a task the user's ask made comes first
     by_id = {b.id: b for b in briefs}
     pending = {b.id: b for b in briefs if b.status == "captured" and not batched(b, by_id)}
     first = next((b for b in pending.values() if b.path), None)  # a brief lives in <project dir>/tasks/
@@ -3959,7 +3994,7 @@ def needs_approval(b, autonomy="standard"):
         return "confirm" not in (b.meta.get("allow") or [])
     if b.meta.get("approved"):
         return False
-    return (b.tier == "L" or bool(b.meta.get("explore")) or (b.tier == "M" and autonomy == "slow")) and autonomy != "full"
+    return (at_least(b.tier, "L") or bool(b.meta.get("explore")) or (b.tier == "M" and autonomy == "slow")) and autonomy != "full"
 
 
 def effective_autonomy(p, meta=None):
@@ -4182,7 +4217,7 @@ def _content_gaps(b):
     """T-2269, T-2335: the plan's content by tier: M/L name 2+ distinct readings (or the one ruled out), 3+ distinct options
     each with an outcome or failure mode, one use-what-exists and one do-less option, and a choice; L adds risks."""
     gaps = []
-    if b.tier in ("M", "L"):
+    if at_least(b.tier, "M"):
         it = b.section("Interpretation")
         n = _distinct(_split_options(it, bullets=False))  # a bullet is a scope line, not a reading
         ruled = _RULED_RE.search(it)
@@ -4218,10 +4253,10 @@ def _content_gaps(b):
             gaps.append(f"a use-what-exists option and a do-less option in Approach that are different options: one option "
                         f"is both (sampo task set {b.id} --section Approach: give each its own 'N) use what exists: …' and "
                         "'N) do less: …')")
-    if b.tier == "L":
+    if at_least(b.tier, "L"):
         if not b.section("Risks and rollback").strip():
             gaps.append(f"Risks and rollback (sampo task set {b.id} --section 'Risks and rollback': what fails, what undoes it)")
-    if b.tier not in ("M", "L"):  # T-2338: S is untouched: a "(low)" assumption still waits for research, a spike or a verify
+    if not at_least(b.tier, "M"):  # T-2338: S is untouched: a "(low)" assumption still waits for research, a spike or a verify
         low = [l for l in b.section(b.ASSUMPTIONS).splitlines()
                if "(low)" in l.lower() and not re.match(r"- \[(?:verified|false)\b", l) and not _SPIKE_RE.search(l)]
         if low:
@@ -4276,7 +4311,7 @@ def rival_gap(b):
         return []
     conf = stated_confidence(b.section("Approach (options → choice → why)"))  # T-2427: the one shared parser (last wins)
     hard = _one_way(b) or ("untracked data, T-2342" if b.meta.get("doors") or b.meta.get("door_acs") else "")  # fm focus marks local one-way steps
-    why = ("an L plan" if b.tier == "L" else
+    why = ("an L plan" if at_least(b.tier, "L") else
            f"a one-way step ({hard})" if hard else
            f"the choice is {conf}% sure, under {RACE_BAR}%" if b.tier == "M" and conf is not None and conf < RACE_BAR else
            "the plan claims one reading" if b.tier == "M" and _ONE_READING_RE.search(b.section("Interpretation")) else "")
@@ -4307,12 +4342,12 @@ def plan_gaps(b, autonomy="standard"):
     # T-2335: a plan Foreman's own harness wrote (fm code's station plan, a hook's task from the raw request) has no
     # readings or options to gate: harness_plan says who wrote it, and the plan's own text is not checked
     own = bool(b.meta.get("harness_plan"))
-    if b.tier in ("M", "L") and not own:
+    if at_least(b.tier, "M") and not own:
         gaps += [name for name, sec in (("Interpretation", "Interpretation"),
                                          ("Approach", "Approach (options → choice → why)")) if not b.section(sec).strip()]
     if not _started(b) and not own:  # a task already started (even if paused back to planned) isn't re-gated
         gaps += _content_gaps(b)
-        if b.tier in ("M", "L") and b.meta.get("source") == "user" and not b.meta.get("batch") and _users_words(b):
+        if at_least(b.tier, "M") and b.meta.get("source") == "user" and not b.meta.get("batch") and _users_words(b):
             # T-2914: meaning is planned, not labelled after (a batch host's members were each planned already)
             from sampo import recall
             cls = [f'"{fit(plain(cl), 70)}"' for cl in recall.unchecked_clauses(b)]
@@ -4322,7 +4357,7 @@ def plan_gaps(b, autonomy="standard"):
     acs = b.acceptance()
     if not acs:
         gaps.append("acceptance criterion")
-    elif b.tier in ("M", "L") and b.meta.get("harness_plan") != "hook":  # a hook's criteria are the request's own DONE-WHEN lines
+    elif at_least(b.tier, "M") and b.meta.get("harness_plan") != "hook":  # a hook's criteria are the request's own DONE-WHEN lines
         gaps += [f"verify command on criterion {a.n}" for a in acs if "verify with" not in a.text]
     if not b.steps():
         gaps.append("step")
@@ -4336,7 +4371,7 @@ def plan_gaps(b, autonomy="standard"):
                     f"by asking the user one yes/no, then sampo task set {b.id} approved=true after their yes; or close "
                     f"smaller tasks on plan)"
                     if autonomy == "slow" and b.tier == "M" and not b.meta.get("explore") else
-                    f"approval ({'L tier' if b.tier == 'L' else 'explore item'}, standard autonomy)")
+                    f"approval ({'L tier' if at_least(b.tier, 'L') else 'explore item'}, standard autonomy)")
     return gaps
 
 
@@ -5149,7 +5184,7 @@ def race_open(b):
 def race_line(b):
     """T-2338: the one sentence that sends a task to the evidence: the stuck rung and the confidence trigger both say it.
     An L task isn't raced as code: its design is, by another model reading the plan."""
-    if b.tier == "L":
+    if at_least(b.tier, "L"):
         return (f"design race: sampo second plan {b.id} (another model reads the plan and argues the runner-up design before "
                 f"any edit); or sampo lane race {b.id} (one throwaway spike per option, T-2340)")
     return (f"sampo lane race {b.id} (a builder takes the runner-up; both are scored on this task's checks and the better "
@@ -5161,7 +5196,7 @@ def race_ask(b):
     is on file, it was never raced, and nothing has been done on it yet. An L task's ask ends once its plan was read."""
     if b.status not in ("planned", "active") or not race_open(b) or b.has_evidence() or any(s.done for s in b.steps()):
         return None
-    if b.tier == "L" and b.section("Plan review").strip():
+    if at_least(b.tier, "L") and b.section("Plan review").strip():
         return None
     pct = stated_confidence(b.section("Approach (options → choice → why)"))
     bar = confidence_bar(b, "race")
@@ -5375,7 +5410,7 @@ def next_for(p, briefs=None, checks=True, concerns=None):
     ask = race_ask(b) if b is not None else None  # T-2338: a low-confidence choice goes to the evidence first (before any
     if ask:  # work, so never beside a stuck rung: the two share race_open and race_line)
         action += f" · {ask}"
-    elif b is not None and b.tier == "L" and b.status == "planned" and not b.meta.get("approved") \
+    elif b is not None and at_least(b.tier, "L") and b.status == "planned" and not b.meta.get("approved") \
             and not b.section("Plan review").strip():  # T-0662: L plans get a second read before approval
         action += f" · before approving it: sampo second plan {b.id} (another model reads the plan; protocols.json)"
     if b is not None and b.meta.get("cost_cap") and str(b.meta.get("cap_hit")) == str(b.meta["cost_cap"]):  # T-1127

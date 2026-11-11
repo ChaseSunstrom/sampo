@@ -19,7 +19,7 @@ class FirstRun(ForemanTestCase):
         out = self.fm("task", "new", "--help").stdout
         for v in ("RESEARCH", "CLEAN", "PERFORMANCE", "SECURITY", "FIX", "FEATURE"):
             self.assertIn(v, out)
-        self.assertRegex(out, r"\{S,M,L\}")
+        self.assertRegex(out, r"\{S,M,L,XL,HUGE,GIANT\}")
         last = out.strip().splitlines()[-1]
         self.assertIn('sampo task new "Add login timeout" --type FIX --tier S', last)
         self.assertIn("--focus", last)

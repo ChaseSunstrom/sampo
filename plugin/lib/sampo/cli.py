@@ -531,7 +531,7 @@ def flag_replan(p, task, reason):
     """T-0603: an active M/L task's plan met a surprise; fm next leads with a replan until fm task log ID "replan: …"
     (a later trigger replaces the reason; the Log keeps each one)."""
     b, reason = (c.find_brief(p, task) if task else None), " ".join(c.redact(reason).split())  # one frontmatter line
-    if b and b.status == "active" and b.tier in ("M", "L"):
+    if b and b.status == "active" and c.at_least(b.tier, "M"):
         mutate(p, b.id, lambda x: (x.meta.update(replan=reason), x.append_log(f"plan revision needed: {reason}")),
                "replan_needed", {"reason": reason[:200]})
 
@@ -625,7 +625,7 @@ def task_assume(p, args):
     status = "verified" if code == 0 else "false"
     cold = False
     pct = c.assumption_confidence(this[3])
-    if status == "verified" and proof and cur.tier in ("M", "L") and pct is not None and (
+    if status == "verified" and proof and c.at_least(cur.tier, "M") and pct is not None and (
             pct < c.confidence_bar(cur, "research") or "(low)" in this[3].lower()):
         cold, why = _cold_read(p, this[3], proof)  # T-2338: only an assumption under the research bar is asked
         if not cold:
@@ -915,7 +915,7 @@ def cmd_task(args):
         tree = c.audit_tree_past_merges(p, pre, tree)  # T-2784: other lanes' merges alone don't stale audits
         if pre.status == "dropped":  # T-0679 chaos test: a dropped task isn't finished by closing it again
             raise c.PolicyError(f"{pre.id} is dropped: reopen it first (sampo task set {pre.id} status=planned)")
-        drift, notes = sdocs.task_docs(p.root, pre.section("Docs impact")) if pre.tier in ("M", "L") else ([], [])
+        drift, notes = sdocs.task_docs(p.root, pre.section("Docs impact")) if c.at_least(pre.tier, "M") else ([], [])
 
         lesson = c.plain(args.lesson or "").strip()
         touches, risky, gone = _task_files(p, pre)
@@ -936,7 +936,7 @@ def cmd_task(args):
             if b.type == "RESEARCH" and not b.section("Decision").strip():  # T-0896 (was a warning, T-0599)
                 reasons.append(f"no Decision: research ends in a choice: sampo task set {b.id} --section Decision --text "
                                f"\"Recommendation: …; would change if: …\" (or \"none: <why>\")")
-            if b.tier in ("M", "L") and not lesson and not b.section("Lessons").strip():
+            if c.at_least(b.tier, "M") and not lesson and not b.section("Lessons").strip():
                 reasons.append(f"lesson missing: sampo task done {b.id} --lesson \"<what the next similar task should "
                                f"know>\" (or \"none: <why>\"); recall shows it on related work")
             from sampo import miss  # T-2369: fm task done is no way round finish's refusal
@@ -948,7 +948,7 @@ def cmd_task(args):
             if reasons:
                 lead = "" if hasattr(args, "audit") else (  # T-0849: fm task done, not finish's own close
                     f" — one call settles most of it: sampo task finish {b.id} --run \"<test cmd>\" --audit \"<how>\""
-                    + (" --lens \"<lens>: <result>\" … --docs \"<…>\" --lesson \"<…>\"" if b.tier in ("M", "L") else ""))
+                    + (" --lens \"<lens>: <result>\" … --docs \"<…>\" --lesson \"<…>\"" if c.at_least(b.tier, "M") else ""))
                 raise c.PolicyError(f"{b.id} can't be marked done{lead}:\n  - " + "\n  - ".join(reasons))
             if lesson:
                 old = b.section("Lessons").rstrip()
@@ -1028,7 +1028,7 @@ def cmd_task(args):
         for w in warns:
             print(f"sampo: warning: {w}", file=sys.stderr)
         grade, why = b.grade()
-        guessed = b.unverified() if b.tier in ("M", "L") else []  # T-0254: a warning, not a gate
+        guessed = b.unverified() if c.at_least(b.tier, "M") else []  # T-0254: a warning, not a gate
         own = {a.n for a in b.acceptance() if c.verify_of(a.text) and any(  # T-0900: proven by its own command
             ln.startswith(f"- (ac {a.n}) ") and c._RAN_MARK in ln for ln in b.evidence())}
         # T-1159: one list: what finish was told it didn't check (waiver, claims) first, then criteria no command proved
@@ -2312,9 +2312,9 @@ def _field_gaps(b, args):
         gaps.append("docs impact missing: --docs \"<docs updated | none: why>\"")
     if b.type == "PERFORMANCE" and not getattr(args, "numbers", None) and not b.section("Measurements").strip():
         gaps.append("numbers missing: --numbers \"<metric>: <before> → <after> (<how measured>)\" (or \"none: <why>\")")
-    if b.tier in ("M", "L") and not args.lesson and not b.section("Lessons").strip():
+    if c.at_least(b.tier, "M") and not args.lesson and not b.section("Lessons").strip():
         gaps.append("lesson missing: --lesson \"<what the next similar task should know>\" (or \"none: <why>\")")
-    if b.type == "FIX" and b.tier in ("M", "L") and not getattr(args, "why_not_caught", None) \
+    if b.type == "FIX" and c.at_least(b.tier, "M") and not getattr(args, "why_not_caught", None) \
             and not b.section("Why not caught").strip():  # T-0598: every M/L fix asks what would have caught it
         gaps.append("why-not-caught missing: --why-not-caught \"<the test, gate or guard that would have caught it "
                     "earlier>\" (or \"none: <why>\"); it becomes a follow-up")
@@ -3167,7 +3167,7 @@ def _close_warnings_of(p, b, files):
         shown, left = c.more(unexplained, 6)
         honest.append(f"deleted without saying why it existed: {', '.join(shown + [left] if left else shown)} — sampo why <file>, then sampo task "
                       f"set {b.id} --section Origins --text \"- <file>: <why it was there>\"")
-    if b.tier == "L" and not b.section("Risks and rollback").strip():  # T-0626
+    if c.at_least(b.tier, "L") and not b.section("Risks and rollback").strip():  # T-0626
         honest.append("an L task closed with no Risks and rollback section: what undoes it if it goes wrong?")
     if b.meta.get("replan"):  # T-0603: a surprise the plan never answered
         honest.append(f"closed with a replan never answered ({c.fit(b.meta['replan'], 100)}): sampo task log {b.id} "
@@ -3557,7 +3557,7 @@ _UNKNOWN = re.compile(r"(?i)\b(spike|probe|prototype|investigate|measure|find ou
 def spike_note(b):
     """T-1664: an L FEATURE finds its riskiest unknown in a throwaway spike before building on it; a note at first
     focus, not a gate, and none once a step spikes, probes or prototypes."""
-    if b.type != "FEATURE" or b.tier != "L" or any(re.search(r"(?i)\b(spike|probe|prototyp)", s.text) for s in b.steps()):
+    if b.type != "FEATURE" or not c.at_least(b.tier, "L") or any(re.search(r"(?i)\b(spike|probe|prototyp)", s.text) for s in b.steps()):
         return ""
     return (f"Spike first: an L feature's riskiest unknown is cheapest to find in a throwaway lane (sampo lane new {b.id} "
             f"--spike) before step 1; then sampo task step {b.id} add 'spike: <the unknown>' so the brief records it.")
@@ -3584,7 +3584,7 @@ def _honest(p, b):
     edits = [re.sub(r"^- \S+ ", "", x) for x in log[start:]] if start is not None else []
     edits = [x for x in edits if re.match(r"criterion \d+ (text|verify):", x)]
     runs = [x for x in b.evidence() if c._RAN_MARK in x]
-    smooth = b.tier in ("M", "L") and b.type != "FIX" and runs and not any("✗" in x for x in runs)
+    smooth = c.at_least(b.tier, "M") and b.type != "FIX" and runs and not any("✗" in x for x in runs)
     out = ([f"criteria edited after work started (re-check they weren't loosened to fit the result): "
             + "; ".join(c.fit(x, 140) for x in edits[:3])] if edits else []) + (
         [f"suspiciously smooth: all {len(runs)} recorded run(s) passed the first time; was a test seen failing "
@@ -3635,7 +3635,7 @@ def _tier_drift(p, b, files):
             except OSError:
                 pass
     size = "L" if len(files) > 20 or lines > 1500 else "M" if len(files) > 3 or lines > 150 else "S"
-    if "SML".index(size) > "SML".index(b.tier):
+    if c.tier_rank(size) > c.tier_rank(b.tier):
         return (f"{b.id} was planned {b.tier}, but its diff is {size}-sized ({len(files)} files, {lines} lines): "
                 f"plan this kind of change as {size} next time")
     return None
@@ -3738,8 +3738,8 @@ def task_new(p, args):
     type_ = c.WORK_TAGS.get(args.type.upper(), args.type.upper())
     if type_ not in c.TYPES:
         raise UsageError(f"unknown type {args.type!r}; one of {', '.join(c.TYPES)}")
-    if args.tier not in ("S", "M", "L"):
-        raise UsageError("tier must be S, M or L")
+    if args.tier not in c.TIERS:
+        raise UsageError(f"tier must be one of {', '.join(c.TIERS)}")
     reused = ""
     if not args.from_id and not getattr(args, "redo", None):  # T-0848: the capture this request already is
         key = " ".join(c.plain(args.title).lower().split())
@@ -3888,11 +3888,13 @@ def task_set(p, args):
             v = c.WORK_TAGS.get(v.upper(), v.upper())
             if v not in c.TYPES:
                 raise UsageError(f"unknown type {v!r}")
-        if k == "tier" and v not in ("S", "M", "L"):
-            raise UsageError("tier must be S, M or L")
+        if k == "tier":  # T-4220: any case; stored canonical
+            v = c.canonical_tier(v)
+            if not v:
+                raise UsageError(f"tier must be one of {', '.join(c.TIERS)}")
         if k == "approved" and v == "true":  # T-0490: an L feature names what it builds on before it's approved
             b = need_brief(p, args.id)
-            if b.type == "FEATURE" and b.tier == "L" and not b.section("Build vs reuse").strip() and \
+            if b.type == "FEATURE" and c.at_least(b.tier, "L") and not b.section("Build vs reuse").strip() and \
                     not any(sec == "Build vs reuse" and txt.strip() for sec, txt in _section_pairs(args)):
                 raise UsageError(f"{b.id} is a FEATURE L: before it's approved, say what it builds on — sampo task set "
                                  f"{b.id} --section \"Build vs reuse\" --text \"<the sampo command, module or library it "
@@ -3938,9 +3940,7 @@ def task_set(p, args):
                     cur = list(items) if op == "=" else cur + [x for x in items if x not in cur] if op == "+" else \
                         [x for x in cur if x not in items]
                 changes[k] = cur
-        tiers = "SML"
-        if "tier" in changes and changes["tier"] in tiers and b.tier in tiers and \
-                tiers.index(changes["tier"]) < tiers.index(b.tier) and b.evidence():
+        if "tier" in changes and c.tier_rank(changes["tier"]) < c.tier_rank(b.tier) and b.evidence():
             raise c.PolicyError(f"{b.id}: tier can't be lowered ({b.tier} → {changes['tier']}) once work has "
                                 f"evidence; it sets which audits are required")
         for k, v in changes.items():
@@ -4236,7 +4236,7 @@ def cmd_focus(args):
         # gate just re-marked the doors plan_gaps reads (a task it unparked starts)
         _focus_refusal(p, peek := need_brief(p, args.id))
         try:
-            if peek.tier in ("M", "L") and not _BLAST_LINE.search(peek.section("Risks and rollback")):
+            if c.at_least(peek.tier, "M") and not _BLAST_LINE.search(peek.section("Risks and rollback")):
                 from sampo import graph
                 blast = graph.blast_line(p, peek.meta.get("scope"), text="\n".join(
                     peek.section(s) for s in ("Interpretation", "Approach (options → choice → why)", "Steps")))  # T-2336
@@ -4351,7 +4351,7 @@ def gates(type_, tier):
     need = [("evidence", "every step and criterion has a check sampo ran (--run) or a typed one for what can't run here"),
             ("audits", f"{audits}, recorded after the last change (sampo audit prep ID); adversary as well when the "
                        f"change touches auth, crypto, secrets, exec or deserialization")]
-    if tier in ("M", "L"):
+    if c.at_least(tier, "M"):
         need += [("docs impact", "--section \"Docs impact\" (updated docs, or none: why)"),
                  ("lesson", "sampo task done ID --lesson \"…\"")]
         if type_ == "FIX":  # T-1977: fm task finish refuses an M/L fix without it (_close_gaps)
@@ -7288,7 +7288,7 @@ def _build_parser(only=None):
     s.add_argument("--source", default="user", choices=["user", "discovered", "followup", "self", "cross-project"],
                    help="cross-project: a request from another project (fm -p SLUG capture … asks that project)")
     s.add_argument("--type")
-    s.add_argument("--tier", choices=["S", "M", "L"])
+    s.add_argument("--tier", type=str.upper, choices=c.TIERS)
     s.add_argument("--scope", action="append")
     s.add_argument("--urgent", action="store_true")
     s.add_argument("--anyway", action="store_true", help="keep a request whose title is close to an open task's of the same type: "
@@ -7448,7 +7448,7 @@ def _build_parser(only=None):
     t.add_argument("title")
     t.add_argument("--type", required=True, metavar="{" + ",".join(c.TYPES) + "}",
                    help="what kind of work (aliases such as BUG, PERF, FEAT and lowercase work too)")
-    t.add_argument("--tier", required=True, choices=["S", "M", "L"],
+    t.add_argument("--tier", required=True, type=str.upper, choices=c.TIERS,
                    help="S: ≤~30 lines, 1–2 files · M: several files or a design choice · L: cross-cutting or uncertain")
     t.add_argument("--scope", action="append")
     t.add_argument("--depends", action="append")
@@ -7910,7 +7910,7 @@ def _build_parser(only=None):
     s.add_argument("words", nargs=argparse.REMAINDER)
     s = add("gates", cmd_gates, tier=("Every task", 100), help="what sampo task done will require for a type and tier, or a task id (default: the active task)")
     s.add_argument("type", nargs="?", type=str.upper, help=f"{', '.join(c.TYPES)}, or a task id")
-    s.add_argument("tier", nargs="?", type=str.upper, choices=["S", "M", "L"])
+    s.add_argument("tier", nargs="?", type=str.upper, choices=c.TIERS)
     s = add("pr", lazy("sampo.cost", "cmd_pr"), tier=("Finding your way", 500), help="a pull-request description from a task's brief, with its proof "
                                                   "(red→green, lens verdicts, assumptions, bench replays; printed only); "
                                                   "sampo pr threads ID: review comments to steps; sampo pr train: merge in order")
@@ -8312,7 +8312,7 @@ def _build_parser(only=None):
     s.add_argument("--route", choices=["inbox", "queue", "lane", "muted"], help="set: where its captures go")
     s.add_argument("--budget", type=int, help="set: captures a day before it adds to its open one (0: none)")
     s.add_argument("--burst", type=int, help="set: seconds after a filing in which it adds to its open one (0: none)")
-    s.add_argument("--tier-cap", choices=["S", "M", "L"], help="set: the largest tier it may queue")
+    s.add_argument("--tier-cap", type=str.upper, choices=c.TIERS, help="set: the largest tier it may queue")
 
     s = add("repeats", lazy("sampo.repeats", "cmd_repeats"), tier=("Reports", 1030),
             help="commands and procedures this project keeps repeating, and what project tool each could become")

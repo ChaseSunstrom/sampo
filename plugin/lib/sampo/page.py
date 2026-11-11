@@ -439,7 +439,7 @@ GRAPH_MAX = 1500  # ponytail: the newest 1500 tasks stand; older ones are left o
 GRAPH_EDGES = 6000  # and the first 6000 dependencies by waiter id are drawn (the text twin lists every one)
 GRAPH_NAMED = 12  # tasks named on the poster: the active work first, then the blocked
 GRAPH_STATUSES = ["active", "verifying", "blocked", "planned", "captured", "deferred", "done", "dropped"]
-TIER_HEIGHT = {"S": 0.5, "M": 0.9, "L": 1.4}
+TIER_HEIGHT = dict(zip(c.TIERS, (0.5, 0.9) + (1.4,) * (len(c.TIERS) - 2)))  # T-4220: a big task draws as tall as an L
 
 
 def graph_tasks(p):
@@ -682,7 +682,7 @@ def graph_html(tasks, name, when=None):
         try:
             kept.append({"id": clean(str(t["id"])), "title": clean(str(t.get("title") or "")),
                          "status": str(t.get("status") or ""),
-                         "tier": t.get("tier") if t.get("tier") in TIER_HEIGHT else "",  # S, M or L only
+                         "tier": t.get("tier") if t.get("tier") in TIER_HEIGHT else "",  # any tier name (T-4220)
                          "deps": [clean(str(d)) for d in t.get("deps") or []]})
         except Leak:
             raise Leak(f"task {t['id']}") from None

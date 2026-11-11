@@ -110,7 +110,7 @@ def jobs(p):
     if lesion:  # T-0734: a model nobody has ablated Foreman's rules and skills on yet
         out.append((f"model lesion {lesion}", ["evolve", "--target", lesion, "--drop"], budget.estimate("bench", 3, 0.5)))
     big = None if budget.degrade(p) else next(  # T-0730: optional, so it waits while usage runs ahead of pace
-        (b for b in c.order_queue(c.load_briefs(p))[0] if b.tier == "L" and not b.section("Plan review").strip()), None)
+        (b for b in c.order_queue(c.load_briefs(p))[0] if c.at_least(b.tier, "L") and not b.section("Plan review").strip()), None)
     if big:  # a queued L task's plan read by another model while nobody is waiting on it
         out.append((f"pre-plan {big.id}", ["second", "plan", big.id], budget.estimate("second-plan", 1, 0.05)))
     events = c.ledger_tail(p, 5000)

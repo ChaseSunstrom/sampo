@@ -963,7 +963,7 @@ def race(p, b, main, args):
     if b.meta.get("race") or b.meta.get("race_of"):  # said first: a second race is not a slot problem
         raise c.PolicyError(f"{b.id} is already racing (fm lane race {b.id} --score)")
     _ready(p, b, n)
-    design = b.tier == "L"  # T-2340: an L's design races as S spikes, one per option; the L itself stays in the main thread
+    design = c.at_least(b.tier, "L")  # T-2340: an L's design races as S spikes, one per option; the L itself stays in the main thread
     plan = _plan_sides(b, n)
     stated = plan[0][0]
     if design:
@@ -1065,17 +1065,19 @@ def race(p, b, main, args):
 def _ready(p, b, n=2):
     """T-1069 review: what builder_brief checks, for every side, before a race writes anything."""
     from sampo import cli
-    if b.tier not in ("S", "M", "L"):
+    if c.is_big(b):
+        raise c.PolicyError(c.big_refusal(b))
+    if not c.canonical_tier(b.tier):
         raise c.PolicyError(f"{b.id} is {b.tier}: a race takes an S, M or L task")
     idle = b.status == "active" and not b.has_evidence() and not any(s.done for s in b.steps())  # T-2338: no work yet
     if b.status in c.CLOSED or b.status == "verifying" or (b.status == "active" and not idle) or c.held_elsewhere(b):
         raise c.PolicyError(f"{b.id} is {b.status}: a race takes a task nobody is working on")
     # T-2340: an L's design races before its approval (the race informs the yes), so the approval gap doesn't count;
     # an explore item's own wait for the user's yes does (its spikes clone it, and a builder brief refuses them)
-    if b.tier == "L" and b.meta.get("explore") and c.needs_approval(b, c.effective_autonomy(p)):
+    if c.at_least(b.tier, "L") and b.meta.get("explore") and c.needs_approval(b, c.effective_autonomy(p)):
         raise c.PolicyError(f"{b.id} is an explore item that isn't approved: the user's yes comes before any spike "
                             f"(fm task set {b.id} approved=true after it)")
-    gaps =c.plan_gaps(b, "full" if b.tier == "L" else c.effective_autonomy(p))
+    gaps = c.plan_gaps(b, "full" if c.at_least(b.tier, "L") else c.effective_autonomy(p))
     if gaps:
         raise c.PolicyError(f"{b.id} isn't planned enough for a builder: missing {', '.join(gaps)} (fm task set/ac/step)")
     if not [v for _, v in b.verify_cmds() if v]:
@@ -1984,6 +1986,8 @@ def brief_ready(p, args):
     limit = free if args.limit is None else min(free, args.limit)
 
     def not_ready(b):  # None when ready, else the reason it is not
+        if c.is_big(b):
+            return c.big_refusal(b)
         if b.tier not in ("S", "M"):
             return "an L task stays in the main thread"
         if b.meta.get("lane") or c.held_elsewhere(b):
@@ -2067,6 +2071,8 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
     thread reviews the branch, merges it, refocuses the task here, re-runs its criteria and closes it."""
     from sampo import budget
     from sampo import cli
+    if c.is_big(b):
+        raise c.PolicyError(c.big_refusal(b))
     if b.tier not in ("S", "M"):
         raise c.PolicyError(f"{b.id} is {b.tier}: a builder takes an S or M task; an L task stays in the main thread")
     if b.status in c.CLOSED or b.status in ("active", "verifying") or c.held_elsewhere(b):

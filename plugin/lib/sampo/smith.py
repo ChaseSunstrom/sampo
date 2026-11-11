@@ -88,7 +88,7 @@ NESTED = ("args", "arguments", "parameters", "input")
 CHANGE_TYPES = ("FIX", "FEATURE", "PERFORMANCE", "SECURITY")
 # T-4177: a step of a change plan may look (read, search, run, card) this many times before it has edited, by the plan's
 # tier; then the turn is a forced edit (qwen3.8-27b on T-4132: 40 turns, 23 reads, 12 searches, 0 edits)
-EXPLORE_BUDGET, FORCE_TURNS, SCRATCH_CHARS = {"S": 8, "M": 10, "L": 12}, 3, 1600
+EXPLORE_BUDGET, FORCE_TURNS, SCRATCH_CHARS = dict(zip(core.TIERS, (8, 10) + (12,) * (len(core.TIERS) - 2))), 3, 1600  # T-4220: a big tier explores like an L
 EXPLORING = ("read", "search", "run", "card")
 _CHANGE = re.compile(r"(?<![\w.])(?:fix|repair|make(?! sure)|add|implement|handle|change|rename|remove|update|speed up)"
                      r"(?![\w.(])", re.I)  # a word, not an identifier: calc.add, add() and make_page don't count
@@ -491,7 +491,7 @@ def _items(text):
 def _word(text):
     """The first word that is a type or tier ("The task is a FIX" gives FIX), else the first word."""
     w = [x.strip(".,;:'\"`*").upper() for x in text.split()]
-    return next((x for x in w if x in TYPES or x in ("S", "M", "L")), w[0] if w else "")
+    return next((x for x in w if x in TYPES or x in core.TIERS), w[0] if w else "")
 
 
 def _criteria(text):
@@ -1112,7 +1112,8 @@ class Run:
 
     # -- the explore budget and the forced edit (T-4177)
     def budget(self):
-        return EXPLORE_BUDGET.get(str((self.plan or {}).get("tier") or "S").upper()[:1], EXPLORE_BUDGET["S"])
+        t = str((self.plan or {}).get("tier") or "S").upper()
+        return EXPLORE_BUDGET.get(core.canonical_tier(t) or t[:1], EXPLORE_BUDGET["S"])  # T-4220: "XL" is not "X"
 
     @property
     def guided(self):

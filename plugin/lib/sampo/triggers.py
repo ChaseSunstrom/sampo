@@ -18,7 +18,7 @@ URGENT = {"baseline", "ci", "ci-red", "security"}  # a red build is never "noise
 ROUTES = ("inbox", "queue", "lane", "muted")
 DEFAULT = {"route": "inbox", "tier_cap": "M", "budget": None, "burst": 0}  # T-2355: the defaults change nothing
 PROMOTE, PROMOTE_MIN, MUTE, MUTE_MIN = 0.7, 10, 0.1, 10  # queue: 0.7 of 10+ closed S/M held; muted: under 0.1 of 10+
-TIERS = ("S", "M", "L")
+TIERS = c.TIERS  # T-4220: every tier name; the cap compares by rank
 
 
 def _since(days):
@@ -214,9 +214,9 @@ def over_budget(p, trigger, r):
 
 def lane_only(p, trigger, tier, type_):
     """A queue- or lane-routed trigger's capture starts only in a lane (a branch, never main), within its tier cap; L and
-    SECURITY captures stay in the inbox whatever the route."""
+    SECURITY captures stay in the inbox whatever the route (T-4220: so do the big tiers)."""
     r = row(p, trigger)
-    return (r["route"] in ("queue", "lane") and tier in TIERS[:TIERS.index(r["tier_cap"]) + 1] and tier != "L"
+    return (r["route"] in ("queue", "lane") and c.tier_rank(tier) < c.tier_rank("L") and tier in TIERS[:TIERS.index(r["tier_cap"]) + 1]
             and type_ != "SECURITY")
 
 

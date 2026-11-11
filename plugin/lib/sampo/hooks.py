@@ -1116,7 +1116,7 @@ def _first_brief(p, sid, transcript=None):
              "\"<the test command>\" --audit \"<how you checked it>\" --commit \"<message>\".")
     return (f"Sampo made this session's task from your request: {act.id} ({act.type} {act.tier}, focused), with "
             f"{len(done)} criterion(s) from it; this edit goes ahead.{close} Wrong size? sampo task set {act.id} "
-            f"tier=S|M|L.")
+            f"tier={'|'.join(c.TIERS)}.")
 
 
 _LANE_BRANCH = c.lazy(r"foreman/(T-\d+)")
@@ -5219,7 +5219,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         if not act and big:
             extras.append([f" · Context {used} used at a task boundary: a good point to /compact", f" · /compact ({used})",
                            " · /compact"])  # short forms: a long step title never hides it
-        elif act and act["tier"] in ("M", "L") and big:
+        elif act and c.at_least(act["tier"], "M") and big:
             n = _step_boundary(p, act["id"])  # T-0448: compact between steps, not mid-step; once per boundary
             if n and _first_time(sid, f"compact-{act['id']}-s{n}"):
                 first = (f"context {used} at {act['id']}'s step boundary: the user can /compact after sampo checkpoint "

@@ -1631,7 +1631,10 @@ def shadow_uses():
             "intake-tier": {
                 "S": "small and obvious: about 30 lines in one or two files",
                 "M": "several files, or a design choice to make",
-                "L": "cross-cutting: schema, API or security, a large or uncertain change"},
+                "L": "cross-cutting: schema, API or security, a large or uncertain change",
+                "XL": "bigger than L: a plan of several tasks, each small enough to build",
+                "HUGE": "a whole feature area or a rewrite: it runs as children, never as one task",
+                "GIANT": "a program-scale change: a tree of children, planned before any of it is built"},
             "dedupe": {"same": "the two requests ask for the same work", "different": "the two requests ask for different work"},
             "lead-triage": {"real": "a genuine defect or risk in the code", "noise": "a false alarm or style nit"}}
 

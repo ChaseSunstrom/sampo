@@ -595,7 +595,7 @@ def recommend(by_model, cases):
     among ties. by_model: {model: [case result]}."""
     tiers = {x["id"]: x.get("tier") for x in cases}
     out = {}
-    for tier in sorted({t for t in tiers.values() if t in ("S", "M", "L")}):
+    for tier in sorted({t for t in tiers.values() if t in c.TIERS}):  # T-4220: every tier name
         scores = []
         for model, results in by_model.items():
             mine = [r for r in results if tiers.get(r["id"]) == tier]

@@ -21,7 +21,7 @@ _ROW = c.lazy(r"^\|\s*(\d{4}-\d{2}-\d{2})\s*\|\s*(.+?)\s*\|\s*(.*?)\s*\|")
 MAX_READ = 20_000  # chars of a research note that count
 INDEX_MAX, HITS_MAX = 20_000_000, 50  # fm recall --ask: characters indexed per question, answers shown (T-0728)
 LINE, TOTAL, HITS = 170, 800, 4
-TIERS = {"S": 0, "M": 1, "L": 2}
+TIERS = {t: i for i, t in enumerate(c.TIERS)}  # T-4220: ranked by the one tier list
 
 
 def stem(w, cut=5):
@@ -523,7 +523,7 @@ def render(hits, tier=None):
     done = [(TIERS[t], x) for _, kind, _, t, x in hits if kind == "brief" and t in TIERS]
     if tier in TIERS and done and min(t for t, _ in done) > TIERS[tier]:
         big = max(t for t, _ in done)
-        lines.append(f"- similar past tasks were {'SML'[big]}: consider --tier {'SML'[big]}")
+        lines.append(f"- similar past tasks were {c.TIERS[big]}: consider --tier {c.TIERS[big]}")
     if done:  # T-0050: effort from the nearest finished tasks
         steps = [x["steps"] for _, x in done]
         lines.append(f"- similar finished tasks took {min(steps)}–{max(steps)} steps" if len(steps) > 1 else

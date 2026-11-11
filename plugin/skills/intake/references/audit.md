@@ -9,6 +9,7 @@ what counts as correct. `sampo task done` refuses until the tier's audits are re
 | S | `self`: run the checklist below yourself, all five lenses, in the main thread |
 | M | `intent` + one of `adversary` / `edge` / `operator` / `maintainer` (pick the riskiest), via `sampo:fm-reviewer` |
 | L | all five: `intent`, `adversary`, `edge`, `operator`, `maintainer`, in one `sampo:fm-reviewer` pass |
+| XL, HUGE, GIANT | the same five as L (T-4220: a big task is reviewed like L) |
 
 `design` is advisory, never required: `sampo audit prep` adds it at any tier when the diff touches UI (markup, styles, components, the foreman-ui pane's hooks, TUI screens; not tests), and `sampo audit run` runs it only then, so a backend diff costs nothing extra. Record it like any lens: `sampo task audit ID design …`.
 

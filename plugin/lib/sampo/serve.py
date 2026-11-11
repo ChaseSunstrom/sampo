@@ -320,7 +320,7 @@ def _next_runnable(p, skip, told, fit=False):
     if fit:  # T-0732: small first, so more finish before a limit; a task waiting on an open one keeps waiting
         state = {x.id: x.status for x in briefs}
         queue = sorted((x for x in queue if all(state.get(d) in c.CLOSED for d in c._deps(x))),
-                       key=lambda x: "SML".find(x.tier))
+                       key=lambda x: c.tier_rank(x.tier))
     try:  # T-2139: a standing goal's next item's task goes first among what this picker already accepts, never added to it
         from sampo import mandate
         g = mandate.progress(p, briefs)
@@ -721,7 +721,8 @@ def _models(p, args):
         models = {k.strip().upper(): v.strip() for k, v in (x.split("=", 1) for x in args.models.split(",") if x.strip())}
     except ValueError:
         models = {"?": ""}
-    if not models or set(models) - {"S", "M", "L"} or not all(re.fullmatch(r"[\w.:-]+", v) for v in models.values()):
+    # T-4220: a big task never reaches a builder, so the model map names only the tiers a builder takes
+    if not models or set(models) - {t for t in c.TIERS if not c.is_big(t)} or not all(re.fullmatch(r"[\w.:-]+", v) for v in models.values()):
         raise c.PolicyError(f"--models takes TIER=MODEL pairs (tiers S, M, L), e.g. S=sonnet,L=opus; got {args.models!r}")
     if args.save:
         c.update_meta(p, run_models=models)
