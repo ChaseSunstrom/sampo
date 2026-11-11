@@ -571,7 +571,10 @@ def failure_signature(text):
     pick = next((x for x in reversed(lines) if _ERROR_LINE.search(x)), lines[-1] if lines else "")
     s = re.sub(r"(?:[\w.~-]*/)+([\w.-]+)", r"\1", pick.lower())
     s = re.sub(r"0x[0-9a-f]+|\b(?=[0-9a-f]*\d)[0-9a-f]{5,}\b|\d+", "0", s)  # T-1109: hex ids (agent-a0bd0ad0edc0)
-    return c.redact(re.sub(r"\s+", " ", s).strip())[:160]
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s or not re.search(r"[a-z]", s):  # T-4141: a digits-only line normalizes to "0": no signature
+        return ""  # the function's own "no signature" (test_recall.Tally): every caller tests it for truth
+    return c.redact(s)[:160]
 
 
 def note_failure(p, task, text):

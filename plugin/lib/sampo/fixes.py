@@ -93,7 +93,8 @@ def read(path):
                 except ValueError:
                     continue
                 if isinstance(rec, dict) and isinstance(rec.get("sig"), str) and rec["sig"].strip() \
-                        and isinstance(rec.get("do"), str):
+                        and re.search(r"[a-zA-Z]", rec["sig"]) \
+                        and isinstance(rec.get("do"), str):  # T-4141: a digits-only key ("0") or empty sig is ignored and never matched
                     rec = {k: c.plain(str(v))[:400] for k, v in rec.items() if isinstance(v, (str, int, float))}
                     rec["id"] = _fid(rec)
                     out.append(rec)
