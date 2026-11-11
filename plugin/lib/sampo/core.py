@@ -2707,7 +2707,9 @@ class Brief:
 
     def add_evidence(self, cmd, result, step=None, ac=None, ts=None, tree=None, ran=False, inconclusive=False):
         tag = f"(step {step}) " if step is not None else f"(ac {ac}) " if ac is not None else ""
-        cmd = _unmarked(redact(str(cmd)).replace("`", "'").strip())
+        # One line, like the result: evidence() reads only lines that start "- ", so a heredoc's later lines (and
+        # its "→ exit 0") were dropped and a multi-line run could never close a miss or a step.
+        cmd = _unmarked(redact(str(cmd)).replace("`", "'").replace("\n", " ").strip())
         result = defang(_unmarked(redact(str(result)).replace("\n", " ").strip()))
         # [ran]: fm ran it (only runs decide pass/fail); [tree]: the files it was recorded against (audit_blockers)
         mark = (_INCONCLUSIVE if inconclusive else "") + (_RAN_MARK if ran else "") + (f" [tree {tree}]" if tree else "")

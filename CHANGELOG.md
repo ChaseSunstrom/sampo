@@ -13,6 +13,7 @@
 
 - fm task ac edit judges a criterion on runs of its own verify command: one that only ever matched no test can now take the right check even after that check's runs were recorded under it (only a check already run there may be swapped in) (T-4113).
 - fm exam models --loo no longer scores a backend that is down as abstaining: three straight failures with no answer mark it down for the run, it gets no rows and no more calls, and the run names it, so its last real numbers stand (T-4111).
+- a multi-line command (a heredoc run) is recorded as one evidence line, so its exit is read and it can close a step or a miss; the fix came from the JARVIS box's own Sampo session (T-4116).
 - the tracked-tree private-term test skips where only the tests' made-up term is configured, as in CI, which it had turned red on main (T-4100).
 - fm doctor measures an over-budget hook bench again with twice the runs and fails only if it is still over, so a burst beside a merge train's own suite no longer parks a lane that never touched a hook (T-4098).
 - The README now opens with the live Board, shown on Sampo's own fixture data, and adds Claude Code with the mod, the Smith TUI, and drawn diagrams of the loop, lanes and merge train, and Kalevala, each dark and light; `sampo readme diagram` falls back to the Board look when a repo's colours would be unreadable, and no longer cuts panel subtitles (T-3853).

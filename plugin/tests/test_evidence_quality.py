@@ -27,6 +27,16 @@ class Inconclusive(_Base):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("no verification evidence", p.stderr)
 
+    def test_a_multi_line_command_is_one_evidence_line_that_keeps_its_exit(self):  # T-4116 (the JARVIS box's 9d09d60c)
+        from sampo import core as c
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, self.tid)
+        b.add_evidence("python3 - <<'EOF'\nprint(1)\nEOF", c.run_result(0, "1"), step=1, ran=True)
+        c.save_brief(p, b)
+        lines = [ln for ln in c.find_brief(p, self.tid).evidence() if "print(1)" in ln]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("→ exit 0", lines[0])
+
     def test_next_asks_for_a_sharper_check(self):
         self.fm("focus", self.tid)
         self.fm("task", "evidence", self.tid, "--step", "1", "--run", "true", "--inconclusive")
