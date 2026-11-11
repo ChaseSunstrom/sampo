@@ -9250,6 +9250,9 @@ def _build_parser(only=None):
                                                         "or over 7 days old; the waiver is logged (T-1401)")
     s.add_argument("--task", metavar="ID", help="work this planned task: its criteria and open steps are the plan "
                                                 "(no planner call; T-1330)")
+    s.add_argument("--restart", action="store_true", help="with --task: an unfinished run of the task is set aside "
+                                                          "(kept as its journal, beside the new one) and starts over "
+                                                          "(T-4204)")
     s.add_argument("--worker", metavar="CLI", help="an installed CLI does each step and fix round instead of the "
                                                    "model: claude, codex, gemini, aider, or 'CMD {prompt}'; "
                                                    "the harness reverts what the guard refuses and its verify decides "

@@ -177,6 +177,7 @@ WORKER_TIMEOUT, JUDGE_MAX = 1200, 300  # a worker turn's seconds; changed files 
 ON_EVENTS = {"closed": ("closed",), "blocked": ("blocked", "needs-you"), "error": ("needs-you",)}  # T-1351: [on]
 LIMIT_WAIT, LIMIT_WAITS = 3600, 3  # T-1356: seconds a usage limit is waited out (code.toml limit_wait); waits a turn
 HOOK_SECONDS = 30
+SET_ASIDE = re.compile(r"[^.]+\.\d+\.jsonl")  # T-4204: an earlier run's journal --restart kept as <task>.<time>.jsonl
 # T-1214: each CLI's unattended one-prompt form, none of them free to run shell commands on its own say: Foreman's
 # guard judges a worker's files afterwards, not its commands (security review). claude asks for Bash, which -p can't
 # answer (and Foreman's own hooks guard it); codex keeps its workspace sandbox; gemini edits without asking, shell still
@@ -741,6 +742,8 @@ class Run:
         self.read_only, self.summary = False, None  # T-1320: a question's run, and the last done's summary
         self.own_plan = False  # T-1422: the plan is the user's (--task's brief, --verify's), not a planner's
         self.kept = []  # events before the task (and its journal) exists, written once it does
+        self.held = None  # T-4204: the journal's lines while no model has replied yet (a run with no turn leaves none)
+        self.turn_base = 0  # T-4204: the turns a resumed journal already counted; --max-steps counts from here
         self.usd, self.max_usd, self.slug = None, getattr(args, "max_usd", None), None  # T-1357
         self.context = ""  # T-1374: what was piped on stdin
         self.reason = getattr(args, "reason", None)  # T-3006: one of REASONS, or None: as before
@@ -773,7 +776,7 @@ class Run:
             self.report()  # T-4177: the stats come just before the end, which stays a stream's last event
         rec = dict(data, event=event, text=text, ts=round(time.time(), 1))
         self.kept.append(core.redact_obj(rec))
-        if self.journal:
+        if self.journal and self.held is None:
             try:
                 core.append_line(self.journal[:-len(".jsonl")] + ".events.jsonl",
                                    "".join(json.dumps(r) + "\n" for r in self.kept))
@@ -815,7 +818,15 @@ class Run:
 
     def log(self, **rec):
         if self.journal:
-            core.append_line(self.journal, json.dumps(core.redact_obj(dict(rec, ts=time.time()))) + "\n")
+            line = json.dumps(core.redact_obj(dict(rec, ts=time.time()))) + "\n"
+            if self.held is not None:  # T-4204: no journal file until a model has replied (a refused first call leaves none)
+                self.held.append(line)
+                if rec.get("kind") in ("action", "worker") or (
+                        rec.get("kind") == "msg" and (rec.get("msg") or {}).get("role") == "assistant"):
+                    lines, self.held = self.held, None  # a model or worker reply came back: the run has turns
+                    core.append_line(self.journal, "".join(lines))
+                return
+            core.append_line(self.journal, line)
 
     def spend(self, usd, tokens, what):
         """T-1357: a call's dollars, when known, added to the run's, the budget ledger (fm budget, fm cost) and the
@@ -1653,7 +1664,7 @@ class Run:
         self.cur, self.shown, self.pending, self.cut = name, {"reads": {}, "searches": []}, None, set()
         self.explored, self.forced_turns, self.missing_used, self.look_next = 0, 0, False, False
         while True:
-            if self.turns >= self.max_steps:
+            if self.turns - self.turn_base >= self.max_steps:  # T-4204: this process's turns, not the journal's
                 raise CodeError(f"stopped: the model used all {self.max_steps} turns (--max-steps) before {name} was "
                                 f"done; fm code --resume {self.tid} --max-steps N carries on")
             left = self.ends - time.monotonic() if self.ends else None
@@ -3745,7 +3756,7 @@ def _look(run, profile):
     keeps its --max-steps; a look that runs out plans without it. A CLI planner reads the files itself."""
     if profile.get("kind") == "cli":
         return None
-    cap, start, run.read_only, run.summary = run.max_steps, run.turns, True, None
+    cap, start, run.read_only, run.summary = run.max_steps, run.turns - run.turn_base, True, None
     run.max_steps = start + LOOK_TURNS
     try:
         run.phase("look", profile, f"Request: {run.request}\n\nBefore any plan, look: read and search the files this "
@@ -3753,11 +3764,11 @@ def _look(run, profile):
                                    "summary naming each defect you found, its file and function, and a command that "
                                    "fails now because of it.")
     except CodeError:
-        if run.turns < run.max_steps:  # not the look's own turn cap: a --max-usd stop, say
+        if run.turns - run.turn_base < run.max_steps:  # not the look's own turn cap: a --max-usd stop, say
             raise
         run.emit("note", f"the look before the plan used its {LOOK_TURNS} turns without a done: planning without it")
     finally:
-        run.read_only, run.max_steps = False, cap + run.turns - start
+        run.read_only, run.max_steps = False, cap + run.turns - run.turn_base - start
     return run.summary
 
 
@@ -4107,7 +4118,8 @@ def unfinished(jdir):
     import fcntl
     out = []
     try:
-        names = [n for n in os.listdir(jdir) if n.endswith(".jsonl") and not n.endswith(".events.jsonl")]
+        names = [n for n in os.listdir(jdir) if n.endswith(".jsonl") and not n.endswith(".events.jsonl")
+                 and not SET_ASIDE.fullmatch(n)]  # T-4204: a run --restart set aside is not unfinished
     except OSError:
         return out
     for n in names:
@@ -4212,10 +4224,15 @@ def _load_task(run, tid):
     if os.path.isfile(journal):  # an earlier run of it: carry on an unfinished one; keep a finished one beside
         with open(journal, encoding="utf-8", errors="replace") as f:
             ended = any('"kind": "end"' in line or '"kind":"end"' in line for line in f)
-        if not ended:
-            raise CodeError(f"an earlier fm code run of {tid} didn't finish: fm code --resume {tid} carries it on")
+        if not ended and not getattr(run.args, "restart", False):
+            raise CodeError(f"an earlier fm code run of {tid} didn't finish: fm code --resume {tid} carries it on, or "
+                            f"fm code --task {tid} --restart starts over beside it")
+        # T-4204: an ended run, or an unfinished one --restart sets aside: kept whole beside the new run's journal
         at = int(time.time())
-        for old in (journal, journal[:-len(".jsonl")] + ".events.jsonl"):
+        pair = [journal, journal[:-len(".jsonl")] + ".events.jsonl"]
+        while any(os.path.exists(old.replace(f"{tid}.", f"{tid}.{at}.", 1)) for old in pair):
+            at += 1
+        for old in pair:
             if os.path.isfile(old):
                 os.replace(old, old.replace(f"{tid}.", f"{tid}.{at}.", 1))
 
@@ -4244,6 +4261,9 @@ def _start_task(run, profile):
 def _journal_start(run, profile):
     pl = run.plan
     run.journal = os.path.join(run.jdir, f"{run.tid}.jsonl")
+    # T-4204: no model has replied yet unless planning spent one (its messages and dollars are kept now): the lines
+    # wait in run.held until the first reply, so a run refused or timed out before it leaves no journal
+    run.held = None if (run.plan_msgs or run.usd) else []
     run.log(kind="start", task=run.tid, request=run.request, plan=pl, model=profile and profile["name"],
             planner=run.planner and run.planner["name"], messages=run.plan_msgs,
             options={"no_commit": run.no_commit, "escalate": run.escalate and run.escalate["name"],
@@ -4526,6 +4546,8 @@ def _load(run, tid, ended=False):
                        key=os.path.getmtime, reverse=True)
     if tid:
         paths = [x for x in paths if os.path.basename(x) == f"{tid}.jsonl"]
+    if not ended:  # T-4204: a run --restart set aside is kept, not a run to resume
+        paths = [x for x in paths if not SET_ASIDE.fullmatch(os.path.basename(x))]
     for path in paths:
         recs = records(path)
         if recs and recs[0].get("kind") == "start" and (ended or not any(r.get("kind") == "end" for r in recs)):
@@ -4550,7 +4572,7 @@ def _load(run, tid, ended=False):
     run.small = run.small or opts.get("small") is True  # T-3974: a resumed --small run stays small
     for r in recs[1:]:
         k = r.get("kind")
-        if k == "msg":
+        if k == "msg":  # (run.turns counts them all; run.turn_base is set below, so --max-steps counts this resume's)
             run.msgs.setdefault(r["phase"], []).append(r["msg"])
             run.turns += r["msg"].get("role") == "assistant"
         elif k == "phase_done":
@@ -4571,6 +4593,7 @@ def _load(run, tid, ended=False):
             run.worker = r["worker"]
         elif k == "spend" and type(r.get("usd")) in (int, float):  # T-1357: the cap counts the whole run
             run.usd = round((run.usd or 0) + r["usd"], 6)
+    run.turn_base = run.turns  # T-4204: the journal's turns are spent; --max-steps (the journal's or the flag's) is new
 
 
 def _runners(args, cli):
