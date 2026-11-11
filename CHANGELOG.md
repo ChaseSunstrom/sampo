@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- the check sampo lane accept starts is run by the trunk's sampo on the lane's tree, so a lane cut before an option existed is still checked and a check fix on the trunk holds for every waiting lane at once; a check that ends without a result is reported with its exit code and last output line instead of as cut off at its deadline (T-4410).
 - sampo code's close commit leaves out a directory a command filled (over 20 untracked files, none written by the run's own tools, not there when the run began), listing it in .git/info/exclude and saying so with its count, instead of sweeping build output into the commit (T-4387).
 - sampo focus takes a verified copy of a small path outside the repo before a step or verify deletes it (under <snapshot>.out, the same caps and hash check, an exact restore per path in the Undo line) and starts the task, where it used to refuse the plan unread; a planner's verify that removes its own /tmp binary ended sampo code's run at the plan (T-4377).
 - sampo code repairs a plan the plan gate refuses for a part of the request by asking the planner which of its criteria covers that part, for one new criterion, or whether the part asks for nothing to be made; a mapped part is bounded to half the request and recorded on the task, and no plan refusal ends the run while a repair round is left (T-4363).
