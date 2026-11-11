@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code carries on past its turn cap while a run is still changing files or moving a test, up to four carries and only with deadline left, and says why in each note and in the stop message; an edit between two runs of the same red test is progress, not a repeat (T-4291).
 - sampo code shows the planner the unfinished work on record, so a bare 'continue' plans the open items instead of an invented task; a request that names something else in the tree is not pushed off it, and a second ask that gives no plan keeps the first (T-4294).
 - sampo code starts a call with thinking off where it needs none: for --reason off, a local model's small call, and a size whose thinking was exhausted before; a call the caller asked to think teaches no such rule (T-4290).
 - sampo code's explore budget now counts a run by its effect and keeps running after an edit, forces 'run the test' then 'edit the source', and carries on once when turns run out with edits in the tree (T-4206).
