@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code's close commit leaves out a directory a command filled (over 20 untracked files, none written by the run's own tools, not there when the run began), listing it in .git/info/exclude and saying so with its count, instead of sweeping build output into the commit (T-4387).
 - sampo focus takes a verified copy of a small path outside the repo before a step or verify deletes it (under <snapshot>.out, the same caps and hash check, an exact restore per path in the Undo line) and starts the task, where it used to refuse the plan unread; a planner's verify that removes its own /tmp binary ended sampo code's run at the plan (T-4377).
 - sampo code repairs a plan the plan gate refuses for a part of the request by asking the planner which of its criteria covers that part, for one new criterion, or whether the part asks for nothing to be made; a mapped part is bounded to half the request and recorded on the task, and no plan refusal ends the run while a repair round is left (T-4363).
 - sampo code no longer ends a run at the plan when a verify writes inside the repo (rm -f of its own build product): the guard's refusal for want of a task is not a refusal of the verify, which waits for its task and is first run once the task is focused (T-4371).
