@@ -505,21 +505,24 @@ class PlanForm(CodeCase):
         self.assertEqual(len(f.seen), 8)  # three JSON tries and five field questions, no targeted one
 
     def test_focus_refusal_twice_for_a_clause_gets_one_targeted_question_and_the_task_starts(self):
-        f, r = self.go(plan(M_PLAN), plan(M_PLAN), {"text": "the test file is unchanged :: python3 test_calc.py"},
+        # T-4363: the order is the mapping question first (two replies that fill nothing), the whole re-plan next, and
+        # on its refusal the mapping question again: its reply, a new criterion, starts the task
+        f, r = self.go(plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(M_PLAN),
+                       {"text": "0\nthe test file is unchanged :: python3 test_calc.py"},
                        FIX_EDIT, DONE, CLOSE, request="fix add, and keep the tests as they are", kind="anthropic")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("a criterion for", f.said(2))
-        self.assertIn("keep the tests as they are", f.said(2))
+        self.assertIn("a criterion for", f.said(4))
+        self.assertIn("keep the tests as they are", f.said(4))
         self.assertEqual([self.task(t)["status"] for t in ("T-0001", "T-0002", "T-0003")],
                          ["dropped", "dropped", "done"], r.stdout + r.stderr)
         self.assertIn("the test file is unchanged", json.dumps(self.task("T-0003")))
 
     def test_focus_refusal_whose_targeted_reply_fills_nothing_ends_with_the_refusal(self):
-        f, r = self.go(plan(M_PLAN), plan(M_PLAN), {"text": "nope"},
-                       request="fix add, and keep the tests as they are", kind="anthropic")
+        f, r = self.go(plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(M_PLAN), {"text": "hmm"},
+                       {"text": "nope"}, request="fix add, and keep the tests as they are", kind="anthropic")
         self.assertEqual(r.returncode, 1)
         self.assertIn("refused the plan", r.stderr)
-        self.assertEqual(len(f.seen), 3)
+        self.assertEqual(len(f.seen), 6)
         self.assertEqual(self.task("T-0002")["status"], "planned")  # it stays to be looked at
 
     def test_focus_refusal_for_a_one_way_step_asks_for_that_step_again(self):
@@ -547,6 +550,177 @@ class PlanForm(CodeCase):
         self.assertIn(smith.STEP_LIMIT, brief, "the limit the gate asked for stays in the step the worker reads")
         self.assertIn("step 1 reworded for the plan gate", r.stdout)
 
+    # T-4363: the plan gate's clause refusal is answered by a mapping the planner gives -----------------------------------
+    TWO = "Get these helpers to a finished state I could release; decide what that takes."
+    TWO_PLAN = dict(M_PLAN, title="Bring the helpers in app.py to a release-ready state and cover them in test_app.py",
+                    criteria=[{"text": "app.py helpers are complete with no TODO/stub/placeholder behavior left",
+                               "verify": "! grep -q 'a - b' calc.py"},
+                              {"text": "Every helper in app.py has a passing test in test_app.py",
+                               "verify": "python3 test_calc.py"}])
+
+    def brief(self, tid):
+        with open(self.task(tid)["path"], encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_clause_map_one_and_none_start_the_task_with_both_criteria_and_a_non_goals_line(self):
+        # exam s8-048 goal-python-14283a: the plan is sound, the gate reads words; the planner says what covers what
+        f, r = self.go(plan(self.TWO_PLAN), {"text": "1"}, {"text": "none"}, FIX_EDIT, DONE, CLOSE, request=self.TWO,
+                       kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Get these helpers to a finished state I could release", f.said(1))
+        self.assertIn("decide what that takes", f.said(2))
+        self.assertIn("which of your criteria delivers this part", f.said(1))
+        # no whole JSON re-plan (the plan was sound); counted as what was asked, not the run's total, which a closing
+        # look before the close may lengthen
+        self.assertFalse(any("The plan gate refused this plan" in f.said(i) for i in range(len(f.seen))), f.said(2))
+        self.assertEqual([self.task(t)["status"] for t in ("T-0001", "T-0002")], ["dropped", "done"], r.stdout)
+        text = self.brief("T-0002")
+        self.assertIn("Get these helpers to a finished state I could release: app.py helpers are complete with no "
+                      "TODO/stub/placeholder behavior left", text)
+        self.assertIn("! grep -q 'a - b' calc.py", text)  # its check is untouched
+        self.assertIn("Every helper in app.py has a passing test in test_app.py", text)
+        self.assertEqual(text.count("verify with"), 2, text)
+        self.assertIn(f"- {smith._none_line('decide what that takes')}", text)
+        # (b) the clause that rests on another criterion's check is recorded in the task and in one note
+        self.assertIn("Clause map: 'Get these helpers to a finished state I could release' rests on criterion 1's "
+                      "check, not one of its own", text)
+        self.assertIn("plan gate: 'Get these helpers to a finished state I could release' -> criterion 1", r.stdout)
+
+    def test_clause_map_question_lists_the_criteria_numbered_with_their_checks(self):
+        f, r = self.go(plan(self.TWO_PLAN), {"text": "1"}, {"text": "none"}, FIX_EDIT, DONE, CLOSE, request=self.TWO,
+                       kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        asked = json.dumps(f.seen[1]["messages"][-1])
+        self.assertIn("1. app.py helpers are complete with no TODO/stub/placeholder behavior left :: ! grep -q", asked)
+        self.assertIn("2. Every helper in app.py has a passing test in test_app.py :: python3 test_calc.py", asked)
+
+    def test_clause_map_numbers_past_the_bound_get_the_old_question_with_a_new_check(self):
+        # one clause of two may rest on another criterion's check (MAPPED_ONE_IN): the second number is not read
+        self.assertEqual(smith.MAPPED_ONE_IN, 2)
+        f, r = self.go(plan(self.TWO_PLAN), {"text": "2."}, {"text": "1"},
+                       {"text": "what that takes is decided :: python3 test_calc.py"}, FIX_EDIT, DONE, CLOSE,
+                       request=self.TWO, kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("what that part means when it is done", f.said(3), "past the bound: the old question")
+        text = self.brief("T-0002")
+        self.assertIn("Get these helpers to a finished state I could release: Every helper in app.py", text)
+        self.assertIn("decide what that takes: what that takes is decided", text)
+        self.assertEqual(text.count("verify with"), 3, text)
+        self.assertEqual(text.count("rests on criterion"), 1, text)
+
+    def planner_non_goals(self, bad):
+        # a planner's own non_goals (a list excusing every clause, a number, a string) is dropped, not written
+        f, r = self.go(plan(dict(self.TWO_PLAN, non_goals=bad)), {"text": "1"}, {"text": "none"}, FIX_EDIT, DONE, CLOSE,
+                       request=self.TWO, kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("which of your criteria delivers this part", f.said(1), "the gate still refused it")
+        text = self.brief("T-0002")
+        self.assertEqual(text.count(smith._none_line("decide what that takes")), 1, text)
+        self.assertNotIn("- Get these helpers to a finished state I could release\n", text)
+        self.assertEqual(text.count("none of this is to be made"), 1, text)
+
+    def test_clause_map_a_planner_non_goals_list_never_reaches_the_brief(self):
+        self.planner_non_goals(["Get these helpers to a finished state I could release", "decide what that takes"])
+
+    def test_clause_map_a_planner_non_goals_number_never_reaches_the_brief(self):
+        self.planner_non_goals(5)
+
+    def test_clause_map_a_planner_non_goals_string_never_reaches_the_brief(self):
+        self.planner_non_goals("decide what that takes")
+
+    def test_clause_map_a_number_leaves_a_plan_whose_other_criterion_stays_as_it_was(self):
+        f, r = self.go(plan(self.TWO_PLAN), {"text": "2."}, {"text": "0\nwhat that takes is decided :: python3 test_calc.py"},
+                       FIX_EDIT, DONE, CLOSE, request=self.TWO, kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = self.brief("T-0002")
+        self.assertIn("Get these helpers to a finished state I could release: Every helper in app.py", text)
+        self.assertIn("app.py helpers are complete", text)
+        self.assertNotIn("decide what that takes: app.py helpers", text)
+        self.assertNotIn(smith._none_line("decide what that takes"), text)
+
+    def test_clause_map_zero_with_a_line_adds_one_new_criterion(self):
+        f, r = self.go(plan(M_PLAN), {"text": "0\nthe test file is unchanged :: python3 test_calc.py"}, FIX_EDIT, DONE,
+                       CLOSE, request="fix add, and keep the tests as they are", kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("which of your criteria delivers this part", f.said(1))  # what was asked up to the task's start
+        self.assertFalse(any("The plan gate refused this plan" in f.said(i) for i in range(len(f.seen))))
+        self.assertEqual([self.task(t)["status"] for t in ("T-0001", "T-0002")], ["dropped", "done"], r.stdout)
+        text = self.brief("T-0002")
+        self.assertIn("keep the tests as they are: the test file is unchanged", text)
+        self.assertIn("calc.add adds", text, "the plan's own criterion stays")
+
+    def test_clause_map_unreadable_reply_asks_the_old_question_once(self):
+        f, r = self.go(plan(M_PLAN), {"text": "I am not sure"}, {"text": "the test file is unchanged :: python3 test_calc.py"},
+                       FIX_EDIT, DONE, CLOSE, request="fix add, and keep the tests as they are", kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("which of your criteria delivers this part", f.said(1))
+        self.assertIn("what that part means when it is done", f.said(2))
+        self.assertIn("keep the tests as they are: the test file is unchanged", self.brief("T-0002"))
+
+    def test_clause_map_a_reply_that_fills_nothing_twice_goes_to_the_whole_replan_without_its_own_words_hint(self):
+        again = dict(M_PLAN, criteria=M_PLAN["criteria"] + [
+            {"text": "keep the tests as they are: test_calc.py is unchanged", "verify": "python3 test_calc.py"}])
+        f, r = self.go(plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(again), FIX_EDIT, DONE, CLOSE,
+                       request="fix add, and keep the tests as they are", kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("The plan gate refused this plan", f.said(3))
+        self.assertNotIn("own words", f.said(3))
+        self.assertIn("a criterion for", f.said(3))
+        self.assertEqual(self.task("T-0002")["status"], "done", r.stdout + r.stderr)
+
+    def test_clause_map_none_for_the_only_clause_is_an_unreadable_reply(self):
+        f, r = self.go(plan(M_PLAN), {"text": "none"}, {"text": "the test file is unchanged :: python3 test_calc.py"},
+                       FIX_EDIT, DONE, CLOSE, request="fix add, and keep the tests as they are", kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("what that part means when it is done", f.said(2), "asked the old question instead")
+        self.assertNotIn(smith._none_line("keep the tests as they are"), self.brief("T-0002"))
+
+    def test_clause_map_a_second_none_is_an_unreadable_reply(self):
+        f, r = self.go(plan(self.TWO_PLAN), {"text": "none"}, {"text": "none"},
+                       {"text": "what that takes is decided :: python3 test_calc.py"}, FIX_EDIT, DONE, CLOSE,
+                       request=self.TWO, kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("what that part means when it is done", f.said(3), "the second none gets the old question")
+        text = self.brief("T-0002")
+        self.assertEqual(text.count("none of this is to be made"), 1, text)
+        self.assertIn("what that takes is decided", text)
+
+    def test_clause_map_zero_with_a_check_that_passes_now_goes_to_the_replan_with_that_problem(self):
+        again = dict(M_PLAN, criteria=M_PLAN["criteria"] + [
+            {"text": "keep the tests as they are: test_calc.py is unchanged", "verify": "python3 test_calc.py"}])
+        f, r = self.go(plan(M_PLAN), {"text": "0\nthe module loads :: python3 -c 'import calc'"}, plan(again), FIX_EDIT,
+                       DONE, CLOSE, request="fix add, and keep the tests as they are", kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already passes before any work", f.said(2))
+        self.assertEqual(self.task("T-0002")["status"], "done", r.stdout + r.stderr)
+
+    # T-4363: no plan refusal ends the run while a repair round is left -------------------------------------------------
+    def test_replan_round_a_ladder_plan_whose_check_passes_goes_back_before_the_task_is_made(self):
+        # the field-by-field plan meets _plan_problem in _plan like any other: a green-before verify never reaches task new
+        ladder = ("FIX", "S", "Make calc.add add", f"calc.add adds two numbers :: {GREEN}", "1. edit calc.py")
+        f, r = self.go(*[{"text": "nope"}] * 3, *[{"text": a} for a in ladder], plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("came field by field", r.stdout)
+        self.assertIn("already passes before any work", f.said(3 + len(ladder)))
+        self.assertEqual(self.task()["status"], "done", "the first task made is the corrected plan's")
+
+    HARD = dict(M_PLAN, steps=["delete ./", "fix calc.add"])
+    GREEN_M = dict(M_PLAN, criteria=[{"text": "calc.add adds", "verify": GREEN}])
+
+    def test_replan_round_a_replan_the_check_refuses_gets_one_more_round_with_the_problem(self):
+        f, r = self.go(plan(self.HARD), plan(self.GREEN_M), plan(M_PLAN), FIX_EDIT, DONE, CLOSE, kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("already passes before any work", f.said(2))
+        self.assertIn("fails the harness's own check", json.dumps(f.seen[2]["messages"][-1]))  # the last message, not the first re-plan's
+        self.assertEqual([self.task(t)["status"] for t in ("T-0001", "T-0002")], ["dropped", "done"], r.stdout)
+
+    def test_replan_round_the_extra_round_is_the_last_one(self):
+        f, r = self.go(plan(self.HARD), plan(self.GREEN_M), plan(self.GREEN_M), kind="anthropic")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("already passes before any work", r.stderr + r.stdout)
+        self.assertEqual(len(f.seen), 3)
+        self.assertEqual(self.task("T-0001")["status"], "planned")  # it stays to be looked at
+
     def downgrades(self, tid="T-0001"):
         return [e for e in map(json.loads, journal_events(self, tid)) if e.get("downgrade")]
 
@@ -572,6 +746,80 @@ class PlanForm(CodeCase):
 
 NAMES_ITEM = dict(M_PLAN, title="Make parse_line() handle tabs", steps=["handle tabs in parse_line()"],
                   criteria=[{"text": "parse_line() handles tabs", "verify": "python3 test_calc.py"}])
+
+
+class ClauseMapParse(unittest.TestCase):  # T-4363 review: what a reply to the mapping question is read as
+    def test_a_number_counts_only_as_the_whole_first_line(self):
+        for text in ("2", " 2. ", "Criterion 2", "criterion #2.", "#2", "2\nit covers the second part"):
+            with self.subTest(text=text):
+                self.assertEqual(smith._clause_map(text, 3), ("crit", 2))
+        for text in ("2 of them cover it", "1 and 3", "1, 2", "-1", "I think 2", "2)", "number 2", "1.0", "4", "7"):
+            with self.subTest(text=text):
+                self.assertIsNone(smith._clause_map(text, 3), "unreadable: the old question is asked")
+
+    def test_none_is_the_whole_first_line_too(self):
+        for text in ("none", "None.", "none\nit asks for nothing to be made"):
+            self.assertEqual(smith._clause_map(text, 3), ("none",), text)
+        for text in ("none of them", "None cover it", "nothing", "none, I think"):
+            self.assertIsNone(smith._clause_map(text, 3), text)
+
+    def test_zero_takes_only_the_one_line_holding_the_separator(self):
+        self.assertEqual(smith._clause_map("0\nNone cover it.\nwhat it means :: python3 t.py\nHope this helps", 2),
+                         ("new", "what it means", "python3 t.py"))
+        self.assertEqual(smith._clause_map("0\n`what it means :: python3 t.py`", 2),
+                         ("new", "what it means", "python3 t.py"))
+        for text in ("0", "0\nno line with both halves", "0 :: x", "0: what :: check", "0\n :: check", "0\nwhat :: "):
+            self.assertIsNone(smith._clause_map(text, 2), text)
+
+    def test_a_run_of_digits_is_unreadable_not_an_error(self):
+        for text in ("9" * 4301, "0" * 4301, "1" * 4):
+            self.assertIsNone(smith._clause_map(text, 3))
+        self.assertIsNone(smith._clause_map("", 3))
+        self.assertIsNone(smith._clause_map(None, 3))
+
+    def test_the_non_goals_line_carries_the_clause_and_stop_words_only(self):
+        from sampo import recall
+        line = smith._none_line("decide what that takes")
+        self.assertEqual(set(recall._tokens(line)), set(recall._tokens("decide what that takes")))
+        other = "keep the decision criteria next to the release notes"  # shared stems with a wordier boilerplate
+        self.assertFalse(set(recall._tokens(line)) & set(recall._tokens(other)))
+
+    def test_the_gate_counts_a_request_without_its_context_lines(self):
+        from sampo import recall
+        for ctx in ("CONTEXT: calc.py is in the root", "> CONTEXT: calc.py is in the root"):
+            req = f"fix add, and keep the tests as they are\n{ctx}"
+            self.assertEqual(len(recall.clauses(req)), 2, "recall.clauses alone counts the context line")
+            self.assertEqual(len(smith._gate_clauses(req)), 1, ctx)
+
+    def make(self, plan, fm):
+        return types.SimpleNamespace(request="fix add", plan=plan, fm=fm, plan_msgs=None, root=".")
+
+    def test_a_failed_task_set_ends_the_run_with_the_refused_task_kept(self):
+        calls = []
+
+        def fm(*a):
+            calls.append(a)
+            return (0, json.dumps({"id": "T-0009"})) if a[:2] == ("task", "new") else (1, "no such section")
+        pl = smith._ClauseMap(M_PLAN)
+        pl.none_lines = [smith._none_line("keep it")]
+        with self.assertRaises(smith.CodeError) as cm:
+            smith._make_task(self.make(pl, fm), None)
+        self.assertIn("Non-goals", str(cm.exception))
+        self.assertEqual(cm.exception.then, "fm task show T-0009")
+        self.assertEqual([c[:2] for c in calls], [("task", "new"), ("task", "set")])
+        self.assertIn("- keep it: none of this is to be made", calls[1][-1])
+
+    def test_a_plan_the_planner_wrote_never_runs_task_set(self):
+        calls = []
+
+        def fm(*a):
+            calls.append(a)
+            return (0, json.dumps({"id": "T-0009"})) if a[:2] == ("task", "new") else (1, "stop here")
+        for bad in (["everything"], 5, "text"):
+            with self.subTest(bad=bad), mock.patch.object(smith.core, "find_project", return_value=None), \
+                    self.assertRaises(smith.CodeError):
+                smith._make_task(self.make(dict(M_PLAN, non_goals=bad), fm), None)
+        self.assertNotIn(("task", "set"), [c[:2] for c in calls])
 
 
 class PlanFormRecord(CodeCase):

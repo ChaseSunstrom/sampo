@@ -701,15 +701,16 @@ class Review(CodeCase):
         # T-3016: 3 of 15 local exam runs ended here (an M plan with no criterion for a clause of the request)
         kept = dict(M_PLAN, criteria=M_PLAN["criteria"] + [
             {"text": "keep the tests as they are", "verify": "python3 test_calc.py"}])
-        f = self.serve("anthropic", plan(M_PLAN), plan(kept),
+        # T-4363: the mapping question comes first; two replies that fill nothing leave the whole re-plan to do it
+        f = self.serve("anthropic", plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(kept),
                        call("edit", file="calc.py", old="a - b", new="a + b"), call("done", summary="x"), CLOSE)
         r = self.code("fix add, and keep the tests as they are", "--model", "fake", check=False)
-        self.assertIn("isn't planned enough", f.said(1))
+        self.assertIn("isn't planned enough", f.said(3))
         self.assertEqual(self.task("T-0001")["status"], "dropped", r.stdout + r.stderr)
         self.assertEqual(self.task("T-0002")["status"], "done", r.stdout + r.stderr)
 
     def test_a_plan_refused_twice_ends_the_run_with_the_refusal(self):
-        self.serve("anthropic", plan(M_PLAN), plan(M_PLAN))
+        self.serve("anthropic", plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(M_PLAN), {"text": "hmm"}, {"text": "nope"})
         r = self.code("fix add, and keep the tests as they are", "--model", "fake", check=False)
         self.assertEqual(r.returncode, 1)
         self.assertIn("refused the plan", r.stderr)
@@ -720,7 +721,7 @@ class Review(CodeCase):
     def test_a_re_plan_that_cannot_stand_keeps_the_refused_task(self):
         # T-3016 review: the refused task is dropped only once its replacement passes the plan's checks
         weak = dict(M_PLAN, criteria=[{"text": "keep the tests as they are", "verify": "true"}])
-        self.serve("anthropic", plan(M_PLAN), plan(weak))
+        self.serve("anthropic", plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(weak), plan(weak))  # T-4363: one more round
         r = self.code("fix add, and keep the tests as they are", "--model", "fake", check=False)
         self.assertEqual(r.returncode, 1)
         self.assertIn("proves nothing", r.stderr)

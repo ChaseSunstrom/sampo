@@ -4679,23 +4679,35 @@ def _replan(run, profile, tid, why, repaired, code):
     msgs, then = getattr(run, "plan_msgs", None), f"fm task show {tid}" if tid else None
     if repaired > 1 or not msgs or code == 124 or "refused" not in why.split(":", 1)[-1]:  # a --verify plan has no
         raise CodeError(why, then=then)  # planner conversation; a timed-out task new may have made the task anyway
-    if repaired:  # T-4282: refused again after the re-plan: one targeted question for the piece the gate names
-        fixed, how = _piece(run, run.planner or profile, msgs, why), "asked for the one piece it named"
-        if not fixed:
+    fixed = how = None
+    rej = ""
+    if repaired or _GATE_CLAUSES.search(why):  # T-4282, T-4363: a targeted question for the piece the gate names; for a
+        fixed, how = _piece(run, run.planner or profile, msgs, why), "asked for the one piece it named"  # clause it is
+        if fixed:  # asked first, as a mapping onto the plan's own criteria; the JSON re-plan is the fallback
+            kept, run.plan = run.plan, fixed
+            problem = _plan_problem(run)
+            if problem:
+                run.plan = kept
+                if repaired:
+                    raise CodeError(f"{why}\nthe piece asked for: {problem}", then=then)
+                fixed, rej = None, problem
+        elif repaired:
             raise CodeError(why, then=then)
-        kept, run.plan = run.plan, fixed
-        problem = _plan_problem(run)
-        if problem:
-            run.plan = kept
-            raise CodeError(f"{why}\nthe piece asked for: {problem}", then=then)
-    else:
-        hint = ("Give each part of the request it names a criterion in the request's own words, with a check that "
-                "fails now.\n" if "a criterion for" in why else "")
+    if not fixed:
+        hint = ("Give each part of the request it names a criterion with a check that fails now.\n"
+                if "a criterion for" in why else "")
+        hint += f"The piece you just named fails the harness's own check: {rej}\n" if rej else ""
         msgs.append({"role": "user", "content": f"The plan gate refused this plan: {why}\n{hint}"
                                                 "Reply with only the corrected plan as a JSON object."})
         run.plan = slot(run, run.planner or profile, msgs, getattr(run, "plan_check", check_plan), "plan", PLAN_FIELDS)
         problem, how = "the planner answered instead of planning" if is_answer(run.plan) else _plan_problem(run), \
             "re-planned once"
+        if problem and not is_answer(run.plan):  # T-4363: a re-plan the plan checks refuse gets one more round of slots
+            msgs.append({"role": "user", "content": f"That plan fails the harness's own check: {problem}\n"
+                                                    "Reply with only the corrected plan as a JSON object."})
+            run.plan = slot(run, run.planner or profile, msgs, getattr(run, "plan_check", check_plan), "plan",
+                            PLAN_FIELDS)
+            problem = "the planner answered instead of planning" if is_answer(run.plan) else _plan_problem(run)
         if problem:  # the refused task stays, to be looked at
             raise CodeError(f"{why}\nre-plan: {problem}", then=then)
     if tid:
@@ -4714,6 +4726,59 @@ _GATE_STEP = re.compile(r"an Undo: line on step (\d+)(?: \([^)\n]*\))?")  # core
 STEP_LIMIT = "every untracked file stays as it is"  # what a step reworded for the gate carries on to the worker
 
 
+MAPPED_ONE_IN = 2  # T-4363: at most one clause in this many (rounded up) may rest on another criterion's check, not its own
+
+
+class _ClauseMap(dict):
+    """T-4363: a plan the clause question repaired, with what the question decided about the request's clauses: mapped
+    (each clause that rests on a criterion's check: {clause, criterion}) and none_lines (the Non-goals lines for clauses
+    that ask for nothing to be made). Attributes, not keys: a planner's JSON can't forge either, and only these reach
+    the task."""
+    mapped = ()
+    none_lines = ()
+
+
+def _none_line(bare):
+    """A Non-goals line for a clause that asks for nothing to be made. The plan gate counts a clause echoed when a line
+    shares two words with it, so the line is the clause and stop-words only: it covers that clause and no other."""
+    return f"{bare}: none of this is to be made"
+
+
+def _gate_clauses(text):
+    """The request's clauses as the plan gate counts them: recall.bind drops the CONTEXT: lines before it splits."""
+    from sampo import recall
+    return recall.clauses("\n".join(x[2:] if x.startswith("> ") else x for x in (text or "").splitlines()
+                                    if not re.match(r"(?:> )?\s*CONTEXT:", x)))
+
+
+_MAP_WORD = re.compile(r"(?i)\s*(?:criterion\s*#?\s*|#\s*)?(\d{1,3}|none)\s*\.?\s*")  # the whole first line, no more
+
+
+def _clause_map(text, n):
+    """T-4363: a reply to 'which criterion delivers this clause', as ('crit', k) for a number 1..n, ('none',), or
+    ('new', what, check) for 0 and the one line 'what :: check'; None when it reads as none of these (a number out of
+    range, a 0 without both halves, prose, a number with words around it, a run of digits), so the caller asks the old
+    question. The number or none is the whole first line, bar a full stop, 'criterion' and '#'."""
+    lines = [x.strip() for x in (text or "").strip().splitlines() if x.strip()]
+    hit = _MAP_WORD.fullmatch(lines[0]) if lines else None
+    if not hit:
+        return None
+    word = hit.group(1).lower()
+    if word == "none":
+        return ("none",)
+    k = int(word)
+    if 1 <= k <= n:
+        return ("crit", k)
+    if k:
+        return None
+    for line in lines[1:]:  # 0: only the line holding ' :: ' is read, whatever prose comes round it
+        what, sep, check = line.partition(" :: ")
+        if sep:
+            what, check = what.strip("` "), check.strip().strip("`").strip()
+            return ("new", what, check) if what and check else None
+    return None
+
+
 def _piece(run, profile, msgs, why):
     """T-4282: the plan with the one missing piece the plan gate named, filled by a targeted question each, or None when
     the refusal names no such piece, a reply doesn't give one, or the model call fails (the refusal then ends the run as
@@ -4724,25 +4789,58 @@ def _piece(run, profile, msgs, why):
     and a model can't make one. The reworded step carries STEP_LIMIT, so the worker reads the limit too; the gate reads
     the new step again at focus, and each command still meets Smith's guard when it runs. The plan is checked like any
     other before it replaces the refused one."""
-    pl = dict(run.plan, criteria=list(run.plan["criteria"]), steps=list(run.plan["steps"]))
-    grp, step, asked, said = _GATE_CLAUSES.search(why), _GATE_STEP.search(why), 0, None
+    pl = _ClauseMap(run.plan, criteria=list(run.plan["criteria"]), steps=list(run.plan["steps"]))
+    pl.mapped, pl.none_lines = (list(getattr(run.plan, k, ())) for k in ("mapped", "none_lines"))  # a plan an earlier
+    pl.pop("non_goals", None)  # round repaired keeps its record; a planner's own non_goals is never read
+    grp, step, asked, said, maps = _GATE_CLAUSES.search(why), _GATE_STEP.search(why), 0, None, []
 
-    def one(question, key):
+    def one(question, key, raw=False):
         msgs.append({"role": "user", "content": f"The plan gate still refuses the plan, for one missing piece: "
                                                 f"{question}"})
         r = _ask(run, profile, msgs, "plan")
         msgs.append({"role": "assistant", "content": r["text"]})
-        return _line(_unlabel(r["text"], key))
+        return _unlabel(r["text"], key) if raw else _line(_unlabel(r["text"], key))
     try:
+        from sampo import recall
+        parts = len(_gate_clauses(run.request))  # T-4363: the clauses the gate counts, CONTEXT lines aside
+        none_ok = not pl.none_lines and parts > 1  # one none, never the request's only clause
+        room = -(-parts // MAPPED_ONE_IN)  # clauses that may rest on another criterion's check (all, never, of 2+)
         for clause in re.findall(r'"([^"\n]*)"', grp.group(1)) if grp else ():
-            said, sep, verify = one(
-                f'a criterion for this part of the request: "{clause}". Leave the JSON aside. In plain text, reply '
-                'with only one line: what that part means when it is done, then " :: ", then one shell command that '
-                "fails now and exits 0 only once it is done.", "criterion").partition("::")
-            said, verify = said.strip(), verify.strip().strip("`").strip()
-            if not (sep and said and verify) or "::" in verify or len(pl["criteria"]) >= 8:
-                return None
-            pl["criteria"].append({"text": f"{clause.strip(' .;,…')}: {said}", "verify": verify})
+            bare = clause.strip(" .;,…")
+            listing = "\n".join(_one_line(f"{i}. {cr['text']} :: {cr['verify']}", 300)
+                                for i, cr in enumerate(pl["criteria"], 1))
+            got = _clause_map(one(
+                f'which of your criteria delivers this part of the request: "{clause}"?\nYour criteria:\n{listing}\n'
+                'Leave the JSON aside. In plain text, reply with only its number; or 0 and then on the next line '
+                '"<what it means> :: <a check that fails now>" when none of them does; or the word none when this part '
+                "asks for nothing to be made and only leaves a choice to you.", "criterion", raw=True),
+                len(pl["criteria"]))
+            if got and ((got[0] == "none" and not none_ok) or (got[0] == "crit" and len(pl.mapped) >= room)):
+                got = None  # a second none, the only clause, or past the bound on mapped clauses: read as no reply
+            if got and got[0] == "crit":
+                cr = pl["criteria"][got[1] - 1]
+                pl["criteria"][got[1] - 1] = dict(cr, text=f"{bare}: {cr['text']}")  # its check stays as it was
+                pl.mapped.append({"clause": bare, "criterion": got[1]})
+                maps.append(f"{bare!r} -> criterion {got[1]}")
+            elif got and got[0] == "none":
+                pl.none_lines.append(_none_line(bare))
+                none_ok = False
+                maps.append(f"{bare!r} -> nothing to make (Non-goals)")
+            else:  # a new criterion (the reply said 0) or an unreadable reply, which asks the old question once
+                if got:
+                    said, verify = got[1], got[2]
+                else:
+                    said, sep, verify = one(
+                        f'a criterion for this part of the request: "{clause}". Leave the JSON aside. In plain text, '
+                        'reply with only one line: what that part means when it is done, then " :: ", then one shell '
+                        "command that fails now and exits 0 only once it is done.", "criterion").partition("::")
+                    said, verify = said.strip(), verify.strip().strip("`").strip()
+                    if not sep:
+                        return None
+                if not (said and verify) or "::" in verify or len(pl["criteria"]) >= 8:
+                    return None
+                pl["criteria"].append({"text": f"{bare}: {said}", "verify": verify})
+                maps.append(f"{bare!r} -> a new criterion")
             asked += 1
         n = int(step.group(1)) if step else 0
         if 1 <= n <= len(pl["steps"]):
@@ -4764,6 +4862,8 @@ def _piece(run, profile, msgs, why):
         return None
     if step and said:  # said only of a plan that goes on
         run.emit("note", said, reworded=n)
+    if maps:
+        run.emit("note", _one_line(f"plan gate: {'; '.join(maps)}", 600))
     return pl
 
 
@@ -4773,6 +4873,8 @@ def _make_task(run, profile, repaired=False):
     a = ["task", "new", pl["title"], "--type", pl["type"], "--tier", pl["tier"], f"--raw={run.request}{after}"]
     if pl["tier"] == "M":  # T-2344: the model's readings and options, so the task meets the plan gate unchanged
         it, ap = plan_sections(pl)
+        ap += "".join(f" Clause map: {x['clause']!r} rests on criterion {x['criterion']}'s check, not one of its own."
+                      for x in getattr(pl, "mapped", ()))  # T-4363: the close can say which clauses lean on another check
         a += [f"--interpretation={it}", f"--approach={ap}", "--json"]
     else:
         a += [f"--interpretation={run.request}",
@@ -4789,6 +4891,12 @@ def _make_task(run, profile, repaired=False):
     if code or not made.get("id"):
         return _replan(run, profile, made.get("id"), f"fm task new refused the plan: {out[:500]}", repaired, code)
     if pl["tier"] == "M":
+        if getattr(pl, "none_lines", None):  # T-4363: task new has no flag for it; the plan gate reads the section at
+            code, out = run.fm("task", "set", made["id"], "--section", "Non-goals", "--text",  # focus. Only the lines the
+                               "\n".join(f"- {x}" for x in pl.none_lines))  # clause question made: never a planner's key
+            if code:
+                return _replan(run, profile, made["id"], f"fm task set refused the plan's Non-goals: {out[:500]}",
+                               repaired, code)
         p = core.find_project(run.root)
         if p and core.rival_gap(core.find_brief(p, made["id"])):  # T-2341: under the race bar or one reading
             run.fm("second", "rival", made["id"])  # a failed or skipped read is noted and never blocks
