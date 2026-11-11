@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code's explore budget now counts a run by its effect and keeps running after an edit, forces 'run the test' then 'edit the source', and carries on once when turns run out with edits in the tree (T-4206).
 - sampo check --affected also runs the doctor's tree-only self docs check on the checked tree, so a docs/map line over 2000 characters fails in the lane's own run and names its file and line (T-4279).
 - sampo check's gate loop keeps the gates' environment: every gate after the first still leaves out other tasks' red-first tests, and a gate after an environment failure runs instead of crashing (T-4285).
 - A flaky test failure no longer empties the test cache: a class the cache has green that fails runs once more first, and each flake or drop leaves a line in the run-cache's events file (T-4274).
