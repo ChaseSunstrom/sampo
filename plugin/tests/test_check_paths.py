@@ -160,6 +160,37 @@ class CheckSkip(ForemanTestCase):
         r = self.fm("check", check=False, env={"FOREMAN_SKIP_TESTS": "test_red"})
         self.assertEqual(r.returncode, 1, "only fm check's own red-first list leaves a file out")
 
+    def test_gate_env_a_second_gate_still_sees_the_skip_list(self):
+        """T-4285: the gate loop reused its environment variable for a failure note, so every gate after the first
+        ran without FOREMAN_SKIP_TESTS and failed on another task's red-first test."""
+        self.fm("init")
+        self.suite()
+        # the probe passes only when the environment names test_red, whichever of the two gates runs second
+        self.write("probe.py", "import os, sys\nsys.exit(0 if os.environ.get('FOREMAN_SKIP_TESTS') == 'test_red' else 1)\n")
+        self.fm("check", "add", "python3 tests/run.py")
+        self.fm("check", "add", "python3 probe.py")
+        b = self.task("B builds red")
+        self.fm("task", "evidence", b, "--step", "1", "--run", "python3 tests/run.py test_red", check=False)
+        self.fm("checkpoint")
+        self.task("A")
+        r = self.fm("check", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"skipped 1 test file(s) that are only task {b}'s red-first tests: test_red", r.stdout)
+
+    def test_gate_env_a_gate_after_an_environment_failure_still_runs(self):
+        """T-4285: an environment failure in one gate made the next gate's environment a string, so sampo check
+        crashed with a traceback instead of running that gate."""
+        self.fm("init")
+        self.write("src/app.py", "a = 1\n")
+        marker = os.path.join(self.tmp, "second-gate")
+        self.fm("check", "add", "echo 'ModuleNotFoundError: No module named zz' >&2; exit 1")
+        self.fm("check", "add", f"echo x >> {marker}")
+        r = self.fm("check", check=False)
+        self.assertNotIn("Traceback", r.stdout + r.stderr)
+        self.assertEqual(r.returncode, 1, "the first gate failed")
+        self.assertEqual(open(marker).read().count("x") if os.path.exists(marker) else 0, 1,
+                         "the second gate ran after the environment failure")
+
 
 class CheckPython(ForemanTestCase):
     """T-1805: fm check --python VER runs the gates with that interpreter as python3 (oldest: the lowest Foreman

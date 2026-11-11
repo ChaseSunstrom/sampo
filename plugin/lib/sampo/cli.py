@@ -5571,9 +5571,9 @@ def _cmd_check(args):
                     if narrow else "flaky: failed, then passed on a rerun")
             elif before.get(cmd):
                 notes[cmd] = "pre-existing: it also failed before this task"
-        env = failure_class(output) if code else None
-        if env:  # R4: say when a failure is the environment's, not a regression in the code
-            notes[cmd] = "; ".join(filter(None, [notes.get(cmd), env]))
+        env_note = failure_class(output) if code else None  # T-4285: not env, which every gate still runs under
+        if env_note:  # R4: say when a failure is the environment's, not a regression in the code
+            notes[cmd] = "; ".join(filter(None, [notes.get(cmd), env_note]))
         results.append((cmd, code, output, time.monotonic() - t0))
         slow = None if code else _slower(p, cmd, results[-1][3])
         if slow:
