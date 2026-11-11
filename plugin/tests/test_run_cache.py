@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -733,6 +734,7 @@ class Main(unittest.TestCase):
         self.addCleanup(cover.stop)
         self.blobs, self.git_dir = {"a.py": "ka", "b.py": "kb", "c.py": "kc", "other.py": "ko"}, "/repo"
         self.fail_ids, self.late, self.skips, self.during, self.blind = set(), set(), set(), {}, set()
+        self.once = {}  # T-4274: class -> how many more times it fails before it passes (a flake)
 
     def main(self, *argv, cids=("test_m.A", "test_m.B"), tests=1, matched=None, sample=0.5):
         ran, err = [], io.StringIO()
@@ -743,10 +745,14 @@ class Main(unittest.TestCase):
             if c.split(".")[1] not in self.blind:
                 run.COVERED[c] = f"f /repo/{c.split('.')[1].lower()}.py\n"
             self.blobs.update(self.during.pop(c, {}))  # a file edited while the class runs
+            getattr(self, "after", lambda c: None)(c)
             if c in self.late:
                 return c, 1, run.NOT_STARTED, 0, 0.0
             if c in self.skips:
                 return c, 0, f"\nRan {n} tests in 0.0s\n\nOK (skipped=1)\n", n, 0.0
+            if self.once.get(c):
+                self.once[c] -= 1
+                return c, 1, "boom", n, 0.0
             return c, int(c in self.fail_ids), "boom" if c in self.fail_ids else "", n, 0.0
         rnd = sample if callable(sample) else (lambda: sample)
         with mock.patch.object(run, "classes", fake_classes(list(cids), tests, matched)), \
@@ -881,9 +887,71 @@ class Main(unittest.TestCase):
         self.fail_ids = {"test_m.A"}
         code, ran, err = self.main("test_m", sample=lambda: next(draws))
         self.assertEqual(code, 1)
-        self.assertEqual(ran, ["test_m.A", "test_m.B"], "the cache is wrong: what it skipped runs too")
+        self.assertEqual(ran, ["test_m.A", "test_m.A", "test_m.B"],
+                         "red twice: the cache is wrong, and what it skipped runs too")
         self.assertIn("test_m.A failed though the cache had it green", err)
         self.assertEqual(self.cache(), {}, "dropped, and nothing recorded from this run")
+
+    def events(self):
+        try:
+            with open(run.events_path(run.cache_path(self.git_dir))) as f:
+                return [json.loads(ln) for ln in f]
+        except FileNotFoundError:
+            return []
+
+    def test_a_flake_of_a_sampled_class_keeps_the_cache_and_counts_green(self):
+        # T-4274: one timing failure on a loaded host emptied the whole cache, so every check reran everything
+        self.main("test_m")
+        draws = iter([0.05, 0.9])  # A drawn, B skipped
+        self.once = {"test_m.A": 1}
+        code, ran, err = self.main("test_m", sample=lambda: next(draws))
+        self.assertEqual((code, ran), (0, ["test_m.A", "test_m.A"]), err)
+        self.assertRegex(err, r"test_m\.A failed once and passed again on code the cache has green \(load [\d.]+ per "
+                              r"CPU\): a flake, the cache stands")
+        self.assertNotIn("the cache is wrong", err)
+        self.assertEqual(sorted(self.cache()), ["test_m.A", "test_m.B"])
+        self.assertRegex(err, r"\nRan 1 tests in [\d.]+s \(1 jobs, [^\n]*\); 1 more green in the cache\n")
+        self.assertEqual(err.strip().splitlines()[-1], "OK")
+
+    def test_a_flake_whose_second_run_the_deadline_stopped_neither_drops_the_cache_nor_passes(self):
+        self.main("test_m")
+        self.once = {"test_m.A": 1}
+
+        def late_after_first(c):  # the rerun finds the deadline passed
+            if self.once.get(c) == 0:
+                self.late.add(c)
+        self.after = late_after_first
+        code, ran, err = self.main("test_m", cids=("test_m.A",), sample=0.0)
+        self.assertEqual(ran, ["test_m.A", "test_m.A"])
+        self.assertNotEqual(code, 0, err)
+        self.assertNotIn("the cache is wrong", err)
+        self.assertEqual(sorted(self.cache()), ["test_m.A", "test_m.B"])
+
+    def test_events_a_flake_and_a_drop_each_leave_a_line_with_the_class_and_the_load(self):
+        self.main("test_m")
+        self.once = {"test_m.A": 1}
+        self.main("test_m", sample=0.0)
+        self.fail_ids = {"test_m.B"}
+        self.main("test_m", sample=0.0)
+        got = self.events()
+        self.assertEqual([(e["kind"], e["class"]) for e in got], [("flake", "test_m.A"), ("drop", "test_m.B")])
+        self.assertTrue(all(isinstance(e["load"], float) and abs(e["at"] - time.time()) < 600 for e in got), got)
+        self.assertEqual(os.stat(run.events_path(run.cache_path(self.git_dir))).st_mode & 0o777, 0o600)
+
+    def test_events_the_file_keeps_its_newest_lines_only(self):
+        p = run.events_path(run.cache_path(self.git_dir))
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with mock.patch.object(run, "EVENTS_KEEP", 5):
+            for i in range(12):
+                run.note_event(run.cache_path(self.git_dir), "flake", f"m.C{i}")
+        got = self.events()
+        self.assertLessEqual(len(got), 5)
+        self.assertEqual(got[-1]["class"], "m.C11")
+
+    def test_events_a_folder_that_can_not_be_written_never_fails_the_run(self):
+        open(os.path.join(self.d, "file-not-dir"), "w").close()
+        run.note_event(os.path.join(self.d, "file-not-dir", "x.json"), "flake", "m.A")
+        self.assertTrue(os.path.isfile(os.path.join(self.d, "file-not-dir")))
 
     def test_a_sampled_class_the_deadline_stopped_keeps_the_cache(self):
         self.main("test_m")

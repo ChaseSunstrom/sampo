@@ -545,6 +545,32 @@ def drop_cache(path):
         _write_json(path, {"gen": load_cache(path)[0] + 1, "classes": {}})
 
 
+EVENTS_KEEP = 500  # T-4274: the newest lines the events file keeps
+
+
+def events_path(cache):
+    return cache[:-len(".json")] + ".events.jsonl" if cache.endswith(".json") else cache + ".events.jsonl"
+
+
+def note_event(cache, kind, cid):
+    """T-4274: one line in the cache's events file (the class, the time, the load per CPU) for a flake (a class the
+    cache has green failed once and passed again) or a drop (it failed twice: the cache was emptied). A run's stderr
+    is rarely kept, so until this nothing said how often the cache was lost, or to which class. Never fails a run."""
+    path = events_path(cache)
+    line = json.dumps({"at": int(time.time()), "kind": kind, "class": cid, "load": round(float(load_per_cpu()), 2)})
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with _cache_lock(path):
+            fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "r+") as f:
+                old = f.read().splitlines()
+                if len(old) >= EVENTS_KEEP:
+                    f.seek(0)
+                    f.truncate()
+                    f.write("".join(ln + "\n" for ln in old[-(EVENTS_KEEP - 1):]))
+                f.write(line + "\n")
+
+
 NO_JOIN = "SAMPO_NO_JOIN"  # T-4267: =1 never joins a class another run is running, nor marks the ones this run runs
 POLL = 0.2  # T-4267: how often a waiter reads the owner's marker
 JOIN_MIN_S, JOIN_TIMES = 120, 3  # T-4267: a marker older than max(JOIN_MIN_S, JOIN_TIMES x the class's known time) is dead
@@ -1616,7 +1642,19 @@ def main():
                     results[i] = again
         bad = [r[0] for r in results if r[1] != 0 and owner(r[0]) in drawn  # a deadline's stop says nothing of it
                and r[2] != NOT_STARTED and "the run's deadline" not in r[2]]
-        if bad:  # T-3502: green in the cache at this code, red now: the cache is wrong, so nothing it said holds
+        for i, r in enumerate(results):  # T-4274: red on code the cache has green is a flake (a loaded host fails the
+            if r[0] in bad:              # timing-sensitive classes) far more often than a file the coverage missed:
+                again = go(r[0])         # it runs once more, the pool drained, before the cache is blamed
+                if again[1] == 0:
+                    results[i] = again
+                    bad.remove(r[0])
+                    note_event(cache, "flake", r[0])
+                    sys.stderr.write(f"run.py: {r[0]} failed once and passed again on code the cache has green (load "
+                                     f"{load_per_cpu():.1f} per CPU): a flake, the cache stands\n")
+                elif again[2] == NOT_STARTED or "the run's deadline" in again[2]:
+                    bad.remove(r[0])  # the deadline's stop says nothing of the cache; the class's first red stands
+        if bad:  # T-3502: green in the cache at this code, red twice now: the cache is wrong, so nothing it said holds
+            note_event(cache, "drop", bad[0])
             drop_cache(cache)
             sys.stderr.write(f"run.py: {bad[0]} failed though the cache had it green at the same code: the cache is "
                              f"wrong, dropped" + (f"; running the {len(skip)} classes it skipped\n" if skip else "\n"))
