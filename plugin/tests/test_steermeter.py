@@ -17,7 +17,7 @@ from sampo import steermeter as sm
 
 GOOD = {"kind": "steer", "avoidable": True, "missed_thought": "check the live page, not only the tests",
         "root": "R7", "why": "it said done after the tests passed", "concern": "the page really works",
-        "surface": "the login page"}
+        "surface": "the login page", "same_as": "new"}
 
 
 def reply(**kw):
@@ -442,6 +442,124 @@ class Detached(Meter):
         with open(os.path.join(self.p.dir, "steers.lock"), "w") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
             self.assertEqual(sm.tick(self.p)["read"], 0)
+        self.assertEqual(self.prompts, [])
+
+
+class Folding(Meter):
+    """T-4200 review: the meter decides which message says an open concern again (same_as), with a fake model; the
+    replies name the K- ids the test can compute (concern_id of the session and the entry's uuid)."""
+
+    def talk(self, sid, *texts):
+        entries = []
+        for t in texts:
+            entries += [self.said("on it"), self.user(t)]
+        return self.session(entries, sid=sid)
+
+    @staticmethod
+    def uuid_of(sid, k):
+        return f"{sid[:8]}-{2 * k + 1}"  # talk(): the k-th user message is entry 2k+1
+
+    def book(self, sid, uuid, text, at, concern):
+        """A row as the meter booked it before it made a decision (no repeat_of key)."""
+        r = {"session": sid, "uuid": uuid, "at": at, "model": "fake", "text": text, "kind": "steer", "avoidable": True,
+             "root": "R7", "missed_thought": "check the live page", "why": "it said done", "concern": concern,
+             "surface": "the push"}
+        c.append_line(os.path.join(self.p.dir, "steers.jsonl"), json.dumps(r, ensure_ascii=False))
+
+    def test_folding_three_messages_about_one_thing_become_one_concern_said_three_times(self):
+        from sampo import concerns as cn
+        sid = "aaaaaaaa-1111-4111-8111-000000000001"
+        self.talk(sid, "why is the page blank", "still blank after the deploy", "it is still blank, look at it live")
+        k1 = cn.concern_id(sid, self.uuid_of(sid, 0))
+        self.model(reply(concern="the page works", same_as="new"), reply(concern="the page works", same_as=k1),
+                   reply(concern="the page works", same_as=k1))
+        self.assertEqual(sm.tick(self.p)["read"], 3)
+        self.assertIn(k1, self.prompts[1][0]["content"])  # the second message was asked with the first concern open
+        self.assertEqual([(x["id"], x["said"]) for x in cn.fold(self.p)], [(k1, 3)])
+
+    def test_folding_an_unrelated_message_stays_apart(self):
+        from sampo import concerns as cn
+        sid = "aaaaaaaa-1111-4111-8111-000000000002"
+        self.talk(sid, "why is the page blank", "and the push never reached GitHub")
+        k1 = cn.concern_id(sid, self.uuid_of(sid, 0))
+        self.model(reply(concern="the page works", same_as="new"),
+                   reply(concern="the push reaches GitHub", same_as="new"))
+        sm.tick(self.p)
+        self.assertIn(k1, self.prompts[1][0]["content"])
+        self.assertEqual(sorted(x["said"] for x in cn.fold(self.p)), [1, 1])
+
+    def test_folding_a_wrong_merge_can_be_split(self):
+        from sampo import concerns as cn
+        sid = "aaaaaaaa-1111-4111-8111-000000000003"
+        self.talk(sid, "why is the page blank", "and the push never reached GitHub")
+        k1 = cn.concern_id(sid, self.uuid_of(sid, 0))
+        self.model(reply(concern="the page works", same_as="new"),
+                   reply(concern="the push reaches GitHub", same_as=k1))  # the model linked two unrelated asks
+        sm.tick(self.p)
+        self.assertEqual([x["said"] for x in cn.fold(self.p)], [2])
+        self.assertEqual(len(cn.split(self.p, k1)["into"]), 2)
+        self.assertEqual(sorted(x["said"] for x in cn.fold(self.p)), [1, 1])
+
+    def test_folding_a_same_as_that_names_no_open_concern_is_unread_not_guessed(self):
+        sid = "aaaaaaaa-1111-4111-8111-000000000004"
+        self.talk(sid, "why is the page blank", "and the push never reached GitHub")
+        self.model(reply(concern="the page works", same_as="new"), reply(concern="the push", same_as="K-FFFFFF"),
+                   reply(concern="the push", same_as="K-FFFFFF"))
+        got = sm.tick(self.p)
+        self.assertEqual((got["read"], got["unread"]), (1, 1))
+        self.assertEqual([bool(r.get("unread")) for r in self.rows()], [False, True])
+
+    def test_folding_fold_rows_decides_the_old_rows_once_and_says_which_repeat(self):
+        from sampo import concerns as cn
+        sid = "bbbbbbbb-2222-4222-8222-000000000001"
+        self.book(sid, "u1", "why is the page blank", stamp(hours=3), "the page works")
+        self.book(sid, "u2", "still blank after the deploy", stamp(hours=2), "the page works")
+        self.book(sid, "u3", "and the push never reached GitHub", stamp(hours=1), "the push reaches GitHub")
+        k1 = cn.concern_id(sid, "u1")
+        self.model(json.dumps({"same_as": "new"}), json.dumps({"same_as": k1}), json.dumps({"same_as": "new"}))
+        got = sm.fold_rows(self.p)
+        self.assertEqual((got["asked"], got["same"], got["new"], got["unread"], got["left"]), (3, 1, 2, 0, 0))
+        self.assertEqual(sorted(x["said"] for x in cn.fold(self.p)), [1, 2])
+        self.assertEqual(sm.fold_rows(self.p)["asked"], 0)  # decided rows are never asked again
+        self.assertEqual(len(self.prompts), 3)
+
+    def test_folding_fold_rows_asks_at_most_its_limit_and_the_rest_next_run(self):
+        sid = "bbbbbbbb-2222-4222-8222-000000000002"
+        for i, h in enumerate((3, 2, 1)):
+            self.book(sid, f"u{i}", f"message {i}", stamp(hours=h), f"concern {i}")
+        self.model(json.dumps({"same_as": "new"}))
+        self.assertEqual(sm.fold_rows(self.p, limit=2)["left"], 1)
+        self.assertEqual(sm.fold_rows(self.p, limit=2)["asked"], 1)
+        self.assertEqual(len(self.prompts), 3)
+
+    def test_folding_no_model_up_writes_nothing(self):
+        sid = "bbbbbbbb-2222-4222-8222-000000000003"
+        self.book(sid, "u1", "why is the page blank", stamp(hours=1), "the page works")
+        self.model(json.dumps({"same_as": "new"}), down=True)
+        got = sm.fold_rows(self.p)
+        self.assertEqual((got["asked"], got["model"]), (0, None))
+        self.assertFalse(os.path.exists(os.path.join(self.p.dir, "concerns.jsonl")))
+
+    def test_folding_two_unreadable_replies_book_the_row_unread_as_its_own_concern(self):
+        from sampo import concerns as cn
+        sid = "bbbbbbbb-2222-4222-8222-000000000004"
+        self.book(sid, "u1", "why is the page blank", stamp(hours=2), "the page works")
+        self.book(sid, "u2", "and the push never reached GitHub", stamp(hours=1), "the push reaches GitHub")
+        self.model(json.dumps({"same_as": "new"}), "nope", json.dumps({"same_as": "K-FFFFFF"}))
+        got = sm.fold_rows(self.p)
+        self.assertEqual((got["asked"], got["unread"]), (2, 1))
+        self.assertEqual(sorted(x["said"] for x in cn.fold(self.p)), [1, 1])
+
+    def test_folding_refused_while_paused_by_the_verb_and_the_function(self):
+        from sampo import concerns as cn
+        self.book("bbbbbbbb-2222-4222-8222-000000000005", "u1", "why", stamp(hours=1), "the page works")
+        self.model(json.dumps({"same_as": "new"}))
+        self.fm("pause", "on")
+        with self.assertRaises(cn.Refused):
+            sm.fold_rows(self.p)
+        got = self.fm("concerns", "fold", check=False)
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("paused", got.stderr + got.stdout)
         self.assertEqual(self.prompts, [])
 
 

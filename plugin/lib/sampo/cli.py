@@ -8305,6 +8305,18 @@ def _build_parser(only=None):
     s.add_argument("--all", action="store_true", help="add the machine-wide rate and each project's")
     s.add_argument("--tick", action="store_true", help="read the unread messages now (bounded; the Stop hook spawns this)")
 
+    s = add("concerns", lazy("sampo.concerns", "cmd_concerns"), tier=("Reports", 1034),
+            help="what the user raised and is still waiting on, folded from the steer meter (T-4200): times said, age, "
+                 "surface, linked tasks; `show ID --proof <checkable>` marks one shown, `answer ID \"<text>\"` takes a "
+                 "question out, `split ID` cuts merged asks, `fold` asks the local meter which booked messages repeat an "
+                 "open concern (bounded per run, refused while paused)")
+    s.add_argument("action", nargs="?", choices=["show", "answer", "split", "fold"], help="omitted: list the open concerns")
+    s.add_argument("id", nargs="?", metavar="K-ID", help="the concern's id, as listed")
+    s.add_argument("text", nargs="?", help="answer: the answer, a sentence")
+    s.add_argument("--proof", help="show: git:<ref> (on a remote-tracking branch), url:<address> (answers), path:<file> "
+                                   "(exists) or num:<value> via <command> (prints it)")
+    s.add_argument("--all", action="store_true", help="list every concern, shown and answered ones too")
+
     s = add("sync", lazy("sampo.sync", "cmd_sync"), tier=("Project and settings", 790),
             help="opt-in mirror of this project's briefs, decisions and research in the repo (.sampo/)")
     s.add_argument("action", nargs="?", default="status", choices=["status", "on", "off", "import", "export"])

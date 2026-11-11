@@ -63,10 +63,33 @@ def old_mirror(p, briefs, now):
     return f"the retired {old}/ is tracked beside {new}/ → sampo sync export folds it in and commits it gone"
 
 
+def _concerns_waiting(held):
+    """T-4200: the open concerns from the last ASK_DAYS days, open ASK_H hours or more, oldest first. A shown or
+    answered one is not waiting; a concern said again after its proof is open again (concerns.fold says so)."""
+    rows = []
+    for x in held:
+        made = c.age_days(x["opened"])
+        if x["state"] != "open" or made is None or made > ASK_DAYS or made * 24 < ASK_H:
+            continue
+        rows.append((made, x))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: -r[0])
+    shown = [f"{x['id']} ({_age(made * 86400)}, said {x['said']}x, surface: {x['surface'] or 'none'})"
+             for made, x in rows[:3]]
+    return Hit(f"{len(rows)} of the user's concerns from the last {ASK_DAYS} days aren't shown; oldest: "
+               + "; ".join(shown) + " → show the oldest with a proof, or answer it", tell=True,
+               level=len(rows) // 5)
+
+
 def asks_waiting(p, briefs, now):
     """The user's own asks from the last ASK_DAYS days that are open ASK_H hours or more, oldest first, each with
     where it sits: they ask "why isn't X done" next."""
-    from sampo import foresight
+    from sampo import concerns, foresight
+    briefs = list(briefs)  # read twice below (the concerns' task links, then the old count): a generator would run dry
+    held = concerns.fold(p, briefs)  # T-4200: once the steer meter has read any message, its concerns are the count
+    if held:
+        return _concerns_waiting(held)
     tower, rows = foresight._tower_ids(p), []  # review: the tower's own briefs and agent-noted ones aren't the user's
     for b in briefs:
         if b.meta.get("source") != "user" or b.status not in OPEN or b.id in tower \
