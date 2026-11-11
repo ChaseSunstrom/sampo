@@ -4647,6 +4647,18 @@ def run_agent(p, run, agent, split="all", limit=None, budget=None, model=None, t
         return _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small, ids)
 
 
+def default_limit(agent, limit, n):
+    """(how many of n picked scenarios the agent answers, or None for all; the line to print when a default cut them).
+    T-4258: 3 is a spend guard for a paid Claude session; a local model costs nothing and answers all (a paired A/B
+    on one graded 3 of 24 in silence). A default that cuts says so, naming --limit."""
+    if limit:
+        return limit, None
+    if agent in SESSIONS:
+        return 3, (f"sampo exam run: answering 3 of {n} scenarios (the default for a Claude session, a spend guard; "
+                   "--limit N answers more)" if n > 3 else None)
+    return None, None
+
+
 def _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small=False, ids=None):
     """Answers from one agent on the run's scenarios (split, then the first `limit`), then the grade. A session arm runs
     `jobs` scenarios at a time (default 1) and defaults to 3 (ponytail: a spend guard; --limit raises it); kinds take
@@ -4676,7 +4688,10 @@ def _run_agent(p, run, agent, split, limit, budget, model, timeout, request, job
         return seen[s["kind"]]
     picked = sorted((s for s in load(p, run)["scenarios"] if (split == "all" or s["split"] == split)
                      and (ids is None or s["id"] in ids)), key=turn)  # T-3484: ids, when given, is the exact set to answer
-    picked = picked[:limit or (3 if agent in SESSIONS + LOCAL else None)]
+    cut, line = default_limit(agent, limit, len(picked))
+    if line:
+        print(line, file=sys.stderr, flush=True)
+    picked = picked[:cut]
     if not picked:
         raise ValueError(f"no {split} scenarios in {run}")
     if agent in SESSIONS:

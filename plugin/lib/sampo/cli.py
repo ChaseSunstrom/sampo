@@ -8966,7 +8966,8 @@ def _build_parser(only=None):
                    help="gen: child = a tool-less model writes the bug, vuln, slow, dep, none and rank plants and the goal "
                         "and resume keys (kept only when sampo exam check passes); only these decide sampo exam scorecard")
     s.add_argument("--model", help="gen: the child author's model (default sonnet); run: the session's model")
-    s.add_argument("--limit", type=int, help="run: answer the first N picked scenarios (session arms default to 3)")
+    s.add_argument("--limit", type=int, help="run: answer the first N picked scenarios (a Claude session arm defaults "
+                   "to 3; a local arm answers all)")
     s.add_argument("--rounds", type=int, default=1, help="loop: rounds to run (T-3484)")
     s.add_argument("--jobs", type=int, help="run, long run: session scenarios at once (default 1, T-2292); steer run: "
                                             "cases at once (default 4)")
