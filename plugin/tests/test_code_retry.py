@@ -1,0 +1,131 @@
+"""T-4205: a transient model failure (a read or connect timeout, a dropped connection, a 502/503/529) is tried again
+with a longer timeout before fm code's run stops; a 4xx is never retried. In-process with the model stubbed: no
+real stall, no real wait (the wait is injected)."""
+import socket
+import unittest
+from unittest import mock
+
+import helpers  # noqa: F401 (puts plugin/lib on the import path)
+from sampo import models, smith
+
+MSG = [{"role": "user", "content": "fix calc.add"}]
+OK = {"text": "ok", "tool_calls": [], "stop": "stop", "usage": {}}
+PROFILE = {"name": "cloud", "kind": "openai", "base_url": "https://api.example.com/v1", "model": "m1"}
+LOCAL = dict(PROFILE, name="local", base_url="http://127.0.0.1:8080/v1")
+
+
+class Run:
+    """The parts of fm code's run the retry helper touches."""
+
+    def __init__(self):
+        self.notes, self.logs = [], []
+        self.root, self.unlean = None, None
+
+    def check_cap(self, what):
+        pass
+
+    def usage(self, r, profile, what):
+        pass
+
+    def capped(self, profile):
+        return profile
+
+    def emit(self, event, text, quiet=False, **data):
+        self.notes.append((event, text))
+
+    def log(self, **data):
+        self.logs.append(data)
+
+
+def fail(status=None, transient=False):
+    return models.ModelError("read timed out" if transient else "HTTP", status=status, transient=transient)
+
+
+class Retry(unittest.TestCase):
+    def setUp(self):
+        self.run = Run()
+        self.wait = mock.patch.object(smith, "_wait").start()
+        self.addCleanup(mock.patch.stopall)
+
+    def complete(self, profile, *results):
+        """Calls the helper with models.complete answering each result in turn (an exception is raised)."""
+        with mock.patch.object(models, "complete", side_effect=list(results)) as mc:
+            try:
+                out = smith.complete_retrying(self.run, profile, MSG, max_tokens=10)
+            except models.ModelError as e:
+                out = e
+        return out, [c.kwargs.get("timeout") for c in mc.call_args_list]
+
+    def test_a_timeout_once_is_retried_with_a_longer_timeout_and_a_note_says_so(self):
+        out, timeouts = self.complete(PROFILE, fail(transient=True), OK)
+        self.assertIs(out, OK)
+        self.assertEqual(timeouts, [120, 300])
+        self.assertEqual(self.wait.call_count, 1)
+        self.assertTrue(any("timed out" in text and "300 s" in text for _, text in self.run.notes), self.run.notes)
+        self.assertEqual(self.run.logs[0]["kind"], "retry")
+
+    def test_a_local_profile_waits_longer_from_the_first_try(self):
+        out, timeouts = self.complete(LOCAL, fail(transient=True), OK)
+        self.assertIs(out, OK)
+        self.assertEqual(timeouts, [300, 600])
+
+    def test_a_cloud_timeout_twice_stops_after_one_retry(self):  # each retry re-bills the prompt
+        err = fail(transient=True)
+        out, timeouts = self.complete(PROFILE, err, err, OK)
+        self.assertIs(out, err)
+        self.assertEqual(timeouts, [120, 300])
+
+    def test_a_local_timeout_after_three_tries_stops_with_the_last_error(self):
+        err = fail(transient=True)
+        out, timeouts = self.complete(LOCAL, err, err, err, OK)
+        self.assertIs(out, err)
+        self.assertEqual(timeouts, [300, 600, 900])
+        self.assertEqual(self.wait.call_count, 2)
+
+    def test_the_planners_first_call_is_retried_on_a_timeout(self):  # smith._ask: the planner's model call
+        with mock.patch.object(smith, "fit", side_effect=lambda run, p, msgs: msgs), \
+                mock.patch.object(models, "complete", side_effect=[fail(transient=True), OK]) as mc:
+            out = smith._ask(self.run, PROFILE, MSG, "plan")
+        self.assertIs(out, OK)
+        self.assertEqual([c.kwargs.get("timeout") for c in mc.call_args_list], [120, 300])
+
+    def test_a_transport_timeout_from_the_socket_is_transient(self):
+        # the real wrapping in models._send: a read timeout from the opener becomes a ModelError marked transient
+        with mock.patch.object(models, "_OPENER") as op:
+            op.open.side_effect = socket.timeout("timed out")
+            with self.assertRaises(models.ModelError) as cm:
+                models.complete(dict(PROFILE, base_url="http://127.0.0.1:9/v1"), MSG, max_tokens=5)
+        self.assertTrue(cm.exception.transient)
+        self.assertIsNone(cm.exception.status)
+
+    def test_a_502_503_or_529_is_retried_and_stops_at_the_end_of_the_ladder(self):
+        for status in (502, 503, 529):
+            with self.subTest(status=status):
+                self.wait.reset_mock()
+                err = fail(status=status)
+                out, timeouts = self.complete(PROFILE, err, err)
+                self.assertIs(out, err)
+                self.assertEqual(timeouts, [120, 300])
+                out, timeouts = self.complete(LOCAL, err, err, err, OK)
+                self.assertIs(out, err)
+                self.assertEqual(timeouts, [300, 600, 900])
+
+    def test_a_4xx_is_never_retried_and_stops_at_once(self):
+        for status in (400, 401, 404, 422):
+            with self.subTest(status=status):
+                self.wait.reset_mock()
+                err = fail(status=status)
+                out, timeouts = self.complete(PROFILE, err, OK)
+                self.assertIs(out, err)
+                self.assertEqual(timeouts, [120])
+                self.assertEqual(self.wait.call_count, 0)
+
+    def test_a_refused_request_stops_at_once(self):  # an error that is not transient: no retry
+        err = fail()
+        out, timeouts = self.complete(PROFILE, err, OK)
+        self.assertIs(out, err)
+        self.assertEqual(timeouts, [120])
+
+
+if __name__ == "__main__":
+    unittest.main()

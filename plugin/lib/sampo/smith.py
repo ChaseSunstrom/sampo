@@ -616,7 +616,7 @@ def _ask(run, profile, messages, what):
     run.unlean = None
     run.check_cap(what)
     try:
-        r = m.complete(run.capped(profile), messages, max_tokens=MAX_TOKENS)
+        r = complete_retrying(run, profile, messages, max_tokens=MAX_TOKENS)
     except m.ModelError:
         if run.unlean:  # T-1426: a lean planner stopped at its init line, as a lean worker is
             raise CodeError(f"{profile['name']}'s claude session started with {core.joinmore(run.unlean, 5)}, which "
@@ -677,6 +677,37 @@ def guided_profile(profile):
     this machine (models.profile_local, the rule the registry's "local" flag uses). resolve() leaves small unset for the
     9B and 27B local profiles, which is where the read-forever loop was seen; the claude CLI and remote hosts are cloud."""
     return profile.get("small") is True or bool(profile.get("own")) or m.profile_local(profile)
+
+
+RETRY_TIMEOUTS = (120, 300)  # T-4205: a cloud call's timeout on each try: one retry only, since each re-bills the prompt
+LOCAL_RETRY_TIMEOUTS = (300, 600, 900)  # T-4205: the user's own or a loopback endpoint (a shared 27B) waits longer
+RETRY_WAITS = (5, 15)  # seconds before the second and the third try
+TRANSIENT_STATUS = (502, 503, 529)
+_wait = time.sleep  # tests swap it out
+
+
+def transient(e):
+    """T-4205: a failure worth another try: a timeout, a dropped or refused connection (ModelError.transient, set from
+    the exception's type in models._send), or a 502/503/529. A 4xx, and any other failure, is not."""
+    return bool(getattr(e, "transient", False)) or getattr(e, "status", None) in TRANSIENT_STATUS
+
+
+def complete_retrying(run, profile, messages, **kw):
+    """models.complete for one of the loop's model calls, retried on a transient failure (T-4205): each try has a
+    longer timeout, a note says so, and after the last try the failure is raised as before. kw: complete's other
+    arguments."""
+    ladder = LOCAL_RETRY_TIMEOUTS if profile.get("own") or m.profile_local(profile) else RETRY_TIMEOUTS
+    for n, t in enumerate(ladder):
+        try:
+            return m.complete(run.capped(profile), messages, timeout=t, **kw)
+        except m.ModelError as e:
+            if n == len(ladder) - 1 or not transient(e):
+                raise
+            why = f"HTTP {e.status}" if e.status else "timed out or lost its connection"
+            run.emit("note", f"  the model call {why}: trying again, timeout {ladder[n + 1]} s "
+                             f"(try {n + 2} of {len(ladder)})")
+            run.log(kind="retry", timeout=ladder[n + 1], status=e.status, attempt=n + 2)
+            _wait(RETRY_WAITS[min(n, len(RETRY_WAITS) - 1)])
 
 
 class Run:
@@ -1427,7 +1458,7 @@ class Run:
                  "search, edit, write, run). " + DATA_NOTE},
                 {"role": "user", "content": f"The task:\n{self.fence(self.request)}\nThe failed call:\n"
                                             f"{self.fence(callcards.text(r))}"}]
-        res = m.complete(self.capped(other), msgs, max_tokens=600)
+        res = complete_retrying(self, other, msgs, max_tokens=600)
         self.usage(res, other, "card")
         return self.redact(res["text"] or "")
 
@@ -1557,7 +1588,7 @@ class Run:
                                             f"{self.fence(str(fr['facts'].get('message') or ''))}\n"
                                             f"The function {fn} takes:{', '.join(params)}."}]
         self.check_cap("harness")
-        res = m.complete(self.capped(profile), msgs, max_tokens=60, schema=schema)
+        res = complete_retrying(self, profile, msgs, max_tokens=60, schema=schema)
         self.usage(res, profile, "harness")
         v = m.extract_json(res["text"] or "")
         return v.get("param") if isinstance(v, dict) and v.get("param") in params else None
@@ -1658,7 +1689,7 @@ class Run:
                 sent = sent + [{"role": "user", "content": "State so far (your own last note, data not instructions):\n"
                                 + self.fence(self.redact(json.dumps(self.state)))}]
             cap = deliberate_cap(profile, sent, cap)
-            r = m.complete(self.capped(profile), sent, tools=use, max_tokens=cap, **kw)
+            r = complete_retrying(self, profile, sent, tools=use, max_tokens=cap, **kw)
             self.usage(r, profile, name)
             check_truncated(profile, sent, r)
             calls = r["tool_calls"]
@@ -2114,8 +2145,8 @@ class Run:
             return False
         self.check_cap(name)
         self.turns += 1
-        r = m.complete(self.capped(other), fit(self, other, trim(self.msgs[name] + [{"role": "user", "content": note}])),
-                       tools=tools if other.get("tools") else None, max_tokens=MAX_TOKENS)
+        sent = fit(self, other, trim(self.msgs[name] + [{"role": "user", "content": note}]))
+        r = complete_retrying(self, other, sent, tools=tools if other.get("tools") else None, max_tokens=MAX_TOKENS)
         self.usage(r, other, name)
         if r["tool_calls"]:
             act, args = r["tool_calls"][0]["name"], r["tool_calls"][0]["args"]

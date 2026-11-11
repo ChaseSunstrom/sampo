@@ -234,9 +234,10 @@ _TRANSPORT = (urllib.error.URLError, OSError, http.client.HTTPException)
 
 
 class ModelError(Exception):
-    def __init__(self, msg, status=None):
+    def __init__(self, msg, status=None, transient=False):
         super().__init__(msg)
         self.status = status
+        self.transient = transient  # T-4205: a timeout or a dropped/refused connection: worth another try
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1031,8 +1032,10 @@ def _send(url, body, headers, timeout, key):
                 continue
             where = f" -> {hdrs.get('Location')}" if 300 <= status < 400 else ""
             raise ModelError(_scrub(f"{url}: HTTP {status}{where}: {' '.join(text.split())[:300]}", key), status)
-        except _TRANSPORT as e:  # refused, DNS, timeout, cut off: no retry, the caller decides
-            raise ModelError(_scrub(f"{url}: {getattr(e, 'reason', None) or e!r}", key)) from None
+        except _TRANSPORT as e:  # refused, DNS, timeout, cut off: no retry here, the caller decides (T-4205)
+            reason = getattr(e, "reason", None) or e
+            raise ModelError(_scrub(f"{url}: {reason!r}", key),
+                             transient=isinstance(reason, (TimeoutError, ConnectionError))) from None
         except ValueError as e:  # http.client refusing a header value: its message may hold the key
             raise ModelError(_scrub(f"{url}: request refused: {e}", key)) from None
         if len(raw) > MAX_BODY:
