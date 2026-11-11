@@ -23,7 +23,8 @@ class Run:
     def __init__(self):
         self.notes, self.logs = [], []
         self.root, self.unlean = None, None
-        self.reason, self.think_floor, self.think_noted = None, {}, False  # T-4290: what think_start reads
+        # T-4290: what think_start reads; T-4297: with no --reason a local call starts with thinking off, so these ask for native
+        self.reason, self.think_floor, self.think_noted = "native", {}, False
 
     def check_cap(self, what):
         pass

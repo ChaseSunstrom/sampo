@@ -9311,7 +9311,8 @@ def _build_parser(only=None):
                    "step and fix round stays on --model (a small model acts on a stronger one's plan)")
     s.add_argument("--reason", metavar="ARM", help="T-3006: how the model reasons: state (its compact state rides each "
                    "call; thinking only on low confidence, a failed check or a loop break; a named check before an "
-                   "edit), off, native, budget, bias or schema")
+                   "edit), off, native, budget, bias or schema. With none, a local profile starts every call with "
+                   "thinking off (T-4297; native turns it on, and a model the exam measured better with it keeps it)")
     s.add_argument("--small", action="store_true", help="T-2878: small-model mode (also a models.json profile's "
                    "\"small\": true): a change plan's checks must fail before the work, a change request isn't planned "
                    "as research or answered, and its last step can't end with nothing changed")

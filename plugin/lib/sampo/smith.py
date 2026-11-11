@@ -70,6 +70,7 @@ THINK_BUDGET, DELIBERATE_TOKENS, LOW_CONFIDENCE = 1024, 2 * MAX_TOKENS, 0.5
 STATE_TEXT, STATE_FACTS = 160, 5  # characters of a state's text fields; facts kept
 SMALL_OUT, THINK_FILE = 1024, "think-kept.json"  # T-4290: a local model's call this small starts with thinking off; the
 #                                                 kept sizes per model (a call that exhausted its thinking) live here
+THINK_LAPSE_DAYS = 14  # T-4297: a kept size older than this is not applied (one day's model and load, not a law)
 STATE_NOTE = ("\nWith every action also send \"state\": a compact note of your thinking, so you need little other "
               "thinking: {\"goal\": \"...\", \"facts\": [\"what you have verified\"], \"hypothesis\": \"your best "
               "explanation\", \"next_check\": \"the command or file that would confirm it\", \"confidence\": 0 to 1}. "
@@ -772,33 +773,150 @@ def transient(e):
     return bool(getattr(e, "transient", False)) or getattr(e, "status", None) in TRANSIENT_STATUS
 
 
-def think_kept(name):
-    """T-4290: the largest max_tokens that exhausted this model's thinking in an earlier run (THINK_FILE in the state:
-    {model: {size: count}}). 0 when none is kept, or the file is unreadable: no count."""
+def think_key(name):
+    """T-4297: the key of a model's record in THINK_FILE, the one both sides use (the loop reads it by its profile's name,
+    the exam writes it from the name its answers carry, cut at 60 characters): the name as core.plain shows it, 60 at most."""
+    return core.plain(str(name or ""))[:60]
+
+
+def _think_path():
+    return os.path.join(core.state_dir(), THINK_FILE)
+
+
+def _think_read():
+    """The whole kept file (THINK_FILE in the state) as a dict; {} when it is missing, corrupt (not JSON) or not an object.
+    T-4297: any other failure to read it (a permission, a directory in its place) is raised: a writer must not take it for
+    an empty file and write over every model's record."""
     try:
-        with open(os.path.join(core.state_dir(), THINK_FILE), encoding="utf-8") as f:
-            sizes = json.load(f).get(name) or {}
-        return max((int(s) for s, c in sizes.items() if int(c) > 0), default=0)
-    except (OSError, ValueError, TypeError, AttributeError):
-        return 0
+        with open(_think_path(), encoding="utf-8") as f:
+            kept = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        return {}
+    return kept if isinstance(kept, dict) else {}
+
+
+def _think_age():
+    """The kept file's modified time: the age of an entry that carries none (T-4290's bare counts); None when it has none."""
+    try:
+        return os.stat(_think_path()).st_mtime
+    except OSError:
+        return None
+
+
+def _think_safe(read):
+    """read() for a reader: the file's content, or {} when it can't be read (no count then, the arm is the default)."""
+    try:
+        return read()
+    except OSError:
+        return {}
+
+
+def _think_rec(kept, name):
+    """One model's record in the file: {size: {"n": count, "ts": last counted}} (T-4297; T-4290 wrote {size: count},
+    still read) beside the arm the exam kept: {"arm", "run", "native", "off", "ts"}. {} when there is none."""
+    rec = kept.get(name)
+    return rec if isinstance(rec, dict) else {}
+
+
+def _think_size(v):
+    """(count, time) of one kept size: {"n", "ts"}, or the old bare count (no time: it never lapses, a new count
+    rewrites it). (0, None) for anything else."""
+    num = (int, float)
+    if isinstance(v, bool):
+        return 0, None
+    if isinstance(v, int):
+        return v, None
+    if isinstance(v, dict) and isinstance(v.get("n"), int) and not isinstance(v["n"], bool):
+        ts = v.get("ts")
+        return v["n"], ts if isinstance(ts, num) and not isinstance(ts, bool) else None
+    return 0, None
+
+
+def _think_update(name, change):
+    """change(record) on this model's record (its key: think_key), with the file read again and written inside one lock
+    (T-4297: two writers lose no update). A file that can't be read (not just missing) raises OSError before any write. The
+    old bare counts anywhere in the file are written in the new shape, aged by the file's modified time, so a write does
+    not make them younger. Returns what change returns."""
+    with core.lock(os.path.join(core.state_dir(), "think")):
+        kept = _think_read()
+        aged = _think_age() or time.time()
+        for rec in kept.values():
+            if isinstance(rec, dict):
+                for s, v in list(rec.items()):
+                    if s.isascii() and s.isdigit() and _think_size(v)[1] is None and _think_size(v)[0] > 0:
+                        rec[s] = {"n": _think_size(v)[0], "ts": aged}
+        key = think_key(name)
+        rec = _think_rec(kept, key)
+        got = change(rec)
+        kept[key] = rec
+        core.write_atomic(_think_path(), json.dumps(kept, sort_keys=True))
+        return got
+
+
+def think_kept(name):
+    """T-4290: the largest max_tokens that exhausted this model's thinking in an earlier run, among the sizes counted in
+    the last THINK_LAPSE_DAYS (T-4297: an older one is not applied; an old bare count is as old as the file's last
+    write). 0 when none is kept, or the file is unreadable."""
+    now = time.time()
+    rec = _think_rec(_think_safe(_think_read), think_key(name))
+    aged = _think_age() if any(_think_size(v)[1] is None for v in rec.values()) else None
+    best = 0
+    for s, v in rec.items():
+        n, ts = _think_size(v)
+        ts = aged if ts is None else ts
+        if n > 0 and s.isascii() and s.isdigit() and (ts is None or now - ts <= THINK_LAPSE_DAYS * 86400):
+            best = max(best, int(s))
+    return best
+
+
+def think_arm(name):
+    """T-4297: the arm the exam kept for this model ("native" or "off"), "" when none is."""
+    arm = _think_rec(_think_safe(_think_read), think_key(name)).get("arm")
+    return arm if arm in ("native", "off") else ""
+
+
+def think_ran(profile, reason):
+    """T-4297: the thinking arm a run of this profile runs under, the one the exam stamps beside --reason: the reason's own
+    name when one was given; with none, "off" for a local profile (its default) unless its kept arm is native, and
+    "native" for any other profile (its calls are as given)."""
+    if reason:
+        return reason
+    if not m.profile_local(profile):
+        return "native"
+    return "native" if think_arm(str(profile.get("name") or "")) == "native" else "off"
 
 
 def think_record(name, size):
-    """T-4290: one more call of this local model at this size exhausted its thinking. The file is re-read before it is
-    written; a corrupt file starts again from this count. The sizes are the code's own max_tokens values, so the file
-    stays small."""
-    path = os.path.join(core.state_dir(), THINK_FILE)
-    try:
-        with open(path, encoding="utf-8") as f:
-            kept = json.load(f)
-    except (OSError, ValueError):
-        kept = None
-    kept = kept if isinstance(kept, dict) else {}
-    sizes = kept.get(name) if isinstance(kept.get(name), dict) else {}
-    count = sizes.get(str(size))
-    sizes[str(size)] = count + 1 if isinstance(count, int) else 1
-    kept[name] = sizes
-    core.write_atomic(path, json.dumps(kept, sort_keys=True))
+    """T-4290: one more call of this local model at this size exhausted its thinking, counted now (T-4297: with its
+    time). The sizes are the code's own max_tokens values, so the file stays small."""
+    def count(rec):
+        rec[str(size)] = {"n": _think_size(rec.get(str(size)))[0] + 1, "ts": time.time()}
+    _think_update(name, count)
+
+
+def think_forget(name, size):
+    """T-4297: a call of this size that thought and answered: its kept entry (it had lapsed) is removed. The file is
+    not written when there is none."""
+    if str(size) in _think_rec(_think_safe(_think_read), think_key(name)):
+        _think_update(name, lambda rec: rec.pop(str(size), None))
+
+
+def think_keep(name, arm, run, native, off, fixable=0):
+    """T-4297: the arm sampo exam grade kept for this model, with the run, both fix counts and the sample size (the
+    fixable items each arm was graded over); its sizes stay. A smaller sample never replaces a larger record of the other
+    arm. Returns (written, before): before is the record's arm, run, counts, sample and time as they were (None when it
+    kept none), so the caller can say what was replaced or what held."""
+    def keep(rec):
+        before = {k: rec[k] for k in ("arm", "run", "native", "off", "fixable", "ts") if k in rec} if rec.get("arm") else None
+        held = before.get("fixable") if before else 0
+        held = held if isinstance(held, int) and not isinstance(held, bool) else 0
+        if before and before["arm"] != arm and fixable < held:
+            return False, before
+        rec.update(arm=arm, run=str(run), native=native, off=off, fixable=fixable, ts=time.time())
+        return True, before
+    return _think_update(name, keep)
 
 
 def think_start(run, profile, kw):
@@ -806,7 +924,9 @@ def think_start(run, profile, kw):
     left as given). Under --reason off every call of the run starts off. A local model's call of at most SMALL_OUT
     tokens starts off unless the caller names think or think_budget; so does a size that one of this model's calls
     exhausted thinking on, in this run (run.think_floor) or an earlier one (think_kept: the note says so, once per
-    run). Cloud and CLI profiles are as given, bar --reason off."""
+    run). T-4297: with no --reason every call of a local profile starts off (why 'local default', one note per run)
+    unless the model's kept arm is native (the exam measured it better with thinking): then it is as above. Cloud and
+    CLI profiles are as given, bar --reason off; so is every explicit --reason arm."""
     if run.reason == "off":
         return {k: v for k, v in dict(kw, think=False).items() if k != "think_budget"}, "reason off"
     if "think" in kw or kw.get("think_budget") or not m.profile_local(profile):
@@ -814,6 +934,11 @@ def think_start(run, profile, kw):
     name, size = str(profile.get("name") or ""), kw.get("max_tokens") or 0
     if size <= SMALL_OUT:
         return dict(kw, think=False), "small call"
+    if not run.reason and think_arm(name) != "native":
+        if not run.think_noted:
+            run.think_noted = True
+            run.emit("note", f"  thinking off by default for {name}: --reason native turns it on")
+        return dict(kw, think=False), "local default"
     if size <= run.think_floor.get(name, 0):
         return dict(kw, think=False), "exhausted in this run"
     kept = think_kept(name)
@@ -834,6 +959,7 @@ def complete_retrying(run, profile, messages, **kw):
     model's call that exhausts its thinking is kept, so later calls of that size or smaller start off. kw: complete's
     other arguments."""
     kw, why = think_start(run, profile, kw)
+    default_off = bool(why)
     if why:
         run.log(kind="reason", phase="think", mode="off", why=why)
     ladder = LOCAL_RETRY_TIMEOUTS if profile.get("own") or m.profile_local(profile) else RETRY_TIMEOUTS
@@ -841,7 +967,13 @@ def complete_retrying(run, profile, messages, **kw):
     while True:
         t = ladder[n]
         try:
-            return m.complete(run.capped(profile), messages, timeout=t, **(dict(kw, think=False) if off else kw))
+            got = m.complete(run.capped(profile), messages, timeout=t, **(dict(kw, think=False) if off else kw))
+            if not (off or default_off or "think" in kw or kw.get("think_budget")) and m.profile_local(profile):
+                try:  # T-4297: it thought and answered at this size: a kept (lapsed) exhausted size is no longer true
+                    think_forget(str(profile.get("name") or ""), kw.get("max_tokens") or 0)
+                except (OSError, ValueError, TypeError, core.LockTimeout):
+                    pass
+            return got
         except m.ModelError as e:
             if e.reasoning and not off and kw.get("think") is not False and not kw.get("think_budget"):
                 # T-4290: a local call that started on by default and spent its budget thinking is kept for its size
@@ -851,7 +983,7 @@ def complete_retrying(run, profile, messages, **kw):
                     run.think_floor[name] = max(run.think_floor.get(name, 0), size)
                     try:
                         think_record(name, size)
-                    except (OSError, ValueError, TypeError):  # a count is extra: a state that won't write stops nothing
+                    except (OSError, ValueError, TypeError, core.LockTimeout):  # a count is extra: a state that won't write stops nothing
                         pass
                 # T-4210: once, with thinking off, and said (a think_budget call already closed its thinking itself)
                 off = True

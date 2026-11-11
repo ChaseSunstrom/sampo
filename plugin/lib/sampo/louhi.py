@@ -4671,7 +4671,7 @@ def _run_agent(p, run, agent, split, limit, budget, model, timeout, request, job
         if not model:
             raise ValueError(f"--agent {agent} needs --model PROFILE (sampo models list)")
         from sampo import models as smodels
-        smodels.resolve(model)
+        profile = smodels.resolve(model)
         if planner:
             smodels.resolve(planner)
     elif planner or reason or small:
@@ -4715,6 +4715,9 @@ def _run_agent(p, run, agent, split, limit, budget, model, timeout, request, job
         c.write_atomic(os.path.join(_answers(p, run, agent), "planner"), c.plain(planner)[:60])  # not a list: a name cut at 60 characters
     if reason:  # T-3006: the arm's reasoning mode, beside its model
         c.write_atomic(os.path.join(_answers(p, run, agent), "reason"), reason)
+    if agent in LOCAL:  # T-4297: the arm that ran, so a run with no --reason (off by default now, native before) is told apart
+        from sampo import smith
+        c.write_atomic(os.path.join(_answers(p, run, agent), "thinking"), smith.think_ran(profile, reason))
     if small:  # T-2878: small-model mode, so a paired grade says which arm it is
         c.write_atomic(os.path.join(_answers(p, run, agent), "small"), "on")
 
@@ -5001,7 +5004,7 @@ def grade(p, run, agent):
             except (OSError, ValueError, AttributeError, TypeError):
                 pass
         _per_fix(res, toks)
-    for name in ("request", "model", "planner", "reason", "small"):  # T-3974: planner and small, so the arm is told apart
+    for name in ("request", "model", "planner", "reason", "small", "thinking"):  # T-3974: planner and small, so the arm is told apart
         try:
             with open(os.path.join(_answers(p, run, agent), name), encoding="utf-8") as f:
                 res[name] = f.read()
@@ -5015,7 +5018,78 @@ def grade(p, run, agent):
                 author="+".join(sorted({s.get("author", "self") for s in answered})))
     line.pop("rows")  # T-4296: a row per scenario stays in the grade's own output; the tower line keeps by_kind
     rune.exam_line(p, line)
+    if arm_of(res) in THINK_ARMS and res.get("model"):  # T-4297: this arm may complete a pair for its model
+        try:
+            res["kept_arm"] = keep_think_arm(p, run, agent, res["model"])
+        except (OSError, ValueError, TypeError, c.LockTimeout):  # a record that won't write loses the line, never the grade
+            res["kept_arm"] = None
     return res
+
+
+THINK_ARMS = ("off", "native")  # T-4297: the two arms the exam compares to keep a model's thinking arm
+
+
+def arm_of(x):
+    """T-4297: the thinking arm a graded line ran under, "off" or "native": the `thinking` stamp (what ran, whether or not
+    --reason was given) and, for a line from before it, an explicit --reason off or native. "" when it says none."""
+    for k in ("thinking", "reason"):
+        if isinstance(x, dict) and x.get(k) in THINK_ARMS:
+            return x[k]
+    return ""
+
+
+def think_pair(lines, run, model):
+    """T-4297: (pick, (off line, native line), why) from the graded lines of one run id for one model: the newest line of
+    each arm (arm_of) on the same split, the same number of fixable items and the same planner, small and request stamps
+    (two arms that differ in one measure the stamp, not the thinking). pick is {arm, native, off, fixable}: the arm that
+    fixed more; a tie or fewer keeps off (it answers a turn faster). Without a pair pick and the lines are None, and why
+    says what kept one from forming ('' when it is just that an arm has not run: the other line is yet to come)."""
+    got, unarmed = {}, 0
+    for x in lines:
+        if isinstance(x, dict) and x.get("run") == run and x.get("model") == model:
+            arm = arm_of(x)
+            if arm:
+                got[arm] = x  # the newest of each arm: a regrade replaces its older line
+            else:
+                unarmed += 1
+    if len(got) < 2:
+        return None, None, (f"{unarmed} line{'s' * (unarmed != 1)} of this run say no thinking arm (a run before the stamp, "
+                            f"or another --reason)" if got and unarmed else "")
+    off, nat = got["off"], got["native"]
+    nums = [x.get(k) for x in (off, nat) for k in ("fixed", "fixable")]
+    if any(isinstance(n, bool) or not isinstance(n, int) for n in nums):
+        return None, None, "a count is no number"
+    diff = [name for name, key in (("split", lambda x: x.get("split")), ("fixable", lambda x: x["fixable"]),
+                                   ("planner", lambda x: x.get("planner") or ""), ("small", lambda x: bool(x.get("small"))),
+                                   ("request", lambda x: x.get("request") or "")) if key(off) != key(nat)]
+    if diff:
+        return None, None, f"off and native differ in {', '.join(diff)}"
+    pick = {"arm": "native" if nat["fixed"] > off["fixed"] else "off", "native": nat["fixed"], "off": off["fixed"],
+            "fixable": nat["fixable"]}
+    return pick, (off, nat), ""
+
+
+def think_arm_pick(lines, run, model):
+    """T-4297: (arm, native fixed, off fixed) of think_pair's pick; None when there is no pair."""
+    pick = think_pair(lines, run, model)[0]
+    return (pick["arm"], pick["native"], pick["off"]) if pick else None
+
+
+def keep_think_arm(p, run, agent, model):
+    """T-4297: the thinking arm this run's graded lines favour for this model, written to its kept record (smith.think_keep:
+    arm, run, both counts, the sample) so a later sampo code run on that profile follows it. {model, run, arm, native, off,
+    fixable, held, replaced}: held when a larger sample of the other arm keeps the record as it was (nothing written),
+    replaced the record it overwrote (arm, run, counts, ts) or None; {model, run, why} when no pair formed and there is
+    a why; None when there is nothing to say."""
+    from sampo import rune, smith
+    pick, _, why = think_pair(rune.exam_lines(p, agent), run, model)
+    if not pick:
+        return {"model": model, "run": run, "why": why} if why else None
+    written, before = smith.think_keep(model, pick["arm"], run, pick["native"], pick["off"], pick["fixable"])
+    same = before and (before.get("arm"), before.get("run"), before.get("native"), before.get("off")) == (
+        pick["arm"], str(run), pick["native"], pick["off"])  # a regrade of the same pair rewrites the same record
+    return dict(pick, model=model, run=run, held=not written, kept=before if not written else None,
+                replaced=before if written and before and not same else None)
 
 
 KIND_COUNTS = ("scenarios", "fixable", "fixed", "done", "false_done")  # T-4296: per scenario kind and per language
@@ -5069,9 +5143,37 @@ def kinds_text(r):
 
 
 def graded_text(r):
-    """A grade as text: the totals line, then the kinds under it (kinds_text) when there is more than one."""
-    under = kinds_text(r)
-    return summary(r) + (f"\n{under}" if under else "")
+    """A grade as text: the totals line, then the kinds under it (kinds_text) when there is more than one, then (T-4297)
+    one line naming the thinking arm kept for the model when this grade completed an off/native pair of its run."""
+    under, kept = kinds_text(r), r.get("kept_arm")
+    why = ""
+    if isinstance(kept, dict):
+        model, run = c.plain(str(kept.get("model")))[:60], c.plain(str(kept.get("run")))[:40]
+        if "arm" not in kept:  # T-4297: no pair formed, and one line says why
+            why = f"thinking: no pair for {model} (run {run}): {c.plain(str(kept.get('why')))[:200]}"
+        else:
+            win = kept.get("arm") == "native"
+            counts = f"native fixed {kept.get('native')}, off fixed {kept.get('off')}"
+            if kept.get("held"):  # a smaller sample than the record's never replaces it
+                old = _think_was(kept.get("kept"))
+                why = (f"thinking for {model}: this pair ({kept.get('arm')}: {counts} of {kept.get('fixable')} fixable) is a smaller "
+                       f"sample than the record, which stays: {old}")
+            else:
+                why = (f"thinking kept for {model}: {kept.get('arm')} (run {run}: {counts}"
+                       + ("" if win else "; a tie or fewer keeps off, it answers a turn faster") + ")")
+                if kept.get("replaced"):
+                    why += f"; replaced {_think_was(kept['replaced'])}"
+    return summary(r) + (f"\n{under}" if under else "") + (f"\n{why}" if why else "")
+
+
+def _think_was(rec):
+    """T-4297: a kept record as one clause: 'native (run R: native fixed 20, off fixed 14 of 24 fixable, 2026-01-02)'."""
+    rec = rec if isinstance(rec, dict) else {}
+    ts = rec.get("ts")
+    day = time.strftime("%Y-%m-%d", time.localtime(ts)) if isinstance(ts, (int, float)) and not isinstance(ts, bool) else "undated"
+    of = f" of {rec.get('fixable')} fixable" if rec.get("fixable") else ""
+    return (f"{c.plain(str(rec.get('arm')))[:10]} (run {c.plain(str(rec.get('run')))[:40]}: native fixed {rec.get('native')}, "
+            f"off fixed {rec.get('off')}{of}, {day})")
 
 
 def summary(r):
