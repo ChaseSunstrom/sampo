@@ -23,6 +23,10 @@ from sampo import serve
 
 STALE_H = 12  # a statusline snapshot older than this says nothing about tonight's usage
 JOB_TIMEOUT = 3 * 3600  # seconds one night job may take
+NIGHT_LAND_WAIT_S = 30 * 60  # T-4278: longest a heavy job waits for a running land before it is skipped
+LAND_POLL_S = 30  # T-4278: how often the wait looks at the land's lock
+HEAVY = ("evolve", "bench", "exam", "sentinel")  # T-4278: a replayed session, exam arms or a bisect's test suites: by a
+# job's first word; such a job never starts while a land runs
 _LEASE = None  # T-0921: the open lock file of a running night
 NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds")
 
@@ -43,6 +47,32 @@ def priority(name):
         except (AttributeError, OSError):
             pass
     return apply
+
+
+def _pause(s):
+    """T-4278: the wait's sleep, a function of its own so the tests patch it."""
+    time.sleep(s)
+
+
+def _wait_for_land(p, name):
+    """T-4278: a heavy night job waits while a sampo lane land holds its lock: the replay and the gate crawl each other
+    on the shared CPUs (measured 2026-11-11: 27 of 40 runnable processes were the replay, load 53 to 84 on 16 CPUs).
+    Waiting before the start costs nothing; a job already running is never cut. True when the job may start; False
+    once the land has held its lock past NIGHT_LAND_WAIT_S, and the job is skipped (a skip, not a failure)."""
+    from sampo import train
+    waited, started = 0, False
+    while train.landing(p):
+        if not started:
+            started = True
+            print(f"night: waiting for a sampo lane land to finish before {name} (they would share the CPUs)", file=sys.stderr)
+        if waited >= NIGHT_LAND_WAIT_S:
+            print(f"night: skipped {name}: the land ran {waited} s past the wait limit", file=sys.stderr)
+            return False
+        _pause(LAND_POLL_S)
+        waited += LAND_POLL_S
+    if started:
+        print(f"night: the land ended after {waited} s; {name} starts", file=sys.stderr)
+    return True
 
 
 def current_model(p):
@@ -642,6 +672,9 @@ def cmd_night(args):
         if len(real) >= serve.FAILS_MAX and all(real[-serve.FAILS_MAX:]):  # T-0434: the breaker
             stopped = f"{serve.FAILS_MAX} jobs failed in a row"
             break
+        if j["argv"][0] in HEAVY and not _wait_for_land(p, j["name"]):  # T-4278: no replay beside a land's gate
+            skipped.append(dict(j, why="a land ran past the wait limit"))
+            continue
         if j["name"] == "kalevala rounds":  # T-3082: the rounds run here until the night's limit or a halt stops them
             ran.append(_kalevala_rounds(p, start, limit))
             continue

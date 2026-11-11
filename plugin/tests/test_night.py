@@ -486,6 +486,68 @@ class NightStops(ForemanTestCase):  # T-3929: a $0 night runs its free jobs; a b
         self.assertIn("in a row", res["stopped"])
 
 
+class NightLand(ForemanTestCase):  # T-4278: a heavy job (evolve, bench) waits while a sampo lane land holds its lock
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        from sampo import budget
+        budget.set_caps(day=5.0)
+        sessions = os.path.join(c.state_dir(), "sessions")
+        os.makedirs(sessions, exist_ok=True)
+        with open(os.path.join(sessions, "s.json"), "w") as f:
+            json.dump({"rate_limits": {"seven_day": {"used_percentage": 10}}}, f)
+
+    def night(self, jobs, lands, limit=None):
+        """cmd_night in-process over fake jobs (the key is argv[1]); train.landing answers from `lands`, the pause is
+        recorded, not slept, and the wait limit is patched when given. Returns (summary, stdout, stderr, pauses)."""
+        from sampo import night
+        p = c.find_project(self.repo, create=False)
+        pauses = []
+
+        def child(argv, **kw):
+            return subprocess.CompletedProcess(argv, 0, "", f"{argv[3]} said\n")
+        out, err = io.StringIO(), io.StringIO()
+        patches = [mock.patch("sampo.night.jobs", return_value=jobs), mock.patch.object(night.subprocess, "run", side_effect=child),
+                   mock.patch("sampo.cli.resolve", return_value=p), mock.patch("sampo.train.landing", side_effect=lands),
+                   mock.patch("sampo.night._pause", side_effect=pauses.append)]
+        if limit is not None:
+            patches.append(mock.patch("sampo.night.NIGHT_LAND_WAIT_S", limit))
+        with contextlib.ExitStack() as st:
+            for pt in patches:
+                st.enter_context(pt)
+            st.enter_context(contextlib.redirect_stdout(out))
+            st.enter_context(contextlib.redirect_stderr(err))
+            night.cmd_night(SimpleNamespace(max_usd=0.0, only=None, dry_run=False, json=True))
+        return json.loads(out.getvalue()), out.getvalue(), err.getvalue(), pauses
+
+    def test_a_heavy_job_waits_while_a_land_runs_and_starts_when_it_ends(self):
+        jobs = [("scout", ["stub", "a"], 0.0), ("model lesion x", ["evolve", "b"], 0.0), ("compost", ["stub", "c"], 0.0)]
+        res, _, err, pauses = self.night(jobs, lands=[True, True, False])
+        self.assertEqual([j["name"] for j in res["ran"]], ["scout", "model lesion x", "compost"])  # the heavy one ran, after the land
+        self.assertEqual(len(pauses), 2)  # two polls while the land held its lock
+        self.assertIn("waiting for a sampo lane land", err)  # the wait starts, saying why
+        self.assertIn("model lesion x", err)
+        self.assertIn("the land ended", err)  # and ends, saying how long it waited
+        self.assertIn("60 s", err)
+
+    def test_a_cheap_job_does_not_wait_for_a_land(self):
+        jobs = [("scout", ["stub", "a"], 0.0), ("compost", ["stub", "c"], 0.0)]
+        res, _, err, pauses = self.night(jobs, lands=[True])
+        self.assertEqual([j["name"] for j in res["ran"]], ["scout", "compost"])
+        self.assertEqual(pauses, [])
+        self.assertNotIn("waiting", err)
+
+    def test_land_limit_skips_the_heavy_job_and_the_night_goes_on(self):
+        jobs = [("model lesion x", ["evolve", "b"], 0.0), ("compost", ["stub", "c"], 0.0)]
+        res, _, err, pauses = self.night(jobs, lands=[True] * 10, limit=60)  # a land that never ends
+        self.assertEqual([j["name"] for j in res["ran"]], ["compost"])  # the night goes on to the next job
+        self.assertEqual([s["name"] for s in res["skipped"]], ["model lesion x"])  # the skip is named
+        self.assertEqual(len(pauses), 2)  # 60 s of 30 s polls, then the limit
+        self.assertIn("model lesion x", err)
+        self.assertIn("skipped", err)
+        self.assertEqual(res["stopped"], "")  # a skip is not a failed night
+
+
 class StrangerGuards(ForemanTestCase):
     def test_captures_wait_for_the_user_and_quote_the_replay(self):
         bindir = os.path.join(self.tmp, "bin")
