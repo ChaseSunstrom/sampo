@@ -5982,7 +5982,7 @@ _SYSTEMCTL_MUTATE = {"start", "stop", "restart", "reload", "try-restart", "reloa
 _FM_VALUED = {"--timeout", "--repeat", "--evidence", "--step", "--ac", "--expect", "--status", "--json-key", "-p",
               "--project", "--tail", "--top", "--text", "--section", "--file", "--run", "--verify", "--check", "--same",
               "--stack-check", "--good", "--why", "--audit", "--lens", "--docs", "--lesson", "--commit", "--type",
-              "--tier", "--title", "--source", "--until", "--model", "--max"}
+              "--tier", "--title", "--source", "--until", "--model", "--max", "--proof"}
 NOTIFY_PROBE = "rm -rf ~"  # what $1 is read as: a notify command that runs its message as code is refused
 
 
@@ -6016,6 +6016,8 @@ def _fm_stored(sub, rest, fm_args):
             out.append(v)
         elif flag == "--ac" and " :: " in v:
             out.append(v.rpartition(" :: ")[2])
+        elif flag == "--proof" and (m := re.match(r"(?is)\s*num\s*:.*?\bvia\s+(.+)$", v)):
+            out.append(m.group(1))  # T-4230: sampo concerns show's number proof runs this argv
         elif flag == "--section":
             section = v
         elif flag == "--text" and words[:1] == ["set"] and section.lower().startswith("acceptance"):

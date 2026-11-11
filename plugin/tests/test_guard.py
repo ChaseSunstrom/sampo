@@ -2587,6 +2587,12 @@ class PluginChanges(GuardCase):
             ("fm task finish T-0001 --stack-check 'rm -rf ~'", "rm-outside"),
             ("fm whyred 'rm -rf ~'", "rm-outside"),
             ("fm record 'npm publish'", "publish"),
+            # T-4230: a concern's number proof runs its command (argv, no shell): the guard reads it like a verify
+            ("fm concerns show K-ABC123 --proof 'num:1 via rm -rf ~'", "rm-outside"),
+            ("fm concerns show K-ABC123 --proof='NUM : 1 via rm -rf ~'", "rm-outside"),
+            ("fm concerns show K-ABC123 --proof 'num:2 via npm publish'", "publish"),
+            ("fm concerns show K-ABC123 --proof 'num:3 via git rev-list --count HEAD'", None),
+            ("fm concerns show K-ABC123 --proof 'git:HEAD'", None),
             ("fm check --fresh", None),
             ("fm smoke set cmd 'curl -fsS localhost:8000/health'", None),
         ], self.bash)
