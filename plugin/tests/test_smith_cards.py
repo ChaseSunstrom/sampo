@@ -71,15 +71,16 @@ class Cards(CodeCase):
         self.assertNotIn("py-none-guard", f.said(1))
 
     def test_a_question_runs_read_cards_only(self):
-        f = self.serve("openai", {"text": json.dumps({"answer": "it subtracts"})},
+        judged = {"text": json.dumps({"wants_change": False, "why": "it asks what the code does"})}  # T-4284: no --ask
+        f = self.serve("openai", {"text": json.dumps({"answer": "it subtracts"})}, judged,
                        card("py-outline", {"path": "calc.py"}), card("py-none-guard", GUARD),
                        call("done", summary="calc.add (calc.py line 1) subtracts"))
         r = self.code("outline calc.py: what does calc.add do?", "--model", "fake", "--json")
-        self.assertIn("card py-outline: facts", f.said(2), r.stdout)
+        self.assertIn("card py-outline: facts", f.said(3), r.stdout)
         notes = [json.loads(ln) for ln in r.stdout.splitlines() if '"cards"' in ln and ln.startswith("{")]
         self.assertIn("py-outline", notes[0]["cards"], "the run says what it was offered (the card bench reads it)")
-        self.assertIn("refused", f.said(3))
-        self.assertNotIn("py-none-guard", json.dumps(f.seen[1]["tools"]), "a write card isn't offered to a question")
+        self.assertIn("refused", f.said(4))
+        self.assertNotIn("py-none-guard", json.dumps(f.seen[2]["tools"]), "a write card isn't offered to a question")
         self.assertEqual(self.calc(), "def add(a, b):\n    return a - b\n")
 
 

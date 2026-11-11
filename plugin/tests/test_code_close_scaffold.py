@@ -19,7 +19,9 @@ def reply(**keys):
 
 class CloseGaps(CodeCase):
     def closes(self, p, *script):
-        f = self.serve("anthropic", plan(p), *EDIT, *script)
+        asked = [{"text": json.dumps({"wants_change": False, "why": "research asks for findings"})}] \
+            if p.get("type") == "RESEARCH" else []  # T-4284: a RESEARCH plan's request is judged once
+        f = self.serve("anthropic", plan(p), *asked, *EDIT, *script)
         r = self.code("research add", "--model", "fake")
         self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
         return f
@@ -27,12 +29,12 @@ class CloseGaps(CodeCase):
     def test_research_s_sets_the_decision_before_finish(self):
         f = self.closes(dict(PLAN, type="RESEARCH"), reply(decision=GAPS["decision"]))
         self.assertIn("would change if: callers", read_text(self.task()["path"]))
-        self.assertEqual(len(f.seen), 4)  # plan, edit, done, the one gap slot: no M close notes for S
+        self.assertEqual(len(f.seen), 5)  # plan, the judgment, edit, done, the one gap slot: no M close notes for S
 
     def test_research_m_asks_close_notes_then_the_decision(self):
         f = self.closes(dict(M_PLAN, type="RESEARCH"), CLOSE, reply(decision=GAPS["decision"]))
         self.assertIn("would change if: callers", read_text(self.task()["path"]))
-        self.assertEqual(len(f.seen), 5)
+        self.assertEqual(len(f.seen), 6)
 
     def test_performance_numbers_and_fix_regression_ride_the_same_slot(self):
         self.closes(dict(PLAN, type="PERFORMANCE"), reply(numbers=GAPS["numbers"]))
@@ -71,8 +73,8 @@ class CloseGaps(CodeCase):
 
     def test_the_gap_prompt_sent_shows_the_example(self):
         f = self.closes(dict(PLAN, type="RESEARCH"), reply(decision=GAPS["decision"]))
-        self.assertIn("Recommendation:", f.said(3))
-        self.assertIn("For example", f.said(3))
+        self.assertIn("Recommendation:", f.said(4))
+        self.assertIn("For example", f.said(4))
 
 
 if __name__ == "__main__":

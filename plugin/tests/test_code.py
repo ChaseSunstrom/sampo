@@ -491,6 +491,7 @@ class AnyRequest(CodeCase):
 
     def test_a_question_is_answered_from_the_files_and_changes_nothing(self):
         f = self.serve("openai", {"text": json.dumps({"answer": "it subtracts"})},
+                       {"text": json.dumps({"wants_change": False, "why": "it asks what the code does"})},  # T-4284
                        call("read", path="calc.py"),
                        call("edit", file="calc.py", old="a - b", new="a + b"),
                        call("done", summary="calc.add returns a - b (calc.py line 2): it subtracts, it doesn't add"))
@@ -500,7 +501,7 @@ class AnyRequest(CodeCase):
         self.assertEqual(len(answer), 1, r.stdout)
         self.assertIn("calc.py line 2", answer[0]["text"])
         self.assertIn("return a - b", self.calc(), "a question changes nothing")
-        self.assertIn("refused", f.said(3), "the edit was refused: this run only answers")
+        self.assertIn("refused", f.said(4), "the edit was refused: this run only answers")
         self.assertNotEqual(self.fm("task", "show", "T-0001", check=False).returncode, 0, "no task for a question")
 
     def test_a_plan_that_also_says_answer_is_a_plan(self):
@@ -521,7 +522,9 @@ class AnyRequest(CodeCase):
 
 class Resume(CodeCase):
     def kill_mid_run(self, p=None):
-        first = self.serve("openai", plan(p), call("read", path="calc.py"), HANG)
+        asked = [{"text": json.dumps({"wants_change": False, "why": "findings"})}] \
+            if (p or {}).get("type") == "RESEARCH" else []  # T-4284: a RESEARCH plan's request is judged once
+        first = self.serve("openai", plan(p), *asked, call("read", path="calc.py"), HANG)
         p = subprocess.Popen([sys.executable, FM, "code", "fix add", "--model", "fake"], cwd=self.repo, env=self.env(),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:

@@ -10,6 +10,7 @@ import types
 import unittest
 from unittest import mock
 
+import test_code
 from test_code import CLOSE, M_PLAN, PLAN, CodeCase, call, journal_text, plan
 
 from sampo import louhi, models, smith, smithbench
@@ -156,8 +157,8 @@ class SmallMode(CodeCase):
 
     def test_a_find_and_fix_request_outside_small_mode_is_still_answered(self):
         answer = {"text": json.dumps({"answer": "calc.add subtracts"})}
-        f, r = self.run_small(False, answer, call("done", summary="calc.add subtracts (calc.py:2)"),
-                              request="Check calc.add.")
+        f, r = self.run_small(False, answer, wants(False, "it asks for a check, findings only"),  # T-4284: the model judges
+                              call("done", summary="calc.add subtracts (calc.py:2)"), request="Check calc.add.")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("read-only answer", json.dumps(f.seen))
 
@@ -172,8 +173,8 @@ class SmallMode(CodeCase):
 
     def test_a_question_is_still_answered(self):
         answer = {"text": json.dumps({"answer": "calc.add subtracts"})}
-        f, r = self.run_small(True, answer, call("done", summary="calc.add subtracts (calc.py:2)"),
-                              request="what does calc.add do?")
+        f, r = self.run_small(True, answer, wants(False, "it asks how the code works"),  # T-4284
+                              call("done", summary="calc.add subtracts (calc.py:2)"), request="what does calc.add do?")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertNotIn("asks for a change", json.dumps(f.seen))
         self.assertNotIn("Before any plan", json.dumps(f.seen), "a question has no look before its plan")
@@ -225,6 +226,222 @@ class SmallMode(CodeCase):
                                        os.path.join(tmp, "e.jsonl"), small=True)
             self.assertIn("--small", ans["notes"][0])
             self.assertTrue(ans["small"])
+
+
+def wants(yes, why="the request states an outcome"):
+    return {"text": json.dumps({"wants_change": yes, "why": why})}
+
+
+ANSWERED = {"text": json.dumps({"answer": "calc.add subtracts; the fix is to change - to +"})}
+RELEASE = "Get these helpers to a finished state I could release; decide what that takes."
+RESEARCH_S = {"type": "RESEARCH", "tier": "S", "title": "Read the helpers to determine finished state",
+              "criteria": [{"text": "the state of the helpers is known", "verify": "test -f calc.py"}],
+              "steps": ["cat app.rs", "cat test_app.rs", "cat README.md"]}
+
+
+class WantsChange(CodeCase):
+    """T-4284: whether a request wants files changed is one cached model call's judgment, made lazily after an answer or
+    a RESEARCH plan (the word lists only stand in when the call gives nothing). T-2878's guard needs no --small."""
+
+    def go(self, request, *script, args=()):
+        f = self.serve("openai", *script)
+        r = self.code(request, "--model", "fake", "--json", *args, check=False)
+        return f, r, [json.loads(ln) for ln in r.stdout.splitlines() if ln.startswith("{")]
+
+    def judged(self, f):
+        return [i for i, s in enumerate(f.seen) if "wants_change" in json.dumps(s["messages"][0])]
+
+    def test_wants_change_an_answer_to_an_outcome_goes_back_for_a_plan_and_the_work_is_done(self):
+        for request in ("The code needs these fixes.", "Gap analysis of calc.py: the three real bugs"):
+            with self.subTest(request=request):
+                f, r, ev = self.go(request, ANSWERED, wants(True), plan(PLAN), FIX_EDIT, DONE, CLOSE)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.judged(f), [1])
+                self.assertIn("names fixes the user wants made", f.said(2))
+                self.assertIn("change - to +", f.said(2), "the answer, fenced, seeds the plan")
+                self.assertIn("<data-", f.said(2))
+                self.assertIn("a + b", self.calc())
+                self.assertEqual(self.task()["status"], "done")
+                self.tearDown()
+                self.setUp()
+
+    def test_wants_change_a_second_answer_is_refused(self):
+        f, r, ev = self.go("The code needs these fixes.", ANSWERED, wants(True), ANSWERED, plan(PLAN), FIX_EDIT, DONE,
+                           CLOSE)
+        self.assertIn("read-only answer", f.said(3))
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+
+    def test_wants_change_a_question_the_judgment_says_wants_none_stays_an_answer(self):
+        f, r, ev = self.go("what does calc.add do?", ANSWERED, wants(False, "it asks what the code does"),
+                           call("done", summary="calc.add returns a - b (calc.py line 2)"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual([e["event"] for e in ev if e["event"] == "answer"], ["answer"])
+        self.assertIn("return a - b", self.calc())
+        self.assertNotIn("task", [e["event"] for e in ev])
+        self.assertEqual(len(f.seen), 3, "the answer, the judgment and the answering phase: no re-plan")
+
+    def test_wants_change_ask_is_unchanged_and_asks_nothing(self):
+        f, r, ev = self.go("The code needs these fixes.", ANSWERED, call("done", summary="it subtracts (calc.py)"),
+                           args=("--ask",))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.judged(f), [])
+        self.assertIn("return a - b", self.calc())
+
+    def test_wants_change_a_first_plan_that_changes_something_asks_nothing(self):
+        f, r, ev = self.go("The code needs these fixes.", plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.judged(f), [], "no answer, no RESEARCH plan: no call")
+        self.assertEqual(len(f.seen), 3, "the plan, the edit, the done: the fake model's own calls and no extra one")
+
+    def test_judgment_is_one_call_with_thinking_off_and_the_request_fenced(self):
+        f, r, ev = self.go(RELEASE, plan(RESEARCH_S), wants(True), plan(RESEARCH_S), plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(self.judged(f), [1], "refused again by the check, never judged again")
+        asked = f.seen[1]
+        self.assertIn("<data-", json.dumps(asked["messages"]))
+        self.assertIn(RELEASE, json.dumps(asked["messages"][-1]))
+        self.assertTrue(0 < asked.get("max_tokens", 0) <= 256, asked.keys())
+
+    def test_judgment_verdict_and_reason_are_an_event_of_the_run(self):
+        f, r, ev = self.go("The code needs these fixes.", ANSWERED, wants(True, "it lists fixes to make"), plan(PLAN),
+                           FIX_EDIT, DONE, CLOSE)
+        got = [e for e in ev if "wants_change" in e]
+        self.assertEqual(len(got), 1, r.stdout)
+        self.assertIs(got[0]["wants_change"], True)
+        self.assertEqual(got[0]["why"], "it lists fixes to make")
+        self.assertEqual(got[0]["event"], "note")
+
+    def test_judgment_that_fails_falls_back_to_the_word_lists_and_never_fails_the_run(self):
+        bad = {"text": "maybe, hard to say"}, {"text": ""}, {"text": json.dumps({"wants_change": "yes"})}, \
+            {"text": json.dumps({"why": "no verdict"})}
+        for reply in bad:
+            with self.subTest(reply=reply["text"]):
+                f, r, ev = self.go("Fix calc.add", ANSWERED, reply, plan(PLAN), FIX_EDIT, DONE, CLOSE)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                self.assertEqual(self.task()["status"], "done", "asks_change says a change: back for a plan")
+                got = [e for e in ev if "wants_change" in e]
+                self.assertEqual([e["wants_change"] for e in got], [True])
+                self.assertIn("fallback", got[0]["why"])
+                self.tearDown()
+                self.setUp()
+
+    def test_judgment_that_fails_for_a_question_leaves_the_answer(self):
+        f, r, ev = self.go("what does calc.add do?", ANSWERED, {"text": "no idea"},
+                           call("done", summary="calc.add returns a - b (calc.py line 2)"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(len([e for e in ev if e["event"] == "answer"]), 1)
+        self.assertIn("return a - b", self.calc())
+
+    def test_research_plan_for_an_outcome_goes_back_once_for_a_plan_that_changes_files(self):
+        f, r, ev = self.go(RELEASE, plan(RESEARCH_S), wants(True), plan(RESEARCH_S), plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        seed = f.said(2)
+        self.assertIn("you planned to look and report; the user wants the work done: plan the look as step 1 and the "
+                      "changes after it", seed)
+        for text in ("Read the helpers to determine finished state", "cat app.rs", "cat README.md"):
+            self.assertIn(text, seed, "the RESEARCH plan's own title and steps seed the second ask")
+        self.assertIn("<data-", seed)
+        self.assertIn("RESEARCH plan", f.said(3), "check_plan(v, change) refuses a second RESEARCH plan")
+        self.assertEqual(self.task()["type"], "FIX")
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+
+    def test_research_plan_for_a_request_that_wants_only_findings_keeps_it(self):
+        f, r, ev = self.go(RELEASE, plan(RESEARCH_S), wants(False, "it asks what is left to do"), call("run", cmd="true"),
+                           DONE, CLOSE)
+        self.assertEqual(self.judged(f), [1])
+        self.assertNotIn("you planned to look", json.dumps(f.seen))
+        self.assertEqual([e["plan"]["type"] for e in ev if e["event"] == "plan"], ["RESEARCH"])
+        self.assertIn("return a - b", self.calc())
+
+    def test_research_plan_under_ask_is_left_alone(self):
+        f, r, ev = self.go(RELEASE, plan(RESEARCH_S), args=("--ask",))
+        self.assertEqual(self.judged(f), [])
+
+    # T-4284 round 2: exam s8-048 goal-c-1764a8. The judgment said yes, the second ask gave a sound CLEAN M plan after
+    # the ladder, and check_plan(v, change) threw it away: its first verify ended `&& exit 1 || exit 0`, which can fail
+    # (exit 1 ends the shell) but matched _CANT_FAIL's `|| exit 0`. A bare except then said only "kept the first".
+
+    def test_a_clean_plan_whose_verify_can_exit_1_is_a_change_plan(self):
+        verify = "grep -q 'a - b' calc.py && exit 1 || exit 0"
+        self.assertIsNone(smith.check_plan(dict(M_PLAN, type="CLEAN", criteria=[{"text": "t", "verify": verify}]),
+                                           "an outcome stated as a fact"))
+        for hollow in ("echo ok", "true", "python3 test_calc.py || exit 0", "grep -q x calc.py; exit 0"):
+            with self.subTest(verify=hollow):
+                why = smith.check_plan(dict(PLAN, criteria=[{"text": "t", "verify": hollow}]), "fix")
+                self.assertIn("can't fail", why or "")
+        self.assertIn("CLEAN", smith.SMALL_CHANGE)
+
+    def test_a_second_plan_typed_clean_with_that_verify_is_taken_and_the_work_is_done(self):
+        clean = dict(PLAN, type="CLEAN", title="Bring calc to a finished state",
+                     criteria=[{"text": "calc.add is fixed", "verify": "grep -q 'a - b' calc.py && exit 1 || exit 0"}])
+        f, r, ev = self.go(RELEASE, plan(RESEARCH_S), wants(True), plan(clean), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("kept the first", r.stdout)
+        self.assertEqual((self.task()["type"], self.task()["status"]), ("CLEAN", "done"))
+        self.assertIn("a + b", self.calc())
+
+    def test_a_second_plan_gets_the_same_repairs_a_first_plan_gets(self):
+        hollow = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "echo ok"}])
+        f, r, ev = self.go(RELEASE, plan(RESEARCH_S), wants(True), plan(hollow), plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertIn("can't fail", f.said(3), "the check's own words go back to the model")
+        self.assertEqual((self.task()["type"], self.task()["status"]), ("FIX", "done"), r.stdout + r.stderr)
+
+    def test_a_second_plan_whose_verify_passes_already_goes_through_the_replan_round(self):
+        green = dict(PLAN, criteria=[{"text": "calc imports", "verify": GREEN}])
+        f, r, ev = self.go(RELEASE, plan(RESEARCH_S), wants(True), plan(green), plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertIn("already passes before any work", f.said(3))
+        self.assertEqual((self.task()["type"], self.task()["status"]), ("FIX", "done"), r.stdout + r.stderr)
+
+    HOLLOW = dict(PLAN, criteria=[{"text": "calc is done", "verify": "echo ok"}])
+    LADDER_HOLLOW = ({"text": "FIX"}, {"text": "S"}, {"text": "Make it right"}, {"text": "calc is done :: echo ok"},
+                     {"text": "1. edit calc.py"})
+
+    def test_no_change_plan_after_the_ladder_says_why_in_one_line_and_that_the_change_went_unmade(self):
+        one = dict(RESEARCH_S, steps=["cat calc.py"])
+        decision = {"text": json.dumps({"decision": "Recommendation: change the operator; would change if: callers differ"})}
+        f, r, ev = self.go(RELEASE, plan(one), wants(True), *[plan(self.HOLLOW)] * 3, *self.LADDER_HOLLOW,
+                           call("run", cmd="true"), DONE, decision)
+        notes =[e["text"] for e in ev if e["event"] == "note" and "unmade" in e["text"]]
+        self.assertEqual(len(notes), 1, r.stdout + r.stderr)
+        self.assertNotIn("\n", notes[0])
+        self.assertIn("can't fail", notes[0], "the check's own words")
+        self.assertNotIn("kept the first", notes[0])
+        self.assertIn("RESEARCH", [e["plan"]["type"] for e in ev if e["event"] == "plan"][0])
+        ended = [e for e in ev if e["event"] == "closed"]
+        self.assertTrue(ended and any("unmade" in x for x in ended[-1]["unproven"]), r.stdout + r.stderr)
+
+    def test_an_answer_that_no_change_plan_followed_says_the_change_went_unmade(self):
+        f, r, ev = self.go("The code needs these fixes.", ANSWERED, wants(True), *[ANSWERED] * 3, *self.LADDER_HOLLOW,
+                           call("done", summary="calc.add subtracts (calc.py line 2)"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        answer = [e for e in ev if e["event"] == "answer"]
+        self.assertEqual(len(answer), 1)
+        self.assertIn("unmade", answer[0]["text"])
+        self.assertIn("return a - b", self.calc())
+
+    def test_a_spend_cap_in_the_second_ask_stops_the_run_and_is_not_kept_as_the_first_plan(self):
+        self.serve("openai", plan(RESEARCH_S), wants(True), plan(RESEARCH_S), plan(RESEARCH_S))
+        test_code.Cost.priced(self)  # $0.07 a call: the plan, the judgment, the second ask, and the cap is met before its repair
+        r = self.code(RELEASE, "--model", "fake", "--max-usd", "0.15", check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("of its $0.15 cap", r.stderr)
+        self.assertNotIn("kept the first", r.stdout)
+
+    def test_the_gate_asks_nothing_of_a_cli_or_cloud_planner_after_either_an_answer_or_a_research_plan(self):
+        def run(plan_, guided, kind):
+            r = types.SimpleNamespace(plan=plan_, ask=False, guided=guided)
+            with mock.patch.object(smith, "wants_change", side_effect=AssertionError("judged")):
+                return smith._wants_work(r, {"name": "p", "kind": kind}, [], None)
+        for what in ({"answer": "fix the sum"}, dict(RESEARCH_S)):
+            for guided, kind in ((True, "cli"), (False, "openai"), (False, "cli")):
+                with self.subTest(plan=sorted(what)[0], guided=guided, kind=kind):
+                    self.assertIsNone(run(what, guided, kind))
+
+    def test_the_reason_is_one_printable_line_of_bounded_length(self):
+        f, r, ev = self.go("The code needs these fixes.", ANSWERED, wants(True, "ok\x1b[31m red\x07\nnext\x00 " + "y" * 500),
+                           plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        got = [e for e in ev if "wants_change" in e][0]
+        self.assertTrue(got["why"].isprintable(), repr(got["why"]))
+        self.assertLessEqual(len(got["why"]), 200)
+        self.assertNotIn("\x1b", r.stdout)
 
 
 M_ONE = dict(M_PLAN, readings=M_PLAN["readings"][:1])  # sound work, one reading and no ruled_out: only the M form fails
