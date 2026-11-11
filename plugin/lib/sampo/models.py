@@ -234,10 +234,11 @@ _TRANSPORT = (urllib.error.URLError, OSError, http.client.HTTPException)
 
 
 class ModelError(Exception):
-    def __init__(self, msg, status=None, transient=False):
+    def __init__(self, msg, status=None, transient=False, reasoning=False):
         super().__init__(msg)
         self.status = status
         self.transient = transient  # T-4205: a timeout or a dropped/refused connection: worth another try
+        self.reasoning = reasoning  # T-4210: the reply was all reasoning and no text, cut by the output budget
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1309,7 +1310,7 @@ def _reasoned(profile, messages, tools, max_tokens, timeout, think, budget, bias
     try:
         return go(extra, think, cap)
     except ModelError as e:
-        if budget and "reasoning used the whole budget" in str(e):
+        if budget and e.reasoning:  # T-4210: the flag, not the message
             return go({k: v for k, v in extra.items() if k != "thinking_budget_tokens"}, False)  # the forced close
         if extra and e.status in (400, 422):
             for k in extra:  # only what was sent
@@ -1383,7 +1384,7 @@ def complete(profile, messages, tools=None, max_tokens=2048, timeout=120, think=
     text = msg.get("content") or ""
     if stop == "length" and not calls and not (text if isinstance(text, str) else "x").strip():
         raise ModelError(f"{profile.get('name')}: reasoning used the whole budget: no text in {max_tokens} tokens "
-                         "(think: false, or a larger max_out)")  # T-2893: said, not a silent fallback
+                         "(think: false, or a larger max_out)", reasoning=True)  # T-2893: said, not a silent fallback
     return {"text": text, "tool_calls": calls,
             "usage": {"in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0)},
             "stop": stop}

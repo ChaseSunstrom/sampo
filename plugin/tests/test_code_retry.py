@@ -126,6 +126,46 @@ class Retry(unittest.TestCase):
         self.assertIs(out, err)
         self.assertEqual(timeouts, [120])
 
+    def test_a_reply_that_is_all_reasoning_is_retried_once_with_thinking_off_and_a_note_says_so(self):  # T-4210
+        spent = models.ModelError("local: reasoning used the whole budget", reasoning=True)
+        with mock.patch.object(models, "complete", side_effect=[spent, OK]) as mc:
+            out = smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=10)
+        self.assertIs(out, OK)
+        self.assertIs(mc.call_args_list[0].kwargs.get("think"), None)
+        self.assertIs(mc.call_args_list[1].kwargs.get("think"), False)
+        self.assertTrue(any("thinking off" in text for _, text in self.run.notes), self.run.notes)
+        self.assertEqual(self.run.logs[0]["kind"], "retry")
+
+    def test_a_second_all_reasoning_reply_stops_the_run_as_before(self):  # T-4210
+        spent = models.ModelError("local: reasoning used the whole budget", reasoning=True)
+        with mock.patch.object(models, "complete", side_effect=[spent, spent, OK]) as mc:
+            with self.assertRaises(models.ModelError) as cm:
+                smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=10)
+        self.assertIs(cm.exception, spent)
+        self.assertEqual(mc.call_count, 2)
+        self.assertEqual(self.wait.call_count, 0)
+
+    def test_a_reasoning_failure_from_a_call_with_thinking_off_is_not_asked_again(self):  # T-4210
+        spent = models.ModelError("local: reasoning used the whole budget", reasoning=True)
+        with mock.patch.object(models, "complete", side_effect=[spent, OK]) as mc:
+            with self.assertRaises(models.ModelError):
+                smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=10, think=False)
+        self.assertEqual(mc.call_count, 1)
+
+    def test_a_reasoning_failure_of_a_budgeted_call_is_not_repeated_with_thinking_off(self):  # T-4210: _reasoned closes it
+        spent = models.ModelError("local: reasoning used the whole budget", reasoning=True)
+        with mock.patch.object(models, "complete", side_effect=[spent, OK]) as mc:
+            with self.assertRaises(models.ModelError):
+                smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=10, think=True, think_budget=64)
+        self.assertEqual(mc.call_count, 1)
+
+    def test_a_reasoning_retry_then_a_transient_failure_still_gets_the_timeout_ladder(self):  # T-4210
+        spent = models.ModelError("local: reasoning used the whole budget", reasoning=True)
+        err = fail(transient=True)
+        out, timeouts = self.complete(LOCAL, spent, err, OK)
+        self.assertIs(out, OK)
+        self.assertEqual(timeouts, [300, 300, 600])
+
 
 if __name__ == "__main__":
     unittest.main()

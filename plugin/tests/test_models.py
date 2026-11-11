@@ -982,6 +982,7 @@ class Extras(Base):  # T-2893: a profile's body extras, its reasoning switch, an
         with self.assertRaises(m.ModelError) as e:
             m.complete(self.profile(f), [{"role": "user", "content": "hi"}])
         self.assertIn("reasoning used the whole budget", str(e.exception))
+        self.assertTrue(e.exception.reasoning, "T-4210: a flag, so no caller matches the message")
         f = self.fake((200, oa_reply("half a sent", finish="length"), None))
         self.assertEqual(m.complete(self.profile(f), [{"role": "user", "content": "hi"}])["text"], "half a sent")
 

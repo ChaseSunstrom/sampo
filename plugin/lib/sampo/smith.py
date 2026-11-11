@@ -694,13 +694,23 @@ def transient(e):
 
 def complete_retrying(run, profile, messages, **kw):
     """models.complete for one of the loop's model calls, retried on a transient failure (T-4205): each try has a
-    longer timeout, a note says so, and after the last try the failure is raised as before. kw: complete's other
-    arguments."""
+    longer timeout, a note says so, and after the last try the failure is raised as before. T-4210: a reply that was all
+    reasoning (ModelError.reasoning) is asked again once with thinking off, with a note, unless the caller already
+    turned thinking off. kw: complete's other arguments."""
     ladder = LOCAL_RETRY_TIMEOUTS if profile.get("own") or m.profile_local(profile) else RETRY_TIMEOUTS
-    for n, t in enumerate(ladder):
+    n, off = 0, False
+    while True:
+        t = ladder[n]
         try:
-            return m.complete(run.capped(profile), messages, timeout=t, **kw)
+            return m.complete(run.capped(profile), messages, timeout=t, **(dict(kw, think=False) if off else kw))
         except m.ModelError as e:
+            if e.reasoning and not off and kw.get("think") is not False and not kw.get("think_budget"):
+                # T-4210: once, with thinking off, and said (a think_budget call already closed its thinking itself)
+                off = True
+                run.emit("note", "  the model spent its whole output budget thinking, no text: trying again with "
+                                 "thinking off")
+                run.log(kind="retry", timeout=t, think=False, reason="reasoning", attempt=n + 1)
+                continue
             if n == len(ladder) - 1 or not transient(e):
                 raise
             why = f"HTTP {e.status}" if e.status else "timed out or lost its connection"
@@ -708,6 +718,7 @@ def complete_retrying(run, profile, messages, **kw):
                              f"(try {n + 2} of {len(ladder)})")
             run.log(kind="retry", timeout=ladder[n + 1], status=e.status, attempt=n + 2)
             _wait(RETRY_WAITS[min(n, len(RETRY_WAITS) - 1)])
+            n += 1
 
 
 class Run:
