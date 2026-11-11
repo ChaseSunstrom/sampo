@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A headless replay session (a bench arm, the stranger, a louhi or long-run arm) runs on the highest quarter of the CPUs at nice 10, with everything it starts, and its Pythons are told that CPU count (T-4276).
 - sampo concerns: the user's asks folded from the steer meter into concerns (the local model says which message repeats an open one), linked to the tasks captured from them, and shown only by a checkable proof (T-4200).
 - Small test runs take an express slot beside a gate, and a non-priority run defers to a priority waiter for at most 300 s (T-4247).
 - Accepted XL, HUGE and GIANT as tiers wherever a tier is read, with one tier list and builders refusing big tasks (T-4220).
