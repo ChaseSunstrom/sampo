@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo doctor, sampo ship's record and the hook benchmark no longer start a detached steer expansion (a paid model call) when run outside the tests: the scratch project they measure in turns background work off (T-4344).
 - sampo exam grade says where the points were lost: fixed, done and false done per scenario kind and per language, a row per scenario with its time to the first action and its turns, and 'nothing fixed in kind K' in words; the scorecard carries the newest run's kinds (T-4296).
 - sampo code carries on past its turn cap while a run is still changing files or moving a test, up to four carries and only with deadline left, and says why in each note and in the stop message; an edit between two runs of the same red test is progress, not a repeat (T-4291).
 - sampo code shows the planner the unfinished work on record, so a bare 'continue' plans the open items instead of an invented task; a request that names something else in the tree is not pushed off it, and a second ask that gives no plan keeps the first (T-4294).
