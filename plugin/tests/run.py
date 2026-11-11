@@ -99,23 +99,29 @@ def slot_count():
 
 
 @contextlib.contextmanager
-def cpu_slot(wait=3600.0, poll=0.05):
+def cpu_slot(wait=3600.0, poll=0.05, small=False):
     """T-3252: one of the machine's CPU slots, shared by every run.py on it (mine, each builder's, the ship's, the
     post-merge verify), held while the block runs: its number, or None when nested, off (SAMPO_SLOTS=0) or the wait ran
     out (the class then runs anyway: a slow run beats a hung one). A slot is a lock file, so the kernel frees it when
     its holder dies and a crashed runner leaks nothing. T-3614: while a SAMPO_SLOT_PRIORITY=1 run waits, other runs
-    leave freed slots to it (the merge train's gate got 1/N of them beside ~10 testing builders) for half their wait,
-    then compete again, so a lane's run under a deadline isn't left NOT_STARTED by a long gate."""
+    leave freed slots to it (the merge train's gate got 1/N of them beside ~10 testing builders) for defer_for(wait),
+    then compete again, so a lane's run under a deadline isn't left NOT_STARTED by a long gate. T-4247: a small run (a
+    selection of at most EXPRESS_CLASSES classes) first tries an express slot, without deferring to a priority waiter,
+    so one or two classes start beside a gate; when those are taken it competes for the pool as any run does."""
     n = slot_count()
     folder = _slot_folder() if n and not _env(SLOT_ENV) and fcntl else None
     if not folder:  # nested, off, no flock (Windows) or a folder that isn't safely ours: run without one
         yield None
         return
     now, order, prio, mark = time.monotonic(), random.sample(range(n), n), _env(PRIO_ENV) == "1", None
-    end, defer = now + wait, now + wait / 2
+    end, defer, got = now + wait, now + defer_for(wait), None
     try:
-        while not (got := _take(folder, order) if prio or time.monotonic() >= defer or not _prio_waiting(folder)
-                   else None):
+        while True:
+            if small and (got := _take(folder, EXPRESS)):
+                break
+            if prio or time.monotonic() >= defer or not _prio_waiting(folder):
+                if got := _take(folder, order):
+                    break
             if time.monotonic() >= end:
                 break
             if prio and not mark:
@@ -135,9 +141,25 @@ def cpu_slot(wait=3600.0, poll=0.05):
         os.close(got[1])  # closing it frees the slot
 
 
-def _take(folder, order):
-    """A free slot: (its number, its locked fd), or None."""
-    for i in order:
+EXPRESS = ("x0", "x1")  # T-4247: the express slots' lock files, beside the pool's "0".."N-1" in the same folder
+EXPRESS_CLASSES = 2  # T-4247: a run of at most this many classes may take an express slot
+DEFER_MAX = 300.0  # T-4247: a non-priority run leaves freed slots to a waiting priority run at most this long
+
+
+def defer_for(wait):
+    """T-4247: how long a non-priority run leaves freed slots to a waiting priority run: half its wait, at most DEFER_MAX
+    (it was half the wait, up to 1800 s, so a lane's run waited out a whole gate)."""
+    return min(wait / 2, DEFER_MAX)
+
+
+def small_selection(classes):
+    """T-4247: whether a run of these test classes is small enough for an express slot: distinct classes, not tests."""
+    return len(set(classes)) <= EXPRESS_CLASSES
+
+
+def _take(folder, names):
+    """A free slot among names (the pool's numbers, or EXPRESS): (its name, its locked fd), or None."""
+    for i in names:
         try:
             fd = os.open(os.path.join(folder, str(i)), os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
         except OSError:
@@ -335,6 +357,13 @@ PRUNE_S = 14 * 86400  # a repo's cache unused this long (a removed lane's) is de
 KEEP = 3  # T-3593: records kept per class, newest first: main's code beside the lanes' that changed what it reads
 COVERED = {}  # T-3593: job id -> what its processes recorded (runcover.py's lines), filled by _run_one
 CPU = {}  # T-3757: job id -> the CPU s its processes took (BOOT's file), filled by _run_one
+WAITED = {}  # T-4247: job id -> the s its class waited for a slot (run_one), not its run time: nothing else keeps it
+
+
+def waited_note(waits):
+    """T-4247: the summary's '; waited N s for a slot' when the classes waited over 5 s in all, else ''."""
+    total = sum(waits.values())
+    return f"; waited {total:.0f} s for a slot" if total > 5 else ""
 BUDGETS = {}  # T-3757: class id -> its CPU_BUDGET_S, a costly new class's declared cost
 CPU_BASE, CPU_GATE = "SAMPO_CPU_BASE", "SAMPO_CPU_GATE"  # T-3757: the train's baseline file; =1 fails a rise
 CPU_FLOOR = "SAMPO_CPU_FLOOR_S"  # T-3757: the absolute margin, 20 CPU s; a new class may take 4.5x it, a run 6x
@@ -995,11 +1024,14 @@ def sandboxed(argv, tmp, env):
             sandbox.job_env(env, tmp))
 
 
-def run_one(cid, k, timeout=480, deadline=None):
+def run_one(cid, k, timeout=480, deadline=None, small=False):
     """T-3252: the class runs in one of the machine's CPU slots; waiting for it counts against neither its timeout nor
-    its recorded time, and the run's deadline still applies once it starts."""
+    its recorded time, and the run's deadline still applies once it starts. T-4247: small (the run's selection is at
+    most EXPRESS_CLASSES classes) lets it take an express slot; the seconds it waited are kept in WAITED."""
     wait = max(0.0, deadline - time.time()) if deadline is not None else 3600.0
-    with cpu_slot(wait) as slot:
+    t = time.monotonic()
+    with cpu_slot(wait, small=small) as slot:
+        WAITED[cid] = WAITED.get(cid, 0.0) + time.monotonic() - t
         return _run_one(cid, k, timeout, deadline, slot)
 
 
@@ -1268,8 +1300,9 @@ def main():
     a.deadline, end = dl, t0 + dl
     # T-3541: the whole suite (the gate: no names, -k or -p) waits for any other on the machine, at most half its deadline
     slot = suite_slot(t0 + dl / 2) if not (a.names or a.k or a.p) else contextlib.nullcontext()
+    small = small_selection(owner(j) for j in todo)  # T-4247: at most two classes to run: they may take an express slot
     with slot, burn(a.load), concurrent.futures.ThreadPoolExecutor(max(1, a.j)) as ex:
-        go = lambda c: run_one(c, a.k or a.names, cap, end)  # noqa: E731  # T-1994: the class is in a named module, so -k alone
+        go = lambda c: run_one(c, a.k or a.names, cap, end, small)  # noqa: E731  # T-1994: the class is in a named module, so -k alone
         results = list(ex.map(go, todo))
         for i, r in enumerate(results):  # T-3936: a cap-kill on a loaded host runs once more alone, the pool drained
             if r[1] < 0 and "killed (T-1808)" in r[2] and (lp := load_per_cpu()) > LOAD_BAR:
@@ -1361,7 +1394,7 @@ def main():
     me = resource.getrusage(resource.RUSAGE_SELF) if resource else None
     spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     sys.stderr.write(f"\nRan {total} tests in {time.time() - t0:.1f}s ({len(todo)} jobs, {a.j} at a time; "
-                     f"slowest: {slow}; cpu {spent:.1f} s){cached}\n\n"
+                     f"slowest: {slow}; cpu {spent:.1f} s{waited_note(WAITED)}){cached}\n\n"
                      f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip else 'NO TESTS RAN'}\n")
     if stopped:
         sys.stderr.write(f"not run (deadline): {len(stopped)}\n" + "".join(f"  not run class: {r[0]}\n" for r in stopped))

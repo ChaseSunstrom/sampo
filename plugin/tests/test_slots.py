@@ -199,6 +199,109 @@ class Slots(ForemanTestCase):
             run.run_one("test_nothing.Nothing", [])
         self.assertEqual(seen, ["0"])
 
+    def hold(self, small=False):
+        """T-4247: a slot held by a thread until the returned event is set: (its name, the event)."""
+        held, free, box = threading.Event(), threading.Event(), []
+
+        def body():
+            with run.cpu_slot(wait=5, poll=0.01, small=small) as s:
+                box.append(s)
+                held.set()
+                free.wait(30)
+
+        t = threading.Thread(target=body, daemon=True)
+        t.start()
+        self.addCleanup(lambda: (free.set(), t.join(30)))
+        self.assertTrue(held.wait(5), "the slot was not free")
+        return box[0], free
+
+    def test_a_small_run_takes_an_express_slot_while_the_pool_is_held_and_a_priority_run_waits(self):
+        # T-4247: a run of one or two classes starts at once beside a gate that holds every pool slot and waits
+        self.assertEqual(self.hold()[0], 0)
+        self.priority_waiter(os.path.join(self.tmp, "never"))
+        self.assertTrue(self.marks(), "the priority run waits for the pool")
+        start = time.monotonic()
+        with run.cpu_slot(wait=5, poll=0.01, small=True) as s:
+            self.assertEqual(s, "x0")
+        self.assertLess(time.monotonic() - start, 1)
+        self.assertTrue(run.small_selection(["test_a.A", "test_a.B", "test_a.A"]))
+        self.assertFalse(run.small_selection(["test_a.A", "test_b.B", "test_c.C"]))
+
+    def test_a_third_small_run_falls_back_to_the_pool_once_express_is_full(self):
+        _, free_pool = self.hold()
+        self.assertEqual(self.hold(small=True)[0], "x0")
+        self.assertEqual(self.hold(small=True)[0], "x1")
+        got = []
+
+        def third():
+            with run.cpu_slot(wait=10, poll=0.01, small=True) as s:
+                got.append(s)
+
+        t = threading.Thread(target=third)
+        t.start()
+        time.sleep(0.3)
+        self.assertEqual(got, [], "both express slots are taken: the third run waits for the pool")
+        free_pool.set()
+        t.join(10)
+        self.assertEqual(got, [0])
+
+    def test_a_large_run_never_takes_an_express_slot(self):
+        self.hold()  # the pool is held; both express files are free
+        with run.cpu_slot(wait=0.5, poll=0.01) as s:
+            self.assertIsNone(s, "a larger run waits out its wait, never an express file")
+            free = run._take(run._slot_folder(), run.EXPRESS)
+            self.assertIsNotNone(free, "an express file is still free")
+            os.close(free[1])
+
+    def test_a_dead_express_holder_frees_its_slot(self):
+        code = ("import sys, time; sys.path.insert(0, %r); import run\n"
+                "with run.cpu_slot(small=True) as s:\n    print(s, flush=True); time.sleep(60)\n") % run.HERE
+        p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True, env=dict(os.environ))
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        self.assertEqual(p.stdout.readline().strip(), "x0")
+        self.assertEqual(self.hold(small=True)[0], "x1")  # x0 is the child's until it is killed
+        p.kill()
+        p.wait()
+        start = time.monotonic()
+        with run.cpu_slot(wait=5, poll=0.01, small=True) as s:
+            self.assertEqual(s, "x0", "the killed holder's express file is free again")
+        self.assertLess(time.monotonic() - start, 2)
+
+    def test_defer_is_half_the_wait_capped_at_defer_max(self):
+        self.assertEqual(run.defer_for(3600.0), 300.0)  # DEFER_MAX
+        self.assertEqual(run.defer_for(1.0), 0.5)
+
+    def test_a_non_priority_run_defers_to_a_priority_waiter_for_defer_max_at_most(self):
+        mark = run._mark(run._slot_folder())  # a live priority waiter's marker; the pool is free
+        self.addCleanup(os.close, mark[0])
+        start = time.monotonic()
+        with mock.patch.object(run, "DEFER_MAX", 0.3):
+            with run.cpu_slot(wait=10, poll=0.01) as s:
+                waited = time.monotonic() - start
+        self.assertEqual(s, 0)
+        self.assertGreaterEqual(waited, 0.3)
+        self.assertLess(waited, 3)
+
+    def test_a_run_says_how_long_it_waited_for_a_slot_when_over_5s(self):
+        self.assertEqual(run.waited_note({"test_a.A": 4.0}), "")
+        self.assertEqual(run.waited_note({"test_a.A": 4.0, "test_b.B": 3.0}), "; waited 7 s for a slot")
+
+    def test_run_one_keeps_the_seconds_its_class_waited_for_a_slot(self):
+        _, free = self.hold()
+        threading.Timer(0.6, free.set).start()
+        seen = []
+        with mock.patch.object(run, "_run_one", lambda cid, k, t, d, slot: seen.append(slot) or (cid, 0, "", 0, 0.0)):
+            run.WAITED.pop("test_w.W", None)
+            run.run_one("test_w.W", [])
+        self.assertEqual(seen, [0])
+        self.assertGreaterEqual(run.WAITED["test_w.W"], 0.4)
+        self.hold()  # the pool is held again: a small class's run_one takes express at once, passing small through
+        with mock.patch.object(run, "_run_one", lambda cid, k, t, d, slot: seen.append(slot) or (cid, 0, "", 0, 0.0)):
+            before = run.WAITED["test_w.W"]
+            run.run_one("test_w.W", [], small=True)
+        self.assertEqual(seen, [0, "x0"])
+        self.assertLess(run.WAITED["test_w.W"] - before, 0.5)
+
 
 @unittest.skipUnless(hasattr(os, "sched_getscheduler"), "scheduler policies (SCHED_IDLE) are Linux only")
 class Idle(unittest.TestCase):
