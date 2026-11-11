@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Open concerns order the queue: tasks linked to a concern the user raised come first, most-said first, and sampo next, queue and status name the concern (T-4201).
 - sampo code leaves no unfinished journal when a run is refused before its first model turn, --task ID --restart sets an unfinished run aside and starts fresh, and a resume gets its own turns (T-4204).
 - Sampo's own test runs for a lane (lane verify, ship's test run, a lane's check) start at nice 10 so they no longer compete with the user's session or block new lanes at the load gate (T-4197).
 - sampo code retries a local model's all-reasoning reply once with thinking off, and says so, before the run stops (T-4210).
