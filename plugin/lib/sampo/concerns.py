@@ -233,6 +233,35 @@ def open_concerns(p, briefs=None):
     return [x for x in fold(p, briefs) if x["state"] == "open"]
 
 
+def queue_links(p, briefs=None, rows=None):
+    """T-4201: {task id: {id, said, opened, text}} for the tasks linked to an open concern: the concern said most
+    (then the oldest) when a task has several. core.order_queue reads it. Only the verbs that show the queue (next,
+    queue, status) call this: it folds the ledger, which no hook's path may."""
+    out = {}
+    for x in open_concerns(p, briefs) if rows is None else rows:
+        for t in x["tasks"]:
+            cur = out.get(t)
+            if cur is None or (-x["said"], x["opened"]) < (-cur["said"], cur["opened"]):
+                out[t] = {"id": x["id"], "said": x["said"], "opened": x["opened"], "text": x["text"]}
+    return out
+
+
+def summary(p, briefs=None, rows=None):
+    """T-4201: {open, twice, oldest: {id, hours, text}} of the open concerns, or None with none (nothing to say)."""
+    rows = open_concerns(p, briefs) if rows is None else rows
+    if not rows:
+        return None
+    oldest = min(rows, key=lambda x: x["opened"])
+    return {"open": len(rows), "twice": sum(1 for x in rows if x["said"] >= 2),
+            "oldest": {"id": oldest["id"], "hours": _hours(oldest["opened"]), "text": oldest["text"]}}
+
+
+def lead(link):
+    """The words `sampo next` and `sampo queue` put beside a linked task."""
+    via = f" (for {link['via']}, which waits on it)" if link.get("via") else ""
+    return f"{link['id']} said {link['said']}x: {c.fit(c.plain(' '.join(str(link['text']).split())), 80)}{via}"
+
+
 def held(p):
     """{id, text} of the open concerns, oldest first, the newest HELD_N: the ones a message may be said to repeat."""
     return [{"id": x["id"], "text": x["text"]} for x in open_concerns(p)][-HELD_N:]

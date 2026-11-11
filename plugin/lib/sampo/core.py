@@ -3370,9 +3370,37 @@ def next_id(p, net=True):
 
 # ---------------------------------------------------------------- queue
 
-def _key(b):
+def concern_rank(link):
+    """T-4201: where a task linked to an open concern sorts among the others: before every unlinked one, the concern
+    said most first, then the oldest opened (a stamp that sorts as text). link: concerns.queue_links' entry, or None."""
+    return (1,) if not link else (0, -int(link.get("said") or 0), str(link.get("opened") or ""))
+
+
+def inherit_concerns(briefs, concerns):
+    """T-4201: the concerns with each one's dependencies added: a task an open concern's task waits on is worked
+    before it, so it counts as that concern's too ("via" names the waiting task), the strongest concern claiming it.
+    {task id: link}; a link already there stays unless a stronger one needs the task."""
+    if not concerns:
+        return {}
+    by_id = {b.id: b for b in briefs}
+    own = {t: v for t, v in concerns.items() if t in by_id}
+    out = dict(own)
+    for t in sorted(own, key=lambda t: concern_rank(own[t])):
+        seen, todo = {t}, [t]
+        while todo:
+            for d in _deps(by_id[todo.pop()]):
+                if d in by_id and d not in seen and by_id[d].status not in CLOSED:
+                    seen.add(d)
+                    todo.append(d)
+                    if d not in out or concern_rank(own[t]) < concern_rank(out[d]):
+                        out[d] = {**own[t], "via": t}
+    return out
+
+
+def _key(b, link=None):
+    """Active first, urgent next (the hoists), then a task linked to an open concern (T-4201), then type, then age."""
     return (0 if b.status in ("active", "verifying") else 1, 0 if b.priority == "urgent" else 1,
-            RANK.get(b.type, 99), id_num(b.id))
+            concern_rank(link), RANK.get(b.type, 99), id_num(b.id))
 
 
 def _deps(b):
@@ -3486,7 +3514,7 @@ def batched(b, by_id):
     return bool(h) and h.status not in CLOSED
 
 
-def rank_inbox(briefs):
+def rank_inbox(briefs, concerns=None):
     """T-0111: captured items by value for effort inside the intake order: urgent first, then type (RANK), then value
     (who asked, 2 per item depending on it, up to 2 for waiting two weeks) per tier; an item follows any captured
     item it depends on. T-0383: inferred dependencies count too, and a group's members follow the first one placed."""
@@ -3498,14 +3526,15 @@ def rank_inbox(briefs):
     def key(b):  # whole days waited: a float age read at each call would order same-second captures by the clock
         value = SOURCE_VALUE.get(b.meta.get("source"), 1) + 2 * wanted[b.id] + min(int(age_days(b.meta.get("created")) or 0) / 7, 2)
         value += title_tilt(learned, b.title)  # T-1664: fm inbox prefer's choices, at most 2 either way
-        return (0 if b.priority == "urgent" else 1, RANK.get(b.type, 99), -value / TIER_EFFORT.get(b.tier, 2), id_num(b.id))
+        return (0 if b.priority == "urgent" else 1, concern_rank((concerns or {}).get(b.id)), RANK.get(b.type, 99),
+                -value / TIER_EFFORT.get(b.tier, 2), id_num(b.id))  # T-4201: a task the user's ask made comes first
     by_id = {b.id: b for b in briefs}
     pending = {b.id: b for b in briefs if b.status == "captured" and not batched(b, by_id)}
     first = next((b for b in pending.values() if b.path), None)  # a brief lives in <project dir>/tasks/
     learned = learned_weights(os.path.dirname(os.path.dirname(first.path))) if first else {}
     order, _ = _topo(list(pending), {i: [d for d in deps[i] if d in pending] for i in pending},
                      {i: key(b) for i, b in pending.items()}, {i: b.meta.get("group") for i, b in pending.items()},
-                     1, brk=True)  # a cycle: as ranked
+                     2, brk=True)  # a cycle: as ranked; the group follows its first member unless urgent or a concern says otherwise
     return [pending[i] for i in order]
 
 
@@ -3536,9 +3565,13 @@ def archived_ids(p):
     return {m.group(1) for _, _, fs in os.walk(os.path.join(p.dir, "archive")) for f in fs if (m := _BRIEF_FILE.match(f))}
 
 
-def order_queue(briefs, archived=()):
+def order_queue(briefs, archived=(), concerns=None):
     """Runnable briefs in canonical order with dependencies respected. Returns (queue, cycles, dangling).
-    `archived`: ids of archived (closed) tasks: a dependency on one is satisfied, not dangling (T-3430)."""
+    `archived`: ids of archived (closed) tasks: a dependency on one is satisfied, not dangling (T-3430).
+    `concerns` (T-4201): {task id: concerns.queue_links' entry}: a task linked to an open concern comes before the
+    unlinked ones, the most said first; active and urgent tasks and dependencies still come first. None (what every
+    hook passes: the ledger is never read there) is exactly the order without concerns."""
+    concerns = inherit_concerns(briefs, concerns)
     by_id = {b.id: b for b in briefs}
     runnable = [b for b in briefs if b.status in RUNNABLE and not batched(b, by_id)]  # T-0257: its host runs
     rid = {b.id for b in runnable}
@@ -3551,8 +3584,8 @@ def order_queue(briefs, archived=()):
             elif d not in by_id and d not in archived and d in (b.meta.get("depends_on") or []):  # an inferred one was checked when made
                 dangling.append((b.id, d))
         deps[b.id] = ds
-    key = {b.id: _key(b) for b in runnable}
-    order, remaining = _topo(list(deps), deps, key, {b.id: b.meta.get("group") for b in runnable}, 2)
+    key = {b.id: _key(b, concerns.get(b.id)) for b in runnable}
+    order, remaining = _topo(list(deps), deps, key, {b.id: b.meta.get("group") for b in runnable}, 3)
     cycles = _cycles({i: [d for d in deps[i] if d in remaining] for i in remaining})
     return [by_id[i] for i in order + sorted(remaining, key=key.get)], cycles, dangling
 
@@ -5333,11 +5366,11 @@ def merge_hint(done):
             f"from its builder's report lines; run it in the background)")
 
 
-def next_for(p, briefs=None, checks=True):
+def next_for(p, briefs=None, checks=True, concerns=None):
     """(brief or None, stage, action): the active task, else the first queued, else the top-ranked captured item (T-0111);
     T-0247: a decision whose revisit trigger fired rides along."""
     briefs = briefs if briefs is not None else load_briefs(p)  # T-2016: one load for every check below
-    b, st, action = _next_for(p, briefs)
+    b, st, action = _next_for(p, briefs, concerns)
     rung = stuck_rung(b) if b is not None and b.status == "active" else None
     ask = race_ask(b) if b is not None else None  # T-2338: a low-confidence choice goes to the evidence first (before any
     if ask:  # work, so never beside a stuck rung: the two share race_open and race_line)
@@ -5479,7 +5512,7 @@ def _round_held(p, briefs):
             and x.meta.get("priority") != "urgent" and x.id not in wanted}
 
 
-def _next_for(p, briefs=None):
+def _next_for(p, briefs=None, concerns=None):
     briefs = lane_view(load_briefs(p) if briefs is None else briefs, p.lane)  # T-0134: not another lane's work
     autonomy = "standard" if panicked() else effective_autonomy(p)
     waits = ""
@@ -5509,8 +5542,14 @@ def _next_for(p, briefs=None):
         not p.lane and x.meta.get("builder") and x.status not in CLOSED) and not any(
         d in open_ids for d in _deps(x))
     held = _round_held(p, briefs)  # T-2327: Foreman's own captures wait for an open Genesis round the user put first
-    b = active_brief(briefs, p.lane) or next(filter(mine, order_queue(briefs)[0]), None) or \
-        next((x for x in rank_inbox(briefs) if mine(x) and x.id not in held), None)
+    concerns = inherit_concerns(briefs, concerns)
+    b = active_brief(briefs, p.lane) or next(filter(mine, order_queue(briefs, concerns=concerns)[0]), None) or \
+        next((x for x in rank_inbox(briefs, concerns) if mine(x) and x.id not in held), None)
+    if concerns and not active_brief(briefs, p.lane):  # T-4201: a task the user's ask made is captured until planned
+        ask = next((x for x in rank_inbox(briefs, concerns) if x.id in concerns and mine(x) and x.id not in held), None)
+        if ask and (b is None or b.id not in concerns
+                    or concern_rank(concerns[ask.id]) < concern_rank(concerns[b.id])):
+            b = ask  # not behind the queue: the first linked of the queue and the inbox, the most said first
     if not b:
         from sampo import tidy  # T-0657: what a blocked task waited on may have changed since
         state = {x.id: x.status for x in briefs}

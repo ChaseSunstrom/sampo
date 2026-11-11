@@ -147,6 +147,11 @@ def cmd_state(args):
             sd["self_running"] = triggers.self_running(p)
         except Exception:
             pass
+        try:  # T-4201: what the user is still waiting on; folds the concerns ledger, so never a status bar's poll
+            from sampo import concerns
+            sd["concerns"] = concerns.summary(p)
+        except Exception:
+            pass
     if args.line:
         run = c.code_line(p)  # T-1351: the newest fm code run, for tmux and prompt segments
         print(c.state_line(sd) + (f" · {run}" if run else ""))
@@ -158,6 +163,11 @@ def cmd_state(args):
             shown, left = c.more(text.splitlines(), 15, "drop --brief")
             text = "\n".join(shown + [left] if left else shown)
         print(text.rstrip("\n"))
+        got = sd.get("concerns")
+        if got:  # T-4201: one line, in the brief status too: it is what the queue is ordered by
+            old = got["oldest"]
+            print(f"Open concerns: {got['open']} open, oldest {old['id']} {old['hours']} h: {c.fit(c.plain(old['text']), 60)}; "
+                  f"{got['twice']} said twice or more (sampo concerns)")
         if not args.brief:  # T-2276: the trigger whose tasks mostly get dropped
             from sampo import triggers
             n = triggers.noisiest(p)
@@ -4454,20 +4464,38 @@ def _queue_preview(p, args, order, briefs):
     return out(args, {"autonomy": autonomy, "items": items, "minutes_known": sum(known)}, "\n".join(lines))
 
 
+def _concern_links(p, briefs):
+    """T-4201: {task id: its open concern} for the verbs that show the queue (never a hook: the ledger is folded
+    here). A ledger that can't be read costs the ordering by concern, never the verb."""
+    try:
+        from sampo import concerns
+        return c.inherit_concerns(briefs, concerns.queue_links(p, briefs))
+    except Exception:
+        return {}
+
+
 def cmd_queue(args):
     p = resolve(args)
-    briefs = c.lane_view(c.load_briefs(p), p.lane)  # T-0134: another lane's work isn't this side's queue
-    order, cycles, dangling = c.order_queue(briefs, c.archived_ids(p))
+    everything = c.load_briefs(p)
+    briefs = c.lane_view(everything, p.lane)  # T-0134: another lane's work isn't this side's queue
+    links = _concern_links(p, everything)  # T-4201: tasks the user is waiting on come first, the most said first
+    order, cycles, dangling = c.order_queue(briefs, c.archived_ids(p), links)
     if args.preview:
         return _queue_preview(p, args, order, briefs)
     if args.replan:
         with c.lock(p.dir):
             c.log_event(p, "replan", data={"order": [b.id for b in order]}, session=session())
             c.regen_views(p, briefs)
-    data = {"order": [c.brief_summary(b) for b in order], "cycles": cycles, "dangling": [list(d) for d in dangling]}
+    data = {"order": [{**c.brief_summary(b), **({"concern": {k: links[b.id][k] for k in ("id", "said", "via")
+                                                             if k in links[b.id]}}
+                                                if b.id in links else {})} for b in order],
+            "cycles": cycles, "dangling": [list(d) for d in dangling]}
     lines = []
     for i, b in enumerate(order, 1):
         lines.append(f"{i}. {b.id} {b.type} {b.tier} [{b.status}]{' !' if b.priority == 'urgent' else ''} — {b.title}")
+        if b.id in links:  # T-4201: the user's words that put it here
+            from sampo import concerns
+            lines.append("   ↳ the user is waiting: " + concerns.lead(links[b.id]))
         why = [x for x in (b.meta.get("inferred_why") and f"after {b.meta['inferred_why']}",
                            b.meta.get("group") and f"group: {b.meta['group']}") if x]
         if why:  # T-0383: what fm relate inferred, and why
@@ -6799,7 +6827,12 @@ def _sync_in(args):
 def cmd_next(args):
     p = resolve(args)
     briefs = c.load_briefs(p)  # T-2016: shared by every check below; each load is ~18 ms at 1,200 briefs
-    b, st, action = c.next_for(p, briefs)
+    links = _concern_links(p, briefs)  # T-4201: what the user is waiting on (fm next only: never a hook's path)
+    b, st, action = c.next_for(p, briefs, concerns=links)
+    link = links.get(b.id) if b else None
+    if link and st != "idle":  # the top concern and its task are the required action, said first
+        from sampo import concerns
+        action = f"the user is waiting on {concerns.lead(link)} — {action}"
     usual = None
     if b and b.status != "active":  # T-0451: what this kind of task usually takes here (fm next only: not the hooks)
         from sampo import watch
@@ -6850,7 +6883,8 @@ def cmd_next(args):
         shown, left = c.more([c.fit(x, 120) for x in beliefs], 3)
         over += f" · open beliefs: {'; '.join(shown + [left] if left else shown)}" if beliefs else ""
     skill = c.skill_for(b, st)  # T-1697
-    out(args, {"task": b.id if b else None, "stage": st, "action": action, "usual_minutes": usual, "skill": skill or None},
+    out(args, {"task": b.id if b else None, "stage": st, "action": action, "usual_minutes": usual, "skill": skill or None,
+               "concern": {k: link[k] for k in ("id", "said", "via") if k in link} if link else None},
         f"Next: {action}" + (f" ({skill})" if skill else "")
         + (f" · a {b.type} {b.tier} usually takes {usual:g} min here" if usual is not None else "") + over)
 
