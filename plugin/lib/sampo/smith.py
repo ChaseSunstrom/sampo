@@ -61,6 +61,7 @@ EARLY_DONE_REFUSALS = 2  # T-3180: dones refused while no edit is made and a ver
 CAP = 3000            # characters of a run's head, and of its tail, the model sees
 READ_LINES, READ_MAX, LINE_MAX, READ_BYTES = 200, 400, 500, 16 << 20
 RUN_TIMEOUT, VERIFY_TIMEOUT, FM_TIMEOUT = 120, 600, 900
+BUILT_FILES = 20  # T-4387: more untracked files than this in one new directory, none written by the run's tools: a command's output
 MAX_TOKENS, KEEP_RESULTS, SMALL_CONTEXT = 8192, 6, 32768
 # T-3006: --reason arms. state: the model's compact state rides each call, thinking off but for low confidence, a failed
 # check or a loop break, a named check before an edit; off/native: thinking off/on every turn; budget: on, capped, closed
@@ -238,6 +239,8 @@ EVENTS = {
     "stats": "reads, rereads, reread_ratio, searches, notes, forced, turns, turns_to_first_edit (null: none): what the "
              "run looked at and how soon it edited, at its end however it ended (T-4177)",
     "changed": "step, files (dirty after the step), stat {path: [added, removed]}",
+    "built_out": "dir, count, text: a new directory a command filled (over BUILT_FILES untracked files, none written by the "
+                 "run's own tools) listed in .git/info/exclude and left out of the commit (T-4387)",
     "closed": "task, tokens, unproven (fm task finish's Not verified lines, T-2395)",
     "blocked": "task, reason, next (the command to run now)", "error": "task, next",
     "answer": "text: the answer to a question about the code (no task, nothing changed)",
@@ -1042,6 +1045,8 @@ class Run:
         self.state, self.checked, self.bad_run, self.broke = None, False, False, False  # a resume starts the state again
         self.step_edited = False  # T-3124: an edit landed in this step
         self.early, self.edited, self.tree0 = 0, False, None  # T-3180: refused early dones; an edit landed; the tree at start
+        self.wrote = set()  # T-4387: repo-relative paths the run's own write and edit tools changed (journaled, replayed)
+        self.had_dirs = set()  # T-4387: the untracked directories there were when the run began: the user's, never excluded
         self.nonce = secrets.token_hex(6)  # T-1394: the data envelope's tag, which no file can know ahead
         self.cards_offer = self.cards_session = None  # T-3160: the calling cards picked for this run, and their Session
         self.harness_text = None  # T-3181: what the harness ran before turn 1 (its facts, any fix it applied)
@@ -1315,6 +1320,8 @@ class Run:
                 if ok and not self.edited:  # T-3180
                     self.edited = True
                     self.log(kind="edited")  # T-3974: a resume knows an edit landed before the crash
+                if ok:
+                    self.wrote_file(a.get("file"))
                 self.step_edited = self.step_edited or ok  # T-3124
                 if ok and self.count["first_edit"] is None:
                     self.count["first_edit"] = self.turns  # T-4177: the turn the first edit landed on
@@ -2239,6 +2246,26 @@ class Run:
                 break
         self.done.add(name)
         self.log(kind="phase_done", phase=name)
+
+    def wrote_file(self, rel):
+        """T-4387: the run's own tools touched this file: a new directory holding it is never a command's output."""
+        try:
+            rel = os.path.relpath(self.path(rel), self.root).replace(os.sep, "/")
+        except (ValueError, TypeError):
+            return
+        if rel not in self.wrote:
+            self.wrote.add(rel)
+            self.log(kind="wrote", file=rel)
+
+    def leave_out_built(self):
+        """T-4387: a directory a command filled stays out of the changed event and the commit; one line says which and
+        how to keep it. A worker CLI writes with its own tools, which the run can't see: nothing is judged there."""
+        if self.worker or self.read_only:
+            return
+        for d, n in _leave_out_built(self.root, self.wrote, self.had_dirs):
+            self.emit("built_out", f"  left out {core.defang(d)} ({n} untracked files, none written by this run's own edits): "
+                      "a command's output, listed in .git/info/exclude (only this clone); to keep it, commit it by hand "
+                      "or add it to .gitignore", dir=d, count=n)
 
     def tree(self):
         """T-3180: HEAD and every dirty or untracked file with its size and mtime: a change by `run` shows as a
@@ -3467,6 +3494,64 @@ def _dirty(root):
     """{path: status} of every dirty or untracked file."""
     out = _git(root, "status", "--porcelain", "-z", "-uall", "--no-renames").stdout
     return {e[3:]: e[:2] for e in os.fsdecode(out).split("\0") if len(e) > 3 and not e.endswith("/")}
+
+
+def _untracked_dirs(root):
+    """T-4387: the highest-level directories git shows as wholly untracked (and not ignored), each with its '/'."""
+    try:
+        out = os.fsdecode(_git(root, "status", "--porcelain", "-z", "--untracked-files=normal", "--no-renames").stdout)
+    except (subprocess.TimeoutExpired, OSError):
+        return set()
+    return {e[3:] for e in out.split("\0") if e.startswith("?? ") and e.endswith("/")}
+
+
+def _leave_out_built(root, wrote, had=()):
+    """T-4387: [(dir/, count)] of each highest-level untracked directory holding more than BUILT_FILES untracked files
+    of which the run's own tools (`wrote`, repo-relative) wrote none, and which `had` (the untracked directories at the
+    run's start: the user's own) doesn't list: a command's output, not the run's work. Each is
+    appended as an anchored line to the repo's own info/exclude (git's local ignore file: never .gitignore, never twice),
+    so the changed event, the close's file list and the commit never see it. A directory .gitignore covers never shows
+    in git status, so it never gets here. No names of build folders: who made the files, and how many."""
+    try:
+        dirs = _untracked_dirs(root)
+        if not dirs:
+            return []
+        counts = {}
+        for path, st in _dirty(root).items():
+            if st != "??":
+                continue
+            parts = path.split("/")
+            for i in range(1, len(parts)):
+                if "/".join(parts[:i]) + "/" in dirs:
+                    counts["/".join(parts[:i]) + "/"] = counts.get("/".join(parts[:i]) + "/", 0) + 1
+                    break
+        built = sorted(d for d, n in counts.items() if n > BUILT_FILES and "\n" not in d and d not in had
+                       and not any(w.startswith(d) for w in wrote))
+        if not built:
+            return []
+        where = os.fsdecode(_git(root, "rev-parse", "--git-path", "info/exclude").stdout).strip()
+        if not where:
+            return []
+        where = os.path.join(root, where)
+        try:
+            with open(where, "rb") as f:
+                have = f.read()
+        except FileNotFoundError:
+            have = b""
+        lines = set(have.splitlines())
+        done = []
+        for d in built:
+            line = os.fsencode("/" + re.sub(r"([\\*?\[])", r"\\\1", d))  # anchored to the top, a glob character literal
+            if line in lines:  # listed already and still showing (a later negation): never written twice, never claimed
+                continue
+            os.makedirs(os.path.dirname(where), exist_ok=True)
+            with open(where, "ab") as f:
+                f.write((b"" if not have or have.endswith(b"\n") else b"\n") + line + b"\n")
+            have += line + b"\n"
+            done.append((d, counts[d]))
+        return done
+    except (subprocess.TimeoutExpired, OSError):  # a broken tree or an unwritable exclude: the commit goes as before
+        return []
 
 
 def _head(root):
@@ -5159,6 +5244,8 @@ def _journal_start(run, profile):
                      "max_steps": run.max_steps, "worker": run.worker, "worker_timeout": run.worker_timeout,
                      "verify": run.verify_cmd, "own_plan": run.own_plan, "max_usd": run.max_usd,
                      "context": run.context, "small": run.small})
+    run.had_dirs = _untracked_dirs(run.root)  # T-4387: kept, so a resume still knows which were the user's
+    run.log(kind="had_dirs", dirs=sorted(run.had_dirs))
     if run.usd:  # what planning spent, before there was a journal to say it
         run.log(kind="spend", usd=run.usd)
 
@@ -5263,6 +5350,7 @@ def _drive(run, profile):
             run.work(f"step:{n}", f"{prompt}\n\n{DATA_NOTE}")
         else:
             run.phase(f"step:{n}", profile, prompt)
+        run.leave_out_built()  # T-4387: before the file list
         files = sorted(f for f in _dirty(run.root) if not core.ARTEFACT.search(f))  # T-1320: not a .pyc a check left
         run.emit("changed", "", quiet=True, step=n, files=files, stat=_numstat(run.root, files))
     rounds = 0
@@ -5299,6 +5387,7 @@ def _who(run, profile):
 
 def _finish(run, profile):
     pl = run.plan
+    run.leave_out_built()  # T-4387: what a close-time command built (a fix round's verify) stays out of the commit too
     a = ["task", "finish", run.tid, f"--audit=fm code ({_who(run, None if run.worker else profile)}): harness-run "
                                     "verify",
          "--run=" + " && ".join(cr["verify"] for cr in pl["criteria"])]
@@ -5469,6 +5558,10 @@ def _load(run, tid, ended=False):
             run.done.add(r["phase"])
         elif k == "edited":  # T-3974: else the resumed run's early-done check counts no edit
             run.edited = True
+        elif k == "wrote" and isinstance(r.get("file"), str):  # T-4387: else a resume would call its own files built
+            run.wrote.add(r["file"])
+        elif k == "had_dirs" and isinstance(r.get("dirs"), list):
+            run.had_dirs = {x for x in r["dirs"] if isinstance(x, str)}
         elif k == "counts":  # T-4177: the stats go on from what the run counted before it was stopped
             run.count.update({key: r[key] for key in run.count if key in r})
         elif k == "baseline":
