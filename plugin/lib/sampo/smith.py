@@ -68,6 +68,8 @@ MAX_TOKENS, KEEP_RESULTS, SMALL_CONTEXT = 8192, 6, 32768
 REASONS = ("state", "off", "native", "budget", "bias", "schema")
 THINK_BUDGET, DELIBERATE_TOKENS, LOW_CONFIDENCE = 1024, 2 * MAX_TOKENS, 0.5
 STATE_TEXT, STATE_FACTS = 160, 5  # characters of a state's text fields; facts kept
+SMALL_OUT, THINK_FILE = 1024, "think-kept.json"  # T-4290: a local model's call this small starts with thinking off; the
+#                                                 kept sizes per model (a call that exhausted its thinking) live here
 STATE_NOTE = ("\nWith every action also send \"state\": a compact note of your thinking, so you need little other "
               "thinking: {\"goal\": \"...\", \"facts\": [\"what you have verified\"], \"hypothesis\": \"your best "
               "explanation\", \"next_check\": \"the command or file that would confirm it\", \"confidence\": 0 to 1}. "
@@ -697,11 +699,70 @@ def transient(e):
     return bool(getattr(e, "transient", False)) or getattr(e, "status", None) in TRANSIENT_STATUS
 
 
+def think_kept(name):
+    """T-4290: the largest max_tokens that exhausted this model's thinking in an earlier run (THINK_FILE in the state:
+    {model: {size: count}}). 0 when none is kept, or the file is unreadable: no count."""
+    try:
+        with open(os.path.join(core.state_dir(), THINK_FILE), encoding="utf-8") as f:
+            sizes = json.load(f).get(name) or {}
+        return max((int(s) for s, c in sizes.items() if int(c) > 0), default=0)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 0
+
+
+def think_record(name, size):
+    """T-4290: one more call of this local model at this size exhausted its thinking. The file is re-read before it is
+    written; a corrupt file starts again from this count. The sizes are the code's own max_tokens values, so the file
+    stays small."""
+    path = os.path.join(core.state_dir(), THINK_FILE)
+    try:
+        with open(path, encoding="utf-8") as f:
+            kept = json.load(f)
+    except (OSError, ValueError):
+        kept = None
+    kept = kept if isinstance(kept, dict) else {}
+    sizes = kept.get(name) if isinstance(kept.get(name), dict) else {}
+    count = sizes.get(str(size))
+    sizes[str(size)] = count + 1 if isinstance(count, int) else 1
+    kept[name] = sizes
+    core.write_atomic(path, json.dumps(kept, sort_keys=True))
+
+
+def think_start(run, profile, kw):
+    """T-4290: (kw, why) for a model call: kw with thinking off where the call needs none, why said ("" when kw is
+    left as given). Under --reason off every call of the run starts off. A local model's call of at most SMALL_OUT
+    tokens starts off unless the caller names think or think_budget; so does a size that one of this model's calls
+    exhausted thinking on, in this run (run.think_floor) or an earlier one (think_kept: the note says so, once per
+    run). Cloud and CLI profiles are as given, bar --reason off."""
+    if run.reason == "off":
+        return {k: v for k, v in dict(kw, think=False).items() if k != "think_budget"}, "reason off"
+    if "think" in kw or kw.get("think_budget") or not m.profile_local(profile):
+        return kw, ""
+    name, size = str(profile.get("name") or ""), kw.get("max_tokens") or 0
+    if size <= SMALL_OUT:
+        return dict(kw, think=False), "small call"
+    if size <= run.think_floor.get(name, 0):
+        return dict(kw, think=False), "exhausted in this run"
+    kept = think_kept(name)
+    if size <= kept:
+        if not run.think_noted:
+            run.think_noted = True
+            run.emit("note", f"  {name} spent its thinking budget at {kept} tokens in an earlier run: thinking off "
+                             f"for calls that size or smaller")
+        return dict(kw, think=False), "earlier run"
+    return kw, ""
+
+
 def complete_retrying(run, profile, messages, **kw):
     """models.complete for one of the loop's model calls, retried on a transient failure (T-4205): each try has a
     longer timeout, a note says so, and after the last try the failure is raised as before. T-4210: a reply that was all
     reasoning (ModelError.reasoning) is asked again once with thinking off, with a note, unless the caller already
-    turned thinking off. kw: complete's other arguments."""
+    turned thinking off. T-4290: the first try's thinking is decided by think_start (its why is journaled), and a local
+    model's call that exhausts its thinking is kept, so later calls of that size or smaller start off. kw: complete's
+    other arguments."""
+    kw, why = think_start(run, profile, kw)
+    if why:
+        run.log(kind="reason", phase="think", mode="off", why=why)
     ladder = LOCAL_RETRY_TIMEOUTS if profile.get("own") or m.profile_local(profile) else RETRY_TIMEOUTS
     n, off = 0, False
     while True:
@@ -710,6 +771,15 @@ def complete_retrying(run, profile, messages, **kw):
             return m.complete(run.capped(profile), messages, timeout=t, **(dict(kw, think=False) if off else kw))
         except m.ModelError as e:
             if e.reasoning and not off and kw.get("think") is not False and not kw.get("think_budget"):
+                # T-4290: a local call that started on by default and spent its budget thinking is kept for its size
+                # (never one the caller asked to think: that is its choice, and no lesson for the default calls)
+                if m.profile_local(profile) and "think" not in kw:
+                    size, name = kw.get("max_tokens") or 0, str(profile.get("name") or "")
+                    run.think_floor[name] = max(run.think_floor.get(name, 0), size)
+                    try:
+                        think_record(name, size)
+                    except (OSError, ValueError, TypeError):  # a count is extra: a state that won't write stops nothing
+                        pass
                 # T-4210: once, with thinking off, and said (a think_budget call already closed its thinking itself)
                 off = True
                 run.emit("note", "  the model spent its whole output budget thinking, no text: trying again with "
@@ -751,6 +821,7 @@ class Run:
         self.usd, self.max_usd, self.slug = None, getattr(args, "max_usd", None), None  # T-1357
         self.context = ""  # T-1374: what was piped on stdin
         self.reason = getattr(args, "reason", None)  # T-3006: one of REASONS, or None: as before
+        self.think_floor, self.think_noted = {}, False  # T-4290: per local model, the largest size thinking exhausted
         self.small = bool(getattr(args, "small", False))  # T-2878: small-model mode (a profile's "small" turns it on too)
         self.own_endpoint = False  # T-4177: the profile is the user's own or a loopback one (guided_profile)
         self.state, self.checked, self.bad_run, self.broke = None, False, False, False  # a resume starts the state again
