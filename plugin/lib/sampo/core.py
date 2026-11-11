@@ -1259,10 +1259,21 @@ def first_error_line(out):
 SLOT_PRIORITY = "FOREMAN_SLOT_PRIORITY"  # T-3614: tests/run.py's SAMPO_SLOT_PRIORITY, as mirror_env names it
 
 
-def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False):
+NICE_LANE = 10  # T-4197: the nice value of Sampo's own test runs for a lane (lane verify, ship, a lane's check)
+
+
+def nice_argv(argv, level=NICE_LANE):
+    """T-4197: argv at nice `level` when this host has nice, else argv as it is: the one wrapper for Sampo's own runs
+    that must not compete with the user's session."""
+    nice = shutil.which("nice")
+    return [nice, "-n", str(level), *argv] if nice else list(argv)
+
+
+def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False):
     """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). stdin is
     /dev/null unless a caller hands it one it knows won't block (T-1766). priority: its tests/run.py takes freed CPU
-    slots ahead of lane runs (T-3614), unless SAMPO_SLOT_PRIORITY is already set (=0 opts out)."""
+    slots ahead of lane runs (T-3614), unless SAMPO_SLOT_PRIORITY is already set (=0 opts out). niced: the command
+    starts at nice 10 (T-4197), after normalize_verify has read it."""
     stdin = subprocess.DEVNULL if stdin is None else stdin
     root, cmd, _ = normalize_verify(root, cmd)  # T-3411
     if root and os.path.isdir(root):
@@ -1274,7 +1285,8 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False):
     if timeout:  # T-3338: tests/run.py ends its own run under the timeout, naming what was slow, not killed unnamed
         env = {**env, "FM_RUN_DEADLINE": str(max(1, int(timeout) - min(30, int(timeout) // 10)))}
     try:  # its own process group, so a timeout kills the servers and workers it started too; no stdin to wait on
-        pr = subprocess.Popen(["bash", "-c", cmd], cwd=root, stdin=stdin, stdout=subprocess.PIPE,
+        argv = nice_argv(["bash", "-c", cmd]) if niced else ["bash", "-c", cmd]
+        pr = subprocess.Popen(argv, cwd=root, stdin=stdin, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True, env=env)
     except OSError as e:  # no bash on PATH, or the repo root is gone
         return 127, f"could not run bash: {e}"

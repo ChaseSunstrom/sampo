@@ -530,7 +530,8 @@ def _run_test(p, wt, base, env, test, log):
     _affected_first(p, wt, base, env)  # T-2323: a red linked test stops the ship in minutes, not after the suite
     with open(log, "wb") as out, open(log, "rb") as rd:
         try:
-            proc = subprocess.Popen(test, cwd=wt, stdin=subprocess.DEVNULL, env=env, stdout=out, stderr=subprocess.STDOUT)
+            proc = subprocess.Popen(c.nice_argv(test), cwd=wt, stdin=subprocess.DEVNULL, env=env, stdout=out,
+                                    stderr=subprocess.STDOUT)  # T-4197: a ship's run yields to the user's session
         except OSError as e:
             _err(f"--test {test[0]!r} couldn't run ({e.strerror}); nothing was pushed")
         dec = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -558,7 +559,7 @@ def _rerun_red(wt, out, code, env):
         return None
     c.wait_for_load("sampo ship", out=sys.stdout)
     print(f"{', '.join(classes)} failed in the full run; rerunning alone", flush=True)
-    if c.run_command(wt, again, c.load_scaled(900), env=env)[0]:
+    if c.run_command(wt, again, c.load_scaled(900), env=env, niced=True)[0]:  # T-4197
         return None
     print(f"flaky (red in the full run, green alone): {', '.join(classes)}", flush=True)
     return classes
@@ -578,7 +579,8 @@ def _affected_first(p, wt, base, env, only=None):
     if not cmd:
         return []
     print(f"testing the {len(tests)} affected test file(s) " + (f"of {c.joinmore(only, 5)}" if only else "first"), flush=True)
-    code, out = c.run_command(wt, cmd, 900, env=dict(cli._skip_env({}), **{k: v for k, v in env.items() if k != "FOREMAN_SKIP_TESTS"}))
+    code, out = c.run_command(wt, cmd, 900, niced=True,  # T-4197
+                              env=dict(cli._skip_env({}), **{k: v for k, v in env.items() if k != "FOREMAN_SKIP_TESTS"}))
     if code and _rerun_red(wt, out, code, env) is None:
         print(out[-4000:], flush=True)
         bad = sorted({m.group(1) for m in re.finditer(r"^(?:FAIL|ERROR): \S+ \(([\w.]+?)\.\w+\)", out, re.M)})

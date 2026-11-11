@@ -2780,7 +2780,7 @@ def pm_verify(p, main, sha):
         if full:
             pm_set(p, sha, uncached=True)
         code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600),
-                                  env=cpu_env(p, gate=False))  # T-3757: what landed becomes the usual
+                                  env=cpu_env(p, gate=False), niced=True)  # T-3757: what landed becomes the usual; T-4197
         flaky =inherited = unrelated = []
         reds = pm_classes(out, code) if code and code != 124 else []
         files, reach = _pm_files(main, sha), reds
@@ -2793,14 +2793,14 @@ def pm_verify(p, main, sha):
                 reach, unrelated = reds, []
             if again:
                 c.wait_for_load(f"lane verify {sha[:9]}")  # T-3425: the alone-rerun waits for load like a gate
-            if again and not c.run_command(wt, again, c.load_scaled(900))[0]:
+            if again and not c.run_command(wt, again, c.load_scaled(900), niced=True)[0]:
                 flaky = reds
             elif again and isinstance(reach, list) and not reach:
                 pass  # red alone, but only in classes the docs-only merge cannot reach: no parent run needed
             elif again:  # T-3213: red alone too; does main just before this merge fail the same classes?
                 _git(wt, "reset", "--hard", "-q", f"{sha}^1")
                 if not gone or not _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
-                    pcode, pout = c.run_command(wt, again, c.load_scaled(900))
+                    pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True)
                     # T-3224: inherited only when the parent names each red class failing; a parent run that
                     # names none ("no test matches" for a class the merge added, a crash) leaves the red this merge's
                     named = {m.rpartition(".")[0] or m for m in _FAILED.findall(pout)}
@@ -2950,7 +2950,8 @@ def _pm_green_at(p, main, sha, reds=None):
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         full = _pm_uncached_due(p)
-        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600), env=cpu_env(p, gate=False))
+        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600), env=cpu_env(p, gate=False),
+                                  niced=True)  # T-4197
         if code:
             if reds is not None and code != 124:  # a timeout names nothing
                 reds.extend(k for k in pm_classes(out, code) if not k.startswith("suite exit"))
@@ -2971,7 +2972,7 @@ def _pm_cmd_green_at(main, sha, cmd):
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         c.wait_for_load(f"lane verify {sha[:9]}")  # as pm_verify's alone-rerun waits
-        return not c.run_command(wt, cmd, c.load_scaled(900))[0]
+        return not c.run_command(wt, cmd, c.load_scaled(900), niced=True)[0]  # T-4197: a lane verify's run
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)

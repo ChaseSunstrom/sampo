@@ -5525,13 +5525,15 @@ def _cmd_check(args):
         guard_stored(p, act, cmd)  # T-0901 review: a stored gate (fm smoke set cmd adds one too)
         t0 = time.monotonic()
         gate_timeout = _gate_deadline(cmd, base_timeout)
-        code, output = c.run_command(p.root, cmd, gate_timeout, env=env, priority=not p.lane)  # T-3614
+        code, output = c.run_command(p.root, cmd, gate_timeout, env=env, priority=not p.lane,
+                                     niced=bool(p.lane))  # T-3614; T-4197: a lane's gates yield to the user's session
         if code == 124 and (hl := c.host_load()):  # T-3174: a timeout says the load it ran under
             output += f"\n(load {hl[0] / hl[1]:.1f} per CPU, deadline {gate_timeout:g}s)"
         slow = time.monotonic() - t0 > _slow_gate()  # a slow gate isn't rerun whole: its failure costs enough already
         narrow = _narrow_rerun(cmd, output) if code == 1 and slow and not failure_class(output) else None  # T-1678
         if code and (not slow or narrow):
-            code2, output2 = c.run_command(p.root, narrow or cmd, gate_timeout, env=env, priority=not p.lane)
+            code2, output2 = c.run_command(p.root, narrow or cmd, gate_timeout, env=env, priority=not p.lane,
+                                           niced=bool(p.lane))  # T-4197
             if not code2 and _flaky_count(p, cmd) >= 2:  # a racy bug passes half the time: not "flaky" forever
                 notes[cmd] = "flaky again (failed first in 3+ recent runs): treated as a failure; find the race"
             elif not code2:
@@ -5761,17 +5763,17 @@ def cmd_sentinel(args):
         print(f"sampo: warning: {len(refused)} stored check(s) the guard refuses weren't rerun: "
               + "; ".join(c.fit(x, 60) for x in refused[:3]), file=sys.stderr)
     for cmd, tid in list(cmds.items())[:args.max]:
-        code, output = c.run_command(p.root, cmd, args.timeout)
+        code, output = c.run_command(p.root, cmd, args.timeout, niced=bool(p.lane))  # T-4197
         timed = _timed_out(code, output, args.timeout)
         flaky = bool(code and not timed)
         if flaky:  # T-1380: a failure that passes on a second run is a flake (canaries ran side by side, loaded)
-            code2, output2 = c.run_command(p.root, cmd, args.timeout)
+            code2, output2 = c.run_command(p.root, cmd, args.timeout, niced=bool(p.lane))
             if not _timed_out(code2, output2, args.timeout):  # a rerun that timed out must not mask the failure
                 code, output = code2, output2
         results.append({"cmd": cmd, "task": tid, "exit": code, "result": c.run_result(code, output), "timed": timed,
                         "flaky": flaky and not code})
     for cmd, (tid, fact) in list(checks.items())[:args.max]:
-        code, output = c.run_command(p.root, cmd, args.timeout)
+        code, output = c.run_command(p.root, cmd, args.timeout, niced=bool(p.lane))  # T-4197
         timed = _timed_out(code, output, args.timeout)
         results.append({"cmd": cmd, "task": tid, "exit": code, "result": c.run_result(code, output), "assumption": fact,
                         "timed": timed})
@@ -6414,7 +6416,7 @@ def _check_affected(p, args):
                     f"gates: sampo check\n! {_left_out(skip)}" if skip else
                     f"No tests linked to the {len(changed)} changed file(s); run the full gates: sampo check") + note) or 0
     code, output = c.run_command(p.root, cmd, c.load_scaled(args.timeout if args.timeout > 0 else None),
-                                 env=_skip_env(skip))
+                                 env=_skip_env(skip), niced=bool(p.lane))  # T-4197: a lane's affected tests
     if args.evidence:  # T-1747: recorded as what it is, never as the full gates (close still needs fm check)
         result = c.run_result(code, output)
         if code and (every := c.failed_classes(output)):  # T-3397: the names first, they survive the cut
