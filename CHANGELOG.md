@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo pause now records who set it (agent or user) in the flag, so an agent may lift only its own pause and every surface, including a bare sampo pause, names who and when (T-4190).
 - The lane load gate no longer counts Sampo's own nice-19 gate runs as strain, and a lane stopped or silent for days is no longer a builder out, so briefs are issued while a land runs (T-4175).
 - A bare sampo pause only reports whether Sampo is paused; sampo pause on pauses every project, and sampo pause --now still stops everything (T-4132).
 - A standing steer meter: a local model reads each of the user's messages with the agent's words before it and books kind, avoidable or not, root, the missed thought, the concern and where the user would see it resolved; sampo steers shows avoidable steers per 100 messages by root; compaction summaries, machine blocks and same-text twins are left out (T-4181).
