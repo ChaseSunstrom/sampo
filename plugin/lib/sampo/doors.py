@@ -29,6 +29,7 @@ _NEGATE = re.compile(r"(?i)\b(?:don'?t|do not|dont|never|not|no|without|avoid|ke
 # write-target parse, fmguard.write_targets
 _ALLARGS = {"rm", "rmdir", "unlink", "shred", "truncate", "gzip", "gunzip", "bzip2", "xz", "sed", "tee", "dd"}
 _REGEN = {"build", "dist", "node_modules", "__pycache__", ".venv", "target", ".cache"}  # ignored AND rebuilt by a command
+_PLACE = {"from", "under", "in", "inside", "into", "to", "at", "on", "of", "below", "beneath", "within"}  # T-4370
 _PATHS = 50  # paths one step may name: the snapshot, its copy and the hash stay bounded
 
 
@@ -62,10 +63,15 @@ def _cats(cmds, ctx):
 
 
 def _tokens(text):
-    """Path-like words of a step: one with a '/' or a '.', no flag or URL."""
-    for w in re.split(r"[\s`]+", text):
-        w = w.strip("\"'()[]{},;:").rstrip(".")
+    """Path-like words of a step: one with a '/' or a '.', no flag or URL. T-4370: a lone '/' between two words is
+    prose ('Releasing / Decision', 'and / or'), not the filesystem root, unless the word before it is a destroy verb or
+    a place word ('delete /', 'from / to'): a step that names the root as a place stays a door no copy covers."""
+    words = [w.strip("\"'()[]{},;:").rstrip(".") for w in re.split(r"[\s`]+", text)]
+    for i, w in enumerate(words):
         if w and "://" not in w and not w.startswith("-") and ("/" in w or "." in w) and w not in (".", ".."):
+            if not w.strip("/") and 0 < i < len(words) - 1 and words[i - 1] and words[i + 1] \
+                    and not _DESTROY.fullmatch(words[i - 1]) and words[i - 1].lower() not in _PLACE:
+                continue
             yield w
 
 

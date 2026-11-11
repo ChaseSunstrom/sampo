@@ -95,6 +95,24 @@ class DoorGate(DoorBase):
         tid = self.brief("edit it", verify=f"touch {marker}; mkdir -p {marker}.d; python3 test_calc.py")
         self.assertEqual(self.doors(tid)["verify 1"]["door"], "two-way")  # T-2435: a touch of an existing file loses nothing
 
+    def test_a_lone_slash_between_two_words_of_a_step_is_prose_not_the_root(self):
+        # T-4370 (exam s8-047 goal-ruby-f44b59): 'Write the "Releasing / Decision" section into README.md' named '/',
+        # the filesystem root, which no snapshot covers: sampo focus refused the plan for a missing Undo line
+        from sampo import doors as sdoors
+        tid = self.brief('Write the "Releasing / Decision" section into the readme only', "update the intro and / or the summary",
+                         "edit a / b / c in the table")
+        d = self.doors(tid)
+        self.assertEqual([d[f"step {n}"]["door"] for n in (1, 2, 3)], ["two-way"] * 3, d)
+        self.assertIsNone(sdoors.gate(self.p, tid))
+        self.assertEqual(c.door_marked(c.find_brief(self.p, tid)), [])
+
+    def test_a_step_that_names_the_root_as_a_place_is_still_a_door_no_copy_covers(self):  # T-4370: fail closed
+        tid = self.brief("delete / and start over", "wipe everything under /", "clean up, then delete /.",
+                         "move everything from / to the backup", "remove /etc/hosts")
+        d = self.doors(tid)
+        self.assertEqual([(d[f"step {n}"]["door"], d[f"step {n}"]["root"]) for n in (1, 2, 3, 4)], [("local", True)] * 4, d)
+        self.assertEqual((d["step 5"]["door"], d["step 5"]["named"]), ("local", ["/etc/hosts"]))
+
     def test_an_untracked_data_path_is_a_local_one_way_step(self):
         self.data()
         tid = self.brief("delete data/old.csv")
