@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A standing steer meter: a local model reads each of the user's messages with the agent's words before it and books kind, avoidable or not, root, the missed thought, the concern and where the user would see it resolved; sampo steers shows avoidable steers per 100 messages by root; compaction summaries, machine blocks and same-text twins are left out (T-4181).
 - sampo code now holds every own or local-endpoint model to an explore budget, a forced edit and carried notes, not only --small runs, and keeps what a model was shown so it stops reading in circles (T-4177).
 - a self-check that finds something now acts or tells you, with drive on or off: finished lanes with no landing start a land; unshipped work, your asks waiting, slow jobs, usage on pace to run out and stale heartbeats reach you through your notify command, a desktop notification or a pane toast, once a day per check and again only when worse (T-4118).
 - fm task ac edit judges a criterion on runs of its own verify command: one that only ever matched no test can now take the right check even after that check's runs were recorded under it (only a check already run there may be swapped in) (T-4113).
