@@ -135,7 +135,7 @@ def cmd_state(args):
     sd = c.state_dict(p)
     if args.cmd == "status" and not (args.line or args.json) and not c.load_briefs(p):  # T-0847: nothing yet
         return print(f"{p.slug}: no tasks yet. Start with sampo capture \"<request>\" or sampo task new \"<title>\" --type FIX "
-                     f"--tier S --focus (or just give Claude a request).")
+                     f"--tier S --focus (or just give Claude a request)." + (f" PAUSED, {c.pause_line()}." if sd.get("panic") else ""))
     if not args.line:  # T-2273: reads closed briefs and the ledger, so never on a status bar's poll
         try:
             got = c.unproven_summary(p)
@@ -5288,26 +5288,30 @@ def cmd_pause(args):
     either way it's no consent to guard."""
     if args.state is None and not args.now:  # T-4132: typed to check, a bare pause paused every project
         on, hard = c.panicked(), c.panicked(hard=True)
+        who = c.pause_line() if on else ""
         return out(args, {"paused": on, "hard": hard}, (
             f"Paused everywhere{' (hard: sampo pause --now)' if hard else ''}: nothing unattended starts; "
-            "sampo pause off lifts it." if on else
+            f"{who[0].upper() + who[1:]}. sampo pause off lifts it." if on else
             "Not paused: the drive and the launchers run. sampo pause on pauses every project (--now also stops "
             "what runs now)."))
     on = args.state != "off"  # sampo pause --now alone still pauses: it is the documented "stop everything now"
     if args.now and not on:
         raise UsageError("--now goes with sampo pause on: sampo pause off lifts both")
-    c.set_panic(on, hard=args.now)
+    if args.for_user and not on:
+        raise UsageError("--for-user goes with sampo pause on")
+    rec = c.set_panic(on, hard=args.now, for_user=args.for_user)  # T-4190: records who set it
+    who = c.pause_line() if on else None
     if on and args.now:  # T-1821
         from sampo import serve
         r = serve.panic_stop()
-        return out(args, {"paused": True, "hard": True, **r},
+        return out(args, {"paused": True, "hard": True, "by": rec["by"], **r},
                    f"Stopped now: {len(r['sessions'])} sampo session(s), {len(r['serve'])} sampo serve unit(s), "
                    f"{r['leases']} lease(s) freed; a running sampo run or night stops its session within 2 s. Interactive "
-                   "Claude Code sessions and subagents finish their turn. Record: state/stops.jsonl. sampo pause off lifts it."
+                   f"Claude Code sessions and subagents finish their turn. Record: state/stops.jsonl. {who[0].upper()}{who[1:]}."
                    + "".join(f"\n  ✗ {e}" for e in r.get("errors", [])))
-    out(args, {"paused": on}, "Paused everywhere: no drive, sampo run, serve, night or lane launches, and autonomy reads "
-        "standard; a session already running finishes its turn. sampo pause off lifts it." if on else
-        "Pause lifted: the drive and the launchers run again, under each project's own autonomy.")
+    out(args, {"paused": on, **({"by": rec["by"]} if on else {})}, "Paused everywhere: no drive, sampo run, serve, night or "
+        f"lane launches, and autonomy reads standard; a session already running finishes its turn. {who[0].upper()}{who[1:]}."
+        if on else "Pause lifted: the drive and the launchers run again, under each project's own autonomy.")
 
 
 def cmd_check(args):
@@ -8197,10 +8201,12 @@ def _build_parser(only=None):
                                                        "that only read (yours to turn on; T-0974)")
     s.add_argument("state", nargs="?", choices=["on", "off"])
 
-    s = add("pause", cmd_pause, tier=("Project and settings", 720), help="sampo pause on stops everything Sampo runs unattended, in every project (off lifts it; bare: only reports)")
+    s = add("pause", cmd_pause, tier=("Project and settings", 720), help="sampo pause on stops everything Sampo runs unattended, in every project, and records who set it (off lifts it: a session lifts only its own, a user's stays the user's; bare: only reports)")
     s.add_argument("state", nargs="?", choices=["on", "off"], default=None)
     s.add_argument("--now", action="store_true", help="also stop what runs now: sampo sessions, serve units, sampo run's "
                    "session, leases (T-1821)")
+    s.add_argument("--for-user", action="store_true", dest="for_user", help="the user asked for this pause: it stays theirs "
+                   "to lift (without it, a pause a session's own tool call sets is the session's to lift; T-4190)")
 
     add("next", cmd_next, tier=("Every task", 10), help="the one next required action (derived from the briefs)")
 

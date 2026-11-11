@@ -7,6 +7,7 @@ text can always be obfuscated; deny rules and git are the other layers.
 """
 import collections
 import functools
+import json
 import os
 import re
 import sys
@@ -75,6 +76,33 @@ USER_ONLY_FM = {
 }
 FM_GATED = {"plugins", "night", "agents"}  # T-3600: other verbs whose check in check_bash keys on a later word; a new
 # such check adds its verb here, so a word the shell fills in there is refused too (_fm_unread)
+
+
+def _pause_is_agents(ctx):
+    """T-4190: sampo pause off is the agent's to run only over a pause a session's own tool call set. The flag file says
+    so (line 2, JSON, by == "agent"): read here by hand, no import of Sampo. It fails closed: some PANIC file must exist,
+    and every one that does (each state folder the guard knows) must be a plain file that reads exactly by=agent; a
+    missing one, an old one with no record, a broken or forged one, a folder in its place, is the user's."""
+    seen = False
+    for d in ctx.state_dirs:
+        path = os.path.join(d, "PANIC")
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return False
+        seen = True
+        try:
+            with open(path, "rb") as f:
+                f.readline(512)
+                rec = f.readline(4096)
+            by = json.loads(rec).get("by")
+        except (OSError, ValueError, AttributeError):
+            return False
+        if by != "agent":
+            return False
+    return seen
 
 
 def _user_only_hit(word, arg):
@@ -4284,7 +4312,8 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             if sub == "night" and any(_user_only_hit("--install", a) for a in rest):  # T-2357: plugin is the user's yes
                 found.append(("plugin", "sampo night --install puts timers on this machine that run Sampo unattended "
                                         "(sampo night --stage queues the request for the user)"))
-            if sub in USER_ONLY_FM and any(_user_only_hit(USER_ONLY_FM[sub][0], a) for a in rest):  # flag order is free
+            if sub in USER_ONLY_FM and any(_user_only_hit(USER_ONLY_FM[sub][0], a) for a in rest) \
+                    and not (sub == "pause" and _pause_is_agents(ctx)):  # flag order is free
                 word, why, typed = USER_ONLY_FM[sub]
                 found.append(("self-authorize", f"{why} (they can type ! {typed})"))
             if sub == "agents" and "uninstall" in rest[:2]:  # T-0340: it takes the guard out of another agent

@@ -3,6 +3,7 @@
 was tracked beside .sampo/, and why pages they had asked for weren't done, then "I shouldn't even need to send any of
 the messages". Each check reads state and at most one git call; lines() caches the set CACHE_S per project, and
 next_for (sampo next and the drive's line) shows it in every state, not only when idle."""
+import calendar
 import collections
 import json
 import os
@@ -281,7 +282,24 @@ def stale_beats(p, briefs, now):
     return Hit("stale heartbeat: " + ", ".join(n for n, _ in late) + " → see whether it died", tell=True) if late else None
 
 
-CHECKS += (usage_burn, stale_beats)
+def pause_lingers(p, briefs, now):
+    """T-4190: a pause that has outlasted its welcome, with who set it. A session's own pause is told (it lifts it with
+    sampo pause off: it was the one that set it); the user's is only named, after an hour, and stays theirs."""
+    info = c.pause_info()
+    if not info:
+        return None
+    try:
+        age = now - calendar.timegm(time.strptime(info["at"], "%Y-%m-%dT%H:%M:%SZ"))
+    except (ValueError, OverflowError):
+        return None
+    if info["by"] == "agent":
+        return Hit(f"{c.pause_line(info)}, {_age(age)} ago → lift it if it has done its job", tell=True) \
+            if age >= PAUSE_AGENT_MIN * 60 else None
+    return f"{c.pause_line(info)}, {_age(age)} ago" if age >= 3600 else None
+
+
+PAUSE_AGENT_MIN = 10  # a session's own pause told after this many minutes
+CHECKS += (usage_burn, stale_beats, pause_lingers)
 
 
 def lines(p, briefs=None, now=None):

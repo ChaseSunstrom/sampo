@@ -925,7 +925,7 @@ def session_context(p, sd, other_note=None, sid=None, budget=None, dedupe=False)
     head = [f"Sampo project {p.slug} ({p.root}). Drive: {'on' if sd['drive'] else 'off'}"
             + (", paused" if sd["paused"] else "") + "."
             + (" Autonomy: full." if sd.get("autonomy") == "full" else "")
-            + (" PAUSED everywhere (sampo pause): nothing unattended starts; the user lifts it." if sd.get("panic") else "")
+            + (f" PAUSED everywhere (sampo pause), {c.pause_line()}: nothing unattended starts." if sd.get("panic") else "")
             + _grants_note(c.read_meta(p))
             + (f" State: fallback {c.state_dir()} (sampo doctor)." if c.fallback_marker() else "")]
     focus, resume = [], []
@@ -2355,6 +2355,29 @@ def _lane_fault(pl):
             "did; the work stays in the lane for the main session to recover.")
 
 
+_PAUSE_CMD = c.lazy(r"\b(?:sampo|fm)\b[^;&|\n]*\bpause\b")
+
+
+def _pause_call(pl):
+    """The session id when this Bash call's command runs `sampo pause` (one substring test for every other command)."""
+    ti = pl.get("tool_input")
+    cmd = ti.get("command") if isinstance(ti, dict) else None
+    sid = pl.get("session_id")
+    return sid if isinstance(cmd, str) and isinstance(sid, str) and "pause" in cmd and _PAUSE_CMD.search(cmd) else None
+
+
+def _stamp_pause(pl):
+    """T-4190: a Bash tool call that runs `sampo pause` is the session's own act (a typed `!` command and a terminal run
+    no hook), so the pause it writes reads as the agent's. PostToolUse spends what the call left (post_tool_use), so a
+    stamp never outlives its call to meet a typed command."""
+    sid = _pause_call(pl)
+    if sid:
+        try:
+            c.stamp_pause(sid)
+        except OSError:
+            log_error("PreToolUse", _tb())  # no stamp reads as the user's pause: the strict side
+
+
 def _pre_tool_use(raw):
     try:
         pl = json.loads(raw)
@@ -2573,6 +2596,8 @@ def _pre_tool_use(raw):
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision[0],
                                                  "permissionDecisionReason": decision[1]}}))
         return 2 if decision[0] == "deny" else 0
+    if tool == "Bash":
+        _stamp_pause(pl)
     try:
         saved = _snapshot_note(pl, guard) if tool == "Bash" else None  # T-0884: in every session, quiet ones too
     except Exception:
@@ -3727,6 +3752,11 @@ def _refused(tool, ti, resp):
 
 def post_tool_use(pl, ok=True):
     tool, ti = pl.get("tool_name", ""), pl.get("tool_input") or {}
+    if tool == "Bash" and _pause_call(pl):  # T-4190: the call is over: its stamp is spent, run or not
+        try:
+            c.take_pause_stamp(pl.get("session_id"))
+        except OSError:
+            log_error("PostToolUse", _tb())
     p = c.find_project(_cwd(pl))
     if p:  # T-3422: a subagent's calls carry its parent's session_id and keep that session alive: no agent_id skip
         _touch_seen(p, pl.get("session_id"))

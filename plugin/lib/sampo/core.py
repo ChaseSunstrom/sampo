@@ -694,7 +694,8 @@ def trusted():
         return None
 
 
-PAUSED = "paused (sampo pause): nothing unattended starts until the user runs sampo pause off"
+PAUSED = ("paused (sampo pause): nothing unattended starts until sampo pause off lifts it "
+          "(a session's own pause: that session may; the user's: only they do; sampo pause says whose)")  # T-4190
 
 
 def panicked(hard=False):
@@ -705,10 +706,102 @@ def panicked(hard=False):
     if not hard:
         return os.path.exists(path)
     try:
-        with open(path, encoding="utf-8") as f:
-            return f.read().split()[1:2] == ["hard"]
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.readline().split()[1:2] == ["hard"]  # T-4190: line 2 is the owner record
     except OSError:
         return False
+
+
+PAUSE_STAMP_TTL = 60  # seconds a PreToolUse stamp stays good for the sampo pause it announced (T-4190)
+
+
+def pause_stamp_path():
+    return os.path.join(state_dir(), "pause-stamp.json")
+
+
+def _pause_stamps():
+    try:
+        with open(pause_stamp_path(), encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in d.items() if isinstance(k, str) and isinstance(v, (int, float))} if isinstance(d, dict) else {}
+
+
+def stamp_pause(session):
+    """T-4190: the PreToolUse hook, on a tool call whose command names sampo pause, records that this session's own
+    tool call is about to run it. Nothing else can: a typed `!` command and a terminal run no hook, so their pause
+    finds no stamp and reads as the user's. One small file of session -> epoch, pruned at twice the TTL; a lost race
+    drops a stamp, which reads as the user's (the strict side)."""
+    if not session:
+        return
+    t = time.time()
+    d = {k: v for k, v in _pause_stamps().items() if 0 <= t - v < 2 * PAUSE_STAMP_TTL}
+    d[session] = t
+    write_atomic(pause_stamp_path(), json.dumps(d))
+
+
+def take_pause_stamp(session):
+    """True when `session` has a fresh stamp; the stamp is spent either way (one stamp, one pause write)."""
+    d = _pause_stamps()
+    t = time.time()
+    fresh = bool(session) and session in d and 0 <= t - d[session] < PAUSE_STAMP_TTL
+    if session in d:
+        del d[session]
+        try:
+            write_atomic(pause_stamp_path(), json.dumps(d))
+        except OSError:
+            pass
+    return fresh
+
+
+def pause_info():
+    """T-4190: who set the pause, from the flag file: {"by": "agent"|"user", "session", "at", "hard"}; None when not
+    paused. Line 1 is the old `<time> [hard]` (an older tree reads it still); line 2 a JSON owner record. A flag with
+    no record, a record that doesn't parse, or any `by` but exactly "agent" reads as the user's: fails closed."""
+    path = os.path.join(state_dir(), "PANIC")
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            head = f.readline().split()
+            rec = f.readline(4096)
+    except OSError:
+        head, rec = [], ""
+    info = {"by": "user", "session": None, "at": head[0] if head else "", "hard": head[1:2] == ["hard"]}
+    try:
+        d = json.loads(rec)
+    except ValueError:
+        d = None
+    if isinstance(d, dict):
+        if d.get("by") == "agent":
+            info["by"] = "agent"
+        if isinstance(d.get("session"), str):
+            info["session"] = d["session"]
+        if isinstance(d.get("at"), str) and d["at"]:
+            info["at"] = d["at"]
+    return info
+
+
+def _local_hm(at):
+    try:
+        t = datetime.datetime.strptime(at, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+        return t.astimezone().strftime("%H:%M")
+    except (ValueError, TypeError):
+        return at or "an unknown time"
+
+
+def pause_line(info=None):
+    """T-4190: the one sentence every surface uses for who paused and who lifts it; None when not paused."""
+    info = info or pause_info()
+    if not info:
+        return None
+    when = _local_hm(info["at"])
+    if info["by"] != "agent":
+        return f"paused by the user at {when}; only they lift it"
+    sid = session_id()
+    whose = "another session's" if info.get("session") and sid and info["session"] != sid else "this session's"
+    return f"paused by {whose} command at {when} (sampo pause off lifts it)"
 
 
 def host_load():
@@ -899,12 +992,44 @@ def refuse_if_paused():
         raise PolicyError(PAUSED)
 
 
-def set_panic(on, hard=False):
+def set_panic(on, hard=False, for_user=False):
+    """Set or lift the pause flag and record who did (T-4190). An agent's own tool call is told by a fresh stamp from the
+    PreToolUse hook (stamp_pause); with none the write is the user's. The flag only gets stricter at an agent's hand: a
+    stamped write over a user's pause keeps it the user's (their session, their time, hard stays hard). for_user: the
+    session carries out the user's own word, so it's theirs. The stamp is spent by the write. Returns the owner record."""
     path = os.path.join(state_dir(), "PANIC")
+    sid = session_id()
+    stamped = take_pause_stamp(sid)
+    cur = pause_info()
     if on:
-        write_atomic(path, now() + (" hard" if hard else "") + "\n")
-    elif os.path.exists(path):
-        os.remove(path)
+        if cur and cur["by"] == "user" and stamped:
+            rec = {"by": "user", "session": cur["session"], "at": cur["at"]}
+            hard = hard or cur["hard"]
+        else:
+            rec = {"by": "agent" if stamped and not for_user else "user", "session": sid, "at": now()}
+        write_atomic(path, now() + (" hard" if hard else "") + "\n" + json.dumps(rec) + "\n")
+    else:
+        if stamped and cur and cur["by"] == "user":  # the guard let it by on an agent's flag that has since become theirs
+            raise PolicyError("sampo pause off is the user's to run: this pause is theirs, and only they lift it "
+                              "(! sampo pause off)")
+        rec = {"by": "agent" if stamped else "user", "session": sid, "at": now()}
+        if cur:
+            os.remove(path)
+    if on or cur:
+        _log_pause("pause_on" if on else "pause_off", rec, hard and on)
+    return rec
+
+
+def _log_pause(event, rec, hard):
+    """The machine-wide record (state/pauses.jsonl) and, when the working folder is a project, its ledger (T-4190)."""
+    row = {"ts": now(), "event": event, "by": rec["by"], "session": rec["session"], "hard": bool(hard)}
+    try:
+        append_line(os.path.join(state_dir(), "pauses.jsonl"), json.dumps(row))
+        p = find_project(os.getcwd())
+        if p:
+            log_event(p, event, data={"by": rec["by"], "session": rec["session"], "hard": bool(hard)}, session=rec["session"])
+    except OSError:
+        pass  # the flag is what matters; a record that can't land is not worth failing the pause for
 
 
 def task_base(root, b):
@@ -5579,7 +5704,7 @@ def state_dict(p, briefs=None):
         "deferred": [b.id for b in briefs if b.status == "deferred"],
         "cycles": cycles, "dangling": [list(d) for d in dangling],
         "sensitive": bool(meta.get("sensitive")), "drive": meta.get("drive", True), "paused": bool(meta.get("paused")),
-        "autonomy": autonomy, "panic": panic,
+        "autonomy": autonomy, "panic": panic, "panic_by": (pause_info() or {}).get("by") if panic else None,
         "pending": pending_tasks(meta),
         "asks": [{"task": a.get("task"), "allow": list(a.get("allow") or [])}
                  for a in meta.get("pending_approvals") or [] if isinstance(a, dict) and a.get("task")],
@@ -5620,8 +5745,8 @@ def render_state(sd, ts=None):
     a = sd["active"]
     out = [f"# STATE — {sd['project']}", f"_Generated {ts or now()} by sampo from the briefs; do not edit._", ""]
     if sd.get("panic"):
-        out += ["**PAUSED everywhere (sampo pause): no drive, sampo run, serve, night or lane launches; autonomy standard. "
-                "sampo pause off lifts it.**", ""]
+        out += ["**PAUSED everywhere (sampo pause), " + (pause_line() or "") + ": no drive, sampo run, serve, night or lane "
+                "launches; autonomy standard.**", ""]
     out.append("## Focus")
     if a:
         out.append(f"{a['id']} [{a['type']} {a['tier']}] {a['title']}")

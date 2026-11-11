@@ -1036,6 +1036,13 @@ def check_risk_off(p):
         Result("risk budget", "PASS", "the risk budget is on")
 
 
+def check_pause():
+    """T-4190: a pause is on: who set it and who lifts it (the user's stays theirs; a session's own `sampo pause off`)."""
+    line = c.pause_line()
+    return Result("pause", "WARN", f"{line}; nothing unattended starts while it is on") if line else \
+        Result("pause", "PASS", "not paused")
+
+
 def check_steers(p, run=False):
     """T-2167: in a Genesis tower project every rule cited from a user steer has a check (--full runs them; fm genesis
     sweep always does). A FAIL, so fm check stops a commit that leaves a steer rule unchecked; a rule whose
@@ -3193,6 +3200,7 @@ def run_all(full=False, accept_supply=False):
     results.append(check_muted_triggers(here))
     results.append(check_night_timers(here))
     results.append(check_risk_off(here))
+    results.append(check_pause())
     results.append(check_anergy())
     results.append(check_predictions(here))
     results.append(check_model_backends(here))
@@ -3425,6 +3433,7 @@ def cmd_wiring(args):
             "autonomy": meta.get("autonomy", "standard"), "drive": bool(meta.get("drive")),
             "sensitive": bool(meta.get("sensitive")), "sync": bool(meta.get("sync")),
             "standing": sorted(meta.get("standing") or {}), "trust": bool(c.trusted()), "paused": c.panicked(),
+            "paused_by": c.pause_line(),
             "budget": caps, "budget_halved": high, "plugins": plugins}
     lines = [f"Sampo version {version} from {PLUGIN}",
              "hooks: " + " · ".join(e + (f" ({', '.join(m for m in ms if m)})" if any(ms) else "")
@@ -3432,7 +3441,7 @@ def cmd_wiring(args):
              f"{p.slug}: autonomy {data['autonomy']} · drive {'on' if data['drive'] else 'off'} · sensitive "
              f"{'on' if data['sensitive'] else 'off'} · sync {'on' if data['sync'] else 'off'}",
              f"standing yes: {', '.join(data['standing']) or 'none'} · trust {'on' if data['trust'] else 'off'} · "
-             f"pause {'ON' if data['paused'] else 'off'}",
+             f"pause {'ON, ' + str(data['paused_by']) if data['paused'] else 'off'}",
              "budget: " + ", ".join(f"{k} ${v:g}" for k, v in caps.items()) + (f" (halved: {high})" if high else ""),
              f"plugins enabled ({len(plugins)}): " + (", ".join(plugins[:12]) + (" …" if len(plugins) > 12 else "")
                                                        if plugins else "none")]
