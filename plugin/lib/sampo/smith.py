@@ -94,8 +94,11 @@ EXPLORE_BUDGET, FORCE_TURNS, SCRATCH_CHARS = dict(zip(core.TIERS, (8, 10) + (12,
 EXPLORING = ("read", "search", "run", "card")
 # T-4206: the budget goes on after an edit, as looks since the last progress (an edit that applied, a test run of
 # something edited, a run that changed a file); and when the turns run out with edits in the tree, the run carries on
-# once with at least this many more (T-4151: two test edits, then 13 runs that were greps and ls, 8 reads, step undone)
-CARRY_MIN = 8
+# (T-4151: two test edits, then 13 runs that were greps and ls, 8 reads, step undone). T-4291: it carries on while the
+# last PROGRESS_WINDOW turns moved something (a file to a content the window had not seen, a test whose exit or failure
+# count changed) and no one action repeated three times in them: CARRY_TURNS more each time, CARRY_MAX carries at most,
+# and only with CARRY_MIN_LEFT_S of deadline left (a run past its deadline stops, as before)
+PROGRESS_WINDOW, CARRY_TURNS, CARRY_MAX, CARRY_MIN_LEFT_S = 12, 20, 4, 90
 _CHANGE = re.compile(r"(?<![\w.])(?:fix|repair|make(?! sure)|add|implement|handle|change|rename|remove|update|speed up)"
                      r"(?![\w.(])", re.I)  # a word, not an identifier: calc.add, add() and make_page don't count
 SMALL_CHANGE = ("The request asks for a change ({word!r}: find what is wrong and fix it), so a {what} won't do: reply "
@@ -843,7 +846,7 @@ class Run:
         # T-4206: this step's state the forced turn names its move from: edits since the last test run, whether that run
         # failed, the progress made so far, the verify commands that passed, and how the last run was judged
         self.stale, self.red, self.progress, self.green, self.run_kind = False, False, 0, set(), None
-        self.carry_used = False  # the one carry-on a run gets when its turns run out with edits in the tree
+        self.carries, self.window, self.last_test, self.stop_why = 0, [], {}, None  # T-4291: carries; the progress window
         self.reported = False  # the stats event went out
 
     def fence(self, text):
@@ -1291,19 +1294,87 @@ class Run:
             return "source"
         return "edit"
 
+    def target(self, name, a):
+        """T-4291: the file an edit or write names, as (its full path, what it holds now); None for any other action."""
+        if name not in ("edit", "write") or not isinstance(a, dict) or not isinstance(a.get("file"), str):
+            return None
+        try:
+            full = self.path(a["file"])
+        except ValueError:
+            return None
+        return full, self.digest(full)
+
+    def record(self, name, a, res, before):
+        """T-4291: one action in the progress window. 'moved' says what it changed: a file whose content the window had
+        not seen (a change back to a seen content is not progress), a run of a test whose exit or failure count differs
+        from its last run, or a run that changed the tree to a state the window had not seen. Every action is kept with
+        its key, so a repeated one shows."""
+        args = {k: v for k, v in a.items() if k != "state"} if isinstance(a, dict) else {}
+        key = json.dumps([name, args], sort_keys=True, default=str)
+        self.window = [r for r in self.window if r["turn"] > self.turns - PROGRESS_WINDOW]
+        moved, space, state = None, None, None
+        if name in ("edit", "write") and not res.startswith(("error", "refused")) and before is not None:
+            space, state = before[0], self.digest(before[0])
+            seen = {r["state"] for r in self.window if r["space"] == space}
+            if state is not None and state != before[1] and state not in seen:
+                moved = "a file changed"
+        elif name == "run" and isinstance(a, dict) and isinstance(a.get("cmd"), str) and self.is_test(a["cmd"]):
+            verifies = [cr["verify"].strip() for cr in self.verifies()]
+            cmd = next((v for v in verifies if v in a["cmd"]), a["cmd"].strip())
+            m = re.match(r"exit (-?\d+)", res)  # keyed by the verify command, so a flag varied each turn is still one test
+            now = (m.group(1) if m else res[:40], len(re.findall(r"(?m)^(?:FAIL|ERROR)\b|Error\b|assert", res)))
+            prev = self.last_test.get(cmd)
+            moved = "a test moved" if prev is not None and prev != now else None  # the first run only sets the baseline
+            self.last_test[cmd] = now
+        elif name == "run" and self.run_kind == "changed":
+            space, state = "tree", json.dumps(self.tree(), default=str)  # a string: the window keeps states in a set
+            seen = {r["state"] for r in self.window if r["space"] == space}
+            if state not in seen:
+                moved = "the tree changed"
+        self.window.append({"turn": self.turns, "key": key, "moved": moved, "space": space, "state": state})
+
+    def carry_check(self):
+        """T-4291: (True, why the run moved) when a run out of turns may carry on; otherwise (False, the condition that
+        failed: a repeat, no change, the deadline, or the carries used up)."""
+        recent = [r for r in self.window if r["turn"] > self.turns - PROGRESS_WINDOW]
+        repeats, most = {}, 0
+        for r in recent:  # a repeat is the same action again with nothing moved since its last time: a test run again
+            if r["moved"]:  # after an edit that changed the file is the work, not a loop
+                repeats = {}
+                continue
+            repeats[r["key"]] = repeats.get(r["key"], 0) + 1
+            most = max(most, repeats[r["key"]])
+        if most >= 3:
+            return False, f"the same action repeated three times in the last {PROGRESS_WINDOW} turns"
+        moved = [r["moved"] for r in recent if r["moved"]]
+        if not moved:
+            return False, f"no file changed and no test moved in the last {PROGRESS_WINDOW} turns"
+        left = self.ends - time.monotonic() if self.ends else None
+        if left is not None and left < CARRY_MIN_LEFT_S:
+            return False, f"{max(int(left), 0)} s of deadline left, under {CARRY_MIN_LEFT_S} s"
+        if self.carries >= CARRY_MAX:
+            return False, f"all {CARRY_MAX} carries used"
+        return True, moved[-1]
+
     def carry_on(self, name):
-        """T-4206: the turns ran out. A guided run with edits in the tree (this run's own: the flag, or a tree that is not
-        the one it started with) carries on once with a fresh allowance for the step instead of stopping with the work
-        half done. A second run-out stops as before."""
-        if not self.guided or self.carry_used or not (
-                self.edited or (self.tree0 is not None and self.tree() != self.tree0)):
+        """T-4291 (was T-4206's one carry): the turns ran out. A guided run carries on CARRY_TURNS more while its progress
+        window moved (carry_check); each carry is a note naming the cap before and after, why, and the seconds left.
+        A run that stops says why (self.stop_why) in its final message. A cloud run stops at the cap as before."""
+        self.stop_why = None
+        if not self.guided:
             return False
-        more = max(CARRY_MIN, self.max_steps // 2)
-        self.carry_used, self.max_steps = True, self.max_steps + more
+        ok, why = self.carry_check()
+        if not ok:
+            self.stop_why = why
+            return False
+        old, self.carries = self.max_steps, self.carries + 1
+        self.max_steps += CARRY_TURNS
         self.explored, self.forced_turns = 0, 0
         self.count["carried"] += 1
-        self.log(kind="carry_on", phase=name, turns=more)
-        self.emit("note", f"  out of turns with edits in the tree: carrying on once, {more} more turns for {name}")
+        left = f"{max(int(self.ends - time.monotonic()), 0)} s" if self.ends else "no deadline"
+        self.log(kind="carry_on", phase=name, cap=self.max_steps, why=why, carry=self.carries)
+        self.emit("note", f"  out of turns with progress ({why}): carrying on, cap {old} -> {self.max_steps} for "
+                          f"{name} ({left} left, carry {self.carries} of {CARRY_MAX})")
         return True
 
     def lines(self):
@@ -1852,7 +1923,8 @@ class Run:
         while True:
             if self.turns - self.turn_base >= self.max_steps and not self.carry_on(name):  # T-4204: this process's turns
                 raise CodeError(f"stopped: the model used all {self.max_steps} turns (--max-steps) before {name} was "
-                                f"done" + (" (it carried on once already)" if self.carry_used else "")
+                                f"done" + (f" ({self.carries} carries used)" if self.carries else "")
+                                + (f"; stopped because {self.stop_why}" if self.stop_why else "")
                                 + f"; fm code --resume {self.tid} --max-steps N carries on")
             left = self.ends - time.monotonic() if self.ends else None
             if left is not None and left <= 0:  # T-4083: stop with the trail before the caller's kill
@@ -2329,6 +2401,7 @@ class Run:
 
     def do(self, name, a):
         a = canon_args(name, a)  # T-2878: a small model's other names for the arguments
+        before = self.target(name, a) if self.guided else None  # T-4291: a file's content before the action
         result, fin = self.act(name, a)
         result = self.redact(result)
         target = next((str(a.get(k)) for k in ("file", "path", "cmd", "pattern", "summary") if isinstance(a, dict)
@@ -2341,6 +2414,8 @@ class Run:
             detail=result[:1500])
         self.log(kind="action", action=name, result=state)
         self.last_act = (name, target[:200])  # T-2966: the key louhi's loop class reads
+        if self.guided:
+            self.record(name, a, result, before)  # T-4291: what this action moved, for the carry at the cap
         return result, fin
 
     def loop_break(self, name, profile, key, tools):
