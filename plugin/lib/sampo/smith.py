@@ -1489,6 +1489,8 @@ class Run:
         os.makedirs(os.path.dirname(full), exist_ok=True)
         with open(full, "w", encoding="utf-8", newline="") as f:
             f.write(content)
+        from sampo import edit
+        edit.drop_bytecode(full)  # T-4206: a same-size rewrite in the same second never runs the old .pyc
         self.after("Write", ti, {"filePath": full})
         return f"wrote {rel} ({len(content)} characters)"
 

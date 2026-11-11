@@ -118,6 +118,22 @@ def _write(changed, before):
         raise
     for tmp, path in staged:
         os.replace(tmp, path)
+        drop_bytecode(path)
+
+
+def drop_bytecode(path):
+    """T-4206: Python runs a .pyc whose recorded source mtime (whole seconds) and size still match, so a same-size
+    edit inside the second the file was last written would run the old code (a fixed test read red, one run in three).
+    The written file's cached bytecode goes with the write; Python compiles it again."""
+    if not path.endswith(".py"):
+        return
+    import glob
+    cache = os.path.join(glob.escape(os.path.dirname(path)), "__pycache__", glob.escape(os.path.basename(path)[:-3]))
+    for pyc in glob.glob(cache + ".*.pyc"):
+        try:
+            os.unlink(pyc)
+        except OSError:
+            pass
 
 
 def cmd_edit(args):
