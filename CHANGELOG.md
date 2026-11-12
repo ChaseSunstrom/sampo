@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo code` now surveys a project's documents read-only before a model plans a change, names back any it never opened, and keeps the project's own green tests green after each step (T-4425).
 - sampo code now says when an edit leaves a Python, JSON, JS, shell or TOML file unparsable, refuses done while one stands, and puts the files it changed back to the last finished step when a run stops with one (T-4426).
 - sampo lane accept starts the lane's affected check itself, detached and niced, when the lane has no clean run at its tip that held the four repo-shape classes: green queues it, red holds it out of the land with the failing classes named, a newer green run clears the hold, and lane rm ends the check (T-4286).
 - sampo code no longer gives up a whole run on a plan's form: a plan that is sound work with an incomplete M form gets one targeted question and is otherwise filed as tier S with the gap noted once; a plan the gate refuses twice for one named piece (a criterion for a part of the request, a one-way step) gets one targeted question in the gate's own words (T-4282).
