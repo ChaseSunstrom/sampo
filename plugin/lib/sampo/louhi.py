@@ -4042,11 +4042,11 @@ def _per_fix(res, tokens):
     res["tokens_per_fix"] = round(res["tokens"] / done) if done else None
 
 
-def _smith_argv(request, model, t, planner=None, reason=None, small=False):
+def _smith_argv(request, model, t, planner=None, reason=None, small=False, steps=None):
     """fm code's argv for one exam scenario; T-4083: --deadline is the scenario's clock less SMITH_MARGIN, so Smith
-    stops itself with a trail before the exam's kill."""
+    stops itself with a trail before the exam's kill. T-4424: `steps` is a long goal's turn cap (a whole change, not a defect)."""
     from sampo import smithbench
-    return [sys.executable, smithbench.FM, "code", request, "--json", "--max-steps", str(SMITH_STEPS), "--model", model,
+    return [sys.executable, smithbench.FM, "code", request, "--json", "--max-steps", str(steps or SMITH_STEPS), "--model", model,
             "--deadline", str(t - SMITH_MARGIN),
             *(["--planner", planner] if planner else []),  # T-2945: split planning from acting
             *(["--reason", reason] if reason else []),  # T-3006: how the model reasons on this arm

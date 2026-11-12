@@ -850,7 +850,149 @@ class DoorFault(Long):
         self.assertEqual((g["brier"], g["conf_missing"], g["door_touched"]), (None, None, None), g)
         self.assertTrue(all(x["confidence"] is None and x["brier"] is None for x in g["goals"]), g)
 
+    # T-4424: the local arm (sampo code on a model profile) and the goal as the task's own raw request
+    def smith(self, steps=3, edit=True, **kw):
+        """A stand-in for fm code: records how it was called, edits the repo it runs in, prints Smith's JSON events."""
+        from unittest import mock
+        from sampo import models, smithbench
+        self.stub()
+        fm = os.path.join(self.tmp, "fakefm.py")
+        self.slog = os.path.join(self.tmp, "smith.log")
+        evs = [{"event": "step", "step": n} for n in range(1, steps + 1)] + [
+            {"event": "tokens", "total_in": 100, "total_out": 20}, {"event": "stats", "turns": 7},
+            {"event": "closed", "text": "done"}]
+        write(self.tmp, "fakefm.py", FAKE_SMITH.format(log=self.slog, edit=edit, events=json.dumps(evs)))
+        for patch in (mock.patch.object(smithbench, "FM", fm),
+                      mock.patch.object(models, "resolve", lambda m: {"name": m})):
+            patch.start()
+            self.addCleanup(patch.stop)
+        return self.go("smith", model="local-7b", **kw)
 
+    def test_smith_answers_each_goal_in_a_boxed_copy_and_the_grade_reads_the_tree(self):
+        r = self.smith()
+        self.assertEqual(sorted(r["answered"]), ["T-1001", "T-1003"])
+        with open(self.slog) as f:
+            calls = [json.loads(x) for x in f]
+        self.assertEqual(len(calls), 2)
+        for x in calls:
+            self.assertIn("--json", x["argv"])
+            self.assertEqual(x["argv"][x["argv"].index("--model") + 1], "local-7b")
+            self.assertIn("--deadline", x["argv"])
+            self.assertTrue(x["seed"] and x["home"].startswith(x["seed"]) and x["cwd"].startswith(x["seed"]))  # its own Smith home
+            self.assertFalse(x["cwd"].startswith(self.fmlong._root(self.p)))  # a temp copy, never the goal's own repo
+            self.assertIn("Add f", x["req"])
+        w = self.fmlong._work(self.p, self.run_id, "smith", "T-1001")
+        self.assertIn("def f1", open(os.path.join(w, "app.py")).read())
+        self.assertFalse(os.path.exists(os.path.join(w, ".git")))
+        self.assertIn(os.path.join("work", "smith"), w)
+        with open(os.path.join(self.fmlong._root(self.p), self.run_id, "faults", "smith", "T-1001.run.json")) as f:
+            info = json.load(f)
+        self.assertEqual((info["steps"], info["turns"], info["end"], info["tokens"], info["cost"]), (3, 7, "closed", 120, 0))
+        self.assertIsInstance(info["minutes"], float)
+        g = self.fmlong.grade(self.p, self.run_id, "smith")
+        self.assertEqual((g["agent"], g["model"], g["true_done"], g["scenarios"]), ("smith", "local-7b", 2, 2), g)
+        self.assertEqual(g["goals"][0]["secs"], round(g["goals"][0]["secs"], 1))
+        self.assertEqual(g["cost"], 0)
+        self.assertTrue(all(x["confidence"] is None and x["brier"] is None for x in g["goals"]), g)  # none stated: unknown
+        self.assertEqual([(x["agent"], x["model"]) for x in self.lines() if x.get("tier") == "long"], [("smith", "local-7b")])
+
+    def test_smith_records_a_run_that_made_no_edit_a_late_end_and_one_that_never_ended(self):
+        self.smith(edit=False, limit=1)
+        g = self.fmlong.grade(self.p, self.run_id, "smith")  # --limit: one goal answered, the other is in the total, not done
+        self.assertEqual((g["scenarios"], g["true_done"], sum(x["answered"] for x in g["goals"])), (2, 0, 1), g)
+        self.assertEqual(g["goals"][0]["false_done"], True)  # closed claimed, a hidden check red
+
+    def test_smith_without_a_model_and_with_faults_is_refused_with_its_reason_before_any_run(self):
+        self.stub()
+        r = self.fm("exam", "long", "run", self.run_id, "--agent", "smith", "--faults", "kill", "--model", "x", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--faults", r.stderr)
+        self.assertIn("sampo code", r.stderr)  # why: no claude session to kill, pause or compact
+        r = self.fm("exam", "long", "run", self.run_id, "--agent", "smith", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--model", r.stderr)
+        self.assertFalse(os.path.exists(self.fmlong._work(self.p, self.run_id, "smith", "T-1001")))
+        for bad in ({"jobs": 0}, {"reason": "nope"}):
+            with self.assertRaises(ValueError):
+                self.go("smith", model="x", **bad)
+
+    def test_smith_takes_timeout_reason_small_and_jobs_and_the_help_names_the_arm(self):
+        self.smith(timeout=2, reason="native", small=True, jobs=2)
+        with open(self.slog) as f:
+            argv = json.loads(f.readline())["argv"]
+        self.assertEqual(argv[argv.index("--reason") + 1], "native")
+        self.assertIn("--small", argv)
+        deadline = int(argv[argv.index("--deadline") + 1])
+        self.assertTrue(0 < deadline <= 120, deadline)  # 2 minutes, less the margin Smith leaves itself
+        h = self.fm("exam", "-h").stdout
+        for word in ("smith", "--goal", "raw"):
+            self.assertIn(word, h)
+
+    def raw_repo(self, raw="FEATURE: add q, it should return seven\nMUST: keep old()", tier="S"):
+        out = self.fm("task", "new", "Add q", "--type", "FEATURE", "--tier", tier, "--ac", "q returns 7 :: python3 -m unittest tests.test_app",
+                      *(["--raw", raw] if raw else []), "--json").stdout
+        tid = json.loads(out)["id"]
+        write(self.repo, "app.py", APP)
+        write(self.repo, "tests/test_app.py", TEST.format(extra=""))
+        subprocess.run(["git", "-C", self.repo, "add", "."], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "base"], check=True)
+        write(self.repo, "app.py", APP + "\n\ndef q():\n    return 7\n")
+        write(self.repo, "tests/test_app.py",
+              TEST.format(extra="\n    def test_q_is_seven(self):\n        self.assertEqual(app.q(), 7)\n"))
+        subprocess.run(["git", "-C", self.repo, "add", "."], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", f"Add q ({tid})"], check=True)
+        prove.remember(self.repo)
+        return tid
+
+    def test_raw_goal_is_the_tasks_own_request_then_only_the_names_and_values_the_checks_need(self):
+        tid = self.raw_repo()
+        r = json.loads(self.fm("exam", "long", "gen", "--from", self.repo, "--goal", "raw", "--json").stdout)
+        (s,) = [x for x in r["scenarios"] if x["id"] == tid]
+        self.assertEqual(s["goal"], "add q, it should return seven\nkeep old()\n\nThe checks use these new names: app.q"
+                                    "\n\nThe checks expect these values: 7")  # the value the request says only in words
+        self.assertNotIn("Acceptance criteria", s["goal"])  # no ticket, no done-when list
+        self.assertNotIn("Done when", s["goal"])
+        plain = json.loads(self.fm("exam", "long", "gen", "--from", self.repo, "--json").stdout)  # without the option: unchanged
+        self.assertIn("Acceptance criteria", [x for x in plain["scenarios"] if x["id"] == tid][0]["goal"])
+
+    def test_raw_goal_drops_a_task_with_no_raw_request_and_says_why(self):
+        tid = self.raw_repo(raw=None)
+        from sampo import core as c
+        b = c.find_brief(c.find_project(self.repo), tid)
+        with open(b.path) as f:
+            text = f.read()
+        with open(b.path, "w") as f:
+            f.write(text.replace("> Add q", ""))  # the brief holds no raw request
+        r = self.fm("exam", "long", "gen", "--from", self.repo, "--goal", "raw", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("raw request", r.stderr)
+        self.assertIn(tid, r.stderr)
+        prove.remember(self.src)
+        r = self.fm("exam", "long", "gen", "--from", self.src, "--goal", "raw", check=False)  # another repo's ids have no brief here
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("raw request", r.stderr)
+        self.assertNotEqual(self.fm("exam", "long", "gen", "--from", self.src, "--goal", "other", check=False).returncode, 0)
+
+    def test_raw_goal_with_a_size_picks_only_that_tiers_tasks_and_n_may_pass_twenty(self):
+        self.raw_repo(tier="M")
+        self.assertNotEqual(self.fm("exam", "long", "gen", "--from", self.repo, "--tier", "S", check=False).returncode, 0)
+        r = json.loads(self.fm("exam", "long", "gen", "--from", self.repo, "--tier", "M", "--n", "25", "--json").stdout)
+        self.assertEqual(len(r["scenarios"]), 1)
+        self.assertNotEqual(self.fm("exam", "long", "gen", "--from", self.repo, "--n", "101", check=False).returncode, 0)
+        self.assertNotEqual(self.fm("exam", "long", "gen", "--from", self.repo, "--tier", "XL", check=False).returncode, 0)
+
+
+FAKE_SMITH = r'''import json, os, re, sys
+n = re.search(r"Add f(\d)", sys.argv[2])
+with open({log!r}, "a") as f:
+    f.write(json.dumps({{"argv": sys.argv[3:], "req": sys.argv[2], "home": os.environ.get("FOREMAN_HOME"),
+                        "seed": os.environ.get("FM_BENCH_SEED"), "cwd": os.getcwd()}}) + "\n")
+if n and {edit!r}:
+    with open("app.py", "a") as f:
+        f.write("\n\ndef f%s():\n    return %s\n" % (n.group(1), n.group(1)))
+for e in json.loads({events!r}):
+    print(json.dumps(e))
+'''
 SLOW ='''#!/usr/bin/env python3
 import json, os, time
 t0 = time.time()

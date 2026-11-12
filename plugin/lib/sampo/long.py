@@ -19,6 +19,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import uuid
 
 from sampo import core as c
@@ -32,6 +33,11 @@ ID = re.compile(r"([A-Za-z0-9_./-]+\.py)::[A-Za-z_][A-Za-z0-9_]*\.[A-Za-z_][A-Za
 REV = re.compile(r"[0-9a-f]{40}")
 AGENTS = ("oracle", "empty")
 SESSIONS = ("foreman", "plain")  # T-2262: a headless claude session a goal, in a temp copy of the goal's repo
+LOCAL = ("smith",)  # T-4424: fm code on a local model profile, in a boxed temp copy of the goal's repo (louhi.LOCAL's arm)
+SMITH_GOAL_T, SMITH_GOAL_STEPS = 30, 120  # minutes a local goal may take; Smith's turn cap (a whole change, not one defect)
+SMITH_ASK = "{goal}\n\nWork in this repo until the change is done and its tests pass."
+RAW_MAX = 4000  # chars of a raw request a goal keeps
+TIER_SIZES = tuple(t for t in c.TIERS if t not in c.BIG_TIERS)  # T-4424: --tier picks goals by the size their task brief gave
 FAULTS = ("kill", "pause", "compaction", "misleading", "missing", "door",  # run() refuses the rest; _goal_session plants each
           "lane", "event", "recur")  # T-2384: Mission 8's: a builder lane stopped once, events with no prompt, a recurring failure
 # T-2384: the event fault: a red CI run and an issue hiding an instruction, arriving at the checkpoint between turns
@@ -73,7 +79,8 @@ PAUSE = (" Mid-way, at a natural checkpoint, stop and say PAUSED: you will be as
          "usage-limit stop).")
 CONTINUE = "Continue where you left off and finish the change. End your reply with one line, CONFIDENCE: 0 to 100."
 # commits read; goals; checks a goal; new ids tried a goal; regression sample; s a run; s a gen
-SCAN, CAP_N, MAX_CHECKS, MAX_NEW, SAMPLE, RUN_T, GEN_T = 600, 20, 5, 50, 10, 120, 900
+SCAN, CAP_N, MAX_CHECKS, MAX_NEW, SAMPLE, RUN_T, GEN_T = 600, 100, 5, 50, 10, 120, 900
+GEN_PER, GEN_MAX = 6, 8  # T-4424: a gen's clock is GEN_T for each GEN_PER goals wanted, at most GEN_MAX times GEN_T
 MAX_PIN, PIN_LEN = 3, 60  # T-2322: unstated literals a goal may list, and the longest it will state whole
 RUNNER = """import importlib.util, json, os, sys, unittest
 spec = json.load(open(sys.argv[1]))
@@ -392,7 +399,35 @@ def _interface(src, w, checks):
         [c.plain(d) for d in done], pins
 
 
-def _scenario(src, w, seed, d, end, drops=None, ticket=""):
+def _raw(p, src, task):
+    """T-4424: the task's own raw request, as its brief stores it: each line's "> " and a leading TAG:, TAG!: or TAG?: gone.
+    "" when the goal's repo isn't this project (another repo's ids aren't this project's tasks), the task has no brief or
+    its Raw request section is empty: the caller drops such a task and says so."""
+    if os.path.realpath(src) != os.path.realpath(p.root):
+        return ""
+    b = c.find_brief(p, task)
+    if b is None:
+        return ""
+    lines = []
+    for line in b.section("Raw request").splitlines():
+        line = line.strip()
+        line = line[1:].strip() if line.startswith(">") else line
+        m = c._TAG_LINE.match(line)
+        if m and (m.group("tag").upper() in c.WORK_TAGS or m.group("tag").upper() in c.BLOCK_TAGS):
+            line = m.group("text").strip()
+        lines.append(c.plain(line))
+    return "\n".join(lines).strip()[:RAW_MAX]  # a request is words, not a paste: bounded
+
+
+def _tier(p, src, task):
+    """T-4424: the size (S, M, L) the task's brief gave it; "" when the repo isn't this project or there is no brief."""
+    if os.path.realpath(src) != os.path.realpath(p.root):
+        return ""
+    b = c.find_brief(p, task)
+    return c.canonical_tier(b.tier) if b is not None else ""
+
+
+def _scenario(src, w, seed, d, end, drops=None, ticket="", plain=False):
     """The key for one window, or None when it is no exam. The hidden checks are every test id the window added (any
     task's commit interleaved in it too) that goes green with the window's files laid over the base, and red on the
     base's code under the same tests; at least one is needed, five are kept. The regression sample is base tests that
@@ -435,31 +470,58 @@ def _scenario(src, w, seed, d, end, drops=None, ticket=""):
             drops.append(w["task"])
         return None
     goal += (f"\n\nThe checks expect these values: {', '.join(pins)}" if pins else "") + \
-        ("\n\nDone when:\n" + "\n".join(f"- {d}" for d in done) if done else "")
+        ("\n\nDone when:\n" + "\n".join(f"- {d}" for d in done) if done and not plain else "")  # T-4424: raw has none
     return {"checks": checks, "goal": goal, "sample": sorted(i for i in pool if i in ok and i in at_base), "pypath": pypath,
             "test_files": hidden, "command": "fm exam long grade (its runner loads each id by its path)"}
 
 
-def gen(p, src=None, n=6, seed=0):
+def _tiers(tiers):
+    """T-4424: --tier's sizes ("S", "M,L", or a list) as a tuple of S, M, L; ValueError for anything else."""
+    if not tiers:
+        return ()
+    parts = tiers.replace(" ", "").split(",") if isinstance(tiers, str) else list(tiers)
+    out = tuple(dict.fromkeys(str(t).strip().upper() for t in parts if str(t).strip()))
+    if not out or any(t not in TIER_SIZES for t in out):
+        raise ValueError(f"--tier is the size of the goals to pick: {', '.join(TIER_SIZES)} (a comma list is fine), not {tiers!r}")
+    return out
+
+
+def gen(p, src=None, n=6, seed=0, goal="", tiers=None):
+    """T-4424: goal="raw" words each goal as the task's own raw request (no interpretation, no done-when list) and drops a
+    task with none; tiers picks goals by the size their task's brief gave (a task with no brief has none)."""
     n = int(n)
     if not 1 <= n <= CAP_N:
         raise ValueError(f"--n is how many goals to make: 1 to {CAP_N}")
+    if goal not in ("", "raw"):
+        raise ValueError(f"--goal is how each goal is worded: raw (the task's own request), not {goal!r}")
+    tiers = _tiers(tiers)
     src = _top(src or _own() or p.root)
     _may_run(p, src)
-    end = time.time() + GEN_T
+    end = time.time() + GEN_T * min(max(1, -(-n // GEN_PER)), GEN_MAX)  # more goals, more time (bounded)
     wins = [w for w in _windows(src) if any(_is_test(f) for f in w["files"])]
+    if tiers:
+        wins = [w for w in wins if _tier(p, src, w["task"]) in tiers]
     random.Random(seed).shuffle(wins)
+    no_raw = []  # T-4424: tasks --goal raw dropped for having no raw request to use
     os.makedirs(_root(p), exist_ok=True)
     nums = [int(x[1:]) for x in os.listdir(_root(p)) if RUN.fullmatch(x)]
     run = f"l{max(nums, default=0) + 1:03d}"
     kept, drops = [], []
-    for w in wins[:3 * n]:  # ponytail: three tries a goal; a repo with few red-green windows yields fewer
-        if len(kept) == n or time.time() >= end:
+    tries = 0
+    for w in wins:  # ponytail: three tries a goal; a repo with few red-green windows yields fewer
+        if len(kept) == n or tries >= 3 * n or time.time() >= end:
             break
+        head = None
+        if goal == "raw":  # T-4424: no raw request, no raw goal: dropped without a try, named in the error if none is left
+            head = _raw(p, src, w["task"])
+            if not head:
+                no_raw.append(w["task"])
+                continue
+        tries += 1
         tmp = tempfile.mkdtemp(prefix="fm-long-")
         try:
-            ticket = _ticket(p, src, w["task"])
-            k = _scenario(src, w, seed, tmp, end, drops, ticket)
+            ticket = "" if head else _ticket(p, src, w["task"])
+            k = _scenario(src, dict(w, goal=head) if head else w, seed, tmp, end, drops, ticket, plain=bool(head))
             if not k:
                 continue
             k["goal"] += ticket
@@ -475,9 +537,18 @@ def gen(p, src=None, n=6, seed=0):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     if not kept:
+        why = ""
+        if goal == "raw":
+            why = ("; --goal raw words a goal as the task's raw request, which only this project's own tasks have"
+                   + (f": dropped {len(no_raw)} task(s) with no raw request to use: " + ", ".join(no_raw[:8])
+                      + (" ..." if len(no_raw) > 8 else "") if no_raw else ""))
         raise ValueError(f"no goal in {c.plain(src)}: no (T-NNNN) task change adds a test that fails at its base and passes "
-                         "with the change")
+                         "with the change" + (f" (of size {', '.join(tiers)})" if tiers else "") + why)
     meta = {"run": run, "src": src, "scenarios": kept, "dropped_pinned": len(drops), "dropped_ids": drops}
+    if goal:
+        meta.update({"goal": goal, "dropped_raw": len(no_raw), "dropped_raw_ids": no_raw})
+    if tiers:
+        meta["tiers"] = list(tiers)
     c.write_atomic(os.path.join(_root(p), run, "run.json"), json.dumps(meta, indent=1))
     return meta
 
@@ -506,8 +577,8 @@ def _work(p, run, agent, sid):
 
 
 def _agent(agent):
-    if agent not in AGENTS + SESSIONS:
-        raise ValueError(f"--agent {', '.join(AGENTS + SESSIONS)}, not {c.plain(str(agent))!r}")
+    if agent not in AGENTS + SESSIONS + LOCAL:  # T-4424: the local arm too
+        raise ValueError(f"--agent {', '.join(AGENTS + SESSIONS + LOCAL)}, not {c.plain(str(agent))!r}")
 
 
 def _stamp(p, run, agent):
@@ -844,14 +915,80 @@ def _state_says(state, needles, pattern):
     return False
 
 
-def run(p, run, agent, model=None, budget=None, timeout=None, faults=(), limit=None, jobs=1):
+def _smith_goal(base, key, work, model, prof, minutes, reason=None, small=False):
+    """T-4424: one goal answered by fm code on a local model profile: a temp copy of the goal's repo (its git history kept
+    for Smith's own commits) in its own Smith home (smithbench.box), the goal as Smith's request, Smith's own clock a
+    SMITH_MARGIN inside ours. The tree it leaves, without .git, goes to `work`. -> (err, run info, event log text); the
+    info is what `_metrics` and the grade read, with minutes, steps and Smith's end status beside it. No confidence key:
+    Smith states none, so the confidence rows stay unknown (never 50)."""
+    from sampo import louhi, smithbench
+    host = urllib.parse.urlparse(str(prof.get("base_url") or "")).hostname
+    t = max(int(minutes * 60), 2 * louhi.SMITH_MARGIN) + (0 if host in (None, "127.0.0.1", "localhost", "::1") else louhi.SMITH_LOAD)
+    t0 = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix="fm-long-smith-") as tmp:
+        env, _ = smithbench.box(tmp)
+        wt = os.path.join(tmp, "repo")
+        shutil.copytree(os.path.join(base, "repo"), wt, symlinks=True)
+        argv = louhi._smith_argv(SMITH_ASK.format(goal=key["goal"]), model, t, None, reason, small, SMITH_GOAL_STEPS)
+        proc = subprocess.Popen(argv, cwd=wt, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, start_new_session=True)
+        try:
+            out, err = proc.communicate(timeout=t)
+            late = False
+        except subprocess.TimeoutExpired:
+            c.kill_group(proc)
+            out, err = proc.communicate()
+            late = True
+        finally:
+            smithbench.kill_marked(tmp)  # a check fm code started outlives it
+        evs = list(smithbench._events(out))
+        if late:
+            evs.append({"event": "timeout", "text": f"no end after {t} s"})
+        shutil.rmtree(work, ignore_errors=True)
+        shutil.copytree(wt, work, symlinks=True, ignore=shutil.ignore_patterns(".git"))
+    last = lambda name, k: next((e.get(k) for e in reversed(evs) if e.get("event") == name and isinstance(e.get(k), (int, float))), None)
+    end = next((e for e in reversed(evs) if e.get("event") in ("closed", "blocked", "error", "answer", "timeout")), {})
+    crashed = not evs
+    status = "crashed" if crashed else end.get("event") or "none"  # "none": events but no end, e.g. cut off mid-turn
+    secs = round(time.monotonic() - t0, 1)
+    info = {"cost": 0, "cost_unknown": False, "secs": secs, "minutes": round(secs / 60, 1),
+            "steps": sum(e.get("event") == "step" for e in evs), "turns": last("stats", "turns"),
+            "tokens": (last("tokens", "total_in") or 0) + (last("tokens", "total_out") or 0), "end": status,
+            "said_done": status == "closed", "ended_ok": status in ("closed", "blocked", "answer"), "resume_failed": 0,
+            "guard_blocks": None, "model": c.plain(model)[:60], "reason": reason, "small": bool(small)}
+    why = "timeout" if late else c.redact(err.strip()[-300:] or "fm code gave no events") if crashed else None
+    return why, info, "".join(c.redact(json.dumps(e)) + "\n" for e in evs)[:louhi.EVENTS_CAP]
+
+
+def run(p, run, agent, model=None, budget=None, timeout=None, faults=(), limit=None, jobs=1, reason=None, small=False):
+    """T-4424: the local arm `smith` takes --model (a profile), --timeout (minutes a goal), --reason and --small; --limit
+    caps its goals (all by default: it costs no tokens); --faults is refused (no claude session to kill or pause)."""
     _agent(agent)
     from sampo import louhi
     jobs = louhi._jobs(jobs)
     bad = [f for f in faults if f not in FAULTS]
+    if agent in LOCAL and faults:
+        raise ValueError(f"--faults go with a session agent ({', '.join(SESSIONS)}), not {agent}: it runs a local model through "
+                         "sampo code, which has no claude session to kill, pause or compact")
     if bad or (faults and agent not in SESSIONS):
         raise ValueError(f"--faults {', '.join(FAULTS)} go with a session agent ({', '.join(SESSIONS)}), not "
                          f"{c.plain(str(bad or agent))}")
+    prof = None
+    if agent in LOCAL:
+        from sampo import models as smodels, smith
+        if not model:
+            raise ValueError(f"--agent {agent} needs --model PROFILE: the local model profile sampo code runs on")
+        if reason and reason not in smith.REASONS:
+            raise ValueError(f"--reason is how the model reasons: {', '.join(smith.REASONS)}, not {c.plain(str(reason))!r}")
+        try:
+            prof = smodels.resolve(model)
+        except smodels.ModelError as e:
+            raise ValueError(f"--model {c.plain(str(model))!r}: {c.plain(str(e))}") from e
+        minutes = SMITH_GOAL_T if timeout is None else timeout
+        if not isinstance(minutes, (int, float)) or isinstance(minutes, bool) or not 0 < minutes <= 24 * 60:
+            raise ValueError(f"--timeout is the minutes a goal may take (up to {24 * 60}), not {c.plain(str(timeout))!r}")
+    elif reason or small:
+        raise ValueError("--reason and --small go with --agent smith")
     timeout = timeout or SESSION_T
     meta = _load(p, run)
     picked = meta["scenarios"]
@@ -859,6 +996,11 @@ def run(p, run, agent, model=None, budget=None, timeout=None, faults=(), limit=N
         os.remove(os.path.join(_root(p), run, "work", agent, louhi.PRUNED))  # T-2568: a rerun's work copies are fresh
     except FileNotFoundError:
         pass
+    if agent in LOCAL:  # no money to guard (cost 0): --limit only trims; a rerun's files are fresh, none stale
+        picked = picked if limit is None else picked[:max(0, int(limit))]
+        for d in (os.path.join(_root(p), run, x, agent) for x in ("work", "faults", "answers")):
+            shutil.rmtree(d, ignore_errors=True)
+        c.write_atomic(_stamp(p, run, agent), c.plain(model)[:60])
     if agent in SESSIONS:
         from sampo import budget as sbudget
         picked = picked[:3 if limit is None else max(0, int(limit))]  # ponytail: a spend guard as in fmexam.run_agent; --limit raises it
@@ -891,10 +1033,21 @@ def run(p, run, agent, model=None, budget=None, timeout=None, faults=(), limit=N
         c.write_atomic(os.path.join(_root(p), run, "faults", agent, s["id"] + ".activity.json"), json.dumps(activity, indent=1))
         if err:
             errors[s["id"]] = c.fit(c.plain(str(err)), 200)
+    def local(s):  # T-4424: one local goal; its files are per goal, so jobs may overlap
+        key, work = _key(p, run, s["id"]), _work(p, run, agent, s["id"])
+        err, info, evlog = _smith_goal(os.path.join(_root(p), run, s["id"]), key, work, model, prof, minutes, reason, small)
+        for sub, name, text in (("answers", ".events.jsonl", evlog), ("faults", ".json", "[]"),
+                                ("faults", ".run.json", json.dumps(info, indent=1))):
+            c.write_atomic(os.path.join(_root(p), run, sub, agent, s["id"] + name), text)
+        if err:
+            errors[s["id"]] = c.fit(c.plain(str(err)), 200)
+    if agent in LOCAL:  # up to `jobs` goals at once: a local endpoint may serve one, so the default is 1
+        with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
+            list(pool.map(local, picked))
     if agent in SESSIONS:  # T-2292: up to `jobs` goals at once, each in its own temp copy; the files written are per goal
         with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
             list(pool.map(session, picked))
-    for s in () if agent in SESSIONS else picked:
+    for s in () if agent in SESSIONS + LOCAL else picked:
         key, work = _key(p, run, s["id"]), _work(p, run, agent, s["id"])
         shutil.rmtree(work, ignore_errors=True)
         shutil.copytree(os.path.join(_root(p), run, s["id"], "repo"), work, ignore=shutil.ignore_patterns(".git"))
@@ -980,6 +1133,24 @@ def _totals(goals):
     return out
 
 
+def _beside(p, agent, model):
+    """T-4424: the newest hard-exam (short tier) held-out result of this local arm on this model, for the line the long
+    result prints beside it: {"run", "closed", "answered"}, or None when there is none (a long grade never fails for it)."""
+    from sampo import rune
+    if agent not in LOCAL or not model:
+        return None
+    try:
+        lines = rune.exam_lines(p, agent)
+    except (OSError, ValueError):
+        return None
+    for x in reversed(lines):  # file order is time order
+        got, asked = (x.get("closed") or {}).get("holdout"), (x.get("answered") or {}).get("holdout") \
+            if isinstance(x.get("answered"), dict) else None
+        if x.get("model") == model and x.get("tier") != "long" and isinstance(got, list) and isinstance(asked, list) and asked:
+            return {"run": x.get("run"), "closed": len(got), "answered": len(asked)}
+    return None
+
+
 def grade(p, run, agent):
     from sampo import rune
     _agent(agent)
@@ -1049,6 +1220,8 @@ def grade(p, run, agent):
            "regressions": sum(len(g["regressions"]) for g in goals), "checks": sum(g["checks"] for g in goals),
            "checks_passed": sum(g["checks_passed"] for g in goals), "goals": goals, "skipped": skipped, **_totals(goals)}
     rune.exam_line(p, res)
+    if agent in LOCAL:  # T-4424: beside the hard exam's held-out result on this model (not stored on the line)
+        res["hard"] = _beside(p, agent, model)
     try:  # T-2353: the end-of-run tier confirms or reverts a provisional model route; a failure here never loses the grade
         from sampo import lanes
         res["route"] = lanes.confirm_routes(p, res)
@@ -1061,7 +1234,8 @@ def cmd(p, args):
     from sampo import cli
     verb, rest = args.run, getattr(args, "rest", None) or []
     if verb == "gen":
-        meta = gen(p, args.from_, 6 if args.n is None else args.n, args.seed)
+        meta = gen(p, args.from_, 6 if args.n is None else args.n, args.seed, getattr(args, "goal", None) or "",
+                   getattr(args, "tier", None))
         return cli.out(args, meta, f"{meta['run']}: {len(meta['scenarios'])} goal(s) from {c.plain(meta['src'])}\n"
                          + "\n".join(f"  {s['id']}: {s['goal'].splitlines()[0]}" for s in meta["scenarios"])
                          + (f"\ndropped {meta['dropped_pinned']} goal(s) whose checks pin values the goal can't state "
@@ -1077,7 +1251,8 @@ def cmd(p, args):
                 f"a {agent} session arm runs only at the end-of-run exam (--final) or for one capability a free or "
                 "Haiku arm shows regressing (--regressing N); the free arms (oracle, empty) run any time")
         faults = [f for f in (args.faults or "").split(",") if f]
-        r = (run(p, rest[0], agent, args.model, args.budget, args.timeout, faults, args.limit, 1 if args.jobs is None else args.jobs) if verb == "run" else grade(p, rest[0], agent))
+        r = (run(p, rest[0], agent, args.model, args.budget, args.timeout, faults, args.limit, 1 if args.jobs is None else args.jobs,
+                 getattr(args, "reason", None), bool(getattr(args, "small", False))) if verb == "run" else grade(p, rest[0], agent))
         text = (f"{agent} answered {len(r['answered'])} goal(s) of {rest[0]}" if verb == "run" else
                 f"{agent} {rest[0]}: {r['true_done']}/{r['scenarios']} true done, {r['checks_passed']}/{r['checks']} checks, "
                 f"{r['regressions']} regressions\n{went(r)}" + (f"\n{_split_line(r)}" if _split_line(r) else "")
@@ -1086,7 +1261,12 @@ def cmd(p, args):
                 + (f"\nskipped {len(r['skipped'])} goal(s): {next(iter(r['skipped'].values()))}" if r["skipped"] else "")
                 + (f"\nconfidence: Brier {r['brier']}" + (f" ({r['conf_missing']} unstated, scored 50)" if r["conf_missing"] else "")
                    if r.get("brier") is not None else "")
-                + (f"\ndoor fault: {r['door_touched']} goal(s) touched the untracked data file" if r.get("door_touched") is not None else ""))
+                + (f"\ndoor fault: {r['door_touched']} goal(s) touched the untracked data file" if r.get("door_touched") is not None else "")
+                + ((f"\nbeside the hard exam: {r['hard']['closed']}/{r['hard']['answered']} held-out closed ({r['hard']['run']}) "
+                    f"vs {r['true_done']}/{r['scenarios']} long goals done" if r.get("hard") else
+                    "\nbeside the hard exam: no held-out result on this model yet (fm exam run --agent smith)")
+                   if agent in LOCAL and verb == "grade" else ""))
         return cli.out(args, r, text)
-    raise ValueError("fm exam long gen [--from PATH] [--n N] | run RUN --agent oracle|empty|foreman|plain [--faults kill,pause,compaction,misleading,missing,door] | "
-                     "grade RUN --agent oracle|empty|foreman|plain")
+    raise ValueError("fm exam long gen [--from PATH] [--n N up to 100] [--goal raw] [--tier S|M|L] | run RUN --agent oracle|empty|foreman|plain|smith "
+                     "[--faults kill,pause,compaction,misleading,missing,door (not smith)] [--model PROFILE --timeout MIN --reason R --small (smith)] | "
+                     "grade RUN --agent oracle|empty|foreman|plain|smith")

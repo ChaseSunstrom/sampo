@@ -9011,15 +9011,16 @@ def _build_parser(only=None):
                         "smith arm per local profile and appends its failure classes to research/local-loop.jsonl (T-3484); "
                         "taxonomy RUN: Smith's failure classes with counts and rates from a --agent smith run's event logs "
                         "(run it with --model PROFILE; T-2908); scorecard: each gen-0 §2 capability's held-out pass rate from graded runs; exit 1 unless all "
-                        "pass (T-2097); long: replayed past changes, sampo exam long gen [--from PATH] [--n N] | run RUN | "
-                        "grade RUN (--agent oracle|empty; T-2258); steer: raw words expanded into standing rules, graded by a "
+                        "pass (T-2097); long: replayed past changes, sampo exam long gen [--from PATH] [--n N] [--goal raw] [--tier S|M|L] | "
+                        "run RUN | grade RUN (--agent oracle|empty|foreman|plain|smith; smith: sampo code on --model PROFILE in a "
+                        "boxed copy of each goal's repo, T-4424; T-2258); steer: raw words expanded into standing rules, graded by a "
                         "stronger judge, sampo exam steer [status] | cases [--from FILE] | run [--split S] [--model M] | "
                         "expand SESSION | live on|off (T-2625); models: run|show, the decision models and embedders on "
                         "held-out closed tasks, rows in research/models/bench.jsonl (T-2887)")
     s.add_argument("run", nargs="?", help="run/grade/check: the run id sampo exam gen printed; long: gen|run|grade")
     s.add_argument("rest", nargs="*", help="long run|grade: the run id")
     s.add_argument("--from", dest="from_", metavar="PATH", help="long gen: the local git repo to replay (default Sampo's own)")
-    s.add_argument("--n", type=int, help="long gen: goals to make (default 6, at most 20); gen --from-repo: scenarios to keep "
+    s.add_argument("--n", type=int, help="long gen: goals to make (default 6, at most 100); gen --from-repo: scenarios to keep "
                                          "(default 6, at most 50)")
     s.add_argument("--from-repo", dest="from_repo", metavar="PATH", help="gen: mint scenarios from this git repo's HEAD, one "
                                                                          "mutation each, kept only when its own tests go red (T-2978)")
@@ -9083,11 +9084,16 @@ def _build_parser(only=None):
     s.add_argument("--trend", action="store_true", help="gap: each profile's gap over the last 14 runs, the commits between")
     s.add_argument("--request", help="run: session arms get these words instead of each scenario's request")
     s.add_argument("--planner", help="run --agent smith: this profile asks the plan and close notes, --model acts (T-2945)")
-    s.add_argument("--reason", help="run --agent smith: state|off|native|budget|bias|schema, how the model reasons; the "
+    s.add_argument("--reason", help="run, long run --agent smith: state|off|native|budget|bias|schema, how the model reasons; the "
                    "score line gives its fix rate and tokens per fix (T-3006)")
-    s.add_argument("--small", action="store_true", help="run --agent smith: fm code --small, small-model mode (T-2878)")
-    s.add_argument("--timeout", type=float, help="long run: minutes a session turn may take (default 60)")
-    s.add_argument("--faults", help="long run --agent foreman|plain: comma list of kill, pause, compaction, misleading (T-2262), missing (T-2377), door (T-2343)")
+    s.add_argument("--small", action="store_true", help="run, long run --agent smith: fm code --small, small-model mode (T-2878)")
+    s.add_argument("--timeout", type=float, help="long run: minutes a session turn may take (default 60); --agent smith: "
+                   "minutes a goal may take (default 30)")
+    s.add_argument("--faults", help="long run --agent foreman|plain: comma list of kill, pause, compaction, misleading (T-2262), missing (T-2377), door (T-2343); "
+                   "refused with --agent smith (sampo code has no claude session to kill or pause)")
+    s.add_argument("--goal", choices=("raw",), help="long gen: raw = each goal is the task's own raw request (tags and quote "
+                   "mark stripped), then only the names and values the checks need; a task with no raw request is dropped (T-4424)")
+    s.add_argument("--tier", metavar="S|M|L", help="long gen: only goals whose task brief gave this size (a comma list is fine) (T-4424)")
     s = add("demo", lazy("sampo.demo", "cmd_demo"), tier=("Finding your way", 210), help="see Sampo work on a seeded bug in a throwaway repo, with no "
                                                       "model calls and nothing left behind (T-0870)")
     s.add_argument("--pace", type=float, default=0, metavar="SECONDS",
