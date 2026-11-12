@@ -3181,11 +3181,16 @@ class Brief:
         line = f"- [ ] {text.strip()}" + (f" — verify with `{verify}`" if verify else "")
         self._append_line("Acceptance criteria", line)
 
-    def edit_ac(self, n, text=None, verify=None):
+    def edit_ac(self, n, text=None, verify=None, proven=None):
         """T-0333: criterion n's text and/or verify command replaced; its checkbox stays as it was. T-0342: only while
         it has no evidence (the T-0305 decision: an edit could weaken a failing check until it passes), and logged.
         T-3823: the words of one with a verify command may change (logged): the check that holds it stays as it is
-        (typed evidence vouches for the words themselves, so those stay)."""
+        (typed evidence vouches for the words themselves, so those stay). T-4362: proven (a line saying how) lets the
+        harness replace a check that has evidence, after it ran the new one failing at the base commit and passing on the
+        work, and only for a check that had failed on its own (the harness asks the planner for one then): what is
+        guaranteed is that the new check fails at the base and passes on the work, and the line is in the log. A
+        planner could still offer a check that fails at base for a reason that has little to do with the work; that
+        residual risk is the reader's to see in the log line. Only fm code passes it."""
         mine = [ln for ln in self.evidence() if (m := _EV_RE.match(ln)) and (m.group(1), int(m.group(2))) == ("ac", n)]
         old = dict(self.verify_cmds()).get(n)
         cmd = lambda ln: (re.search(r"`([^`]*)`", ln) or [None, None])[1]  # noqa: E731
@@ -3196,7 +3201,7 @@ class Brief:
         measured_nothing = bool(mine) and all(_NO_TEST.search(ln) for ln in own or mine) and (
             not own or not others or verify in others)
         same_check = old is not None and verify in (None, old)
-        if self.has_evidence(ac=n, checked=True) and not measured_nothing and not same_check:
+        if self.has_evidence(ac=n, checked=True) and not measured_nothing and not same_check and not proven:
             raise PolicyError(f"{self.id} criterion {n} already has evidence, so its check stays as it is (an edit could "
                               f"weaken a failing one). Add a criterion (sampo task ac {self.id} add …), or drop the task "
                               f"with a reason and recreate it with the right check (sampo task new … --redo {self.id} keeps its "
@@ -3212,7 +3217,7 @@ class Brief:
                     v = verify if verify is not None else old
                     line = f"- [{m.group(1)}] {(text or body).strip()}" + (f" — verify with `{v}`" if v else "")
                     if (v or None) != old:
-                        changes.append(f"criterion {n} verify: `{old or ''}` → `{v or ''}`")
+                        changes.append(f"criterion {n} verify: `{old or ''}` → `{v or ''}`" + (f" ({proven})" if proven else ""))
                     if text and text.strip() != body:
                         changes.append(f"criterion {n} text: {body} → {text.strip()}")
             lines.append(line)

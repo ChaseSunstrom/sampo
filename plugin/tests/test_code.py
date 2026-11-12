@@ -23,12 +23,18 @@ M_PLAN = dict(PLAN, tier="M",  # T-2344: an M plan's readings, options with fail
               choice=1, confidence=85, why="the failing test names the operator")
 
 
+ASIDES = {  # T-4362: a harness question about one check; the words are in its prompt. Answered with its default
+    "check command's own failure": '{"own": []}',  # (a red of the project's own) without taking a scripted reply or
+    "keeps failing the same way": '{"keep": true}'}  # showing in .seen, unless a test scripts one in Fake.asides[marker]
+
+
 class Fake:
     """Answers each POST with the next scripted reply (a dict: text and/or calls; in: the prompt tokens it reports, 5 unless given) in the profile's wire shape; HANG
     holds the request until release(); past the script it answers 400. Records every request body."""
 
     def __init__(self, kind, script):
         self.kind, self.script, self.seen = kind, list(script), []
+        self.asides, self.asked = {k: [] for k in ASIDES}, {k: [] for k in ASIDES}
         self.hung, self.release_ = threading.Event(), threading.Event()
         fake = self
 
@@ -38,8 +44,13 @@ class Fake:
 
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
-                fake.seen.append(body)
-                step = fake.script.pop(0) if fake.script else None
+                aside = next((k for k in ASIDES if k in json.dumps(body)), None)
+                if aside:
+                    fake.asked[aside].append(body)
+                    step = {"text": fake.asides[aside].pop(0) if fake.asides[aside] else ASIDES[aside]}
+                else:
+                    fake.seen.append(body)
+                    step = fake.script.pop(0) if fake.script else None
                 if step is HANG:
                     fake.hung.set()
                     fake.release_.wait(10)
@@ -1292,7 +1303,7 @@ class Cost(CodeCase):  # T-1357
         self.priced()
         closed = self.closed(self.code("fix add", "--model", "fake", "--json"))
         rows = self.spent()
-        self.assertEqual([round(e["usd"], 4) for e in rows], [0.07, 0.07, 0.07])  # the plan, the edit, done
+        self.assertEqual([round(e["usd"], 4) for e in rows], [0.07] * 3)  # the plan, the edit, done: a priced profile is judged nothing (T-4362)
         self.assertEqual({e["project"] for e in rows}, {self.fm_json("status")["project"]})
         self.assertEqual((closed["event"], closed["usd"]), ("closed", 0.21))
         self.assertIn("$0.21", closed["text"])
