@@ -1,7 +1,12 @@
 """T-4291: a guided run that runs out of turns while it is still progressing carries on in steps, and a run that
 repeats itself or changes nothing stops at the cap as before. Every model reply is scripted turn by turn."""
+import types
+import unittest
+
 from test_code import call
 from test_smith_budget import SRC_EDIT, VERIFY, Budget, looks
+
+from sampo import smith  # noqa: E402  (test_code puts plugin/lib on the path)
 
 
 def writes(n, start=0):
@@ -100,3 +105,30 @@ class Stalled(Budget):
         self.assertEqual(out.count("carrying on"), 1, "once: the flips after the first carry are not progress")
         self.assertEqual(self.stats(r)["carried"], 1)
         self.assertIn("repeated", out)
+
+
+class StepFinished(unittest.TestCase):
+    """T-4471: hard exam, cascade run: the worker did three steps' work in one, closed each of the next three on a
+    look, and was stopped at its cap as 'no file changed' with eighteen minutes left. A finished step is movement."""
+
+    def run_at(self, turns, phase_turn):
+        looks_ = [{"turn": t, "key": f"read:f{t}", "moved": None, "space": None, "state": None}
+                  for t in range(turns - smith.PROGRESS_WINDOW + 1, turns + 1)]
+        return types.SimpleNamespace(window=looks_, turns=turns, ends=None, carries=0, phase_turn=phase_turn)
+
+    def test_step_finished_inside_the_window_carries_on(self):
+        self.assertEqual(smith.Run.carry_check(self.run_at(140, 135)), (True, "a step finished"))
+
+    def test_step_finished_before_the_window_or_never_still_stops_as_no_change(self):
+        for at in (140 - smith.PROGRESS_WINDOW, None):
+            ok, why = smith.Run.carry_check(self.run_at(140, at))
+            self.assertFalse(ok)
+            self.assertIn("no file changed", why)
+
+    def test_step_finished_does_not_excuse_one_action_repeated(self):
+        run = self.run_at(140, 139)
+        for r in run.window[-3:]:
+            r["key"] = "read:same"
+        ok, why = smith.Run.carry_check(run)
+        self.assertFalse(ok)
+        self.assertIn("repeated", why)

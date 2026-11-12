@@ -1851,6 +1851,10 @@ class Run:
         if most >= 3:
             return False, f"the same action repeated three times in the last {PROGRESS_WINDOW} turns"
         moved = [r["moved"] for r in recent if r["moved"]]
+        # T-4471: a step that finished in the window is movement: a worker ahead of its plan closes the next steps on
+        # one look each (nothing left to change), and the run was stopped as stalled with a third of its clock left
+        if not moved and getattr(self, "phase_turn", None) is not None and self.phase_turn > self.turns - PROGRESS_WINDOW:
+            moved = ["a step finished"]
         if not moved:
             return False, f"no file changed and no test moved in the last {PROGRESS_WINDOW} turns"
         left = self.ends - time.monotonic() if self.ends else None
@@ -2753,6 +2757,8 @@ class Run:
                     continue
                 break
         self.done.add(name)
+        if name.startswith("step:"):  # T-4471: a plan step only; the survey's second round keeps its own bound
+            self.phase_turn = self.turns
         self.log(kind="phase_done", phase=name)
 
     # -- a project is never left worse without a word (T-4426)
