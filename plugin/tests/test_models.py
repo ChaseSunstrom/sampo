@@ -986,6 +986,22 @@ class Extras(Base):  # T-2893: a profile's body extras, its reasoning switch, an
         f = self.fake((200, oa_reply("half a sent", finish="length"), None))
         self.assertEqual(m.complete(self.profile(f), [{"role": "user", "content": "hi"}])["text"], "half a sent")
 
+    def test_cut_reply_with_thinking_off_and_no_reasoning_in_it_is_returned_not_raised(self):
+        # T-4445: thinking was off and the reply shows none, so the limit cut the answer itself (a long tool call): the
+        # caller's own cut-reply handling takes it; "reasoning used the whole budget" would send it the wrong way
+        f = self.fake((200, oa_reply("", finish="length"), None))
+        r = m.complete(self.profile(f), [{"role": "user", "content": "hi"}], think=False)
+        self.assertEqual((r["text"], r["tool_calls"], r["stop"]), ("", [], "length"))
+
+    def test_cut_reply_that_reasoned_although_thinking_was_off_still_names_the_reasoning(self):
+        for msg, usage in (({"content": "", "reasoning": "We need to"}, {}),
+                           ({"content": "", "reasoning_content": "We need to"}, {}),
+                           ({"content": ""}, {"completion_tokens_details": {"reasoning_tokens": 64}})):
+            f = self.fake((200, {"choices": [{"message": msg, "finish_reason": "length"}], "usage": usage}, None))
+            with self.assertRaises(m.ModelError) as e:
+                m.complete(self.profile(f), [{"role": "user", "content": "hi"}], think=False)
+            self.assertTrue(e.exception.reasoning)
+
     def test_an_all_reasoning_reply_keeps_the_thought_it_was_cut_in(self):
         # T-4358: the server hands the reasoning back (message.reasoning, or reasoning_content on others); it was
         # dropped, so a retry started from nothing after minutes of thinking

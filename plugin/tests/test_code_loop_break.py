@@ -147,11 +147,11 @@ class ForcedEdit(CodeCase):
         f, r = self.run_script(*SEARCHES, EDIT, call("done", summary="x"))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("return a + b", self.calc())
-        self.assertLessEqual(tool_names(f.seen[1]), {"read", "search", "run", "edit", "write", "done"})
+        self.assertLessEqual(tool_names(f.seen[1]), {"read", "search", "run", "edit", "write", "done", "lib"})
         self.assertIn("search", tool_names(f.seen[8]), "eight explorations are within the budget")
         forced = f.seen[9]  # plan, eight searches, then the ninth turn
         self.assertTrue({"edit", "write"} <= tool_names(forced))
-        self.assertFalse(tool_names(forced) & {"read", "search", "run", "card"}, tool_names(forced))
+        self.assertFalse(tool_names(forced) & {"read", "search", "run", "card", "lib"}, tool_names(forced))
         self.assertIn("explor", last(f, 9), "the turn says why, and what was read is summarised")
         self.assertIn("calc.py", last(f, 9))
 

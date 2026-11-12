@@ -186,8 +186,8 @@ class SmallMode(CodeCase):
                               request="Check calc.add.")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("Before any plan", f.said(0))
-        self.assertEqual({t["function"]["name"] for t in f.seen[0]["tools"]}, {"read", "search", "done"},
-                         "the look can't change a file")
+        self.assertEqual({t["function"]["name"] for t in f.seen[0]["tools"]}, {"read", "search", "done", "lib"},
+                         "the look can't change a file (the lib tool, T-4443, only reads a stack card)")
         self.assertIn("a - b should be a + b", f.said(2), "the planner hears what the look found")
         self.assertEqual(self.task()["status"], "done")
 
@@ -868,6 +868,34 @@ class Resume(unittest.TestCase):  # T-3974: a resumed --small run kept neither s
         self.assertEqual((run.small, run.edited), (True, True))
         run = self.load(dict(start, options={}))  # an older journal: neither
         self.assertEqual((run.small, run.edited), (False, False))
+
+
+class VerifyShape(CodeCase):
+    """T-4445: on the hard exam a field-by-field plan's verify was `python3 -c "` (the first line of a command that
+    spanned five): the work was done and the run blocked on a check bash could not parse. A verify whose quote is still
+    open takes the lines that follow, as written; one bash cannot parse is refused at the plan, with bash's reason."""
+
+    def test_multi_line_verify_of_a_field_by_field_plan_is_kept_whole(self):
+        text = ('- totals match :: python3 -c "\nimport calc\n\nif True:\n    assert calc.add(2, 3) == 5\n"\n'
+                "- docs say so :: grep -q sum README.md\nno sep")
+        got = smith._criteria(text)
+        self.assertEqual(len(got), 2, got)
+        self.assertEqual(got[0], {"text": "totals match",
+                                  "verify": 'python3 -c "\nimport calc\n\nif True:\n    assert calc.add(2, 3) == 5\n"'})
+        self.assertEqual(got[1], {"text": "docs say so", "verify": "grep -q sum README.md"})
+        self.assertEqual(smith._criteria("1. a :: `x`\nno sep"), [{"text": "a", "verify": "x"}],
+                         "a verify that is whole takes no line after it")
+        self.assertEqual(smith._criteria("- a :: `sh -c 'echo\n  ok'`"), [{"text": "a", "verify": "sh -c 'echo\n  ok'"}])
+
+    def test_unparsable_verify_goes_back_to_the_planner_with_bashs_reason(self):
+        self.assertIsNone(smith._shell_syntax("python3 -c 'print(1)' && echo ok"))
+        self.assertIn("EOF", smith._shell_syntax('python3 -c "'))
+        cut = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": 'python3 -c "'}])
+        f = self.serve("openai", plan(cut), plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        r = self.code("fix add", "--model", "fake", "--json", check=False)
+        said = [f.said(i) for i in range(len(f.seen))]
+        self.assertTrue(any("not a complete shell command" in s for s in said), r.stdout + r.stderr)
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
 
 
 if __name__ == "__main__":  # T-3688: run as a script, as the brief's verify does, it ran nothing before

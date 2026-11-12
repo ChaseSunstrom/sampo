@@ -1405,8 +1405,12 @@ def complete(profile, messages, tools=None, max_tokens=2048, timeout=120, think=
     usage = _of(r.get("usage"), dict)
     stop = _stop(choice.get("finish_reason"), calls)
     text = msg.get("content") or ""
-    if stop == "length" and not calls and not (text if isinstance(text, str) else "x").strip():
-        thought = msg.get("reasoning_content") or msg.get("reasoning")  # T-4358: vLLM and llama.cpp name it either way
+    # T-4445: with thinking sent off and no reasoning in the reply, the limit cut the answer itself (a long tool call):
+    # the caller gets the cut reply, as it does a cut text, and its own handling of a cut decides
+    details = _of(usage.get("completion_tokens_details"), dict)
+    thought = msg.get("reasoning_content") or msg.get("reasoning")  # T-4358: vLLM and llama.cpp name it either way
+    reasoned = think is not False or bool(thought or details.get("reasoning_tokens"))
+    if stop == "length" and not calls and not (text if isinstance(text, str) else "x").strip() and reasoned:
         raise ModelError(f"{profile.get('name')}: reasoning used the whole budget: no text in {max_tokens} tokens "
                          "(think: false, or a larger max_out)", reasoning=True,  # T-2893: said, not a silent fallback
                          thought=thought if isinstance(thought, str) else "")

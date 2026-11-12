@@ -61,8 +61,8 @@ class Survey(SurveyCase):
         f, r, ev = self.go(wants(True), *READ_ALL, SURVEY_DONE, plan(PLAN), FIX_EDIT, DONE, CLOSE)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         first = f.seen[1]
-        self.assertEqual({t["function"]["name"] for t in first["tools"]}, {"read", "search", "done"},
-                         "the survey can't change a file")
+        self.assertEqual({t["function"]["name"] for t in first["tools"]}, {"read", "search", "done", "lib"},
+                         "the survey can't change a file (the lib tool, T-4443, only reads a stack card)")
         said = json.dumps(first["messages"])
         for doc in ("README.md", "docs/rules.md", "docs/notes.md", "Changelog policy", "Rounding"):
             self.assertIn(doc, said, "the document map: each document and its headings")
@@ -266,7 +266,9 @@ class Keep(SurveyCase):
         s = self.stats(ev)
         self.assertEqual(s["keep"], "none")
         self.assertIn("red before the work", s["keep_why"])
-        self.assertEqual([e["keep"] for e in self.notes(ev, "keep")], ["before"], "none after the first run: no more runs")
+        # T-4445: the suite prove finds is tried after the survey's line; both are red here
+        self.assertEqual({e["keep"] for e in self.notes(ev, "keep")}, {"before"}, "none before the work: no more runs")
+        self.assertEqual({e["state"] for e in self.notes(ev, "keep")}, {"red"})
 
     def test_keep_none_when_the_survey_names_no_tests_and_no_suite_is_found(self):
         os.remove(os.path.join(self.repo, "test_ok.py"))
@@ -339,3 +341,138 @@ class Keep(SurveyCase):
         keep = [x for x in recs if x.get("kind") == "keep"]
         self.assertEqual(keep[0]["cmd"], "python3 test_ok.py")
         self.assertEqual(keep[0]["state"], "green")
+
+    def test_tests_line_red_before_the_work_falls_back_to_the_suite_prove_finds(self):  # T-4445
+        self.one_unittest_suite()
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "one suite"], check=True)
+        verify = "python3 -c 'import calc; assert calc.add(2, 3) == 5'"
+        p = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": verify}])
+        bad = "DOCS: rules\nTESTS: python3 -m pytest nowhere/ (the project's own tests: test_calc.py)"
+        f, r, ev = self.go(wants(True), *READ_ALL, call("done", summary=bad), plan(p), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        s = self.stats(ev)
+        self.assertEqual(s["keep"], "green", s.get("keep_why"))
+        self.assertIn("prove", s["keep_why"])
+        self.assertIn("the survey's TESTS line", s["keep_why"], "and it says the survey's line was tried first")
+        before = [e for e in self.notes(ev, "keep") if e["keep"] == "before"]
+        self.assertEqual([e["state"] for e in before], ["red", "green"])
+
+
+class Wrap(SurveyCase):
+    """T-4445: on the hard exam the local model's survey used its turns without a done in 5 of 6 runs, and the planner
+    was handed nothing: it invented the interface the documents state. A survey out of turns is now asked for its summary
+    alone (the done tool only, WRAP_TURNS turns); one that still gives none hands the planner the head of each document
+    it opened."""
+    LOOKS = [call("read", path="README.md"), call("read", path="docs/rules.md")] + [
+        call("search", pattern=f"add{n}") for n in range(smith.SURVEY_TURNS - 2)]
+
+    def test_wrap_a_survey_out_of_turns_is_asked_for_the_summary_alone_and_the_planner_hears_it(self):
+        f, r, ev = self.go(wants(True), *self.LOOKS, SURVEY_DONE, plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        ask = 1 + smith.SURVEY_TURNS  # the wants call, the survey's turns, then the wrap-up request
+        self.assertIn("call done now", f.said(ask))
+        self.assertEqual({t["function"]["name"] for t in f.seen[ask]["tools"]}, {"done"}, "nothing more to look at")
+        at = self.planner(f)
+        self.assertEqual(at, ask + 1)
+        self.assertIn("calc.add(a, b) returns the sum", f.said(at), "the planner hears the wrap-up's summary")
+        kinds = [e["survey"] for e in self.notes(ev, "survey")]
+        self.assertEqual(kinds, ["start", "wrap", "summary"])
+        self.assertEqual(self.notes(ev, "survey")[-1]["source"], "wrap")
+        self.assertEqual(self.task()["status"], "done")
+
+    def test_wrap_a_survey_that_ends_in_a_done_gets_no_wrap_round_and_says_so(self):
+        f, r, ev = self.go(wants(True), *READ_ALL, SURVEY_DONE, plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.notes(ev, "survey")[-1]["source"], "done")
+        self.assertNotIn("call done now", "".join(f.said(i) for i in range(len(f.seen))))
+
+    def test_excerpts_of_the_opened_documents_reach_the_planner_when_the_wrap_round_gives_no_summary(self):
+        more = [call("search", pattern=f"sub{n}") for n in range(smith.WRAP_TURNS)]  # refused: only done is offered
+        f, r, ev = self.go(wants(True), *self.LOOKS, *more, plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        at = self.planner(f)
+        self.assertEqual(at, 1 + smith.SURVEY_TURNS + smith.WRAP_TURNS)
+        sent = f.said(at)
+        self.assertIn("calc.add(a, b) returns the sum of a and b", sent, "docs/rules.md, which the survey opened")
+        self.assertIn("Results are never rounded", sent, "README.md, opened too")
+        self.assertNotIn("Entries are one line, newest first", sent, "docs/notes.md was never opened: not handed on")
+        last = self.notes(ev, "survey")[-1]
+        self.assertEqual((last["survey"], last["source"]), ("summary", "excerpts"))
+        self.assertEqual(self.task()["status"], "done")
+
+    def test_excerpts_share_a_bounded_budget_and_a_short_document_leaves_its_share_to_the_long_one(self):
+        long = "# Long\n\n" + "rule line that matters\n" * 2000
+        with open(os.path.join(self.repo, "docs", "long.md"), "w", encoding="utf-8") as h:
+            h.write(long)
+        run = self.run_object(opened={"docs/rules.md", "docs/long.md"})
+        text = smith._excerpts(run, ["README.md", "docs/long.md", "docs/rules.md"])
+        self.assertLessEqual(len(text), smith.EXCERPT_CHARS + 400)
+        self.assertIn(RULES.strip(), text, "the short one whole")
+        self.assertIn("docs/long.md", text)
+        self.assertIn("(cut)", text, "the long one says it was cut")
+        self.assertNotIn("Small arithmetic helpers", text, "README.md was not opened")
+        self.assertGreater(text.count("rule line that matters"), 300, "the short one's unused share went to the long one")
+        self.assertIsNone(smith._excerpts(self.run_object(opened=set()), ["README.md"]))
+
+
+SPEC_SUMMARY = SUMMARY + "\nSPEC: docs/rules.md"
+ONLY_IN_RULES = "Every public function is lowercase."  # in docs/rules.md, in no summary here
+
+
+class Spec(SurveyCase):
+    """T-4457: on the hard exam the survey called a design note 'the spec for this exact feature' and then reported it
+    with invented names; the plan, its verifies and every step used them (0 of 23). The survey now names the documents
+    that specify the change (SPEC lines) and the harness hands each one it opened to the planner and to every step,
+    verbatim: which document is the specification is the model's call, carrying its text is the harness's."""
+
+    def test_spec_documents_the_survey_names_reach_the_planner_verbatim(self):
+        f, r, ev = self.go(wants(True), *READ_ALL, call("done", summary=SPEC_SUMMARY), plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("SPEC:", json.dumps(f.seen[1]["messages"]), "the survey is asked for the line")
+        sent = f.said(self.planner(f))
+        self.assertIn(ONLY_IN_RULES, sent, "the document itself, not the summary's line about it")
+        self.assertIn("docs/rules.md", sent)
+        self.assertIn("the specification wins", sent)
+        self.assertNotIn("Entries are one line, newest first", sent, "a document it did not name is not handed on")
+        note = self.notes(ev, "spec")
+        self.assertEqual([e["spec"] for e in note], [["docs/rules.md"]], "one note says which documents")
+        recs = [json.loads(ln) for ln in journal_text(self).splitlines()]
+        self.assertEqual([x["docs"] for x in recs if x.get("kind") == "spec"], [["docs/rules.md"]],
+                         "in the journal, so a resumed run hands on the same documents")
+        self.assertEqual(self.task()["status"], "done")
+
+    def test_spec_reaches_the_step(self):
+        f, r, ev = self.go(wants(True), *READ_ALL, call("done", summary=SPEC_SUMMARY), plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        step = self.planner(f) + 1
+        self.assertIn(ONLY_IN_RULES, f.said(step), "the model that does the step works from the document")
+
+    def test_spec_none_named_adds_nothing_to_the_planner_or_the_step(self):
+        f, r, ev = self.go(wants(True), *READ_ALL, SURVEY_DONE, plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.notes(ev, "spec"), [])
+        self.assertNotIn(ONLY_IN_RULES, "".join(f.said(i) for i in range(self.planner(f), len(f.seen))))
+
+    def test_spec_unopened_or_unlisted_paths_are_not_handed_on(self):
+        named = call("done", summary=SUMMARY + "\nSPEC: docs/rules.md\nSPEC: `docs/notes.md`\nSPEC: calc.py\nSPEC: none")
+        f, r, ev = self.go(wants(True), call("read", path="README.md"), call("read", path="docs/rules.md"), named, named,
+                           plan(PLAN), FIX_EDIT, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        sent = f.said(self.planner(f))
+        self.assertIn(ONLY_IN_RULES, sent)
+        self.assertNotIn("Entries are one line, newest first", sent, "docs/notes.md was never opened")
+        self.assertEqual([e["spec"] for e in self.notes(ev, "spec")], [["docs/rules.md"]],
+                         "calc.py is no listed document; a path never read is a guess")
+
+    def test_spec_documents_share_a_bound_and_a_cut_one_says_so(self):
+        run = self.run_object()
+        with open(os.path.join(self.repo, "docs", "rules.md"), "w") as h:
+            h.write("# Rules\n\n" + "clause. " * 8000)
+        run.opened = {"docs/rules.md", "docs/notes.md"}
+        run.spec = smith.spec_docs(run, "SPEC: docs/notes.md\nSPEC: docs/rules.md", ["README.md", "docs/rules.md", "docs/notes.md"])
+        self.assertEqual(run.spec, ["docs/rules.md", "docs/notes.md"], "in the map's order")
+        text = run.spec_note()
+        self.assertLessEqual(len(text), smith.SPEC_CHARS + 1500)
+        self.assertIn("Entries are one line, newest first, never edited.", text, "the short one whole")
+        self.assertIn("cut", text, "the long one says it was cut and where the rest is")
+        self.assertEqual(self.run_object().spec_note(), "")

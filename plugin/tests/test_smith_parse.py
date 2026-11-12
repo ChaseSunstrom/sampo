@@ -98,7 +98,7 @@ class ParseDone(CodeCase):
         self.assertNotEqual(self.task()["status"], "done")
 
 
-class Restore(CodeCase):
+class RestoreCase(CodeCase):
     def run_script(self, *script, steps=TWO, max_steps="4"):
         f = self.serve("openai", plan(steps), *script)
         r = self.code("fix add", "--model", "fake", "--json", "--max-steps", max_steps, check=False)
@@ -113,6 +113,8 @@ class Restore(CodeCase):
     def stats(self, r):
         return [e for e in events(r) if e["event"] == "stats"][-1]
 
+
+class Restore(RestoreCase):
     def test_restore_a_turn_limit_stop_with_an_unparsable_file_goes_back_to_the_last_step_end(self):
         # turns: plan 1, write v1 2, done 3 (step 1 ends, snapshot), write broken 4, the cap at the 5th
         _, r = self.run_script(call("write", file="helper.py", content="V = 1\n"), DONE,
@@ -162,6 +164,36 @@ class Restore(CodeCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.patches(), [])
         self.assertEqual(open(os.path.join(self.repo, "helper.py")).read(), "V = (\n")
+
+
+class RestoreKeep(RestoreCase):
+    """T-4445: a run that stops unfinished with the keep check red (the project's own tests, green before the work) puts
+    its files back as it does for an unparsable file: on the hard exam a run out of turns left 7 of 7 keep checks
+    broken, and one ended by a model error left 2."""
+    repo_seed = ("seed with a green suite", (
+        ("calc.py", "def add(a, b):\n    return a - b\n"),
+        ("test_calc.py", "import unittest\nimport calc\n\n\nclass T(unittest.TestCase):\n    def test_zero(self):\n"
+                         "        self.assertEqual(calc.add(1, 0), 1)\n")))
+    P = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "python3 -c 'import calc; assert calc.add(2, 3) == 5'"}])
+
+    def test_keep_red_at_a_stop_puts_the_files_back_and_keeps_the_patch(self):
+        _, r = self.run_script(call("edit", file="calc.py", old="a - b", new="a * b"), steps=self.P, max_steps="2")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a - b", self.calc(), "back to the start: no step had ended")
+        patch = self.patches()
+        self.assertEqual(len(patch), 1)
+        self.assertIn("+    return a * b", open(patch[0]).read())
+        for ev in (self.ended(r), self.stats(r)):
+            self.assertEqual(ev["restored"], ["calc.py"])
+        self.assertIn("keep check", self.ended(r)["text"])
+        self.assertIn("keep check", r.stderr)
+
+    def test_keep_red_is_not_claimed_when_the_check_is_green_at_the_stop(self):
+        _, r = self.run_script(call("edit", file="calc.py", old="a - b", new="a + b"), steps=self.P, max_steps="2")
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("a + b", self.calc(), "unfinished work that keeps the tests green stays")
+        self.assertEqual(self.patches(), [])
+        self.assertEqual(self.stats(r)["restored"], [])
 
 
 def journal_path(case):
