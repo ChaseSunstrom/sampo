@@ -234,11 +234,12 @@ _TRANSPORT = (urllib.error.URLError, OSError, http.client.HTTPException)
 
 
 class ModelError(Exception):
-    def __init__(self, msg, status=None, transient=False, reasoning=False):
+    def __init__(self, msg, status=None, transient=False, reasoning=False, thought=""):
         super().__init__(msg)
         self.status = status
         self.transient = transient  # T-4205: a timeout or a dropped/refused connection: worth another try
         self.reasoning = reasoning  # T-4210: the reply was all reasoning and no text, cut by the output budget
+        self.thought = thought if isinstance(thought, str) else ""  # T-4358: that reasoning, when the server hands it back
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1266,6 +1267,26 @@ UNSUPPORTED = {}  # T-3006: profile name -> {feature: why} for each reasoning ex
 
 EXTRA_FEATURE = {"thinking_budget_tokens": "think_budget", "logit_bias": "logit_bias", "response_format": "schema"}
 ANSWER_ALLOWANCE = 2048  # tokens beyond a thinking budget the call may spend on its answer
+THOUGHT_KEPT = 12000  # characters of a cut call's reasoning its next ask reads: the end, where the thinking had got to
+
+
+def with_thought(messages, thought):
+    """T-4358: the messages for asking again after a reply that was all reasoning and no text: the end of that
+    reasoning rides along as the model's own notes, so the answer is written from them and not from nothing (live,
+    exam s8-047: 8 of 12 plans thought for 250 to 530 s, were cut, and were asked again with the thinking thrown
+    away). The notes join the last user turn when it is plain text (some chat templates refuse two user turns in a
+    row), else they are a user turn of their own. No thought: the messages as given, the same list."""
+    thought = (thought or "").strip() if isinstance(thought, str) else ""
+    if not thought:
+        return messages
+    kept = thought[-THOUGHT_KEPT:]
+    note = ("You ran out of room while thinking this over, before you wrote any answer. "
+            f"{'The end of your' if len(kept) < len(thought) else 'Your'} notes so far, between the lines:\n-----\n"
+            f"{kept}\n-----\nDo not start over: write the answer now, from these notes.")
+    last = messages[-1] if messages else None
+    if isinstance(last, dict) and last.get("role") == "user" and isinstance(last.get("content"), str):
+        return [*messages[:-1], dict(last, content=f"{last['content']}\n\n{note}")]
+    return [*messages, {"role": "user", "content": note}]
 
 
 def support(profile):
@@ -1304,14 +1325,16 @@ def _reasoned(profile, messages, tools, max_tokens, timeout, think, budget, bias
     if budget and think is not False:  # servers often ignore thinking_budget_tokens: bound the call ourselves
         cap = min(max_tokens, int(budget) + ANSWER_ALLOWANCE)
 
-    def go(ex, th, cap=max_tokens):
+    def go(ex, th, cap=max_tokens, msgs=messages):
         body = {**_of(profile.get("body"), dict), **ex}
-        return complete(dict(profile, body=body), messages, tools, cap, timeout, th)
+        return complete(dict(profile, body=body), msgs, tools, cap, timeout, th)
     try:
         return go(extra, think, cap)
     except ModelError as e:
         if budget and e.reasoning:  # T-4210: the flag, not the message
-            return go({k: v for k, v in extra.items() if k != "thinking_budget_tokens"}, False)  # the forced close
+            # the forced close; T-4358: written from the thinking the budget bought, not from nothing
+            return go({k: v for k, v in extra.items() if k != "thinking_budget_tokens"}, False,
+                      msgs=with_thought(messages, e.thought))
         if extra and e.status in (400, 422):
             for k in extra:  # only what was sent
                 _refuse(profile, EXTRA_FEATURE[k], f"the server refused: {e}")
@@ -1383,8 +1406,10 @@ def complete(profile, messages, tools=None, max_tokens=2048, timeout=120, think=
     stop = _stop(choice.get("finish_reason"), calls)
     text = msg.get("content") or ""
     if stop == "length" and not calls and not (text if isinstance(text, str) else "x").strip():
+        thought = msg.get("reasoning_content") or msg.get("reasoning")  # T-4358: vLLM and llama.cpp name it either way
         raise ModelError(f"{profile.get('name')}: reasoning used the whole budget: no text in {max_tokens} tokens "
-                         "(think: false, or a larger max_out)", reasoning=True)  # T-2893: said, not a silent fallback
+                         "(think: false, or a larger max_out)", reasoning=True,  # T-2893: said, not a silent fallback
+                         thought=thought if isinstance(thought, str) else "")
     return {"text": text, "tool_calls": calls,
             "usage": {"in": usage.get("prompt_tokens", 0), "out": usage.get("completion_tokens", 0)},
             "stop": stop}

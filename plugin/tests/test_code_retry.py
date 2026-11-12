@@ -160,6 +160,53 @@ class Retry(unittest.TestCase):
                 smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=BIG, think=False)
         self.assertEqual(mc.call_count, 1)
 
+    def test_the_retry_of_an_all_reasoning_reply_is_written_from_its_own_notes(self):  # T-4358
+        # live (exam s8-047): 8 of 12 plans thought for 250 to 530 s, were cut with no text, and were asked again from
+        # nothing; the server had handed the reasoning back each time
+        spent = models.ModelError("local: reasoning used the whole budget", reasoning=True,
+                                  thought="app.c: slice_page drops a short last page; fix that, then test it")
+        before = [dict(x) for x in MSG]
+        with mock.patch.object(models, "complete", side_effect=[spent, OK]) as mc:
+            out = smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=BIG)
+        self.assertIs(out, OK)
+        self.assertEqual(MSG, before, "the caller's messages are never changed")
+        first, second = (c.args[1] for c in mc.call_args_list)
+        self.assertEqual(first, MSG)
+        self.assertIn("slice_page drops a short last page", second[-1]["content"])
+        self.assertTrue(second[-1]["content"].startswith(MSG[-1]["content"]), "the request still leads")
+        self.assertIs(mc.call_args_list[1].kwargs.get("think"), False)
+        note = next(text for _, text in self.run.notes if "thinking off" in text)
+        self.assertIn("from its notes", note)
+        self.assertEqual(self.run.logs[-1].get("notes"), len(spent.thought))
+
+    def test_a_retry_with_no_notes_says_nothing_of_notes(self):  # T-4358: a server that hands no reasoning back
+        spent = models.ModelError("local: reasoning used the whole budget", reasoning=True)
+        with mock.patch.object(models, "complete", side_effect=[spent, OK]) as mc:
+            smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=BIG)
+        self.assertEqual(mc.call_args_list[1].args[1], MSG)
+        self.assertFalse(any("notes" in text for _, text in self.run.notes), self.run.notes)
+
+    def test_an_all_reasoning_reply_with_thinking_already_off_is_asked_once_more_from_its_notes(self):  # T-4367
+        # live (s8-048 goal-rust-ea4f63, goal-c-ab86e2): the call was sent with thinking off, the model reasoned all
+        # the same, and the run ended on it; with its notes in the prompt the second ask has something to write from
+        spent = models.ModelError("local: reasoning used the whole budget", reasoning=True, thought="so cargo test, then")
+        with mock.patch.object(models, "complete", side_effect=[spent, OK]) as mc:
+            out = smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=BIG, think=False)
+        self.assertIs(out, OK)
+        self.assertEqual(mc.call_count, 2)
+        self.assertIn("so cargo test, then", mc.call_args_list[1].args[1][-1]["content"])
+        self.assertIs(mc.call_args_list[1].kwargs.get("think"), False)
+        self.assertTrue(any("from its notes" in text for _, text in self.run.notes), self.run.notes)
+        self.run.reason = "off"  # the arm that turns every call off reaches the same path
+        with mock.patch.object(models, "complete", side_effect=[spent, OK]) as mc:
+            self.assertIs(smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=BIG), OK)
+        self.assertEqual(mc.call_count, 2)
+        with mock.patch.object(models, "complete", side_effect=[spent, spent, OK]) as mc:  # once, never a loop
+            with self.assertRaises(models.ModelError):
+                smith.complete_retrying(self.run, LOCAL, MSG, max_tokens=BIG, think=False)
+        self.assertEqual(mc.call_count, 2)
+        self.assertEqual(self.run.think_floor, {}, "a call sent with thinking off teaches the default nothing")
+
     def test_a_reasoning_failure_of_a_budgeted_call_is_not_repeated_with_thinking_off(self):  # T-4210: _reasoned closes it
         spent = models.ModelError("local: reasoning used the whole budget", reasoning=True)
         with mock.patch.object(models, "complete", side_effect=[spent, OK]) as mc:

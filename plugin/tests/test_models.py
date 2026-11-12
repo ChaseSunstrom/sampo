@@ -986,6 +986,70 @@ class Extras(Base):  # T-2893: a profile's body extras, its reasoning switch, an
         f = self.fake((200, oa_reply("half a sent", finish="length"), None))
         self.assertEqual(m.complete(self.profile(f), [{"role": "user", "content": "hi"}])["text"], "half a sent")
 
+    def test_an_all_reasoning_reply_keeps_the_thought_it_was_cut_in(self):
+        # T-4358: the server hands the reasoning back (message.reasoning, or reasoning_content on others); it was
+        # dropped, so a retry started from nothing after minutes of thinking
+        for key in ("reasoning", "reasoning_content"):
+            with self.subTest(key=key):
+                cut = oa_reply("", finish="length")
+                cut["choices"][0]["message"].update({"content": None, key: "the tests fail on empty input, so"})
+                with self.assertRaises(m.ModelError) as e:
+                    m.complete(self.profile(self.fake((200, cut, None))), [{"role": "user", "content": "hi"}])
+                self.assertTrue(e.exception.reasoning)
+                self.assertEqual(e.exception.thought, "the tests fail on empty input, so")
+        with self.assertRaises(m.ModelError) as e:  # a server that returns none, or a shape that is no text
+            m.complete(self.profile(self.fake((200, oa_reply("", finish="length"), None))), [{"role": "user", "content": "hi"}])
+        self.assertEqual(e.exception.thought, "")
+        odd = oa_reply("", finish="length")
+        odd["choices"][0]["message"]["reasoning"] = {"tokens": 9}
+        with self.assertRaises(m.ModelError) as e:
+            m.complete(self.profile(self.fake((200, odd, None))), [{"role": "user", "content": "hi"}])
+        self.assertEqual(e.exception.thought, "")
+        self.assertEqual(m.ModelError("x").thought, "")
+
+    def test_with_thought_hands_the_end_of_the_thinking_to_the_next_call_as_notes(self):  # T-4358
+        msgs = [{"role": "system", "content": "s"}, {"role": "user", "content": "plan it"}]
+        out = m.with_thought(msgs, "first the header, then the tests")
+        self.assertEqual(msgs, [{"role": "system", "content": "s"}, {"role": "user", "content": "plan it"}], "never changed in place")
+        self.assertEqual([x["role"] for x in out], ["system", "user"], "one user turn: some chat templates refuse two in a row")
+        self.assertTrue(out[1]["content"].startswith("plan it\n"))
+        self.assertIn("first the header, then the tests", out[1]["content"])
+        self.assertIn("Do not start over", out[1]["content"])
+        self.assertIs(m.with_thought(msgs, ""), msgs)
+        self.assertIs(m.with_thought(msgs, "  \n "), msgs)
+        self.assertIs(m.with_thought(msgs, None), msgs)
+        # after a tool result, or a user turn that is a list of parts, the notes are a turn of their own
+        tool = [{"role": "user", "content": "go"}, {"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "ok"}]
+        out = m.with_thought(tool, "it printed ok")
+        self.assertEqual([x["role"] for x in out], ["user", "assistant", "tool", "user"])
+        self.assertIn("it printed ok", out[-1]["content"])
+        parts = [{"role": "user", "content": [{"type": "text", "text": "see"}]}]
+        out = m.with_thought(parts, "a picture of a cat")
+        self.assertEqual(out[0], parts[0])
+        self.assertIn("a picture of a cat", out[1]["content"])
+        self.assertIn("so the answer is 4", m.with_thought([], "so the answer is 4")[0]["content"])
+
+    def test_with_thought_keeps_the_end_of_a_long_thought_and_says_it_is_the_end(self):  # T-4358
+        long = "A" * m.THOUGHT_KEPT + "\nso: fix slice_page first"
+        text = m.with_thought([{"role": "user", "content": "plan it"}], long)[0]["content"]
+        self.assertIn("so: fix slice_page first", text, "where the thinking had got to is its end")
+        self.assertLess(text.count("A"), m.THOUGHT_KEPT)
+        self.assertLess(len(text), m.THOUGHT_KEPT + 600)
+        self.assertIn("the end of", text.lower())
+        short = m.with_thought([{"role": "user", "content": "plan it"}], "short")[0]["content"]
+        self.assertNotIn("the end of", short.lower())
+
+    def test_a_spent_thinking_budget_closes_with_its_own_notes(self):  # T-4358 on T-3006's forced close
+        eaten = oa_reply("", finish="length")
+        eaten["choices"][0]["message"].update({"content": None, "reasoning": "the bug is the size guard"})
+        f = self.fake((200, eaten, None), (200, oa_reply("answer"), None))
+        r = m.complete(self.profile(f), [{"role": "user", "content": "hi"}], think=True, think_budget=64)
+        self.assertEqual(r["text"], "answer")
+        self.assertIs(f.seen[1][3]["chat_template_kwargs"]["enable_thinking"], False)
+        self.assertNotIn("the bug is the size guard", json.dumps(f.seen[0][3]["messages"]))
+        self.assertIn("the bug is the size guard", f.seen[1][3]["messages"][-1]["content"])
+
     def test_the_new_profile_keys_are_checked(self):
         for k, v in (("body", []), ("think", "no"), ("slots", 0), ("max_out", True), ("slots", 1.5)):
             with self.subTest(k=k), self.assertRaises(m.ModelError):

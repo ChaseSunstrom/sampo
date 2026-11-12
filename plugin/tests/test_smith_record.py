@@ -287,3 +287,50 @@ class ContinueTests(ResumeSeed):
         self.assertNotIn("Read the input", text)
         self.assertNotIn("Write the readme", text)
         self.assertNotIn("gitignore", text)
+
+
+GOAL = "Get these helpers to a finished state I could release; decide what that takes."
+
+
+def whole(f, i=0):
+    """Every message request i of the fake carried (system and user), as text."""
+    return "\n".join(str(m.get("content") or "") for m in f.seen[i]["messages"])
+
+
+class RuleBare(BareSeed):
+    """T-4358: exam s8-045: the rule for a bare 'continue' sat in the plan's system prompt for every request, and a goal
+    request with nothing on record was planned as 'the unfinished list my instructions name is not on record'."""
+
+    def test_goal_request_with_nothing_on_record_is_sent_no_word_about_a_record(self):
+        f = self.serve("openai", plan(PLAN))
+        r = self.code(GOAL, "--dry-plan", "--model", "fake", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = whole(f).replace(GOAL, "")
+        for word in ("on record", "names no change", "unfinished", "keep going"):
+            self.assertNotIn(word, text)
+
+    def test_goal_request_the_plan_prompt_itself_holds_no_rule_about_a_record(self):
+        from sampo import smith
+        for word in ("on record", "names no change", "keep going"):
+            self.assertNotIn(word, smith.PLAN_PROMPT)
+
+
+class RuleRides(RecordSeed):
+    def test_rule_rides_with_the_record_after_it_in_the_user_message(self):
+        f, _ = self.dry(plan(NAMING))
+        user = sent(f)
+        after = user[user.index("</data-", user.index(HEADER)):]
+        self.assertIn("only says to go on", after)
+        self.assertIn("plan all of them", after)
+        self.assertIn("tick", after)
+        system = "\n".join(str(m.get("content") or "") for m in f.seen[0]["messages"] if m.get("role") == "system")
+        self.assertNotIn("on record", system)
+
+    def test_rule_rides_and_a_goal_request_is_told_the_record_is_not_its_task(self):
+        f = Planned(self.serve("openai", wants(False), plan(NAMING)))  # T-4425: the tree has a document
+        r = self.code(GOAL, "--dry-plan", "--model", "fake", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        user = sent(f)
+        after = user[user.index("</data-", user.index(HEADER)):]
+        self.assertIn("a goal or a change of its own", after)
+        self.assertIn("plan that", after)

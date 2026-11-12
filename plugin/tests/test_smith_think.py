@@ -69,9 +69,9 @@ class Base(unittest.TestCase):
 
 
 class ArmOff(Base):
-    def test_arm_off_no_model_call_of_the_run_starts_with_thinking_on(self):
-        # the type and plan calls (8192 and 600), a plan repair, the findings (1024), a turn with its caller's think on,
-        # a cloud and a CLI profile: none starts on under --reason off
+    def test_arm_off_no_call_but_the_plan_starts_with_thinking_on(self):
+        # calls of every size (8192, 600, 1024, 60), a turn with its caller's think on, a cloud and a CLI profile: none
+        # starts on under --reason off; the plan's own answer is the one exception (T-4358, the tests below)
         run = self.fresh("off")
         fake = Fake()
         with mock.patch.object(models, "complete", fake):
@@ -83,13 +83,56 @@ class ArmOff(Base):
         self.assertEqual(set(fake.thinks), {False}, fake.thinks)
         self.assertEqual(len(fake.thinks), 3 * 4 + 2)
 
-    def test_arm_off_through_the_slot_path_a_plan_starts_with_thinking_off(self):
-        # the plan and findings slots reach models.complete through _ask, the way a run's first plan does
+    def test_plan_thinks_under_the_arm_off_and_the_other_slots_do_not(self):
+        # T-4358: exam s8-045: with the plan's thinking off too, the goal kind fell from 18 to 6 of 48 fix points (plans in
+        # 5 s that never looked at the files). The plan decides every later call: it is left as the profile has it.
         run = self.fresh("off")
         fake = Fake()
         with mock.patch.object(models, "complete", fake), mock.patch.object(smith, "fit", lambda r, p, msgs: msgs):
+            smith.slot(run, LOCAL, list(MSG), lambda v: None, "plan")
+            smith.slot(run, LOCAL, list(MSG), lambda v: None, "set of close notes")
+            smith._ask(run, LOCAL, MSG, "plan")  # a form question or a ladder field: no second round of thought
+        self.assertEqual(fake.thinks, ["unset", False, False])
+
+    def test_plan_thinks_whatever_size_an_earlier_call_exhausted(self):
+        run, fake = self.fresh("native"), Fake(spent(), TEXT, TEXT, TEXT)  # T-4297: sizes are learned where the default is on
+        self.assertEqual(self.calls(fake, run, LOCAL, 8192, 8192), ["unset", False, False])  # learned: 8192 starts off
+        with mock.patch.object(models, "complete", fake), mock.patch.object(smith, "fit", lambda r, p, msgs: msgs):
+            smith.slot(run, LOCAL, list(MSG), lambda v: None, "plan")
+        self.assertEqual(fake.thinks[-1], "unset")
+
+    def test_plan_thinks_under_the_local_default_and_the_acts_start_off(self):
+        # T-4297 made thinking off the default of a local run with no --reason; the plan's own answer is still thought
+        run, fake = self.fresh(), Fake()
+        with mock.patch.object(models, "complete", fake), mock.patch.object(smith, "fit", lambda r, p, msgs: msgs):
+            smith.slot(run, LOCAL, list(MSG), lambda v: None, "plan")
             smith._ask(run, LOCAL, MSG, "plan")
-        self.assertEqual(fake.thinks, [False])
+        self.assertEqual(self.calls(fake, run, LOCAL, smith.MAX_TOKENS), [False])
+        self.assertEqual(fake.thinks, ["unset", False, False])
+
+    def test_plan_thinks_and_answers_without_forgetting_a_size_the_default_calls_learned(self):
+        # T-4297's lapse rule: a default call that thought and answered removes a kept size; the plan's answer is no such call
+        smith.think_record(LOCAL["name"], smith.MAX_TOKENS)
+        run, fake = self.fresh("native"), Fake()
+        with mock.patch.object(models, "complete", fake), mock.patch.object(smith, "fit", lambda r, p, msgs: msgs):
+            smith.slot(run, LOCAL, list(MSG), lambda v: None, "plan")
+        self.assertEqual(fake.thinks, ["unset"])
+        self.assertEqual(smith.think_kept(LOCAL["name"]), smith.MAX_TOKENS)
+
+    def test_plan_thinks_and_one_that_spends_its_budget_is_asked_again_off_and_teaches_nothing(self):
+        run, fake = self.fresh("off"), Fake(spent(), TEXT)
+        with mock.patch.object(models, "complete", fake), mock.patch.object(smith, "fit", lambda r, p, msgs: msgs):
+            smith.slot(run, LOCAL, list(MSG), lambda v: None, "plan")
+        self.assertEqual(fake.thinks, ["unset", False])
+        self.assertEqual(smith.think_kept(LOCAL["name"]), 0)
+        self.assertEqual(run.think_floor, {})
+
+    def test_plan_thinks_a_cloud_or_cli_planner_is_left_as_given(self):
+        run, fake = self.fresh("off"), Fake()
+        with mock.patch.object(models, "complete", fake), mock.patch.object(smith, "fit", lambda r, p, msgs: msgs):
+            for profile in (CLOUD, CLI):
+                smith.slot(run, profile, list(MSG), lambda v: None, "plan")
+        self.assertEqual(fake.thinks, ["unset", "unset"])
 
     def test_under_reason_native_a_large_call_is_left_as_the_profile_has_it(self):
         self.assertEqual(self.calls(Fake(), self.fresh("native"), LOCAL, 8192), ["unset"])
