@@ -2314,6 +2314,54 @@ class SmithArm(ForemanTestCase):
         self.assertEqual(louhi.failure_classes([act("ok", a="read", t="a"), act("ok", a="read", t="b"), act("ok")]), {})
         self.assertEqual(set(louhi.FAILURE_CLASSES), set(cases))
 
+    def test_loop_key_counts_a_loop_from_the_key_and_fresh(self):  # T-4357
+        from sampo import louhi
+        act = lambda key, fresh, t="x", a="read": {"event": "action", "action": a, "target": t, "result": "ok",
+                                                    "key": key, "fresh": fresh}
+        # the same target, different arguments: three distinct keys, every one new: no loop (the old rule counted 1)
+        self.assertEqual(louhi.failure_classes([act("a", True), act("b", True), act("c", True)]), {})
+        # the same key sent three times with nothing changed since: one loop, counted once however long it goes on
+        same = [act("a", True), act("a", False), act("a", False), act("a", False)]
+        self.assertEqual(louhi.failure_classes(same), {"loop": 1})
+        # a change in between makes the next send new again: the count starts over
+        reset = [act("a", True), act("a", False), act("a", True), act("a", False)]
+        self.assertEqual(louhi.failure_classes(reset), {})
+        # other keys in between do not break the run: nothing changed
+        mixed = [act("a", True), act("b", True), act("a", False), act("b", False), act("a", False)]
+        self.assertEqual(louhi.failure_classes(mixed), {"loop": 1})
+
+    def test_loop_key_an_old_stream_is_counted_by_the_old_rule_and_marked_coarse(self):  # T-4357
+        import tempfile
+        from sampo import louhi
+        old = [{"event": "action", "action": "read", "target": "x", "result": "ok"}] * 3
+        self.assertEqual(louhi.failure_classes(old), {"loop": 1})
+        flags = []
+        louhi.failure_classes(old, coarse=flags)
+        self.assertEqual(flags, ["loop"])
+        keyed = [{"event": "action", "action": "read", "target": "x", "result": "ok", "key": "k", "fresh": m}
+                 for m in (True, False, False)]
+        flags = []
+        self.assertEqual(louhi.failure_classes(keyed, coarse=flags), {"loop": 1})
+        self.assertEqual(flags, [], "a keyed stream is exact")
+        with tempfile.TemporaryDirectory() as d:
+            ans = os.path.join(d, "answers", "smith")
+            os.makedirs(ans)
+            for name, evs in (("a", old), ("b", keyed)):
+                with open(os.path.join(ans, f"{name}.events.jsonl"), "w") as f:
+                    f.write("".join(json.dumps(e) + "\n" for e in evs))
+            orig = (louhi.load, louhi._answers)
+            louhi.load, louhi._answers = (lambda p, run: None), (lambda p, run, agent: ans)
+            try:
+                tax = louhi.taxonomy(None, "r")
+            finally:
+                louhi.load, louhi._answers = orig
+        self.assertEqual(tax["classes"]["loop"]["count"], 2)
+        self.assertTrue(tax["classes"]["loop"]["coarse_key"], "one scenario's loop came from an old stream")
+        self.assertFalse(tax["classes"]["malformed"]["coarse_key"])
+        res = dict(tax, classes={k: dict(v, scaffold=louhi.SCAFFOLDS[k]) for k, v in tax["classes"].items()})
+        self.assertRegex(louhi.taxonomy_text(res), r"(?m)^  loop .*coarse key")
+        self.assertNotRegex(louhi.taxonomy_text(res), r"(?m)^  timeout .*coarse key")
+
     def test_the_taxonomy_reports_each_class_as_a_share_of_scenarios(self):
         from test_code import PLAN, call, plan
         g = self.gen()

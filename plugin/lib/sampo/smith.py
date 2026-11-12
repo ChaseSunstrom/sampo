@@ -263,7 +263,8 @@ EVENTS = {
     "task": "task", "resume": "task", "step": "step", "fix": "round",
     "say": "text: the model's own words beside its actions",
     "tokens": "call_in, call_out, total_in, total_out",
-    "action": "action, target, result (ok|refused|error), detail (the result, cut)",
+    "action": "action, target, result (ok|refused|error), detail (the result, cut), key (a hash of the action's canonical "
+              "arguments), fresh (false when this send repeats the key with nothing changed since)",
     "worker": "worker, exit", "revert": "file, reason",
     "verify": "criterion, label (before|verify), cmd, exit, output (when it failed)",
     "early_done": "n: a done refused (no edit, a verify fails); the third stops the run",
@@ -2054,6 +2055,7 @@ class Run:
         if why:
             return f"refused by Smith's guard: {why}"
         code, out = run_bounded(cmd, self.root, RUN_TIMEOUT, self.env(), self.cap, confine=self.confine())
+        self.code, self.ran = code, out  # T-4357: how it ended and what it printed, without the failure note that grows
         note = ""
         if code == 0:
             self.after("Bash", {"command": cmd}, {"stdout": out, "stderr": "", "interrupted": False})
@@ -2512,7 +2514,8 @@ class Run:
                                                                                 state=STATE_PROP))) for t in tools]
         self.state, self.checked, self.bad_run, self.broke = None, False, False, False  # T-3006: each step starts clean
         self.step_edited = False  # T-3124
-        seen = {}  # T-2966: (action, target) -> times, this call of the step
+        self.sent, self.third = {}, []  # T-4357: key -> its run of unchanged sends, this call of the step; the keys at three
+        self.visited, self.base, self.files, self.world = set(), {}, {}, None  # the states the step's edits made; the tree
         self.keep()  # T-4177: what the last step was shown stays in the notes
         self.cur, self.shown, self.pending, self.cut = name, {"reads": {}, "searches": []}, None, set()
         self.explored, self.forced_turns, self.missing_used, self.look_next = 0, 0, False, False
@@ -2617,9 +2620,9 @@ class Run:
                 self.explored, self.forced_turns = self.budget() // 2, 0
             if self.last_act is None:  # T-3006: a check-first bounce ran nothing: it counts as no action
                 continue
-            seen[self.last_act] = seen.get(self.last_act, 0) + 1
-            if seen[self.last_act] == 3 and not finished:  # T-2966: once a key, as louhi counts it
-                finished = self.loop_break(name, profile, self.last_act, tools)
+            third, self.third = self.third, []
+            if third and not finished:  # T-4357: each key at its third send with nothing changed since, as louhi counts it
+                finished = self.loop_break(name, profile, third, tools)
             if finished:  # a done while a changed file does not parse, with no edit, or after a step that turned the
                 # project's own tests red, is not done (T-4426 parse first, then T-4425's keep check on parsing files)
                 back = ((self.parse_refusal() or self.early_done(name)) if self.last_act[0] == "done" else None) \
@@ -3182,7 +3185,12 @@ class Run:
 
     def do(self, name, a):
         a = canon_args(name, a)  # T-2878: a small model's other names for the arguments
-        before = self.target(name, a) if self.guided else None  # T-4291: a file's content before the action
+        before = self.target(name, a)  # T-4291: a file's content before the action (T-4357: on every run: the repeat table)
+        cardlike = name == "card" or name not in ("read", "search", "edit", "write", "run", "done") and name in {
+            cd["name"] for cd in self.offered()}  # T-4357: a card can change files, and a model may call it by its name
+        tree0 = (self.world if self.world is not None else self.tree()) if cardlike or (
+            name == "run" and not self.guided) else None  # judge_run takes a guided run's own
+        self.code = self.ran = None
         result, fin = self.act(name, a)
         result = self.redact(result)
         target = next((str(a.get(k)) for k in ("file", "path", "cmd", "pattern", "summary", "name") if isinstance(a, dict)
@@ -3190,26 +3198,111 @@ class Run:
         if name == "card" and isinstance(a, dict):  # T-3160: a card call's key is its name and inputs, not one path
             target = f"{a.get('name')} {json.dumps(a.get('inputs'), sort_keys=True, default=str)}"
         state = "refused" if result.startswith("refused") else "error" if result.startswith("error") else "ok"
+        changed = False  # T-4357: it changed what a repeat could see: a file's content, or the tree, to a state not yet been in
+        if name in ("edit", "write"):
+            now = self.digest(before[0]) if before else None
+            if state == "ok" and (before is None or before[1] is None or now != before[1]):
+                self.world = None  # the cached tree is out of date
+                changed = self.new_state(before[0], before[1], now) if before else True
+        elif name == "run" and self.guided:
+            changed = self.run_kind == "changed"  # judge_run compared the trees
+            self.world = None if changed else self.world
+        elif tree0 is not None:  # a run on a cloud model, or a card: what it did is the tree before and after
+            self.world = self.tree()
+            changed = self.world != tree0
+        key, fresh = self.repeat(name, a, result, changed)
         self.emit("action", f"  {name} {_one_line(target, 70)}: {state}" + (
             f" ({_one_line(result, 100)})" if state != "ok" else ""), action=name, target=target[:200], result=state,
-            detail=result[:1500])
+            detail=result[:1500], key=key, fresh=fresh)
         self.log(kind="action", action=name, result=state)
-        self.last_act = (name, target[:200])  # T-2966: the key louhi's loop class reads
+        self.last_act = (name, target[:200])  # T-2966: what the carry check and the forced edit read
         if self.guided:
             self.record(name, a, result, before)  # T-4291: what this action moved, for the carry at the cap
         return result, fin
 
-    def loop_break(self, name, profile, key, tools):
-        """T-2966: the third identical action in a step. One turn to --planner (else --escalate) with the step's
-        messages and a note naming the repetition; its action runs and the actor is told. With neither, the actor
-        gets the note. Returns whether the step finished."""
-        note = (f"You have now done the same action ({key[0]} {key[1]!r}) three times. Repeating it won't change the "
-                "result: take a different action, or done if the work is finished.")
+    def new_state(self, full, was, now):
+        """T-4357: whether an applied change of one file leaves the files this step has changed in a state it has not
+        been in (a change back to a state it has been in is not the work: edit X to Y and Y to X forever is a loop)."""
+        self.visited.add(frozenset())  # the tree as the step found it
+        self.base.setdefault(full, was)
+        self.files[full] = now if now is not None else f"?{self.turns}"  # what can't be read is never a state seen before
+        state = frozenset((p, d) for p, d in self.files.items() if d != self.base[p])
+        new = state not in self.visited
+        self.visited.add(state)
+        return new
+
+    def canon_repeat(self, name, a):
+        """T-4357: the arguments an action is known by, with defaults filled in, its path resolved inside the project and
+        the spacing of a command collapsed: what the model added beside them (why, thought, state) is not part of it."""
+        a = a if isinstance(a, dict) else {}
+
+        def rel(v):
+            try:
+                return os.path.relpath(self.path(v), self.root) if isinstance(v, str) else v
+            except ValueError:
+                return v
+        if name == "read":
+            return {"path": rel(a.get("path")), "start": 1 if a.get("start") is None else a["start"],
+                    "lines": READ_LINES if a.get("lines") is None else a["lines"]}
+        if name == "search":
+            return {"pattern": a.get("pattern"), "glob": a.get("glob")}
+        if name in ("edit", "write"):
+            return {"file": rel(a.get("file")), **{k: a.get(k) for k in (("old", "new") if name == "edit" else ("content",))}}
+        if name == "run":
+            return {"cmd": " ".join(a["cmd"].split()) if isinstance(a.get("cmd"), str) else a.get("cmd")}
+        return {k: v for k, v in a.items() if k not in ("state", "why", "thought", "reason")}
+
+    def repeat_key(self, name, a):
+        """T-4357: the key of an action: a hash of its name and canonical arguments."""
+        text = json.dumps([name, self.canon_repeat(name, a)], sort_keys=True, default=str)
+        return hashlib.sha1(text.encode("utf-8", "replace")).hexdigest()[:12]
+
+    def repeat(self, name, a, result, changed):
+        """T-4357: (the key of this action's canonical arguments, whether this send is fresh). A change (an applied edit
+        or write to a state this step has not been in, a run or card that changed the tree) clears the table: the same
+        action after it is the work, not a repeat. A send of a key in the table is a repeat, and a run only when it exits
+        with the same code as before (the output carries noise, the code and the tree do not). The third send of one key
+        goes on self.third, for loop_break. louhi.failure_classes counts the same key and fresh, so one rule serves both."""
+        canon = self.canon_repeat(name, a)
+        key = self.repeat_key(name, a)
+        if changed:
+            self.sent = {}
+        e = self.sent.get(key)
+        if e and e["code"] == self.code:
+            e["n"] += 1
+        else:
+            e = self.sent[key] = {"n": 1, "turns": [], "code": self.code, "action": name,
+                                  "args": json.dumps(canon, default=str)[:200]}
+        e["turns"] = (e["turns"] + [self.turns])[-3:]
+        e["result"] = self.redact(_tail(self.ran)) if name == "run" and self.ran is not None else _tail(result)  # result is redacted
+        if e["n"] == 3:
+            self.third.append(e)
+        return key, e["n"] == 1
+
+    def repeat_note(self, e):
+        """T-4357: what one repeated action had in common and the one fact the model lacks: its last result."""
+        ts, act = e["turns"], e["action"]
+        code = "none: it timed out or was refused" if e["code"] is None else e["code"]
+        note = (f"You have now sent the same action ({act} {e['args']}) three times (turns {ts[0]}, {ts[1]} and {ts[2]}) "
+                f"with nothing changed since turn {ts[0]}: no file was edited and no run or card changed the tree"
+                + (f", and it exited with the same exit code each time ({code})" if act == "run" else "") + ". ")
+        if act in ("read", "search"):  # its text is in the conversation already
+            return note + (f"The {'file' if act == 'read' else 'search result'} has not changed since turn {ts[0]}. ")
+        return note + f"Its last result ended:\n{self.fence(e['result'])}\n"
+
+    def loop_break(self, name, profile, third, tools):
+        """T-2966: the third identical action in a step (T-4357: the same canonical arguments, with nothing changed since
+        it was first sent; every key that reached three this turn is named). One turn to --planner (else --escalate)
+        with the step's messages and a note naming the repetition, since which turn and its last result; its action
+        runs and the actor is told. With neither, the actor gets the note. Returns whether the step finished."""
+        note = "".join(self.repeat_note(e) for e in third) \
+            + "Repeating it won't change the result: take a different action, or done if the work is finished."
         other = self.planner or self.escalate
         self.broke = True  # T-3006: the next turn thinks
-        self.log(kind="loop_break", phase=name, action=key[0], target=key[1], by=other and other["name"])
-        self.emit("note", f"  {key[0]} {_one_line(key[1], 60)}: three times; "
-                  + (f"{other['name']} takes one turn" if other else "the actor is told"), quiet=True)
+        for e in third:
+            self.log(kind="loop_break", phase=name, action=e["action"], target=e["args"], by=other and other["name"])
+            self.emit("note", f"  {e['action']} {_one_line(e['args'], 60)}: three times; "
+                      + (f"{other['name']} takes one turn" if other else "the actor is told"), quiet=True)
         if not other:
             self.add(name, {"role": "user", "content": note})
             return False
@@ -3258,6 +3351,12 @@ class Blocked(Exception):
 def _one_line(s, n):
     s = " ".join(str(s).split())
     return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def _tail(s, lines=6, cap=600):
+    """T-4357: the last few lines of a result, cut to a few hundred characters from the front."""
+    s = "\n".join(str(s).strip().splitlines()[-lines:])
+    return s if len(s) <= cap else "…" + s[-cap:]
 
 
 def _cut(s, cap=CAP):

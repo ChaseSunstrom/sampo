@@ -49,9 +49,9 @@ class Taxonomy(unittest.TestCase):
                "classes": {k: {"count": hit(k), "scenarios": hit(k), "rate": hit(k) / 2,
                                "scaffold": louhi.SCAFFOLDS[k]} for k in louhi.FAILURE_CLASSES}}
         text = louhi.taxonomy_text(res)
-        self.assertRegex(text, r"(?m)^  timeout .* 1 in 1 scenarios \(50%\) · closed, T-4083: Session\.phase")
+        self.assertRegex(text, r"(?m)^  timeout .* 1 in 1 scenarios \(50%\) · closed, T-4083: Run\.phase")
         self.assertEqual({r["status"] for r in louhi.SCAFFOLDS.values()}, {"closed"}, "T-4083 closed the last one")
-        self.assertRegex(text, r"(?m)^  loop .* · closed, T-2966: Session\.loop_break$")
+        self.assertRegex(text, r"(?m)^  loop .* · closed, T-2966: Run\.loop_break$")
 
     def test_the_smith_arm_passes_its_wall_clock_less_a_margin(self):  # T-4083
         argv = louhi._smith_argv("fix it", "m", 900)

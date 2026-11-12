@@ -1516,6 +1516,184 @@ class OutcomeEscalation(CodeCase):
         self.assertIn("none is set", r.stdout)
 
 
+class TrueRepeat(CodeCase):
+    """T-4357: a repeat is the same action with the same arguments while nothing it could see has changed since it was
+    last sent. An edit of one file, a run of one command and a read of one path are no repeat when the arguments, an
+    applied edit or the output between them differ."""
+    RUN = call("run", cmd="python3 test_calc.py")
+
+    def go(self, *script):
+        f = self.serve("anthropic", plan(), *script, name="small")
+        r = self.code("fix add", "--model", "small", "--json", check=False)
+        evs = [json.loads(x) for x in r.stdout.splitlines() if x.startswith("{")]
+        return f, r, evs, journal_text(self).count('"loop_break"')
+
+    def test_true_repeat_edit_run_cycles_of_one_file_are_no_loop(self):
+        e = [call("edit", file="calc.py", old=o, new=n) for o, n in (("a - b", "a * b"), ("a * b", "a / b"),
+                                                                    ("a / b", "a + b"))]
+        f, r, evs, breaks = self.go(e[0], self.RUN, e[1], self.RUN, e[2], self.RUN)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(breaks, 0, "three edits and three runs, each pair with a change between")
+        self.assertNotIn("same action", json.dumps(f.seen))
+        self.assertIn("return a + b", self.calc())
+
+    def test_true_repeat_three_reads_of_different_ranges_are_no_loop(self):
+        reads = [call("read", path="calc.py", start=1, lines=1), call("read", path="calc.py", start=2, lines=1),
+                 call("read", path="calc.py", start=1, lines=2)]
+        f, r, evs, breaks = self.go(*reads, *FIX)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(breaks, 0)
+        self.assertNotIn("same action", json.dumps(f.seen))
+
+    def test_true_repeat_the_same_run_with_the_same_output_names_what_was_the_same(self):
+        f, r, evs, breaks = self.go(self.RUN, self.RUN, self.RUN, *FIX)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(breaks, 1, [(e["action"], e["key"], e["fresh"], e["detail"][-80:]) for e in evs if e["event"] == "action"])
+        note = f.said(4)  # the plan, three runs, then the turn that is told
+        self.assertIn("same action", note)
+        self.assertIn("python3 test_calc.py", note)
+        self.assertIn("turns 1, 2 and 3", note, "the turns it was sent")
+        self.assertIn("same exit code", note)
+        self.assertIn("Its last result ended", note, "the failing output's last lines, the fact the model lacked")
+        self.assertIn("Traceback", note)  # test_calc.py fails on the unfixed calc.py: its output is quoted
+        self.assertIn("AssertionError", note)
+
+    def test_true_repeat_a_failing_run_whose_output_differs_only_by_noise_is_still_a_loop(self):
+        # pytest's "failed in 0.03s", a tmp-path counter, a timestamp: the same command, the same exit code and no change
+        # to the tree is a repeat whatever the bytes it printed (the review of T-4357)
+        run = call("run", cmd="python3 -c \"import time; print(time.time_ns()); raise SystemExit(1)\"")
+        f, r, evs, breaks = self.go(run, run, run, *FIX)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(breaks, 1, [(e["action"], e["fresh"]) for e in evs if e["event"] == "action"])
+        self.assertIn("same exit code", f.said(4))
+
+    def test_true_repeat_an_edit_between_two_sends_of_a_failing_run_is_no_loop(self):
+        fail = call("run", cmd="python3 -c \"print('t=0.01s'); raise SystemExit(1)\"")
+        f, r, evs, breaks = self.go(fail, fail, call("edit", file="calc.py", old="a - b", new="a + b"), fail, *FIX)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(breaks, 0, "two sends, an applied edit, one send: never three with nothing between")
+
+    def fake(self, trees, results):
+        """A Run whose act() and tree() are scripted, to drive do() without a model: trees[i] is the tree after action i."""
+        from sampo import smith as s
+        seq = iter(results)
+        class Fake(s.Run):
+            guided = False  # a class attribute over Run's property: a cloud profile, so a run is judged by the tree
+
+            def __init__(me):
+                me.root, me.turns, me.last_act, me.code = os.path.realpath(self.repo), 0, None, None
+                me.sent, me.third, me.visited, me.world, me.tree_now = {}, [], set(), None, trees[0]
+                me.events = []
+            def act(me, name, a):
+                me.turns += 1
+                me.tree_now = trees[min(me.turns, len(trees) - 1)]
+                return next(seq), False
+            def tree(me):
+                return me.tree_now
+            def redact(me, t):
+                return t
+            def emit(me, event, text, quiet=False, **d):
+                me.events.append(d)
+            def log(me, **d):
+                pass
+            def offered(me):
+                return [{"name": "fixcard"}]
+        return Fake()
+
+    def test_true_repeat_a_card_that_changes_the_tree_clears_the_count(self):
+        # read, an applied card, read, read: the card changed files between the first read and the rest
+        read = ("read", {"path": "calc.py"})
+        card = ("card", {"name": "fixcard", "inputs": {}})
+        changed = self.fake(["t0", "t0", "t1", "t1", "t1"], ["text", "applied", "text", "text"])
+        for name, a in (read, card, read, read):
+            changed.do(name, a)
+        self.assertEqual(changed.third, [], "the card changed the tree: the later reads are new")
+        same = self.fake(["t0"] * 5, ["text", "no change", "text", "text"])
+        for name, a in (read, card, read, read):
+            same.do(name, a)
+        self.assertEqual(len(same.third), 1, "a card that changed nothing is no change")
+        own = self.fake(["t0", "t0", "t1", "t1", "t1"], ["text", "applied", "text", "text"])  # called by its own name
+        for name, a in (read, ("fixcard", {}), read, read):
+            own.do(name, a)
+        self.assertEqual(own.third, [])
+        self.assertEqual([e["fresh"] for e in changed.events], [True, True, True, False])
+
+    def test_true_repeat_an_edit_and_its_exact_reverse_forever_is_a_loop(self):
+        fwd = call("edit", file="calc.py", old="a - b", new="a + b")
+        back = call("edit", file="calc.py", old="a + b", new="a - b")
+        f, r, evs, breaks = self.go(fwd, back, fwd, back, fwd, back, call("done", summary="x"))
+        self.assertGreaterEqual(breaks, 1, "A to B, B to A: the third return to a state this step has been in is a repeat")
+        self.assertIn("same action", json.dumps(f.seen))
+
+    def test_true_repeat_three_different_edits_of_one_file_are_no_loop(self):
+        e = [call("edit", file="calc.py", old=o, new=n) for o, n in (("a - b", "a * b"), ("a * b", "a / b"),
+                                                                    ("a / b", "a ** b"))]
+        f, r, evs, breaks = self.go(*e, call("done", summary="x"))
+        self.assertEqual(breaks, 0)
+
+    def test_true_repeat_the_key_is_the_actions_canonical_arguments(self):
+        from sampo import smith as s
+        run = s.Run.__new__(s.Run)
+        run.root = os.path.realpath(self.repo)
+        key = lambda name, **a: run.repeat_key(name, a)
+        self.assertEqual(key("read", path="calc.py"), key("read", path="./calc.py"))
+        self.assertEqual(key("read", path="calc.py"), key("read", path="calc.py", start=1))
+        self.assertEqual(key("read", path="calc.py"), key("read", path="calc.py", why="to see", thought="x"))
+        self.assertEqual(key("run", cmd="python3  test_calc.py"), key("run", cmd="python3 test_calc.py "))
+        self.assertNotEqual(key("read", path="calc.py"), key("read", path="calc.py", start=2))
+        self.assertNotEqual(key("read", path="calc.py"), key("read", path="test_calc.py"))
+        self.assertEqual(key("edit", file="calc.py", old="a", new="b"), key("edit", file="./calc.py", old="a", new="b"))
+
+    def test_true_repeat_two_keys_reaching_three_in_one_turn_are_both_named(self):
+        from sampo import smith as s
+        run = s.Run.__new__(s.Run)
+        run.root = os.path.realpath(self.repo)
+        run.sent, run.third, run.turns, run.visited, run.code = {}, [], 0, set(), None
+        for i in range(3):
+            run.turns = i + 1
+            run.repeat("read", {"path": "a.py"}, "x", False)
+            run.repeat("read", {"path": "b.py"}, "y", False)
+        self.assertEqual(len(run.third), 2, "the first key's third send is not lost to the second's")
+        self.assertEqual([e["action"] for e in run.third], ["read", "read"])
+        self.assertTrue("a.py" in run.third[0]["args"] and "b.py" in run.third[1]["args"])
+
+    def test_true_repeat_the_same_read_three_times_names_since_which_turn(self):
+        read = call("read", path="calc.py")
+        f, r, evs, breaks = self.go(read, read, read, *FIX)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(breaks, 1)
+        self.assertIn("same action", f.said(4))
+        self.assertIn("nothing changed since turn 1", f.said(4))
+        self.assertIn("calc.py", f.said(4))
+        self.assertIn("The file has not changed since turn 1", f.said(4), "a read's fact: its text is what it was")
+
+    def test_true_repeat_the_same_edit_sent_a_third_time_with_nothing_changed_is_one(self):
+        edit = call("edit", file="calc.py", old="a - b", new="a + b")
+        f, r, evs, breaks = self.go(edit, edit, edit, call("done", summary="x"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(breaks, 1, "the first applied; the second and third found nothing to change")
+        self.assertIn("nothing changed since turn 1", f.said(4))
+
+    def test_true_repeat_an_edit_between_two_reads_of_a_file_clears_the_count(self):
+        read = call("read", path="calc.py")
+        edit = call("edit", file="calc.py", old="a - b", new="a + b")
+        f, r, evs, breaks = self.go(read, read, edit, read, read, call("done", summary="x"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(breaks, 0, "two reads, an edit, two reads: never three with nothing between")
+
+    def test_true_repeat_each_action_event_carries_its_key_and_whether_it_is_new(self):
+        read = call("read", path="calc.py")
+        f, r, evs, breaks = self.go(read, read, call("read", path="test_calc.py"),
+                                    call("edit", file="calc.py", old="a - b", new="a + b"), read, call("done", summary="x"))
+        acts = [e for e in evs if e["event"] == "action"]
+        self.assertEqual([e["action"] for e in acts], ["read", "read", "read", "edit", "read", "done"])
+        self.assertTrue(all(len(e["key"]) == 12 for e in acts))
+        self.assertEqual([e["fresh"] for e in acts], [True, False, True, True, True, True],
+                         "the second read repeats the first; the read after the edit is new")
+        self.assertEqual(acts[0]["key"], acts[1]["key"])
+        self.assertNotEqual(acts[0]["key"], acts[2]["key"], "another path is another key")
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

@@ -3996,24 +3996,25 @@ FAILURE_CLASSES = ("malformed", "wrong_tool", "loop", "false_done", "timeout", "
 SCAFFOLDS = {
     "malformed": {"scaffold": "a reply fm code can't read is repaired (REPAIRS turns, then field by field); an action "
                               "with wrong arguments gets the error back as its result",
-                  "where": "smith.slot, Session.do", "status": "closed", "task": "T-1765"},
+                  "where": "smith.slot, Run.do", "status": "closed", "task": "T-1765"},
     "wrong_tool": {"scaffold": "an unknown action's result lists the actions Smith has",
-                   "where": "Session.do", "status": "closed", "task": None},
-    "loop": {"scaffold": "the third identical action hands one turn to --planner (else --escalate), else the actor is "
-                         "told; the next turn thinks",
-             "where": "Session.loop_break", "status": "closed", "task": "T-2966"},
+                   "where": "Run.do", "status": "closed", "task": None},
+    "loop": {"scaffold": "the third send of the same action with the same canonical arguments and nothing changed since (no edit to a new state, "
+                         "no tree-changing run or card, a run's same exit code) hands one turn to --planner (else --escalate), "
+                         "else the actor is told what was the same, since which turn and the last result it got; the next turn thinks",
+             "where": "Run.loop_break", "status": "closed", "task": "T-2966"},
     "false_done": {"scaffold": "a done with no edit while a verify fails is refused with the failure, twice; the close "
                                "runs every criterion's verify",
-                   "where": "Session.early_done, smith._finish", "status": "closed", "task": "T-3180"},
+                   "where": "Run.early_done, smith._finish", "status": "closed", "task": "T-3180"},
     "timeout": {"scaffold": "--deadline: each turn tells the model the time left, the last tenth asks it to finish, and "
                             "past it Smith stops itself with a resumable trail; the exam passes its wall clock less "
                             "SMITH_MARGIN",
-                "where": "Session.phase", "status": "closed", "task": "T-4083"},
+                "where": "Run.phase", "status": "closed", "task": "T-4083"},
     "refused": {"scaffold": "a guard's or Smith's refusal comes back as the action's result, with its reason",
-                "where": "Session.do", "status": "closed", "task": None},
+                "where": "Run.do", "status": "closed", "task": None},
     "budget": {"scaffold": "--reason: thinking off once a state exists, on for low confidence, a failed check or a "
                            "loop break; the budget arm caps it",
-               "where": "Session.reason_kw", "status": "closed", "task": "T-3006"},
+               "where": "Run.reason_kw", "status": "closed", "task": "T-3006"},
     "plan_refused": {"scaffold": "a plan the gate refuses goes back to the planner once with the refusal text",
                      "where": "smith._replan", "status": "closed", "task": "T-3016"},
     "no_plan": {"scaffold": "an unreadable plan is repaired (REPAIRS turns, then field by field), then re-planned once "
@@ -4241,13 +4242,15 @@ def end_class(events):
     return "timeout" if end.get("event") == "timeout" else _end_text(str(end.get("text") or "")) or "other"
 
 
-def failure_classes(events):
+def failure_classes(events, coarse=None):
     """T-2908: {class: count} of what went wrong in one Smith event stream (only the nonzero classes). malformed: a
     reply fm code couldn't read or an action whose arguments were wrong; wrong_tool: an action Smith doesn't have; loop:
-    the same action on the same target three times, or the turn limit; false_done: said done and the verify failed;
-    timeout: no end in time; refused: a guard or Smith's own refusal, or a write put back."""
+    the same action with the same arguments three times with nothing changed since, or the turn limit; false_done: said
+    done and the verify failed; timeout: no end in time; refused: a guard or Smith's own refusal, or a write put back.
+    T-4357: a loop is counted from the action event's key and fresh (Smith's own notion of a true repeat); an event with
+    no key (a stream from before) is counted by the old (action, target) rule, and `coarse`, a list, gets "loop" then."""
     n = dict.fromkeys(FAILURE_CLASSES, 0)
-    seen = {}
+    seen, sent = {}, {}
     for e in events:
         kind, text = e.get("event"), str(e.get("text") or "") + str(e.get("detail") or "")
         named = kind in ("error", "blocked") and _end_text(text)
@@ -4266,9 +4269,16 @@ def failure_classes(events):
         if kind == "revert":
             n["refused"] += 1
         if kind == "action":
-            k = (e.get("action"), e.get("target"))
-            seen[k] = seen.get(k, 0) + 1
-            n["loop"] += seen[k] == 3  # once per repeated call, not for each time after
+            if e.get("key"):  # T-4357: fresh is true on a send that is new since the last change; else a repeat
+                sent[e["key"]] = 1 if e.get("fresh") else sent.get(e["key"], 0) + 1
+                n["loop"] += sent[e["key"]] == 3  # once per repeated call, not for each time after
+            else:
+                k = (e.get("action"), e.get("target"))
+                seen[k] = seen.get(k, 0) + 1
+                if seen[k] == 3:
+                    n["loop"] += 1
+                    if coarse is not None and "loop" not in coarse:
+                        coarse.append("loop")
             if e.get("result") == "refused":
                 n["refused"] += 1
             elif e.get("result") == "error":
@@ -4285,7 +4295,8 @@ def taxonomy_text(res):
         r = v.get("scaffold") or SCAFFOLDS.get(k) or {}
         how = f" · {r['status']}{', ' + r['task'] if r.get('task') else ''}: {c.fit(r.get('where') or r['scaffold'], 70)}" \
             if r else ""
-        return f"  {k:<14} {v['count']:>3} in {v['scenarios']} scenarios ({v['rate']:.0%}){how}"
+        mark = " · coarse key" if v.get("coarse_key") else ""  # T-4357: counted by the old (action, target) rule
+        return f"  {k:<14} {v['count']:>3} in {v['scenarios']} scenarios ({v['rate']:.0%}){how}{mark}"
     return (f"{res['run']} {res['agent']} {res['model'] or ''}: {res['scenarios']} scenarios\n"
             "ends: " + ", ".join(f"{k} {v}" for k, v in res["ends"].items()) + "\n"
             + "\n".join(row(k, v) for k, v in res["classes"].items()))
@@ -4295,18 +4306,21 @@ def taxonomy(p, run, agent="smith"):
     """T-2908: the failure classes over a run's answered scenarios: {run, agent, model, scenarios, classes: {class:
     {count, scenarios, rate}}} with every class listed, most common first. rate: the share of scenarios it hit."""
     load(p, run)
-    answers, per, ends = _answers(p, run, agent), [], {}
+    answers, per, ends, coarse = _answers(p, run, agent), [], {}, set()
     for name in sorted(os.listdir(answers)) if os.path.isdir(answers) else ():
         if name.endswith(".events.jsonl"):
             with open(os.path.join(answers, name), encoding="utf-8", errors="replace") as f:
                 evs = [e for e in (_json_line(ln) for ln in f) if e]
-                per.append(failure_classes(evs))
+                flags = []
+                per.append(failure_classes(evs, coarse=flags))
+                coarse.update(flags)
                 end = end_class(evs)
                 ends[end] = ends.get(end, 0) + 1
     if not per:
         raise ValueError(f"no Smith event logs from {agent!r} in {run} (fm exam run {run} --agent smith --model PROFILE)")
     classes = {k: {"count": sum(x.get(k, 0) for x in per), "scenarios": sum(k in x for x in per),
-                   "rate": sum(k in x for x in per) / len(per), "scaffold": SCAFFOLDS[k]} for k in FAILURE_CLASSES}
+                   "rate": sum(k in x for x in per) / len(per), "scaffold": SCAFFOLDS[k],
+                   "coarse_key": k in coarse} for k in FAILURE_CLASSES}  # T-4357: a count that came from key-less events
     try:
         with open(os.path.join(answers, "model"), encoding="utf-8") as f:
             model = f.read().strip()
