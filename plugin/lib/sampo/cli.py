@@ -9365,6 +9365,8 @@ def _build_parser(only=None):
     s.add_argument("--resume", nargs="?", const="", metavar="ID", help="carry on a crashed or killed run from its "
                                                                      "journal (default: the newest unfinished one)")
     s.add_argument("--no-commit", action="store_true", help="close the task without committing")
+    s.add_argument("--no-review", action="store_true", help="T-4388: skip the function-by-function review a free "
+                   "model's run makes before planning a request for the code as a whole (find and fix, release)")
     s.add_argument("--stale-ok", metavar="REASON", help="run unattended even though the guard corpus replay is red "
                                                         "or over 7 days old; the waiver is logged (T-1401)")
     s.add_argument("--task", metavar="ID", help="work this planned task: its criteria and open steps are the plan "

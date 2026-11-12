@@ -154,7 +154,9 @@ class Harness(CodeCase):  # T-3181: the harness runs the read cards before turn 
         self.seed_none_bug("import calc\ncalc.Calc().add(None, 3)\nprint('ok')\n",
                            "def add(a, b):\n    return a - b\n\n\nclass Calc:\n    def add(self, a, b):\n"
                            "        return a - b\n")
-        self.serve("openai", plan(), SLOT, call("done", summary="guarded"), CLOSE)
+        # T-4388: two functions are a whole a review could read, so the request's kind is judged first (one named change)
+        named = {"text": json.dumps({"wants_change": True, "whole": False, "find_fix": False, "why": "one named change"})}
+        self.serve("openai", named, plan(), SLOT, call("done", summary="guarded"), CLOSE)
         r = self.code("make Calc.add handle None", "--model", "fake", check=False)
         self.assertEqual(self.calc(), "def add(a, b):\n    return a - b\n\n\nclass Calc:\n    def add(self, a, b):\n"
                          "        if a is None:\n            return None\n        return a - b\n", r.stdout + r.stderr)
