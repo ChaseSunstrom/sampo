@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- sampo lane accept now refuses a malformed --audit (two values, an option eaten as a value, an unknown lens, an empty how or result, leftover words) with the --audit LENS HOW RESULT form before recording or starting anything (T-4391).
+- sampo check --affected runs a template that changes directory in a subshell when another command follows it, so the repo-shape classes sampo lane accept adds run from the project root instead of failing inside mods/foreman-ui (T-4409).
 - sampo next's map-room self-check now counts what the accepted, waiting lanes add to MASTER.md or a docs/map shard that has under 10 KB left, and names the file, the lanes and their bytes before a train carries them past the read cap (T-4411).
 - the check sampo lane accept starts is run by the trunk's sampo on the lane's tree, so a lane cut before an option existed is still checked and a check fix on the trunk holds for every waiting lane at once; a check that ends without a result is reported with its exit code and last output line instead of as cut off at its deadline (T-4410).
 - sampo code's close commit leaves out a directory a command filled (over 20 untracked files, none written by the run's own tools, not there when the run began), listing it in .git/info/exclude and saying so with its count, instead of sweeping build output into the commit (T-4387).
