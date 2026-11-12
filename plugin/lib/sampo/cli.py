@@ -6472,8 +6472,11 @@ def _check_affected(p, args):
     """Only the tests linked (fm map) to files changed since the task started, with the project's template."""
     skip = {}  # T-1101: another open task's red-first test files, left out as the full gates leave them out
     hubs = {}  # T-3306: per changed hub file, the symbols and tests chosen
-    cmd, tests, changed = affected(p, skipped=skip, detail=hubs, since=getattr(args, "since", None),
-                                   hold=bool(getattr(args, "hold", False)))  # T-4286: sampo lane accept's own check
+    hold, since = bool(getattr(args, "hold", False)), getattr(args, "since", None)  # T-4286: sampo lane accept's own check
+    # T-4418: that check answers for the task it names, the lane's active one or not: with none active the changed
+    # files were counted from HEAD (none) and it ran the held classes alone
+    named = c.find_brief(p, args.evidence) if hold and not since and getattr(args, "evidence", None) else None
+    cmd, tests, changed = affected(p, b=named, skipped=skip, detail=hubs, since=since, hold=hold)
     act = c.active_brief(c.load_briefs(p), p.lane)
     if cmd:
         guard_stored(p, act, cmd)  # T-0901: the template is a stored command

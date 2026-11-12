@@ -29,7 +29,8 @@ ASKED_ROW = [["self", "read the diff", "no findings"]]
 def stub(exit_code=0, failed=(), cut_off=False, text=None):
     """A stand-in for the lane's `sampo check --affected --json`: prints what the real one's JSON carries."""
     data = {"exit": exit_code, "failed": list(failed), "cut_off": cut_off, "tests": [], "changed": []}
-    return [sys.executable, "-c", f"import sys; print({text!r} or ''); print({json.dumps(json.dumps(data))}); sys.exit({exit_code})"]
+    shown = json.dumps(data, indent=2)  # T-4418: over many lines, as cli.out prints it; one line was never the real form
+    return [sys.executable, "-c", f"import sys; print({text!r} or ''); print({shown!r}); sys.exit({exit_code})"]
 
 
 class AcceptCase(LandCase):
@@ -536,6 +537,79 @@ class Review(AcceptCase):
             f.write("a note\n")
         got = json.loads(self.fm("check", "--affected", "--json", "--since", "HEAD", check=False).stdout)
         self.assertEqual((got["exit"], got["cut_off"], got["failed"]), (0, False, []))
+
+
+class Result(AcceptCase):
+    """T-4418: the check's result is read in the form the real check prints it. From T-4286's landing every accept
+    check (10 of 10 on 2026-11-11) ended 'cut off 2x at its deadline' after running its suite twice: sampo check
+    --json prints an object over 17 lines and the reader looked for it on one."""
+
+    def shown(self, text):
+        return train._result_of(subprocess.CompletedProcess([], 0, text, ""))
+
+    def test_a_result_printed_by_the_real_check_is_read(self):  # result
+        self.fm("check", "affected", "python3 -m pytest -q {tests}")
+        with open(os.path.join(self.repo, "new.txt"), "w") as f:
+            f.write("a change\n")
+        r = self.fm("check", "--affected", "--hold", "--json", "--since", "HEAD", check=False)
+        self.assertGreater(len(r.stdout.splitlines()), 3, "the real check prints its result over many lines: " + r.stderr[-300:])
+        got = self.shown("sampo: running the lane's own plugin at /lane\n" + r.stdout)
+        self.assertIsNotNone(got, "the accept check found no result in what the check printed")
+        self.assertEqual((got["exit"], got["cut_off"], got["failed"]), (0, False, []))
+
+    def test_the_last_result_is_read_with_other_output_around_it(self):  # result
+        first_one = json.dumps({"exit": 1, "failed": ["a.B"], "cut_off": False}, indent=2)
+        last = json.dumps({"exit": 0, "failed": [], "cut_off": False, "hubs": {"x.py": {"tests": None}}}, indent=2)
+        got = self.shown(f"noise\n{first_one}\n{{'not': json}}\n{last}\na line a hook printed after it\n")
+        self.assertEqual(got["exit"], 0)
+        self.assertEqual(got["hubs"], {"x.py": {"tests": None}})
+
+    def test_an_object_that_is_not_a_result_and_no_object_at_all_are_no_result(self):  # result
+        self.assertIsNone(self.shown("usage: sampo check\nsampo: error: unrecognized arguments: --hold\n"))
+        self.assertIsNone(self.shown(json.dumps({"tests": 3}, indent=2) + "\n"), "a test's own JSON is not the check's")
+        self.assertIsNone(self.shown(""))
+
+    def test_a_green_result_over_many_lines_queues_the_lane(self):  # result
+        tid = self.a_lane(1)
+        self.accept(tid)
+        self.child(tid, 1, stub(0, text="Ran 3 tests\nOK"))
+        self.assertEqual(self.meta_of(tid)["check_state"], "green")
+        self.assertEqual(self.queued(), [tid])
+
+    def test_a_red_result_over_many_lines_names_its_classes(self):  # result
+        tid = self.a_lane(1)
+        self.accept(tid)
+        self.child(tid, 1, stub(1, failed=["test_x.Y"]))
+        m = self.meta_of(tid)
+        self.assertEqual((m["check_state"], m["check_failed"]), ("red", "test_x.Y"))
+
+
+class NamedTask(AcceptCase):
+    """T-4418: the accept check answers for the task it is given. It took its changed files from the lane's active
+    task; for a lane whose task was not focused there (T-4416's, accepted while 'planned') the list was empty and
+    the check ran the four held classes and nothing of the change."""
+
+    def test_the_check_lists_the_named_task_changes_when_it_is_not_the_lanes_active_task(self):  # named_task
+        tid = self.a_lane(1)
+        lane = os.path.join(self.tmp, "lane1")
+
+        self.fm("check", "affected", "python3 -m pytest -q {tests}")
+
+        def park(x):
+            x.meta["status"] = "planned"
+        cli.mutate(self.p, tid, park, "test", {})
+        self.assertIsNone(c.active_brief(c.load_briefs(self.p), lane), "the lane has no active task now")
+        r = self.fm("check", "--affected", "--hold", "--evidence", tid, "--json", cwd=lane, check=False)
+        got = train._result_of(r)
+        self.assertIsNotNone(got, r.stdout[-300:] + r.stderr[-300:])
+        self.assertIn("f1.txt", got["changed"], "the lane's own commit is what the check answers for")
+
+    def test_a_plain_affected_run_still_follows_the_active_task(self):  # named_task
+        self.a_lane(1)
+        self.fm("check", "affected", "python3 -m pytest -q {tests}")
+        lane = os.path.join(self.tmp, "lane1")
+        r = self.fm("check", "--affected", "--json", cwd=lane, check=False)
+        self.assertIn("f1.txt", json.loads(r.stdout)["changed"], r.stderr[-300:])
 
 
 if __name__ == "__main__":

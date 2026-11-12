@@ -1768,15 +1768,19 @@ def _start_check(p, b, main, tip, since, tries):
 
 
 def _result_of(r):
-    """The JSON the lane's `sampo check --affected --json` printed (its last line that parses as an object), or None."""
-    for line in reversed((r.stdout or "").splitlines()):
-        if line.startswith("{"):
-            try:
-                got = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(got, dict):
-                return got
+    """The result the lane's `sampo check --affected --json` printed, or None: the last JSON object in the output that
+    starts a line and carries "exit". T-4418: cli.out prints it over many lines (indent 2) and this read one line, so
+    from T-4286's landing no check ever had a result: each ran its suite twice and ended 'cut off 2x at its
+    deadline' (10 of 10 on 2026-11-11). Decoded from where it starts, so other output before and after it (the
+    lane hand-over's line, a hook's) is passed over, and an object of a test's own is not taken for it."""
+    text, decoder = r.stdout or "", json.JSONDecoder()
+    for m in reversed(list(re.finditer(r"(?m)^\{", text))):
+        try:
+            got, _ = decoder.raw_decode(text, m.start())
+        except ValueError:
+            continue
+        if isinstance(got, dict) and "exit" in got:
+            return got
     return None
 
 
