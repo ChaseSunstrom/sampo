@@ -385,6 +385,168 @@ class Giant(Base):
         self.assertEqual(json.loads(self.fm("big", "expand", tid, "--json").stdout)["created"], {})
 
 
+def block(key, files, tier="S", after="", covers="1", extra=""):
+    return (f"[{key}] Block {key}\ntier: {tier}\nfiles: {files}\n" + (f"after: {after}\n" if after else "")
+            + f"covers: {covers}\ncriterion: ok :: grep -q x {key}.py\n{extra}")
+
+
+class Overlap(Base):
+    """The review of T-4221: what counts as one shared file, and which pairs the check looks at."""
+
+    def shared(self, tid, a, b):
+        return [x for x in self.problems(tid) if "c1" in x and "c2" in x and ("share" in x or "overlap" in x)]
+
+    def test_gate_clash_counts_a_directory_a_normalised_path_and_a_glob(self):
+        for a, b in (("lib/", "lib/a.py"), ("lib//a.py", "lib/a.py"), ("./lib/a.py", "lib/a.py"), ("lib/*.py", "lib/a.py"),
+                     ("lib/a.py", "lib/a.py"), ("lib/sub/..", "lib/a.py")):
+            self.assertTrue(big._clash(a, b) and big._clash(b, a), (a, b))
+        for a, b in (("lib/a.py", "lib/ab.py"), ("lib/a", "lib/ab/x.py"), ("Lib/", "lib/a.py"), ("lib/*.py", "lib/a.txt")):
+            self.assertFalse(big._clash(a, b) or big._clash(b, a), (a, b))
+
+    def test_gate_a_directory_and_a_file_in_it_are_shared_in_one_wave(self):
+        tid = self.make()
+        self.plan(tid, breakdown(block("c1", "lib/", covers="1"), block("c2", "lib/a.py", covers="2"),
+                                 block("c3", "x.py", covers="3", after="c1, c2")))
+        got = self.shared(tid, "c1", "c2")
+        self.assertTrue(any("lib/" in x and "lib/a.py" in x for x in got), self.problems(tid))
+
+    def test_gate_a_glob_and_a_double_slash_are_shared_too(self):
+        tid = self.make()
+        for a, b in (("lib/*.py", "lib/a.py"), ("lib//a.py", "lib/a.py")):
+            self.plan(tid, breakdown(block("c1", a, covers="1"), block("c2", b, covers="2"),
+                                     block("c3", "x.py", covers="3", after="c1, c2")))
+            self.assertTrue(self.shared(tid, a, b), (a, b, self.problems(tid)))
+
+    def test_gate_a_pair_in_different_waves_with_no_path_between_them_is_shared(self):
+        tid = self.make()
+        self.plan(tid, breakdown(block("c1", "f.py", covers="1"), block("c2", "g.py", covers="2"),
+                                 block("c3", "f.py", covers="3", after="c2")))
+        got = [x for x in self.problems(tid) if "c1" in x and "c3" in x and "f.py" in x]
+        self.assertTrue(got, self.problems(tid))
+        self.assertIn("after", [y["fix"] for y in self.check(tid)[1]["problems"] if "c3" in y["problem"]][0])
+
+    def test_gate_a_path_between_them_in_either_direction_or_through_a_third_is_not_shared(self):
+        tid = self.make()
+        self.plan(tid, breakdown(block("c1", "f.py", covers="1"), block("c2", "g.py", covers="2", after="c1"),
+                                 block("c3", "f.py", covers="3", after="c2")))
+        self.assertEqual(self.problems(tid), [])
+        self.plan(tid, breakdown(block("c1", "f.py", covers="1", after="c3"), block("c2", "g.py", covers="2"),
+                                 block("c3", "f.py", covers="3", after="c2")))
+        self.assertEqual(self.problems(tid), [])
+
+
+class Comments(Base):
+    def test_gate_an_inline_comment_is_stripped_from_the_value_lines_only(self):
+        blocks, errs = big.parse_blocks("[c1] T\ntype: FEATURE   # the parent's\ntier: M   # S or M\nfiles: a.py, b.py  # two\n"
+                                        "after: c0  # first\ncovers: 1, 2  # both\ncriterion: x :: grep -q '#' f  # keep\n"
+                                        "step: do a # b\n")
+        self.assertEqual(errs, [])
+        x = blocks[0]
+        self.assertEqual((x["type"], x["tier"], x["files"], x["after"], x["covers"]),
+                         ("FEATURE", "M", ["a.py", "b.py"], ["c0"], [1, 2]))
+        self.assertEqual(x["criteria"][0][1], "grep -q '#' f  # keep")
+        self.assertEqual(x["steps"], ["do a # b"])
+        self.assertEqual(big.parse_blocks("[c1] T\ntier:   # S or M\n")[0][0]["tier"], "")
+
+    def test_gate_a_plan_with_the_docstring_comments_passes(self):
+        tid = self.make()
+        self.plan(tid, breakdown(C1.replace("tier: M", "tier: M   # S or M"), C2, C3.replace("after: c1, c2", "after: c1, c2  # first")))
+        self.assertEqual(self.problems(tid), [])
+
+    def test_gate_a_files_token_with_parentheses_a_root_or_dots_is_named(self):
+        for tok in ("(lib/a.py)", "/etc/passwd", "../x.py", "lib/../x.py"):
+            blocks, errs = big.parse_blocks(f"[c1] T\nfiles: ok.py, {tok}\n")
+            self.assertTrue(any(tok in e["problem"] and e["block"] == "c1" for e in errs), (tok, errs))
+        self.assertEqual(big.parse_blocks("[c1] T\nfiles: lib/a.py, lib/*.py\n")[1], [])
+
+
+class Resume(Base):
+    """expand after a hard kill: the child carries its own plan key, so a rerun finds what was made."""
+
+    def run_expand(self, tid, dry=False):
+        import contextlib
+        import io
+        from types import SimpleNamespace
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            big.task_expand(self.p, SimpleNamespace(id=tid, dry_run=dry, json=True))
+        return json.loads(buf.getvalue())
+
+    def test_expand_a_kill_after_two_children_leaves_a_rerun_the_rest_to_make(self):
+        from unittest import mock
+        tid = self.make()
+        self.good(tid)
+        real, n = big._make, []
+
+        def dies(*a, **kw):
+            if len(n) == 2:
+                raise KeyboardInterrupt("killed")
+            n.append(1)
+            return real(*a, **kw)
+        with mock.patch.object(big, "_make", dies), mock.patch.object(big, "_write_children", lambda *a, **k: None):
+            with self.assertRaises(KeyboardInterrupt):
+                self.run_expand(tid)
+        self.assertEqual(len(self.kids(tid)), 2)
+        self.assertEqual(c.find_brief(self.p, tid).section("Children").strip(), "")  # the parent's record never came
+        data = self.run_expand(tid)
+        self.assertEqual(list(data["created"]), ["c3"])
+        self.assertEqual(len(self.kids(tid)), 3)
+        self.assertEqual(sorted(k.title for k in self.kids(tid)), ["Parser", "Runner", "Wire them"])
+        parent = c.find_brief(self.p, tid)
+        self.assertEqual(sorted(parent.meta["depends_on"]), sorted(k.id for k in self.kids(tid)))
+        self.assertEqual(self.run_expand(tid)["created"], {})
+
+    def test_expand_a_lost_children_record_is_rebuilt_from_the_children_not_made_again(self):
+        tid = self.make()
+        self.good(tid)
+        self.run_expand(tid)
+        before = [k.id for k in self.kids(tid)]
+        b = c.find_brief(self.p, tid)
+        b.set_section("Children", "")
+        b.meta["depends_on"] = []
+        c.save_brief(self.p, b)
+        data = self.run_expand(tid)
+        self.assertEqual(data["created"], {})
+        self.assertEqual(sorted(data["existing"].values()), before)
+        self.assertEqual([k.id for k in self.kids(tid)], before)
+        parent = c.find_brief(self.p, tid)
+        self.assertEqual(sorted(parent.meta["depends_on"]), before)
+        self.assertIn(f"c1 → {before[0]}", parent.section("Children"))
+
+    def test_expand_a_child_with_a_deleted_brief_is_made_again_and_the_parent_follows(self):
+        import os
+        tid = self.make()
+        self.good(tid)
+        self.run_expand(tid)
+        k2 = next(k for k in self.kids(tid) if k.title == "Runner")
+        os.remove(k2.path)
+        data = self.run_expand(tid)
+        self.assertEqual(list(data["created"]), ["c2"])
+        new = data["created"]["c2"]
+        self.assertNotEqual(new, k2.id)
+        parent = c.find_brief(self.p, tid)
+        self.assertNotIn(k2.id, parent.meta["depends_on"])
+        self.assertIn(new, parent.meta["depends_on"])
+        self.assertNotIn(k2.id, parent.section("Children"))
+        self.assertEqual(len(self.kids(tid)), 3)
+        self.assertEqual(self.run_expand(tid)["created"], {})
+
+    def test_expand_the_child_carries_its_plan_key_and_signature(self):
+        tid = self.make()
+        self.good(tid)
+        self.run_expand(tid)
+        for k in self.kids(tid):
+            self.assertTrue(k.meta.get("big_key") and k.meta.get("big_sig"), k.meta)
+
+
+class Hint(Base):
+    def test_plan_hint_names_the_real_task_id(self):
+        tid = self.make()
+        out = self.fm("big", "plan", tid).stdout
+        self.assertIn(f"sampo task set {tid} --section Breakdown", out)
+        self.assertNotIn("task set ID", out)
+
+
 class Bounds(Base):
     def test_a_breakdown_past_the_block_cap_is_one_problem_not_a_quadratic_walk(self):
         tid = self.make()

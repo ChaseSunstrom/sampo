@@ -18,9 +18,11 @@ sampo big plan ID writes the empty skeleton, sampo big check ID reports what is 
 ID makes the children (split's child path, idempotent). core.plan_gaps asks gate_gaps, so focus, a lane and the next
 action all refuse a big task whose plan has problems. Nothing here calls a model: the plan is checked by code (models
 advise, proof decides)."""
+import fnmatch
 import functools
 import hashlib
 import json
+import posixpath
 import re
 
 from sampo import core as c
@@ -38,6 +40,22 @@ _HEAD = re.compile(r"^\[([A-Za-z][\w-]*)\]\s+(\S.*)$")
 _LINE = re.compile(r"^([A-Za-z]+):\s*(.*)$")
 _CHILDREN = re.compile(r"^(\S+) → (T-\d+)\b.*?\(block ([0-9a-f]{8})\)\s*$")
 _INHERIT = re.compile(r"^(?:CONTEXT|MUST|NEVER|CONSTRAINT):", re.I)
+_COMMENT = re.compile(r"(?:^|\s)#.*$")  # an inline `# note` on a type, tier, files, after or covers line
+_BAD_FILE = re.compile(r"[()]|^/|\.\.")
+
+
+def _norm(path):
+    n = posixpath.normpath(re.sub(r"^(?:\./)+", "", path))
+    return n[2:] if n.startswith("./") else n
+
+
+def _clash(a, b):
+    """True when two `files` entries can name the same file: equal after normalising, one a directory holding the
+    other, or a glob matching the other. Case is never folded."""
+    a, b = _norm(a), _norm(b)
+    if a == b or a == "." or b == "." or b.startswith(a + "/") or a.startswith(b + "/"):
+        return True
+    return fnmatch.fnmatchcase(b, a) or fnmatch.fnmatchcase(a, b)
 
 
 def big_tiers():
@@ -104,6 +122,8 @@ def parse_blocks(text, integration=False):
                                      "use only " + ", ".join(sorted(allowed)) + " lines, one 'key: value' each"))
         else:
             k, v = m.group(1).lower(), m.group(2).strip()
+            if k in ("type", "tier", "files", "after", "covers"):  # a criterion's command or a step may hold ' #'
+                v = _COMMENT.sub("", v).strip()
             if k == "criterion":
                 cur["criteria"].append(c.split_verify(v))
             elif k == "step":
@@ -112,6 +132,10 @@ def parse_blocks(text, integration=False):
                 cur["covers"] += _numbers(v, where, problems)
             elif k in ("files", "after"):
                 cur[k] += _words(v)
+                for w in (_words(v) if k == "files" else []):
+                    if _BAD_FILE.search(w):
+                        problems.append(_problem(where, f"files token {w!r} is not a path inside the repo",
+                                                 "write a relative path or glob without parentheses, a leading / or .."))
             elif k in ("tier", "type"):
                 cur[k] = v.upper()
             else:
@@ -125,7 +149,8 @@ def _empty(text):
 
 def waves(blocks):
     """([[keys of one wave]], [keys left in a cycle]): a block's wave is one past the highest wave of its `after`."""
-    deps = {b["key"]: [a for a in b["after"] if a in {x["key"] for x in blocks} and a != b["key"]] for b in blocks}
+    keys = {x["key"] for x in blocks}
+    deps = {b["key"]: [a for a in b["after"] if a in keys and a != b["key"]] for b in blocks}
     level, left = {}, list(deps)
     while left:
         ready = [k for k in left if all(d in level for d in deps[k])]
@@ -155,6 +180,33 @@ def _cycle(blocks, left):
         if at in path:
             return " → ".join(path[path.index(at):] + [at])
         path.append(at)
+
+
+def _shared(blocks):
+    """A problem per pair of children that own overlapping files with no `after` path between them (either way, through
+    any number of others): lanes order by depends_on alone, so such a pair can run at once whatever its wave."""
+    deps = {x["key"]: {a for a in x["after"] if a != x["key"]} for x in blocks}
+    below = {}
+
+    def reach(k):  # every key k waits on, however far round (the graph has no cycle here)
+        if k not in below:
+            below[k] = set()
+            for d in deps.get(k, ()):
+                below[k] |= {d} | reach(d)
+        return below[k]
+    out = []
+    for i, x in enumerate(blocks):
+        for y in blocks[i + 1:]:
+            if x["key"] in reach(y["key"]) or y["key"] in reach(x["key"]):  # ordered: no file clash to look for
+                continue
+            hit = next(((f, g) for f in x["files"] for g in y["files"] if _clash(f, g)), None)
+            if hit:
+                f, g = hit
+                what = _norm(f) if _norm(f) == _norm(g) else f"{f} ({g} in {y['key']})"
+                out.append(_problem(x["key"], f"shares {what} with {y['key']}: neither waits on the other, so they could "
+                                    f"run at once", f"order them (after: {x['key']} on {y['key']}) or give the file to one of them"
+                                    f", or split the file"))
+    return out
 
 
 def _fit_tier(n):
@@ -227,15 +279,7 @@ def analyse(b, root="."):
         problems.append(_problem(left[0], f"cycle: {_cycle(blocks, left)}", "no block may wait, however far round, on itself: "
                                  "drop one of those after links"))
     elif not giant:
-        for i, wave in enumerate(wv, 1):
-            owner = {}
-            for k in wave:
-                for f in {re.sub(r"^\./", "", f) for f in next(x for x in blocks if x["key"] == k)["files"]}:
-                    if f in owner:
-                        problems.append(_problem(owner[f], f"shares {f} with {k} in wave {i}: they could run at once",
-                                                 f"order them (after: {owner[f]} on {k}) or give the file to one of them"))
-                    else:
-                        owner[f] = k
+        problems += _shared(blocks)
     n = len(b.acceptance())
     covered = {m for x in blocks for m in x["covers"]} | {m for x in ib for m in x["covers"]}
     for x in blocks + ib:
@@ -326,7 +370,7 @@ GUIDE_INTEGRATION = """# What holds once every child is in, checked by commands 
 CHECKS = ("every criterion of this task is covered by a child or by Integration (covers: N)",
           "no child above M (a GIANT's milestones are XL or HUGE)",
           "no cycle and no unknown key in any after line",
-          "no two children in one wave own the same file",
+          "no two children own the same file (a directory, a glob and a ./ or // spelling count) unless one waits on the other",
           "every child has a criterion whose verify command can fail",
           "Design and Integration are filled, with at least one Integration criterion",
           "the child count fits the tier (XL 3..8, HUGE 9..25, GIANT 2+ milestones): a warning, not a refusal")
@@ -348,7 +392,7 @@ def task_plan(p, args):
         x.append_log("big plan: skeleton written (" + ", ".join(wrote) + ")") if wrote else None
     cli.mutate(p, b.id, fill, "big_plan", {"wrote": wrote})
     text = [f"{b.id} ({b.tier}): " + (f"skeleton written for {', '.join(wrote)}" if wrote else "every section is filled; nothing written"),
-            "Fill the three sections in the brief (sampo task set ID --section Breakdown --text '…'), then:",
+            f"Fill the three sections in the brief (sampo task set {b.id} --section Breakdown --text '…'), then:",
             f"  sampo big check {b.id}    what it applies:"] + [f"    - {x}" for x in CHECKS] + [
             f"  sampo big expand {b.id}   one child task per block, linked, ordered, scoped (--dry-run first)"]
     return cli.out(args, {"id": b.id, "wrote": wrote, "checks": list(CHECKS)}, "\n".join(text))
@@ -393,6 +437,47 @@ def _children(b):
     return out
 
 
+def _have(p, b):
+    """({block key: (child id, sig)} of the children that exist, {block key: id} of recorded ones whose brief is gone).
+    A child carries its own plan key from its first write, so the tasks whose parent is b are the truth and the
+    parent's Children record only adds to them: a kill between the two leaves nothing to make twice."""
+    rec = _children(b)
+    briefs = sorted(c.load_briefs(p, include_archive=True), key=lambda x: c.id_num(x.id))
+    have = {}
+    for kid in briefs:
+        k = kid.meta.get("big_key")
+        if k and kid.meta.get("parent") == b.id and k not in have:
+            have[k] = (kid.id, str(kid.meta.get("big_sig") or rec.get(k, ("", ""))[1]))
+    alive = {kid.id for kid in briefs}
+    gone = {}
+    for k, (i, sig) in rec.items():
+        if k not in have:
+            if i in alive:
+                have[k] = (i, sig)
+            else:
+                gone[k] = i  # the brief was deleted: absent, made again
+    return have, gone
+
+
+def _write_children(p, parent_id, entries, strip, drop):
+    """The parent's side of expand: Children lines for entries [(key, id, title, sig)] (a key's older line goes), the
+    ids of `drop` leave depends_on, the new ids join it."""
+    b = c.find_brief(p, parent_id)
+    out = [l for l in b.section("Children").splitlines()
+           if not ((m := _CHILDREN.match(l.strip())) and (m.group(1) in strip or m.group(1) in {e[0] for e in entries}))]
+    for k, i, title, sig in entries:
+        out.append(f"{k} → {i}  {c.fit(title, 60)}  (block {sig})")
+    b.set_section("Children", "\n".join(out) + "\n" if out else "")
+    b.meta["depends_on"] = sorted((set(b.meta.get("depends_on") or []) - set(drop)) | {e[1] for e in entries})
+    b.append_log("big expand: " + ", ".join([f"{k}={i}" for k, i, _, _ in entries]
+                                            + [f"{i} was deleted" for i in sorted(drop)]))
+    c.save_brief(p, b)
+    from sampo import cli
+    c.log_event(p, "big_expand", task=b.id, data={"created": {k: i for k, i, _, _ in entries}}, session=cli.session())
+    c.regen_views(p)
+    return b
+
+
 def _inherited(b):
     return [l for l in (re.sub(r"^>\s?", "", x).strip() for x in b.section("Raw request").splitlines()) if _INHERIT.match(l)]
 
@@ -411,8 +496,8 @@ def _make(p, b, x, ids, giant):
                      + (f". Outcome: {x['outcome']}" if giant else "")] + _inherited(b))
     deps = sorted({ids[a] for a in x["after"] if a in ids})
     kid = cli._create(p, x["title"], x["type"] or b.type, x["tier"] if not giant else x["tier"] or "XL", "planned", raw=raw,
-                      scope=x["files"], depends=deps, source=b.meta.get("source", "user"), priority=b.priority)
-    kid.meta["parent"] = b.id
+                      scope=x["files"], depends=deps, source=b.meta.get("source", "user"), priority=b.priority,
+                      meta={"parent": b.id, "big_key": k, "big_sig": _sig(x)})  # on the first write: a rerun after a kill finds it
     if giant:
         kid.set_section("Interpretation", f"{x['outcome']}\nThis milestone is part of {b.id}'s Design: its own full plan "
                         f"(Design, Breakdown, Integration) is written when it starts: sampo big plan {kid.id}.\n")
@@ -443,7 +528,7 @@ def task_expand(p, args):
         raise cli.UsageError(f"{b.id} is {b.status}")
     giant = b.tier == "GIANT"
     created, existing, changed, dropped = {}, {}, [], []
-    plan = {}
+    plan, entries, gone = {}, [], {}  # entries: [(key, id, title, sig)] the parent's Children record still lacks
 
     def work(b, make):
         r = plan["r"] = analyse(b, p.root)  # again under the lock: the Breakdown may have changed since the first look
@@ -453,7 +538,9 @@ def task_expand(p, args):
             raise c.PolicyError(f"{b.id}: the plan has problems, nothing made: {shown}{more}; sampo big check {b.id}")
         blocks, _ = parse_blocks(b.section("Breakdown"))
         by = {x["key"]: x for x in blocks}
-        have = _children(b)
+        have, lost = _have(p, b)
+        gone.update(lost)
+        recorded = _children(b)
         started = []
         for k, (kid_id, _) in have.items():
             kid = c.find_brief(p, kid_id)
@@ -471,6 +558,8 @@ def task_expand(p, args):
                     existing[k] = have[k][0]
                     if have[k][1] != _sig(x):
                         changed.append((k, have[k][0]))
+                    if recorded.get(k, ("",))[0] != have[k][0]:  # made, but never written to the parent
+                        entries.append((k, have[k][0], x["title"], have[k][1]))
                 else:
                     created[k] = make(x, ids)
                     ids[k] = created[k]
@@ -482,28 +571,17 @@ def task_expand(p, args):
     else:
         with c.lock(p.dir):
             b = cli.need_brief(p, b.id)
-            blocks_by = {}
 
             def make(x, ids):
                 kid = _make(p, b, x, ids, giant)
-                blocks_by[x["key"]] = x
+                entries.append((x["key"], kid.id, x["title"], _sig(x)))
                 return kid.id
             ids = {}
             try:
                 ids = work(b, make)
-            finally:  # whatever was made is recorded, even when a later one failed: a second run must not make it twice
-                if created:
-                    b = c.find_brief(p, b.id)
-                    rec = b.section("Children")
-                    rec = (rec if not rec.strip() or rec.endswith("\n") else rec + "\n")
-                    for k, i in created.items():
-                        rec += f"{k} → {i}  {c.fit(blocks_by[k]['title'], 60)}  (block {_sig(blocks_by[k])})\n"
-                    b.set_section("Children", rec)
-                    b.meta["depends_on"] = sorted(set(b.meta.get("depends_on") or []) | set(created.values()))
-                    b.append_log(f"big expand: made {', '.join(f'{k}={i}' for k, i in created.items())}")
-                    c.save_brief(p, b)
-                    c.log_event(p, "big_expand", task=b.id, data={"created": created}, session=cli.session())
-                    c.regen_views(p)
+            finally:  # whatever was made is recorded, even when a later one failed; a hard kill is covered by each
+                if entries or gone:  # child's own plan key (_have), so a second run must not make it twice either
+                    _write_children(p, b.id, entries, set(gone), set(gone.values()))
     r = plan["r"]
     lines = [f"{b.id} ({b.tier}) {'would make' if args.dry_run else 'made'} {len(created)} "
              f"{'milestone' if giant else 'child'}(ren){' (dry run)' if args.dry_run else ''}, "

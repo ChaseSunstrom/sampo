@@ -233,11 +233,13 @@ def _scope_paths(values):
     return list(dict.fromkeys(out))
 
 
-def _create(p, title, type, tier, status, raw=None, scope=(), depends=(), source="user", priority="normal", explore=False, net=True):
+def _create(p, title, type, tier, status, raw=None, scope=(), depends=(), source="user", priority="normal", explore=False, net=True,
+            meta=None):
     scope = _scope_paths(scope)
     tid = c.next_id(p, net=net)  # T-3329: the hook captures pass net=False, so no prompt or stop waits on the claims remote
     b = c.Brief.new(tid, title, type, tier, raw=raw, scope=scope, depends=depends, source=source,
                     priority=priority, status=status, explore=explore)
+    b.meta.update(meta or {})  # T-4221: fields the caller needs on the very first write (a plan key), not a second save later
     c.save_brief(p, b, touch=False)
     return b
 
