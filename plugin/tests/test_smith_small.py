@@ -517,13 +517,17 @@ class PlanForm(CodeCase):
                          ["dropped", "dropped", "done"], r.stdout + r.stderr)
         self.assertIn("the test file is unchanged", json.dumps(self.task("T-0003")))
 
-    def test_focus_refusal_whose_targeted_reply_fills_nothing_ends_with_the_refusal(self):
+    def test_focus_refusal_whose_targeted_reply_fills_nothing_starts_with_the_part_set_aside(self):
+        # T-4386: it ended with the refusal; now the clause no reply could tie to a check is carried as unproven (the
+        # tests in test_smith_unproven.py hold the rest), after the same six requests and no more
         f, r = self.go(plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(M_PLAN), {"text": "hmm"},
-                       {"text": "nope"}, request="fix add, and keep the tests as they are", kind="anthropic")
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("refused the plan", r.stderr)
-        self.assertEqual(len(f.seen), 6)
-        self.assertEqual(self.task("T-0002")["status"], "planned")  # it stays to be looked at
+                       {"text": "nope"}, FIX_EDIT, DONE, CLOSE, request="fix add, and keep the tests as they are",
+                       kind="anthropic")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("set aside, to start without it", r.stdout)
+        self.assertEqual(self.task("T-0002")["status"], "dropped")
+        self.assertEqual(self.task("T-0003")["status"], "done")
+        self.assertIn("unproven by this run", self.brief("T-0003"))
 
     def test_focus_refusal_for_a_one_way_step_asks_for_that_step_again(self):
         # the repo itself is a door no snapshot covers, so focus can't write the Undo line on its own (doors.gate)

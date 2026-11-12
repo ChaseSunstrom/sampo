@@ -720,23 +720,30 @@ class Review(CodeCase):
         self.assertEqual(self.task("T-0001")["status"], "dropped", r.stdout + r.stderr)
         self.assertEqual(self.task("T-0002")["status"], "done", r.stdout + r.stderr)
 
-    def test_a_plan_refused_twice_ends_the_run_with_the_refusal(self):
-        self.serve("anthropic", plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(M_PLAN), {"text": "hmm"}, {"text": "nope"})
+    def test_a_plan_refused_twice_starts_with_the_clause_set_aside(self):
+        # T-4386: it ended with the refusal (T-0002 left planned); now the clause no reply could tie to a check is
+        # carried as unproven, and the run starts on the plan's own criteria in a third task
+        self.serve("anthropic", plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(M_PLAN), {"text": "hmm"},
+                   {"text": "nope"}, call("edit", file="calc.py", old="a - b", new="a + b"),
+                   call("done", summary="x"), CLOSE)
         r = self.code("fix add, and keep the tests as they are", "--model", "fake", check=False)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("refused the plan", r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(self.task("T-0001")["status"], "dropped")  # the first gave way to the re-plan
-        self.assertEqual(self.task("T-0002")["status"], "planned")  # the second stays to be looked at
-        self.assertIn("fm task show T-0002", r.stderr)
+        self.assertEqual(self.task("T-0002")["status"], "dropped")  # the second to the run without the clause
+        self.assertEqual(self.task("T-0003")["status"], "done")
+        self.assertIn("not proven", r.stdout)
 
-    def test_a_re_plan_that_cannot_stand_keeps_the_refused_task(self):
-        # T-3016 review: the refused task is dropped only once its replacement passes the plan's checks
+    def test_a_re_plan_that_cannot_stand_is_dropped_for_the_plan_in_hand_with_the_clause_set_aside(self):
+        # T-3016 review: the refused task is dropped only once its replacement passes the plan's checks; T-4386: a
+        # re-plan that cannot stand leaves the plan in hand, and its clause is the one thing set aside
         weak = dict(M_PLAN, criteria=[{"text": "keep the tests as they are", "verify": "true"}])
-        self.serve("anthropic", plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(weak), plan(weak))  # T-4363: one more round
+        self.serve("anthropic", plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(weak), plan(weak),  # T-4363: one more round
+                   call("edit", file="calc.py", old="a - b", new="a + b"), call("done", summary="x"), CLOSE)
         r = self.code("fix add, and keep the tests as they are", "--model", "fake", check=False)
-        self.assertEqual(r.returncode, 1)
-        self.assertIn("proves nothing", r.stderr)
-        self.assertEqual(self.task("T-0001")["status"], "planned", r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task("T-0001")["status"], "dropped", r.stderr)
+        self.assertEqual(self.task("T-0002")["status"], "done", r.stdout + r.stderr)
+        self.assertIn("not proven", r.stdout)
 
     def test_max_steps_stop_resumes_with_its_options(self):
         f = self.serve("openai", plan(), call("read", path="calc.py"), call("read", path="calc.py"))
