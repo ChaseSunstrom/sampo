@@ -1815,7 +1815,8 @@ class ScratchNames(GuardCase):
         self.assertFalse(self.bash("fm secrets > /tmp/claude-1000/proj/sess/scratchpad/secrets.txt"))
         self.assertBlocked(self.bash(f"echo x > {self.repo}/secrets.txt"), "credentials")
         self.assertBlocked(self.bash(f"echo x > {self.home}/secrets.txt"), "credentials")
-        self.assertBlocked(self.bash("echo x > /tmp/claude-1000/proj/sess/scratchpad/.env"), "credentials")
+        # T-4143: a scratch .env is a fixture the session wrote (30 refusals of redchk/host/.env in the JARVIS logs)
+        self.assertFalse(self.bash("echo x > /tmp/claude-1000/proj/sess/scratchpad/.env"))
         with tempfile.TemporaryDirectory(dir="/tmp") as d:
             os.symlink(self.home, os.path.join(d, "l"))  # its real path is in home
             self.assertBlocked(self.bash(f"echo x > {d}/l/secrets.txt"), "credentials")

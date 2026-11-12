@@ -105,6 +105,118 @@ class BareCredName(GuardCase):
                 self.assertBlocked(self.bash(cmd, cwd=self.repo), "credentials")
 
 
+class CredentialFalsePositives(GuardCase):
+    """T-4143: the credentials category refused files that are not secrets (46 distinct shapes in the JARVIS logs):
+    design tokens, text in a heredoc body, scratch fixtures, templates, a doc comment's '/**', a variable that only
+    reads a secret. Placeholders only: no real host or key name."""
+    SCRATCH = "/tmp/claude-1000/x/scratchpad"
+
+    def test_cred_design_tokens_pass(self):
+        for path in ("{repo}/design/tokens.json", "{repo}/web/src/lib/ds/Tokens.svelte"):
+            for tool in ("Write", "Edit"):
+                with self.subTest(path=path, tool=tool):
+                    self.assertIsNone(self.write(path, tool=tool))
+        # a folder named for them: one that exists is no file to hold a secret, and mkdir makes only a folder
+        os.makedirs(os.path.join(self.repo, "lib", "tokens"), exist_ok=True)
+        self.assertIsNone(self.write("{repo}/lib/tokens"))
+        self.assertBlocked(self.write("{repo}/lib/newdir/tokens"), "credentials")  # a file not there yet: still a name
+        for cmd in ("mkdir tokens", "mkdir -p {repo}/tokens/colors", "mkdir -p src/tokens && ls src/tokens"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd, cwd=self.repo))
+        code = ("python3 - <<'EOF'\np='design/tokens.json'; s=open(p).read(); s=s.replace('a','b')\n"
+                "open(p,'w').write(s)\nEOF")
+        self.assertIsNone(self.bash(code, cwd=self.repo))
+
+    def test_cred_text_in_a_heredoc_body_is_not_a_target(self):
+        body = ("import pathlib\n# the host's .env is left alone\ndef test_cleanup(tmp):\n"
+                "    (tmp / 'host' / '.env').write_text('X=1')\n")
+        for opener in ("cat > deploy/tests/test_cleanup.py <<'EOF'", "cat > deploy/tests/test_cleanup.py <<EOF"):
+            with self.subTest(opener=opener):
+                self.assertIsNone(self.bash(f"{opener}\n{body}EOF", cwd=self.repo))
+
+    def test_cred_a_heredoc_body_that_is_run_stays_refused(self):
+        # a body written and run in ONE command is code, not text: the guard cannot tell a test that mentions
+        # a secret from a script that writes it, so every credential hit stays (the two-command form passes above)
+        body = "from pathlib import Path\n(Path(tmp) / \"host\" / \".env\").write_text(\"X=1\")\n"
+        for tail in ("python3 -m pytest deploy/tests/test_cleanup.py", "python3 deploy/tests/test_cleanup.py",
+                     "cd deploy && python3 -m pytest -q 2>&1 | tail -5"):
+            with self.subTest(tail=tail):
+                self.assertBlocked(self.bash(f"cat > deploy/tests/test_cleanup.py <<'EOF'\n{body}EOF\n{tail}",
+                                             cwd=self.repo), "credentials")
+                self.assertBlocked(self.bash(f"cd {{repo}} && cat > deploy/tests/test_cleanup.py <<'EOF'\n{body}EOF\n"
+                                             f"{tail}", cwd=self.repo), "credentials")
+        home = "from pathlib import Path\nPath('{home}/.ssh/authorized_keys').write_text('x')\n"
+        self.assertBlocked(self.bash(f"cat > t.py <<'EOF'\n{home}EOF\npython3 t.py", cwd=self.repo), "credentials")
+        home = "from pathlib import Path\nPath('{home}/.ssh/id_rsa').write_text('x')\n"
+        self.assertBlocked(self.bash(f"cat > t.py <<'EOF'\n{home}EOF\npython3 t.py", cwd=self.repo), "credentials")
+        # an interpreter that reads its code from a heredoc or stdin is never a text body
+        self.assertBlocked(self.bash("cat > t.py <<'EOF'\nx = 1\nEOF\npython3 - <<'EOF'\nopen('.env', 'w')\nEOF",
+                                     cwd=self.repo), "credentials")
+        self.assertBlocked(self.bash("python3 - <<'EOF'\nopen('.env', 'w').write('K=1')\nEOF", cwd=self.repo),
+                           "credentials")
+        self.assertBlocked(self.bash("bash <<'EOF'\necho K=1 > .env\nEOF", cwd=self.repo), "credentials")
+        self.assertBlocked(self.bash("bash -s <<'EOF'\necho K=1 > deploy/.env\nEOF", cwd=self.repo), "credentials")
+
+    def test_cred_scratch_fixtures_pass(self):
+        for cmd in (f"cd {self.SCRATCH} && mkdir -p redchk/host && printf 'A=1\\n' > redchk/host/.env",
+                    f"printf 'A=1\\n' > {self.SCRATCH}/redchk/.env",
+                    "printf 'A=1\\n' > /tmp/redchk/.env.production"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd, cwd=self.repo))
+        self.assertIsNone(self.write(f"{self.SCRATCH}/redchk/.env"))
+        self.assertIsNone(self.write("/tmp/redchk/host/secrets.yaml"))
+
+    def test_cred_scratch_exemption_has_limits(self):
+        # a project checked out under /tmp keeps its .env; a link from scratch to a credential folder is judged there
+        ctx = g.Ctx(cwd="/tmp/projx", project_root="/tmp/projx", home=self.home, foreman_home=self.fhome,
+                    scratch=["/tmp", self.SCRATCH], task_id="T-0007")
+        self.assertBlocked(g.check("Write", {"file_path": "/tmp/projx/.env", "content": "x"}, ctx), "credentials")
+        self.assertIsNone(g.check("Write", {"file_path": f"{self.SCRATCH}/projx/.env", "content": "x"}, ctx))
+        ssh = os.path.join(self.home, ".ssh")
+        os.makedirs(ssh, exist_ok=True)
+        link = os.path.join(self.repo, "lnk")
+        if not os.path.lexists(link):
+            os.symlink(ssh, link)
+        self.assertBlocked(g.check("Write", {"file_path": f"{link}/id_rsa", "content": "x"}, self.ctx()), "credentials")
+
+    def test_cred_templates_pass(self):
+        for path in ("{repo}/core/config/secrets.yaml.example", "{repo}/deploy/.env.example",
+                     "{repo}/deploy/.env.production.sample", "{repo}/deploy/credentials.json.template",
+                     "{repo}/deploy/secrets.yaml.dist"):
+            for tool in ("Write", "Edit"):
+                with self.subTest(path=path, tool=tool):
+                    self.assertIsNone(self.write(path, tool=tool))
+        self.assertIsNone(self.bash("python3 -c \"open('{repo}/deploy/.env.example', 'w').write('K=\\n')\"",
+                                    cwd=self.repo))
+
+    def test_cred_doc_comment_is_not_a_path(self):
+        src = "package a\n\n/**\n * The pairing token, as the lock sees it.\n */\nclass Lock\n"
+        self.assertIsNone(self.bash(f"cat > app/src/Lock.kt <<'EOF'\n{src}EOF", cwd=self.repo))
+        self.assertIsNone(self.bash(f"cat > app/src/Lock.java <<EOF\n/** the .env reader */\nclass Lock\nEOF",
+                                    cwd=self.repo))
+        self.assertIsNone(g.check("Write", {"file_path": f"{self.repo}/app/Lock.kt", "content": src}, self.ctx()))
+
+    def test_cred_reading_a_secret_into_a_variable_is_not_a_write(self):
+        cmd = ("T=$(grep ^API_TOKEN= /srv/host/.env | cut -d= -f2-); S=" + self.SCRATCH + "; "
+               "for p in 551 552; do curl -s -H \"PRIVATE-TOKEN: $T\" \"$API/pipelines/$p/jobs\" > $S/j$p.json; done")
+        self.assertIsNone(self.bash(cmd, cwd=self.repo))
+
+    def test_cred_real_secrets_stay_refused(self):
+        for path in ("{repo}/.env", "{repo}/.env.production", "/srv/host/.env", "{home}/.ssh/id_ed25519",
+                     "{repo}/certs/server.pem", "{repo}/deploy/credentials.json", "{repo}/config/secrets.yaml",
+                     "{home}/.npmrc", "{home}/.netrc", "{repo}/deploy/token", "{repo}/deploy/api_token.txt",
+                     "{repo}/deploy/prod-tokens.json"):
+            for tool in ("Write", "Edit"):
+                with self.subTest(path=path, tool=tool):
+                    self.assertBlocked(self.write(path, tool=tool), "credentials")
+        for cmd in ("sed -i 's/a/b/' {repo}/.env", "echo K=1 >> {repo}/.env.production", "sed -i 's/a/b/' /srv/host/.env",
+                    "cp /srv/host/.env {home}/backup.env; sed -i 's/a/b/' /srv/host/.env",
+                    "python3 -c \"open('/srv/host/.env','w').write('x')\"",
+                    "python3 - <<'EOF'\nopen('{repo}/.env', 'w').write('x')\nEOF"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.bash(cmd, cwd=self.repo))
+
+
 class NoTaskCase(GuardCase):
     """T-4138: the write detector with no task active (the project's root is `unbriefed`): shapes mined from 106 blocks
     where text that wasn't a write target was named as one ("<proj>/.json", "<proj>/.join(struct.pack(")."""

@@ -482,6 +482,14 @@ def _is_credential(path, ctx):
     if path in {os.path.join(ctx.home, f) for f in _CRED_FILES}:
         return True
     base = os.path.basename(path)
+    if os.path.isdir(path):
+        return False  # T-4143: a folder named tokens/.env holds no secret itself (a file in it is judged by its own name)
+    # T-4143: a scratch fixture (redchk/host/.env under the session scratchpad, /tmp, a test's temp folder) holds what
+    # the session wrote there: no secret of the user's. A scratch root that contains the home or the project (a project
+    # checked out under /tmp) never exempts: only a folder strictly apart from both counts
+    if any(_under(path, s) and not _under(ctx.home, s) and not (ctx.project_root and _under(ctx.project_root, s))
+           for s in getattr(ctx, "scratch", ()) or ()):
+        return False
     if re.fullmatch(r"\.env(\..+)?", base) and not re.search(r"\.(example|sample|template|dist|defaults?)$", base):
         return True
     if re.search(r"\.(pem|key|p12|pfx|keystore|jks)$", base) or re.match(r"id_(rsa|dsa|ecdsa|ed25519)(?!.*\.pub$)", base):
