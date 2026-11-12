@@ -15,6 +15,10 @@ tool call when its profile has tools, else a JSON object in its text ({"action":
   search {pattern, glob?}       git grep -E, bounded
   edit {file, old, new}         the guard (PreToolUse Edit), then fm edit (all or nothing)
   write {file, content}         the guard (PreToolUse Write), then the file
+An edit or write that leaves a .py, .json, .js/.mjs/.cjs, .sh or .toml file unparsable (when it parsed before, or is
+new) returns the parser's line and message; done is refused while such a file stands; a run that stops unfinished with
+one puts the files it changed back to the last step's end (the start when none ended) and keeps what it dropped as
+<task>.dropped-*.patch beside the journal (T-4426).
   run {cmd}                     the guard (PreToolUse Bash), then bash at the root; output cut to head and tail
   done {summary}                the step is finished
 The guard is reached exactly as other harnesses do: plugin/hooks/hook PreToolUse with a Claude-Code-shaped payload;
@@ -235,14 +239,19 @@ EVENTS = {
     "worker": "worker, exit", "revert": "file, reason",
     "verify": "criterion, label (before|verify), cmd, exit, output (when it failed)",
     "early_done": "n: a done refused (no edit, a verify fails); the third stops the run",
+    "parse_refused": "files: a done refused while a file the run changed does not parse (T-4426)",
     "forced": "n: a turn forced to be the edit, after n looks in a step without one (T-4177)",
     "stats": "reads, rereads, reread_ratio, searches, notes, forced, turns, turns_to_first_edit (null: none): what the "
-             "run looked at and how soon it edited, at its end however it ended (T-4177)",
+             "run looked at and how soon it edited, at its end however it ended (T-4177); parse_breaks: edits that left "
+             "a file unparsable; restored [files], patch: what a stop put back and where the dropped difference is "
+             "(T-4426)",
     "changed": "step, files (dirty after the step), stat {path: [added, removed]}",
     "built_out": "dir, count, text: a new directory a command filled (over BUILT_FILES untracked files, none written by the "
                  "run's own tools) listed in .git/info/exclude and left out of the commit (T-4387)",
     "closed": "task, tokens, unproven (fm task finish's Not verified lines, T-2395)",
-    "blocked": "task, reason, next (the command to run now)", "error": "task, next",
+    "blocked": "task, reason, next (the command to run now), restored, patch (T-4426)",
+    "error": "task, next, restored [files], patch: a stop with a file it broke put the files it changed back to the last "
+             "finished step and kept the difference as a patch (T-4426)",
     "answer": "text: the answer to a question about the code (no task, nothing changed)",
     "note": "text, worker: which runner the run uses and why, or a caution about it (T-1328), or a worker turn that "
             "changed nothing (T-1393); stopped [pids]: runners a killed fm code left, stopped at this start (T-1337); "
@@ -1045,6 +1054,9 @@ class Run:
         self.state, self.checked, self.bad_run, self.broke = None, False, False, False  # a resume starts the state again
         self.step_edited = False  # T-3124: an edit landed in this step
         self.early, self.edited, self.tree0 = 0, False, None  # T-3180: refused early dones; an edit landed; the tree at start
+        # T-4426: the files the run's edit and write changed: what each held first (orig) and at the last step end (snap),
+        # None for a file not there; those that don't parse now (broken); a parse result by content; the unwind's result
+        self.orig, self.snap, self.broken, self.pmemo, self.lost, self.steps_done = {}, {}, {}, {}, None, False
         self.wrote = set()  # T-4387: repo-relative paths the run's own write and edit tools changed (journaled, replayed)
         self.had_dirs = set()  # T-4387: the untracked directories there were when the run began: the user's, never excluded
         self.nonce = secrets.token_hex(6)  # T-1394: the data envelope's tag, which no file can know ahead
@@ -1055,7 +1067,8 @@ class Run:
         self.shown, self.cur, self.pending, self.cut = {"reads": {}, "searches": []}, None, None, set()
         self.facts = []  # the notes of earlier steps (a resume starts them again: the model re-reads what it needs)
         self.count = {"reads": 0, "rereads": 0, "searches": 0, "notes": 0, "forced": 0, "first_edit": None,
-                      "looks": 0, "look_runs": 0, "forced_edit": 0, "forced_test": 0, "forced_source": 0, "carried": 0}
+                      "looks": 0, "look_runs": 0, "forced_edit": 0, "forced_test": 0, "forced_source": 0, "carried": 0,
+                      "parse_breaks": 0}
         self.explored, self.forced_turns, self.missing_used, self.look_next = 0, 0, False, False  # this step's budget
         # T-4206: this step's state the forced turn names its move from: edits since the last test run, whether that run
         # failed, the progress made so far, the verify commands that passed, and how the last run was judged
@@ -1314,9 +1327,12 @@ class Run:
             if name == "search":
                 return self.seen_search(arg("pattern"), a.get("glob") if isinstance(a.get("glob"), str) else None), False
             if name in ("edit", "write"):
+                pre = self.touch(a.get("file"))  # T-4426: what the file held and whether it parsed, before the action
                 res = self.edit(arg("file"), arg("old"), arg("new")) if name == "edit" else \
                     self.write(arg("file"), arg("content"))
                 ok = not res.startswith(("error", "refused"))
+                if ok:
+                    res += self.parse_after(pre)
                 if ok and not self.edited:  # T-3180
                     self.edited = True
                     self.log(kind="edited")  # T-3974: a resume knows an edit landed before the crash
@@ -1658,7 +1674,10 @@ class Run:
                 "turns_to_first_edit": c["first_edit"],
                 # T-4206: what the budget counted and forced, so a local-runs row can tell the stops apart
                 "looks": c["looks"], "look_runs": c["look_runs"], "forced_edit": c["forced_edit"],
-                "forced_test": c["forced_test"], "forced_source": c["forced_source"], "carried": c["carried"]}
+                "forced_test": c["forced_test"], "forced_source": c["forced_source"], "carried": c["carried"],
+                # T-4426: edits that left a file unparsable, and what a stop unfinished with one put back
+                "parse_breaks": c["parse_breaks"], "restored": (self.lost or {}).get("restored", []),
+                "patch": (self.lost or {}).get("patch")}
 
     def report(self):
         """The stats event, once, and before the run's ending event (the last event of a stream is its end: the TUI and
@@ -2239,13 +2258,171 @@ class Run:
             seen[self.last_act] = seen.get(self.last_act, 0) + 1
             if seen[self.last_act] == 3 and not finished:  # T-2966: once a key, as louhi counts it
                 finished = self.loop_break(name, profile, self.last_act, tools)
-            if finished and self.last_act[0] == "done" and (back := self.early_done(name)):
+            if finished and self.last_act[0] == "done" and (back := self.parse_refusal() or self.early_done(name)):
                 self.add(name, {"role": "user", "content": back})
                 continue
             if finished:
                 break
         self.done.add(name)
         self.log(kind="phase_done", phase=name)
+
+    # -- a project is never left worse without a word (T-4426)
+    def problem(self, rel, data):
+        """parse_problem, remembered by the content's hash (an edit's 'after' is the next edit's 'before')."""
+        key = hashlib.sha1(data).digest()
+        hit = self.pmemo.get(rel)
+        if hit and hit[0] == key:
+            return hit[1]
+        found = parse_problem(rel, data)
+        self.pmemo[rel] = (key, found)
+        return found
+
+    def touch(self, file):
+        """(rel, full, existed, parsed) of an edit's or write's target before it runs, remembering the first state the
+        run saw (orig, and snap until a step ends). None for a name that is no file of the project or one too big."""
+        if not isinstance(file, str):
+            return None
+        try:
+            full = self.path(file)
+        except (ValueError, OSError):
+            return None
+        rel = os.path.relpath(full, self.root).replace(os.sep, "/")
+        ok, data = _slurp(full)
+        if not ok:
+            return None
+        if rel not in self.orig:
+            self.orig[rel] = self.snap[rel] = data
+        return rel, full, data is not None, data is None or self.problem(rel, data) is None
+
+    def parse_after(self, pre):
+        """The words appended to an edit's or write's result when it left a file unparsable that parsed before (or is
+        new): the parser's line and message. A file that was already broken (before the run, or by its last edit, when
+        the model may be mid-way through a two-edit change) gets none; a file that parses again leaves the held list."""
+        if not pre:
+            return ""
+        rel, full, existed, parsed = pre
+        ok, data = _slurp(full)
+        if not ok or data is None:
+            return ""
+        now = self.problem(rel, data)
+        if now is None:
+            self.broken.pop(rel, None)
+            return ""
+        if not parsed:
+            if rel in self.broken:
+                self.broken[rel] = now
+            return ""
+        self.broken[rel] = now
+        self.count["parse_breaks"] += 1
+        return (f"\nWarning: {rel} {'no longer parses' if existed else 'does not parse'}: {now}. "
+                "Fix it before you call done.")
+
+    def unparsable(self):
+        """[(rel, problem)] of the held files that still don't parse (read again: a command may have mended one)."""
+        out = []
+        for rel in sorted(self.broken):
+            try:
+                ok, data = _slurp(self.path(rel))
+            except (ValueError, OSError):
+                continue
+            now = self.problem(rel, data) if ok and data is not None else None
+            if now is None:
+                self.broken.pop(rel, None)
+            else:
+                self.broken[rel] = now
+                out.append((rel, now))
+        return out
+
+    def parse_refusal(self):
+        """A done while a file this run changed doesn't parse: the list as the next turn, else None."""
+        bad = self.unparsable()
+        if not bad:
+            return None
+        self.log(kind="parse_refused", files=[r for r, _ in bad])
+        self.emit("parse_refused", f"  done refused: {', '.join(r for r, _ in bad)} no longer parse", quiet=True,
+                  files=[r for r, _ in bad])
+        return ("Not done: " + ("this file you changed no longer parses" if len(bad) == 1
+                                else "these files you changed no longer parse") + ":\n\n"
+                + self.fence("\n".join(f"{r}: {p}" for r, p in bad)) + "\n\nFix them, then call done.")
+
+    def snapshot(self):
+        """A step ended: when every file the run changed parses, they are put back to this state by a stop."""
+        if self.unparsable():
+            return
+        for rel in self.orig:
+            try:
+                ok, data = _slurp(self.path(rel))
+            except (ValueError, OSError):
+                continue
+            if ok:
+                self.snap[rel] = data
+
+    def unwind(self):
+        """A run that stops with its steps unfinished and a file it changed unparsable puts the files it changed back
+        to the last step-end snapshot (the start when none ended), keeps the dropped difference as a patch beside the
+        journal, and returns {restored, patch, unparsable, text} for the end event; {} when it restores nothing.
+        Once a run, whatever way it ends."""
+        if self.lost is not None:
+            return self.lost
+        self.lost = {}
+        if self.steps_done or self.worker or self.read_only or not self.orig:
+            return self.lost
+        try:
+            self.lost = self.put_back() or {}
+        except Exception as e:  # the stop's own work never hides the stop
+            self.log(kind="restore_failed", error=_one_line(str(e), 200))
+        return self.lost
+
+    def put_back(self):
+        import difflib
+        bad = self.unparsable()
+        if not bad:
+            return None
+        restored, diff, kept = [], [], []
+        for rel in sorted(self.orig):
+            try:
+                full = self.path(rel)
+            except (ValueError, OSError):
+                continue
+            ok, now = _slurp(full)
+            was = self.snap.get(rel, self.orig[rel])
+            if not ok or now == was:
+                continue
+            try:
+                if was is None:
+                    os.remove(full)
+                else:
+                    with open(full, "wb") as f:
+                        f.write(was)
+                    from sampo import edit
+                    edit.drop_bytecode(full)
+            except OSError:
+                kept.append(rel)
+                continue
+            restored.append(rel)
+            old = (was or b"").decode("utf-8", "replace").splitlines(keepends=True)
+            new = (now or b"").decode("utf-8", "replace").splitlines(keepends=True)
+            diff.extend(difflib.unified_diff(old, new, "/dev/null" if was is None else f"a/{rel}",
+                                             "/dev/null" if now is None else f"b/{rel}"))
+        patch = None
+        if diff:
+            where = os.path.dirname(self.journal) if self.journal else self.jdir
+            patch = os.path.join(where, f"{self.tid or 'run'}.dropped-{int(time.time())}.patch")
+            for n in itertools.count(1):  # never over a file (or through a link) that is already there
+                if not os.path.lexists(patch):
+                    break
+                patch = os.path.join(where, f"{self.tid or 'run'}.dropped-{int(time.time())}-{n}.patch")
+            fd = os.open(patch, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("".join(x if x.endswith("\n") else x + "\n\\ No newline at end of file\n" for x in diff))
+        if not restored:
+            return None
+        text = (f"fm code put the project back: it stopped unfinished with {', '.join(r for r, _ in bad)} not parsing, "
+                f"so {', '.join(restored)} went back to {'the last finished step' if self.snap != self.orig else 'the start'}"
+                + (f"; the dropped changes are in {patch}" if patch else "")
+                + (f"; could not put back {', '.join(kept)}" if kept else ""))
+        self.log(kind="restored", files=restored, patch=patch, unparsable=[r for r, _ in bad])
+        return {"restored": restored, "patch": patch, "unparsable": [r for r, _ in bad], "text": text}
 
     def wrote_file(self, rel):
         """T-4387: the run's own tools touched this file: a new directory holding it is never a command's output."""
@@ -3496,6 +3673,91 @@ def _dirty(root):
     return {e[3:]: e[:2] for e in os.fsdecode(out).split("\0") if len(e) > 3 and not e.endswith("/")}
 
 
+PARSE_BYTES, PARSE_SECONDS = 2 << 20, 10  # T-4426: the largest file the parse check and the stop's snapshot hold; a tool's time
+
+
+def _tool_parse(rel, data, argv, suffix, found):
+    """T-4426: a checker that reads a file (node --check, bash -n), run on a copy in a folder of its own: it only parses,
+    never runs the file. None when it parses, or the tool is missing, slow or odd; else found(its stderr)."""
+    try:
+        with tempfile.TemporaryDirectory(prefix="smith-parse-") as d:
+            path = os.path.join(d, "x" + suffix)
+            with open(path, "wb") as f:
+                f.write(data)
+            p = subprocess.run([*argv, path], cwd=d, capture_output=True, timeout=PARSE_SECONDS, stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode == 0:
+        return None
+    text = os.fsdecode(p.stderr).replace(os.path.join(d, ""), "")
+    return found(text) or None
+
+
+def _node_problem(text):
+    at = re.search(r"^[^\n]*:(\d+)\n", text)
+    why = re.search(r"^(\w*Error: .*)$", text, re.M)
+    return f"line {at.group(1)}: {why.group(1)}" if at and why else (f"{why.group(1)}" if why else None)
+
+
+def _bash_problem(text):
+    at = re.search(r"line (\d+): (.+)", text)
+    return f"line {at.group(1)}: {_one_line(at.group(2), 160)}" if at else _one_line(text, 200) or None
+
+
+def parse_problem(rel, data):
+    """T-4426: None when data parses as rel's kind, or the kind is unknown, the checker isn't on this machine or the file
+    is over PARSE_BYTES; else the parser's own line and message ('IndentationError at line 75: unexpected indent').
+    Python: compile(); JSON: json; .js/.mjs/.cjs: node --check (a .js that only parses as a module counts as parsing);
+    shell: bash -n; TOML: tomllib."""
+    if len(data) > PARSE_BYTES:
+        return None
+    ext = os.path.splitext(rel)[1].lower()
+    if not ext and re.match(rb"#!\s*(?:/usr/bin/env\s+)?(?:\S*/)?(?:ba)?sh\b", data):
+        ext = ".sh"
+    try:
+        if ext == ".py":
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                compile(data, rel, "exec", dont_inherit=True)
+        elif ext == ".json":
+            json.loads(data.decode("utf-8-sig"))
+        elif ext == ".toml":
+            import tomllib
+            tomllib.loads(data.decode("utf-8"))
+        elif ext in (".js", ".mjs", ".cjs") and shutil.which("node"):
+            first = _tool_parse(rel, data, ["node", "--check"], ext, _node_problem)
+            if first and ext == ".js" and not _tool_parse(rel, data, ["node", "--check"], ".mjs", _node_problem):
+                return None
+            return first
+        elif ext in (".sh", ".bash"):
+            return _tool_parse(rel, data, ["bash", "-n"], ".sh", _bash_problem) if shutil.which("bash") else None
+    except SyntaxError as e:
+        return f"{type(e).__name__} at line {e.lineno}: {_one_line(e.msg or '', 160)}" if e.lineno else \
+            f"{type(e).__name__}: {_one_line(e.msg or '', 160)}"
+    except json.JSONDecodeError as e:
+        return f"line {e.lineno}: {e.msg}"
+    except ValueError as e:  # a null byte, not UTF-8, tomllib's TOMLDecodeError (it names its line)
+        return _one_line(f"{type(e).__name__}: {e}", 200)
+    except (ImportError, RecursionError, MemoryError):
+        return None
+    return None
+
+
+def _slurp(full):
+    """T-4426: (True, bytes) for a regular file within PARSE_BYTES, (True, None) for one that isn't there, else (False,
+    None): a folder, a pipe, a file too big to hold."""
+    try:
+        if not os.path.lexists(full):
+            return True, None
+        if not os.path.isfile(full) or os.path.getsize(full) > PARSE_BYTES:
+            return False, None
+        with open(full, "rb") as f:
+            return True, f.read()
+    except OSError:
+        return False, None
+
+
 def _untracked_dirs(root):
     """T-4387: the highest-level directories git shows as wholly untracked (and not ignored), each with its '/'."""
     try:
@@ -4371,23 +4633,29 @@ def cmd_code(args):
         _drive(run, profile)
     except (m.ModelError, CodeError) as e:  # T-1334: every failure ends with the one command to run next
         msg, then = f"fm code: {'model: ' if isinstance(e, m.ModelError) else ''}{e}", next_step(e, run.tid)
+        lost = run.unwind()  # T-4426: an unfinished stop with a file it broke puts the project back, and says so
+        if lost:
+            msg += f"\n{lost['text']}"
         if not run.tid:  # T-1339: it failed before any task: a preflight
             run_friction("preflight", e)
         else:  # T-1342: a run that stopped after making its task says so through fm notify
             _tell(p, f"fm code {run.tid} stopped: {_one_line(str(e), 200)}")
-        run.emit("error", msg, quiet=True, task=run.tid, next=then)
+        run.emit("error", msg, quiet=True, task=run.tid, next=then, **_lost_data(lost))
         print(f"{msg}\nNext: {then}", file=sys.stderr)
         raise SystemExit(1)
     except Blocked as e:
+        lost = run.unwind()  # T-4426
         run.fm("task", "block", run.tid, str(e)[:500])
-        run.log(kind="end", status="blocked", reason=str(e))
+        run.log(kind="end", status="blocked", reason=str(e), **_lost_data(lost))
         then = f"fm task show {run.tid}"
         run_friction("blocked", re.sub(r"^fm code: ", "", str(e)))  # T-1339
         _tell(p, f"fm code {run.tid} blocked: {_one_line(str(e), 200)}")  # T-1342
-        run.emit("blocked", f"{run.tid} blocked: {e}", task=run.tid, reason=str(e), next=then)
+        run.emit("blocked", f"{run.tid} blocked: {e}" + (f"\n{lost['text']}" if lost else ""), task=run.tid,
+                 reason=str(e), next=then, **_lost_data(lost))
         print(f"Next: {then}", file=sys.stderr)
         raise SystemExit(1)
     finally:
+        run.unwind()  # T-4426: an interrupt or a bug ends the run too, and the project is not left broken by it
         run.report()  # a stop that ended with no event of its own still reports
         if run.tid:  # T-1294: the run's leases end with it; T-1764: a model run's edits take them too, not only a worker's
             try:
@@ -4395,6 +4663,11 @@ def cmd_code(args):
                 bus.drop_session(f"fm-code-{run.tid}")
             except Exception:  # leases are advisory: a bus problem never fails the run
                 pass
+
+
+def _lost_data(lost):
+    """T-4426: the end event's fields for a stop that put the project back (none when it put nothing back)."""
+    return {"restored": lost["restored"], "patch": lost["patch"]} if lost else {}
 
 
 JUDGE_TOKENS = 120
@@ -5351,8 +5624,10 @@ def _drive(run, profile):
         else:
             run.phase(f"step:{n}", profile, prompt)
         run.leave_out_built()  # T-4387: before the file list
+        run.snapshot()  # T-4426: the step ended: a stop later puts the files back to here
         files = sorted(f for f in _dirty(run.root) if not core.ARTEFACT.search(f))  # T-1320: not a .pyc a check left
         run.emit("changed", "", quiet=True, step=n, files=files, stat=_numstat(run.root, files))
+    run.steps_done = True  # T-4426: every step finished: a later stop is the verify's to report, nothing is put back
     rounds = 0
     while True:
         failed = run.verify("verify")
