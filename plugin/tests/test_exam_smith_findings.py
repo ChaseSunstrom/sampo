@@ -38,6 +38,7 @@ class SmithFindings(unittest.TestCase):
         calls = []
         def complete(profile, messages, **kw):
             calls.append(messages)
+            self.kw = kw
             return {"text": reply, "tool_calls": [], "usage": {"in": 1, "out": 1}}
         files = files if isinstance(files, dict) else dict.fromkeys(files, "x = 1\n")
         with tempfile.TemporaryDirectory() as tmp:
@@ -197,6 +198,12 @@ class SmithFindings(unittest.TestCase):
             self.assertIsNotNone(louhi._conf(ans), "a stated confidence, not one the grade scores as 50")
             self.assertLess(ans["confidence"], 50, "Nov 7: no smith run closed its scenario, green or not")
         self.assertGreaterEqual(green["confidence"], red["confidence"])
+
+    def test_the_call_is_sent_with_thinking_off(self):
+        # T-4427: a reasoning-default profile spent the call's 1,024 tokens thinking and gave no text, on every run of
+        # the hard exam: a listing of what the run already said needs none
+        self.arm([{"event": "answer", "text": END}], "{}")
+        self.assertIs(self.kw.get("think"), False)
 
     def test_no_end_text_makes_no_call(self):
         ans, calls, _ = self.arm([{"event": "error", "text": ""}], "{}")

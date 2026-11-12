@@ -4208,7 +4208,8 @@ def _smith_findings(prof, work, evs, repo):
            f"Files it changed: {', '.join(changed) or 'none'}\n\nThe repo's files:\n" + "\n".join(files[:FINDINGS_FILES])
            + "\n\n" + AGAIN.replace("listing every defect you found or fixed here.", FINDINGS_ASK))
     try:
-        got = smodels.complete(prof, [{"role": "user", "content": ask}], max_tokens=1024, timeout=120)
+        # T-4427: thinking off: a reasoning-default profile spent the whole cap thinking and gave no text on every run
+        got = smodels.complete(prof, [{"role": "user", "content": ask}], max_tokens=1024, timeout=120, think=False)
         reply = str(got.get("text") or "")
     except (smodels.ModelError, OSError) as e:
         evs.append({"event": "findings", "text": f"no findings: {c.redact(str(e))[:200]}"})
