@@ -382,10 +382,27 @@ def _child_result(r):
     return f"its check process ended with exit {r.returncode} and no result: {c.fit(tail, 200)}", []
 
 
+def _own_path_off():
+    """T-4455: drop this lib's folder from PYTHONPATH once the child has imported sampo. Each parent (_fan, the ship's
+    start, _spawn_check) adds it so `-m sampo.train` resolves; left in place it reached every command the child ran:
+    a lane's check ran the lane's tests with the trunk's lib first on the path of each Python they started, and
+    test_cli_speed.ForkServer and test_hooks.NoTaskGateKinds were red in every lane check that selected them."""
+    lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    rest = [x for x in os.environ.get("PYTHONPATH", "").split(os.pathsep) if x and os.path.abspath(x) != lib]
+    if rest:
+        os.environ["PYTHONPATH"] = os.pathsep.join(rest)
+    else:
+        os.environ.pop("PYTHONPATH", None)
+
+
 def _main(arg):
     """T-3119: the lane's check process: read the lane's task here, check it, print the result on one MARK line."""
     from sampo import cli
+    _own_path_off()
     a = json.loads(arg)
+    if "probe_pythonpath" in a:  # T-4455: what a command this child runs would inherit
+        print(os.environ.get("PYTHONPATH"))
+        return 0
     if "ship" in a:  # T-4239: the land's detached ship
         return _ship_child(a["ship"])
     if "accept" in a:  # T-4286: sampo lane accept's detached check of one lane

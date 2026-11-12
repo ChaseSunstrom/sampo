@@ -98,7 +98,9 @@ class Behind(ShipCase):
         out = r.stdout + r.stderr
         for name in ("a.txt", "b.txt", "c.txt"):
             self.assertTrue(os.path.exists(os.path.join(self.repo, name)), out)  # all three trains landed
-        self.assertEqual(self.gate_runs(), 3 + 1, "one gate run per train, and the held ship's own test run of its snapshot")
+        # T-4455: the detached ship no longer carries the PYTHONPATH entry its start added, so its environment is the
+        # train's and it reuses the train's gate pass on the same code tree: no second run of the suite per ship
+        self.assertEqual(self.gate_runs(), 3, "one gate run per train; the held ship reuses its train's pass")
         self.assertEqual(len(self.pushes()), 1, "one ship is at its push; the later trains started none beside it")
         self.assertTrue(train._ship_alive(self.p), "the ship is still running when the land ends")
         self.assertIn("ship still running", out)

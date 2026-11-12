@@ -614,3 +614,24 @@ class NamedTask(AcceptCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChildPath(unittest.TestCase):
+    """T-4455: the detached child is started with the trunk's lib on PYTHONPATH so `-m sampo.train` imports; what the
+    child then runs (a lane's check, the ship's tests) must not inherit that entry: with it, every Python the tests
+    start imported the trunk's sampo, and two classes went red in each lane check that selected them."""
+
+    def test_the_childs_pythonpath_entry_is_dropped_and_the_callers_kept(self):
+        lib = os.path.dirname(os.path.dirname(os.path.abspath(train.__file__)))
+        for had, want in ((lib + os.pathsep, None), (lib + os.pathsep + "/opt/x", "/opt/x"),
+                          ("/opt/x" + os.pathsep + lib, "/opt/x"), ("/opt/x", "/opt/x")):
+            with self.subTest(had=had), mock.patch.dict(os.environ, {"PYTHONPATH": had}):
+                train._own_path_off()
+                self.assertEqual(os.environ.get("PYTHONPATH"), want)
+
+    def test_a_check_the_child_runs_sees_no_pythonpath_of_the_childs(self):
+        lib = os.path.dirname(os.path.dirname(os.path.abspath(train.__file__)))
+        arg = json.dumps({"probe_pythonpath": True})
+        r = subprocess.run([sys.executable, "-m", "sampo.train", arg], capture_output=True, text=True, timeout=60,
+                           env=dict(os.environ, PYTHONPATH=lib + os.pathsep))
+        self.assertEqual(r.stdout.strip(), "None", r.stderr)
