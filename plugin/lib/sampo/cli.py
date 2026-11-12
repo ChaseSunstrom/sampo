@@ -9466,7 +9466,8 @@ def _build_parser(only=None):
     s.add_argument("--all", action="store_true", help="recover: every lane stopped before its merge, one launch line each "
                                                       "or the reason it's left (T-3922); merge: every finished lane (T-3119)")
     s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),
-                   help="accept: one audit of the lane (its lens, how it was done, the result); repeat per lens (T-3922)")
+                   help="accept: one audit of the lane, three values: LENS HOW RESULT (its lens, how it was done, the result); "
+                        "repeat the whole --audit LENS HOW RESULT per lens, never two values (T-3922, T-4391)")
     s.add_argument("--no-check", action="store_true", help="accept: don't start the lane's affected check; refused when the "
                                                            "lane has no run at its tip that held the repo-shape classes "
                                                            "(T-4286)")

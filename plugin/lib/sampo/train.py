@@ -1852,6 +1852,39 @@ def _accept_check_child(a):
 
 # ---------------------------------------------------------------- sampo lane accept (T-3922)
 
+AUDIT_FORM = "--audit LENS HOW RESULT"
+
+
+def _audit_rows(args):
+    """T-4391: the audits typed to `lane accept`, every one read before anything is recorded or started. Python 3.14's
+    argparse lets an option taking three values take the next option as its last value when one is short, so
+    `--audit intent TEXT --audit adversary TEXT` was one audit whose RESULT was "--audit"; the words after it fell into the
+    command's task-id list, and the second audit was dropped without a word. A refused audit names the lens it could
+    not read and shows the form; a known lens, a non-empty HOW and RESULT, and no value that is one of the command's own
+    options are all it takes."""
+    from sampo import cli
+    rows = [tuple(x) for x in (getattr(args, "audit", None) or [])]
+    if not rows:
+        raise cli.UsageError(f"sampo lane accept needs {AUDIT_FORM} (one per lens reviewed, three values each)")
+    lane = next(a for a in cli.build_parser()._actions if isinstance(a, cli.argparse._SubParsersAction)).choices["lane"]
+    flags = set(lane._option_string_actions)
+    form = f"{AUDIT_FORM}: a lens ({', '.join(c.AUDIT_LENSES)}), then how it was done, then the result, each one word or quoted"
+    for lens, how, result in rows:
+        for name, value in (("HOW", how), ("RESULT", result)):
+            if value.startswith("--") and value.partition("=")[0] in flags:
+                raise cli.UsageError(f"could not read the {lens} audit: its {name} is the option {value} (an audit takes "
+                                     f"three values, repeat --audit for each lens); {form}")
+            if not value.strip():
+                raise cli.UsageError(f"could not read the {lens} audit: its {name} is empty; {form}")
+    bad = sorted({lens for lens, _, _ in rows if lens not in c.AUDIT_LENSES})
+    if bad:
+        raise cli.UsageError(f"unknown lens {', '.join(bad)}; {form}")
+    more = list(getattr(args, "more", None) or [])
+    if more:  # words after the audits that no audit took: a dropped audit's, never a task id (accept takes one lane)
+        raise cli.UsageError(f"could not read {', '.join(repr(w) for w in more)} after the {rows[-1][0]} audit; {form}")
+    return rows
+
+
 def accept(p, b, main, args):
     """T-3922: a reviewed lane in one call: each --audit (lens, how, result) recorded on its brief from the lane's tree,
     the close's missing lines named, and the lane queued first (first_ids): into a running land at its next train
@@ -1859,12 +1892,7 @@ def accept(p, b, main, args):
     the review just happened); any other lane says why. Nothing is forced, granted or closed beyond land's own close."""
     from sampo import cli
     from sampo import lanes
-    rows = [tuple(x) for x in (getattr(args, "audit", None) or [])]
-    if not rows:
-        raise cli.UsageError("sampo lane accept needs --audit LENS 'how' 'result' (one per lens reviewed)")
-    bad = sorted({lens for lens, _, _ in rows if lens not in c.AUDIT_LENSES})
-    if bad:  # refused before anything is recorded
-        raise cli.UsageError(f"unknown lens {', '.join(bad)}; one of {', '.join(c.AUDIT_LENSES)}")
+    rows = _audit_rows(args)  # T-4391: refused before anything is recorded or started
     path = b.meta.get("lane") or ""
     if not path or not os.path.isdir(path):
         raise c.PolicyError(f"{b.id} has no lane to accept (fm lane brief {b.id} starts a builder)")
