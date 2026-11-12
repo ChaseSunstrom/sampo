@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code no longer gives up a whole run on a plan's form: a plan that is sound work with an incomplete M form gets one targeted question and is otherwise filed as tier S with the gap noted once; a plan the gate refuses twice for one named piece (a criterion for a part of the request, a one-way step) gets one targeted question in the gate's own words (T-4282).
 - The lane load gate weighs the load by the share of runnable threads at nice 0, sampled from /proc and cached 30 s; a hook reads only the cache (T-4277).
 - sampo exam run answers every picked scenario for a local model arm by default; a Claude session arm keeps its default of 3 and now prints that it cut the run (T-4258).
 - sampo lane accept's checks take turns: one lane's check runs at a time in a project, a waiting one says so on its task, and a lane whose tip moved while it waited runs nothing (T-4416).
