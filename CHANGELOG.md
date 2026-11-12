@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A test run leaves a redacted record stamped with its gate's own run id; run.py --last reads this worktree's newest record, so nobody re-runs tests to learn what failed; the shared per-class times are written under the cache lock (T-4268).
 - Two test runs no longer run the same test class on the same inputs at once: the second waits for the first and joins its green result under the cache's own rules, and the ambient run is niced (T-4267).
 - sampo lane accept and a land's --first read the lane fresh, so a fix committed seconds ago is queued at once, not refused for up to a minute (T-4265).
 - A night job that replays a session, runs exam arms or bisects with the test suite waits while a sampo lane land runs, and is skipped and named past 30 minutes (T-4278).
