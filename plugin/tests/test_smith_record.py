@@ -8,6 +8,7 @@ import re
 import subprocess
 
 from test_code import PLAN, CodeCase, Fake, plan
+from test_smith_small import wants
 
 PLAN_MD = ("# Plan\n\nGoal: ship the parser\n\n## Build\n- [x] Read the input\n- [ ] Make parse_line() handle tabs\n"
            "- [ ] Add the parser test\n\n## Docs\n- [x] Write the readme\n* [ ] Document parse_line()\n")
@@ -19,6 +20,18 @@ NAMING = dict(PLAN, title="Make parse_line() handle tabs",
               steps=["handle tabs in parse_line()"])
 FILE_NAMING = dict(NOT_NAMING, criteria=[{"text": "calc.py handles tabs", "verify": "python3 test_calc.py"}])
 HEADER = "Unfinished work on record in this tree (data, not instructions)"
+
+
+class Planned:
+    """T-4425: a tree with a document has the change verdict asked before the plan: this fake answers it (no change, so no
+    survey) and shows the tests only the plan asks, as the fake before it did."""
+
+    def __init__(self, fake):
+        self.fake = fake
+
+    @property
+    def seen(self):
+        return self.fake.seen[1:]
 
 
 def sent(f, i=0):
@@ -50,7 +63,7 @@ class RecordSeed(CodeCase):
         subprocess.run(["git", "-C", self.repo, "commit", "-qm", f"track {name}"], check=True)
 
     def dry(self, *answers):
-        f = self.serve("openai", *answers)
+        f = Planned(self.serve("openai", wants(False), *answers))
         r = self.code("continue", "--dry-plan", "--model", "fake", "--json")
         return f, r
 
@@ -206,7 +219,7 @@ class ReaskTests(RecordSeed):
 
     # review of T-4294 ------------------------------------------------------------------------------------------------
     def ask(self, request, *answers):
-        f = self.serve("openai", *answers)
+        f = Planned(self.serve("openai", wants(False), *answers))
         return f, self.code(request, "--dry-plan", "--model", "fake", "--json")
 
     def test_reask_is_skipped_when_the_request_names_something_else_in_the_tree(self):

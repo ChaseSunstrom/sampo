@@ -2257,7 +2257,8 @@ class SmithArm(ForemanTestCase):
         ok = plan(dict(PLAN, criteria=[{"text": "it holds", "verify": "test -f fixed.txt"}]))  # fails until Smith writes it
         fix = [call("write", file="fixed.txt", content="x"), call("done", summary="wrote it")]
         none = {"text": '{"findings": []}'}  # T-2931: the arm's one findings call after each run
-        f = self.serve(ok, *fix, none, ok, *fix, none)
+        no = {"text": '{"wants_change": false, "why": "x"}'}  # T-4425: a tree with a document is asked the change verdict first
+        f = self.serve(no, ok, *fix, none, no, ok, *fix, none)
         r = self.fm_json("exam", "run", g["run"], "--agent", "smith", "--model", "fake", "--limit", "2", timeout=240)
         self.assertEqual((r["scenarios"], r["errors"]), (2, 0), r)
         self.assertTrue(any(s["request"][:40] in f.said(0) for s in g["scenarios"]), "fm code got a scenario's request")
@@ -2317,8 +2318,9 @@ class SmithArm(ForemanTestCase):
         from test_code import PLAN, call, plan
         g = self.gen()
         ok = plan(dict(PLAN, criteria=[{"text": "it holds", "verify": "test -f fixed.txt"}]))
-        self.serve(ok, call("fly"), call("write", file="fixed.txt", content="x"), call("done", summary="x"),
-                   *[{"text": "Sure! Here you go."}] * 12)
+        no = {"text": '{"wants_change": false, "why": "x"}'}  # T-4425: a tree with a document is asked the change verdict first
+        self.serve(no, ok, call("fly"), call("write", file="fixed.txt", content="x"), call("done", summary="x"),
+                   *[{"text": "Sure! Here you go."}] * 60)  # the second scenario's verdict and survey turns come first
         self.fm_json("exam", "run", g["run"], "--agent", "smith", "--model", "fake", "--limit", "2", timeout=240)
         tax = self.fm_json("exam", "taxonomy", g["run"], "--agent", "smith")
         cl = tax["classes"]

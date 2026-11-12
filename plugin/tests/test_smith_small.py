@@ -828,7 +828,9 @@ class PlanFormRecord(CodeCase):
     repo_seed = ("seed record", CodeCase.repo_seed[1] + (("PLAN.md", "# Plan\n\n- [ ] Make parse_line() handle tabs\n"),))
 
     def dry(self, *script):
-        self.serve("openai", *script)
+        # T-4425: PLAN.md is a document, so a model-planned request surveys first: the change verdict, the survey's done
+        # (PLAN.md was never opened: named back once, a second done), then the plan asks
+        self.serve("openai", wants(True), DONE, DONE, *script)
         return self.code("continue", "--dry-plan", "--model", "fake", check=False)
 
     def test_m_form_downgrade_of_a_plan_the_second_ask_replaced_is_not_reported(self):

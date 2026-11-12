@@ -9322,7 +9322,11 @@ def _build_parser(only=None):
     s = add("code", lazy("sampo.smith", "cmd_code"), tier=("Running elsewhere", 1135),
             help="Sampo Code: run a request through Sampo's loop on any model (local server, models.json or an API "
                  "key); the model fills the plan and picks one action at a time, the harness guards, verifies and "
-                 "closes. sampo code models lists the profiles (T-1212); on a terminal a request runs in the app, as sampo code tui [REQUEST] does (--plain, --json or piped: lines; T-1283, T-1343); sampo code bench grades a model or worker on seeded tasks (T-1215); sampo code runners lists every coding CLI and model it can use (T-1328); claude's -p, -c and "
+                 "closes. A change request planned by a model starts with a read-only survey of the project's "
+                 "documents (README, docs/; the model reads the ones that matter, the harness names back any it never "
+                 "opened) and the project's own tests run once before the plan: green, they are the keep check run "
+                 "after each step and at the end, and a step that turns them red is not done (T-4425; --verify, "
+                 "--ask and a worker CLI run neither). sampo code models lists the profiles (T-1212); on a terminal a request runs in the app, as sampo code tui [REQUEST] does (--plain, --json or piped: lines; T-1283, T-1343); sampo code bench grades a model or worker on seeded tasks (T-1215); sampo code runners lists every coding CLI and model it can use (T-1328); claude's -p, -c and "
                  "--output-format json work too (T-1399)",
             conflict_handler="resolve")  # T-1399: -p after the verb is claude's --print; the project is --project
     s.add_argument("request", nargs="*", help="what to do (or: models, runners, config, why, bench, tui)")
