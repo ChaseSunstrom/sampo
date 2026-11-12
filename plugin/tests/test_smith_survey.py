@@ -476,3 +476,30 @@ class Spec(SurveyCase):
         self.assertIn("Entries are one line, newest first, never edited.", text, "the short one whole")
         self.assertIn("cut", text, "the long one says it was cut and where the rest is")
         self.assertEqual(self.run_object().spec_note(), "")
+
+
+class MissingPath(SurveyCase):
+    """T-4458: on the hard exam the model asked for cabinet/api_share.py (the file is api_shares.py), was told it 'is
+    not a regular file (a pipe or a device would never end)', and planned around a file it believed unreadable."""
+
+    def test_missing_path_says_so_and_names_the_nearest_files(self):
+        run = self.run_object()
+        got = run.read("docs/rule.md", 1, 50)
+        self.assertIn("no such file", got)
+        self.assertIn("docs/rules.md", got, "the one it most likely meant, with its folder")
+        self.assertNotIn("regular file", got)
+        self.assertNotIn("device", got)
+
+    def test_missing_path_in_a_missing_folder_names_files_by_name_across_the_tree(self):
+        run = self.run_object()
+        got = run.read("doc/rules.md", 1, 50)
+        self.assertIn("no such file", got)
+        self.assertIn("docs/rules.md", got)
+        far = run.read("zzz/qqq.bin", 1, 50)
+        self.assertIn("no such file", far)
+        self.assertNotIn("did you mean", far, "nothing near: no guess is offered")
+
+    def test_missing_path_text_is_not_given_for_a_real_non_regular_file(self):
+        run = self.run_object()
+        os.mkfifo(os.path.join(self.repo, "pipe"))
+        self.assertIn("not a regular file", run.read("pipe", 1, 50))

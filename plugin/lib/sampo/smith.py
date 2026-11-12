@@ -1918,6 +1918,18 @@ class Run:
         self.look_next = False
         self.log(kind="counts", **self.count)  # a resume adds to these: the last record is the run's total so far
 
+    def near(self, rel):
+        """T-4458: for a path that does not exist, the listed files it most likely meant: the closest whole paths, then
+        files of a close name anywhere in the tree (a wrong folder). Spelling distance on names only; "" with none
+        near, so no guess is offered."""
+        files = [f for f in (_names(self.root) or []) if not f.endswith("/")]
+        rel = rel.replace(os.sep, "/").removeprefix("./")
+        hits = difflib.get_close_matches(rel, files, n=3, cutoff=0.8)
+        base = os.path.basename(rel)
+        for name in difflib.get_close_matches(base, sorted({os.path.basename(f) for f in files}), n=2, cutoff=0.8):
+            hits += [f for f in files if os.path.basename(f) == name and f not in hits][:2]
+        return f"; did you mean {', '.join(hits[:4])}?" if hits else ""  # not a list: the nearest names, a guess
+
     def read(self, rel, start, lines):
         full = self.path(rel)
         why = self.hidden(full)
@@ -1926,6 +1938,8 @@ class Run:
         if os.path.isdir(full):
             names = sorted(n + "/" * os.path.isdir(os.path.join(full, n)) for n in os.listdir(full) if n != ".git")
             return "\n".join(names[:300]) + (f"\n… {len(names) - 300} more" if len(names) > 300 else "")
+        if not os.path.lexists(full):  # T-4458: a misspelt path is not a device: say it is missing, and what is near
+            return f"refused: no such file: {rel}" + self.near(rel)
         if not os.path.isfile(full):
             return f"refused: {rel} is not a regular file (a pipe or a device would never end)"
         if os.path.getsize(full) > READ_BYTES:
