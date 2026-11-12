@@ -1085,7 +1085,7 @@ PAGES = [
           "work, a change request isn't planned as research or answered, and the last step can't end with nothing "
           "changed (a profile's <code>\"small\": true</code> turns it on too); "
           "<code>--dry-plan</code> prints the plan and changes nothing; <code>--verify CMD</code> makes the plan "
-          "one task done when CMD passes; <code>--no-commit</code> closes without committing; before it plans a "
+          "one task done when CMD passes; <code>--no-commit</code> closes without committing; <code>--no-look</code> skips the closing look a state-of-the-code request otherwise gets after its first task (each gap the look names, with a check that fails now, becomes the next task, within bounds); before it plans a "
           "find-and-fix request it reads each function against its comment and the README, and <code>--no-review"
           "</code> skips that read.</li><li><strong>"
           "Resume or hand over.</strong> <code>--resume [ID]</code> carries on a crashed run from its journal "
