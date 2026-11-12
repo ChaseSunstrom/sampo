@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code's keep check no longer takes the work's own new failing tests for the project's tests turned red: a red run is repeated without the files the run created, and when that is green the step goes on with the files named. A plan that writes its failing tests first used to end in its first step (T-4459).
 - sampo code's read of a path that does not exist now answers 'no such file' and names the nearest existing files; it used to answer as for a pipe or device, which a model took for a file it could not read (T-4458).
 - sampo exam grade sets each kind beside the last comparable grade and says a fallen kind first, though the total rose ('goal fell from 18 to 6 of 48'): it compares only with a run of the same seed, model, arm, reason, planner, small, request, author, split and scenario set, judges a kind by rate when its fixable count differs, names kinds that are new or no longer graded, takes its sprea… (T-4359).
 - sampo lane land prints each lane a merge train leaves out as it happens, with its reason; --first names the lane's real state; a parked --first lane whose tip has moved is judged again in the same land (T-4252, with T-4013) (T-4252).
