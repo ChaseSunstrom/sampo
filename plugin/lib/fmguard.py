@@ -2532,8 +2532,12 @@ def _interpreter_writes(cmd, ctx):
         units, _, starters, lead = _python_units(cmd)
         base = (_chain_dir(starters, "\n".join(lead), ctx) if units else None) or ctx.cwd
     for path in proved if proved is not None else [_resolve(_expand(x, ctx), base) for x in _quoted_paths(cmd)]:
-        found += [(cat, f"{path} (written from interpreter code)") for cat in classify_write(path, ctx)
-                  if cat in _GUARDED_BY_PATH]
+        what = f"{path} (written from interpreter code)" if "$" not in path else (  # T-4138: a $name the shell fills in
+            "a file the script writes at a path the shell fills in, which the guard can't read (written from interpreter code)")
+        found += [(cat, what) for cat in classify_write(path, ctx) if cat in _GUARDED_BY_PATH and (cat, what) not in found]
+    if proved is None and not found and ctx.unbriefed and _computed_path_write(cmd):
+        # T-4138: no task is active and the file is named by text the script builds: not a path the scan can name
+        found = [("brief", "a file the script writes at a computed path the guard can't read (written from interpreter code)")]
     return found
 
 
@@ -2544,6 +2548,99 @@ def _is_sys_path_call(f):
     import ast
     return (isinstance(f, ast.Attribute) and f.attr in ("insert", "append") and isinstance(f.value, ast.Attribute)
             and f.value.attr == "path" and isinstance(f.value.value, ast.Name) and f.value.value.id == "sys")
+
+
+# T-4138: str methods whose literal arguments are text to test or cut, never a file the call touches
+_STR_METHODS = frozenset("startswith endswith split rsplit strip lstrip rstrip removeprefix removesuffix partition "
+                         "rpartition find rfind index rindex count".split())
+_REWIRING = frozenset("exec eval compile getattr setattr globals vars __import__ importlib builtins".split())
+_PATH_HEAD = lazy(r"(?:/|~|\.\.?/|[\w.-]+/)")  # how a path's first piece starts; a tail like ".json" doesn't
+
+
+def _fragment_ids(tree):
+    """T-4138: the ids of string constants in parsed python that name no file: an argument of a str method
+    (f.endswith('.jsonl'), s.split('.py')), and the tail after a computed head (n + '.json', f'{n}.json'), which the
+    quote scan read as a path of its own and named in a refusal ("<project>/.json"). A head stays (home + '/x' keeps
+    '/x' out: the path it ends is computed, not the literal). Code that rewires names or defines a method of that name
+    is read whole, as before."""
+    import ast
+    nodes = list(ast.walk(tree))
+    if any(isinstance(n, ast.Name) and n.id in _REWIRING for n in nodes):
+        return frozenset()
+    own = {n.name for n in nodes if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    own |= {n.attr for n in nodes if isinstance(n, ast.Attribute) and not isinstance(n.ctx, ast.Load)}
+
+    def text(e):
+        return isinstance(e, ast.Constant) and isinstance(e.value, str)
+    out = set()
+    for n in nodes:
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr in _STR_METHODS \
+                and n.func.attr not in own:
+            out |= {id(a) for a in n.args if text(a)}
+        elif isinstance(n, ast.BinOp) and isinstance(n.op, ast.Add) and text(n.right) and not text(n.left):
+            out.add(id(n.right))
+        elif isinstance(n, ast.JoinedStr):
+            out |= {id(v) for v in n.values[1:] if text(v)}
+            if n.values and text(n.values[0]) and not _PATH_HEAD.match(n.values[0].value):
+                out.add(id(n.values[0]))
+    return out
+
+
+def _write_path_args(tree):
+    """The path expression of each write call in parsed python: open(P, 'w'), P.write_text(…), os.x(P, …)."""
+    import ast
+    for n in ast.walk(tree):
+        if not isinstance(n, ast.Call):
+            continue
+        f, arg = n.func, None
+        if isinstance(f, ast.Name) and f.id == "open":
+            kw = {k.arg: k.value for k in n.keywords}
+            mode = n.args[1] if len(n.args) > 1 else kw.get("mode")
+            readonly = mode is None or (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+                                        and not set(mode.value) & set("wax+"))
+            arg = None if readonly else (n.args[0] if n.args else kw.get("file"))
+        elif isinstance(f, ast.Attribute) and f.attr in ("write_text", "write_bytes", "touch", "unlink", "rename",
+                                                         "replace", "mkdir"):
+            arg = f.value
+        elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in ("os", "shutil") and n.args:
+            arg = n.args[0]
+        if arg is not None:
+            yield arg
+
+
+def _writes_at_computed_path(code):
+    """T-4138: whether parsed python writes through a path it computes from text (open(n + '.json', 'w'),
+    Path(f'{n}.json').write_text(…)): the guard can't read which file that is. Named by the scan as "<project>/.json"
+    before; now one refusal that says so."""
+    import ast
+    try:
+        tree = ast.parse(code)
+    except Exception:
+        return False
+    frag = _fragment_ids(tree)
+    return any(id(c) in frag for arg in _write_path_args(tree) for c in ast.walk(arg))
+
+
+def _computed_path_write(cmd):
+    return any(_writes_at_computed_path(code) for code in _python_units(cmd)[0])
+
+
+def _text_quoted(text):
+    """The quoted path literals in code the guard can't parse. T-4138: a match that opens at a quote closing an earlier
+    literal on its line and holds a parenthesis is the stretch of code between two literals (b''.join(f('<I'): the
+    scan goes on one character later, so a real path inside it is still found."""
+    out = []
+    for line in text.split("\n"):
+        closers = {m.end() - 1 for q in "'\"" for m in re.finditer(f"{q}[^{q}\\n]*{q}", line)}  # either kind alone: a
+        # code string inside a shell string (python3 -c "…'<I'…") pairs its single quotes among themselves
+        pos = 0
+        while m := _QUOTED.search(line, pos):
+            if m.start() in closers and re.search(r"[()]", m.group(2)):
+                pos = m.start() + 1
+                continue
+            out.append(m.group(2))
+            pos = m.end()
+    return out
 
 
 def _quoted_paths(cmd):
@@ -2567,13 +2664,24 @@ def _quoted_paths(cmd):
         skip = {id(a) for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_sys_path_call(n.func) for a in n.args}
         skip |= {id(v) for n in ast.walk(tree) if isinstance(n, ast.FormattedValue) and n.format_spec  # T-3716: the
                  for v in n.format_spec.values if isinstance(v, ast.Constant)}  # .0f of {dt:.0f}; nested code counts
+        skip |= _fragment_ids(tree)  # T-4138: a str method's argument, the tail of a computed name
         for n in ast.walk(tree):  # T-2662: sys.path.insert/append(…, "/lib") names an import folder, not a write
             if id(n) not in skip and isinstance(n, ast.Constant) and isinstance(n.value, (str, bytes)):  # open(b'/x', 'w') writes /x too
                 v = n.value.decode("latin-1") if isinstance(n.value, bytes) else n.value
                 if _PATH_LITERAL.fullmatch(v):
                     out.append(v)
                 out += [m.group(2) for m in _QUOTED.finditer(v)]
-    return out + [m.group(2) for m in _QUOTED.finditer(text)]
+        # T-4138: a bare name a write call opens (open('x.py', 'w')) is a path too: the old quote scan named it only by
+        # the accident of pairing quotes across the code in between
+        for arg in _write_path_args(tree):  # only open('x') / Path('x'): os.getenv('HOME') is no file
+            if isinstance(arg, ast.Call) and (getattr(arg.func, "id", None) or getattr(arg.func, "attr", None)) == "Path":
+                arg = arg.args[0] if arg.args else arg
+            if (isinstance(arg, ast.Constant) and isinstance(arg.value, str) and id(arg) not in skip
+                    and re.fullmatch(r"[\w][\w.-]*", arg.value) and not _PATH_LITERAL.fullmatch(arg.value)):
+                out.append(arg.value)
+    # the same bare name in code the guard can't parse (python behind an env assignment, a -c body)
+    out += [m.group(2) for m in re.finditer(r"""\bopen\(\s*(['"])(\w[\w.-]*)\1\s*,\s*['"][rbt]*[wax+]""", text)]
+    return out + _text_quoted(text)
 
 
 # T-1460: the home folder's credential names, as code joins them (os.path.join(HOME, ".ssh", "id_rsa"))
@@ -3993,15 +4101,20 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         plain, prev = re.sub(r"`[^`]*`|\$\([^()]*\)", "$S", plain), plain  # eval) keeps each tail, read from the
     clean = not _moves_text(plain) and not any(  # folders before it, as the coarse catch it was (review: c$(…), A=1 $C)
         re.search(r"[^\w./+:@%,-]", word(x.argv)) for x in cmds)
+    # T-0330 review: ~ is $HOME, so once the command may set HOME a ~ in a value isn't the user's home any more
+    tilde = None if re.search(r"(?<![\w${])HOME\b", shell) else ctx.home
+    pre = _prefix_vars(shell, cmds, tilde)  # T-0183; also what a path-named command may expand (T-0331)
     for body in _subst_bodies(shell, tails, clean) + [b for t in live for b in _subst_bodies(t, tails, clean)]:  # `…`
-        found += check_bash(body, ctx, depth + 1, tails=False)
+        # T-4138: a body (or the tail after a substitution opens) is read apart from the assignments before it: the
+        # names this command sets once in its prefix, which the body uses, go with it (S=/x; cd $(pwd)/y; … > $S/f)
+        carried = [f"{k}={v}" for k, v in pre.items() if re.search(rf"\$\{{?{k}\b", body) and re.fullmatch(r"[\w./@:+,=%~-]+", v)]
+        if carried and body.count(")") > body.count("("):  # a tail still holds the `)` that closes its substitution:
+            body = "(" + body  # reopened, so the text reads as a group, not a stray close the walk can't follow
+        found += check_bash("; ".join(carried + [body]) if carried else body, ctx, depth + 1, tails=False)
     for script in _stdin_scripts(cmd, cmds):  # T-0589: bash <<'EOF' … EOF and sh <<< '…' run that text
         found += check_bash(script, ctx, depth + 1)
     cwd, chain = ctx.cwd, []
     raw = _raw_cmds(shell) if _straight_line(shell) else None  # the same commands, quotes kept (T-0161)
-    # T-0330 review: ~ is $HOME, so once the command may set HOME a ~ in a value isn't the user's home any more
-    tilde = None if re.search(r"(?<![\w${])HOME\b", shell) else ctx.home
-    pre = _prefix_vars(shell, cmds, tilde)  # T-0183; also what a path-named command may expand (T-0331)
     outside, bare = _outside(shell, cmds, ctx, pre)  # T-0175: what it inherits and can't change
     # VAR → literal (T-0151); rm trusts no inherited value but HOME, a write target any (its review)
     env = {k: v for k, v in outside.items() if k == "HOME"} if raw is not None and len(raw) == len(cmds) else None
