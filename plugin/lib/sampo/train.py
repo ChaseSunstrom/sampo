@@ -1177,6 +1177,28 @@ def announce_skills(root, before, after):
     return sent
 
 
+def _first_state(b, tid, why, landed):
+    """T-4252: what `sampo lane land --first` finds for a lane not waiting on a merge: parked in this land (its why),
+    merged, parked by an earlier land, not a lane, or still building (its builder runs). The catch-all only when none
+    of those can be told from the brief."""
+    from sampo import bus
+    from sampo import lanes
+    if why:
+        return f"parked: {why}"
+    if b is None:
+        return "not a task: no brief has that id"
+    if tid in landed or lanes._stop(b)[0] == "merged":
+        return "merged already"
+    if lanes.parked(b):
+        return f"parked by an earlier land (its last merge: {lanes._stop(b)[0]})"
+    if not b.meta.get("lane"):
+        return "not a lane: its task has no lane to land"
+    if b.status not in c.CLOSED and bus.proc_state(b.meta.get("builder_proc")) == "alive":
+        return "still building: its builder is running and its lane is not yet quiet"
+    return ("not a finished lane waiting on a merge here (its state can't be told from here: merged, parked or "
+            "still building)")
+
+
 def land(p, main, batch=None):
     """T-3500: every finished lane waiting on a merge (lanes.awaiting_merge) through `train`, `batch` at a time (one
     that conflicts with the branch is parked before any criteria or gate run); each landed lane is removed and its task
@@ -1284,6 +1306,10 @@ def _land(p, main, batch):
             print(f"sampo lane land: left for a hand close {tid}: {c.fit(why, 400)}" if why else
                   f"sampo lane land: closed {tid}", file=sys.stderr, flush=True)  # T-3819: the reason, not hours later
 
+    def note_park(pairs):  # T-4252: one line per lane left out, as it happens; plain() keeps a gate's output to one line
+        for i, w in pairs:
+            print(f"sampo lane land: parked {i}: {c.fit(c.plain(w), 400)}", file=sys.stderr, flush=True)
+
     def sort(bs):  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
         for b in sorted(bs, key=land_key):
             if why := _check_hold(b, tip(b), main):  # T-4286: its check is running, red or cut off at this tip: left out
@@ -1294,6 +1320,7 @@ def _land(p, main, batch):
             if r.returncode == 1:
                 files = [f for f in r.stdout.splitlines()[1:] if f]
                 parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
+                note_park(parked[-1:])  # T-4252: said now, not at the land's end
             else:
                 ready.append(b.id)
                 if why := _stale_affected(b, tip(b), main):  # T-3963: trains after the fresh ones, still lands
@@ -1307,8 +1334,17 @@ def _land(p, main, batch):
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
     seen = set(waiting) | set(landed)
+    first_taken = set()  # T-4013: every --first id this land took (`asked` is the ship request's flag, not this)
     while True:
         jump = first_ids(p)  # T-3796: asked for meanwhile go next, a lane finished since the land began too
+        first_taken.update(jump)
+        moved = {t for t, _ in parked if t in first_taken and tested.get(t) != tip(by[t])}
+        if moved:  # T-4013: a --first lane parked on a conflict its tip has since moved past is judged again
+            now = c.load_briefs(p)
+            again = set(lanes.awaiting_merge(p, now, 0, fresh=True)) & moved  # T-4265: its new tip is seconds old
+            parked[:] = [x for x in parked if x[0] not in again]
+            sort(b for b in now if b.id in again)
+            jump = jump + sorted(again - set(jump))
         if jump:
             late = set()
             if set(jump) - seen:
@@ -1319,9 +1355,12 @@ def _land(p, main, batch):
                 seen |= late
             front = [t for t in jump if t in ready]
             ready = front + [t for t in ready if t not in front]
+            if any(t not in front for t in jump):  # (`now` above is a list of briefs; this one a map by id)
+                by_id = {b.id: b for b in c.load_briefs(p)}
             for t in (t for t in jump if t not in front):
-                print(f"sampo lane land: --first {t}: not a finished lane waiting on a merge here (merged, parked or "
-                      "still building)", file=sys.stderr, flush=True)
+                why = next((w for i, w in parked if i == t), "")
+                print(f"sampo lane land: --first {t}: " + _first_state(by_id.get(t), t, why, landed),
+                      file=sys.stderr, flush=True)
         if not ready:
             break
         ids, ready = ready[:batch], ready[batch:]
@@ -1339,6 +1378,7 @@ def _land(p, main, batch):
         except c.LockTimeout:
             stopped = "a sampo lane train is running: land again after it"
             break
+        note_park(got["left_out"])  # T-4252: before the next train starts, not in the summary
         if got.get("kept"):  # T-4007: the main checkout's local changes the fast-forward set aside
             print(f"sampo lane land: {got['kept']}", file=sys.stderr, flush=True)
         trains += 1

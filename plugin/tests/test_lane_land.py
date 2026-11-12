@@ -6,11 +6,13 @@ and ships on a publish grant already given. The drive names it when 2+ lanes wai
 import os
 import re
 import subprocess
+import time
 import unittest
 
 from test_lane_train import TrainCase, first
 
 from sampo import core as c
+from sampo import train
 
 OLD = "2026-01-01T00:00:00"  # a lane quiet this long counts as finished (core.finished_lanes)
 
@@ -237,6 +239,29 @@ class Land(LandCase):
         self.assertRegex(r.stdout, rf"(?m)^  parked {a}: .*same.txt")
         self.assertEqual(self.gate_runs(), 0, r.stdout)
         self.assertTrue(self.brief(a).meta["lane_stop"].startswith("conflict"))
+
+    def test_a_first_lane_parked_on_a_conflict_says_so_and_lands_once_its_tip_moves_past_it(self):
+        # T-4013: T-3989 was named --first, parked on a conflict, read "not a finished lane" and stayed parked all land
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("main\n")
+        a = self.lane(1, "same.txt", "lane\n", when=OLD)
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "main moves")
+        one, fix = os.path.join(self.tmp, "lane1"), os.path.join(self.tmp, "resolve.sh")
+        with open(fix, "w") as f:  # b's gate resolves a's conflict while the land runs; its close runs it again.
+            # The resolving commit is dated like the lane's own: a commit newer than the lane's audit makes the land
+            # leave it for a fresh review (rightly), which this test met whenever the clock's second turned between
+            # the audit and the gate (red beside its heavy neighbours and at a load of 45, green alone)
+            f.write(f"printf 'main\\n' > {one}/same.txt; GIT_AUTHOR_DATE={OLD} GIT_COMMITTER_DATE={OLD} "
+                    f"git -C {one} commit -qam resolve; true\n")
+        b = self.lane(2, "b.txt", ac=f"sh {fix}", when=OLD)
+        self.audited(a, b)
+        for tid in (a, b):
+            self.returned(tid, f"Lane {tid}")
+        r = self.land("--first", a, "--batch", "1")
+        self.assertRegex(r.stderr, rf"--first {a}: parked: conflicts with .*same.txt")
+        self.assertEqual(self.trains(r), [b, a], r.stderr)
+        self.assertEqual(self.brief(a).status, "done", r.stdout + r.stderr)
 
     def test_a_refused_finish_keeps_the_lane_and_says_so(self):
         a = self.lane(1, "a.txt", ac="case $PWD in */lane1) true;; *) false;; esac", when=OLD)  # green only in its lane
@@ -655,6 +680,101 @@ class Restart(LandCase):
             ex, out = self.cmd(background=False)
         ex.assert_not_called()
         self.assertIn("restarts on new code", out)
+
+
+class ParkLines(LandCase):
+    """T-4252: a lane a train leaves out is said as it happens, and --first names the state a lane is in."""
+    def test_parked_line_prints_mid_land_before_the_next_train_with_its_reason(self):
+        # 2026-11-11: T-4221 left train 1 at 04:55 and its line came only in the summary, an hour later
+        a, b, d = self.lane(1, "a.txt", when=OLD), self.lane(2, "BREAK", when=OLD), self.lane(3, "d.txt", when=OLD)
+        self.audited(a, b, d)
+        for tid, what in ((a, "Lane one"), (b, "Lane two"), (d, "Lane three")):
+            self.returned(tid, what)
+        r = self.land("--batch", "1")
+        park = re.search(rf"(?m)^sampo lane land: parked {b}: its merge turns the gates red: .+$", r.stderr)
+        self.assertTrue(park, r.stderr)
+        self.assertLess(r.stderr.index(f"train 2: {b}"), park.start(), "after the train that left it out")
+        self.assertLess(park.start(), r.stderr.index(f"train 3: {d}"), "before the next train starts")
+        self.assertRegex(r.stdout, rf"(?m)^  parked {b}: ", "the summary keeps its list")
+        self.assertEqual(self.brief(d).status, "done", r.stdout + r.stderr)
+
+    def test_parked_line_prints_for_a_lane_left_out_of_a_train_of_two(self):
+        a, b = self.lane(1, "a.txt", when=OLD), self.lane(2, "BREAK", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        r = self.land()
+        self.assertRegex(r.stderr, rf"(?m)^sampo lane land: parked {b}: its merge turns the gates red")
+        self.assertEqual(self.brief(a).status, "done", r.stdout + r.stderr)
+
+    def test_first_names_a_lane_parked_in_this_land_with_its_why(self):
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("main\n")
+        a = self.lane(1, "same.txt", "lane\n", when=OLD)
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "main moves")
+        self.audited(a)
+        self.returned(a, "Lane one")
+        r = self.land("--first", a)
+        self.assertRegex(r.stderr, rf"--first {a}: parked: conflicts with .*same.txt", r.stdout + r.stderr)
+        self.assertNotIn("can't be told", r.stderr)
+
+    def test_first_names_the_state_of_a_lane_not_waiting_on_a_merge(self):
+        # 2026-11-11: --first on T-4221 said only "merged, parked or still building": three states, none chosen
+        a = self.lane(1, "a.txt", when=OLD)
+        self.audited(a)
+        self.returned(a, "Lane one")
+        self.land()
+        self.assertRegex(self.land("--first", a).stderr, rf"--first {a}: merged already")
+        b = self.lane(2, "BREAK", when=OLD)
+        self.audited(b)
+        self.returned(b, "Lane two")
+        self.land()
+        self.assertRegex(self.land("--first", b).stderr, rf"--first {b}: parked by an earlier land \(its last merge: refused\)")
+        c_ = self.lane(3, "c.txt")  # committed just now: not quiet yet, and its builder runs
+        p = c.find_project(self.repo)
+        from sampo import bus
+        x = c.find_brief(p, c_)
+        x.meta["builder_proc"] = f"{bus.host_id()}|{os.getpid()}|{bus._proc(os.getpid())[1]}"
+        c.save_brief(p, x)
+        self.assertRegex(self.land("--first", c_).stderr, rf"--first {c_}: still building")
+        t = first(self.fm("task", "new", "Plain", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                          "--step", "s", "--json").stdout)["id"]
+        self.assertRegex(self.land("--first", t).stderr, rf"--first {t}: not a lane")
+
+
+class ShipAndFirst(LandCase):
+    """T-4252 review: a land that asks a detached ship after a train and also takes a --first id in the same run. The
+    land's --first set and the ship request's flag were both named `asked` in _land(): the request replaced the set with
+    True and the next loop's `asked.update(jump)` crashed the land."""
+    def setUp(self):
+        super().setUp()
+        os.environ.pop("FOREMAN_NO_BACKGROUND", None)  # SampoTestCase restores it: the ship is a detached process here
+
+    def tearDown(self):
+        try:
+            end = time.monotonic() + 60
+            while train._ship_alive(c.find_project(self.repo)) and time.monotonic() < end:
+                time.sleep(0.1)
+        finally:
+            super().tearDown()
+
+    def test_a_ship_asked_after_a_train_and_a_first_id_taken_in_one_land_do_not_clash(self):
+        a, b = self.lane(1, "a.txt", when=OLD), self.lane(2, "b.txt", when=OLD)
+        self.audited(a, b)
+        self.returned(a, "Lane one")
+        self.returned(b, "Lane two")
+        p = c.find_project(self.repo)
+        x = self.brief(a)
+        x.meta["allow"] = ["publish"]  # the grant a detached ship spends
+        c.save_brief(p, x)
+        r = self.fm("lane", "land", "--first", b, "--batch", "1", env={"SAMPO_LAND_SHIP_WAIT_S": "4"}, timeout=240)
+        out = r.stdout + r.stderr
+        self.assertNotIn("AttributeError", out)
+        self.assertEqual(r.returncode, 0, out)
+        self.assertIn("sampo lane land: ship ", out, "a ship was asked for after the first train")
+        self.assertEqual(self.brief(a).status, "done", out)
+        self.assertEqual(self.brief(b).status, "done", out)
 
 
 if __name__ == "__main__":
