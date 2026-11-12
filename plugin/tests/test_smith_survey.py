@@ -6,8 +6,11 @@ was never opened, once); the project's test command runs once before the plan an
 harness runs after each step's done and at the end. The scripted fake model is test_code's."""
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import types
+import unittest
 
 from test_code import CLOSE, PLAN, CodeCase, call, journal_text, plan
 from test_smith_small import DONE, FIX_EDIT, wants
@@ -54,6 +57,18 @@ class SurveyCase(CodeCase):
         run.wants = (True, "the request states an outcome")
         run.__dict__.update(kw)
         return run
+
+    def stats(self, ev):
+        return [e for e in ev if e["event"] == "stats"][-1]
+
+    def one_unittest_suite(self):
+        """test_calc.py a unittest file that is green before the work and after it: the suite the gate detection finds
+        is `python3 -m unittest discover -q`."""
+        os.remove(os.path.join(self.repo, "test_ok.py"))
+        with open(os.path.join(self.repo, "test_calc.py"), "w", encoding="utf-8") as h:
+            h.write("import unittest\nimport calc\n\n\nclass T(unittest.TestCase):\n    def test_zero(self):\n"
+                    "        self.assertEqual(calc.add(1, 0), 1)\n")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
 
 
 class Survey(SurveyCase):
@@ -210,9 +225,6 @@ class Unopened(SurveyCase):
 
 
 class Keep(SurveyCase):
-    def stats(self, ev):
-        return [e for e in ev if e["event"] == "stats"][-1]
-
     def test_keep_green_before_the_plan_is_checked_after_each_step_and_at_the_end(self):
         f, r, ev = self.go(wants(True), *READ_ALL, SURVEY_DONE, plan(PLAN), FIX_EDIT, DONE, CLOSE)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -283,15 +295,6 @@ class Keep(SurveyCase):
         s = self.stats(ev)
         self.assertEqual(s["keep"], "none")
         self.assertIn("no test command", s["keep_why"])
-
-    def one_unittest_suite(self):
-        """test_calc.py a unittest file that is green before the work and after it: the suite the gate detection finds
-        is `python3 -m unittest discover -q`."""
-        os.remove(os.path.join(self.repo, "test_ok.py"))
-        with open(os.path.join(self.repo, "test_calc.py"), "w", encoding="utf-8") as h:
-            h.write("import unittest\nimport calc\n\n\nclass T(unittest.TestCase):\n    def test_zero(self):\n"
-                    "        self.assertEqual(calc.add(1, 0), 1)\n")
-        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
 
     def test_keep_falls_back_to_the_suite_prove_finds_when_the_survey_has_no_tests_line(self):
         self.one_unittest_suite()
@@ -503,3 +506,74 @@ class MissingPath(SurveyCase):
         run = self.run_object()
         os.mkfifo(os.path.join(self.repo, "pipe"))
         self.assertIn("not a regular file", run.read("pipe", 1, 50))
+
+
+NEW_TEST = call("write", file="test_later.py", content=(
+    "import unittest\nimport calc\n\n\nclass Later(unittest.TestCase):\n    def test_mul(self):\n"
+    "        self.assertEqual(calc.mul(2, 3), 6)\n"))
+
+
+class OwnNew(SurveyCase):
+    """T-4459: on the hard exam a plan's first step was 'write failing tests'; the suite's discovery ran the new file,
+    the keep check was red, the step could never be done and the run ended in it. A red that is green without the files
+    the run itself created is not the project's tests turned red."""
+
+    def suite(self):
+        self.one_unittest_suite()
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "one suite"], check=True)
+        verify = "python3 -c 'import calc; assert calc.add(2, 3) == 5'"
+        return dict(PLAN, criteria=[{"text": "calc.add adds", "verify": verify}])
+
+    def test_own_new_failing_test_file_does_not_hold_the_step_and_is_named(self):
+        p = self.suite()
+        f, r, ev = self.go(wants(True), *READ_ALL, call("done", summary="DOCS: rules"), plan(p), NEW_TEST, FIX_EDIT,
+                           DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        keeps = self.notes(ev, "keep")
+        self.assertEqual([(e["keep"], e["state"]) for e in keeps],
+                         [("before", "green"), ("step", "green"), ("end", "green")])
+        self.assertEqual(keeps[1]["own"], ["test_later.py"], "the note says which file it is green without")
+        self.assertIn("test_later.py", keeps[1]["text"])
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "test_later.py")), "the work's test is kept")
+        self.assertEqual([e["step"] for e in ev if e["event"] == "step"], [1])
+        self.assertEqual(self.stats(ev)["keep"], "green")
+        self.assertEqual(self.task()["status"], "done")
+
+    def test_own_new_file_beside_a_broken_old_test_is_still_refused(self):
+        p = self.suite()
+        f, r, ev = self.go(wants(True), *READ_ALL, call("done", summary="DOCS: rules"), plan(p), NEW_TEST, BREAK, DONE,
+                           MEND, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        keeps = self.notes(ev, "keep")
+        self.assertEqual([(e["keep"], e["state"]) for e in keeps][:3],
+                         [("before", "green"), ("step", "red"), ("step", "green")])
+        self.assertNotIn("own", keeps[1], "a * b fails the project's own test with or without the new file")
+
+
+class OwnTries(unittest.TestCase):
+    """T-4459, cascade run: seven created files were over the cap, and leaving out a new source file the edited code
+    imports turns the old tests red for a reason that is not theirs. The files nothing mentions go first, together."""
+
+    def tree(self, files):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        for rel, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(tmp, rel)), exist_ok=True)
+            with open(os.path.join(tmp, rel), "w") as f:
+                f.write(text)
+        return tmp
+
+    def test_own_tries_start_with_every_created_file_nothing_mentions_however_many(self):
+        tests = {f"test/t{n}.test.js": "import '../src/calendar.js'\n" for n in range(8)}
+        root = self.tree({"src/job.js": "import './calendar.js'\n", "src/calendar.js": "export {}\n", **tests})
+        made = sorted([*tests, "src/calendar.js"])
+        self.assertEqual(smith.own_tries(root, made), [sorted(tests)], "nine created files: the leaves, in one run")
+
+    def test_own_tries_then_go_one_at_a_time_and_all_when_they_are_few(self):
+        root = self.tree({"calc.py": "import helper\n", "helper.py": "", "test_later.py": "import calc\n"})
+        self.assertEqual(smith.own_tries(root, ["helper.py", "test_later.py"]),
+                         [["test_later.py"], ["helper.py"], ["helper.py", "test_later.py"]])
+
+    def test_own_tries_of_one_created_file_is_one_run(self):
+        root = self.tree({"calc.py": "", "test_later.py": "import calc\n"})
+        self.assertEqual(smith.own_tries(root, ["test_later.py"]), [["test_later.py"]])

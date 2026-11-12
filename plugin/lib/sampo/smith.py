@@ -85,6 +85,7 @@ WRAP_TURNS, EXCERPT_CHARS = 2, 12000
 SPEC_CHARS = 24000
 DOC_EXT, DOC_MIN, DOC_MAX, DOC_CHARS, DOC_HEADS, DOC_READ = (".md", ".markdown", ".rst", ".txt", ".adoc"), 20, 60, 4000, 8, 65536
 KEEP_TIMEOUT, KEEP_REFUSALS, KEEP_LINES = 120, 3, 30
+KEEP_OWN_FILES, KEEP_OWN_TREE = 6, 4000  # T-4459: created files tried one by one; the largest tree copied for it
 BUILT_FILES = 20  # T-4387: more untracked files than this in one new directory, none written by the run's tools: a command's output
 MAX_TOKENS, KEEP_RESULTS, SMALL_CONTEXT = 8192, 6, 32768
 # T-3006: --reason arms. state: the model's compact state rides each call, thinking off but for low confidence, a failed
@@ -1515,7 +1516,7 @@ class Run:
         """One run of the keep check (kind: before|step|end): (state, output), state green, red or timeout. A tree that
         was last green and has not changed since is not run again: its note says so (cached). The note, the journal and
         the tree that was checked are kept; a run of the check never counts as the model's own change of the tree."""
-        cmd = self.keep_cmd
+        cmd, own = self.keep_cmd, []
         if self.keep_state == "green" and self.keep_tree is not None and self.keep_tree == self.tree():
             state, out = "green", ""
         else:
@@ -1524,14 +1525,58 @@ class Run:
             state = "green" if code == 0 else "timeout" if code is None else "red"
             if code is None:
                 out = f"timed out after {KEEP_TIMEOUT} s\n{out}"
+            if state == "red" and kind != "before":  # T-4459: red by the work's own new tests is not the project's red
+                own = self.keep_own(cmd, env)
+                if own:
+                    state, out = "green", ""
             if not self.edited:  # what the check wrote (a cache folder) is not an edit: the next phase starts from it
                 self.tree0 = None
             self.keep_tree = self.tree()
-        self.emit("note", f"  keep check ({kind}): {state}: {cmd}", quiet=True, keep=kind, state=state, cmd=cmd)
+        if own:
+            self.emit("note", f"  keep check ({kind}): green without {', '.join(own)}, which this run created: every "
+                              f"test that passed before the work still passes: {cmd}", quiet=True, keep=kind,
+                      state=state, cmd=cmd, own=own)
+        else:
+            self.emit("note", f"  keep check ({kind}): {state}: {cmd}", quiet=True, keep=kind, state=state, cmd=cmd)
         if kind != "before":
             self.keep_state = "green" if state == "green" else "red"
             self.log(kind="keep", cmd=cmd, state=self.keep_state, why=self.keep_why)
         return state, out
+
+    def keep_own(self, cmd, env):
+        """T-4459: the files this run created without which a red keep check is green, else []. The check is run again
+        in a scratch copy of the tree with created files left out (own_tries says which, in which order); the first
+        green names its files. Found by running, not by a file's name: a plan's 'write the failing tests first' step
+        adds a file the suite's discovery runs, and the project's own tests have not turned red. A tree of
+        KEEP_OWN_TREE files at most: past it, the red stands."""
+        made = sorted(rel for rel, was in self.orig.items() if was is None and os.path.isfile(os.path.join(self.root, rel)))
+        if not made:
+            return []
+        tmp = tempfile.mkdtemp(prefix="fm-keep-")
+        try:
+            copy, n = os.path.join(tmp, os.path.basename(self.root.rstrip(os.sep)) or "tree"), 0
+            for _, _, names in os.walk(self.root):
+                n += len(names)
+                if n > KEEP_OWN_TREE:
+                    return []
+            shutil.copytree(self.root, copy, symlinks=True)
+            for drop in own_tries(self.root, made):
+                held = {}
+                for rel in drop:
+                    with open(os.path.join(copy, rel), "rb") as f:
+                        held[rel] = f.read()
+                    os.remove(os.path.join(copy, rel))
+                code, _ = run_bounded(cmd, copy, KEEP_TIMEOUT, env, self.cap, confine=worker_confinement(copy)[0])
+                if code == 0:
+                    return drop
+                for rel, data in held.items():
+                    with open(os.path.join(copy, rel), "wb") as f:
+                        f.write(data)
+        except OSError:
+            return []
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        return []
 
     def keep_tail(self, out):
         """The failing lines of a keep run, as the model is told them: the last lines, bounded, no secret."""
@@ -1554,7 +1599,9 @@ class Run:
                             f"fm code --resume {self.tid}" if self.tid else None)
         return (f"Not done: your edits turned the project's own tests red. The keep check `{self.keep_cmd}` passed before "
                 f"your work and now fails ({n} of {KEEP_REFUSALS} tries):\n\n{self.fence(self.keep_tail(out))}\n\n"
-                "Mend what your edits broke without dropping the step's goal, then call done.")
+                "Mend what your edits broke without dropping the step's goal, then call done. A new test of yours that "
+                "fails until a later step belongs in a new test file, not in one the project already has: a file you "
+                "create is left out of this check.")  # T-4459
 
     def seen_read(self, rel, start, lines):
         """read(), but a range the model was already shown of a file unchanged since, and still holds, is a note
@@ -3384,6 +3431,38 @@ _ZW = r"[\s​-‍⁠﻿]*"  # any spacing, NBSP and zero-width characters too
 # T-1394: a tag shaped like the envelope's own, which alone could open or close one; `a < data - 1` and <data-grid> pass
 _LOOKALIKE = re.compile(rf"<(?={_ZW}/?{_ZW}data{_ZW}-{_ZW}[0-9a-f​-‍⁠﻿]+{_ZW}>)", re.I)
 _FENCED = re.compile(r"(<data-[0-9a-f]+>)\n(.*)\n(</data-[0-9a-f]+>)", re.S)
+
+
+def own_tries(root, made):
+    """T-4459: which of the files a run created (`made`, relative to root) the keep check is run again without, in
+    order. First every created file no other file mentions (by its name less its last extension): a test file is a
+    leaf nothing imports, while a new source file the edited code imports must stay or the old tests break for a
+    reason that is not theirs (hard exam, cascade run: six new test files and src/calendar.js, and the red was one of
+    the run's own tests). Then one file at a time and all of them, when they are KEEP_OWN_FILES at most."""
+    stems = {rel: os.path.splitext(os.path.basename(rel))[0].encode() for rel in made}
+    seen = set()
+    for folder, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "__pycache__")]
+        for name in names:
+            path = os.path.join(folder, name)
+            rel = os.path.relpath(path, root)
+            try:
+                if os.path.getsize(path) > 300_000:
+                    continue
+                with open(path, "rb") as f:
+                    data = f.read()
+            except OSError:
+                continue
+            seen.update(r for r, stem in stems.items() if r != rel and r not in seen and stem and stem in data)
+    leaves = [rel for rel in made if rel not in seen]
+    tries = [leaves] if leaves else []
+    if len(made) <= KEEP_OWN_FILES:
+        tries += [[rel] for rel in made] + ([made] if len(made) > 1 else [])
+    out = []
+    for t in tries:
+        if t not in out:
+            out.append(t)
+    return out
 
 
 def _is_result(msg):
