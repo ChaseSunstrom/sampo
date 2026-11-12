@@ -199,13 +199,72 @@ def _rule(n, k, text, files, tests):
     return f"its diff touches what {_mod(k)} tests" if any(_stem(t) == _mod(k) for t in tests) else ""
 
 
-def _merge_in(wt, b, tip, log):
-    """Merge `tip` into the scratch tree; a conflict is aborted and logged (id, files). The new head sha or None."""
-    r = _git(wt, "-c", "user.name=sampo", "-c", "user.email=sampo@localhost", "merge", "--no-ff", "-m",
-             f"Merge {b.id}: {b.title}", tip)
+_MAP_FILE = re.compile(r"docs/map/[^/\0]+\.md")
+_MARKER = re.compile(r"^(?:<{7}|>{7})(?: .*)?$|^={7}$", re.M)  # a conflict marker line
+
+
+def _map_only(files):
+    """T-4375: True when there are conflicted files and every one is a docs/map/*.md entry: two lanes that each add a
+    sentence to one long entry clash textually though nothing disagrees. One code file among them: False."""
+    return bool(files) and all(_MAP_FILE.fullmatch(f) for f in files)
+
+
+def _union_map(wt, files):
+    """T-4375: resolve the merge in `wt`, conflicted only in map files `files`, keeping both sides' lines: each file's
+    three index stages through `git merge-file --union` (no base stage, both sides added it: an empty base). All results
+    are read first and written only when every one is clean (no marker line, both sides present, a plain file); False
+    leaves the merge as it was, for the caller to abort."""
+    stages = {}  # path: {stage: mode}
+    r = _git(wt, "ls-files", "-u", "-z")
+    for rec in r.stdout.split("\0"):
+        head, _, path = rec.partition("\t")
+        parts = head.split()
+        if len(parts) == 3 and path in files:
+            stages.setdefault(path, {})[parts[2]] = parts[0]
+    done = {}
+    with tempfile.TemporaryDirectory(prefix="sampo-union-") as tmp:
+        for f in files:
+            got = stages.get(f, {})
+            if "2" not in got or "3" not in got or any(m not in ("100644", "100755") for m in got.values()) \
+                    or os.path.islink(os.path.join(wt, f)):
+                return False  # deleted on one side, or not a plain file: a real disagreement
+            paths = []
+            for n, name in (("2", "ours"), ("1", "base"), ("3", "theirs")):
+                out = subprocess.run(["git", "-C", wt, "show", f":{n}:{f}"], capture_output=True) if n in got else None
+                if out is not None and out.returncode:
+                    return False
+                with open(os.path.join(tmp, name), "wb") as fh:
+                    fh.write(out.stdout if out is not None else b"")
+                paths.append(os.path.join(tmp, name))
+            m = subprocess.run(["git", "merge-file", "--union", "-p", *paths], capture_output=True)
+            text = m.stdout.decode("utf-8", "replace")
+            if m.returncode or _MARKER.search(text):
+                return False
+            done[f] = m.stdout
+    for f, data in done.items():
+        with open(os.path.join(wt, f), "wb") as fh:
+            fh.write(data)
+        if _git(wt, "add", "--", f).returncode:
+            return False
+    return True
+
+
+def _merge_in(wt, b, tip, log, kept=None):
+    """Merge `tip` into the scratch tree; a conflict is aborted and logged (id, files). The new head sha or None.
+    T-4375: a conflict only in docs/map/*.md entries is resolved keeping both sides' lines, the files recorded in
+    `kept` (lane id: files) for the train to say and follow up."""
+    ident = ("-c", "user.name=sampo", "-c", "user.email=sampo@localhost")
+    msg = f"Merge {b.id}: {b.title}"
+    if kept is not None:
+        kept.pop(b.id, None)
+    r = _git(wt, *ident, "merge", "--no-ff", "-m", msg, tip)
     if not r.returncode:
         return _git(wt, "rev-parse", "HEAD").stdout.strip()
     files = [f for f in _git(wt, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if f]
+    if kept is not None and _map_only(files) and _union_map(wt, files) and \
+            not _git(wt, *ident, "commit", "-m", msg).returncode:
+        kept[b.id] = sorted(files)
+        return _git(wt, "rev-parse", "HEAD").stdout.strip()
     _git(wt, "merge", "--abort")
     log.append((b.id, "conflicts with an earlier lane in the train" + (f": {c.joinmore(files, 8)}" if files else "")))
     return None
@@ -221,8 +280,9 @@ def _probe(p, main, base, b, tip, notes, tests=True):
     from sampo import cli
     r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", base, tip)
     if r.returncode == 1:  # 1 is a conflict; any other failure (an old git) leaves it to the train's own merge
-        files = r.stdout.splitlines()[1:]  # the first line is the merged tree
-        return "conflicts with the base" + (f": {c.joinmore(files, 8)}" if files else "")
+        files = [f for f in r.stdout.splitlines()[1:] if f]  # the first line is the merged tree
+        if not _map_only(files):  # T-4375: a clash only in map entries is merged keeping both sides, by the train
+            return "conflicts with the base" + (f": {c.joinmore(files, 8)}" if files else "")
     if not tests:  # T-3770: the gate runs this lane's affected tests itself, and a red gate names its lane (T-3602)
         return ""
     wt = tempfile.mkdtemp(prefix="sampo-probe-")
@@ -437,6 +497,7 @@ def _run(p, main, ids):
     pm_wait(p, main)
     pre_tree = c.worktree_tree(main)
     left, notes = [], []  # notes: (id, what a probe saw that still let the lane on)
+    kept_maps = {}  # T-4375: lane id: the docs/map files its merge resolved keeping both sides' lines
     cands, rows = [], []  # (brief, tip) in order; (brief, tip, why so far) in order
     for tid in ids:
         b = cli.need_brief(p, tid)
@@ -539,7 +600,7 @@ def _run(p, main, ids):
         _git(wt, "reset", "-q", "--hard", start)
         out = []
         for b, tip in lanes:
-            sha = _merge_in(wt, b, tip, left)
+            sha = _merge_in(wt, b, tip, left, kept_maps)
             if sha:
                 out.append((b, sha))
         return out
@@ -675,6 +736,8 @@ def _run(p, main, ids):
                 cli.mutate(p, b.id, lambda x: x.meta.update(lane_stop=f"refused {c.now()}: the train's fast-forward failed"),
                            "lane_merge", {"train": ids_in, "undone": True})
             raise c.PolicyError(f"fast-forward of {branch} to {tip[:9]} refused: {(ff.stderr or ff.stdout).strip()[:300]}")
+        maps = [(i, kept_maps[i]) for i in ids_in if i in kept_maps]  # T-4375: only the lanes that landed this way
+        map_task = _map_follow_up(p, maps) if maps else ""
         part = next((r["affected"] for r in green if r.get("affected")), None)
         if part:  # T-3544: the full suite the gate skipped verifies each landed merge in the background, newest first
             for i, (b, sha) in enumerate(merged):
@@ -685,13 +748,36 @@ def _run(p, main, ids):
                                           "results": green})
         t3 = time.monotonic()
         mins = {"probe": round((t1 - t0) / 60, 1), "gate": round((t2 - t1) / 60, 1), "land": round((t3 - t2) / 60, 1)}
-        return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "gate_runs": runs[0],
+        return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "map_merged": maps,
+                "map_follow_up": map_task, "gate_runs": runs[0],
                 "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
                     w.startswith(SKIPPED) for _, w in notes), "lanes_probed": len(rows)}
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(wt, ignore_errors=True)
         _git(main, "worktree", "prune")
+
+
+def _map_follow_up(p, maps):
+    """T-4375: one captured follow-up (source followup) for a train that merged lanes keeping both sides' lines in docs/map
+    entries, naming each lane and file: a line both sides rewrote is kept twice, so the stale one must go. One ledger
+    event says what was merged. Returns the new task's id, '' when the capture failed (the landing never waits on it)."""
+    from sampo import cli
+    what = "; ".join(f"{i}: {', '.join(fs)}" for i, fs in maps)
+    text = (f"Read the docs/map entries the train merged keeping both sides' lines ({what})\n\nThe lane train merged "
+            "these lanes with `git merge-file --union` because they clashed only in docs/map entries. A line both sides "
+            "rewrote is kept twice: read each merged entry and drop the stale line.")
+    made = ""
+    try:
+        with c.lock(p.dir, timeout=5):
+            n = cli._create(p, cli._title(text), "CLEAN", "S", "captured", raw=text, source="followup", net=False)
+            c.log_event(p, "capture", task=n.id, data={"source": "followup", "type": "CLEAN", "from": "map_union"})
+            c.regen_views(p)
+            made = n.id
+    except Exception:  # noqa: BLE001 — a busy lock or a full disk costs the note, never the landed lanes
+        pass
+    c.log_event(p, "map_union", data={"lanes": {i: fs for i, fs in maps}, "followup": made})
+    return made
 
 
 def _fast_forward(main, tip):
@@ -731,6 +817,11 @@ def cmd(p, args, main):
              f"{got['gate_runs']} gate run(s)" + (f" and {got['probes']} probe(s) of only the failing tests"
                                                   if got["probes"] else "") + f": {', '.join(got['merged'])}"]
     lines += [f"  left out {i}: {w}" for i, w in got["left_out"]] + [f"  note {i}: {w}" for i, w in got["notes"]]
+    lines += [f"  merged {i} keeping both sides' lines in {', '.join(fs)} (clashed only in docs/map)"
+              for i, fs in got.get("map_merged") or []]  # T-4375
+    if got.get("map_follow_up"):
+        lines.append(f"  follow-up {got['map_follow_up']}: read the merged map entries (a line both sides rewrote is "
+                     "kept twice)")
     m = got["minutes"]  # T-3596: where the time went; the serial closes after the train are not in it
     lines.append(f"Minutes: probe {m['probe']}, gate {m['gate']}, land {m['land']}; "
                  f"{got['probes_skipped']} of {got['lanes_probed']} probe(s) skipped (a held green run)")
@@ -1317,8 +1408,8 @@ def _land(p, main, batch):
                 continue
             by[b.id], tested[b.id] = b, tip(b)
             r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tested[b.id] or "HEAD")
-            if r.returncode == 1:
-                files = [f for f in r.stdout.splitlines()[1:] if f]
+            files = [f for f in r.stdout.splitlines()[1:] if f] if r.returncode == 1 else []
+            if r.returncode == 1 and not _map_only(files):  # T-4375: a map-only clash is the train's to merge
                 parked.append((b.id, f"conflicts with {branch}" + (f": {c.joinmore(files, 8)}" if files else "")))
                 note_park(parked[-1:])  # T-4252: said now, not at the land's end
             else:

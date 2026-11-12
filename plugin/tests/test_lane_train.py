@@ -10,6 +10,8 @@ import unittest
 
 from helpers import ForemanTestCase
 
+from sampo import core as c
+
 first = lambda text: json.JSONDecoder().raw_decode(text)[0]  # noqa: E731
 
 
@@ -149,6 +151,115 @@ class Train(TrainCase):
         r = self.train(a, check=False)
         self.assertIn("conflicts with the base: same.txt", r.stdout + r.stderr)
         self.assertEqual(self.gate_runs(), 0, "no gate run on a lane merge-tree rules out")
+
+    MAP = "docs/map/ops.md"
+    ENTRY = "- `ops.py`: does the work.\n"
+
+    def map_base(self, name=MAP, text=ENTRY):
+        """T-4375: a committed map entry (one long line) two lanes can each add a sentence to."""
+        os.makedirs(os.path.dirname(os.path.join(self.repo, name)), exist_ok=True)
+        with open(os.path.join(self.repo, name), "w") as f:
+            f.write(text)
+        self.git("add", name)
+        self.git("commit", "-qm", "map entry")
+
+    def read(self, name):
+        with open(os.path.join(self.repo, name)) as f:
+            return f.read()
+
+    def followups(self):
+        p = c.find_project(self.repo)
+        return [b for b in c.load_briefs(p) if b.meta.get("source") == "followup"]
+
+    def test_map_only_conflict_keeps_both(self):
+        """T-4375: two lanes that each add a sentence to the same docs/map entry both land: the train keeps both sides'
+        lines (git merge-file --union) and says which lane and file; no conflict marker, nobody left out."""
+        self.map_base()
+        a = self.lane(1, self.MAP, self.ENTRY.rstrip("\n") + " Lane one adds this.\n")
+        b = self.lane(2, self.MAP, self.ENTRY.rstrip("\n") + " Lane two adds that.\n")
+        r = self.train(a, b)
+        self.assertNotIn("left out", r.stdout)
+        for tid in (a, b):
+            self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), r.stdout)
+        text = self.read(self.MAP)
+        self.assertIn("Lane one adds this.", text)
+        self.assertIn("Lane two adds that.", text)
+        self.assertNotRegex(text, r"(?m)^(<<<<<<<|=======|>>>>>>>)")
+        self.assertIn(f"merged {b} keeping both sides' lines in {self.MAP}", r.stdout)
+        self.assertNotIn(f"merged {a} keeping", r.stdout, "the first lane merged cleanly")
+        self.assertEqual(self.git("ls-files", "-u"), "")
+        self.assertEqual(self.git("status", "--porcelain", "--untracked-files=no"), "")
+
+    def test_map_only_conflict_with_the_base_keeps_both(self):
+        """T-4375: the 2026-11-11 case: main moved and added a line to the same entry; the lane is not parked."""
+        self.map_base()
+        a = self.lane(1, self.MAP, self.ENTRY.rstrip("\n") + " Lane adds this.\n")
+        with open(os.path.join(self.repo, self.MAP), "w") as f:
+            f.write(self.ENTRY.rstrip("\n") + " Main adds that.\n")
+        self.git("add", self.MAP)
+        self.git("commit", "-qm", "main moves")
+        r = self.train(a)
+        self.assertNotIn("left out", r.stdout)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout)
+        text = self.read(self.MAP)
+        self.assertIn("Lane adds this.", text)
+        self.assertIn("Main adds that.", text)
+        self.assertNotRegex(text, r"(?m)^(<<<<<<<|=======|>>>>>>>)")
+        self.assertIn(self.MAP, r.stdout)
+
+    def test_map_and_code_conflict_is_left_out(self):
+        """T-4375: a lane that conflicts in a map file and in a code file is left out as before, its files named, the
+        train's tree holds nothing of it, and nothing is captured."""
+        self.map_base()
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("base\n")
+        self.git("add", "same.txt")
+        self.git("commit", "-qm", "code")
+        a = self.lane(1, self.MAP, self.ENTRY.rstrip("\n") + " Lane one adds this.\n")
+        with open(os.path.join(self.tmp, "lane1", "same.txt"), "w") as f:
+            f.write("one\n")
+        self.git("add", "same.txt", cwd=os.path.join(self.tmp, "lane1"))
+        subprocess.run(["git", "-C", os.path.join(self.tmp, "lane1"), "commit", "-qm", "code one"], check=True)
+        b = self.lane(2, self.MAP, self.ENTRY.rstrip("\n") + " Lane two adds that.\n")
+        with open(os.path.join(self.tmp, "lane2", "same.txt"), "w") as f:
+            f.write("two\n")
+        self.git("add", "same.txt", cwd=os.path.join(self.tmp, "lane2"))
+        subprocess.run(["git", "-C", os.path.join(self.tmp, "lane2"), "commit", "-qm", "code two"], check=True)
+        r = self.train(a, b)
+        self.assertIn(f"left out {b}: conflicts with an earlier lane in the train: ", r.stdout)
+        self.assertIn(self.MAP, r.stdout.split(f"left out {b}")[1])
+        self.assertIn("same.txt", r.stdout.split(f"left out {b}")[1])
+        self.assertNotIn("both sides", r.stdout)
+        self.assertEqual(self.read("same.txt"), "one\n")
+        text = self.read(self.MAP)
+        self.assertIn("Lane one adds this.", text)
+        self.assertNotIn("Lane two adds that.", text)
+        self.assertNotRegex(text, r"(?m)^(<<<<<<<|=======|>>>>>>>)")
+        self.assertFalse(self.meta(b).get("lane_stop", "").startswith("merged"))
+        self.assertEqual(self.followups(), [], "nothing was merged that way: nothing to read")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "MERGE_HEAD")))
+
+    def test_map_union_follow_up(self):
+        """T-4375: one follow-up per train that merged this way, naming each lane and file; a train with no such merge
+        captures none."""
+        self.map_base()
+        self.map_base("docs/map/files.md", "- `f.py`: files.\n")
+        a = self.lane(1, self.MAP, self.ENTRY.rstrip("\n") + " One.\n")
+        b = self.lane(2, self.MAP, self.ENTRY.rstrip("\n") + " Two.\n")
+        d = self.lane(3, self.MAP, self.ENTRY.rstrip("\n") + " Three.\n")
+        r = self.train(a, b, d)
+        got = self.followups()
+        self.assertEqual(len(got), 1, [x.title for x in got])
+        raw = got[0].section("Raw request")
+        for tid in (b, d):
+            self.assertIn(tid, raw)
+        self.assertIn(self.MAP, raw)
+        self.assertNotIn(a, raw, "the first lane merged cleanly")
+        self.assertIn(got[0].id, r.stdout)
+        # a second train with only clean lanes captures nothing more
+        e = self.lane(4, "e.txt")
+        self.train(e)
+        self.assertEqual(len(self.followups()), 1)
 
     def test_a_lane_whose_affected_test_fails_is_left_out_before_the_gate_run(self):
         """T-3474: each lane's affected tests run on base+lane first; a red one is named by class, a green one lands
