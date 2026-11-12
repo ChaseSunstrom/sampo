@@ -146,6 +146,22 @@ class Kalevala(ForemanTestCase):
             self.assertIn("root tower", r.stderr + r.stdout)
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "out")))
 
+    def test_exam_lines_malformed_run_a_line_whose_run_is_a_list_is_skipped_and_the_rest_are_read(self):
+        # T-4382: stamp[x.get("run")] raised TypeError on one such line, which broke the scorecard, keep_think_arm and
+        # the grade's comparison for every line of the tower
+        from sampo import rune
+        p = self.project()
+        self.fm("genesis", "init", "--file", self.gen0("r.md", "root\n"))
+        lines = [{"agent": "smith", "closed": {}, "run": ["r0"], "model": "m"},
+                 {"agent": "smith", "closed": {}, "run": {"a": 1}},
+                 {"agent": "smith", "closed": {}, "run": "r1"},
+                 {"agent": "smith", "closed": {}, "run": "r1", "model": "m1"}]
+        with open(os.path.join(rune.home(p), "exam.jsonl"), "w") as f:
+            f.write("".join(json.dumps(x) + "\n" for x in lines))
+        got = rune.exam_lines(p, "smith")
+        self.assertEqual([x["run"] for x in got], ["r1", "r1"])
+        self.assertEqual([x.get("model") for x in got], ["m1", "m1"], "the stamp of a later regrade still reaches back")
+
     def test_exam_lines_are_per_tower_and_the_lean_record_is_keyed_by_tower(self):
         from sampo import louhi, rune
         p = self.project()

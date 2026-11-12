@@ -2451,14 +2451,16 @@ def train_scenarios(lines):
 
 
 def _exam(p, agent):
-    """exam.jsonl lines from one agent that carry closed ids (fm exam grade since T-2102)."""
+    """exam.jsonl lines from one agent that carry closed ids (fm exam grade since T-2102). T-4382: a line whose run is
+    not a string (a list, a dict) is skipped: it broke the stamp below, and with it every reader of the tower."""
     out = []
     for raw in (_doc(home(p), "exam.jsonl") or "").splitlines():
         try:
             x = json.loads(raw)
         except ValueError:
             continue
-        if isinstance(x, dict) and x.get("agent") == agent and isinstance(x.get("closed"), dict):
+        if isinstance(x, dict) and x.get("agent") == agent and isinstance(x.get("closed"), dict) \
+                and isinstance(x.get("run"), (str, type(None))):  # T-4382: a run that is a list or a dict names none
             out.append(x)
     stamp = {}
     for x in reversed(out):  # T-2158: a line from before the model stamp takes the one a later regrade of its run gave
