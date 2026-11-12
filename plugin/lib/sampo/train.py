@@ -8,6 +8,7 @@ each close reuses the pass while the code is unchanged. T-3544: the full-suite g
 changes reach (_affected_gate); the full suite then runs on the landed merges in the background (lanes.pm_run)."""
 import concurrent.futures
 import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -1813,6 +1814,26 @@ def _run_check(argv, cwd):
             signal.signal(signal.SIGTERM, before)
 
 
+@contextlib.contextmanager
+def _check_turn(p, waits=None):
+    """T-4416: one lane's accept check at a time in a project. Five started together (2026-11-11: 1,275 test modules for
+    16 slots) were each still running after 15 to 25 minutes and a 59-module one was cut off at its run's deadline; in
+    turn the work is the same and the first result comes after one run. An flock on the state's check/turn.lock, held
+    by the check's own process around its run and released by the kernel however that process ends. Free: taken at
+    once. Held: `waits()` once (the task is told), then the process blocks; no signal handler is set here, so the
+    SIGTERM of sampo lane rm (stop_check) ends a waiting one. The land's gate and ship do not take it."""
+    d = os.path.join(p.dir, "check")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, "turn.lock"), "a") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            if waits:
+                waits()
+            fcntl.flock(f, fcntl.LOCK_EX)
+        yield
+
+
 def _accept_check_child(a):
     """T-4286: the lane's check process: run the check in the lane, then act on its result. Green: the lane is queued
     first, the same call accept makes (a land not running is started). Red: left out, its failing classes (from the
@@ -1822,10 +1843,14 @@ def _accept_check_child(a):
     p = c.Project(*a["project"])
     b = cli.need_brief(p, a["id"])
     main, tip, tries = a["main"], a["tip"], int(a.get("tries") or 1)
-    r, timed_out = _run_check(a["argv"], b.meta.get("lane") or main)
-    got = _result_of(r)
+    r, timed_out = None, False
+    with _check_turn(p, lambda: _set_check(p, b.id, "check waits its turn: another lane's check is running (one at a "
+                                                    "time in a project, T-4416)")):
+        if _lane_tip(main, cli.need_brief(p, b.id)) == tip:  # a tip that moved during the wait: no suite for nothing
+            r, timed_out = _run_check(a["argv"], b.meta.get("lane") or main)
+    got = _result_of(r) if r is not None else None
     b = cli.need_brief(p, b.id)
-    if _lane_tip(main, b) != tip:
+    if r is None or _lane_tip(main, b) != tip:
         _set_check(p, b.id, f"check on {tip[:9]} discarded: the lane tip moved; sampo lane accept {b.id} checks the new one",
                    **dict.fromkeys(_CHECK_KEYS))  # every key: a leftover tries or failed list would mislead the next one
         return 0
