@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo exam run answers every picked scenario for a local model arm by default; a Claude session arm keeps its default of 3 and now prints that it cut the run (T-4258).
 - sampo lane accept's checks take turns: one lane's check runs at a time in a project, a waiting one says so on its task, and a lane whose tip moved while it waited runs nothing (T-4416).
 - sampo lane accept's check now gets its result: the check's JSON is read as it is printed (over many lines), so a green check queues its lane and a red one names its classes instead of every check ending 'cut off 2x at its deadline'; and the check picks its tests from the task it is given, active in the lane or not (T-4418).
 - sampo lane accept now refuses a malformed --audit (two values, an option eaten as a value, an unknown lens, an empty how or result, leftover words) with the --audit LENS HOW RESULT form before recording or starting anything (T-4391).
