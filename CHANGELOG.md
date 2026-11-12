@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code starts a run with the sound criteria when one criterion's verify is still refused after the re-plans, carries the refused one as not proven and says so at the end, instead of ending the run at the plan (T-4386).
 - a lane accepted with sampo lane accept at or after its last commit is a finished lane at once: one the main session made itself (no builder) was 'not a finished lane waiting on a merge' for 30 minutes after its last commit, and a train left without it (T-4365).
 - A focused big task holds the session's stop once per state of its tree while a child can be worked, within a time budget, and ends in one report; sampo big status ID (or --all), sampo big estimate ID and sampo big report ID show the tree in numbers, with minutes and close attempts from the ledger and 'unknown' where nothing was recorded, never 0 (T-4223).
 - sampo code's keep check no longer takes the work's own new failing tests for the project's tests turned red: a red run is repeated without the files the run created, and when that is green the step goes on with the files named. A plan that writes its failing tests first used to end in its first step (T-4459).
