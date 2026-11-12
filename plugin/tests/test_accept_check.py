@@ -87,6 +87,41 @@ class AcceptCase(LandCase):
                                           "id": tid, "tip": self.tip(n), "tries": tries, "argv": argv, "since": since})
 
 
+class Lenses(AcceptCase):
+    """T-4487: accept refuses, recording nothing, a lane whose close would refuse it for the audits it lacks: the
+    lenses its tier needs, and adversary when its own diff is security-sensitive."""
+
+    def accept_rows(self, tid, rows):
+        args = types.SimpleNamespace(audit=rows, json=False, no_check=False)
+        with contextlib.redirect_stdout(io.StringIO()):
+            train.accept(self.p, c.find_brief(self.p, tid), self.repo, args)
+
+    def test_lenses_m_lane_with_one_audit_is_refused_and_records_nothing(self):  # T-4487
+        tid = self.lane(1, "f1.txt", when=OLD, tier="M")
+        with self.assertRaises(c.PolicyError) as e:
+            self.accept_rows(tid, [["edge", "read the diff", "no findings"]])
+        self.assertIn("audit missing: --lens 'intent: <result>'", str(e.exception))
+        self.assertFalse(list(self.brief(tid).audits()), "nothing recorded when accept refuses")
+
+    def test_lenses_security_sensitive_diff_also_needs_adversary(self):  # T-4487
+        tid = self.lane(1, "auth.py", when=OLD, tier="M")
+        b = self.brief(tid)
+        rows = [["intent", "read the diff", "fine"], ["edge", "read the diff", "no findings"]]
+        gaps = train._accept_gaps(b, os.path.join(self.tmp, "lane1"), self.repo, [(r[0], r[1], r[2]) for r in rows])
+        # the close's own words (_adversary_gaps): edge does not stand in for adversary on a sensitive diff
+        self.assertTrue(any(g.startswith("audit missing: adversary (security-sensitive: auth.py)") for g in gaps), gaps)
+        self.assertTrue(all("security-sensitive" in g for g in gaps), gaps)
+        with self.assertRaises(c.PolicyError) as e:
+            self.accept_rows(tid, rows)
+        self.assertIn("audit missing: adversary", str(e.exception))
+        self.assertFalse(list(self.brief(tid).audits()), "nothing recorded when accept refuses")
+
+    def test_lenses_full_set_is_accepted(self):  # T-4487
+        tid = self.lane(1, "auth.py", when=OLD, tier="M")
+        rows = [(lens, "read the diff", "fine") for lens in ("intent", "edge", "adversary")]
+        self.assertEqual(train._accept_gaps(self.brief(tid), os.path.join(self.tmp, "lane1"), self.repo, rows), [])
+
+
 class Starts(AcceptCase):
     def test_a_stale_run_starts_the_check_detached_and_accept_returns_at_once(self):  # starts
         tid = self.a_lane(1, run=STALE)

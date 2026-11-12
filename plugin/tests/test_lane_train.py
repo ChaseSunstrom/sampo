@@ -29,12 +29,17 @@ class TrainCase(ForemanTestCase):
     def gate_runs(self):
         return len(open(self.runs).read().split()) if os.path.exists(self.runs) else 0
 
-    def lane(self, n, name, text=None, ac="true", when=None):
+    def lane(self, n, name, text=None, ac="true", when=None, tier="S"):
         """A lane worktree with a task and one commit writing `name` (dated `when`, else now); its task id."""
         path = os.path.join(self.tmp, f"lane{n}")
         subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", f"foreman/lane{n}", path], check=True)
-        tid = first(self.fm("task", "new", f"Lane {n}", "--type", "FEATURE", "--tier", "S", "--ac", f"ok :: {ac}",
-                            "--step", "s", "--json", "--focus", cwd=path).stdout)["id"]
+        plan = (["--interpretation", "Reading 1: the lane's change. Reading 2: none.",
+                 "--approach", "1) use what exists: the close's own rule. fails if: the rule needs state the merge "
+                               "makes. 2) do less: say it in the help. fails if: the close still refuses. 3) relax the "
+                               "close. fails if: an unaudited change lands. Choice 1 (80%): the rule is already code."]
+                if tier != "S" else [])  # M/L plan gate
+        tid = first(self.fm("task", "new", f"Lane {n}", "--type", "FEATURE", "--tier", tier, "--ac", f"ok :: {ac}",
+                            *plan, "--step", "s", "--json", "--focus", cwd=path).stdout)["id"]
         with open(os.path.join(path, name), "w") as f:
             f.write(text or f"{n}\n")
         self.git("add", name, cwd=path)

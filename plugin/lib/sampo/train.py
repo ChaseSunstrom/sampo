@@ -2080,6 +2080,27 @@ def _audit_rows(args):
     return rows
 
 
+def _accept_gaps(b, path, main, rows):
+    """T-4487: what the close would refuse for the lane at `path` once these audits (rows) are on its brief: the lens
+    groups its tier needs (cli._audit_gaps, the close's own rule), and adversary when the lane's own diff is
+    security-sensitive (the close's _adversary_gaps). Judged against the lane's tree, before anything is recorded."""
+    from sampo import cli
+    tree = c.worktree_id(path)
+    base = c.task_base(main, b)  # the close reads the same start point: a task with none is judged on its audits alone
+    names = c.task_diff(path, base, "--name-only", "--no-renames") if base and tree else None
+    if not base:
+        risky = []
+    elif names is None:  # unreadable: counted as sensitive, as the close does
+        risky = ["diff unavailable, so its content wasn't checked"]
+    else:
+        risky = c.sensitive(sorted(set(names.splitlines())), c.task_diff(path, base) or "")
+    gaps = cli._audit_gaps(b, [(lens, how) for lens, how, _ in rows], b.audit_blockers(tree=tree))
+    if risky and not any(lens == "adversary" for lens, _, _ in rows):
+        gaps += [r + cli._adversary_ask(risky) for r in b.audit_blockers(tree=tree, need=("adversary",))
+                 if r.startswith("audit missing: adversary")]
+    return gaps
+
+
 def accept(p, b, main, args):
     """T-3922: a reviewed lane in one call: each --audit (lens, how, result) recorded on its brief from the lane's tree,
     the close's missing lines named, and the lane queued first (first_ids): into a running land at its next train
@@ -2099,6 +2120,10 @@ def accept(p, b, main, args):
             f"{b.id} has no passing affected run at its tip that held the repo-shape classes "
             f"({', '.join(c.REPO_SHAPE_CLASSES)}): --no-check would queue it without them. Run "
             f"`sampo check --affected --hold --evidence {b.id}` in the lane (or drop --no-check: accept starts that check)")
+    gaps = _accept_gaps(b, path, main, rows)
+    if gaps:  # T-4487: refused before anything is recorded or started: the close would refuse the lane for these
+        raise c.PolicyError(f"{b.id} not accepted, nothing recorded: the close would refuse this lane: {'; '.join(gaps)}. "
+                            f"Accept again with the audits it names ({AUDIT_FORM}, one per lens)")
     tree = c.worktree_id(path)
     added = 0
     for lens, how, result in rows:

@@ -1215,14 +1215,26 @@ def merged_in(root, b):
 def audit_tree_past_merges(p, b, tree):
     """T-2784: the trees an audit may have been made on and still cover this task's own changes: `tree` (the working
     files) and each audit tree that differs from them only by other tasks' merged-in files (and those this task
-    didn't touch). T-3200: all of them, so an audit made after the merge and one made before both count."""
+    didn't touch). T-3200: all of them, so an audit made after the merge and one made before both count.
+    T-4487: and an audit tree whose difference from the working files misses this lane's own files: the land's merge
+    of the audited tip, and another lane's close (its CHANGELOG line, which no merge message names), are not changes
+    to what the audit read."""
     if not tree:
         return tree
     trees = {tree}
-    merged = set(merged_in(p.root, b)) - set(task_touches(p, b.id))
-    for t in {t for _, _, t in b.audits()} if merged else ():
-        if t and t != tree and (names := task_diff(p.root, t, "--name-only", "--no-renames")) is not None \
-                and set(names.splitlines()) <= merged:
+    touched = set(task_touches(p, b.id))
+    merged = set(merged_in(p.root, b)) - touched
+    base = task_base(p.root, b)
+    for t in {t for _, _, t in b.audits()}:
+        if not t or t == tree or (names := task_diff(p.root, t, "--name-only", "--no-renames")) is None:
+            continue
+        names = set(names.splitlines())
+        # the task's own files: what the audited tree changed since the task's base, plus every file this task touched
+        # (an edit made after the audit is this task's change even though the audit tree doesn't show it). Empty or
+        # unknown: nothing is judged unchanged, the strict answer
+        mine = set(_git(p.root, "diff", "--name-only", "--no-renames", base, t, timeout=60).splitlines()) if base else set()
+        own = mine | touched
+        if names <= merged or (own and not names & own):
             trees.add(t)
     return frozenset(trees)
 

@@ -2311,13 +2311,17 @@ def _scope_gaps(p, b, touches):
 def _finish_gaps(b, args, lenses, p=None):
     """T-0704: what fm task done would refuse that this call doesn't supply, checked before anything runs: the audit
     lenses its tier needs, docs impact and the lesson (M/L)."""
+    return _audit_gaps(b, lenses, b.audit_blockers(tree=_merge_aware_tree(p, b))) + _field_gaps(b, args)
+
+
+def _audit_gaps(b, lenses, recorded):
+    """T-4487: the audit lines a close refuses: each lens group its tier needs that neither `lenses` (the close's own
+    --lens, or accept's audits) nor an audit on record that still counts gives. `recorded`: the audit_blockers lines."""
     given = {lens for lens, _ in lenses} | ({"self"} if b.tier == "S" else set())
-    recorded = b.audit_blockers(tree=_merge_aware_tree(p, b))
-    gaps = [f"audit missing: --lens '{sorted(g)[0]}: <result>'" + (f" (or {', '.join(sorted(g)[1:])})" if len(g) > 1
+    return [f"audit missing: --lens '{sorted(g)[0]}: <result>'" + (f" (or {', '.join(sorted(g)[1:])})" if len(g) > 1
                                                                   else "")
             for g in c.REQUIRED_AUDITS.get(b.tier, c.REQUIRED_AUDITS["S"])
             if not g & given and any(r.startswith(f"audit missing: {' or '.join(sorted(g))}") for r in recorded)]
-    return gaps + _field_gaps(b, args)
 
 
 def _field_gaps(b, args):
@@ -9490,9 +9494,11 @@ def _build_parser(only=None):
                                                        "rest parked with why) then a ship on a publish grant already "
                                                        "given (T-3500); "
                                                        "andon: mark this lane's ANDON.md answered, moved aside, no rm (T-3704); "
-                                                       "accept ID --audit LENS 'how' 'result' …: a reviewed lane's audits, "
-                                                       "its close's gaps named, then it lands first (T-3922; T-4286: a lane with "
-                                                       "no run at its tip is checked first, detached); "
+                                                       "accept ID --audit LENS 'how' 'result' …: a reviewed lane's audits; refused, "
+                                                       "nothing recorded, unless the audits given plus those on record cover what the "
+                                                       "close requires for its diff (intent; one of adversary/edge/operator/maintainer; "
+                                                       "adversary too when the diff is security-sensitive; T-4487), then it lands first "
+                                                       "(T-3922; T-4286: a lane with no run at its tip is checked first, detached); "
                                                        "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon", "accept"])

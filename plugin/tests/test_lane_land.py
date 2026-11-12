@@ -777,5 +777,48 @@ class ShipAndFirst(LandCase):
         self.assertEqual(self.brief(b).status, "done", out)
 
 
+class AuditSurvives(LandCase):
+    """T-4487: an audit taken at a lane's own tip still counts at the land's close after another lane's close has
+    written to main (its CHANGELOG line, which no merge message names). What decides staleness is the lane's own files."""
+
+    def audit_at_tip(self, tid, n, lenses):
+        p = c.find_project(self.repo)
+        x = c.find_brief(p, tid)
+        for lens in lenses:  # what accept records: the lane's own working tree
+            x.add_audit(lens, "read the diff", "no findings", tree=c.worktree_id(os.path.join(self.tmp, f"lane{n}")))
+        c.save_brief(p, x)
+
+    def blockers(self, tid):
+        """The audit gaps the close judges b's audits by, against main as it stands now (the merge-aware tree)."""
+        p = c.find_project(self.repo)
+        x = c.find_brief(p, tid)
+        return x.audit_blockers(tree=c.audit_tree_past_merges(p, x, c.worktree_id(self.repo)))
+
+    def land_lane_one_then_lane_two(self):
+        """Main as a's close leaves it (its merge, then its CHANGELOG line), then b's land merges b's audited tip."""
+        self.git("merge", "-q", "--no-ff", "--no-edit", "foreman/lane1")
+        with open(os.path.join(self.repo, "CHANGELOG.md"), "a") as f:
+            f.write("- Lane one\n")
+        self.git("commit", "-qam", "CHANGELOG: lane one")
+        self.git("merge", "-q", "--no-ff", "--no-edit", "foreman/lane2")
+
+    def test_audit_survives_another_lanes_close_on_main(self):  # T-4487
+        a = self.lane(1, "a.txt", when=OLD)
+        b = self.lane(2, "b.txt", when=OLD, tier="M")
+        self.audit_at_tip(b, 2, ("intent", "edge"))
+        self.land_lane_one_then_lane_two()
+        self.assertEqual(self.blockers(b), [], "main gained a.txt and CHANGELOG.md, not b's files: b's audits still count")
+
+    def test_audit_survives_is_not_granted_once_the_lanes_own_file_changes(self):  # T-4487
+        a = self.lane(1, "a.txt", when=OLD)
+        b = self.lane(2, "b.txt", when=OLD, tier="M")
+        self.audit_at_tip(b, 2, ("intent", "edge"))
+        with open(os.path.join(self.tmp, "lane2", "b.txt"), "w") as f:  # the lane's own file, edited after the audit
+            f.write("edited after the audit\n")
+        self.git("commit", "-qam", "edit after the audit", cwd=os.path.join(self.tmp, "lane2"))
+        self.land_lane_one_then_lane_two()
+        self.assertTrue(any("files changed since the audit" in x for x in self.blockers(b)), self.blockers(b))
+
+
 if __name__ == "__main__":
     unittest.main()
