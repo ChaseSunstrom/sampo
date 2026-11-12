@@ -1019,15 +1019,25 @@ def _ship_child(a):
                 rc, out = 1, f"{type(e).__name__}: {e}"
             line, _ = _ship_end(p, grant, head, rc, out, t0, time.time())
             print(f"{_hms()} {c.fit(c.plain(line), 300)}", flush=True)
-            with c.lock(os.path.dirname(path), timeout=30):
-                m = _read_marker(p) or {}
-                again = bool(m.get("again"))
-                _settle(p, grant, rc, out, m)
-                if again:
-                    continue
-                with contextlib.suppress(OSError):
-                    os.remove(path)
-                return 0
+            def said(e):  # a failure here is a timed line in the log, never the loss of a queued ship
+                print(f"{_hms()} grant not settled after the ship: {type(e).__name__}: {c.fit(c.plain(str(e)), 200)}",
+                      flush=True)
+            try:
+                with c.lock(os.path.dirname(path), timeout=30):
+                    m = _read_marker(p) or {}
+                    again = bool(m.get("again"))
+                    try:
+                        _settle(p, grant, rc, out, m)
+                    except Exception as e:  # noqa: BLE001 — a hook holding the project lock, a brief that won't save
+                        said(e)
+                    if not again:
+                        with contextlib.suppress(OSError):
+                            os.remove(path)
+                        return 0
+            except Exception as e:  # noqa: BLE001 — the marker lock itself: the request is read without it
+                said(e)
+                if not (_read_marker(p) or {}).get("again"):
+                    return 0  # the finally clears the marker
     finally:
         m = _read_marker(p)
         if m and m.get("pid") == os.getpid():  # an escaped exception: the marker never outlives its ship
@@ -1226,6 +1236,7 @@ def _land(p, main, batch):
     closed, hand, shipped = [], [], None
     by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
     times, background, asked = [], not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked(), False
+    ship_failed = None  # the newest request's failure to start a ship (None once a later one started or joined)
     land_id = f"{os.getpid()}-{int(time.time())}"
     if (rec := ship_last(p)) and not rec.get("seen"):  # T-4239: the end of a ship that outlived its land
         print(f"sampo lane land: the earlier ship ended at {time.strftime('%H:%M:%S', time.localtime(rec['end']))} "
@@ -1234,16 +1245,16 @@ def _land(p, main, batch):
             c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps({**rec, "seen": True}))
 
     def ship(final):  # T-4239: where nothing runs detached the ship is in line, as before; else it is asked for
-        nonlocal asked
+        nonlocal asked, ship_failed
         if not background:
             return _ship(p, not final, main)
         got = _ship_request(p, main, final)
         if got:
-            asked = True
             kind, m = got
-            print(f"sampo lane land: ship {kind} " + (f"(pid {m['pid']}, log {m['log']})" if kind == "started" else
-                  f"for {m.get('want', '')[:9]}: the running ship goes again when it is done" if kind == "joined" else
-                  f"not started: {m}"), file=sys.stderr, flush=True)
+            asked, ship_failed = kind in ("started", "joined"), (None if kind in ("started", "joined") else str(m))
+            print("sampo lane land: " + (f"ship started (pid {m['pid']}, log {m['log']})" if kind == "started" else
+                  f"ship joined for {m.get('want', '')[:9]}: the running ship goes again when it is done"
+                  if kind == "joined" else f"ship not started: {m}"), file=sys.stderr, flush=True)
         return None
 
     def close(ids):  # T-3796: each lane closes once its train lands it, not after the whole pile has trained
@@ -1339,7 +1350,7 @@ def _land(p, main, batch):
     grant, said = shipped or (None, "")
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
             "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
-            "train_times": times, "ship_asked": asked}
+            "train_times": times, "ship_asked": asked, "ship_failed": ship_failed}
 
 
 def _close_gaps(b):
@@ -1497,17 +1508,24 @@ def cmd_land(p, args, main):
         pid, log = started
         return cli.out(args, {"land": "started", "pid": pid, "log": log},
                        f"land started in the background (pid {pid}, log {log}); it trains the finished lanes.")
+    t_land = time.time()
     got = land(p, main, args.batch)
     go = got["restart"] and not os.environ.get("FOREMAN_NO_BACKGROUND") and not c.panicked()
     wait = ""
-    if got.get("ship_asked") and not got["restart"]:  # T-4239: the land's last ship, awaited (bounded) with the lock released
+    if got.get("ship_failed"):  # the newest request never started a ship: no record of an earlier one stands in for it
+        wait = f"Ship not started: {c.fit(c.plain(got['ship_failed']), 300)} (the next land ships the head)"
+        got["ship"] = wait
+    elif got.get("ship_asked") and not got["restart"]:  # T-4239: the land's last ship, awaited (bounded) with the lock released
         secs = float(os.environ.get("FOREMAN_LAND_SHIP_WAIT_S") or 1800)  # SAMPO_LAND_SHIP_WAIT_S, mirrored by core
         if _ship_wait(p, secs):
             rec = ship_last(p)
-            if rec:
+            if rec and float(rec.get("start") or 0) >= t_land - 0.2:  # this land's ship (start is rounded to 0.1 s)
                 got["ship_grant"], got["ship"] = rec["grant"], rec["line"]
                 with contextlib.suppress(OSError):
                     c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps({**rec, "seen": True}))
+            else:  # the ship died before its record, or it was never this land's: the earlier line is not its result
+                wait = "Ship ended without a result (the next land ships the head)"
+                got["ship"] = wait
         else:
             wait = f"ship still running: {os.path.join(p.dir, 'ship.log')}"
             got["ship"], got["ship_log"] = wait, os.path.join(p.dir, "ship.log")

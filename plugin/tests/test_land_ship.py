@@ -128,7 +128,96 @@ class Behind(ShipCase):
         self.assertRegex(out, r"(?i)refused")
 
 
+    def child(self, **patches):
+        """_ship_child run here over a marker of this process, its ship mocked: (the ship mock, what it printed)."""
+        import contextlib
+        import io
+        from unittest import mock
+        path = train._ship_marker(self.p)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"pid": os.getpid(), "ticks": train._ticks(os.getpid()), "started": time.time(), "want": "a" * 40,
+                       "ship_head": "", "again": False, "final": True}, f)
+
+        def ship(*a, **k):  # a later train asks for another ship while the first one runs
+            if ship.mock.call_count == 1:
+                m = train._read_marker(self.p)
+                m["again"] = True
+                c.write_atomic(path, json.dumps(m))
+            return 0, "shipped 1 to origin main at " + "b" * 40 + " (the publish grant is spent)."
+        out = io.StringIO()
+        with mock.patch.object(train, "_ship_run", side_effect=ship) as ship.mock, \
+                mock.patch.object(train, "_settle", **patches), contextlib.redirect_stdout(out):
+            train._ship_child({"project": [self.p.slug, self.p.root, self.p.dir, self.p.lane], "main": self.repo,
+                               "grant": "T-0001"})
+        return ship.mock, out.getvalue()
+
+    def test_behind_a_failed_settle_never_drops_the_ship_a_later_train_asked_for(self):
+        ran, out = self.child(side_effect=[RuntimeError("lock busy"), None])
+        self.assertEqual(ran.call_count, 2, "the queued ship ran although the first settle raised")
+        self.assertRegex(out, r"(?m)^\d\d:\d\d:\d\d .*lock busy", "the failure is a timed line in the log")
+        self.assertFalse(os.path.exists(train._ship_marker(self.p)), "the marker is cleared with the last ship")
+
+    def test_behind_a_settle_that_cannot_take_the_lock_still_goes_again(self):
+        from unittest import mock
+        real, n = c.lock, []
+
+        def lock(path, *a, **k):  # the second acquire (after the first ship) times out
+            n.append(path)
+            if len(n) == 2:
+                raise c.LockTimeout("busy")
+            return real(path, *a, **k)
+        with mock.patch.object(c, "lock", side_effect=lock):
+            ran, out = self.child(return_value=None)
+        self.assertEqual(ran.call_count, 2, out)
+        self.assertRegex(out, r"(?m)^\d\d:\d\d:\d\d .*busy")
+
+
 class Sha(ShipCase):
+    def land_here(self):
+        """cmd_land run here: what it printed to stdout and stderr."""
+        import argparse
+        import contextlib
+        import io
+        out, err = io.StringIO(), io.StringIO()
+        self.addCleanup(os.chdir, os.getcwd())
+        os.chdir(self.repo)  # the close runs `sampo` from the cwd: the test's repo
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            train.cmd_land(self.p, argparse.Namespace(batch=1, first=None, bg=False, json=False), self.repo)
+        return out.getvalue() + err.getvalue()
+
+    def old_record(self):
+        c.write_atomic(os.path.join(self.p.dir, "ship-last.json"), json.dumps(
+            {"head": "0" * 40, "sha": "0" * 40, "seconds": 1.0, "exit": 0, "start": time.time() - 5000,
+             "end": time.time() - 4990, "red": [], "grant": "T-0001", "seen": True, "line": "STALE earlier ship fine"}))
+
+    def test_sha_a_ship_that_could_not_start_is_said_and_no_earlier_record_stands_in_for_it(self):
+        from unittest import mock
+        self.lanes_ready(1)
+        self.old_record()
+        with mock.patch.object(train, "_ship_request", return_value=("failed", "OSError: no fork left")):
+            out = self.land_here()
+        self.assertRegex(out, r"(?m)^Ship not started: .*no fork left.*next land", "the land's own summary names it")
+        self.assertNotIn("STALE", out)
+        self.assertNotIn("Ship (", out, "no ship result line: none ran")
+
+    def test_sha_a_ship_that_ended_without_its_record_never_reports_the_earlier_ones_line(self):
+        from unittest import mock
+        self.lanes_ready(1)
+        self.old_record()
+        real = train._ship_request  # the ship child dies before writing its record
+
+        def request(p, main, final):
+            got = real(p, main, final)
+            m = train._read_marker(p)
+            if m and m.get("pid") != os.getpid():
+                os.kill(m["pid"], signal.SIGKILL)  # the ship child dies at once: its marker reads dead
+            return got
+        with mock.patch.object(train, "_ship_request", side_effect=request):
+            out = self.land_here()
+        self.assertRegex(out, r"(?m)^Ship ended without a result.*next land")
+        self.assertNotIn("STALE", out)
+
     def test_sha_the_ship_pushes_the_head_it_read_while_later_trains_land(self):
         self.lanes_ready(3)
         before = self.git("rev-parse", "HEAD")
