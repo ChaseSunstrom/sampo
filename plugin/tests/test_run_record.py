@@ -74,7 +74,8 @@ class Fixture(unittest.TestCase):
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-qm", "init")
         self.env = {k: v for k, v in os.environ.items() if k not in NESTED}
-        self.env.update(XDG_CACHE_HOME=self.cache, FOREMAN_SLOTS="0")
+        # T-4442: these count runs: a red class is not rerun because this host happens to be loaded
+        self.env.update(XDG_CACHE_HOME=self.cache, FOREMAN_SLOTS="0", FOREMAN_LOAD_RERUN="0")
 
     def go(self, *argv, repo=None, **env):
         repo = repo or self.repo

@@ -1895,6 +1895,7 @@ def main():
                     joined = {c: n for c, n in joined.items() if c not in over}
                     cached_cpu.update({c: s for c, s in known.items() if c in joined})
                 results += list(ex.map(go, [j for j in todo if owner(j) in theirs and owner(j) not in joined]))
+        retried = set()
         for i, r in enumerate(results):  # T-3936: a cap-kill on a loaded host runs once more alone, the pool drained
             if r[1] < 0 and "killed (T-1808)" in r[2] and (lp := load_per_cpu()) > LOAD_BAR:
                 again = go(r[0])
@@ -1902,6 +1903,19 @@ def main():
                     sys.stderr.write(f"run.py: {r[0]} passed alone (load {lp:.1f} per CPU): "
                                      f"its kill at the cap was the host's\n")
                     results[i] = again
+                retried.add(r[0])
+        for i, r in enumerate(results):  # T-4442: a class red while the host is past the bar runs once more alone: a
+            # loaded host fails timing-sensitive classes the code did not (T-4358: 16 of 17 green alone). The drawn
+            # classes have their own rerun below, a cap-kill had its, and a deadline's cut is not a failure.
+            if (r[1] != 0 and r[0] not in retried and owner(r[0]) not in drawn and r[2] != NOT_STARTED
+                    and "the run's deadline" not in r[2] and os.environ.get("FOREMAN_LOAD_RERUN") != "0"
+                    and (lp := load_per_cpu()) > LOAD_BAR):  # FOREMAN_LOAD_RERUN=0: a red class is never run twice
+                again = go(r[0])
+                if again[1] == 0:
+                    results[i] = again
+                    if got:  # no cache read (-k, FOREMAN_NO_TEST_CACHE): no events file either
+                        note_event(cache, "flake", r[0])
+                    sys.stderr.write(f"run.py: {r[0]} load flake: failed once, passed alone (load {lp:.1f} per CPU)\n")
         bad = [r[0] for r in results if r[1] != 0 and owner(r[0]) in drawn  # a deadline's stop says nothing of it
                and r[2] != NOT_STARTED and "the run's deadline" not in r[2]]
         for i, r in enumerate(results):  # T-4274: red on code the cache has green is a flake (a loaded host fails the

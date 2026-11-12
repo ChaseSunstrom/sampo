@@ -455,6 +455,26 @@ class DeadlineIsNotFailure(unittest.TestCase):
         code, err, calls = self.main({"test_t2.A": [kill, kill]}, load=2.0)  # still killed alone: failed, one retry only
         self.assertEqual((code, calls), (1, ["test_t2.A"] * 2))
 
+    def test_a_red_class_under_load_is_a_flake_when_green_alone(self):
+        """T-4442: a loaded host fails classes the code did not: red past the load bar runs once more alone."""
+        red = ("test_t3.A", 1, "FAIL: test_a\nboom\n", 1, 2.0)
+        ok = ("test_t3.A", 0, "Ran 1 test\n", 1, 2.0)
+        code, err, calls = self.main({"test_t3.A": [red, ok]}, load=2.0)
+        self.assertEqual((code, calls), (0, ["test_t3.A"] * 2))
+        self.assertIn("test_t3.A load flake: failed once, passed alone (load 2.0 per CPU)", err)
+        self.assertNotIn("FAILED", err)
+        code, err, calls = self.main({"test_t3.A": [red, ok]}, load=0.5)  # a quiet host: the first red stands
+        self.assertEqual((code, calls), (1, ["test_t3.A"]))
+        self.assertIn("FAILED", err)
+        code, err, calls = self.main({"test_t3.A": [red, red]}, load=2.0)  # red twice stands, one rerun only
+        self.assertEqual((code, calls), (1, ["test_t3.A"] * 2))
+        late = ("test_t3.A", 1, run.NOT_STARTED, 0, 0.0)  # a deadline's cut is not a failure to rerun
+        code, err, calls = self.main({"test_t3.A": [late, ok]}, load=2.0)
+        self.assertEqual((code, calls), (124, ["test_t3.A"]))
+        with mock.patch.dict(os.environ, {"FOREMAN_LOAD_RERUN": "0"}):  # the switch: a red class is never run twice
+            code, err, calls = self.main({"test_t3.A": [red, ok]}, load=2.0)
+        self.assertEqual((code, calls), (1, ["test_t3.A"]))
+
 
 class HangsWhenAsked(unittest.TestCase):
     """T-3338: hangs only when test_a_killed_class_is_timed_and_split_next_run asks, through the environment."""
