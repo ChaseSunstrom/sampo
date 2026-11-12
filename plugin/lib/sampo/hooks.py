@@ -1492,6 +1492,79 @@ def _tools_ran(sid, since):
     return False
 
 
+BIG_HOLD_S = 8 * 3600  # T-4223: a big task's turn budget, from the start of its current run of holds (FOREMAN_BIG_HOLD_S)
+BIG_SEEN = 8  # T-4223: the tree states a big task has said, newest last: a return to one of them says nothing new
+
+
+def _big_budget():
+    try:
+        v = float(os.environ.get("FOREMAN_BIG_HOLD_S") or BIG_HOLD_S)
+    except ValueError:  # a value that is no number is the default, never an error on every Stop
+        return float(BIG_HOLD_S)
+    return v if v >= 0 else float(BIG_HOLD_S)  # nan fails the test too
+
+
+def _big_hold(p, sd, briefs, pl, g, saved=True):
+    """T-4223: a big task runs as one turn and one report. With it (or one of its children) in focus, a ready child
+    holds the stop, a landed-but-unclosed child holds it to a review, and a tree only the user can unblock ends in one
+    report line; the turn budget ends it the same way. Once per tree state: the marker is a hash of the children's
+    states, so a changed tree says once more and an unchanged one stays quiet. Reads only the briefs already loaded:
+    no git, no transcript, no lane."""
+    if not saved or not sd.get("drive") or sd.get("paused") or c.panicked() or os.environ.get("FOREMAN_DRIVE_TASK"):
+        return None  # FOREMAN_DRIVE_TASK: a claude -p worker is no session of its own (as _drive_push)
+    act = c.active_brief(briefs, p.lane)
+    if act is None:
+        return None
+    parent = act.meta.get("parent")
+    b = next((x for x in briefs if x.id == parent), None) if parent else act  # a child in focus: its big task
+    if b is None or b.tier not in c.BIG_TIERS:  # one constant for every big-tier check (T-4220)
+        return None
+    kids = sorted((k for k in briefs if k.meta.get("parent") == b.id), key=lambda k: c.id_num(k.id))
+    if not kids:
+        return None
+    byid = {x.id: x for x in briefs}
+    open_ = [k for k in kids if k.status not in c.CLOSED]  # done or dropped: finished, as the status counts it
+    landed = [k for k in open_ if str(k.meta.get("lane_stop") or "").startswith("merged")]
+    landed_ids = {k.id for k in landed}
+    blocked = [k for k in open_ if k.status == "blocked"]
+    ready = [k for k in open_ if k.status in c.RUNNABLE and k.id != act.id and k.id not in landed_ids
+             and not k.meta.get("builder") and all((byid.get(x) is None or byid[x].status in c.CLOSED) for x in c._deps(k))]
+    state = "|".join([b.id] + [f"{k.id}:{k.status}:{'L' if k.id in landed_ids else ''}" for k in kids])
+    h = c.sha1(state.encode()).hexdigest()[:16]
+    d = g.setdefault("big", {}).setdefault(b.id, {})
+    seen = d.get("seen") if isinstance(d.get("seen"), list) else []
+    if h in seen:
+        return None  # said for this tree state already, and a return to it says nothing new
+    now = time.time()
+    budget = _big_budget()
+    last = d.get("last")
+    if not isinstance(last, (int, float)) or now - last > budget:  # a new run: the run before it ended over a budget ago
+        d["first"], d["budget_said"] = now, False
+    first = d.get("first") if isinstance(d.get("first"), (int, float)) else now
+    done_n = len(kids) - len(open_)
+    head = f"big task {b.id}: {done_n} of {len(kids)} children done"
+    if not open_:
+        mode, text = "close", f"{head}; every child is done, so finish {b.id}"
+    elif now - first >= budget:
+        if d.get("budget_said"):
+            return None  # the budget was reported once in this run: the stop is released
+        d["budget_said"] = True
+        mode, text = "budget", f"{head}; past its time budget ({budget / 3600:.1f}h): report where it stands once, then stop"
+    elif landed:
+        mode, text = "landed", f"{head}; {landed[0].id} landed and is not reviewed: review it and close it"
+    elif ready:
+        mode, text = "continue", f"{head}; take up {ready[0].id} (sampo focus {ready[0].id})"
+    elif blocked:
+        mode, text = "user", (f"{head}; needs you: {', '.join(k.id for k in blocked)} blocked. Report that once, "
+                              "in a few lines, and stop")
+    else:
+        return None  # only builder lanes run what is left: they report themselves
+    d["seen"], d["last"] = (seen + [h])[-BIG_SEEN:], now
+    c.log_event(p, "big_hold", task=b.id, data={"mode": mode, "done": done_n, "of": len(kids), "hash": h},
+                session=pl.get("session_id"))
+    return text + "."
+
+
 def _leads_hold(p, pl, tools):
     """T-2297: the leads session start showed (keys only, per session) are held to at the first working Stop (tools
     ran this turn: a question never spends the hold): each still found on a re-scan (same file cap and deadline; past
@@ -4538,6 +4611,11 @@ def _stop(pl):
             or _question_nudge(pl, p)
             or _headless_wait(pl))
         reason = nudge or (None if oneoff or "drive" in c.ablated() else _drive(p, sd, briefs, pl, g, save))  # T-1375
+        if not reason and not oneoff:  # T-4223: a big task's turn, once per tree state; drive first, as it always was
+            try:
+                reason = _big_hold(p, sd, briefs, pl, g, save)
+            except Exception:
+                log_error("Stop", _tb())
         d = g["drive"].setdefault(sid, {"count": 0})
         had_work, d["had_work"] = d.get("had_work"), bool(sd["active"] or sd["queue"])
         reloading, waiting_on = d.pop("reloading", None), d.pop("waiting_on", None)

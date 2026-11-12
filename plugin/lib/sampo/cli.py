@@ -1002,6 +1002,12 @@ def cmd_task(args):
         b, _ = mutate(p, args.id, done, "task_done", logged)
         from sampo import outcomes
         outcomes.record_close(p, logged)  # T-1061
+        if b.tier in c.BIG_TIERS:  # T-4223: a big task's tree, once per state, into big.jsonl (the next estimate's history)
+            try:
+                from sampo import bigview
+                bigview.record_close(p, b)
+            except Exception as e:  # the task is done already; a missing history row must not make that look failed
+                print(f"sampo: warning: big close row not written: {e}", file=sys.stderr)
         outcomes.maintain(p)  # T-2337: the calibration ledger's due outcomes and bar check, each close
         _boundary(p)
         try:  # T-2351: a task a trigger filed is a trial on its trigger's own key
@@ -8765,10 +8771,16 @@ def _build_parser(only=None):
     s = add("big", lazy("sampo.big", "cmd_big"), tier=("Every task", 171),
             help="a big task (tier XL, HUGE or GIANT) starts only with a full plan: plan writes the Design, Breakdown "
                  "and Integration skeleton, check lists what is wrong and how to fix it (exit 1), expand makes one "
-                 "child task per Breakdown block, linked, ordered and scoped; no model call (T-4221)")
-    s.add_argument("action", choices=["plan", "check", "expand"])
-    s.add_argument("id", metavar="ID", help="the big task")
-    s.add_argument("--dry-run", action="store_true", help="expand: list what it would make, make nothing")
+                 "child task per Breakdown block, linked, ordered and scoped; no model call (T-4221); run prints the next "
+                 "wave, every ready child's builder launch at once, cut from the big task's integration branch big/ID, "
+                 "capped by the free lane slots and the load gate, and lists failed children with retry, re-plan or drop; "
+                 "sync merges the build branch into big/ID and names conflicts (T-4222); status, estimate, report: the "
+                 "tree's progress and cost (T-4223)")
+    s.add_argument("action", choices=["plan", "check", "expand", "run", "sync", "status", "estimate", "report"])
+    s.add_argument("id", metavar="ID", nargs="?", help="the big task (status: omit it with --all)")
+    s.add_argument("--all", action="store_true", help="status: every big task, one line each")
+    s.add_argument("--dry-run", action="store_true", help="expand: list what it would make, make nothing; run: show the "
+                   "wave without writing a brief or opening a lane")
     s = add("mandate", lazy("sampo.mandate", "cmd_mandate"), tier=("Project and settings", 772),
             help="a sweeping request kept as one standing record with an end date: sampo scout and sampo night read it; "
                  "once it ends, one decision and nothing more captured under it (T-1400)")

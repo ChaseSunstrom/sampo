@@ -617,7 +617,9 @@ def stop_causes(p, briefs=None, fresh=False):
             if done is None:
                 main = c.main_worktree(p.root) or p.root
                 done = git(main, "rev-parse", "HEAD").stdout.strip()
-            ahead = git(b.meta["lane"], "rev-list", "--count", "HEAD", "--not", done).stdout.strip() if done else ""
+            cut = str(b.meta.get("big_base") or "")  # T-4222: a big child's own commits are the ones past its cut tip
+            nots = [done] + ([cut] if re.fullmatch(r"[0-9a-f]{40,64}", cut) else [])
+            ahead = git(b.meta["lane"], "rev-list", "--count", "HEAD", "--not", *nots).stdout.strip() if done else ""
             if ahead not in ("", "0") and not git(b.meta["lane"], "status", "--porcelain").stdout.strip():
                 out[tid] = ("no_report", "")
                 continue
@@ -1879,18 +1881,30 @@ def revert_route(p, date):
     return back
 
 
-def _merged_in_head(root, tid):
-    """T-3168: is the task's own work on HEAD? The newest of the last 2000 subjects naming it decides: "Merge ID:" or
-    "<what> (ID)" is its work, a Revert is not; a passing mention ("(ID part 1)", "for ID") is skipped."""
-    word = re.compile(rf"\b{re.escape(tid)}\b")
-    for s in c._git(root, "log", "-2000", "--format=%s", timeout=5).splitlines():
-        if not word.search(s):
-            continue
-        if s.startswith("Revert"):
-            return False
-        if s.startswith(f"Merge {tid}:") or s.endswith(f"({tid})"):
-            return True
-    return False
+def _merged_among(root, tids, rev="HEAD"):
+    """T-4222: the ids of `tids` whose own work is on `rev`, from one read of its last 2000 subjects (a big task's
+    integration branch is asked about every child at once). The rule is _merged_in_head's."""
+    words = {t: re.compile(rf"\b{re.escape(t)}\b") for t in tids}
+    got, undecided = set(), set(words)
+    if not undecided:
+        return got
+    for s in c._git(root, "log", "-2000", "--format=%s", rev, "--", timeout=5).splitlines():
+        for tid in [t for t in undecided if words[t].search(s)]:
+            if s.startswith("Revert"):
+                undecided.discard(tid)
+            elif s.startswith(f"Merge {tid}:") or s.endswith(f"({tid})"):
+                undecided.discard(tid)
+                got.add(tid)
+        if not undecided:
+            break
+    return got
+
+
+def _merged_in_head(root, tid, rev="HEAD"):
+    """T-3168: is the task's own work on HEAD (T-4222: or on `rev`)? The newest of the last 2000 subjects naming it
+    decides: "Merge ID:" or "<what> (ID)" is its work, a Revert is not; a passing mention ("(ID part 1)", "for ID") is
+    skipped."""
+    return tid in _merged_among(root, [tid], rev)
 
 
 SKIPS_SHOWN = 15  # T-3293: a batch that skips more lists this many and says how many more (--json has all)
@@ -2016,7 +2030,10 @@ def brief_ready(p, args):
             return f"batched into {b.meta['batched_in']}"
         if c.needs_approval(b, autonomy):
             return "waits on your approval"
-        waits = [d for d in c._deps(b) if d not in by_id or by_id[d].status not in c.CLOSED]
+        from sampo import big  # T-4222: a big task's child waits for its siblings to land on the integration branch
+        anchor = big.anchor(p, b, by_id)
+        waits = (big.unmet(p, b, anchor, by_id) if anchor else
+                 [d for d in c._deps(b) if d not in by_id or by_id[d].status not in c.CLOSED])
         if waits:
             return "waits on " + ", ".join(waits)
         gaps = c.plan_gaps(b, autonomy)
@@ -2099,6 +2116,15 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
     if resume_branch is None and _merged_in_head(p.root, b.id):
         # T-3168: T-3034 was briefed anew though its commits were in main and only its close was pending
         raise c.PolicyError(f"{b.id} is merged: re-run its criteria and finish it (a commit naming it is already in HEAD)")
+    from sampo import big  # T-4222: a child of a big task is cut from the parent's integration branch, after its siblings
+    anchor = big.anchor(p, b)
+    if anchor:
+        if resume_branch is None and _merged_in_head(c.main_worktree(p.root) or p.root, b.id, f"big/{anchor.id}"):
+            raise c.PolicyError(f"{b.id} is merged: re-run its criteria and finish it (a commit naming it is already on "
+                                f"big/{anchor.id})")
+        if waits := (resume_branch is None and big.unmet(p, b, anchor)):  # a lane that already ran is recovered, not held
+            raise c.PolicyError(f"{b.id} waits on {', '.join(waits)}: it is cut from big/{anchor.id} once their commits are on it "
+                                f"({'; '.join(big.why_waits(p, anchor, waits))})")
     gaps = c.plan_gaps(b, c.effective_autonomy(p))
     if gaps:  # T-0823: the builder's first act is fm focus, which refuses these
         raise c.PolicyError(f"{b.id} isn't planned enough for a builder: missing {', '.join(gaps)} (fm task set/ac/step)")
@@ -2139,6 +2165,16 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
             parts += [f"## {name}", body, ""]
     main = c.main_worktree(p.root) or p.root
     base = _git(main, "rev-parse", "HEAD").stdout.strip() or "HEAD"
+    if anchor:  # T-4222: the base is the integration branch's tip (cut lazily, never pushed), not the build head
+        cut = big.branch(p, anchor)
+        base = cut["tip"]
+        on = big.proved(p, b, anchor)  # only what the check found: those siblings' commits are on the tip right now
+        parts += ["## Base: the integration branch",
+                  f"{anchor.id} is a big task: its children are cut from, and land on, its integration branch "
+                  f"`{cut['branch']}`, not the build branch. Your base `{base}` is that branch's tip"
+                  + (f"; the check found the commits of {', '.join(on)} on it" if on else "") + f". Fast-forward your "
+                  f"worktree to it first (the contract below names it as <BASE>); the main thread merges your branch back "
+                  f"onto `{cut['branch']}`.", ""]
     if resume_branch:
         parts += ["## Resume", f"A builder worked this task before and stopped. Its work, including a WIP commit of its "
                   f"unfinished files, is on branch `{resume_branch}`. Right after `fm focus {b.id}`, run "
@@ -2201,6 +2237,10 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         from sampo import bus
         x.meta["builder"] = c.now()
         x.meta["builder_model"] = chosen
+        if anchor:  # T-4222: the lane's base, on the brief
+            x.meta["big_base"] = base
+        else:
+            x.meta.pop("big_base", None)
         if probe:  # T-2353: a labelled probe: its outcome is the evidence for or against the cheaper model
             x.meta["route_probe"] = 1
         else:

@@ -489,10 +489,12 @@ def quote_line(q):
             + ". A quote: nothing is refused.")
 
 
-def forecast_task(p, b, costs=None, days=90):
-    """T-1083: (median cost, how many) of finished tasks of b's type and tier (two or more), else None."""
+def forecast_task(p, b, costs=None, days=90, briefs=None):
+    """T-1083: (median cost, how many) of finished tasks of b's type and tier (two or more), else None. briefs: the
+    briefs the caller already loaded (T-4223: a tree's forecasts read them once, not once per child)."""
     costs = task_costs(p, days) if costs is None else costs
-    xs = [costs[x.id] for x in c.load_briefs(p) if x.status == "done" and x.id != b.id and x.type == b.type
+    pool = c.load_briefs(p) if briefs is None else briefs
+    xs = [costs[x.id] for x in pool if x.status == "done" and x.id != b.id and x.type == b.type
           and x.tier == b.tier and costs.get(x.id)]
     return (round(statistics.median(xs)), len(xs)) if len(xs) >= 2 else None
 
@@ -524,6 +526,12 @@ def _transcripts_size(p):
 
 def _fresh(old, size):
     return bool(old) and abs(size - old["size"]) <= CACHE_GROWTH and time.time() - old["ts"] < CACHE_AGE_S
+
+
+def cache_as_is(p):
+    """(costs, made_at): the cost cache as it is, never computed: an empty Counter and None with no cache (T-4223)."""
+    old = _read_cache(p)
+    return (collections.Counter(old["costs"]), float(old["ts"])) if old else (collections.Counter(), None)
 
 
 def cached_costs(p, compute=True, refresh=False):

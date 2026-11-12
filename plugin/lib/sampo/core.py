@@ -5490,7 +5490,10 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
     base = _git(main, "rev-parse", "HEAD").strip()  # a sha: a detached main works too
     if not base:
         return []
-    key = [base] + sorted(f"{b.id}={b.meta['lane']}" for b in lanes)
+    def cut(b):  # T-4222: a big child's lane is cut from its integration branch's tip, which may be ahead of main: its
+        bb = str(b.meta.get("big_base") or "")  # own commits are the ones past that tip, or a fresh lane reads as finished
+        return bb if re.fullmatch(r"[0-9a-f]{40,64}", bb) else ""
+    key = [base] + sorted(f"{b.id}={b.meta['lane']}@{cut(b)}" for b in lanes)
     cache = os.path.join(p.dir, "finished.json")
     try:
         ttl = float(os.environ.get("FM_STALL_CACHE_S") or 60)
@@ -5518,26 +5521,27 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
         row = dict(ln.partition(" ")[::2] for ln in block.splitlines())
         if row.get("worktree") and row.get("HEAD"):
             heads[os.path.realpath(row["worktree"])] = row["HEAD"]
-    new, walk = {}, set()
+    new, walk = {}, {}  # walk: what a tip must not reach (main's head, and a big child's cut tip) -> the tips to ask about
     for b in lanes:
         path, f = b.meta["lane"], facts.get(b.id) or {}
         sha = heads.get(os.path.realpath(path))
+        nots = f"{base} {cut(b)}".strip()
         if not sha:  # not a worktree of main's repository: asked directly, as before T-3585
             last = _git(path, "log", "-1", "--format=%ct").strip()
-            f = {"ct": int(last) if last.isdigit() and _git(path, "rev-list", "--count", "HEAD", "--not", base)
+            f = {"ct": int(last) if last.isdigit() and _git(path, "rev-list", "--count", "HEAD", "--not", *nots.split())
                  .strip() not in ("", "0") else None}
         else:
             f = dict(f) if f.get("sha") == sha else {"sha": sha}  # a new tip drops every answer
-            if f.get("base") != base or "ct" not in f:  # main moved: ahead or not is asked again
-                f["base"] = base
+            if f.get("base") != nots or "ct" not in f:  # main moved: ahead or not is asked again
+                f["base"] = nots
                 f.pop("ct", None)
-                walk.add(sha)
+                walk.setdefault(nots, set()).add(sha)
         new[b.id] = f
-    if walk:  # every commit on a moved tip that main lacks: a tip in the walk is ahead, with its commit time
-        log = _git(main, "log", "--format=%H %ct", *sorted(walk), "--not", base, timeout=10, fail=None)
+    for nots, shas in walk.items():  # every commit on a moved tip that main lacks: a tip in the walk is ahead, with its commit time
+        log = _git(main, "log", "--format=%H %ct", *sorted(shas), "--not", *nots.split(), timeout=10, fail=None)
         times = dict(ln.split(" ", 1) for ln in (log or "").splitlines() if " " in ln)
         for f in new.values():
-            if log is not None and f.get("sha") in walk:  # a failed walk leaves "ct" out: asked again next refresh
+            if log is not None and f.get("base") == nots and f.get("sha") in shas:  # a failed walk leaves "ct" out: asked again
                 f["ct"] = int(times[f["sha"]]) if f["sha"] in times else None
     for b in lanes:
         f, path = new[b.id], b.meta["lane"]
@@ -5820,6 +5824,12 @@ def _next_for(p, briefs=None, concerns=None):
                              f"no longer holds, then sampo task log {b.id} \"replan: <what changed>\"")
     since = last_change(p, b.id, str(b.meta.get("created") or ""))
     st, action = stage(b, autonomy, since), next_action(b, autonomy, since)
+    if is_big(b.tier) and st in ("ready", "executing") and b.status not in CLOSED and not p.lane:  # T-4222: the wave
+        try:
+            from sampo import big
+            action = big.wave_line(p, b, briefs) or action  # the briefs this turn already holds, never every one again
+        except Exception:  # noqa: BLE001 — a wave that cannot be read never costs the next action
+            pass
     group = []
     if st in ("captured", "planned") and not b.meta.get("batch"):  # T-0670: related items of any size, as one
         group = (related_groups(briefs, of=b) or [[]])[0]
@@ -5997,7 +6007,20 @@ def state_dict(p, briefs=None):
         "session": meta.get("session") or {},
         "genesis": _genesis(p, everything),  # T-2118: the tower's next action, on every surface that reads this
         "goal": _goal_count(p, everything),
+        "big": _big_segment(everything, act.id if act else None),  # T-4223: "T-… XL 3/7 · wave 2" on every status surface
     }
+
+
+def _big_segment(briefs, active_id):
+    """T-4223: the big task in view, as the status surfaces print it; None when none has children or it can't be read
+    (a broken tree costs its segment, never the state). No big-tier brief: no import (T-3577: state_dict runs per hook)."""
+    if not any(b.tier in BIG_TIERS for b in briefs):
+        return None
+    try:
+        from sampo import bigview
+        return bigview.segment(briefs, active_id)
+    except Exception:
+        return None
 
 
 def _goal_count(p, briefs):
@@ -6040,6 +6063,8 @@ def render_state(sd, ts=None):
             out.append(f"Steps: {a['steps_done']}/{a['steps_total']} done")
     else:
         out.append("No active task." + "".join(f" {stranded_note(s)}." for s in sd.get("stranded", ())))
+    if sd.get("big"):  # T-4223
+        out.append(f"Big: {sd['big']}")
     out += ["", f"## Queue ({len(sd['queue'])})"]
     out += [f"{i}. {q['id']} {q['type']} {q['tier']}{' !' if q['priority'] == 'urgent' else ''} — {q['title'][:70]}"
             for i, q in enumerate(sd["queue"][:10], 1)] + _more(len(sd["queue"]), 10)
@@ -6085,7 +6110,7 @@ def state_line(sd):
         head += f" {a['step']['n']}/{a['step']['of']}" if a["step"] else f" {a['steps_done']}/{a['steps_total']}"
     else:
         head = "idle"
-    parts = [head, f"q{len(sd['queue'])}", f"in{len(sd['inbox'])}"]
+    parts = [head] + ([sd["big"]] if sd.get("big") else []) + [f"q{len(sd['queue'])}", f"in{len(sd['inbox'])}"]  # T-4223
     if sd["blocked"]:
         parts.append(f"blk{len(sd['blocked'])}")
     if sd["paused"]:

@@ -598,8 +598,433 @@ def task_expand(p, args):
                           "waves": r["waves"], "dry_run": bool(args.dry_run)}, "\n".join(lines))
 
 
-def cmd_big(args):
+# ---------------------------------------------------------------- the integration branch (T-4222, part C1)
+
+def kids_of(b):
+    """{key: (child id, signature)}: the Children record of the big task b. EVERY reader of a parent's children in the wave
+    (wave_state, unmet, _need_expanded, wave_line, task_run) goes through this one function, so reading the record another
+    way (T-4223's `_have`) is a change here and nowhere else."""
+    return _children(b)
+
+
+def _main(p):
+    return c.main_worktree(p.root) or p.root
+
+
+def _g(p, *args):
+    from sampo import lanes
+    return lanes._git(_main(p), *args)
+
+
+def _zero(p):
+    """update-ref's "the ref must not exist yet": the all-zero id, as long as the repository's object ids (sha256: 64)."""
+    fmt = _g(p, "rev-parse", "--show-object-format").stdout.strip()
+    return "0" * (64 if fmt == "sha256" else 40)
+
+
+def _ref(p, name):
+    """The commit refs/heads/<name> points at, or ''."""
+    return _g(p, "rev-parse", "--verify", "-q", f"refs/heads/{name}^{{commit}}").stdout.strip()
+
+
+def anchor(p, b, by_id=None):
+    """The nearest big ancestor of the task b (its parent when that is big, else the parent's parent, and so on), or None:
+    the task whose integration branch b is cut from. A GIANT's milestone gets the GIANT, a nested child the milestone."""
+    cur, seen = b, {b.id}
+    for _ in range(16):
+        pid = cur.meta.get("parent")
+        if not pid or pid in seen:
+            return None
+        seen.add(pid)
+        up = by_id.get(pid) if by_id is not None else c.find_brief(p, pid)
+        if up is None:
+            return None
+        if is_big(up):
+            return up
+        cur = up
+    return None
+
+
+def branch(p, b):
+    """big/<ID> for the big task b: made once, lazily, from the build head (the main checkout's HEAD), or from the tip of
+    the nearest big ancestor's branch; its name and cut commit go on b's meta (big_branch, big_cut) for the children to
+    read. It is a local branch only: nothing here pushes. -> {"branch", "sha" (the cut), "tip", "created"}"""
     from sampo import cli
+    name = f"big/{b.id}"
+    tip, created = _ref(p, name), False
+    if not tip:
+        up = anchor(p, b)
+        start = branch(p, up)["tip"] if up else _g(p, "rev-parse", "HEAD").stdout.strip()
+        if not start:
+            raise cli.UsageError(f"{b.id}: the build branch has no commit to cut {name} from")
+        made = _g(p, "update-ref", f"refs/heads/{name}", start, _zero(p))
+        tip, created = _ref(p, name), made.returncode == 0
+        if not tip:
+            raise c.PolicyError(f"{b.id}: could not make {name}: {made.stderr.strip() or 'git refused'}")
+        cut = start if created else tip
+    else:
+        cut = str(b.meta.get("big_cut") or tip)
+    if b.meta.get("big_branch") != name or b.meta.get("big_cut") != cut:
+        def record(x):
+            x.meta["big_branch"], x.meta["big_cut"] = name, cut
+
+        cli.mutate(p, b.id, record, "big_branch", {"branch": name, "cut": cut})
+        b.meta["big_branch"], b.meta["big_cut"] = name, cut
+    return {"branch": name, "sha": cut, "tip": tip, "created": created}
+
+
+def _landed(p, up, ids):
+    """The ids among `ids` whose own work is on up's integration branch (a "Merge ID:" or "(ID)" subject, a Revert undoes)."""
+    from sampo import lanes
+    name = f"big/{up.id}"
+    return lanes._merged_among(_main(p), list(ids), name) if ids and _ref(p, name) else set()
+
+
+def _sibling_deps(kid, up):
+    sib = {i for i, _ in kids_of(up).values()}
+    return [d for d in c._deps(kid) if d in sib]
+
+
+def unmet(p, kid, up, by_id=None):
+    """The ids the child `kid` of the big task `up` still waits on. A sibling it comes after is met only when its commits are
+    ON up's integration branch (the lane is cut from that tip: a closed sibling that never landed there would be missing
+    from it), or when it was dropped (its dependents are freed of it); any other dependency is met once closed, as
+    everywhere."""
+    sib = set(_sibling_deps(kid, up))
+    on = None
+    out = []
+    for d in c._deps(kid):
+        x = by_id.get(d) if by_id is not None else c.find_brief(p, d)
+        if d in sib:
+            if x is not None and x.status == "dropped":
+                continue
+            on = _landed(p, up, sorted(sib)) if on is None else on
+            if d not in on:
+                out.append(d)
+        elif x is None or x.status not in c.CLOSED:
+            out.append(d)
+    return out
+
+
+def proved(p, kid, up):
+    """The siblings `kid` comes after whose commits are on up's integration branch right now (what a brief may claim)."""
+    deps = _sibling_deps(kid, up)
+    on = _landed(p, up, deps)
+    return [d for d in deps if d in on]
+
+
+def why_waits(p, up, ids, by_id=None):
+    """One phrase per id `unmet` returned: what the child is still waiting for."""
+    out = []
+    for d in ids:
+        x = by_id.get(d) if by_id is not None else c.find_brief(p, d)
+        if x is None:
+            out.append(f"{d} has no brief")
+        elif x.status == "done":
+            out.append(f"{d} is closed but not on big/{up.id} yet")
+        else:
+            out.append(f"{d} is {x.status}")
+    return out
+
+
+def _checked_out(p, name):
+    """The folder where the branch is checked out, or ''."""
+    here = ""
+    for line in _g(p, "worktree", "list", "--porcelain").stdout.splitlines():
+        if line.startswith("worktree "):
+            here = line[9:]
+        elif line == f"branch refs/heads/{name}":
+            return here
+    return ""
+
+
+def _ident(p):
+    return [] if _g(p, "config", "user.email").stdout.strip() else ["-c", "user.name=Sampo", "-c", "user.email=sampo@localhost"]
+
+
+def sync(p, b):
+    """Merge the build branch (or the nearest big ancestor's branch) into big/<ID> without touching a worktree: a
+    fast-forward when the branch has nothing of its own yet, else a merge commit made from git's own merge-tree. A
+    conflict changes nothing and is named. -> {"branch", "from", "status", "sha", "conflicts"}"""
+    got = branch(p, b)
+    name, up = got["branch"], anchor(p, b)
+    if up:
+        source, src = f"big/{up.id}", branch(p, up)["tip"]
+    else:
+        head = _g(p, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+        source, src = (head if head and head != "HEAD" else "the build head"), _g(p, "rev-parse", "HEAD").stdout.strip()
+    tip = _ref(p, name)
+    res = {"branch": name, "from": source, "status": "up to date", "sha": tip, "conflicts": []}
+    if _g(p, "merge-base", "--is-ancestor", src, tip).returncode == 0:
+        return res
+    if where := _checked_out(p, name):
+        raise c.PolicyError(f"{name} is checked out in {where}: sync moves the branch without a worktree, so leave it first")
+    if _g(p, "merge-base", "--is-ancestor", tip, src).returncode == 0:
+        new, res["status"] = src, "fast-forwarded"
+    else:
+        r = _g(p, "merge-tree", "--write-tree", "--name-only", tip, src)
+        lines = r.stdout.splitlines()
+        if r.returncode not in (0, 1):  # 1 is "conflicts"; anything else is git not doing the merge at all (T-4222 review)
+            ver = _g(p, "version").stdout.strip() or "this git"
+            if r.returncode == 129 or "write-tree" in r.stderr:
+                raise c.PolicyError(f"{name}: sync needs git 2.38 or newer (merge-tree --write-tree); {ver} lacks it. "
+                                    f"Merge by hand: git worktree add <dir> {name}, git merge {source} there, then "
+                                    f"git worktree remove <dir>")
+            raise c.PolicyError(f"{name}: git merge-tree failed ({r.returncode}): {c.fit(r.stderr.strip(), 160) or 'no message'}")
+        if r.returncode != 0:
+            files = []
+            for l in lines[1:]:
+                if not l.strip():
+                    break
+                files.append(l.strip())
+            res.update(status="conflict", conflicts=files or [c.fit(r.stderr.strip() or "git could not merge", 120)])
+            return res
+        made = _g(p, *_ident(p), "commit-tree", lines[0].strip(), "-p", tip, "-p", src, "-m", f"Merge {source} into {name}")
+        new = made.stdout.strip()
+        if made.returncode or not new:
+            raise c.PolicyError(f"{name}: the merge commit failed: {made.stderr.strip() or 'git refused'}")
+        res["status"] = "merged"
+    moved = _g(p, "update-ref", f"refs/heads/{name}", new, tip)
+    if moved.returncode:
+        raise c.PolicyError(f"{name} moved while it was synced: run it again ({moved.stderr.strip()})")
+    res["sha"] = new
+    return res
+
+
+def _main_only(p, what):
+    """`big run` and `big sync` count every lane and move refs of the repository: in a lane they would count its own as
+    the whole (the lane sees a different set of slots), so they are for the main checkout."""
+    from sampo import cli
+    if p.lane:
+        raise cli.UsageError(f"sampo big {what} runs from the main checkout, not a lane: run it from the main checkout")
+
+
+def task_sync(p, args):
+    from sampo import cli
+    _main_only(p, "sync")
+    b = cli.need_brief(p, args.id)
+    _need_big(b)
+    r = sync(p, b)
+    if r["status"] == "conflict":
+        lines = [f"{r['branch']}: merging {r['from']} conflicts in {len(r['conflicts'])} place(s), nothing changed:"]
+        lines += [f"  ✗ {f}" for f in r["conflicts"][:20]]
+        lines.append(f"Resolve it by hand: git worktree add <dir> {r['branch']}, git merge {r['from']} there, fix the files and "
+                     f"commit, then git worktree remove <dir>; sampo big sync {args.id} afterwards finds it up to date.")
+        cli.out(args, r, "\n".join(lines))
+        return 1
+    text = {"up to date": f"{r['branch']} is up to date with {r['from']}",
+            "fast-forwarded": f"{r['branch']} fast-forwarded to {r['from']} ({r['sha'][:9]})",
+            "merged": f"{r['branch']} merged {r['from']} ({r['sha'][:9]})"}[r["status"]]
+    return cli.out(args, r, text)
+
+
+# ---------------------------------------------------------------- the wave
+
+CHOICES = "retry, re-plan or drop"
+
+
+def _blocked_why(kid):
+    for line in reversed(kid.section("Log").splitlines()):
+        if m := re.match(r"^- \S+ blocked: (.*)$", line.strip()):
+            return m.group(1).strip()
+    return ""
+
+
+def _problem_row(parent, kid, row, reason, retry):
+    return {**row, "reason": reason, "choices": [
+        f"retry: {retry}",
+        f"re-plan: change {row['key']}'s block in {parent.id}'s Breakdown, then sampo big expand {parent.id}",
+        f"drop: sampo task drop {kid.id} \"<why>\" (its dependents are then free of it)"]}
+
+
+def wave_state(p, b, briefs=None):
+    """Where each child of the expanded big task b stands, read-only: landed (closed, or its work is on b's integration
+    branch), running (a builder out, or a lane open), problems (blocked, parked by a conflict or a refusal, its builder
+    stopped or stalled), waiting (an `after` sibling has not landed), ready. The wave is `ready`, in Breakdown order."""
+    from sampo import lanes
+    briefs = c.load_briefs(p) if briefs is None else briefs
+    by_id = {x.id: x for x in briefs}
+    kids = kids_of(b)
+    ids = [i for i, _ in kids.values()]
+    name = f"big/{b.id}"
+    landed = _landed(p, b, ids)
+    working, merging, dormant = lanes._slots(p, briefs)
+    causes = lanes.stop_causes(p, briefs)
+    out = {k: [] for k in ("landed", "dropped", "running", "problems", "waiting", "ready")}
+    for key, (kid_id, _) in kids.items():
+        kid = by_id.get(kid_id)
+        row = {"id": kid_id, "key": key, "title": kid.title if kid else ""}
+        if kid is None:
+            out["problems"].append({**row, "reason": "its brief is missing", "choices": [
+                f"re-plan: remove {key}'s line from {b.id}'s Children, then sampo big expand {b.id}"]})
+        elif kid.status == "dropped":  # not landed: it never built anything (its dependents are freed of it)
+            out["dropped"].append(row)
+        elif kid.status in c.CLOSED or kid_id in landed:
+            out["landed"].append(row)
+        elif kid.status == "blocked":
+            why = _blocked_why(kid)
+            out["problems"].append(_problem_row(b, kid, row, "blocked" + (f": {why}" if why else ""),
+                                                f"sampo task unblock {kid_id}, once what it waited on is settled"))
+        elif kid_id in causes:
+            cause, detail = causes[kid_id]
+            out["problems"].append(_problem_row(b, kid, row, lanes.STOP_CAUSES[cause][0],
+                                                lanes.recovery_text(cause, kid_id, detail)))
+        elif lanes.parked(kid):
+            kind = lanes._stop(kid)[0]
+            out["problems"].append(_problem_row(b, kid, row, f"its lane is parked ({kind})", f"sampo lane recover {kid_id}"))
+        elif kid_id in dormant:
+            out["problems"].append(_problem_row(b, kid, row, f"its lane is stalled ({lanes.STALL_QUIET_H} h without a change)",
+                                                f"sampo lane recover {kid_id}"))
+        elif (kid_id in working or kid_id in merging or kid.meta.get("lane") or kid.status in ("active", "verifying")
+              or c.held_elsewhere(kid)):
+            out["running"].append({**row, "state": "waits on a merge" if kid_id in merging else "working"})
+        elif waits := unmet(p, kid, b, by_id):
+            out["waiting"].append({**row, "waits": waits, "why": why_waits(p, b, waits, by_id)})
+        else:
+            out["ready"].append(row)
+    cap = lanes.builders_cap(p)
+    # a dropped child built nothing: it is reported on its own, and a parent whose children were all dropped has landed nothing
+    out.update(branch=name, free=max(0, cap - len(working)), cap=cap, working=working, merging=merging,
+               all_landed=bool(out["landed"]) and len(out["landed"]) + len(out["dropped"]) == len(kids))
+    return out
+
+
+def _need_expanded(b):
+    from sampo import cli
+    _need_big(b)
+    if not kids_of(b):
+        raise cli.UsageError(f"{b.id} has no children yet: sampo big check {b.id}, then sampo big expand {b.id}")
+    if b.status in c.CLOSED:
+        raise cli.UsageError(f"{b.id} is {b.status}")
+
+
+def _strain(st):
+    """The refusal a new lane would meet from the load gate or the unmerged cap, or '' (builder_brief's own two checks)."""
+    from sampo import lanes
+    if len(st["merging"]) >= lanes.UNMERGED_MAX:
+        return f"{len(st['merging'])} finished lanes wait unmerged: merge some first (sampo lane merge ID)"
+    return c.host_strain(lanes.LANE_HARD_BAR if not st["working"] else c.LOAD_BAR, nice_free=True) or ""
+
+
+def task_run(p, args):
+    """sampo big run ID: the next wave of the expanded big task. Every ready child is briefed (its lane cut from the
+    integration branch) and printed as an Agent call, all to go out in one message; capped by the free lane slots and the
+    load gate, which is never bypassed. What is left is the next wave, and nothing is handed out twice: a launch marks
+    the child's brief, and a launch that never opened a lane is released after 30 minutes by the slot count itself."""
+    import argparse
+    import contextlib
+    import io
+    from sampo import cli, lanes
+    _main_only(p, "run")
+    b = cli.need_brief(p, args.id)
+    _need_expanded(b)
+    st = wave_state(p, b)
+    giant = b.tier == "GIANT"
+    dry = bool(getattr(args, "dry_run", False))
+    wave, next_wave, cut_failed, held = [], [], [], ""
+    if giant:  # a milestone is planned, not built: it is a big task of its own, expanded and run on its own
+        wave_rows = []
+    elif st["ready"] and dry:
+        held = _strain(st)
+    for row in st["ready"]:
+        if giant:
+            wave_rows.append(row)
+            continue
+        if len(wave) >= st["free"]:
+            next_wave.append({**row, "reason": f"no builder slot left ({st['cap']} of {st['cap']} out)"})
+        elif held:
+            next_wave.append({**row, "reason": held})
+        elif dry:
+            wave.append({**row, "launch": None})
+        else:
+            kid = c.find_brief(p, row["id"])
+            buf = io.StringIO()
+            try:
+                with contextlib.redirect_stdout(buf):  # builder_brief's own text is replaced by the block below
+                    lanes.builder_brief(p, kid, argparse.Namespace(json=True, model=None))
+                data = json.loads(buf.getvalue())
+            except Exception as e:  # noqa: BLE001 — one child's lane failing to cut is its own report; the rest go on
+                if getattr(e, "batch", False):
+                    held = str(e)
+                    next_wave.append({**row, "reason": held})
+                else:
+                    cut_failed.append({**row, "reason": str(e) or type(e).__name__})
+                continue
+            wave.append({**row, "launch": data["agent"], "path": data["path"], "model": data["model"],
+                         "warnings": data["warnings"]})
+    r = {"id": b.id, "branch": st["branch"], "wave": wave, "next_wave": next_wave, "waiting": st["waiting"],
+         "running": st["running"], "problems": st["problems"], "cut_failed": cut_failed, "landed": st["landed"],
+         "dropped": st["dropped"], "held": held, "all_landed": st["all_landed"], "dry_run": dry, "free": st["free"]}
+    if giant:
+        r["plan"] = wave_rows
+    lines = []
+    if st["all_landed"]:
+        gone = (f"; {len(st['dropped'])} dropped, built nothing: {', '.join(x['id'] for x in st['dropped'])}"
+                if st["dropped"] else "")
+        lines.append(f"{b.id}: every child that was built ({len(st['landed'])}) is done{gone}: close the parent, "
+                     f"sampo task finish {b.id}")
+    elif wave:
+        lines.append(f"{b.id}: {'would launch' if dry else 'launch'} these {len(wave)} builder(s), one Agent call each, all in "
+                     f"one message (cut from {st['branch']}):")
+        lines += [f"  {x['id']}: {x['launch'] or '(dry run: no brief written)'}  [{x['key']}: {x['title']}]" for x in wave]
+        lines += [f"  note: {w}" for x in wave for w in x.get("warnings") or []]
+    elif giant and wave_rows:
+        lines.append(f"{b.id}: plan these milestones, each as a big task of its own (sampo focus ID, sampo big plan ID):")
+        lines += [f"  {x['id']}: {x['title']}" for x in wave_rows]
+    elif not (st["running"] or st["problems"] or st["waiting"] or next_wave or cut_failed):
+        lines.append(f"{b.id}: nothing to launch")
+    if next_wave:
+        lines.append(f"next wave ({len(next_wave)}): " + "; ".join(f"{x['id']} ({x['reason']})" for x in next_wave[:6])
+                     + f"; run sampo big run {b.id} again when a builder returns")
+    if held:
+        lines.append(f"held by the host gate, not bypassed: {held}")
+    for x in cut_failed:
+        lines.append(f"  ✗ {x['id']}: its lane did not cut: {x['reason']}; sampo big run {b.id} again hands it out with the rest")
+    for x in st["problems"]:
+        lines.append(f"  ✗ {x['id']} ({x['key']}): {x['reason']}")
+        lines += [f"      {ch}" for ch in x["choices"]]
+    if st["running"]:
+        lines.append("running: " + ", ".join(f"{x['id']} ({x['state']})" for x in st["running"]))
+    if st["waiting"]:
+        lines.append("waiting: " + "; ".join(f"{x['id']} after {', '.join(x['waits'])}" for x in st["waiting"]))
+        lines += [f"  waits: {x['id']}: {'; '.join(x['why'])}" for x in st["waiting"]]
+    if st["dropped"] and not st["all_landed"]:
+        lines.append(f"dropped: {', '.join(x['id'] for x in st['dropped'])} (built nothing; their dependents are freed of them)")
+    lines.append(f"landed: {len(st['landed'])} of {len(kids_of(b))}")
+    return cli.out(args, r, "\n".join(lines))
+
+
+def wave_line(p, b, briefs=None):
+    """The next action for a focused, expanded big task, from the wave ('' when there is nothing to say). `briefs` is the
+    list the caller (`sampo next`, every turn) already holds: without it every brief is read again."""
+    if not is_big(b) or b.status in c.CLOSED or not kids_of(b):
+        return ""
+    st = wave_state(p, b, briefs)
+    n = min(len(st["ready"]), st["free"])
+    bad = (f" · {len(st['problems'])} child(ren) failed or parked ({', '.join(x['id'] for x in st['problems'][:4])}): "
+           f"sampo big run {b.id} lists each with its choices ({CHOICES})") if st["problems"] else ""
+    if st["all_landed"]:
+        return f"{b.id}: every child that was built is done: close the parent, sampo task finish {b.id}"
+    if b.tier == "GIANT" and st["ready"]:
+        return (f"{b.id}: plan the milestone(s) {c.joinmore([x['id'] for x in st['ready']], 4)}: sampo focus ID, then sampo big "
+                f"plan ID" + bad)
+    if n:
+        who = f"these {n} builders" if n > 1 else "this builder"
+        return (f"{b.id}: launch {who} in one message: sampo big run {b.id} writes each brief and prints the Agent calls"
+                + (f" ({len(st['ready']) - n} more are the next wave)" if len(st["ready"]) > n else "") + bad)
+    if st["running"]:
+        return (f"{b.id}: {len(st['running'])} builder(s) running ({', '.join(x['id'] for x in st['running'][:4])}): review and "
+                f"merge each as it returns, then sampo big run {b.id} for the next wave" + bad)
+    if st["problems"]:
+        return bad.lstrip(" ·").strip().replace("child(ren)", f"child(ren) of {b.id}", 1)
+    return ""
+
+
+def cmd_big(args):
+    from sampo import cli, bigview
     p = cli.resolve(args)
-    fn = {"plan": task_plan, "check": task_check, "expand": task_expand}[args.action]
+    fn = {"plan": task_plan, "check": task_check, "expand": task_expand, "run": task_run, "sync": task_sync,
+          "status": bigview.task_status, "estimate": bigview.task_estimate, "report": bigview.task_report}[args.action]
+    if not args.id and args.action != "status":  # T-4223: only status takes no ID (--all)
+        raise cli.UsageError(f"sampo big {args.action} needs the big task's ID")
     return fn(p, args)

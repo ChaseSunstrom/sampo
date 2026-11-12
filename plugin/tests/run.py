@@ -63,6 +63,7 @@ OPERATOR_SWITCHES.add("TEST_RUN_ID")  # T-4268: the check's id for its gate's re
 OPERATOR_SWITCHES.add("BENCH_MIN_FREE_GB")  # T-3747: the operator's disk budget for bench builds; the low-disk test sets its own
 # T-4239: a land's ship pin, caps and line stamp are the land's (its gate runs these tests inside it), never a test's
 OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND_STAMP"})
+OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a big task; a hold test sets its own
 CGROUP_ROOT = "/sys/fs/cgroup"
 
 
