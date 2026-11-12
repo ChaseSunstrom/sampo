@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo lane accept starts the lane's affected check itself, detached and niced, when the lane has no clean run at its tip that held the four repo-shape classes: green queues it, red holds it out of the land with the failing classes named, a newer green run clears the hold, and lane rm ends the check (T-4286).
 - sampo code no longer gives up a whole run on a plan's form: a plan that is sound work with an incomplete M form gets one targeted question and is otherwise filed as tier S with the gap noted once; a plan the gate refuses twice for one named piece (a criterion for a part of the request, a one-way step) gets one targeted question in the gate's own words (T-4282).
 - The lane load gate weighs the load by the share of runnable threads at nice 0, sampled from /proc and cached 30 s; a hook reads only the cache (T-4277).
 - sampo exam run answers every picked scenario for a local model arm by default; a Claude session arm keeps its default of 3 and now prints that it cut the run (T-4258).
