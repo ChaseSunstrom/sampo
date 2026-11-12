@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-11",
+ "generated": "2026-11-12",
  "totals": {
-  "tasks_done": 814,
-  "evidence": 4353,
-  "proofs": 459,
-  "commits": 615,
-  "gate_runs": 364,
-  "subagents": 2046,
-  "lanes_merged": 491,
-  "findings": 590,
-  "guard_blocks": 803,
-  "captures": 1265,
-  "lessons_shown": 1574
+  "tasks_done": 860,
+  "evidence": 5010,
+  "proofs": 503,
+  "commits": 654,
+  "gate_runs": 391,
+  "subagents": 2244,
+  "lanes_merged": 545,
+  "findings": 678,
+  "guard_blocks": 931,
+  "captures": 1450,
+  "lessons_shown": 1648
  },
  "daily": [
   {
@@ -126,71 +126,82 @@
   },
   {
    "day": "2026-11-11",
-   "FEATURE": 1,
-   "FIX": 0,
+   "FEATURE": 6,
+   "FIX": 25,
+   "CLEAN": 1,
+   "PERFORMANCE": 3,
+   "SECURITY": 1,
+   "RESEARCH": 1,
+   "lanes": 49,
+   "evidence": 687
+  },
+  {
+   "day": "2026-11-12",
+   "FEATURE": 2,
+   "FIX": 8,
    "CLEAN": 0,
    "PERFORMANCE": 0,
    "SECURITY": 0,
    "RESEARCH": 0,
-   "lanes": 2,
-   "evidence": 59
+   "lanes": 7,
+   "evidence": 29
   }
  ],
  "tiers": {
-  "S": 435,
-  "M": 355,
+  "S": 458,
+  "M": 378,
   "L": 24
  },
  "types": {
-  "FEATURE": 272,
-  "FIX": 375,
-  "CLEAN": 45,
-  "PERFORMANCE": 77,
-  "SECURITY": 25,
-  "RESEARCH": 20
+  "FEATURE": 279,
+  "FIX": 408,
+  "CLEAN": 46,
+  "PERFORMANCE": 80,
+  "SECURITY": 26,
+  "RESEARCH": 21
  },
  "guard": {
-  "brief": 419,
-  "core": 191,
-  "system": 77,
-  "state-direct": 43,
-  "rm-outside": 21,
+  "brief": 488,
+  "core": 213,
+  "system": 86,
+  "state-direct": 48,
+  "rm-outside": 39,
   "credentials": 18,
-  "pipe-shell": 14,
+  "pipe-shell": 15,
   "plugin": 8
  },
  "findings": {
   "lenses": {
-   "edge": 177,
-   "adversary": 127,
-   "self": 77,
-   "intent": 73,
-   "design": 53,
-   "maintainer": 48
+   "edge": 187,
+   "adversary": 137,
+   "self": 131,
+   "intent": 77,
+   "maintainer": 55,
+   "design": 53
   },
   "severity": {
-   "LOW": 327,
-   "MEDIUM": 224,
-   "HIGH": 39
+   "LOW": 379,
+   "MEDIUM": 255,
+   "HIGH": 44
   }
  },
  "subagents": {
   "fm-builder": 1112,
-  "general-purpose": 486,
+  "general-purpose": 506,
+  "sampo:fm-builder": 329,
   "fm-reviewer": 208,
-  "sampo:fm-builder": 176,
   "fm-recon": 41,
-  "Plan": 8
+  "sampo:fm-reviewer": 28
  },
  "gate_seconds": {
-  "runs": 364,
-  "median": 380.2
+  "runs": 391,
+  "median": 392.4
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 195,
+  "searches": 221,
   "queued": 3,
   "refused": 0
  },
@@ -310,14 +321,14 @@
  "code": {
   "model_tests": 95,
   "endpoints": 9,
-  "tests": 8389
+  "tests": 9060
  },
  "calibration": {
-  "scored": 28,
-  "pending": 516,
+  "scored": 29,
+  "pending": 566,
   "brier": {
-   "stated": 0.11357142857142857,
-   "base": 0.13732222222222223
+   "stated": 0.13456896551724137,
+   "base": 0.16330714285714285
   },
   "bars": {
    "research": 70,
@@ -342,11 +353,11 @@
     {
      "lo": 80,
      "hi": 94,
-     "n": 2,
+     "n": 3,
      "held": 0,
      "pct": 0,
-     "stated": 88,
-     "gap": 88
+     "stated": 87,
+     "gap": 87
     }
    ],
    "ship": [
@@ -382,18 +393,25 @@
   "interim": {
    "choice": [
     {
+     "lo": 0,
+     "hi": 59,
+     "n": 1,
+     "held": 1,
+     "pct": 100
+    },
+    {
      "lo": 60,
      "hi": 79,
-     "n": 31,
-     "held": 30,
-     "pct": 97
+     "n": 69,
+     "held": 66,
+     "pct": 96
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 140,
-     "held": 130,
-     "pct": 93
+     "n": 163,
+     "held": 153,
+     "pct": 94
     },
     {
      "lo": 95,
@@ -406,20 +424,20 @@
   }
  },
  "proof": {
-  "n": 787,
+  "n": 780,
   "counts": {
-   "meaning-notes": 400,
-   "research-uncited": 35,
-   "meaning-user": 112,
-   "perf-typed": 121,
+   "meaning-notes": 407,
+   "research-uncited": 36,
+   "meaning-user": 115,
+   "perf-typed": 124,
    "typed": 75,
    "red": 89,
    "perf-noise": 1,
-   "docs": 90,
-   "ui-unshot": 32,
-   "tui-unshot": 8,
-   "data": 5,
-   "infra": 3
+   "ui-unshot": 13,
+   "docs": 82,
+   "data": 3,
+   "tui-unshot": 3,
+   "infra": 2
   },
   "history": [
    {
@@ -465,6 +483,10 @@
    {
     "day": "2026-11-11",
     "n": 787
+   },
+   {
+    "day": "2026-11-12",
+    "n": 780
    }
   ]
  },
@@ -472,25 +494,25 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1161,
-    "precision": 0.799,
+    "fired": 1290,
+    "precision": 0.805,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 359,
-    "precision": 0.708,
+    "fired": 370,
+    "precision": 0.71,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 221,
-    "precision": 0.773,
+    "fired": 239,
+    "precision": 0.774,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 125,
+    "fired": 130,
     "precision": 0.421,
     "route": "inbox"
    },
@@ -501,20 +523,20 @@
     "route": "inbox"
    },
    {
-    "trigger": "ci",
-    "fired": 41,
-    "precision": 0.368,
-    "route": "inbox"
-   },
-   {
     "trigger": "ci-red",
-    "fired": 39,
+    "fired": 47,
     "precision": 0.778,
     "route": "inbox"
    },
    {
+    "trigger": "ci",
+    "fired": 43,
+    "precision": 0.368,
+    "route": "inbox"
+   },
+   {
     "trigger": "baseline",
-    "fired": 34,
+    "fired": 35,
     "precision": 0.697,
     "route": "inbox"
    },
@@ -549,6 +571,12 @@
     "route": "inbox"
    },
    {
+    "trigger": "spar",
+    "fired": 5,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
     "trigger": "cold",
     "fired": 4,
     "precision": 0.667,
@@ -567,6 +595,12 @@
     "route": "inbox"
    },
    {
+    "trigger": "did-not-hold",
+    "fired": 2,
+    "precision": 1.0,
+    "route": "inbox"
+   },
+   {
     "trigger": "foresight-date",
     "fired": 2,
     "precision": 0.0,
@@ -575,12 +609,6 @@
    {
     "trigger": "night",
     "fired": 2,
-    "precision": 1.0,
-    "route": "inbox"
-   },
-   {
-    "trigger": "did-not-hold",
-    "fired": 1,
     "precision": 1.0,
     "route": "inbox"
    },
@@ -599,20 +627,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 207,
-    "hit": 0.449,
-    "base_hit": 0.386,
+    "n": 220,
+    "hit": 0.445,
+    "base_hit": 0.382,
     "lead": [
      true,
-     0.005311012268066406,
-     18,
+     0.003305375576019287,
+     19,
      5
     ],
     "muted": false,
-    "shown_n": 133,
-    "shown_hit": 0.474,
-    "overlap": 0.095,
-    "base_overlap": 0.09
+    "shown_n": 146,
+    "shown_hit": 0.466,
+    "overlap": 0.091,
+    "base_overlap": 0.086
    }
   ],
   "lean": [
@@ -669,6 +697,184 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-12",
+   "text": "read T-4439: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "read T-4434: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "Confirm M lanes on haiku",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "Hard exam: the first thinking problem (ideas judged against a product's own data) and the first instrument problem (facts only in a stack card) are written by Opus sessions; the judge of thinking answ",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "read T-4423: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "The hard exam has bands: 1 = today's toy problems, 2 = real-sized projects (Fable alone 44/44 on the first three), 3 = problems Fable gets about half of; band 2 measures the local model's gap to Fable",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "The hard exam's packs are written by Opus sessions (three at a time) and measured on Fable alone and with Sampo: a problem that is hard for the strongest model cannot be written or calibrated by a loc",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "Ran Claude Fable with Sampo on the twelve goal requests at the user's request (2026-11-11): 45/48 for $12.87 (Fable alone 38/48 for $5.84)",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "T-4358: plan calls stay with thinking off for the local model. On the twelve seed-8 goal requests the two arms with plan thinking scored 16 (E, 83 min) and 19 of 48 (H, with notes and the cut-reply fi",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "Run the Fable plain reference arm on the same twelve goal requests (run s8-053, plain agent), about 5 dollars by Sonnet's 0.93: the local model's target is Fable, and Sonnet alone left 16 of 48 points",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "Reference arms, after Sonnet plain cost under a dollar for the twelve goal requests: the same twelve once on Sonnet with Sampo loaded (--agent foreman) and once as a plain session on Fable, so the pag",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "Reference arm for the goal exam: run seed 8's twelve goal scenarios once as a plain Claude session on Sonnet (sampo exam run s8-049 --agent plain --model sonnet), so the local model's 15 to 22 of 48 h",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "sampo code's turn-cap carry (T-4291) on the user's own endpoint profile still holds after today's smith.py changes (T-4363, T-4377: plan gate only): up to 4 carries of 20 turns each on a run that is s",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "sampo code's turn-cap carry (T-4291) also applies to the user's own endpoint profile: up to 4 carries of 20 turns each on a run that is still progressing",
+   "later": {
+    "date": "2026-11-11",
+    "how": "revisited"
+   },
+   "confidence": 70,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "Thinking off becomes sampo code's default arm for local profiles (T-4297), after T-4290 and T-4291 land and the same-seed exam is run again; the state-layer arm as built is not taken further",
+   "later": null,
+   "confidence": 70,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "T-4206 builder on Sonnet, not the Haiku the lane router named",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "sampo code's default thinking: found native thinking ON by default (reason=None) and the compact-state arm (T-3006) unused; not flipped on a guess: A/B on five tasks (plain, off, state) decides the de",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "T-4229: 'that AI architecture' read as three earlier asks taken together (reasoning layer 11-04, tiny steward model 11-10, council and orchestrators of orchestrators 11-08) = programme T-4233; every r",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4228: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "ponytail: already off for the foreman project (settings.local.json, since T-4130); turned off for the JARVIS project the same way (its 'simplest, shortest, no unrequested' rule works against the user'",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "T-4219 big tiers: built as parent tasks with a checked full plan, children on an integration branch, wave launches and one close (not a longer single-agent loop); split into T-4220..T-4224; part B's b",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "read T-4225: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "The machine-wide pause I set by mistake (bare sampo pause, 23:47 and again 00:49) was removed by my own new test's late cleanup (T-4196: an addCleanup ran after tearDown restored the real home). I did",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "Slate: T-4181, T-4188, T-4189, T-4185, T-4190, T-4192, T-4191, T-4193 in that order; groups C, E, G, N, P are built or covered; J and the 45 unread titles stay open. Why: my own read of the user's mes",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-11",
+   "text": "T-4171 brainstorm: build order is T-4181 (meter), T-4188 (concerns ledger), T-4189, T-4185, T-4190, then local best-of-N and the cut; built or duplicate groups skipped (catalogue: research brainstorm-",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-11",
    "text": "read T-4187: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
@@ -1893,185 +2099,10 @@
    "later": null,
    "confidence": 90,
    "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-2878's Claude baseline is the foreman agent (a Claude Code session) on Haiku, not Smith on Haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "A single model verdict that blocks work is confirmed by a second, independent read before it blocks",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "A change that improves how Sampo thinks is registered when it closes and reaches every tower's next seed without anyone carrying it",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "A brand theme dresses brand surfaces; a working tool defaults to a plain, modern look and carries the brand only as a setting",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "A rule derived from the user's circumstances names them and is revisited when Sampo sees them change",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "A run whose answers all carry a setup error (a missing key, an unreachable model) is reported as not run, never as a score",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "A setting the user gives once is checked from every context Sampo runs in (login shell, hook, night job, service, exam sandbox) before it is called done",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "A target counts the outcome the user named (kept, closed, passing, used), never an upstream count that feeds it",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "Every feature the user asks for that a generator never proposed is traced to the prompt line or rule that excluded it, and that line changes in the same generation",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "Kalevala (T-3050): namespaced Rune towers per aspect run at once, V\u00e4in\u00e4m\u00f6inen oversees against the user's intent, Kalevala's own generations evolve the tower set, every behaviour gain registered and s",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3052: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3048: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3042 plan: raise the funnel's yield (normalise, re-admit, kill repair, data-fed prompts), add a Sampo grid, count kept moons, export all",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "genesis select gen-4: keep (seed base gen-4)",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-3043: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-3041: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Parked T-3036 at a one-way, ambiguous step: write the env file and the ~/.bashrc line",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-3035: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "read T-3033: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Snapshot before a one-way step: ground (done by recon: mods/foreman-ui kit.ts/register.tsx/rows.tsx, smithtui.py, tokens.json, pane-glyph.txt) and pin the baseline before any edit: commit cb, riso and",
-   "later": null,
-   "confidence": 90,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "T-2876: the heat language applies to the default (forge) palette and the TUI's night/paper only; cb, riso, signal and custom palettes render exactly as today",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "Approve T-2876 (forge re-skin of the pane and the Smith TUI) after the rival read and the second plan read, with all six review points folded in (baseline fixtures first, one token source test, 256-co",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "T-3006's arm comparison runs on local models (gemma 12B, MiMo 9B) instead of the 27B: the Jarvis profiles need LLM_API_KEY, which is never stored, so those calls fail before any turn",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "T-3022 plan self-approved and split into three M children",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-04",
-   "text": "T-3006 builder on sonnet, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
   }
  ],
  "louhi": {
-  "trials": 191,
+  "trials": 239,
   "runs": [
    {
     "run": "s0-001",
@@ -2117,8 +2148,8 @@
    },
    {
     "run": "l002",
-    "trials": 16,
-    "scenarios": 96,
+    "trials": 19,
+    "scenarios": 114,
     "keyed": 0,
     "found": 0
    },
@@ -2299,10 +2330,10 @@
    },
    {
     "run": "s31-039",
-    "trials": 8,
-    "scenarios": 176,
-    "keyed": 192,
-    "found": 79
+    "trials": 9,
+    "scenarios": 187,
+    "keyed": 204,
+    "found": 89
    },
    {
     "run": "s52-040",
@@ -2310,41 +2341,139 @@
     "scenarios": 272,
     "keyed": 246,
     "found": 194
+   },
+   {
+    "run": "s8-008",
+    "trials": 6,
+    "scenarios": 73,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-042",
+    "trials": 4,
+    "scenarios": 96,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-043",
+    "trials": 2,
+    "scenarios": 48,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-041",
+    "trials": 2,
+    "scenarios": 48,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-045",
+    "trials": 4,
+    "scenarios": 96,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-046",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-048",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-047",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-049",
+    "trials": 6,
+    "scenarios": 72,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-051",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-050",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-053",
+    "trials": 6,
+    "scenarios": 72,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-052",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-054",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
    }
   ],
   "agents": [
    {
     "agent": "smith",
-    "trials": 87,
-    "scenarios": 1902,
+    "trials": 124,
+    "scenarios": 2485,
     "keyed": 2012,
     "found": 367,
     "false_alarms": 630,
-    "fixable": 2012,
-    "fixed": 238,
-    "brier": 0.24
+    "fixable": 3958,
+    "fixed": 760,
+    "brier": 0.191
    },
    {
     "agent": "foreman",
-    "trials": 31,
-    "scenarios": 173,
-    "keyed": 110,
-    "found": 81,
-    "false_alarms": 26,
-    "fixable": 110,
-    "fixed": 96,
-    "brier": 0.144
+    "trials": 37,
+    "scenarios": 238,
+    "keyed": 122,
+    "found": 91,
+    "false_alarms": 28,
+    "fixable": 314,
+    "fixed": 277,
+    "brier": 0.264
    },
    {
     "agent": "plain",
-    "trials": 23,
-    "scenarios": 325,
+    "trials": 28,
+    "scenarios": 379,
     "keyed": 287,
     "found": 211,
     "false_alarms": 59,
-    "fixable": 419,
-    "fixed": 317,
-    "brier": 0.468
+    "fixable": 611,
+    "fixed": 457,
+    "brier": 0.496
    },
    {
     "agent": "oracle",
@@ -2478,9 +2607,9 @@
    },
    {
     "gen": 4,
-    "trials": 2,
-    "keyed": 6,
-    "found": 6
+    "trials": 8,
+    "keyed": 18,
+    "found": 16
    }
   ]
  },
