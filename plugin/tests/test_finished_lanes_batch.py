@@ -145,6 +145,18 @@ class FinishedLanesBatch(unittest.TestCase):
         self.assertIn("empty", c.finished_lanes(self.p, self.briefs, quiet_min=0, fresh=True))
         self.assertIn("empty", self.calls(0)[0], "the fresh read is what the cache now holds")
 
+    def test_accepted_a_lane_accepted_at_or_after_its_last_commit_is_finished_with_no_quiet_wait(self):
+        # T-4365: a lane the main session made itself has no builder_returned; accepted at its new tip, the land's
+        # --first called it "not a finished lane waiting on a merge" for 30 minutes and a train left without it
+        young = next(b for b in self.briefs if b.id == "young")
+        self.assertNotIn("young", c.finished_lanes(self.p, self.briefs, quiet_min=30, fresh=True))
+        young.meta["accepted_at"] = round(time.time() - 3600, 1)  # accepted an hour before its last commit: it waits
+        self.assertNotIn("young", c.finished_lanes(self.p, self.briefs, quiet_min=30, fresh=True))
+        young.meta["accepted_at"] = round(time.time() + 1, 1)
+        self.assertIn("young", c.finished_lanes(self.p, self.briefs, quiet_min=30, fresh=True))
+        young.meta["accepted_at"] = "not a time"  # a damaged stamp is no acceptance, and no crash
+        self.assertNotIn("young", c.finished_lanes(self.p, self.briefs, quiet_min=30, fresh=True))
+
     def test_fresh_awaiting_merge_hands_it_on(self):
         from sampo import lanes
         with mock.patch.object(c, "finished_lanes", return_value=[]) as asked:

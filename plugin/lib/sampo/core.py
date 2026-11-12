@@ -5482,7 +5482,9 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
     list now reads every tip and one log walk of the tips past main says which are ahead and when each was committed,
     kept per lane on (tip, main); a clean tree is kept on (tip, index), so an unchanged lane costs no git process. The
     cache holds facts, not ids, so quiet_min 0 and 30 callers share it. T-4265: `fresh` skips the 60 s answer (each
-    lane's facts are still kept on its tip): accept and a land's --first have just seen the lane's new commit."""
+    lane's facts are still kept on its tip): accept and a land's --first have just seen the lane's new commit.
+    T-4365: a lane accepted (accepted_at) at or after its last commit is finished at once, as one whose builder
+    returned is: a lane the main session made itself has no builder to return."""
     from sampo import bus
     # T-3907: a done task still holding its lane was closed inside it; unmerged commits make it wait like any other
     lanes = [b for b in briefs if b.meta.get("lane") and b.status != "dropped" and os.path.isdir(b.meta["lane"])
@@ -5507,7 +5509,12 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
 
     def returned(b, ct):  # T-3824: a builder that returned after its last commit is done; no quiet wait
         at = parse_ts(b.meta.get("builder_returned") or "")
-        return bool(at) and at.timestamp() >= ct
+        if at and at.timestamp() >= ct:
+            return True
+        try:  # T-4365: sampo lane accept at or after the last commit says the same of a lane with no builder
+            return float(b.meta.get("accepted_at") or 0) >= ct
+        except (TypeError, ValueError):
+            return False
 
     def done(facts):
         return [b.id for b in lanes if (facts.get(b.id) or {}).get("ct") is not None and facts[b.id].get("clean")
