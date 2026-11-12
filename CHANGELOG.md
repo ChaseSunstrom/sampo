@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo exam long can be sat by a local model (--agent smith --model PROFILE), can hand over only the user's original request as the goal (gen --goal raw), takes --tier and up to 100 changes; first local result on six replayed changes: 0 of 20 hidden checks, against 4 of 20 for a Claude session with and without Sampo (T-4424).
 - `sampo code` now surveys a project's documents read-only before a model plans a change, names back any it never opened, and keeps the project's own green tests green after each step (T-4425).
 - sampo code now says when an edit leaves a Python, JSON, JS, shell or TOML file unparsable, refuses done while one stands, and puts the files it changed back to the last finished step when a run stops with one (T-4426).
 - sampo lane accept starts the lane's affected check itself, detached and niced, when the lane has no clean run at its tip that held the four repo-shape classes: green queues it, red holds it out of the land with the failing classes named, a newer green run clears the hold, and lane rm ends the check (T-4286).
