@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo lane land` no longer waits for a ship: one detached, coalesced ship per land tests and pushes the head it read, and every land.log line, the per-train summary, the ledger (`land_train`, `ship_done`) and `sampo status` carry their times (T-4239).
 - The lane guard lets the main session edit or merge in a builder's lane once that lane's one open task is active or focusable there and its builder has returned, and its refusal says what record it looked for instead of repeating the focus advice; a running builder, a .. or .git path, a second open task and a task another lane holds all keep the refusal, and git worktree remove and move … (T-4340).
 - sampo exam long can be sat by a local model (--agent smith --model PROFILE), can hand over only the user's original request as the goal (gen --goal raw), takes --tier and up to 100 changes; first local result on six replayed changes: 0 of 20 hidden checks, against 4 of 20 for a Claude session with and without Sampo (T-4424).
 - `sampo code` now surveys a project's documents read-only before a model plans a change, names back any it never opened, and keeps the project's own green tests green after each step (T-4425).
