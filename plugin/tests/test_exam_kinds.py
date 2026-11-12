@@ -8,7 +8,8 @@ import shutil
 
 from helpers import ForemanTestCase
 
-from sampo import louhi
+from sampo import core as c
+from sampo import louhi, rune
 
 
 class Kinds(ForemanTestCase):
@@ -38,7 +39,7 @@ class Kinds(ForemanTestCase):
         self.assertEqual((r["by_kind"]["bug"]["scenarios"], r["by_kind"]["bug"]["fixable"], r["by_kind"]["bug"]["fixed"]),
                          (1, 1, 1))
         self.assertEqual((r["by_kind"]["parts"]["fixable"], r["by_kind"]["parts"]["fixed"]), (3, 3))
-        self.assertEqual(sorted(r["by_kind"]["bug"]), ["done", "false_done", "fixable", "fixed", "scenarios"])
+        self.assertEqual(sorted(r["by_kind"]["bug"]), ["done", "false_done", "fixable", "fixed", "scenarios", "whole"])
         self.assertEqual(r["by_lang"]["python"]["scenarios"], 2)
         self.assertEqual(r["by_lang"]["python"]["fixed"], r["fixed"])
         rows = {x["id"]: x for x in r["rows"]}
@@ -96,7 +97,9 @@ class Kinds(ForemanTestCase):
         g = self.fm_json("exam", "gen", "--seed", "9", "--per-kind", "1", "--lang", "python", "--kind", "bug")
         self.fm_json("exam", "run", g["run"], "--agent", "empty")
         text = self.fm("exam", "grade", g["run"], "--agent", "empty").stdout
-        self.assertEqual(len(text.strip().splitlines()), 1, text)
+        # the summary, then the one comparison line (no earlier run); no kind lines between them
+        self.assertEqual(len(text.strip().splitlines()), 2, text)
+        self.assertIn("nothing to compare with", text.strip().splitlines()[1])
 
     def test_zero_a_tower_line_from_before_this_change_still_prints(self):
         old = {"run": "s1-001", "agent": "smith", "kinds": ["goal", "resume"], "found": 0, "keyed": 0, "fixed": 6, "fixable": 72,
@@ -111,3 +114,94 @@ class Kinds(ForemanTestCase):
         self.assertIn("nothing fixed in kind resume (6 scenarios, 5 said done)", text.splitlines())
         self.assertTrue(any(x.strip().startswith("goal: 14/48 fixed") for x in text.splitlines()), text)
         self.assertTrue(any("5 false done" in x for x in text.splitlines() if x.strip().startswith("resume:")), text)
+
+
+class Compare(ForemanTestCase):
+    """T-4359: a grade sets each kind beside the last graded run of the same seed, agent, model, thinking arm, split and
+    scenario set; a kind that fixed fewer points is said first, in words; repeats on one code give the spread; and
+    --against RUN is refused, naming the difference, when the run is not comparable."""
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.a = self.new_run()
+
+    def new_run(self, seed="8", kinds="bug,parts"):
+        g = self.fm_json("exam", "gen", "--seed", seed, "--per-kind", "1", "--lang", "python", "--kind", kinds)
+        r = {"run": g["run"], "by": {s["kind"]: s for s in g["scenarios"]}}
+        r["dir"] = os.path.dirname(os.path.dirname(r["by"][sorted(r["by"])[0]]["repo"]))
+        self.fm_json("exam", "run", g["run"], "--agent", "oracle")
+        return r
+
+    def unfix(self, r, kind):
+        """The oracle's work on one kind put back to the planted repo, so that kind is fixed 0 of its items."""
+        work = os.path.join(r["dir"], "work", "oracle", r["by"][kind]["id"])
+        shutil.rmtree(work)
+        shutil.copytree(r["by"][kind]["repo"], work, symlinks=True)
+
+    def grade(self, r, *extra):
+        return self.fm("exam", "grade", r["run"], "--agent", "oracle", *extra, check=False)
+
+    def test_against_last_names_the_run_and_sets_each_kind_beside_it(self):
+        first = self.grade(self.a)
+        self.assertRegex(first.stdout, r"(?m)^nothing to compare with: ")
+        b = self.new_run()
+        self.unfix(b, "parts")
+        got = self.fm_json("exam", "grade", b["run"], "--agent", "oracle")
+        self.assertEqual(got["compare"]["run"], self.a["run"])
+        rows = got["compare"]["rows"]
+        self.assertEqual((rows["bug"]["fixed"], rows["bug"]["fixable"], rows["bug"]["was_fixed"]), (1, 1, 1))
+        self.assertEqual((rows["parts"]["fixed"], rows["parts"]["was_fixed"], rows["parts"]["change"]), (0, 3, -3))
+        self.assertEqual((rows["bug"]["whole"], rows["bug"]["false_done"], rows["bug"]["was_false_done"]), (1, 0, 0))
+        text = self.grade(b).stdout
+        self.assertIn(self.a["run"], text)
+        self.assertRegex(text, r"(?m)^  bug: 1/1 fixed \(was 1/1, same\)")
+        self.assertRegex(text, r"(?m)^  parts: 0/3 fixed \(was 3/3, fell by 3\)")
+
+    def test_kind_fell_is_said_first_though_the_total_rose(self):
+        self.unfix(self.a, "parts")  # A: bug 1 of 1, parts 0 of 3 (total 1 of 4)
+        self.assertEqual(self.grade(self.a).returncode, 0)
+        b = self.new_run()
+        self.unfix(b, "bug")  # B: bug 0 of 1, parts 3 of 3 (total 3 of 4): the total rose, the bug kind fell
+        got = self.grade(b, "--bar", "0.8")
+        lines = got.stdout.splitlines()
+        self.assertRegex(lines[1], r"^bug fell from 1 to 0 of 1, though the total rose from 1 to 3 of 4$", got.stdout)
+        self.assertEqual(got.returncode, 1, got.stdout)
+        self.assertIn("failed under --bar", got.stdout)
+        self.assertIn("bug fell from 1 to 0 of 1", got.stdout)
+        self.assertEqual(self.grade(b).returncode, 0, "without --bar the fall is said but does not fail the grade")
+
+    def test_spread_needs_two_repeats_on_one_code_and_judges_each_change_by_it(self):
+        self.grade(self.a)
+        b = self.new_run()
+        self.unfix(b, "parts")  # B: parts 0 of 3, bug 1 of 1
+        one = self.grade(b).stdout
+        self.assertRegex(one, r"(?m)^no repeat of this arm on this code, so a small change is not sure")
+        c = self.new_run()
+        self.unfix(c, "bug")  # C: bug 0 of 1 (against B's 1: a change of 1, and A and B repeat on one code), parts 3 of 3
+        got = self.fm_json("exam", "grade", c["run"], "--agent", "oracle")
+        self.assertEqual(got["compare"]["repeats"], 2)
+        self.assertEqual((got["compare"]["rows"]["bug"]["spread"], got["compare"]["rows"]["bug"]["larger"]), (0, True))
+        self.assertEqual((got["compare"]["rows"]["parts"]["spread"], got["compare"]["rows"]["parts"]["larger"]), (3, False))
+        text = self.fm("exam", "grade", c["run"], "--agent", "oracle").stdout
+        self.assertRegex(text, r"(?m)^  bug: .*larger than the spread \(0\)")
+        self.assertRegex(text, r"(?m)^  parts: .*within the spread \(3\)")
+
+    def test_against_run_compares_with_that_run_or_refuses_by_name(self):
+        self.grade(self.a)
+        b = self.new_run()
+        got = self.fm_json("exam", "grade", b["run"], "--agent", "oracle", "--against", self.a["run"])
+        self.assertEqual(got["compare"]["run"], self.a["run"])
+        d = self.new_run(kinds="bug")  # another scenario set; exam run grades it, so the count is taken after
+        before = len(rune.exam_lines(c.find_project(self.repo), "oracle"))
+        got = self.grade(d, "--against", self.a["run"])
+        self.assertEqual(got.returncode, 1, got.stdout)
+        self.assertIn("differs in scenario set", got.stdout + got.stderr)
+        self.assertEqual(len(rune.exam_lines(c.find_project(self.repo), "oracle")), before, "a refused grade writes nothing")
+        e = self.new_run(seed="9")  # another seed
+        got = self.grade(e, "--against", self.a["run"])
+        self.assertIn("differs in seed", got.stdout + got.stderr)
+
+    def test_against_run_the_arm_is_part_of_the_match(self):
+        base = {"seed": 8, "agent": "oracle", "model": None, "split": "all", "ids": "x", "thinking": "native"}
+        self.assertEqual(louhi._set_differs(base, dict(base, thinking="off")), ["thinking arm"])
+        self.assertEqual(louhi._set_differs(base, dict(base)), [])

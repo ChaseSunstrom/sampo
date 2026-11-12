@@ -4837,9 +4837,11 @@ def _arm_proof(base, key, work, f):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
-def grade(p, run, agent):
+def grade(p, run, agent, against=None):
     """Grade the scenarios the agent answered against their keys; one line to the tower's exam.jsonl. A session that
-    errored (budget cap, timeout, rate limit) still counts, under errors, so a low score says why."""
+    errored (budget cap, timeout, rate limit) still counts, under errors, so a low score says why. T-4359: res carries
+    `compare` (compare_grade: each kind beside the last comparable graded run, or the run `against` names, which a
+    different set or arm refuses (AgainstRefused) before anything is written)."""
     _known(agent)
     meta = load(p, run)
     answered = [s for s in meta["scenarios"] if os.path.isfile(os.path.join(_answers(p, run, agent), f"{s['id']}.json"))]
@@ -4938,6 +4940,7 @@ def grade(p, run, agent):
         row = {"id": s["id"], "kind": s.get("kind") or key["kind"], "lang": key["lang"],  # T-4296: where the points went
                "fixable": n["fixable"], "fixed": n["fixed"], "done": bool(ans.get("done")), "false_done": n["false_done"],
                "error": bool(ans.get("error")), "first_action_s": first_s, "turns": turns,
+               "whole": bool(n["fixable"]) and n["fixed"] == n["fixable"],  # T-4359: every item of the scenario fixed
                "ended": (c.fit(c.plain(str(ans["error"])), 160) if ans.get("error") else "done" if ans.get("done")
                          else "not done"),
                "note": c.fit(c.plain(notes[-1]), 160) if notes else ""}
@@ -5028,10 +5031,19 @@ def grade(p, run, agent):
     if "small" in res:
         res["small"] = res["small"] == "on"
     res["rows"].sort(key=lambda x: x["id"])
+    res["seed"], res["ids"] = meta.get("seed"), _ids_hash(answered)  # T-4359: the match keys a later grade compares by
     line = dict(res, at=c.now(), gen=gen, split=splits.pop() if len(splits) == 1 else "all",
                 kinds=sorted({s["kind"] for s in answered}),
                 author="+".join(sorted({s.get("author", "self") for s in answered})))
     line.pop("rows")  # T-4296: a row per scenario stays in the grade's own output; the tower line keeps by_kind
+    try:  # T-4359: before the write, so a refused --against writes nothing; a malformed earlier line never loses the grade
+        res["compare"] = compare_grade(p, line, against)
+    except AgainstRefused:
+        raise
+    except (TypeError, ValueError, KeyError, AttributeError) as e:
+        if against:
+            raise
+        res["compare"] = {"nothing": f"nothing to compare with: an earlier line could not be read ({c.plain(str(e))[:120]})"}
     rune.exam_line(p, line)
     if arm_of(res) in THINK_ARMS and res.get("model"):  # T-4297: this arm may complete a pair for its model
         try:
@@ -5107,7 +5119,7 @@ def keep_think_arm(p, run, agent, model):
                 replaced=before if written and before and not same else None)
 
 
-KIND_COUNTS = ("scenarios", "fixable", "fixed", "done", "false_done")  # T-4296: per scenario kind and per language
+KIND_COUNTS = ("scenarios", "fixable", "fixed", "done", "false_done", "whole")  # T-4296: per scenario kind and per language; T-4359: + whole
 
 
 def _pace(path):
@@ -5157,10 +5169,149 @@ def kinds_text(r):
     return "\n".join(out + zero)
 
 
+class AgainstRefused(ValueError):
+    """T-4359: --against names a run whose graded line is not comparable with this grade; refused before anything is written."""
+
+
+def _ids_hash(answered):
+    """T-4359: the scenario set a grade covered, as the sha1 of its sorted ids. A seed and its kinds give the same ids on
+    every gen, so a repeat matches; another seed or kind set gives other ids."""
+    return hashlib.sha1("\n".join(sorted(str(s["id"]) for s in answered)).encode("utf-8")).hexdigest()[:12]
+
+
+def _num(v):
+    """T-4359: a count from a tower line; 0 for anything that is no int (a damaged or older line)."""
+    return v if isinstance(v, int) and not isinstance(v, bool) else 0
+
+
+def _set_differs(a, b):
+    """T-4359: the fields that make two graded lines not comparable: seed, agent, model, thinking arm (arm_of), split and
+    scenario set (ids). [] when they are the same set. A line with no ids (from before T-4359) differs in the set."""
+    out = []
+    for name, get in (("seed", lambda x: str(x.get("seed"))), ("agent", lambda x: x.get("agent")),
+                      ("model", lambda x: x.get("model") or ""), ("thinking arm", arm_of),
+                      ("split", lambda x: x.get("split")), ("scenario set", lambda x: x.get("ids") or None)):
+        if get(a) != get(b):
+            out.append(name)
+    return out
+
+
+def _by_kind(x):
+    """T-4359: a line's by_kind as {kind: counts}, every KIND_COUNTS name an int; whole is None on a line that kept no
+    whole count (from before T-4359). {} for a damaged or older line."""
+    by = x.get("by_kind") if isinstance(x, dict) else None
+    out = {}
+    for k, v in (by.items() if isinstance(by, dict) else ()):
+        if isinstance(v, dict):
+            out[str(k)] = {name: _num(v.get(name)) for name in KIND_COUNTS}
+            out[str(k)]["whole"] = _num(v["whole"]) if "whole" in v else None
+    return out
+
+
+def _newest_per_run(lines):
+    """T-4359: one line per run, its newest, the runs in the order they were last graded. An exam run grades itself and
+    a regrade appends another line, so a run can have two; the spread counts runs, not lines."""
+    latest = {}
+    for x in lines:
+        latest.pop(str(x.get("run")), None)
+        latest[str(x.get("run"))] = x
+    return list(latest.values())
+
+
+def compare_grade(p, line, against=None):
+    """T-4359: this grade beside the last comparable graded run. The comparable lines are this agent's earlier lines (not
+    this run's own) that _set_differs finds the same; the newest of them is compared, unless `against` names a run, which
+    is refused (AgainstRefused: no line of that run, or the set differs) before anything is written. Per kind: fixed and
+    fixable now and before, the change, whole scenarios and false done, and the spread over the earlier repeats (the
+    comparable lines of this gen, the same code) with each change judged by it. {"nothing": why} when there is none."""
+    from sampo import rune
+    earlier = [x for x in rune.exam_lines(p, line["agent"])
+               if isinstance(x, dict) and x.get("run") != line["run"] and x.get("ids")]
+    if against is not None:
+        named = [x for x in earlier if str(x.get("run")) == str(against)]
+        if not named:
+            raise AgainstRefused(f"--against {c.plain(str(against))[:40]} refused: no graded line of that run for "
+                                 f"{line['agent']} that records its scenario set (fm exam grade {against} first); nothing written")
+        ref = named[-1]
+        diff = _set_differs(line, ref)
+        if diff:
+            raise AgainstRefused(f"--against {c.plain(str(against))[:40]} refused: this grade differs in "
+                                 f"{', '.join(diff)} from that run; nothing written")
+        same = _newest_per_run([x for x in earlier if not _set_differs(line, x)])
+    else:
+        same = _newest_per_run([x for x in earlier if not _set_differs(line, x)])
+        if not same:
+            return {"nothing": "nothing to compare with: no earlier graded run of this seed, agent, model, thinking arm, "
+                               "split and scenario set"}
+        ref = same[-1]
+    repeats = [x for x in same if x.get("gen") == line.get("gen")]  # the same code's runs: the spread
+    cur, was = _by_kind(line), _by_kind(ref)
+    rows = {}
+    for k in sorted(set(cur) | set(was)):
+        now, before = cur.get(k) or dict.fromkeys(KIND_COUNTS, 0), was.get(k) or dict.fromkeys(KIND_COUNTS, 0)
+        values = [(_by_kind(x).get(k) or {}).get("fixed", 0) for x in repeats]
+        spread = max(values) - min(values) if len(repeats) >= 2 else None
+        change = now["fixed"] - before["fixed"]
+        rows[k] = {"fixed": now["fixed"], "fixable": now["fixable"], "was_fixed": before["fixed"],
+                   "was_fixable": before["fixable"], "change": change, "whole": now.get("whole"),
+                   "was_whole": before.get("whole"), "false_done": now["false_done"],
+                   "was_false_done": before["false_done"], "spread": spread,
+                   "larger": None if spread is None else abs(change) > spread}
+    return {"run": ref.get("run"), "at": ref.get("at"), "rows": rows, "repeats": len(repeats),
+            "fell": [k for k in rows if rows[k]["fixed"] < rows[k]["was_fixed"]],
+            "total": {"fixed": _num(line.get("fixed")), "fixable": _num(line.get("fixable")),
+                      "was_fixed": _num(ref.get("fixed")), "was_fixable": _num(ref.get("fixable"))}}
+
+
+def fell_lines(cmp):
+    """T-4359: each kind that fixed fewer points than its last comparable run, in words: 'goal fell from 18 to 6 of 48',
+    and 'though the total rose from A to B of N' when the total rose anyway. [] when none fell."""
+    if not isinstance(cmp, dict) or not cmp.get("fell"):
+        return []
+    t, out = cmp["total"], []
+    for k in cmp["fell"]:
+        v = cmp["rows"][k]
+        line = f"{c.plain(str(k))[:40]} fell from {v['was_fixed']} to {v['fixed']} of {v['fixable']}"
+        if t["fixed"] > t["was_fixed"]:
+            line += f", though the total rose from {t['was_fixed']} to {t['fixed']} of {t['fixable']}"
+        out.append(line)
+    return out
+
+
+def compare_text(cmp):
+    """T-4359: a comparison as lines: the kinds that fell first (fell_lines), the run it compares with, each kind beside its
+    before (fixed, change, whole scenarios, false done, and the change against the spread when there are two repeats), then
+    'no repeat' when there are fewer than two. [] when there was no comparison to make."""
+    if not isinstance(cmp, dict) or not cmp:
+        return []
+    if cmp.get("nothing"):
+        return [c.plain(str(cmp["nothing"]))]
+    out = fell_lines(cmp)
+    out.append(f"compared with run {c.plain(str(cmp.get('run')))[:40]}"
+               + (f" (graded {c.plain(str(cmp['at']))[:16]})" if cmp.get("at") else "") + ":")
+    for k in sorted(cmp["rows"]):
+        v = cmp["rows"][k]
+        ch = v["change"]
+        how = "same" if not ch else f"fell by {-ch}" if ch < 0 else f"rose by {ch}"
+        extra = ""
+        if v["spread"] is not None:
+            extra = (f"; {'larger than' if v['larger'] else 'within'} the spread ({v['spread']})" if ch
+                     else f"; spread ({v['spread']})")
+        whole = "" if v["was_whole"] is None else f"; whole scenarios {v['whole']} (was {v['was_whole']})"
+        fd = f"; {v['false_done']} false done (was {v['was_false_done']})" if v["false_done"] or v["was_false_done"] else ""
+        out.append(f"  {c.plain(str(k))[:40]}: {v['fixed']}/{v['fixable']} fixed (was {v['was_fixed']}/{v['was_fixable']}, "
+                   f"{how}){extra}{whole}{fd}")
+    if cmp["repeats"] < 2:
+        out.append("no repeat of this arm on this code, so a small change is not sure")
+    return out
+
+
 def graded_text(r):
-    """A grade as text: the totals line, then the kinds under it (kinds_text) when there is more than one, then (T-4297)
+    """A grade as text: the totals line, then (T-4359) the comparison with the last comparable run (compare_text, the kinds
+    that fell first), else the kinds under the totals (kinds_text) when there is more than one, then (T-4297)
     one line naming the thinking arm kept for the model when this grade completed an off/native pair of its run."""
-    under, kept = kinds_text(r), r.get("kept_arm")
+    cmp = r.get("compare")
+    under, kept = ("" if isinstance(cmp, dict) and cmp.get("rows") else kinds_text(r)), r.get("kept_arm")
     why = ""
     if isinstance(kept, dict):
         model, run = c.plain(str(kept.get("model")))[:60], c.plain(str(kept.get("run")))[:40]
@@ -5178,7 +5329,7 @@ def graded_text(r):
                        + ("" if win else "; a tie or fewer keeps off, it answers a turn faster") + ")")
                 if kept.get("replaced"):
                     why += f"; replaced {_think_was(kept['replaced'])}"
-    return summary(r) + (f"\n{under}" if under else "") + (f"\n{why}" if why else "")
+    return "\n".join([summary(r)] + compare_text(cmp) + ([under] if under else []) + ([why] if why else []))
 
 
 def _think_was(rec):
@@ -5439,9 +5590,13 @@ def cmd_exam(args):
                     raise ValueError(f"{args.run}'s {who} answers already name their model ({c.plain(old)}); a named "
                                      "stamp is never rewritten")
                 c.write_atomic(f, new)
-            res = grade(p, args.run, args.agent or "oracle")
-            cli.out(args, res, graded_text(res))  # T-4296: the totals, then each kind under them
-            return 1 if res.get("ungraded") else 0
+            res = grade(p, args.run, args.agent or "oracle", args.against)  # T-4359: --against RUN, refused by name if not comparable
+            fell = fell_lines(res.get("compare"))
+            res["failed"] = args.bar is not None and bool(fell)  # T-4359: --bar: a kind that fell fails the grade
+            text = graded_text(res) + (f"\nfailed under --bar {args.bar:g}: the fall is why: {'; '.join(fell)}"
+                                       if res["failed"] else "")
+            cli.out(args, res, text)  # T-4296: the totals, then each kind under them
+            return 1 if res.get("ungraded") or res["failed"] else 0
         if action == "runs":  # T-2601
             rows = run_rows(p)
             return cli.out(args, {"runs": rows}, "\n".join(
@@ -5455,7 +5610,7 @@ def cmd_exam(args):
             return 0 if res["ok"] else 1
         if action == "scorecard":
             from sampo import rune
-            res = rune.scorecard(p, args.agent or "foreman", args.bar)
+            res = rune.scorecard(p, args.agent or "foreman", 0.8 if args.bar is None else args.bar)
             rows = res["rows"]
             last = next((x for x in reversed(rune.exam_lines(p, res["agent"])) if isinstance(x.get("by_kind"), dict)), None)
             res["newest_kinds"] = {"run": last.get("run"), "by_kind": last["by_kind"]} if last else None  # T-4296

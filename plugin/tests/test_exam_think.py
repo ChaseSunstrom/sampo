@@ -76,7 +76,7 @@ class KeptArm(ForemanTestCase):
         self.assertIsInstance(rec["ts"], float)
         self.assertEqual(native["kept_arm"]["arm"], "native")
         lines = [x for x in self.fm("exam", "grade", self.run_id, "--agent", "oracle").stdout.splitlines()
-                 if "thinking" in x]
+                 if x.startswith("thinking")]
         self.assertEqual(len(lines), 1, lines)
         for word in ("qwen-local", "native", "4", "3"):
             self.assertIn(word, lines[0])
@@ -178,7 +178,7 @@ class KeptArm(ForemanTestCase):
         self.two_arms()  # a tie over 4 fixable items: off, but the record is over 24
         rec = self.kept()["qwen-local"]
         self.assertEqual((rec["arm"], rec["run"], rec["fixable"]), ("native", "s1-001", 24))
-        line = [x for x in self.text().splitlines() if "thinking" in x]
+        line = [x for x in self.text().splitlines() if x.startswith("thinking")]
         self.assertEqual(len(line), 1, line)
         for word in ("native", "stays", "s1-001", "24"):
             self.assertIn(word, line[0])
@@ -188,7 +188,7 @@ class KeptArm(ForemanTestCase):
         graded = self.two_arms()[1]  # a tie over 4: off replaces native
         rec = self.kept()["qwen-local"]
         self.assertEqual((rec["arm"], rec["fixable"]), ("off", 4))
-        line = [x for x in louhi.graded_text(graded).splitlines() if "thinking" in x]
+        line = [x for x in louhi.graded_text(graded).splitlines() if x.startswith("thinking")]
         self.assertEqual(len(line), 1, line)
         for word in ("replaced", "native", "s1-001", "20", "14", "2026-01-02"):
             self.assertIn(word, line[0])

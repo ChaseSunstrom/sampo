@@ -9049,7 +9049,10 @@ def _build_parser(only=None):
     s.add_argument("--split", choices=("train", "holdout", "all"), default="all", help="gen: which to render; run: which to answer")
     s.add_argument("--agent", help="run/grade: oracle | empty | finders | foreman | plain | genesis (claude sessions, "
                                   "cost recorded; genesis runs one Genesis generation); scorecard: whose runs (default foreman)")
-    s.add_argument("--bar", type=float, default=0.8, help="scorecard: the held-out rate a capability needs to pass")
+    s.add_argument("--bar", type=float, default=None, help="scorecard: the held-out rate a capability needs to pass "
+                                                          "(default 0.8); grade: exit 1 when a kind fell from its last comparable run")
+    s.add_argument("--against", metavar="RUN", help="grade: compare with this run's graded line; refused, naming the "
+                                                    "difference, when its scenario set, arm, seed or model differs")
     s.add_argument("--author", choices=("self", "child"), default="self",
                    help="gen: child = a tool-less model writes the bug, vuln, slow, dep, none and rank plants and the goal "
                         "and resume keys (kept only when sampo exam check passes); only these decide sampo exam scorecard")
