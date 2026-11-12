@@ -11,6 +11,9 @@
 
 ### Everything else
 
+- Two test runs no longer run the same test class on the same inputs at once: the second waits for the first and joins its green result under the cache's own rules, and the ambient run is niced (T-4267).
+- sampo lane accept and a land's --first read the lane fresh, so a fix committed seconds ago is queued at once, not refused for up to a minute (T-4265).
+- A night job that replays a session, runs exam arms or bisects with the test suite waits while a sampo lane land runs, and is skipped and named past 30 minutes (T-4278).
 - `sampo lane land` no longer waits for a ship: one detached, coalesced ship per land tests and pushes the head it read, and every land.log line, the per-train summary, the ledger (`land_train`, `ship_done`) and `sampo status` carry their times (T-4239).
 - The lane guard lets the main session edit or merge in a builder's lane once that lane's one open task is active or focusable there and its builder has returned, and its refusal says what record it looked for instead of repeating the focus advice; a running builder, a .. or .git path, a second open task and a task another lane holds all keep the refusal, and git worktree remove and move … (T-4340).
 - sampo exam long can be sat by a local model (--agent smith --model PROFILE), can hand over only the user's original request as the goal (gen --goal raw), takes --tier and up to 100 changes; first local result on six replayed changes: 0 of 20 hidden checks, against 4 of 20 for a Claude session with and without Sampo (T-4424).
