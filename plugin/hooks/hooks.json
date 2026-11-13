@@ -170,6 +170,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/wait-timer",
+            "args": [],
             "asyncRewake": true,
             "timeout": 1500
           }

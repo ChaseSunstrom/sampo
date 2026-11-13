@@ -494,7 +494,9 @@ class PluginFiles(unittest.TestCase):
             # wakes an idle session when a wait passes its limit). Counted apart so the one-handler rule stands
             wakers = [h for h in every if h.get("asyncRewake")]
             self.assertEqual(len(wakers), {"Stop": 1}.get(event, 0), event)
-            self.assertTrue(all(h["command"].endswith("/hooks/wait-timer") and "args" not in h for h in wakers), event)
+            # T-4544: exec form (an args list, here empty): the shell form with the unquoted plugin root fails
+            # claude plugin validate --strict, which turned trunk's doctor red
+            self.assertTrue(all(h["command"].endswith("/hooks/wait-timer") and h.get("args") == [] for h in wakers), event)
             handlers = [h for h in every if not h.get("asyncRewake")]
             # T-0724: PreToolUse has a second entry, for Read (outline-first), with its own failure rule; T-0784: a
             # third, for the tools that send content off the machine; T-0947: PostToolUse is sync for file writes
