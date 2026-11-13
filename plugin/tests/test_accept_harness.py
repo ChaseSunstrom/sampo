@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from unittest import mock
 
 from test_accept_check import AcceptCase, stub
 
@@ -58,6 +59,77 @@ class NoResult(AcceptCase):
         self.accept(tid)
         self.child(tid, 1, stub(124, cut_off=True), tries=2)
         self.assertIn("at its deadline", open(self.brief(tid).path).read())
+
+
+SLEEPER = "import time; time.sleep(90)"
+# what a real check is: a command in a session of its own (sampo check starts each one so), which starts another
+# (tests/run.py starts each class so); the innermost writes its pid where the test can read it
+MID = ("import subprocess, sys\np = subprocess.Popen([sys.executable, '-c', %r], start_new_session=True)\n"
+       "open(sys.argv[1], 'w').write(str(p.pid))\np.wait()\n" % SLEEPER)
+TOP = "import subprocess, sys\nsubprocess.Popen([sys.executable, '-c', %r, sys.argv[1]], start_new_session=True).wait()\n" % MID
+
+
+def gone(pid):
+    """Whether a process has ended (a zombie waiting on its new parent counts as ended)."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            stat = f.read()
+    except OSError:
+        return True
+    return stat[stat.rindex(b")") + 2:stat.rindex(b")") + 3] == b"Z"
+
+
+class Stop(AcceptCase):
+    """T-4417: a stopped check leaves nothing running: three stopped checks left three near-full suites alive for 10 to
+    23 minutes on 8 of the 16 test slots, each in a session the kill of the check's own group never reached."""
+
+    def sleeper(self, pidfile, seconds=20):
+        end = time.time() + seconds
+        while time.time() < end and not (os.path.exists(pidfile) and open(pidfile).read().strip()):
+            time.sleep(0.05)
+        self.assertTrue(os.path.exists(pidfile), "the stand-in check never started its innermost process")
+        pid = int(open(pidfile).read())
+        self.addCleanup(lambda: gone(pid) or os.kill(pid, signal.SIGKILL))
+        return pid
+
+    def ends(self, pid, seconds=10):
+        end = time.time() + seconds
+        while time.time() < end and not gone(pid):
+            time.sleep(0.05)
+        return gone(pid)
+
+    def test_a_check_past_its_wall_limit_leaves_nothing_running(self):  # leaves_nothing
+        pidfile = os.path.join(self.tmp, "sleeper.pid")
+        t0 = time.time()
+        with mock.patch.object(train, "CHECK_WALL_S", 8):
+            r, timed_out = train._run_check([sys.executable, "-c", TOP, pidfile], self.repo)
+        self.assertTrue(timed_out)
+        self.assertLess(time.time() - t0, 45, "the runner waited on the output pipe a surviving process held open")
+        pid = self.sleeper(pidfile, seconds=1)
+        self.assertTrue(self.ends(pid), "the check's innermost process outlived the kill at the wall limit")
+
+    def test_the_tree_kill_refuses_init_and_the_caller_itself_and_leaves_nothing_else_touched(self):  # leaves_nothing
+        from sampo import core
+        self.assertEqual(core.kill_tree(1), 0, "pid 1's tree is every process")
+        self.assertEqual(core.kill_tree(0), 0)
+        self.assertEqual(core.kill_tree(os.getpid()), 0, "the caller's own tree holds the caller")
+        other = subprocess.Popen([sys.executable, "-c", SLEEPER])
+        self.addCleanup(other.kill)
+        doomed = subprocess.Popen([sys.executable, "-c", SLEEPER])
+        self.assertEqual(core.kill_tree(doomed.pid), 1)
+        self.assertEqual(doomed.wait(timeout=10), -signal.SIGKILL)
+        self.assertIsNone(other.poll(), "a sibling outside the tree was signalled")
+
+    def test_a_check_stopped_by_lane_rm_leaves_nothing_running(self):  # leaves_nothing
+        pidfile = os.path.join(self.tmp, "sleeper.pid")
+        code = "import sys\nfrom sampo import train\ntrain._run_check([sys.executable, '-c', sys.argv[1], sys.argv[2]], sys.argv[3])\n"
+        lib = os.path.dirname(os.path.dirname(os.path.abspath(train.__file__)))
+        runner = subprocess.Popen([sys.executable, "-c", code, TOP, pidfile, self.repo], env={**os.environ, "PYTHONPATH": lib})
+        self.addCleanup(runner.kill)
+        pid = self.sleeper(pidfile)
+        runner.send_signal(signal.SIGTERM)  # what stop_check sends the check's process
+        self.assertEqual(runner.wait(timeout=20), 128 + signal.SIGTERM)
+        self.assertTrue(self.ends(pid), "the check's innermost process outlived sampo lane rm")
 
 
 def marks(path, exit_code=0):

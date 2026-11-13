@@ -1309,6 +1309,66 @@ def kill_group(proc):
             pass
 
 
+def _proc_children():
+    """{parent pid: [child pids]} of every process /proc lists now ({} where there is no /proc)."""
+    kids = {}
+    try:
+        names = os.listdir("/proc")
+    except OSError:
+        return kids
+    for name in names:
+        if name.isdigit():
+            try:
+                with open(f"/proc/{name}/stat", "rb") as f:
+                    stat = f.read()
+                kids.setdefault(int(stat[stat.rindex(b")") + 2:].split()[1]), []).append(int(name))  # field 4: ppid
+            except (OSError, ValueError, IndexError):  # it ended between the listing and the read
+                continue
+    return kids
+
+
+def _signal(pid, sig, group=False):
+    """os.kill (or killpg) that says whether it reached anything, never raising."""
+    try:
+        (os.killpg if group else os.kill)(pid, sig)
+        return True
+    except OSError:
+        return False
+
+
+def kill_tree(pid, sig=9):
+    """T-4417: end `pid` and every process descended from it, whatever session or group each one is in; how many were
+    signalled. kill_group reaches one group, and a check's commands (run, above) and their test classes each start a
+    session of their own: three stopped accept checks left three test runs alive on 8 of 16 slots for up to 23
+    minutes. The descendants are found while their parents still live (an orphan's parent is no longer the one that
+    started it) and stopped as they are found, so none starts another in between; then all are signalled, parents
+    first. Never raises; without /proc it is kill of pid's group and pid."""
+    import signal  # here, not at the top: the hooks import this module on every tool call
+    pid, found = int(pid), []
+    if pid <= 1 or pid == os.getpid():  # never init's tree (every process) and never the caller's own
+        return 0
+    for _ in range(8):  # each pass stops what the last one's processes had started meanwhile
+        kids, todo, tree = _proc_children(), [pid], []
+        while todo:
+            x = todo.pop()
+            tree.append(x)
+            todo.extend(kids.get(x, ()))
+        new = [x for x in tree if x not in found]
+        if not new:
+            break
+        for x in new:
+            _signal(x, signal.SIGSTOP)
+        found += new
+    if len(found) <= 1:  # no /proc, or nothing below it: its group, as kill_group does
+        _signal(pid, sig, group=True)
+    n = 0
+    for x in found or [pid]:
+        n += _signal(x, sig)
+        if sig != signal.SIGKILL:  # a stopped process acts on any other signal only once it runs again
+            _signal(x, signal.SIGCONT)
+    return n
+
+
 def guard_settings(plugin=None):
     """T-0963, T-1354: Sampo's guard alone, as a --settings JSON for a claude session that loads no plugin: the
     plugin's own PreToolUse entries, every matcher and its onFailure kept, the root resolved (security review), so

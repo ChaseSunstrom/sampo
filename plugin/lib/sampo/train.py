@@ -1980,9 +1980,8 @@ def _run_check(argv, cwd):
     proc = subprocess.Popen(argv, cwd=cwd, env={**_scrub_env(os.environ), "SAMPO_LANE_CHILD": "1"},
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
-    def stopped(signum, frame):  # sampo lane rm (stop_check): the check's own session ends with this process
-        with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
+    def stopped(signum, frame):  # sampo lane rm (stop_check): everything the check started ends with this process
+        c.kill_tree(proc.pid)  # T-4417: its commands and their test classes run in sessions of their own
         os._exit(128 + signum)
     try:
         before = signal.signal(signal.SIGTERM, stopped)
@@ -1992,10 +1991,12 @@ def _run_check(argv, cwd):
         out, _ = proc.communicate(timeout=CHECK_WALL_S)
         return subprocess.CompletedProcess(argv, proc.returncode, out, ""), False
     except subprocess.TimeoutExpired:
-        with contextlib.suppress(OSError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        out, _ = proc.communicate()
-        return subprocess.CompletedProcess(argv, 124, out, ""), True
+        c.kill_tree(proc.pid)  # T-4417: the whole tree, or a survivor keeps its test slots and this pipe open
+        try:
+            out, _ = proc.communicate(timeout=30)
+        except subprocess.TimeoutExpired:  # something outside the tree holds the pipe: its output is not waited for
+            out = ""
+        return subprocess.CompletedProcess(argv, 124, out or "", ""), True
     finally:
         if before is not None:
             signal.signal(signal.SIGTERM, before)
