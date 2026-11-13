@@ -209,8 +209,8 @@ class Gate(Base):
         # a big tier is at least L (T-4220): the reading and the risks are still its own sections, and it waits for a yes;
         # its Design is its approach, never asked for twice
         gaps = c.plan_gaps(c.find_brief(self.p, tid))
-        self.assertIn("Interpretation", gaps)
-        self.assertNotIn("Approach", gaps)
+        self.assertTrue(any(g.startswith("Interpretation") for g in gaps), gaps)  # T-4492: the shape follows the name
+        self.assertFalse(any(g.startswith("Approach") for g in gaps), gaps)
         self.assertTrue(any(g.startswith("approval") for g in gaps), gaps)
         self.fm("task", "set", tid, "--section", "Interpretation", "--text",
                 "Reading 1: rework all three parts. Reading 2: only the parser; ruled out, the criteria name all three.")

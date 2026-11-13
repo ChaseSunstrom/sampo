@@ -4596,6 +4596,17 @@ def _users_words(b):
     return b.id not in foresight._tower_ids(types.SimpleNamespace(dir=os.path.dirname(os.path.dirname(b.path))))
 
 
+# T-4492: what an empty M/L section must hold, named in full in the one refusal (the content checks of _content_gaps
+# word the same shape once the section has text)
+_EMPTY_SHAPE = {
+    "Interpretation": "Interpretation: 2+ readings (sampo task set {id} --section Interpretation --text 'Reading 1: … "
+                      "Reading 2: …', or the one reading and the one you ruled out, with why)",
+    "Approach": "Approach (options → choice → why): 3+ options, each with 'fails if: …' or 'likely outcome: …'; one "
+                "'N) use what exists: …'; one 'N) do less: …'; 'Choice N (NN%): why' (a choice under 80% also gets a cold "
+                "rival read; sampo task set {id} --section Approach)",
+}
+
+
 def plan_gaps(b, autonomy="standard"):
     """What a brief still needs before work may start (fm focus refuses until this is empty)."""
     gaps = []
@@ -4606,8 +4617,10 @@ def plan_gaps(b, autonomy="standard"):
     # readings or options to gate: harness_plan says who wrote it, and the plan's own text is not checked
     own = bool(b.meta.get("harness_plan"))
     if at_least(b.tier, "M") and not own:
-        gaps += [name for name, sec in (("Interpretation", "Interpretation"),
-                                         ("Approach", "Approach (options → choice → why)")) if not b.section(sec).strip()
+        # T-4492: an empty section names the whole shape it needs, so the first refusal lists every missing piece
+        gaps += [_EMPTY_SHAPE[name].format(id=b.id) for name, sec in (("Interpretation", "Interpretation"),
+                                                                        ("Approach", "Approach (options → choice → why)"))
+                 if not b.section(sec).strip()
                  # T-4221: a big task's Design section holds its approach (the plan gate above checks it): never asked twice
                  and not (name == "Approach" and is_big(b.tier) and b.section("Design").strip())]
     if not _started(b) and not own:  # a task already started (even if paused back to planned) isn't re-gated

@@ -273,3 +273,23 @@ class CalibrationLedger(Base):
         for _ in range(3):
             self.close(0)
         self.assertEqual(c.effective_autonomy(self.p), "standard")
+
+
+class PlanShape(Base):  # T-4492: an empty reading or approach names the whole shape in its one refusal
+    SHAPE = ("2+ readings", "3+ options", "fails if", "likely outcome", "use what exists", "do less", "Choice N (NN%)",
+             "rival read", "80%")
+
+    def test_an_empty_plan_names_the_whole_shape_in_one_refusal(self):
+        t = self.new("Cache the lookups", "FEATURE", "M")
+        shape = [g for g in c.plan_gaps(c.find_brief(self.p, t)) if g.startswith(("Interpretation", "Approach"))]
+        self.assertEqual(len(shape), 2, shape)
+        text = " ".join(shape)
+        for word in self.SHAPE:
+            self.assertIn(word, text)
+        refused = self.fm("focus", t, check=False)
+        out = refused.stdout + refused.stderr
+        for word in self.SHAPE:
+            self.assertIn(word, out)
+        self.fm("task", "set", t, "--section", "Interpretation", "--text", "Reading 1: a. Reading 2: b.")
+        left = [g for g in c.plan_gaps(c.find_brief(self.p, t)) if g.startswith(("Interpretation", "Approach"))]
+        self.assertEqual([g.split(":")[0] for g in left], ["Approach (options → choice → why)"], left)

@@ -776,7 +776,9 @@ class Stages(unittest.TestCase):
         m = self.brief("M")
         m.add_ac("works")
         m.add_step("do it")
-        self.assertEqual(sorted(c.plan_gaps(m)), ["Approach", "Interpretation", "verify command on criterion 1"])
+        # T-4492: an empty section names its whole shape, so the gap is the shape's first words, not the bare name
+        self.assertEqual([g.split(":")[0] for g in sorted(c.plan_gaps(m))],
+                         ["Approach (options → choice → why)", "Interpretation", "verify command on criterion 1"])
         big = self.plan(self.brief("L"))
         self.assertEqual(c.plan_gaps(big), ["approval (L tier, standard autonomy)"])
         self.assertEqual(c.plan_gaps(big, autonomy="full"), [])
