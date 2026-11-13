@@ -6067,6 +6067,10 @@ SURVEY_PROMPT = (
     "format's description), one line per document, or none. The planner and every step are handed each one whole, so "
     "name it; your DOCS lines need not retell it\n"
     "Report only what you read; never guess a name, and copy each name exactly as its file writes it.")
+# T-4566: the wrap asked for three of the four fields, so a survey out of turns could never name its specification
+WRAP_PROMPT = ("Your survey turns are used: call done now, with the summary of what you read so far (the DOCS, CODE, "
+               "TESTS and SPEC lines). Nothing else can be read.")
+SURVEY_FIELDS = ("DOCS", "CODE", "TESTS", "SPEC")  # the labels SURVEY_PROMPT asks for
 
 
 def _is_doc(rel):
@@ -6174,13 +6178,13 @@ def survey_skip(run, profile):
 
 
 def tests_line(summary):
-    """The command on a TESTS: line of the survey's summary (the line the survey was asked for), else None: no line,
-    or 'none'. One line, no quotes or backticks around it, bounded."""
-    for ln in str(summary or "").splitlines():
-        head, sep, rest = ln.strip().partition(":")
-        if sep and head.strip().upper() == "TESTS":
-            cmd = rest.strip().strip("`'\"").strip()
-            return None if not cmd or cmd.lower() in ("none", "n/a", "unknown") else cmd[:300]
+    """The command in the TESTS field of the survey's summary (the field the survey was asked for), else None: no
+    field, or 'none'. T-4566: the field is found by survey_fields, so one inline in a one-line summary is taken. Its
+    first line, no quotes or backticks around it, bounded."""
+    for label, text in survey_fields(summary):
+        if label == "TESTS":
+            cmd = (text.strip().splitlines() or [""])[0].strip().strip("`'\"").strip()
+            return None if not cmd or cmd.lower().rstrip(".") in ("none", "n/a", "unknown") else cmd[:300]
     return None
 
 
@@ -6229,9 +6233,7 @@ def _survey(run, profile):
         else:  # T-4445: out of turns with no done: what it read is asked for alone, never thrown away
             run.emit("note", f"  the survey before the plan used its {SURVEY_TURNS} turns without a done: asked for "
                              "its summary alone", survey="wrap")
-            run.add("survey", {"role": "user", "content": (
-                "Your survey turns are used: call done now, with the summary of what you read so far (the DOCS, CODE "
-                "and TESTS lines). Nothing else can be read.")})
+            run.add("survey", {"role": "user", "content": WRAP_PROMPT})
             run.done.discard("survey")
             run.summary, run.only_done = None, True
             run.max_steps = run.turns - run.turn_base + WRAP_TURNS
@@ -6258,16 +6260,41 @@ def _survey(run, profile):
     return summary
 
 
+_FIELD_NAMES = "|".join(SURVEY_FIELDS)
+# a field label: at a line's start in any case, or after anything that is not a word character in capitals (the model
+# often writes the whole summary on one line: '... TESTS: pytest (...). SPEC: docs/x.md (...)'), with bold marks around
+_FIELD_LINE = re.compile(rf"(?im)^[ \t>*`-]*({_FIELD_NAMES})\**[ \t]*:")
+_FIELD_INLINE = re.compile(rf"(?<!\w)({_FIELD_NAMES})\**[ \t]*:")
+
+
+def survey_fields(summary):
+    """T-4566: [(label, text)] for the fields of the survey's summary (the labels SURVEY_PROMPT asks for), in order.
+    A field runs from its label to the next label, a blank line or the end, wherever the label sits: at a line's start
+    or inline in a one-line summary. The labels are the prompt's own; nothing here guesses what a field means."""
+    text = str(summary or "")
+    marks = {}
+    for pat in (_FIELD_LINE, _FIELD_INLINE):
+        for m in pat.finditer(text):
+            marks.setdefault(m.start(1), (m.start(), m.end(), m.group(1).upper()))
+    found = sorted(marks.values())
+    out = []
+    for n, (_, end, label) in enumerate(found):
+        stop = found[n + 1][0] if n + 1 < len(found) else len(text)
+        blank = re.search(r"\n[ \t]*\n", text[end:stop])
+        out.append((label, text[end:end + blank.start() if blank else stop]))
+    return out
+
+
 def spec_docs(run, summary, shown):
-    """T-4457: the documents on the SPEC: lines of the survey's summary (the lines it was asked for), in the map's
-    order: only a listed document the survey opened, so a path it guessed, a code file or 'none' names nothing. Which
+    """T-4457: the documents named in the SPEC field of the survey's summary (the field it was asked for), in the map's
+    order: only a listed document the survey opened, so a path it guessed, a code file or 'none' names nothing, and a
+    path under DOCS or CODE names nothing. T-4566: the field may sit anywhere (inline at the end of a one-line summary),
+    and a path counts when it appears in the field's text whole, followed by a parenthesis or prose or not. Which
     document specifies the request is the model's judgment; the harness reads the field and carries the text."""
-    named = set()
-    for ln in str(summary or "").splitlines():
-        head, sep, rest = ln.strip().partition(":")
-        if sep and head.strip().upper() == "SPEC":
-            named.update(part.strip().strip("`'\"").strip().removeprefix("./") for part in rest.split(","))
-    return [rel for rel in shown if rel in named and rel in run.opened]
+    text = " ".join(t for label, t in survey_fields(summary) if label == "SPEC")
+    text = re.sub(r"(?<![\w.])\./", "", text)
+    return [rel for rel in shown if rel in run.opened
+            and re.search(rf"(?<![\w/.-]){re.escape(rel)}(?![\w/-]|\.\w)", text)]
 
 
 def _excerpts(run, shown):
