@@ -50,6 +50,7 @@ import hashlib
 import itertools
 import json
 import os
+import posixpath
 import re
 import secrets
 import shlex
@@ -89,6 +90,12 @@ SPEC_CHARS = 24000
 DOC_EXT, DOC_MIN, DOC_MAX, DOC_CHARS, DOC_HEADS, DOC_READ = (".md", ".markdown", ".rst", ".txt", ".adoc"), 20, 60, 4000, 8, 65536
 KEEP_TIMEOUT, KEEP_REFUSALS, KEEP_LINES = 120, 3, 30
 KEEP_OWN_FILES, KEEP_OWN_TREE = 6, 4000  # T-4459: created files tried one by one; the largest tree copied for it
+# T-4590: a criterion's declared proof files (at most PROOF_FILES, each at most PROOF_NAME characters), run on the
+# before-work copy (a tree of PROOF_TREE files at most, PROOF_REFUSALS done-refusals in one phase at most, the start's dirty
+# files PROOF_DIRTY at most)
+PROOF_FILES, PROOF_NAME, PROOF_TREE, PROOF_REFUSALS, PROOF_DIRTY = 6, 200, 20000, 2, 200
+PROOF_BYTES = 512 << 20  # the most a tree may hold (git's own folder left out) to be copied for the check
+PROOF_JOURNAL = 128 << 10  # the most start-dirty bytes the journal holds for a resume to rebuild the before copy from
 BUILT_FILES = 20  # T-4387: more untracked files than this in one new directory, none written by the run's tools: a command's output
 MAX_TOKENS, KEEP_RESULTS, SMALL_CONTEXT = 8192, 6, 32768
 # T-4490: an unpriced model keeps every result of a step whole while the sent text is under SIGHT_HIGH of the context's
@@ -272,7 +279,8 @@ SCHEMA = 1  # T-1283: the --json event stream's version; a reader refuses a newe
 # T-1283: every --json event (each also has "event", "text" and "ts", seconds since the epoch). The TUI reads only these.
 EVENTS = {
     "start": "schema, request, task, worker, model, verify, resume, foreman {root, version}",
-    "plan": "plan (type, tier, title, criteria [{text, verify}], steps)",
+    "plan": "plan (type, tier, title, criteria [{text, verify, proof?}], steps); proof: the repo-relative files the run "
+            "writes that the verify needs (T-4590)",
     "task": "task", "resume": "task", "step": "step", "fix": "round",
     "say": "text: the model's own words beside its actions",
     "tokens": "call_in, call_out, total_in, total_out",
@@ -309,7 +317,9 @@ EVENTS = {
             "refused, set aside so the run starts with the sound ones (T-4386); survey (start|unopened|summary|cap), "
             "docs, unopened, turns, summary: the read-only survey of the documents before the plan, and the listed "
             "documents it never opened (T-4425); keep (before|step|end), state (green|red|none), cmd: one run of the "
-            "keep check (T-4425)",
+            "keep check (T-4425); proof (red|passes|skipped), criterion: one run of a criterion's verify on the "
+            "before-work copy with only its proof files laid over it; passes: the proof does not reproduce the "
+            "defect (T-4590)",
     "tool": "action (read|edit|run|search|…), target, worker: a CLI's tool use as it happens (T-1329)",
     "working": "worker, secs, silent (seconds since its last byte): a CLI turn still running with nothing to show "
                "(each FM_HEARTBEAT s, default 10)",
@@ -349,8 +359,9 @@ TOOLS = [
 
 PLAN_PROMPT = """You plan one coding task for Smith's harness. Reply with only one JSON object:
 {"type": "FIX|FEATURE|CLEAN|PERFORMANCE|SECURITY|RESEARCH", "tier": "S|M", "title": "...",
- "criteria": [{"text": "what is true when it is done", "verify": "a shell command that exits 0 only then"}],
- "steps": ["...", "..."]}
+ "criteria": [{"text": "what is true when it is done", "verify": "a shell command that exits 0 only then",
+ "proof": ["path"]}], "steps": ["...", "..."]}
+A criterion's "proof" is optional: the repo-relative paths of the files you write that its verify needs (a new test); leave it out when the verify uses only files already there. The verify is also run on the code as it was before the work with only those files added, and must fail there.
 If the request only asks a question about the code and needs no change, reply instead with only
 {"answer": "the answer, naming the files and lines it rests on"}.
 Tier S is a small change in one or two files; M is several files or a design choice. An M plan adds:
@@ -537,11 +548,51 @@ def fit_verifies(run, v):
     return dict(v, criteria=out), note
 
 
+def _proof_names(x):
+    """T-4590: the proof files a criterion names, as repo-relative paths: a text is one name; an entry that is not
+    text, is empty, absolute, over PROOF_NAME characters, a folder, has a line break or NUL, or climbs out (a '..' part)
+    or names .git is dropped; the rest are normalized ('./a/b' is 'a/b'), kept once each, PROOF_FILES at most."""
+    names = [x] if isinstance(x, str) else x if isinstance(x, list) else []
+    out = []
+    for p in names:
+        if not isinstance(p, str) or not p.strip() or len(p) > PROOF_NAME or p.startswith("/") or p.endswith("/") \
+                or "\n" in p or "\r" in p or "\0" in p or "\\" in p:
+            continue
+        parts = p.strip().split("/")
+        if ".." in parts or ".git" in parts:
+            continue
+        q = posixpath.normpath(p.strip())
+        if q not in (".", "") and q not in out:
+            out.append(q)
+    return out[:PROOF_FILES]
+
+
+def fit_proof(v):
+    """T-4590: a plan's per-criterion proof lists as the harness reads them: each is normalized by _proof_names, and one
+    that comes out empty (or was not a list or text) is left out; absence is accepted. Returns (the plan, None), the
+    plan being v itself when nothing changed (the reply is never changed in place)."""
+    crit = v.get("criteria") if isinstance(v, dict) else None
+    if not isinstance(crit, list):
+        return v, None
+    out, changed = [], False
+    for cr in crit:
+        if isinstance(cr, dict) and "proof" in cr:
+            names = _proof_names(cr["proof"])
+            if names != cr["proof"] or not names:
+                cr = {k: x for k, x in cr.items() if k != "proof"}
+                if names:
+                    cr["proof"] = names
+                changed = True
+        out.append(cr)
+    return (dict(v, criteria=out) if changed else v), None
+
+
 def fit_plan(run, v):
-    """T-4571: a plan reply as the harness repairs it before the plan gate reads it: fit_steps, then fit_verifies.
-    Returns (the plan, the notes joined), or (v, None) when nothing changed."""
+    """T-4571: a plan reply as the harness repairs it before the plan gate reads it: fit_steps, then fit_verifies, then
+    fit_proof (T-4590). Returns (the plan, the notes joined), or (v, None) when nothing changed."""
     v, a = fit_steps(v)
     v, b = fit_verifies(run, v)
+    v, _ = fit_proof(v)
     return v, " ".join(x for x in (a, b) if x) or None
 
 
@@ -1421,6 +1472,13 @@ class Run:
         self.no_look, self.looking, self.closing = bool(getattr(args, "no_look", False)), False, None
         self.look_recs, self.look_tried, self.look_did, self.before_task = [], {}, [], None
         self.keep_logged, self.keep_refused = False, {}
+        # T-4590: the tree as the work found it (None: not recorded, the proof check is off), a criterion's proof run by
+        # (criterion, verify, proof contents) -> state, the done-refusals per phase, and the criteria whose proof passes
+        # on the code as it was before the work ([{text, why}]: not proven at the close; journaled and replayed)
+        self.proof_base, self.proof_memo, self.proof_refused, self.proof_unproven = None, {}, {}, []
+        # the base's record was journalled (a resume replays it), and a resume that could not restore it: its criteria
+        # that name proof files close not proven
+        self.proof_logged = self.proof_lost = False
 
     def fence(self, text):
         """T-1394: text the repo or a tool wrote, in this run's data envelope, the '<' of every envelope-shaped tag in it
@@ -1893,6 +1951,121 @@ class Run:
                 "Mend what your edits broke without dropping the step's goal, then call done. A new test of yours that "
                 "fails until a later step belongs in a new test file, not in one the project already has: a file you "
                 "create is left out of this check.")  # T-4459
+
+    # -- T-4590: a criterion's proof is run on the code as it was before the work
+    def proof_begin(self):
+        """The tree as the work finds it, recorded once at a fresh start (a resume, a read-only run and a worker's run
+        keep it off: their tree may already hold the work, and a proof of a fix would then pass 'before'). Also off
+        when no criterion names proof files, or the tree is not a git tree at its top."""
+        self.proof_base = None
+        if not self.proof_wanted():
+            return
+        self.proof_base, why = _proof_base(self.root)
+        if not self.proof_base:
+            self.emit("note", f"  proof check: off: {why}", quiet=True, proof="off", why=why)
+        # journalled, so a resume rebuilds the same before copy: the base, or why there is none (off), or that it was too
+        # large to keep (lost: a resume says the check is off and proves nothing)
+        rec = {"off": _one_line(why, 200)} if not self.proof_base else (
+            _proof_pack(self.proof_base) or {"lost": "the start's changed files are too large to keep"})
+        self.log(kind="proof_base", **rec)
+        self.proof_logged = True
+
+    def proof_wanted(self):
+        """Whether the proof check applies to this run: a criterion names proof files, and the run writes to its tree."""
+        return not (self.read_only or self.worker) and any(
+            isinstance(cr, dict) and cr.get("proof") for cr in (self.plan or {}).get("criteria") or [])
+
+    def proof_resume(self):
+        """A resumed run replays the base from its journal (_load). One whose base is not there (not kept, or too large) can't
+        build the before copy: the check is off, and a criterion that names proof files closes not proven. A base the
+        fresh start itself found impossible (not a git tree) stays off, as it was then."""
+        if not self.proof_wanted() or self.proof_base or (self.proof_logged and not self.proof_lost):
+            return
+        self.proof_lost = True
+        why = "the tree the work found was not kept for this resume"
+        self.emit("note", f"  proof check: off on this resume: {why}", quiet=True, proof="off", why=why)
+
+    def proof_run(self, n, cr):
+        """T-4590: one criterion's verify on the before-work copy with only its proof files laid over it: 'passes' (the
+        proof does not reproduce the defect), 'red' (it failed there, or timed out: accepted), 'missing' (a proof file it
+        names is not written) or 'skipped' (no proof files, one that is no plain file, the copy can't be made, or the
+        verify can't run there). The copy is a scratch folder, removed at the end, run under the verify's own timeout;
+        the working tree is never written."""
+        files = cr.get("proof") if isinstance(cr, dict) else None
+        if self.read_only or self.worker or not files or not isinstance(cr.get("verify"), str):
+            return "skipped"
+        laid = {}
+        for rel in files:
+            full = os.path.join(self.root, rel)
+            ok, data = _slurp(full)
+            if ok and data is None:
+                return "missing"  # named, and not written (yet: a step's end waits, the close says so)
+            if not ok or os.path.islink(full) or not _inside(self.root, full):
+                return "skipped"  # not a plain file of this tree
+            laid[rel] = (data, stat.S_IMODE(os.stat(full).st_mode))
+        if not self.proof_base:
+            return "skipped"
+        key = (n, cr["verify"], tuple(sorted((r, hashlib.sha1(b).hexdigest(), m) for r, (b, m) in laid.items())))
+        if key in self.proof_memo:
+            return self.proof_memo[key]
+        tmp, state, why = tempfile.mkdtemp(prefix="fm-proof-"), "skipped", ""
+        try:
+            roots = {x for x in (self.root.rstrip(os.sep), os.path.realpath(self.root).rstrip(os.sep)) if x}
+            if any(x in cr["verify"] for x in roots):
+                why = "its verify names the working tree's own path, so the copy would run the fixed tree"
+            else:
+                copy = os.path.join(tmp, os.path.basename(self.root.rstrip(os.sep)) or "tree")
+                why = _proof_copy(self.root, copy) or _proof_before(self.root, copy, self.proof_base)
+            if not why:
+                for rel, (data, mode) in laid.items():
+                    dest = os.path.join(copy, rel)
+                    if not _inside(copy, dest):
+                        raise OSError(f"{rel} leaves the tree")
+                    os.makedirs(os.path.dirname(dest), exist_ok=True)
+                    with open(dest, "wb") as f:
+                        f.write(data)
+                    os.chmod(dest, mode)  # ./proof.sh must stay runnable
+                env = dict(self.env(), PYTHONDONTWRITEBYTECODE="1")
+                code, _ = run_bounded(cr["verify"], copy, VERIFY_TIMEOUT, env, self.cap,  # a restored file of the same
+                                      confine=worker_confinement(copy)[0])  # size must not reuse the fixed .pyc
+                if code in (126, 127):  # not executable / not found there: the check could not run, nothing failed
+                    why = f"the verify could not run there (exit {code})"
+                else:
+                    state = "passes" if code == 0 else "red"
+        except (OSError, subprocess.SubprocessError, shutil.Error) as e:
+            why = f"the copy failed: {_one_line(e, 160)}"
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.proof_memo[key] = state
+        self.emit("note", f"  proof check (criterion {n}): {state if state != 'skipped' else 'skipped: ' + why}",
+                  quiet=True, proof=state, criterion=n, **({"why": why} if why else {}))
+        return state
+
+    def proof_bad(self):
+        """[(n, criterion)] whose proof files make the verify pass on the code as it was before the work."""
+        return [(n, cr) for n, cr in enumerate(self.plan["criteria"], 1)
+                if isinstance(cr, dict) and cr.get("proof") and self.proof_run(n, cr) == "passes"]
+
+    def proof_back(self, name):
+        """A step (or fix) whose done leaves a criterion's proof passing on the before-work copy is not done: told which
+        and why, PROOF_REFUSALS times at most in one phase; the next goes through (the close then says not proven).
+        None: the check is off, or every proof fails there."""
+        if not self.proof_base or self.read_only or self.worker or not name.startswith(("step:", "fix:")):
+            return None
+        bad = self.proof_bad()
+        if not bad:
+            return None
+        n = self.proof_refused[name] = self.proof_refused.get(name, 0) + 1
+        self.log(kind="proof_refused", phase=name, n=n, criteria=[i for i, _ in bad])
+        if n > PROOF_REFUSALS:
+            return None
+        lines = "\n".join(f"- criterion {i} ({_one_line(self.redact(cr['text']), 160)}): `{_one_line(cr['verify'], 200)}` "
+                          f"passes with only {', '.join(cr['proof'])} added" for i, cr in bad)
+        return (f"Not done: this proof passes on the code as it was before your work, with only your proof "
+                f"file(s) laid over it, so it does not reproduce the defect ({n} of {PROOF_REFUSALS} tries):\n"
+                f"{self.fence(lines)}\n\nA check that passes without your fix proves nothing. Change the proof so it "
+                "fails on the old code and passes on yours (an input the old code gets wrong, asserting what the "
+                "request asks for), then call done.")
 
     def seen_read(self, rel, start, lines):
         """read(), but a range the model was already shown of a file unchanged since, and still holds, is a note
@@ -3046,7 +3219,7 @@ class Run:
             if finished:  # a done while a changed file does not parse, with no edit, or after a step that turned the
                 # project's own tests red, is not done (T-4426 parse first, then T-4425's keep check on parsing files)
                 back = ((self.parse_refusal() or self.early_done(name)) if self.last_act[0] == "done" else None) \
-                    or self.keep_back(name)
+                    or self.keep_back(name) or self.proof_back(name)  # T-4590: after the project's own tests
                 if back:
                     self.add(name, {"role": "user", "content": back})
                     continue
@@ -5602,6 +5775,8 @@ def _lookback_swap(run, tid):
     run.keep_cmd = run.keep_state = run.keep_why = run.keep_tree = run.keep_logged = None
     run.orig, run.snap, run.broken, run.pmemo, run.steps_done = {}, {}, {}, {}, False
     run.wrote = set()
+    run.proof_base, run.proof_memo, run.proof_refused, run.proof_unproven = None, {}, {}, []  # T-4590
+    run.proof_logged = run.proof_lost = False
     run.review, run.review_text, run.whole, run.find_fix = None, "", False, None
 
 
@@ -6713,6 +6888,144 @@ def _keep_end(run, profile):
     if state != "green":
         raise Blocked(f"fm code: the keep check `{run.keep_cmd}` is still red after the work: "
                       f"{_one_line(run.keep_tail(out), 300)}")
+
+
+def _inside(root, path):
+    """Whether path, its links followed, is within root."""
+    base, got = os.path.realpath(root), os.path.realpath(path)
+    return got == base or got.startswith(base.rstrip(os.sep) + os.sep)
+
+
+def _proof_base(root):
+    """T-4590: (base, why): what the work finds, so the before-work copy can be made later without the run's own memory
+    (a shell edit counts too): {head: (ref, sha), dirty: {path: its bytes now, or None when absent}} of a git tree the run
+    stands at the top of. (None, why) when there is no such tree, or its dirty files are many, large or odd."""
+    try:
+        top = os.fsdecode(_git(root, "rev-parse", "--show-toplevel").stdout).strip()
+        if not top or os.path.realpath(top) != os.path.realpath(root):
+            return None, "the folder is not the top of a git tree"
+        head = _head(root)
+        if not head[1]:
+            return None, "the tree has no commit yet"
+        dirty = _dirty(root)
+        if len(dirty) > PROOF_DIRTY:
+            return None, f"{len(dirty)} files are changed at the start"
+        held = {}
+        for rel in dirty:
+            ok, data = _slurp(os.path.join(root, rel))
+            if not ok or os.path.islink(os.path.join(root, rel)) or not _inside(root, os.path.join(root, rel)):
+                return None, "a changed file at the start is not a plain file within the size the check holds"
+            held[rel] = data
+        return {"head": head, "dirty": held}, ""
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        return None, _one_line(e, 160)
+
+
+def _proof_copy(root, copy):
+    """Copies the tree (its .git, and compiled Python, left out: the check reads source, and a stale .pyc would hide a
+    restored file) to copy. '' when done; else why not (a tree of more than PROOF_TREE files or PROOF_BYTES bytes)."""
+    files = size = 0
+    for here, dirs, names in os.walk(root):
+        dirs[:] = [d for d in dirs if d != ".git"]
+        files += len(names)
+        if files > PROOF_TREE:
+            return f"the tree has more than {PROOF_TREE} files"
+        for x in names:
+            try:
+                size += os.lstat(os.path.join(here, x)).st_size
+            except OSError:
+                pass
+        if size > PROOF_BYTES:
+            return "the tree is too large to copy for the check"
+    shutil.copytree(root, copy, symlinks=True, ignore=shutil.ignore_patterns(".git", "__pycache__", "*.pyc"))
+    return ""
+
+
+def _proof_before(root, copy, base):
+    """Puts copy back to the tree the work found: every file dirty now or at the start gets its start bytes, else its
+    HEAD blob, else is removed (the work made it). '' when done; else why not (HEAD moved, git refused)."""
+    if _head(root) != base["head"]:
+        return "HEAD moved during the run"
+    paths = set(base["dirty"]) | set(_dirty(root))
+    for rel in sorted(paths):
+        if rel.startswith(".git/") or posixpath.isabs(rel) or ".." in rel.split("/"):
+            continue
+        dest = os.path.join(copy, rel)
+        if not _inside(copy, os.path.dirname(dest)):
+            return f"{rel} leaves the tree"
+        mode = None  # a file keeps its mode: ./tests/run.sh must stay runnable in the copy
+        if rel in base["dirty"]:
+            data = base["dirty"][rel]
+            if os.path.isfile(dest) and not os.path.islink(dest):
+                mode = stat.S_IMODE(os.stat(dest).st_mode)
+        else:
+            got = _git(root, "show", f"HEAD:{rel}")
+            data = got.stdout if got.returncode == 0 else None
+            tree = _git(root, "ls-tree", "HEAD", "--", rel)
+            if tree.returncode == 0 and tree.stdout.strip():
+                mode = 0o755 if tree.stdout.split(None, 1)[0] == b"100755" else 0o644
+        if os.path.islink(dest) or os.path.isfile(dest):
+            if mode is None and not os.path.islink(dest):
+                mode = stat.S_IMODE(os.stat(dest).st_mode)
+            os.remove(dest)
+        if data is not None:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(data)
+            os.chmod(dest, mode or 0o644)
+    return ""
+
+
+def _proof_pack(base):
+    """The base as a journal record ({head, dirty: {path: hex bytes or None}}), or None when its bytes are too many."""
+    if sum(len(b) for b in base["dirty"].values() if b) > PROOF_JOURNAL:
+        return None
+    return {"head": [os.fsdecode(x) for x in base["head"]],  # _head's two values are bytes
+            "dirty": {k: (v.hex() if v is not None else None) for k, v in base["dirty"].items()}}
+
+
+def _proof_unpack(r):
+    """_proof_pack's record back to a base (a journal is data: None unless the whole record is well formed)."""
+    head, dirty = r.get("head"), r.get("dirty")
+    if not (isinstance(head, list) and len(head) == 2 and all(isinstance(x, str) for x in head)
+            and isinstance(dirty, dict) and len(dirty) <= PROOF_DIRTY):
+        return None
+    held = {}
+    for k, v in dirty.items():
+        if not isinstance(k, str) or not (v is None or isinstance(v, str)):
+            return None
+        try:
+            held[k] = None if v is None else bytes.fromhex(v)
+        except ValueError:
+            return None
+    return {"head": tuple(os.fsencode(x) for x in head), "dirty": held}
+
+
+def _proof_end(run):
+    """T-4590: the close's verdict on the proofs. A criterion whose proof files still make its verify pass on the
+    before-work copy is not proven: it joins the 'not proven' lines of the closed event (journalled, so a resume says it
+    too), and a run whose every criterion is so is blocked, not closed. So is one that names a proof file it never wrote,
+    and (on a resume that could not restore the base) every one that names proof files. Nothing else changes."""
+    if not hasattr(run, "proof_run") or run.read_only or run.worker:
+        return
+    whys = {"passes": "its verify passes on the code as it was before the work with only its proof file(s) added: no "
+                      "defect reproduced",
+            "missing": "a proof file it names was never written: it promised proof it did not write"}
+    items = []
+    for n, cr in enumerate(run.plan["criteria"], 1):
+        if not (isinstance(cr, dict) and cr.get("proof")):
+            continue
+        state = run.proof_run(n, cr)
+        why = whys.get(state) or ("the check of its proof could not run on this resumed run (the tree the work found "
+                                  "was not kept)" if run.proof_lost else None)
+        if why:
+            items.append({"text": _one_line(cr["text"], 300), "why": why})
+    if not items:
+        return
+    run.proof_unproven = items
+    run.log(kind="proof_unproven", items=items)
+    if len(items) == len(run.plan["criteria"]):
+        raise Blocked("fm code: not proven: " + "; ".join(f"{x['text']} ({x['why']})" for x in items))
 
 
 PLAN_SUFFIX = " (plan, read-only)"  # how a planner CLI's profile is named, in the start event and a journal's options
@@ -8031,10 +8344,13 @@ def _drive(run, profile):
         run.log(kind="spec", docs=run.spec)
         run.spec_logged = True
     if run.baseline is None:
+        getattr(run, "proof_begin", int)()  # T-4590: the tree as the work finds it, before the baseline and step 1
         failed = run.verify("before")
         run.baseline = _failures(failed) or "every verify passes already"
         run.log(kind="baseline", text=run.baseline)
         run.harness(profile, failed)  # T-3181: the cards the harness runs before turn 1, not the model
+    else:
+        getattr(run, "proof_resume", int)()  # T-4590: the base the journal replayed, or the check off
     for n, step in enumerate(pl["steps"], 1):
         if f"step:{n}" not in run.done:
             run.emit("step", f"step {n}/{len(pl['steps'])}: {step}", step=n)
@@ -8095,6 +8411,7 @@ def _drive(run, profile):
         else:
             run.phase(f"fix:{rounds}", model, text + ", then call done.")
     _keep_end(run, profile)  # T-4425
+    _proof_end(run)  # T-4590
     _finish(run, profile)
 
 
@@ -8190,7 +8507,8 @@ def _finish(run, profile):
 def _not_proven(run):
     """T-4386: one 'not proven: <text> (<why the gate refused its check>)' line for each criterion the run set aside;
     printable text only (a model wrote it), so it never drives a terminal."""
-    got = [f"not proven: {x['text']} ({x['why']})" for x in getattr(run, "unproven", None) or []]
+    got = [f"not proven: {x['text']} ({x['why']})"
+           for x in (getattr(run, "unproven", None) or []) + (getattr(run, "proof_unproven", None) or [])]  # T-4590
     return ["".join(ch for ch in run.redact(x) if ch.isprintable()) for x in got]
 
 
@@ -8353,6 +8671,15 @@ def _load(run, tid, ended=False):
             run.unproven = [{"text": _one_line(x["text"], 300), "why": _one_line(x.get("why") or "", 400)}
                             for x in r["items"] if isinstance(x, dict) and isinstance(x.get("text"), str)
                             and x["text"].strip()][:8]
+        elif k == "proof_base":  # T-4590: the tree the work found, so a resume builds the same before copy
+            run.proof_logged = True
+            if not isinstance(r.get("off"), str):  # off: the fresh start found no tree to copy, and a resume agrees
+                run.proof_base = _proof_unpack(r)
+                run.proof_lost = run.proof_base is None
+        elif k == "proof_unproven" and isinstance(r.get("items"), list):  # T-4590: the same, for a proof that passes before
+            run.proof_unproven = [{"text": _one_line(x["text"], 300), "why": _one_line(x.get("why") or "", 400)}
+                                  for x in r["items"] if isinstance(x, dict) and isinstance(x.get("text"), str)
+                                  and x["text"].strip()][:8]
         elif k in ("route", "failover") and isinstance(r.get("worker"), str) and not run.args_worker:  # T-1358, T-1356
             run.worker = r["worker"]
         elif k == "spend" and type(r.get("usd")) in (int, float):  # T-1357: the cap counts the whole run
