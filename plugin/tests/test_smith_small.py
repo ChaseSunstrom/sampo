@@ -500,11 +500,11 @@ class PlanForm(CodeCase):
 
     def test_m_form_rescue_leaves_a_plan_that_fails_an_s_rule_to_end_as_before(self):
         no_verify = dict(M_ONE, criteria=[{"text": "calc.add adds", "verify": ""}])
-        f, r = self.go(*[plan(no_verify)] * 3, *[{"text": "nope"}] * 5)
+        f, r = self.go(*[plan(no_verify)] * 3, *[{"text": "nope"}] * 6)  # T-4594: the sixth answers the type asked alone
         self.assertEqual(r.returncode, 1)
         self.assertIn("no valid plan after 2 repairs, nor field by field", r.stderr + r.stdout)
         self.assertNotIn("plan filed as S", r.stdout)
-        self.assertEqual(len(f.seen), 8)  # three JSON tries and five field questions, no targeted one
+        self.assertEqual(len(f.seen), 9)  # three JSON tries, five field questions and the type again; no targeted one
 
     def test_focus_refusal_twice_for_a_clause_gets_one_targeted_question_and_the_task_starts(self):
         # T-4363: the order is the mapping question first (two replies that fill nothing), the whole re-plan next, and

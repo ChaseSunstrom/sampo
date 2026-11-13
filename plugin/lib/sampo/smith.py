@@ -1042,6 +1042,7 @@ def slot(run, profile, messages, check, what, fields=()):
             v[key] = parse(_unlabel(r["text"], key))
         note = None
         if what == "plan":  # T-4506, T-4571: as in the loop above
+            v = _field_gaps(run, profile, messages, v)  # T-4594: the type and each criterion's missing half, asked alone
             v, note = fit_plan(run, v)
         why = check(v)
         if why and what == "plan" and _form_only(v, check):  # T-4282
@@ -1057,6 +1058,65 @@ def slot(run, profile, messages, check, what, fields=()):
                       then=None if run.tid else "fm code models")  # before a task: a stronger model is the way on
     bad.candidate = v  # T-4386: what the last reply was, for a caller that can use the sound part of it
     raise bad
+
+
+def _ask_alone(run, profile, messages, question):
+    """T-4594: one plain-text question after the field ladder, its reply as text; None when the model call fails (the
+    question is taken back out, so the conversation stays user/assistant in turn). A stop (cap, context) passes through."""
+    messages.append({"role": "user", "content": f"Leave the JSON aside. In plain text, reply with only {question}."})
+    try:
+        r = _ask(run, profile, messages, "plan")
+    except m.ModelError:
+        messages.pop()
+        return None
+    messages.append({"role": "assistant", "content": r["text"]})
+    return r["text"] or ""
+
+
+def _judged_type(run):
+    """T-4594: the plan's type when the run's own judgment of the request decides it, else None: a find-and-fix the model
+    judged is a FIX, a speed-up it judged is PERFORMANCE. A verdict the word lists gave (wants_change's fallback) or none
+    yet decides nothing: no word list picks the type."""
+    if getattr(run, "wants", None) is None:
+        return None
+    if getattr(run, "find_fix_judged", False) and getattr(run, "find_fix", None) is True:
+        return "FIX"
+    return "PERFORMANCE" if getattr(run, "speed_up", None) is True else None
+
+
+def _field_gaps(run, profile, messages, v):
+    """T-4594: a plan the field ladder assembled is not ended by one flaw it can mend. A type that is none of TYPES is
+    asked alone once more with the allowed values, then taken from the run's judged verdict (_judged_type); a criterion
+    with its text or its verify blank is asked for that half alone, once. What is still missing is left for check_plan
+    to name: a criterion the plan gate flags is set aside (_set_aside, T-4386) and the run starts with the sound ones,
+    and a type nothing decides still ends the run as before. At most one question for the type and 8 for criteria."""
+    if v.get("type") not in TYPES:
+        got = _ask_alone(run, profile, messages, f"the task's type, exactly one word of {', '.join(TYPES)} ("
+                         f"{_one_line(str(v.get('type')), 40)!r} is none of them)")
+        word = _word(_unlabel(got, "type")) if got else None
+        if word in TYPES:
+            v = dict(v, type=word)
+        elif _judged_type(run):
+            v = dict(v, type=_judged_type(run))
+            run.emit("note", f"the plan's type was taken from the run's judged verdict of the request: {v['type']}")
+    crit = v.get("criteria")
+    if isinstance(crit, list) and 1 <= len(crit) <= 8:
+        mended = []
+        for i, cr in enumerate(crit, 1):
+            ok = {k: isinstance(cr.get(k), str) and bool(cr[k].strip()) for k in ("text", "verify")} \
+                if isinstance(cr, dict) else {}
+            if len(ok) == 2 and sum(ok.values()) == 1:  # one half is there: the other is asked alone
+                key = "verify" if ok["text"] else "text"
+                known = cr["text"] if ok["text"] else cr["verify"]
+                ask = ("the one-line shell command that exits 0 only when this is true, and fails now (for example: "
+                       f"python3 test_calc.py): {_one_line(known, 200)}" if key == "verify" else
+                       f"one line saying what is true when this check passes: {_one_line(known, 200)}")
+                text = _ask_alone(run, profile, messages, ask)
+                got = (_items(_unlabel(text, key)) or [""])[0].strip().strip("`").strip() if text else ""
+                cr = dict(cr, **{key: got}) if got else cr
+            mended.append(cr)
+        v = dict(v, criteria=mended)
+    return v
 
 
 M_FORM = ("readings", "ruled_out", "options", "choice", "confidence", "why")  # what only an M plan carries
@@ -6121,6 +6181,7 @@ def wants_change(run, profile):
     if getattr(run, "wants", None) is None:
         verdict = why = None
         run.whole, run.find_fix, run.speed_up, kind = False, None, False, ""  # T-4579: no valid verdict is no speed-up
+        run.find_fix_judged = False  # T-4594: whether find_fix is the model's judgment, not a word list's (_judged_type)
         if (run.request or "").strip():
             try:  # _ask: the cap, the context fit and a CLI planner's tree check; a stop of its own passes through
                 r = _ask(run, profile, [{"role": "system", "content": WANTS_PROMPT},
@@ -6135,6 +6196,7 @@ def wants_change(run, profile):
                     run.speed_up = v.get("speed_up") is True  # T-4579: the model's judgment; the word lists never decide it
                     if isinstance(v.get("find_fix"), bool):
                         run.find_fix, kind = v["find_fix"], "the model"  # T-4388: the request's kind is a judgment
+                        run.find_fix_judged = True
             except m.ModelError:
                 pass
         if verdict is None:
