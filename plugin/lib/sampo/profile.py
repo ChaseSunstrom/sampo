@@ -338,6 +338,40 @@ def full():
     return text if text and not leaks(text) else ""
 
 
+AUTONOMY = ("standard", "full")  # T-4519: the levels a machine's standing autonomy can hold
+
+
+def settings_path():
+    return os.path.join(folder(), "settings.json")
+
+
+def standing_autonomy():
+    """T-4519: the machine's standing autonomy for a new project ("full" or "standard"), or None when the profile holds
+    none. It's a key in settings.json (0600), never read out of the profile's free text; anything else reads as None."""
+    try:
+        with open(settings_path(), encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return None
+    a = got.get("autonomy") if isinstance(got, dict) else None
+    return a if a in AUTONOMY else None
+
+
+def set_standing_autonomy(level):
+    """T-4519: writes the machine's standing autonomy key (sampo autonomy LEVEL --standing)."""
+    if level not in AUTONOMY:
+        raise c.PolicyError(f"standing autonomy is standard or full, not {level!r}")
+    try:
+        with open(settings_path(), encoding="utf-8") as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        got = {}
+    got = got if isinstance(got, dict) else {}
+    got["autonomy"] = level
+    _write(settings_path(), json.dumps(got, sort_keys=True) + "\n")
+    return level
+
+
 def live_line(sid=None):
     """The projects other live sessions work in (names only; a sensitive project is never named)."""
     try:
@@ -474,8 +508,11 @@ def cmd_profile(args):
         rules = link(args.tool, off=args.off)
         return cli.out(args, {"tool": args.tool, "rules": rules, "linked": not args.off},
                        f"{args.tool}: profile {'removed from' if args.off else 'kept in'} {rules}")
-    text = _read(path())
+    text, standing = _read(path()), standing_autonomy()
+    line = f"standing autonomy for new projects: {standing} (sampo autonomy {standing} --standing)" if standing else ""
     if not text:
-        return cli.out(args, {"profile": None}, "no profile yet: sampo profile rebuild builds one from Claude's "
-                                                "user and feedback memories and the seed (sampo profile edit)")
-    return cli.out(args, {"profile": path(), "text": text, "problems": check()}, text.rstrip())
+        return cli.out(args, {"profile": None, "autonomy": standing}, "\n".join(filter(None, [
+            line, "no profile yet: sampo profile rebuild builds one from Claude's user and feedback memories and the "
+                  "seed (sampo profile edit)"])))
+    return cli.out(args, {"profile": path(), "text": text, "problems": check(), "autonomy": standing},
+                   "\n".join(filter(None, [line, text.rstrip()])))

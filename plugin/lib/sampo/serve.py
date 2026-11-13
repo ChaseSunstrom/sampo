@@ -135,7 +135,7 @@ def start(p, mode=None):
     lingering = _linger() or (_loginctl("enable-linger") is not None and _linger())
     with c.lock(p.dir):
         meta = c.read_meta(p)
-        prev = meta.get("serve") or {"prev_autonomy": meta.get("autonomy", "standard"),
+        prev = meta.get("serve") or {"prev_autonomy": meta.get("autonomy", c.project_autonomy({})),  # T-4519: the profile's
                                      "prev_drive": meta.get("drive", True)}
         meta.update(autonomy="full", drive=True, serve=dict(prev, unit=unit_name(p.slug), mode=mode, started=c.now()))
         c.write_meta(p, meta)

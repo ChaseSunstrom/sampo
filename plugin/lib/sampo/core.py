@@ -4257,12 +4257,22 @@ def needs_approval(b, autonomy="standard"):
     return (at_least(b.tier, "L") or bool(b.meta.get("explore")) or (b.tier == "M" and autonomy == "slow")) and autonomy != "full"
 
 
+def project_autonomy(meta):
+    """T-4519: the project's own autonomy (its meta's key, explicit even when standard); a project with none starts at
+    the machine profile's standing autonomy (sampo autonomy LEVEL --standing), else standard."""
+    a = meta.get("autonomy")
+    if a is not None:
+        return a
+    from sampo import profile  # lazy: profile imports this module
+    return profile.standing_autonomy() or "standard"
+
+
 def effective_autonomy(p, meta=None):
     """The project's autonomy, or "slow" (standard plus approval for M, T-1061) while its plans keep missing."""
     if panicked():  # every reader agrees: standard while paused (T-0436)
         return "standard"
     meta = read_meta(p) if meta is None else meta
-    a = meta.get("autonomy", "standard")
+    a = project_autonomy(meta)
     if a in ("full", "standard"):
         from sampo import risk  # T-1080: past today's risk budget, one notch down
         if risk.slowed(p, meta):

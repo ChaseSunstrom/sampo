@@ -3430,7 +3430,7 @@ def cmd_wiring(args):
         plugins = []
     caps, high = sbudget.effective()
     data = {"version": version, "plugin": PLUGIN, "hooks": {e: [g.get("matcher", "") for g in gs] for e, gs in hooks.items()},
-            "autonomy": meta.get("autonomy", "standard"), "drive": bool(meta.get("drive")),
+            "autonomy": c.project_autonomy(meta), "drive": bool(meta.get("drive")),
             "sensitive": bool(meta.get("sensitive")), "sync": bool(meta.get("sync")),
             "standing": sorted(meta.get("standing") or {}), "trust": bool(c.trusted()), "paused": c.panicked(),
             "paused_by": c.pause_line(),

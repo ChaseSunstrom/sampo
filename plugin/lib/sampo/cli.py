@@ -7015,20 +7015,31 @@ def cmd_next(args):
 
 
 def cmd_autonomy(args):
+    from sampo import profile  # T-4519: --standing writes the machine profile's key a new project starts at
     p = resolve(args)
+    if getattr(args, "standing", False) and not args.level:
+        raise UsageError("sampo autonomy full|standard --standing: the level this project and every new one start at")
     if not args.level:
-        level = c.read_meta(p).get("autonomy", "standard")
+        meta = c.read_meta(p)
+        level = c.project_autonomy(meta)  # T-4519: a project with no setting of its own reads the profile's
+        standing = profile.standing_autonomy()
+        src = "" if meta.get("autonomy") is not None else (
+            " (no setting of its own: the machine profile's standing autonomy)" if standing else "")
         eff = c.effective_autonomy(p)  # T-1061, T-1080
         from sampo import risk
         risky = risk.slowed(p)
         why = risky if risky else "recent closes missed their plan, M needs approval; sampo digest"
-        return out(args, {"autonomy": level, "effective": eff, "slow": eff == "slow", "risk": risky},
-                   f"{p.slug}: autonomy {level}" + (f" (now {eff}: {why})" if eff != level else "") + ".")
+        return out(args, {"autonomy": level, "effective": eff, "slow": eff == "slow", "risk": risky,
+                          "standing": standing},
+                   f"{p.slug}: autonomy {level}{src}" + (f" (now {eff}: {why})" if eff != level else "") + ".")
+    if args.standing:
+        profile.set_standing_autonomy(args.level)
     c.update_meta(p, autonomy=args.level)
     with c.lock(p.dir):
-        c.log_event(p, "autonomy", data={"level": args.level}, session=session())
+        c.log_event(p, "autonomy", data={"level": args.level, "standing": bool(args.standing)}, session=session())
         c.regen_views(p)
-    out(args, {"autonomy": args.level}, f"{p.slug}: autonomy {args.level}.")
+    out(args, {"autonomy": args.level, "standing": args.level if args.standing else None},
+        f"{p.slug}: autonomy {args.level}" + (" and the standing autonomy of new projects" if args.standing else "") + ".")
 
 
 def lazy(module, func):
@@ -8516,6 +8527,8 @@ def _build_parser(only=None):
 
     s = add("autonomy", cmd_autonomy, tier=("Project and settings", 680), help="standard (asks for L plans, ? items, approvals) or full (never asks mid-run)")
     s.add_argument("level", nargs="?", choices=["standard", "full"])
+    s.add_argument("--standing", action="store_true", help="also the machine profile's standing autonomy: every new "
+                                                           "project starts at it (T-4519)")
 
     s = add("tidy", lazy("sampo.tidy", "cmd_tidy"), tier=("Project and settings", 940), help="hygiene (dry-run by default)")
     s.add_argument("--apply", action="store_true")
