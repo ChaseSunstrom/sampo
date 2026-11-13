@@ -224,6 +224,8 @@ def cmd_steers(args):
     p = cli.resolve(args)
     if getattr(args, "tick", False):
         got = tick(p)
+        from sampo import concerns  # T-4189: model-free, so it runs whether or not a local model is up
+        got["repeats"] = len(concerns.safe_tick(p)["repeats"])
         return cli.out(args, got, f"steers: {got['read']} read, {got['unread']} unread, {got['left']} left"
                        + ("" if got["model"] else " (no local model up)"))
     r = report(p)

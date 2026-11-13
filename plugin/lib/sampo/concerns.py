@@ -9,10 +9,16 @@ brief names the concern id; a task's close changes nothing here. Only `show` wit
 remote-tracking branch, a URL that answers, a path that exists, a number its command prints) marks a concern shown; a
 message said again after that reopens it. `answer` takes a pure question out of the open list.
 
-The events (show, answer, split, fold) are write-once lines in the project's concerns.jsonl; every read folds them with
-the rows, so no state is edited in place and two sessions can't lose each other's write. Nothing here calls a model
-except fold (the meter's reader, under its lock, never on a hook), and nothing gates a close or a merge: the ledger
-tells the agent what the user is still waiting on."""
+The events (show, answer, split, fold, repeat, remeasure) are write-once lines in the project's concerns.jsonl; every
+read folds them with the rows, so no state is edited in place and two sessions can't lose each other's write. Nothing
+here calls a model except fold (the meter's reader, under its lock, never on a hook). The ledger tells the agent what the
+user is still waiting on, and gates one close (T-4189).
+
+T-4189: a concern said again after its linked task closed, or after a proof was shown for it, or whose shown number is
+worse a day later, was fixed on the wrong cause model. `repeated` finds those (the proof is kept, marked refuted), `act`
+reopens the closed task (or captures a linked FIX when the close is old or there is none) with one first step, "look at
+the real surface", and `surface_gaps` is the one gate: that task cannot close on unit-test evidence alone. The meaning
+of "the same concern" is what fold already decides; nothing here reads the words of a message."""
 import hashlib
 import json
 import os
@@ -33,10 +39,20 @@ PLAN_RE = re.compile(r"(?<![\w/.-])((?:[\w-]+/)*[\w-][\w.-]*\.md)(?![\w/-])")  #
 PHASE_RE = re.compile(r"^#{1,6}[ \t]*Phase[ \t]+(\d+[a-z]?)\b[ \t:.\-]*(.*)$", re.M | re.I)  # '## Phase 2: the page'
 PLAN_MAX = 200 * 1024  # a plan document is read this far, at most, on the hook path
 TEXT_N = 400       # an answer or a proof is kept to this many characters
+REPEAT_DAYS = 7    # a close this recent is reopened; an older one is left closed and a linked FIX is captured
+REMEASURE_S = 86400  # a shown number is read again once, this long after it was shown
+WORSE_PCT = 10     # a re-read number is worse when it moved this far (of the shown value) the wrong way
+SURFACE_STEP = "Look at the real surface first"
+# the commands that look at what the user sees (a command's words, its program's name only); a project adds its own as
+# meta.json "surface_commands" (["make deploy-staging"]). Anything else, a test run above all, is not a surface run.
+SURFACE_CMDS = (("sampo", "smoke"), ("fm", "smoke"), ("sampo", "shot"), ("fm", "shot"), ("sampo", "concerns", "show"),
+                ("fm", "concerns", "show"), ("curl",), ("wget",))
 PROOF_HELP = ("a proof is git:<ref> (a commit on a remote-tracking branch), url:<address> (it answers), path:<file> "
-              "(it exists) or num:<value> via <command> (the command exits 0 and prints the value)")
+              "(it exists) or num:<value> via <command> (the command exits 0 and prints the value; num:<value> up via "
+              "<command> when a higher number is better)")
 _ID = re.compile(r"K-[0-9A-F]{6}")
-_NUM = re.compile(r"^\s*([-+]?\d+(?:[.,]\d+)*)\s+via\s+(.+)$", re.S)
+_NUM = re.compile(r"^\s*([-+]?\d+(?:[.,]\d+)*)(\s+up)?\s+via\s+(.+)$", re.S)
+_MARK = "\0"      # where the shown number sat in the line the command printed it on (a show event's template)
 
 
 class Refused(ValueError):
@@ -201,7 +217,9 @@ def _captured_from(p, rows, root):
 
 def fold(p, briefs=None):
     """The concerns of this project, oldest first: {id, text, surface, opened, last_said, said, tasks, state ("open",
-    "shown" or "answered"), reopened (said after its last show or answer), proof, checked}. Empty with no rows."""
+    "shown" or "answered"), reopened (said after its last show or answer, or its shown number worse a day later),
+    proof, checked, refuted (the shown proof that a later report or reading refuted, else None), refuted_by ("said" or
+    "remeasure"), refuted_at, said_at (when each message was said)}. Empty with no rows."""
     rows = _rows(p)
     if not rows:
         return []
@@ -220,17 +238,31 @@ def fold(p, briefs=None):
         cid = concern_id(first["session"], first["uuid"])
         tasks = set(by_root.get(r0, ())) | set(named.get(cid, ()))
         state, reopened, proof, checked = "open", False, None, None
-        ev = [e for e in events if e["concern"] == cid and e["event"] in ("show", "answer")]
+        refuted = refuted_by = refuted_at = None  # T-4189: the proof a later report or reading refuted
+        ev = [e for e in events if e["concern"] == cid and (e["event"] in ("show", "answer")
+                                                            or (e["event"] == "remeasure" and e.get("worse")))]
         if ev:
             e = ev[-1]
-            state = "shown" if e["event"] == "show" else "answered"
-            proof, checked = e.get("proof"), e.get("checked")
-            if last["at"] > e["ts"]:  # said again after the proof or the answer: it is open again
+            if e["event"] == "remeasure":  # the shown number was worse a day later: open again, its proof refuted
+                shows = [x for x in ev if x["event"] == "show"]
+                proof = shows[-1].get("proof") if shows else None
                 state, reopened = "open", True
+                refuted, refuted_by, refuted_at = proof, "remeasure", e["ts"]
+                if last["at"] > e["ts"]:
+                    refuted_by, refuted_at = "said", last["at"]
+            else:
+                state = "shown" if e["event"] == "show" else "answered"
+                proof, checked = e.get("proof"), e.get("checked")
+                if last["at"] > e["ts"]:  # said again after the proof or the answer: it is open again
+                    state, reopened = "open", True
+                    if e["event"] == "show":
+                        refuted, refuted_by, refuted_at = proof, "said", last["at"]
         docs = sorted({d for i in members for d in _plan_names(rows[i].get("text"))})  # T-4524: the user's words
         out.append({"id": cid, "text": first["concern"], "surface": last.get("surface"), "opened": first["at"],
                     "last_said": last["at"], "said": len(members), "tasks": sorted(tasks), "state": state,
-                    "reopened": reopened, "proof": proof, "checked": checked, "named": docs})
+                    "reopened": reopened, "proof": proof, "checked": checked, "refuted": refuted,
+                    "refuted_by": refuted_by, "refuted_at": refuted_at, "said_at": [rows[i]["at"] for i in members],
+                    "named": docs})
     return out
 
 
@@ -359,22 +391,28 @@ def _write(p, event):
 
 def check_proof(p, proof):
     """(True, what was checked) or (False, why). Only a proof that can be checked here is one."""
+    return _check_full(p, proof)[:2]
+
+
+def _check_full(p, proof):
+    """(ok, what was checked or why not, extra): extra is what a show event keeps of a num proof (value, up, template),
+    so the number can be read again a day later (remeasure)."""
     kind, sep, rest = (proof or "").strip().partition(":")
     kind, rest = kind.strip().lower(), rest.strip()
     if not sep or not rest:
-        return False, PROOF_HELP
+        return False, PROOF_HELP, {}
     if kind == "git":
-        return _git_proof(p, rest)
+        return (*_git_proof(p, rest), {})
     if kind == "url":
         if not re.match(r"https?://\S+$", rest):
-            return False, "url: needs an http or https address"
-        return (True, f"{rest} answers") if _url_answers(rest) else (False, f"{rest} does not answer")
+            return False, "url: needs an http or https address", {}
+        return (True, f"{rest} answers", {}) if _url_answers(rest) else (False, f"{rest} does not answer", {})
     if kind == "path":
         path = rest if os.path.isabs(rest) else os.path.join(p.root, rest)
-        return (True, f"{rest} exists") if os.path.exists(path) else (False, f"no such path: {rest}")
+        return (True, f"{rest} exists", {}) if os.path.exists(path) else (False, f"no such path: {rest}", {})
     if kind == "num":
         return _num_proof(p, rest)
-    return False, PROOF_HELP
+    return False, PROOF_HELP, {}
 
 
 def _git_proof(p, ref):
@@ -401,27 +439,52 @@ def _url_answers(url):
         return False
 
 
-def _num_proof(p, rest):
-    m = _NUM.match(rest)
-    if not m:
-        return False, "a number must come with its command: num:<value> via <command>, the command printing the value"
-    value, cmd = m.group(1), m.group(2).strip()
+def _run_argv(p, cmd):
+    """(stdout, None) of a command run as argv (no shell) in the project's root, bounded in time; (None, why) when it
+    does not parse, run, or exit 0."""
     try:
         argv = shlex.split(cmd)
     except ValueError as e:
-        return False, f"the command does not parse: {e}"
+        return None, f"the command does not parse: {e}"
     if not argv:
-        return False, "a number must come with its command"
-    try:  # no shell: the command is argv, run in the project's root, bounded in time
+        return None, "a number must come with its command"
+    try:
         run = subprocess.run(argv, cwd=p.root, capture_output=True, text=True, timeout=PROOF_S,
                              stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as e:
-        return False, f"the command did not run: {e}"
+        return None, f"the command did not run: {e}"
     if run.returncode:
-        return False, f"the command exited {run.returncode}"
-    if not re.search(r"(?<![\w.,])" + re.escape(value) + r"(?![\w.,])", run.stdout or ""):
-        return False, f"the command does not print {value}"
-    return True, f"{value} printed by {argv[0]}"
+        return None, f"the command exited {run.returncode}"
+    return run.stdout or "", None
+
+
+def _number(s):
+    """The float of a printed number ('1,234' thousands, '1,5' a decimal comma), None when it is neither."""
+    s = str(s).strip()
+    if "," in s and "." not in s and not re.fullmatch(r"[-+]?\d{1,3}(,\d{3})+", s):
+        s = s.replace(",", ".")
+    try:
+        return float(s.replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _num_proof(p, rest):
+    m = _NUM.match(rest)
+    if not m:
+        return False, "a number must come with its command: num:<value> via <command>, the command printing the value", {}
+    value, up, cmd = m.group(1), bool(m.group(2)), m.group(3).strip()
+    out, why = _run_argv(p, cmd)
+    if out is None:
+        return False, why, {}
+    at = re.compile(r"(?<![\w.,])" + re.escape(value) + r"(?![\w.,])")
+    line = next((x for x in out.splitlines() if at.search(x)), None)
+    if line is None:
+        return False, f"the command does not print {value}", {}
+    extra = {}
+    if _number(value) is not None:  # what a later reading looks for: the same line, its number in the shown one's place
+        extra = {"value": _number(value), "up": up, "template": c.fit(c.redact(at.sub(_MARK, line.strip(), count=1)), TEXT_N)}
+    return True, f"{value} printed by {shlex.split(cmd)[0]}", extra
 
 
 # ---------------------------------------------------------------- the verbs
@@ -429,11 +492,11 @@ def _num_proof(p, rest):
 def show(p, cid, proof):
     """Marks a concern shown when its proof checks; a refused proof writes nothing."""
     cid = _exists(p, cid)
-    ok, why = check_proof(p, proof)
+    ok, why, extra = _check_full(p, proof)
     if not ok:
         raise Refused(f"not shown: {why}")
     _write(p, {"event": "show", "concern": cid, "proof": c.fit(c.redact(proof), TEXT_N), "checked": why,
-               "ts": c.now()})
+               "ts": c.now(), **extra})
     return {"id": cid, "state": "shown", "checked": why}
 
 
@@ -464,6 +527,296 @@ def split(p, cid):
         raise Refused(f"nothing to split in {cid}: every ask in it says the same thing")
     _write(p, {"event": "split", "concern": cid, "ts": c.now()})
     return {"id": cid, "into": [concern_id(rows[k]["session"], rows[k]["uuid"]) for k in pieces]}
+
+
+# ---------------------------------------------------------------- T-4189: a repeated report
+
+REMEASURE_N = 3    # at most this many shown numbers are read again in one pass (each command may run PROOF_S)
+EXEMPT = ("", "none")  # a concern whose surface is none has nothing to look at: no forced step
+
+
+def _reading(p, e):
+    """The number a show event's command prints now, on the line shaped as it was shown (its template, the number in
+    the shown one's place), as a float; None when the command fails or no line has that shape."""
+    kind, _, rest = str(e.get("proof") or "").strip().partition(":")
+    m = _NUM.match(rest) if kind.strip().lower() == "num" else None
+    tpl = e.get("template")
+    if not m or not isinstance(tpl, str) or _MARK not in tpl:
+        return None
+    out, _ = _run_argv(p, m.group(3).strip())
+    if out is None:
+        return None
+    head, _, tail = tpl.partition(_MARK)
+    rx = re.compile(re.escape(head) + r"(?<![\w.,])([-+]?\d+(?:[.,]\d+)*)(?![\w.,])" + re.escape(tail))
+    for line in out.splitlines():
+        hit = rx.fullmatch(line.strip())
+        if hit:
+            return _number(hit.group(1))
+    return None
+
+
+def remeasure(p):
+    """A shown number is read again once, REMEASURE_S after it was shown: the same command, the same line. Worse (WORSE_PCT
+    of the shown value the wrong way: higher, or lower when the proof says up) writes a remeasure event with worse true,
+    which fold reads as the concern open again with its proof refuted. Any other reading (better, equal, or none found)
+    is written too, so a number is read a single time. [{id, before, after, worse}]."""
+    pending = {}
+    for e in _events(p):
+        if e["event"] == "show":
+            pending[e["concern"]] = e
+        elif e["event"] in ("answer", "remeasure"):
+            pending.pop(e["concern"], None)
+    cutoff, out = c.clock().timestamp() - REMEASURE_S, []
+    for cid, e in pending.items():
+        t = _epoch(e["ts"])
+        if len(out) >= REMEASURE_N or t is None or t > cutoff or not e.get("template") \
+                or not isinstance(e.get("value"), (int, float)):
+            continue
+        before, after = float(e["value"]), _reading(p, e)
+        slack = abs(before) * WORSE_PCT / 100
+        worse = after is not None and (after < before - slack if e.get("up") else after > before + slack)
+        _write(p, {"event": "remeasure", "concern": cid, "before": before, "after": after, "worse": worse,
+                   "ts": c.now()})
+        out.append({"id": cid, "before": before, "after": after, "worse": worse})
+    return out
+
+
+def repeated(p, briefs=None):
+    """The concerns reported again that nobody has acted on yet: [{id, text, surface, said, trigger, when, task,
+    closed_at, refuted}]. trigger: "remeasure" (its shown number got worse), "closed" (said again after its linked task
+    closed; task is that task) or "proof" (said again after a proof was shown; refuted is that proof). Nothing for a
+    concern whose linked task is still open (the work is under way) or that was acted on at or after the report (a repeat
+    event's since). Meaning is fold's: a message is the same concern when the meter said so."""
+    bs = list(c.load_briefs(p) if briefs is None else briefs)
+    by_id = {b.id: b for b in bs}
+    xs = [x for x in fold(p, bs) if x["tasks"] or x["refuted"]]
+    if not xs:
+        return []
+    done_at = {}
+    for e in c.ledger_events(p, kinds=("task_done",), since=min(x["opened"] for x in xs)):
+        if e.get("task"):
+            done_at[e["task"]] = max(done_at.get(e["task"], ""), str(e.get("ts") or ""))
+    handled = {}
+    for e in _events(p):
+        if e["event"] == "repeat":
+            handled[e["concern"]] = max(handled.get(e["concern"], ""), str(e.get("since") or ""))
+    out = []
+    for x in xs:
+        linked = [by_id[t] for t in x["tasks"] if t in by_id]
+        if any(b.status not in c.CLOSED for b in linked):
+            continue
+        closed = [(done_at[b.id], b) for b in linked if b.status == "done" and done_at.get(b.id)]
+        closed_at, task = max(closed, key=lambda z: z[0]) if closed else (None, None)
+        if x["refuted_by"] == "remeasure":
+            kind, when = "remeasure", x["refuted_at"]
+        elif task is not None and any(a > closed_at for a in x["said_at"]) and any(a <= closed_at for a in x["said_at"]):
+            kind, when = "closed", x["last_said"]
+        elif x["refuted_by"] == "said":
+            kind, when = "proof", x["refuted_at"]
+        else:
+            continue
+        if when > handled.get(x["id"], ""):
+            out.append({"id": x["id"], "text": x["text"], "surface": x["surface"], "said": x["said"], "trigger": kind,
+                        "when": when, "task": task.id if task else None, "closed_at": closed_at,
+                        "refuted": x["refuted"]})
+    return out
+
+
+def _step_text(r):
+    surface = c.fit(c.plain(" ".join(str(r["surface"] or "").split())), 60)
+    return (f"{SURFACE_STEP} ({r['id']}): open the real thing the user looks at ({surface}) and record what you see "
+            f"(sampo smoke, sampo shot URL, curl); the earlier cause was wrong or incomplete, so find the cause there "
+            f"before changing anything")
+
+
+def _earlier_fix(p, tid):
+    sha = c._git(p.root, "log", "-1", "--format=%h", "-F", f"--grep=({tid})")
+    return sha.strip() or "none found in git log"
+
+
+def _reopen(p, b, r):
+    """A closed task open again with the surface step current (kept, not added again, when it is there and not done);
+    a concern with no surface only gets the log line."""
+    exempt = _norm(r["surface"]) in EXEMPT
+    said = c.fit(c.plain(" ".join(str(r["text"]).split())), 100)
+    head = (f"re-measured on {r['when']}: the shown number got worse" if r["trigger"] == "remeasure"
+            else f"reported again on {r['when']}")
+    b.append_log(f"{head} ({r['id']}, said {r['said']}x: {said}); the earlier cause was wrong or incomplete; earlier fix: "
+                 f"{_earlier_fix(p, b.id)}" + (f"; its shown proof {r['refuted']} is refuted" if r["refuted"] else "")
+                 + ("; no reachable surface for this concern, so no forced step" if exempt else ""))
+    if b.status in c.CLOSED:
+        b.meta["status"] = "planned"
+    if not exempt:
+        mine = [s for s in b.steps() if s.text.startswith(SURFACE_STEP) and r["id"] in s.text and not s.done]
+        b.set_current(mine[-1].n if mine else b.add_step(_step_text(r)))
+    c.save_brief(p, b)
+
+
+def _capture(p, r):
+    """(brief, action): a FIX linked to the concern by its id, with the surface step; a FIX this concern already has
+    (found by that id, even closed or archived) is reopened or left, not filed again."""
+    from sampo import eco
+    said = c.fit(c.plain(" ".join(str(r["text"]).split())), 100)
+    why = {"remeasure": "its shown number got worse when read again", "proof": "said again after its proof was shown",
+           "closed": "said again after its linked task closed"}[r["trigger"]]
+    text = (f"{said} ({r['id']}, said {r['said']}x)\nCONTEXT: {r['id']} reported again on {r['when']}: {why}; the earlier "
+            f"cause was wrong or incomplete" + (f"; the proof {r['refuted']} is refuted" if r["refuted"] else "")
+            + (f"; the close was {r['closed_at']}" if r["closed_at"] else ""))
+    b, new = eco.capture_once(p, text, "FIX", "discovered", key=f"CONTEXT: {r['id']} reported again")
+    if new:
+        if _norm(r["surface"]) not in EXEMPT:
+            b.set_current(b.add_step(_step_text(r)))
+            c.save_brief(p, b)
+        return b, "captured"
+    if b.status in c.CLOSED:
+        _reopen(p, b, r)
+        return b, "reopened"
+    return b, "joined"
+
+
+def act(p, briefs=None):
+    """What a repeat calls for, once each: the linked task closed within REPEAT_DAYS is reopened with the surface step,
+    anything else (an older close, no task, a proof refuted) gets a linked FIX. Writes a repeat event per concern acted
+    on (its since is the report's time, so the next report is acted on again). [{id, task, action, trigger}]."""
+    bs = list(c.load_briefs(p) if briefs is None else briefs)
+    by_id = {b.id: b for b in bs}
+    out = []
+    for r in repeated(p, bs):
+        b = by_id.get(r["task"]) if r["task"] else None
+        age = c.clock().timestamp() - (_epoch(r["closed_at"]) or 0) if r["closed_at"] else None
+        if b is not None and age is not None and age <= REPEAT_DAYS * 86400:
+            _reopen(p, b, r)
+            action = "reopened"
+        else:
+            b, action = _capture(p, r)
+        _write(p, {"event": "repeat", "concern": r["id"], "task": b.id, "action": action, "trigger": r["trigger"],
+                   "since": r["when"], "ts": c.now()})
+        out.append({"id": r["id"], "task": b.id, "action": action, "trigger": r["trigger"]})
+    return out
+
+
+def _sig(p):
+    out = []
+    for name in ("steers.jsonl", CONCERNS):
+        try:
+            st = os.stat(os.path.join(p.dir, name))
+            out.append([st.st_size, st.st_mtime_ns])
+        except OSError:
+            out.append(None)
+    return out
+
+
+def tick(p):
+    """The model-free work of a pass: read due numbers again, then act on repeats. Only when the steer rows or this
+    ledger changed since the last pass is the ledger folded (a quiet one costs two stats), and one pass at a time (a
+    second does nothing). Paused: nothing. {"remeasured", "repeats"}."""
+    import fcntl
+    out = {"remeasured": [], "repeats": []}
+    if c.panicked():
+        return out
+    os.makedirs(p.dir, exist_ok=True)
+    fd = os.open(os.path.join(p.dir, "concerns.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return out
+        out["remeasured"] = remeasure(p)
+        path = os.path.join(p.dir, "concerns.tick")
+        try:
+            with open(path, encoding="utf-8") as f:
+                last = json.load(f)
+        except (OSError, ValueError):
+            last = None
+        if _sig(p) == last:
+            return out
+        out["repeats"] = act(p)
+        c.write_atomic(path, json.dumps(_sig(p)))
+        return out
+    finally:
+        os.close(fd)
+
+
+def safe_tick(p):
+    """tick for the steer meter's pass: a failure (a torn line, a full disk, a refused capture) is logged where the hooks'
+    errors go and never stops the meter."""
+    try:
+        return tick(p)
+    except Exception:
+        _log_error("tick")
+        return {"remeasured": [], "repeats": []}
+
+
+def _log_error(where):
+    import traceback
+    try:
+        path = os.path.join(c.state_dir(), "logs", "hooks.log")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        c.append_line(path, f"{c.now()} concerns.{where} {c.redact(traceback.format_exc()).rstrip()}\n")
+    except OSError:
+        pass
+
+
+def _surface_cmd(p, cmd):
+    """Whether a command's words hold one of SURFACE_CMDS or the project's own (meta surface_commands), by the programs'
+    names only (python3 plugin/bin/sampo shot URL is `sampo shot`)."""
+    def names(s):
+        try:
+            return [os.path.basename(w) for w in shlex.split(str(s))]
+        except ValueError:
+            return [os.path.basename(w) for w in str(s).split()]
+    extra = c.read_meta(p).get("surface_commands")
+    heads = [tuple(h) for h in SURFACE_CMDS] + [tuple(names(x)) for x in extra if isinstance(x, str) and x.strip()] \
+        if isinstance(extra, list) else [tuple(h) for h in SURFACE_CMDS]
+    words = names(cmd)
+    return any(h and words[i:i + len(h)] == list(h) for h in heads for i in range(len(words) - len(h) + 1))
+
+
+_RUN_LINE = re.compile(r"^- \(step (\d+)\) `(.*?)` → (.*)$")
+
+
+def surface_gaps(p, b, then=()):
+    """T-4189: the refusal lines for a task that carries a surface step (a concern reported again): the step needs a
+    passing run, made by Sampo, of a command that looks at the real surface (SURFACE_CMDS or the project's own), or its
+    concern shown (sampo concerns show). then: [(step n, command)] the close is about to run, counted as made. [] for any
+    other task, without reading a ledger."""
+    steps = [s for s in b.steps() if s.text.startswith(SURFACE_STEP)]
+    if not steps:
+        return []
+    shown = None
+    out = []
+    for s in steps:
+        m = _ID.search(s.text.upper())
+        cid = m.group(0) if m else None
+        cmds = []
+        for line in b.evidence():
+            ev = _RUN_LINE.match(line)
+            if ev and int(ev.group(1)) == s.n and c._RAN_MARK in line and not ev.group(3).lstrip().startswith("✗"):
+                cmds.append(ev.group(2))
+        cmds += [cmd for n, cmd in then if n == s.n and cmd]
+        if any(_surface_cmd(p, x) for x in cmds):
+            continue
+        if cid:
+            if shown is None:
+                shown = {x["id"] for x in fold(p, briefs=[]) if x["state"] == "shown"}
+            if cid in shown:
+                continue
+        how = (f"look at the real surface and record it: sampo task evidence {b.id} --step {s.n} --run \"sampo smoke\" "
+               f"(or sampo shot URL, curl URL), or sampo concerns show {cid or 'K-ID'} --proof \"<what the user can now see>\"")
+        have = (f" has only {c.joinmore(['`' + x + '`' for x in cmds], 3)}: not a surface run; " if cmds
+                else " has no run on the real surface; ")
+        out.append(f"step {s.n} ({SURFACE_STEP}{f', {cid}' if cid else ''}){have}the concern was reported again, so "
+                   f"unit tests alone cannot close it: {how}")
+    return out
+
+
+def safe_gaps(p, b, then=()):
+    """surface_gaps for the close gates: a reader that breaks must not stop a close, so it fails open and logs."""
+    try:
+        return surface_gaps(p, b, then)
+    except Exception:
+        _log_error("surface_gaps")
+        return []
 
 
 def _hours(opened):

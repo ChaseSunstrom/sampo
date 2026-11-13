@@ -952,8 +952,9 @@ def cmd_task(args):
             from sampo import toolproof  # T-2372: nor round a tool's proof
             from sampo import incident  # T-2388: nor round an incident's two greens and follow-up
             from sampo import grants  # T-2383: nor round a secret pasted into the session
+            from sampo import concerns  # T-4189: nor round a repeated report's surface step
             reasons += toolproof.safe_gaps(p, b) + miss.safe_gaps(p, b) + incident.safe_gaps(p, b) \
-                + grants.safe_secret_gaps(p, b)
+                + grants.safe_secret_gaps(p, b) + concerns.safe_gaps(p, b)
             if reasons:
                 lead = "" if hasattr(args, "audit") else (  # T-0849: fm task done, not finish's own close
                     f" — one call settles most of it: sampo task finish {b.id} --run \"<test cmd>\" --audit \"<how>\""
@@ -1571,6 +1572,8 @@ def _task_finish(p, args):
     from sampo import grants  # T-2383: a secret the task's grant names must not be in this session's transcript
     gaps += toolproof.safe_gaps(p, b) + miss.safe_gaps(p, b) + incident.safe_gaps(p, b, closing=True) \
         + grants.safe_secret_gaps(p, b)
+    from sampo import concerns  # T-4189: a task reopened by a repeated report needs a run on the real surface
+    gaps += concerns.safe_gaps(p, b, then=[(n, cmd) for kind, n, cmd in todo if kind == "step" and cmd])
     if gaps:  # T-0704: every gap in one refusal (135 finishes in 14 days were refused and retried one gap at a time)
         raise UsageError(f"{b.id} not finished, nothing ran:\n  - " + "\n  - ".join(gaps))
     if args.run and args.run not in [cmd for _, _, cmd in todo]:  # T-0742: --run is the close's final check, always
