@@ -1691,14 +1691,29 @@ def c_short(name):
     return name if len(name) <= 60 else "…" + name[-59:]
 
 
+RESULT_CAP = 600  # T-4564: a record's last lines, at most this many characters (head and tail kept when cut)
+
+
+def keep_ends(text, cap=RESULT_CAP):
+    """T-4564: text whole when it fits cap characters, else its head and its tail with … between. The head says what
+    ran; the tail holds the run's verdict (the Ran line, OK or FAILED with the failed classes), which a cut at the
+    start used to lose."""
+    if len(text) <= cap:
+        return text
+    head = cap // 4
+    return text[:head].rstrip() + " … " + text[len(text) - (cap - head - 3):].lstrip()
+
+
 def run_result(code, output, cmd=None):
     """The evidence result for a run: `exit N · <last two output lines>`, marked ✗ when it failed; T-0985: given the
-    command, a run that never reached its check says so (it doesn't lock the criterion)."""
+    command, a run that never reached its check says so (it doesn't lock the criterion). T-4564: those lines are kept
+    whole up to RESULT_CAP, so a long run's Ran line (with the count of cached greens) and OK or FAILED survive."""
     lines = [l.strip() for l in output.splitlines() if l.strip()]
     timed = f" ({lines[-1]})" if code == 124 and lines and lines[-1].startswith("timed out after") else ""
     why = never_ran(cmd, code, output)
     timed += f" {NEVER_RAN}{why})" if why else ""
-    return f"{'✗ ' if code else ''}exit {code}{timed} · {' / '.join(lines[-2:])[:200] or '(no output)'}"
+    # T-4564: redacted before the cut, so a token straddling the cut can't leave its half in the record
+    return f"{'✗ ' if code else ''}exit {code}{timed} · {keep_ends(redact(' / '.join(lines[-2:]))) or '(no output)'}"
 
 
 def result_exit(result):
