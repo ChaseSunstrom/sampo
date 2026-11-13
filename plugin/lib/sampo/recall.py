@@ -834,13 +834,41 @@ def meaning_unproven(b):
             if why and not set(_tokens(re.sub(r"^\s*[A-Z]+[!?]?:\s*", "", part))) <= title]
 
 
+def clause_nongoals(b):
+    """T-4510: [(clause, Non-goals line)] for each clause no criterion checks (the clauses of unchecked_clauses), paired
+    with the first Non-goals line that echoes it (2+ shared words), '' when none does."""
+    title = set(_tokens(b.title))  # a clause that only restates the title is the task's summary, not a separate ask
+    out = [part for part, n, _ in bind(b) if n is None and not set(_tokens(part)) <= title]
+    skips = [(x, set(_tokens(x))) for x in b.section("Non-goals").splitlines()]
+    return [(x, next((line for line, s in skips if len(set(_tokens(x)) & s) >= 2), "")) for x in out]
+
+
 def unchecked_clauses(b):
     """T-2914: [clause] of bind(b) that no criterion checks at all (not "no green run yet": nothing has run at plan time)
     and that no Non-goals line echoes (2+ shared words): the clauses a plan names before work starts."""
-    title = set(_tokens(b.title))  # a clause that only restates the title is the task's summary, not a separate ask
-    out = [part for part, n, _ in bind(b) if n is None and not set(_tokens(part)) <= title]
-    skips = [set(_tokens(x)) for x in b.section("Non-goals").splitlines()]
-    return [x for x in out if not any(len(set(_tokens(x)) & s) >= 2 for s in skips)]
+    return [x for x, line in clause_nongoals(b) if not line]
+
+
+_OWN_LINE = re.compile(r"^(?:>\s*)?(?:SKIP|NEVER):\s*(.+?)\s*$", re.M)  # the user's own SKIP: and NEVER: lines
+
+
+def _said(text):
+    """T-4510: a line as compared for carrying: bullets and spacing aside, case aside."""
+    return " ".join(re.sub(r"^\s*(?:[-*•]|\d+[.)])\s*", "", text or "").split()).lower()
+
+
+def answered_nongoals(b):
+    """T-4510: [(clause, Non-goals line)] where a Non-goals line answered a clause of the request at the plan gate. Such a
+    line is a deferral the close queues and says (cli._carry_left_out), once per line. The user's own SKIP: and NEVER:
+    lines are not carried: the user asked to leave those out."""
+    own = {_said(x) for x in _OWN_LINE.findall(b.section("Raw request"))}
+    out, seen = [], set()
+    for clause, line in clause_nongoals(b):
+        key = _said(line)
+        if line and key not in own and key not in seen:
+            seen.add(key)
+            out.append((clause, line))
+    return out
 
 
 def unaccounted(p, loose):

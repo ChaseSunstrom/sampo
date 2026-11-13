@@ -1397,6 +1397,52 @@ def _close_advice(p, b):
         print(f"sampo: advice: {low}", file=sys.stderr)
 
 
+def _carry_left_out(p, b):
+    """T-4510: a Non-goals line that answered a clause of a user's request is a deferral, not a decision for the user:
+    captured as a follow-up linked to its task (carried_from, carried_line), quoting the clause, once per line. Returns
+    [(new id, line, clause)] for the ones made now."""
+    from sampo import recall
+    if b is None or b.meta.get("source") != "user":
+        return []
+    made = []
+    with c.lock(p.dir, timeout=5):
+        have = {x.meta.get("carried_line") for x in c.load_briefs(p) if x.meta.get("carried_from") == b.id}
+        for clause, line in recall.answered_nongoals(b):
+            text = c.redact(c.plain(line)).strip().lstrip("-*•").strip()
+            key = recall._said(text)
+            if key in have:
+                continue
+            raw = (f"Left out of {b.id} ({b.title}): {text}\n\nThe request asked for this: \"{c.redact(clause)}\"\n"
+                   f"The plan put it under Non-goals, so {b.id} closed without it. Build it, or drop it on purpose.")
+            n = _create(p, _title(f"Left out of {b.id}: {text}"), "FEATURE", c.guess_tier("FEATURE", raw), "captured",
+                        raw=raw, source="followup", net=False, meta={"carried_from": b.id, "carried_line": key})
+            c.log_event(p, "capture", task=n.id, data={"source": "followup", "type": "FEATURE", "from": b.id,
+                                                       "carried": True})
+            have.add(key)
+            made.append((n.id, text, clause))
+        if made:
+            c.log_event(p, "nongoal_carried", task=b.id, data={"carried": [m[0] for m in made]})
+            c.regen_views(p)
+    return made
+
+
+def _queue_left_out(p, tid, say):
+    """T-4510: the close's left-out lines are queued (_carry_left_out) and said under 'Left out, queued next'. The close
+    has landed already: a capture that fails (a busy lock) says so, and names where the lines are, rather than dropping
+    them silently."""
+    try:
+        made = _carry_left_out(p, c.find_brief(p, tid))
+    except Exception as e:  # noqa: BLE001 — a busy lock costs the capture a retry, never the close
+        print(f"sampo: {tid} closed, but its left-out lines weren't queued ({c.fit(str(e), 80)}): capture the "
+              f"Non-goals lines that answer its request by hand (sampo task show {tid})", file=sys.stderr)
+        return []
+    if made and say:
+        print("Left out, queued next:")
+        for n, line, clause in made:
+            print(f"  {n}: {c.fit(line, 90)} (asked: \"{c.fit(clause, 70)}\")")
+    return made
+
+
 def task_finish(p, args):
     """T-3030: the close runs under a `closing` marker (task, pid), so the edit hook attributes nothing made meanwhile."""
     me = str(os.getpid())
@@ -1411,7 +1457,10 @@ def task_finish(p, args):
             c.write_meta(p, m)
     mark({"task": args.id, "pid": os.getpid(), "root": p.root, "at": c.now()})
     try:
-        return _task_finish(p, args)
+        rc = _task_finish(p, args)
+        if not rc:  # T-4510: what the plan left out of the request is queued and said, after the close landed
+            _queue_left_out(p, args.id, say=not getattr(args, "json", False))
+        return rc
     finally:
         try:
             mark(None)
