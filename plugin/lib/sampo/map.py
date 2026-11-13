@@ -572,10 +572,13 @@ def ran_tests(root, base, tree, paths):
             if reach is None or (q and (q in heads or any(q.startswith(s + ".") for s in heads))):
                 hits.add(i)
     out = set()
+    star = next((i for i, k in enumerate(table) if k == "*"), -1)
     for cid, recs in classes.items() if hits else ():
         # a record from before function keys names each module the class imported as read whole: only a newer one counts
-        # (T-3711: as a fallback it selected nearly every class for any change until a full re-record)
-        idx = [i for r in recs if not fn.isdisjoint(r[2]) for i in r[2]]
+        # (T-3711: as a fallback it selected nearly every class for any change until a full re-record). T-4554: one
+        # holding "*" is a newer one that ran its code in a child the recorder couldn't follow (the hook or the CLI
+        # through a launcher: test_sampo_spelling.Spelling): no function key can name, so the files it read whole do
+        idx = [i for r in recs if star in r[2] or not fn.isdisjoint(r[2]) for i in r[2]]
         if not idx:
             continue
         if hits.isdisjoint(idx):
