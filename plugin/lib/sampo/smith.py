@@ -6700,7 +6700,7 @@ def _piece(run, profile, msgs, why):
     pl = _ClauseMap(run.plan, criteria=list(run.plan["criteria"]), steps=list(run.plan["steps"]))
     pl.mapped, pl.none_lines = (list(getattr(run.plan, k, ())) for k in ("mapped", "none_lines"))  # a plan an earlier
     pl.pop("non_goals", None)  # round repaired keeps its record; a planner's own non_goals is never read
-    grp, step, asked, said, maps = _GATE_CLAUSES.search(why), _GATE_STEP.search(why), 0, None, []
+    grp, asked, said, maps, named, worded = _GATE_CLAUSES.search(why), 0, None, [], [], []
 
     def one(question, key, raw=False):
         msgs.append({"role": "user", "content": f"The plan gate still refuses the plan, for one missing piece: "
@@ -6750,8 +6750,11 @@ def _piece(run, profile, msgs, why):
                 pl["criteria"].append({"text": f"{bare}: {said}", "verify": verify})
                 maps.append(f"{bare!r} -> a new criterion")
             asked += 1
-        n = int(step.group(1)) if step else 0
-        if 1 <= n <= len(pl["steps"]):
+        for step in _GATE_STEP.finditer(why):  # T-4507: every step the refusal names gets its own question, once each
+            n = int(step.group(1))
+            if n in named or not 1 <= n <= len(pl["steps"]):
+                continue
+            named.append(n)
             old = pl["steps"][n - 1]
             text = one(f"{step.group(0)}. Step {n} is {old!r}. No snapshot covers what it names, so no Undo line can be "
                        "written for it and it can't run as it is. Leave the JSON aside. In plain text, reply with only "
@@ -6760,16 +6763,17 @@ def _piece(run, profile, msgs, why):
             if not text or text == old:
                 return None
             pl["steps"][n - 1] = f"{text.rstrip(' .')} ({STEP_LIMIT})"  # the limit goes on in the step the worker reads
-            said = (f"step {n} reworded for the plan gate: {_one_line(old, 80)!r} -> {_one_line(text, 120)!r} "
-                    f"({STEP_LIMIT})")
+            worded.append(f"step {n} reworded for the plan gate: {_one_line(old, 80)!r} -> {_one_line(text, 120)!r} "
+                          f"({STEP_LIMIT})")
             asked += 1
+        said = "; ".join(worded) or None
     except m.ModelError:
         msgs.pop()
         return None
     if not asked or getattr(run, "plan_check", check_plan)(pl):
         return None
-    if step and said:  # said only of a plan that goes on
-        run.emit("note", said, reworded=n)
+    if named and said:  # said only of a plan that goes on
+        run.emit("note", said, reworded=named)
     if maps:
         run.emit("note", _one_line(f"plan gate: {'; '.join(maps)}", 600))
     return pl
@@ -6811,8 +6815,8 @@ def _make_task(run, profile, repaired=False):
         if p and core.rival_gap(core.find_brief(p, made["id"])):  # T-2341: under the race bar or one reading
             run.fm("second", "rival", made["id"])  # a failed or skipped read is noted and never blocks
         code, out = run.fm("focus", made["id"])
-        if code:
-            return _replan(run, profile, made["id"], f"fm focus refused the plan: {out[:500]}", repaired, code)
+        if code:  # T-4507: a refusal naming several one-way steps runs past 500 characters; the gate lines come last
+            return _replan(run, profile, made["id"], f"fm focus refused the plan: {out[:2000]}", repaired, code)
     hook, run.before_task = run.before_task, None  # T-4295: a closing look's next task puts the last one away first
     if hook:
         hook()
