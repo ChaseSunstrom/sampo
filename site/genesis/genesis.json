@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-12T20:58:07Z",
- "rev": "146a00788",
+ "updated": "2026-11-13T15:31:08Z",
+ "rev": "35feb19aa",
  "capabilities": [
   {
    "n": 1,
@@ -61521,17 +61521,17 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 791,
+ "unproven": 786,
  "unproven_kinds": {
-  "meaning-notes": 418,
+  "meaning-notes": 419,
   "research-uncited": 36,
   "meaning-user": 115,
   "perf-typed": 128,
   "typed": 75,
   "red": 89,
   "perf-noise": 1,
-  "ui-unshot": 10,
-  "docs": 84,
+  "ui-unshot": 7,
+  "docs": 80,
   "data": 1,
   "tui-unshot": 3,
   "infra": 2
@@ -62739,27 +62739,27 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 52811,
+   "generated": 54313,
    "write": {
-    "title": 364,
-    "line": 2767,
-    "payoff": 33,
-    "kill test": 168,
-    "code": 18
+    "title": 379,
+    "line": 2823,
+    "payoff": 35,
+    "kill test": 170,
+    "code": 20
    },
    "dups": {
     "exact": 15,
-    "embed": 112,
+    "embed": 118,
     "shingle": 0
    },
    "rejected": {
-    "kill": 26835,
-    "tier": 18519,
-    "novelty": 162
+    "kill": 27685,
+    "tier": 19002,
+    "novelty": 164
    },
-   "merged": 1596,
-   "kept": 2083,
-   "pending": 139
+   "merged": 1697,
+   "kept": 2149,
+   "pending": 56
   },
   "families": [
    {
@@ -62797,7 +62797,7 @@
    },
    {
     "id": "F-016199",
-    "size": 383,
+    "size": 398,
     "lead": "Store Sampo's memory as a gravitational lensing field",
     "today": "Today you can't compress and retrieve Sampo's historical context by simulating how light bends around massive objects.",
     "with_this": "With this, Sampo can access relevant past decisions with zero latency by treating data mass as gravitational wells that naturally attract relevant queries, rather than using linear search.",
@@ -62845,7 +62845,7 @@
    },
    {
     "id": "F-013109",
-    "size": 56,
+    "size": 62,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -62857,6 +62857,7 @@
     "evidence": "",
     "kinds": [
      "bugs",
+     "data",
      "design",
      "docs",
      "features",
@@ -63034,23 +63035,6 @@
     "evidence": "",
     "kinds": [
      "verifying anything"
-    ]
-   },
-   {
-    "id": "F-046468",
-    "size": 2,
-    "lead": "Simulate ecosystem collapse to prune inefficient reasoning branches",
-    "today": "Today you can't see which parts of your reasoning are parasitic dead weight that consumes tokens without adding value.",
-    "with_this": "With this, Sampo can simulate the 'death' of its own reasoning steps to identify and prune parasitic branches that waste computational energy.",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 5,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "calibrated judgment",
-     "orchestration"
     ]
    },
    {
@@ -64014,6 +63998,54 @@
     ]
    },
    {
+    "id": "F-053660",
+    "size": 1,
+    "lead": "Audit release impact on user retention via synthetic cohort",
+    "today": "Today you can't know if a UI change will increase or decrease user engagement before pushing to production.",
+    "with_this": "With this, you can run a simulated cohort of your most valuable users against the new UI to predict retention deltas before release.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 3,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "releases"
+    ]
+   },
+   {
+    "id": "F-053664",
+    "size": 1,
+    "lead": "Detect zero-day intent before the first packet is sent",
+    "today": "Today you can't see that a developer is about to write a function that will be exploited in three months",
+    "with_this": "With this, you can block the specific architectural pattern that predicts future zero-days, saving millions in incident response",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "security"
+    ]
+   },
+   {
+    "id": "F-054055",
+    "size": 1,
+    "lead": "Simulate zero-day attacks on your specific logic",
+    "today": "Today you can't test how your code would hold up against a unique, never-seen-before attack.",
+    "with_this": "With this, you can generate and test against novel attack patterns that are unique to your code's specific logic and data structures, not just known CVEs.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "security"
+    ]
+   },
+   {
     "id": "F-010563",
     "size": 4,
     "lead": "Settle security disagreements by letting two rival fixes fight in a tournament",
@@ -64299,23 +64331,6 @@
     "kinds": [
      "docs",
      "ops"
-    ]
-   },
-   {
-    "id": "F-016083",
-    "size": 2,
-    "lead": "Let Sampo negotiate resource allocation with other AI agents",
-    "today": "Today you can't have Sampo coordinate with other tools or agents to share context and divide labor intelligently",
-    "with_this": "With this, Sampo can act as a chief engineer, delegating sub-tasks to specialized agents and merging their results with minimal latency",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "exhaustive thinking",
-     "model layer"
     ]
    },
    {
@@ -66013,28 +66028,12 @@
     "kinds": [
      "features"
     ]
-   },
-   {
-    "id": "F-011213",
-    "size": 1,
-    "lead": "Derive feature priorities from collective athlete fatigue patterns",
-    "today": "Today you can't see which new features are causing burnout across the entire engineering organization.",
-    "with_this": "With this, you can automatically suppress low-impact feature requests that historically correlate with team fatigue, saving thousands of development hours.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "features"
-    ]
    }
   ],
-  "families_total": 1483,
+  "families_total": 1526,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2083
+   "total": 2149
   }
  },
  "steer": {
@@ -66068,7 +66067,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.8,
+    "idle_h": 128.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66091,7 +66090,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.9,
+    "idle_h": 128.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66114,7 +66113,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.8,
+    "idle_h": 128.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66137,7 +66136,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.8,
+    "idle_h": 128.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66160,7 +66159,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.6,
+    "idle_h": 128.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66183,7 +66182,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.6,
+    "idle_h": 128.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66206,7 +66205,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.4,
+    "idle_h": 127.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66229,7 +66228,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.4,
+    "idle_h": 127.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66252,7 +66251,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 109.5,
+    "idle_h": 128.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66275,7 +66274,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 111.1,
+    "idle_h": 129.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66298,7 +66297,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.8,
+    "idle_h": 129.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66321,7 +66320,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.8,
+    "idle_h": 129.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66344,7 +66343,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.8,
+    "idle_h": 129.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66367,7 +66366,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.8,
+    "idle_h": 129.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66390,7 +66389,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.6,
+    "idle_h": 129.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66413,7 +66412,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.6,
+    "idle_h": 129.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66436,7 +66435,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.6,
+    "idle_h": 129.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66459,7 +66458,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.6,
+    "idle_h": 129.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66482,7 +66481,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.4,
+    "idle_h": 128.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66505,7 +66504,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.4,
+    "idle_h": 128.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66528,7 +66527,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.4,
+    "idle_h": 128.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66551,7 +66550,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.3,
+    "idle_h": 128.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66574,7 +66573,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.2,
+    "idle_h": 128.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66597,7 +66596,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.1,
+    "idle_h": 128.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66620,7 +66619,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.1,
+    "idle_h": 128.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66643,7 +66642,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 110.2,
+    "idle_h": 128.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
@@ -66843,7 +66842,7 @@
    }
   ],
   "halted": null,
-  "rounds": 14,
+  "rounds": 15,
   "spent_today": 0,
   "share": 65.0
  }

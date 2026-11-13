@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-12",
+ "generated": "2026-11-13",
  "totals": {
-  "tasks_done": 860,
-  "evidence": 5010,
-  "proofs": 503,
-  "commits": 654,
-  "gate_runs": 391,
-  "subagents": 2244,
-  "lanes_merged": 545,
-  "findings": 678,
-  "guard_blocks": 931,
-  "captures": 1450,
-  "lessons_shown": 1648
+  "tasks_done": 890,
+  "evidence": 5395,
+  "proofs": 509,
+  "commits": 662,
+  "gate_runs": 410,
+  "subagents": 2448,
+  "lanes_merged": 595,
+  "findings": 688,
+  "guard_blocks": 964,
+  "captures": 1563,
+  "lessons_shown": 1724
  },
  "daily": [
   {
@@ -137,71 +137,82 @@
   },
   {
    "day": "2026-11-12",
-   "FEATURE": 2,
-   "FIX": 8,
+   "FEATURE": 10,
+   "FIX": 21,
+   "CLEAN": 2,
+   "PERFORMANCE": 4,
+   "SECURITY": 0,
+   "RESEARCH": 0,
+   "lanes": 30,
+   "evidence": 358
+  },
+  {
+   "day": "2026-11-13",
+   "FEATURE": 0,
+   "FIX": 3,
    "CLEAN": 0,
    "PERFORMANCE": 0,
    "SECURITY": 0,
    "RESEARCH": 0,
-   "lanes": 7,
-   "evidence": 29
+   "lanes": 27,
+   "evidence": 56
   }
  ],
  "tiers": {
-  "S": 458,
-  "M": 378,
+  "S": 469,
+  "M": 397,
   "L": 24
  },
  "types": {
-  "FEATURE": 279,
-  "FIX": 408,
-  "CLEAN": 46,
-  "PERFORMANCE": 80,
+  "FEATURE": 287,
+  "FIX": 424,
+  "CLEAN": 48,
+  "PERFORMANCE": 84,
   "SECURITY": 26,
   "RESEARCH": 21
  },
  "guard": {
-  "brief": 488,
-  "core": 213,
-  "system": 86,
+  "brief": 500,
+  "core": 224,
+  "system": 91,
   "state-direct": 48,
-  "rm-outside": 39,
-  "credentials": 18,
+  "rm-outside": 41,
+  "credentials": 21,
   "pipe-shell": 15,
   "plugin": 8
  },
  "findings": {
   "lenses": {
    "edge": 187,
+   "self": 141,
    "adversary": 137,
-   "self": 131,
    "intent": 77,
    "maintainer": 55,
    "design": 53
   },
   "severity": {
-   "LOW": 379,
-   "MEDIUM": 255,
+   "LOW": 386,
+   "MEDIUM": 258,
    "HIGH": 44
   }
  },
  "subagents": {
   "fm-builder": 1112,
+  "sampo:fm-builder": 529,
   "general-purpose": 506,
-  "sampo:fm-builder": 329,
   "fm-reviewer": 208,
   "fm-recon": 41,
-  "sampo:fm-reviewer": 28
+  "sampo:fm-reviewer": 31
  },
  "gate_seconds": {
-  "runs": 391,
-  "median": 392.4
+  "runs": 410,
+  "median": 398.7
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 221,
+  "searches": 230,
   "queued": 3,
   "refused": 0
  },
@@ -319,16 +330,16 @@
   "hardware": 8
  },
  "code": {
-  "model_tests": 95,
+  "model_tests": 101,
   "endpoints": 9,
-  "tests": 9060
+  "tests": 9423
  },
  "calibration": {
   "scored": 29,
-  "pending": 566,
+  "pending": 588,
   "brier": {
    "stated": 0.13456896551724137,
-   "base": 0.16330714285714285
+   "base": 0.15761785714285712
   },
   "bars": {
    "research": 70,
@@ -402,40 +413,40 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 69,
-     "held": 66,
+     "n": 74,
+     "held": 71,
      "pct": 96
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 163,
-     "held": 153,
-     "pct": 94
+     "n": 201,
+     "held": 183,
+     "pct": 91
     },
     {
      "lo": 95,
      "hi": 100,
-     "n": 1,
-     "held": 1,
+     "n": 2,
+     "held": 2,
      "pct": 100
     }
    ]
   }
  },
  "proof": {
-  "n": 780,
+  "n": 786,
   "counts": {
-   "meaning-notes": 407,
+   "meaning-notes": 419,
    "research-uncited": 36,
    "meaning-user": 115,
-   "perf-typed": 124,
+   "perf-typed": 128,
    "typed": 75,
    "red": 89,
    "perf-noise": 1,
-   "ui-unshot": 13,
-   "docs": 82,
-   "data": 3,
+   "ui-unshot": 7,
+   "docs": 80,
+   "data": 1,
    "tui-unshot": 3,
    "infra": 2
   },
@@ -487,6 +498,10 @@
    {
     "day": "2026-11-12",
     "n": 780
+   },
+   {
+    "day": "2026-11-13",
+    "n": 786
    }
   ]
  },
@@ -494,25 +509,25 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1290,
-    "precision": 0.805,
+    "fired": 1349,
+    "precision": 0.807,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 370,
+    "fired": 380,
     "precision": 0.71,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 239,
-    "precision": 0.774,
+    "fired": 257,
+    "precision": 0.777,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 130,
+    "fired": 132,
     "precision": 0.421,
     "route": "inbox"
    },
@@ -524,7 +539,7 @@
    },
    {
     "trigger": "ci-red",
-    "fired": 47,
+    "fired": 57,
     "precision": 0.778,
     "route": "inbox"
    },
@@ -553,8 +568,14 @@
     "route": "inbox"
    },
    {
+    "trigger": "spar",
+    "fired": 15,
+    "precision": null,
+    "route": "inbox"
+   },
+   {
     "trigger": "sentinel reverify",
-    "fired": 8,
+    "fired": 9,
     "precision": 1.0,
     "route": "inbox"
    },
@@ -568,12 +589,6 @@
     "trigger": "friction",
     "fired": 7,
     "precision": 0.0,
-    "route": "inbox"
-   },
-   {
-    "trigger": "spar",
-    "fired": 5,
-    "precision": null,
     "route": "inbox"
    },
    {
@@ -627,20 +642,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 220,
-    "hit": 0.445,
-    "base_hit": 0.382,
+    "n": 233,
+    "hit": 0.442,
+    "base_hit": 0.378,
     "lead": [
      true,
-     0.003305375576019287,
-     19,
+     0.0020386576652526855,
+     20,
      5
     ],
     "muted": false,
-    "shown_n": 146,
-    "shown_hit": 0.466,
-    "overlap": 0.091,
-    "base_overlap": 0.086
+    "shown_n": 156,
+    "shown_hit": 0.462,
+    "overlap": 0.088,
+    "base_overlap": 0.083
    }
   ],
   "lean": [
@@ -697,6 +712,55 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-13",
+   "text": "Snapshot before a one-way step: failing tests in plugin/tests/test_disk_pressure.py (doctor thresholds with a patched disk reading; tidy lists a merged clean old lane, skips a dirty one, an unmerged o",
+   "later": null,
+   "confidence": 90,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-13",
+   "text": "T-4491 (two lane checks at once by default) is held out of the trains: on 2026-11-12 two concurrent checks under the 8-core cap each ran past their deadline, and T-4528's batches (landed) get the thro",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-13",
+   "text": "Accepted the plugin supply-chain baseline after review: security-guidance 2.0.19 to 2.0.20 from the official marketplace (auto-updated 2026-11-12). The added PostToolUse handler is a PowerShell matche",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "T-4528's builder runs on Sonnet, not the Haiku the routing named: the change is concurrent state in train.py (locks, per-lane results), where a wrong edit stalls every landing",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "T-4189's builder runs on Sonnet, not the Haiku the lane brief routes: the task changes the concerns ledger, the tick and the finish gate together, and its brief is over the size where Haiku lanes land",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "read T-4504: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-12",
+   "text": "read T-4495: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
   {
    "date": "2026-11-12",
    "text": "read T-4439: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
@@ -2049,55 +2113,6 @@
    "text": "standing (T-3054 miss): the merge queue puts the lanes the user is waiting to see first (the live page before internals), and while a merge waits for a quiet window no close or suite starts; the chain",
    "later": null,
    "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "Parked T-3006 at a one-way, ambiguous step: failing tests with a fake model: the state message, the deliberate trigger, the check-before-edit ask, a stateless reply unchanged, the exam arm",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "standing (T-3001): commands handed to the user are a script with set -euo pipefail and a check before every irreversible step, never a paste block that ends in rm; better still, run them yourself (the",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-2904: port.py is kept as a record that stops with a clear message, not rebuilt, since port_css.py is lost and the port was one-time",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "Recommendation: keep the notes as the cold read for these files; the fm*.py aliases point at plugin/lib/sampo, so a session reading them should open the sampo module named in the note; would change if",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-2994: grow UI cards on with --batch 2 toward 6,500 so most of the 3,840 UI cells hold a card (today 660 cells, 17%), writer Haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-2879: rename the plugins inside the existing 'foreman' marketplace with a renames map (foreman\u2192sampo, foreman-ui\u2192sampo-ui, foreman-design\u2192sampo-design); no shims; the marketplace keeps the name 'for",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "Snapshot before a one-way step: probe first: in a scratch CLAUDE_CONFIG_DIR, install foreman@foreman from a local marketplace copy; then try (a) a renames map inside the marketplace, (b) shims with de",
-   "later": null,
-   "confidence": 90,
    "kind": "reversible"
   }
  ],
