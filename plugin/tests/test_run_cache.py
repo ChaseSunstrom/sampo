@@ -587,7 +587,9 @@ class Recorder(unittest.TestCase):
                 self.assertNotIn("*", got)
         self.assertIn("*", self.record("subprocess.run([os.path.abspath('bin/pytool')], cwd='lib')\n"),
                       "its #! python, found on this PATH, isn't this venv's")
-        self.assertIn("*", self.record("subprocess.run(['bwrap', '--ro-bind', '/', '/', sys.executable, '-c', 'pass'])\n"),
+        # the recorder reads the Popen audit event, which fires before the exec: a host with no bwrap (macOS) fails after it
+        self.assertIn("*", self.record("try:\n    subprocess.run(['bwrap', '--ro-bind', '/', '/', sys.executable, '-c', 'pass'])\n"
+                                       "except OSError:\n    pass\n"),
                       "a sandbox hides the record file")
 
     def test_git_on_the_repo_also_keys_on_head_and_tags_other_blind_children_on_files_alone(self):

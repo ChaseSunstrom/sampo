@@ -4382,6 +4382,8 @@ def undo_ok(text):
         words = shlex.split(text.split("Undo:", 1)[1].strip())
     except ValueError:
         return False
+    while words[:2] == ["mkdir", "-p"] and words[3:4] == ["&&"]:  # the folder an outside path's copy is put back into
+        words = words[4:]
     if not words or os.path.basename(words[0]) not in ("cp", "mv", "rsync", "tar", "unzip", "gunzip"):
         return False
     args = [w for w in words[1:] if not w.startswith("-")]
@@ -7613,7 +7615,11 @@ def stdout_log():
         try:
             path = os.readlink(f"/proc/self/fd/{fd}")
         except OSError:
-            continue
+            try:  # macOS has no /proc: the kernel names an open file through fcntl
+                import fcntl
+                path = fcntl.fcntl(fd, fcntl.F_GETPATH, bytes(1024)).split(b"\0", 1)[0].decode()
+            except (OSError, AttributeError, ImportError, ValueError):
+                continue
         if path.startswith("/") and os.path.isfile(path):
             return path
     return None

@@ -359,7 +359,7 @@ class DoorPark(DoorBase):
         self.fm("focus", tid)
         steps = [s.text for s in c.find_brief(self.p, tid).steps()]
         for s in steps:
-            self.assertIn("Undo: cp -a", s)
+            self.assertRegex(s, r"Undo: (mkdir -p \S+ && )?cp -a")  # a folder is made first: BSD cp has no -T
             self.assertTrue(c.undo_ok(s), s)
         self.assertIsNone(self.waits(tid))
         before = sorted(os.path.join(dp, n) for dp, _, fn in os.walk(self.repo) if ".git" not in dp for n in fn)
@@ -381,6 +381,24 @@ class DoorPark(DoorBase):
         after = sorted(os.path.join(dp, n) for dp, _, fn in os.walk(self.repo) if ".git" not in dp for n in fn)
         self.assertEqual(after, before, "nothing of an outside copy lands in the repo")
         self.assertEqual(os.stat(self.tmp).st_mode & 0o7777, tmp_mode, "a parent folder's mode is left alone")
+
+    def test_an_outside_undo_uses_only_the_cp_flags_macos_has(self):
+        # the CI run on macOS: BSD cp has no -T, so the copy that checked the Undo failed and the plan was refused
+        outside = os.path.join(self.tmp, "elsewhere.dat")
+        folder = os.path.join(self.tmp, "elsewhere.d")
+        os.makedirs(folder)
+        for path in (outside, os.path.join(folder, "a.txt")):
+            with open(path, "w") as f:
+                f.write("x")
+        tid = self.brief(f"delete {outside}", f"delete {folder}")
+        self.fm("focus", tid)
+        for s in (x.text for x in c.find_brief(self.p, tid).steps()):
+            undo = s.split("Undo: ", 1)[1]
+            self.assertTrue(c.undo_ok(s), s)
+            for part in undo.split(" && "):
+                flags = [w for w in part.split() if w.startswith("-") and w != "--"]
+                self.assertEqual(flags, ["-a"] if part.startswith("cp") else ["-p"], part)
+        subprocess.run(c.find_brief(self.p, tid).steps()[1].text.split("Undo: ", 1)[1], shell=True, check=True)
 
     def test_an_outside_still_refused_path_says_why(self):  # T-4377: what a copy can't cover parks as before
         big = os.path.join(self.tmp, "big.dat")

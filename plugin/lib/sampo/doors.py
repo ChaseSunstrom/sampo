@@ -312,7 +312,8 @@ def _snapshot(p, tid, key, toks):
             json.dump({"digests": {**{rel: _digest(os.path.join(rroot, rel)) for rel in rels},
                                    **{o: _digest(o) for o in outs}}}, f)
         undo = [f"cp -a {shlex.quote(snap + '/.')} {shlex.quote(rroot + '/')}"] if rels else []
-        undo += [f"cp -aT {shlex.quote(dst)} {shlex.quote(src)}" for src, dst in kept]
+        for src, dst in kept:
+            undo += [shlex.join(a) for a in _put_back(dst, src)]
         where = snap if not outs else f"{snap}.out" if not rels else f"{snap} and {snap}.out"
         return " && ".join(undo), \
             f"{', '.join(toks)}: {total} bytes in {count} entries copied to {where} and restored into a temp folder with matching hashes"
@@ -321,13 +322,23 @@ def _snapshot(p, tid, key, toks):
         return None, f"no snapshot ({type(e).__name__})"
 
 
+def _put_back(kept, place):
+    """The commands (argv lists) that put the copy `kept` back at `place` as itself: a folder's contents into the folder
+    (made first, `kept/.` never nests it into itself), anything else as one `cp -a`. No cp -T: BSD cp (macOS) has none."""
+    if os.path.isdir(kept) and not os.path.islink(kept):
+        return [["mkdir", "-p", place], ["cp", "-a", kept + "/.", place]]
+    return [["cp", "-a", kept, place]]
+
+
 def _back(src, dst):
-    """T-4377: the exact copy an outside path's Undo runs (cp -aT), made into a temp folder, gives back what the live
+    """T-4377: the exact copy an outside path's Undo runs (_put_back), made into a temp folder, gives back what the live
     path holds now, by hash."""
     with tempfile.TemporaryDirectory() as tmp:
         again = os.path.join(tmp, "x")
-        r = subprocess.run(["cp", "-aT", "--", dst, again], capture_output=True, timeout=120)
-        return r.returncode == 0 and os.path.lexists(again) and _digest(again) == _digest(src)
+        for a in _put_back(dst, again):
+            if subprocess.run(a, capture_output=True, timeout=120).returncode:
+                return False
+        return os.path.lexists(again) and _digest(again) == _digest(src)
 
 
 def drift(p, tid, n):

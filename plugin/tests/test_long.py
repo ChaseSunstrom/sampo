@@ -878,8 +878,10 @@ class DoorFault(Long):
             self.assertIn("--json", x["argv"])
             self.assertEqual(x["argv"][x["argv"].index("--model") + 1], "local-7b")
             self.assertIn("--deadline", x["argv"])
-            self.assertTrue(x["seed"] and x["home"].startswith(x["seed"]) and x["cwd"].startswith(x["seed"]))  # its own Smith home
-            self.assertFalse(x["cwd"].startswith(self.fmlong._root(self.p)))  # a temp copy, never the goal's own repo
+            # its own Smith home; a process reports its cwd by realpath (macOS: /var is /private/var), the seed as it was made
+            self.assertTrue(x["seed"] and x["home"].startswith(x["seed"])
+                            and os.path.realpath(x["cwd"]).startswith(os.path.realpath(x["seed"])))
+            self.assertFalse(os.path.realpath(x["cwd"]).startswith(os.path.realpath(self.fmlong._root(self.p))))  # a temp copy, never the goal's own repo
             self.assertIn("Add f", x["req"])
         w = self.fmlong._work(self.p, self.run_id, "smith", "T-1001")
         self.assertIn("def f1", open(os.path.join(w, "app.py")).read())

@@ -41,6 +41,15 @@ if cmd == "exec":
     n, argv = rest[0], rest[1:]
     os.makedirs(fs(n) + wd, exist_ok=True)
     os.chdir(fs(n) + wd)
+    if argv[0] == "timeout":  # the container's GNU timeout (macOS has none): `timeout -k KILL_AFTER SECONDS cmd...`
+        i = 1
+        while argv[i] == "-k": i += 2
+        secs, argv = float(argv[i]), argv[i + 1:]
+        p = subprocess.Popen([argv[0]] + [mapp(x, n) for x in argv[1:]], start_new_session=True)
+        try:
+            sys.exit(p.wait(timeout=secs))
+        except subprocess.TimeoutExpired:
+            os.killpg(p.pid, 9); p.wait(); sys.exit(124)
     os.execvp(argv[0], [argv[0]] + [mapp(x, n) for x in argv[1:]])
 if cmd == "cp":
     src, dst = a[1], a[2]
