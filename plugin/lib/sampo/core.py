@@ -5652,6 +5652,10 @@ def next_for(p, briefs=None, checks=True, concerns=None):
         done, recovery = finished_lanes(p, briefs), ""
     if done:
         merge = f"builder lane(s) finished, their work waits on a merge: {merge_hint(done)} (review the branch first)"
+        busy = active_brief_fast(p)  # T-4526: a land refuses beside an active main task, so that task holds every lane
+        if busy:
+            merge = (f"{busy.id} is active in the main checkout and holds the land of {len(done)} finished lane(s) waiting "
+                     f"on a merge: finish {busy.id}, or sampo task set {busy.id} status=planned, then sampo lane land")
         try:
             from sampo import train as strain
             if strain.landing(p):  # a land under way takes these: a second `sampo lane land` would race it

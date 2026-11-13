@@ -1290,6 +1290,17 @@ def _first_state(b, tid, why, landed):
             "still building)")
 
 
+def _note_refusal(p, why):
+    """T-4526: a refused land's reason as one stamped line of the state's land.log. A detached land's stderr is that log
+    already (its refusal is printed there), so it adds nothing. 2026-11-12: a refusal for an active task went unread for
+    2 h because nothing wrote it down where the land's output went."""
+    if isinstance(sys.stderr, _Stamped):
+        return
+    with contextlib.suppress(OSError):
+        with open(os.path.join(p.dir, "land.log"), "a", encoding="utf-8") as f:
+            f.write(f"{_hms()} refused: {why}\n")
+
+
 def land(p, main, batch=None):
     """T-3500: every finished lane waiting on a merge (lanes.awaiting_merge) through `train`, `batch` at a time (one
     that conflicts with the branch is parked before any criteria or gate run); each landed lane is removed and its task
@@ -1298,8 +1309,10 @@ def land(p, main, batch=None):
     a task already holding the publish grant ships after. One land at a time, never beside an active main task."""
     busy = c.active_brief_fast(p)
     if busy:
-        raise c.PolicyError(f"{busy.id} is active in the main checkout, where sampo lane land focuses each lane's task to "
-                            f"close it: finish {busy.id} (or sampo task set {busy.id} status=planned), then land")
+        why = (f"{busy.id} is active in the main checkout, where sampo lane land focuses each lane's task to "
+               f"close it: finish {busy.id} (or sampo task set {busy.id} status=planned), then land")
+        _note_refusal(p, why)
+        raise c.PolicyError(why)
     with contextlib.ExitStack() as held:
         try:
             held.enter_context(c.lock(os.path.join(p.dir, "land"), timeout=1))
