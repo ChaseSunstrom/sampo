@@ -7540,6 +7540,58 @@ def resume_info(p):
             "execution_prompt": b.section("Execution prompt").strip(), "path": b.path, "stale": stale_refs(p, b)}
 
 
+def stdout_log():
+    """T-4514: the regular file this process's stdout (else stderr) is written to (a background task's output file), else
+    None: a terminal or a pipe has no log to point at."""
+    for fd in (1, 2):
+        try:
+            path = os.readlink(f"/proc/self/fd/{fd}")
+        except OSError:
+            continue
+        if path.startswith("/") and os.path.isfile(path):
+            return path
+    return None
+
+
+@_contextmanager
+def check_claim(p, kind, log=None):
+    """T-4514: one sampo check of a kind ("full", "affected") on a tree at a time. A flock on a file beside the project's
+    state (never a process-list pattern, and a dead holder's lock dies with it, so a stale file holds nothing); the
+    holder writes its pid and log path there. A second run raises PolicyError naming them. The log is `log`, else
+    SAMPO_CHECK_LOG (the accept check's own), else this process's stdout file. A claim that can't be made at all
+    (a read-only state folder) runs the check unclaimed."""
+    folder = os.path.join(p.dir, "check-claims")
+    key = hashlib.sha1(os.path.realpath(p.root).encode()).hexdigest()[:12]
+    try:
+        os.makedirs(folder, exist_ok=True)
+        fd = os.open(os.path.join(folder, f"{key}-{kind}.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    except OSError:
+        yield
+        return
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            who = {}
+            for _ in range(20):  # the holder writes its line a moment after it takes the lock
+                with contextlib.suppress(OSError, ValueError):
+                    who = json.loads(os.pread(fd, 4096, 0).decode("utf-8", "replace"))
+                if isinstance(who, dict) and who.get("pid"):
+                    break
+                time.sleep(0.05)
+            who = who if isinstance(who, dict) else {}
+            where = f"its output is in {who['log']}" if who.get("log") else "its output goes to a terminal or pipe, not a file"
+            what = "sampo check --affected" if kind == "affected" else "the full sampo check"
+            raise PolicyError(f"{what} is already running on this tree (pid {who.get('pid', '?')}, started "
+                              f"{who.get('at', '?')}); {where}: wait for it rather than start a second one")
+        os.ftruncate(fd, 0)
+        os.pwrite(fd, json.dumps({"pid": os.getpid(), "kind": kind, "at": now(), "root": p.root,
+                                  "log": log or os.environ.get("FOREMAN_CHECK_LOG") or stdout_log()}).encode(), 0)
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the flock; the file stays (an unlink would race a taker)
+
+
 @_contextmanager
 def gate_lock(label, say=None, timeout=None):
     """T-1668: one machine-wide gate lock (flock, state/gate.lock): release checks, the canary and full fm check runs

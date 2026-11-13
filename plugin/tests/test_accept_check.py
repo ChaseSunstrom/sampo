@@ -519,10 +519,12 @@ class Review(AcceptCase):
             self.accept(tid, no_check=True)
         self.assertIn("sampo check --affected --hold --evidence " + tid, str(e.exception))
 
-    def test_the_builder_brief_tells_the_builder_to_hold_the_classes(self):  # no_check
+    def test_the_builder_brief_leaves_the_accept_check_to_the_main_thread(self):  # no_check
+        # T-4514: the builder no longer runs the wide check (it doubled a 30 to 50 minute run); accept starts it
         with open(os.path.join(c.PLUGIN_ROOT, "agents", "fm-builder.md"), encoding="utf-8") as f:
             text = f.read()
-        self.assertIn("sampo check --affected --hold --evidence <ID>", text)
+        self.assertIn("Never run `sampo check --affected` or the full `sampo check`", text)
+        self.assertIn("sampo lane accept", text)
 
     # -- 6: the small ends
     def test_a_check_whose_tip_moved_clears_every_check_key(self):  # tip_moved

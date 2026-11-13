@@ -5440,6 +5440,14 @@ def cmd_check(args):
         finally:
             os.environ["PATH"] = old
             shutil.rmtree(shim, ignore_errors=True)
+    if args.action == "run" and not getattr(args, "repeat", 0):  # T-4514: one wide check of a kind a tree
+        # (a builder's own wide check is refused earlier, by the PreToolUse hook: hooks._builder_check_deny)
+        with c.check_claim(resolve(args), "affected" if getattr(args, "affected", False) else "full"):
+            return _gated_check(args)
+    return _gated_check(args)
+
+
+def _gated_check(args):
     # T-1668: full runs queue on the machine-wide gate lock; T-1743: --affected runs (each builder's own) don't
     if args.action == "run" and not getattr(args, "repeat", 0) and not getattr(args, "affected", False):
         try:  # T-1753: a hung run elsewhere (another project's) mustn't hold every check for hours

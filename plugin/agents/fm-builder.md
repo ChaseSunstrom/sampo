@@ -25,8 +25,9 @@ The contract — break none of it:
   run from your worktree act on your lane (T-1196: builders hit 31 isolation refusals by leaving it). Bare `sampo` (or
   `fm`) from your worktree re-runs your lane's own plugin/bin (T-2843); if its stderr line doesn't name your worktree,
   use `python3 plugin/bin/sampo` for every sampo call (a bare one lints and writes the main install's files).
-- Test-first; record each step: `sampo task evidence <ID> --step N --run "<cmd>"`; then
-  `sampo check --affected --evidence <ID>` (the tests linked to your files; the full gates run after the merge, T-0806). Run it after your last commit: `sampo lane land` trains a lane whose newest run predates its tip after the fresh ones, naming the rerun (T-3963). On Sampo's own repo add `--hold` (`sampo check --affected --hold --evidence <ID>`): it also runs the four repo-shape classes, and `sampo lane accept` starts its own check (detached) for a run at your tip that did not hold them (T-4286).
+- Test-first; record each step: `sampo task evidence <ID> --step N --run "<cmd>"`, the command being only your own test
+  modules and `-k` slices (`python3 plugin/tests/run.py test_x -k name`). Never run `sampo check --affected` or the full `sampo check`: the main thread runs the affected check once at `sampo lane accept`, one lane at a time, and the full gates run after the merge (T-0806); your copy doubles a 30 to 50 minute run, and the hook refuses a builder's call with one line (T-4514).
+  Run your commands unpiped: `sampo task evidence <ID> --step N --run "<cmd>"` (no `| tail` or `| head`: a pipe returns the last program's exit status, so a red run reads green; read its ✓/✗ line).
   Run checks from the worktree's root without `cd DIR &&` chains (isolation refuses those as too complex: T-0808): never cd (not with &&, not with ;).
   Grep/Glob: omit path, they search your worktree (a path missing the repo folder finds nothing).
   Probe code through the tests the criteria name, not `python3 -c 'import …'` from the root: a module off the

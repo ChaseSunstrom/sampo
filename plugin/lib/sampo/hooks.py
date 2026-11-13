@@ -2709,7 +2709,7 @@ def _pre_tool_use(raw):
             return 2
     try:
         _record_asks(pl, p, guard)
-        decision = _ask_prompt(pl, p, guard) or (_taint_check(pl, p) if tool == "Bash" else None) or _gate_pipe_deny(pl) or _wait_loop(pl) or _rm_var(pl) or _self_match(pl) or _stdin_hang(pl)
+        decision = _ask_prompt(pl, p, guard) or (_taint_check(pl, p) if tool == "Bash" else None) or _gate_pipe_deny(pl) or _builder_check_deny(pl, guard) or _wait_loop(pl) or _rm_var(pl) or _self_match(pl) or _stdin_hang(pl)
     except Exception:
         log_error("PreToolUse", _tb())
         decision = None
@@ -3022,6 +3022,33 @@ def _gate_pipe_deny(pl):
         return None
     return ("deny", "Sampo: a piped gate's exit status is the last program's, so a red gate reads green: drop the pipe "
                     "(its summary is short) or start with set -o pipefail; (then read its ✓/✗ line).")
+
+
+_CHECK_SETUP = {"add", "rm", "list", "paths", "affected", "ambient", "onwrite", "playbooks", "office"}
+
+
+def _builder_check_deny(pl, fmguard):
+    """T-4514: a builder agent's own wide check (sampo check --affected, the full sampo check) doubled a 30 to 50 minute
+    run (three builders, 2026-11-12): the main thread runs the affected one at sampo lane accept, one lane at a time.
+    The signal is the hook payload's: only a subagent's own calls carry an agent_id, and its agent_type says it is a
+    builder. The CLI can't tell: the train's accept check, the main thread's hand runs, a headless run and every lane
+    fixture in the tests run it in a lane too, with no agent_id (nor does a PreToolUse payload exist for them)."""
+    if pl.get("tool_name") != "Bash" or not pl.get("agent_id") or pl.get("agent_type") not in c.ns_names("fm-builder"):
+        return None
+    for args in fmguard.fm_calls((pl.get("tool_input") or {}).get("command") or ""):
+        if args[:1] == ["quiet"]:  # sampo quiet [--] sampo check …
+            rest = [a for a in args[1:] if a != "--"]
+            args = rest[1:] if rest[:1] and os.path.basename(rest[0]) in fmguard.FM_PROGRAMS else []
+        verb, rest = fmguard._fm_subcommand(args)
+        if verb != "check" or "-h" in rest or "--help" in rest:
+            continue
+        word = next((a for a in rest if not a.startswith("-")), "")
+        if word in _CHECK_SETUP:  # the verbs that set gates up or list them run none
+            continue
+        return ("deny", "Sampo: never run sampo check --affected or the full sampo check in a builder lane: the main "
+                        "thread runs the affected check once at sampo lane accept, one lane at a time; run your own "
+                        "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514).")
+    return None
 
 
 def _bus_note(pl):

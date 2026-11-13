@@ -2119,7 +2119,12 @@ def _run_check(argv, cwd):
     SAMPO_LANE_CHILD set, so the trunk's sampo checks the lane's tree itself (py.lane_reexec would hand over to the
     lane's own copy, which may not know --hold or may carry a check bug the trunk has fixed); the tests it runs are
     the lane's either way."""
-    proc = subprocess.Popen(argv, cwd=cwd, env={**_scrub_env(os.environ), "SAMPO_LANE_CHILD": "1"},
+    # T-4514: SAMPO_CHECK_LOG is the file this process writes to, which a second check of the kind is told to read
+    log = c.stdout_log()
+    env = {**_scrub_env(os.environ), "SAMPO_LANE_CHILD": "1"}
+    if log:
+        env["SAMPO_CHECK_LOG"] = log
+    proc = subprocess.Popen(argv, cwd=cwd, env=env,
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True)
     def stopped(signum, frame):  # sampo lane rm (stop_check): everything the check started ends with this process
