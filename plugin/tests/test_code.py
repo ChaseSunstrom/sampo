@@ -495,7 +495,11 @@ class MissNote(CodeCase):
         misses = [e for e in core.ledger_events(p, ("capability_miss",))
                   if (e.get("data") or {}).get("name") == "nosuchtool-q7"]
         self.assertEqual([e["task"] for e in misses], [self.task()["id"]])
-        self.assertNotEqual(self.task()["status"], "done", r.stdout)  # fm task finish refuses past an open miss
+        # T-4593: a tool no verify and no keep check invokes was tried and dropped: it no longer holds the close, and the
+        # reply names it (test_smith_tool_detour: a miss a verify invokes still blocks)
+        self.assertEqual(self.task()["status"], "done", r.stdout)
+        self.assertIn("tried and not needed: nosuchtool-q7", r.stdout)
+        self.assertIn("is not installed here", f.said(2))
 
 
 class SelfRunningNote(CodeCase):  # T-2364: fm code shows what runs by itself, as fm state does

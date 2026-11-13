@@ -9,6 +9,8 @@ that happens to exist. Everything is read from the task's own ledger and brief, 
     present now, and never for a no-op command (touch, mkdir, true, :, test, [),
   - `tool_proved` (data name: a tool built and proved from runs),
   - `grant_queued` (data name, optional step: a grant asked for) plus a later passing [ran] run of that step.
+  - T-4593: fm code's close logs `miss_resolved` itself (with a why) for a miss no criterion's verify and no keep check
+    invokes, a tool the run tried and dropped; a miss a verify invokes is never set aside.
 A run counts only when strictly later than the miss (timestamps are whole seconds). The way out short of resolving is
 fm task block with the diagnosis. No miss logged on the task: nothing here runs."""
 import importlib.util
@@ -142,6 +144,38 @@ def safe_gaps(p, b):
         except OSError:
             pass
         return []
+
+
+def absent(root, err):
+    """T-4593: the tool a failed command's output says is not here (the hook's own reading of it, a project's own module
+    aside), or ''. The name is untrusted text: a plain tool name or nothing."""
+    from sampo import hooks
+    m = hooks._MISSING.search(str(err or "")[-4000:])
+    name = next((x for x in m.groups() if x), "") if m else ""
+    if not re.fullmatch(r"[A-Za-z0-9_.+-]{1,64}", name):
+        return ""
+    return "" if m.lastindex == 3 and own_module(root, name) else name
+
+
+def invoked(name, *texts):
+    """T-4593: whether any of these command texts names the tool as a whole word (a longer word or a hyphenated one is
+    another word). Text only: the conservative reading, so a doubtful one keeps the miss open."""
+    pat = r"(?<![\w.+-])" + re.escape(name) + r"(?![\w+-])"
+    return any(re.search(pat, t or "") for t in texts)
+
+
+def set_aside(p, b, sid, texts, why):
+    """T-4593: fm code's close sets aside the open misses whose tool none of these commands (the criteria's verifies,
+    the keep check) invokes: a tool the run tried and went on without needs nothing resolved. Logged as `miss_resolved`
+    with the reason, the gate's own record, so the audit trail shows it. The names set aside, once each."""
+    names = []
+    for m in open_misses(p, b):
+        if invoked(m["name"], *texts):
+            continue
+        c.log_event(p, "miss_resolved", task=b.id, session=sid, data={"name": m["name"], "key": m["key"], "why": why})
+        if m["name"] not in names:
+            names.append(m["name"])
+    return names
 
 
 def lead(p, b):

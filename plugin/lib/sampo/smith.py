@@ -2457,8 +2457,23 @@ class Run:
             self.after("Bash", {"command": cmd}, {"stdout": out, "stderr": "", "interrupted": False})
         else:  # T-2378: a failure is Claude Code's failure event, as it would be in a session
             note = self.failed("Bash", {"command": cmd}, out if code is not None else f"timed out after {RUN_TIMEOUT} s\n{out}")
+            note = " ".join(x for x in (self.tool_gone(out if code is not None else ""), note) if x)
         return (f"timed out after {RUN_TIMEOUT} s" if code is None else f"exit {code}") + (f"\n{out}" if out else "") \
             + (f"\n{note}" if note else "")
+
+    def tool_gone(self, out):
+        """T-4593: a command that failed for want of a tool says so in plain words, with the project's own test command
+        when the run knows one: a run installs nothing, so the worker goes on with what is here and stops retrying."""
+        from sampo import miss as smiss
+        try:
+            name = smiss.absent(self.root, out)
+        except (ImportError, OSError, ValueError):
+            return ""
+        if not name:
+            return ""
+        return (f"`{core.fit(core.plain(name), 64)}` is not installed here, and this run installs nothing: do not retry "
+                f"it or look for it" + (f"; the project's own test command is `{self.keep_cmd}`, use that."
+                                        if self.keep_cmd else "; use what the project already has."))
 
     # -- stack cards (T-4443): the library's cards, offered as names and one-line summaries, opened by the model's own pick
     def lib_state(self):
@@ -8088,6 +8103,23 @@ def _who(run, profile):
     return profile["name"] if profile else f"worker {run.worker}"
 
 
+def _tool_detours(run):
+    """T-4593: the tools this run tried and went on without: finish refuses on a capability miss, and a miss no
+    criterion's verify (or the check script it calls) and no keep check invokes is not unfinished work. Set aside through
+    the gate's own record, with the reason; the names, or [] (a reader that breaks leaves the miss to the gate)."""
+    from sampo import miss as smiss
+    try:
+        p = core.find_project(run.root)
+        b = p and core.find_brief(p, run.tid)
+        if not b:
+            return []
+        texts = [x for cr in run.plan["criteria"] for x in (cr["verify"], script_body(cr["verify"]))] + [run.keep_cmd]
+        return smiss.set_aside(p, b, f"fm-code-{run.tid}", texts,
+                               "fm code: no criterion's verify and no keep check invokes it: the run tried it and went on")
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+
+
 def _finish(run, profile):
     pl = run.plan
     run.leave_out_built()  # T-4387: what a close-time command built (a fix round's verify) stays out of the commit too
@@ -8126,6 +8158,7 @@ def _finish(run, profile):
             a[3] += "; adversary lens: this run's own model, shown the diff, not an independent review"
     if not run.no_commit:
         a += ["--commit", f"{pl['title']} ({run.tid})"]
+    aside = _tool_detours(run)
     code, out = run.fm(*a)
     if code:
         raise Blocked(f"fm code: fm task finish refused: {_one_line(out, 400)}")
@@ -8143,7 +8176,9 @@ def _finish(run, profile):
             f"(tokens: {run.tokens[0]} in, {run.tokens[1]} out"
             f"{f', ${run.usd:.2f}' if run.usd is not None else ''})"
             + (f"\n{lines[at] if at is not None else 'Not verified:'}\n" + "\n".join(unproven) if unproven else "")
-            + "".join(f"\n{x}" for x in asked))
+            + "".join(f"\n{x}" for x in asked)
+            + (f"\ntried and not needed: {', '.join(core.fit(core.plain(x), 64) for x in aside)} (not installed here; no "
+               "criterion's verify and no keep check uses it)" if aside else ""))
     kw = dict(task=run.tid, tokens=run.tokens, unproven=[x.strip().removeprefix("- ") for x in unproven] + asked,
               usd=None if run.usd is None else round(run.usd, 4), **({"first_in": first} if first else {}))
     if run.looking:  # T-4295: held; the closing look emits it, with its rounds, when it is done
