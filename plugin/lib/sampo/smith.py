@@ -421,6 +421,32 @@ def next_step(e, tid):
 
 # ---------------------------------------------------------------- slots
 
+MAX_STEPS = 30  # T-4506: a plan takes up to this many one-line steps; the harness repairs more (fit_steps)
+
+
+def fit_steps(v):
+    """T-4506: a plan the planner wrote with more than MAX_STEPS steps, or with a multi-line step, is repaired by the
+    harness instead of refused (cascade5f's file service plan was refused twice and the run ended before step 1): each
+    multi-line step is joined to one line, and the steps past the limit are folded into the last one with '; '. Returns
+    (the plan, a note saying what changed), or (v, None) when nothing needed repair. A non-text step is left for
+    check_plan to refuse, as before, and a list past the limit with one in it is not folded."""
+    steps = v.get("steps") if isinstance(v, dict) else None
+    if not isinstance(steps, list):
+        return v, None
+    multi = sum(1 for s in steps if isinstance(s, str) and "\n" in s)
+    joined = [" ".join(p.strip() for p in s.splitlines() if p.strip()) if isinstance(s, str) else s for s in steps]
+    folded = 0
+    if len(joined) > MAX_STEPS and all(isinstance(s, str) for s in joined):
+        folded = len(joined) - MAX_STEPS
+        joined = joined[:MAX_STEPS - 1] + ["; ".join(joined[MAX_STEPS - 1:])]
+    if not multi and not folded:
+        return v, None
+    parts = ([f"{multi} multi-line step{'s' if multi != 1 else ''} joined to one line"] if multi else []) + (
+        [f"{folded} step{'s' if folded != 1 else ''} past {MAX_STEPS} folded into step {MAX_STEPS}"] if folded else [])
+    return dict(v, steps=joined), (f"the plan's steps were repaired by the harness ({'; '.join(parts)}); "
+                                   f"the run goes on with the plan as repaired")
+
+
 def check_plan(v, change=None):
     """None when v is a usable plan, else what's wrong with it (quoted back to the model). T-3688: given `change`, the
     request's word asking for one (small-model mode), an answer, a RESEARCH plan and a verify that can't fail are
@@ -451,9 +477,9 @@ def check_plan(v, change=None):
                          "pipes into tail or head), so it proves nothing: give a check that fails now and passes once "
                          "the fix is made", i)
     steps = v.get("steps")
-    if not isinstance(steps, list) or not 1 <= len(steps) <= 12 or \
+    if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_STEPS or \
             not all(isinstance(s, str) and s.strip() and "\n" not in s for s in steps):
-        return "steps must be a list of 1 to 12 one-line texts"
+        return f"steps must be a list of 1 to {MAX_STEPS} one-line texts"
     if title.lstrip().startswith("-"):
         return "title must not start with '-'"
     return _m_gaps(v) if v["tier"] == "M" else None
@@ -817,8 +843,13 @@ def slot(run, profile, messages, check, what, fields=()):
         if v is None and r["tool_calls"]:
             v = r["tool_calls"][0]["args"]
         messages.append({"role": "assistant", "content": r["text"]})
+        note = None
+        if what == "plan":  # T-4506: the harness repairs a plan's steps (fit_steps) before the check judges them
+            v, note = fit_steps(v)
         err = check(v)
         if not err:
+            if note:
+                run.emit("note", note)
             return v
         messages.append({"role": "user", "content": f"That is not a valid {what}: {err}. Reply with only the "
                                                     "corrected JSON object."})
@@ -836,10 +867,15 @@ def slot(run, profile, messages, check, what, fields=()):
             r = _ask(run, profile, messages, what)
             messages.append({"role": "assistant", "content": r["text"]})
             v[key] = parse(_unlabel(r["text"], key))
+        note = None
+        if what == "plan":  # T-4506: as in the loop above
+            v, note = fit_steps(v)
         why = check(v)
         if why and what == "plan" and _form_only(v, check):  # T-4282
             v, why = _form_rescue(run, profile, messages, check, v), None
         if not why:
+            if note:
+                run.emit("note", note)
             run.emit("note", f"the {what} came field by field, after {REPAIRS} failed JSON repairs")
             return v
         err = f"{err}; field by field: {why}"

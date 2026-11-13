@@ -445,6 +445,38 @@ class PlanReadings(CodeCase):
         self.assertEqual(self.task()["status"], "done", r.stdout)
 
 
+class LongPlan(CodeCase):  # T-4506: a planner's plan of 13 to 30 one-line steps is taken as it is; more, or a multi-line step, is repaired
+    def test_long_plan_13_to_30_one_line_steps_are_taken_as_they_are(self):
+        from sampo import smith
+        for n in (13, 30):
+            with self.subTest(steps=n):
+                self.assertIsNone(smith.check_plan(dict(PLAN, steps=[f"step {i}" for i in range(1, n + 1)])))
+        self.assertIn("1 to 30", smith.check_plan(dict(PLAN, steps=[f"step {i}" for i in range(31)])) or "")
+        f = self.serve("openai", plan(dict(PLAN, steps=[f"step {i}" for i in range(1, 21)])))
+        r = self.code("fix add", "--model", "fake", "--dry-plan")
+        self.assertIn("Make calc.add add", r.stdout)
+        self.assertEqual(len(f.seen), 1, "no repair was asked for a plan the check takes")
+        self.assertNotIn("folded", r.stdout + r.stderr)
+
+    def test_long_plan_more_than_30_steps_or_a_multi_line_step_is_repaired_and_the_run_goes_on(self):
+        from sampo import smith
+        steps = [f"step {i}" for i in range(1, 46)]
+        steps[2] = "step 3\nits second line"
+        fixed, note = smith.fit_steps(dict(PLAN, steps=steps))
+        self.assertEqual(len(fixed["steps"]), smith.MAX_STEPS)
+        self.assertEqual(fixed["steps"][2], "step 3 its second line")
+        self.assertTrue(fixed["steps"][-1].startswith("step 30; step 31; "), fixed["steps"][-1])
+        self.assertTrue(fixed["steps"][-1].endswith("; step 45"))
+        self.assertIsNone(smith.check_plan(fixed))
+        self.assertIn("folded", note)
+        self.assertIsNone(smith.fit_steps(dict(PLAN, steps=["a", "b"]))[1], "a plan that needs no repair gets no note")
+        f = self.serve("openai", plan(dict(PLAN, steps=steps)))
+        r = self.code("fix add", "--model", "fake", "--dry-plan")
+        self.assertIn("Make calc.add add", r.stdout)
+        self.assertEqual(len(f.seen), 1, "the harness repaired the plan: it did not ask the model again")
+        self.assertIn("folded", r.stdout + r.stderr)
+
+
 class MissNote(CodeCase):
     """T-2378 (#5 in fm code): a shell run that fails on a missing tool goes through Claude Code's own failure hook, so
     the model reads the same miss note and the task can't finish past the miss."""
