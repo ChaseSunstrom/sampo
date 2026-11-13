@@ -500,6 +500,10 @@ def tick(p, limit=None):
     from sampo import concerns as cn, cost, models, moonscale
     out = {"read": 0, "unread": 0, "left": 0, "model": None}
     os.makedirs(p.dir, exist_ok=True)
+    try:
+        cn.note_plans(p)  # T-4524: the plans the open concerns name, for the drive's hook path; no model
+    except Exception:  # a bad plan file never holds the steer meter's read
+        pass
     fd = os.open(os.path.join(p.dir, "steers.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:

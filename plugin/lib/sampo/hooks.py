@@ -4608,6 +4608,7 @@ def _stop(pl):
             _evidence_gate(p, act, pl, g, closed) or _clauses_gate(p, pl, g, closed) or _safe_goal_gate(p, pl, g, sid, closed)
             or _claims_gate(pl, g) or _paste_gate(pl, g)
             or _proof_claim_gate(p, act, pl, g)
+            or _offer_gate(p, pl, g, sd.get("autonomy") == "full")
             or _question_nudge(pl, p)
             or _headless_wait(pl))
         reason = nudge or (None if oneoff or "drive" in c.ablated() else _drive(p, sd, briefs, pl, g, save))  # T-1375
@@ -4692,6 +4693,25 @@ def _push_nudge(sid, sd, drained):
     return (f"Sampo: the user may be away from the terminal. Send one PushNotification (status proactive, one line "
             f"under 200 characters) that leads with what they'd act on, like \"{lead}: <the one thing>\", then end "
             f"the turn.")
+
+
+def _offer_gate(p, pl, g, full):
+    """T-4524: under full autonomy a final reply (no hook continuation) is refused once per part while a plan document
+    has a part no done task names: the part is the drive's next action (queue it), so the stop isn't the user's. Keyed
+    on the session, the document and the part's label, never on the reply's words; the plan is read live, no model."""
+    if not full or pl.get("stop_hook_active"):
+        return None
+    from sampo import concerns as cn
+    nxt = cn.plan_next(p)
+    if not nxt:
+        return None
+    key = f"{pl.get('session_id')}:o:{nxt['doc']}:{nxt['label']}"
+    if key in g.setdefault("claims", []):
+        return None
+    g["claims"] = (g["claims"] + [key])[-50:]
+    return (f"Sampo: {nxt['doc']} has parts left ({c.fit(nxt['part'], 60)}) and nothing is queued for them. Under full "
+            "autonomy the next part is yours to start, not the user's to ask for: queue it now (sampo big or sampo "
+            "intake from the plan), then work it.")
 
 
 def _question_nudge(pl, p):
@@ -5244,6 +5264,11 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         # T-0417: in full autonomy a drained queue is when to look at the product as its user does, once per drain
         d.update(drained=len(briefs), count=d.get("count", 0) + 1, marks=_marks(p))
         _event({"kind": "drive_drained", "session_id": sid, "project": p.slug})  # project: fm explain (T-0464)
+        from sampo import concerns as cn  # T-4524: an open request's plan with a part no done task names is the next action
+        nxt = cn.plan_next(p, briefs)
+        if nxt:
+            return _line(f"Sampo drive: the queue is empty: queue the next part of {nxt['doc']} "
+                         f"({c.fit(nxt['part'], 60)}) with sampo big or sampo intake, then work it")
         return _line("Sampo drive: the queue is empty: "
                      + ("sampo smoke, then " if (c.read_meta(p).get("smoke") or {}).get("web") else "")
                      + "use the product as its user does, sampo capture --source self each gap, then work the first",

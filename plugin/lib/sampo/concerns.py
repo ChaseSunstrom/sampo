@@ -28,6 +28,10 @@ CHUNK = 256 * 1024  # the ledger is read backwards in pieces of this size, until
 HELD_N = 40        # the open concerns a message may be said to repeat: the newest this many
 PROOF_S = 120      # a num proof's command gets this long
 URL_S = 10         # a url proof gets this long to answer
+PLANS = "plans.json"  # T-4524: the open concerns' plan documents, written by note_plans (no model) for the drive's hook path
+PLAN_RE = re.compile(r"(?<![\w/.-])((?:[\w-]+/)*[\w-][\w.-]*\.md)(?![\w/-])")  # a path the user names: PLAN.md, docs/p.md
+PHASE_RE = re.compile(r"^#{1,6}[ \t]*Phase[ \t]+(\d+[a-z]?)\b[ \t:.\-]*(.*)$", re.M | re.I)  # '## Phase 2: the page'
+PLAN_MAX = 200 * 1024  # a plan document is read this far, at most, on the hook path
 TEXT_N = 400       # an answer or a proof is kept to this many characters
 PROOF_HELP = ("a proof is git:<ref> (a commit on a remote-tracking branch), url:<address> (it answers), path:<file> "
               "(it exists) or num:<value> via <command> (the command exits 0 and prints the value)")
@@ -223,10 +227,77 @@ def fold(p, briefs=None):
             proof, checked = e.get("proof"), e.get("checked")
             if last["at"] > e["ts"]:  # said again after the proof or the answer: it is open again
                 state, reopened = "open", True
+        docs = sorted({d for i in members for d in _plan_names(rows[i].get("text"))})  # T-4524: the user's words
         out.append({"id": cid, "text": first["concern"], "surface": last.get("surface"), "opened": first["at"],
                     "last_said": last["at"], "said": len(members), "tasks": sorted(tasks), "state": state,
-                    "reopened": reopened, "proof": proof, "checked": checked})
+                    "reopened": reopened, "proof": proof, "checked": checked, "named": docs})
     return out
+
+
+def _plan_names(text):
+    """The relative paths of the .md documents a message names (no absolute path, no '..' out of the repo)."""
+    out = []
+    for m in PLAN_RE.finditer(text or ""):
+        d = os.path.normpath(m.group(1))
+        if not os.path.isabs(d) and d != ".." and not d.startswith(".." + os.sep):
+            out.append(d)
+    return out
+
+
+def _brief_text(b):
+    try:
+        return f"{b.title} {b.section('Raw request') or ''}"
+    except (AttributeError, TypeError):
+        return b.title or ""
+
+
+def phases(text):
+    """[(label, part)] of a plan document's '## Phase N: title' headings, in document order."""
+    return [(f"Phase {m.group(1)}", f"{m.group(2).strip()}") for m in PHASE_RE.finditer(text or "")]
+
+
+def note_plans(p):
+    """T-4524: the plan documents the open concerns name, that exist in the repo, into plans.json. steermeter.tick runs
+    this each round, detached; the drive's hook path reads the file (plan_next) and never folds the ledger. No model."""
+    found = [{"concern": x["id"], "doc": d} for x in open_concerns(p) for d in x.get("named") or ()
+             if os.path.isfile(os.path.join(p.root, d))]
+    path = os.path.join(p.dir, PLANS)
+    text = json.dumps({"plans": found}, ensure_ascii=False, indent=1) + "\n"
+    try:
+        same = open(path, encoding="utf-8").read() == text
+    except OSError:
+        same = False
+    if not same:
+        c.write_atomic(path, text)
+    return found
+
+
+def plan_next(p, briefs=None):
+    """T-4524: the first part of an open concern's plan document that no done task names: {doc, part}, or None. Reads
+    plans.json (note_plans), the plan document and the briefs; no model, no fold. A part is built when a done task's
+    title or Raw request names both the document and the part's label ('PLAN.md Phase 1')."""
+    try:
+        with open(os.path.join(p.dir, PLANS), encoding="utf-8") as f:
+            plans = json.load(f).get("plans") or []
+    except (OSError, ValueError, AttributeError):
+        return None
+    briefs = c.load_briefs(p) if briefs is None else briefs
+    for x in plans if isinstance(plans, list) else []:
+        doc = x.get("doc") if isinstance(x, dict) else None
+        if not isinstance(doc, str) or doc != os.path.normpath(doc) or doc.startswith("..") or os.path.isabs(doc):
+            continue  # a hand-edited or stale entry is never read outside the repo
+        try:
+            with open(os.path.join(p.root, doc), encoding="utf-8", errors="replace") as f:
+                text = f.read(PLAN_MAX)
+        except OSError:
+            continue  # the document is gone: nothing is left to queue from it
+        built = [_brief_text(b) for b in briefs if b.meta.get("status") == "done"]
+        named = re.compile(rf"(?<![\w/.-]){re.escape(doc)}(?![\w/-])")  # PLAN.md, not NEWPLAN.md
+        built = [t for t in built if named.search(t)]
+        for label, part in phases(text):
+            if not any(re.search(rf"\b{re.escape(label)}\b", t, re.I) for t in built):
+                return {"doc": doc, "label": label, "part": f"{label}: {part}" if part else label}
+    return None
 
 
 def open_concerns(p, briefs=None):

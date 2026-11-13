@@ -438,7 +438,7 @@ The notes below are grouped; each group folds. `sampo outline MASTER.md` lists t
 | [Cost, usage and performance](#cost-usage-and-performance) | Cost and budget, forecast, retry tax, read memos, fast active task, performance notes | 9 |
 | [Bench](#bench) | sampo bench: build, duel, long sessions, false dones, the family, unattended checks | 6 |
 | [Release, ship, CI and PRs](#release-ship-ci-and-prs) | sampo release, sampo ship, CI watch, review threads and the merge train | 5 |
-| [Night, drive and autonomy](#night-drive-and-autonomy) | Run contract, forever loop, night jobs, risk budget, repeat-session skip | 6 |
+| [Night, drive and autonomy](#night-drive-and-autonomy) | Run contract, forever loop, night jobs, risk budget, repeat-session skip, plan left | 7 |
 | [Crash, snapshots and rollback](#crash-snapshots-and-rollback) | Crash damage and hygiene, fsck, work snapshots, rollback, small verbs | 6 |
 | [Cards and library](#cards-and-library) | The project map, stack cards at edit and prompt time, import-matched cards, library growth | 5 |
 | [Pane and UI](#pane-and-ui) | foreman-ui's modules, economy mode, speedrun splits, palette and scrubber | 4 |
@@ -626,6 +626,7 @@ Each note below is one index line: the first words of its full note and a link t
 - Night queue (T-1046): `sampo night` adds a "queue" job when an unblocked S/M… [→ ops-3](docs/map/ops-3.md)
 - Night gardening (T-1071): `sampo night` runs two free jobs: compost… [→ ops-3](docs/map/ops-3.md)
 - Repeat-session skip (T-1825, `fmserve._repeat_key`): `sampo run`'s serial loop… [→ ops-3](docs/map/ops-3.md)
+- Plan left (T-4524, `concerns.plan_next`): an empty queue with an open request's plan document still having a part no done task names queues that part, not "say so and stop"; under full autonomy a final reply is refused once per part while one is left, whatever it says [→ ops-3](docs/map/ops-3.md)
 
 ### Crash, snapshots and rollback
 
