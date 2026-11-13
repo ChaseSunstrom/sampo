@@ -83,6 +83,7 @@ OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND
 OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a big task; a hold test sets its own
 OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S"})  # T-4525: the wait timer's limits; its tests set their own
 OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its starter; a test that needs it sets it itself
+OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
 CGROUP_ROOT = "/sys/fs/cgroup"
 LIVE_CLASSES = set()  # T-4538: the class processes running now (each leads its own session, so its pid is its group)
 PARENT_POLL_S = 1.0  # T-4538: how often a run checks that the process which started it is still alive
@@ -156,7 +157,7 @@ def slot_count():
 
 
 @contextlib.contextmanager
-def cpu_slot(wait=3600.0, poll=0.05, small=False):
+def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False):
     """T-3252: one of the machine's CPU slots, shared by every run.py on it (mine, each builder's, the ship's, the
     post-merge verify), held while the block runs: its number, or None when nested, off (SAMPO_SLOTS=0) or the wait ran
     out (the class then runs anyway: a slow run beats a hung one). A slot is a lock file, so the kernel frees it when
@@ -166,7 +167,10 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False):
     selection of at most EXPRESS_CLASSES classes) first tries an express slot, without deferring to a priority waiter,
     so one or two classes start beside a gate; when those are taken it competes for the pool as any run does. T-4536: a
     small run waits at most SMALL_WAIT for either, then runs with none (a 14 s module's 13 per-test jobs, two on express,
-    queued 786 s behind full suites); a run that waits SAY_WAIT or more says so once, with the seconds waited so far."""
+    queued 786 s behind full suites); a run that waits SAY_WAIT or more says so once, with the seconds waited so far.
+    T-4570: `low` (the post-merge verify's runs, SAMPO_SLOT_LOW=1) leaves freed slots to a waiting ordinary run too: a
+    waiting class holds a wait- marker (one per process), and a low class does not take a slot while one is there, for
+    LOW_MAX seconds from the process's first yield (_builder_waiting), then competes as before."""
     n = slot_count()
     folder = _slot_folder() if n and not _env(SLOT_ENV) and fcntl else None
     if not folder:  # nested, off, no flock (Windows) or a folder that isn't safely ours: run without one
@@ -174,11 +178,13 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False):
         return
     now, order, prio, mark = time.monotonic(), random.sample(range(n), n), _env(PRIO_ENV) == "1", None
     end, defer, got, said = now + (min(wait, SMALL_WAIT) if small else wait), now + defer_for(wait), None, False
+    low, marked = low and not prio, False
     try:
         while True:
             if small and (got := _take(folder, EXPRESS)):
                 break
-            if prio or time.monotonic() >= defer or not _prio_waiting(folder):
+            behind = not prio and ((time.monotonic() < defer and _prio_waiting(folder)) or (low and _builder_waiting(folder)))
+            if not behind:
                 if got := _take(folder, order):
                     break
             if not said and time.monotonic() - now >= SAY_WAIT:
@@ -192,8 +198,12 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False):
                 break
             if prio and not mark:
                 mark = _mark(folder)
+            elif not prio and not low and not marked:  # T-4570: an ordinary run waiting is what a low class yields to
+                marked = _wait_enter(folder)
             time.sleep(poll * random.uniform(1, 5))  # spread the retries of many waiters
     finally:
+        if marked:
+            _wait_leave()
         if mark:
             with contextlib.suppress(OSError):
                 os.unlink(mark[1])
@@ -245,10 +255,11 @@ def _take(folder, names):
 PRIO_ENV = "SAMPO_SLOT_PRIORITY"  # T-3614: =1 (the train's gate and probes, ship's suite, sampo check outside a lane)
 
 
-def _mark(folder):
+def _mark(folder, prefix="prio-"):
     """T-3614: a waiting priority run's marker, (fd, path): locked before it takes its prio- name, so a prio- file
-    nobody holds is a dead waiter's. None when it can't be made (the run then just competes)."""
-    name = f"prio-{os.getpid()}-{random.getrandbits(32):08x}"
+    nobody holds is a dead waiter's. None when it can't be made (the run then just competes). T-4570: prefix wait-
+    is an ordinary waiting run's, made the same way."""
+    name = f"{prefix}{os.getpid()}-{random.getrandbits(32):08x}"
     tmp, path = os.path.join(folder, "." + name), os.path.join(folder, name)
     try:
         fd = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -265,10 +276,58 @@ def _mark(folder):
     return fd, path
 
 
-def _prio_waiting(folder):
-    """T-3614: whether a priority run waits for a slot (holds a prio- marker); a dead waiter's marker is removed."""
+LOW_ENV = "SAMPO_SLOT_LOW"  # T-4570: =1 (the post-merge verify's runs): their classes yield freed slots to waiting runs
+LOW_MAX = 600.0  # T-4570: a low run.py yields to waiting runs for this long from its first yield, then competes as any run
+_LOW, _LOW_LOCK = {"until": None}, threading.Lock()  # T-4570: when this process's window to yield ends (None: not begun)
+_WAIT, _WAIT_LOCK = {"n": 0, "mark": None}, threading.Lock()  # T-4570: this process's waiting classes and their one marker
+
+
+def is_low():
+    """T-4570: whether this run is the post-merge verify's (SAMPO_SLOT_LOW=1): its classes yield to waiting runs."""
+    return _env(LOW_ENV) == "1"
+
+
+def _wait_enter(folder):
+    """T-4570: a class of this process starts waiting for a slot: the process's one wait- marker is made for the first.
+    True when counted (the caller then calls _wait_leave); the marker may be missing (the verify just doesn't yield)."""
+    with _WAIT_LOCK:
+        _WAIT["n"] += 1
+        if not _WAIT["mark"]:
+            _WAIT["mark"] = _mark(folder, "wait-")
+    return True
+
+
+def _wait_leave():
+    """T-4570: a waiting class got its slot or gave up; the last one out removes the marker."""
+    with _WAIT_LOCK:
+        _WAIT["n"] -= 1
+        if _WAIT["n"] <= 0 and _WAIT["mark"]:
+            fd, path = _WAIT["mark"]
+            _WAIT["mark"] = None
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            os.close(fd)
+
+
+def _builder_waiting(folder):
+    """T-4570: whether a low class leaves a freed slot to a waiting ordinary run: one holds a wait- marker and this
+    process's window (LOW_MAX from its first yield, one window for every class of the run) is still open."""
+    with _LOW_LOCK:
+        if _LOW["until"] is not None and time.monotonic() >= _LOW["until"]:
+            return False
+    if not _prio_waiting(folder, "wait-"):
+        return False
+    with _LOW_LOCK:
+        if _LOW["until"] is None:
+            _LOW["until"] = time.monotonic() + LOW_MAX
+    return True
+
+
+def _prio_waiting(folder, prefix="prio-"):
+    """T-3614: whether a priority run waits for a slot (holds a prio- marker); a dead waiter's marker is removed.
+    T-4570: prefix wait- asks the same of ordinary waiting runs."""
     try:
-        names = [x for x in os.listdir(folder) if x.startswith("prio-")]
+        names = [x for x in os.listdir(folder) if x.startswith(prefix)]
     except OSError:
         return False
     for name in names:
@@ -451,6 +510,71 @@ KEEP = 3  # T-3593: records kept per class, newest first: main's code beside the
 COVERED = {}  # T-3593: job id -> what its processes recorded (runcover.py's lines), filled by _run_one
 CPU = {}  # T-3757: job id -> the CPU s its processes took (BOOT's file), filled by _run_one
 WAITED = {}  # T-4247: job id -> the s its class waited for a slot (run_one), not its run time: nothing else keeps it
+
+
+HELD = {}  # T-4570: job id -> the s its class held a slot (run_one): the machine's slot-seconds this run took
+
+
+def slot_kind():
+    """T-4570: the kind of holder this run is, as its record says: a gate (SAMPO_SLOT_PRIORITY=1), the post-merge verify
+    (SAMPO_SLOT_LOW=1) or any other run (a builder's, the main thread's)."""
+    return "priority" if _env(PRIO_ENV) == "1" else "low" if is_low() else "normal"
+
+
+def slot_fields(started, ended):
+    """T-4570: what a run's record says about the slots: when it started and how long it took (wall), the s its classes
+    waited for a slot and held one (sums over its worker threads: with -j N they add up to about N times the wall),
+    and its kind. Waiting was counted in the summary line only, and the holder nowhere: 2026-11-13's 'who held the
+    slots' could not be read back from disk."""
+    return {"started": round(started, 3), "seconds": round(ended - started, 1), "waited_s": round(sum(WAITED.values()), 1),
+            "held_s": round(sum(HELD.values()), 1), "kind": slot_kind()}
+
+
+def held_by_kind(recs, day):
+    """T-4570: ({kind: {runs, held_s, waited_s, seconds}}, n records of that UTC day without slot fields) over run
+    records: the slot-seconds each kind of holder took on `day` (YYYY-MM-DD)."""
+    out, unrecorded = {}, 0
+    for r in recs:
+        if not isinstance(r, dict) or time.strftime("%Y-%m-%d", time.gmtime(r.get("t") or 0)) != day:
+            continue
+        if "held_s" not in r:
+            unrecorded += 1
+            continue
+        k = out.setdefault(str(r.get("kind") or "normal"), {"runs": 0, "held_s": 0.0, "waited_s": 0.0, "seconds": 0.0})
+        k["runs"] += 1
+        for f in ("held_s", "waited_s", "seconds"):
+            k[f] = round(k[f] + float(r.get(f) or 0), 1)
+    return out, unrecorded
+
+
+def show_held(a):
+    """--held [--day YYYY-MM-DD]: the slot-seconds each kind of run took that UTC day (default today), from this repo's
+    run records (the newest KEEP_RUNS are kept, so an older day may be partly gone). Runs nothing, takes no slot."""
+    where = _where()
+    if not where:
+        sys.stderr.write("run.py: not in a git repository: no run records\n")
+        return 3
+    day = a.day or time.strftime("%Y-%m-%d", time.gmtime())
+    folder, recs = runs_dir(where[1]), []
+    try:
+        names = sorted(n for n in os.listdir(folder) if RUN_NAME.fullmatch(n))
+    except OSError:
+        names = []
+    for n in names:
+        try:
+            with open(os.path.join(folder, n)) as f:
+                recs.append(json.load(f))
+        except (OSError, ValueError):
+            continue
+    got, unrecorded = held_by_kind(recs, day)
+    for kind, v in sorted(got.items(), key=lambda kv: -kv[1]["held_s"]):
+        print(f"{kind}: held {v['held_s']:.0f} slot-s, waited {v['waited_s']:.0f} s, {v['runs']} runs, "
+              f"{v['seconds']:.0f} s wall (waited and held add up over each run's worker threads)")
+    if not got:
+        print(f"no run record of {day} has slot fields (runs before T-4570 did not write them)")
+    if unrecorded:
+        print(f"{unrecorded} runs of {day} wrote no slot fields")
+    return 0
 
 
 def waited_note(waits):
@@ -1637,14 +1761,19 @@ def run_one(cid, k, timeout=480, deadline=None, small=False, joins=None):
     most EXPRESS_CLASSES classes) lets it take an express slot; the seconds it waited are kept in WAITED."""
     wait = max(0.0, deadline - time.time()) if deadline is not None else 3600.0
     t = time.monotonic()
-    with cpu_slot(wait, small=small) as slot:
-        WAITED[cid] = WAITED.get(cid, 0.0) + time.monotonic() - t
-        if joins and not joins.start(cid):  # T-4267: another run is running this class on these inputs: wait for it later
-            return cid, 0, DEFERRED, 0, 0.0
-        res = _run_one(cid, k, timeout, deadline, slot)
-        if joins:
-            joins.done(res)
-        return res
+    with cpu_slot(wait, small=small, low=is_low()) as slot:
+        got = time.monotonic()
+        WAITED[cid] = WAITED.get(cid, 0.0) + got - t
+        try:
+            if joins and not joins.start(cid):  # T-4267: another run is running this class on these inputs: wait for it later
+                return cid, 0, DEFERRED, 0, 0.0
+            res = _run_one(cid, k, timeout, deadline, slot)
+            if joins:
+                joins.done(res)
+            return res
+        finally:
+            if slot is not None:  # T-4570: the slot-seconds this class took, for the run's record
+                HELD[cid] = HELD.get(cid, 0.0) + time.monotonic() - got
 
 
 def _run_one(cid, k, timeout, deadline, slot):
@@ -1826,6 +1955,9 @@ def parse(argv=None):
     ap.add_argument("--run-id", metavar="ID", help="with --last: the record stamped with this id (the check's, "
                     "SAMPO_TEST_RUN_ID), of any worktree")
     ap.add_argument("--json", action="store_true", help="with --last: the whole record as JSON")
+    ap.add_argument("--held", action="store_true", help="print the slot-seconds each kind of run (priority gate, post-merge "
+                    "verify, other) took on a UTC day, from this repo's run records, and run nothing (T-4570)")
+    ap.add_argument("--day", metavar="YYYY-MM-DD", help="with --held: the UTC day (default today)")
     ap.add_argument("names", nargs="*", help="test module names (T-0808: fm check affected's {names}); with -k, only "
                                              "their tests that match a -k (T-1994)")
     a = ap.parse_intermixed_args(argv)  # names may sit on either side of -k
@@ -1856,6 +1988,8 @@ def main():
     ap = a
     if a.last:  # T-4268: a reader: no slot, no sweep, no test
         return show_last(a)
+    if a.held:  # T-4570: a reader too
+        return show_held(a)
     watch_parent()  # T-4538: a run whose starter is gone ends with its classes
     run_id = _env(RUN_ID_ENV)  # T-4268: the check's id for this gate: kept for the record, out of every class's environment
     for k in (RUN_ID_ENV, "FOREMAN_" + RUN_ID_ENV[len("SAMPO_"):]):
@@ -2111,7 +2245,7 @@ def main():
                     "tree_end": tree_id(end_tree[1]) if end_tree else "", "run_id": run_id or "",
                     "argv": sys.argv[1:], "whole": entire, "selection": "" if entire else sel.strip(),
                     "ok": not failed and not cpu_red and bool(total or skip), "ran": total, "cached": sum(skip.values()),
-                    "n_failed": len(names), "n_not_run": len(stopped),
+                    "n_failed": len(names), "n_not_run": len(stopped), **slot_fields(t0, time.time()),
                     "failed": ents[:FAILS_MAX],
                     "not_run": [r[0] for r in stopped][:NOT_RUN_MAX]}
             record_run(where[1], {**made, "lines": record_lines(made)})  # the lines too: a caller prints them as they are

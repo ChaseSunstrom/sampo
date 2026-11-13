@@ -2897,7 +2897,8 @@ def pm_verify(p, main, sha):
         if full:
             pm_set(p, sha, uncached=True)
         code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600),
-                                  env=cpu_env(p, gate=False), niced=True)  # T-3757: what landed becomes the usual; T-4197
+                                  env=cpu_env(p, gate=False), niced=True,
+                                  low=True)  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
         flaky =inherited = unrelated = []
         reds = pm_classes(out, code) if code and code != 124 else []
         files, reach = _pm_files(main, sha), reds
@@ -2910,14 +2911,14 @@ def pm_verify(p, main, sha):
                 reach, unrelated = reds, []
             if again:
                 c.wait_for_load(f"lane verify {sha[:9]}")  # T-3425: the alone-rerun waits for load like a gate
-            if again and not c.run_command(wt, again, c.load_scaled(900), niced=True)[0]:
+            if again and not c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)[0]:
                 flaky = reds
             elif again and isinstance(reach, list) and not reach:
                 pass  # red alone, but only in classes the docs-only merge cannot reach: no parent run needed
             elif again:  # T-3213: red alone too; does main just before this merge fail the same classes?
                 _git(wt, "reset", "--hard", "-q", f"{sha}^1")
                 if not gone or not _git(wt, "revert", "-m", "1", "--no-commit", "--no-edit", *reversed(gone)).returncode:
-                    pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True)
+                    pcode, pout = c.run_command(wt, again, c.load_scaled(900), niced=True, low=True)
                     # T-3224: inherited only when the parent names each red class failing; a parent run that
                     # names none ("no test matches" for a class the merge added, a crash) leaves the red this merge's
                     named = {m.rpartition(".")[0] or m for m in _FAILED.findall(pout)}
@@ -3035,10 +3036,12 @@ def pm_run(p, main):
             continue
         todo = [s for s, r in recs.items() if r["state"] == "pending" or (r["state"] == "running" and _pm_dead(r))]
         newest = todo[-1] if todo else None
-        if len(todo) > 1 and newest not in probed:  # once per newest merge: a red probe isn't rerun until one lands
-            probed.add(newest)
-            head = _git(main, "rev-parse", "HEAD").stdout.strip()
-            if head and _pm_claim(p, todo[0]):  # holds the queue (other runners stop at the oldest) while HEAD runs
+        head = _git(main, "rev-parse", "HEAD").stdout.strip() if len(todo) > 1 else ""
+        # once per (newest merge, HEAD): a red probe isn't rerun until one lands, but a revert moves HEAD (T-4570: the
+        # merges still pending then went one full suite each, oldest first: 2026-11-13, three reverts, about 2 h of slots)
+        if head and (newest, head) not in probed:
+            probed.add((newest, head))
+            if _pm_claim(p, todo[0]):  # holds the queue (other runners stop at the oldest) while HEAD runs
                 reds, cut = [], None
                 try:
                     green = _pm_green_at(p, main, head, reds)
@@ -3076,7 +3079,7 @@ def _pm_green_at(p, main, sha, reds=None):
             return False
         full = _pm_uncached_due(p)
         code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600), env=cpu_env(p, gate=False),
-                                  niced=True)  # T-4197
+                                  niced=True, low=True)  # T-4197; T-4570
         if code:
             if reds is not None and code != 124:  # a timeout names nothing
                 reds.extend(k for k in pm_classes(out, code) if not k.startswith("suite exit"))
@@ -3097,7 +3100,7 @@ def _pm_cmd_green_at(main, sha, cmd):
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         c.wait_for_load(f"lane verify {sha[:9]}")  # as pm_verify's alone-rerun waits
-        return not c.run_command(wt, cmd, c.load_scaled(900), niced=True)[0]  # T-4197: a lane verify's run
+        return not c.run_command(wt, cmd, c.load_scaled(900), niced=True, low=True)[0]  # T-4197: a lane verify's run; T-4570
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)

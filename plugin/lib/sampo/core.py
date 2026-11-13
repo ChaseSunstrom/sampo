@@ -1526,6 +1526,7 @@ def first_error_line(out):
 
 
 SLOT_PRIORITY = "FOREMAN_SLOT_PRIORITY"  # T-3614: tests/run.py's SAMPO_SLOT_PRIORITY, as mirror_env names it
+SLOT_LOW = "FOREMAN_SLOT_LOW"  # T-4570: tests/run.py's SAMPO_SLOT_LOW: its classes yield freed slots to waiting runs
 
 
 NICE_LANE = 10  # T-4197: the nice value of Sampo's own test runs for a lane (lane verify, ship, a lane's check)
@@ -1539,12 +1540,13 @@ def nice_argv(argv, level=NICE_LANE):
 
 
 def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None, watch=None,
-                watch_every=30.0):
+                watch_every=30.0, low=False):
     """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). stdin is
     /dev/null unless a caller hands it one it knows won't block (T-1766). priority: its tests/run.py takes freed CPU
     slots ahead of lane runs (T-3614), unless SAMPO_SLOT_PRIORITY is already set (=0 opts out). niced: the command
     starts at nice 10 (T-4197), after normalize_verify has read it. run_id: stamped on the record its tests/run.py
-    leaves (T-4268), so the caller reads that run's record and no other."""
+    leaves (T-4268), so the caller reads that run's record and no other. low: its tests/run.py leaves freed slots to a
+    waiting run for a bounded time (T-4570: the post-merge verify, which no one waits on), unless it is a priority run."""
     stdin = subprocess.DEVNULL if stdin is None else stdin
     root, cmd, _ = normalize_verify(root, cmd)  # T-3411
     if root and os.path.isdir(root):
@@ -1553,6 +1555,8 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         env = {k: v for k, v in os.environ.items() if k != "FOREMAN_SKIP_TESTS"}
     if priority and not env.get(SLOT_PRIORITY):
         env = {**env, SLOT_PRIORITY: "1"}
+    if low and not env.get(SLOT_LOW):
+        env = {**env, SLOT_LOW: "1"}
     if run_id:
         env = {**env, RUN_ID_ENV: str(run_id)}
     if timeout:  # T-3338: tests/run.py ends its own run under the timeout, naming what was slow, not killed unnamed
