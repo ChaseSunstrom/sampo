@@ -82,7 +82,10 @@ OPERATOR_SWITCHES.add("BENCH_MIN_FREE_GB")  # T-3747: the operator's disk budget
 OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND_STAMP"})
 OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a big task; a hold test sets its own
 OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S"})  # T-4525: the wait timer's limits; its tests set their own
+OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its starter; a test that needs it sets it itself
 CGROUP_ROOT = "/sys/fs/cgroup"
+LIVE_CLASSES = set()  # T-4538: the class processes running now (each leads its own session, so its pid is its group)
+PARENT_POLL_S = 1.0  # T-4538: how often a run checks that the process which started it is still alive
 
 
 def _env(name):
@@ -1673,6 +1676,7 @@ def _run_one(cid, k, timeout, deadline, slot):
     p = subprocess.Popen(argv, cwd=HERE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL,
                          start_new_session=True, env=env)
+    LIVE_CLASSES.add(p.pid)  # T-4538: watch_parent kills it if this run's starter is gone
     try:
         _, err = p.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -1686,6 +1690,7 @@ def _run_one(cid, k, timeout, deadline, slot):
         _, err = p.communicate()
         err += f"\nrun.py: {cid} {why}\n"
     finally:
+        LIVE_CLASSES.discard(p.pid)  # T-4538: after communicate reaped it, so the pid cannot name another group
         if COVER_PY:
             with contextlib.suppress(OSError), open(os.path.join(tmp, ".runcover"), encoding="utf-8",
                                                     errors="surrogateescape") as f:
@@ -1695,6 +1700,26 @@ def _run_one(cid, k, timeout, deadline, slot):
         shutil.rmtree(tmp, ignore_errors=True)
     m = re.search(r"Ran (\d+) tests?", err)
     return cid, p.returncode, err, int(m.group(1)) if m else 0, time.time() - t0  # killed: negative
+
+
+def watch_parent(poll=PARENT_POLL_S):
+    """T-4538: a run whose starter has exited (a check killed mid-run; nobody reads its result) ends now, its classes
+    with it, so their CPU slots are freed. A run started detached on purpose sets SAMPO_KEEP_ORPHAN=1 and keeps going.
+    The starter is compared with the one at startup, not with pid 1: a subreaper adopts an orphan, not init."""
+    if _env("SAMPO_KEEP_ORPHAN"):
+        return
+    parent = os.getppid()
+
+    def watch():
+        while True:
+            time.sleep(poll)
+            if os.getppid() != parent:
+                for pid in list(LIVE_CLASSES):
+                    with contextlib.suppress(OSError):
+                        os.killpg(pid, signal.SIGKILL)
+                os._exit(1)
+
+    threading.Thread(target=watch, daemon=True, name="run-parent-watch").start()
 
 
 def sweep(base=None):
@@ -1831,6 +1856,7 @@ def main():
     ap = a
     if a.last:  # T-4268: a reader: no slot, no sweep, no test
         return show_last(a)
+    watch_parent()  # T-4538: a run whose starter is gone ends with its classes
     run_id = _env(RUN_ID_ENV)  # T-4268: the check's id for this gate: kept for the record, out of every class's environment
     for k in (RUN_ID_ENV, "FOREMAN_" + RUN_ID_ENV[len("SAMPO_"):]):
         os.environ.pop(k, None)
