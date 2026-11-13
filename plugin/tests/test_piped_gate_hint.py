@@ -1,7 +1,6 @@
 """T-4514: a builder's own runs are never piped. 20 of 23 'piped gate' refusals on the JARVIS box in 38 hours were
 builders piping a check through tail: the lane brief shows the builder's own command unpiped with the reason in one
-line. (T-4511's refusal text, which named the command to run instead, was reverted after the merge and is not tested
-here.)"""
+line. T-4511 (re-landed by T-4553): the refusal names the same command with the pipe removed, spelled sampo."""
 import json
 import unittest
 
@@ -31,6 +30,36 @@ class BriefShowsTheUnpipedGate(ForemanTestCase):
         for line in brief.splitlines():
             self.assertNotRegex(line, r"`(?:sampo|python3)[^`]*\|[^`]*`",
                                 "no piped form is shown as the command to run")
+
+
+class RefusalNamesTheCommand(unittest.TestCase):  # T-4511 (re-landed): the exact command to run, the pipe removed
+    def test_the_refusal_names_the_same_command_with_the_pipe_removed_and_spelled_sampo(self):
+        from sampo import hooks
+        cases = {
+            "sampo check --evidence T-1 --step 1 2>&1 | tail -8": "sampo check --evidence T-1 --step 1",
+            "fm check --evidence T-1 --step 1 | tail -8": "sampo check --evidence T-1 --step 1",
+            "fm quiet -- fm check | tail -3": "sampo quiet -- sampo check",
+            "sampo quiet -- fm check --evidence T-1 | tail -1": "sampo quiet -- sampo check --evidence T-1",
+            "cd x && fm check --evidence T-1 --step 2 | grep ✓": "sampo check --evidence T-1 --step 2",
+            "FOO=1 fm check --evidence T-1 | tail -1": "FOO=1 sampo check --evidence T-1",
+            "sampo check --affected --evidence T-1 | tail -2": "sampo check --affected --evidence T-1",
+            "sampo check --evidence T-1 --run 'a | b' | tail -1": "sampo check --evidence T-1 --run 'a | b'",
+            "sampo check --evidence T-1 --run 'echo fm check' | tail -1": "sampo check --evidence T-1 --run 'echo fm check'",
+            "fm check --run 'fm next' | tail -1": "sampo check --run 'fm next'",
+        }
+        for cmd, want in cases.items():
+            d = hooks._gate_pipe_deny({"tool_name": "Bash", "tool_input": {"command": cmd}})
+            self.assertEqual(d[0], "deny", cmd)
+            self.assertIn(f"`{want}`", d[1], cmd)
+            self.assertIn("drop the pipe (its summary is short) or start with set -o pipefail;", d[1], cmd)
+
+    def test_a_very_long_gate_line_is_refused_without_echoing_it(self):  # the refusal's size is bounded
+        from sampo import hooks
+        long_cmd = "fm check --run '" + "x" * 5000 + "' | tail -1"
+        d = hooks._gate_pipe_deny({"tool_name": "Bash", "tool_input": {"command": long_cmd}})
+        self.assertEqual(d[0], "deny")
+        self.assertNotIn("xxxxx", d[1])
+        self.assertLess(len(d[1]), 1000)
 
 
 if __name__ == "__main__":
