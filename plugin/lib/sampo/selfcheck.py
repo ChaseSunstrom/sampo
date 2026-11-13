@@ -273,15 +273,18 @@ def map_room(p, briefs, now):
     for rel, left in near.items():  # T-4411: room on the trunk, none once the accepted lanes land
         rows = adds.get(rel) or []
         total = sum(n for _, n in rows)
-        if left - total < MAP_ROOM:
+        if rows and (left - total < MAP_ROOM or left < MAP_NAME_ROOM):  # T-4562: a lane that grows it names the room
+            tail = ("a train that carries them goes red" if left - total < MAP_ROOM
+                    else f"{left - total} bytes left after them")
             out.append(f"{rel} has {left} bytes left of its {c.MAP_FILE_BYTES} and {len(rows)} accepted lane(s) add "
                        f"{total} ({', '.join(f'{i} {n}' for i, n in rows[:6])}{', …' if len(rows) > 6 else ''}): "
-                       "a train that carries them goes red")
+                       f"{tail}")
     return (" · ".join(out) + " → split it: move a block of entries to a new docs/map shard and their MASTER.md index "
             "links with it") if out else None
 
 
 MAP_LANES_ROOM = 10000  # bytes: only a file with less than this left on the trunk has its waiting lanes added up
+MAP_NAME_ROOM = 4000  # bytes (T-4562): under this, an accepted lane that grows a map file gets the room it leaves named
 
 
 def _lane_adds(p, briefs, rels):
