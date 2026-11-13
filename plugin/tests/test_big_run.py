@@ -247,6 +247,16 @@ class Wave(Base):
         again = self.run_json(tid)
         self.assertEqual([x["id"] for x in again["wave"]], [kids["c1"]])
 
+    def test_wave_a_run_while_another_holds_the_wave_is_refused_and_hands_out_nothing(self):
+        tid, kids = self.big()
+        with unittest.mock.patch.object(big, "RUN_WAIT", 0.2), c.lock(os.path.join(self.p.dir, big.RUN_LOCK)):
+            # another `big run` is handing out this wave right now: this one must not read the same ready children
+            with self.assertRaises(c.LockTimeout):
+                big.task_run(self.p, argparse.Namespace(id=tid, json=True, dry_run=False))
+        self.assertFalse(self.meta(kids["c1"]).get("builder"), "nothing was briefed by the run that was refused")
+        out = self.run_json(tid)  # once the lock is free the wave goes out as usual
+        self.assertEqual([x["id"] for x in out["wave"]], [kids["c1"], kids["c2"]])
+
     def test_wave_all_landed_says_to_close_the_parent(self):
         tid, kids = self.big()
         big.branch(self.p, c.find_brief(self.p, tid))
@@ -256,9 +266,7 @@ class Wave(Base):
         self.assertTrue(out["all_landed"])
         self.assertEqual(out["wave"], [])
         text = self.fm("big", "run", tid).stdout
-        self.assertIn(f"close the parent, sampo task finish {tid}", text)
-        self.assertNotIn("big close", text, "no such verb")
-        self.assertEqual(self.fm("task", "finish", "--help", check=False).returncode, 0, "the verb the line names exists")
+        self.assertIn(f"close the parent, sampo big close {tid}", text, "the verb is part C2's: this line only names it")
 
     def test_wave_is_the_next_action_of_a_focused_expanded_big_task(self):
         tid, kids = self.big()
@@ -299,6 +307,22 @@ class Order(Base):
         last = self.run_json(tid)
         self.assertEqual([x["id"] for x in last["wave"]], [kids["c3"]])
         self.assertIn(self.tip(tid), self.brief_text(kids["c3"]), "the third lane starts from the branch with both landed")
+
+    def test_order_a_reverted_landing_is_not_landed_and_holds_its_dependent_again(self):
+        tid, kids = self.big()
+        big.branch(self.p, c.find_brief(self.p, tid))
+        self.land(tid, kids["c1"])
+        self.land(tid, kids["c2"])
+        up = c.find_brief(self.p, tid)
+        self.assertEqual(big.unmet(self.p, c.find_brief(self.p, kids["c3"]), up), [])
+        branch = f"big/{tid}"  # the revert of c1's merge on the branch: the newest subject naming c1 decides
+        title = c.find_brief(self.p, kids["c1"]).title
+        new = self.git("commit-tree", f"{branch}^{{tree}}", "-p", branch, "-m", f'Revert "Merge {kids["c1"]}: {title}"')
+        self.git("update-ref", f"refs/heads/{branch}", new)
+        self.assertEqual(big.unmet(self.p, c.find_brief(self.p, kids["c3"]), up), [kids["c1"]])
+        out = self.run_json(tid)  # c1 is not on the branch any more: it is ready again, and c3 waits for it again
+        self.assertEqual([x["id"] for x in out["wave"]], [kids["c1"]])
+        self.assertEqual([(x["id"], x["waits"]) for x in out["waiting"]], [(kids["c3"], [kids["c1"]])])
 
     def test_order_a_blocked_child_is_reported_with_its_choices_and_does_not_stop_its_siblings(self):
         tid, kids = self.big()

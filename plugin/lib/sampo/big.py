@@ -22,6 +22,7 @@ import fnmatch
 import functools
 import hashlib
 import json
+import os
 import posixpath
 import re
 
@@ -821,6 +822,8 @@ def task_sync(p, args):
 # ---------------------------------------------------------------- the wave
 
 CHOICES = "retry, re-plan or drop"
+RUN_LOCK = "big-run"  # the folder (under the state folder) whose lock one `sampo big run` holds while it hands a wave out
+RUN_WAIT = 60.0  # seconds a run waits for another run's wave; then it is refused (LockTimeout) and briefs nothing
 
 
 def _blocked_why(kid):
@@ -911,11 +914,21 @@ def task_run(p, args):
     integration branch) and printed as an Agent call, all to go out in one message; capped by the free lane slots and the
     load gate, which is never bypassed. What is left is the next wave, and nothing is handed out twice: a launch marks
     the child's brief, and a launch that never opened a lane is released after 30 minutes by the slot count itself."""
+    _main_only(p, "run")
+    if getattr(args, "dry_run", False):  # a dry run writes nothing, so it does not wait for a run in progress
+        return _hand_out(p, args)
+    # two runs at once would both read the same ready children and brief each one: the wave goes out under one lock
+    # (its own folder, not the state lock that every brief write takes: that one is not reentrant)
+    with c.lock(os.path.join(p.dir, RUN_LOCK), timeout=RUN_WAIT):
+        return _hand_out(p, args)
+
+
+def _hand_out(p, args):
+    """task_run's body: the wave of the expanded big task args.id, read and handed out (the caller holds the run lock)."""
     import argparse
     import contextlib
     import io
     from sampo import cli, lanes
-    _main_only(p, "run")
     b = cli.need_brief(p, args.id)
     _need_expanded(b)
     st = wave_state(p, b)
@@ -962,7 +975,7 @@ def task_run(p, args):
         gone = (f"; {len(st['dropped'])} dropped, built nothing: {', '.join(x['id'] for x in st['dropped'])}"
                 if st["dropped"] else "")
         lines.append(f"{b.id}: every child that was built ({len(st['landed'])}) is done{gone}: close the parent, "
-                     f"sampo task finish {b.id}")
+                     f"sampo big close {b.id}")
     elif wave:
         lines.append(f"{b.id}: {'would launch' if dry else 'launch'} these {len(wave)} builder(s), one Agent call each, all in "
                      f"one message (cut from {st['branch']}):")
@@ -1004,7 +1017,7 @@ def wave_line(p, b, briefs=None):
     bad = (f" · {len(st['problems'])} child(ren) failed or parked ({', '.join(x['id'] for x in st['problems'][:4])}): "
            f"sampo big run {b.id} lists each with its choices ({CHOICES})") if st["problems"] else ""
     if st["all_landed"]:
-        return f"{b.id}: every child that was built is done: close the parent, sampo task finish {b.id}"
+        return f"{b.id}: every child that was built is done: close the parent, sampo big close {b.id}"
     if b.tier == "GIANT" and st["ready"]:
         return (f"{b.id}: plan the milestone(s) {c.joinmore([x['id'] for x in st['ready']], 4)}: sampo focus ID, then sampo big "
                 f"plan ID" + bad)
