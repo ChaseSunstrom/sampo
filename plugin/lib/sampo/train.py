@@ -1502,7 +1502,8 @@ def _land(p, main, batch):
 
 
 def _close_gaps(b):
-    """T-3819: what a close would refuse for a line the brief lacks (CHANGELOG, DOCS, NUMBERS, LESSON, why not caught)."""
+    """T-3819: what a close would refuse for a line the brief lacks (CHANGELOG, DOCS, NUMBERS, LESSON, why not caught;
+    T-4515: the WHY-NOT-CAUGHT line of its Close fields counts for the last)."""
     from types import SimpleNamespace
 
     from sampo import cli
@@ -1510,7 +1511,8 @@ def _close_gaps(b):
     f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
     if not f.get("changelog"):
         return ["no CHANGELOG line in its Close fields"]
-    return cli._field_gaps(b, SimpleNamespace(docs=f.get("docs"), numbers=f.get("numbers"), lesson=f.get("lesson")))
+    return cli._field_gaps(b, SimpleNamespace(docs=f.get("docs"), numbers=f.get("numbers"), lesson=f.get("lesson"),
+                                              why_not_caught=f.get("why_not_caught")))
 
 
 def _brief_hash(b):
@@ -1582,9 +1584,12 @@ def _close(p, main, tid):
     seen = f"as recorded before the merge, after lane tip {sha}"
     if (was := _refused_before(b, sha)) is not None:  # T-3884: same brief, same tip: the answer can't have changed
         return was + " (unchanged since the land that refused it: no retry)", ""
+    # T-4515: the builder's WHY-NOT-CAUGHT line goes on as the close's why-not-caught; the brief's own section wins
+    own = b.section("Why not caught").strip() or not f.get("why_not_caught")
+    why_arg = [] if own else [f"--why-not-caught={f['why_not_caught']}"]
     rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
                            *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
-                           "--commit", title])
+                           *why_arg, "--commit", title])
     if rc:
         why = _why(err or out) + ("; its lane is kept" if path else "")
         nb = cli.need_brief(p, tid)  # after the refusal: it may have touched the brief, and the hash must match then

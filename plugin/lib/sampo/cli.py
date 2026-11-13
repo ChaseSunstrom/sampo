@@ -1442,6 +1442,9 @@ def _task_finish(p, args):
     for k in ("lesson", "numbers", "docs"):
         if fields.get(k) and not getattr(args, k, None):
             setattr(args, k, fields[k])
+    if fields.get("why_not_caught") and not getattr(args, "why_not_caught", None) \
+            and not b.section("Why not caught").strip():  # T-4515: the brief's own section wins over the builder's line
+        args.why_not_caught = fields["why_not_caught"]
     if b.status == "done" and args.commit:  # T-0720: a commit refused after the close is retried on its own
         _changelog_line(p, b, fields)
         _commit_task(p, b, args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)

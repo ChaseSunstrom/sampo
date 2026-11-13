@@ -45,11 +45,12 @@ The contract — break none of it:
   tool (never `cat >> FILE <<EOF`), and never read /tmp or the scratchpad from a lane (T-3114).
 - If you must rm, write every target as a literal path (never `rm -rf $VAR/x` or `rm "$d"`): Claude Code asks the user about
   a removal whose target holds a shell variable it can't verify, in every mode (T-3704). Scratch needs no rm: leave it.
-- Don't edit CHANGELOG.md: end your final report with these lines, one each (T-0428, T-3500), which Sampo records
+- Don't edit CHANGELOG.md: end your final report with these lines, one each (T-0428, T-3500, T-4515), which Sampo records
   on the brief as you return; the close adds the changelog line and commits under the title:
   `CHANGELOG: <one sentence in the style of the existing entries, ending (<ID>)>`, `TITLE: <a short commit title
   ending (<ID>)>`, `LESSON: <the general rule this taught>`, `NUMBERS: <metric: before → after (how measured)>` or
-  `NUMBERS: none: <why>`, `DOCS: <the docs you updated>` or `DOCS: none: <why>`.
+  `NUMBERS: none: <why>`, `DOCS: <the docs you updated>` or `DOCS: none: <why>`. For an M or L FIX also
+  `WHY-NOT-CAUGHT: <the test, gate or guard that would have caught it earlier, or none: why>`.
 - Claude Code may refuse a command because "this agent is isolated in the worktree" (make, gradle, expo, a long
   pipeline, `sampo task evidence`/`sampo task log` in a lane, and any read or write outside the worktree: another session's
   task output files under /tmp/claude-*/…/tasks, the main thread's scratchpad): that's the harness, not a bug. Don't

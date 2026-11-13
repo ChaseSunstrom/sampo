@@ -1582,15 +1582,16 @@ def reviewer_findings(msg, cap=30):
 
 
 CLOSE_FIELDS = "Close fields"  # T-3500: the brief section a builder's report lines land in
-CLOSE_KEYS = ("changelog", "title", "lesson", "numbers", "docs")
-_CLOSE_LINE = re.compile(r"(?m)^[ \t>*_`-]*(CHANGELOG|TITLE|LESSON|NUMBERS|DOCS)[*_`]*[ \t]*:[*_`]*[ \t]*(\S.*?)[ \t*_`]*$")
+CLOSE_KEYS = ("changelog", "title", "lesson", "numbers", "docs", "why_not_caught")  # T-4515: an M/L fix's why-not-caught
+_CLOSE_LINE = re.compile(r"(?m)^[ \t>*_`-]*(CHANGELOG|TITLE|LESSON|NUMBERS|DOCS|WHY-NOT-CAUGHT)[*_`]*[ \t]*:[*_`]*[ \t]*(\S.*?)[ \t*_`]*$")
 _NOTICED = re.compile(r"(?i)^[ \t>*_`-]*Noticed[*_`]*[ \t]*:")  # T-3920: a builder's trailing Noticed line
 _BULLET = re.compile(r"^\s*[-*]\s")
 
 
 def close_fields(text, tail=False):
     """T-3500: {key: value} from 'CHANGELOG: …', 'TITLE: …', 'LESSON: …', 'NUMBERS: …', 'DOCS: …' lines (bold and list
-    marks tolerated, the last of each wins), plus 'id', the task its CHANGELOG or TITLE line ends with: (T-NNNN). Each
+    marks tolerated, the last of each wins), plus 'why_not_caught' from 'WHY-NOT-CAUGHT: …' (T-4515), and 'id', the task
+    its CHANGELOG or TITLE line ends with: (T-NNNN). Each
     value is one redacted line; one that reads like instructions (core.defang) is dropped, never published. `tail`:
     only the block of such lines that ends the text (a report's own close, not lines it quotes)."""
     text = str(text or "")
@@ -1608,7 +1609,7 @@ def close_fields(text, tail=False):
     for key, value in _CLOSE_LINE.findall(text):
         value = c.fit(" ".join(c.redact(c.plain(value)).split()), 1000)
         if c.defang(value) == value:
-            got[key.lower()] = value
+            got[key.lower().replace("-", "_")] = value  # WHY-NOT-CAUGHT → why_not_caught
     for key in ("changelog", "title"):
         m = re.search(r"\((T-\d{4,})\)\W*$", got.get(key, ""))
         if m:
@@ -1618,7 +1619,7 @@ def close_fields(text, tail=False):
 
 def close_text(fields):
     """The Close fields section for `fields`: the lines close_fields reads back."""
-    return "".join(f"{k.upper()}: {fields[k]}\n" for k in CLOSE_KEYS if fields.get(k))
+    return "".join(f"{k.upper().replace('_', '-')}: {fields[k]}\n" for k in CLOSE_KEYS if fields.get(k))
 
 
 CLOSE_CAPS = {"title": 120, "changelog": 400}  # a commit subject; a CHANGELOG line
