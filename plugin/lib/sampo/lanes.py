@@ -283,7 +283,7 @@ def cmd_lane(args):
                 raise cli.UsageError("no finished lane awaits a merge")
         from sampo import train
         args.id = " ".join(ids)
-        return train.cmd(p, args, main)
+        return train.cmd(p, args, main, close=True)  # T-4596: what the train lands closes too (the close a land makes)
     if not args.id:
         raise cli.UsageError(f"fm lane {args.action} needs a task id")
     if p.lane:  # T-0234 review: a lane (a builder's above all) doesn't hand itself back or start others

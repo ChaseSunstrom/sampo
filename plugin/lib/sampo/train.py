@@ -1007,7 +1007,9 @@ def _fast_forward(main, tip):
                 f"'{tag}' (git stash list)")
 
 
-def cmd(p, args, main):
+def cmd(p, args, main, close=False):
+    """sampo lane train IDS; `close` (T-4596: the multi-id sampo lane merge) also closes each task it landed, through
+    close_landed: the train's gate pass serves every close, so the merge costs no gate run beyond the train's."""
     from sampo import cli
     ids = [x for x in (args.id or "").replace(",", " ").split() if x]  # one positional: T-1,T-2
     got = train(p, main, ids)
@@ -1027,6 +1029,16 @@ def cmd(p, args, main):
         lines.append(f"The test gate ran {len(got['affected'])} affected test module(s), not the full suite "
                      "(FOREMAN_FULL_GATE=1 runs it); the full suite verifies the landed merges in the background.")
     lines.append("sampo check now reuses this pass while only CHANGELOG.md and the sync mirror change.")
+    if close and got["merged"]:  # T-4596: what it landed closes through the same close a land makes
+        try:
+            with c.lock(os.path.join(p.dir, "land"), timeout=1):  # a running land closes them itself
+                done, left = close_landed(p, main, got["merged"], who="sampo lane merge")
+        except c.LockTimeout:
+            done, left = [], []
+            lines.append("A sampo lane land is running: it closes the lanes this merge landed.")
+        got["closed"], got["hand"] = [t for t, _ in done], left
+        lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in done]
+        lines += [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in left]
     if got["merged"] and (sh := _ship(p, False, main)):  # T-3849: a train by hand ships too, on a grant already given
         got["ship"] = sh[1]
         lines.append(f"Ship ({sh[0]}'s grant): {c.fit(c.plain(sh[1]), 300)}")
@@ -1600,14 +1612,9 @@ def _land(p, main, batch):
         return None
 
     def close(ids):  # T-3796: each lane closes once its train lands it, not after the whole pile has trained
-        for tid in ids:
-            try:
-                why, last = _close(p, main, tid)
-            except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
-                why, last = f"{type(e).__name__}: {e}", ""
-            (hand if why else closed).append((tid, why or last))
-            print(f"sampo lane land: left for a hand close {tid}: {c.fit(why, 400)}" if why else
-                  f"sampo lane land: closed {tid}", file=sys.stderr, flush=True)  # T-3819: the reason, not hours later
+        done, left = close_landed(p, main, ids)
+        closed.extend(done)
+        hand.extend(left)
 
     def note_park(pairs):  # T-4252: one line per lane left out, as it happens; plain() keeps a gate's output to one line
         for i, w in pairs:
@@ -1711,6 +1718,113 @@ def _land(p, main, batch):
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
             "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
             "train_times": times, "ship_asked": asked, "ship_failed": ship_failed}
+
+
+def close_landed(p, main, ids, who="sampo lane land"):
+    """T-4596: the one close every landing path makes (a land's trains, a multi-id sampo lane merge, sampo lane land
+    --merged): each id's task closes through `_close` (sampo task finish's own checks, re-run on the trunk; nothing
+    forced) and its lane goes with it. ([(id, the close's last line)], [(id, why it is left for a hand close)]); one
+    lane's refusal or error never costs the others theirs. The gates need no run of their own here: finish reuses the
+    full pass on record for the trunk's code tree, which the CHANGELOG line each close commits leaves valid (the code
+    tree leaves CHANGELOG.md out), so N closes cost one gate run at most, the first, and none after a train."""
+    closed, hand = [], []
+    for tid in ids:
+        try:
+            why, last = _close(p, main, tid)
+        except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
+            why, last = f"{type(e).__name__}: {e}", ""
+        (hand if why else closed).append((tid, why or last))
+        print(f"{who}: left for a hand close {tid}: {c.fit(why, 400)}" if why else f"{who}: closed {tid}",
+              file=sys.stderr, flush=True)  # T-3819: the reason, not hours later
+    return closed, hand
+
+
+def _worktree_dirty(path):
+    """What `git status` lists in a lane's folder (uncommitted or untracked files; ignored ones are not work), '' when
+    clean; None when the folder is not a worktree git can read."""
+    if not os.path.isdir(path):
+        return None
+    r = _git(path, "status", "--porcelain")
+    return None if r.returncode else r.stdout.strip()
+
+
+def _merged_lanes(p, main):
+    """T-4596: ([(task id, its lane folder)] for every open task whose lane is wholly on the trunk, ordered by id; and
+    [(id, why)] for the ones the sweep leaves). On the trunk: the lane's branch tip and its worktree's own HEAD are both
+    ancestors of the trunk's HEAD, so no commit of the lane's is ever lost; a lane with any other commit is not here."""
+    on, left = [], []
+    for b in sorted(c.load_briefs(p), key=lambda x: c.id_num(x.id)):
+        path = b.meta.get("lane") or ""
+        if b.status in c.CLOSED or not path:
+            continue
+        branch = b.meta.get("lane_branch") or f"foreman/{b.id}"
+        tip = _git(main, "rev-parse", "--verify", "-q", f"{branch}^{{commit}}").stdout.strip()
+        head = _git(path, "rev-parse", "--verify", "-q", "HEAD^{commit}").stdout.strip() if os.path.isdir(path) else ""
+        if not tip or any(_git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode for t in (tip, head) if t):
+            continue  # not merged (or no branch left to judge): the sweep's business ends here
+        dirty = _worktree_dirty(path)
+        if dirty is None:
+            left.append((b.id, f"its lane folder {path} is gone or not a worktree git can read"))
+        elif dirty:
+            first = dirty.splitlines()[0][3:]
+            left.append((b.id, f"its lane has uncommitted work ({first}{' and more' if len(dirty.splitlines()) > 1 else ''})"
+                               ": commit it or remove it, nothing is discarded"))
+        else:
+            on.append((b.id, path))
+    return on, left
+
+
+def land_merged(p, main):
+    """T-4596: close the tasks of every lane whose tip is already on the trunk (a hand train, `sampo lane merge`, or a
+    land cut short landed them and closed nothing): the lane goes and the task closes through `close_landed`. One gate
+    pass serves them all: the one on record for the trunk's code tree, else a single `sampo check` first, whose red
+    result leaves every task active. A dirty lane, a task with no close fields or audits and one whose own verify fails
+    on the trunk stay active, the reason in the output and on the task's Log. {"closed", "left": [(id, why)], "gate"}."""
+    from sampo import cli
+    busy = c.active_brief_fast(p)
+    if busy:
+        raise c.PolicyError(f"{busy.id} is active in the main checkout, where sampo lane land focuses each lane's task "
+                            f"to close it: finish {busy.id} (or sampo task set {busy.id} status=planned), then land")
+    with contextlib.ExitStack() as held:
+        try:
+            held.enter_context(c.lock(os.path.join(p.dir, "land"), timeout=1))
+        except c.LockTimeout:
+            raise c.PolicyError("another sampo lane land is running; it closes the lanes it lands") from None
+        on, left = _merged_lanes(p, main)
+        gate = "no merged lane waits for a close" if not on else ""
+        if on and cli._full_pass(p):
+            gate = "reused the gate pass on record for the trunk's code tree"
+        elif on:  # one run for all of them; finish then reuses it for each close (a red one closes nothing)
+            print(f"sampo lane land --merged: no gate pass on record for the trunk: one sampo check for the "
+                  f"{len(on)} lane(s)", file=sys.stderr, flush=True)
+            rc, out, err = _sampo(["check"])
+            gate = "ran one sampo check on the trunk" if not rc else ""
+            if rc:
+                why = f"the trunk's gates are red, so no close rides on them: {c.fit(_why(err or out), 300)}"
+                left.extend((t, why) for t, _ in on)
+                on = []
+                gate = "one sampo check on the trunk, red"
+        closed, hand = close_landed(p, main, [t for t, _ in on], who="sampo lane land --merged") if on else ([], [])
+        left.extend(hand)
+        for tid, why in left:
+            try:
+                _note_left(p, tid, why)
+            except Exception as e:  # noqa: BLE001 — the Log line is a note: it never costs the sweep its result
+                print(f"sampo lane land --merged: no note on {tid}: {type(e).__name__}", file=sys.stderr)
+    return {"closed": [t for t, _ in closed], "left": left, "lines": closed, "gate": gate}
+
+
+def _note_left(p, tid, why):
+    """T-4596: the reason a sweep left a task active, on its Log once (the same reason twice in a row is not logged
+    again: a sweep run every hour must not grow every brief it leaves)."""
+    from sampo import cli
+    b = cli.need_brief(p, tid)
+    line = f"land --merged: left active: {c.fit(' '.join(why.split()), 300)}"
+    log = [x for x in b.section("Log").splitlines() if x.strip()]
+    if log and log[-1].endswith(line):
+        return
+    b.append_log(line)
+    c.save_brief(p, b)
 
 
 def _close_gaps(b):
@@ -1859,6 +1973,16 @@ def cmd_land(p, args, main):
     _stamp_output(args)
     if args.batch is not None and args.batch < 1:
         raise cli.UsageError("--batch takes a whole number of lanes per train, 1 or more")
+    if getattr(args, "merged", False):  # T-4596: close the tasks of lanes already on the trunk; no train, no merge
+        if args.batch is not None or getattr(args, "first", None) or getattr(args, "bg", False):
+            raise cli.UsageError("sampo lane land --merged takes none of --batch, --first or --bg: it trains nothing")
+        got = land_merged(p, main)
+        lines = [f"Land --merged: {len(got['closed']) + len(got['left'])} lane(s) already on the trunk: "
+                 f"{len(got['closed'])} closed, {len(got['left'])} left active ({got['gate']})."
+                 if got["closed"] or got["left"] else "Land --merged: no lane with an open task is on the trunk."]
+        lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in got.pop("lines")]
+        lines += [f"  left {t}: {c.fit(c.plain(w), 400)}" for t, w in got["left"]]
+        return cli.out(args, got, "\n".join(lines))
     first = [x.upper() for x in (getattr(args, "first", None) or "").replace(",", " ").split() if x]
     if first:  # T-3796: ahead of the rest; into a running land at its next train boundary
         for t in first:
