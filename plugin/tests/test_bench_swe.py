@@ -77,7 +77,10 @@ class SweBench(unittest.TestCase):
         env = {"SAMPO_DOCKER": self.docker, "FAKE_ROOT": self.root, "FAKE_LOG": self.log}
         p = mock.patch.dict(os.environ, env)
         p.start(); self.addCleanup(p.stop)
-        self.profile = {"name": "fake", "kind": "openai", "model": "m1", "tools": True, "context": 32000}
+        # T-4541: the machine's real free disk is not this test's subject (36 GB free turned all of it red)
+        d = mock.patch.object(dockershim, "free_gb", lambda path=None: 500.0)
+        d.start(); self.addCleanup(d.stop)
+        self.profile ={"name": "fake", "kind": "openai", "model": "m1", "tools": True, "context": 32000}
         p = mock.patch.object(bench_swe, "profile_for", lambda name: self.profile)
         p.start(); self.addCleanup(p.stop)
 
