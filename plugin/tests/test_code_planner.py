@@ -113,6 +113,98 @@ class CliPlanner(CodeCase):
         self.assertFalse(os.path.exists(self.args), "the CLI was never run")
 
 
+def read(*lines):
+    """A rival read's reply: readings, then one approach the plan has."""
+    return {"text": "## Readings\n" + "".join(f"- {x}\n" for x in lines)
+            + "## Approaches\n- change the operator in calc.add\n## Failure modes\n- a caller relies on it\n"}
+
+
+SAME = "calc.add subtracts by mistake, so it should add"  # the plan's own first reading
+OTHER = "`notes.db` is a ledger other jobs append to, so removing it loses their rows"
+
+
+class RivalGate(CodeCase):
+    """T-4466: the cold rival read the task gate asks for a one-way step, which is only marked when the task starts.
+    The run fetches it from its own model and answers what it opens; before, the cascade died here before step 1."""
+
+    def go(self, big, small):
+        with open(os.path.join(self.repo, "notes.db"), "w") as f:
+            f.write("totals\n")
+        p = dict(M_PLAN, steps=["fix calc.add, then drop the stale totals: `rm notes.db`"])
+        self.big = self.serve("anthropic", plan(p), *big, name="big")
+        self.small = self.serve("anthropic", *small, name="small")
+        r = self.code("fix add", "--model", "small", "--planner", "big", check=False, env={"FOREMAN_NO_RIVAL": "0"})
+        from sampo import core
+        return r, core.find_brief(core.find_project(self.repo), "T-0001")
+
+    def test_rival_read_comes_from_the_runs_own_model_and_the_run_reaches_step_1(self):
+        r, b = self.go([CLOSE], [read(SAME), *FIX])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task()["status"], "done", r.stdout)
+        self.assertTrue(b.meta.get("rival_at"), r.stdout)
+        self.assertIn("A cold read on small", b.section("Rival plan"))
+        self.assertIn("Failure modes", self.small.said(0), "the read's own prompt")
+        self.assertNotIn("Make calc.add add", self.small.said(0), "the reader never sees the plan")
+        self.assertEqual(len(self.big.seen), 2, "the plan and the close notes: nothing was open to answer")
+
+    def test_rival_lines_are_answered_by_the_plans_author_and_recorded(self):
+        r, b = self.go([{"text": "1: rejected: the request asks only for calc.add, and calls the totals stale"}, CLOSE],
+                       [read(SAME, OTHER), *FIX])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task()["status"], "done", r.stdout)
+        self.assertIn("a ledger other jobs append to", self.big.said(1), "the open line was put to the planner")
+        self.assertIn("answered: rejected: the request asks only for calc.add", b.section("Dissent"))
+        self.assertNotIn("- [ ] rival", b.section("Dissent"))
+
+    def test_rival_lines_left_unanswered_stay_open_and_the_gate_still_refuses(self):
+        r, b = self.go([{"text": "I would rather not say."}], [read(SAME, OTHER), *FIX])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("- [ ] rival reading: `notes.db` is a ledger", b.section("Dissent"))
+        self.assertIn("rival", r.stdout + r.stderr)
+        self.assertIn("a - b", self.calc(), "no step ran")
+
+
+class VerifyDoor(CodeCase):
+    """T-4466: a verify that writes over a file git doesn't track. The plan check ran it before any work with no
+    snapshot behind it, and the gate then met the check's own output as somebody's data (exam cascade3: the run ended
+    before step 1, the same verify sent back three times because the gate's line names no path)."""
+
+    def run_with(self, verify, *big, kind="FIX"):
+        p = dict(M_PLAN, type=kind, criteria=[{"text": "calc.add adds", "verify": verify}])
+        self.big = self.serve("anthropic", plan(p), *big, CLOSE, name="big")
+        self.serve("anthropic", *FIX, name="small")
+        r = self.code("fix add", "--model", "small", "--planner", "big", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        return r
+
+    def test_verify_door_at_the_plan_is_never_run_and_the_planner_is_told_the_path(self):
+        log = os.path.join(self.tmp, "day.log")
+        with open(log, "w") as f:
+            f.write("somebody's day\n")
+        r = self.run_with(f"python3 test_calc.py > {log}", plan(M_PLAN))
+        self.assertEqual(self.task()["status"], "done", r.stdout)
+        self.assertIn(log, self.big.said(1), "the path the verify would write over is named")
+        with open(log) as f:
+            self.assertEqual(f.read(), "somebody's day\n", "and it was never run")
+
+    def test_verify_door_is_not_made_of_the_plan_checks_own_output(self):
+        r = self.run_with(f"python3 test_calc.py > {os.path.join(self.tmp, 'fresh.log')}")
+        self.assertEqual(self.task()["status"], "done", r.stdout)
+        from sampo import core
+        b = core.find_brief(core.find_project(self.repo), "T-0001")
+        self.assertFalse(b.meta.get("door_acs"), "the file the plan check made was gone again when the task started")
+        self.assertEqual(len(self.big.seen), 2, "the plan and the close notes")
+
+    def test_verify_door_at_the_gate_is_asked_again_with_the_path_named(self):
+        log = os.path.join(self.tmp, "day.log")
+        with open(log, "w") as f:
+            f.truncate(21 * 1024 * 1024)  # sparse, and over the snapshot cap: no copy can cover it, so the gate parks
+        r = self.run_with(f"python3 test_calc.py > {log}", {"text": "python3 test_calc.py"}, kind="CLEAN")  # not run
+        self.assertEqual(self.task("T-0002")["status"], "done", r.stdout)  # at the plan: the gate is the first to read it
+        self.assertIn(log, self.big.said(1), "the path the verify would write over is named")
+        self.assertEqual(os.path.getsize(log), 21 * 1024 * 1024, "and the file is as it was")
+
+
 class ExamArm(unittest.TestCase):
     def test_the_smith_arm_passes_planner_through_and_records_it(self):
         fake = "import json,sys\nprint(json.dumps({'event': 'closed', 'text': ' '.join(sys.argv)}))\n"

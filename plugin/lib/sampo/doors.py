@@ -186,6 +186,23 @@ def classify(p, b, local_only=False):
     return rows
 
 
+def overwritten(root, cmd):
+    """T-4466: the existing paths git doesn't track that a verify command would write over or remove, as the gate reads
+    them (classify's own targets and tests), so a refusal can be put to a planner with the paths named."""
+    out = []
+    for t in dict.fromkeys(_cmd_targets(cmd)):
+        out += [h for h in _expand(t, root) if _local(h, root) and h not in out]
+    return out[:_PATHS]
+
+
+def unmade(root, cmd):
+    """T-4466: the plain paths a command writes that are not there now: what a run of it would make. A caller that
+    runs a check before any work (sampo code's plan check) removes the ones it made, so the gate doesn't then meet the
+    check's own output as somebody's data."""
+    full = (_full(root, t) for t in dict.fromkeys(_cmd_targets(cmd)) if not any(ch in t for ch in "*?[$`"))
+    return [f for f in full if not os.path.lexists(f)]
+
+
 def reply_door(text, p):
     """'one-way' when a reply's question is about a command the guard stops (a backticked one it categorizes, or a word
     of its categories: fmcli's list), else 'two-way'."""

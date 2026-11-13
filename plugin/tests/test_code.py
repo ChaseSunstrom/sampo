@@ -435,8 +435,11 @@ class PlanReadings(CodeCase):
         self.assertIn("use what exists:", ap)
 
     def test_an_m_plan_under_the_race_bar_gets_its_rival_read_before_focus(self):
-        os.environ["FOREMAN_NO_RIVAL"] = "0"  # the suite skips the read; here the stubbed child fails, which never blocks
-        self.serve("anthropic", plan(dict(M_PLAN, confidence=60)), call("edit", file="calc.py", old="a - b", new="a + b"),
+        os.environ["FOREMAN_NO_RIVAL"] = "0"  # the suite skips the read; T-4466: the run's own model gives it, cold
+        cold = {"text": "## Readings\n- calc.add subtracts by mistake, so it should add\n## Approaches\n"
+                        "- change the operator in calc.add\n## Failure modes\n- a caller relies on it\n"}
+        self.serve("anthropic", plan(dict(M_PLAN, confidence=60)), cold,
+                   call("edit", file="calc.py", old="a - b", new="a + b"),
                    call("done", summary="x"), CLOSE)
         r = self.code("fix add", "--model", "fake")
         from sampo import core

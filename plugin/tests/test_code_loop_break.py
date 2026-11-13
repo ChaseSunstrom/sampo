@@ -106,12 +106,7 @@ class Seen(CodeCase):
         self.assertIn("return a + b", last(f, 4), "the edit changed it: the new text, not a note")
         self.assertNotIn("you have this", last(f, 4))
 
-    def test_seen_text_the_model_no_longer_holds_is_sent_again(self):
-        # the first read's result is cut from the context after KEEP_RESULTS more: a repeat then needs the text
-        f, r = self.run_script(READ, *SEARCHES[:6], READ, EDIT, call("done", summary="x"))
-        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(CODE, last(f, 9), "cut from the conversation: sent whole")
-        self.assertNotIn("you have this", last(f, 9))
+    # T-4490: text the model no longer holds is sent again: test_code_window.SeenFar (a priced model's last-six rule)
 
     def test_seen_a_reworded_search_with_the_same_hits_is_a_note(self):
         a, b, c = (call("search", pattern=p) for p in ("def add", "def a", "assert"))
