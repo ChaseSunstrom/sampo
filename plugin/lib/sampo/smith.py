@@ -452,6 +452,99 @@ def fit_steps(v):
                                    f"the run goes on with the plan as repaired")
 
 
+CHECKS_DIR, SCRIPT_MAX = "checks", 6000  # T-4571: the folder (in the run's own) of check scripts; the longest verify kept
+SCRIPT_HEAD = "# a verify the plan wrote over several lines, kept as written (fm code, T-4571)\n"
+
+
+def _script_name(body):
+    """T-4571: a check script's file name: its text's hash, so the same command is the same file and a file that holds
+    other text than its name says is not one of ours."""
+    return hashlib.sha1(body.encode("utf-8")).hexdigest()[:12] + ".sh"
+
+
+def script_body(verify):
+    """T-4571: the text of the check script a verify line calls (`bash <folder>/checks/<hash>.sh`, as fit_verifies writes
+    it), or None for any other verify. The file must be a plain file whose text is its name's hash: a path the model
+    typed, or a file of another content, is no script of the run's and is read as the line it is."""
+    if not isinstance(verify, str) or "\n" in verify:
+        return None
+    try:
+        words = shlex.split(verify)
+    except ValueError:
+        return None
+    if len(words) != 2 or words[0] != "bash":
+        return None
+    path = words[1]
+    name = os.path.basename(path)
+    if os.path.basename(os.path.dirname(path)) != CHECKS_DIR or len(name) != 15 or not name.endswith(".sh") or any(
+            ch not in "0123456789abcdef" for ch in name[:12]):
+        return None
+    try:
+        if os.path.islink(path) or not os.path.isfile(path) or os.path.getsize(path) > SCRIPT_MAX * 2:
+            return None
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+    except (OSError, ValueError):
+        return None
+    body = text[len(SCRIPT_HEAD):].removesuffix("\n") if text.startswith(SCRIPT_HEAD) else None
+    return body if body and _script_name(body) == name else None
+
+
+def fit_verifies(run, v):
+    """T-4571: a plan whose criteria have a verify over several lines (a python3 -c whose program is on the lines inside
+    its quotes; exam cascade11l: three full M plans refused for it and the run ended with no edit) is kept, not
+    refused: each such verify is written as it was, to a check script in the run's own folder (<jdir>/checks, outside the
+    worked tree, so it is never the model's change and no restore wipes it), and the criterion's verify becomes the
+    one line `bash <that script>`. Joining the lines would change what a program means. Returns (the plan, a note), or
+    (v, None) when nothing needed it. Left for check_plan to refuse as before: the user's own plan, a criterion whose
+    text is itself flawed (it is set aside whole), a verify past SCRIPT_MAX, and every criterion when the folder can't
+    be written. The script's text is what the guard, the can't-fail rule and the other plan checks read (script_body)."""
+    crit = v.get("criteria") if isinstance(v, dict) else None
+    if getattr(run, "own_plan", False) or not isinstance(crit, list):
+        return v, None
+    folder, out, stored, tidy = os.path.join(os.path.abspath(run.jdir), CHECKS_DIR), [], 0, False
+    for cr in crit:
+        verify = cr.get("verify") if isinstance(cr, dict) else None
+        text = cr.get("text") if isinstance(cr, dict) else None
+        body = verify.replace("\r\n", "\n").strip() if isinstance(verify, str) else ""
+        if not body or "\n" not in verify or not isinstance(text, str) or not text.strip() or "::" in text or "\n" in text:
+            out.append(cr)
+        elif "\n" not in body:  # only a line break round it
+            out.append(dict(cr, verify=body))
+            tidy = True
+        elif len(body) > SCRIPT_MAX:
+            out.append(cr)
+        else:
+            path = os.path.join(folder, _script_name(body))
+            try:
+                if script_body(f"bash {shlex.quote(path)}") != body:
+                    core.write_atomic(path, SCRIPT_HEAD + body + "\n")
+            except OSError:
+                return v, None
+            out.append(dict(cr, verify=f"bash {shlex.quote(path)}"))
+            stored += 1
+    if not stored and not tidy:
+        return v, None
+    note = (f"{stored} multi-line verify command{'s' if stored != 1 else ''} written, as written, to check scripts in "
+            f"{folder} and called in one line; the run goes on with the plan as repaired") if stored else None
+    return dict(v, criteria=out), note
+
+
+def fit_plan(run, v):
+    """T-4571: a plan reply as the harness repairs it before the plan gate reads it: fit_steps, then fit_verifies.
+    Returns (the plan, the notes joined), or (v, None) when nothing changed."""
+    v, a = fit_steps(v)
+    v, b = fit_verifies(run, v)
+    return v, " ".join(x for x in (a, b) if x) or None
+
+
+def _cant_fail(verify):
+    """T-4571: whether a verify ends in a command that can't fail (echo, true, exit 0, a pipe into tail or head): as a
+    line, and, for a script of several lines, its last line as a line of its own."""
+    last = next((x for x in reversed(verify.splitlines()) if x.strip()), "")
+    return bool((_CANT_FAIL.search(verify) or _CANT_FAIL.search(last)) and not _EXITS_NONZERO.search(verify))
+
+
 def check_plan(v, change=None):
     """None when v is a usable plan, else what's wrong with it (quoted back to the model). T-3688: given `change`, the
     request's word asking for one (small-model mode), an answer, a RESEARCH plan and a verify that can't fail are
@@ -477,8 +570,9 @@ def check_plan(v, change=None):
             return _flaw(f"criterion {i} needs both text and verify, as text", i)
         if "::" in cr["text"] or "\n" in cr["text"] + cr["verify"]:
             return _flaw(f"criterion {i}: text and verify are one line each, and text has no '::'", i)
-        if change and _CANT_FAIL.search(cr["verify"]) and not _EXITS_NONZERO.search(cr["verify"]):
-            return _flaw(f"criterion {i}'s verify `{cr['verify']}` can't fail (it ends in an echo, true or exit 0, or "
+        body = script_body(cr["verify"]) or cr["verify"]  # T-4571: a stored script is judged by its own text
+        if change and _cant_fail(body):
+            return _flaw(f"criterion {i}'s verify `{body}` can't fail (it ends in an echo, true or exit 0, or "
                          "pipes into tail or head), so it proves nothing: give a check that fails now and passes once "
                          "the fix is made", i)
     steps = v.get("steps")
@@ -866,7 +960,7 @@ def slot(run, profile, messages, check, what, fields=()):
         messages.append({"role": "assistant", "content": r["text"]})
         note = None
         if what == "plan":  # T-4506: the harness repairs a plan's steps (fit_steps) before the check judges them
-            v, note = fit_steps(v)
+            v, note = fit_plan(run, v)  # T-4571: and a verify over several lines (fit_verifies)
         err = check(v)
         if not err:
             if note:
@@ -889,8 +983,8 @@ def slot(run, profile, messages, check, what, fields=()):
             messages.append({"role": "assistant", "content": r["text"]})
             v[key] = parse(_unlabel(r["text"], key))
         note = None
-        if what == "plan":  # T-4506: as in the loop above
-            v, note = fit_steps(v)
+        if what == "plan":  # T-4506, T-4571: as in the loop above
+            v, note = fit_plan(run, v)
         why = check(v)
         if why and what == "plan" and _form_only(v, check):  # T-4282
             v, why = _form_rescue(run, profile, messages, check, v), None
@@ -6562,20 +6656,22 @@ def _plan_problem(run, profile=None):
     T-4362: given the planner's profile (the first ask only), a verify whose first failure is the command's own (see
     _own_failure) goes back to the planner with its output, as a check that can never pass."""
     waits = set()
+    bodies = {}  # T-4571: a verify that is a call to a check script is read by the script's text (what it runs)
     for n, cr in enumerate(run.plan["criteria"], 1):
-        why = _shell_syntax(cr["verify"])  # T-4445: a cut verify (`python3 -c "`) blocked finished work at the close
+        bodies[n] = body = script_body(cr["verify"]) or cr["verify"]
+        why = _shell_syntax(body)  # T-4445: a cut verify (`python3 -c "`) blocked finished work at the close
         if why:
-            return (f"Criterion {n}'s verify `{cr['verify']}` is not a complete shell command ({why}). Give the whole "
-                    "command on one line (a multi-line program belongs in a test file the steps write).")
-        why = run.guard("Bash", {"command": cr["verify"]})
+            return (f"Criterion {n}'s verify `{body}` is not a complete shell command ({why}). Give the whole "
+                    "command, every quote closed (a long program belongs in a test file the steps write).")
+        why = run.guard("Bash", {"command": body}) or (run.guard("Bash", {"command": cr["verify"]}) if body != cr["verify"] else None)
         if why and _NO_TASK in why[:60]:  # the guard's last category (brief): any other refusal is named before it
             waits.add(n)
             continue
         if why:
-            return _flaw(f"refused by Smith's guard: criterion {n}'s verify `{cr['verify']}`: {_one_line(why, 300)}", n)
-        why = core.unrunnable(cr["verify"], run.root)  # T-1320: fm task new refuses it; the planner can do better
+            return _flaw(f"refused by Smith's guard: criterion {n}'s verify `{body}`: {_one_line(why, 300)}", n)
+        why = core.unrunnable(body, run.root)  # T-1320: fm task new refuses it; the planner can do better
         if why:
-            return _flaw(f"Criterion {n}'s verify `{cr['verify']}` can't run here: {why}. Use a check this project can "
+            return _flaw(f"Criterion {n}'s verify `{body}` can't run here: {why}. Use a check this project can "
                          "run (its own test runner, python3 -m unittest, node --test, a python3 -c assert).", n)
     # T-2878: small-model mode checks every change type (T-3688: check_plan refuses a change request's RESEARCH plan)
     small = getattr(run, "small", False)
@@ -6590,12 +6686,12 @@ def _plan_problem(run, profile=None):
         # would write over data git doesn't track is never run here: the planner is told which path. What the run
         # makes itself is removed after it, or the gate would meet the check's own output as somebody's data (exam
         # cascade3, perf-log-rollup: `genlog > /tmp/day.log` ended the run before step 1).
-        hit = doors.overwritten(run.root, cr["verify"])
+        hit = doors.overwritten(run.root, bodies[n])
         if hit:
-            return (f"Criterion {n}'s verify `{cr['verify']}` would write over or remove {core.joinmore(hit, 5)}, "
+            return (f"Criterion {n}'s verify `{bodies[n]}` would write over or remove {core.joinmore(hit, 5)}, "
                     "which is there now and which git doesn't track: give the same check, writing only to a fresh "
                     "place it makes itself (a folder from mktemp -d) or nowhere.")
-        own = doors.unmade(run.root, cr["verify"])
+        own = doors.unmade(run.root, bodies[n])
         code, out = run_bounded(cr["verify"], run.root, VERIFY_TIMEOUT, run.env(), 200, confine=run.confine())
         for path in own:
             if os.path.isfile(path) and not os.path.islink(path):
@@ -6604,7 +6700,7 @@ def _plan_problem(run, profile=None):
                 except OSError:
                     pass
         if code == 0:
-            return (f"Criterion {n}'s verify `{cr['verify']}` already passes before any work, so it proves nothing: "
+            return (f"Criterion {n}'s verify `{bodies[n]}` already passes before any work, so it proves nothing: "
                     "give a verify that fails now and passes once the work is done.")
         if code:  # a timeout (None) is no first failure to read
             failed.append((n, code, out))
