@@ -166,6 +166,12 @@
               "Stop"
             ],
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/wait-timer",
+            "asyncRewake": true,
+            "timeout": 1500
           }
         ]
       }

@@ -4725,6 +4725,140 @@ def _stop(pl):
     return out
 
 
+# ---------------------------------------------------------------- the wait deadline (T-4525)
+# LONG_JOB_S is read at a Stop, and an idle session has none: JARVIS idled 2.4 h on a script whose ps grep matched its own
+# launcher. plugin/hooks/wait-timer is a second Stop hook (asyncRewake): it sleeps to the deadline of the jobs the Stop
+# left waited on and exits 2 with one line, which wakes the idle session. No model call, one sleep.
+
+WAIT_SETTLE_S = 6      # the drive hook runs beside the timer: its wait_jobs is read after it has had time to write
+WAIT_FRESH_S = 30      # a wait_jobs written this long before the timer started is from this Stop or its close neighbour
+_WAIT_DIR = "waitwake"
+
+
+def _stale_jobs(since, armed_at, turn_at, now, woken=(), limit=LONG_JOB_S):
+    """[(age_s, job)] of the waited jobs past `limit`, oldest first; none when the session took a turn since the wait."""
+    if turn_at and turn_at > armed_at:
+        return []
+    return sorted(((now - t, k) for k, t in since.items() if now - t >= limit and k not in woken), reverse=True)
+
+
+def wait_wake(since, armed_at, turn_at, now, woken=(), limit=LONG_JOB_S):
+    """T-4525: the one line that wakes an idle session whose waited background jobs ran past `limit`, else None.
+    since: {job: when the drive first saw it}; armed_at: when the Stop left the wait; turn_at: the session's last
+    prompt; woken: jobs already named (once per job)."""
+    stale = _stale_jobs(since, armed_at, turn_at, now, woken, limit)
+    if not stale:
+        return None
+    names = ", ".join(f"{k} ({int(age // 60)} min)" for age, k in stale[:3]) + (f" and {len(stale) - 3} more" if len(stale) > 3 else "")
+    return (f"Sampo: the drive has waited on {names}, longer than the {round(limit / 60)} min a job holds it, so it may be "
+            f"stuck (a wait that never ends). Inspect it (TaskOutput) or stop it (TaskStop), then go on with the queued "
+            f"work (sampo next).")
+
+
+def _wait_env(name, default, lo, hi):
+    try:
+        v = float(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return min(max(v, lo), hi) if v == v else default
+
+
+def _is_timer(pid):
+    """Whether `pid` is a wait-timer process (a recycled pid is somebody else's: never signalled)."""
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return b"wait-timer" in f.read()
+    except OSError:
+        pass
+    try:
+        r = subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, timeout=5)
+        return "wait-timer" in r.stdout
+    except Exception:
+        return False
+
+
+def _wait_claim(folder, sid, job):
+    """Once per job: True for the first caller (an exclusive create), False after."""
+    name = re.sub(r"[^\w.-]", "_", f"{sid}-{job}")[:120]
+    try:
+        os.close(os.open(os.path.join(folder, name), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        return False
+    except OSError:
+        return True  # an unwritable folder must not hide a stuck job: said (maybe twice) beats never
+    return True
+
+
+def wait_timer(raw):
+    """T-4525: the timer hook's body: the Stop payload on stdin; the exit code (2 wakes the session, its line on stderr)."""
+    t0 = time.time()
+    try:
+        pl = json.loads(raw)
+        sid, p = str(pl.get("session_id") or ""), c.find_project(_cwd(pl))
+    except Exception:
+        return 0
+    if not sid or not p:
+        return 0
+    import signal
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))  # a newer timer ends this one: a clean exit wakes nothing
+    # core mirrors SAMPO_X to FOREMAN_X at import (T-2766): FOREMAN_ is the name the environment holds here
+    limit = _wait_env("FOREMAN_WAIT_LIMIT_S", LONG_JOB_S, 1, 6 * 3600)
+    time.sleep(_wait_env("FOREMAN_WAIT_SETTLE_S", WAIT_SETTLE_S, 0, 30))
+    folder = os.path.join(p.dir, _WAIT_DIR)
+    key = re.sub(r"[^\w-]", "", sid)[:64]
+
+    def state():
+        d = (_read_gate(p).get("drive") or {}).get(sid) or {}
+        w = d.get("wait_jobs") if isinstance(d, dict) else None
+        ok = isinstance(w, dict) and isinstance(w.get("since"), dict) and isinstance(w.get("at"), (int, float))
+        return (d, w) if ok else (None, None)
+    try:
+        os.makedirs(folder, exist_ok=True)
+        for name in os.listdir(folder)[:500]:  # claims and pids of sessions long gone
+            try:
+                if t0 - os.stat(os.path.join(folder, name)).st_mtime > 3 * 86400:
+                    os.unlink(os.path.join(folder, name))
+            except OSError:
+                pass
+        pidfile = os.path.join(folder, key + ".pid")
+        try:  # one timer per session: this Stop's wait replaces the last one's
+            with open(pidfile) as f:
+                old = int(f.read().strip())
+            if old != os.getpid() and _is_timer(old):
+                os.kill(old, signal.SIGTERM)
+        except (OSError, ValueError):
+            pass
+        c.write_atomic(pidfile, str(os.getpid()))
+        d, w = state()
+        if not w or w["at"] < t0 - WAIT_FRESH_S:  # nothing waited on at this Stop
+            return 0
+        armed = w["at"]
+        since = {str(k): t for k, t in w["since"].items() if isinstance(t, (int, float))}
+        if not since:
+            return 0
+        deadline = min(since.values()) + limit
+        for _ in range(3):  # one sleep; again only when the clock moved under it
+            rest = deadline - time.time()
+            if rest <= 0:
+                break
+            time.sleep(min(rest, limit + 60))
+        d, w = state()
+        if not w or w["at"] != armed:  # the job ended, or a later Stop took over (its own timer follows)
+            return 0
+        now = time.time()
+        since = {str(k): t for k, t in w["since"].items() if isinstance(t, (int, float))}
+        stale = _stale_jobs(since, armed, d.get("turn_at"), now, limit=limit)
+        mine = [k for _, k in stale if _wait_claim(folder, key, k)]
+        text = wait_wake({k: since[k] for k in mine}, armed, d.get("turn_at"), now, limit=limit) if mine else None
+        if not text:
+            return 0
+        print(text, file=sys.stderr)
+        return 2
+    except Exception:
+        log_error("WaitTimer", _tb())
+        return 0
+
+
 def _push_nudge(sid, sd, drained):
     """T-0778: a full-autonomy turn ending on an open ask (fm ask) or a drained queue asks for one PushNotification
     (phone over Remote Control, desktop otherwise; the tool skips itself when the user is at the terminal). Once per
@@ -5342,6 +5476,9 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     agents = ({str(t.get("id")) for t in bg if isinstance(t, dict) and t.get("type") == "agent"} if isinstance(bg, list)
               else set()) | scanned  # T-0575: a subagent (a builder can take 30 min) is work that ends, never a service
     running = [k for k in running if k in agents or now - since[k] < LONG_JOB_S]
+    # T-4525: the jobs a turn ending here waits on (not agents: they end), for the timer hook that wakes an idle session
+    jobs = {k: since[k] for k in running if k not in agents}
+    d.pop("wait_jobs", None) if not jobs else d.update(wait_jobs={"since": jobs, "at": now})
     act = sd["active"]
     if running:  # background work is out; its notification wakes the session. T-3539: with no active task too (a
         # session keeping the main checkout unfocused for lane merges got 361 pushes to focus one): the wait is said

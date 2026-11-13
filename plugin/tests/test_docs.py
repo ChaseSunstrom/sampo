@@ -489,7 +489,13 @@ class PluginFiles(unittest.TestCase):
         hooks = read_json(os.path.join(PLUGIN, "hooks", "hooks.json"))["hooks"]
         self.assertEqual(set(hooks), HOOK_EVENTS)
         for event, groups in hooks.items():
-            handlers = [h for g in groups for h in g["hooks"]]
+            every = [h for g in groups for h in g["hooks"]]
+            # T-4525: Stop has one background waker beside its handler (asyncRewake: it never holds the turn; it
+            # wakes an idle session when a wait passes its limit). Counted apart so the one-handler rule stands
+            wakers = [h for h in every if h.get("asyncRewake")]
+            self.assertEqual(len(wakers), {"Stop": 1}.get(event, 0), event)
+            self.assertTrue(all(h["command"].endswith("/hooks/wait-timer") and "args" not in h for h in wakers), event)
+            handlers = [h for h in every if not h.get("asyncRewake")]
             # T-0724: PreToolUse has a second entry, for Read (outline-first), with its own failure rule; T-0784: a
             # third, for the tools that send content off the machine; T-0947: PostToolUse is sync for file writes
             # (their validators block, handler PostToolUseValidate) beside the async catch-all; T-3672: SubagentStart

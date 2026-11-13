@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Sampo wait timer (T-4525): a second Stop hook (hooks.json: asyncRewake, so Claude Code runs it in the background
+and wakes an idle session when it exits 2, its stderr shown as a system reminder). The Stop hook (hooks/hook) records
+the background jobs a turn ends on waiting for; this sleeps to the deadline of the oldest (LONG_JOB_S) in one call,
+re-reads that record, and exits 2 with one line only when the job still runs, no turn happened since, and the job was
+not named before. Nothing waited on: exit 0 at once. It never calls a model and never fails the session: any error exits 0.
+"""
+import os
+import sys
+
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "lib"))
+    from sampo import hooks
+    code = hooks.wait_timer(sys.stdin.read())
+except Exception:
+    code = 0
+sys.stdout.flush()
+sys.stderr.flush()
+os._exit(code)
