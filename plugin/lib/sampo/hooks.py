@@ -4,6 +4,7 @@ Non-guard handlers fail open: any exception is logged to state/logs/hooks.log an
 The PreToolUse guard fails closed: any exception blocks the tool call (exit 2).
 Injected text is factual state, never instructions.
 """
+import bisect
 import collections
 import json
 import os
@@ -2735,6 +2736,7 @@ def _pre_tool_use(raw):
         builders = (("fix", lambda: _fix_note(pl, p)), ("deps", lambda: _dep_note(pl, p)),
                     ("veto", lambda: _veto_note(pl, p)), ("scope", lambda: _scope_note(pl, p, act)),
                     ("lessons", lambda: _tripwire_note(pl, p, act)), ("steps", lambda: _step_note(pl, p, act)),
+                    ("self-wait", lambda: _self_wait_note(pl)),
                     ("ambient", lambda: _ambient_note(p)), ("bus", lambda: _bus_note(pl)),
                     ("cards", lambda: _card_note(pl, p, act)), ("test-first", lambda: _test_first_note(pl, p, act)),
                     ("design", lambda: _design_note(pl, p, act)), ("readme", lambda: _readme_note(pl, p, act)),
@@ -3346,6 +3348,48 @@ def _self_match(pl):
                    "job itself with run_in_background.")
             return ("deny", f"Sampo: `{cmd[m.start(1) - 5:m.end()]}` matches this command's own shell (its command "
                             f"line is this whole command), so a wait on it never ends and a kill hits itself. {fix}")
+    return None
+
+
+_PS_WAIT = c.lazy(r"""\bps\b[^\n;&]{0,300}?\|\s*grep\s+(?:-(?![A-Za-z]*v)[A-Za-z]+\s+)*(?!-)(?:'([^']*)'|"([^"]*)"|([^\s;&|)'"]+))""")
+_PGREP_WAIT = c.lazy(r"""\bpgrep((?:\s+-{1,2}[\w=-]+)*)\s+(?:'([^']*)'|"([^"]*)"|([^\s;&|)'"]+))""")
+
+
+def _self_wait_note(pl):
+    """T-4527 (JARVIS 2026-11-12: a background wait looped on `ps -eo args | grep NAME` for a NAME its own launcher's
+    command text held, and never ended, 2.4 h; Ward refused only the pgrep form, in _self_match): a process-listing
+    wait inside a while/until whose pattern also occurs elsewhere in the same command text matches the launcher's own
+    command line, so it never ends. One advisory line, never a refusal: the loop may be right when the name is
+    someone else's process. Syntax matching on the command text; a miss says nothing."""
+    cmd = str((pl.get("tool_input") or {}).get("command") or "") if pl.get("tool_name") == "Bash" else ""
+    if not re.search(r"\b(?:while|until)\b", cmd) or not re.search(r"\b(?:ps|pgrep)\b", cmd):
+        return None
+    whiles = [m.start() for m in re.finditer(r"(?<![\w-])(?:while|until)\b", cmd)]
+    dones = [m.start() for m in re.finditer(r"(?<![\w-])done(?![\w-])", cmd)]
+
+    def in_loop(pos):  # the nearest while/until before pos is still open at pos (no done between them)
+        i = bisect.bisect_left(whiles, pos) - 1
+        j = bisect.bisect_right(dones, whiles[i]) if i >= 0 else 0
+        return i >= 0 and (j == len(dones) or dones[j] > pos)
+
+    waits = [(m, next((g for g in m.group(1, 2, 3) if g is not None), "")) for m in _PS_WAIT.finditer(cmd)]
+    for m in _PGREP_WAIT.finditer(cmd):
+        flags = m.group(1).split()
+        short = "".join(f[1:] for f in flags if not f.startswith("--"))
+        if ("f" in short or "--full" in flags) and "x" not in short and "--exact" not in flags:
+            waits.append((m, next((g for g in m.group(2, 3, 4) if g is not None), "")))
+    for m, pat in waits:
+        if not pat or len(pat) > 200 or not whiles or not in_loop(m.start()) or _quoted_text(cmd, m.start()):
+            continue  # a pattern outside a loop, or a mention quoted as another command's data; a 200+ char pattern is no name
+        try:
+            rx = re.compile(pat)
+        except re.error:
+            rx = re.compile(re.escape(pat))
+        if any(not m.start() <= h.start() < m.end() for h in rx.finditer(cmd)):  # text outside the listing itself
+            shown = re.sub(r"[`\n\r]", " ", pat)[:60]
+            return (f"Sampo: this wait loop lists processes for `{shown}`, which also occurs elsewhere in this command, "
+                    "and the launcher's own command line holds it, so the loop never ends. Wait on the job's PID "
+                    "(`while kill -0 PID`) or on a file the job writes.")
     return None
 
 
