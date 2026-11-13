@@ -1538,7 +1538,8 @@ def nice_argv(argv, level=NICE_LANE):
     return [nice, "-n", str(level), *argv] if nice else list(argv)
 
 
-def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None):
+def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None, watch=None,
+                watch_every=30.0):
     """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). stdin is
     /dev/null unless a caller hands it one it knows won't block (T-1766). priority: its tests/run.py takes freed CPU
     slots ahead of lane runs (T-3614), unless SAMPO_SLOT_PRIORITY is already set (=0 opts out). niced: the command
@@ -1563,7 +1564,7 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
     except OSError as e:  # no bash on PATH, or the repo root is gone
         return 127, f"could not run bash: {e}"
     try:
-        out, _ = pr.communicate(timeout=timeout)
+        out = _wait_out(pr, timeout, watch, watch_every)
         return judged(pr.returncode, redact(out))
     except subprocess.TimeoutExpired:
         kill_group(pr)
@@ -1572,6 +1573,29 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         except subprocess.TimeoutExpired:  # a grandchild kept the pipe open after leaving the group
             out = ""
         return 124, redact((out or "") + f"\ntimed out after {timeout:g}s")
+    except BaseException:  # T-4540: watch() stopped the run (or a signal did): its group goes too
+        if watch is None:
+            raise
+        kill_group(pr)
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            pr.communicate(timeout=10)
+        raise
+
+
+def _wait_out(pr, timeout, watch, every):
+    """pr's output once it ends (communicate's); with `watch`, watch() runs every `every` seconds meanwhile, and a
+    raise from it ends the wait (T-4540: a train stops its gate when trunk moved). TimeoutExpired past `timeout`."""
+    if watch is None:
+        return pr.communicate(timeout=timeout)[0]
+    end = None if not timeout else time.monotonic() + timeout
+    while True:
+        left = None if end is None else max(0.0, end - time.monotonic())
+        try:
+            return pr.communicate(timeout=every if left is None else min(every, left))[0]
+        except subprocess.TimeoutExpired:
+            if end is not None and time.monotonic() >= end:
+                raise
+            watch()
 
 
 def judged(code, out):

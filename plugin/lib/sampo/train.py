@@ -24,7 +24,8 @@ import threading
 import time
 
 from sampo import core as c
-from sampo.lanes import CriterionRed, _git, _ref_ok, _verify, cpu_env, pm_record, pm_rerun_cmd, pm_wait
+from sampo.lanes import CLOSE_MARK, CriterionRed, _git, _ref_ok, _verify, cpu_env, pm_after_train, pm_record, \
+    pm_rerun_cmd, pm_wait, train_lock, train_lock_closing
 
 FLAKY_ROUNDS = 3  # T-4289: red rounds a train goes on past (flaky classes alone) before it judges them as a lane's again
 SKIPPED = "probe skipped"  # the note a held green run leaves; the report counts by it (T-3596)
@@ -522,6 +523,45 @@ def _main(arg):
     return 0
 
 
+CLOSE_WAIT_S = 900.0  # T-4540: a hand close holds trunk across its finish (gates can run minutes): a train waits this long
+
+
+def _closing(p):
+    """T-4540: True while a live hand close holds the train's lock (lanes.train_lock_closing names it by pid)."""
+    try:
+        with open(os.path.join(p.dir, "train", CLOSE_MARK)) as f:
+            pid = int(f.read().strip() or 0)
+        if pid <= 0:
+            return False
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+@contextlib.contextmanager
+def _train_run_lock(p):
+    """The train's lock for one run: a second train is refused after 1 s, but a hand close's commit is waited for."""
+    with contextlib.ExitStack() as st:
+        try:
+            st.enter_context(train_lock(p, timeout=1))  # a second train, not a lane merge, waits on this one
+        except c.LockTimeout:
+            if not _closing(p):
+                raise
+            st.enter_context(train_lock(p, timeout=CLOSE_WAIT_S))  # LockTimeout again if the close outlasts the wait
+        yield
+
+
+def _after_train_run(p, main):
+    """T-4540: after a train that held the lock: a red merge whose revert waited for it is reverted now. It never
+    raises: the train's trunk is already fast-forwarded, so its return value or error must stand."""
+    try:
+        pm_after_train(p, main)
+    except Exception as e:
+        with contextlib.suppress(Exception):
+            c.log_event(p, "postmerge_spawn_failed", data={"why": c.fit(str(e), 200)})
+
+
 def train(p, main, ids=None):
     """Land the named `ids` (a bare train would land lanes nobody picked) through one gate run, one train at a time.
     Returns a dict: merged, left_out [(id, why)], gate_runs, probes, tip, branch. Raises PolicyError when nothing can
@@ -530,8 +570,17 @@ def train(p, main, ids=None):
     ids = list(dict.fromkeys(ids or []))
     if not ids:
         raise cli.UsageError("name the lanes to land: sampo lane train T-0001,T-0002 (it never lands a lane nobody picked)")
-    with c.lock(os.path.join(p.dir, "train"), timeout=1):  # a second train, not a lane merge, waits on this one
-        return _run(p, main, ids)
+    took = False
+    try:
+        with _train_run_lock(p):
+            took = True
+            return _run(p, main, ids)
+    finally:  # T-4540: only a train that held the lock runs the pass: a refused one spawns nothing
+        if took:
+            _after_train_run(p, main)
+
+
+TRUNK_POLL_S = 30.0  # T-4540: a running gate checks trunk this often (a commit there ends the gate at once)
 
 
 def _run(p, main, ids):
@@ -638,7 +687,7 @@ def _run(p, main, ids):
             return passed.get(key), False
         t0 = time.monotonic()
         code, out = c.run_command(wt, line, c.load_scaled(1800), priority=True,  # T-3614, T-3757; T-4289: no test override
-                                  env=c.scrubbed_env(cpu_env(p)))
+                                  env=c.scrubbed_env(cpu_env(p)), watch=trunk_watch, watch_every=TRUNK_POLL_S)
         row = {"cmd": cmd, "exit": code, "s": round(time.monotonic() - t0, 1), **({"affected": mods} if mods else {})}
         if code:
             row.update(failing=_red(out), tail=out.rstrip().splitlines()[-15:], out=out)
@@ -659,6 +708,19 @@ def _run(p, main, ids):
     def moved():
         return _git(main, "rev-parse", "HEAD").stdout.strip() != base or \
             _git(main, "symbolic-ref", "--short", "-q", "HEAD").stdout.strip() != branch
+
+    def moved_why(when):
+        """The refusal for a trunk that moved, naming the commit that moved it (T-4540: a stop is traced at once)."""
+        tip = _git(main, "rev-parse", "HEAD").stdout.strip()
+        if tip == base:
+            return f"{branch} changed {when} (HEAD is no longer on it): nothing landed; run it again"
+        by = c.fit(_git(main, "log", "-1", "--format=%s", tip).stdout.strip(), 80)
+        return f"{branch} moved {when} (was {base[:9]}; now {tip[:9]} {by}): nothing landed; run it again"
+
+    def trunk_watch():
+        """T-4540: a gate's result is thrown away once trunk moved, so the gate ends at its next TRUNK_POLL_S check."""
+        if moved():
+            raise c.PolicyError(moved_why("while its gate ran"))
 
     def gate():
         """True when every gate passes in the scratch tree as it stands, each as form() words it."""
@@ -748,7 +810,7 @@ def _run(p, main, ids):
         merged = build(base, cands)
         sub = _affected_gate(p, wt, base, checks)
         if moved():  # a lane merged meanwhile: don't spend a gate run on a base that is gone
-            raise c.PolicyError(f"{branch} moved since the train started (was {base[:9]}): nothing landed; run it again")
+            raise c.PolicyError(moved_why("since the train started"))
         why = _base_red(p, main, base, sub) if sub and merged else ""
         if why:  # T-3625: the base's affected tests first: a red base is known in minutes
             raise c.PolicyError(f"the base {base[:9]} of {branch} is red; fix it before a train can blame a lane: red on "
@@ -854,7 +916,7 @@ def _run(p, main, ids):
         t2 = time.monotonic()
         tip =_git(wt, "rev-parse", "HEAD").stdout.strip()
         if moved():
-            raise c.PolicyError(f"{branch} moved while the train ran (was {base[:9]}): nothing landed; run it again")
+            raise c.PolicyError(moved_why("while the train ran"))
         ids_in = [b.id for b, _ in merged]
         for b, _ in merged:  # marked before the fast-forward, so a crash can't leave landed lanes unmarked
             def done(x, b=b):
@@ -1737,9 +1799,14 @@ def _close(p, main, tid):
     # T-4515: the builder's WHY-NOT-CAUGHT line goes on as the close's why-not-caught; the brief's own section wins
     own = b.section("Why not caught").strip() or not f.get("why_not_caught")
     why_arg = [] if own else [f"--why-not-caught={f['why_not_caught']}"]
-    rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
-                           *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
-                           *why_arg, "--commit", title])
+    try:
+        with train_lock_closing(p):  # T-4540: the close commits on trunk: it waits for a running train (bounded), not beside it
+            rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
+                                   *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
+                                   *why_arg, "--commit", title])
+    except c.LockTimeout:
+        return ("a running train holds trunk: the close waits for it, and the next land retries it"
+                + ("; its lane is kept" if path else ""), "")
     if rc:
         why = _why(err or out) + ("; its lane is kept" if path else "")
         nb = cli.need_brief(p, tid)  # after the refusal: it may have touched the brief, and the hash must match then

@@ -2719,6 +2719,39 @@ def pm_record(p, sha, tid, main, spawn=True):
         pm_spawn(p, main)
 
 
+TRUNK_WAIT_S = 60.0  # T-4540: a commit on trunk that Sampo makes itself waits this long for a running train, then retries later
+
+
+def train_lock(p, timeout=None):
+    """The train's lock: train.train holds it for a whole run. Each commit on trunk that Sampo makes itself takes it, so
+    none lands beside a train (T-4540). LockTimeout after `timeout` (default TRUNK_WAIT_S) while a train runs."""
+    return c.lock(os.path.join(p.dir, "train"), timeout=TRUNK_WAIT_S if timeout is None else timeout)
+
+
+CLOSE_MARK = "closing"  # T-4540: the file a hand close writes under the train's lock while it commits (its pid)
+
+
+@contextlib.contextmanager
+def train_lock_closing(p, timeout=None):
+    """A hand close's trunk commit (T-4540): the train's lock, held across its whole `sampo task finish`, with a file
+    naming this process, so a train that starts meanwhile waits for the close instead of being refused at once."""
+    with train_lock(p, timeout):
+        path = os.path.join(p.dir, "train", CLOSE_MARK)
+        with open(path, "w") as f:
+            f.write(str(os.getpid()))
+        try:
+            yield
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+
+def pm_after_train(p, main):
+    """T-4540: a red merge whose revert waited for a train is reverted by a detached pass now the train is done."""
+    if any(r["state"] == "red" for r in pm_records(p).values()):
+        pm_spawn(p, main)
+
+
 def pm_spawn(p, main):
     """Detached `fm lane verify`: its own session, so the merge's caller exits without it."""
     if os.environ.get("FOREMAN_NO_BACKGROUND"):
@@ -2737,6 +2770,20 @@ def _pm_reverted(main, sha):
     return bool(_git(main, "log", "-1", "--format=%H", f"--grep=This reverts commit {sha}", "HEAD").stdout.strip())
 
 
+def _pm_settled(p, main, sha):
+    """T-4540: read under the train's lock, before a revert: True when there is nothing left to revert (the record
+    is no longer red, the revert is on trunk, or the merge is not in main). It settles the record when it can."""
+    if pm_records(p).get(sha, {}).get("state") != "red":
+        return True
+    if _git(main, "merge-base", "--is-ancestor", sha, "HEAD").returncode:
+        pm_set(p, sha, state="reverted", note="not in main")
+        return True
+    if _pm_reverted(main, sha):
+        pm_set(p, sha, state="reverted")
+        return True
+    return False
+
+
 def pm_wait(p, main):
     """Verify before landing: refuse a merge while a landed merge is red or its revert failed. A revert someone made by
     hand settles the record. Under the lock: merge() calls _pm_check again right before git merge."""
@@ -2745,15 +2792,18 @@ def pm_wait(p, main):
 
 
 def _pm_check(p, main):
-    bad = []
+    bad, waiting = [], False
     for sha, r in pm_records(p).items():
         if r["state"] in ("red", "conflict"):
             if _pm_reverted(main, sha):
                 r["state"] = "reverted"
                 c.write_atomic(os.path.join(_pm_dir(p), f"{sha}.json"), json.dumps(r))
             else:
+                waiting = waiting or r["state"] == "red"
                 bad.append(f"{r['task']} ({sha[:9]}, {r['state']}: {r.get('classes') or 'see the ledger'})")
     if bad:
+        if waiting:  # T-4540: a revert that lost its train's lock is retried by a pass now, not only by the train's end
+            pm_spawn(p, main)
         raise c.PolicyError("merges wait: the full suite is red on a landed merge: " + "; ".join(bad)
                             + ". It is reverted automatically, or revert it by hand (git revert -m 1 <sha>)")
 
@@ -2923,9 +2973,17 @@ def _pm_revert(p, main, sha):
             c.log_event(p, "postmerge_revert_waiting", task=r["task"], data={"sha": sha, "dirty": line[3:]})
             return False
     classes = r.get("classes") or []
-    if _git(main, "revert", "-m", "1", "--no-edit", sha).returncode:
-        if _git(main, "rev-parse", "-q", "--verify", "REVERT_HEAD").stdout.strip():  # ours, started just above
-            _git(main, "revert", "--abort")
+    try:
+        with train_lock(p):  # T-4540: a revert is a trunk commit: it waits for a running train (bounded), not beside it
+            if _pm_settled(p, main, sha):  # T-4540: the other pass (the original, or pm_after_train's) got here first
+                return True
+            code = _git(main, "revert", "-m", "1", "--no-edit", sha).returncode
+            if code and _git(main, "rev-parse", "-q", "--verify", "REVERT_HEAD").stdout.strip():  # ours, started just above
+                _git(main, "revert", "--abort")
+    except c.LockTimeout:
+        c.log_event(p, "postmerge_revert_waiting", task=r["task"], data={"sha": sha, "train": True})
+        return False  # the record stays red: pm_after_train runs a pass once the running train is done
+    if code:
         pm_set(p, sha, state="conflict")
         c.log_event(p, "lane_revert_conflict", task=r["task"], data={"sha": sha, "classes": classes})
         return True
