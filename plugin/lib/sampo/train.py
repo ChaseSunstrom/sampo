@@ -2447,6 +2447,39 @@ def _accept_gaps(b, path, main, rows):
     return gaps
 
 
+SHAPE_WALL_S = 900  # T-4542: the repo-shape modules in a lane before its long check; past it, no verdict (the check runs them)
+
+
+def _shape_tree(path):
+    """T-4542: whether a lane's tree is a Sampo tree with the repo-shape modules (another project's is not held to them)."""
+    return os.path.isfile(os.path.join(path, "plugin", "tests", "run.py"))
+
+
+def _shape_run(path):
+    """T-4542: ('green' | 'red' | 'cut', the failing classes named) for the repo-shape modules run once in the lane's tree,
+    niced. Red names the classes its run record carries (else the classes its output names). Cut is no verdict (the
+    deadline, a run that left no record and named no class): the lane's own check runs the same classes with --hold."""
+    cmd = "python3 plugin/tests/run.py " + " ".join(c.REPO_SHAPE_MODULES)
+    rid = c.new_run_id(cmd)
+    code, out = c.run_command(path, cmd, SHAPE_WALL_S, niced=True, run_id=rid)
+    if code == 0:
+        return "green", ""
+    rec = c.run_record(path, cmd, rid) if code else None
+    if code == 124 or (rec or {}).get("not_run"):
+        return "cut", ""
+    names = sorted({f["class"] for f in (rec or {}).get("failed") or [] if f.get("class")}) or c.failed_classes(out)
+    return ("red", ", ".join(names)) if names else ("cut", "")
+
+
+def _shape_due(p, b, path, tip):
+    """T-4542: whether accept runs a lane's repo-shape modules before anything is recorded: a Sampo tree, a finished lane
+    waiting on its merge, and no check already running at its tip (that check runs them)."""
+    from sampo import lanes
+    m = b.meta
+    running = m.get("check_state") == "running" and m.get("check_tip") == tip and _check_alive(m)
+    return _shape_tree(path) and not running and b.id in lanes.awaiting_merge(p, c.load_briefs(p), 0, fresh=True)
+
+
 def accept(p, b, main, args):
     """T-3922: a reviewed lane in one call: each --audit (lens, how, result) recorded on its brief from the lane's tree,
     the close's missing lines named, and the lane queued first (first_ids): into a running land at its next train
@@ -2470,6 +2503,11 @@ def accept(p, b, main, args):
     if gaps:  # T-4487: refused before anything is recorded or started: the close would refuse the lane for these
         raise c.PolicyError(f"{b.id} not accepted, nothing recorded: the close would refuse this lane: {'; '.join(gaps)}. "
                             f"Accept again with the audits it names ({AUDIT_FORM}, one per lens)")
+    if not skip_check and not clean and _shape_due(p, b, path, tip):
+        verdict, names = _shape_run(path)  # T-4542: the lane's repo-shape modules before its long check; red refuses here
+        if verdict == "red":
+            raise c.PolicyError(f"{b.id} not accepted, nothing recorded: its repo-shape modules are red in its lane "
+                                f"({names}). Fix them in the lane, commit, and accept again (no long check was queued)")
     tree = c.worktree_id(path)
     added = 0
     for lens, how, result in rows:

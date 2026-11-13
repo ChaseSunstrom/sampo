@@ -400,7 +400,8 @@ def contract(id, base, main):
     with open(os.path.join(os.path.dirname(os.path.abspath(os.path.dirname(__file__))), "..", "agents", "fm-builder.md"), encoding="utf-8") as f:
         rules = f.read().split("break none of it:\n")[1].split("\n\nReport in")[0]
     rules = "\n".join(l for l in rules.splitlines() if not l.startswith("("))  # the note about this very copy
-    for k, v in (("<ID>", id), ("<BASE>", base), ("<MAIN>", main)):
+    for k, v in (("<ID>", id), ("<BASE>", base), ("<MAIN>", main),
+                 ("<SHAPE>", " ".join(c.REPO_SHAPE_MODULES))):  # T-4542: the repo-shape modules, from the one constant
         rules = rules.replace(k, v)
     return "## Your contract (sampo:fm-builder)\n" + rules
 

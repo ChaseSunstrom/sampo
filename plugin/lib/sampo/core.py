@@ -5165,6 +5165,10 @@ def new_run_id(cmd):
 
 REPO_SHAPE_CLASSES = ("test_docs.PluginFiles", "test_left_out.LeftOut", "test_rename_aliases.RenameAliases",
                       "test_run.EnvClassified")  # T-4286: the classes a lane's own change breaks that no linked test names
+# T-4542: the repo-shape modules a builder runs before its report and sampo lane accept runs in the lane before its long
+# check (a red one refuses the lane): the map counts and line lengths, the hooks' rules, the classified env switches,
+# the left-out and renamed tests, the fast mirror's hashes
+REPO_SHAPE_MODULES = ("test_docs", "test_left_out", "test_rename_aliases", "test_rename_scan", "test_run", "test_fast_equiv")
 
 
 def run_record(root, cmd, run_id=None):
