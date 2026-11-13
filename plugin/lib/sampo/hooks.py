@@ -5528,8 +5528,13 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
             return _line(f"Sampo loop: the queue is empty and the forever loop is on. Next: {sloop.action(p)}")
         # waiting: what's left is the user's; drained: checked already, and no task has been made since; review: only
         # after this turn worked a task (answering a question isn't a drain) and within DRIVE_MAX
-        began = _turn_began(p, sid, d) or time.time()
-        worked = any(time.time() - (c.age_days(b.meta.get("updated")) or 1e9) * 86400 >= began - 1 for b in briefs)
+        # T-4547: both sides are whole seconds (updated is one). An exact turn start (turn_at) counts a stamp in its own
+        # second, as before; a start known only to its whole second (the seen second) counts that second too, so the
+        # work of this turn stamped there isn't lost (the cost: last turn's work done in that same second counts again);
+        # no start at all, the last second
+        began = _turn_began(p, sid, d)
+        since = ((began - 1 if d.get("turn_at") else began) if began else time.time() - 1)
+        worked = any((t := c.parse_ts(b.meta.get("updated"))) is not None and t.timestamp() >= since for b in briefs)
         if (not full or scope or waiting or d.get("drained") == len(briefs) or not worked or not saved or _headless()
                 or d.get("count", 0) >= DRIVE_MAX):
             return None
@@ -5841,10 +5846,14 @@ def _laneable(x, lanes=True, economy=False):
 
 
 def _turn_began(p, sid, d):
-    """When this session's turn began: the prompt hook's turn_at, else (a turn the old hook started) when it was seen."""
+    """When this session's turn began, on the clock the stamps keep: the prompt hook's turn_at (exact), else (a turn the
+    old hook started) the whole second the session was seen (T-4547: a seen stamp is a whole second, as `updated` is;
+    a time.time() minus its age mixed the two clocks, so a stamp in the seen second read as after the turn began)."""
+    if d.get("turn_at"):
+        return d["turn_at"]
     seen = c.read_meta(p).get("session") or {}
-    age = c.age_days(seen.get("seen")) if seen.get("id") == sid else None
-    return d.get("turn_at") or (time.time() - age * 86400 if age is not None else None)
+    t = c.parse_ts(seen.get("seen")) if seen.get("id") == sid else None
+    return t.timestamp() if t else None
 
 
 def _ui_changed(sid, since, handed):
