@@ -3013,15 +3013,27 @@ _GATE_PIPE = c.lazy(r"(?m)(?:^\s*|[;&|(]\s*)(?:\w+=\S*\s+)*(?:fm|sampo)\s+(?:qui
                         r"(?:[^|;&\n]|>&)*\|(?!\|)")  # a command's first word; 2>&1 before the pipe
 
 
+def _mask_quotes(text):
+    """T-4511: quoted text blanked to underscores at its own length, so a match's span still indexes the raw command."""
+    return re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", lambda m: m.group(0)[0] + "_" * (len(m.group(0)) - 2) + m.group(0)[-1], text)
+
+
 def _gate_pipe_deny(pl):
     """T-1759, T-2765: `fm check … | tail` exits with tail's status, so a red gate reads green (T-1758 reached main
-    that way). The note was ignored three times a week: refuse the call and say how to run it."""
+    that way). The note was ignored three times a week: refuse the call and say how to run it. T-4511: and name the
+    same command with the pipe removed (20 of 23 refusals on JARVIS in 38 hours were builders piping through tail)."""
     ti = pl.get("tool_input") or {}
-    cmd = re.sub(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"", "''", ti.get("command") or "")  # T-1768: quoted text isn't a command
-    if pl.get("tool_name") != "Bash" or "pipefail" in cmd or not _GATE_PIPE.search(cmd):
+    raw = ti.get("command") or ""
+    cmd = _mask_quotes(raw)  # T-1768: quoted text isn't a command
+    m = None if pl.get("tool_name") != "Bash" or "pipefail" in cmd else _GATE_PIPE.search(cmd)
+    if not m:
         return None
+    gate = raw[m.start():m.end() - 1]  # up to the pipe; the separator before the gate word is not part of it
+    gate = gate[len(gate) - len(gate.lstrip(" \t\r\n;&|(")):]
+    gate = re.sub(r"\s*\d*>&\d+\s*$", "", gate.rstrip()).replace("\n", " ").strip()  # the 2>&1 that fed the pipe goes too
+    hint = f" The same command, unpiped: `{gate}`." if gate else ""
     return ("deny", "Sampo: a piped gate's exit status is the last program's, so a red gate reads green: drop the pipe "
-                    "(its summary is short) or start with set -o pipefail; (then read its ✓/✗ line).")
+                    "(its summary is short) or start with set -o pipefail; (then read its ✓/✗ line)." + hint)
 
 
 def _bus_note(pl):
