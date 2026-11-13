@@ -43,9 +43,26 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 def child_env(tmp):
     """A class's environment: its own TMPDIR, and local models hidden as on CI unless the caller set the switch
     (T-3229: the moons tests leaned on this box's Ollama embedders, passed here and failed on every CI run)."""
-    env = {k: v for k, v in os.environ.items() if not (k.startswith(("FOREMAN_", "SAMPO_")) and k.split("_", 1)[1] in OPERATOR_SWITCHES)}  # T-3625
+    env = {k: v for k, v in os.environ.items() if not (k.startswith(("FOREMAN_", "SAMPO_")) and k.split("_", 1)[1] in OPERATOR_SWITCHES)  # T-3625
+           and not k.startswith(override_prefixes())}  # T-4289: a test sets its own FM_STALL_ and kin, never its caller
     return dict(env, TMPDIR=tmp, FOREMAN_NO_LOCAL_MODELS=os.environ.get("FOREMAN_NO_LOCAL_MODELS", "1"))
 
+
+_OVERRIDES = None
+
+
+def override_prefixes():
+    """T-4289 review: core.TEST_OVERRIDES, the one list, read from the lib's source (run.py imports no sampo module, so
+    the file is read, once); () when the file isn't beside this runner (a copy of run.py alone)."""
+    global _OVERRIDES
+    if _OVERRIDES is None:
+        _OVERRIDES = ()
+        with contextlib.suppress(OSError, ValueError, SyntaxError):
+            with open(os.path.join(HERE, "..", "lib", "sampo", "core.py"), encoding="utf-8") as f:
+                m = re.search(r"^TEST_OVERRIDES = (\(.*?\))$", f.read(), re.M | re.S)
+            if m:
+                _OVERRIDES = tuple(ast.literal_eval(m.group(1)))
+    return _OVERRIDES
 
 # T-3625: switches an operator sets for one run (either prefix); a test that needs one sets it itself
 OPERATOR_SWITCHES = {"LOAD_GATE", "LOAD_WAIT", "FULL_GATE", "SENTINEL", "SENTINEL_RUN", "SENTINEL_TREE", "NO_BACKGROUND",
