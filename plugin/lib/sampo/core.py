@@ -804,6 +804,37 @@ def pause_line(info=None):
     return f"paused by {whose} command at {when} (sampo pause off lifts it)"
 
 
+def usable_cpus(cgroup_root="/sys/fs/cgroup", proc_cgroup="/proc/self/cgroup"):
+    """T-4531: the CPUs this process may use, the one count every load-scaled deadline and per-CPU load reads: the
+    smallest of os.cpu_count(), the scheduler affinity (where the system has one) and, for this process's cgroup v2
+    folder and each ancestor up to cgroup_root, its cpu.max quota over period rounded up ("max" is no limit); at least
+    1. An unreadable file is ignored. A cgroup cap (a systemd CPUQuota, sampo cpu cap) is CPU the run doesn't get."""
+    counts = [os.cpu_count() or 1]
+    try:
+        counts.append(len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        pass
+    try:
+        with open(proc_cgroup, encoding="utf-8") as f:
+            rel = next((ln.split("::", 1)[1].strip() for ln in f if ln.startswith("0::")), None)
+    except (OSError, UnicodeDecodeError):
+        rel = None
+    top = os.path.normpath(cgroup_root)
+    folder = os.path.normpath(os.path.join(top, rel.lstrip("/"))) if rel else None
+    if folder and not (folder == top or folder.startswith(top.rstrip(os.sep) + os.sep)):
+        folder = None  # a path that leaves the cgroup root is none of ours
+    while folder:
+        try:
+            with open(os.path.join(folder, "cpu.max"), encoding="utf-8") as f:
+                quota, period = f.read().split()[:2]
+            if quota != "max" and int(quota) > 0 and int(period) > 0:
+                counts.append(max(1, -(-int(quota) // int(period))))  # ceiling of quota / period
+        except (OSError, ValueError, ZeroDivisionError):
+            pass
+        folder = None if folder == top else os.path.dirname(folder)
+    return max(1, min(counts))
+
+
 def host_load():
     """T-1518: (1-minute load average, CPU count), or None when unreadable; FOREMAN_HOST's load and cpus in tests."""
     try:
@@ -857,7 +888,8 @@ def load_factor(cap=None, host=None):
     try:
         fake = dict(kv.split("=", 1) for kv in (os.environ.get("FOREMAN_HOST", "") if host is None else host).split(",")
                     if "=" in kv)
-        cpus = int(fake["cpus"]) if "cpus" in fake else (os.cpu_count() or 1)
+        machine = max(1, int(fake["cpus"]) if "cpus" in fake else (os.cpu_count() or 1))  # the host's load per CPU
+        cpus = max(1, int(fake["cpus"]) if "cpus" in fake else usable_cpus())  # T-4531: what this run gets
         avg = float(fake["load"]) if "load" in fake else os.getloadavg()[0]
         if "runnable" in fake or "load" in fake:  # a stand-in that names the load describes the whole host
             now = float(fake.get("runnable", 0))
@@ -869,7 +901,8 @@ def load_factor(cap=None, host=None):
                 now = 0
     except (OSError, ValueError):
         return 1.0
-    f = max(1.0, avg / max(1, cpus), min(now / max(1, cpus), BURST_CAP))  # one sample of a burst can't stretch a hang 6x
+    # one sample of a burst can't stretch a hang 6x; a cap (cgroup or affinity) makes this run that many times slower again
+    f = max(1.0, avg / machine, min(now / machine, BURST_CAP)) * machine / cpus
     return f if cap is None else min(cap, f)
 
 
@@ -1104,7 +1137,7 @@ def host_strain(bar=None, nice_free=False, sample=True):
     try:
         fake = dict(kv.split("=", 1) for kv in os.environ.get("FOREMAN_HOST", "").split(",") if "=" in kv)
         load = float(fake["load"]) if "load" in fake else os.getloadavg()[0]
-        cpus = int(fake["cpus"]) if "cpus" in fake else (os.cpu_count() or 1)
+        cpus = int(fake["cpus"]) if "cpus" in fake else (os.cpu_count() or 1)  # the host's load, so the host's CPUs
         mem = float(fake["mem_mb"]) if "mem_mb" in fake else _mem_available_mb()
         got = _strain_share(fake, sample) if nice_free else None
     except (OSError, ValueError, StopIteration, KeyError):

@@ -82,6 +82,36 @@ def _cgroup_dir():
     return os.path.join(CGROUP_ROOT, rel.lstrip("/")) if rel else None
 
 
+def usable_cpus(folder=None):
+    """T-4531: sampo core.usable_cpus for this runner, a copy because run.py must count before sampo is importable (a
+    copy of run.py alone): the smallest of os.cpu_count(), the scheduler affinity and each cgroup v2 folder's cpu.max
+    from `folder` up to CGROUP_ROOT (quota over period, rounded up, "max" none), at least 1. test_cpu_cap_count keeps
+    the two equal."""
+    counts = [os.cpu_count() or 4]
+    try:
+        counts.append(len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        pass
+    top = os.path.realpath(CGROUP_ROOT)
+    d = folder
+    while d and _under(os.path.realpath(d), top):
+        try:
+            with open(os.path.join(d, "cpu.max")) as f:
+                quota, period = f.read().split()[:2]
+            if quota != "max":
+                counts.append(max(1, math.ceil(int(quota) / int(period))))
+        except (OSError, ValueError, ZeroDivisionError):
+            pass
+        if os.path.realpath(d) == top:
+            break
+        d = os.path.dirname(d)
+    return max(1, min(counts))
+
+
+def _under(path, top):
+    return path == top or path.startswith(top.rstrip(os.sep) + os.sep)
+
+
 def slot_count():
     """T-3252: the CPUs every run.py on the machine shares: SAMPO_SLOTS, else the CPU count cut to the tightest cgroup
     quota above this process (sampo cpu cap 50 on 16 CPUs gives 8)."""
@@ -1715,7 +1745,8 @@ def load_room(n, cpus=None, load=None, spinners=None):
 
 def parse(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("-j", type=int, default=slot_count() or os.cpu_count() or 4)  # T-3252: the pool
+    # T-3252: the pool bounds this run's workers; T-4531: this run gets only the CPUs it may use (cgroup cap, affinity)
+    ap.add_argument("-j", type=int, default=min(slot_count(), usable_cpus(_cgroup_dir())) or usable_cpus(_cgroup_dir()))
     ap.add_argument("-k", action="append", default=[], help="only tests whose id contains this (repeatable)")
     ap.add_argument("-p", action="append", help="module glob, as unittest discover's -p (repeatable; default "
                                                 "test*.py)")  # T-0389: a second -p replaced the first

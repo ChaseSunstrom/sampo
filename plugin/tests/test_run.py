@@ -130,10 +130,13 @@ class Load(unittest.TestCase):
         # T-1719: a hook call's 10 s guard tripped beside 24 busy processes; it scales with runnable tasks per core
         from unittest import mock
         import helpers
-        cores = os.cpu_count() or 1
+        from sampo import core
+        cores = 16  # pinned: usable_cpus reads cgroup files, and mock_open would hand them this test's text (T-4531)
         cases = [("0.50 0.4 0.3 1/900 1\n", 1.0), (f"0.1 0.1 0.1 {3 * cores}/900 1\n", 3.0), ("garbage\n", None)]
         for text, want in cases:
             with mock.patch("builtins.open", mock.mock_open(read_data=text)), \
+                    mock.patch.object(core, "usable_cpus", lambda: cores), \
+                    mock.patch.object(core.os, "cpu_count", lambda: cores), \
                     mock.patch.dict(os.environ, {"FOREMAN_HOST": helpers.CALM_HOST}), \
                     mock.patch("os.getloadavg", return_value=(0.5, 0, 0)):
                 got = helpers.busy_factor()
