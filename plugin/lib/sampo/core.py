@@ -2687,6 +2687,11 @@ _FM_LINE = lazy(r"^([A-Za-z_][\w-]*):(.*)$")
 _SECTION = lazy(r"(?m)^## (.*)\n")
 
 
+def _short_heading(name):
+    """T-4545: a section's short name: 'Approach' for 'Approach (options → choice → why)'."""
+    return name.split(" (", 1)[0].strip()
+
+
 def _parse_value(raw):
     v = (re.sub(r"\s+#.*$", "", raw) if "#" in raw else raw).strip()  # T-2015: most values carry no comment
     if v.startswith("[") and v.endswith("]"):
@@ -2967,13 +2972,16 @@ class Brief:
         for h, b in self.sections:
             if h.strip() == name:
                 return b
-        return ""
+        # T-4545: the heading's short name answers too: 'Approach' for 'Approach (options → choice → why)', and back
+        short = _short_heading(name)
+        return next((b for h, b in self.sections if _short_heading(h) == short), "")
 
     def set_section(self, name, body):
         body = body if body.endswith("\n") or not body else body + "\n"
         heads = [s[0].strip() for s in self.sections]
-        if name not in heads:  # a short name fills the template's long heading ("Approach" → "Approach (options …)")
-            name = next((h for h in heads if h.startswith(name + " (")), name)
+        if name not in heads:  # a short name fills the template's long heading ("Approach" → "Approach (options …)"), and
+            # the long one the brief's short heading ("## Approach" from an older template): one section, never a second
+            name = next((h for h in heads if _short_heading(h) == _short_heading(name)), name)
         for s in self.sections:
             if s[0].strip() == name:
                 s[1] = body
@@ -4554,10 +4562,10 @@ def _content_gaps(b):
                         "--section Approach: add 'fails if: …' or 'likely outcome: …' to each option)")
         ex = {i for i, p in enumerate(parts) if _EXISTS_RE.search(p)}
         less = {i for i, p in enumerate(parts) if _LESS_RE.search(p)}
-        if parts and not ex:
+        if ap.strip() and not ex:
             gaps.append(f"a use-what-exists option in Approach: what the repo already has that does this (sampo task set {b.id} "
                         "--section Approach: add 'N) use what exists: …')")
-        if parts and not less:
+        if ap.strip() and not less:
             gaps.append(f"a do-less option in Approach: do nothing, or the smaller change (sampo task set {b.id} "
                         "--section Approach: add 'N) do less: …')")
         if ex and less and not any(i != j for i in ex for j in less):
