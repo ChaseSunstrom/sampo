@@ -819,6 +819,18 @@ class AuditSurvives(LandCase):
         self.land_lane_one_then_lane_two()
         self.assertTrue(any("files changed since the audit" in x for x in self.blockers(b)), self.blockers(b))
 
+    def test_a_new_file_the_lane_writes_after_its_audit_stales_it(self):  # T-4487: no touch was recorded for it
+        a = self.lane(1, "a.txt", when=OLD)
+        b = self.lane(2, "b.txt", when=OLD, tier="M")
+        self.audit_at_tip(b, 2, ("intent", "edge"))
+        lane2 = os.path.join(self.tmp, "lane2")
+        with open(os.path.join(lane2, "new.txt"), "w") as f:  # a script's file in the lane, no Edit hook saw it
+            f.write("written by a shell command\n")
+        p = c.find_project(lane2)
+        x = c.find_brief(p, b)
+        blockers = x.audit_blockers(tree=c.audit_tree_past_merges(p, x, c.worktree_id(lane2)))
+        self.assertTrue(any("files changed since the audit" in y for y in blockers), blockers)
+
 
 if __name__ == "__main__":
     unittest.main()

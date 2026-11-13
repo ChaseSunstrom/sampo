@@ -1258,15 +1258,24 @@ def audit_tree_past_merges(p, b, tree):
     touched = set(task_touches(p, b.id))
     merged = set(merged_in(p.root, b)) - touched
     base = task_base(p.root, b)
+    # the uncommitted working files (edited or untracked, against HEAD): a file a script wrote in the lane without a
+    # recorded touch is still the task's own change. A commit already on HEAD is not (another lane's close lives there)
+    dirty = None
+    if base:
+        tracked = _git(p.root, "diff", "--name-only", "--no-renames", "HEAD", timeout=60, fail=None)
+        untracked = _git(p.root, "ls-files", "--others", "--exclude-standard", timeout=60, fail=None)
+        if tracked is None or untracked is None:
+            return frozenset({tree})  # unknown: nothing is judged unchanged, the strict answer
+        dirty = set(tracked.splitlines()) | set(untracked.splitlines())
     for t in {t for _, _, t in b.audits()}:
         if not t or t == tree or (names := task_diff(p.root, t, "--name-only", "--no-renames")) is None:
             continue
         names = set(names.splitlines())
-        # the task's own files: what the audited tree changed since the task's base, plus every file this task touched
-        # (an edit made after the audit is this task's change even though the audit tree doesn't show it). Empty or
-        # unknown: nothing is judged unchanged, the strict answer
+        # the task's own files: what the audited tree changed since the task's base, every file this task touched, and
+        # its uncommitted files (an edit made after the audit is this task's change even though the audit tree doesn't
+        # show it). Empty or unknown: nothing is judged unchanged, the strict answer
         mine = set(_git(p.root, "diff", "--name-only", "--no-renames", base, t, timeout=60).splitlines()) if base else set()
-        own = mine | touched
+        own = mine | touched | ((dirty or set()) - merged)
         if names <= merged or (own and not names & own):
             trees.add(t)
     return frozenset(trees)
