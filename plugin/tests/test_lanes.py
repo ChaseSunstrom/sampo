@@ -1324,7 +1324,7 @@ class BuilderContractOneSource(unittest.TestCase):
         text = slanes.contract("T-9", "abc123", "/main")
         for r in rules:
             self.assertIn(r.replace("<ID>", "T-9").replace("<BASE>", "abc123").replace("<MAIN>", "/main")
-                          .replace("<SHAPE>", " ".join(slanes.c.REPO_SHAPE_MODULES)), text)  # T-4542
+                          .replace("<SHAPE>", " ".join(slanes.c.repo_shape_modules())), text)  # T-4542
         self.assertNotIn("<ID>", text)
 
 

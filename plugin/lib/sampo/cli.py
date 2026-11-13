@@ -6450,10 +6450,11 @@ def _hub_tests(p, m, base, changed, detail=None, tree=None):
     return picked
 
 
-def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False):
+def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
     project's template; command None when no test is linked. fm check --affected and the ambient runner (T-0705).
-    `hold` (T-4286): the run always holds c.REPO_SHAPE_CLASSES, whatever files changed.
+    `hold` (T-4286): the run always holds the repo-shape classes, whatever files changed. `shape_green` (T-4563): the
+    repo-shape modules ran green at this tip, and they hold those classes, so a run with linked tests leaves them out.
     Another open task's red-first test files are left out (T-1718); a dict passed as skipped gets them {module: task}.
     `only`: exactly these files as the changed ones (T-3533: fm ship's files main moved past the gated tree)."""
     from sampo import map as smap
@@ -6521,7 +6522,8 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     if skipped is not None:
         skipped.update(skip)
     if hold and os.path.isfile(os.path.join(p.root, "plugin", "tests", "run.py")):  # T-4286: the four repo-shape classes
-        cmds = [*cmds, "python3 plugin/tests/run.py " + " ".join(c.REPO_SHAPE_CLASSES)]
+        if not (shape_green and cmds):  # T-4563: green at the tip already ran them (the shape modules hold them)
+            cmds = [*cmds, "python3 plugin/tests/run.py " + " ".join(c.repo_shape_classes())]
         tests = sorted({*tests, "plugin/tests/run.py"})
     # T-4409: a template that changes directory (cd mods/x && its runner) runs in a subshell when another command
     # follows, so the next one starts at the project root; the last one, and one that stays put, are joined as before
@@ -6551,7 +6553,8 @@ def _check_affected(p, args):
     # T-4418: that check answers for the task it names, the lane's active one or not: with none active the changed
     # files were counted from HEAD (none) and it ran the held classes alone
     named = c.find_brief(p, args.evidence) if hold and not since and getattr(args, "evidence", None) else None
-    cmd, tests, changed = affected(p, b=named, skipped=skip, detail=hubs, since=since, hold=hold)
+    shape_green = bool(getattr(args, "shape_green", False))  # T-4563: the child's shape run is green at this tip
+    cmd, tests, changed = affected(p, b=named, skipped=skip, detail=hubs, since=since, hold=hold, shape_green=shape_green)
     act = c.active_brief(c.load_briefs(p), p.lane)
     if cmd:
         guard_stored(p, act, cmd)  # T-0901: the template is a stored command
@@ -8436,6 +8439,7 @@ def _build_parser(only=None):
     s.add_argument("--hold", action="store_true", help="--affected: always run the repo-shape classes (test_docs.PluginFiles, "
                                                        "test_left_out.LeftOut, test_rename_aliases.RenameAliases, "
                                                        "test_run.EnvClassified) too (T-4286)")
+    s.add_argument("--shape-green", action="store_true", help=argparse.SUPPRESS)  # T-4563: the child's shape run went green at this tip
     g = s.add_mutually_exclusive_group()
     g.add_argument("--step", type=int)
     g.add_argument("--ac", type=int)

@@ -300,7 +300,7 @@ class NoCheck(AcceptCase):
             self.accept(tid, no_check=True)
         msg = str(e.exception)
         self.assertIn("sampo check --affected --hold --evidence " + tid, msg)
-        for name in train.c.REPO_SHAPE_CLASSES:
+        for name in c.repo_shape_classes():
             self.assertIn(name, msg)
         self.assertEqual(self.spawned, [])
         self.assertEqual(self.queued(), [])
@@ -315,8 +315,8 @@ class RepoShape(AcceptCase):
         self.assertEqual(argv[argv.index("check") + 1:][:1], ["--affected"])
         self.assertIn("--hold", argv)
         self.assertIn(f"--evidence", argv)
-        self.assertEqual(c.REPO_SHAPE_CLASSES, ("test_docs.PluginFiles", "test_left_out.LeftOut",
-                                                "test_rename_aliases.RenameAliases", "test_run.EnvClassified"))
+        self.assertEqual(c.repo_shape_classes(), ("test_docs.PluginFiles", "test_left_out.LeftOut",
+                                                  "test_rename_aliases.RenameAliases", "test_run.EnvClassified"))
 
     def test_hold_adds_the_classes_to_an_affected_run_that_links_no_test(self):  # repo_shape
         os.makedirs(os.path.join(self.repo, "plugin", "tests"), exist_ok=True)
@@ -324,11 +324,27 @@ class RepoShape(AcceptCase):
             f.write("# the runner\n")
         self.fm("check", "affected", "python3 -m pytest -q {tests}")
         cmd, tests, _ = cli.affected(self.p, since="HEAD", hold=True)
-        for name in c.REPO_SHAPE_CLASSES:
+        for name in c.repo_shape_classes():
             self.assertIn(name, cmd)
         self.assertTrue(tests)
         plain, _, _ = cli.affected(self.p, since="HEAD")
         self.assertFalse(plain and "PluginFiles" in plain, "a plain affected run is unchanged")
+
+    def test_hold_with_shape_green_leaves_the_classes_out_of_a_run_that_has_linked_tests(self):  # T-4563
+        """The shape modules ran green at this tip (they hold the classes), so the hold run keeps only the linked tests;
+        with no linked test the classes stay, so the run is never empty."""
+        os.makedirs(os.path.join(self.repo, "plugin", "tests"), exist_ok=True)
+        with open(os.path.join(self.repo, "plugin", "tests", "run.py"), "w") as f:
+            f.write("# the runner\n")
+        self.fm("check", "affected", "python3 -m pytest -q {tests}")
+        only = ["plugin/tests/test_zz_shape.py"]
+        cmd, tests, _ = cli.affected(self.p, since="HEAD", hold=True, only=only, shape_green=True)
+        self.assertIn("test_zz_shape", cmd)
+        for name in c.repo_shape_classes():
+            self.assertNotIn(name, cmd)
+        cmd, _, _ = cli.affected(self.p, since="HEAD", hold=True, shape_green=True)  # nothing linked: the classes stay
+        for name in c.repo_shape_classes():
+            self.assertIn(name, cmd)
 
     def a_template_in_its_own_folder(self):
         """A by-extension template that changes directory first (as the mod's runner does) and a changed test for it."""

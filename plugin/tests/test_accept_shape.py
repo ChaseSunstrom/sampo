@@ -1,26 +1,36 @@
-"""T-4542: the repo-shape modules are one constant (core.REPO_SHAPE_MODULES). The builder contract names them as required
-before the report (fm-builder.md through the <SHAPE> placeholder, lanes.contract() substitutes them), and sampo lane accept
-runs them in the lane before it queues the long check: red refuses (nothing recorded, the failing classes named), green
-or cut goes on as before. A lane whose check is already running at its tip starts no shape run. The runs here are
-stubbed (c.run_command, c.run_record, train._shape_run's callers); none starts a real test run."""
+"""T-4542, T-4563: the repo-shape tests are one list (core.REPO_SHAPE: its modules, then its module.Class entries). The builder
+contract names the modules before the report (fm-builder.md through the <SHAPE> placeholder, lanes.contract() substitutes
+them). sampo lane accept starts the lane's check and returns at once (T-4563): the check's child runs the modules first,
+before its long part. Red records the refusal on the lane and ends the child; green is recorded at the tip and the hold
+check runs without the classes (--shape-green), a fresh run without them holds the lane clean at that tip; cut or a tree
+without the modules goes on as before, and a retry runs no module again. The runs here are stubbed (c.run_command,
+c.run_record, train._shape_run, train._run_check); none starts a real test run."""
 # map-links: plugin/lib/sampo/train.py
 import os
 import unittest
 from unittest import mock
 
-from test_accept_check import AcceptCase, OLD
+from test_accept_check import AcceptCase, OLD, FRESH, stub
 
+from sampo import cli
 from sampo import core as c
 from sampo import lanes as slanes
 from sampo import train
 
 AGENT = os.path.join(os.path.dirname(__file__), "..", "agents", "fm-builder.md")
 MODULES = ("test_docs", "test_left_out", "test_rename_aliases", "test_rename_scan", "test_run", "test_fast_equiv")
+CLASSES = ("test_docs.PluginFiles", "test_left_out.LeftOut", "test_rename_aliases.RenameAliases", "test_run.EnvClassified")
 
 
 class ContractShape(unittest.TestCase):
-    def test_the_shape_modules_are_one_constant_named_in_the_builder_contract(self):  # T-4542
-        self.assertEqual(c.REPO_SHAPE_MODULES, MODULES)
+    def test_the_shape_modules_and_classes_are_one_list(self):  # T-4563
+        self.assertEqual(c.REPO_SHAPE, MODULES + CLASSES)
+        self.assertEqual(c.repo_shape_modules(), MODULES)
+        self.assertEqual(c.repo_shape_classes(), CLASSES)
+        self.assertFalse(hasattr(c, "REPO_SHAPE_MODULES"), "one list, not two constants")
+        self.assertFalse(hasattr(c, "REPO_SHAPE_CLASSES"), "one list, not two constants")
+
+    def test_the_shape_modules_are_named_in_the_builder_contract(self):  # T-4542
         with open(AGENT, encoding="utf-8") as f:
             agent = f.read()
         self.assertIn("<SHAPE>", agent)
@@ -73,43 +83,88 @@ class AcceptShape(AcceptCase):
         tree.start()
         self.addCleanup(tree.stop)
 
-    def test_red_shape_module_refuses_before_the_long_check_and_names_the_classes(self):  # T-4542
-        tid = self.lane(1, "f1.txt", when=OLD)
-        self.shape_run.return_value = ("red", "test_docs.PluginFiles, test_run.EnvClassified")
-        with self.assertRaises(c.PolicyError) as cm:
-            self.accept(tid)
-        self.assertIn("test_docs.PluginFiles, test_run.EnvClassified", str(cm.exception))
-        self.assertEqual(self.spawned, [], "the long check is never queued on a red lane")
-        self.assertEqual(self.queued(), [])
-        self.assertFalse(any("(audit" in x for x in self.brief(tid).evidence()), "nothing recorded on a refused accept")
-
-    def test_green_shape_modules_go_on_to_the_check_as_before(self):  # T-4542
+    def test_accept_returns_at_once_and_runs_no_module_itself(self):  # T-4563
         tid = self.lane(1, "f1.txt", when=OLD)
         out = self.accept(tid)
-        self.shape_run.assert_called_once()
-        self.assertEqual(len(self.spawned), 1, "the lane's own check starts, as before")
-        self.assertIn("check started", out)
-
-    def test_cut_shape_run_is_no_verdict_and_the_check_decides(self):  # T-4542
-        tid = self.lane(1, "f1.txt", when=OLD)
-        self.shape_run.return_value = ("cut", "")
-        self.accept(tid)
-        self.assertEqual(len(self.spawned), 1)
-
-    def test_a_lane_with_no_shape_modules_in_its_tree_runs_none(self):  # T-4542
-        tid = self.lane(1, "f1.txt", when=OLD)
-        with mock.patch.object(train, "_shape_tree", return_value=False):
-            self.accept(tid)
         self.shape_run.assert_not_called()
-        self.assertEqual(len(self.spawned), 1, "a tree without the modules (not Sampo's) goes on as before")
+        self.assertEqual(len(self.spawned), 1, "the lane's check starts; its child runs the modules first")
+        self.assertIn("check started", out)
+        self.assertEqual(self.queued(), [])
 
-    def test_a_check_already_running_at_the_tip_starts_no_shape_run(self):  # T-4542
+    def test_a_red_module_run_ends_the_child_before_the_long_check_and_is_recorded_on_the_lane(self):  # T-4563
+        tid = self.lane(1, "f1.txt", when=OLD)
+        self.accept(tid)
+        self.shape_run.return_value = ("red", "test_docs.PluginFiles, test_run.EnvClassified")
+        with mock.patch.object(train, "_run_check") as long_check:
+            self.assertEqual(self.child(tid, 1, stub(0)), 1)
+        long_check.assert_not_called()
+        m = self.meta_of(tid)
+        self.assertEqual((m["check_state"], m["check_failed"]), ("red", "test_docs.PluginFiles test_run.EnvClassified"))
+        self.assertIn("repo-shape modules are red", self.brief(tid).section("Log"))
+        self.assertEqual(self.queued(), [])
+        self.land_started.assert_not_called()
+        out = self.accept(tid)  # held at its tip: named, no retry
+        self.assertIn("test_docs.PluginFiles", out)
+        self.assertEqual(len(self.spawned), 1, out)
+
+    def test_a_green_module_run_is_recorded_at_the_tip_and_the_hold_check_runs_without_the_classes(self):  # T-4563
+        tid = self.lane(1, "f1.txt", when=OLD)
+        self.accept(tid)
+        with mock.patch.object(train, "_run_check", wraps=train._run_check) as long_check:
+            self.assertEqual(self.child(tid, 1, stub(0)), 0)
+        self.assertIn("--shape-green", long_check.call_args[0][0])
+        self.assertEqual(self.meta_of(tid)["check_shape"], self.tip(1))
+        self.shape_run.assert_called_once()
+        self.assertEqual(self.meta_of(tid)["check_state"], "green")
+        self.assertEqual(self.queued(), [tid])
+
+    def test_a_fresh_run_without_the_classes_is_clean_once_the_module_run_is_green_at_its_tip(self):  # T-4563
+        tid = self.lane(1, "f1.txt", when=OLD)
+        self.record_run(tid, FRESH, cmd="python3 plugin/tests/run.py test_x")
+        b = c.find_brief(self.p, tid)
+        b.meta["check_shape"] = self.tip(1)
+        c.save_brief(self.p, b)
+        self.accept(tid)
+        self.assertEqual(self.spawned, [], "the reused green holds the classes: no check again")
+        self.assertEqual(self.queued(), [tid])
+
+    def test_a_cut_module_run_is_no_verdict_and_the_long_check_runs_the_classes_itself(self):  # T-4563
+        tid = self.lane(1, "f1.txt", when=OLD)
+        self.accept(tid)
+        self.shape_run.return_value = ("cut", "")
+        with mock.patch.object(train, "_run_check", wraps=train._run_check) as long_check:
+            self.assertEqual(self.child(tid, 1, stub(0)), 0)
+        self.assertNotIn("--shape-green", long_check.call_args[0][0])
+        self.assertNotIn("check_shape", self.meta_of(tid))
+        self.assertEqual(self.queued(), [tid])
+
+    def test_a_retry_runs_no_module_again(self):  # T-4563
+        tid = self.lane(1, "f1.txt", when=OLD)
+        self.accept(tid)
+        self.assertEqual(self.child(tid, 1, stub(0), tries=2), 0)
+        self.shape_run.assert_not_called()
+        self.assertEqual(self.queued(), [tid])
+
+    def test_a_lane_with_no_shape_modules_in_its_tree_runs_none_and_its_check_goes_on(self):  # T-4542
+        tid = self.lane(1, "f1.txt", when=OLD)
+        self.accept(tid)
+        with mock.patch.object(train, "_shape_tree", return_value=False):
+            self.assertEqual(self.child(tid, 1, stub(0)), 0)
+        self.shape_run.assert_not_called()
+        self.assertEqual(self.queued(), [tid], "a tree without the modules (not Sampo's) goes on as before")
+
+    def test_a_check_already_running_at_the_tip_starts_no_module_run(self):  # T-4542
         tid = self.lane(1, "f1.txt", when=OLD)
         b = c.find_brief(self.p, tid)
         b.meta.update(check_state="running", check_tip=self.tip(1), check_pid=self.pid, check_ticks=train._ticks(self.pid))
         c.save_brief(self.p, b)
         self.accept(tid)
         self.shape_run.assert_not_called()
+
+    def test_the_parser_takes_shape_green_on_a_hold_check(self):  # T-4563
+        args = cli.build_parser().parse_args(["check", "--affected", "--hold", "--shape-green", "--evidence", "T-1"])
+        self.assertTrue(args.shape_green)
+        self.assertTrue(args.hold)
 
 
 if __name__ == "__main__":

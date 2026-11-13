@@ -5186,12 +5186,23 @@ def new_run_id(cmd):
     return os.urandom(8).hex() if cmd and _RUN_PY.search(cmd) else None
 
 
-REPO_SHAPE_CLASSES = ("test_docs.PluginFiles", "test_left_out.LeftOut", "test_rename_aliases.RenameAliases",
-                      "test_run.EnvClassified")  # T-4286: the classes a lane's own change breaks that no linked test names
-# T-4542: the repo-shape modules a builder runs before its report and sampo lane accept runs in the lane before its long
-# check (a red one refuses the lane): the map counts and line lengths, the hooks' rules, the classified env switches,
-# the left-out and renamed tests, the fast mirror's hashes
-REPO_SHAPE_MODULES = ("test_docs", "test_left_out", "test_rename_aliases", "test_rename_scan", "test_run", "test_fast_equiv")
+# T-4542, T-4286, T-4563: the repo-shape tests, one list. The modules (no dot) are what a builder runs before its report
+# and what sampo lane accept runs first in the lane's check child (a red one refuses the lane): the map counts and line
+# lengths, the hooks' rules, the classified env switches, the left-out and renamed tests, the fast mirror's hashes. The
+# module.Class entries (dotted) are the classes a lane's own change breaks that no linked test names; the hold check
+# runs them (unless the shape run went green at the tip, then it runs without them).
+REPO_SHAPE = ("test_docs", "test_left_out", "test_rename_aliases", "test_rename_scan", "test_run", "test_fast_equiv",
+              "test_docs.PluginFiles", "test_left_out.LeftOut", "test_rename_aliases.RenameAliases", "test_run.EnvClassified")
+
+
+def repo_shape_modules():
+    """T-4563: the repo-shape modules (no class part), in their order."""
+    return tuple(n for n in REPO_SHAPE if "." not in n)
+
+
+def repo_shape_classes():
+    """T-4563: the repo-shape classes (module.Class), in their order."""
+    return tuple(n for n in REPO_SHAPE if "." in n)
 
 
 def run_record(root, cmd, run_id=None):

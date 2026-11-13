@@ -49,7 +49,7 @@ class LaneCase(ForemanTestCase):
         """A lane's affected run at its tip (T-4286: accept starts the lane's own check when it has none)."""
         p = c.find_project(self.repo)
         b = c.find_brief(p, tid)
-        b.add_evidence(c.AFFECTED_LABEL + "python3 plugin/tests/run.py x " + " ".join(c.REPO_SHAPE_CLASSES), "exit 0 · ok",
+        b.add_evidence(c.AFFECTED_LABEL + "python3 plugin/tests/run.py x " + " ".join(c.repo_shape_classes()), "exit 0 · ok",
                        step=1, ran=True)  # the four repo-shape classes held: it is a run accept lets queue
         c.save_brief(p, b)
         return tid

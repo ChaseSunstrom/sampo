@@ -1948,7 +1948,7 @@ CHECK_TRIES = 2  # a check cut off at its deadline is started once more (its gre
 CHECK_WALL_S = 4 * 3600  # a check process still running after this is killed and counts as cut off
 _SCRUBBED = ("FM_STALL", c.RUN_ID_ENV, "FOREMAN_TEST_RUN_ID")  # env prefixes a lane's check never inherits: a test's override, a nested run's id (the legacy name too)
 _CHECK_KEYS = ("check_state", "check_tip", "check_pid", "check_ticks", "check_log", "check_tries", "check_failed",
-               "check_solo")
+               "check_solo", "check_shape")  # T-4563: the tip the repo-shape modules ran green at
 BATCH_MAX = 8  # T-4528: lanes (the turn's own included) checked as one candidate; the rest wait their own turn
 
 
@@ -2005,7 +2005,7 @@ def _affected_state(b, sha, main):
 def _held_classes(line):
     """T-4286: whether an affected run's evidence line names every repo-shape class in its command (a --hold run's does)."""
     cmd = line.split("` → ", 1)[0]
-    return all(n in cmd for n in c.REPO_SHAPE_CLASSES)
+    return all(n in cmd for n in c.repo_shape_classes())
 
 
 def _run_passed(line):
@@ -2015,10 +2015,11 @@ def _run_passed(line):
 
 def _clean_run(b, sha, main):
     """T-4286, the one rule for what lets a lane skip its check: its newest affected run is at its tip (not before its
-    own last commit), passed, and its command held the four repo-shape classes. A failing line (a red check records
-    one too), or a run that did not hold the classes, is not it. Accept and the land's hold both read this."""
+    own last commit), passed, and its command held the repo-shape classes, or the repo-shape modules ran green at this
+    tip (T-4563: check_shape, which the modules hold the classes by). A failing line (a red check records one too), or a
+    run that held neither, is not it. Accept and the land's hold both read this."""
     state, line = _affected_state(b, sha, main)
-    return state == "fresh" and _run_passed(line) and _held_classes(line)
+    return state == "fresh" and _run_passed(line) and (_held_classes(line) or b.meta.get("check_shape") == sha)
 
 
 def _check_alive(m):
@@ -2251,14 +2252,16 @@ def _outcome(r, timed_out):
 def _batch_peers(p, main, me, tip):
     """T-4528: the lanes whose check waits its turn behind this one, as (brief, tip), oldest task first, at most
     BATCH_MAX - 1: its process alive, claimed at the lane's current tip on its first try, and not marked for a solo run
-    (a batch that went red or was cut off marks its members). One git call per lane that passes the task's own record."""
+    (a batch that went red or was cut off marks its members). T-4563: and whose repo-shape modules ran green at that tip
+    (_shape_clear: a batch's run holds the classes, not the other modules). One git call per lane that passes the task's
+    own record."""
     out = []
     for x in c.load_briefs(p):
         m = x.meta
         if x.id == me or m.get("check_state") != "running" or not _check_alive(m) or int(m.get("check_tries") or 1) != 1:
             continue
         t = _lane_tip(main, x)
-        if t and m.get("check_tip") == t and m.get("check_solo") != t:
+        if t and m.get("check_tip") == t and m.get("check_solo") != t and _shape_clear(x, t, main):
             out.append((x, t))
     return sorted(out, key=lambda r: c.id_num(r[0].id))[:max(BATCH_MAX - 1, 0)]
 
@@ -2344,6 +2347,12 @@ def _accept_check_child(a):
     p = c.Project(*a["project"])
     b = cli.need_brief(p, a["id"])
     main, tip, tries = a["main"], a["tip"], int(a.get("tries") or 1)
+    if tries == 1 and _shape_wanted(b, main, tip):  # T-4563: the modules first, before the turn: lanes run theirs together
+        verdict = _shape_stage(p, b, main, tip)
+        if verdict == "red":
+            return 1  # refused at its tip: recorded on the lane, and no long check runs
+        if verdict == "moved":
+            return 0
     r, timed_out = None, False
     with _check_turn(p, lambda: _set_check(p, b.id, "check waits its turn: another lane's check is running (one at a "
                                                     "time in a project, T-4416)")):
@@ -2351,14 +2360,16 @@ def _accept_check_child(a):
         if _lane_tip(main, cur) == tip:  # a tip that moved during the wait: no suite for nothing
             if cur.meta.get("check_state") == "green" and cur.meta.get("check_tip") == tip:
                 return 0  # T-4528: a batch checked it while it waited, and queued it
-            if tries == 1 and cur.meta.get("check_solo") != tip:
+            if tries == 1 and cur.meta.get("check_solo") != tip and _shape_clear(cur, tip, main):
                 try:
                     peers = _batch_peers(p, main, b.id, tip)
                     if peers and b.id in _batch_check(p, main, cur, tip, peers):
                         return 0
                 except Exception as e:  # a batch that cannot be built costs nothing: the lane's own check follows
                     print(f"batch check skipped: {type(e).__name__}: {c.redact(str(e))[:200]}", file=sys.stderr)
-            r, timed_out = _run_check(a["argv"], b.meta.get("lane") or main)
+            # T-4563: the modules ran green at this tip (they hold the classes): the hold check runs the rest without them
+            argv = [*a["argv"], "--shape-green"] if cur.meta.get("check_shape") == tip else a["argv"]
+            r, timed_out = _run_check(argv, b.meta.get("lane") or main)
     got = _result_of(r) if r is not None else None
     b = cli.need_brief(p, b.id)
     if r is None or _lane_tip(main, b) != tip:
@@ -2374,7 +2385,8 @@ def _accept_check_child(a):
     if what == "red":
         failed = " ".join(str(x) for x in got.get("failed") or [])[:500]
         _set_check(p, b.id, f"its lane's check is red: {failed or 'no failing class recorded'} (tip {tip[:9]}; no retry "
-                            "until the tip moves)", check_state="red", check_failed=failed, check_pid=None, check_ticks=None)
+                            "until the tip moves)", check_state="red", check_failed=failed, check_pid=None, check_ticks=None,
+                   check_shape=None)  # T-4563: a red check no longer rests on the shape modules' green
         return 1
     try:
         if tries < CHECK_TRIES and _start_check(p, b, main, tip, a.get("since"), tries + 1):
@@ -2459,7 +2471,7 @@ def _shape_run(path):
     """T-4542: ('green' | 'red' | 'cut', the failing classes named) for the repo-shape modules run once in the lane's tree,
     niced. Red names the classes its run record carries (else the classes its output names). Cut is no verdict (the
     deadline, a run that left no record and named no class): the lane's own check runs the same classes with --hold."""
-    cmd = "python3 plugin/tests/run.py " + " ".join(c.REPO_SHAPE_MODULES)
+    cmd = "python3 plugin/tests/run.py " + " ".join(c.repo_shape_modules())
     rid = c.new_run_id(cmd)
     code, out = c.run_command(path, cmd, SHAPE_WALL_S, niced=True, run_id=rid)
     if code == 0:
@@ -2471,13 +2483,39 @@ def _shape_run(path):
     return ("red", ", ".join(names)) if names else ("cut", "")
 
 
-def _shape_due(p, b, path, tip):
-    """T-4542: whether accept runs a lane's repo-shape modules before anything is recorded: a Sampo tree, a finished lane
-    waiting on its merge, and no check already running at its tip (that check runs them)."""
-    from sampo import lanes
+def _shape_wanted(b, main, tip):
+    """T-4563: whether a lane's check child runs its repo-shape modules first: a Sampo tree with the modules, and no green
+    at this tip yet (a green one, or a batch's, needs no run)."""
     m = b.meta
-    running = m.get("check_state") == "running" and m.get("check_tip") == tip and _check_alive(m)
-    return _shape_tree(path) and not running and b.id in lanes.awaiting_merge(p, c.load_briefs(p), 0, fresh=True)
+    if m.get("check_shape") == tip or (m.get("check_state") == "green" and m.get("check_tip") == tip):
+        return False
+    return _shape_tree(m.get("lane") or main)
+
+
+def _shape_clear(b, tip, main):
+    """T-4563: whether a lane's repo-shape modules are clear at `tip` for a batch to queue it: they ran green there, or the
+    lane's tree has none (another project's)."""
+    return b.meta.get("check_shape") == tip or not _shape_tree(b.meta.get("lane") or main)
+
+
+def _shape_stage(p, b, main, tip):
+    """T-4563: the lane's repo-shape modules, run first in its check child, before the turn (so lanes run theirs at once).
+    'red': the lane's tip is recorded red with the failing classes (no retry until it moves) and no long check runs.
+    'green': check_shape = tip, so the hold check runs without the classes. 'cut': no verdict, the long check runs them.
+    'moved': the tip changed meanwhile; nothing is written, the newer tip's check decides."""
+    from sampo import cli
+    verdict, names = _shape_run(b.meta.get("lane") or main)
+    if _lane_tip(main, cli.need_brief(p, b.id)) != tip:
+        return "moved"
+    if verdict == "red":
+        failed = " ".join(names.split(", "))[:500]
+        _set_check(p, b.id, f"its repo-shape modules are red in its lane: {failed} (tip {tip[:9]}; no long check was run; "
+                            "fix them, commit, and accept again)", check_state="red", check_tip=tip, check_failed=failed,
+                   check_pid=None, check_ticks=None, check_shape=None)
+    elif verdict == "green":
+        _set_check(p, b.id, f"repo-shape modules green on {tip[:9]}: the check runs the rest without the classes",
+                   check_shape=tip)
+    return verdict
 
 
 def accept(p, b, main, args):
@@ -2497,17 +2535,12 @@ def accept(p, b, main, args):
     if skip_check and not clean:  # refused before anything is recorded
         raise c.PolicyError(
             f"{b.id} has no passing affected run at its tip that held the repo-shape classes "
-            f"({', '.join(c.REPO_SHAPE_CLASSES)}): --no-check would queue it without them. Run "
+            f"({', '.join(c.repo_shape_classes())}): --no-check would queue it without them. Run "
             f"`sampo check --affected --hold --evidence {b.id}` in the lane (or drop --no-check: accept starts that check)")
     gaps = _accept_gaps(b, path, main, rows)
     if gaps:  # T-4487: refused before anything is recorded or started: the close would refuse the lane for these
         raise c.PolicyError(f"{b.id} not accepted, nothing recorded: the close would refuse this lane: {'; '.join(gaps)}. "
                             f"Accept again with the audits it names ({AUDIT_FORM}, one per lens)")
-    if not skip_check and not clean and _shape_due(p, b, path, tip):
-        verdict, names = _shape_run(path)  # T-4542: the lane's repo-shape modules before its long check; red refuses here
-        if verdict == "red":
-            raise c.PolicyError(f"{b.id} not accepted, nothing recorded: its repo-shape modules are red in its lane "
-                                f"({names}). Fix them in the lane, commit, and accept again (no long check was queued)")
     tree = c.worktree_id(path)
     added = 0
     for lens, how, result in rows:
