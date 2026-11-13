@@ -2026,22 +2026,64 @@ def check_plugins():
     return Result("plugins", "PASS", "no conflicts among enabled plugins")
 
 
-LOW_DISK_BYTES = 10e9  # T-1450: below this, or below LOW_DISK_SHARE of the disk, doctor warns
-LOW_DISK_SHARE = 0.05
+RECLAIM_BUDGET_S = 10  # T-4543: sizing Sampo's reclaimables, all projects together, stops here
+
+
+def _old_outputs():
+    """(count, bytes) of the compact-output full texts older than tidy's keep (state/outputs): derived, tidy deletes them."""
+    from sampo import lanes as slanes
+    from sampo import tidy
+    folder, n, size = os.path.join(c.state_dir(), "outputs"), 0, 0
+    for f in os.listdir(folder) if os.path.isdir(folder) else []:
+        full = os.path.join(folder, f)
+        try:
+            if time.time() - os.path.getmtime(full) > tidy.SNAPSHOT_MAX_DAYS * 86400:
+                n += 1
+                size += slanes.dir_bytes(full) if os.path.isdir(full) else os.lstat(full).st_blocks * 512
+        except OSError:
+            pass
+    return n, size
+
+
+def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S):
+    """[(label, bytes)] Sampo owns and could free, largest first: finished lanes (done, no-task, scratch) of each project
+    and old outputs. Each source that can't be read is skipped: the disk check never costs the doctor its run."""
+    from sampo import lanes as slanes
+    deadline, rows = time.monotonic() + budget, []
+    for p, _ in projects:
+        try:
+            for r in slanes.reclaimables(p, budget=max(0.0, deadline - time.monotonic())):
+                rows.append((f"{slanes._KINDS[r['kind']]} {os.path.basename(r['path'])}", r["bytes"] or 0))
+        except (OSError, c.PolicyError, subprocess.SubprocessError, ValueError):
+            continue
+    try:
+        n, size = _old_outputs()
+        if n:
+            rows.append((f"{n} old outputs", size))
+    except (OSError, ImportError):
+        pass
+    return sorted(rows, key=lambda r: -r[1])
 
 
 def check_disk(path=None, usage=None, projects=None):
     """T-1450: the disk filled on 2026-10-22 and every hook that wrote state failed (ENOSPC) with no warning first.
-    Builder worktrees pile up unseen, so their counts are named (a listdir each; sizing them would be slow)."""
+    T-4543: warns under 10% or 40 GB free, fails under 5 GB (lanes.disk_level), and names what Sampo could free with
+    its bytes (disk_reclaimables), the way a done lane would be after `sampo tidy --apply`. A healthy disk measures
+    nothing more. Builder worktrees' counts stay (a listdir each) for what tidy can't offer."""
+    from sampo import lanes as slanes
     try:
-        u = (usage or shutil.disk_usage)(path or c.state_dir())
+        u = (usage or slanes.disk_usage)(path or c.state_dir())
     except OSError:
         return Result("disk", "PASS", "not measured")
     free = f"{u.free / 1e9:.0f} GB free ({100 * u.free / u.total:.0f}%)"
-    if u.free >= LOW_DISK_BYTES and u.free >= LOW_DISK_SHARE * u.total:
+    if usage is None and slanes.disk_pinned():  # a reading set by hand is not the disk: say so
+        free += " [reading pinned by FOREMAN_DISK_FREE, not the disk]"
+    level = slanes.disk_level(u)
+    if level == "ok":
         return Result("disk", "PASS", free)
+    projects = c.all_projects() if projects is None else projects
     lanes = []
-    for p, _ in (c.all_projects() if projects is None else projects):
+    for p, _ in projects:
         try:
             n = len(os.listdir(os.path.join(p.root, ".claude", "worktrees")))
         except OSError:
@@ -2049,7 +2091,11 @@ def check_disk(path=None, usage=None, projects=None):
         if n:
             lanes.append((n, os.path.basename(p.root.rstrip(os.sep))))
     where = c.joinmore([f"{name} {n}" for n, name in sorted(lanes, reverse=True)], 5)
-    return Result("disk", "WARN", f"{free} on the disk holding Sampo's state: hooks fail when it fills"
+    held = disk_reclaimables(projects)
+    named = c.joinmore([f"{label} {slanes.human(size)}" for label, size in held], 5)
+    return Result("disk", "FAIL" if level == "fail" else "WARN",
+                  f"{free} on the disk holding Sampo's state: hooks and builders fail when it fills"
+                  + (f"; Sampo could free: {named} (sampo tidy --apply removes the lanes)" if held else "")
                   + (f"; builder worktrees: {where} (git worktree list; fm lane rm the merged ones)" if where else ""))
 
 

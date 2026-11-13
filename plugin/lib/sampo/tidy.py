@@ -38,8 +38,9 @@ LSP_BINARIES = {"clangd-lsp": "clangd", "pyright-lsp": "pyright-langserver", "ty
                 "gopls-lsp": "gopls", "rust-analyzer-lsp": "rust-analyzer"}
 
 
-def finding(project, kind, severity, detail, fix="", auto=False):
-    return {"project": project, "kind": kind, "severity": severity, "detail": detail, "fix": fix, "auto": auto}
+def finding(project, kind, severity, detail, fix="", auto=False, **extra):
+    """T-4543: `extra` (a path, bytes) rides in the report's JSON; bytes also orders a kind's items, largest first."""
+    return {"project": project, "kind": kind, "severity": severity, "detail": detail, "fix": fix, "auto": auto, **extra}
 
 
 # ---------------------------------------------------------------- helpers
@@ -339,6 +340,7 @@ def check_project(p, apply, actions):
                            "fm repeats lists them, each with a suggestion (fm check add, a script, a project skill)"))
     from sampo import lanes as slanes
     out += slanes.stale(p, briefs, apply, actions, finding)
+    out += slanes.finished_findings(p, briefs, apply, actions, finding)  # T-4543: never in fm night's lanes-only run
     out += _roll_ledger(p, apply, actions)
     out += _prune_snapshots(p, apply, actions)
     out += _prune_exam_work(p, apply, actions)  # T-2568
@@ -833,7 +835,7 @@ def cmd_tidy(args):
         print("Tidy: nothing to do.")
         return
     order = {"action": 0, "warn": 1, "info": 2}
-    for f in sorted(findings, key=lambda f: (order[f["severity"]], f["project"] or "", f["kind"])):
+    for f in sorted(findings, key=lambda f: (order[f["severity"]], f["project"] or "", f["kind"], -(f.get("bytes") or 0))):
         mark = {"action": "DONE" if args.apply else "APPLY", "warn": "DECIDE", "info": "info"}[f["severity"]]
         print(f"{mark:6} [{f['project'] or 'global'}] {f['kind']}: {f['detail']}" + (f"  → {f['fix']}" if f["fix"] else ""))
     if not args.apply and any(f["auto"] for f in findings):

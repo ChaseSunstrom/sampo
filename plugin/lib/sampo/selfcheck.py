@@ -367,7 +367,55 @@ def pause_lingers(p, briefs, now):
 
 
 PAUSE_AGENT_MIN = 10  # a session's own pause told after this many minutes
-CHECKS += (usage_burn, stale_beats, pause_lingers)
+
+
+def disk_low(p, briefs, now):
+    """T-4543: under 5 GB free (a doctor fail): hooks, tests and builders fail writing. A warn is doctor's to show; only
+    a fail reaches the Next line, with what tidy would free of this project's finished lanes. Told once a day."""
+    from sampo import lanes as slanes
+    try:
+        u = slanes.disk_usage()
+    except OSError:
+        return None
+    if slanes.disk_level(u) != "fail":
+        return None
+    held = _disk_held(p, briefs, now)
+    return Hit(f"disk: {u.free / 1e9:.0f} GB free ({100 * u.free / u.total:.0f}%): writes fail when it fills{held} "
+               f"→ sampo tidy --apply, then sampo doctor names the rest", tell=True)
+
+
+def _disk_held(p, briefs, now):
+    """"; N finished lanes hold X", or "" when none or when no scan may run. The scan walks worktrees (git per lane), and
+    this runs from the Stop hook: at most one per CACHE_S, kept in a stamp written BEFORE the scan starts. When that
+    stamp can't be written (the disk is full, which is when this runs) no scan runs at all: the bare disk reading, which
+    needs no walk, is the line. The scan is itself bounded (lanes.finished's one deadline, 3 s here)."""
+    from sampo import lanes as slanes
+    path = os.path.join(p.dir, "disk_scan.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        if 0 <= now - float(d["at"]) < CACHE_S:
+            return str(d.get("held") or "")
+    except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        pass
+    try:
+        c.write_atomic(path, json.dumps({"at": now, "held": ""}))
+    except OSError:
+        return ""
+    try:
+        rows = slanes.reclaimables(p, briefs, budget=3)
+    except (OSError, c.PolicyError, ValueError):
+        rows = []
+    held = f"; {len(rows)} finished lane{'s' if len(rows) != 1 else ''} hold {slanes.human(sum(r['bytes'] or 0 for r in rows))}" \
+        if rows else ""
+    try:
+        c.write_atomic(path, json.dumps({"at": now, "held": held}))
+    except OSError:
+        pass
+    return held
+
+
+CHECKS += (usage_burn, stale_beats, pause_lingers, disk_low)
 
 
 def lines(p, briefs=None, now=None):

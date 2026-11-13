@@ -328,7 +328,10 @@ class SampoTestCase(unittest.TestCase):
                                                      "FOREMAN_STATE", "XDG_STATE_HOME", "FOREMAN_NO_BACKGROUND",
                                                      "FOREMAN_ONEOFF", "CLAUDE_CODE_ENTRYPOINT", "FOREMAN_DRIVE_TASK",
                                                      "FOREMAN_GUARD_CASES", "FOREMAN_NO_LINK", "FOREMAN_NO_RIVAL",
-                                                     "FOREMAN_UI_CACHE_S")}
+                                                     "FOREMAN_UI_CACHE_S", "FOREMAN_DISK_FREE")}
+        # T-4543: no test reads the machine's free disk: on 2026-11-12 a 97%-full disk turned trunk red. 500 of 1000 GB
+        # free is roomy; a test of low space pins its own reading (test_disk_pressure)
+        os.environ["FOREMAN_DISK_FREE"] = "500e9/1000e9"
         os.environ["FOREMAN_NO_RIVAL"] = "1"  # T-2341: no plan waits on a cold rival read (the Rival tests turn it on)
         os.environ["FOREMAN_HOME"] = self.home
         os.environ["FOREMAN_NO_BACKGROUND"] = "1"  # a detached child writing into a test's folder races its cleanup

@@ -9,6 +9,7 @@ import functools
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import shutil
@@ -3296,4 +3297,337 @@ def stale(p, briefs, apply, actions, finding):
                            f"git branch -d {name}", auto=True))
         if apply and _git(main, "branch", "-d", name).returncode == 0:  # -d: never an unmerged one
             actions.append(("branch_rm", name))
+    return out
+
+
+# ---------------------------------------------------------------- disk pressure (T-4543)
+# On 2026-11-12 free space fell from 36 to 32 GB in three hours: a test that read the real free disk turned trunk red
+# and a builder's writes failed, with nothing in Sampo having said so. doctor and the session's Next line read the
+# level here; fm tidy lists, and --apply removes, the lanes that hold the space and are finished.
+
+DiskUsage = collections.namedtuple("DiskUsage", "total used free")
+DISK_WARN_BYTES, DISK_WARN_SHARE, DISK_FAIL_BYTES = 40e9, 0.10, 5e9  # warn under 10% or 40 GB free; fail under 5 GB
+FINISHED_LANE_DAYS = 1  # a lane must have sat this long untouched before it counts as finished
+SIZE_BUDGET_S = 8.0  # one finished() scan (git calls, status, sizing) stops here: a row without a size is still listed
+TIDY_SCAN_S = 60.0  # fm tidy is run by hand, not from a hook: it may take longer
+_KINDS = {"done_lane": "done lane", "no_task_lane": "no-task lane", "scratch_worktree": "scratch worktree",
+          "old_outputs": "old output"}
+
+
+def _pin():
+    """The FOREMAN_DISK_FREE reading ("<free>" or "<free>/<total>" in bytes, 3e9 allowed) as a DiskUsage, or None when
+    it is unset or not a usable reading: not a number, not finite (nan, inf), negative, or more free than the total."""
+    raw = os.environ.get("FOREMAN_DISK_FREE", "").strip()
+    if not raw:
+        return None
+    try:
+        free, _, total = raw.partition("/")
+        free = float(free)
+        total = float(total) if total else max(free * 10, 1000e9)
+    except ValueError:
+        return None
+    if not (math.isfinite(free) and math.isfinite(total)) or free < 0 or total <= 0 or free > total:
+        return None
+    return DiskUsage(total, total - free, free)
+
+
+def disk_pinned():
+    """True when disk_usage() reads FOREMAN_DISK_FREE rather than the disk: doctor says so."""
+    return _pin() is not None
+
+
+def disk_usage(path=None):
+    """The disk holding `path` (default: Sampo's state). FOREMAN_DISK_FREE pins the reading, as FOREMAN_NOW pins the
+    clock: the test base sets it, so no test reads the machine's real free space (T-4543). A pin that is not a usable
+    reading (see _pin) is ignored and the disk is read."""
+    return _pin() or shutil.disk_usage(path or c.state_dir())
+
+
+def disk_level(u):
+    """"ok", "warn" (under 10% or 40 GB free) or "fail" (under 5 GB free)."""
+    if u.free < DISK_FAIL_BYTES:
+        return "fail"
+    return "warn" if u.free < DISK_WARN_BYTES or u.free < DISK_WARN_SHARE * u.total else "ok"
+
+
+def human(n):
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.1f} MB" if n >= 1e6 else f"{n / 1e3:.0f} KB" if n >= 1e3 \
+        else f"{n:.0f} B"
+
+
+def dir_bytes(path, deadline=None):
+    """Disk a folder holds (allocated blocks, symlinks not followed, a hard-linked file once), or None when
+    `deadline` (a time.monotonic() value) passes first."""
+    total, seen, todo = 0, set(), [path]
+    while todo:
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
+        try:
+            with os.scandir(todo.pop()) as it:
+                for e in it:
+                    try:
+                        st = e.stat(follow_symlinks=False)
+                        if e.is_dir(follow_symlinks=False):
+                            todo.append(e.path)
+                        if st.st_nlink > 1 and not e.is_dir(follow_symlinks=False):
+                            if (st.st_dev, st.st_ino) in seen:
+                                continue
+                            seen.add((st.st_dev, st.st_ino))
+                        total += st.st_blocks * 512
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return total
+
+
+def _worktrees(main):
+    """[{"path", "head", "branch", "lock", "prunable"}] from git worktree list, the main checkout first."""
+    out, cur = [], None
+    for ln in _git(main, "worktree", "list", "--porcelain").stdout.splitlines() + [""]:
+        if not ln:
+            if cur:
+                out.append(cur)
+            cur = None
+        elif ln.startswith("worktree "):
+            cur = {"path": ln[9:], "head": "", "branch": None, "lock": None, "prunable": False}
+        elif cur is not None:
+            key, _, val = ln.partition(" ")
+            if key == "HEAD":
+                cur["head"] = val
+            elif key == "branch":
+                cur["branch"] = val.removeprefix("refs/heads/")
+            elif key == "locked":
+                cur["lock"] = val
+            elif key == "prunable":
+                cur["prunable"] = True
+    return out
+
+
+def _busy_dirs():
+    """Every process's working directory: a lane some process stands in is in use, whoever it belongs to."""
+    out = []
+    if os.path.isdir("/proc/self"):
+        for d in os.listdir("/proc"):
+            if d.isdigit():
+                try:
+                    out.append(os.readlink(f"/proc/{d}/cwd"))
+                except OSError:  # gone, or another user's
+                    pass
+        return out
+    try:  # no procfs (macOS): lsof prints "n<path>" per process
+        r = subprocess.run(["lsof", "-Fn", "-d", "cwd"], capture_output=True, text=True, timeout=10)
+        return [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("n/")]
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
+def _in_use(path, busy):
+    return any(d == path or d.startswith(path + os.sep) for d in busy)
+
+
+def _admin_dir(path):
+    try:
+        with open(os.path.join(path, ".git"), encoding="utf-8", errors="replace") as f:
+            line = f.readline()
+    except OSError:
+        return ""
+    gd = line.partition("gitdir:")[2].strip()
+    return gd if gd and os.path.isabs(gd) else os.path.join(path, gd) if gd else ""
+
+
+def _idle_days(path, now):
+    """Days since the worktree was last touched, read from its .git file and the admin folder's HEAD, index and
+    reflog: a fresh checkout, a commit and a staged change each move one. None when it can't be read. (git status
+    here runs with --no-optional-locks, so asking does not refresh the index time it reads.)"""
+    admin = _admin_dir(path)
+    times = []
+    files = [os.path.join(path, ".git")]
+    if admin:
+        files += [os.path.join(admin, x) for x in ("HEAD", "index", os.path.join("logs", "HEAD"))]
+    for f in files:
+        try:
+            times.append(os.stat(f).st_mtime)
+        except OSError:
+            pass
+    return (now - max(times)) / 86400 if times else None
+
+
+_AGENT_PID = re.compile(r"\(pid (\d+) start (\d+)\)")
+_MID_OPERATION = ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "sequencer")
+# the branches a lane makes (fm lane new, Claude Code's builder worktrees, a draft): only these go with a removal
+_LANE_BRANCH = re.compile(r"^(?:foreman/T-\d|worktree-agent-|draft/)")
+
+
+def agent_lock_dead(reason):
+    """True only when a Claude Code worktree lock names its agent and that process is gone. The reason reads
+    "claude agent agent-<id> (pid N start S)" in `git worktree list --porcelain`, S being the process's start time
+    (field 22 of /proc/N/stat): a pid that now has another start time was reused, so its agent is gone too. A reason
+    with no readable pid, or a process that is alive or can't be told, is False: the lock stands, as a user's does."""
+    m = _AGENT_PID.search(reason or "") if (reason or "").startswith("claude agent") else None
+    if not m or int(m[1]) < 1:
+        return False
+    pid, start = int(m[1]), int(m[2])
+    if os.path.isdir("/proc/self"):
+        try:
+            with open(f"/proc/{pid}/stat", encoding="utf-8", errors="replace") as f:
+                return int(f.read().rsplit(")", 1)[1].split()[19]) != start
+        except FileNotFoundError:
+            return True
+        except (OSError, IndexError, ValueError):
+            return False
+    try:  # no procfs (macOS): only whether the pid exists can be told
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
+def _mid_operation(path):
+    """True when the worktree is in the middle of a rebase, merge, cherry-pick, revert or bisect: its admin folder
+    holds the operation's state, and the work in it is not done whatever the status reads."""
+    admin = _admin_dir(path)
+    return not admin or any(os.path.exists(os.path.join(admin, x)) for x in _MID_OPERATION)
+
+
+def _left(deadline):
+    return deadline - time.monotonic()
+
+
+def _left_work(path, timeout=30):
+    """What removing the lane would lose, as remove() counts it: anything uncommitted, and ignored files that aren't
+    a rebuildable cache. Empty is clean; an unreadable status is not."""
+    st = _git(path, "--no-optional-locks", "status", "--porcelain", "--ignored=matching", timeout=timeout)
+    if st.returncode:
+        return ["status failed"]
+    left = [ln for ln in st.stdout.splitlines() if not (ln.startswith("!! ") and _is_cache(path, ln[3:]))]
+    left += [f"!! {x}" for ln in st.stdout.splitlines() if ln.startswith("!! ") and _BUILD.search(ln[3:])
+             for x in _secretish(path, ln[3:])]
+    return left
+
+
+def finished(p, briefs, budget=SIZE_BUDGET_S, now=None, busy=None):
+    """T-4543: Sampo's own worktrees that hold disk and have nothing left to do, biggest first: under <repo>.lanes/ or
+    <repo>/.claude/worktrees/, clean (as remove() reads it), their tip already in the checkout's HEAD and not that
+    tip itself, untouched FINISHED_LANE_DAYS, no process standing in them, no open task naming them, not in the middle
+    of a rebase, merge, cherry-pick or bisect, and not locked except by a Claude Code agent that is dead (which leaves
+    a finished builder's worktree locked: T-0725; a live agent's lock, and a user's, stand). Rows: path, branch, tip,
+    kind (done_lane: its task closed; no_task_lane; scratch_worktree), bytes (None past the budget), lock.
+    One monotonic deadline, `budget` seconds from the call, bounds the whole scan (the git calls, the status of each
+    candidate, the sizing: this runs from the Stop hook): past it, the rows verified so far come back, never an
+    unverified one."""
+    deadline = time.monotonic() + budget
+    main = c.main_worktree(p.root) or p.root
+    if not c.git_root(main):
+        return []
+    now = time.time() if now is None else now
+    real = os.path.realpath
+    homes = {real(main) + ".lanes": "no_task_lane", real(os.path.join(main, ".claude", "worktrees")): "scratch_worktree"}
+    if _left(deadline) <= 0:
+        return []
+    trunk = _git(main, "rev-parse", "HEAD", timeout=max(1, min(30, _left(deadline)))).stdout.strip()
+    if not trunk:
+        return []
+    named = collections.defaultdict(list)  # realpath of a lane folder -> the briefs naming it
+    for b in briefs:
+        if b.meta.get("lane"):
+            named[real(b.meta["lane"])].append(b)
+    rows = []
+    for w in _worktrees(main)[1:]:  # the first is the main checkout itself
+        if _left(deadline) <= 0:
+            break
+        path = real(w["path"])
+        kind = next((k for home, k in homes.items() if path.startswith(home + os.sep)), None)
+        if kind is None or w["prunable"] or not os.path.isdir(path) or not w["head"] or w["head"] == trunk:
+            continue
+        if w["lock"] is not None and not agent_lock_dead(w["lock"]):
+            continue  # someone's own lock is theirs, and a live (or unreadable) agent's stands
+        mine = named.get(path, [])
+        if any(b.status not in c.CLOSED for b in mine):
+            continue
+        if mine:
+            kind = "done_lane"
+        if _mid_operation(path):
+            continue
+        if _git(main, "merge-base", "--is-ancestor", w["head"], trunk,
+                timeout=max(1, min(30, _left(deadline)))).returncode:
+            continue
+        idle = _idle_days(path, now)
+        if idle is None or idle < FINISHED_LANE_DAYS:
+            continue
+        rows.append({"path": path, "branch": w["branch"], "tip": w["head"], "kind": kind, "bytes": None,
+                     "lock": w["lock"]})
+    if rows:
+        busy = _busy_dirs() if busy is None else busy
+        kept = []
+        for r in rows:
+            if _left(deadline) <= 0:
+                break  # unverified rows are dropped, not listed
+            if not _in_use(r["path"], busy) and not _left_work(r["path"], max(1, min(30, _left(deadline)))):
+                kept.append(r)
+        rows = kept
+    for r in rows:
+        r["bytes"] = dir_bytes(r["path"], deadline)
+    rows.sort(key=lambda r: (r["bytes"] is None, -(r["bytes"] or 0), r["path"]))
+    return rows
+
+
+def reclaimables(p, briefs=None, budget=SIZE_BUDGET_S):
+    """What doctor names when the disk runs short: this project's finished lanes (done, no-task, scratch)."""
+    return finished(p, c.load_briefs(p) if briefs is None else briefs, budget=budget)
+
+
+def _remove_finished(main, row):
+    """Take one finished lane out, never forced: git itself refuses a worktree with uncommitted files. A lock held by a
+    Claude Code agent is lifted only while that agent is still dead (checked again here, the scan was a moment ago) and
+    put back if git still refuses; a re-lock that fails is said too. The lane's branch goes with it (git branch -d,
+    never an unmerged one) only when it is a lane's own name (_LANE_BRANCH): foreman/T-*, worktree-agent-*, draft/*.
+    "" when removed, else why not."""
+    path, lock = row["path"], row["lock"]
+    if lock is not None and not agent_lock_dead(lock):
+        return "its Claude Code agent is alive again or its lock names no pid: the lock stands"
+    if _mid_operation(path):
+        return "a rebase, merge, cherry-pick or bisect is in progress in it"
+    if lock is not None:
+        _git(main, "worktree", "unlock", path)
+    r = _git(main, "worktree", "remove", path)
+    if r.returncode:
+        why = (r.stderr.strip() or f"git worktree remove exited {r.returncode}")[:300]
+        if lock is not None and os.path.isdir(path):
+            back = _git(main, "worktree", "lock", "--reason", lock, path)
+            if back.returncode:
+                why += f"; and putting its lock back failed: {(back.stderr.strip() or f'exit {back.returncode}')[:200]}"
+        return why
+    _git(main, "worktree", "prune")
+    if row["branch"] and _LANE_BRANCH.match(row["branch"]):
+        _git(main, "branch", "-d", row["branch"])  # -d: the commits stay when the branch somehow isn't merged
+    return ""
+
+
+def finished_findings(p, briefs, apply, actions, finding):
+    """fm tidy: one APPLY item per finished lane with its bytes, largest first. A done lane is stale()'s item (its task
+    comes back with it), so it isn't listed twice. --apply removes each with _remove_finished; a refusal becomes a
+    DECIDE item that names git's reason."""
+    rows = [r for r in finished(p, briefs, budget=TIDY_SCAN_S) if r["kind"] != "done_lane"]
+    if not rows:
+        return []
+    main = c.main_worktree(p.root) or p.root
+    busy = _busy_dirs() if apply else []
+    out = []
+    for r in rows:
+        name = os.path.basename(r["path"])
+        size = f" ({human(r['bytes'])})" if r["bytes"] is not None else ""
+        out.append(finding(p.slug, "finished_lane", "action",
+                           f"{_KINDS[r['kind']]} {name}{size}: clean, its tip is already in the trunk, idle over "
+                           f"{FINISHED_LANE_DAYS}d", f"git worktree remove {r['path']}", auto=True, path=r["path"],
+                           bytes=r["bytes"]))
+        if not apply:
+            continue
+        why = "a process is working in it" if _in_use(r["path"], busy) else _remove_finished(main, r)
+        if why:
+            out[-1].update(severity="warn", auto=False, fix=why)
+        else:
+            actions.append(("finished_lane", name))
     return out

@@ -165,9 +165,11 @@ class Checks(_TmpDir):
         self.assertIn("gitter 1", low.detail)
         self.assertNotIn("quiet", low.detail)
         self.assertEqual(d.check_disk(self.t, lambda _: Usage(900e9, 600e9, 300e9), projects).status, "PASS")
-        self.assertEqual(d.check_disk(self.t, lambda _: Usage(100e9, 88e9, 12e9), projects).status, "PASS")
+        # T-4543: the bar rose to 10% or 40 GB free, and under 5 GB is a failure (test_disk_pressure has the edges)
+        self.assertEqual(d.check_disk(self.t, lambda _: Usage(100e9, 88e9, 12e9), projects).status, "WARN")
         self.assertEqual(d.check_disk(self.t, lambda _: Usage(2000e9, 1985e9, 15e9), projects).status, "WARN",
-                         "under 5% free is low even with 15 GB left")
+                         "under 10% free is low even with 15 GB left")
+        self.assertEqual(d.check_disk(self.t, lambda _: Usage(900e9, 898e9, 2e9), projects).status, "FAIL")
 
     def test_a_busy_machine_skips_hook_timing(self):
         # T-0367: at load 35 JARVIS spent 21 s on 136 timed hook runs, and slow numbers there say nothing of the hooks
