@@ -1,6 +1,8 @@
 """fm code (T-1212): Smith's loop run by the harness, with a model filling small slots (Smith Code, T-1207).
 
     fm code "<request>" [--model NAME] [--escalate NAME] [--planner NAME] [--max-steps 40] [--dry-plan] [--no-commit] [--json]
+      --planner NAME: a profile, or a planner CLI (claude, codex, gemini) run read-only, plans and writes the
+      close notes; --model does every step (T-2945, T-4449)
     fm code --resume [ID]          continue a run that crashed or was killed, from its journal
     fm code models                 the model profiles (fmmodels) and where each comes from
     fm code tui [REQUEST]          the same run in a terminal UI (fmcodetui, T-1283); on a terminal, fm code "<request>"
@@ -1952,6 +1954,8 @@ class Run:
                 "reread_ratio": round(c["rereads"] / c["reads"], 3) if c["reads"] else 0.0,
                 "searches": c["searches"], "notes": c["notes"], "forced": c["forced"], "turns": self.turns,
                 "turns_to_first_edit": c["first_edit"],
+                # T-4449: who planned when it was not the model that worked (a profile, or a CLI in its read-only mode)
+                "planner": self.planner.get("name") if isinstance(self.planner, dict) else None,
                 # T-4206: what the budget counted and forced, so a local-runs row can tell the stops apart
                 "looks": c["looks"], "look_runs": c["look_runs"], "forced_edit": c["forced_edit"],
                 "forced_test": c["forced_test"], "forced_source": c["forced_source"], "carried": c["carried"],
@@ -2433,10 +2437,16 @@ class Run:
         """This run's card Session: one per run, so its failed-call counts and closed cards carry over."""
         from sampo import callcards
         if self.cards_session is None:
-            other = self.planner or self.escalate
+            other = self.aide()
             self.cards_session = callcards.Session(self.root, guard=self.card_guard, escalate=(
                 lambda r: self.card_advice(other, r)) if other else None)
         return self.cards_session
+
+    def aide(self):
+        """The stronger profile that takes one turn for a stuck actor: --planner, else --escalate. T-4449: a planner
+        CLI plans in its read-only mode and takes no tool turn, so it is passed over here."""
+        planner = self.planner if isinstance(self.planner, dict) and self.planner.get("kind") != "cli" else None
+        return planner or self.escalate
 
     def harness_call(self, name, inputs, calls):
         """A card call the harness makes itself, through the run's Session; what it changed is recorded like a model's."""
@@ -3424,7 +3434,7 @@ class Run:
         runs and the actor is told. With neither, the actor gets the note. Returns whether the step finished."""
         note = "".join(self.repeat_note(e) for e in third) \
             + "Repeating it won't change the result: take a different action, or done if the work is finished."
-        other = self.planner or self.escalate
+        other = self.aide()
         self.broke = True  # T-3006: the next turn thinks
         for e in third:
             self.log(kind="loop_break", phase=name, action=e["action"], target=e["args"], by=other and other["name"])
@@ -5516,9 +5526,8 @@ def cmd_code(args):
         run.escalate =m.resolve(run.escalate) if run.escalate else None  # a bad name fails now, not 3 rounds in
         if run.escalate:
             run.offsite_ok(p, run.escalate)
-        run.planner = m.resolve(run.planner) if run.planner else None  # T-2945: same rule as --escalate
-        if run.planner:
-            run.offsite_ok(p, run.planner)
+        # T-2945: same rule as --escalate; T-4449: a planner CLI's name is a planner too
+        run.planner = named_planner(run, p) if run.planner else None
         from sampo import smithbench  # T-1355: which Foreman ran this, for when two installs answer to fm
         run.emit("start", f"fm code in {p.slug} ({os.path.realpath(root)})", schema=SCHEMA, request=run.request,
                  task=run.tid, worker=run.worker, project=p.slug, root=os.path.realpath(root),  # T-2741: -p shows where
@@ -6223,22 +6232,62 @@ def _keep_end(run, profile):
                       f"{_one_line(run.keep_tail(out), 300)}")
 
 
+PLAN_SUFFIX = " (plan, read-only)"  # how a planner CLI's profile is named, in the start event and a journal's options
+
+
+def cli_planner(run, name):
+    """The profile of a planner CLI in its read-only mode (T-1320), or None when `name` is no runner with a plan mode.
+    T-4449: one builder for both ways in: a --worker that plans for itself, and --planner NAME beside a --model that
+    does the steps (a resumed run names it with the suffix its journal recorded)."""
+    name = (name or "")[:-len(PLAN_SUFFIX)] if (name or "").endswith(PLAN_SUFFIX) else (name or "")
+    r = all_runners().get(name, {})
+    if not r.get("plan"):
+        return None
+    lean = lean_args(r, "plan")  # T-1426: a lean planner's init line is checked like a lean worker's
+    return {"name": name + PLAN_SUFFIX, "kind": "cli", "verified": r.get("verified"), "cli": name,
+            "argv": r["plan"] + "".join(" " + shlex.quote(a) for a in lean),
+            "stream": "claude" if "stream-json" in r["plan"] else None,
+            "on_line": run.live_tools(name, "--strict-mcp-config" in lean),
+            "heartbeat": lambda: run.live_beat(name),  # a fresh clock for each call
+            "cwd": run.root, "context": 200000, "timeout": run.worker_timeout or WORKER_TIMEOUT,
+            "env": dict(worker_env(), FOREMAN_QUIET="1", FOREMAN_WORKER_OF="fm-code-plan", DISABLE_AUTOUPDATER="1")}
+
+
+def named_planner(run, p):
+    """T-4449: --planner NAME as a profile: a model profile (T-2945), else a planner CLI (claude, codex, gemini) in its
+    read-only mode. A CLI sends the code to its own model, so a sensitive repo refuses it; one not installed, and a
+    name that is neither, fail here, before any model call."""
+    try:
+        prof = m.resolve(run.planner)
+    except m.ModelError as e:
+        prof = cli_planner(run, run.planner)
+        if not prof:
+            raise m.ModelError(f"{e}; --planner also takes a planner CLI: {', '.join(sorted(PLANNERS))}") from None
+        if core.read_meta(p).get("sensitive"):
+            raise CodeError("this repo is marked sensitive (fm sensitive on), so its code can't go to a planner CLI, "
+                            "which sends it to its own model: plan with a local model, or fm sensitive off")
+        try:
+            exe = shlex.split(prof["argv"])[0]
+        except (ValueError, IndexError):
+            exe = prof["cli"]
+        if not shutil.which(exe):
+            raise CodeError(f"--planner {prof['cli']}: `{exe}` is not installed (not on PATH): install it, or name a "
+                            "model profile (fm code models)") from None
+        if not prof["verified"]:  # T-1328's caution, as for a worker that plans: the tree check still stands
+            run.emit("note", f"{prof['cli']}'s read-only mode is not verified here: if its plan changes a file, the "
+                             "run stops", worker=prof["cli"])
+        return prof
+    run.offsite_ok(p, prof)
+    return prof
+
+
 def choose_profile(run, model):
     """The profile that fills the plan and close-notes slots: the model named, else the run's own (on --resume), else
     the configured one. With none and a --worker in PLANNERS, that CLI in its read-only mode (T-1320), which a resumed
     run it planned gets again; a model asked for by name is never swapped for it."""
-    planner, r = None, all_runners().get(run.worker or "", {})
-    if r.get("plan"):
-        lean = lean_args(r, "plan")  # T-1426: a lean planner's init line is checked like a lean worker's
-        planner = {"name": f"{run.worker} (plan, read-only)", "kind": "cli", "verified": r.get("verified"),
-                   "argv": r["plan"] + "".join(" " + shlex.quote(a) for a in lean),
-                   "stream": "claude" if "stream-json" in r["plan"] else None,
-                   "on_line": run.live_tools(run.worker, "--strict-mcp-config" in lean),
-                   "heartbeat": lambda: run.live_beat(run.worker),  # a fresh clock for each call
-                   "cwd": run.root, "context": 200000, "timeout": run.worker_timeout,
-                   "env": dict(worker_env(), FOREMAN_QUIET="1", FOREMAN_WORKER_OF="fm-code-plan", DISABLE_AUTOUPDATER="1")}
-        if not model and run.model_name == planner["name"]:
-            return planner
+    planner = cli_planner(run, run.worker)
+    if planner and not model and run.model_name == planner["name"]:
+        return planner
     try:
         return m.resolve(model or run.model_name)
     except m.ModelError as e:

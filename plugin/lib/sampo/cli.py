@@ -9412,8 +9412,9 @@ def _build_parser(only=None):
                    "the same as --json (sampo code's own events; text and stream-json are refused)")
     s.add_argument("--model", help="the model profile (default: models.json's, a local server, then a keyed cloud)")
     s.add_argument("--escalate", metavar="MODEL", help="after 3 failed fix rounds, 3 more on this profile")
-    s.add_argument("--planner", metavar="MODEL", help="T-2945: this profile asks the plan and the close notes; every "
-                   "step and fix round stays on --model (a small model acts on a stronger one's plan)")
+    s.add_argument("--planner", metavar="NAME", help="T-2945: this profile asks the plan and the close notes; every "
+                   "step and fix round stays on --model (a small model acts on a stronger one's plan). T-4449: also a "
+                   "planner CLI (claude, codex, gemini), run in its read-only mode")
     s.add_argument("--reason", metavar="ARM", help="T-3006: how the model reasons: state (its compact state rides each "
                    "call; thinking only on low confidence, a failed check or a loop break; a named check before an "
                    "edit), off, native, budget, bias or schema. With none, a local profile starts every call with "

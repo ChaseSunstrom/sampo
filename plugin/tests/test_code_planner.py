@@ -38,6 +38,81 @@ class CodePlanner(CodeCase):
         self.assertEqual(small.seen, [])
 
 
+class CliPlanner(CodeCase):
+    """T-4449: --planner takes a planner CLI's name (claude, codex, gemini): it plans in its read-only mode and writes
+    the close notes, the --model profile does every step. The cascade: a big model plans once, a free one works."""
+
+    def setUp(self):
+        super().setUp()
+        self.bin = os.path.join(self.tmp, "bin")
+        os.makedirs(self.bin)
+        self.args = os.path.join(self.tmp, "planner-args")
+
+    def claude(self, *replies):
+        """A fake claude: each call appends its argv to self.args and prints the next reply as a result line."""
+        for n, text in enumerate(replies):
+            with open(os.path.join(self.tmp, f"reply{n}.json"), "w") as f:
+                f.write(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": text,
+                                    "usage": {"input_tokens": 10, "output_tokens": 20}}))
+        path = os.path.join(self.bin, "claude")
+        with open(path, "w") as f:
+            f.write(f'#!/bin/sh\nn=$(cat {self.tmp}/calls 2>/dev/null || echo 0)\nprintf "%s\\n" "== call $n" "$@" >> '
+                    f'{self.args}\necho $((n + 1)) > {self.tmp}/calls\ncat {self.tmp}/reply$n.json\n')
+        os.chmod(path, 0o755)
+
+    def go(self, *args):
+        return self.code("fix add", "--model", "small", *args, check=False,
+                         env={"PATH": self.bin + os.pathsep + os.environ["PATH"]})
+
+    def test_cli_planner_plans_read_only_and_the_model_does_the_steps(self):
+        self.claude(json.dumps(M_PLAN), CLOSE["text"])
+        small = self.serve("anthropic", *FIX, name="small")
+        r = self.go("--planner", "claude", "--json")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+        self.assertIn("return a + b", self.calc())
+        self.assertEqual(len(small.seen), 2, "the two step turns, and no plan or close call")
+        with open(self.args) as f:
+            argv = f.read()
+        self.assertEqual(argv.count("== call"), 2, "the plan and the close notes")
+        self.assertIn("--permission-mode\nplan\n", argv, "in its read-only mode, both times")
+        self.assertIn("fix add", argv, "the request reached it")
+        events = [json.loads(line) for line in r.stdout.splitlines() if line.startswith("{")]
+        start = next(e for e in events if e["event"] == "start")
+        self.assertEqual((start["model"], start["planner"]), ("small", "claude (plan, read-only)"))
+        stats = next(e for e in events if e["event"] == "stats")
+        self.assertEqual(stats["planner"], "claude (plan, read-only)")
+
+    def test_cli_planner_name_that_is_neither_a_profile_nor_a_cli_names_both_lists(self):
+        small = self.serve("anthropic", plan(M_PLAN), *FIX, CLOSE, name="small")
+        r = self.go("--planner", "nope")
+        self.assertNotEqual(r.returncode, 0)
+        out = r.stdout + r.stderr
+        self.assertIn("nope", out)
+        self.assertIn("code models", out, "where the profiles are listed")
+        self.assertIn("claude", out, "and the planner CLIs")
+        self.assertEqual(small.seen, [])
+
+    def test_cli_planner_missing_from_the_path_fails_before_any_call(self):
+        small = self.serve("anthropic", plan(M_PLAN), *FIX, CLOSE, name="small")
+        r = self.code("fix add", "--model", "small", "--planner", "claude", check=False,
+                      env={"PATH": self.bin + os.pathsep + "/usr/bin" + os.pathsep + "/bin"})  # no claude in it
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("claude", r.stderr)
+        self.assertIn("Next:", r.stderr)
+        self.assertEqual(small.seen, [])
+
+    def test_cli_planner_is_refused_on_a_sensitive_repo(self):
+        self.claude(json.dumps(M_PLAN), CLOSE["text"])
+        self.serve("anthropic", *FIX, name="small")
+        self.fm("init")
+        self.fm("sensitive", "on")
+        r = self.go("--planner", "claude")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("sensitive", r.stderr)
+        self.assertFalse(os.path.exists(self.args), "the CLI was never run")
+
+
 class ExamArm(unittest.TestCase):
     def test_the_smith_arm_passes_planner_through_and_records_it(self):
         fake = "import json,sys\nprint(json.dumps({'event': 'closed', 'text': ' '.join(sys.argv)}))\n"
