@@ -161,14 +161,16 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False):
     leave freed slots to it (the merge train's gate got 1/N of them beside ~10 testing builders) for defer_for(wait),
     then compete again, so a lane's run under a deadline isn't left NOT_STARTED by a long gate. T-4247: a small run (a
     selection of at most EXPRESS_CLASSES classes) first tries an express slot, without deferring to a priority waiter,
-    so one or two classes start beside a gate; when those are taken it competes for the pool as any run does."""
+    so one or two classes start beside a gate; when those are taken it competes for the pool as any run does. T-4536: a
+    small run waits at most SMALL_WAIT for either, then runs with none (a 14 s module's 13 per-test jobs, two on express,
+    queued 786 s behind full suites); a run that waits SAY_WAIT or more says so once, with the seconds waited so far."""
     n = slot_count()
     folder = _slot_folder() if n and not _env(SLOT_ENV) and fcntl else None
     if not folder:  # nested, off, no flock (Windows) or a folder that isn't safely ours: run without one
         yield None
         return
     now, order, prio, mark = time.monotonic(), random.sample(range(n), n), _env(PRIO_ENV) == "1", None
-    end, defer, got = now + wait, now + defer_for(wait), None
+    end, defer, got, said = now + (min(wait, SMALL_WAIT) if small else wait), now + defer_for(wait), None, False
     try:
         while True:
             if small and (got := _take(folder, EXPRESS)):
@@ -176,6 +178,13 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False):
             if prio or time.monotonic() >= defer or not _prio_waiting(folder):
                 if got := _take(folder, order):
                     break
+            if not said and time.monotonic() - now >= SAY_WAIT:
+                said = True
+                with _SAY_LOCK:  # T-4536: one line per run.py, not one per class waiting in its pool
+                    if not _SAID:
+                        _SAID.append(True)
+                        sys.stderr.write(f"run.py: waiting for a CPU slot, {time.monotonic() - now:.0f} s\n")
+                        sys.stderr.flush()
             if time.monotonic() >= end:
                 break
             if prio and not mark:
@@ -198,6 +207,9 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False):
 EXPRESS = ("x0", "x1")  # T-4247: the express slots' lock files, beside the pool's "0".."N-1" in the same folder
 EXPRESS_CLASSES = 2  # T-4247: a run of at most this many classes may take an express slot
 DEFER_MAX = 300.0  # T-4247: a non-priority run leaves freed slots to a waiting priority run at most this long
+SMALL_WAIT = 20.0  # T-4536: a small run waits at most this long for a slot (express or pool), then runs with none
+SAY_WAIT = 5.0  # T-4536: a run that has waited this long writes one 'waiting for a CPU slot, N s' line to stderr
+_SAID, _SAY_LOCK = [], threading.Lock()  # T-4536: the line is said once per run.py process, whichever class waited first
 
 
 def defer_for(wait):
