@@ -1720,7 +1720,9 @@ def spawn_land(p, main):
 CHECK_TRIES = 2  # a check cut off at its deadline is started once more (its green classes are cached), then reported
 CHECK_WALL_S = 4 * 3600  # a check process still running after this is killed and counts as cut off
 _SCRUBBED = ("FM_STALL", c.RUN_ID_ENV, "FOREMAN_TEST_RUN_ID")  # env prefixes a lane's check never inherits: a test's override, a nested run's id (the legacy name too)
-_CHECK_KEYS = ("check_state", "check_tip", "check_pid", "check_ticks", "check_log", "check_tries", "check_failed")
+_CHECK_KEYS = ("check_state", "check_tip", "check_pid", "check_ticks", "check_log", "check_tries", "check_failed",
+               "check_solo")
+BATCH_MAX = 8  # T-4528: lanes (the turn's own included) checked as one candidate; the rest wait their own turn
 
 
 def _scrub_env(env):
@@ -1870,8 +1872,9 @@ def _add_audit_once(x, lens, how, result, tree):
 
 def _queue(p, main, tid):
     """T-3922: the lane queued first: ('running', None) into a running land at its next train boundary; else a detached
-    land starts and trains it first, ('started', (pid, log)), or ('not started', None) in the tests and when paused."""
-    first_ids(p, [tid])
+    land starts and trains it first, ('started', (pid, log)), or ('not started', None) in the tests and when paused.
+    T-4528: `tid` may be a list (a batch's members, in order): one call, so one land is started for all of them."""
+    first_ids(p, [tid] if isinstance(tid, str) else list(tid))
     if landing(p):
         return "running", None
     started = spawn_land(p, main)  # a land takes hours: never waited on
@@ -2000,11 +2003,110 @@ def _check_turn(p, waits=None):
         yield
 
 
+def _outcome(r, timed_out):
+    """T-4528: ('green' | 'red' | 'cut', the check's JSON or None) for a finished `sampo check --affected --json`: green
+    is an exit 0 with a result inside the deadline; red is a result that names failures; anything else (the deadline, a
+    kill, a crash, no result at all) is cut. One reading for a lane's own check and for a batch's."""
+    got = _result_of(r)
+    if got is not None and r.returncode == 0 and not timed_out:
+        return "green", got
+    if got is not None and not got.get("cut_off") and not timed_out:
+        return "red", got
+    return "cut", got
+
+
+def _batch_peers(p, main, me, tip):
+    """T-4528: the lanes whose check waits its turn behind this one, as (brief, tip), oldest task first, at most
+    BATCH_MAX - 1: its process alive, claimed at the lane's current tip on its first try, and not marked for a solo run
+    (a batch that went red or was cut off marks its members). One git call per lane that passes the task's own record."""
+    out = []
+    for x in c.load_briefs(p):
+        m = x.meta
+        if x.id == me or m.get("check_state") != "running" or not _check_alive(m) or int(m.get("check_tries") or 1) != 1:
+            continue
+        t = _lane_tip(main, x)
+        if t and m.get("check_tip") == t and m.get("check_solo") != t:
+            out.append((x, t))
+    return sorted(out, key=lambda r: c.id_num(r[0].id))[:max(BATCH_MAX - 1, 0)]
+
+
+def _batch_argv(base):
+    """T-4528: the candidate's check: the lane check's command over everything changed since the trunk it sits on, and
+    no --evidence (the run is no one lane's own)."""
+    return [os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "check", "--affected", "--hold", "--json", "--since", base]
+
+
+def _mark_members(p, main, members, note, solo=False, **meta):
+    """T-4528: write `meta` (None removes a key), `check_solo` = the member's tip when `solo`, and `note` on each member
+    (brief, tip) whose check still waits at that tip, and only those: a lane whose tip moved or whose check ended
+    meanwhile keeps whatever it has. The ids written."""
+    from sampo import cli
+    wrote = []
+    for x, t in members:
+        def go(y, t=t):
+            if y.meta.get("check_state") != "running" or y.meta.get("check_tip") != t or _lane_tip(main, y) != t:
+                return
+            for k, v in meta.items():
+                if v is None:
+                    y.meta.pop(k, None)
+                else:
+                    y.meta[k] = v
+            if solo:
+                y.meta["check_solo"] = t
+            y.append_log(note.replace("{tip}", t[:9]))
+            wrote.append(y.id)
+        cli.mutate(p, x.id, go, "check", {k: v for k, v in meta.items() if k == "check_state"})
+    return wrote
+
+
+def _batch_check(p, main, b, tip, peers, run=None):
+    """T-4528: this lane and the lanes waiting behind it as one candidate: a scratch copy of the trunk with their branches
+    merged (a lane that conflicts with the others is left out, as the train leaves it; this lane conflicting means no
+    batch), one affected run over the union of their changes. Green: every member that still waits at its tip is marked
+    green and queued, in order; the ids covered. Red or cut off: nothing is written for the lanes but a solo mark, so
+    each takes its own turn and a red lane is named by its own check (the cost of a miss is this one run). [] when no
+    batch ran (a single lane, a conflict with the trunk): the caller checks this lane alone."""
+    run = run or _run_check
+    base = _git(main, "rev-parse", "HEAD").stdout.strip()
+    if not base:
+        return []
+    wt = tempfile.mkdtemp(prefix="sampo-batch-")
+    try:
+        if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode:
+            return []
+        merged, log = [], []
+        for x, t in [(b, tip), *peers]:
+            if _merge_in(wt, x, t, log, kept={}):
+                merged.append((x, t))
+            elif x.id == b.id:
+                return []
+        if len(merged) < 2:
+            return []
+        what, _ = _outcome(*run(_batch_argv(base), wt))
+        if what != "green":
+            _mark_members(p, main, merged, f"batch check of {len(merged)} lanes was {'red' if what == 'red' else 'cut off'} "
+                                           "on {tip}: each lane is checked alone in turn", solo=True)
+            return []
+        wrote = _mark_members(p, main, merged, f"check green on {{tip}} as one of a batch of {len(merged)} lanes checked "
+                                               f"together on {base[:9]} (one run)", check_state="green", check_pid=None,
+                              check_ticks=None, check_failed=None, check_solo=None, accepted_at=round(time.time(), 1))
+        if wrote:
+            _queue(p, main, wrote)
+        return wrote
+    finally:
+        _git(main, "worktree", "remove", "--force", wt)
+        shutil.rmtree(wt, ignore_errors=True)
+        _git(main, "worktree", "prune")
+
+
 def _accept_check_child(a):
     """T-4286: the lane's check process: run the check in the lane, then act on its result. Green: the lane is queued
     first, the same call accept makes (a land not running is started). Red: left out, its failing classes (from the
     run's record, via the check's JSON) on the task and no retry until the tip moves. Cut off (the deadline, a kill, no
-    result at all): started once more, then reported. A lane whose tip moved meanwhile is judged by none of it."""
+    result at all): started once more, then reported. A lane whose tip moved meanwhile is judged by none of it.
+    T-4528: taking the turn, a lane whose check a batch already marked green at its tip runs nothing, and one with
+    other lanes waiting behind it checks them with itself as one candidate (_batch_check); a batch that did not go
+    green falls through to this lane's own check."""
     from sampo import cli
     p = c.Project(*a["project"])
     b = cli.need_brief(p, a["id"])
@@ -2012,7 +2114,17 @@ def _accept_check_child(a):
     r, timed_out = None, False
     with _check_turn(p, lambda: _set_check(p, b.id, "check waits its turn: another lane's check is running (one at a "
                                                     "time in a project, T-4416)")):
-        if _lane_tip(main, cli.need_brief(p, b.id)) == tip:  # a tip that moved during the wait: no suite for nothing
+        cur = cli.need_brief(p, b.id)
+        if _lane_tip(main, cur) == tip:  # a tip that moved during the wait: no suite for nothing
+            if cur.meta.get("check_state") == "green" and cur.meta.get("check_tip") == tip:
+                return 0  # T-4528: a batch checked it while it waited, and queued it
+            if tries == 1 and cur.meta.get("check_solo") != tip:
+                try:
+                    peers = _batch_peers(p, main, b.id, tip)
+                    if peers and b.id in _batch_check(p, main, cur, tip, peers):
+                        return 0
+                except Exception as e:  # a batch that cannot be built costs nothing: the lane's own check follows
+                    print(f"batch check skipped: {type(e).__name__}: {c.redact(str(e))[:200]}", file=sys.stderr)
             r, timed_out = _run_check(a["argv"], b.meta.get("lane") or main)
     got = _result_of(r) if r is not None else None
     b = cli.need_brief(p, b.id)
@@ -2020,12 +2132,13 @@ def _accept_check_child(a):
         _set_check(p, b.id, f"check on {tip[:9]} discarded: the lane tip moved; sampo lane accept {b.id} checks the new one",
                    **dict.fromkeys(_CHECK_KEYS))  # every key: a leftover tries or failed list would mislead the next one
         return 0
-    if got is not None and r.returncode == 0 and not timed_out:
+    what, got = _outcome(r, timed_out)
+    if what == "green":
         _set_check(p, b.id, f"check green on {tip[:9]}", check_state="green", check_pid=None, check_ticks=None,
                    check_failed=None, accepted_at=round(time.time(), 1))
         _queue(p, main, b.id)
         return 0
-    if got is not None and not got.get("cut_off") and not timed_out:
+    if what == "red":
         failed = " ".join(str(x) for x in got.get("failed") or [])[:500]
         _set_check(p, b.id, f"its lane's check is red: {failed or 'no failing class recorded'} (tip {tip[:9]}; no retry "
                             "until the tip moves)", check_state="red", check_failed=failed, check_pid=None, check_ticks=None)
