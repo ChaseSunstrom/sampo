@@ -13,8 +13,8 @@ THREE = dict(M_PLAN, steps=["delete ./", "fix calc.add", "wipe ./ and rewrite it
 
 class UndoGate(CodeCase):
     def go(self, *script, request="fix add", kind="anthropic"):
-        f = self.serve(kind, *script)
-        return f, self.code(request, "--model", "fake", check=False)
+        f = self.serve(kind, *script)  # T-4586: no copy of the tree fits, so the run can't supply the Undo line itself
+        return f, self.code(request, "--model", "fake", check=False, env={"FM_DOOR_CAP": "1"})
 
     def test_undo_every_step_one_refusal_names_gets_its_own_question_and_the_task_starts(self):
         f, r = self.go(plan(THREE), plan(THREE), {"text": "check calc.py against the request"},

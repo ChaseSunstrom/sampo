@@ -459,9 +459,11 @@ class PlanForm(CodeCase):
     tokens and nothing built for 'Interpretation names 1 distinct reading'; s8-042 goal-ruby-f44b59 and s8-043
     goal-c-e61e7e: 'fm focus refused the plan' for one named missing piece)."""
 
-    def go(self, *script, request="fix add", kind="openai"):
+    NO_COPY = {"FM_DOOR_CAP": "1"}  # T-4586: no copy of the tree fits, so the run can't supply a missing Undo line itself
+
+    def go(self, *script, request="fix add", kind="openai", env=None):
         f = self.serve(kind, *script)
-        return f, self.code(request, "--model", "fake", check=False)
+        return f, self.code(request, "--model", "fake", check=False, env=env)
 
     def test_m_form_one_reading_gets_one_targeted_question_and_the_plan_stays_m(self):
         f, r = self.go(*[plan(M_ONE)] * 3, {"text": RULED}, FIX_EDIT, DONE, CLOSE)
@@ -533,7 +535,7 @@ class PlanForm(CodeCase):
         # the repo itself is a door no snapshot covers, so focus can't write the Undo line on its own (doors.gate)
         hard = dict(M_PLAN, steps=["delete ./", "fix calc.add"])
         f, r = self.go(plan(hard), plan(hard), {"text": "read calc.py and leave every file where it is"},
-                       FIX_EDIT, DONE, DONE, CLOSE, kind="anthropic")
+                       FIX_EDIT, DONE, DONE, CLOSE, kind="anthropic", env=self.NO_COPY)
         self.assertIn("Undo: line on step 1", f.said(2), r.stdout + r.stderr)
         self.assertIn("delete ./", f.said(2))
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
@@ -543,7 +545,7 @@ class PlanForm(CodeCase):
     def test_focus_refusal_for_a_one_way_step_quotes_the_gate_in_the_question_and_the_new_step_keeps_the_limit(self):
         hard = dict(M_PLAN, steps=["delete ./", "fix calc.add"])
         f, r = self.go(plan(hard), plan(hard), {"text": "read calc.py and leave every file where it is"},
-                       FIX_EDIT, DONE, DONE, CLOSE, kind="anthropic")
+                       FIX_EDIT, DONE, DONE, CLOSE, kind="anthropic", env=self.NO_COPY)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         asked = json.dumps(f.seen[2]["messages"][-1])  # the targeted question itself, not the refusal before it
         self.assertIn("an Undo: line on step 1 (one-way, untracked data", asked)
@@ -712,14 +714,15 @@ class PlanForm(CodeCase):
     GREEN_M = dict(M_PLAN, criteria=[{"text": "calc.add adds", "verify": GREEN}])
 
     def test_replan_round_a_replan_the_check_refuses_gets_one_more_round_with_the_problem(self):
-        f, r = self.go(plan(self.HARD), plan(self.GREEN_M), plan(M_PLAN), FIX_EDIT, DONE, CLOSE, kind="anthropic")
+        f, r = self.go(plan(self.HARD), plan(self.GREEN_M), plan(M_PLAN), FIX_EDIT, DONE, CLOSE, kind="anthropic",
+                       env=self.NO_COPY)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("already passes before any work", f.said(2))
         self.assertIn("fails the harness's own check", json.dumps(f.seen[2]["messages"][-1]))  # the last message, not the first re-plan's
         self.assertEqual([self.task(t)["status"] for t in ("T-0001", "T-0002")], ["dropped", "done"], r.stdout)
 
     def test_replan_round_the_extra_round_is_the_last_one(self):
-        f, r = self.go(plan(self.HARD), plan(self.GREEN_M), plan(self.GREEN_M), kind="anthropic")
+        f, r = self.go(plan(self.HARD), plan(self.GREEN_M), plan(self.GREEN_M), kind="anthropic", env=self.NO_COPY)
         self.assertEqual(r.returncode, 1)
         self.assertIn("already passes before any work", r.stderr + r.stdout)
         self.assertEqual(len(f.seen), 3)

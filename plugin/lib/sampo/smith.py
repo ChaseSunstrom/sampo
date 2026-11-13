@@ -7150,6 +7150,42 @@ def _rival(run, profile, p, tid):
     return True
 
 
+def _own_undo(run, p, tid, why):
+    """T-4586: whether the Undo: line fm focus refused the plan for is now on each step the refusal names, from the run's
+    own copy of the tree (cascade12l ended at the plan, 0 of 12, 19 minutes, on 'missing an Undo: line on step 1'). Focus
+    snapshots only the paths a step names and gives up when the step names the repo itself; the run keeps one copy of every
+    top-level entry but .git (git has its own way back), through the same bounded, hash-verified snapshot focus uses, and
+    writes its restore command on the step as focus would. The copy is kept by name, so a tree holding a name a shell would
+    expand ($ or a leading ~) gets none rather than a partial one; a copy over the snapshot cap, a failed copy, or a step
+    that can't be edited gets none either, and the refusal goes to the planner as before. The gate's rules are untouched:
+    it reads the line it asked for, and a source that exists."""
+    named = [n for n in dict.fromkeys(int(x.group(1)) for x in _GATE_STEP.finditer(why)) if 1 <= n <= len(run.plan["steps"])]
+    if not named:
+        return False
+    try:
+        from sampo import doors
+        names = sorted(x for x in os.listdir(run.root) if x != ".git")
+    except OSError:
+        return False
+    if not names or any("$" in x or x.startswith("~") or "\n" in x for x in names):
+        return False
+    undo, note = doors._snapshot(p, tid, f"step{named[0]}", names)
+    if not undo:
+        run.emit("note", f"no copy of the tree to put on the Undo: line ({_one_line(note, 160)}): the plan goes back to the planner")
+        return False
+    for n in named:
+        text = run.plan["steps"][n - 1]
+        new = f"{text.split('Undo:', 1)[0].rstrip().rstrip('.')}. Undo: {undo}"
+        code, out = run.fm("task", "step", tid, "edit", str(n), new)
+        if code:
+            run.emit("note", f"step {n} couldn't take the Undo: line ({_one_line(out, 160)}): the plan goes back to the planner")
+            return False
+        run.plan["steps"][n - 1] = new
+    run.emit("note", f"kept a copy of the tree before any work ({note}) and put its restore command on step "
+                     f"{', '.join(map(str, named))} as the Undo: line the plan gate asked for")
+    return True
+
+
 def _make_task(run, profile, repaired=False):
     pl = run.plan
     after = f" (a follow-up to {run.after_tid})" if getattr(run, "after_tid", None) else ""  # T-1340
@@ -7187,6 +7223,8 @@ def _make_task(run, profile, repaired=False):
             _rival(run, profile, p, made["id"])  # T-2341: under the race bar or one reading
         code, out = run.fm("focus", made["id"])
         if code and p and _rival(run, profile, p, made["id"]):  # T-4466: a one-way step is only marked at focus
+            code, out = run.fm("focus", made["id"])
+        if code and code != 124 and p and _own_undo(run, p, made["id"], out):  # T-4586: the way back the gate asked for
             code, out = run.fm("focus", made["id"])
         if code:  # T-4507: a refusal naming several one-way steps runs past 500 characters; the gate lines come last
             return _replan(run, profile, made["id"], f"fm focus refused the plan: {out[:2000]}", repaired, code)
