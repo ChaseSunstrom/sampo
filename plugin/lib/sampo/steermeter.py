@@ -97,8 +97,14 @@ def rows(p):
     """The booked rows, oldest first, as every rate counts them: a torn or foreign line is skipped, the first row of a
     message stays, and a row a later fix would not have booked (a compaction summary, machine text, the same words in the
     same session within TWIN_S of an earlier row) is left out."""
+    return clean(_booked(p))
+
+
+def clean(booked):
+    """rows' rule on rows already read (oldest first, the first row of a message kept): what a rate counts. T-4202: the
+    Stop hook's hold applies it to the tail of the book it reads."""
     out, last = [], {}
-    for r in _booked(p):
+    for r in booked:
         text = r.get("text") if isinstance(r.get("text"), str) else ""
         if text and (_summary(text) or c.machine_text(text)):
             continue

@@ -26,6 +26,8 @@ DRIVE_MAX = 50          # consecutive drive continuations without a user prompt
 DRIVE_LINE = 160        # T-3163: the drive's push is printed in the terminal: one line naming the one next action
 OFFERS_MAX = 3          # T-0401: queued tasks offered, one per Stop, while one set of background jobs runs
 WAIT_REPUSH_S = 600     # T-3163: the background-wait push, at most once per active task per this many seconds
+CONCERN_SLACK_S = 120   # T-4202: a message is stamped before its prompt hook runs; a concern opened this long before the turn counts
+CONCERNS_TOLD = 50      # T-4202: the concern ids a session's record keeps (the newest)
 
 
 def _slack(raw):
@@ -4683,6 +4685,11 @@ def _stop(pl):
             or _question_nudge(pl, p)
             or _headless_wait(pl))
         reason = nudge or (None if oneoff or "drive" in c.ablated() else _drive(p, sd, briefs, pl, g, save))  # T-1375
+        if not reason and save and not oneoff and "drive" not in c.ablated():
+            try:  # T-4202: what the user asked this turn with no task, proof or answer holds the stop once
+                reason = _concern_hold(p, sd, briefs, pl, g)
+            except Exception:
+                log_error("Stop", _tb())
         if not reason and not oneoff:  # T-4223: a big task's turn, once per tree state; drive first, as it always was
             try:
                 reason = _big_hold(p, sd, briefs, pl, g, save)
@@ -5350,6 +5357,39 @@ def _drive(p, sd, briefs, pl, g, saved=True):
             and not (sd["active"] and _tools_ran(sid, last.get("at"))):
         return None
     return reason
+
+
+def _concern_hold(p, sd, briefs, pl, g):
+    """T-4202 (T-4188 part C): a concern this session raised since the last turn's start (booked by the meter, so one
+    booked late is seen at the next Stop) that has no task, proof or answer holds the stop once per saying: the saying
+    (the message's concern id and time) goes in this session's gate record before the reason is returned, so it never
+    holds twice, while a concern said again holds once more. Reads this turn's tail of the book and the ledger only (the
+    hook runs in every session: concerns.hold), no model, and loaded here (nothing on a hook's path imports it). Off with the drive, a pause, or a reply that asks the user."""
+    sid, msg = pl.get("session_id"), pl.get("last_assistant_message")
+    if not sid or sd.get("panic") or not sd["drive"] or sd["paused"] \
+            or (needs_user(msg) and sd.get("autonomy") != "full"):
+        return None
+    d = g["drive"].setdefault(sid, {"count": 0})
+    began = _turn_began(p, sid, d)
+    if not began:
+        return None
+    floor = min(began, d.get("concern_at") or began) - CONCERN_SLACK_S  # the last check's turn on: a late booking counts
+    d["concern_at"] = began
+    try:
+        book = os.stat(os.path.join(p.dir, "steers.jsonl"))
+        if not book.st_size or book.st_mtime < floor:
+            return None  # nothing booked since: the fold (the whole book and the ledger's tail) is not worth a Stop
+    except OSError:
+        return None
+    from sampo import concerns
+    told = d.get("concerns") or []  # the sayings handled: a concern said again is a new saying, one saying holds once
+    rows, handled = concerns.hold(p, sid, floor, told, briefs, 5)
+    if handled:
+        d["concerns"] = (told + handled)[-CONCERNS_TOLD:]
+    if not rows:
+        return None
+    _event({"kind": "concern_hold", "session_id": sid, "project": p.slug, "concerns": [x["id"] for x in rows]})
+    return concerns.hold_reason(rows)
 
 
 def _work_changed(p, at, named=()):

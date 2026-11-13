@@ -32,6 +32,9 @@ class PlanLeft(HookCase):
                "concern": "implementing the plan", "surface": "the plan"}
         c.append_line(os.path.join(p.dir, "steers.jsonl"), json.dumps(row, ensure_ascii=False))
         cn.note_plans(p)  # what steermeter.tick does each round, model-free
+        # the turn starts here, before any task is built: a done task counts as this turn's work only if it was
+        # updated after the turn began (drive's `worked`), and a wall-clock margin of one second made it flaky
+        self.hook("UserPromptSubmit", {"prompt": "carry on with the plan", "session_id": "sess-1"})
 
     def built(self, title):
         tid = self.task(title, focus=False)
