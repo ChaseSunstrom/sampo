@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The credentials guard no longer releases a real secret through a `..` after a scratch symlink, a hardlink to a released name, a project under a scratch root, a broad `tokens` name, a different letter case, or `.default(s)` (T-4666).
 - The guard's credentials category no longer refuses .env fixtures under scratch folders, folders named like credentials, or text in a cat heredoc body, while real secrets and written-and-run scripts stay refused (T-4143).
 - macOS CI runs five shards, and recover and train read the boot id and a process's start time on macOS where there is no /proc; suite fixtures no longer assume a `timeout` command (T-4633).
 - The deadline test now holds at any machine speed, so a loaded runner no longer fails it on the wall clock (T-4653).
