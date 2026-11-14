@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A session left idle on a background wait that never ends is woken at the long-job deadline by a second Stop hook (asyncRewake), naming the stale job and telling it to inspect or stop it and go on with queued work (T-4525).
 - A builder agent's own sampo check --affected or full check is refused by the PreToolUse hook (keyed on its agent id and builder type; the main thread, the train and tests are never refused), and a second same-kind check on one tree is refused with the first one's pid and log (T-4514).
 - sampo code answers the plan gate's Undo: line for every one-way step the gate names, each with its own question, and reads the whole refusal (2000 characters, not 500) (T-4507).
 - sampo lane accept refuses, recording nothing, when its audits lack what the close will require for the lane's diff; an audit taken at the lane's tip still counts after the land's merge, and a file the lane writes after its audit makes it stale (T-4487).
