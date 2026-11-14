@@ -524,6 +524,38 @@ class DoctorNamesReclaimables(DiskCase):
         self.assertEqual(r.status, "WARN")
 
 
+class DoctorSplitsWhatTidyCannotFree(DiskCase):
+    """T-4661: 'Sampo could free' counts only what tidy removes. The build output a kept lane holds stays after
+    tidy --apply, so it is named apart as 'not freed by tidy', never summed into the figure that tidy frees."""
+
+    def rust_lane(self, name, size):
+        path = self.lane(name, size=100, old=False)
+        with open(os.path.join(path, "Cargo.toml"), "w") as f:
+            f.write('[package]\nname = "fixture"\n')
+        target = os.path.join(path, "target", "debug", "deps")
+        os.makedirs(target)
+        with open(os.path.join(target, "big.rlib"), "wb") as f:
+            f.write(os.urandom(size))
+        return path
+
+    def test_build_output_tidy_leaves_is_named_apart_from_what_tidy_frees(self):
+        self.lane("T-3030", size=900_000, merged=True)  # a no-task finished lane: tidy takes it whole
+        self.rust_lane("T-3031", 600_000)  # a kept lane's target folder: tidy leaves it
+        r = d.check_disk(self.tmp, lambda _: Usage(900e9, 893e9, 30e9), [(self.p, {})])
+        self.assertEqual(r.status, "WARN")
+        freed, sep, left = r.detail.partition("; not freed by tidy: ")
+        self.assertTrue(sep, f"the build output is named apart: {r.detail}")
+        self.assertIn("Sampo could free: no-task lane T-3030", freed)
+        self.assertNotIn("lane build output", freed, "tidy cannot free it, so it is not in Sampo's figure")
+        self.assertRegex(left, r"^lane build output \(1 target folder\) \d{3} KB")
+
+    def test_with_nothing_tidy_frees_the_build_output_is_still_named_apart(self):
+        self.rust_lane("T-3032", 600_000)
+        r = d.check_disk(self.tmp, lambda _: Usage(900e9, 893e9, 30e9), [(self.p, {})])
+        self.assertNotIn("Sampo could free", r.detail)
+        self.assertRegex(r.detail, r"not freed by tidy: lane build output \(1 target folder\) \d{3} KB")
+
+
 class NextLineCarriesAFail(DiskCase):
     def pin(self, free):
         return unittest.mock.patch.dict(os.environ, {"FOREMAN_DISK_FREE": free})

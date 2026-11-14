@@ -2046,35 +2046,38 @@ def _old_outputs():
 
 
 def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S):
-    """[(label, bytes)] Sampo owns and could free, largest first: finished lanes (done, no-task, scratch) of each project,
-    the idle lanes' bytecode (T-4655), the build output that stays and old outputs. Each source that can't be read is
-    skipped: the disk check never costs the doctor its run."""
+    """T-4661: ([(label, bytes)], [(label, bytes)]) of what Sampo's disk line names, each list largest first. The first
+    is what `sampo tidy --apply` frees: finished lanes (done, no-task, scratch) of each project, the idle lanes' bytecode
+    (T-4655), old outputs. The second is what tidy leaves: the build output a kept lane holds (T-4575), named apart so
+    neither figure carries the other; a project's label is named when several projects are read. Each source that
+    can't be read is skipped: the disk check never costs the doctor its run."""
     from sampo import lanes as slanes
-    deadline, rows = time.monotonic() + budget, []
+    deadline, freed, kept = time.monotonic() + budget, [], []
     for p, _ in projects:
         try:
             done = slanes.reclaimables(p, budget=max(0.0, deadline - time.monotonic()))
             for r in done:
-                rows.append((f"{slanes._KINDS[r['kind']]} {os.path.basename(r['path'])}", r["bytes"] or 0))
+                freed.append((f"{slanes._KINDS[r['kind']]} {os.path.basename(r['path'])}", r["bytes"] or 0))
             # T-4575: a Rust project's lanes' cargo output (their target/ folders, the shared one); a finished lane's is
             # in its own row (tidy takes the lane whole), so only the lanes that stay are counted here
             build = slanes.lane_build_output(p, skip=[r["path"] for r in done], budget=max(0.0, deadline - time.monotonic()))
             if build:
-                rows.append(build)
+                label = f"{os.path.basename(p.root.rstrip(os.sep))}: {build[0]}" if len(projects) > 1 else build[0]
+                kept.append((label, build[1]))
             # T-4655: the idle lanes' bytecode (tidy --apply removes its *.pyc; a finished lane is counted whole above)
             bytecode = slanes.lane_bytecode_output(p, skip=[r["path"] for r in done],
                                                    budget=max(0.0, deadline - time.monotonic()))
             if bytecode:
-                rows.append(bytecode)
+                freed.append(bytecode)
         except (OSError, c.PolicyError, subprocess.SubprocessError, ValueError):
             continue
     try:
         n, size = _old_outputs()
         if n:
-            rows.append((f"{n} old outputs", size))
+            freed.append((f"{n} old outputs", size))
     except (OSError, ImportError):
         pass
-    return sorted(rows, key=lambda r: -r[1])
+    return sorted(freed, key=lambda r: -r[1]), sorted(kept, key=lambda r: -r[1])
 
 
 def check_disk(path=None, usage=None, projects=None):
@@ -2103,12 +2106,14 @@ def check_disk(path=None, usage=None, projects=None):
         if n:
             lanes.append((n, os.path.basename(p.root.rstrip(os.sep))))
     where = c.joinmore([f"{name} {n}" for n, name in sorted(lanes, reverse=True)], 5)
-    held = disk_reclaimables(projects)
-    named = c.joinmore([f"{label} {slanes.human(size)}" for label, size in held], 5)
+    freed, kept = disk_reclaimables(projects)  # T-4661: what tidy frees, and what it leaves, each named apart
+    named = c.joinmore([f"{label} {slanes.human(size)}" for label, size in freed], 5)
+    left = c.joinmore([f"{label} {slanes.human(size)}" for label, size in kept], 5)
     return Result("disk", "FAIL" if level == "fail" else "WARN",
                   f"{free} on the disk holding Sampo's state: hooks and builders fail when it fills"
                   + (f"; Sampo could free: {named} (sampo tidy --apply removes the finished lanes and the idle lanes' bytecode)"
-                     if held else "")
+                     if freed else "")
+                  + (f"; not freed by tidy: {left}" if kept else "")
                   + (f"; builder worktrees: {where} (git worktree list; fm lane rm the merged ones)" if where else ""))
 
 

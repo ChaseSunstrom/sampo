@@ -3996,15 +3996,27 @@ def _pyc_files(path, deadline):
     return found
 
 
+def _builder_returned(b):
+    """T-4661: the builder of an open brief returned after its last launch. A relaunch (sampo lane brief stamps a new
+    `builder`) before the new agent starts (its start hook clears the mark) leaves the old mark behind: that builder
+    is out, not returned."""
+    done = c.parse_ts(b.meta.get("builder_returned") or "")
+    if not done:
+        return False
+    launched = c.parse_ts(b.meta.get("builder") or "")
+    return not launched or done >= launched
+
+
 def lane_bytecode(p, briefs=None, skip=(), budget=SIZE_BUDGET_S, busy=None):
     """T-4655: the *.pyc each idle lane keeps in its __pycache__ folders, biggest first. Lanes each keep their own
     bytecode: on 2026-11-14, 949 MB of it filled a disk at 100%. A lane is idle when no process stands in it, its lock
-    (if any) is a dead agent's, no brief names it at all (a closed one's whole lane is stale()'s; an open one is work),
-    it is not in the middle of an operation, and it is not one of `skip` (finished() rows, removed whole). The repo's
-    tracked .pyc stays; a lane whose tracked list or walk can't be read is left out. The main checkout is never
-    listed. Rows: path, branch, kind, files, bytes, lock, pycs (the paths --apply removes). One monotonic deadline,
-    `budget` seconds from the call, bounds the whole scan: past it, the rows verified so far come back, never a
-    partly-walked one."""
+    (if any) is a dead agent's, it is not in the middle of an operation, it is not one of `skip` (finished() rows,
+    removed whole), and no brief makes it work: a closed brief's lane is stale()'s, and an open brief's lane is work
+    until its builder returned (T-4661: the lanes of tasks waiting for a merge hold most of the bytecode; a returned
+    builder's lane loses only a cache). The repo's tracked .pyc stays; a lane whose tracked list or walk can't be read
+    is left out. The main checkout is never listed. Rows: path, branch, kind, files, bytes, lock, returned (its open
+    task's builder returned), pycs (the paths --apply removes). One monotonic deadline, `budget` seconds from the call,
+    bounds the whole scan: past it, the rows verified so far come back, never a partly-walked one."""
     deadline = time.monotonic() + budget
     if _left(deadline) <= 0:
         return []
@@ -4014,7 +4026,14 @@ def lane_bytecode(p, briefs=None, skip=(), budget=SIZE_BUDGET_S, busy=None):
     briefs = c.load_briefs(p) if briefs is None else briefs
     real = os.path.realpath
     homes = {real(main) + ".lanes": "no_task_lane", real(os.path.join(main, ".claude", "worktrees")): "scratch_worktree"}
-    named = {real(b.meta["lane"]) for b in briefs if b.meta.get("lane")}
+    work, returned = set(), set()  # the lanes a brief still makes work; the lanes whose open brief's builder returned
+    for b in briefs:
+        if b.meta.get("lane"):
+            lane = real(b.meta["lane"])
+            if b.status not in c.CLOSED and _builder_returned(b):
+                returned.add(lane)
+            else:  # a closed brief's lane goes whole, as stale()'s item; an open one with its builder out is work
+                work.add(lane)
     skip = {real(s) for s in skip}
     busy = _busy_dirs() if busy is None else busy
     rows = []
@@ -4023,7 +4042,7 @@ def lane_bytecode(p, briefs=None, skip=(), budget=SIZE_BUDGET_S, busy=None):
             break
         path = real(w["path"])
         kind = next((k for home, k in homes.items() if path.startswith(home + os.sep)), None)
-        if kind is None or w["prunable"] or not os.path.isdir(path) or path in skip or path in named:
+        if kind is None or w["prunable"] or not os.path.isdir(path) or path in skip or path in work:
             continue
         if w["lock"] is not None and not agent_lock_dead(w["lock"]):
             continue
@@ -4039,7 +4058,8 @@ def lane_bytecode(p, briefs=None, skip=(), budget=SIZE_BUDGET_S, busy=None):
         if not kept:
             continue
         rows.append({"path": path, "branch": w["branch"], "kind": kind, "files": len(kept),
-                     "bytes": sum(n for _, n in kept), "lock": w["lock"], "pycs": [f for f, _ in kept]})
+                     "bytes": sum(n for _, n in kept), "lock": w["lock"], "returned": path in returned,
+                     "pycs": [f for f, _ in kept]})
     rows.sort(key=lambda r: (-r["bytes"], r["path"]))
     return rows
 
@@ -4051,9 +4071,10 @@ def bytecode_findings(p, briefs, apply, actions, finding, skip=()):
     rows = lane_bytecode(p, briefs, skip=skip, budget=TIDY_SCAN_S)
     out = []
     for r in rows:
+        why = "its task's builder returned" if r["returned"] else "no open task names it"  # T-4661
         out.append(finding(p.slug, "lane_bytecode", "action",
                            f"{_KINDS[r['kind']]} {os.path.basename(r['path'])} bytecode: {r['files']} .pyc in __pycache__ "
-                           f"({human(r['bytes'])}), idle: no process in it, no open task names it",
+                           f"({human(r['bytes'])}), idle: no process in it, {why}",
                            "sampo tidy --apply removes these .pyc files", auto=True, path=r["path"],
                            bytes=r["bytes"], files=r["files"]))
     if not apply or not out:

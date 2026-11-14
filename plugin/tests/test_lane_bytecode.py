@@ -149,6 +149,32 @@ class FinderLists(LaneBytecodeCase):
         git(self.repo, "commit", "-q", "--allow-empty", "-m", "trunk moves on")
         self.assertEqual(self.items(self.tidy()), [], "a finished lane is finished_lane's item alone")
 
+    def test_a_lane_of_an_open_task_whose_builder_returned_is_listed_and_applied_and_a_builder_out_is_not(self):
+        # T-4661: the lanes of open tasks waiting for a merge hold most of the bytecode; only a returned builder's lane goes
+        waiting = self.lane("T-4090")
+        out = self.lane("T-4091")
+        relaunched = self.lane("T-4092")  # its builder returned, then a new one was launched and has not started yet
+        for title in ("waiting on a merge", "builder still out", "relaunched"):
+            self.fm("task", "new", title, "--type", "FIX", "--tier", "S")
+        old = "2000-01-01T00:00:00Z"
+        for tid, lane, extra in (("T-0001", waiting, {"builder": old, "builder_returned": c.now()}),
+                                 ("T-0002", out, {"builder": c.now()}),
+                                 ("T-0003", relaunched, {"builder": c.now(), "builder_returned": old})):
+            b = c.find_brief(self.p, tid)
+            b.meta.update(lane=lane, status="active", **extra)
+            c.save_brief(self.p, b, touch=False)
+        for lane in (waiting, out, relaunched):
+            self.pyc(lane, "plugin/lib/__pycache__/a.cpython-311.pyc", 200_000)
+        got = self.items(self.tidy())
+        self.assertEqual([f["path"] for f in got], [waiting], "the returned builder's lane is idle; the others are work")
+        self.assertIn("builder returned", got[0]["detail"], "the finding says why an open task's lane is idle")
+        self.tidy("--apply")
+        self.assertFalse(os.path.exists(os.path.join(waiting, "plugin/lib/__pycache__/a.cpython-311.pyc")))
+        for lane in (out, relaunched):
+            self.assertTrue(os.path.exists(os.path.join(lane, "plugin/lib/__pycache__/a.cpython-311.pyc")),
+                            "a builder out, or relaunched after its return, keeps its bytecode")
+        self.assertEqual(self.items(self.tidy("--apply")), [], "a second run finds nothing")
+
 
 class Safety(LaneBytecodeCase):
     def test_symlinks_are_never_followed_and_what_they_point_at_survives(self):
