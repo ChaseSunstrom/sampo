@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Variant cards and their brief drafts no longer share the think setting, and a brief file a paid writer made is drafted again by the local writer (T-4659).
 - The Stop hook holds a concern with no task, proof or answer even while a task is open, once, in the drive's continuation (T-4668).
 - Concerns link only the user's own captures and a K-id only where a brief names it, a dropped task no longer hides a concern, `num:` proofs run only surface commands with capped output, path/git/url proofs are tighter, and concerns.jsonl is rolled (T-4663).
 - Idle lanes' bytecode is listed and removed by `sampo tidy --apply`, and doctor's disk line names it (T-4655).
