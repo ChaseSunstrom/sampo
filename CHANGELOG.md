@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo lane land --merged names a lane in which nothing was built as empty (its task never built, left open) instead of reporting missing close fields, and --drop-empty removes the clean empty lanes and returns their tasks to the queue (T-4603).
 - Smith measures a speed-up request on a project with no documents before its first edit, judged by a `speed_up` field the plan reply itself carries, at no extra judge call (T-4595).
 - Each close now prints per-step seconds and logs them, and a state-index file leaked into plugin/tests no longer makes every close of a land rerun its linked tests (T-4600).
 - A builder's close lines are now stored when only Noticed lines and a short closing passage follow them, and `sampo lane land --merged` names a refused report's cause instead of "no CHANGELOG line" (T-4599).
