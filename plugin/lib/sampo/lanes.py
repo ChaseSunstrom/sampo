@@ -1859,7 +1859,8 @@ STANDING = ("- models advise, proof decides: no model gates a close or a merge",
             "- Sampo's models learn only from outcomes, the user's words and tests' verdicts, never from Claude's output",
             "- nothing a user already has may break: keep an alias or add a migration",
             "- a new plugin/lib module needs its fm shim, a MASTER.md bullet and a docs/map line",
-            "- a criterion never names state/ by a repo-relative path")
+            "- a criterion never names state/ by a repo-relative path",
+            "- plugin/rules/foreman.md is at its 6400-character cap: a new rule goes to a skill or a hook note, not there")  # T-4627
 
 
 def standing_decisions(p, top=8):

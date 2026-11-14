@@ -487,7 +487,15 @@ def _verb_docs():
             key = f"{verb} {more}" if f"{verb} {more}" in docs else verb
             if key in docs:
                 docs[key] = (docs[key][0], docs[key][1] + " " + phrase)
+    for verb, phrase in _PLAIN_MOVED.items():
+        if verb in docs:
+            docs[verb] = (docs[verb][0], docs[verb][1] + " " + phrase)
     return docs
+
+
+# T-4627: plain phrases that left the always-on rules line (6400-character cap) and that fm help's own words miss: the
+# verb's text here instead, so fm which finds them on demand
+_PLAIN_MOVED = {"doctor": "is foreman ok?", "friction": "keep improving yourself", "notify": "ping me when done"}
 
 
 def can(question, n=3):
