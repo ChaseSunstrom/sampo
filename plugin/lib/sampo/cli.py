@@ -662,9 +662,20 @@ def cmd_vetoes(args):
         if args.n is None or not c.drop_veto(p, args.n):
             raise UsageError("sampo vetoes rm N (N from sampo vetoes)")
         return out(args, {"removed": args.n}, f"Veto {args.n} removed.")
+    if args.action == "restore":  # T-4577: tightening, so it is no guard category (rm, which loosens, is the user's)
+        rec = None if args.n is None else c.restore_veto(p, args.n)
+        if rec is None:
+            raise UsageError("sampo vetoes restore N (N from the Lifted list in sampo vetoes)")
+        return out(args, {"restored": args.n, "said": rec.get("said")}, f"Veto restored: {rec.get('said', '')}")
     v = [dict(x, retract=f"sampo vetoes rm {i}") for i, x in enumerate(c.vetoes(p), 1)]  # T-1410: N counts oldest first
-    out(args, v, "\n".join(f"{i}. {x.get('said', '')} — key words: {' '.join(x['words'])} ({str(x.get('at', ''))[:10]})"
-                           f" — retract: {x['retract']}" for i, x in enumerate(v, 1)) or "No vetoes recorded.")
+    parked = [dict(x, lifted=True, restore=f"sampo vetoes restore {i}") for i, x in enumerate(c.lifted(p), 1)]
+    text = "\n".join(f"{i}. {x.get('said', '')} — key words: {' '.join(x['words'])} ({str(x.get('at', ''))[:10]})"
+                     f" — retract: {x['retract']}" for i, x in enumerate(v, 1)) or "No vetoes recorded."
+    if parked:  # T-4577: a message lifted these (the model's reading); each can come back
+        text += "\n\nLifted (a later message let the work resume; restore puts one back):\n" + "\n".join(
+            f"{i}. {x.get('said', '')} — key words: {' '.join(x['words'])} — lifted {str(x.get('lifted_at', ''))[:10]} "
+            f"by \"{x.get('by', '')}\" — restore: {x['restore']}" for i, x in enumerate(parked, 1))
+    out(args, v + parked, text)
 
 
 def cmd_rule(args):
@@ -8434,7 +8445,7 @@ def _build_parser(only=None):
                               help=instr.TOOLS[name][1]), name)
 
     s = add("vetoes", cmd_vetoes, tier=("Finding your way", 290), help="what the user said never to do, checked before matching commands and edits")
-    s.add_argument("action", nargs="?", choices=["list", "rm"], default="list")
+    s.add_argument("action", nargs="?", choices=["list", "rm", "restore"], default="list")
     s.add_argument("n", nargs="?", type=int)
     s = add("rule", cmd_rule, tier=("Finding your way", 300), help="the user's regex rules on Bash commands or edited paths that warn or block")
     s.add_argument("action", nargs="?", choices=["list", "add", "rm"], default="list")

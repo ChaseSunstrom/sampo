@@ -24,9 +24,9 @@ class Veto(ForemanTestCase):
         return _ctx(self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}}))
 
     def test_a_no_becomes_a_note_on_the_matching_command(self):
-        self.hook("UserPromptSubmit", {"prompt": "never push without asking me first"})
+        self.hook("UserPromptSubmit", {"prompt": "never push to main without asking me first"})
         note = self.bash("git push origin main")
-        self.assertIn("never push without asking me first", note)
+        self.assertIn("never push to main without asking me first", note)
         self.assertNotIn("never push", self.bash("git status"))
 
     def test_an_edit_matches_on_its_path(self):
@@ -46,9 +46,10 @@ class Veto(ForemanTestCase):
 
     def test_listed_deduped_and_removable(self):
         for _ in range(2):
-            self.hook("UserPromptSubmit", {"prompt": "never push without asking"})
+            self.hook("UserPromptSubmit", {"prompt": "never push to main without asking"})
         listed = self.fm("vetoes").stdout
-        self.assertEqual(listed.count("never push without asking"), 1)
+        self.assertEqual(listed.count("never push to main without asking"), 1)
+        self.assertIn("never push", self.bash("git push origin main"))
         self.fm("vetoes", "rm", "1")
         self.assertNotIn("never push", self.bash("git push origin main"))
         self.assertNotEqual(self.fm("vetoes", "rm", "5", check=False).returncode, 0)

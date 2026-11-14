@@ -5103,18 +5103,45 @@ def vetoes(p):
         return []
 
 
-def add_veto(p, text, words=None):
-    """Record the veto in a correction (the newest VETOES_KEEP, one per set of key words); None when it has none.
-    words: the key words already known (T-0439: a proposal from repeated steers the user said yes to)."""
-    words = list(words or [])
-    text = redact(text or "")  # T-1606: a key inside "never use <key>" never reaches vetoes.json, nor its words
-    for m in [] if words else _VETO.finditer(text):  # each clause alone: "I don't think so, never push" is pushing
+def _key_words(phrase):
+    return [w for w in re.findall(r"[a-z0-9]{3,}", (phrase or "").lower()) if w not in _VETO_STOP]
+
+
+def _veto_clauses(text):
+    """T-4577: each clause of text that could be a no, as (key words, whether it leads with "stop")."""
+    out = []
+    for m in _VETO.finditer(text):  # each clause alone: "I don't think so, never push" is pushing
         if _GRANTS.match(m.group(1)):  # T-1323: "stop asking me if you can release" says go ahead, it isn't a no
             continue
-        found = [w for w in re.findall(r"[a-z0-9]{3,}", m.group(1).lower()) if w not in _VETO_STOP]
+        found = _key_words(m.group(1))
         if found and found[0] not in _NOT_A_VETO:
-            words = found[:3]
-            break
+            out.append((found[:3], m.group(0).lstrip().lower().startswith("stop")))
+    return out
+
+
+def veto_fired(text):
+    """T-4577: whether the cheap check reads text as a possible no (the only time a message costs a judge call)."""
+    return any(not _GRANTS.match(m.group(1)) for m in _VETO.finditer(redact(text or "")))
+
+
+def add_veto(p, text, words=None, judged=None):
+    """Record the veto in a correction (the newest VETOES_KEEP, one per set of key words); None when it has none.
+    words: the key words already known (T-0439: a proposal from repeated steers the user said yes to).
+    judged: the model's reading of the message (veto_read), or None when none was reachable (T-4577). A reading that
+    says the message is no standing prohibition stores nothing, and the model's phrase for what is forbidden gives the
+    key words. Unjudged, a "stop X" clause of fewer than two key words is a command for now and is not stored."""
+    words = list(words or [])
+    text = redact(text or "")  # T-1606: a key inside "never use <key>" never reaches vetoes.json, nor its words
+    if not words:
+        cands = _veto_clauses(text)
+        if judged is not None:
+            if judged.get("standing") is not True or not veto_fired(text):
+                return None  # (a "don't do that again" has no key words of its own: the model's phrase gives them)
+            said = _key_words(redact(judged.get("prohibits") or ""))[:3]
+            own = cands[0][0] if cands else []
+            words = next((x for x in (said, own) if len(x) >= 2), said or own)
+        else:
+            words = next((w for w, stop in cands if not (stop and len(w) < 2)), [])
     if not words:
         return None
     rec = {"words": words, "said": fit(defang(plain(text.strip())).replace('"', "'"), 200), "at": now()}
@@ -5132,6 +5159,62 @@ def drop_veto(p, n):
             return False
         write_atomic(_vetoes_path(p), json.dumps(v[:n - 1] + v[n:]))
     return True
+
+
+VETOES_LIFTED_KEEP = 20
+
+
+def _lifted_path(p):
+    return os.path.join(p.dir, "vetoes_lifted.json")
+
+
+def lifted(p):
+    """T-4577: the vetoes a message lifted, oldest first (the newest VETOES_LIFTED_KEEP): each is the veto record plus
+    lifted_at and by (the first 80 characters of the lifting message, redacted). sampo vetoes restore N puts one back."""
+    try:
+        with open(_lifted_path(p), encoding="utf-8") as f:
+            v = json.load(f)
+        return [x for x in v if isinstance(x, dict) and isinstance(x.get("words"), list) and x["words"]
+                and all(isinstance(w, str) for w in x["words"])] if isinstance(v, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def lift_vetoes(p, recs, by=""):
+    """T-4577: move the given veto records (by words and time, so a change since they were read costs nothing) to the
+    lifted list, kept beside the vetoes so a misread message never deletes a rule for good; returns the ones moved, each
+    with n, its place in that list (sampo vetoes restore n). Called from a user's message only: an agent's own words
+    never reach it."""
+    if not recs:
+        return []
+    said = fit(defang(plain(redact(by or "").strip())).replace('"', "'"), 80)
+    with lock(p.dir, timeout=2):
+        have = vetoes(p)
+        gone = [x for x in have if any(x["words"] == r["words"] and x.get("at") == r.get("at") for r in recs)]
+        if not gone:
+            return []
+        parked = (lifted(p) + [dict(x, lifted_at=now(), by=said) for x in gone])[-VETOES_LIFTED_KEEP:]
+        write_atomic(_lifted_path(p), json.dumps(parked))  # first: a crash between the two keeps the rule twice, not never
+        write_atomic(_vetoes_path(p), json.dumps([x for x in have if x not in gone]))
+    out = []
+    for x in gone:
+        n = next((i for i, g in enumerate(parked, 1) if g["words"] == x["words"] and g.get("at") == x.get("at")), None)
+        out.append(dict(x, n=n))
+    return out
+
+
+def restore_veto(p, n):
+    """T-4577: put the n-th lifted veto (1 = the oldest, as sampo vetoes lists them) back among the vetoes; the record,
+    or None when there is none. A veto with the same key words is replaced, so one rule never holds twice."""
+    with lock(p.dir, timeout=2):
+        parked = lifted(p)
+        if not 1 <= n <= len(parked):
+            return None
+        rec = {k: v for k, v in parked[n - 1].items() if k not in ("lifted_at", "by")}
+        keep = [x for x in vetoes(p) if x["words"] != rec["words"]][-(VETOES_KEEP - 1):] + [rec]
+        write_atomic(_vetoes_path(p), json.dumps(keep))
+        write_atomic(_lifted_path(p), json.dumps(parked[:n - 1] + parked[n:]))
+    return rec
 
 
 RULE_MAX = 300      # T-0971: a user rule's pattern, in characters
@@ -5241,9 +5324,11 @@ def rule_hits(p, on, text):
 
 
 def veto_hits(p, text):
-    """The recorded vetoes whose every key word starts a word of text (a command, or an edit's tool and path)."""
+    """The recorded vetoes whose every key word starts a word of text (a command, or an edit's tool and path).
+    T-4577: a veto of one key word never matches by words alone (a common word in a quoted request flagged work); it
+    is context: the prompt hook says so when it is kept, and sampo vetoes lists it."""
     have = re.findall(r"[a-z0-9]+", (text or "").lower())
-    return [v for v in vetoes(p) if all(any(h.startswith(str(w)) for h in have) for w in v["words"])]
+    return [v for v in vetoes(p) if len(v["words"]) >= 2 and all(any(h.startswith(str(w)) for h in have) for w in v["words"])]
 
 
 CODE = lazy(r"\.(py|js|jsx|ts|tsx|go|rs|rb|java|kt|c|cc|cpp|h|hpp|cs|swift|php|sh|lua|zig)$")

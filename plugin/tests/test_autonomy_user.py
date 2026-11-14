@@ -39,7 +39,10 @@ class TasteVetoes(_Base):
         self.fm("taste", "adopt")  # the user's one yes takes every proposal
         self.assertEqual([v["words"] for v in c.vetoes(self.p)], [["dependencies"]])
         self.assertEqual(self.fm_json("taste")["proposed"], [], "an adopted veto isn't proposed again")
-        self.assertIn("Vetoed", self.fm("capture", "Add the dependencies for yaml parsing").stdout)
+        # T-4577: a veto of one key word is context, never matched by words alone; two words flag a capture
+        self.assertNotIn("Vetoed", self.fm("capture", "Add the dependencies for yaml parsing").stdout)
+        c.add_veto(self.p, "never add dependencies")
+        self.assertIn("Vetoed", self.fm("capture", "Bring in dependencies to add for toml").stdout)
 
     def test_two_steers_are_not_a_pattern_and_a_no_is_kept(self):
         for s in DEPS[:2]:
@@ -55,6 +58,7 @@ class TasteVetoes(_Base):
         for s in DEPS:
             self.steer(s)
         self.fm("taste", "adopt")
+        c.add_veto(self.p, "never add dependencies")  # T-4577: the adopted one-word veto only informs; two words avoid
         self.steer("keep leaning on the stdlib")
         self.fm("autonomy", "full")
         r = self.fm_json("decide", "--ask", "How should the config be read?", "--options",
@@ -96,6 +100,7 @@ class TasteVetoes(_Base):
         for s in DEPS:
             self.steer(s)
         self.fm("taste", "adopt")
+        c.add_veto(self.p, "never add dependencies")  # T-4577: two key words, as a one-word veto never blocks
         self.fm("autonomy", "full")
         r = self.fm_json("decide", "--ask", "Which parser?", "--options", "add the yaml dependencies",
                          "add the toml dependencies")
