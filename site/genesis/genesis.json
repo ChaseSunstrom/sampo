@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-13T15:31:08Z",
- "rev": "35feb19aa",
+ "updated": "2026-11-14T09:01:00Z",
+ "rev": "e4dc04874",
  "capabilities": [
   {
    "n": 1,
@@ -61521,19 +61521,19 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 786,
+ "unproven": 819,
  "unproven_kinds": {
-  "meaning-notes": 419,
-  "research-uncited": 36,
-  "meaning-user": 115,
-  "perf-typed": 128,
   "typed": 75,
-  "red": 89,
+  "meaning-user": 105,
+  "meaning-notes": 427,
+  "red": 86,
+  "perf-typed": 129,
   "perf-noise": 1,
-  "ui-unshot": 7,
-  "docs": 80,
+  "research-uncited": 33,
+  "docs": 116,
   "data": 1,
-  "tui-unshot": 3,
+  "ui-unshot": 6,
+  "tui-unshot": 2,
   "infra": 2
  },
  "next": {
@@ -61930,7 +61930,7 @@
     "novelty": "5",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-2113"
+    "asked": "T-2992"
    },
    {
     "id": "M-07",
@@ -62295,7 +62295,7 @@
     "novelty": "4",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-1254"
+    "asked": "T-2077"
    },
    {
     "id": "M-31",
@@ -62407,7 +62407,7 @@
     "novelty": "5",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-1256"
+    "asked": "T-2908"
    },
    {
     "id": "M-39",
@@ -62505,7 +62505,7 @@
     "novelty": "4",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-1800"
+    "asked": "T-2077"
    },
    {
     "id": "M-46",
@@ -62575,7 +62575,7 @@
     "novelty": "4",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-1411"
+    "asked": "T-1803"
    },
    {
     "id": "M-51",
@@ -62589,7 +62589,7 @@
     "novelty": "5",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-1974"
+    "asked": "T-2963"
    },
    {
     "id": "M-52",
@@ -62617,7 +62617,7 @@
     "novelty": "5",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-1396"
+    "asked": "T-1407"
    },
    {
     "id": "M-54",
@@ -62631,7 +62631,7 @@
     "novelty": "4",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-2000"
+    "asked": "T-2077"
    },
    {
     "id": "M-55",
@@ -62753,13 +62753,13 @@
     "shingle": 0
    },
    "rejected": {
-    "kill": 27685,
-    "tier": 19002,
+    "kill": 27705,
+    "tier": 19031,
     "novelty": 164
    },
-   "merged": 1697,
-   "kept": 2149,
-   "pending": 56
+   "merged": 1701,
+   "kept": 2152,
+   "pending": 0
   },
   "families": [
    {
@@ -62797,7 +62797,7 @@
    },
    {
     "id": "F-016199",
-    "size": 398,
+    "size": 399,
     "lead": "Store Sampo's memory as a gravitational lensing field",
     "today": "Today you can't compress and retrieve Sampo's historical context by simulating how light bends around massive objects.",
     "with_this": "With this, Sampo can access relevant past decisions with zero latency by treating data mass as gravitational wells that naturally attract relevant queries, rather than using linear search.",
@@ -66030,10 +66030,10 @@
     ]
    }
   ],
-  "families_total": 1526,
+  "families_total": 1527,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2149
+   "total": 2152
   }
  },
  "steer": {
@@ -66067,7 +66067,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.3,
+    "idle_h": 145.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66090,7 +66090,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.5,
+    "idle_h": 146.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66113,7 +66113,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.3,
+    "idle_h": 145.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66136,7 +66136,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.3,
+    "idle_h": 145.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66159,7 +66159,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.1,
+    "idle_h": 145.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66182,7 +66182,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.2,
+    "idle_h": 145.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66205,7 +66205,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 127.9,
+    "idle_h": 145.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66228,7 +66228,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 127.9,
+    "idle_h": 145.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66251,7 +66251,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.0,
+    "idle_h": 145.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66274,7 +66274,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.7,
+    "idle_h": 147.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66297,7 +66297,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.3,
+    "idle_h": 146.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66320,7 +66320,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.3,
+    "idle_h": 146.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66343,7 +66343,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.4,
+    "idle_h": 146.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66366,7 +66366,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.4,
+    "idle_h": 146.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66389,7 +66389,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.2,
+    "idle_h": 146.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66412,7 +66412,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.1,
+    "idle_h": 146.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66435,7 +66435,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.2,
+    "idle_h": 146.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66458,7 +66458,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 129.1,
+    "idle_h": 146.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66481,7 +66481,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.9,
+    "idle_h": 146.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66504,7 +66504,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.9,
+    "idle_h": 146.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66527,7 +66527,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.9,
+    "idle_h": 146.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66550,7 +66550,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.9,
+    "idle_h": 146.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66573,7 +66573,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.7,
+    "idle_h": 146.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66596,7 +66596,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.7,
+    "idle_h": 146.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66619,7 +66619,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.7,
+    "idle_h": 146.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66642,7 +66642,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 128.8,
+    "idle_h": 146.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
