@@ -5700,16 +5700,26 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         pace = _pace(p)  # T-0449: while usage runs ahead of pace, no side work (each would be a builder or a plan)
         offer = (_side_work(sd, briefs, work if act else {"id": None}, full, skip, p, lane_only=not act)
                  if len(offered) < OFFERS_MAX and not pace else None)
+        started = False
+        if not offer and len(jobs) == len(running):  # T-4611: only non-agent jobs (a CI watcher) run, and no side work
+            # fits them (no free lane, a research or planned task): the turn still doesn't end on a wait with an
+            # independent task queued; the user's queue isn't optional, so no pace or OFFERS_MAX here (each task once)
+            offer = _side_work(sd, briefs, work if act else {"id": None}, full, skip, p, startable=True)
+            started = bool(offer)
         if offer:  # T-0401: a concrete next task, a new one each Stop, instead of one generic push and then idling
             d.update(offered=offered + [offer["id"]], made=sorted(made | {f"{offer['id']}:{st.get(offer['id'])}"}),
                      count=d.get("count", 0) + 1, marks=_marks(p))
             how = _start_how(offer, lanes_free(briefs, p), _economy(p))
+            if started and offer.get("status") != "captured":  # (a captured one is planned first: _start_how); a checkpoint keeps the waiting task: the job's notification returns the session to it
+                how = ("sampo checkpoint, then " if act else "") + f"sampo focus {offer['id']} and work it"
             _event({"kind": "drive_offer", "session_id": sid, "project": p.slug, "task": work["id"],
                     "offer": offer["id"], "how": how})
             block = f"; if it can't move: sampo task block {offer['id']} \"why\""
             lead, tail = f"Sampo drive: Start {offer['id']} ({offer['tier']} {offer['type']}: ", f") now: {how}"
-            title = c.fit(" ".join(offer["title"].split()), max(20, DRIVE_LINE - len(lead) - len(tail) - len(block)))
-            return _line(lead + title + tail, [block, f"; can't move: sampo task block {offer['id']}"], jm)
+            title = c.fit(" ".join(offer["title"].split()),
+                          max(20, DRIVE_LINE - len(lead) - len(tail) - len(jm[0] if started else block)))
+            alts = [block, f"; can't move: sampo task block {offer['id']}"]
+            return _line(lead + title + tail, *([jm, alts] if started else [alts, jm]))  # the job's name never cut
         if not first or not act:
             return None
         # T-0364: once per running set, work on what doesn't need it instead of idling (357 waits vs 11 pushes)
@@ -5828,11 +5838,12 @@ def _pace(p=None):
         return None
 
 
-def _side_work(sd, briefs, work, full, offered, p, lane_only=False):
+def _side_work(sd, briefs, work, full, offered, p, lane_only=False, startable=False):
     """T-0401: the next queued task (then, in full autonomy, captured one) that can move while the active one's
     background jobs run: not the active one, not offered already for this set, not waiting on an open task
     (depends_on or what fm relate inferred; T-1899: any open one, not only the active), not already briefed for a
-    builder lane."""
+    builder lane. T-4611 startable: the session itself starts it (a focus), so a planned task no lane takes and a
+    task no lane fits (research, a strained host) count too."""
     by_id = {b.id: b for b in briefs}
     lanes = lanes_free(briefs, p)
     gated = _gates_running(p)
@@ -5844,6 +5855,8 @@ def _side_work(sd, briefs, work, full, offered, p, lane_only=False):
                 or b.meta.get("builder") or any(s.done for s in b.steps())  # T-0429: under way here already
                 or b.section("Verification evidence").strip()):
             continue
+        if startable:
+            return x
         if (x.get("status") != "captured" and b.section("Plan review").strip()
                 and not (lanes and x.get("tier") in ("S", "M"))):  # T-0700: planned and reviewed, no lane free:
             continue                                                 # nothing left to do on it from here
