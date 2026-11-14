@@ -1,9 +1,12 @@
 """T-2909: small-model cards part 1 — the write-time admit, the grid read thin-first by grow on a fake local profile
 with two workers, and coverage by cells. Every model call is mocked."""
 # map-links: plugin/lib/sampo/smallcards.py plugin/lib/sampo/moonscale.py plugin/lib/sampo/playbooks.py
+import contextlib
+import io
 import json
 import os
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -404,6 +407,106 @@ class UiGrid(_Cards):
             ms._ask(self.p, "s", "p", writer="local")
         with self.assertRaises(ValueError):
             ms._ask(self.p, "s", "p", writer="gpt")
+
+
+# T-2949: a variant is drafted by the local writer only and scored on briefs its prompt never names; the original's
+# booked eval is reused only for the same playbook text
+PROF = {"name": "gpu-q", "kind": "openai", "model": "q", "context": 8192, "own": True}
+FIX_NAME = "references/zz/fixture.md"
+BOOK_FIX = ("# Fixture: migrations\n- Set a lock_timeout before any DDL statement.\n"
+            "- Build the index with CREATE INDEX CONCURRENTLY outside a transaction.\n"
+            "- Run the migration twice: the second run must change nothing.\n")
+FIX_BRIEFS = [{"task": "Add a NOT NULL column to the users table.", "checks": [{"has": "lock_timeout"}]},
+              {"task": "Add an index to a big table.", "checks": [{"has": "CREATE INDEX CONCURRENTLY"}]}]
+FIX_CARD = good(title="Migrate a live table safely", steps=[
+    {"do": "Set a lock_timeout before any DDL statement.", "cmd": "grep -n lock_timeout migration.sql"},
+    {"do": "Build the index with CREATE INDEX CONCURRENTLY outside a transaction.", "cmd": "sampo check"},
+    {"do": "Rerun the migration and confirm it changes nothing.", "cmd": "ls"}])
+
+
+class LocalWriter:
+    """Stands in for the local writer's _ask: the briefs for the drafting prompt, the card for the card prompt."""
+    def __init__(self):
+        self.prompts = []
+
+    def __call__(self, p, system, prompt, **k):
+        self.prompts.append(prompt)
+        if prompt.startswith("Write held-out briefs"):
+            return "\n".join(json.dumps(b) for b in FIX_BRIEFS), "gpu-q"
+        return json.dumps(FIX_CARD), "gpu-q"
+
+
+class Variant(_Cards):
+    def setUp(self):
+        super().setUp()
+        patches = [mock.patch.object(self.sc, "_book", return_value=(FIX_NAME, BOOK_FIX)),
+                   mock.patch("sampo.moonscale._generative", lambda s: iter([PROF])),
+                   mock.patch("sampo.models.resolve", lambda n: PROF if n == "gpu-q" else {"name": n}),
+                   mock.patch("sampo.models.complete",
+                              lambda prof, messages, **k: {"text": " ".join(m["content"] for m in messages), "usage": {}})]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        paid = mock.patch("sampo.ideas.run_child", return_value="paid")  # a paid model's child: must never be called
+        self.paid = paid.start()
+        self.addCleanup(paid.stop)
+
+    def local_writer(self):
+        w = LocalWriter()
+        patch = mock.patch.object(self.sc.ms, "_ask", w)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return w
+
+    def test_the_card_prompt_names_no_brief_phrase_outside_the_quoted_playbook(self):
+        prompt = self.sc._variant_prompt(FIX_NAME, BOOK_FIX)
+        outside = prompt.replace(BOOK_FIX, "")  # the playbook's own quoted text may carry its phrases
+        for b in FIX_BRIEFS:
+            for k in b["checks"]:
+                self.assertNotIn(k["has"], outside, "the writer was handed a check phrase its playbook does not hold")
+            self.assertNotIn(b["task"], prompt, "the writer saw a brief's task")
+
+    def test_a_variant_is_scored_on_briefs_its_writer_never_saw(self):
+        w = self.local_writer()
+        r = self.sc.variant(self.p, FIX_NAME, "gpu-q")
+        card_prompt = w.prompts[-1]
+        self.assertTrue(card_prompt.startswith("Rewrite"), card_prompt[:60])
+        outside = card_prompt.replace(BOOK_FIX, "")
+        for b in FIX_BRIEFS:
+            self.assertNotIn(b["task"], card_prompt)
+            for k in b["checks"]:
+                self.assertNotIn(k["has"], outside, "the card prompt hands the writer a check phrase")
+        self.assertTrue(r["kept"], r)
+
+    def test_no_local_answer_raises_and_sends_nothing_to_a_paid_model(self):
+        with mock.patch.object(self.sc.ms, "_locals", return_value=[]), self.assertRaises(ValueError):
+            self.sc.variant(self.p, FIX_NAME, "gpu-q")
+        self.paid.assert_not_called()
+
+    def test_the_result_names_the_writer_that_drafted_the_card(self):
+        self.local_writer()
+        r = self.sc.variant(self.p, FIX_NAME, "gpu-q")
+        self.assertEqual(r["writer"], "gpu-q")
+
+    def test_the_variant_line_says_which_writer_drafted_it(self):
+        self.local_writer()
+        buf = io.StringIO()
+        with mock.patch("sampo.core.find_project", return_value=self.p), contextlib.redirect_stdout(buf):
+            self.sc.cmd(types.SimpleNamespace(name="variant", rest=[FIX_NAME], model="gpu-q", project=None, json=False))
+        self.assertIn("drafted by gpu-q", buf.getvalue())
+
+    def test_the_booked_original_is_reused_only_for_the_same_playbook_text(self):
+        ask = types.SimpleNamespace(name="gpu-q")
+        path = os.path.join(self.tmp, "fix.json")
+        measured = mock.patch.object(self.sc.playbooks, "evaluate",
+                                     side_effect=lambda book, bs, model, **k: {"n": 2, "with": 2, "without": 1, "lift": 0.5})
+        with measured as ev:
+            first = self.sc._orig_eval(FIX_NAME, BOOK_FIX, path, FIX_BRIEFS, ask)
+            again = self.sc._orig_eval(FIX_NAME, BOOK_FIX, path, FIX_BRIEFS, ask)
+            self.assertEqual(ev.call_count, 1, "the same text reuses its booked row")
+            self.sc._orig_eval(FIX_NAME, BOOK_FIX + "- A new step.\n", path, FIX_BRIEFS, ask)
+            self.assertEqual(ev.call_count, 2, "an edited playbook is measured again")
+        self.assertEqual((first["lift"], again["lift"]), (0.5, 0.5))
 
 
 # T-3102: a UI card's live example, written by a local model and kept only when its render check passes
