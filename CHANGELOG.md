@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A test run's load-scaled time limit and default worker count honour a cgroup CPU cap, so a capped session's checks are no longer cut off for running on fewer cores than the machine has (T-4531).
 - Accepted lanes waiting on their check are checked as one candidate on a scratch copy of the trunk, so N lanes cost one affected run, with a fallback to each lane's own check when the batch is red or cut off (T-4528).
 - Ward adds one advisory line for a process-list wait loop whose pattern also occurs elsewhere in its command, since the launcher matches itself and the loop never ends (T-4527).
 - sampo lane land records a refusal for an active main task in land.log, and sampo next names that task as the one holding the waiting lanes (T-4526).
