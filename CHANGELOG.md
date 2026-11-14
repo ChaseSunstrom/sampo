@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A builder's close lines are now stored when only Noticed lines and a short closing passage follow them, and `sampo lane land --merged` names a refused report's cause instead of "no CHANGELOG line" (T-4599).
 - CI tests no longer lean on this machine: the cpu cap count test states its cores, the fake docker emulates GNU timeout, paths compare by realpath, and an outside path's Undo and the check's log path now work on macOS (T-4587).
 - sampo code now finds the survey's SPEC field wherever it sits, including inline at the end of a one-line summary, so the specification is handed whole to the planner, and the wrap prompt asks for SPEC too (T-4566).
 - MASTER.md keeps 13 KB of room under its cap, with sections 2 and 5 moved to a docs/map shard and a lane that grows it under 4 KB of room named in the self-check (T-4562).
