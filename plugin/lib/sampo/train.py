@@ -164,6 +164,44 @@ def _red(out):
     return sorted(n for n in names if not any(n.startswith(m + ".") for m in names))
 
 
+MACHINE_FAIL = re.compile(r"^FAIL[ \t]+disk\b.*$", re.M)  # T-4652: doctor's disk line at its fail level
+MACHINE_OTHER = re.compile(r"^(?:FAIL|ERROR)(?::|[ \t]+(?![ \t]*disk\b))", re.M)  # any other failing line
+
+
+def _machine_only(out):
+    """T-4652: True when a red run's only failing line is doctor's disk FAIL: a machine condition, the same whatever the
+    code is, never a red base. Any other failing line (a test, another doctor check) makes it a code failure."""
+    return bool(MACHINE_FAIL.search(out)) and not MACHINE_OTHER.search(out)
+
+
+def _machine_refusal(p, out):
+    """T-4652: the refusal for a gate red only on the machine: it names the disk line, and that no base or lane is
+    blamed (nothing is dropped for it; the train stops and the gate can run again once the disk has room)."""
+    line = c.fit(MACHINE_FAIL.search(out).group(0).strip(), 200)
+    c.log_event(p, "lane_train_machine", data={"line": line})
+    return c.PolicyError(f"refused: the machine, not the base or a lane, fails the gate: {line}; no lane dropped for it, "
+                         "nothing landed: free disk space (sampo tidy shows what Sampo could free) and run it again")
+
+
+def machine_stop(p):
+    """T-4652: the refusal a train gives before it merges or tests anything when the machine fails every gate whatever
+    the code is: the disk at doctor's fail level (under 5 GB free, lanes.disk_level). The line is doctor's own (the free
+    space, what Sampo could free and its verb). '' at warn or ok, and when the disk can't be read: those trains run."""
+    from sampo import doctor, lanes
+    try:
+        u = lanes.disk_usage(c.state_dir())
+    except OSError:
+        return ""
+    if lanes.disk_level(u) != "fail":
+        return ""
+    r = doctor.check_disk()
+    if r.status != "FAIL":
+        return ""
+    detail = r.detail if "sampo tidy" in r.detail else r.detail + "; sampo tidy shows what Sampo could free"
+    c.log_event(p, "lane_train_machine", data={"free": int(u.free)})
+    return f"refused before any merge or test: the machine, not the code, fails every gate: {detail}"
+
+
 def _texts(out, names):
     """T-3602: {red name: its failure text}. unittest's and run.py's ==== rules split the output; a block belongs to
     the names in its first two lines (`==== mod.Class`, `FAIL: test (mod.Class.test)`); a name heading none gets it all."""
@@ -570,6 +608,9 @@ def train(p, main, ids=None):
     ids = list(dict.fromkeys(ids or []))
     if not ids:
         raise cli.UsageError("name the lanes to land: sampo lane train T-0001,T-0002 (it never lands a lane nobody picked)")
+    why = machine_stop(p)  # T-4652: a full disk fails every gate: known in a second, before any merge or test
+    if why:
+        raise c.PolicyError(why)
     took = False
     try:
         with _train_run_lock(p):
@@ -692,6 +733,8 @@ def _run(p, main, ids):
                                   env=c.scrubbed_env(cpu_env(p)), watch=trunk_watch, watch_every=TRUNK_POLL_S)
         row = {"cmd": cmd, "exit": code, "s": round(time.monotonic() - t0, 1), **({"affected": mods} if mods else {})}
         if code:
+            if _machine_only(out):  # T-4652: the disk, not the code: no base is called red and no lane blamed for it
+                raise _machine_refusal(p, out)
             row.update(failing=_red(out), tail=out.rstrip().splitlines()[-15:], out=out)
         else:
             passed[key] = row
@@ -1520,6 +1563,9 @@ def land(p, main, batch=None):
     closed from its brief's Close fields through sampo task finish's own checks; the rest are parked (lane_stop and a
     Log line), which awaiting_merge leaves out until the lane has a new commit. Nothing is forced, reset or granted;
     a task already holding the publish grant ships after. One land at a time, never beside an active main task."""
+    why = machine_stop(p)  # T-4652: the disk refuses the land at once, before a lane is parked or a batch trains
+    if why:
+        raise c.PolicyError(why)
     busy = c.active_brief_fast(p)
     if busy:
         why = (f"{busy.id} is active in the main checkout, where sampo lane land focuses each lane's task to "
