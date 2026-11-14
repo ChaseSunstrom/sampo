@@ -1947,19 +1947,20 @@ class Run:
         else:
             fresh, began = True, time.monotonic()
             env = dict(self.env(), PYTHONDONTWRITEBYTECODE="1")  # a check before any task leaves no __pycache__
-            seen = {}  # T-4629: the per-test results the run prints, read line by line (the output kept is cut short)
+            reader = _PerTest()  # T-4629: the per-test results the run prints, read line by line (the output kept is cut short)
             code, out = run_bounded(self.keep_vcmd or cmd, self.root, bound, env, self.cap, confine=self.confine(),
-                                    on_line=lambda ln: seen.update(_per_test(ln)) or False)
+                                    on_line=reader.feed)
+            seen = reader.seen
             took = time.monotonic() - began
             state = "green" if code == 0 else "timeout" if code is None else "red"
             first = self.keep_held - {t for t, s in seen.items() if s == "PASSED"} if self.keep_held is not None else None
             if state == "red" and kind != "before" and first and not (kind == "stop" and took > bound / 2):
                 # T-4630: a held test that failed is run once more before it counts: only what fails both times does
-                again = {}
+                again = _PerTest()
                 code2, out2 = run_bounded(self.keep_vcmd or cmd, self.root, bound, env, self.cap, confine=self.confine(),
-                                          on_line=lambda ln: again.update(_per_test(ln)) or False)
+                                          on_line=again.feed)
                 if code2 is not None:  # a rerun that timed out proves nothing: the first run's result stands
-                    code, out, seen = code2, out2, again
+                    code, out, seen = code2, out2, again.seen
                     flaky = sorted(first & {t for t, s in seen.items() if s == "PASSED"})
                     state = "green" if code == 0 else "red"
             if kind == "before":
@@ -2014,9 +2015,10 @@ class Run:
             if self.keep_took > KEEP_TIMEOUT / 2:
                 return None, None, (f"the suite took {round(self.keep_took)} s, too long to run again for its per-test "
                                     f"results")
-            seen = {}
+            reader = _PerTest()
             code, _ = run_bounded(vcmd, self.root, KEEP_TIMEOUT, dict(self.env(), PYTHONDONTWRITEBYTECODE="1"), self.cap,
-                                  confine=self.confine(), on_line=lambda ln: seen.update(_per_test(ln)) or False)
+                                  confine=self.confine(), on_line=reader.feed)
+            seen = reader.seen
             if code is None:
                 return None, None, f"`{vcmd}` timed out after {KEEP_TIMEOUT} s"
         held = frozenset(t for t, s in seen.items() if s == "PASSED")
@@ -7086,6 +7088,40 @@ def _per_test(line):
         return bench_swe.parse_log(line)
     except (ImportError, ValueError):
         return {}
+
+
+_OPEN_ID = re.compile(r"^(\w+ \([\w.]+\)) \.\.\. ")  # unittest -v: `name (mod.Class.name) ... ` opens a result
+_VERDICT = re.compile(r"^(ok|FAIL|ERROR|skipped\b.*|expected failure|unexpected success)\s*$")  # the line that closes it
+PER_TEST_REACH = 100  # T-4634: the lines a test may write between its open line and its verdict before the id is left unread
+
+
+class _PerTest:
+    """T-4634: the per-test results of an output read line by line, `seen` {id: PASSED|FAILED|SKIPPED}. What a test writes
+    to stderr or stdout between unittest's `name (mod.Class.name) ... ` and its verdict splits the result over lines: the
+    open id waits, and the next bare verdict line (ok, FAIL, ERROR, skipped, expected failure, unexpected success) within
+    PER_TEST_REACH lines is its own. Left unread, so never taken as passed: a second id opened (or a whole result read)
+    while one waits (parallel output: whose verdict is it?), a verdict too far on, a verdict glued to text."""
+
+    def __init__(self):
+        self.seen, self.open, self.gap = {}, None, 0
+
+    def feed(self, line):
+        """One output line; False, for run_bounded's on_line (it shows nothing)."""
+        line = line.rstrip("\r\n")
+        got = _per_test(line)
+        if got:
+            self.seen.update(got)
+            self.open = None  # a whole result while one waits: the waiting id has no verdict to be read
+        elif (mt := _OPEN_ID.match(line)) and len(line) < 1000:
+            self.open, self.gap = (None if self.open else mt.group(1)), 0
+        elif self.open:
+            self.gap += 1
+            if self.gap > PER_TEST_REACH:
+                self.open = None
+            elif (mt := _VERDICT.match(line)):
+                self.seen.update(_per_test(f"{self.open} ... {mt.group(1)}"))
+                self.open = None
+        return False
 
 
 def _verbose(cmd):
