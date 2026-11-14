@@ -2379,6 +2379,9 @@ def _task_files(p, b):
         # T-3968: a lane already merged is judged on its own commits; later merges by others aren't its change
         changed = sorted(set((c._git(p.root, "diff", "--name-only", "--no-renames", lo, hi, timeout=60, fail="") or "")
                              .splitlines())) if tip else smap.changed(p.root, base)
+        if not tip and not p.lane:  # T-4628: a task the trunk holds is judged by its own landing, as the linked tests are
+            base, changed = _own_change(p, b, base, changed)
+            changed = sorted(changed)
         theirs = set(_theirs(p, b, changed))  # T-1968: another task's edits are its to answer for (scope, audit)
         # T-3550: a file untracked at the start and removed since (another task, a shell rm) is no edit of this task's:
         # read as touched now, no 'scope:' reason could ever cover it. Tracked at the start or in HEAD, it still counts.
