@@ -6788,6 +6788,33 @@ def measure_fields(summary):
     return cmd, measured[:MEASURE_CHARS]
 
 
+def shell_steps(text):
+    """T-4583: the commands of a shell line as the guard reads them (quotes, comments, heredocs, newlines and ; && | as a
+    shell does), each as its words with leading env assignments and time/timeout/sudo-style wrappers set aside; None when
+    the guard's reader fails on it. A word inside quotes is an argument, never a step."""
+    try:
+        import fmguard
+        steps = [fmguard._strip_wrappers([str(w) for w in c.argv])[0]
+                 for c in fmguard._split(fmguard._tokens(fmguard._lines(fmguard._strip_heredocs(text))))]
+    except Exception:  # noqa: BLE001 — a reader that fails leaves the caller its older, looser test
+        return None
+    return [s for s in steps if s]
+
+
+def runs_scenario(verify, scenario):
+    """T-4583: whether `verify` runs `scenario` as steps of its own: every step of the scenario (its words, so an
+    argument's quotes and extra spaces don't matter, and a wrapper such as `timeout 60` on either side doesn't) is a step
+    of the verify, in order, others between. `echo 'CMD'`, a comment, or CMD quoted as an argument is no run. When either
+    can't be read the old substring test stands."""
+    want, got = shell_steps(scenario), shell_steps(verify)
+    if want is None or got is None:
+        return scenario in " ".join((verify or "").split())
+    if not want:
+        return True  # a scenario with no command in it asks for nothing the verify can fail to run
+    at = iter(got)
+    return all(any(step == s for s in at) for step in want)
+
+
 def measure_skip(run, profile, dry=False, plan_says=False):
     """T-4579: why no measure runs, or None when it does. A --verify, --ask or worker CLI run, a CLI planner (it reads and
     runs things itself) and --dry-plan (it runs nothing) run none; and the request must be one the model judged a speed-up
@@ -7313,10 +7340,11 @@ def _plan_problem(run, profile=None):
     scenario = getattr(run, "measure_cmd", None)
     if isinstance(scenario, str) and scenario and run.plan["type"] in CHANGE_TYPES and bodies:  # T-4579: the measured scenario is what the plan proves
         first = run.plan["criteria"][0]["verify"]
-        if not any(scenario in " ".join(t.split()) for t in (bodies[1], first)):
+        if not any(runs_scenario(t, scenario) for t in (bodies[1], first)):  # T-4583: run as a step, not mentioned
             return (f"refused: the plan's first criterion must run the measured scenario `{scenario}` (the command the "
-                    "request's slowness was timed with), whole, in a timing check such as `timeout N <command>`; its "
-                    f"verify `{_one_line(bodies[1], 200)}` does not, so it times a part, and a part's speed is not the "
+                    "request's slowness was timed with), whole, as a command of its own step, as in `timeout N "
+                    "<command>` (a mention in echo, a comment or a quoted argument runs nothing); its verify "
+                    f"`{_one_line(bodies[1], 200)}` does not, so it times a part or nothing, and that is not the "
                     "slowness the user sees. Put that first, a check of one part may follow it.")
     # T-2878: small-model mode checks every change type (T-3688: check_plan refuses a change request's RESEARCH plan)
     small = getattr(run, "small", False)
