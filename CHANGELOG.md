@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- smith's run_bounded closes the stdout and stdin pipes it opens on every way out (normal end, timeout, a raising callback), so a call no longer leaves an open file and a ResourceWarning behind (T-4636).
 - The close-time readers (affected, landed line, task files, self docs, proof, file map, tier drift, deleted files, scaffolding) read a landed task's own landing through one shared view, so other lanes' later code no longer counts as its change, and a guard test fails any new reader that diffs a base itself (T-4635).
 - A merge train refuses a full disk before any merge or test, and a gate red only on its disk line is reported as the machine, not the base (T-4652).
 - The always-on rules text drops the eleven plain-words pairs `sampo which` finds on its own (6399 to 5928 characters, 472 of headroom under doctor's cap), and every builder brief says the rules text has no room (T-4627).
