@@ -23,7 +23,8 @@ def gaps(changed, master):
         with mock.patch.object(cli.c, "git_root", return_value=root), \
                 mock.patch.object(cli.c, "task_base", return_value="abc"), \
                 mock.patch("sampo.map.changed", return_value=changed):
-            return cli._file_map_gaps(SimpleNamespace(root=root), SimpleNamespace())
+            return cli._file_map_gaps(SimpleNamespace(root=root, lane=None),
+                                         SimpleNamespace(id="T-0001", meta={}))
 
 
 class FileMapClose(unittest.TestCase):

@@ -15,7 +15,7 @@ def gap(changed, status):
             mock.patch.object(cli.c, "task_base", return_value="abc"), \
             mock.patch("sampo.map.changed", return_value=changed), \
             mock.patch("sampo.doctor.check_self_docs", return_value=doctor.Result("self docs", status, "stale")):
-        return cli._self_docs_gaps(SimpleNamespace(root="/x"), SimpleNamespace())
+        return cli._self_docs_gaps(SimpleNamespace(root="/x", lane=None), SimpleNamespace(id="T-0001", meta={}))
 
 
 class SelfDocsGap(unittest.TestCase):

@@ -1297,16 +1297,17 @@ def merged_in(root, b):
 
 
 def landed_change(root, b):
-    """T-4625: (the files, the first parent of the oldest) of the commits that put this task on the trunk, or None when
-    none did (or git can't say). A landing commit is `Merge T-ID: …` or one whose subject ends `(T-ID)`, on HEAD's
-    first-parent line since the task's start commit; its change is the diff against its first parent. The closing step
-    judges a landed task by this, not by base..tree, which also holds every lane that landed since the base."""
+    """T-4625: (the files, the first parent of the oldest, the commits) of the commits that put this task on the trunk, or
+    None when none did (or git can't say). A landing commit is `Merge T-ID: …` or one whose subject ends `(T-ID)`, on
+    HEAD's first-parent line since the task's start commit; its change is the diff against its first parent. The commits
+    are (sha, first parent) pairs, oldest first (T-4635: cli._own_view reads each one's diff text from them). The closing
+    step judges a landed task by this, not by base..tree, which also holds every lane that landed since the base."""
     base = b.meta.get("base")
     if not base or _git(root, "cat-file", "-t", base, timeout=10).strip() != "commit":
         return None
     line = _git(root, "log", "--first-parent", "--format=%H%x09%s", f"{base}..HEAD", timeout=30, fail=None)
     ours = re.compile(rf"^Merge {re.escape(b.id)}:|\({re.escape(b.id)}\)\s*$")
-    files, first = set(), None
+    files, first, commits = set(), None, []
     for row in (line or "").splitlines():
         sha, _, subj = row.partition("\t")
         if not ours.search(subj):
@@ -1317,7 +1318,8 @@ def landed_change(root, b):
             return None  # can't read it: the caller keeps the whole base..tree diff, as before
         files |= set(names.splitlines())
         first = parent  # newest first: the last row seen is the oldest
-    return (files, first) if first else None
+        commits.insert(0, (sha, parent))
+    return (files, first, commits) if first else None
 
 
 def audit_tree_past_merges(p, b, tree):

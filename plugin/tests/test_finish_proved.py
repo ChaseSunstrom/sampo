@@ -31,7 +31,7 @@ def gaps(changed, b, listed="# scores\nplugin/lib/fmexam.py\nsite/*.py\n", then=
                 mock.patch.object(cli.c, "task_base", return_value="abc"), \
                 mock.patch("sampo.map.changed", return_value=changed), \
                 mock.patch.object(cli, "_theirs", return_value=[]):  # T-2791: no other lane's merge in this unit
-            return cli._proved_gaps(SimpleNamespace(root=root), b, then=list(then))
+            return cli._proved_gaps(SimpleNamespace(root=root, lane=None), b, then=list(then))
 
 
 class ProvedPaths(unittest.TestCase):

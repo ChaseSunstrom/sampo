@@ -2294,13 +2294,10 @@ def _closed(p, tid):
 def _landed(p, b):
     """T-0956: the close's last line: where the task's own files ended up — committed (sha, pushed or not) or not.
     Another task's files are left out, as the commit leaves them out; git that can't answer says unknown."""
-    from sampo import map as smap
     base = c.task_base(p.root, b) if c.git_root(p.root) else None
     if not base:
         return "Landed: unknown (no git start point on record)"
-    changed = smap.changed(p.root, base)
-    if not p.lane:  # T-4632: a task the trunk holds is judged by its own landing, as the scope check is (T-4628)
-        changed = sorted(_own_change(p, b, base, changed)[1])
+    changed = _own_view(p, b, base).files  # T-4632: a task the trunk holds is judged by its own landing, as the scope check is
     files = [f for f in changed if not f.startswith(c.MIRROR_DIRS)]
     others = _others(p, b)
     theirs = set(_theirs(p, b, files, others))
@@ -2377,14 +2374,11 @@ def _task_files(p, b):
     base = c.task_base(p.root, b) if c.git_root(p.root) else None
     tip = _merged_lane_tip(p, b) if base else None
     lo, hi = _lane_merge(p, base, tip) if tip else (base, None)
+    # T-3968: a lane already merged is judged on its own commits (the span); later merges by others aren't its change.
+    # T-4628: else a task the trunk holds is judged by its own landing, as the linked tests are (T-4635: one view)
+    view = _own_view(p, b, base, span=(lo, hi) if tip else None) if base else None
     if base:  # R1: edits made through the shell or outside Claude count too
-        from sampo import map as smap
-        # T-3968: a lane already merged is judged on its own commits; later merges by others aren't its change
-        changed = sorted(set((c._git(p.root, "diff", "--name-only", "--no-renames", lo, hi, timeout=60, fail="") or "")
-                             .splitlines())) if tip else smap.changed(p.root, base)
-        if not tip and not p.lane:  # T-4628: a task the trunk holds is judged by its own landing, as the linked tests are
-            base, changed = _own_change(p, b, base, changed)
-            changed = sorted(changed)
+        base, changed = view.base, view.files
         theirs = set(_theirs(p, b, changed))  # T-1968: another task's edits are its to answer for (scope, audit)
         # T-3550: a file untracked at the start and removed since (another task, a shell rm) is no edit of this task's:
         # read as touched now, no 'scope:' reason could ever cover it. Tracked at the start or in HEAD, it still counts.
@@ -2400,7 +2394,7 @@ def _task_files(p, b):
                     touches[f] = c.iso(os.path.getmtime(os.path.join(p.root, f)))
                 except OSError:  # deleted
                     touches[f] = c.now()
-    diff = (c._git(p.root, "diff", lo, hi, timeout=300, fail=None) if tip else c.task_diff(p.root, base)) if base else None
+    diff = view.text() if view else None
     risky = c.sensitive(list(touches), diff or "")
     recorded = b.meta.get("base_tree") or b.meta.get("base")  # never focused: no start point, as before
     if diff is None and recorded and c.git_root(p.root):  # T-0078 review: what can't be read isn't passed as clean
@@ -2435,8 +2429,8 @@ def _owed_companions(p, b, outside):
     named = [s for s in b.meta.get("scope") or [] if not any(ch in s for ch in "*?[")]
     if not base or not named:
         return set()
-    if not p.lane:  # T-4632: a file another task added before this one's landing isn't this task's to add (its first parent has it)
-        base = _own_change(p, b, base, set())[0]
+    # T-4632: a file another task added before this one's landing isn't this task's to add (its first parent has it)
+    base = _own_view(p, b, base, changed=()).base
     had = set((c._git(p.root, "ls-tree", "-r", "--name-only", base, "--", *named, timeout=30, fail="") or "").splitlines())
     from sampo import shape
     owed = set()
@@ -2553,10 +2547,9 @@ def _self_docs_gaps(p, b):
     """CLEAN T-0764: a close that touches fmcli.py or plugin/skills must leave Sampo's own docs naming real commands
     and skills (fm doctor's self docs check), so the close is refused, not caught later."""
     from sampo import doctor
-    from sampo import map as smap
-    base = c.task_base(p.root, b) if c.git_root(p.root) else None
+    base = c.task_base(p.root, b) if c.git_root(p.root) else None  # T-4635: the task's own change, not base..tree
     if not base or not any(f == "plugin/lib/sampo/cli.py" or f.startswith("plugin/skills/")
-                           for f in smap.changed(p.root, base)):
+                           for f in _own_view(p, b, base).files):
         return []
     res = doctor.check_self_docs()
     return [f"self docs: {res.detail}"] if res.status == "FAIL" else []
@@ -2566,14 +2559,13 @@ def _proved_gaps(p, b, then=()):
     """T-2222: a close that changed a path the repo's .fmproved lists (globs, one a line, # comments) needs a red→green
     proof whatever its type: scores, grades, money, auth, whatever the repo names. A FIX has its own gate."""
     import fnmatch
-    from sampo import map as smap
     try:
         with open(os.path.join(p.root, ".fmproved"), encoding="utf-8") as f:
             globs = [x.strip() for x in f if x.strip() and not x.lstrip().startswith("#")]
     except OSError:
         return []
     base = c.task_base(p.root, b) if globs and b.type != "FIX" and c.git_root(p.root) else None
-    mine = smap.changed(p.root, base) if base else []
+    mine = _own_view(p, b, base).files if base else []  # T-4635: the task's own change, not base..tree
     mine = sorted(set(mine) - set(_theirs(p, b, mine)))  # T-2791: other lanes' merges aren't this task's change
     hit = sorted(x for x in mine if any(fnmatch.fnmatch(x, g) for g in globs))
     gap = b.proof_gap(then=then, force=True) if hit else None
@@ -2584,12 +2576,12 @@ def _proved_gaps(p, b, then=()):
 def _file_map_gaps(p, b):
     """T-1179: a close that adds a plugin/<entry> MASTER.md's file map doesn't list is refused, not left for release-check."""
     from sampo import doctor
-    from sampo import map as smap
     base = c.task_base(p.root, b) if c.git_root(p.root) else None
     master = os.path.join(p.root, "MASTER.md")
     if not base or not os.path.exists(master):
         return []
-    entries = {"/".join(f.split("/")[:2]) for f in smap.changed(p.root, base) if f.startswith("plugin/")}  # not a list: a path prefix
+    # T-4635: the task's own change, not base..tree; a path prefix, not a list
+    entries = {"/".join(f.split("/")[:2]) for f in _own_view(p, b, base).files if f.startswith("plugin/")}  # not a list: a path prefix
     if not entries:
         return []
     res = doctor.check_file_map(p.root, master)
@@ -3642,15 +3634,12 @@ _CONFLICT = re.compile(r"^(?:<{7}|>{7})(?: |$)|^={7}$")  # T-0956
 def _scaffolding(p, b, files):
     """T-0650: added lines in the task's files that look like debug scaffolding, and (T-0956) merge conflict markers:
     ([file:line], [file:line])."""
-    import subprocess
     base = b.meta.get("base")
     files = [f for f in files if not f.lower().endswith(_PROSE)]  # docs may name debug calls; only code runs them
     if not base or not files or not c.git_root(p.root):
         return [], []
-    try:
-        diff = subprocess.run(["git", "-C", p.root, "diff", "-U0", base, "--", *files[:200]], capture_output=True,
-                              text=True, errors="replace", timeout=30).stdout
-    except (OSError, subprocess.SubprocessError):
+    diff = _own_view(p, b, base, changed=()).diff("-U0", paths=files[:200])  # T-4635: the task's own text, not base..tree
+    if diff is None:
         return [], []
     hits, conflicts, path, n = [], [], None, 0
     for line in diff.splitlines():
@@ -3725,16 +3714,11 @@ def _files_vs_steps(b, files):
 
 def _deleted(p, b):
     """Files tracked at the task's start that are gone now (committed or not)."""
-    import subprocess
     base = b.meta.get("base")
     if not base or not c.git_root(p.root):
         return []
-    try:
-        r = subprocess.run(["git", "-C", p.root, "diff", "--name-only", "--diff-filter=D", base], capture_output=True,
-                           text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return []
-    return [x for x in r.stdout.splitlines() if x.strip()]
+    names = _own_view(p, b, base, changed=()).diff("--name-only", "--diff-filter=D", timeout=20)  # T-4635: its own landing
+    return [x for x in (names or "").splitlines() if x.strip()]
 
 
 def _plan_gaps(p, b):
@@ -3849,12 +3833,13 @@ def _tier_drift(p, b, files):
     base = c.task_base(p.root, b) if files and c.git_root(p.root) else None
     if not base:
         return None
+    view = _own_view(p, b, base, changed=())  # T-4635: the task's own landing's lines, not base..tree's
     lines, seen = 0, set()
-    for row in (c._git(p.root, "diff", "--numstat", base, "--", *files[:500], timeout=30) or "").splitlines():
+    for row in (view.diff("--numstat", paths=files[:500]) or "").splitlines():
         add, rem, name = (row.split("\t") + ["", "", ""])[:3]
         seen.add(name)
         lines += (int(add) if add.isdigit() else 0) + (int(rem) if rem.isdigit() else 0)
-    at_base = set((c._git(p.root, "ls-tree", "-r", "--name-only", base, "--", *files[:500], timeout=30)
+    at_base = set((c._git(p.root, "ls-tree", "-r", "--name-only", view.base, "--", *files[:500], timeout=30)
                    or "").splitlines())
     for f in files[:500]:  # new files: every line is added (one at the start and not in the diff is unchanged: T-0812)
         if f not in seen and f not in at_base:
@@ -6663,22 +6648,85 @@ def _hub_tests(p, m, base, changed, detail=None, tree=None):
     return picked
 
 
-def _own_change(p, b, base, changed):
-    """T-4625: (base, changed) for a task the trunk already holds (a `Merge T-ID:` commit or commits ending `(T-ID)`
-    since its start): the files those commits brought in, what is uncommitted, and the files it touched or claims that
-    changed since the base, with the base moved to the commits' first parent. base..tree also holds every lane that
-    landed since (T-4607: about 480 modules for a close of two test files). A task nothing landed, or a git that can't say,
-    gives its arguments back."""
-    try:
-        landed = c.landed_change(p.root, b)
-    except (OSError, subprocess.SubprocessError):
-        landed = None
-    if not landed:
-        return base, changed
-    from sampo import map as smap
-    files, first = landed
-    mine = set(c.task_touches(p, b.id)) | _claimed(p, b, {})
-    return first, set(files) | set(smap.changed(p.root, "HEAD")) | (set(changed) & mine)  # HEAD..tree: not committed yet
+class _OwnView:
+    """T-4635: one reading of a task's own change for every close-time reader (T-4625 the linked tests, T-4628 the scope
+    check, T-4632 the Landed line and owed companions, T-4635 the self-docs, proof, file-map, tier, deletion and debug
+    scans). A task the trunk already holds (a `Merge T-ID:` commit or commits ending `(T-ID)` since its start) is its
+    landing: the files those commits brought in, what is uncommitted, and the files it touched or claims that changed
+    since the base; the base moves to the oldest commit's first parent; a diff is each commit's own text plus HEAD to the
+    working files. base..tree also holds every lane that landed since (T-4607: about 480 modules for a close of two test
+    files). A task nothing landed, a lane, a git that can't say, or no `landing` asked, reads base..tree as before; a
+    `span` (the merged lane's first parent and tip: T-3968) is that range and nothing else. The guard in
+    test_close_one_view fails a function in this file that diffs a base itself, so a new reader goes through here."""
+
+    def __init__(self, p, b, base, changed=None, landing=True, span=None):
+        self.p, self.b, self._start, self._changed, self.span = p, b, base, changed, span
+        self._ask = bool(landing and b is not None and base and not span and not p.lane)
+        self._found, self._read, self._files = None, False, None
+
+    def _landing(self):
+        """core.landed_change's answer (files, first parent, commits), read once; None when nothing landed."""
+        if not self._read:
+            self._read = True
+            if self._ask:
+                try:
+                    self._found = c.landed_change(self.p.root, self.b)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+        return self._found
+
+    @property
+    def base(self):
+        land = self._landing()
+        return land[1] if land else self._start
+
+    @property
+    def files(self):
+        """Sorted. `changed` handed in (a set; () for none) stands for the base..tree files, as the caller read them."""
+        if self._files is None:
+            from sampo import map as smap
+            root = self.p.root
+            if self.span:
+                got = set((c._git(root, "diff", "--name-only", "--no-renames", *self.span, timeout=60, fail="") or "")
+                          .splitlines())
+            else:
+                got = set(self._changed) if self._changed is not None else set(
+                    smap.changed(root, self._start) if self._start else ())
+                land = self._landing()
+                if land:
+                    mine = set(c.task_touches(self.p, self.b.id)) | _claimed(self.p, self.b, {})
+                    got = set(land[0]) | set(smap.changed(root, "HEAD")) | (got & mine)  # HEAD..tree: not committed yet
+            self._files = sorted(got)
+        return self._files
+
+    def diff(self, *opts, paths=(), timeout=30):
+        """`git diff <opts>` of the task's own change (limited to `paths`), None when git can't say."""
+        root, tail = self.p.root, (["--", *paths] if paths else [])
+        if self.span:
+            return c._git(root, "diff", *opts, *self.span, *tail, timeout=timeout, fail=None)
+        land = self._landing()
+        if not land:
+            return c._git(root, "diff", *opts, self._start, *tail, timeout=timeout, fail=None) if self._start else None
+        parts = [c._git(root, "diff", *opts, parent, sha, *tail, timeout=timeout, fail=None) for sha, parent in land[2]]
+        parts.append(c._git(root, "diff", *opts, "HEAD", *tail, timeout=timeout, fail=None))
+        return None if None in parts else "".join(parts)
+
+    def text(self):
+        """The whole change as diff text, the working files' untracked ones included; None when git can't say."""
+        root = self.p.root
+        if self.span:
+            return c._git(root, "diff", *self.span, timeout=300, fail=None)
+        land = self._landing()
+        if not land:
+            return c.task_diff(root, self._start) if self._start else None
+        parts = [c._git(root, "diff", parent, sha, timeout=300, fail=None) for sha, parent in land[2]]
+        parts.append(c.task_diff(root, "HEAD"))
+        return None if None in parts else "".join(parts)
+
+
+def _own_view(p, b, base, changed=None, landing=True, span=None):
+    """T-4635: the task's own change as the closing step judges it (see _OwnView): .base, .files, .diff(), .text()."""
+    return _OwnView(p, b, base, changed, landing, span)
 
 
 def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False):
@@ -6693,9 +6741,9 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     act = b or (None if since else c.active_brief(c.load_briefs(p), p.lane))  # T-1117 review: the closing task's base, active or not
     # T-2323: fm ship's range, from a commit; T-3696: a lane past its merge of main's branch, from that merge
     base = since or (c.lane_base(p.root, act) if act else None) or "HEAD"
-    changed = set(only) if only is not None else set(smap.changed(p.root, base))
-    if act and not since and only is None and not p.lane:  # T-4625: a landed task is judged by its own landing
-        base, changed = _own_change(p, act, base, changed)
+    # T-4625: a landed task is judged by its own landing (T-4635: the view every close-time reader shares)
+    view = _own_view(p, act, base, set(only) if only is not None else None, landing=not since and only is None)
+    base, changed = view.base, set(view.files)
     # T-3566: the sync mirror's .md files are no code (core.code_tree and worktree_tree leave them out); those other
     # closes had committed linked ten tests (test_fixes, ...) to every close, none in a train's part
     changed = {f for f in changed if not (f.startswith(c.MIRROR_DIRS) and f.endswith(".md"))}
