@@ -33,7 +33,10 @@ class CiMatrix(unittest.TestCase):
         self.assertEqual(problems(text), [])
         dropped = re.sub(r"(?s)(\n\s+- os: macos-latest[^\n]*\n(?:\s+\w+: [^\n]*\n)*?\s+shard: 3\n)", "\n", text, count=1)
         self.assertNotEqual(problems(dropped), [], "a dropped shard job is caught")
-        miscount = text.replace("matrix.experimental && 3 || 2", "matrix.experimental && 4 || 2")
+        # T-4633: whatever the divisor is today (3 until the macOS jobs became fifths), one more than the jobs is caught
+        miscount, n = re.subn(r"matrix\.experimental && (\d+) \|\| 2",
+                              lambda m: f"matrix.experimental && {int(m.group(1)) + 1} || 2", text)
+        self.assertGreater(n, 0, "the run line names the experimental jobs' shard count")
         self.assertNotEqual(problems(miscount), [], "a run line that divides by more shards than jobs is caught")
 
     def test_the_experimental_job_gets_a_longer_class_watchdog(self):

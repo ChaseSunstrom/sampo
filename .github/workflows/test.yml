@@ -33,6 +33,14 @@ jobs:
             python: "3.14"
             experimental: true
             shard: 3
+          - os: macos-latest  # T-4633: thirds overran too (run 43581600540: 1992-1996 s, 354 jobs never started); fifths
+            python: "3.14"
+            experimental: true
+            shard: 4
+          - os: macos-latest
+            python: "3.14"
+            experimental: true
+            shard: 5
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental || false }}
     timeout-minutes: ${{ matrix.experimental && 35 || 25 }}  # whole suite: macOS 1980+ s, Ubuntu 1268-1381 s (half per shard); keep the suite's --deadline 2 min under
@@ -44,6 +52,6 @@ jobs:
       - name: git identity for the tests' commits
         run: git config --global user.name CI && git config --global user.email ci@example.invalid
       - name: suite (no claude needed; the e2e roundtrip and hook bench stay local)
-        run: python3 plugin/tests/run.py --shard ${{ matrix.shard }}/${{ matrix.experimental && 3 || 2 }} --deadline ${{ matrix.experimental && 1980 || 1380 }} --timeout ${{ matrix.experimental && 900 || 480 }}  # ends below timeout-minutes, naming what was slow (T-1809); macOS 3.14 ran LeanKind 504 s (T-2844)
+        run: python3 plugin/tests/run.py --shard ${{ matrix.shard }}/${{ matrix.experimental && 5 || 2 }} --deadline ${{ matrix.experimental && 1980 || 1380 }} --timeout ${{ matrix.experimental && 900 || 480 }}  # ends below timeout-minutes, naming what was slow (T-1809); macOS 3.14 ran LeanKind 504 s (T-2844)
         env:
           FOREMAN_CHROME: none  # the runner's chromium crashes under the parallel suite; local gates run the browser tests

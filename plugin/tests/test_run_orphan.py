@@ -51,7 +51,10 @@ def gone(pid):
         with open(f"/proc/{pid}/stat") as f:
             return f.read().rsplit(")", 1)[1].split()[0] in ("Z", "X")
     except OSError:
-        return True
+        pass
+    # T-4633: no /proc (macOS): ask ps, whose stat column starts with Z for a zombie; no row means it has ended
+    got = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True)
+    return not got.stdout.strip() or got.stdout.strip()[0] in ("Z", "X")
 
 
 def read(path):

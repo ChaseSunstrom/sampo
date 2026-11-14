@@ -29,14 +29,25 @@ def _read_boot(path):
         return ""
 
 
+@functools.lru_cache(maxsize=1)
+def _mac_boot():
+    """T-4633: macOS has no /proc: its kernel's boot session id (kern.bootsessionuuid), '' when sysctl says nothing."""
+    try:
+        got = subprocess.run(["sysctl", "-n", "kern.bootsessionuuid"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return got.stdout.strip() if got.returncode == 0 else ""
+
+
 def boot():
     """The kernel's boot id ('' where there is none: nothing here then claims a reboot)."""
     h = sys.modules.get("sampo.hooks")  # its BOOT_ID, without importing the hooks into every sampo call
-    return _read_boot(getattr(h, "BOOT_ID", "/proc/sys/kernel/random/boot_id"))
+    got = _read_boot(getattr(h, "BOOT_ID", "/proc/sys/kernel/random/boot_id"))
+    return got or (_mac_boot() if sys.platform == "darwin" else "")
 
 
 def btime():
-    """Epoch seconds the machine booted (/proc/stat), or None."""
+    """Epoch seconds the machine booted (/proc/stat; kern.boottime on macOS, T-4633), or None."""
     try:
         with open("/proc/stat", encoding="ascii") as f:
             for ln in f:
@@ -44,6 +55,13 @@ def btime():
                     return float(ln.split()[1])
     except (OSError, ValueError, IndexError):
         pass
+    if sys.platform == "darwin":
+        try:  # "{ sec = 1731500000, usec = 123456 } Fri Nov 14 ..."
+            out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True, text=True, timeout=10).stdout
+        except (OSError, subprocess.SubprocessError):
+            return None
+        m = re.search(r"sec = (\d+)", out)
+        return float(m.group(1)) if m else None
     return None
 
 

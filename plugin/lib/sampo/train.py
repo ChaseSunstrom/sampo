@@ -1201,12 +1201,29 @@ def _ship_marker(p):
 
 def _ticks(pid):
     """A process's start time in clock ticks (field 22 of /proc/PID/stat), the id a reused pid can't share; 0 when it
-    isn't running, is a zombie, or this host has no /proc."""
+    isn't running or is a zombie. T-4633: a host with no /proc (macOS) gets the start time in epoch seconds from ps,
+    which every liveness check here read as 'not running' (0) before."""
     try:
         with open(f"/proc/{int(pid)}/stat") as f:
             rest = f.read().rsplit(")", 1)[1].split()
         return 0 if rest[0] == "Z" else int(rest[19])
-    except (OSError, IndexError, ValueError):
+    except (IndexError, ValueError):
+        return 0
+    except OSError:
+        pass
+    try:
+        with open("/proc/self/stat"):  # a /proc that answers for this process: the pid just isn't there
+            return 0
+    except OSError:
+        pass
+    try:  # lstart is "Fri Nov 14 10:00:00 2026" in the C locale, then the stat column
+        out = subprocess.run(["ps", "-o", "lstart=,stat=", "-p", str(int(pid))], capture_output=True, text=True,
+                             env=dict(os.environ, LC_ALL="C"), timeout=10).stdout.split()
+        if len(out) < 6 or out[5][0] in "ZX":
+            return 0
+        wday, month, day, clock, year = out[0:5]  # lstart is always five words
+        return int(time.mktime(time.strptime(f"{wday} {month} {day} {clock} {year}", "%a %b %d %H:%M:%S %Y")))
+    except (OSError, IndexError, ValueError, subprocess.SubprocessError):
         return 0
 
 
