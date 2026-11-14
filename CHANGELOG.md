@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A builder's WHY-NOT-CAUGHT line now counts as the why-not-caught of an M or L fix, so lane accept and the land's close stop refusing it (T-4515).
 - a Non-goals line that answered a part of the user's request is queued as a follow-up at the close and listed under 'Left out, queued next' (T-4510).
 - sampo code takes a planner's plan of up to 30 one-line steps, and repairs a longer or multi-line one itself (joins the lines, folds the tail into the last step) instead of ending the run before step 1 (T-4506).
 - sampo lane brief, focus and next name every missing piece of an empty M plan in one refusal: the readings, the three options with their failure modes, use-what-exists, do-less, the choice with its percent, and the rival read under 80% (T-4492).
