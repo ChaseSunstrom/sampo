@@ -24,6 +24,11 @@ class Case(HookCase):
         self.fm("init")
         self.p = self.project()
 
+    def make_task(self, title="publish it"):
+        """A real task: a capture event for a task that is not there links to nothing (T-4663)."""
+        return self.fm_json("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                            "--step", "a")["id"]
+
     def prompt(self, session="sess-1"):
         self.hook("UserPromptSubmit", {"prompt": "where can I see it", "session_id": session})
 
@@ -107,7 +112,7 @@ class Reopen(Case):
     def test_hold_a_concern_said_again_with_a_task_behind_it_is_released(self):
         self.prompt()
         self.book("u1", "the work reaches GitHub", at=stamp(30))
-        c.log_event(self.p, "capture", task="T-0001", data={"source": "user", "type": "FEATURE"}, session="sess-1")
+        c.log_event(self.p, "capture", task=self.make_task(), data={"source": "user", "type": "FEATURE"}, session="sess-1")
         self.assertFalse(self.held(self.stop()))
         self.prompt()
         self.book("u2", "the work reaches GitHub", repeat_of="u1", text="I said the work must reach GitHub")
@@ -223,8 +228,34 @@ class Release(Case):
     def test_release_a_task_made_from_the_message_lets_it_go(self):
         self.prompt()
         self.book()
-        c.log_event(self.p, "capture", task="T-0001", data={"source": "user", "type": "FEATURE"}, session="sess-1")
+        c.log_event(self.p, "capture", task=self.make_task(), data={"source": "user", "type": "FEATURE"}, session="sess-1")
         self.assertFalse(self.held(self.stop()))
+
+    def test_release_an_agents_own_discovered_capture_does_not_let_it_go(self):
+        """T-4663: only a task made from the user's words releases the hold, not any capture of the session."""
+        self.prompt()
+        cid = self.book(at=stamp(30))
+        tid = self.make_task("an unrelated bug")
+        c.log_event(self.p, "capture", task=tid, data={"source": "discovered", "type": "FIX"}, session="sess-1")
+        b = c.find_brief(self.p, tid)
+        b.meta["status"] = "done"  # not open work: the drive's own block must not stand in for the hold
+        c.save_brief(self.p, b)
+        out = self.stop()
+        self.assertTrue(self.held(out), out)
+        self.assertIn(cid, out["reason"])
+
+    def test_release_a_dropped_task_does_not_let_it_go(self):
+        """T-4663: a concern whose only task was dropped has no task: it holds."""
+        self.prompt()
+        cid = self.book(at=stamp(30))
+        tid = self.make_task()
+        c.log_event(self.p, "capture", task=tid, data={"source": "user", "type": "FEATURE"}, session="sess-1")
+        b = c.find_brief(self.p, tid)
+        b.meta["status"] = "dropped"
+        c.save_brief(self.p, b)
+        out = self.stop()
+        self.assertTrue(self.held(out), out)
+        self.assertIn(cid, out["reason"])
 
     def test_release_a_proof_lets_it_go(self):
         self.prompt()

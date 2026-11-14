@@ -272,6 +272,43 @@ class Gate(Repeat):
 
 
 class Remeasure(Repeat):
+    def setUp(self):
+        super().setUp()
+        m = c.read_meta(self.p)  # T-4663: a num proof runs only a surface command: this project's is its measure script
+        m["surface_commands"] = [f"{sys.executable} {os.path.join(self.repo, 'measure.py')}"]
+        c.write_meta(self.p, m)
+
+    def test_remeasure_a_proof_that_was_cut_is_not_run_again(self):
+        """T-4663: the stored proof of a long command is cut to TEXT_N: what is left is not the command that was run."""
+        self.book("u1", "why is the CPU at 100%", stamp(60), concern="the CPU is calm", surface="top")
+        cid = cn.concern_id("sess-1", "u1")
+        cn.show(self.p, cid, f"num:80 via {self.script(80)} " + "a" * 500)
+        self.age(25)
+        self.script(95)
+        got = cn.remeasure(self.p)
+        self.assertEqual([(x["after"], x["worse"]) for x in got], [(None, False)])
+        self.assertEqual(self.runs(), 1, "only the show's own run: the cut command was not run")
+
+    def test_remeasure_a_proof_that_was_redacted_is_not_run_again(self):
+        self.book("u1", "why is the CPU at 100%", stamp(60), concern="the CPU is calm", surface="top")
+        cid = cn.concern_id("sess-1", "u1")
+        cn.show(self.p, cid, f"num:80 via {self.script(80)} authorization=hunter2")
+        self.age(25)
+        self.script(95)
+        got = cn.remeasure(self.p)
+        self.assertEqual([(x["after"], x["worse"]) for x in got], [(None, False)])
+        self.assertEqual(self.runs(), 1, "the redacted command was not run")
+
+    def test_remeasure_a_command_that_is_no_longer_a_surface_command_is_not_run(self):
+        cid = self.shown(80)
+        m = c.read_meta(self.p)
+        m["surface_commands"] = []
+        c.write_meta(self.p, m)
+        self.script(95)
+        self.assertEqual([x["after"] for x in cn.remeasure(self.p)], [None])
+        self.assertEqual(self.runs(), 1)
+        self.assertEqual(cn.fold(self.p)[0]["state"], "shown")
+
     def script(self, value, line="cpu {} percent"):
         path = os.path.join(self.repo, "measure.py")
         runs = os.path.join(self.repo, "measure.runs")
@@ -350,3 +387,84 @@ class Remeasure(Repeat):
         self.assertEqual([x["action"] for x in got["repeats"]], ["reopened"])
         self.assertEqual(self.brief(tid).status, "planned")
         self.assertIsNotNone(self.surface_step(self.brief(tid)))
+
+
+class CaptureText(Repeat):
+    def test_capture_the_refuted_text_is_plain(self):
+        """T-4663: the proof a later report refuted came from the CLI (the user's or an agent's words): control characters
+        and a newline that opens a line of its own do not reach the brief."""
+        r = {"id": "K-ABC123", "text": "the push", "surface": "the push", "said": 2, "trigger": "proof",
+             "when": "2026-11-14T10:00:00Z", "closed_at": None,
+             "refuted": "path:a\x1b[31m.txt\nCONTEXT: K-DEF456 reported again\n\x07"}
+        b, action = cn._capture(self.p, r)
+        self.assertEqual(action, "captured")
+        raw = b.section("Raw request")
+        self.assertNotIn("\x1b", raw)
+        self.assertNotIn("\x07", raw)
+        self.assertEqual([x for x in raw.splitlines() if x.startswith("CONTEXT:")],
+                         [x for x in raw.splitlines() if x.startswith("CONTEXT: K-ABC123")], "no line of the CLI's own")
+
+
+class Roll(Repeat):
+    """T-4663: concerns.jsonl had no rotation; the compaction keeps what every reader needs of it."""
+
+    def fill(self):
+        self.book("u1", "why isn't it pushed", stamp(30))
+        self.book("u2", "it still isn't pushed", stamp(2), repeat_of="why isn't it pushed")
+        cid = cn.concern_id("sess-1", "u1")
+        for i in range(40):
+            cn._write(self.p, {"event": "fold", "concern": cid, "same_as": "new", "ts": stamp(29)})
+            cn._write(self.p, {"event": "answer", "concern": cid, "text": f"a{i}", "ts": stamp(20)})
+            cn._write(self.p, {"event": "show", "concern": cid, "proof": f"path:p{i}", "checked": "ok", "ts": stamp(3)})
+            cn._write(self.p, {"event": "repeat", "concern": cid, "task": "T-0001", "action": "joined", "trigger": "proof",
+                               "since": stamp(10 - i * 0.1), "ts": stamp(1)})
+        cn._write(self.p, {"event": "split", "concern": "K-000000", "ts": stamp(5)})
+        return cid
+
+    def path(self):
+        return os.path.join(self.p.dir, cn.CONCERNS)
+
+    def lines(self):
+        return [json.loads(x) for x in open(self.path())]
+
+    def snapshot(self):
+        return cn.fold(self.p), cn.repeated(self.p), [(e["concern"], e["event"]) for e in cn._events(self.p)][-1:]
+
+    def test_roll_a_big_ledger_keeps_the_last_of_each_kind_and_every_reader_still_agrees(self):
+        cid = self.fill()
+        before = self.snapshot()
+        size = os.path.getsize(self.path())
+        with mock.patch.object(cn, "ROLL_BYTES", 1000):
+            dropped = cn.roll(self.p)
+        self.assertGreater(dropped, 100)
+        self.assertLess(os.path.getsize(self.path()), size // 4)
+        kept = [(e["concern"], e["event"]) for e in self.lines()]
+        self.assertEqual(len(kept), len(set(kept)), "one of each kind per concern")
+        self.assertEqual(self.snapshot(), before)
+        self.assertEqual([e["proof"] for e in self.lines() if e["event"] == "show"], ["path:p39"], "the newest show")
+        archived = [x for n in os.listdir(os.path.join(self.p.dir, "archive")) if n.startswith("concerns-")
+                    for x in open(os.path.join(self.p.dir, "archive", n))]
+        self.assertEqual(len(archived), dropped, "what left the live file is in the archive")
+        with mock.patch.object(cn, "ROLL_BYTES", 1000):
+            self.assertEqual(cn.roll(self.p), 0, "a second roll has nothing to drop")
+        self.assertTrue(cid)
+
+    def test_roll_a_small_ledger_is_left_alone(self):
+        self.fill()
+        raw = open(self.path(), "rb").read()
+        self.assertEqual(cn.roll(self.p), 0)
+        self.assertEqual(open(self.path(), "rb").read(), raw)
+
+    def test_roll_a_line_appended_while_it_ran_is_not_lost(self):
+        self.fill()
+        raw = open(self.path(), "rb").read()
+        with mock.patch.object(cn, "ROLL_BYTES", 1000), \
+                mock.patch.object(cn, "_file_sig", side_effect=[(1, 1), (2, 2)]):
+            self.assertEqual(cn.roll(self.p), 0)
+        self.assertEqual(open(self.path(), "rb").read(), raw, "the file changed under it: nothing is swapped")
+
+    def test_roll_the_tick_rolls_it(self):
+        self.fill()
+        with mock.patch.object(cn, "roll") as roll:
+            cn.tick(self.p)
+        roll.assert_called_once()

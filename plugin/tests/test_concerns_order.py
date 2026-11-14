@@ -96,8 +96,26 @@ class Verbs(ForemanTestCase):
             r["repeat_of"] = repeat_of
         c.append_line(os.path.join(self.p.dir, "steers.jsonl"), json.dumps(r))
 
-    def capture_from(self, tid, session="sess-1"):
-        c.log_event(self.p, "capture", task=tid, data={"source": "user", "type": "FEATURE"}, session=session)
+    def capture_from(self, tid, session="sess-1", source="user"):
+        c.log_event(self.p, "capture", task=tid, data={"source": source, "type": "FEATURE"}, session=session)
+
+    def test_order_an_agents_own_discovered_capture_is_not_the_user_waiting(self):
+        """T-4663: a task the agent captured for an unrelated bug in the same session is not ranked first."""
+        self.plan("plain fix", "FIX")
+        found = self.plan("an unrelated bug the agent found", "FIX")
+        self.say("u1", 300)
+        self.capture_from(found, source="discovered")
+        data = self.fm_json("queue")
+        self.assertEqual([x["id"] for x in data["order"]], ["T-0001", found])
+        self.assertNotIn("concern", data["order"][1])
+
+    def test_order_a_dropped_task_is_not_ranked_by_its_concern(self):
+        two, cid = self.setup_two()
+        b = c.find_brief(self.p, two)
+        b.meta["status"] = "dropped"
+        c.save_brief(self.p, b)
+        self.assertEqual(cn.queue_links(self.p), {})
+        self.assertEqual(self.fm_json("concerns")["concerns"][0]["tasks"], [], "open for action again")
 
     def setup_two(self):
         """T-0001 is the older FIX; T-0002 a FEATURE linked to a concern said twice: it comes first."""

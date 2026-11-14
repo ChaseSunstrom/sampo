@@ -178,13 +178,84 @@ class Proof(Ledger):
             cn.show(self.p, self.cid, "url:https://example.com/pushed")
         self.assertEqual(self.state(), "shown")
 
+    def surface_script(self, body="import sys\nprint(sys.argv[1])\n"):
+        """A script in the project and the project's own surface command for it (meta surface_commands): the only kind of
+        command a num proof may run (T-4663)."""
+        path = os.path.join(self.repo, "measure.py")
+        with open(path, "w") as f:
+            f.write(body)
+        m = c.read_meta(self.p)
+        m["surface_commands"] = [f"{sys.executable} {path}"]
+        c.write_meta(self.p, m)
+        return f"{sys.executable} {path}"
+
     def test_proof_a_number_comes_with_its_command_and_the_command_must_print_it(self):
-        py = sys.executable
+        run = self.surface_script("import sys\nif sys.argv[1] == 'fail':\n    raise SystemExit(2)\nprint(sys.argv[1])\n")
         self.assertFalse(cn.check_proof(self.p, "num:3")[0], "a number with no command")
-        self.assertFalse(cn.check_proof(self.p, f"num:4 via {py} -c 'print(3)'")[0], "the command prints another number")
-        self.assertFalse(cn.check_proof(self.p, f"num:3 via {py} -c 'raise SystemExit(2)'")[0], "a command that fails")
-        cn.show(self.p, self.cid, f"num:3 via {py} -c 'print(3)'")
+        self.assertFalse(cn.check_proof(self.p, f"num:4 via {run} 3")[0], "the command prints another number")
+        self.assertFalse(cn.check_proof(self.p, f"num:3 via {run} fail")[0], "a command that fails")
+        cn.show(self.p, self.cid, f"num:3 via {run} 3")
         self.assertEqual(self.state(), "shown")
+
+    def test_proof_a_number_from_a_command_that_is_no_surface_command_is_refused(self):
+        """T-4663: any argv proved only that the number was typed (`python -c 'print(3)'`, `echo 3`)."""
+        ok, why = cn.check_proof(self.p, f"num:3 via {sys.executable} -c 'print(3)'")
+        self.assertFalse(ok)
+        self.assertIn("surface", why)
+        self.assertFalse(cn.check_proof(self.p, "num:3 via echo 3")[0])
+        self.assertFalse(cn.check_proof(self.p, "num:3 via echo sampo smoke 3")[0],
+                         "the surface command's words after another program do not make it a surface command")
+        with self.assertRaises(ValueError):
+            cn.show(self.p, self.cid, "num:3 via echo 3")
+        self.assertEqual(self.state(), "open")
+
+    def test_proof_what_a_surface_command_is(self):
+        self.assertTrue(cn._surface_run(self.p, "sampo smoke --json"))
+        self.assertTrue(cn._surface_run(self.p, "python3 plugin/bin/sampo shot http://localhost:1/"))
+        self.assertTrue(cn._surface_run(self.p, "/usr/bin/curl -s https://example.com/n"))
+        self.assertFalse(cn._surface_run(self.p, "python3 -c 'print(1)'"))
+        self.assertFalse(cn._surface_run(self.p, "python3 plugin/tests/run.py test_x"))
+        self.assertFalse(cn._surface_run(self.p, "sh -c 'sampo smoke'"))
+        self.assertFalse(cn._surface_run(self.p, ""))
+        self.assertFalse(cn._surface_run(self.p, "'unbalanced"))
+
+    def test_proof_a_number_command_prints_a_bounded_amount(self):
+        run = self.surface_script("print('x' * 5000)\nprint(3)\n")
+        with mock.patch.object(cn, "OUT_MAX", 1000):
+            ok, why = cn.check_proof(self.p, f"num:3 via {run}")
+        self.assertFalse(ok)
+        self.assertIn("more than", why)
+        self.assertTrue(cn.check_proof(self.p, f"num:3 via {run}")[0], "within the cap it is read")
+
+    def test_proof_a_path_outside_the_project_is_refused(self):
+        outside = os.path.join(self.tmp, "outside.txt")
+        with open(outside, "w") as f:
+            f.write("x")
+        ok, why = cn.check_proof(self.p, f"path:{outside}")
+        self.assertFalse(ok)
+        self.assertIn("inside the project", why)
+        self.assertFalse(cn.check_proof(self.p, "path:../outside.txt")[0])
+        self.assertFalse(cn.check_proof(self.p, "path:/etc/passwd")[0])
+        os.symlink(outside, os.path.join(self.repo, "link.txt"))
+        self.assertFalse(cn.check_proof(self.p, "path:link.txt")[0], "a link out of the project is outside it")
+        inside = os.path.join(self.repo, "page.html")
+        with open(inside, "w") as f:
+            f.write("ok")
+        self.assertTrue(cn.check_proof(self.p, f"path:{inside}")[0], "an absolute path inside the project is fine")
+
+    def test_proof_a_git_ref_says_it_was_not_fetched(self):
+        subprocess.run(["git", "-C", self.repo, "update-ref", "refs/remotes/origin/main", "HEAD"], check=True)
+        ok, why = cn.check_proof(self.p, "git:HEAD")
+        self.assertTrue(ok)
+        self.assertIn("not fetched", why, "a remote-tracking ref is what the last fetch saw, not the remote now")
+
+    def test_proof_a_url_follows_no_redirect_to_another_host(self):
+        import urllib.request
+        h = cn._SameHost()
+        req = urllib.request.Request("https://example.com/a")
+        self.assertIsNone(h.redirect_request(req, None, 302, "Found", {}, "https://elsewhere.example.org/b"))
+        self.assertIsNotNone(h.redirect_request(req, None, 302, "Found", {}, "https://example.com/b"))
+        self.assertIsNone(h.redirect_request(req, None, 302, "Found", {}, "http://example.com/b"), "https to http")
 
     def test_proof_a_closed_task_after_a_shown_concern_leaves_it_shown(self):
         with open(os.path.join(self.repo, "page.html"), "w") as f:
@@ -223,15 +294,63 @@ class Link(Ledger):
         t0 = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)
         at = lambda s: (t0 + datetime.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%SZ")
         self.book("u1", "why isn't it pushed", at(0), "the work reaches GitHub")
+        tid = json.loads(self.task())["id"]
         path = os.path.join(self.p.dir, "ledger.jsonl")
         with open(path, "a", encoding="utf-8") as f:
-            f.write(self.capture_line(at(60), "sess-1", "T-9001") + "\n")
+            f.write(self.capture_line(at(60), "sess-1", tid) + "\n")
             for i in range(5000):  # later lines of other events, all inside the link window
                 f.write(json.dumps({"prev": "0" * 64, "ts": at(61 + i // 100), "session_id": "sess-2",
                                     "project": self.p.slug, "task": None, "event": "note", "data": {}}) + "\n")
         got = cn.fold(self.p)
         self.assertEqual(len(got), 1)
-        self.assertEqual(got[0]["tasks"], ["T-9001"])
+        self.assertEqual(got[0]["tasks"], [tid])
+
+    def test_link_only_a_capture_made_from_the_users_words_links(self):
+        """T-4663: an agent's own `capture --source discovered` for an unrelated bug, made in the same session within the
+        window, is not the user's ask: it must not give the concern a task."""
+        self.book("u1", "why isn't it pushed", stamp(seconds=300), "the work reaches GitHub")
+        other = json.loads(self.task("an unrelated bug the agent found"))["id"]
+        c.log_event(self.p, "capture", task=other, data={"source": "discovered", "type": "FIX"}, session="sess-1")
+        self.assertEqual(cn.fold(self.p)[0]["tasks"], [], "a discovered capture is not made from the user's words")
+        mine = json.loads(self.task("publish it"))["id"]
+        c.log_event(self.p, "capture", task=mine, data={"source": "intake", "type": "FEATURE"}, session="sess-1")
+        self.assertEqual(cn.fold(self.p)[0]["tasks"], [mine], "an intake capture is")
+
+    def test_link_a_task_that_names_the_concern_links_whatever_its_source(self):
+        self.book("u1", "where can I see it", stamp(hours=2), "the login page works", surface="login page")
+        cid = cn.concern_id("sess-1", "u1")
+        made = json.loads(self.fm("capture", f"show the login page ({cid})", "--source", "discovered", "--type", "FIX",
+                                  "--tier", "S", "--json").stdout)["id"]
+        self.assertEqual(cn.fold(self.p)[0]["tasks"], [made])
+
+    def test_link_a_dropped_or_missing_task_counts_as_no_task(self):
+        """T-4663: a concern whose only task was dropped (or is not a task any more) stayed open for ever with no hold
+        and no place in the order; such a task is no task, so the concern is open for action again."""
+        self.book("u1", "why isn't it pushed", stamp(seconds=300), "the work reaches GitHub")
+        tid = json.loads(self.task())["id"]
+        self.capture_from("sess-1", tid)
+        self.capture_from("sess-1", "T-9003")  # a task that is not there
+        self.assertEqual(cn.fold(self.p)[0]["tasks"], [tid], "the missing one is not a task; the real one is")
+        b = c.find_brief(self.p, tid)
+        b.meta["status"] = "dropped"
+        c.save_brief(self.p, b)
+        self.assertEqual(cn.fold(self.p)[0]["tasks"], [])
+        self.assertEqual(cn.queue_links(self.p), {}, "nothing queued is ordered by it")
+        b.meta["status"] = "planned"
+        c.save_brief(self.p, b)
+        self.assertEqual(cn.fold(self.p)[0]["tasks"], [tid], "a task that comes back counts again")
+
+    def test_link_a_k_id_in_the_body_of_an_unrelated_brief_does_not_link_it(self):
+        """T-4663: the id names the concern in a brief's first line or on a CONTEXT: line that opens with it (what the
+        capture of a repeat writes), not anywhere in the text: a note that quotes an id is not the task for it."""
+        self.book("u1", "where can I see it", stamp(hours=2), "the login page works", surface="login page")
+        cid = cn.concern_id("sess-1", "u1")
+        self.fm("capture", f"an unrelated fix\nthe log line said {cid} once, long ago", "--type", "FIX", "--tier", "S",
+                "--source", "discovered")
+        self.assertEqual(cn.fold(self.p)[0]["tasks"], [], "a mention in the body is not a link")
+        named = json.loads(self.fm("capture", f"show it\nCONTEXT: {cid} reported again on 2026-11-14", "--type", "FIX",
+                                   "--tier", "S", "--source", "discovered", "--json").stdout)["id"]
+        self.assertEqual(cn.fold(self.p)[0]["tasks"], [named], "a CONTEXT line that opens with the id is a link")
 
     def test_link_a_capture_outside_the_window_is_not_linked(self):
         t0 = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=2)

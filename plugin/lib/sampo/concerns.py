@@ -4,9 +4,11 @@ its words or its concern) joins that one's concern, so one concern is said as ma
 The meter decides which message repeats which (its repeat_of, a K- id of an open concern, or new); `sampo concerns
 fold` asks it for the booked rows that have no decision yet, and records each answer as a fold event. A split (`sampo
 concerns split`) cuts the links where the two asks say different things, for a model that linked unrelated asks.
-Linked tasks are the captures made from a message (the capture's session, within LINK_S after it) and the tasks whose
-brief names the concern id; a task's close changes nothing here. Only `show` with a proof that checks (a git ref on a
-remote-tracking branch, a URL that answers, a path that exists, a number its command prints) marks a concern shown; a
+Linked tasks are the captures the user's words made (source user or intake: the capture's session, within LINK_S after
+the message) and the tasks whose brief names the concern id on its first line or a CONTEXT: line; a dropped or archived
+task is no link, so its concern is open for action again (T-4663); a task's close changes nothing here. Only `show` with
+a proof that checks (a git ref on a remote-tracking branch as of the last fetch, a URL that answers on its own host, a path
+that exists inside the project, a number a surface command prints) marks a concern shown; a
 message said again after that reopens it. `answer` takes a pure question out of the open list.
 
 The events (show, answer, split, fold, repeat, remeasure) are write-once lines in the project's concerns.jsonl; every
@@ -19,6 +21,7 @@ worse a day later, was fixed on the wrong cause model. `repeated` finds those (t
 reopens the closed task (or captures a linked FIX when the close is old or there is none) with one first step, "look at
 the real surface", and `surface_gaps` is the one gate: that task cannot close on unit-test evidence alone. The meaning
 of "the same concern" is what fold already decides; nothing here reads the words of a message."""
+import contextlib
 import hashlib
 import json
 import os
@@ -52,10 +55,15 @@ SURFACE_STEP = "Look at the real surface first"
 SURFACE_CMDS = (("sampo", "smoke"), ("fm", "smoke"), ("sampo", "shot"), ("fm", "shot"), ("sampo", "concerns", "show"),
                 ("fm", "concerns", "show"), ("curl",), ("wget",))
 PROOF_HELP = ("a proof is git:<ref> (a commit on a remote-tracking branch), url:<address> (it answers), path:<file> "
-              "(it exists) or num:<value> via <command> (the command exits 0 and prints the value; num:<value> up via "
-              "<command> when a higher number is better)")
+              "(it exists inside the project) or num:<value> via <command> (a surface command, sampo smoke or shot, curl, "
+              "or one in meta.json surface_commands, exits 0 and prints the value; num:<value> up via <command> when a "
+              "higher number is better)")
+USER_SOURCES = ("user", "intake", "steer")  # T-4663: the captures that are the user's words made a task (steer: Sampo's expansion of one; the others are an agent's)
+OUT_MAX = 64 * 1024  # T-4663: a num proof's command prints at most this much; more and it is killed and refused
+ROLL_BYTES = 256 * 1024  # T-4663: a ledger past this size is rolled by tick (roll): the last of each kind kept, the rest archived
 _ID = re.compile(r"K-[0-9A-F]{6}")
-_NUM = re.compile(r"^\s*([-+]?\d+(?:[.,]\d+)*)(\s+up)?\s+via\s+(.+)$", re.S)
+_CONTEXT = re.compile(r"^\s*CONTEXT:\s*(K-[0-9A-F]{6})")
+_NUM =re.compile(r"^\s*([-+]?\d+(?:[.,]\d+)*)(\s+up)?\s+via\s+(.+)$", re.S)
 _MARK = "\0"      # where the shown number sat in the line the command printed it on (a show event's template)
 
 
@@ -222,6 +230,19 @@ def _components(rows, par, cuts):
     return root
 
 
+def _naming(raw):
+    """The concern ids a raw request names as its subject: one in its first line (`sampo capture "<ask> (K-ID)"`) or at
+    the start of a CONTEXT: line (what act files). T-4663: a K- id anywhere else in a body (a quoted note, a review's
+    list) is a mention, not a link."""
+    lines = [x for x in (re.sub(r"^\s*>\s?", "", y) for y in str(raw or "").upper().splitlines()) if x.strip()]  # a brief quotes each line with "> "
+    found = set(_ID.findall(lines[0])) if lines else set()
+    for line in lines[1:]:
+        m = _CONTEXT.match(line)
+        if m:
+            found.add(m.group(1))
+    return found
+
+
 def _briefs_naming(p, briefs):
     """{concern id: [task ids whose raw request names it]} over the briefs (loaded when not given)."""
     out = {}
@@ -230,7 +251,7 @@ def _briefs_naming(p, briefs):
             raw = b.section("Raw request") or ""
         except (AttributeError, TypeError):
             continue
-        for cid in set(_ID.findall(raw.upper())):
+        for cid in _naming(raw):
             out.setdefault(cid, []).append(b.id)
     return out
 
@@ -292,8 +313,9 @@ def _captured_from(p, rows, root, hold=False):
     floor = min(t for t in (_epoch(r["at"]) for r in rows) if t is not None) - (0 if hold else LINK_S)
     for e in (_captures_since(p, floor, HOLD_CHUNK, HOLD_LEDGER_MAX) if hold else _captures_since(p, floor)):
         sess, ts, tid = e.get("session_id"), _epoch(e.get("ts")), e.get("task")
-        if not sess or ts is None or not tid:
-            continue
+        data = e.get("data")
+        if not sess or ts is None or not tid or (data.get("source") if isinstance(data, dict) else None) not in USER_SOURCES:
+            continue  # T-4663: a task the agent filed itself (discovered, followup, self) is not the user's ask answered
         best = None
         for i in by_sess.get(sess, ()):
             t = _epoch(rows[i]["at"])
@@ -323,12 +345,14 @@ def _fold(p, rows, events, briefs, root, hold=False):
     for i in range(len(rows)):
         groups.setdefault(root[i], []).append(i)
     by_root = _captured_from(p, rows, root, hold)
-    named = _briefs_naming(p, briefs)
+    bs = list(c.load_briefs(p) if briefs is None else briefs)
+    named = _briefs_naming(p, bs)
+    live = {b.id for b in bs if getattr(b, "status", None) != "dropped"}  # T-4663: a dropped or archived task is no task
     out = []
     for r0, members in groups.items():
         first, last = rows[r0], rows[members[-1]]
         cid = concern_id(first["session"], first["uuid"])
-        tasks = set(by_root.get(r0, ())) | set(named.get(cid, ()))
+        tasks = (set(by_root.get(r0, ())) | set(named.get(cid, ()))) & live
         state, reopened, proof, checked = "open", False, None, None
         refuted = refuted_by = refuted_at = None  # T-4189: the proof a later report or reading refuted
         ev = [e for e in events if e["concern"] == cid and (e["event"] in ("show", "answer")
@@ -532,8 +556,91 @@ def _exists(p, cid):
     return cid
 
 
+@contextlib.contextmanager
+def _ledger_lock(p):
+    """A short exclusive flock on the ledger's own lock file: an append (_write) and a roll never overlap, so a line is
+    never written to the file a roll is about to replace. Held for microseconds (an append) or milliseconds (a roll)."""
+    import fcntl
+    os.makedirs(p.dir, exist_ok=True)
+    fd = os.open(os.path.join(p.dir, "concerns.ledger.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except OSError:  # no flock here (NFS): the append goes unlocked, as before T-4663
+            pass
+        yield
+    finally:
+        os.close(fd)
+
+
 def _write(p, event):
-    c.append_line(os.path.join(p.dir, CONCERNS), json.dumps(event, ensure_ascii=False))
+    with _ledger_lock(p):
+        c.append_line(os.path.join(p.dir, CONCERNS), json.dumps(event, ensure_ascii=False))
+
+
+def _file_sig(path):
+    try:
+        st = os.stat(path)
+        return (st.st_size, st.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def _roll_key(e):
+    """What a later event of the same key makes redundant: the readers (fold, remeasure, repeated, hold) keep the last event
+    of each kind per concern; a remeasure is kept per worse flag (fold reads the worse ones, remeasure any)."""
+    if e["event"] == "remeasure":
+        return (e["concern"], "remeasure", bool(e.get("worse")))
+    return (e["concern"], e["event"])
+
+
+def roll(p):
+    """T-4663: the ledger had no rotation (every show, remeasure and repeat of a concern stayed, read whole by every fold).
+    Past ROLL_BYTES, keep per concern the last event of each kind (the newest since for repeat) in file order, which is all
+    fold, remeasure and repeated read, and move the rest, and any line that is not a valid event, to
+    archive/concerns-YYYY-MM.jsonl first (written and synced before the live file is replaced). Nothing droppable or a file
+    that changed meanwhile does nothing. Returns the number of lines moved."""
+    path = os.path.join(p.dir, CONCERNS)
+    try:
+        if os.path.getsize(path) <= ROLL_BYTES:
+            return 0
+    except OSError:
+        return 0
+    with _ledger_lock(p):
+        before = _file_sig(path)
+        try:
+            with open(path, "rb") as f:
+                lines = [x for x in f.read().split(b"\n") if x.strip()]
+        except OSError:
+            return 0
+        events, best = [], {}
+        for i, raw in enumerate(lines):
+            try:
+                e = json.loads(raw)
+            except ValueError:
+                e = None
+            events.append(e if _event_ok(e) else None)
+            if events[-1] is None:
+                continue
+            k = _roll_key(e)
+            if e["event"] == "repeat" and k in best:  # the newest since wins (the later line when equal)
+                if str(e.get("since") or "") < str(events[best[k]].get("since") or ""):
+                    continue
+            best[k] = i
+        keep = set(best.values())
+        dropped = [raw for i, raw in enumerate(lines) if i not in keep]
+        if not dropped:
+            return 0
+        folder = os.path.join(p.dir, "archive")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, f"concerns-{c.now()[:7]}.jsonl"), "ab") as f:
+            f.write(b"\n".join(dropped) + b"\n")
+            f.flush()
+            os.fsync(f.fileno())
+        if _file_sig(path) != before:
+            return 0  # a writer outside _write: left alone, rolled by the next pass (the archive then holds these lines twice)
+        c.write_atomic(path, b"\n".join(raw for i, raw in enumerate(lines) if i in keep) + b"\n")
+        return len(dropped)
 
 
 # ---------------------------------------------------------------- proofs
@@ -557,7 +664,12 @@ def _check_full(p, proof):
             return False, "url: needs an http or https address", {}
         return (True, f"{rest} answers", {}) if _url_answers(rest) else (False, f"{rest} does not answer", {})
     if kind == "path":
-        path = rest if os.path.isabs(rest) else os.path.join(p.root, rest)
+        # T-4663: a proof reads the project, never the machine: a path (or a link) out of the root is refused, so a
+        # proof cannot probe what exists elsewhere (~/.ssh/id_rsa)
+        root = os.path.realpath(p.root)
+        path = os.path.realpath(rest if os.path.isabs(rest) else os.path.join(p.root, rest))
+        if path != root and not path.startswith(root + os.sep):
+            return False, f"path: must be inside the project ({rest} is not)", {}
         return (True, f"{rest} exists", {}) if os.path.exists(path) else (False, f"no such path: {rest}", {})
     if kind == "num":
         return _num_proof(p, rest)
@@ -575,36 +687,141 @@ def _git_proof(p, ref):
     if not names:
         return False, f"git:{ref} is on no remote-tracking branch: push it first"
     on = ", ".join(names[:3]) + (f" and {len(names) - 3} more" if len(names) > 3 else "")
-    return True, f"git:{ref} is on {on}"
+    # a remote-tracking branch is what the last fetch saw: the remote may have moved since, and nothing is fetched here
+    return True, f"git:{ref} is on {on} (as of the last fetch; not fetched now)"
 
 
 def _url_answers(url):
     import urllib.request
     req = urllib.request.Request(url, method="GET", headers={"User-Agent": "sampo"})
     try:
-        with urllib.request.urlopen(req, timeout=URL_S) as r:
+        with urllib.request.build_opener(_SameHost()).open(req, timeout=URL_S) as r:
             return r.status < 400
     except (OSError, ValueError):
         return False
 
 
+def _same_host_class():
+    import urllib.parse
+    import urllib.request
+
+    class SameHost(urllib.request.HTTPRedirectHandler):
+        """T-4663: a url proof follows a redirect on its own host only, and never from https down to http: a proof that
+        answers from another host (a login page, a parked domain) says nothing about the page the user looks at."""
+
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            old, new = urllib.parse.urlsplit(req.full_url), urllib.parse.urlsplit(newurl)
+            if (new.hostname or "").lower() != (old.hostname or "").lower() or (new.port or 0) != (old.port or 0) \
+                    or (old.scheme == "https" and new.scheme != "https"):
+                return None
+            return super().redirect_request(req, fp, code, msg, headers, newurl)
+    return SameHost
+
+
+def _SameHost():  # noqa: N802  (a redirect handler, built on first use: the hook path imports this module and no urllib.request)
+    return _same_host_class()()
+
+
+def _run_capped(argv, cwd):
+    """(stdout text, None) of an argv run (no shell) in cwd, or (None, why): the command gets PROOF_S, prints at most
+    OUT_MAX bytes (stderr is dropped) and exits 0. T-4663: a proof command that floods or hangs is killed, with its
+    process group, instead of filling memory for PROOF_S."""
+    import select
+    import signal
+    import time
+    try:
+        proc = subprocess.Popen(argv, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
+    except (OSError, ValueError) as e:
+        return None, f"the command did not run: {e}"
+
+    def kill():
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    got, end, why = bytearray(), time.monotonic() + PROOF_S, None
+    try:
+        fd = proc.stdout.fileno()
+        while why is None:
+            left = end - time.monotonic()
+            if left <= 0:
+                why = f"the command did not finish in {PROOF_S} s"
+                break
+            if not select.select([fd], [], [], min(left, 1.0))[0]:
+                continue
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            got += chunk
+            if len(got) > OUT_MAX:
+                why = f"the command prints more than {OUT_MAX} bytes"
+    finally:
+        if why is not None:
+            kill()
+        proc.stdout.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            kill()
+            proc.wait()
+    if why:
+        return None, why
+    if proc.returncode:
+        return None, f"the command exited {proc.returncode}"
+    return got.decode("utf-8", "replace"), None
+
+
+def _argv(cmd):
+    try:
+        return shlex.split(str(cmd))
+    except ValueError:
+        return []
+
+
+def _words(argv):
+    """The words a command is judged by: its program's name, and when a script is run by an interpreter (python3, sh,
+    bash) the script's name instead (python3 plugin/bin/sampo shot URL is `sampo shot URL`)."""
+    if not argv:
+        return []
+    prog = os.path.basename(argv[0])
+    if re.fullmatch(r"python[\d.]*|sh|bash|dash|zsh", prog) and len(argv) > 1 and not argv[1].startswith("-"):
+        return [os.path.basename(argv[1])] + argv[2:]
+    return [prog] + argv[1:]
+
+
+def _surface_run(p, cmd):
+    """T-4663: whether a command is one a num proof may run: its argv (a whole command, not words found anywhere in it)
+    starts with one of SURFACE_CMDS, or with one of the project's own (meta surface_commands: the argv's words as an exact
+    prefix, the program by its name). `echo 3`, `python3 -c ...` and a test run are not surface runs: they only print what
+    was typed."""
+    argv = _argv(cmd)
+    if not argv:
+        return False
+    words = _words(argv)
+    if any(words[:len(h)] == list(h) for h in SURFACE_CMDS):
+        return True
+    extra = c.read_meta(p).get("surface_commands")
+    for entry in extra if isinstance(extra, list) else []:
+        e = _argv(entry) if isinstance(entry, str) else []
+        if e and os.path.basename(e[0]) == os.path.basename(argv[0]) and argv[1:len(e)] == e[1:] and len(argv) >= len(e):
+            return True
+    return False
+
+
 def _run_argv(p, cmd):
-    """(stdout, None) of a command run as argv (no shell) in the project's root, bounded in time; (None, why) when it
-    does not parse, run, or exit 0."""
+    """(stdout, None) of a surface command run as argv (no shell) in the project's root, bounded in time and in output;
+    (None, why) when it is no surface command, does not parse, run, or exit 0."""
     try:
         argv = shlex.split(cmd)
     except ValueError as e:
         return None, f"the command does not parse: {e}"
     if not argv:
         return None, "a number must come with its command"
-    try:
-        run = subprocess.run(argv, cwd=p.root, capture_output=True, text=True, timeout=PROOF_S,
-                             stdin=subprocess.DEVNULL)
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return None, f"the command did not run: {e}"
-    if run.returncode:
-        return None, f"the command exited {run.returncode}"
-    return run.stdout or "", None
+    if not _surface_run(p, cmd):
+        return None, ("only a command that looks at the real surface proves a number (sampo smoke, sampo shot URL, curl, "
+                      "or one named in meta.json surface_commands): a number a command only echoes proves nothing")
+    return _run_capped(argv, p.root)
 
 
 def _number(s):
@@ -687,12 +904,15 @@ EXEMPT = ("", "none")  # a concern whose surface is none has nothing to look at:
 def _reading(p, e):
     """The number a show event's command prints now, on the line shaped as it was shown (its template, the number in
     the shown one's place), as a float; None when the command fails or no line has that shape."""
-    kind, _, rest = str(e.get("proof") or "").strip().partition(":")
+    proof = str(e.get("proof") or "").strip()
+    if "[REDACTED" in proof or (len(proof) >= TEXT_N and proof.endswith("…")):
+        return None  # T-4663: the kept proof lost words (cut to TEXT_N or redacted): its command is not the one that was shown
+    kind, _, rest = proof.partition(":")
     m = _NUM.match(rest) if kind.strip().lower() == "num" else None
     tpl = e.get("template")
     if not m or not isinstance(tpl, str) or _MARK not in tpl:
         return None
-    out, _ = _run_argv(p, m.group(3).strip())
+    out, _ = _run_argv(p, m.group(3).strip())  # (it runs a surface command only, the project's current list)
     if out is None:
         return None
     head, _, tail = tpl.partition(_MARK)
@@ -808,8 +1028,9 @@ def _capture(p, r):
     said = c.fit(c.plain(" ".join(str(r["text"]).split())), 100)
     why = {"remeasure": "its shown number got worse when read again", "proof": "said again after its proof was shown",
            "closed": "said again after its linked task closed"}[r["trigger"]]
+    refuted = c.plain(" ".join(str(r["refuted"] or "").split()))  # T-4663: a proof is the CLI's text: no newline, no control
     text = (f"{said} ({r['id']}, said {r['said']}x)\nCONTEXT: {r['id']} reported again on {r['when']}: {why}; the earlier "
-            f"cause was wrong or incomplete" + (f"; the proof {r['refuted']} is refuted" if r["refuted"] else "")
+            f"cause was wrong or incomplete" + (f"; the proof {refuted} is refuted" if refuted else "")
             + (f"; the close was {r['closed_at']}" if r["closed_at"] else ""))
     b, new = eco.capture_once(p, text, "FIX", "discovered", key=f"CONTEXT: {r['id']} reported again")
     if new:
@@ -856,7 +1077,7 @@ def _sig(p):
 
 
 def tick(p):
-    """The model-free work of a pass: read due numbers again, then act on repeats. Only when the steer rows or this
+    """The model-free work of a pass: roll a big ledger, read due numbers again, then act on repeats. Only when the steer rows or this
     ledger changed since the last pass is the ledger folded (a quiet one costs two stats), and one pass at a time (a
     second does nothing). Paused: nothing. {"remeasured", "repeats"}."""
     import fcntl
@@ -870,6 +1091,10 @@ def tick(p):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return out
+        try:  # T-4663: the ledger is rolled before it is read; a failure here never stops the pass
+            roll(p)
+        except Exception:
+            _log_error("roll")
         out["remeasured"] = remeasure(p)
         path = os.path.join(p.dir, "concerns.tick")
         try:
