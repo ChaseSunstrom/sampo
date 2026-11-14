@@ -593,6 +593,7 @@ _lock, _cuts, _THINK = threading.Lock(), collections.Counter(), None  # replies 
 _down, DOWN_S = {}, 600  # T-3152: profile name -> epoch until which a failed local model is skipped
 _LOCAL_ONLY = False  # T-2916: --local-only: a call no local model answers stops the run, never goes to Haiku
 _PICK, _PIN = {}, None  # T-3122: {stage: (writer, profile)} the running job asks with; _PIN is the bench's own override
+_RUN = object()  # _ask's think default: the run's _THINK (T-4659: a call that passes its own never reads or sets the global)
 
 
 class LocalOnly(ValueError):
@@ -625,14 +626,16 @@ def _paid(model):
     return model in ("haiku", "sonnet", rune.REVIEW_MODELS[-1])  # a local answer is free
 
 
-def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, profile=None, timeout=None):
+def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, profile=None, timeout=None, think=_RUN):
     """(text, the model that answered): the local model first, else Haiku (cheap=False: the strongest review model).
     T-2994 writer: "haiku"/"sonnet" skip the local model and pay (same budget caps); "local" never pays.
     A sensitive project never goes to the cloud. Raises budget.BudgetError when the budget says no: today's cap, or the
-    per-command cap over this call and the `paid` cloud calls the same run made before it."""
+    per-command cap over this call and the `paid` cloud calls the same run made before it. think: True/False for this
+    call alone (T-4659), None for the profile's default; left out, the run's _THINK."""
     sensitive = bool(c.read_meta(p).get("sensitive"))
     if writer is not None and writer not in WRITERS:
         raise ValueError(f"--writer takes {', '.join(WRITERS)}")
+    think = _THINK if think is _RUN else think
     named = None
     if profile and writer in (None, "local") and cheap:  # T-3122: a named local profile (the bench's pick) goes first
         try:
@@ -650,10 +653,10 @@ def _ask(p, system, prompt, cheap=True, paid=0, feature=FEATURE, writer=None, pr
         try:
             r = models.complete(prof, [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
                                 max_tokens=min(prof.get("max_out", 4096), prof.get("context", 4096)), timeout=timeout or TIMEOUT,
-                                think=_THINK)
+                                think=think)
             if (r.get("text") or "").strip():
                 # a --think run books its rows under their own name, so coverage's "kept by model" is the A/B (T-2893)
-                return r["text"], prof["name"] + ("" if _THINK is None else "+think" if _THINK else "+nothink")
+                return r["text"], prof["name"] + ("" if think is None else "+think" if think else "+nothink")
             tried.append(f"{prof['name']}: empty reply")
         except (models.ModelError, ValueError, *models._TRANSPORT) as e:
             if "reasoning used the whole budget" in str(e):

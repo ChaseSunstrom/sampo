@@ -508,6 +508,165 @@ class Variant(_Cards):
             self.assertEqual(ev.call_count, 2, "an edited playbook is measured again")
         self.assertEqual((first["lift"], again["lift"]), (0.5, 0.5))
 
+    def test_a_redrafted_brief_set_is_measured_again_for_the_original(self):  # T-4659
+        ask = types.SimpleNamespace(name="gpu-q")
+        path = os.path.join(self.tmp, "fix.json")
+        measured = mock.patch.object(self.sc.playbooks, "evaluate",
+                                     side_effect=lambda book, bs, model, **k: {"n": 2, "with": 2, "without": 1, "lift": 0.5})
+        with measured as ev:
+            self.sc._orig_eval(FIX_NAME, BOOK_FIX, path, FIX_BRIEFS, ask)
+            self.sc._orig_eval(FIX_NAME, BOOK_FIX, path, FIX_BRIEFS[:1], ask)
+            self.assertEqual(ev.call_count, 2, "a row measured on other briefs is not reused")
+
+    def test_a_brief_file_with_no_writer_or_a_paid_one_is_drafted_again_by_the_local_writer(self):  # T-4659
+        w = self.local_writer()
+        old = [{"task": "An old brief drafted before the writer was recorded.", "checks": [{"has": "lock_timeout"}]}] * 2
+        for stale in ({"briefs": old}, {"briefs": old, "writer": "haiku"}):
+            path = self.sc._briefs(self.p, FIX_NAME, BOOK_FIX, writer="local")[0]
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(stale, f)
+            n = len(w.prompts)
+            _, briefs = self.sc._briefs(self.p, FIX_NAME, BOOK_FIX, writer="local")
+            self.assertEqual(len(w.prompts), n + 1, f"{stale.get('writer')!r}: the local writer drafts the set again")
+            self.assertEqual([b["task"] for b in briefs], [b["task"] for b in FIX_BRIEFS])
+
+    def test_a_brief_file_a_local_writer_drafted_is_reused(self):  # T-4659
+        w = self.local_writer()
+        self.sc._briefs(self.p, FIX_NAME, BOOK_FIX, writer="local")
+        n = len(w.prompts)
+        self.sc._briefs(self.p, FIX_NAME, BOOK_FIX, writer="local")
+        self.assertEqual(len(w.prompts), n, "a draft the local writer made is not drafted again")
+
+    def test_a_variant_keeps_its_own_think_setting_while_another_call_runs(self):  # T-4659: no shared global
+        ms = self.sc.ms
+        seen, in_card, probe_done, out = {}, threading.Event(), threading.Event(), {}
+
+        def complete(prof, messages, **k):
+            prompt = messages[-1]["content"]
+            if prompt.startswith("Rewrite"):
+                seen["card"] = k.get("think")
+                in_card.set()
+                probe_done.wait(5)
+                return {"text": json.dumps(FIX_CARD), "usage": {}}
+            if prompt.startswith("Write held-out briefs"):
+                return {"text": "\n".join(json.dumps(b) for b in FIX_BRIEFS), "usage": {}}
+            seen[prompt] = k.get("think")
+            return {"text": " ".join(m["content"] for m in messages), "usage": {}}  # echoes: answers carry the playbook
+
+        def run():
+            try:
+                out["r"] = self.sc.variant(self.p, FIX_NAME, "gpu-q")
+            except Exception as e:  # reported by the assertions below, never lost in the thread
+                out["err"] = e
+        ms._THINK = True  # another run's --think on, in this thread's global
+        self.addCleanup(setattr, ms, "_THINK", None)
+        for patch in (mock.patch.object(ms, "_locals", return_value=[PROF]), mock.patch("sampo.models.complete", complete)):
+            patch.start()
+            self.addCleanup(patch.stop)
+        t = threading.Thread(target=run)
+        t.start()
+        self.assertTrue(in_card.wait(5), "the variant reached its card call")
+        ms._ask(self.p, "s", "probe", writer="local")  # runs while the variant waits inside its card call
+        probe_done.set()
+        t.join(10)
+        self.assertNotIn("err", out)
+        self.assertIs(seen["card"], False, "the card is written with reasoning off")
+        self.assertIs(seen["probe"], True, "a call made while the variant runs keeps the setting it was given")
+        self.assertIs(ms._THINK, True, "the variant leaves the module setting as it found it")
+        self.assertTrue(out["r"]["kept"], out["r"])
+
+
+# T-2917, moved here from test_playbook_evals (T-4659): a variant is kept only on at least the original's lift, and
+# show and the lint serve it by profile
+VARIANT = {"title": "Migrate a live table safely", "when": "A change alters a live database table or column.",
+           "steps": [{"do": "Set a lock_timeout before any DDL statement.", "cmd": "grep -n lock_timeout migration.sql"},
+                     {"do": "Build the index with CREATE INDEX CONCURRENTLY outside a transaction.", "cmd": "sampo check"},
+                     {"do": "Rerun the migration and confirm it changes nothing.", "cmd": "ls"}],
+           "example": "Add the column nullable, backfill it in batches, then add the NOT NULL constraint.",
+           "check": "A second run of the migration changes zero rows.",
+           "traps": ["Taking the table lock with no timeout set.", "Building the index inside a transaction."]}
+WEAK = dict(VARIANT, steps=[dict(s, do=s["do"].replace("lock_timeout", "timeout").replace("CREATE INDEX CONCURRENTLY", "index"))
+                            for s in VARIANT["steps"]])
+BRIEF_LINES = "\n".join(json.dumps(b) for b in [
+    {"task": "Add a NOT NULL column.", "checks": [{"has": "lock_timeout"}]},
+    {"task": "Add an index to a big table.", "checks": [{"has": "CREATE INDEX CONCURRENTLY"}]},
+    {"task": "Invented.", "checks": [{"has": "zebra stripes"}]}])  # not in the original: dropped, never a brief
+
+
+class SmallVariant(_Cards):
+    variant = VARIANT
+
+    def setUp(self):
+        super().setUp()
+        from sampo import playbooks as pb
+        self.pb = pb
+        self.sent, self.writer = [], []
+        for patch in (mock.patch("sampo.moonscale._generative", lambda s: iter([PROF])),
+                      mock.patch("sampo.models.resolve", lambda n: PROF if n == "gpu-q" else {"name": n}),
+                      mock.patch("sampo.models.complete", self.complete),
+                      mock.patch.object(self.sc.ms, "_ask", self.ask),
+                      mock.patch("sampo.ideas.run_child", side_effect=AssertionError("claude -p"))):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def complete(self, prof, messages, **k):
+        self.sent.append(messages)
+        return {"text": " ".join(m["content"] for m in messages), "usage": {}}  # echoes: answers carry the playbook
+
+    def ask(self, p, system, prompt, **k):
+        self.writer.append(prompt)
+        return (BRIEF_LINES if "briefs" in prompt.lower().split("\n")[0] else json.dumps(self.variant)), "gpu-q"
+
+    def test_briefs_are_drafted_from_the_original_before_the_variant_exists(self):
+        r = self.sc.variant(self.p, "fix/migration", "gpu-q")
+        self.assertGreaterEqual(len(self.writer), 2)
+        self.assertIn("briefs", self.writer[0].lower().split("\n")[0])
+        self.assertNotIn("Migrate a live table safely", self.writer[0])
+        with open(r["briefs"]) as f:
+            tasks = [b["task"] for b in json.load(f)["briefs"]]
+        self.assertEqual(tasks, ["Add a NOT NULL column.", "Add an index to a big table."], "the ungrounded brief is dropped")
+
+    def test_a_variant_at_least_as_good_is_kept_and_served_by_profile(self):
+        r = self.sc.variant(self.p, "fix/migration", "gpu-q")
+        self.assertTrue(r["kept"], r)
+        self.assertGreaterEqual(r["lift"], r["orig_lift"])
+        row = self.sc.rows()[-1]
+        self.assertEqual((row["playbook"], row["profile"]), ("references/fix/migration.md", "gpu-q"))
+        self.assertIn("Set a lock_timeout", self.sc.variant_for("fix/migration", "gpu-q"))
+        self.assertIsNone(self.sc.variant_for("fix/migration", "other"))
+        self.assertEqual(self.sc.coverage()["variants"], {"gpu-q": 1})
+        self.assertEqual(self.sc.coverage()["filled"], 0, "a variant is not a grid cell")
+
+    def test_a_variant_that_lifts_less_is_refused_and_nothing_is_saved(self):
+        self.variant = WEAK
+        r = self.sc.variant(self.p, "fix/migration", "gpu-q")
+        self.assertFalse(r["kept"])
+        self.assertIn("lift", r["why"])
+        self.assertEqual(self.sc.rows(), [])
+
+    def test_a_card_admit_refuses_is_not_evaluated(self):
+        self.variant = dict(VARIANT, steps=VARIANT["steps"][:1])
+        r = self.sc.variant(self.p, "fix/migration", "gpu-q")
+        self.assertFalse(r["kept"])
+        self.assertIn("steps", r["why"])
+        self.assertEqual(len(self.sent), 4, "only the original's two briefs, with and without")
+
+    def test_show_serves_the_kept_variant_for_that_profile_and_the_original_otherwise(self):
+        self.sc.variant(self.p, "fix/migration", "gpu-q")
+
+        def show(model):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                self.pb.cmd_show(types.SimpleNamespace(action="show", name="fix/migration", model=model, json=False, project=None))
+            return buf.getvalue()
+        self.assertIn("Use when: A change alters", show("gpu-q"))
+        self.assertIn("Schema and data migrations", show(None))
+        self.assertIn("Schema and data migrations", show("gpu-z"))
+
+    def test_the_lint_counts_variants_by_profile(self):
+        self.sc.variant(self.p, "fix/migration", "gpu-q")
+        self.assertIn("gpu-q 1", self.pb.variant_line())
+
 
 # T-3102: a UI card's live example, written by a local model and kept only when its render check passes
 SAFE = ('<div class="row"><button class="primary" type="button">Save draft</button>'
