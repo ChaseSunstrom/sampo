@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Smith measures a speed-up request on a project with no documents before its first edit, judged by a `speed_up` field the plan reply itself carries, at no extra judge call (T-4595).
 - Each close now prints per-step seconds and logs them, and a state-index file leaked into plugin/tests no longer makes every close of a land rerun its linked tests (T-4600).
 - A builder's close lines are now stored when only Noticed lines and a short closing passage follow them, and `sampo lane land --merged` names a refused report's cause instead of "no CHANGELOG line" (T-4599).
 - CI tests no longer lean on this machine: the cpu cap count test states its cores, the fake docker emulates GNU timeout, paths compare by realpath, and an outside path's Undo and the check's log path now work on macOS (T-4587).
