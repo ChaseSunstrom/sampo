@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Plugin ids move to Sampo: the plugins are now sampo, sampo-ui and sampo-design in the foreman marketplace, a renames map moves existing foreman installs on their next Claude Code start, and every /foreman: command and foreman: skill Sampo writes is now sampo:, with both spellings still read (T-2879).
 - The request judge now reads going through the code to make it safe, ready or right as the whole code and a find-and-fix, and a one-criterion change run it judged whole gets the closing look, shown its own closing notes, so a defect they list becomes the next task (T-4576).
 - The guard no longer refuses read-only scripts, string-method arguments or scratch-path variables as edit targets with no active task, and it names a computed write path as one generic refusal (T-4138).
 - sampo code starts a run with the sound criteria when one criterion's verify is still refused after the re-plans, carries the refused one as not proven and says so at the end, instead of ending the run at the plan (T-4386).
