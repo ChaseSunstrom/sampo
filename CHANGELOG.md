@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The close's Landed line and owed-companions check judge a task the trunk already holds by its own landing, not by every commit other tasks put on the trunk since its base (T-4632).
 - Smith's keep check over a red suite now reruns a failed held test once before it counts, so a flaky test no longer throws a run's work into a patch, and the scripted-model test fake answers the request judge itself (T-4630).
 - The close's scope check now judges a task the trunk already holds by its own landing, so other tasks' commits since its base no longer read as "edited outside scope" (T-4628).
 - Smith's keep check now survives a suite that was red before the work: it holds the tests that passed then, so breaking one is red at the step and stop checks and the stop puts the tree back (T-4629).
