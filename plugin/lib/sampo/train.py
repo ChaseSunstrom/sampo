@@ -1891,7 +1891,10 @@ def _close(p, main, tid):
     last = float(_git(path, "log", "-1", "--format=%ct").stdout.strip() or 0) if path else 0.0
     f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
     if not f.get("changelog"):
-        return "no close fields on its brief (its builder's report had no CHANGELOG line)", ""
+        if "close lines not stored" in b.section("Log"):  # T-4599: the stop hook saw lines the tail rule refused
+            return ("no close fields on its brief (its builder's report had close lines, not at its end: "
+                    "fill them with sampo task set ID --section 'Close fields')", "")
+        return "no close fields on its brief (none came from a builder's report: it held no CHANGELOG line, or none stopped here)", ""
     line, why = lanes.close_line(f["changelog"], "changelog", tid)
     if why:
         return why, ""

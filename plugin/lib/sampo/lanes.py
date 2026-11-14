@@ -1591,6 +1591,45 @@ _NOTICED = re.compile(r"(?i)^[ \t>*_`-]*Noticed[*_`]*[ \t]*:")  # T-3920: a buil
 _BULLET = re.compile(r"^\s*[-*]\s")
 
 
+PASSAGE = (4, 600)  # T-4599: the closing passage after a report's close block: at most this many lines and characters
+
+
+def tail_block(text):
+    """T-4599: the report's own close block, '' when it has none. The last block of close lines, when only what a
+    builder's report ends with follows it: Noticed lines (T-3920: and the bullets under them) and, if a Noticed line
+    is there, a short closing passage ('Files to read first: …') that holds no close line, fence or '>' quote. A
+    passage must be set apart (a blank line, or a Noticed line, after the block; a blank line or the start before it),
+    so a line quoted in the middle of prose is not taken, nor is a block inside a code fence or a '>' quote."""
+    lines = text.rstrip().splitlines()
+    last = max((i for i, ln in enumerate(lines) if _CLOSE_LINE.match(ln)), default=-1)
+    if last < 0:
+        return ""
+    n = last + 1
+    while n and (_CLOSE_LINE.match(lines[n - 1]) or not lines[n - 1].strip()):
+        n -= 1
+    after, passage, seen, under = lines[last + 1:], [], False, False
+    for ln in after:
+        if not ln.strip():
+            continue
+        if _NOTICED.match(ln):
+            seen = under = True
+        elif under and _BULLET.match(ln):
+            continue
+        else:
+            passage.append(ln.strip())
+            under = False
+    if passage:
+        apart = (n == 0 or not _CLOSE_LINE.match(lines[n])) and (not after[0].strip() or _NOTICED.match(after[0]))
+        short = len(passage) <= PASSAGE[0] and sum(map(len, passage)) <= PASSAGE[1]
+        plain = not any(p.startswith((">", "```", "~~~")) or "```" in p for p in passage)
+        block = lines[n:last + 1]
+        fenced = sum(1 for ln in lines[:n] if ln.lstrip().startswith(("```", "~~~"))) % 2
+        if not (seen and apart and short and plain and not fenced
+                and not any(ln.lstrip().startswith(">") for ln in block)):
+            return ""
+    return "\n".join(lines[n:last + 1])
+
+
 def close_fields(text, tail=False):
     """T-3500: {key: value} from 'CHANGELOG: …', 'TITLE: …', 'LESSON: …', 'NUMBERS: …', 'DOCS: …' lines (bold and list
     marks tolerated, the last of each wins), plus 'why_not_caught' from 'WHY-NOT-CAUGHT: …' (T-4515), and 'id', the task
@@ -1599,15 +1638,7 @@ def close_fields(text, tail=False):
     only the block of such lines that ends the text (a report's own close, not lines it quotes)."""
     text = str(text or "")
     if tail:
-        lines = text.rstrip().splitlines()
-        # T-3920: a builder's report ends with its Noticed: line (and bullets under it), above which sits the close block
-        noticed = [i for i, ln in enumerate(lines) if _NOTICED.match(ln)]
-        if noticed and all(not ln.strip() or _BULLET.match(ln) for ln in lines[noticed[-1] + 1:]):
-            lines = lines[:noticed[-1]]
-        n = len(lines)
-        while n and (_CLOSE_LINE.match(lines[n - 1]) or not lines[n - 1].strip()):
-            n -= 1
-        text = "\n".join(lines[n:])
+        text = tail_block(text)
     got = {}
     for key, value in _CLOSE_LINE.findall(text):
         value = c.fit(" ".join(c.redact(c.plain(value)).split()), 1000)

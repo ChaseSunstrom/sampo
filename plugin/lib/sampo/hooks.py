@@ -5960,6 +5960,8 @@ def _close_fields(pl):
         return
     got = slanes.close_fields(pl.get("last_assistant_message"), tail=True)
     if not got.get("id") or not slanes.close_text(got):
+        if not got:
+            _close_refused(pl, who)
         return
     try:
         p = c.find_project(_cwd(pl))
@@ -5979,6 +5981,31 @@ def _close_fields(pl):
                 keys, name = ", ".join(k for k in slanes.CLOSE_KEYS if got.get(k)), c.fit(c.plain(who), 60)
                 b.append_log(f"close fields kept: a later report from {name} left out ({keys})" if kept else
                              f"close fields from the {name}'s report: {keys}")
+                c.save_brief(p, b)
+    except Exception:  # bookkeeping: never the subagent's own event
+        log_error("close fields", _tb())
+
+
+def _close_refused(pl, who):
+    """T-4599: a builder's report held close lines for an open task of its lane that don't end it (quoted, in a fence,
+    or followed by prose): nothing is stored, and the brief's Log says so, so `sampo lane land` names the cause
+    ('close lines not stored') where it would say the report had none. Only once per report, only for a lane's task."""
+    from sampo import lanes as slanes
+    seen = slanes.close_fields(pl.get("last_assistant_message"))
+    tid = seen.get("id")
+    if not tid:
+        return
+    try:
+        p = c.find_project(_cwd(pl))
+        b = c.find_brief(p, tid) if p else None
+        if not b or b.status in c.CLOSED or not os.path.isdir(str(b.meta.get("lane") or "")):
+            return
+        with c.lock(p.dir, timeout=LOCK_QUICK):
+            b = c.find_brief(p, tid)
+            if b and b.status not in c.CLOSED and not b.section(slanes.CLOSE_FIELDS).strip():
+                b.append_log(f"close lines not stored: the {c.fit(c.plain(who), 60)}'s report held "
+                             f"{', '.join(k for k in slanes.CLOSE_KEYS if seen.get(k))} lines that do not end it "
+                             "(quoted, in a fence, or followed by prose)")
                 c.save_brief(p, b)
     except Exception:  # bookkeeping: never the subagent's own event
         log_error("close fields", _tb())
