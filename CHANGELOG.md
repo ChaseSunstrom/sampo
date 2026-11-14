@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A task verb refused inside a lane now says nothing was written and ends in the command to run from the main checkout, not the generic Next line (T-4606).
 - A PERFORMANCE plan's first criterion must now run the measured scenario's command as a step of its own, not just mention it in an echo, a comment or a quoted argument (T-4583).
 - sampo lane land --merged names a lane in which nothing was built as empty (its task never built, left open) instead of reporting missing close fields, and --drop-empty removes the clean empty lanes and returns their tasks to the queue (T-4603).
 - Smith measures a speed-up request on a project with no documents before its first edit, judged by a `speed_up` field the plan reply itself carries, at no extra judge call (T-4595).
