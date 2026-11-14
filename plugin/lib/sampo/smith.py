@@ -90,6 +90,7 @@ WRAP_TURNS, EXCERPT_CHARS = 2, 12000
 SPEC_CHARS = 24000
 DOC_EXT, DOC_MIN, DOC_MAX, DOC_CHARS, DOC_HEADS, DOC_READ = (".md", ".markdown", ".rst", ".txt", ".adoc"), 20, 60, 4000, 8, 65536
 KEEP_TIMEOUT, KEEP_REFUSALS, KEEP_LINES = 120, 3, 30
+KEEP_HELD_MAX = 50000  # T-4629: the most passing tests a red suite's keep check holds (kept in the journal, packed)
 KEEP_STOP_TIMEOUT = 60  # T-4614: the least a stop's own keep check is given (twice the slowest check so far, to KEEP_TIMEOUT)
 KEEP_OWN_FILES, KEEP_OWN_TREE = 6, 4000  # T-4459: created files tried one by one; the largest tree copied for it
 # T-4590: a criterion's declared proof files (at most PROOF_FILES, each at most PROOF_NAME characters), run on the
@@ -1534,6 +1535,9 @@ class Run:
         # T-4614: what each file the run changed held when the keep check last passed ({path: bytes, None absent}; None: it
         # has not since the start; not self.green, the verify commands that passed), and the longest a check took (seconds)
         self.keep_snap, self.keep_took, self.finished = None, 0.0, False
+        # T-4629: a suite red before the work: the ids of the tests that passed (the check is that they still do), the
+        # verbose form of the command that names them, and the per-test results the before-run printed
+        self.keep_held, self.keep_vcmd, self.keep_seen = None, None, {}
         # T-4295: the closing look: switched off by --no-look; whether this run looks; the close held while it does; the
         # looks' records; the tries per gap; what each closed task did; the hook a new task runs before its journal moves
         self.no_look, self.looking, self.closing = bool(getattr(args, "no_look", False)), False, None
@@ -1934,19 +1938,31 @@ class Run:
         again: its note says so (cached). The note, the journal and the tree that was checked are kept; a run of the
         check never counts as the model's own change of the tree. T-4614: a green after the start keeps what the
         run's changed files hold (green), for a stop to go back to."""
-        cmd, own, bound, fresh = self.keep_cmd, [], bound or KEEP_TIMEOUT, False
+        cmd, own, bound, fresh, held_ok = self.keep_cmd, [], bound or KEEP_TIMEOUT, False, False
         if self.keep_state == "green" and self.keep_tree is not None and self.keep_tree == self.tree():
             state, out = "green", ""
         else:
             fresh, began = True, time.monotonic()
             env = dict(self.env(), PYTHONDONTWRITEBYTECODE="1")  # a check before any task leaves no __pycache__
-            code, out = run_bounded(cmd, self.root, bound, env, self.cap, confine=self.confine())
+            seen = {}  # T-4629: the per-test results the run prints, read line by line (the output kept is cut short)
+            code, out = run_bounded(self.keep_vcmd or cmd, self.root, bound, env, self.cap, confine=self.confine(),
+                                    on_line=lambda ln: seen.update(_per_test(ln)) or False)
             state = "green" if code == 0 else "timeout" if code is None else "red"
+            if kind == "before":
+                self.keep_seen = seen
             if code is not None:
                 self.keep_took = max(self.keep_took, time.monotonic() - began)
             if code is None:
                 out = f"timed out after {bound} s\n{out}"
-            if state == "red" and kind != "before":  # T-4459: red by the work's own new tests is not the project's red
+            if state == "red" and self.keep_held is not None:  # T-4629: red before the work: held to its passing tests
+                gone = sorted(self.keep_held - {t for t, s in seen.items() if s == "PASSED"})
+                if gone:
+                    out = (f"{len(gone)} of the {len(self.keep_held)} tests that passed before the work now fail or are "
+                           f"gone: {', '.join(gone[:KEEP_LINES])}" + (" ..." if len(gone) > KEEP_LINES else "")
+                           + f"\n{out}")
+                else:
+                    state, out, held_ok = "green", "", True
+            elif state == "red" and kind != "before":  # T-4459: red by the work's own new tests is not the project's red
                 own = self.keep_own(cmd, env)
                 if own:
                     state, out = "green", ""
@@ -1957,6 +1973,10 @@ class Run:
             self.emit("note", f"  keep check ({kind}): green without {', '.join(own)}, which this run created: every "
                               f"test that passed before the work still passes: {cmd}", quiet=True, keep=kind,
                       state=state, cmd=cmd, own=own)
+        elif held_ok:
+            self.emit("note", f"  keep check ({kind}): green: the {len(self.keep_held)} tests that passed before the work "
+                              f"still pass (the ones red before are not held against it): {cmd}", quiet=True, keep=kind,
+                      state=state, cmd=cmd)
         else:
             self.emit("note", f"  keep check ({kind}): {state}: {cmd}", quiet=True, keep=kind, state=state, cmd=cmd)
         if kind != "before":
@@ -1965,6 +1985,31 @@ class Run:
             if fresh and state == "green":
                 self.keep_green()
         return state, out
+
+    def keep_hold(self, cmd):
+        """T-4629: (held, vcmd, why) for a keep command that was red before the work: held, the ids of the tests that
+        passed then (read from what the before-run printed, else from one more run of cmd in its verbose form, vcmd,
+        which later runs use); why, when none can be held: an unknown runner, a suite too slow to run twice, or no
+        test that passed."""
+        seen, vcmd = dict(self.keep_seen), None
+        if not any(s == "PASSED" for s in seen.values()):
+            vcmd = _verbose(cmd)
+            if not vcmd or vcmd == cmd:
+                return None, None, "the runner prints no per-test results the keep check can read"
+            if self.keep_took > KEEP_TIMEOUT / 2:
+                return None, None, (f"the suite took {round(self.keep_took)} s, too long to run again for its per-test "
+                                    f"results")
+            seen = {}
+            code, _ = run_bounded(vcmd, self.root, KEEP_TIMEOUT, dict(self.env(), PYTHONDONTWRITEBYTECODE="1"), self.cap,
+                                  confine=self.confine(), on_line=lambda ln: seen.update(_per_test(ln)) or False)
+            if code is None:
+                return None, None, f"`{vcmd}` timed out after {KEEP_TIMEOUT} s"
+        held = frozenset(t for t, s in seen.items() if s == "PASSED")
+        if not held:
+            return None, None, "no test passed before the work, or the runner prints no per-test results the keep check can read"
+        if len(held) > KEEP_HELD_MAX:
+            return None, None, f"{len(held)} tests passed, more than the {KEEP_HELD_MAX} a keep check holds"
+        return held, vcmd, None
 
     def keep_green(self):
         """T-4614: the files the run changed, as they are now, kept as the newest state the keep check passed on (no copy
@@ -2019,6 +2064,11 @@ class Run:
         text = "\n".join(self.redact(out or "").splitlines()[-KEEP_LINES:])
         return text[-1500:] or "(no output)"
 
+    def keep_what(self):
+        """What the keep check holds, for a message (T-4629: a suite that was red holds only the tests that passed)."""
+        return ("the tests of the project's own suite that passed before the work" if self.keep_held is not None
+                else "the project's own tests, green before the work")
+
     def keep_back(self, name):
         """A step (or fix, or keep round) whose done left the keep check red is not done: the failing lines back as the
         next turn, KEEP_REFUSALS times at most in one phase; the next raises. None: the check is off or green."""
@@ -2030,10 +2080,12 @@ class Run:
         n = self.keep_refused[name] = self.keep_refused.get(name, 0) + 1
         self.log(kind="keep_refused", phase=name, n=n)
         if n > KEEP_REFUSALS:
-            raise CodeError(f"stopped: the keep check `{self.keep_cmd}` (the project's own tests, green before the work) "
+            raise CodeError(f"stopped: the keep check `{self.keep_cmd}` ({self.keep_what()}) "
                             f"is still red after {n - 1} tries to mend it: {_one_line(self.keep_tail(out), 300)}",
                             f"fm code --resume {self.tid}" if self.tid else None)
-        return (f"Not done: your edits turned the project's own tests red. The keep check `{self.keep_cmd}` passed before "
+        broke = ("tests that passed before your work red" if self.keep_held is not None
+                 else "the project's own tests red")  # T-4629
+        return (f"Not done: your edits turned {broke}. The keep check `{self.keep_cmd}` passed before "
                 f"your work and now fails ({n} of {KEEP_REFUSALS} tries):\n\n{self.fence(self.keep_tail(out))}\n\n"
                 "Mend what your edits broke without dropping the step's goal, then call done. A new test of yours that "
                 "fails until a later step belongs in a new test file, not in one the project already has: a file you "
@@ -5887,6 +5939,7 @@ def _lookback_swap(run, tid):
     run.opened, run.docs, run.survey_tests = set(), None, None
     run.keep_cmd = run.keep_state = run.keep_why = run.keep_tree = run.keep_logged = run.keep_snap = None
     run.keep_took, run.finished = 0.0, False
+    run.keep_held, run.keep_vcmd, run.keep_seen = None, None, {}  # T-4629
     run.orig, run.snap, run.broken, run.pmemo, run.steps_done = {}, {}, {}, {}, False
     run.wrote = set()
     run.proof_base, run.proof_memo, run.proof_refused, run.proof_unproven = None, {}, {}, []  # T-4590
@@ -7008,6 +7061,57 @@ def keep_skip(run):
     return None
 
 
+def _per_test(line):
+    """T-4629: {test id: PASSED|FAILED|SKIPPED} when this one output line is a per-test result (unittest -v, pytest -rA:
+    bench_swe's reader, the one Sampo has), else {}. A line that can't be one is skipped before the reader runs."""
+    if len(line) > 1000 or not (" ... " in line or line.startswith(("PASSED", "FAILED", "ERROR", "SKIPPED", "XFAIL", "XPASS"))):
+        return {}
+    try:
+        from sampo import bench_swe
+        return bench_swe.parse_log(line)
+    except (ImportError, ValueError):
+        return {}
+
+
+def _verbose(cmd):
+    """T-4629: cmd with the per-test lines on, for unittest (-q out, -v on the end) and pytest (-rA on the end), in each
+    && part that runs one; None for a runner it does not know, or a shell it can't read (a pipe, a substitution)."""
+    cmd = (cmd or "").strip()
+    tail = re.search(r"\s+2>&1$", cmd)
+    head = cmd[:tail.start()] if tail else cmd
+    if re.search(r"[;|<>$`()\\\n]", head):
+        return None
+    parts, hit = re.split(r"\s*&&\s*", head), False
+    for i, part in enumerate(parts):
+        if re.search(r"-m\s+unittest\b", part):
+            parts[i], hit = re.sub(r"\s(?:-q|--quiet)(?=\s|$)", "", part) + " -v", True
+        elif re.search(r"(?:^|\s)(?:-m\s+pytest|pytest|py\.test)(?=\s|$)", part):
+            parts[i], hit = part + " -rA", True
+    return " && ".join(parts) + (tail.group(0) if tail else "") if hit else None
+
+
+def _pack_held(held):
+    """The held test ids as a short text for the journal (sorted, zlib, base64)."""
+    import base64
+    import zlib
+    return base64.b64encode(zlib.compress(json.dumps(sorted(held)).encode())).decode()
+
+
+def _unpack_held(text):
+    """The ids _pack_held made, as a frozenset; None for anything else (a damaged line, a list too long)."""
+    import base64
+    import zlib
+    try:
+        d = zlib.decompressobj()
+        raw = d.decompress(base64.b64decode(text, validate=True), 1 << 26)  # 64 MB at most
+        if d.unconsumed_tail:
+            return None
+        ids = json.loads(raw)
+    except (ValueError, TypeError, zlib.error):
+        return None
+    return frozenset(ids) if isinstance(ids, list) and len(ids) <= KEEP_HELD_MAX and all(isinstance(x, str) for x in ids) else None
+
+
 def _suite(run):
     """The command prove finds for the project's own tests (the repo's gate detection, then its test files run as
     scripts), or None."""
@@ -7022,8 +7126,9 @@ def _suite(run):
 def _keep_begin(run, profile, dry=False):
     """T-4425: the project's test command, run once before the plan: the survey's TESTS line, else the suite prove
     finds, judged by Smith's guard like any command and under KEEP_TIMEOUT s. Green: it is the keep check, run after
-    each step's done and at the end. Red or timed out before the work, or none found or allowed: there is no keep check,
-    and the stats say why."""
+    each step's done and at the end. Timed out before the work, or none found or allowed: there is no keep check, and
+    the stats say why. T-4629: red before the work: the check is that the tests that passed then still pass (keep_hold),
+    and when the runner's per-test results can't be read there is none, with that reason."""
     run.keep_state = None
     why = keep_skip(run) or ("--dry-plan runs nothing" if dry else None)
     if why:
@@ -7038,7 +7143,7 @@ def _keep_begin(run, profile, dry=False):
     if not tries:
         run.keep_state, run.keep_why = "none", "no test command: the survey named none and prove finds no suite"
         return
-    whys = []
+    whys, reds = [], []
     for cmd, src in tries:
         refused = run.guard("Bash", {"command": cmd}) or core.unrunnable(cmd, run.root)
         if refused:
@@ -7052,8 +7157,22 @@ def _keep_begin(run, profile, dry=False):
                 run.keep_why += "; tried first: " + "; ".join(whys)
             return
         run.keep_cmd = None
+        if state == "red":
+            reds.append((cmd, src, run.keep_seen, len(whys)))
         whys.append((f"red before the work ({src}): `{cmd}`: " + _one_line(run.keep_tail(out), 200)) if state == "red"
                     else f"`{cmd}` ({src}) timed out after {KEEP_TIMEOUT} s before the work")
+    for cmd, src, seen, i in reds:  # T-4629: red before the work: the check is that the tests that passed still do
+        run.keep_seen = seen
+        held, vcmd, hwhy = run.keep_hold(cmd)
+        if held:
+            run.keep_cmd, run.keep_held, run.keep_vcmd, run.keep_state = cmd, held, vcmd, "green"
+            run.keep_why = (f"{cmd} ({src}): red before the work, so the check is that the {len(held)} tests that passed "
+                            f"then still pass")
+            run.emit("note", f"  keep check (before): red; holding the {len(held)} tests that passed before the work: {cmd}",
+                     quiet=True, keep="before", state="red", cmd=cmd, held=len(held))
+            return
+        whys[i] += f"; no keep check over the tests that passed: {hwhy}"
+    run.keep_seen = {}
     run.keep_state, run.keep_why = "none", "; ".join(whys)
 
 
@@ -7066,8 +7185,8 @@ def _keep_end(run, profile):
     if state == "green":
         return
     run.emit("fix", "keep check red after the last step: one round to mend it", quiet=True, round=0)
-    run.phase("keep:1", profile, f"{_task_text(run)}\n\nEvery step is done, but the keep check `{run.keep_cmd}` (the "
-                                 f"project's own tests, green before the work) is red:\n\n{run.fence(run.keep_tail(out))}"
+    run.phase("keep:1", profile, f"{_task_text(run)}\n\nEvery step is done, but the keep check `{run.keep_cmd}` "
+                                 f"({run.keep_what()}) is red:\n\n{run.fence(run.keep_tail(out))}"
                                  "\n\nMend what the work broke without dropping what it did, then call done.")
     state, out = run.keep_run("end")
     if state != "green":
@@ -8539,6 +8658,8 @@ def _drive(run, profile):
     pl = run.plan
     if (run.keep_cmd or run.keep_state) and not run.keep_logged:  # T-4425: found while planning, before a journal
         run.log(kind="keep", cmd=run.keep_cmd, state=run.keep_state, why=run.keep_why)
+        if run.keep_held is not None:  # T-4629: the tests that passed before the work, for a resume to hold the same
+            run.log(kind="keep_held", held=_pack_held(run.keep_held), vcmd=run.keep_vcmd)
         run.keep_logged = True
     if run.spec and not run.spec_logged:  # T-4457: named before a journal, as the keep check is
         run.log(kind="spec", docs=run.spec)
@@ -8877,6 +8998,9 @@ def _load(run, tid, ended=False):
         elif k == "keep" and (r.get("state") in ("green", "red", "none", None)):  # T-4425
             run.keep_state, run.keep_why, run.keep_logged = r.get("state"), r.get("why"), True
             run.keep_cmd = r.get("cmd") if isinstance(r.get("cmd"), str) and r.get("state") != "none" else None
+        elif k == "keep_held" and isinstance(r.get("held"), str):  # T-4629
+            run.keep_held = _unpack_held(r["held"]) or frozenset()  # unreadable: nothing held, so never blamed
+            run.keep_vcmd = r["vcmd"] if isinstance(r.get("vcmd"), str) else None
         elif k == "spec" and isinstance(r.get("docs"), list):  # T-4457: a resumed run hands on the same documents
             run.spec, run.spec_logged = [d for d in r["docs"] if isinstance(d, str)], True
         elif k == "repaired":  # T-4362: a check the run corrected (the brief holds it; the start record's plan holds the old)
