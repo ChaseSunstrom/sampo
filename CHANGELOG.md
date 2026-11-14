@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `KeptArm` and the `Kinds` and `Compare` exam tests build their exam fixture once per class and give each test a copy; `KeptArm` grades and runs in-process except for one CLI-path test (T-4607).
 - A one-time stop command is no longer stored as a standing veto, a veto needs two key words to match by words alone, and a resume message lifts vetoes by the model's reading (T-4577).
 - A task verb refused inside a lane now says nothing was written and ends in the command to run from the main checkout, not the generic Next line (T-4606).
 - A PERFORMANCE plan's first criterion must now run the measured scenario's command as a step of its own, not just mention it in an echo, a comment or a quoted argument (T-4583).
