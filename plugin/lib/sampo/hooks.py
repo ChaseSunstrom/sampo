@@ -543,6 +543,12 @@ def _heal_note():
             boot = f.read().strip()
     except OSError:
         boot = ""
+        if sys.platform == "darwin":  # T-4672: no boot id file on a Mac: its kernel's boot session id, one sysctl a boot
+            try:
+                from sampo import recover
+                boot = recover._mac_boot()
+            except Exception:
+                boot = ""
     mark = os.path.join(c.state_dir(), "healed-boot")
     if boot:
         try:

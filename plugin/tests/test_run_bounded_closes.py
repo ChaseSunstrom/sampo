@@ -8,6 +8,7 @@ before (the keep-check modules and test_code's run_bounded cases guard them).
 reruns: the whole module, nothing else: each case is its own run_bounded call over a throwaway directory."""
 import gc
 import os
+import shlex
 import sys
 import tempfile
 import threading
@@ -26,6 +27,8 @@ from helpers import ForemanTestCase  # noqa: E402
 from sampo import smith  # noqa: E402
 
 HAS_PROC = os.path.isdir("/proc/self/fd")
+# a child that outlives the call in a session of its own: os.setsid in python3, since macOS has no setsid command
+OUTLIVING = f"({shlex.quote(sys.executable)} -c 'import os, time; os.setsid(); time.sleep(2)' &)"
 
 
 def open_fds():
@@ -95,7 +98,7 @@ class Closes(ForemanTestCase):
         real = threading.Thread.join
         with mock.patch.object(threading.Thread, "join", lambda self, timeout=None: real(self, 0.2)):
             started = time.monotonic()
-            (code, out), leaked = self.call("echo parent; (setsid sleep 2 &) ; true")
+            (code, out), leaked = self.call(f"echo parent; {OUTLIVING} ; true")
             took = time.monotonic() - started
         self.assertEqual((code, out), (0, "parent"))
         self.assertLess(took, 1.5, "the close waited for the grandchild")

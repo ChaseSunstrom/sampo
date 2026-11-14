@@ -1216,15 +1216,7 @@ def _ticks(pid):
             return 0
     except OSError:
         pass
-    try:  # lstart is "Fri Nov 14 10:00:00 2026" in the C locale, then the stat column
-        out = subprocess.run(["ps", "-o", "lstart=,stat=", "-p", str(int(pid))], capture_output=True, text=True,
-                             env=dict(os.environ, LC_ALL="C"), timeout=10).stdout.split()
-        if len(out) < 6 or out[5][0] in "ZX":
-            return 0
-        wday, month, day, clock, year = out[0:5]  # lstart is always five words
-        return int(time.mktime(time.strptime(f"{wday} {month} {day} {clock} {year}", "%a %b %d %H:%M:%S %Y")))
-    except (OSError, IndexError, ValueError, subprocess.SubprocessError):
-        return 0
+    return c.ps_start(pid) or 0  # T-4672: one reading of ps's start time for every reader
 
 
 def _read_marker(p):

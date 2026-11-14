@@ -109,13 +109,56 @@ def _common_of(gitdir):
     return os.path.realpath(os.path.join(gitdir, rel)) if rel else gitdir
 
 
-def _git_procs(proc_root="/proc"):
-    """T-4616: [(pid, cwd or None, command line)] of every running process whose program is git (git, git-remote-https, …),
-    read from /proc: no pgrep, no subprocess. None when the process table can't be listed (then nothing is known)."""
+PROC = "/proc"  # T-4672: the process table's root; a host without it (macOS) lists processes through ps and lsof
+
+
+def _tool(argv, timeout=10, ok=(0,)):
+    """T-4672: a program's stdout, or None when it isn't there, times out or exits with a code not in `ok`."""
     try:
-        names = os.listdir(proc_root)
-    except OSError:
+        got = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
         return None
+    return got.stdout if got.returncode in ok else None
+
+
+def _ps_git_procs():
+    """T-4672: _git_procs on a host with no /proc: the git processes from `ps -axww -o pid=,args=`, each one's folder from
+    one `lsof -a -d cwd -Fpn` over those pids. None (unknown, not "no git") when ps can't list, or when a git runs and
+    lsof can't say where: a lock is then held, as it is when /proc can't be read."""
+    out = _tool(["ps", "-axww", "-o", "pid=,args="])
+    if not out:
+        return None
+    found = []
+    for line in out.splitlines()[:_GIT_LOCK_CAP * 5]:
+        pid, _, args = line.strip().partition(" ")
+        words = args.split(None, 1)
+        prog = os.path.basename(words[0]) if words else ""
+        if pid.isdecimal() and (prog == "git" or prog.startswith("git-")):
+            found.append((int(pid), args.strip()))
+    if not found:
+        return []
+    cwds, pid = {}, None
+    for i in range(0, len(found), 200):  # 200 pids to an lsof call: every git is asked about
+        got = _tool(["lsof", "-a", "-d", "cwd", "-Fpn", "-p", ",".join(str(p) for p, _ in found[i:i + 200])], ok=(0, 1))
+        if got is None:
+            return None
+        for line in got.splitlines():
+            if line[:1] == "p" and line[1:].isdecimal():
+                pid = int(line[1:])
+            elif line[:1] == "n" and pid is not None:
+                cwds[pid] = line[1:]
+    return [(pid, cwds.get(pid), args) for pid, args in found]
+
+
+def _git_procs(proc_root=None):
+    """T-4616: [(pid, cwd or None, command line)] of every running process whose program is git (git, git-remote-https, …),
+    read from /proc: no pgrep, no subprocess. None when the process table can't be listed (then nothing is known).
+    T-4672: where the default /proc isn't there (macOS), ps and lsof list them (_ps_git_procs)."""
+    try:
+        names = os.listdir(proc_root or PROC)
+    except OSError:
+        return _ps_git_procs() if proc_root is None else None
+    proc_root = proc_root or PROC
     out = []
     for name in names[:_GIT_LOCK_CAP * 5]:
         if not name.isdecimal():
@@ -137,7 +180,7 @@ def _git_procs(proc_root="/proc"):
     return out
 
 
-def git_pids(targets, proc_root="/proc", procs=None):
+def git_pids(targets, proc_root=None, procs=None):
     """T-4616: the pids of git processes working in or on any of `targets` (worktree and git dir paths): its cwd is inside
     one, or its command line names one (git -C PATH, --git-dir=PATH). [] when none; None when the process table is
     unreadable. `procs` is a table _git_procs already read."""

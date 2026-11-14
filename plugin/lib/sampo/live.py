@@ -181,22 +181,35 @@ def lanes(p):
 
 def _ticks(pid):
     """Process pid's start time in clock ticks since boot (field 22 of /proc/PID/stat; the comm field may hold spaces
-    and parens, so count from the last ')'), or None. Unlike /proc/PID's ctime it is the real start."""
+    and parens, so count from the last ')'), or None. Unlike /proc/PID's ctime it is the real start. T-4672: where
+    there is no /proc at all (macOS) the start in epoch seconds from ps: the same stamp every call for one process."""
     try:
         with open(f"/proc/{pid}/stat") as f:
             return int(f.read(4096).rsplit(")", 1)[1].split()[19])
-    except (OSError, IndexError, ValueError):
+    except (IndexError, ValueError):
         return None
+    except OSError:
+        pass
+    try:
+        with open("/proc/self/stat"):  # a /proc that answers for this process: the pid just isn't there
+            return None
+    except OSError:
+        return c.ps_start(pid)
 
 
 def _started(pid):
-    """Epoch seconds the process started (start ticks + boot time from /proc/stat), or None."""
+    """Epoch seconds the process started (start ticks + boot time from /proc/stat; ps's start where there is no /proc,
+    T-4672), or None."""
     t = _ticks(pid)
+    if t is None:
+        return None
     try:
         with open("/proc/stat") as f:
             boot = next(int(x.split()[1]) for x in f if x.startswith("btime "))
-        return boot + t / os.sysconf("SC_CLK_TCK") if t is not None else None
-    except (OSError, StopIteration, ValueError, IndexError):
+        return boot + t / os.sysconf("SC_CLK_TCK")
+    except OSError:  # no /proc/stat: no boot time to add ticks to
+        return c.ps_start(pid)
+    except (StopIteration, ValueError, IndexError):
         return None
 
 

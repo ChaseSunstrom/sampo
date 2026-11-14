@@ -21,6 +21,7 @@ printf 'a\nb\n' > /tmp/events
 out=$(timeout 3 ./bin/watch --from-file /tmp/events | wc -l)
 [ "$out" -eq 2 ] || { echo "expected 2 lines got $out"; exit 1; }
 ```
+macOS has no `timeout`: use `gtimeout` (brew coreutils) there, or `perl -e 'alarm 3; exec @ARGV' ./bin/watch --from-file /tmp/events` beside it.
 
 ## Do
 - Entry fields: `name` and `command` and `description` (all required), and optional `when`. Nothing else is accepted.

@@ -16,7 +16,8 @@ from unittest import mock
 from test_perf_measure_first import PERF
 from test_run_orphan import gone
 
-from sampo import hooks, recover, train
+from sampo import core as c
+from sampo import hooks, live, py, recover, train
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 WORKFLOW = os.path.join(ROOT, ".github", "workflows", "test.yml")
@@ -25,15 +26,15 @@ WORKFLOW = os.path.join(ROOT, ".github", "workflows", "test.yml")
 MAC_WORK_SECS = 6900
 
 
-def without_timeout(tmp):
-    """A PATH folder of every executable the real PATH has except timeout and gtimeout: macOS ships neither."""
+def without_timeout(tmp, hide=("timeout", "gtimeout")):
+    """A PATH folder of every executable the real PATH has except `hide`: macOS ships no timeout, gtimeout or setsid."""
     folder = os.path.join(tmp, "bin")
     os.makedirs(folder)
     for d in os.environ.get("PATH", "").split(os.pathsep):
         if not os.path.isdir(d):
             continue
         for name in os.listdir(d):
-            if name in ("timeout", "gtimeout") or os.path.exists(os.path.join(folder, name)):
+            if name in hide or os.path.exists(os.path.join(folder, name)):
                 continue
             src = os.path.join(d, name)
             if os.access(src, os.X_OK) and not os.path.isdir(src):
@@ -105,6 +106,121 @@ class NoProc(unittest.TestCase):
         self.child.kill()
         self.child.wait()
         self.assertEqual(train._ticks(self.child.pid), 0)
+
+
+class StartTimeWithoutProc(unittest.TestCase):
+    """T-4672: the other /proc readers (core._self_ticks, live._ticks and _started) answer on a host with no /proc: the
+    start time from ps, the same value for the same process, None for one that is gone; none raises."""
+
+    def setUp(self):
+        real = builtins.open
+
+        def opener(path, *a, **kw):
+            if isinstance(path, str) and path.startswith("/proc"):
+                raise FileNotFoundError(path)
+            return real(path, *a, **kw)
+
+        p = mock.patch.object(builtins, "open", opener)
+        p.start()
+        self.addCleanup(p.stop)
+        self.child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+        self.addCleanup(self.child.wait)
+        self.addCleanup(self.child.kill)
+
+    def test_this_process_has_a_start_stamp_that_stays_the_same(self):
+        c._SELF_START.clear()
+        first = c._self_ticks()
+        self.assertIsInstance(first, int)
+        self.assertGreater(first, 0)
+        self.assertEqual(c._self_ticks(), first)
+
+    def test_the_stamp_is_read_once_per_process(self):
+        c._SELF_START.clear()
+        c._self_ticks()
+        with mock.patch("subprocess.run", side_effect=AssertionError("ps asked twice for this process")):
+            self.assertGreater(c._self_ticks(), 0)
+
+    def test_a_running_process_has_a_stamp_and_a_start_time_near_now(self):
+        stamp = live._ticks(self.child.pid)
+        self.assertGreater(stamp, 0)
+        self.assertEqual(live._ticks(self.child.pid), stamp)
+        self.assertLess(abs(live._started(self.child.pid) - time.time()), 120)
+
+    def test_a_process_that_is_gone_has_none_and_nothing_raises(self):
+        self.child.kill()
+        self.child.wait()
+        self.assertIsNone(live._ticks(self.child.pid))
+        self.assertIsNone(live._started(self.child.pid))
+
+    def test_a_host_with_no_ps_either_gives_none_not_an_error(self):
+        c._SELF_START.clear()
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("ps")):
+            self.assertIsNone(c._self_ticks())
+            self.assertIsNone(live._ticks(self.child.pid))
+            self.assertIsNone(live._started(self.child.pid))
+
+    def test_a_job_s_progress_file_is_read_on_this_host(self):
+        c._SELF_START.clear()
+        rec = {"done": 5, "total": 10, "unit": "x", "note": "", "t0": 1.0, "t": 3.0, "d0": 1.0, "start": c._self_ticks()}
+        self.assertEqual(live._file_progress(os.getpid(), rec)["done"], 5)
+
+
+class HealOnMac(unittest.TestCase):
+    """T-4672: hooks._heal_note on a host with no boot id file takes the kernel's boot session id (macOS), so the heal
+    runs once per boot there too instead of at every SessionStart."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(subprocess.run, ["rm", "-rf", self.tmp])
+        for p in (mock.patch.object(hooks, "BOOT_ID", os.path.join(self.tmp, "none")),
+                  mock.patch.object(sys, "platform", "darwin"),
+                  mock.patch.dict(os.environ, {"FOREMAN_STATE": self.tmp}),
+                  mock.patch.object(c, "state_dir", lambda: self.tmp)):
+            p.start()
+            self.addCleanup(p.stop)
+        for cached in (recover._read_boot, recover._mac_boot):
+            cached.cache_clear()
+            self.addCleanup(cached.cache_clear)
+
+    def sysctl(self, out="6A1C8E0F-0000-4000-8000-0123456789AB\n"):
+        return mock.patch("subprocess.run", lambda argv, *a, **kw: subprocess.CompletedProcess(argv, 0, out, ""))
+
+    def test_a_boot_that_was_healed_is_not_healed_again(self):
+        with open(os.path.join(self.tmp, "healed-boot"), "w") as f:
+            f.write("6A1C8E0F-0000-4000-8000-0123456789AB\n")
+        with self.sysctl(), mock.patch.object(py, "heal", side_effect=AssertionError("healed twice in a boot")):
+            self.assertEqual(hooks._heal_note(), "")
+
+    def test_a_new_boot_heals_and_records_it(self):
+        calls = []
+        with self.sysctl(), mock.patch.object(py, "heal", lambda root: calls.append(root) or ([], [])):
+            self.assertEqual(hooks._heal_note(), "")
+        self.assertEqual(len(calls), 1)
+        with open(os.path.join(self.tmp, "healed-boot")) as f:
+            self.assertEqual(f.read().strip(), "6A1C8E0F-0000-4000-8000-0123456789AB")
+
+    def test_a_failing_sysctl_leaves_the_heal_at_every_session_as_before(self):
+        calls = []
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("sysctl")), \
+                mock.patch.object(py, "heal", lambda root: calls.append(root) or ([], [])):
+            hooks._heal_note()
+            hooks._heal_note()
+        self.assertEqual(len(calls), 2)
+
+
+class SetsidFreeChild(unittest.TestCase):
+    def test_the_bounded_run_test_makes_its_outliving_child_without_the_setsid_command(self):
+        import test_run_bounded_closes as t
+        self.assertNotRegex(t.OUTLIVING, r"(?<![\w.])setsid\s")  # os.setsid in python3: macOS has no setsid command
+
+    def test_the_outliving_child_starts_where_no_setsid_command_exists(self):
+        import test_run_bounded_closes as t
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(subprocess.run, ["rm", "-rf", tmp])
+        env = dict(os.environ, PATH=without_timeout(tmp, hide=("setsid",)))
+        got = subprocess.run(["bash", "-c", f"echo parent; {t.OUTLIVING}; true"], env=env, capture_output=True,
+                             text=True, timeout=30)
+        self.assertEqual((got.returncode, got.stdout.strip(), got.stderr.strip()), (0, "parent", ""))
 
 
 class BootOnMac(unittest.TestCase):

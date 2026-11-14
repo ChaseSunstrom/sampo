@@ -172,6 +172,72 @@ class StaleGitLock(ForemanTestCase):
         self.assertEqual(slanes.git_pids([os.path.join(self.tmp, "none")], proc_root=proc), [])
         self.assertIsNone(slanes.git_pids([self.lane], proc_root=os.path.join(self.tmp, "no-proc")))  # unknown, not "none"
 
+    def no_proc(self):
+        """T-4672: a host with no /proc (macOS): the default process root is a folder that is not there."""
+        p = mock.patch.object(slanes, "PROC", os.path.join(self.tmp, "no-proc"), create=True)
+        p.start()
+        self.addCleanup(p.stop)
+
+    @unittest.skipUnless(shutil.which("ps") and shutil.which("lsof"), "needs ps and lsof, as macOS has")
+    def test_without_proc_an_old_lock_no_git_holds_is_removed(self):
+        self.no_proc()
+        path = self.lock(os.path.join(self.lane_gitdir(), "index.lock"))
+        rows = slanes.clear_git_locks(self.repo)
+        self.assertEqual([r["state"] for r in rows], ["removed"])
+        self.assertFalse(os.path.exists(path))
+
+    @unittest.skipUnless(shutil.which("ps") and shutil.which("lsof"), "needs ps and lsof, as macOS has")
+    def test_without_proc_an_old_lock_a_listed_git_holds_is_held(self):
+        self.no_proc()
+        path = self.lock(os.path.join(self.lane_gitdir(), "index.lock"))
+        pr = self.fake_git(self.lane)
+        end = time.monotonic() + 10
+        while time.monotonic() < end and pr.pid not in (slanes.git_pids([self.lane]) or []):
+            time.sleep(0.05)  # the child has to exec before ps names it git
+        rows = slanes.clear_git_locks(self.repo)
+        self.assertEqual([(r["state"], r["pids"]) for r in rows], [("held", [pr.pid])])
+        self.assertTrue(os.path.exists(path))
+
+    def tables(self, ps, lsof):
+        """The two commands' output, by program: what ps and lsof print (None: the program is not there)."""
+        def run(argv, timeout=10, ok=(0,)):
+            out = {"ps": ps, "lsof": lsof}[argv[0]]
+            if isinstance(out, type):
+                raise out(f"{argv[0]} asked while /proc answers")
+            return out
+        return mock.patch.object(slanes, "_tool", run, create=True)
+
+    def test_the_ps_listing_names_the_git_processes_and_their_folders(self):
+        ps = "    1 /sbin/launchd\n  501 /usr/bin/git status\n  502 vim x\n  503 git-remote-https origin url\n" \
+             "  504 /Library/Developer/CommandLineTools/usr/bin/git -C /w/lane commit\n"
+        lsof = "p501\nn/w/lane\np503\nn/w/other\n"
+        with self.tables(ps, lsof):
+            got = slanes._ps_git_procs()
+        self.assertEqual(got, [(501, "/w/lane", "/usr/bin/git status"), (503, "/w/other", "git-remote-https origin url"),
+                               (504, None, "/Library/Developer/CommandLineTools/usr/bin/git -C /w/lane commit")])
+
+    def test_no_git_process_means_no_lsof_call_and_an_empty_table(self):
+        with self.tables("    1 /sbin/launchd\n  502 vim x\n", None):
+            self.assertEqual(slanes._ps_git_procs(), [])
+
+    def test_a_table_that_cannot_be_read_stays_unknown(self):
+        with self.tables(None, None):
+            self.assertIsNone(slanes._ps_git_procs())
+        with self.tables("  501 /usr/bin/git status\n", None):  # git runs but its folder can't be told: not "none"
+            self.assertIsNone(slanes._ps_git_procs())
+
+    def test_an_unreadable_table_without_proc_holds_the_lock(self):
+        self.no_proc()
+        path = self.lock(os.path.join(self.lane_gitdir(), "index.lock"))
+        with self.tables(None, None):
+            rows = slanes.clear_git_locks(self.repo)
+        self.assertEqual([r["state"] for r in rows], ["held"])
+        self.assertTrue(os.path.exists(path))
+
+    def test_a_proc_that_answers_is_never_replaced_by_ps(self):
+        with self.tables(AssertionError, AssertionError):
+            self.assertIsNotNone(slanes._git_procs())
+
     def test_an_unreadable_process_table_leaves_the_lock_alone(self):
         path = self.lock(os.path.join(self.lane_gitdir(), "index.lock"))
         with mock.patch.object(slanes, "git_pids", return_value=None):

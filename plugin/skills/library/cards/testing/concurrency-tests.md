@@ -13,7 +13,7 @@ Prove thread-safety by forcing contention: many workers, barriers, race detector
 - `cargo test` with `loom` for core primitives: exhaustively explores thread interleavings of the model (Rust).
 - `python -X dev -m pytest -q -x --count=50`: repeated runs with dev-mode checks (needs pytest-repeat).
 - `java -ea -jar` with a stress tool such as jcstress or `mvn test -Dsurefire.rerunFailingTestsCount=0`: no retries hide failures (JVM).
-- `timeout 120 pytest -q tests/concurrency`: a deadlock fails the run instead of hanging.
+- `timeout 120 pytest -q tests/concurrency`: a deadlock fails the run instead of hanging. macOS has no `timeout`: `gtimeout` (brew coreutils) or the portable `pytest -q --timeout=120 tests/concurrency` (pytest-timeout).
 
 ## Test first
 Start many workers at the same instant and assert the invariant.

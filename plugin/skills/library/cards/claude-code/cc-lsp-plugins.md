@@ -21,6 +21,7 @@ body='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}
 printf 'Content-Length: %d\r\n\r\n%s' "${#body}" "$body" | timeout 5 gopls serve 2>/dev/null | head -c 200 | grep -q Content-Length \
   || echo "server did not answer initialize"
 ```
+macOS has no `timeout`: use `gtimeout` (brew coreutils) there, or `python3 -c 'import subprocess,sys; subprocess.run(sys.argv[2:], timeout=float(sys.argv[1]))' 5 gopls serve` beside it.
 Write that first, then the config below.
 
 ## Do

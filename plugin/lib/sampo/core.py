@@ -2138,13 +2138,35 @@ def _progress_t():
 _PROG = {}  # (pid, unit, note) -> (t0, d0): a loop's first sample, kept in memory, never read back from the file
 
 
+def ps_start(pid):
+    """T-4672: a host with no /proc (macOS): process pid's start time in epoch seconds from `ps -o lstart=,stat=`, the id a
+    pid reuse can't share; None when it isn't running, is a zombie, or ps can't say. Light: a process is started."""
+    try:  # lstart is "Fri Nov 14 10:00:00 2026" in the C locale, then the stat column
+        out = subprocess.run(["ps", "-o", "lstart=,stat=", "-p", str(int(pid))], capture_output=True, text=True,
+                             env=dict(os.environ, LC_ALL="C"), timeout=10).stdout.split()
+        if len(out) < 6 or out[5][0] in "ZX":
+            return None
+        return int(time.mktime(time.strptime(" ".join(out[0:5]), "%a %b %d %H:%M:%S %Y")))  # lstart is five words
+    except (OSError, IndexError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+_SELF_START = {}  # pid -> this process's start stamp from ps: a process never starts again, so one ps per process
+
+
 def _self_ticks():
-    """This process's start time in clock ticks (field 22 of /proc/self/stat), the id a pid reuse can't share; None off Linux."""
+    """This process's start time in clock ticks (field 22 of /proc/self/stat), the id a pid reuse can't share; where
+    there is no /proc (macOS, T-4672) its start in epoch seconds from ps, read once; None when neither says."""
     try:
         with open("/proc/self/stat") as f:
             return int(f.read().rsplit(")", 1)[1].split()[19])
     except (OSError, IndexError, ValueError):
-        return None
+        pass
+    pid = os.getpid()
+    got = _SELF_START.get(pid) or ps_start(pid)
+    if got:
+        _SELF_START[pid] = got
+    return got
 
 
 def _progress_path():
