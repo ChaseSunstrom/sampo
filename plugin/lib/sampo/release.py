@@ -616,6 +616,96 @@ def _pick(root, wt, sha, tower):
     return r
 
 
+def _ship_cap():
+    return float(os.environ.get("FOREMAN_SHIP_TIMEOUT_S") or 7200)  # SAMPO_SHIP_TIMEOUT_S, mirrored by core
+
+
+def _claim_alive(g):
+    """T-4645: a ship's claim names a process that is still running: the pid began at the recorded start time (a reused
+    pid has another), or, on a host where that time can't be read, the pid answers; and the claim is no older than a
+    ship may run (FOREMAN_SHIP_TIMEOUT_S, 7200, plus five minutes: a ship ends itself at its cap)."""
+    from sampo import train
+    pid = g.get("pid") if isinstance(g, dict) else None
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        if time.time() - float(g.get("started") or 0) > _ship_cap() + 300:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if g.get("ticks"):
+        return train._ticks(pid) == g["ticks"]
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _ship_claim(p, at, picks, task):
+    """T-4645: under the project lock, either this ship's claim is recorded (meta ship_claim: pid, start ticks, time,
+    the head it tests, the commits it ships) and None comes back, or the claim of another live ship does. The claim is
+    not ship_testing: that key is the test phase only, and `fm check` waits on it."""
+    from sampo import train
+    with c.lock(p.dir):
+        meta = c.read_meta(p)
+        held = meta.get("ship_claim")
+        if held and held.get("pid") != os.getpid() and _claim_alive(held):
+            return held
+        meta["ship_claim"] = {"pid": os.getpid(), "ticks": train._ticks(os.getpid()), "started": round(time.time(), 1),
+                              "at": c.now(), "head": at, "picks": list(picks), "task": task}
+        c.write_meta(p, meta)
+    return None
+
+
+class _Claimed:
+    """The claim ends with the ship, whatever ends it (only the process that took it clears it)."""
+
+    def __init__(self, p):
+        self.p = p
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            with c.lock(self.p.dir):
+                meta = c.read_meta(self.p)
+                if (meta.get("ship_claim") or {}).get("pid") == os.getpid():
+                    meta.pop("ship_claim")
+                    c.write_meta(self.p, meta)
+        except Exception:  # noqa: BLE001 — a claim that can't be cleared is stale at the next look (its pid is gone)
+            pass
+
+
+def _ship_gate(p, at, picks, task, args):
+    """T-4645: a ship that starts while another ship of this project runs tests nothing yet. "go": no other ship is
+    alive and this one's claim is taken. "covered": the running ship's picks include every one of ours (a line says so,
+    nothing runs). "waited": the other ship ended (the caller reads the moved origin main and plans again). The wait is
+    bounded by what a ship may run (FOREMAN_SHIP_TIMEOUT_S); past it the ship is refused, its grant untouched."""
+    held = _ship_claim(p, at, picks, task)
+    if held is None:
+        return "go"
+    mine, theirs = set(picks), set(held.get("picks") or [])
+    who = f"the running ship (pid {held['pid']}, {held.get('task') or 'a ship'}, testing {str(held.get('head'))[:9]})"
+    if mine <= theirs:
+        print(f"nothing to ship here: {who} already carries every commit this one would ship "
+              f"({', '.join(x[:8] for x in picks)}); no tests run. If it is refused, run fm ship again", flush=True)
+        return "covered"
+    t0 = getattr(args, "_ship_wait_from", None) or time.monotonic()
+    args._ship_wait_from = t0
+    end = t0 + _ship_cap()
+    print(f"fm ship: waiting for {who} to end before testing: {len(picks)} commit(s) wait, no test runs until then "
+          f"(at most {_ship_cap():g}s); then it tests the moved {args.remote or 'origin'} main", flush=True)
+    while True:
+        g = (c.read_meta(p).get("ship_claim") or {})
+        if not (g.get("pid") != os.getpid() and _claim_alive(g)):
+            return "waited"
+        if time.monotonic() >= end:
+            _err(f"{who} is still running after {_ship_cap():g}s; nothing was pushed: run fm ship again after it")
+        time.sleep(1)
+
+
 def ship(p, args):
     """T-1943: fm ship — HEAD's commits the remote's main lacks (git cherry, by patch) or the named ones, cherry-picked
     onto the fetched main in a scratch worktree, their files compared, tested there, main re-checked, then pushed
@@ -698,7 +788,13 @@ def ship(p, args):
             if k else "it is HEAD"), flush=True)
     files = sorted({f for s in picks for f in _git(root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-m", s).splitlines() if f})
     n = f"{len(picks)} commit{'s' if len(picks) > 1 else ''}"
-    with tempfile.TemporaryDirectory() as tmp:
+    gate = _ship_gate(p, at, picks, getattr(b, "id", None) or getattr(args, "task", None), args)
+    if gate == "covered":
+        return 0
+    if gate == "waited":  # the other ship ended: plan again from the moved main (it may carry these commits by now)
+        os.environ["FOREMAN_SHIP_AT"] = at
+        return ship(p, args)
+    with _Claimed(p), tempfile.TemporaryDirectory() as tmp:
         wt = os.path.join(tmp, "ship")
         _git(root, "worktree", "add", "-q", "--detach", wt, base)
         try:
