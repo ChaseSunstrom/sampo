@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code answers the plan gate's Undo: line for every one-way step the gate names, each with its own question, and reads the whole refusal (2000 characters, not 500) (T-4507).
 - sampo lane accept refuses, recording nothing, when its audits lack what the close will require for the lane's diff; an audit taken at the lane's tip still counts after the land's merge, and a file the lane writes after its audit makes it stale (T-4487).
 - sampo task finish now refuses, before any gate runs, every close it can decide without running anything (a docs line naming a missing doc, an open child, RESEARCH with no Decision, CLEAN with no behaviour lock, a credential in the files to commit), and counts its own --lens lines at the tip the close ends on, so a close no longer fails for stale audits after a 45-minute gate run (T-4585).
 - A Rust project's builder lanes now share one CARGO_TARGET_DIR outside the repo, named in the builder brief and set for the commands Sampo spawns (a value the user set is kept), and sampo doctor's disk line counts lane build output (T-4575).
