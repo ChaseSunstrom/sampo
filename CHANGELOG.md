@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Smith's keep check now survives a suite that was red before the work: it holds the tests that passed then, so breaking one is red at the step and stop checks and the stop puts the tree back (T-4629).
 - A repeat sampo focus never takes a second start snapshot (a first snapshot that failed on a loaded host no longer empties the task's diff), prints "Already in focus", and a focus that moves a task between checkouts now says it took a new start and names the old one (T-4626).
 - Closing a task the trunk already holds selects its linked tests from the commits that landed it (plus uncommitted and claimed files), not from every lane merged since its base (T-4625).
 - A close now counts on a green post-merge full suite on its own code tree when the train's affected-only pass ran too few modules, and test_doctor's projects use real state folders so no index file leaks into plugin/tests (T-4605).
