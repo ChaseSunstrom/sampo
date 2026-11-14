@@ -283,8 +283,11 @@ class Slots(ForemanTestCase):
         self.assertLess(waited, 3)
 
     def test_a_run_says_how_long_it_waited_for_a_slot_when_over_5s(self):
-        self.assertEqual(run.waited_note({"test_a.A": 4.0}), "")
-        self.assertEqual(run.waited_note({"test_a.A": 4.0, "test_b.B": 3.0}), "; waited 7 s for a slot")
+        self.assertEqual(run.waited_note({"test_a.A": 4.0}, [(0.0, 4.0)], 50.0), "")
+        self.assertEqual(run.waited_note({"test_a.A": 4.0, "test_b.B": 3.0}, [(0.0, 4.0), (1.0, 4.0)], 50.0), "")
+        # T-4582: the wall wait (the spans' union) leads, the sum over jobs follows, labelled
+        self.assertEqual(run.waited_note({"test_a.A": 6.0, "test_b.B": 6.0}, [(0.0, 6.0), (0.0, 6.0)], 50.0),
+                         "; waited 6 s of 50 s wall for a slot (12%), 12 s summed over jobs")
 
     def test_run_one_keeps_the_seconds_its_class_waited_for_a_slot(self):
         _, free = self.hold()

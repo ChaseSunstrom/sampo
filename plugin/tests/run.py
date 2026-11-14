@@ -512,6 +512,9 @@ CPU = {}  # T-3757: job id -> the CPU s its processes took (BOOT's file), filled
 WAITED = {}  # T-4247: job id -> the s its class waited for a slot (run_one), not its run time: nothing else keeps it
 
 
+WAIT_SPANS = []  # T-4582: (start, end) in time.monotonic() of each class's wait for a slot: wall_wait() takes their union
+
+
 HELD = {}  # T-4570: job id -> the s its class held a slot (run_one): the machine's slot-seconds this run took
 
 
@@ -527,6 +530,7 @@ def slot_fields(started, ended):
     and its kind. Waiting was counted in the summary line only, and the holder nowhere: 2026-11-13's 'who held the
     slots' could not be read back from disk."""
     return {"started": round(started, 3), "seconds": round(ended - started, 1), "waited_s": round(sum(WAITED.values()), 1),
+            "waited_wall_s": round(wall_wait(WAIT_SPANS), 1),  # T-4582: the wall-clock wait, not summed over threads
             "held_s": round(sum(HELD.values()), 1), "kind": slot_kind()}
 
 
@@ -577,10 +581,28 @@ def show_held(a):
     return 0
 
 
-def waited_note(waits):
-    """T-4247: the summary's '; waited N s for a slot' when the classes waited over 5 s in all, else ''."""
-    total = sum(waits.values())
-    return f"; waited {total:.0f} s for a slot" if total > 5 else ""
+def wall_wait(spans):
+    """T-4582: the seconds of wall clock at least one job spent waiting for a slot: the length of the union of the
+    (start, end) spans, so two jobs waiting at once count once. An empty or backwards span counts nothing."""
+    total, end = 0.0, None
+    for a, b in sorted(s for s in spans if s[1] > s[0]):
+        if end is None or a > end:
+            total, end = total + (b - a), b
+        elif b > end:
+            total, end = total + (b - end), b
+    return total
+
+
+def waited_note(waits, spans=(), run_s=0.0):
+    """T-4247, T-4582: the summary's '; waited W s of R s wall for a slot (P%), S s summed over jobs' when some job was
+    waiting for a slot over 5 s of the run's wall clock, else ''. W is the union of the wait spans, R the run's wall;
+    S adds each worker thread's wait (with -j N about N times W) and is said last, as the sum it is: it read as hours."""
+    wall = wall_wait(spans)
+    if wall <= 5:
+        return ""
+    run_s = max(run_s, wall)  # a clock skew between the run's start and the spans must not read over 100%
+    return (f"; waited {wall:.0f} s of {run_s:.0f} s wall for a slot ({100 * wall / run_s:.0f}%), "
+            f"{sum(waits.values()):.0f} s summed over jobs")
 BUDGETS = {}  # T-3757: class id -> its CPU_BUDGET_S, a costly new class's declared cost
 CPU_BASE, CPU_GATE = "SAMPO_CPU_BASE", "SAMPO_CPU_GATE"  # T-3757: the train's baseline file; =1 fails a rise
 CPU_FLOOR = "SAMPO_CPU_FLOOR_S"  # T-3757: the absolute margin, 20 CPU s; a new class may take 4.5x it, a run 6x
@@ -1764,6 +1786,7 @@ def run_one(cid, k, timeout=480, deadline=None, small=False, joins=None):
     with cpu_slot(wait, small=small, low=is_low()) as slot:
         got = time.monotonic()
         WAITED[cid] = WAITED.get(cid, 0.0) + got - t
+        WAIT_SPANS.append((t, got))  # T-4582: kept apart for the wall-clock wait (list.append is atomic across threads)
         try:
             if joins and not joins.start(cid):  # T-4267: another run is running this class on these inputs: wait for it later
                 return cid, 0, DEFERRED, 0, 0.0
@@ -2255,7 +2278,7 @@ def main():
     me = resource.getrusage(resource.RUSAGE_SELF) if resource else None
     spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     sys.stderr.write(f"\nRan {total} tests in {time.time() - t0:.1f}s ({len(todo)} jobs, {a.j} at a time; "
-                     f"slowest: {slow}; cpu {spent:.1f} s{waited_note(WAITED)}){cached}\n\n"
+                     f"slowest: {slow}; cpu {spent:.1f} s{waited_note(WAITED, WAIT_SPANS, time.time() - t0)}){cached}\n\n"
                      f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip or joined else 'NO TESTS RAN'}\n")
     if stopped:
         sys.stderr.write(f"not run (deadline): {len(stopped)}\n" + "".join(f"  not run class: {r[0]}\n" for r in stopped))

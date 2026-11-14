@@ -195,9 +195,11 @@ class HeldSlotsAreRecorded(ForemanTestCase):
             self.assertEqual(run.slot_kind(), "low")
 
     def test_the_record_carries_started_seconds_waited_held_and_kind(self):
-        with mock.patch.object(run, "HELD", {"a": 3.0, "b": 4.5}), mock.patch.object(run, "WAITED", {"a": 10.0, "b": 2.5}):
+        with mock.patch.object(run, "HELD", {"a": 3.0, "b": 4.5}), mock.patch.object(run, "WAITED", {"a": 10.0, "b": 2.5}), \
+                mock.patch.object(run, "WAIT_SPANS", [(0.0, 10.0), (4.0, 6.5)]):
             got = run.slot_fields(100.0, 160.0)
-        self.assertEqual(got, {"started": 100.0, "seconds": 60.0, "waited_s": 12.5, "held_s": 7.5, "kind": "normal"})
+        self.assertEqual(got, {"started": 100.0, "seconds": 60.0, "waited_s": 12.5, "waited_wall_s": 10.0,
+                               "held_s": 7.5, "kind": "normal"})
 
     def test_held_by_kind_adds_up_a_days_records_and_counts_the_unrecorded(self):
         recs = [{"t": 1_700_000_000, "kind": "low", "held_s": 100.0, "waited_s": 5.0, "seconds": 20.0},
