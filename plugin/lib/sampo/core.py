@@ -159,6 +159,7 @@ SENSITIVE_MODES = {"default", "manual", "acceptEdits", "plan", "dontAsk"}
 
 class PolicyError(Exception):
     """A state change Sampo refuses on principle (e.g. done without evidence). Exit code 2."""
+    then = None  # T-4606: the one command to run next, when the refusal knows it (the Next: line says it)
 
 
 class LockTimeout(Exception):

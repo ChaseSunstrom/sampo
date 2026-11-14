@@ -729,8 +729,14 @@ def cmd_task(args):
     if sub in ("done", "finish", "audit", "drop") and getattr(p, "lane", None) and getattr(args, "id", None):
         own = c.find_brief(p, args.id)  # T-0234 review: a builder hands back a commit; the main thread closes the task
         if own and own.meta.get("builder"):
-            raise c.PolicyError(f"{own.id} is a builder's task: the main thread reviews, merges and closes it (sampo lane "
-                                f"rm {own.id}, then sampo task {sub} from the main checkout); report back instead")
+            import shlex  # T-4606: the refusal's last line is the one a '| tail' or a skimmer keeps: it names the command
+            main = c.main_worktree(c.git_root(p.root) or p.root)
+            form = f"{args.id} {args.lens} <how> <result>" if sub == "audit" else args.id
+            err = c.PolicyError(f"{own.id} is a builder's task: the main thread reviews, merges and closes it (sampo lane "
+                                f"rm {own.id}, then sampo task {sub} from the main checkout); report back instead. "
+                                f"Nothing was written: `sampo task {sub}` from inside a lane never records on a builder's task")
+            err.then = (f"cd {shlex.quote(main)} && " if main else "") + f"sampo task {sub} {form}"
+            raise err
     if sub == "new":
         return task_new(p, args)
     if sub == "packet":
@@ -10211,8 +10217,8 @@ def main(argv=None):
         return rc if isinstance(rc, int) else 0  # evidence --run / check pass on the command's exit code
     except c.PolicyError as e:
         print(f"sampo: refused: {e}", file=sys.stderr)
-        print("Next: sampo next", file=sys.stderr)  # T-2653: the one required action, which names what the refusal waits on
-        return 2
+        print(f"Next: {e.then or 'sampo next'}", file=sys.stderr)  # T-2653: the one required action, which names what the
+        return 2  # refusal waits on; T-4606: a refusal that knows the command says it
     except c.LockTimeout as e:
         import shlex
         print(f"sampo: {e} (another sampo or hook is writing; retry)", file=sys.stderr)
