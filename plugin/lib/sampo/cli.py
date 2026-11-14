@@ -4361,8 +4361,16 @@ def _focus_edit(p, target, once, blast=""):
     """Focus's edits to the brief, in memory: lane binding, start point, snapshots, recall, preflight, predict.
     T-3558: every slow read (git, recall, the map, outcomes) goes through once(key, fn), so a first pass on the peek
     before the project lock does them and the pass under it reuses them; an input that moved meanwhile is a new key,
-    read there. Returns (resumed, first focus, recall hits, related text, the new base_tree snapshot or None)."""
-    if target.meta.get("lane") != p.lane:  # moving between checkouts: its start point is taken here, afresh
+    read there. Returns (resumed, first focus, recall hits, related text, the new base_tree snapshot or None, a note
+    when the focus took a new start point). T-4626: a start point is taken once, at the first focus (or when the task
+    moves to another checkout, which holds none of the work done in the first); a repeat focus never takes another."""
+    shifted, relocated = "", target.meta.get("lane") != p.lane
+    if relocated:  # moving between checkouts: its start point is taken here, afresh
+        if target.meta.get("base"):  # T-4626: said, with the old start, so a diff that shrank is no mystery
+            shifted = (f"moved from {'lane ' + target.meta['lane'] if target.meta.get('lane') else 'the main checkout'} to "
+                     f"{'lane ' + p.lane if p.lane else 'the main checkout'}: its start point is now this checkout's "
+                     f"(was {target.meta['base'][:9]}); work done in the other is not in this diff")
+            target.append_log(shifted)
         for k in ("base", "base_tree", "paused_tree"):
             target.meta.pop(k, None)
     if p.lane:  # T-0234 review: the branch it was bound on is the one fm lane rm may delete later
@@ -4387,7 +4395,9 @@ def _focus_edit(p, target, once, blast=""):
                               if moved is False else
                               "other work changed the same lines while it was paused: its diff still includes that work")
     snapped = None
-    if not target.meta.get("base_tree") and c.git_root(p.root):
+    # T-4626: a repeat focus whose first snapshot failed (a loaded host) must not take one now: the files as they are
+    # after the task's commits would be its start, and base_tree is read before the start commit (an empty diff)
+    if not target.meta.get("base_tree") and c.git_root(p.root) and (first_focus or relocated):
         snapped = snap()  # T-0078: its own changes are measured from the files as they are now
         if snapped:
             target.meta["base_tree"] = snapped
@@ -4432,7 +4442,7 @@ def _focus_edit(p, target, once, blast=""):
             target.meta.update(predict_minutes=guess[0], predict_attempts=guess[1])
             target.append_log(f"predicted from its closes: {guess[0]} min, {guess[1]} attempt(s)")
         target.meta.update(plan0_at=c.now(), plan0_scope=list(target.meta.get("scope") or []))
-    return resumed, first_focus, hits, related, snapped
+    return resumed, first_focus, hits, related, snapped, shifted
 
 
 def cmd_focus(args):
@@ -4471,7 +4481,8 @@ def cmd_focus(args):
         target = need_brief(p, args.id)  # read again under the lock: an edit made meanwhile is kept
         _focus_refusal(p, target)
         stage_before = c.stage(target)  # T-1137: focus saves outside mutate, so it logs its own stage move
-        resumed, first_focus, hits, related, snapped = _focus_edit(p, target, once, blast)
+        was_active = target.status in ("active", "verifying")  # T-4626
+        resumed, first_focus, hits, related, snapped, shifted = _focus_edit(p, target, once, blast)
         for b in c.load_briefs(p):
             if b.status in ("active", "verifying") and b.id != target.id and b.meta.get("lane") == p.lane:
                 if b.meta.get("base_tree") and (tree := once("snap", lambda: c.worktree_tree(p.root))):
@@ -4525,6 +4536,9 @@ def cmd_focus(args):
     raw = re.sub(r"(?m)^>\s?", "", target.section("Raw request")).strip() if queued else ""
     record += f"\nThe request, word for word:\n{raw[:6000]}" if raw else ""
     out(args, c.brief_summary(target), f"Focus: {target.id} [{target.type} {target.tier}] {target.title}"
+        + (f"\nAlready in focus: its start point (base {target.meta['base'][:9]}) is kept, so its diff is unchanged."
+           if was_active and not first_focus and not shifted and target.meta.get("base") else "")
+        + (f"\nNote: {shifted}" if shifted else "")
         + (f"\nStale since it started (gone from the repo now): {', '.join(stale)} — re-check the brief." if stale else "")
         + (f"\n{related}" if related else "") + (f"\n{record}" if record else "")
         + f"\nDone needs: {', '.join(g for g, _ in gates(target.type, target.tier))} (sampo gates {target.id})")
