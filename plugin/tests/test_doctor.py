@@ -443,8 +443,12 @@ class Checks(_TmpDir):
         self.write("fh/plugin/skills/extra/SKILL.md", "---\nname: extra\ndescription: x\n---\n")
         r = d.check_self_docs(home, os.path.join(home, "plugin"))
         self.assertEqual(r.status, "FAIL")
-        for needle in ("fm teleport", "MASTER.md lacks fm adopt, agents, approve-reads, ask", "doctor", "extra", "--frobnicate", "--no-wiring"):
+        for needle in ("fm teleport", "MASTER.md lacks fm ", "doctor", "extra", "--frobnicate", "--no-wiring"):
             self.assertIn(needle, r.detail)
+        # T-4662: the verbs MASTER.md lacks sort alphabetically, so a new verb (ahead) landed inside a pinned
+        # prefix and broke this test; assert the verbs it names as a set, not as one exact leading string
+        lacking = r.detail.split("MASTER.md lacks fm ", 1)[1].split("\n", 1)[0].split(";", 1)[0]
+        self.assertLessEqual({"adopt", "agents", "approve-reads", "ask"}, {w.strip() for w in lacking.split(",")})
 
     def test_state_location(self):
         import unittest.mock as mock

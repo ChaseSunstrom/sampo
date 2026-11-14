@@ -8872,6 +8872,13 @@ def _build_parser(only=None):
                                    "(exists) or num:<value> via <command> (prints it)")
     s.add_argument("--all", action="store_true", help="list every concern, shown and answered ones too")
 
+    s = add("ahead", lazy("sampo.ahead", "cmd_ahead"), tier=("Reports", 1035),
+            help="foresight: what a local model predicts the user's next steer would be, each checked against live state "
+                 "before it is believed (probe, verdict, action); the open ones listed, a false one booked as dropped; "
+                 "--tick predicts once from the last turn (local model only, refused while paused; T-4662)")
+    s.add_argument("--tick", action="store_true", help="predict now from the newest transcript's last reply (bounded: two "
+                                                       "model calls, at most three rows)")
+
     s = add("sync", lazy("sampo.sync", "cmd_sync"), tier=("Project and settings", 790),
             help="opt-in mirror of this project's briefs, decisions and research in the repo (.sampo/)")
     s.add_argument("action", nargs="?", default="status", choices=["status", "on", "off", "import", "export"])
