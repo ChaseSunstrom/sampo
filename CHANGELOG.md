@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A Rust project's builder lanes now share one CARGO_TARGET_DIR outside the repo, named in the builder brief and set for the commands Sampo spawns (a value the user set is kept), and sampo doctor's disk line counts lane build output (T-4575).
 - A Smith run on an S-tier plan whose task new --focus is refused for a missing Undo line now supplies the Undo from its own tree copy and focuses again before any re-plan, and the re-plan sees the gate's own words instead of the task's JSON (T-4592).
 - `sampo lane land --merged` sweeps the lanes whose work is already on the trunk and closes their tasks through one shared close on one reused gate pass, and a multi-id `sampo lane merge` now closes what it lands (T-4596).
 - Smith now measures a speed-up request first (scenario command, times at two sizes, profile top), hands the planner that measurement with the user's cause labelled a guess, and refuses a performance plan whose first criterion does not run the measured scenario (T-4579).
