@@ -84,6 +84,7 @@ OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a b
 OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S"})  # T-4525: the wait timer's limits; its tests set their own
 OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its starter; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
+OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record is believed; a nested run's is its own
 CGROUP_ROOT = "/sys/fs/cgroup"
 LIVE_CLASSES = set()  # T-4538: the class processes running now (each leads its own session, so its pid is its group)
 PARENT_POLL_S = 1.0  # T-4538: how often a run checks that the process which started it is still alive
@@ -790,6 +791,74 @@ def last_record(common, tree=None, worktree=None, whole=None, run_id=None):
                 and (run_id is None or rec.get("run_id") == run_id)):
             return rec
     return None
+
+
+KNOWN_RED_MIN = "SAMPO_KNOWN_RED_MIN"  # T-4269: minutes a record of a red class is believed (default 60); 0: no reordering
+KNOWN_RED_DEFAULT_MIN = 60.0
+KNOWN_CLASSES_MAX, KNOWN_PATHS_MAX, KNOWN_PATH_LEN = 10, 1500, 400  # what a record keeps of a red class's inputs
+
+
+def known_red_window():
+    """T-4269: seconds a record of a red class is believed; 0 turns known-red-first off (a bad value: the default)."""
+    raw = _env(KNOWN_RED_MIN)
+    try:
+        minutes = float(raw) if raw not in (None, "") else KNOWN_RED_DEFAULT_MIN
+    except ValueError:
+        minutes = KNOWN_RED_DEFAULT_MIN
+    return minutes * 60 if minutes > 0 else 0.0  # a negative or NaN one is off, never "forever"
+
+
+def red_inputs(failed_classes, results, owner, base, repo, blobs, value):
+    """T-4269: {class: [digest, paths]} for the red classes of a run: the paths its jobs read (what the cache records
+    for a green class, shared files included) and their digest on the tree the run started on. A class whose reads
+    went unrecorded, or too many of them, is left out: nothing is then known of its inputs. At most KNOWN_CLASSES_MAX."""
+    out = {}
+    for cid in list(dict.fromkeys(failed_classes))[:KNOWN_CLASSES_MAX]:
+        texts = [COVERED.get(r[0]) for r in results if owner(r[0]) == cid]
+        if not texts or None in texts:
+            continue
+        paths = sorted(base.union(*(covered(t, repo, blobs) for t in texts)))
+        if len(paths) <= KNOWN_PATHS_MAX and all(len(p) <= KNOWN_PATH_LEN for p in paths):
+            out[cid] = [digest(paths, value), paths]
+    return out
+
+
+def known_red(common, cids, value, window, now=None):
+    """T-4269: {class: age in s} for each of cids whose newest word in the repo's run records, within `window` s, is
+    'red' on the inputs the current tree gives: the record's paths read on this tree (`value`) digest to the one the
+    record kept (the digest the green cache keys on). A newer record naming the class red without inputs, or
+    'cleared' (red once, then green on the same inputs: flaky), or on other inputs, ends the search: not known red.
+    Reads only the records inside the window, newest first; any it can't read is skipped."""
+    now = time.time() if now is None else now
+    out, left = {}, set(cids)
+    if window <= 0 or not left:
+        return out
+    try:
+        names = sorted((n for n in os.listdir(runs_dir(common)) if RUN_NAME.fullmatch(n)), reverse=True)
+    except OSError:
+        return out
+    for n in names:
+        if not left or now - int(n[:20]) / 1e9 > window:  # names sort by time: every later one is older still
+            break
+        try:
+            with open(os.path.join(runs_dir(common), n)) as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            continue
+        t = rec.get("t") if isinstance(rec, dict) else None
+        if not isinstance(t, (int, float)) or now - t > window:
+            continue
+        inputs = rec.get("inputs") if isinstance(rec.get("inputs"), dict) else {}
+        named = {f.get("class") for f in rec.get("failed") or [] if isinstance(f, dict)}
+        named |= set(x for x in rec.get("cleared") or [] if isinstance(x, str))
+        for cid in sorted(left & (named | set(inputs))):
+            left.discard(cid)
+            got = inputs.get(cid)
+            if (isinstance(got, list) and len(got) == 2 and isinstance(got[0], str) and isinstance(got[1], list)
+                    and len(got[1]) <= KNOWN_PATHS_MAX and all(isinstance(p, str) and len(p) <= KNOWN_PATH_LEN for p in got[1])
+                    and digest(got[1], value) == got[0]):
+                out[cid] = max(0.0, now - t)
+    return out
 
 
 def record_lines(rec):
@@ -2087,6 +2156,17 @@ def main():
     owner = lambda j: j if j in parts else j.rsplit(".", 1)[0]  # noqa: E731  (a split class's job is one test)
     times = {} if a.shard else load_times()  # a shard's slice must not depend on this machine's last run
     todo = plan(todo, parts, whole, times)  # T-3166: jobs, a big class's tests apart
+    known = {}  # T-4269: class -> age (s) of the record that shows it red on these inputs; those jobs go first, none is dropped
+    if got:
+        try:
+            known = known_red(got[2], {owner(j) for j in todo}, value, known_red_window())
+        except Exception as e:  # a record that can't be read only costs the order
+            sys.stderr.write(f"run.py: the run records were not read for known red classes (T-4269): {repr(e)[:200]}\n")
+    if known:
+        todo = sorted(todo, key=lambda j: owner(j) not in known)  # stable: the rest keep their longest-first order
+        lo, hi = (round(f(known.values()) / 60) for f in (min, max))
+        sys.stderr.write(f"run.py: known red on these inputs (recorded {f'{lo}-{hi}' if lo != hi else lo} min ago): running first: "
+                         f"{', '.join(sorted(known))}\n")
     if a.load and (room := load_room(a.load)) < a.load:
         sys.stderr.write(f"run.py: --load {a.load} cut to {room}: the host already runs near twice its CPU count\n")
         a.load = room
@@ -2126,7 +2206,21 @@ def main():
         joins = Joins(cache, ident, value, owner, todo, times, {c: len(parts.get(c, ())) for c in ident},
                       {c: recs[c][0][2] for c in ident}, read, fresh, t0)
     with slot, burn(a.load), concurrent.futures.ThreadPoolExecutor(max(1, a.j)) as ex:
-        go = lambda c: run_one(c, a.k or a.names, cap, end, small, joins)  # noqa: E731  # T-1994: the class is in a named module, so -k alone
+        told, told_lock = set(), threading.Lock()  # T-4269: the known-red classes whose second red was said (once each)
+
+        def go(c):  # T-1994: the class is in a named module, so -k alone
+            r = run_one(c, a.k or a.names, cap, end, small, joins)
+            if (known and r[1] != 0 and owner(r[0]) in known and r[2] not in (NOT_STARTED, DEFERRED)
+                    and "the run's deadline" not in r[2]):
+                with told_lock:  # red again on the inputs its record had it red on: said now, not at the end
+                    first = owner(r[0]) not in told
+                    told.add(owner(r[0]))
+                if not first:
+                    return r
+                f = fail_entries([r], owner, [])[0]
+                sys.stderr.write(f"run.py: known red again: {f['class']}{'.' + f['test'] if f['test'] else ''}"
+                                 f"{': ' + f['first'] if f['first'] else ''}\n")
+            return r
         results = list(ex.map(go, todo))
         if joins:
             theirs = joins.deferred()
@@ -2193,6 +2287,11 @@ def main():
             sys.stderr.write("".join(f"run.py: CPU over its margin, not gated: {c} took {s:.1f} CPU s, {why}\n"
                                      for c, s, _, why in over))
         cpu_red = over if cpu_gate else []
+    # T-4269: a class its record had red on these inputs that now passes in every job it ran: a flaky one. The run's
+    # exit follows the results alone; the record says 'cleared' so the next run does not take it for red again.
+    flaky = sorted(c for c in known if (js := [r for r in results if owner(r[0]) == c]) and all(r[1] == 0 for r in js))
+    for c in flaky:
+        sys.stderr.write(f"run.py: was red, now green on the same inputs: {c} (flaky?)\n")
     if got:  # T-3502: each class that ran whole and green, none skipped, recorded with what it read (T-3593)
         size, ran, cov = {}, {}, {}
         for t in set(ids):
@@ -2244,6 +2343,7 @@ def main():
     total = sum(r[3] for r in results)
     cached = f"; {sum(skip.values())} more green in the cache" if skip else ""  # T-3502: core._SOME_TESTS reads it
     cached += f"; joined {len(joined)} ({sum(joined.values())} tests green in a run beside this one)" if joined else ""  # T-4267: so does it
+    cached += f"; flaky {len(flaky)} (red before on these inputs, green now)" if flaky else ""  # T-4269
     slow = slowest(results, 3)
     if skipped():
         sys.stderr.write(f"\nleft out (FOREMAN_SKIP_TESTS): {', '.join(sorted(skipped()))}")
@@ -2271,6 +2371,10 @@ def main():
                     "n_failed": len(names), "n_not_run": len(stopped), **slot_fields(t0, time.time()),
                     "failed": ents[:FAILS_MAX],
                     "not_run": [r[0] for r in stopped][:NOT_RUN_MAX]}
+            if rtree:  # T-4269: what each red class read, so a later run on the same inputs knows it red; and the flaky ones
+                made["inputs"] = red_inputs([e["class"] for e in ents if not e.get("own")], real, owner,
+                                            shared(*rtree[:2]), *rtree[:2], value)
+                made["cleared"] = flaky
             record_run(where[1], {**made, "lines": record_lines(made)})  # the lines too: a caller prints them as they are
     except Exception as e:
         sys.stderr.write(f"run.py: the run's record was not written (T-4268): {repr(e)[:200]}\n")

@@ -545,5 +545,135 @@ class TimesShared(Fixture):
             self.assertEqual(sorted(run.load_times()), [f"a.C{i}" for i in range(6)])
 
 
+# T-4269 (part C of T-4266): a class the record shows red on the same inputs runs first and the run says so at once.
+# Each class logs its start to ORDER. Big and Slow end skipped, so the cache never keeps them: they run every time.
+# Slow, when armed, waits until the test (reading the run's stderr) has seen the verdict and says so: a verdict that
+# came only after Slow finished is a failure of the test, not a slow one. Late reads data.txt (its input) and is
+# green when the `green` flag exists.
+LOG = ("import os\nORDER = {order!r}\n\n\ndef log(name):\n    with open(ORDER, 'a') as f:\n        f.write(name + '\\n')\n")
+BIG = ("import unittest\nfrom kr_log import log\n\n\nclass Big(unittest.TestCase):\n"
+       "    def test_one(self):\n        log('Big')\n        self.skipTest('never cached')\n\n"
+       "    def test_two(self):\n        log('Big')\n\n    def test_three(self):\n        log('Big')\n")
+SLOW = ("import os\nimport time\nimport unittest\nfrom kr_log import log\n\n\nclass Slow(unittest.TestCase):\n"
+        "    def test_slow(self):\n        log('Slow')\n        if os.path.exists({arm!r}):\n"
+        "            for _ in range(200):\n                if os.path.exists({go!r}):\n"
+        "                    open({out!r}, 'w').write('released')\n                    break\n                time.sleep(0.1)\n"
+        "            else:\n                open({out!r}, 'w').write('never told')\n        self.skipTest('never cached')\n")
+LATE = ("import os\nimport unittest\nfrom kr_log import log\n\n\nclass Late(unittest.TestCase):\n"
+        "    def test_late(self):\n        log('Late')\n"
+        "        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data.txt')) as f:\n            f.read()\n"
+        "        if not os.path.exists({green!r}):\n            self.assertEqual(1, 2, 'late and red')\n")
+KR_NAMES = ("test_a_big", "test_slow", "test_zlate")
+KR_TIMES = {"test_a_big.Big": 3.0, "test_slow.Slow": 2.0, "test_zlate.Late": 0.01}  # Late is the cheapest: last today
+
+
+class KnownRed(Fixture):
+    def setUp(self):
+        super().setUp()
+        for name in ("test_red.py", "test_ok.py"):
+            os.unlink(os.path.join(self.tests, name))
+        self.order, self.arm, self.go_flag = (os.path.join(self.top, n) for n in ("order", "arm", "go"))
+        self.out, self.green = os.path.join(self.top, "slow-out"), os.path.join(self.top, "green")
+        self.times = os.path.join(self.top, "times.json")
+        self.env["FM_TEST_TIMES"] = self.times
+        self.write("kr_log.py", LOG.format(order=self.order))
+        self.write("data.txt", "one\n")
+        self.write("test_a_big.py", BIG)
+        self.write("test_slow.py", SLOW.format(arm=self.arm, go=self.go_flag, out=self.out))
+        self.write("test_zlate.py", LATE.format(green=self.green))
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "known red fixture")
+
+    def start(self, **env):
+        with open(self.times, "w") as f:
+            json.dump(KR_TIMES, f)  # the order today: Big, Slow, Late
+        with contextlib.suppress(OSError):
+            os.unlink(self.order)
+        return subprocess.Popen([sys.executable, os.path.join(self.tests, "run.py"), "-j", "1", *KR_NAMES], text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=self.repo, env={**self.env, **env})
+
+    def run_all(self, **env):
+        p = self.start(**env)
+        out, err = p.communicate(timeout=300)
+        return p.returncode, err
+
+    def started(self):
+        with open(self.order) as f:
+            return list(dict.fromkeys(f.read().split()))
+
+    def test_known_red_first_names_the_verdict_before_the_rest_runs(self):
+        code, err = self.run_all()  # today: the class red last, the verdict after everything else ran
+        self.assertEqual(code, 1, err)
+        self.assertEqual(self.started(), ["Big", "Slow", "Late"])
+        self.assertNotIn("known red", err)
+        open(self.arm, "w").close()  # Slow now waits for the verdict, and says whether it came in time
+        p = self.start()
+        lines, seen = [], []
+        for line in p.stderr:
+            lines.append(line)
+            if "known red again: test_zlate.Late.test_late" in line:
+                seen.append(line)
+                open(self.go_flag, "w").close()
+        p.wait(timeout=120)
+        p.stdout.close()
+        p.stderr.close()
+        err = "".join(lines)
+        self.assertEqual(p.returncode, 1, err)
+        self.assertEqual(self.started(), ["Late", "Big", "Slow"], "the class red on these inputs did not run first")
+        with open(self.out) as f:
+            self.assertEqual(f.read(), "released", "the verdict came only after the rest of the suite ran:\n" + err)
+        self.assertRegex(err, r"known red on these inputs \(recorded \d+ min ago\): running first: test_zlate\.Late")
+        self.assertIn("late and red", seen[0])
+        self.assertLess(err.index("known red on these inputs"), err.index("known red again"))
+        self.assertLess(err.index("known red again"), err.index("Ran "))
+        self.assertIn("FAILED", err)
+
+    def test_known_red_first_never_skips_a_class_and_the_switch_turns_it_off(self):
+        self.run_all()
+        code, err = self.run_all()
+        self.assertEqual(sorted(self.started()), ["Big", "Late", "Slow"], err)
+        self.assertEqual(code, 1)
+        code, err = self.run_all(SAMPO_KNOWN_RED_MIN="0")  # the switch: today's order again, no line
+        self.assertEqual(self.started(), ["Big", "Slow", "Late"], err)
+        self.assertNotIn("known red", err)
+
+    def test_not_known_red_after_its_inputs_changed_so_no_flaky_line_and_no_early_verdict(self):
+        self.run_all()
+        self.write("data.txt", "two\n")  # the file the class read changed: another input, nothing is known of it
+        git(self.repo, "commit", "-qam", "data changed")
+        code, err = self.run_all()
+        self.assertEqual(code, 1, err)
+        self.assertEqual(self.started(), ["Big", "Slow", "Late"])
+        self.assertNotIn("known red", err)
+        self.assertNotIn("flaky", err)
+
+    def test_not_known_red_once_the_record_is_older_than_the_window_so_no_flaky_line(self):
+        self.run_all()
+        time.sleep(0.2)
+        code, err = self.run_all(SAMPO_KNOWN_RED_MIN="0.001")  # a 0.06 s window
+        self.assertEqual(code, 1, err)
+        self.assertEqual(self.started(), ["Big", "Slow", "Late"])
+        self.assertNotIn("known red", err)
+        self.assertNotIn("flaky", err)
+        self.assertEqual(self.run_all()[0], 1)  # the default hour still knows it
+        self.assertEqual(self.started()[0], "Late")
+
+    def test_red_then_green_on_the_same_inputs_says_flaky_exits_0_and_is_not_known_red_after(self):
+        self.run_all()
+        open(self.green, "w").close()  # the same inputs, now passing
+        code, err = self.run_all()
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.started()[0], "Late")
+        self.assertIn("known red on these inputs", err)
+        self.assertIn("was red, now green on the same inputs: test_zlate.Late (flaky?)", err)
+        self.assertNotIn("known red again", err)
+        self.assertRegex(err, r"flaky 1\b")
+        self.assertIn("OK", err)
+        code, err = self.run_all()  # the newest word on the class is its green
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("known red", err)
+        self.assertNotIn("flaky", err)
+
+
 if __name__ == "__main__":
     unittest.main()
