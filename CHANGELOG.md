@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A small run (up to 8 classes of little work) takes a reserved pool slot, so a builder's module no longer waits minutes behind full gates (T-4650).
 - The credentials guard no longer releases a real secret through a `..` after a scratch symlink, a hardlink to a released name, a project under a scratch root, a broad `tokens` name, a different letter case, or `.default(s)` (T-4666).
 - The guard's credentials category no longer refuses .env fixtures under scratch folders, folders named like credentials, or text in a cat heredoc body, while real secrets and written-and-run scripts stay refused (T-4143).
 - macOS CI runs five shards, and recover and train read the boot id and a process's start time on macOS where there is no /proc; suite fixtures no longer assume a `timeout` command (T-4633).
