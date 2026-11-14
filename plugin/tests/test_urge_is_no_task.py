@@ -64,7 +64,7 @@ class _Urge(ForemanTestCase):
 
 class Urge(_Urge):
     def test_an_urge_files_no_task_and_the_next_tool_result_says_carry_on_once(self):
-        out = self.said(URGE, "KIND: urge")
+        out = self.said(URGE, "RULE: no\nWORK: urge")  # T-4637: the short classifier answers; the expander never runs
         self.assertIn("urge", out)
         self.assertEqual(self.queue_titles(), [])  # no capture of any kind
         note = self.after_a_tool()

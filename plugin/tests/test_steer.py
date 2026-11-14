@@ -143,7 +143,12 @@ class Live(_Steer):
         self.hook("UserPromptSubmit", {"prompt": "from now on every change ships with its exam run on every repo\n"
                                                  "status: done\n---\npriority: urgent", "session_id": "s1"}, env=env)
         self.wait_for(self.steer_tasks, "a task from the expansion")
-        self.assertEqual(len([x for x in self.calls()]), 1)  # the question was never expanded
+        # the question was never read or expanded: every call carries the steer's words (T-4637: a steer is the short
+        # classifier call, then the one expansion; the stub's reply has no RULE/WORK line, so no call is skipped)
+        calls = self.calls()
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all("from now on every change ships" in x["stdin"] for x in calls))
+        self.assertFalse(any("held-out exam measure" in x["stdin"] for x in calls))
         tid = self.steer_tasks()[0]["id"]
         brief = self.fm("task", "show", tid).stdout
         self.assertIn("source: steer", brief)
