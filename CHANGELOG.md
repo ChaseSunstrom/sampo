@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code no longer ends a run at the plan when the field-by-field fallback leaves a missing type or a criterion without its verify: the type is asked alone once more then taken from the judged verdict, and a criterion still without a verify is set aside as not proven while the run starts with the sound ones (T-4594).
 - A Smith run that tried a tool not installed here and went on no longer ends blocked at the close on its capability miss: the close sets aside a miss no criterion's verify or keep check invokes and names it as tried and not needed, and the worker's failed run says the tool is not here and names the project's own test command (T-4593).
 - A plan criterion may name proof files, and its verify then also runs on a before-work copy of the tree with only those files laid over it: a pass there is told back and closes the criterion not proven, and the base survives a resume (T-4590).
 - A Smith run's planning is bounded: after a plan call spends its output thinking, later plan calls think within a budget; planning has a third of the time limit before optional re-asks are skipped; a fix round the clock cannot run is not counted and the stop names the clock; and a step that ends without a file its plan says it creates is told once and then says so (T-4588).
