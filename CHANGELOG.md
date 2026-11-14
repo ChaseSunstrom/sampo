@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A merge train refuses a full disk before any merge or test, and a gate red only on its disk line is reported as the machine, not the base (T-4652).
 - The always-on rules text drops the eleven plain-words pairs `sampo which` finds on its own (6399 to 5928 characters, 472 of headroom under doctor's cap), and every builder brief says the rules text has no room (T-4627).
 - Smith's keep check over a red suite now reads a unittest result that a test's own stderr or stdout splits across lines, so a passing held test is no longer reported gone (T-4634).
 - The close's Landed line and owed-companions check judge a task the trunk already holds by its own landing, not by every commit other tasks put on the trunk since its base (T-4632).
