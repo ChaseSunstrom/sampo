@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A Smith plan whose only flaw is a multi-line verify is kept: the command is written as written to a check script in the run's own folder and called in one line, so a whole M plan no longer ends with no valid plan (T-4571).
 - `sampo lane accept` runs the repo-shape run in the lane's check child and reuses a green result for the hold check (T-4563).
 - The affected selection now also picks tests whose run record holds the whole tree and no function (the hook or CLI run in a child the recorder can't follow), so the train's gate selects test_sampo_spelling for a hooks.py change like T-4511's (T-4554).
 - `sampo lane accept` refuses a lane whose repo-shape modules are red before its long check starts, and the builder contract names those modules as required before the report (T-4542).
