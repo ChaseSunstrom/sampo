@@ -1,2 +1,4 @@
 # T-0427: every task adds a line under "## Unreleased"; a builder lane's line and the main line's merge as both
 CHANGELOG.md merge=union
+# T-4649: every lane appends a note to a map file; four lanes in a row conflicted on docs/map/files-lib-4.md
+docs/map/*.md merge=union
