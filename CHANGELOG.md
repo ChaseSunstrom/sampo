@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Idle lanes of open tasks whose builder returned are tidied, and doctor names what tidy cannot free apart from its disk line (T-4661).
 - A path that climbs with `..` after a symlink is judged by where it really goes in every guard category, interpreter-made hardlinks of a credential are refused, and home credential folders match in any letter case (T-4667).
 - Variant cards and their brief drafts no longer share the think setting, and a brief file a paid writer made is drafted again by the local writer (T-4659).
 - The Stop hook holds a concern with no task, proof or answer even while a task is open, once, in the drive's continuation (T-4668).
