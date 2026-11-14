@@ -2298,7 +2298,10 @@ def _landed(p, b):
     base = c.task_base(p.root, b) if c.git_root(p.root) else None
     if not base:
         return "Landed: unknown (no git start point on record)"
-    files = [f for f in smap.changed(p.root, base) if not f.startswith(c.MIRROR_DIRS)]
+    changed = smap.changed(p.root, base)
+    if not p.lane:  # T-4632: a task the trunk holds is judged by its own landing, as the scope check is (T-4628)
+        changed = sorted(_own_change(p, b, base, changed)[1])
+    files = [f for f in changed if not f.startswith(c.MIRROR_DIRS)]
     others = _others(p, b)
     theirs = set(_theirs(p, b, files, others))
     files = [f for f in files if f not in theirs][:500]
@@ -2432,6 +2435,8 @@ def _owed_companions(p, b, outside):
     named = [s for s in b.meta.get("scope") or [] if not any(ch in s for ch in "*?[")]
     if not base or not named:
         return set()
+    if not p.lane:  # T-4632: a file another task added before this one's landing isn't this task's to add (its first parent has it)
+        base = _own_change(p, b, base, set())[0]
     had = set((c._git(p.root, "ls-tree", "-r", "--name-only", base, "--", *named, timeout=30, fail="") or "").splitlines())
     from sampo import shape
     owed = set()
