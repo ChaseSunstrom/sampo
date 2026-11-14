@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Smith's keep check over a red suite now reads a unittest result that a test's own stderr or stdout splits across lines, so a passing held test is no longer reported gone (T-4634).
 - The close's Landed line and owed-companions check judge a task the trunk already holds by its own landing, not by every commit other tasks put on the trunk since its base (T-4632).
 - Smith's keep check over a red suite now reruns a failed held test once before it counts, so a flaky test no longer throws a run's work into a patch, and the scripted-model test fake answers the request judge itself (T-4630).
 - The close's scope check now judges a task the trunk already holds by its own landing, so other tasks' commits since its base no longer read as "edited outside scope" (T-4628).
