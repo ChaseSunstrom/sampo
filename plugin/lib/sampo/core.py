@@ -1539,6 +1539,52 @@ def nice_argv(argv, level=NICE_LANE):
     return [nice, "-n", str(level), *argv] if nice else list(argv)
 
 
+CARGO_VAR = "CARGO_TARGET_DIR"
+CARGO_KEPT = (CARGO_VAR, "CARGO_BUILD_TARGET_DIR")  # the two names cargo reads for the same setting
+CARGO_CONFIG_MAX = 1 << 20  # bytes of a cargo config read: a larger file is not one
+
+
+def _cargo_config_dir(path):
+    """build.target-dir of one cargo config file, '' when it has none, can't be read or isn't TOML."""
+    import tomllib
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.loads(f.read(CARGO_CONFIG_MAX).decode("utf-8"))
+    except (OSError, ValueError):  # a torn file is tomllib's ValueError, a bad byte UnicodeDecodeError's
+        return ""
+    build = data.get("build")
+    val = build.get("target-dir") if isinstance(build, dict) else ""
+    return val if isinstance(val, str) else ""
+
+
+def cargo_target(root, slug=None, environ=None):
+    """T-4575: (dir, note) for a Rust project's lanes. Builder lanes each compiled into their own target folder (8.6 to
+    15 GB in 40 minutes, 99% disk, twice), so a project whose checkout root holds a Cargo.toml has ONE shared
+    CARGO_TARGET_DIR under Sampo's state (cache/, which fsck and sync leave alone), outside the repo and its lanes:
+    cargo locks it, so lane builds queue rather than duplicate. `root` is the checkout or any lane of it. (None, "")
+    for a project without a Cargo.toml; (None, why) when the user already chose (the environment, or build.target-dir
+    in the project's .cargo/config[.toml], the lane's own, or cargo home's): kept, never overridden."""
+    main = main_worktree(root) or root
+    if not os.path.isfile(os.path.join(main, "Cargo.toml")):
+        return None, ""
+    environ = os.environ if environ is None else environ
+    for name in CARGO_KEPT:
+        if environ.get(name):
+            return None, f"{name} is already {environ[name]} in the environment: kept"
+    home = environ.get("CARGO_HOME") or os.path.join(os.path.expanduser("~"), ".cargo")
+    for folder in dict.fromkeys((os.path.join(main, ".cargo"), os.path.join(root, ".cargo"), home)):
+        for name in ("config.toml", "config"):
+            val = _cargo_config_dir(os.path.join(folder, name))
+            if val:
+                return None, f"build.target-dir is already {val} in {os.path.join(folder, name)}: kept"
+    return cargo_shared_dir(slug or (find_project(root) or _project(slug_for(main), main)).slug), ""
+
+
+def cargo_shared_dir(slug):
+    """T-4575: where a project's lanes share cargo's build output (whether or not one is set now: doctor sizes it)."""
+    return os.path.join(state_dir(), "cache", "cargo-target", slug)
+
+
 def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None, watch=None,
                 watch_every=30.0, low=False):
     """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). stdin is
@@ -1553,6 +1599,13 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         _drop_racy_pyc(root)
     if env is None:  # T-1114: fm check sets the skip list itself; an inherited one would leave tests out silently
         env = {k: v for k, v in os.environ.items() if k != "FOREMAN_SKIP_TESTS"}
+    if root and os.path.isfile(os.path.join(root, ".git")) and not env.get(CARGO_VAR):  # T-4575: a linked worktree: a lane
+        try:  # of a Rust project (or the gate's throwaway one) builds into the project's one shared folder, unless the
+            shared = cargo_target(root, environ=env)[0] if main_worktree(root) else None  # user chose another; a submodule's
+        except (OSError, subprocess.SubprocessError, PolicyError, ValueError):  # .git file is not a lane; a read that fails
+            shared = None  # leaves the run as it was
+        if shared:
+            env = {**env, CARGO_VAR: shared}
     if priority and not env.get(SLOT_PRIORITY):
         env = {**env, SLOT_PRIORITY: "1"}
     if low and not env.get(SLOT_LOW):

@@ -12,6 +12,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -2229,6 +2230,7 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         parts += ["## The user (machine-local profile)", who, ""]
     parts += ["## Standing rules", "Checked before the merge (sampo check --affected runs their tests); break none:",
               *STANDING, *[f"- {d}: {t}" for d, t in standing_decisions(p)], ""]
+    parts += cargo_brief(p)  # T-4575
     parts.append(contract(b.id, base, p.root))
     path =os.path.join(p.dir, "audits", f"{b.id}.builder.md")
     text = c.redact("\n".join(parts)) + "\n"
@@ -2639,9 +2641,43 @@ def cpu_env(p, gate=True):
     """T-3757: a gate run's environment: tests/run.py holds each test class's CPU to the project's baseline (the median
     of its last green runs) and records a green run as the next usual; with `gate` (the train), a class over its margin
     fails like a red test, so the train's probes leave out the lane that made it. Other test runners ignore both."""
-    env = {k: v for k, v in os.environ.items() if k not in ("FOREMAN_SKIP_TESTS", "SAMPO_CPU_GATE")}  # as run_command
+    env = lane_env(p, {k: v for k, v in os.environ.items() if k not in ("FOREMAN_SKIP_TESTS", "SAMPO_CPU_GATE")})  # as run_command
     env["SAMPO_CPU_BASE"] = os.path.join(p.dir, "test-cpu.json")
     return {**env, "SAMPO_CPU_GATE": "1"} if gate else env
+
+
+def cargo_target(p):
+    """T-4575: (the one shared CARGO_TARGET_DIR of this Rust project's lanes or None, a note when the user's own choice
+    is kept): core.cargo_target on the project's checkout, under the project's own slug."""
+    return c.cargo_target(p.root, p.slug)
+
+
+def lane_env(p, base=None):
+    """T-4575: the environment of a command Sampo spawns for a lane (a copy of `base`, else this process's minus
+    FOREMAN_SKIP_TESTS, as run_command reads it): a Rust project's carries the shared CARGO_TARGET_DIR, unless the
+    caller's already has one (the user's choice stands)."""
+    env = dict({k: v for k, v in os.environ.items() if k != "FOREMAN_SKIP_TESTS"} if base is None else base)
+    try:  # a read that fails (or a project with no checkout path: a test's stand-in) leaves the environment as it was
+        shared = c.cargo_target(p.root, p.slug, env)[0] if isinstance(p.root, str) else None
+    except (OSError, subprocess.SubprocessError, c.PolicyError, ValueError):
+        shared = None
+    if shared and not env.get(c.CARGO_VAR):
+        env[c.CARGO_VAR] = shared
+    return env
+
+
+def cargo_brief(p):
+    """T-4575: the builder brief's build-output section ([] for a project without a Cargo.toml): the line to export
+    before any cargo command, or the user's own setting that stays."""
+    shared, kept = cargo_target(p)
+    if shared:
+        return ["## Build output (Rust)", f"All lanes of this project share one cargo target folder, outside the repo "
+                f"(each lane's own target/ took 8 to 15 GB and filled the disk). Before any cargo command in your "
+                f"worktree run, in the same shell command:", "", f"    export {c.CARGO_VAR}={shlex.quote(shared)}", "",
+                "Sampo's own runs in your lane (`sampo task evidence`, the gates) carry it already. cargo locks the "
+                "folder, so a build may wait on another lane's build (\"Blocking waiting for file lock\"): wait, "
+                "never delete the folder or set another.", ""]
+    return ["## Build output (Rust)", f"{kept[:1].upper()}{kept[1:]}. Leave it as it is: Sampo sets no shared target folder.", ""] if kept else []
 
 
 UNCACHED_EVERY, UNCACHED_S = 6, 4 * 3600
@@ -3580,6 +3616,38 @@ def finished(p, briefs, budget=SIZE_BUDGET_S, now=None, busy=None):
 def reclaimables(p, briefs=None, budget=SIZE_BUDGET_S):
     """What doctor names when the disk runs short: this project's finished lanes (done, no-task, scratch)."""
     return finished(p, c.load_briefs(p) if briefs is None else briefs, budget=budget)
+
+
+def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S):
+    """T-4575: (label, bytes) of the cargo build output of this project's lanes that stay: the target/ folder of each
+    lane worktree (under <repo>.lanes/ or <repo>/.claude/worktrees/) that holds a Cargo.toml, and the shared folder.
+    `skip` are the lanes already counted whole (finished() rows: tidy removes them with their target/). None when
+    there is none or the sizing ran out of `budget`. Reads only: doctor names it, nothing is deleted."""
+    deadline = time.monotonic() + budget
+    main = c.main_worktree(p.root) or p.root
+    if not c.git_root(main):
+        return None
+    real = os.path.realpath
+    homes = (real(main) + ".lanes", real(os.path.join(main, ".claude", "worktrees")))
+    skip, n, total = {real(s) for s in skip}, 0, 0
+    for w in _worktrees(main)[1:]:
+        path = real(w["path"])
+        target = os.path.join(path, "target")
+        if w["prunable"] or path in skip or not path.startswith(tuple(h + os.sep for h in homes)) \
+                or not os.path.isfile(os.path.join(path, "Cargo.toml")) or not os.path.isdir(target):
+            continue
+        size = dir_bytes(target, deadline)
+        if size is None:
+            return None
+        n, total = n + 1, total + size
+    shared = c.cargo_shared_dir(p.slug)
+    held = dir_bytes(shared, deadline) if os.path.isdir(shared) else 0
+    if held is None:
+        return None
+    if not n and not held:
+        return None
+    what = ", ".join(([f"{n} target folder{'s' if n > 1 else ''}"] if n else []) + (["shared"] if held else []))
+    return f"lane build output ({what})", total + held
 
 
 def _remove_finished(main, row):

@@ -2052,8 +2052,14 @@ def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S):
     deadline, rows = time.monotonic() + budget, []
     for p, _ in projects:
         try:
-            for r in slanes.reclaimables(p, budget=max(0.0, deadline - time.monotonic())):
+            done = slanes.reclaimables(p, budget=max(0.0, deadline - time.monotonic()))
+            for r in done:
                 rows.append((f"{slanes._KINDS[r['kind']]} {os.path.basename(r['path'])}", r["bytes"] or 0))
+            # T-4575: a Rust project's lanes' cargo output (their target/ folders, the shared one); a finished lane's is
+            # in its own row (tidy takes the lane whole), so only the lanes that stay are counted here
+            build = slanes.lane_build_output(p, skip=[r["path"] for r in done], budget=max(0.0, deadline - time.monotonic()))
+            if build:
+                rows.append(build)
         except (OSError, c.PolicyError, subprocess.SubprocessError, ValueError):
             continue
     try:
