@@ -83,6 +83,7 @@ OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND
 OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a big task; a hold test sets its own
 OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S"})  # T-4525: the wait timer's limits; its tests set their own
 OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its starter; a test that needs it sets it itself
+OPERATOR_SWITCHES.add("SLOT_RESERVE")  # T-4650: the reserved slots' off switch is the operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
 OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record is believed; a nested run's is its own
 CGROUP_ROOT = "/sys/fs/cgroup"
@@ -177,12 +178,13 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False):
     if not folder:  # nested, off, no flock (Windows) or a folder that isn't safely ours: run without one
         yield None
         return
-    now, order, prio, mark = time.monotonic(), random.sample(range(n), n), _env(PRIO_ENV) == "1", None
+    fast, ordinary = lanes(n)
+    now, order, prio, mark = time.monotonic(), random.sample(ordinary, len(ordinary)), _env(PRIO_ENV) == "1", None
     end, defer, got, said = now + (min(wait, SMALL_WAIT) if small else wait), now + defer_for(wait), None, False
     low, marked = low and not prio, False
     try:
         while True:
-            if small and (got := _take(folder, EXPRESS)):
+            if small and (got := _take(folder, fast)):
                 break
             behind = not prio and ((time.monotonic() < defer and _prio_waiting(folder)) or (low and _builder_waiting(folder)))
             if not behind:
@@ -232,9 +234,37 @@ def defer_for(wait):
     return min(wait / 2, DEFER_MAX)
 
 
-def small_selection(classes):
-    """T-4247: whether a run of these test classes is small enough for an express slot: distinct classes, not tests."""
-    return len(set(classes)) <= EXPRESS_CLASSES
+RESERVE_ENV = "SAMPO_SLOT_RESERVE"  # T-4650: =0 puts back the two extra express files and the two-class size bound
+RESERVE_SLOTS = 2  # T-4650: pool slots only a small run takes, of a pool of RESERVE_POOL * RESERVE_SLOTS or more
+RESERVE_POOL = 4  # ... a pool of n gets min(RESERVE_SLOTS, n // RESERVE_POOL) of them; under 4 slots none (express files)
+# T-4650: a run is small, beyond EXPRESS_CLASSES classes, when it has at most SMALL_CLASSES classes and they are expected
+# to take SMALL_WORK_S s together (their last times, else half a second a test). Measured 2026-11-14: builders' modules of
+# 3 to 10 classes and 13 to 30 tests (under 1 s of work) waited 285 to 411 s behind gates; a module of 300 tests is 150 s.
+SMALL_CLASSES, SMALL_WORK_S = 8, 15.0
+
+
+def reserved(n):
+    """T-4650: how many of the pool's n slots (the highest numbers) only a small run may take: so a gate that holds every
+    other slot leaves them, and the processes at once stay within the pool. 0: the switch is off, or the pool is under
+    RESERVE_POOL slots (a tiny pool keeps T-4247's two extra express files)."""
+    return 0 if _env(RESERVE_ENV) == "0" else min(RESERVE_SLOTS, n // RESERVE_POOL)
+
+
+def lanes(n):
+    """T-4650: (the slot names a small run tries first, the names every run draws from) for a pool of n slots."""
+    r = reserved(n)
+    return (tuple(range(n - r, n)), range(n - r)) if r else (EXPRESS, range(n))
+
+
+def small_selection(classes, jobs=(), times=None, parts=None):
+    """T-4247: whether a run of these test classes is small enough for a reserved slot: at most EXPRESS_CLASSES distinct
+    classes, not tests. T-4650: or, with the reserve on, at most SMALL_CLASSES that take SMALL_WORK_S s over their jobs."""
+    classes = set(classes)
+    if len(classes) <= EXPRESS_CLASSES:
+        return True
+    if not reserved(slot_count()) or len(classes) > SMALL_CLASSES:
+        return False
+    return sum(job_seconds(j, times or {}, parts or {}) for j in jobs) <= SMALL_WORK_S
 
 
 def _take(folder, names):
@@ -1668,14 +1698,17 @@ def plan(todo, parts, whole, times):
         split = cid not in whole and len(ids) > 1 and (times[cid] >= SPLIT_S if cid in times else cid.rsplit(".", 1)[-1] in SEEDED)
         jobs += ids if split else [cid]
 
-    def est(j):
-        if j in times:
-            return times[j]
-        if j in parts:  # a whole class never timed: half a second a test
-            return 0.5 * len(parts[j])
-        c = j.rsplit(".", 1)[0]  # a test never timed: its class's average
-        return times[c] / len(parts[c]) if c in times and c in parts else 0.5
-    return sorted(jobs, key=lambda j: -est(j))  # stable: ties keep the biggest-class-first order
+    return sorted(jobs, key=lambda j: -job_seconds(j, times, parts))  # stable: ties keep the biggest-class-first order
+
+
+def job_seconds(j, times, parts):
+    """Seconds a job (a class, or one test of a split class) is expected to take: its last time, else a guess."""
+    if j in times:
+        return times[j]
+    if j in parts:  # a whole class never timed: half a second a test
+        return 0.5 * len(parts[j])
+    c = j.rsplit(".", 1)[0]  # a test never timed: its class's average
+    return times[c] / len(parts[c]) if c in times and c in parts else 0.5
 
 
 def classes(patterns, k, hit=None, names=(), ids=None, parts=None, whole=None):
@@ -2190,7 +2223,8 @@ def main():
     a.deadline, end = dl, t0 + dl
     # T-3541: the whole suite (the gate: no names, -k or -p) waits for any other on the machine, at most half its deadline
     slot = suite_slot(t0 + dl / 2) if not (a.names or a.k or a.p) else contextlib.nullcontext()
-    small = small_selection(owner(j) for j in todo)  # T-4247: at most two classes to run: they may take an express slot
+    # T-4247: at most two classes to run: they may take an express slot; T-4650: so may a few classes of little work
+    small = small_selection((owner(j) for j in todo), todo, times, parts)
     # T-4267: a class another run is running on the same inputs is that run's: this one does its other classes, then waits
     joins = None
     if ident:
