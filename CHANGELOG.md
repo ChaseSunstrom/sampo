@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Accepted lanes waiting on their check are checked as one candidate on a scratch copy of the trunk, so N lanes cost one affected run, with a fallback to each lane's own check when the batch is red or cut off (T-4528).
 - Ward adds one advisory line for a process-list wait loop whose pattern also occurs elsewhere in its command, since the launcher matches itself and the loop never ends (T-4527).
 - sampo lane land records a refusal for an active main task in land.log, and sampo next names that task as the one holding the waiting lanes (T-4526).
 - The drive queues the next part of an open request's plan instead of stopping at an empty queue, and under full autonomy the Stop hook refuses a final reply once per part while one is left (T-4524).
