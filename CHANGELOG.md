@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A merge train clears a flaky class only when the whole gate is green again, probes the base before a repeat drop, stops at a flake cap, and scrubs test overrides from one list (T-4289).
 - `sampo big` gains an integration branch `big/<ID>`, `lane brief` cuts a big task's children from it and holds each until its `after` siblings land, `sampo big run` prints the whole ready wave capped by lane slots and the load gate, and `sampo big sync` merges the build branch in (T-4222).
 - The Stop hook holds a stop once for a concern the user raised this turn that has no task, proof or answer; it reads only this turn's tail of the book and ledger (6.6 MB to 16 KB per stop), and a concern said again holds once more (T-4202).
 - a concern the user reports again after its task closed (or after a shown proof, or when its shown number is worse a day later) reopens that task, or captures a linked FIX, with a forced 'look at the real surface first' step, and sampo task finish refuses it on unit-test evidence alone (T-4189).
