@@ -24,8 +24,8 @@ import threading
 import time
 
 from sampo import core as c
-from sampo.lanes import CLOSE_MARK, CriterionRed, _git, _ref_ok, _verify, cpu_env, pm_after_train, pm_record, \
-    pm_rerun_cmd, pm_wait, train_lock, train_lock_closing
+from sampo.lanes import CLOSE_MARK, CriterionRed, _git, _ref_ok, _verify, clear_git_locks, cpu_env, git_lock_lines, \
+    pm_after_train, pm_record, pm_rerun_cmd, pm_wait, train_lock, train_lock_closing
 
 FLAKY_ROUNDS = 3  # T-4289: red rounds a train goes on past (flaky classes alone) before it judges them as a lane's again
 SKIPPED = "probe skipped"  # the note a held green run leaves; the report counts by it (T-3596)
@@ -574,6 +574,8 @@ def train(p, main, ids=None):
     try:
         with _train_run_lock(p):
             took = True
+            for line in git_lock_lines(clear_git_locks(main)):  # T-4616: a stale lock would stop a merge or a builder's commit
+                print(f"sampo: train: {line}", file=sys.stderr, flush=True)
             return _run(p, main, ids)
     finally:  # T-4540: only a train that held the lock runs the pass: a refused one spawns nothing
         if took:

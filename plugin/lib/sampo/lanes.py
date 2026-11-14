@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import shutil
+import stat as _stat
 import subprocess
 import sys
 import tarfile
@@ -75,6 +76,181 @@ def corrupt_refs(root, cap=5000):
                 continue
             if empty and not n.endswith(".lock"):
                 out.append(os.path.relpath(os.path.join(r, n), top))
+    return out
+
+
+GIT_LOCK_AGE_S = 60  # T-4616: a git lock younger than this is left whatever the process table says
+_GIT_LOCK_CAP = 20000  # refs examined for lock files in one walk
+
+
+def _gitdir_of(path):
+    """The git dir behind a worktree path (its .git folder, or the one a linked worktree's .git file names), or None."""
+    dot = os.path.join(path, ".git")
+    if os.path.isdir(dot):
+        return os.path.realpath(dot)
+    try:
+        with open(dot, encoding="utf-8", errors="replace") as f:
+            head = f.read(4096).strip()
+    except OSError:
+        return None
+    if not head.startswith("gitdir:"):
+        return None
+    target = os.path.join(path, head[7:].strip())
+    return os.path.realpath(target) if os.path.isdir(target) else None
+
+
+def _common_of(gitdir):
+    """The shared git dir of a linked worktree's git dir (its commondir file), else the dir itself."""
+    try:
+        with open(os.path.join(gitdir, "commondir"), encoding="utf-8", errors="replace") as f:
+            rel = f.read(4096).strip()
+    except OSError:
+        return gitdir
+    return os.path.realpath(os.path.join(gitdir, rel)) if rel else gitdir
+
+
+def _git_procs(proc_root="/proc"):
+    """T-4616: [(pid, cwd or None, command line)] of every running process whose program is git (git, git-remote-https, …),
+    read from /proc: no pgrep, no subprocess. None when the process table can't be listed (then nothing is known)."""
+    try:
+        names = os.listdir(proc_root)
+    except OSError:
+        return None
+    out = []
+    for name in names[:_GIT_LOCK_CAP * 5]:
+        if not name.isdecimal():
+            continue
+        try:
+            with open(os.path.join(proc_root, name, "cmdline"), "rb") as f:
+                raw = f.read(65536)
+        except OSError:  # exited since the listing, or not ours to read
+            continue
+        argv = raw.split(b"\0")
+        prog = os.path.basename(argv[0].decode("utf-8", "replace"))
+        if prog != "git" and not prog.startswith("git-"):
+            continue
+        try:
+            cwd = os.readlink(os.path.join(proc_root, name, "cwd"))
+        except OSError:
+            cwd = None
+        out.append((int(name), cwd, " ".join(a.decode("utf-8", "replace") for a in argv)))
+    return out
+
+
+def git_pids(targets, proc_root="/proc", procs=None):
+    """T-4616: the pids of git processes working in or on any of `targets` (worktree and git dir paths): its cwd is inside
+    one, or its command line names one (git -C PATH, --git-dir=PATH). [] when none; None when the process table is
+    unreadable. `procs` is a table _git_procs already read."""
+    procs = _git_procs(proc_root) if procs is None else procs
+    if procs is None:
+        return None
+    ts = [os.path.realpath(t) for t in targets if t]
+    ts += [t for t in targets if t and t not in ts]
+    return sorted(pid for pid, cwd, line in procs
+                  if any((cwd and (cwd == t or cwd.startswith(t.rstrip("/") + "/"))) or t in line for t in ts))
+
+
+def _lock_files(gitdir, common):
+    """The git lock files in one git dir: index.lock and HEAD.lock; in the shared dir also packed-refs.lock and every
+    refs/**/*.lock (a regular file only: a folder or a link by that name isn't git's)."""
+    names = [os.path.join(gitdir, n) for n in ("index.lock", "HEAD.lock")]
+    if gitdir == common:
+        names.append(os.path.join(common, "packed-refs.lock"))
+        seen = 0
+        for r, _, files in os.walk(os.path.join(common, "refs")):
+            for n in files:
+                seen += 1
+                if seen > _GIT_LOCK_CAP:
+                    return names
+                if n.endswith(".lock"):
+                    names.append(os.path.join(r, n))
+    return names
+
+
+def git_locks(main, now=None, bound=GIT_LOCK_AGE_S, procs=None):
+    """T-4616: every git lock file in the main .git and in each lane's git dir, with its state: "stale" (older than `bound`
+    seconds and no git process works in or on that git dir or worktree), "fresh" (younger: a running git may hold it) or
+    "held" (older, but a git process for it lives, or the process table can't be read: pids is [] then). The process
+    table is read only when some lock is old enough to matter. Nothing is removed here (remove_stale does that)."""
+    r = _git(main, "worktree", "list", "--porcelain")
+    paths = [os.path.realpath(ln[9:]) for ln in (r.stdout if r.returncode == 0 else "").splitlines()
+             if ln.startswith("worktree ")]
+    if not paths:
+        return []
+    now = time.time() if now is None else now
+    dirs = {p: _gitdir_of(p) for p in paths}
+    common = _common_of(dirs[paths[0]]) if dirs[paths[0]] else None
+    rows, checked = [], set()
+    for p in paths:
+        gd = dirs[p]
+        for lock in _lock_files(gd, common) if gd else []:
+            if lock in checked:
+                continue
+            checked.add(lock)
+            try:
+                st = os.lstat(lock)
+            except OSError:
+                continue
+            if not _stat.S_ISREG(st.st_mode):
+                continue
+            where = (gd, *paths) if gd == common else (gd, p)  # the shared git dir: any worktree's git may be in it
+            rows.append({"path": lock, "name": os.path.basename(lock), "gitdir": gd, "worktree": p,
+                         "age": round(now - st.st_mtime), "mtime_ns": st.st_mtime_ns, "pids": [],
+                         "state": "fresh" if now - st.st_mtime < bound else "stale", "_where": where})
+    for row in rows:
+        if row["state"] != "stale":
+            continue
+        if procs is None:
+            procs = _git_procs()
+        pids = git_pids(row["_where"], procs=procs)
+        if pids is None or pids:
+            row["state"], row["pids"] = "held", pids or []
+    for row in rows:
+        del row["_where"]
+    return rows
+
+
+def remove_stale(rows):
+    """T-4616: delete the "stale" rows' files (each re-checked first: a lock git rewrote since the scan is "fresh" again; one
+    already gone is dropped); a refusal is "failed" with its error. Returns the rows."""
+    out = []
+    for row in rows:
+        if row["state"] == "stale":
+            try:
+                if os.lstat(row["path"]).st_mtime_ns != row["mtime_ns"]:
+                    row["state"] = "fresh"
+                else:
+                    os.unlink(row["path"])
+                    row["state"] = "removed"
+            except FileNotFoundError:
+                continue
+            except OSError as e:
+                row["state"], row["error"] = "failed", e.strerror or str(e)
+        out.append(row)
+    return out
+
+
+def clear_git_locks(main, **kw):
+    """T-4616: remove every stale git lock under `main`'s repository (the main .git and each lane's git dir); the rows
+    of every lock found, whatever became of it."""
+    return remove_stale(git_locks(main, **kw))
+
+
+def git_lock_lines(rows, bound=GIT_LOCK_AGE_S):
+    """T-4616: one line per lock found: what was removed, and what was left and why."""
+    out = []
+    for r in rows:
+        who = f"{r['path']} ({r['age']} s old)"
+        if r["state"] == "removed":
+            out.append(f"Stale git lock removed: {who}; no git process works in {r['worktree']}")
+        elif r["state"] == "fresh":
+            out.append(f"Git lock {who} is younger than {bound} s: left (a running git may hold it)")
+        elif r["state"] == "held" and r["pids"]:
+            out.append(f"Git lock {who} left: git process {', '.join(map(str, r['pids']))} works in {r['worktree']}")
+        elif r["state"] == "held":
+            out.append(f"Git lock {who} left: the process table can't be read, so a live git can't be ruled out")
+        elif r["state"] == "failed":
+            out.append(f"Git lock {who} is stale but can't be removed: {r.get('error')}")
     return out
 
 
@@ -210,6 +386,7 @@ def cmd_lane(args):
     if args.action == "list":
         briefs = c.load_briefs(p)
         rows, lines = [], []
+        locks = clear_git_locks(main)  # T-4616: a stale git lock would stop a builder's commit; cleared, and said
         for block in _git(main, "worktree", "list", "--porcelain").stdout.strip().split("\n\n")[1:]:
             fields = dict(line.partition(" ")[::2] for line in block.splitlines())
             path = os.path.realpath(fields.get("worktree", ""))
@@ -252,8 +429,8 @@ def cmd_lane(args):
                              f"frees it")
         from sampo import lane_overlap  # T-3285: open lanes whose branch diffs add the same def or touch the same file
         ov = lane_overlap.scan(main, rows)
-        return cli.out(args, {"lanes": rows, **ov}, "\n".join(lines + lane_overlap.lines(ov))
-                       or "No lanes: fm lane new <task id> makes one.")
+        text = "\n".join(lines + lane_overlap.lines(ov) + git_lock_lines(locks))
+        return cli.out(args, {"lanes": rows, "git_locks": locks, **ov}, text or "No lanes: fm lane new <task id> makes one.")
     if getattr(args, "revert_route", None):  # T-2353: the off switch for the probe-down route, no task id
         if args.action != "brief" or p.lane:
             raise cli.UsageError("fm lane brief --revert-route DATE runs from the main checkout, with no task id")
@@ -2304,6 +2481,7 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         warns.append(f"{b.id}'s own sections are {own} chars: builder briefs up to 8k landed "
                      f"{rate(('up to 4k chars', 'up to 8k'))}, longer ones {rate(('up to 16k', 'more'))} "
                      f"(fm lane stats); split it, or keep it in the main thread")
+    warns += git_lock_lines(clear_git_locks(c.main_worktree(p.root) or p.root))  # T-4616: said to the caller, not in the brief
     return cli.out(args, {"id": b.id, "path": path, "agent": agent, "model": chosen, "route": route, "out": out + [b.id], "warnings": warns},
                      "".join(f"{w}\n" for w in warns) +
                      f"{b.id}: builder brief {path}\n  model {chosen}: {route}\n  launch: {agent}\n  then: review its branch (one fm-reviewer on "

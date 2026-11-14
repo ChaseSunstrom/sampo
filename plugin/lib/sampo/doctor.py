@@ -2278,16 +2278,40 @@ def check_routing(path=None):
     return Result("routing", "FAIL" if why else "PASS", f"{path}: {why}" if why else "routing tables sound")
 
 
+def _stale_locks(root, seen):
+    """T-4616: git lock files in the repo at `root` (its .git and every lane's git dir): the stale ones (older than a minute,
+    no git process for that git dir or worktree) are removed; the rest are named and left. [(lock, what became of it)]."""
+    from sampo import lanes
+    try:
+        rows = lanes.clear_git_locks(root)
+    except (OSError, c.PolicyError):  # not a git repo, or git itself failed: nothing to say
+        return []
+    out = []
+    for r in rows:
+        if r["path"] in seen:  # two roots of one repo (a main checkout and its lane) name each lock once
+            continue
+        seen.add(r["path"])
+        why = {"removed": "stale git lock removed: no git process works there",
+               "fresh": f"left: younger than {lanes.GIT_LOCK_AGE_S} s, a running git may hold it",
+               "held": ("left: git process " + ", ".join(map(str, r["pids"])) + " may hold it") if r["pids"]
+               else "left: the process table can't be read",
+               "failed": f"not removed: {r.get('error')}"}[r["state"]]
+        out.append((r["path"], why))
+    return out
+
+
 def repair(roots):
-    """Move every zero-byte loose object into Sampo's quarantine (never deleted): [(from, to or the error)]."""
+    """Move every zero-byte loose object into Sampo's quarantine (never deleted), and remove stale git locks (T-4616):
+    [(from, to or the error)]."""
     from sampo import py  # T-3727: empty tracked files come back from HEAD; Sampo's repo fsyncs from now on
-    stamp, moved = time.strftime("%Y%m%d-%H%M%S"), []
+    stamp, moved, locks_seen = time.strftime("%Y%m%d-%H%M%S"), [], set()
     for root in roots:
         healed, failed = py.heal(root)
         moved += [(os.path.join(root, p), "restored from HEAD") for p in healed]
         moved += [(os.path.join(root, p), "not restored: HEAD's copy is unreadable") for p in failed]
         if root == c.foreman_home() and py.ensure_fsync(root):
             moved.append((os.path.join(root, ".git", "config"), f"core.fsync={py.FSYNC}"))
+        moved += _stale_locks(root, locks_seen)
         for path in _empty_objects(root) or []:
             dest = os.path.join(c.state_dir(), "quarantine", f"git-objects-{stamp}",
                                 re.sub(r"\W+", "-", root).strip("-"), os.path.basename(os.path.dirname(path))
@@ -3292,7 +3316,7 @@ def _fix_views():
 
 
 def _fix_integrity():
-    return f"moved {len(repair(integrity_roots()))} empty git object(s) to the quarantine"
+    return f"made {len(repair(integrity_roots()))} repair(s): empty git objects to the quarantine, stale git locks removed"
 
 
 def _recheck_integrity():
@@ -3400,7 +3424,7 @@ def cmd_doctor(args):
             sys.exit(1)
     if args.repair:
         moved = repair(integrity_roots())
-        print("\n".join(f"{a} → {b}" for a, b in moved) or "Nothing to repair: no empty git objects.")
+        print("\n".join(f"{a} → {b}" for a, b in moved) or "Nothing to repair: no empty git objects, no git locks.")
         fixed = []
         for p, _ in c.all_projects():  # T-0494: views that don't match their briefs are regenerated
             if not views_match(p):
