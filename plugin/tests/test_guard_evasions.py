@@ -235,5 +235,156 @@ class CredentialReleaseWalks(GuardCase):
         self.assertIsNone(g.check("Write", {"file_path": fresh, "content": "x"}, self.cctx()))
 
 
+class ClimbThroughLinks(GuardCase):
+    """T-4667: a path that climbs with '..' after a link is judged where it really goes in every category, not only the
+    credentials one (T-4666), and in a read as in a write. Every link and hardlink is built in this test's own temp
+    folder; no real credential, core or state file is named or touched."""
+
+    def scratch(self):
+        scr = os.path.join(os.path.dirname(self.repo), "scr")
+        os.makedirs(scr, exist_ok=True)
+        return scr
+
+    def cctx(self, **kw):
+        return g.Ctx(cwd=self.repo, project_root=self.repo, home=self.home, foreman_home=self.fhome,
+                     scratch=[self.scratch()], allow=set(), task_id="T-0007", **kw)
+
+    def link(self, name, target):
+        os.makedirs(target, exist_ok=True)
+        path = os.path.join(self.scratch(), name)
+        if not os.path.lexists(path):
+            os.symlink(target, path)
+        return path
+
+    def cats(self, tool, arg, ctx=None):
+        key = "command" if tool == "Bash" else "file_path"
+        return {c for c, _ in g.findings(tool, {key: arg, "content": "x"}, ctx or self.cctx())}
+
+    def test_core_state_and_system_files_reached_through_a_scratch_link_are_judged_as_themselves(self):
+        scr = self.scratch()
+        lib = self.link("lnk-lib", os.path.join(self.fhome, "plugin", "lib"))
+        proj = self.link("lnk-proj", os.path.join(self.fhome, "state", "projects", "x"))
+        usr = self.link("lnk-usr", "/usr/lib")
+        for path, want in ((f"{lib}/../rules/foreman.md", "core"), (f"{lib}/../lib/fmguard.py", "core"),
+                           (f"{proj}/../x/ledger.jsonl", "state-direct"), (f"{usr}/../share/fixture.txt", "system")):
+            for tool, arg in (("Write", path), ("Edit", path), ("Bash", f"echo x > {path}"), ("Bash", f"tee {path}"),
+                              ("Bash", f"cp {self.repo}/README.md {path}"),
+                              ("Bash", f"python3 -c \"open('{path}', 'w').write('x')\"")):
+                if want == "system" and arg.startswith("python3"):
+                    continue  # interpreter code's writes are never judged "system", at any path (a separate gap)
+                with self.subTest(tool=tool, arg=arg):
+                    self.assertIn(want, self.cats(tool, arg))
+        self.assertTrue(scr)
+
+    def test_a_climb_to_a_confined_or_unbriefed_project_file_is_judged_there(self):
+        main, lane = self.repo, os.path.join(os.path.dirname(self.repo), "lane-x")
+        os.makedirs(lane, exist_ok=True)
+        deploy = self.link("lnk-dep", os.path.join(main, "deploy"))
+        path = f"{deploy}/../README.md"  # lexically scratch/README.md, really the main checkout's file
+        self.assertIn("confine", self.cats("Write", path, self.cctx(confine=(lane, main))))
+        self.assertIn("brief", self.cats("Write", path, self.cctx(unbriefed=main)))
+
+    def test_a_climb_that_stays_honest_is_not_refused(self):
+        scr = self.scratch()
+        os.makedirs(os.path.join(scr, "a", "b"), exist_ok=True)
+        inside = self.link("lnk-in", os.path.join(scr, "a", "b"))
+        for path in (f"{scr}/a/b/../fixture.txt", f"{inside}/../fixture.txt", f"{scr}/a/../redchk/x.txt",
+                     f"{self.repo}/deploy/../notes.txt"):
+            for tool, arg in (("Write", path), ("Bash", f"echo x > {path}")):
+                with self.subTest(tool=tool, arg=arg):
+                    self.assertEqual(self.cats(tool, arg, self.cctx(confine=(self.repo, self.repo))), set())
+
+    def test_a_read_that_climbs_through_a_scratch_link_to_a_credential_is_refused(self):
+        work = self.link("lnk-work", os.path.join(self.home, "work"))
+        path = f"{work}/../.ssh/id_rsa"
+        for tool, arg in (("Read", path), ("Bash", f"cat {path}"), ("Bash", f"cp {path} {self.scratch()}/copy.txt"),
+                          ("Bash", f"python3 -c \"print(open('{path}').read())\"")):
+            with self.subTest(tool=tool, arg=arg):
+                self.assertIn("credentials", self.cats(tool, arg))
+        # public parts and a plain read stay free
+        pub = f"{work}/../.ssh/id_rsa.pub"
+        self.assertEqual(self.cats("Read", pub), set())
+        self.assertEqual(self.cats("Read", f"{self.scratch()}/a/../fixture.txt"), set())
+
+    def test_the_real_path_is_read_where_resolve_returns_not_carried_on_the_string(self):
+        # T-4667: a string operation on a resolved path (normpath, an f-string, a join) drops anything hung on a str
+        # subclass; the verdict must not depend on it
+        self.assertIs(type(g._resolve("a/../b", "/x")), str)
+        work = self.link("lnk-work", os.path.join(self.home, "work"))
+        path = f"{work}/../.ssh/id_rsa"
+        self.assertEqual(g._walk(path, self.repo), (f"{self.scratch()}/.ssh/id_rsa",
+                                                    os.path.join(self.home, ".ssh", "id_rsa")))
+        self.assertEqual(g._walk(f"{self.scratch()}/a/../b", self.repo)[1], "")  # no link: nothing to add
+
+    def test_home_credential_folders_match_in_any_letter_case(self):
+        for path in (f"{self.home}/.SSH/id_x", f"{self.home}/.Ssh/known_hosts", f"{self.home}/.AWS/credentials",
+                     f"{self.home}/.Config/GH/hosts.yml", f"{self.home}/.NETRC", f"{self.home}/.Git-Credentials",
+                     f"{self.home.upper()}/.ssh/notes", f"{self.home}/.CLAUDE/.CREDENTIALS.JSON"):
+            with self.subTest(path=path):
+                self.assertIn("credentials", self.cats("Write", path))
+                self.assertIn("credentials", self.cats("Bash", f"echo x > {path}"))
+        for path in (f"{self.home}/.SSH/id_x", f"{self.home}/.NETRC"):
+            with self.subTest(read=path):
+                self.assertIn("credentials", self.cats("Read", path))
+        # a folder that only looks alike is none
+        for path in (f"{self.home}/.sshd-notes/x", f"{self.home}/.configs/ghost/x"):
+            with self.subTest(path=path):
+                self.assertNotIn("credentials", self.cats("Write", path))
+
+
+class InterpreterHardlinks(GuardCase):
+    """T-4667: a hardlink made by interpreter code is the same file under a released-looking name, as `ln` is (T-4666).
+    The secret is made in this test's own temp folder."""
+
+    def cctx(self):
+        scr = os.path.join(os.path.dirname(self.repo), "scr")
+        os.makedirs(scr, exist_ok=True)
+        return g.Ctx(cwd=self.repo, project_root=self.repo, home=self.home, foreman_home=self.fhome, scratch=[scr],
+                     allow=set(), task_id="T-0007")
+
+    def folder(self):
+        folder = os.path.join(self.repo, "ihl")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, ".env"), "w") as f:
+            f.write("K=1\n")
+        return folder
+
+    def cats(self, cmd):
+        return {c for c, _ in g.findings("Bash", {"command": cmd}, self.cctx())}
+
+    def test_interpreter_code_that_hardlinks_a_credential_is_refused(self):
+        folder = self.folder()
+        for cmd in (f"cd {folder} && python3 -c \"import os; os.link('.env', '.env.example')\"",
+                    f"python3 -c \"import os; os.link('{folder}/.env', '{folder}/.env.sample')\"",
+                    f"cd {folder} && python3 -c \"from pathlib import Path; Path('.env.template').hardlink_to('.env')\"",
+                    f"cd {folder} && node -e \"require('fs').linkSync('.env', '.env.example')\"",
+                    f"cd {folder} && perl -e 'link(\".env\", \".env.example\")'",
+                    f"cd {folder} && ruby -e 'File.link(\".env\", \".env.example\")'",
+                    f"cd {folder} && python3 - <<'EOF'\nimport os\nos.link('.env', '.env.example')\nEOF"):
+            with self.subTest(cmd=cmd):
+                self.assertIn("credentials", self.cats(cmd))
+
+    def test_interpreter_links_that_make_no_second_name_for_a_secret_are_free(self):
+        folder = self.folder()
+        for cmd in (f"cd {folder} && python3 -c \"import os; os.link('a.txt', 'b.txt')\"",
+                    f"cd {folder} && python3 -c \"import os; os.symlink('.env', '.env.example')\"",  # a symlink: no inode
+                    f"cd {folder} && python3 -c \"import os; os.link('.env.example', 'x.txt')\"",
+                    "python3 -c \"print('link(a, b)')\""):
+            with self.subTest(cmd=cmd):
+                self.assertNotIn("credentials", self.cats(cmd))
+        # a copy is a new inode: the link scan adds nothing (the write scan may still read the name .env, as it always did)
+        self.assertEqual(g._interp_links(f"cd {folder} && python3 -c \"import shutil; shutil.copy('.env', 'copy.txt')\"",
+                                         self.cctx()), [])
+
+    def test_a_copy_that_makes_a_new_file_is_no_hardlink_so_it_stays_free(self):
+        # cp -a and rsync -H keep the links among the files they copy; neither gives the SOURCE a second name (the new
+        # file is its own inode), so neither is judged like ln: a project's own .env backed up stays free. Only cp -l,
+        # ln and link share the source's inode (T-4666); rsync --link-dest links a file under its own relative name
+        folder = self.folder()
+        for cmd in (f"cp -a {folder}/.env {folder}/copy.txt", f"rsync -aH {folder}/ {folder}-copy/"):
+            with self.subTest(cmd=cmd):
+                self.assertNotIn("credentials", self.cats(cmd))
+
+
 if __name__ == "__main__":
     unittest.main()

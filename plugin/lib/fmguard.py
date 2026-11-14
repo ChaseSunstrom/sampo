@@ -205,8 +205,8 @@ def findings(tool_name, tool_input, ctx):
             ctx.briefed_lanes = lanes
     if tool_name in FILE_TOOLS:
         raw = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
-        path = _resolve(_expand(raw, ctx), ctx.cwd)
-        found = [(cat, path) for cat in classify_write(path, ctx)]
+        path, real = _walk(_expand(raw, ctx), ctx.cwd)
+        found = _judge(classify_write, path, real, ctx)
         if _CARGO_CONFIG.search(path):  # T-3607 review
             text = [tool_input.get(k) for k in ("content", "new_string", "new_source")] + [
                 e.get("new_string") for e in tool_input.get("edits") or [] if isinstance(e, dict)]
@@ -218,8 +218,8 @@ def findings(tool_name, tool_input, ctx):
         _FELL_BACK.clear()
         return check_bash(tool_input["command"], ctx)
     if tool_name == "Read":  # T-1224
-        path = _resolve(_expand(str(tool_input.get("file_path") or ""), ctx), ctx.cwd)
-        return [(cat, path) for cat in classify_read(path, ctx)]
+        path, real = _walk(_expand(str(tool_input.get("file_path") or ""), ctx), ctx.cwd)
+        return _judge(classify_read, path, real, ctx)
     return []
 
 
@@ -446,22 +446,37 @@ def _unliteral(tok):
     return _unresolvable(tok) or not re.search(r"\s", tok) and bool(re.search(r"\{[^{}]*(?:,|\.\.)[^{}]*\}", tok))
 
 
-class _Climbed(str):
-    """T-4666: a path normpath collapsed that had a '..' part. The kernel follows a link before it climbs, so a/link/../x
-    is not a/x: `.real` is where the raw path really goes (each prefix resolved, then climbed)."""
-    real = ""
-
-
 def _resolve(tok, base):
+    return os.path.normpath(tok if os.path.isabs(tok) else os.path.join(base, tok))
+
+
+def _walk(tok, base):
+    """T-4667 (after T-4666): (path, real). `path` is _resolve's (normpath collapses a '..' before the kernel would); the
+    kernel follows a link before it climbs, so a/link/../x is not a/x: `real` is where the raw token really goes (each
+    prefix resolved, then climbed), "" when there is no '..' in it or the climb leaves the path where _variants already
+    looks (its realpath). A plain pair, not an attribute of the string: a string operation drops an attribute, and
+    only a climbing token pays for the walk."""
     joined = tok if os.path.isabs(tok) else os.path.join(base, tok)
     path = os.path.normpath(joined)
-    if ".." in joined.split("/"):  # only a climbing path pays for the walk
-        path = _Climbed(path)
-        try:
-            path.real = os.path.realpath(joined)
-        except (OSError, ValueError):
-            pass
-    return path
+    if ".." not in joined.split("/"):
+        return path, ""
+    try:
+        real = os.path.realpath(joined)
+        return path, "" if real in (path, os.path.realpath(path)) else real
+    except (OSError, ValueError):
+        return path, ""
+
+
+def _judge(classify, path, real, ctx, note=""):
+    """T-4667: [(category, detail)] of `path` and, when a '..' came after a link, of where it really goes, whatever the
+    category: the stricter reading wins (every category either reading reaches counts). A category only the real path
+    reaches names the real file, and its detail carries a ' (' so that no standing or trusted yes covers it: a path
+    that climbs out of a link is asked about each time."""
+    found = [(cat, f"{path}{note}") for cat in classify(path, ctx)]
+    if real:
+        seen = {cat for cat, _ in found}
+        found += [(cat, f"{real}{note} (a '..' after a link in {path})") for cat in classify(real, ctx) if cat not in seen]
+    return found
 
 
 def _under(path, root):
@@ -503,11 +518,16 @@ def _is_credential(path, ctx):
     return stat.S_ISREG(st.st_mode) and st.st_nlink > 1 and _credential_named(path, ctx, strict=True)
 
 
+def _home_credential(path, ctx):
+    """T-4667: whether a path is one of the home's credential folders or files, in any letter case (~/.SSH/id_rsa is the
+    same file on a case-insensitive disk, and a real name only differs by case there)."""
+    low = path.lower()
+    return (any(_under(low, os.path.join(ctx.home, d).lower()) for d in _CRED_DIRS)
+            or low in {os.path.join(ctx.home, f).lower() for f in _CRED_FILES})
+
+
 def _credential_named(path, ctx, strict=False):
-    for d in _CRED_DIRS:
-        if _under(path, os.path.join(ctx.home, d)):
-            return True
-    if path in {os.path.join(ctx.home, f) for f in _CRED_FILES}:
+    if _home_credential(path, ctx):
         return True
     base = os.path.basename(path).lower()  # T-4666: .ENV and KEY.PEM are the same files on a case-insensitive disk
     if os.path.isdir(path):
@@ -560,11 +580,11 @@ def classify_read(path, ctx):
     known_hosts, authorized_keys and config, ~/.aws/config), where the path is and where it really is. A project's .env
     or *.key is the project's own: its reads stay ordinary."""
     for p in _variants(re.sub(r"^/+", "/", path)):
-        if p.endswith(".pub") or os.path.basename(p) in _CRED_PUBLIC.get(
-                os.path.relpath(os.path.dirname(p), ctx.home), ()):
+        low = p.lower()  # T-4667: any letter case
+        if low.endswith(".pub") or os.path.basename(low) in _CRED_PUBLIC.get(
+                os.path.relpath(os.path.dirname(low), ctx.home.lower()), ()):
             continue
-        if any(_under(p, os.path.join(ctx.home, d)) for d in _CRED_DIRS) or p in {
-                os.path.join(ctx.home, f) for f in _CRED_FILES}:
+        if _home_credential(p, ctx):
             return ["credentials"]
     return []
 
@@ -606,9 +626,9 @@ def _link_sources(name, args):
 
 
 def classify_hardlink(path, ctx):
-    """T-4666: a source that is a credential, where it is and where it really is (a link before a '..' included)."""
-    out = ["credentials"] if any(_is_credential(p, ctx) for p in _variants(path) | {getattr(path, "real", "") or path}) \
-        else []
+    """T-4666: a source that is a credential, where it is and where it really is (a '..' after a link: the caller's
+    _judge, T-4667)."""
+    out = ["credentials"] if any(_is_credential(p, ctx) for p in _variants(path)) else []
     return out or classify_read(path, ctx)
 
 
@@ -946,12 +966,7 @@ def classify_write(path, ctx, real=True):
                 _under(p, d) for d in [*ctx.scratch, os.path.join(ctx.home, ".claude", "projects")]  # project (/tmp)
                 if not _under(root, d)) and not _in_briefed_lane(p, ctx):  # T-4340: this variant, as it is
             cats.append("brief")
-    # T-4666: a/link/../x was collapsed to a/x above; the kernel goes through the link first. Where the raw path really
-    # goes is judged for credentials as well (the same weakness in the other categories is a separate task)
-    real = getattr(path, "real", "")
-    if real and "credentials" not in cats and _is_credential(real, ctx):
-        cats.append("credentials")
-    return list(dict.fromkeys(cats))
+    return list(dict.fromkeys(cats))  # a/link/../x: the caller judges where it really goes too (_walk, _judge: T-4667)
 
 
 def _in_briefed_lane(p, ctx):
@@ -2309,7 +2324,7 @@ def _proved_writes(cmd, ctx):
     mods = {a.name for code in units for n in ast.walk(ast.parse(code)) if isinstance(n, ast.Import) for a in n.names}
     if any(os.path.exists(os.path.join(b, m + x)) for b in bases for m in mods for x in (".py", "")):
         return None  # python - searches the current folder first: a json.py there would be what runs
-    return list(dict.fromkeys(_resolve(_expand(t, ctx), b) for t in targets for b in bases))
+    return list(dict.fromkeys(_walk(_expand(t, ctx), b) for t in targets for b in bases))  # T-4667: (path, real)
 
 
 _SOURCE_WRITE = lazy(r"(?:cat\s+>>?\s*|tee\s+(?:-a\s+)?)([\w./~@+-]+)\s*(?:>\s*/dev/null\s*)?<<-?\s*"
@@ -2606,10 +2621,14 @@ def _interpreter_writes(cmd, ctx):
     if proved is None:  # T-1458: after a provable `cd DIR &&` chain a relative name opens there, not in ctx.cwd
         units, _, starters, lead = _python_units(cmd)
         base = (_chain_dir(starters, "\n".join(lead), ctx) if units else None) or ctx.cwd
-    for path in proved if proved is not None else [_resolve(_expand(x, ctx), base) for x in _quoted_paths(cmd)]:
+    for path, real in proved if proved is not None else [_walk(_expand(x, ctx), base) for x in _quoted_paths(cmd)]:
         what = f"{path} (written from interpreter code)" if "$" not in path else (  # T-4138: a $name the shell fills in
             "a file the script writes at a path the shell fills in, which the guard can't read (written from interpreter code)")
-        found += [(cat, what) for cat in classify_write(path, ctx) if cat in _GUARDED_BY_PATH and (cat, what) not in found]
+        hits = [(cat, what) for cat in classify_write(path, ctx)]
+        if real:  # T-4667: a '..' after a link: where it really goes counts too (named by that path, no yes covers it)
+            hits += [(cat, f"{real} (a '..' after a link in {path}) (written from interpreter code)")
+                     for cat in classify_write(real, ctx) if cat not in {c for c, _ in hits}]
+        found += [h for h in hits if h[0] in _GUARDED_BY_PATH and h not in found]
     if proved is None and not found and ctx.unbriefed and _computed_path_write(cmd):
         # T-4138: no task is active and the file is named by text the script builds: not a path the scan can name
         found = [("brief", "a file the script writes at a computed path the guard can't read (written from interpreter code)")]
@@ -2797,8 +2816,8 @@ def _interpreter_reads(cmd, ctx):
         if not _PATHY.match(lit):
             continue
         explicit = os.path.isabs(lit) or lit.startswith(("~", "$HOME", "${HOME}"))
-        for path in dict.fromkeys(os.path.normpath(_resolve(_expand(lit, ctx), b)) for b in bases):
-            hits = classify_read(path, ctx)  # judged as cat's operand is: where it is and where it really is
+        for path, real in dict.fromkeys(_walk(_expand(lit, ctx), b) for b in bases):
+            hits = classify_read(path, ctx) or real and classify_read(real, ctx)  # as cat's operand is (T-4667: a '..' too)
             if not hits and re.search(r"[*?\[]", path):  # a glob that can reach a credential file
                 hits = ["credentials"] * any(_glob_reaches(path, os.path.join(ctx.home, d, leaf))
                                              for d in _CRED_DIRS + _CRED_FILES for leaf in ("id_rsa", "credentials"))
@@ -2815,6 +2834,34 @@ def _interpreter_reads(cmd, ctx):
     # ponytail: interpreter code that changes CLAUDECODE before starting fm isn't read: edit scripts carry the same
     # words as text (env={"CLAUDE_CODE_ENTRYPOINT": …} in a test they write), and fm's verbs that matter fail closed
     # off a terminal (T-1572); the shell forms are refused in _hides_claude
+    return list(dict.fromkeys(found))
+
+
+# T-4667: the calls that make a HARD link (a second name for one inode): os.link, Path.hardlink_to / link_to, fs.linkSync,
+# File.link, FileUtils.ln, perl's and php's bare link(), `from os import link`. A symlink or a copy is a new inode: no
+_LINK_API = lazy(r"\.(?:link|linkSync|linkat|hardlink_to|link_to)\s*\(|(?<![\w.$])link\s*\(|\bFileUtils\.ln\b"
+                 r"|\bfrom\s+os\s+import\b[^\n]*\blink\b")
+
+
+def _interp_links(cmd, ctx):
+    """T-4667 (after T-4666's ln): interpreter code that hardlinks a credential gives it a second, released-looking name
+    (os.link('.env', '.env.example')). Coarse like the write scan: any quoted literal in code that calls a link API is a
+    possible source, judged as ln's source is (classify_hardlink, where it is and where it really goes); the new name
+    can't be told from the source in text, so a hardlink NAMED `.env` is refused too (use cp)."""
+    dry = _drop_data_heredocs(cmd)
+    if not _INTERP.search(_mask_fm(dry, ctx)):
+        return []
+    code = _interp_code(dry)
+    if not _LINK_API.search(code):
+        return []
+    bases = [ctx.cwd] + [_resolve(_expand(d, ctx), ctx.cwd) for d in re.findall(r"(?:^|[;&|(\n{])\s*cd\s+([^\s;&|)]+)",
+                                                                              dry) if not _unresolvable(d)]
+    found = []
+    for lit in dict.fromkeys(m.group(1) for q in "'\"`" for m in re.finditer(f"{q}([^{q}\\n]*){q}", code)):
+        if not _PATHY.match(lit):
+            continue
+        for path, real in dict.fromkeys(_walk(_expand(lit, ctx), b) for b in bases):
+            found += _judge(classify_hardlink, path, real, ctx, " (hardlinked from interpreter code)")
     return list(dict.fromkeys(found))
 
 
@@ -2988,9 +3035,8 @@ def _check_awk(args, ctx, depth, cwd, cmd):
                 pass
     found = []
     for d in data if inplace else ():  # gawk -i inplace rewrites each data file
-        p = _resolve(_expand(d, ctx), cwd)
-        found += [(cat, f"{p} (edited in place by gawk)") for cat in classify_write(p, ctx)
-                  if cat in _GUARDED_BY_PATH + ("system",)]
+        found += [f for f in _judge(classify_write, *_walk(_expand(d, ctx), cwd), ctx, " (edited in place by gawk)")
+                  if f[0] in _GUARDED_BY_PATH + ("system",)]
     for prog in progs:
         for m in re.finditer(rf"(?<![=!<>])\b([A-Za-z_]\w*)[ \t]*=(?!=)[ \t]*({_AWK_EXPR})", prog):
             assigns.setdefault(m.group(1), []).append(m.group(2))
@@ -3017,19 +3063,16 @@ def _check_awk(args, ctx, depth, cwd, cmd):
         for m in re.finditer(r"\breadfile[ \t]*\(", prog):  # gawk -l readfile: readfile("path") reads it whole
             path = _awk_value(_balanced(prog, m.end()), assigns)
             if "$AWKVAR" not in path and path:
-                found += [(cat, f"{path} (read by awk)") for cat in classify_read(_resolve(_expand(path, ctx), cwd),
-                                                                                 ctx)]
+                found += _judge(classify_read, *_walk(_expand(path, ctx), cwd), ctx, " (read by awk)")
         for m in re.finditer(rf"\b(?:print|printf)\b[^;{{}}\n>|]*?>>?[ \t]*({_AWK_EXPR})", prog):
             path = _awk_value(m.group(1), assigns)
             if "$AWKVAR" not in path and path:  # ponytail: a computed file name (print > $1) isn't read
-                p = _resolve(_expand(path, ctx), cwd)
-                found += [(cat, f"{p} (written by awk)") for cat in classify_write(p, ctx)
-                          if cat in _GUARDED_BY_PATH + ("system",)]
+                found += [f for f in _judge(classify_write, *_walk(_expand(path, ctx), cwd), ctx, " (written by awk)")
+                          if f[0] in _GUARDED_BY_PATH + ("system",)]
         for m in re.finditer(rf"\bgetline\b[ \t]*(?:[A-Za-z_]\w*[ \t]*)?<[ \t]*({_AWK_EXPR})", prog):
             path = _awk_value(m.group(1), assigns)
             if "$AWKVAR" not in path and path:
-                found += [(cat, f"{path} (read by awk)") for cat in classify_read(_resolve(_expand(path, ctx), cwd),
-                                                                                 ctx)]
+                found += _judge(classify_read, *_walk(_expand(path, ctx), cwd), ctx, " (read by awk)")
     return found
 
 
@@ -3933,8 +3976,8 @@ def _target_cats(target, known, bare, cwds, lost, shell, ctx, classify, note="",
     found = []
     if not _unresolvable(t):
         e = _expand(t, ctx)
-        for path in dict.fromkeys(_resolve(e, b) for b in ([ctx.cwd] if os.path.isabs(e) else cwds)):
-            found += [(cat, f"{path}{note}") for cat in classify(path, ctx)]  # T-0180: its real path, as Edit's
+        for path, real in dict.fromkeys(_walk(e, b) for b in ([ctx.cwd] if os.path.isabs(e) else cwds)):
+            found += _judge(classify, path, real, ctx, note)  # T-0180: its real path, as Edit's; T-4667: and a '..'s
             found += [(cat, f"{p}{note}") for p in _expansions(path) if p != path for cat in classify(p, ctx)]
         if os.path.isabs(e) or not lost or not guess:
             return found
@@ -4141,7 +4184,8 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     unreadable = _ifs_unreadable(cmd)  # added last, never instead: a granted system mustn't let the rest through
     cmd = _ifs_spaces(cmd)  # T-0576: rm${IFS}-rf ~ is "rm -rf ~" to bash (IFS splits the expansion into words)
     cmd = _expand_literal_loops(cmd)  # T-0411: a loop over literal words, as the commands it runs
-    found = _interpreter_writes(cmd, ctx) + _interpreter_reads(cmd, ctx)  # every depth: an fm --run command is read
+    found = (_interpreter_writes(cmd, ctx) + _interpreter_reads(cmd, ctx)  # every depth: an fm --run command is read
+             + _interp_links(cmd, ctx))
     # on its own (T-0128 review)
     # T-0345: what python code starts; a script only written with cat isn't run by writing it, unless the same
     # command also runs an interpreter (cat > t.py <<EOF … EOF; python3 t.py)
