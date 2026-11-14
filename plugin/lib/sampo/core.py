@@ -1208,6 +1208,39 @@ def set_panic(on, hard=False, for_user=False):
     return rec
 
 
+def projects_paused(only=None):
+    """T-4601: the projects holding their own pause (meta paused: the user's message that is only a pause word sets it),
+    each as its slug, sorted; `only` (a project) narrows it to that one. A second pause beside the machine-wide flag."""
+    return sorted(p.slug for p, meta in all_projects()
+                  if meta.get("paused") and (only is None or p.slug == only.slug))
+
+
+def lift_project_pauses(only=None):
+    """T-4601: clear meta paused in every project that has it (`only`: just that project), each under its own lock.
+    Returns (lifted slugs, slugs whose lock stayed busy and still hold their pause). One clear, one ledger line."""
+    lifted, busy = [], []
+    for p, meta in all_projects():
+        if not meta.get("paused") or (only is not None and p.slug != only.slug):
+            continue
+        try:
+            with lock(p.dir):
+                m = read_meta(p)
+                was = bool(m.get("paused"))
+                if was:
+                    m["paused"] = False
+                    write_meta(p, m)
+        except LockTimeout:
+            busy.append(p.slug)
+            continue
+        if was:
+            lifted.append(p.slug)
+            try:
+                log_event(p, "project_pause_off", data={"by": "user"})
+            except OSError:
+                pass  # the flag is what matters
+    return sorted(lifted), sorted(busy)
+
+
 def _log_pause(event, rec, hard):
     """The machine-wide record (state/pauses.jsonl) and, when the working folder is a project, its ledger (T-4190)."""
     row = {"ts": now(), "event": event, "by": rec["by"], "session": rec["session"], "hard": bool(hard)}
@@ -6339,6 +6372,18 @@ def _more(n, shown):
     return [f"(+{n - shown} more)"] if n > shown else []
 
 
+def pause_note(sd):
+    """T-4601: ' · PAUSED …' for the state's Notes line, saying which pause it is: this project's own (a message of just
+    "pause"; "resume" or sampo pause off lifts it) or everywhere (sampo pause on; sampo pause off lifts it); '' when
+    neither. Both may stand at once."""
+    mine, wide = bool(sd.get("paused")), bool(sd.get("panic"))
+    if mine and wide:
+        return " · PAUSED everywhere and in this project (sampo pause off lifts both)"
+    if wide:
+        return " · PAUSED everywhere (sampo pause off lifts it)"
+    return " · PAUSED in this project (resume, or sampo pause off, lifts it)" if mine else ""
+
+
 def render_state(sd, ts=None):
     a = sd["active"]
     out = [f"# STATE — {sd['project']}", f"_Generated {ts or now()} by sampo from the briefs; do not edit._", ""]
@@ -6372,7 +6417,7 @@ def render_state(sd, ts=None):
     if sd["dangling"]:
         out.append("Dangling deps: " + ", ".join(f"{a}→{b}" for a, b in sd["dangling"])[:200])  # not a list: cut by characters
     out += ["", "## Notes", f"Sensitive: {'yes' if sd['sensitive'] else 'no'} · Drive: {'on' if sd['drive'] else 'off'}"
-            + (" · PAUSED" if sd["paused"] else "")]
+            + pause_note(sd)]
     if sd.get("unproven"):  # T-2273
         out.append(unproven_line(sd["unproven"], sd.get("unproven_kinds"), "Done on typed or unrun proof, 30 days: "))
     if (sd.get("self_running") or {}).get("line"):  # T-2364

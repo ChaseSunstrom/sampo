@@ -5434,20 +5434,29 @@ def cmd_approve_reads(args):
 
 def cmd_pause(args):
     """T-0436: one flag for every project. It grants nothing, and lifting it only lets back what ran before, so
-    either way it's no consent to guard."""
+    either way it's no consent to guard. T-4601: a project also holds its own pause (a user message of just "pause"), and
+    sampo pause off lifts that too, in every project (with -p, only that project's, and not the machine-wide one)."""
+    only = resolve(args, create=False) if getattr(args, "project", None) else None
     if args.state is None and not args.now:  # T-4132: typed to check, a bare pause paused every project
         on, hard = c.panicked(), c.panicked(hard=True)
         who = c.pause_line() if on else ""
-        return out(args, {"paused": on, "hard": hard}, (
-            f"Paused everywhere{' (hard: sampo pause --now)' if hard else ''}: nothing unattended starts; "
-            f"{who[0].upper() + who[1:]}. sampo pause off lifts it." if on else
-            "Not paused: the drive and the launchers run. sampo pause on pauses every project (--now also stops "
-            "what runs now)."))
+        mine = c.projects_paused(only)
+        own = (f"Paused on its own, in {'that project' if len(mine) == 1 else 'those projects'} only: "
+               f"{', '.join(mine)}. sampo pause off lifts {'it' if len(mine) == 1 else 'them (with -p, only one)'}; "
+               "so does a message of just \"resume\" there." if mine else "")
+        head = (f"Paused everywhere{' (hard: sampo pause --now)' if hard else ''}: nothing unattended starts; "
+                f"{who[0].upper() + who[1:]}. sampo pause off lifts it." if on else
+                ("No machine-wide pause" if mine else "Not paused") + ": the drive and the launchers run"
+                + (" in the other projects" if mine else "") + ". sampo pause on pauses every project (--now also stops "
+                "what runs now).")
+        return out(args, {"paused": on, "hard": hard, **({"projects": mine} if mine else {})}, head + (" " + own if own else ""))
     on = args.state != "off"  # sampo pause --now alone still pauses: it is the documented "stop everything now"
     if args.now and not on:
         raise UsageError("--now goes with sampo pause on: sampo pause off lifts both")
     if args.for_user and not on:
         raise UsageError("--for-user goes with sampo pause on")
+    if not on:
+        return _pause_off(args, only)
     rec = c.set_panic(on, hard=args.now, for_user=args.for_user)  # T-4190: records who set it
     who = c.pause_line() if on else None
     if on and args.now:  # T-1821
@@ -5458,9 +5467,38 @@ def cmd_pause(args):
                    f"{r['leases']} lease(s) freed; a running sampo run or night stops its session within 2 s. Interactive "
                    f"Claude Code sessions and subagents finish their turn. Record: state/stops.jsonl. {who[0].upper()}{who[1:]}."
                    + "".join(f"\n  ✗ {e}" for e in r.get("errors", [])))
-    out(args, {"paused": on, **({"by": rec["by"]} if on else {})}, "Paused everywhere: no drive, sampo run, serve, night or "
-        f"lane launches, and autonomy reads standard; a session already running finishes its turn. {who[0].upper()}{who[1:]}."
-        if on else "Pause lifted: the drive and the launchers run again, under each project's own autonomy.")
+    out(args, {"paused": True, "by": rec["by"]}, "Paused everywhere: no drive, sampo run, serve, night or "
+        f"lane launches, and autonomy reads standard; a session already running finishes its turn. {who[0].upper()}{who[1:]}.")
+
+
+def _pause_off(args, only):
+    """T-4601: sampo pause off lifts both pauses and names what it lifted: the machine-wide flag (not with -p) and each
+    project's own (every project that holds one; with -p, that one). A session's own pause off (its tool call stamped it)
+    lifts only the flag its own call set: a project's own pause is the user's word, so it stays and the output says so."""
+    wide = c.panicked() and only is None
+    # T-4190: a user's pause stays the user's to lift. The caller is told the same way with and without -p: a fresh
+    # stamp from the PreToolUse hook marks a session's own tool call (set_panic spends it; with -p it is spent here)
+    agent = (c.set_panic(False)["by"] if only is None
+             else "agent" if c.take_pause_stamp(c.session_id()) else "user") == "agent"
+    held = c.projects_paused(only)
+    lifted, busy = ([], []) if agent else c.lift_project_pauses(only)
+    still = c.panicked()
+    parts = (["the machine-wide pause"] if wide else []) + ([f"the pause of {', '.join(lifted)}"] if lifted else [])
+    if parts:
+        text = (f"Pause lifted: {' and '.join(parts)}. The drive and the launchers run again, under each project's "
+                "own autonomy.")
+    else:
+        text = f"Nothing was paused{' in ' + only.slug if only else ''}." + (
+            "" if only else " No machine-wide pause is on and no project holds its own.")
+    if only is not None and still:
+        text += " The machine-wide pause is still on (sampo pause off, without -p, lifts it)."
+    if agent and held:
+        text += (f" {', '.join(held)} still holds the user's own pause (their word): only the user's sampo pause off "
+                 "lifts it.")
+    if busy:
+        text += f" Still paused (its lock was busy, run it again): {', '.join(busy)}."
+    out(args, {"paused": still, "machine": wide, "projects": lifted, **({"busy": busy} if busy else {}),
+               **({"kept": held} if agent and held else {})}, text)
 
 
 def cmd_check(args):
@@ -8435,7 +8473,7 @@ def _build_parser(only=None):
                                                        "that only read (yours to turn on; T-0974)")
     s.add_argument("state", nargs="?", choices=["on", "off"])
 
-    s = add("pause", cmd_pause, tier=("Project and settings", 720), help="sampo pause on stops everything Sampo runs unattended, in every project, and records who set it (off lifts it: a session lifts only its own, a user's stays the user's; bare: only reports)")
+    s = add("pause", cmd_pause, tier=("Project and settings", 720), help="sampo pause on stops everything Sampo runs unattended, in every project, and records who set it (off lifts it, and each project's own pause too, naming them; -p lifts only that project's; a session lifts only its own, a user's stays the user's; bare: only reports, projects included)")
     s.add_argument("state", nargs="?", choices=["on", "off"], default=None)
     s.add_argument("--now", action="store_true", help="also stop what runs now: sampo sessions, serve units, sampo run's "
                    "session, leases (T-1821)")

@@ -926,7 +926,7 @@ def _start_seen(notes, every=START_REPEAT):
 def session_context(p, sd, other_note=None, sid=None, budget=None, dedupe=False):
     a = sd["active"]
     head = [f"Sampo project {p.slug} ({p.root}). Drive: {'on' if sd['drive'] else 'off'}"
-            + (", paused" if sd["paused"] else "") + "."
+            + (", paused in this project (sampo pause off lifts it)" if sd["paused"] else "") + "."
             + (" Autonomy: full." if sd.get("autonomy") == "full" else "")
             + (f" PAUSED everywhere (sampo pause), {c.pause_line()}: nothing unattended starts." if sd.get("panic") else "")
             + _grants_note(c.read_meta(p))
