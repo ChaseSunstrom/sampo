@@ -9727,7 +9727,9 @@ def _build_parser(only=None):
                                                        "land --merged: no train: every lane whose tip is already on the "
                                                        "trunk is removed and its task closed, on the gate pass on record "
                                                        "(one sampo check when none); a dirty lane, a task with no close "
-                                                       "fields or audits or a failing verify stays active with why "
+                                                       "fields or audits or a failing verify stays active with why; a "
+                                                       "lane with nothing built is named empty, --drop-empty removes "
+                                                       "the clean ones (T-4603) "
                                                        "(T-4596; merge ID ID … closes what it lands the same way); "
                                                        "andon: mark this lane's ANDON.md answered, moved aside, no rm (T-3704); "
                                                        "accept ID --audit LENS 'how' 'result' …: a reviewed lane's audits; refused, "
@@ -9752,6 +9754,9 @@ def _build_parser(only=None):
                                                          "hand train landed it, nothing closed it) and remove the lane, "
                                                          "one gate pass for all; a dirty lane or a task that cannot close "
                                                          "stays active with the reason on its Log (T-4596)")
+    s.add_argument("--drop-empty", action="store_true", dest="drop_empty",
+                   help="land --merged: remove each clean lane in which nothing was built (its task never built, back in "
+                        "the queue, never closed); a dirty one stays; without it the sweep only names them (T-4603)")
     s.add_argument("--batch", type=int, metavar="N", help=f"land: lanes per train (default {c.TRAIN_BATCH}) (T-3500)")
     s.add_argument("--first", metavar="IDS", help="land: these lanes train first (T-1,T-2); while a land runs, at its "
                                                   "next train (T-3796)")

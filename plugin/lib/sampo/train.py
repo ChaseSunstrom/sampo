@@ -1751,11 +1751,28 @@ def _worktree_dirty(path):
     return None if r.returncode else r.stdout.strip()
 
 
+def _names_task(main, tid):
+    """T-4603: True when a commit on the trunk names the task in its subject ('Merge T-0007', 'Fix it (T-0007)'): the id
+    ends at a non-digit, so T-0007 is not found in T-00071."""
+    r = _git(main, "log", "HEAD", "-E", f"--grep={re.escape(tid)}([^0-9]|$)", "--format=%s")
+    return any(re.search(rf"{re.escape(tid)}(?!\d)", s) for s in r.stdout.splitlines())
+
+
+def _empty_lane(main, first_parent, tid, tips):
+    """T-4603: a lane in which nothing was ever built. Its tip (and its worktree's HEAD) is an ancestor of the trunk
+    only because it is an old commit of the trunk's own first-parent line (a merged lane's commits are on a side line,
+    reached through a merge), and no trunk commit names its task (a lane fast-forwarded in has its own commits on that
+    line, and its subject names the task). `first_parent` is the trunk's first-parent line, read once for the sweep."""
+    return all(t in first_parent for t in tips) and not _names_task(main, tid)
+
+
 def _merged_lanes(p, main):
-    """T-4596: ([(task id, its lane folder)] for every open task whose lane is wholly on the trunk, ordered by id; and
-    [(id, why)] for the ones the sweep leaves). On the trunk: the lane's branch tip and its worktree's own HEAD are both
-    ancestors of the trunk's HEAD, so no commit of the lane's is ever lost; a lane with any other commit is not here."""
-    on, left = [], []
+    """T-4596: ([(task id, its lane folder)] for every open task whose lane is wholly on the trunk, ordered by id;
+    [(id, why)] for the ones the sweep leaves; T-4603: [(id, its lane folder, why it is kept or '')] for the lanes
+    holding nothing, whose task was never built). On the trunk: the lane's branch tip and its worktree's own HEAD are
+    both ancestors of the trunk's HEAD, so no commit of the lane's is ever lost; a lane with any other commit is not here."""
+    on, left, empty = [], [], []
+    first_parent = None  # the trunk's first-parent line, read at most once
     for b in sorted(c.load_briefs(p), key=lambda x: c.id_num(x.id)):
         path = b.meta.get("lane") or ""
         if b.status in c.CLOSED or not path:
@@ -1765,8 +1782,14 @@ def _merged_lanes(p, main):
         head = _git(path, "rev-parse", "--verify", "-q", "HEAD^{commit}").stdout.strip() if os.path.isdir(path) else ""
         if not tip or any(_git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode for t in (tip, head) if t):
             continue  # not merged (or no branch left to judge): the sweep's business ends here
+        if first_parent is None:
+            first_parent = set(_git(main, "rev-list", "--first-parent", "HEAD").stdout.split())
         dirty = _worktree_dirty(path)
-        if dirty is None:
+        if _empty_lane(main, first_parent, b.id, [t for t in (tip, head) if t]):
+            why = ("" if dirty == "" else f"its folder {path} is gone or not a worktree git can read" if dirty is None
+                   else f"its folder has uncommitted work ({dirty.splitlines()[0][3:]}): nothing is discarded")
+            empty.append((b.id, path, why))
+        elif dirty is None:
             left.append((b.id, f"its lane folder {path} is gone or not a worktree git can read"))
         elif dirty:
             first = dirty.splitlines()[0][3:]
@@ -1774,15 +1797,37 @@ def _merged_lanes(p, main):
                                ": commit it or remove it, nothing is discarded"))
         else:
             on.append((b.id, path))
-    return on, left
+    return on, left, empty
 
 
-def land_merged(p, main):
+def _drop_empty(p, main, empty):
+    """T-4603: `sampo lane land --merged --drop-empty`: each clean empty lane goes through the lane remove verb
+    (lanes.remove: its folder, registration and the branch it never added a commit to; its task returns to the queue,
+    never closed). Returns ([ids dropped], [(id, path, why kept)]); a refusal keeps that lane and costs no other."""
+    from sampo import cli
+    from sampo import lanes
+    dropped, kept = [], []
+    for tid, path, why in empty:
+        if why:
+            kept.append((tid, path, why))
+            continue
+        try:
+            lanes.remove(p, cli.need_brief(p, tid), main)
+            dropped.append(tid)
+        except Exception as e:  # noqa: BLE001 — one lane's refusal never costs the others theirs
+            kept.append((tid, path, f"not dropped: {c.fit(c.plain(str(e)), 200)}"))
+    return dropped, kept
+
+
+def land_merged(p, main, drop_empty=False):
     """T-4596: close the tasks of every lane whose tip is already on the trunk (a hand train, `sampo lane merge`, or a
     land cut short landed them and closed nothing): the lane goes and the task closes through `close_landed`. One gate
     pass serves them all: the one on record for the trunk's code tree, else a single `sampo check` first, whose red
     result leaves every task active. A dirty lane, a task with no close fields or audits and one whose own verify fails
-    on the trunk stay active, the reason in the output and on the task's Log. {"closed", "left": [(id, why)], "gate"}."""
+    on the trunk stay active, the reason in the output and on the task's Log. T-4603: a lane in which nothing was built
+    is not landed work: it is named empty (its task never built, left open and queued), and with drop_empty a clean
+    one is removed, its task returned to the queue, never closed. {"closed", "left": [(id, why)], "gate",
+    "empty": [(id, note)], "dropped": [ids]}."""
     from sampo import cli
     busy = c.active_brief_fast(p)
     if busy:
@@ -1793,7 +1838,8 @@ def land_merged(p, main):
             held.enter_context(c.lock(os.path.join(p.dir, "land"), timeout=1))
         except c.LockTimeout:
             raise c.PolicyError("another sampo lane land is running; it closes the lanes it lands") from None
-        on, left = _merged_lanes(p, main)
+        on, left, empty = _merged_lanes(p, main)
+        dropped, kept = _drop_empty(p, main, empty) if drop_empty else ([], [(t, x, w) for t, x, w in empty])
         gate = "no merged lane waits for a close" if not on else ""
         if on and cli._full_pass(p):
             gate = "reused the gate pass on record for the trunk's code tree"
@@ -1814,7 +1860,8 @@ def land_merged(p, main):
                 _note_left(p, tid, why)
             except Exception as e:  # noqa: BLE001 — the Log line is a note: it never costs the sweep its result
                 print(f"sampo lane land --merged: no note on {tid}: {type(e).__name__}", file=sys.stderr)
-    return {"closed": [t for t, _ in closed], "left": left, "lines": closed, "gate": gate}
+    return {"closed": [t for t, _ in closed], "left": left, "lines": closed, "gate": gate,
+            "empty": [(t, w) for t, _, w in kept], "dropped": dropped}
 
 
 def _note_left(p, tid, why):
@@ -1997,13 +2044,21 @@ def cmd_land(p, args, main):
     if getattr(args, "merged", False):  # T-4596: close the tasks of lanes already on the trunk; no train, no merge
         if args.batch is not None or getattr(args, "first", None) or getattr(args, "bg", False):
             raise cli.UsageError("sampo lane land --merged takes none of --batch, --first or --bg: it trains nothing")
-        got = land_merged(p, main)
+        got = land_merged(p, main, drop_empty=getattr(args, "drop_empty", False))
         lines = [f"Land --merged: {len(got['closed']) + len(got['left'])} lane(s) already on the trunk: "
                  f"{len(got['closed'])} closed, {len(got['left'])} left active ({got['gate']})."
-                 if got["closed"] or got["left"] else "Land --merged: no lane with an open task is on the trunk."]
+                 if got["closed"] or got["left"] else "Land --merged: no lane with an open task is on the trunk."
+                 if not got["empty"] and not got["dropped"] else "Land --merged: no lane with landed work is on the trunk."]
         lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in got.pop("lines")]
         lines += [f"  left {t}: {c.fit(c.plain(w), 400)}" for t, w in got["left"]]
+        lines += [f"  dropped {t}: its lane was empty, the task was never built; the lane is removed and the task is back "
+                  "in the queue, not closed" for t in got["dropped"]]
+        lines += [f"  empty {t}: its lane is empty, the task was never built; it stays open"
+                  + (f" ({w})" if w else " (sampo lane land --merged --drop-empty removes the lane and returns the task "
+                                         "to the queue)") for t, w in got["empty"]]
         return cli.out(args, got, "\n".join(lines))
+    if getattr(args, "drop_empty", False):
+        raise cli.UsageError("sampo lane land --drop-empty goes with --merged: it removes the empty lanes that sweep finds")
     first = [x.upper() for x in (getattr(args, "first", None) or "").replace(",", " ").split() if x]
     if first:  # T-3796: ahead of the rest; into a running land at its next train boundary
         for t in first:
