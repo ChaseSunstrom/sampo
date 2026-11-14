@@ -347,7 +347,10 @@ def check_project(p, apply, actions):
                            "fm repeats lists them, each with a suggestion (fm check add, a script, a project skill)"))
     from sampo import lanes as slanes
     out += slanes.stale(p, briefs, apply, actions, finding)
-    out += slanes.finished_findings(p, briefs, apply, actions, finding)  # T-4543: never in fm night's lanes-only run
+    fin = slanes.finished_findings(p, briefs, apply, actions, finding)  # T-4543: never in fm night's lanes-only run
+    out += fin
+    out += slanes.bytecode_findings(p, briefs, apply, actions, finding,  # T-4655: the idle lanes that stay, bytecode only
+                                    skip=[f["path"] for f in fin if "path" in f])
     out += _roll_ledger(p, apply, actions)
     out += _prune_snapshots(p, apply, actions)
     out += _prune_exam_work(p, apply, actions)  # T-2568

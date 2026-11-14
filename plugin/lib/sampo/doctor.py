@@ -2046,8 +2046,9 @@ def _old_outputs():
 
 
 def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S):
-    """[(label, bytes)] Sampo owns and could free, largest first: finished lanes (done, no-task, scratch) of each project
-    and old outputs. Each source that can't be read is skipped: the disk check never costs the doctor its run."""
+    """[(label, bytes)] Sampo owns and could free, largest first: finished lanes (done, no-task, scratch) of each project,
+    the idle lanes' bytecode (T-4655), the build output that stays and old outputs. Each source that can't be read is
+    skipped: the disk check never costs the doctor its run."""
     from sampo import lanes as slanes
     deadline, rows = time.monotonic() + budget, []
     for p, _ in projects:
@@ -2060,6 +2061,11 @@ def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S):
             build = slanes.lane_build_output(p, skip=[r["path"] for r in done], budget=max(0.0, deadline - time.monotonic()))
             if build:
                 rows.append(build)
+            # T-4655: the idle lanes' bytecode (tidy --apply removes its *.pyc; a finished lane is counted whole above)
+            bytecode = slanes.lane_bytecode_output(p, skip=[r["path"] for r in done],
+                                                   budget=max(0.0, deadline - time.monotonic()))
+            if bytecode:
+                rows.append(bytecode)
         except (OSError, c.PolicyError, subprocess.SubprocessError, ValueError):
             continue
     try:
@@ -2101,7 +2107,8 @@ def check_disk(path=None, usage=None, projects=None):
     named = c.joinmore([f"{label} {slanes.human(size)}" for label, size in held], 5)
     return Result("disk", "FAIL" if level == "fail" else "WARN",
                   f"{free} on the disk holding Sampo's state: hooks and builders fail when it fills"
-                  + (f"; Sampo could free: {named} (sampo tidy --apply removes the lanes)" if held else "")
+                  + (f"; Sampo could free: {named} (sampo tidy --apply removes the finished lanes and the idle lanes' bytecode)"
+                     if held else "")
                   + (f"; builder worktrees: {where} (git worktree list; fm lane rm the merged ones)" if where else ""))
 
 

@@ -3913,3 +3913,137 @@ def finished_findings(p, briefs, apply, actions, finding):
         else:
             actions.append(("finished_lane", name))
     return out
+
+
+def _tracked_pyc(path):
+    """T-4655: the *.pyc files git tracks in this lane, as paths: a committed one is the repo's, never a cache. None
+    when git can't list them (an unreadable index is no list), so the lane is left alone."""
+    try:
+        r = _git(path, "ls-files", "-z", "--cached", "--", "*.pyc", timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode:
+        return None
+    return {os.path.join(path, x) for x in r.stdout.split("\0") if x}
+
+
+def _pyc_files(path, deadline):
+    """T-4655: (path, bytes) of each *.pyc regular file directly in a __pycache__ folder under this lane. Symlinks are
+    never followed (a link as a folder or as a file is not listed, so never removed), .git is skipped. None when
+    `deadline` (a time.monotonic() value) passes first: an unfinished walk is no list."""
+    found, todo = [], [path]
+    while todo:
+        folder = todo.pop()
+        try:
+            with os.scandir(folder) as it:
+                for e in it:
+                    if time.monotonic() >= deadline:
+                        return None
+                    try:
+                        if e.is_dir(follow_symlinks=False):
+                            if e.name != ".git":
+                                todo.append(e.path)
+                        elif e.name.endswith(".pyc") and os.path.basename(folder) == "__pycache__" \
+                                and e.is_file(follow_symlinks=False):
+                            found.append((e.path, e.stat(follow_symlinks=False).st_blocks * 512))
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return found
+
+
+def lane_bytecode(p, briefs=None, skip=(), budget=SIZE_BUDGET_S, busy=None):
+    """T-4655: the *.pyc each idle lane keeps in its __pycache__ folders, biggest first. Lanes each keep their own
+    bytecode: on 2026-11-14, 949 MB of it filled a disk at 100%. A lane is idle when no process stands in it, its lock
+    (if any) is a dead agent's, no brief names it at all (a closed one's whole lane is stale()'s; an open one is work),
+    it is not in the middle of an operation, and it is not one of `skip` (finished() rows, removed whole). The repo's
+    tracked .pyc stays; a lane whose tracked list or walk can't be read is left out. The main checkout is never
+    listed. Rows: path, branch, kind, files, bytes, lock, pycs (the paths --apply removes). One monotonic deadline,
+    `budget` seconds from the call, bounds the whole scan: past it, the rows verified so far come back, never a
+    partly-walked one."""
+    deadline = time.monotonic() + budget
+    if _left(deadline) <= 0:
+        return []
+    main = c.main_worktree(p.root) or p.root
+    if not c.git_root(main):
+        return []
+    briefs = c.load_briefs(p) if briefs is None else briefs
+    real = os.path.realpath
+    homes = {real(main) + ".lanes": "no_task_lane", real(os.path.join(main, ".claude", "worktrees")): "scratch_worktree"}
+    named = {real(b.meta["lane"]) for b in briefs if b.meta.get("lane")}
+    skip = {real(s) for s in skip}
+    busy = _busy_dirs() if busy is None else busy
+    rows = []
+    for w in _worktrees(main)[1:]:  # the first is the main checkout itself
+        if _left(deadline) <= 0:
+            break
+        path = real(w["path"])
+        kind = next((k for home, k in homes.items() if path.startswith(home + os.sep)), None)
+        if kind is None or w["prunable"] or not os.path.isdir(path) or path in skip or path in named:
+            continue
+        if w["lock"] is not None and not agent_lock_dead(w["lock"]):
+            continue
+        if _in_use(path, busy) or _mid_operation(path):
+            continue
+        tracked = _tracked_pyc(path)
+        if tracked is None:
+            continue
+        found = _pyc_files(path, deadline)
+        if not found:  # None: the walk ran out of budget; []: nothing to remove
+            continue
+        kept = [(f, n) for f, n in found if f not in tracked]
+        if not kept:
+            continue
+        rows.append({"path": path, "branch": w["branch"], "kind": kind, "files": len(kept),
+                     "bytes": sum(n for _, n in kept), "lock": w["lock"], "pycs": [f for f, _ in kept]})
+    rows.sort(key=lambda r: (-r["bytes"], r["path"]))
+    return rows
+
+
+def bytecode_findings(p, briefs, apply, actions, finding, skip=()):
+    """T-4655: fm tidy: one APPLY item per idle lane that holds bytecode, biggest first. --apply removes only the listed
+    *.pyc regular files of that lane (os.remove, never a link's target): the __pycache__ folders stay, nothing else in
+    the lane goes. Busy and tracked are checked again at apply, a moment after the scan."""
+    rows = lane_bytecode(p, briefs, skip=skip, budget=TIDY_SCAN_S)
+    out = []
+    for r in rows:
+        out.append(finding(p.slug, "lane_bytecode", "action",
+                           f"{_KINDS[r['kind']]} {os.path.basename(r['path'])} bytecode: {r['files']} .pyc in __pycache__ "
+                           f"({human(r['bytes'])}), idle: no process in it, no open task names it",
+                           "sampo tidy --apply removes these .pyc files", auto=True, path=r["path"],
+                           bytes=r["bytes"], files=r["files"]))
+    if not apply or not out:
+        return out
+    busy = _busy_dirs()
+    for r, item in zip(rows, out):
+        if _in_use(r["path"], busy):
+            item.update(severity="warn", auto=False, fix="a process is working in it: left alone")
+            continue
+        tracked = _tracked_pyc(r["path"])
+        if tracked is None:
+            item.update(severity="warn", auto=False, fix="git can't list its tracked files: left alone")
+            continue
+        gone = 0
+        for f in r["pycs"]:
+            if f in tracked:
+                continue
+            try:
+                if _stat.S_ISREG(os.lstat(f).st_mode):
+                    os.remove(f)
+                    gone += 1
+            except OSError:
+                pass
+        if gone:
+            actions.append(("lane_bytecode", os.path.basename(r["path"])))
+    return out
+
+
+def lane_bytecode_output(p, skip=(), budget=SIZE_BUDGET_S):
+    """T-4655: (label, bytes) of the idle lanes' bytecode that doctor names (tidy --apply removes it). `skip` are the
+    finished() rows, counted whole elsewhere. None when there is none. Reads only: nothing is removed here."""
+    rows = lane_bytecode(p, skip=skip, budget=budget)
+    if not rows:
+        return None
+    n = len(rows)
+    return f"lane bytecode ({n} idle lane{'s' if n != 1 else ''})", sum(r["bytes"] for r in rows)
