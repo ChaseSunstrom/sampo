@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A test class recorded red on the same inputs now runs first and is named the moment it fails again, and one that turns green says "was red, now green on the same inputs (flaky?)" (T-4269).
 - `fm ship` started while another ship of the project is running now says what it waits on, runs no test until that ship ends, then tests the moved origin main, or ends at once when the running ship already carries its commits (T-4645).
 - A lane-built CLEAN task records its behaviour lock with `sampo check --evidence T-… --step 1 --lock`, a bounded run of the scope's linked tests that the builder hook allows and the close counts, so it no longer ends in a hand-written "none: …" section (T-4648).
 - smith's run_bounded closes the stdout and stdin pipes it opens on every way out (normal end, timeout, a raising callback), so a call no longer leaves an open file and a ResourceWarning behind (T-4636).
