@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A stale git lock (index.lock, HEAD.lock, packed-refs.lock, a refs lock) older than a minute with no live git process for its git dir is now removed and reported by sampo lane list and brief, the train's start and doctor --repair, while a fresh or process-held one is left and named (T-4616).
 - A message that only urges the session on is read as an urge by the steer expansion already run for it, so no task is captured and the session's next tool result tells it to carry on (T-4612).
 - A fm code run that stops unfinished (out of time, model error, block), in a step or in the verify rounds, with the keep check red now puts the files it changed back to the newest state the check passed on and sets the undone work aside as a patch that the message names (T-4614).
 - The Stop hook's drive no longer lets a session end its turn to wait on a background job while an independent task is queued: it tells the session to checkpoint and start that task, naming the running job (T-4611).
