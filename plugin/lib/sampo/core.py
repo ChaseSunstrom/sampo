@@ -2988,6 +2988,10 @@ class Criterion:
 
 
 AFFECTED_LABEL = "sampo check --affected (affected tests only): "  # T-1747's evidence label (fmcli writes it)
+# T-4648: a lane builder's bounded behaviour lock (sampo check --evidence ID --step 1 --lock): the task's linked tests only,
+# run on the lane's start tree (the label says which) or after an edit (then it is no lock at all)
+LOCK_LABEL = "sampo check --lock (linked tests, on the lane's start tree): "
+LOCK_LATE_LABEL = "sampo check --lock (linked tests, run after an edit: not a lock): "
 
 class Brief:
     """A task brief: YAML-ish frontmatter + markdown sections. Round-trips unchanged content byte-for-byte."""
@@ -3387,7 +3391,7 @@ class Brief:
         if not runs or "` → ✗ exit" not in runs[-1] or runs[-1].count("`") < 2:
             return None
         cmd = runs[-1].split("`")[1]
-        for lab in (AFFECTED_LABEL, AFFECTED_LABEL.replace("sampo ", "fm ", 1)):  # T-2596: rerun the tests, not the label; old ledgers hold the fm form
+        for lab in (AFFECTED_LABEL, AFFECTED_LABEL.replace("sampo ", "fm ", 1), LOCK_LABEL, LOCK_LATE_LABEL):  # T-2596: rerun the tests, not the label; old ledgers hold the fm form
             cmd = cmd[len(lab):] if cmd.startswith(lab) else cmd
         return None if "[REDACTED" in cmd else cmd
 
@@ -3581,8 +3585,14 @@ class Brief:
         return reasons + self.audit_blockers(since, tree, need)
 
     def ran_times(self):
-        """Timestamps of the evidence fm ran itself."""
-        return [t.group(1) for l in self.evidence() if _RAN_MARK in l and (t := _TS_TAIL.search(l))]
+        """Timestamps of the evidence fm ran itself (T-4648: not a lock run after an edit, which locks nothing)."""
+        return [t.group(1) for l in self.evidence() if _RAN_MARK in l and LOCK_LATE_LABEL not in l
+                and (t := _TS_TAIL.search(l))]
+
+    def lock_at_start(self):
+        """T-4648: a green bounded lock run (sampo check --lock) on the lane's start tree is on the brief. The label is
+        written by the run itself (typed evidence carries no ran mark, a --run's command is a shell line, never a label)."""
+        return any(_RAN_MARK in l and f"`{LOCK_LABEL}" in l and "` → ✗" not in l for l in self.evidence())
 
     def grade(self):
         """How strongly this task was verified: (strong | ok | weak, why). Strong = every check fm ran itself, and

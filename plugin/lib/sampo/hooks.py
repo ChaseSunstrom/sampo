@@ -3168,9 +3168,12 @@ def _builder_check_deny(pl, fmguard):
         word = next((a for a in rest if not a.startswith("-")), "")
         if word in _CHECK_SETUP:  # the verbs that set gates up or list them run none
             continue
+        if "--lock" in rest and "--affected" not in rest:  # T-4648: the bounded behaviour lock: the scope's linked tests
+            continue
         return ("deny", "Sampo: never run sampo check --affected or the full sampo check in a builder lane: the main "
                         "thread runs the affected check once at sampo lane accept, one lane at a time; run your own "
-                        "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514).")
+                        "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514); a CLEAN task's "
+                        "behaviour lock is the bounded form: sampo check --evidence T-<id> --step 1 --lock (T-4648).")
     return None
 
 

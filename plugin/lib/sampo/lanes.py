@@ -2417,8 +2417,9 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
                   + "; ".join(f"{f} by {w}" for f, w in skipped), ""]
     if b.type == "CLEAN":  # T-1712: the close gate wants the tests run before the first edit; lanes never heard of it
         parts += ["## Behaviour lock", f"This is a CLEAN task: right after `fm focus {b.id}`, before your first edit, "
-                  f"run `fm check --evidence {b.id} --step 1` (the behaviour lock the close checks; --affected records "
-                  f"no evidence).", ""]
+                  f"run `fm check --evidence {b.id} --step 1 --lock` (T-4648: the tests linked to your scope only, "
+                  f"which the builder hook allows; it records the behaviour lock the close checks, and a run after an "
+                  f"edit counts for nothing).", ""]
     if b.type == "RESEARCH":  # T-3953: a note left in .fm-scratch dies with the worktree (T-3933's was rebuilt by hand)
         parts += ["## Filing your note", "Write your note to a file outside the repo, then file it in Sampo's state "
                   f"before you report: `sampo research add {b.id}-note --file <that file>`. A note under .fm-scratch "

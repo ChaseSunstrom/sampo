@@ -2519,11 +2519,11 @@ def _kind_gaps(b, first_edit):
     """What a CLEAN close (T-1160's behaviour lock) and a RESEARCH close (T-0896's Decision) need on the brief itself.
     Shared by fm task done and finish's pre-check."""
     gaps = []
-    if b.type == "CLEAN" and first_edit and not b.section("Behaviour lock").strip() and not any(
-            ts <= first_edit for ts in b.ran_times()):
+    if b.type == "CLEAN" and first_edit and not b.section("Behaviour lock").strip() and not b.lock_at_start() and not any(
+            ts <= first_edit for ts in b.ran_times()):  # T-4648: a lane's bounded lock (sampo check --lock) on its start tree
         gaps.append(f"no behaviour lock: a CLEAN change needs the tests run before its first edit (sampo check "
-                    f"--evidence {b.id} --step 1), or sampo task set {b.id} --section \"Behaviour lock\" --text "
-                    f"\"none: <why>\"")
+                    f"--evidence {b.id} --step 1; in a lane, the bounded form: add --lock), or sampo task set {b.id} "
+                    f"--section \"Behaviour lock\" --text \"none: <why>\"")
     if b.type == "RESEARCH" and not b.section("Decision").strip():  # T-0896 (was a warning, T-0599)
         gaps.append(f"no Decision: research ends in a choice: sampo task set {b.id} --section Decision --text "
                     f"\"Recommendation: …; would change if: …\" (or \"none: <why>\")")
@@ -5613,6 +5613,10 @@ def cmd_check(args):
     if args.action == "office":  # T-1406: one deliverable's check: no project, no gate lock
         from sampo import office
         return office.cmd(args)
+    if getattr(args, "lock", False):  # T-4648: a lane builder's bounded behaviour lock, never the wide gates
+        if args.action != "run" or getattr(args, "affected", False) or getattr(args, "python", None):
+            raise UsageError("sampo check --lock stands alone: sampo check --evidence T-… --step 1 --lock")
+        return _check_lock(resolve(args), args)
     if getattr(args, "python", None):  # T-1805: the gates under another interpreter, first on PATH as python3/python
         import shutil
         import tempfile
@@ -6602,6 +6606,15 @@ HUB_PAIRS = 10 # T-1467: more co-changed tests than this and a file's pairs are 
 HUB_SHARE = 4  # T-3306: a file linked to over 1/HUB_SHARE of the tests (and to HUB_MIN) is a hub,
 HUB_MIN = 8
 HUB_WEIGHT = 100  # as is one whose linked test files hold this many test methods (cli.py: 5 files, 162)
+LOCK_MODULES = 12  # T-4648: test modules a lane builder's bounded behaviour lock (sampo check --lock) runs, at most
+LOCK_SECONDS = 600  # and the seconds it may take (scaled by the machine's load), whatever --timeout says
+
+
+def _lock_rank(test, files):
+    """T-4648: sort key for the lock's modules: the tests named after a scope file first (test_cli for cli.py), then by name."""
+    stem = os.path.basename(test).rsplit(".", 1)[0]
+    named = any(os.path.basename(f).rsplit(".", 1)[0] in stem for f in files)
+    return (0 if named else 1, test)
 
 
 def _hub_tests(p, m, base, changed, detail=None, tree=None):
@@ -6729,13 +6742,15 @@ def _own_view(p, b, base, changed=None, landing=True, span=None):
     return _OwnView(p, b, base, changed, landing, span)
 
 
-def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False):
+def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False, lock=None):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
     project's template; command None when no test is linked. fm check --affected and the ambient runner (T-0705).
     `hold` (T-4286): the run always holds the repo-shape classes, whatever files changed. `shape_green` (T-4563): the
     repo-shape modules ran green at this tip, and they hold those classes, so a run with linked tests leaves them out.
     Another open task's red-first test files are left out (T-1718); a dict passed as skipped gets them {module: task}.
-    `only`: exactly these files as the changed ones (T-3533: fm ship's files main moved past the gated tree)."""
+    `only`: exactly these files as the changed ones (T-3533: fm ship's files main moved past the gated tree).
+    `lock` (T-4648): a dict the bounded behaviour lock passes; only the tests linked to `only` and its own test files, the
+    ones named like those files first, at most LOCK_MODULES of them; it gets {"linked": how many there were}."""
     from sampo import map as smap
     import shlex
     act = b or (None if since else c.active_brief(c.load_briefs(p), p.lane))  # T-1117 review: the closing task's base, active or not
@@ -6756,7 +6771,7 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     # T-0952: a test that historically changes with a changed file (the map's co-change pairs, either way round):
     # hooks.json has no test named after it, but the wiring tests change with it
     istest = lambda f: c.TESTISH.search(os.path.basename(f)) and c.CODE.search(f)  # noqa: E731
-    pairs = m.get("pairs") or {}
+    pairs = {} if lock is not None else m.get("pairs") or {}  # T-4648: the lock names the linked tests, no more
     # T-1467: a file that co-changes with many tests (CHANGELOG.md, edited by every task) carries no signal; its
     # pairs ran ~28 test files on every close. Its direct map links (tests_for) still count.
     fan = collections.Counter(b for a, bs in pairs.items() if istest(a) for b in bs)
@@ -6769,17 +6784,23 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     by = meta.get("affected_by") or {}  # T-1135: extension -> its own runner's template
     if not template and not by:
         raise UsageError("no affected-tests command: sampo check affected '<cmd with {tests} or {names}>'")
-    broke = {t for f in changed for t in (m.get("broke") or {}).get(f, [])}  # T-2148: tests a file once turned red
+    broke = {t for f in changed for t in (m.get("broke") or {}).get(f, [])} if lock is None else set()  # T-2148: tests a file once turned red
     # T-2307: a hook-path module's import budget is tested in test_core (LaterImports), which no map link names
     budget = {HOOK_BUDGET[1]} if changed & set(HOOK_BUDGET[0]) and os.path.isfile(os.path.join(p.root, HOOK_BUDGET[1])) else set()
     rules = {f"plugin/tests/{t}.py" for t in RULE_TESTS if os.path.isfile(os.path.join(p.root, "plugin", "tests", t + ".py"))} \
         if changed else set()  # T-2992: a builder's missing MASTER bullet or fm shim fails in its own lane
-    tree = c.worktree_tree(p.root) if changed else None
-    picked = _hub_tests(p, m, base, sorted(changed), detail, tree)  # T-3306: a hub file's symbols, not the whole file
-    # T-3603: the tests the run cache saw run a changed function (T-3670: one that drives a hook only by its JSON)
-    ran = set(smap.ran_tests(p.root, base, tree, sorted(changed))) if changed else set()
-    every = sorted(set(smap.tests_for(m, sorted(changed - set(picked)))) | set().union(*picked.values())
-                   | own | paired | broke | budget | rules | ran)
+    if lock is not None:  # T-4648: the bounded lock: the linked tests of the scope's files, no hub, rule or budget extras
+        budget = rules = set()
+        every = sorted(set(smap.tests_for(m, sorted(changed))) | own, key=lambda t: _lock_rank(t, changed))
+        lock["linked"] = len(every)
+        every = every[:LOCK_MODULES]
+    else:
+        tree = c.worktree_tree(p.root) if changed else None
+        picked = _hub_tests(p, m, base, sorted(changed), detail, tree)  # T-3306: a hub file's symbols, not the whole file
+        # T-3603: the tests the run cache saw run a changed function (T-3670: one that drives a hook only by its JSON)
+        ran = set(smap.ran_tests(p.root, base, tree, sorted(changed))) if changed else set()
+        every = sorted(set(smap.tests_for(m, sorted(changed - set(picked)))) | set().union(*picked.values())
+                       | own | paired | broke | budget | rules | ran)
     fill = lambda tpl, ts: tpl.replace("{tests}", " ".join(shlex.quote(t) for t in ts)).replace(  # noqa: E731
         "{names}", " ".join(shlex.quote(os.path.basename(t).rsplit(".", 1)[0]) for t in ts))
 
@@ -6824,6 +6845,63 @@ def _self_docs_affected(p):
         return None
     from sampo import doctor
     return doctor.check_self_docs(p.root, os.path.join(p.root, "plugin"))
+
+
+def _scope_files(p, scope):
+    """T-4648: the git-tracked files a brief's scope names (a path, a subtree or a glob; `file::symbol` is the file)."""
+    pats = [s.split("::", 1)[0].strip() for s in scope if str(s).strip()]
+    if not pats:
+        return []
+    tracked = [f for f in c._git(p.root, "ls-files", timeout=30).splitlines() if f]
+    return sorted({f for f in tracked if any(c.glob_match(f, s) for s in pats)})
+
+
+def _check_lock(p, args):
+    """T-4648: `sampo check --evidence ID --step N --lock`: a lane builder's bounded behaviour lock. A CLEAN close wants the
+    task's tests run before its first edit; a builder may not run the wide checks (T-4514), so this runs only the tests
+    linked to the files the brief's scope names (LOCK_MODULES at most, LOCK_SECONDS at most) and records them under
+    LOCK_LABEL when the tree is still the lane's start tree, under LOCK_LATE_LABEL (no lock) when it is not. Never the
+    full gates: the main checkout keeps `sampo check --evidence ID --step 1`, and a red run records a red line."""
+    if not getattr(args, "evidence", None):
+        raise UsageError("sampo check --lock records a task's behaviour lock: sampo check --evidence T-… --step 1 --lock")
+    if not p.lane:
+        raise UsageError("sampo check --lock is for a task built in a lane; in this checkout run the full gates before "
+                         f"the first edit: sampo check --evidence {args.evidence} --step 1")
+    b = c.find_brief(p, args.evidence)
+    start = str(b.meta.get("base_tree") or "")[:12]
+    if not start:
+        raise UsageError(f"{b.id} has no start point in this lane: sampo focus {b.id} first")
+    files = _scope_files(p, b.meta.get("scope") or [])
+    if not files:
+        return out(args, {"tests": [], "exit": 1, "locked": False},
+                   f"✗ {b.id} has no scope naming a tracked file, so no tests are linked to lock: give it one "
+                   f"(sampo task set {b.id} scope=<files>), or write the section: sampo task set {b.id} "
+                   f"--section \"Behaviour lock\" --text \"none: <why>\"") or 1
+    now = c.worktree_id(p.root)
+    at_start = bool(now) and now == start
+    info = {}
+    cmd, tests, _ = affected(p, b=b, only=files, lock=info)
+    if not tests or not cmd:
+        return out(args, {"tests": [], "exit": 1, "locked": False},
+                   f"✗ no tests linked to the {len(files)} file(s) of {b.id}'s scope ({c.fit(', '.join(files), 120)}): "
+                   f"nothing to lock; write the section: sampo task set {b.id} --section \"Behaviour lock\" "
+                   f"--text \"none: <why>\"") or 1
+    guard_stored(p, b, cmd)  # the template is a stored command
+    c.wait_for_load("sampo check --lock")
+    code, output = c.run_command(p.root, cmd, c.load_scaled(LOCK_SECONDS), niced=True, run_id=c.new_run_id(cmd))
+    cut = f" ({len(tests)} of {info['linked']} linked modules)" if info["linked"] > len(tests) else f" ({len(tests)} linked)"
+    result = c.run_result(code, output)[:540] + cut
+    label = c.LOCK_LABEL if at_start else c.LOCK_LATE_LABEL
+    mutate(p, b.id, lambda x: x.add_evidence(label + cmd, result, step=args.step, ac=args.ac,
+                                             tree=c.worktree_id(p.root), ran=True),
+           "evidence", {"step": args.step, "ac": args.ac, "cmd": "fm check --lock", "result": result[:200]})
+    note = "" if at_start else ("\n! not a lock: the tree is no longer the lane's start tree (a file was edited first), so "
+                                "the close does not count this run; write the section: sampo task set "
+                                f"{b.id} --section \"Behaviour lock\" --text \"none: <why>\"")
+    out(args, {"tests": tests, "linked": info["linked"], "exit": int(bool(code)), "locked": at_start and not code},
+        f"{'✗' if code else '✓'} behaviour lock{'' if at_start else ' (after an edit)'}:{cut} {', '.join(tests)} "
+        f"→ {c.run_result(code, output)}" + note)
+    return 1 if code else 0
 
 
 def _check_affected(p, args):
@@ -8716,6 +8794,9 @@ def _build_parser(only=None):
     s.add_argument("--affected", action="store_true", help="only the tests linked to files changed since the task "
                                                            "started (sampo map); the full gates still decide at the end")
     s.add_argument("--evidence", metavar="ID", help="record each result as evidence on this task")
+    s.add_argument("--lock", action="store_true", help="in a lane, with --evidence ID --step N: the bounded behaviour lock "
+                                                       "for a CLEAN task: only the tests linked to its scope's files (at "
+                                                       f"most {LOCK_MODULES}), run before its first edit (T-4648)")
     s.add_argument("--since", metavar="REF", help="--affected: the files changed since REF, not since the task started "
                                                   "(a merge-commit tip: the whole branch's files; T-4286)")
     s.add_argument("--hold", action="store_true", help="--affected: always run the repo-shape classes (test_docs.PluginFiles, "
