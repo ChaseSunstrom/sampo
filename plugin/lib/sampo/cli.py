@@ -933,18 +933,9 @@ def cmd_task(args):
         def done(b):
             reasons = [r + _adversary_ask(risky) if r.startswith("audit missing: adversary")
                        else r for r in b.done_blockers(since, tree, ("adversary",) if risky else ())] + drift
-            from sampo import split  # T-0709: a parent closes after its children
-            reasons += [f"child {k.id} is {k.status}: finish it first (sampo task capsule {k.id} shows what it returned)"
-                        for k in split.open_children(p, b)]
+            reasons += _child_gaps(p, b)  # T-0709: a parent closes after its children
             reasons += _scope_gaps(p, b, touches)
-            if b.type == "CLEAN" and first_edit and not b.section("Behaviour lock").strip() and not any(
-                    ts <= first_edit for ts in b.ran_times()):
-                reasons.append(f"no behaviour lock: a CLEAN change needs the tests run before its first edit (sampo check "
-                               f"--evidence {b.id} --step 1), or sampo task set {b.id} --section \"Behaviour lock\" --text "
-                               f"\"none: <why>\"")
-            if b.type == "RESEARCH" and not b.section("Decision").strip():  # T-0896 (was a warning, T-0599)
-                reasons.append(f"no Decision: research ends in a choice: sampo task set {b.id} --section Decision --text "
-                               f"\"Recommendation: …; would change if: …\" (or \"none: <why>\")")
+            reasons += _kind_gaps(b, first_edit)
             if c.at_least(b.tier, "M") and not lesson and not b.section("Lessons").strip():
                 reasons.append(f"lesson missing: sampo task done {b.id} --lesson \"<what the next similar task should "
                                f"know>\" (or \"none: <why>\"); recall shows it on related work")
@@ -1565,7 +1556,8 @@ def _task_finish(p, args):
                               f"evidence of its own"] if missing else []) + _finish_gaps(b, args, lenses, p) + _self_docs_gaps(p, b) \
         + _file_map_gaps(p, b) + [g for g in [b.proof_gap(then=[cmd for _, _, cmd in todo] + [args.run])] if g] \
         + _proved_gaps(p, b, then=[cmd for _, _, cmd in todo] + [args.run]) \
-        + _adversary_gaps(p, b, lenses, risky) + _scope_gaps(p, b, touches)  # T-1906, T-1907, T-3550: before anything runs
+        + _adversary_gaps(p, b, lenses, risky) + _scope_gaps(p, b, touches) \
+        + _done_only_gaps(p, b, args)  # T-1906, T-1907, T-3550, T-4585: before anything runs
     from sampo import miss  # T-2369: an open capability miss refuses every try; only a later passing run closes it
     from sampo import toolproof  # T-2372: first, so a proved tool resolves its miss in the same try
     from sampo import incident  # T-2388: its criterion's own run is the close's second green
@@ -1576,6 +1568,8 @@ def _task_finish(p, args):
     gaps += concerns.safe_gaps(p, b, then=[(n, cmd) for kind, n, cmd in todo if kind == "step" and cmd])
     if gaps:  # T-0704: every gap in one refusal (135 finishes in 14 days were refused and retried one gap at a time)
         raise UsageError(f"{b.id} not finished, nothing ran:\n  - " + "\n  - ".join(gaps))
+    if args.commit:  # T-4585: a credential in the files to commit is found now, not after the gates (checked again after)
+        _commit_task(p, b, args.commit, dry=True, with_=args.with_)
     if args.run and args.run not in [cmd for _, _, cmd in todo]:  # T-0742: --run is the close's final check, always
         todo.append(("final", None, args.run))
     for _, _, cmd in todo:  # T-0901 review: every one is checked before any runs, so a refusal leaves no side effects
@@ -1638,6 +1632,7 @@ def _task_finish(p, args):
     if args.commit:  # T-0720: a credential found now leaves the task open to fix it, not done and uncommitted
         _commit_task(p, need_brief(p, b.id), args.commit, dry=True, with_=args.with_)
     _close_advice(p, need_brief(p, b.id))
+    _stamp_lenses_at_tip(p, b, lenses, args, tree)
     args.task_cmd = "done"
     args.not_verified = ([f"affected tests skipped: {c.fit(args.waived_affected, 90)}"]  # T-1159
                          if getattr(args, "waived_affected", None) else []) + [
@@ -2395,6 +2390,57 @@ def _field_gaps(b, args):
     return gaps
 
 
+def _stamp_lenses_at_tip(p, b, lenses, args, tree):
+    """T-4585: the audits this call gave (each --lens, and an S close's self audit) are recorded at the tree the gates
+    left; the linked-tests run after that (T-4576's took 45 minutes) can leave files of its own, and fm task done then
+    judged the audits against another tree and refused the close for audits "that predate the last change". The
+    call's own lines count at the tip the close ends on: recorded again there, the same text, only when the tree moved.
+    A lens this call didn't give, and an audit of an earlier call, are never re-stamped."""
+    now = c.worktree_id(p.root)
+    if not now or now == tree:
+        return
+    small = b.tier == "S" and all(lens != "self" for lens, _ in lenses)
+    given = lenses + ([("self", args.result)] if small else [])
+    if given:
+        mutate(p, b.id, lambda x: [x.add_audit(lens, args.audit, result, tree=now) for lens, result in given],
+               "audit_at_tip", {"lenses": [lens for lens, _ in given], "tree": now})
+
+
+def _child_gaps(p, b):
+    """The children of b still open: a parent closes after them (T-0709). Shared by fm task done and finish's pre-check."""
+    from sampo import split
+    return [f"child {k.id} is {k.status}: finish it first (sampo task capsule {k.id} shows what it returned)"
+            for k in split.open_children(p, b)]
+
+
+def _kind_gaps(b, first_edit):
+    """What a CLEAN close (T-1160's behaviour lock) and a RESEARCH close (T-0896's Decision) need on the brief itself.
+    Shared by fm task done and finish's pre-check."""
+    gaps = []
+    if b.type == "CLEAN" and first_edit and not b.section("Behaviour lock").strip() and not any(
+            ts <= first_edit for ts in b.ran_times()):
+        gaps.append(f"no behaviour lock: a CLEAN change needs the tests run before its first edit (sampo check "
+                    f"--evidence {b.id} --step 1), or sampo task set {b.id} --section \"Behaviour lock\" --text "
+                    f"\"none: <why>\"")
+    if b.type == "RESEARCH" and not b.section("Decision").strip():  # T-0896 (was a warning, T-0599)
+        gaps.append(f"no Decision: research ends in a choice: sampo task set {b.id} --section Decision --text "
+                    f"\"Recommendation: …; would change if: …\" (or \"none: <why>\")")
+    return gaps
+
+
+def _done_only_gaps(p, b, args):
+    """T-4585: the refusals fm task done decides from the brief, the docs and the repo alone, which finish used to meet
+    only after its gates (T-4576: 45 minutes of gates, then refused): a Docs impact naming a missing doc or drifting
+    one (M/L), an open child, a CLEAN close with no behaviour lock, a RESEARCH close with no Decision. Nothing a
+    run of this call could change decides them (a close's own runs come after the task's first edit)."""
+    from sampo import docs as sdocs
+    gaps = []
+    if c.at_least(b.tier, "M"):
+        impact = c.redact(args.docs) if args.docs else b.section("Docs impact")
+        gaps += sdocs.task_docs(p.root, impact)[0]
+    return gaps + _child_gaps(p, b) + _kind_gaps(b, c.first_touch(p, b.id))
+
+
 def _self_docs_gaps(p, b):
     """CLEAN T-0764: a close that touches fmcli.py or plugin/skills must leave Sampo's own docs naming real commands
     and skills (fm doctor's self docs check), so the close is refused, not caught later."""
@@ -2628,7 +2674,8 @@ def _commit_task(p, b, message, dry=False, stack=False, check=None, with_=None):
     files = [f for f in files if f in known or f in head or f not in junk and (
         os.path.lexists(os.path.join(p.root, f)) or any(k.startswith(f.rstrip("/") + "/") for k in known))]
     if not files:
-        print(f"{b.id}: nothing to commit.")
+        if not dry:
+            print(f"{b.id}: nothing to commit.")
         return
     addable = [f for f in files if f in known or os.path.lexists(os.path.join(p.root, f))
                or any(k.startswith(f.rstrip("/") + "/") for k in known)]
@@ -7689,7 +7736,8 @@ def _build_parser(only=None):
     t.add_argument("--run", help="check for steps (and criteria without their own verify command)")
     t.add_argument("--audit", help="how the audits were done (the self checklist, a review pass…); not needed to retry a done task's --commit")
     t.add_argument("--result", default="no findings", help="the self audit's result (S)")
-    t.add_argument("--lens", action="append", help="M/L: '<lens>: <result>' per audit lens (repeatable)")
+    t.add_argument("--lens", action="append", help="M/L: '<lens>: <result>' per audit lens (repeatable); counts as that "
+                   "lens's audit at the tip of this call (T-4585)")
     t.add_argument("--docs", help="Docs impact: the docs updated, or none: why")
     t.add_argument("--numbers", help="PERFORMANCE: the Measurements, '<metric>: <before> → <after> (<how measured>)' (T-1956)")
     t.add_argument("--outcome", metavar="SIGNAL", help="FEATURE: how the feature's use is seen after the merge: event:KIND, "
