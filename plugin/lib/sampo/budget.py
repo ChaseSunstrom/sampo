@@ -207,14 +207,27 @@ def _recent_snaps():
     return [s for s in reversed(snaps[-3:]) if newest - os.path.getmtime(s) <= SNAP_SPAN]
 
 
-def rate_limits():
-    """{"five_hour": %, "seven_day": %, "week_gone": share of the week gone by} from the newest statusline snapshot
-    that has any; a window whose reset time has passed reads as 0 (it emptied since the snapshot)."""
+READ_STALE_S = 6 * 3600  # T-4669: a statusline reading this old is not the usage now (unknown, never over)
+MS_EPOCH = 1e11  # T-4669: a reset time above this is milliseconds since the epoch (1e11 s is year 5138)
+
+
+def _ago(s):
+    """T-4669: how long before now a reading was taken, as a lean's line words it ('just now', '42 min ago', '3 h ago')."""
+    if s < 60:
+        return "just now"
+    return f"{int(s // 60)} min ago" if s < 3600 else f"{s / 3600:.0f} h ago"
+
+
+def _limits():
+    """T-4669: (rate_limits(), when the snapshot it comes from was read, as epoch seconds or None). A window is a reading
+    only while its reset is still ahead (a passed reset reads 0) and the snapshot is no older than READ_STALE_S: a
+    reading past its reset, with no usable reset time, or that old is unknown, and unknown is never over."""
     now = time.time()
     for path in _recent_snaps():
         try:
             with open(path, encoding="utf-8") as f:
                 rl = json.load(f).get("rate_limits") or {}
+            read = os.path.getmtime(path)
             out = {}
             for k in ("five_hour", "seven_day"):
                 w = rl.get(k) or {}
@@ -222,14 +235,27 @@ def rate_limits():
                 if not isinstance(used, (int, float)) or isinstance(used, bool):
                     continue
                 known = isinstance(resets, (int, float))
-                out[k] = 0 if known and resets <= now else used
-                if k == "seven_day" and known and 0 < resets - now <= 7 * 86400:  # else (ms epoch, skew) pace unknown
+                if known and resets > MS_EPOCH:
+                    resets = resets / 1000  # a millisecond epoch: the same instant in seconds
+                if known and resets <= now:
+                    out[k] = 0  # it emptied since the snapshot
+                    continue
+                if now - read > READ_STALE_S:
+                    continue  # read too long ago for its reset (or its absence) to say it still stands
+                out[k] = used
+                if k == "seven_day" and known and 0 < resets - now <= 7 * 86400:  # else (no reset, skew) pace unknown
                     out["week_gone"] = 1 - (resets - now) / (7 * 86400)
         except (OSError, ValueError, AttributeError):
             continue
         if out:
-            return out
-    return {}
+            return out, read
+    return {}, None
+
+
+def rate_limits():
+    """{"five_hour": %, "seven_day": %, "week_gone": share of the week gone by} from the newest statusline snapshot
+    that has any; a window whose reset time has passed reads as 0 (it emptied since the snapshot). T-4669: see _limits."""
+    return _limits()[0]
 
 
 WINDOWS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
@@ -340,13 +366,16 @@ def weekly_lean(p=None):
 
 
 def usage_high(p=None):
-    """'weekly usage 85%' when the newest statusline snapshot is past 80% weekly or 90% of the 5-hour window, else
-    None: the same thresholds as foreman-ui's economy mode (T-0198). The weekly rule skips a project that turned it off."""
-    u = rate_limits()
+    """'weekly usage 85% (read 3 h ago)' when the newest statusline snapshot is past 80% weekly or 90% of the 5-hour
+    window, else None: the same thresholds as foreman-ui's economy mode (T-0198). The weekly rule skips a project that
+    turned it off. T-4669: a reading past its reset or older than READ_STALE_S is unknown (None), and the line says when
+    the figure was read."""
+    u, read = _limits()
+    note = f" (read {_ago(time.time() - read)})" if read is not None else ""
     if u.get("seven_day", 0) >= 80 and weekly_lean(p):
-        return f"weekly usage {u['seven_day']:g}%"
+        return f"weekly usage {u['seven_day']:g}%{note}"
     if u.get("five_hour", 0) >= 90:
-        return f"5-hour usage {u['five_hour']:g}%"
+        return f"5-hour usage {u['five_hour']:g}%{note}"
     return None
 
 
@@ -356,18 +385,21 @@ def subagent_pause(p=None):
     stuff shouldn't matter until 75% usage") and never past 90%. Unknown usage never pauses. T-3902: with a horizon
     (budget set --until) the weekly part is the recent rate against the allowance to it instead: it holds while the
     rate is over PACE_HOLD times the allowance, and releases when it falls under, with no 75% floor."""
-    u = rate_limits()
+    u, read = _limits()
+    note = f" (read {_ago(time.time() - read)})" if read is not None else ""  # T-4669: when the figure was read
     if u.get("five_hour", 0) >= 90:
-        return f"5-hour usage {u['five_hour']:g}%"
+        return f"5-hour usage {u['five_hour']:g}%{note}"
     week, gone = u.get("seven_day"), u.get("week_gone")
     if horizon() is not None:
         pc = pace(week)
         if pc and pc["hold"] and weekly_lean(p):
-            return f"weekly usage {week:g}%, {pc['rate'] or 0:g}%/h recent rate over the {pc['allowance']:g}%/h allowance"
+            return (f"weekly usage {week:g}%{note}, {pc['rate'] or 0:g}%/h recent rate over the "
+                    f"{pc['allowance']:g}%/h allowance")
         return None
     if week is not None and week >= max(PACE_FLOOR, min(90, 100 * gone + 10 if gone is not None else 80)) \
             and weekly_lean(p):  # the project lookup only once past the bar
-        return f"weekly usage {week:g}%" + (f" with {100 * gone:.0f}% of the week gone" if gone is not None else "")
+        return f"weekly usage {week:g}%{note}" + (f" with {100 * gone:.0f}% of the week gone"
+                                                  if gone is not None else "")
     return None
 
 

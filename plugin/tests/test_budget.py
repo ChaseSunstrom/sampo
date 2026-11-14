@@ -181,6 +181,44 @@ class Budget(ForemanTestCase):
             json.dump({"rate_limits": {"seven_day": dict(week, used_percentage=11)}}, f)
         self.assertEqual(bud.rate_limits()["seven_day"], 11)
 
+    def usage_read(self, ago, **windows):
+        """T-4669: a statusline snapshot read `ago` seconds back (its file's mtime): window=(used %, seconds until its reset,
+        or None for no reset time)."""
+        folder = os.path.join(c.state_dir(), "sessions")
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, "s.json")
+        rl = {k: {"used_percentage": u, "resets_at": None if s is None else int(time.time() + s)}
+              for k, (u, s) in windows.items()}
+        with open(path, "w") as f:
+            json.dump({"rate_limits": rl}, f)
+        os.utime(path, (time.time() - ago, time.time() - ago))
+
+    def test_a_weekly_figure_read_before_its_reset_or_too_long_ago_is_unknown(self):
+        # T-4669: JARVIS (2026-11-14) skipped its loop at "weekly usage 85%" while its statusline read 0%
+        p = c.find_project(self.repo)
+        self.usage(seven_day=(85, -3600))  # the week reset an hour ago: the snapshot predates the reset
+        self.assertIsNone(bud.usage_high(p), "a passed reset means the week emptied: never over")
+        self.assertIsNone(bud.subagent_pause(p))
+        self.usage_read(3 * 3600, seven_day=(85, 2 * 86400))  # read 3 h ago, reset in 2 days: the lean holds, says so
+        self.assertIn("weekly usage 85% (read 3 h ago)", bud.usage_high(p) or "")
+        self.assertIn("weekly usage 85%", bud.subagent_pause(p) or "")
+        self.usage_read(bud.READ_STALE_S + 60, seven_day=(85, 2 * 86400))  # read past the stated age: unknown
+        self.assertIsNone(bud.usage_high(p), "an old reading is not the usage now")
+        self.assertIsNone(bud.subagent_pause(p))
+        self.usage_read(bud.READ_STALE_S - 60, seven_day=(85, None))  # no reset time, but recent: still counted
+        self.assertIn("weekly usage 85%", bud.usage_high(p) or "")
+        self.usage_read(bud.READ_STALE_S + 60, seven_day=(85, None))  # no reset time and old: unknown
+        self.assertIsNone(bud.usage_high(p))
+
+    def test_a_millisecond_reset_that_has_passed_empties_the_week(self):  # T-4669: a ms epoch is read as seconds
+        p = c.find_project(self.repo)
+        folder = os.path.join(c.state_dir(), "sessions")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "s.json"), "w") as f:
+            json.dump({"rate_limits": {"seven_day": {"used_percentage": 85,
+                                                     "resets_at": int((time.time() - 3600) * 1000)}}}, f)
+        self.assertIsNone(bud.usage_high(p), "the reset passed an hour ago: the week is empty")
+
     def test_subagents_follow_the_weeks_pace(self):
         self.assertIsNone(bud.subagent_pause(), "unknown usage never pauses")
         day = 86400

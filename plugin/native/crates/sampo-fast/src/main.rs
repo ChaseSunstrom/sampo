@@ -33,6 +33,8 @@ const DOCS_TOOLS: [&str; 8] = ["batch", "create", "delete", "export", "guide", "
 const OUTLINE_LINES: u64 = 600;
 const SNAP_SPAN: f64 = 21600.0;
 const PACE_FLOOR: f64 = 75.0;
+const READ_STALE_S: f64 = 6.0 * 3600.0; // T-4669: budget.READ_STALE_S
+const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
 // sha1[:12] of each mirrored Python function's source (_run: less the other events' else branch; _pre_tool_use: up to
 // its GUARDED check; hooks/hook: its event parse and dispatch)
 const MIRRORS: [(&str, &str); 31] = [
@@ -41,7 +43,7 @@ const MIRRORS: [(&str, &str); 31] = [
     ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "08b8f3abe964"),
     ("hooks._outward_denial", "1e6d4418ddd5"), ("hooks._event", "debcc448ac4d"), ("hooks._rev", "7ee872410ee6"),
     ("hooks._cwd", "5dfb7c01da10"), ("budget.check_subagent", "4575be89ca9a"),
-    ("budget.subagent_pause", "ac9deb5a8204"), ("budget.rate_limits", "295d742b9f04"),
+    ("budget.subagent_pause", "8ea366b833a0"), ("budget.rate_limits", "37cdc34daf37"),
     ("budget._recent_snaps", "fa6247e38a3c"), ("core.mirror_env", "e3ea72852a4e"), ("core.state_dir", "097be350d697"),
     ("core.foreman_home", "c516b6005ee9"), ("core.state_fallbacks", "5ad5949d011c"), ("core.gettempdir", "c30d095e6f0f"),
     ("core._marker_default", "cb40c01d2be1"), ("core._private", "7cfbfb951235"), ("core._writable", "3b299266b366"),
@@ -256,11 +258,14 @@ fn agent_ok(state: &Path) -> Option<()> {
     Some(())
 }
 
-/// budget.rate_limits: (five_hour, seven_day, week_gone) of the newest snapshot that has any; None defers.
+/// budget._limits()[0]: (five_hour, seven_day, week_gone) of the newest snapshot that has any; None defers.
+/// T-4669: a reset above MS_EPOCH is milliseconds; a passed reset reads 0; a window whose snapshot is over READ_STALE_S old is unknown.
 fn rate_limits(state: &Path) -> Option<(Option<f64>, Option<f64>, Option<f64>)> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs_f64();
     'snaps: for path in recent_snaps(state)? {
         let Ok(data) = fs::read(&path) else { continue };
+        let Some(read) = fs::metadata(&path).ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(UNIX_EPOCH).ok()) else { continue };
+        let read = read.as_secs_f64();
         let Value::Object(top) = serde_json::from_slice::<Value>(&data).ok()? else { continue }; // NaN: Python's
         let rl = match top.get("rate_limits") {
             v if !truthy(v) => None,
@@ -280,7 +285,15 @@ fn rate_limits(state: &Path) -> Option<(Option<f64>, Option<f64>, Option<f64>)> 
                 Some(Value::Bool(b)) => Some(f64::from(u8::from(*b))), // a bool is an int to Python
                 _ => None,
             };
-            out[i] = Some(if resets.is_some_and(|r| r <= now) { 0.0 } else { used.as_f64()? });
+            let resets = resets.map(|r| if r > MS_EPOCH { r / 1000.0 } else { r });
+            if resets.is_some_and(|r| r <= now) {
+                out[i] = Some(0.0); // it emptied since the snapshot
+                continue;
+            }
+            if now - read > READ_STALE_S {
+                continue; // read too long ago for its reset (or its absence) to say it still stands
+            }
+            out[i] = Some(used.as_f64()?);
             if let (1, Some(r)) = (i, resets) {
                 if 0.0 < r - now && r - now <= 7.0 * 86400.0 {
                     out[2] = Some(1.0 - (r - now) / (7.0 * 86400.0));
