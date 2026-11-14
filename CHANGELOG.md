@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `fm ship` started while another ship of the project is running now says what it waits on, runs no test until that ship ends, then tests the moved origin main, or ends at once when the running ship already carries its commits (T-4645).
 - A lane-built CLEAN task records its behaviour lock with `sampo check --evidence T-… --step 1 --lock`, a bounded run of the scope's linked tests that the builder hook allows and the close counts, so it no longer ends in a hand-written "none: …" section (T-4648).
 - smith's run_bounded closes the stdout and stdin pipes it opens on every way out (normal end, timeout, a raising callback), so a call no longer leaves an open file and a ResourceWarning behind (T-4636).
 - The close-time readers (affected, landed line, task files, self docs, proof, file map, tier drift, deleted files, scaffolding) read a landed task's own landing through one shared view, so other lanes' later code no longer counts as its change, and a guard test fails any new reader that diffs a base itself (T-4635).
