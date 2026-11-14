@@ -11,6 +11,9 @@
 
 ### Everything else
 
+- The guard's credentials category no longer refuses .env fixtures under scratch folders, folders named like credentials, or text in a cat heredoc body, while real secrets and written-and-run scripts stay refused (T-4143).
+- macOS CI runs five shards, and recover and train read the boot id and a process's start time on macOS where there is no /proc; suite fixtures no longer assume a `timeout` command (T-4633).
+- The deadline test now holds at any machine speed, so a loaded runner no longer fails it on the wall clock (T-4653).
 - Variant playbook cards are drafted by a local writer only, scored without brief phrases in their prompt, and the original's eval is keyed by the playbook's sha256 (T-2949).
 - A test class recorded red on the same inputs now runs first and is named the moment it fails again, and one that turns green says "was red, now green on the same inputs (flaky?)" (T-4269).
 - `fm ship` started while another ship of the project is running now says what it waits on, runs no test until that ship ends, then tests the moved origin main, or ends at once when the running ship already carries its commits (T-4645).
