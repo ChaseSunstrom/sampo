@@ -813,15 +813,19 @@ class Review(CodeCase):
 
     def test_a_deadline_stops_the_run_itself_with_a_resume_hint(self):
         # T-4083: a slow profile hit the exam's wall clock and was killed with no trail (louhi's 'timeout' class)
+        # T-4653: the clock starts before planning, so a loaded runner can spend a short deadline on the plan alone; the
+        # proof holds at any speed: it stops by itself (fewer requests than the script), names --resume, and every actor
+        # turn that was made carries the time left. A turn is made while any of the four seconds is left, so only a plan
+        # that takes all four fails, with that as its message.
         f = self.serve("openai", plan(), *[call("run", cmd="sleep 1")] * 8)
-        t0 = time.monotonic()
-        r = self.code("fix add", "--model", "fake", "--no-commit", "--deadline", "2", check=False)
+        r = self.code("fix add", "--model", "fake", "--no-commit", "--deadline", "4", check=False)
         self.assertEqual(r.returncode, 1)
         self.assertIn("out of time", r.stdout + r.stderr)
         self.assertIn("--resume", r.stdout + r.stderr)
-        self.assertLess(time.monotonic() - t0, 8, "it stops itself, long before the script runs out")
-        self.assertLess(len(f.seen), 9)
-        self.assertIn("Time left:", json.dumps(f.seen[-1]), "each turn carries the time left")
+        self.assertLess(len(f.seen), 9, "it stops itself, before the script runs out")
+        self.assertGreater(len(f.seen), 1, "the plan alone used the whole deadline: no actor turn was made")
+        for body in f.seen[1:]:
+            self.assertIn("Time left:", json.dumps(body), "each actor turn carries the time left")
         self.assertEqual(self.task()["status"], "active", "resumable")
 
     def test_trim_keeps_the_last_six_results_whole(self):
