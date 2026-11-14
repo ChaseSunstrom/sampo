@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A Smith run on an S-tier plan whose task new --focus is refused for a missing Undo line now supplies the Undo from its own tree copy and focuses again before any re-plan, and the re-plan sees the gate's own words instead of the task's JSON (T-4592).
 - `sampo lane land --merged` sweeps the lanes whose work is already on the trunk and closes their tasks through one shared close on one reused gate pass, and a multi-id `sampo lane merge` now closes what it lands (T-4596).
 - Smith now measures a speed-up request first (scenario command, times at two sizes, profile top), hands the planner that measurement with the user's cause labelled a guess, and refuses a performance plan whose first criterion does not run the measured scenario (T-4579).
 - Run records now say who held the CPU slots and for how long (`run.py --held`), the post-merge verify yields slots to waiting builders for at most 600 s, and merges pending after a revert are covered by one full run at the new HEAD (T-4570).
