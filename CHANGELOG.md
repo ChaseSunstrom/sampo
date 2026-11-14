@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo lane accept` runs the repo-shape run in the lane's check child and reuses a green result for the hold check (T-4563).
 - The affected selection now also picks tests whose run record holds the whole tree and no function (the hook or CLI run in a child the recorder can't follow), so the train's gate selects test_sampo_spelling for a hooks.py change like T-4511's (T-4554).
 - `sampo lane accept` refuses a lane whose repo-shape modules are red before its long check starts, and the builder contract names those modules as required before the report (T-4542).
 - A session left idle on a background wait that never ends is woken at the long-job deadline by a second Stop hook (asyncRewake), naming the stale job and telling it to inspect or stop it and go on with queued work (T-4525).
