@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Smith's keep check over a red suite now reruns a failed held test once before it counts, so a flaky test no longer throws a run's work into a patch, and the scripted-model test fake answers the request judge itself (T-4630).
 - The close's scope check now judges a task the trunk already holds by its own landing, so other tasks' commits since its base no longer read as "edited outside scope" (T-4628).
 - Smith's keep check now survives a suite that was red before the work: it holds the tests that passed then, so breaking one is red at the step and stop checks and the stop puts the tree back (T-4629).
 - A repeat sampo focus never takes a second start snapshot (a first snapshot that failed on a loaded host no longer empties the task's diff), prints "Already in focus", and a focus that moves a task between checkouts now says it took a new start and names the old one (T-4626).
