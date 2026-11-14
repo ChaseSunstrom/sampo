@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A train whose trunk moved stops within a minute and names the commit, and a revert or hand close waits for the running train's lock instead of committing beside it (T-4540).
 - Small test runs wait at most 20 s for a CPU slot and then run, and a run that waits says so once (T-4536).
 - A test run's load-scaled time limit and default worker count honour a cgroup CPU cap, so a capped session's checks are no longer cut off for running on fewer cores than the machine has (T-4531).
 - Accepted lanes waiting on their check are checked as one candidate on a scratch copy of the trunk, so N lanes cost one affected run, with a fallback to each lane's own check when the batch is red or cut off (T-4528).
