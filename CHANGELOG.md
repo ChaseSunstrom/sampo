@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The close's scope check now judges a task the trunk already holds by its own landing, so other tasks' commits since its base no longer read as "edited outside scope" (T-4628).
 - Smith's keep check now survives a suite that was red before the work: it holds the tests that passed then, so breaking one is red at the step and stop checks and the stop puts the tree back (T-4629).
 - A repeat sampo focus never takes a second start snapshot (a first snapshot that failed on a loaded host no longer empties the task's diff), prints "Already in focus", and a focus that moves a task between checkouts now says it took a new start and names the old one (T-4626).
 - Closing a task the trunk already holds selects its linked tests from the commits that landed it (plus uncommitted and claimed files), not from every lane merged since its base (T-4625).
