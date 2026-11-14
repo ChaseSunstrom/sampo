@@ -90,6 +90,7 @@ WRAP_TURNS, EXCERPT_CHARS = 2, 12000
 SPEC_CHARS = 24000
 DOC_EXT, DOC_MIN, DOC_MAX, DOC_CHARS, DOC_HEADS, DOC_READ = (".md", ".markdown", ".rst", ".txt", ".adoc"), 20, 60, 4000, 8, 65536
 KEEP_TIMEOUT, KEEP_REFUSALS, KEEP_LINES = 120, 3, 30
+KEEP_FLAKY_NAMED = 5  # T-4630: the most flaky held tests a keep check's note names
 KEEP_HELD_MAX = 50000  # T-4629: the most passing tests a red suite's keep check holds (kept in the journal, packed)
 KEEP_STOP_TIMEOUT = 60  # T-4614: the least a stop's own keep check is given (twice the slowest check so far, to KEEP_TIMEOUT)
 KEEP_OWN_FILES, KEEP_OWN_TREE = 6, 4000  # T-4459: created files tried one by one; the largest tree copied for it
@@ -1937,8 +1938,10 @@ class Run:
         (state, output), state green, red or timeout. A tree that was last green and has not changed since is not run
         again: its note says so (cached). The note, the journal and the tree that was checked are kept; a run of the
         check never counts as the model's own change of the tree. T-4614: a green after the start keeps what the
-        run's changed files hold (green), for a stop to go back to."""
-        cmd, own, bound, fresh, held_ok = self.keep_cmd, [], bound or KEEP_TIMEOUT, False, False
+        run's changed files hold (green), for a stop to go back to. T-4630: a held test that fails is run once more (the
+        check again, once, same bound, not at a stop whose first run took over half of it); what fails both times counts,
+        what passes the second time is flaky (the note names it)."""
+        cmd, own, bound, fresh, held_ok, flaky = self.keep_cmd, [], bound or KEEP_TIMEOUT, False, False, []
         if self.keep_state == "green" and self.keep_tree is not None and self.keep_tree == self.tree():
             state, out = "green", ""
         else:
@@ -1947,11 +1950,22 @@ class Run:
             seen = {}  # T-4629: the per-test results the run prints, read line by line (the output kept is cut short)
             code, out = run_bounded(self.keep_vcmd or cmd, self.root, bound, env, self.cap, confine=self.confine(),
                                     on_line=lambda ln: seen.update(_per_test(ln)) or False)
+            took = time.monotonic() - began
             state = "green" if code == 0 else "timeout" if code is None else "red"
+            first = self.keep_held - {t for t, s in seen.items() if s == "PASSED"} if self.keep_held is not None else None
+            if state == "red" and kind != "before" and first and not (kind == "stop" and took > bound / 2):
+                # T-4630: a held test that failed is run once more before it counts: only what fails both times does
+                again = {}
+                code2, out2 = run_bounded(self.keep_vcmd or cmd, self.root, bound, env, self.cap, confine=self.confine(),
+                                          on_line=lambda ln: again.update(_per_test(ln)) or False)
+                if code2 is not None:  # a rerun that timed out proves nothing: the first run's result stands
+                    code, out, seen = code2, out2, again
+                    flaky = sorted(first & {t for t, s in seen.items() if s == "PASSED"})
+                    state = "green" if code == 0 else "red"
             if kind == "before":
                 self.keep_seen = seen
             if code is not None:
-                self.keep_took = max(self.keep_took, time.monotonic() - began)
+                self.keep_took = max(self.keep_took, took)
             if code is None:
                 out = f"timed out after {bound} s\n{out}"
             if state == "red" and self.keep_held is not None:  # T-4629: red before the work: held to its passing tests
@@ -1973,12 +1987,13 @@ class Run:
             self.emit("note", f"  keep check ({kind}): green without {', '.join(own)}, which this run created: every "
                               f"test that passed before the work still passes: {cmd}", quiet=True, keep=kind,
                       state=state, cmd=cmd, own=own)
-        elif held_ok:
-            self.emit("note", f"  keep check ({kind}): green: the {len(self.keep_held)} tests that passed before the work "
-                              f"still pass (the ones red before are not held against it): {cmd}", quiet=True, keep=kind,
-                      state=state, cmd=cmd)
         else:
-            self.emit("note", f"  keep check ({kind}): {state}: {cmd}", quiet=True, keep=kind, state=state, cmd=cmd)
+            why = (f" (flaky, failed once and passed on the rerun: {', '.join(flaky[:KEEP_FLAKY_NAMED])}"
+                   + (" ..." if len(flaky) > KEEP_FLAKY_NAMED else "") + ")") if flaky else ""  # T-4630
+            self.emit("note", (f"  keep check ({kind}): green: the {len(self.keep_held)} tests that passed before the work "
+                               f"still pass (the ones red before are not held against it){why}: {cmd}") if held_ok
+                      else f"  keep check ({kind}): {state}{why}: {cmd}", quiet=True, keep=kind, state=state, cmd=cmd,
+                      **({"flaky": flaky} if flaky else {}))
         if kind != "before":
             self.keep_state = "green" if state == "green" else "red"
             self.log(kind="keep", cmd=cmd, state=self.keep_state, why=self.keep_why)

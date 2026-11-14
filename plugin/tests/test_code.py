@@ -28,6 +28,10 @@ ASIDES = {  # T-4362: a harness question about one check; the words are in its p
     "keeps failing the same way": '{"keep": true}'}  # showing in .seen, unless a test scripts one in Fake.asides[marker]
 
 
+JUDGE = "Judge one request made to a coding agent"  # T-4630: smith.WANTS_PROMPT's first words, the request judge's call
+JUDGE_DEFAULT = json.dumps({"wants_change": True, "whole": False, "find_fix": False, "speed_up": False, "why": "a change"})
+
+
 class Fake:
     """Answers each POST with the next scripted reply (a dict: text and/or calls; in: the prompt tokens it reports, 5 unless given) in the profile's wire shape; HANG
     holds the request until release(); past the script it answers 400. Records every request body."""
@@ -35,6 +39,7 @@ class Fake:
     def __init__(self, kind, script):
         self.kind, self.script, self.seen = kind, list(script), []
         self.asides, self.asked = {k: [] for k in ASIDES}, {k: [] for k in ASIDES}
+        self.judged = []
         self.hung, self.release_ = threading.Event(), threading.Event()
         fake = self
 
@@ -48,6 +53,9 @@ class Fake:
                 if aside:
                     fake.asked[aside].append(body)
                     step = {"text": fake.asides[aside].pop(0) if fake.asides[aside] else ASIDES[aside]}
+                elif JUDGE in json.dumps(body) and fake.script and fake.script[0] is not HANG and fake.run_reply(fake.script[0]):
+                    fake.judged.append(body)  # T-4630: the request judge's call, answered with the default; the script is the run's
+                    step = {"text": JUDGE_DEFAULT}
                 else:
                     fake.seen.append(body)
                     step = fake.script.pop(0) if fake.script else None
@@ -64,6 +72,12 @@ class Fake:
         self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/v1"
         threading.Thread(target=self.srv.serve_forever, args=(0.02,), daemon=True).start()
+
+    @staticmethod
+    def run_reply(step):
+        """T-4630: a scripted reply that is the run's own (a tool call, or a plan in a code fence), not a reply meant for the
+        request judge: when the script's next one is, the judge's call is answered with the default instead of taking it."""
+        return bool(step.get("calls") or "```" in (step.get("text") or ""))
 
     def reply(self, step):
         calls = [(f"c{len(self.seen)}_{i}", n, a) for i, (n, a) in enumerate(step.get("calls") or [])]
