@@ -90,6 +90,7 @@ WRAP_TURNS, EXCERPT_CHARS = 2, 12000
 SPEC_CHARS = 24000
 DOC_EXT, DOC_MIN, DOC_MAX, DOC_CHARS, DOC_HEADS, DOC_READ = (".md", ".markdown", ".rst", ".txt", ".adoc"), 20, 60, 4000, 8, 65536
 KEEP_TIMEOUT, KEEP_REFUSALS, KEEP_LINES = 120, 3, 30
+KEEP_STOP_TIMEOUT = 60  # T-4614: the least a stop's own keep check is given (twice the slowest check so far, to KEEP_TIMEOUT)
 KEEP_OWN_FILES, KEEP_OWN_TREE = 6, 4000  # T-4459: created files tried one by one; the largest tree copied for it
 # T-4590: a criterion's declared proof files (at most PROOF_FILES, each at most PROOF_NAME characters), run on the
 # before-work copy (a tree of PROOF_TREE files at most, PROOF_REFUSALS done-refusals in one phase at most, the start's dirty
@@ -1530,6 +1531,9 @@ class Run:
         self.opened, self.docs, self.survey_tests = set(), None, None
         self.spec, self.spec_logged = [], False  # T-4457: the documents the survey named as the specification
         self.keep_cmd = self.keep_state = self.keep_why = self.keep_tree = None
+        # T-4614: what each file the run changed held when the keep check last passed ({path: bytes, None absent}; None: it
+        # has not since the start; not self.green, the verify commands that passed), and the longest a check took (seconds)
+        self.keep_snap, self.keep_took, self.finished = None, 0.0, False
         # T-4295: the closing look: switched off by --no-look; whether this run looks; the close held while it does; the
         # looks' records; the tries per gap; what each closed task did; the hook a new task runs before its journal moves
         self.no_look, self.looking, self.closing = bool(getattr(args, "no_look", False)), False, None
@@ -1924,19 +1928,24 @@ class Run:
             pass
 
     # -- the keep check (T-4425): the project's own tests, green before the work, stay green
-    def keep_run(self, kind):
-        """One run of the keep check (kind: before|step|end): (state, output), state green, red or timeout. A tree that
-        was last green and has not changed since is not run again: its note says so (cached). The note, the journal and
-        the tree that was checked are kept; a run of the check never counts as the model's own change of the tree."""
-        cmd, own = self.keep_cmd, []
+    def keep_run(self, kind, bound=None):
+        """One run of the keep check (kind: before|step|end|stop; bound: its seconds, KEEP_TIMEOUT unless given):
+        (state, output), state green, red or timeout. A tree that was last green and has not changed since is not run
+        again: its note says so (cached). The note, the journal and the tree that was checked are kept; a run of the
+        check never counts as the model's own change of the tree. T-4614: a green after the start keeps what the
+        run's changed files hold (green), for a stop to go back to."""
+        cmd, own, bound, fresh = self.keep_cmd, [], bound or KEEP_TIMEOUT, False
         if self.keep_state == "green" and self.keep_tree is not None and self.keep_tree == self.tree():
             state, out = "green", ""
         else:
+            fresh, began = True, time.monotonic()
             env = dict(self.env(), PYTHONDONTWRITEBYTECODE="1")  # a check before any task leaves no __pycache__
-            code, out = run_bounded(cmd, self.root, KEEP_TIMEOUT, env, self.cap, confine=self.confine())
+            code, out = run_bounded(cmd, self.root, bound, env, self.cap, confine=self.confine())
             state = "green" if code == 0 else "timeout" if code is None else "red"
+            if code is not None:
+                self.keep_took = max(self.keep_took, time.monotonic() - began)
             if code is None:
-                out = f"timed out after {KEEP_TIMEOUT} s\n{out}"
+                out = f"timed out after {bound} s\n{out}"
             if state == "red" and kind != "before":  # T-4459: red by the work's own new tests is not the project's red
                 own = self.keep_own(cmd, env)
                 if own:
@@ -1953,7 +1962,22 @@ class Run:
         if kind != "before":
             self.keep_state = "green" if state == "green" else "red"
             self.log(kind="keep", cmd=cmd, state=self.keep_state, why=self.keep_why)
+            if fresh and state == "green":
+                self.keep_green()
         return state, out
+
+    def keep_green(self):
+        """T-4614: the files the run changed, as they are now, kept as the newest state the keep check passed on (no copy
+        of the tree: the files orig names; one too large or odd to hold is left out, as a restore leaves it alone)."""
+        held = {}
+        for rel in self.orig:
+            try:
+                ok, data = _slurp(self.path(rel))
+            except (ValueError, OSError):
+                continue
+            if ok:
+                held[rel] = data
+        self.keep_snap = held
 
     def keep_own(self, cmd, env):
         """T-4459: the files this run created without which a red keep check is green, else []. The check is run again
@@ -3391,7 +3415,7 @@ class Run:
         if self.lost is not None:
             return self.lost
         self.lost = {}
-        if self.steps_done or self.worker or self.read_only or not self.orig:
+        if self.worker or self.read_only or not self.orig or self.finished:  # T-4614: after the last step the keep check judges a stop
             return self.lost
         try:
             self.lost = self.put_back() or {}
@@ -3399,13 +3423,34 @@ class Run:
             self.log(kind="restore_failed", error=_one_line(str(e), 200))
         return self.lost
 
+    def tree_is(self, target):
+        """T-4614: whether every file target names (a rel -> bytes map) holds those bytes now; one that can't be read is
+        not held against it (put_back leaves it alone too)."""
+        for rel, was in target.items():
+            try:
+                ok, now = _slurp(self.path(rel))
+            except (ValueError, OSError):
+                continue
+            if ok and now != was:
+                return False
+        return True
+
     def put_back(self):
         import difflib
-        bad, keep_red = self.unparsable(), False
+        bad, keep_red, slow, target = ([] if self.steps_done else self.unparsable()), False, None, self.snap
         if not bad:  # T-4445: the project's own tests, green before the work and red at the stop, are broken work too
-            if not self.keep_cmd or not self.edited or self.keep_run("stop")[0] != "red":
+            if not self.keep_cmd or not self.edited:
                 return None
-            keep_red = True
+            # T-4614: back to the newest state the check passed on (the start when it never has after an edit); a tree
+            # that is that state is green by what the check said then, and is not run again
+            target = {rel: (self.keep_snap or {}).get(rel, was) for rel, was in self.orig.items()}
+            if self.tree_is(target):
+                return None
+            bound = min(KEEP_TIMEOUT, max(KEEP_STOP_TIMEOUT, round(2 * self.keep_took)))
+            state = self.keep_run("stop", bound)[0]
+            if state == "green":
+                return None
+            keep_red, slow = True, bound if state == "timeout" else None
         restored, diff, kept = [], [], []
         for rel in sorted(self.orig):
             try:
@@ -3413,7 +3458,7 @@ class Run:
             except (ValueError, OSError):
                 continue
             ok, now = _slurp(full)
-            was = self.snap.get(rel, self.orig[rel])
+            was = target.get(rel, self.orig[rel])
             if not ok or now == was:
                 continue
             try:
@@ -3445,12 +3490,17 @@ class Run:
                 f.write("".join(x if x.endswith("\n") else x + "\n\\ No newline at end of file\n" for x in diff))
         if not restored:
             return None
-        what = f"the keep check `{self.keep_cmd}` red" if keep_red else f"{', '.join(r for r, _ in bad)} not parsing"
+        what = (f"the keep check `{self.keep_cmd}` " + (f"could not be run to its end in {slow} s, with edits made since "
+                                                       f"it last passed" if slow else "red")) if keep_red else (
+            f"{', '.join(r for r, _ in bad)} not parsing")
+        back = ("the newest state the keep check passed on" if self.keep_snap is not None else "the start") if keep_red else (
+            "the last finished step" if self.snap != self.orig else "the start")
         text = (f"fm code put the project back: it stopped unfinished with {what}, "
-                f"so {', '.join(restored)} went back to {'the last finished step' if self.snap != self.orig else 'the start'}"
-                + (f"; the dropped changes are in {patch}" if patch else "")
+                f"so {', '.join(restored)} went back to {back}"
+                + (f"; the dropped changes are in {patch} (git apply {patch} puts them back)" if patch else "")
                 + (f"; could not put back {', '.join(kept)}" if kept else ""))
-        self.log(kind="restored", files=restored, patch=patch, unparsable=[r for r, _ in bad], keep_red=keep_red)
+        self.log(kind="restored", files=restored, patch=patch, unparsable=[r for r, _ in bad], keep_red=keep_red,
+                 slow=slow)
         return {"restored": restored, "patch": patch, "unparsable": [r for r, _ in bad], "text": text}
 
     def wrote_file(self, rel):
@@ -5835,7 +5885,8 @@ def _lookback_swap(run, tid):
     run.carries, run.window, run.last_test, run.stop_why = 0, [], {}, None
     run.reported = False
     run.opened, run.docs, run.survey_tests = set(), None, None
-    run.keep_cmd = run.keep_state = run.keep_why = run.keep_tree = run.keep_logged = None
+    run.keep_cmd = run.keep_state = run.keep_why = run.keep_tree = run.keep_logged = run.keep_snap = None
+    run.keep_took, run.finished = 0.0, False
     run.orig, run.snap, run.broken, run.pmemo, run.steps_done = {}, {}, {}, {}, False
     run.wrote = set()
     run.proof_base, run.proof_memo, run.proof_refused, run.proof_unproven = None, {}, {}, []  # T-4590
@@ -6116,6 +6167,7 @@ def cmd_code(args):
             profile = _start_model(run, p, profile)
         run.looking = args.resume is None and lookback_eligible(run, profile)  # T-4295: the plan's own fields decide
         _drive(run, profile)
+        run.finished = True  # T-4614: a run that ended its drive is judged by its verify and close, not by a stop's restore
         if run.looking and run.closing is not None:  # the first task closed (and was held)
             _lookback(run, profile)
     except (m.ModelError, CodeError) as e:  # T-1334: every failure ends with the one command to run next
@@ -8518,7 +8570,7 @@ def _drive(run, profile):
         files = sorted(f for f in _dirty(run.root) if not core.ARTEFACT.search(f))  # T-1320: not a .pyc a check left
         run.emit("changed", "", quiet=True, step=n, files=files, stat=_numstat(run.root, files),
                  **({"missing": absent} if absent else {}))
-    run.steps_done = True  # T-4426: every step finished: a later stop is the verify's to report, nothing is put back
+    run.steps_done = True  # T-4426: every step finished: a later stop is the verify's to report (T-4614: and a red keep check's)
     rounds = 0
     while True:
         failed = run.verify("verify")
