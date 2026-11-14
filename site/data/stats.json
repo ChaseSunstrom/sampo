@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-13",
+ "generated": "2026-11-14",
  "totals": {
-  "tasks_done": 890,
-  "evidence": 5395,
-  "proofs": 509,
-  "commits": 662,
-  "gate_runs": 410,
-  "subagents": 2448,
-  "lanes_merged": 595,
+  "tasks_done": 946,
+  "evidence": 5499,
+  "proofs": 529,
+  "commits": 717,
+  "gate_runs": 425,
+  "subagents": 2569,
+  "lanes_merged": 623,
   "findings": 688,
-  "guard_blocks": 964,
-  "captures": 1563,
-  "lessons_shown": 1724
+  "guard_blocks": 972,
+  "captures": 1601,
+  "lessons_shown": 1788
  },
  "daily": [
   {
@@ -149,37 +149,48 @@
   {
    "day": "2026-11-13",
    "FEATURE": 0,
-   "FIX": 3,
+   "FIX": 4,
    "CLEAN": 0,
    "PERFORMANCE": 0,
    "SECURITY": 0,
    "RESEARCH": 0,
-   "lanes": 27,
-   "evidence": 56
+   "lanes": 44,
+   "evidence": 121
+  },
+  {
+   "day": "2026-11-14",
+   "FEATURE": 7,
+   "FIX": 41,
+   "CLEAN": 1,
+   "PERFORMANCE": 6,
+   "SECURITY": 0,
+   "RESEARCH": 0,
+   "lanes": 11,
+   "evidence": 39
   }
  ],
  "tiers": {
-  "S": 469,
-  "M": 397,
-  "L": 24
+  "S": 490,
+  "M": 431,
+  "L": 25
  },
  "types": {
-  "FEATURE": 287,
-  "FIX": 424,
-  "CLEAN": 48,
-  "PERFORMANCE": 84,
+  "FEATURE": 294,
+  "FIX": 466,
+  "CLEAN": 49,
+  "PERFORMANCE": 90,
   "SECURITY": 26,
   "RESEARCH": 21
  },
  "guard": {
-  "brief": 500,
+  "brief": 502,
   "core": 224,
-  "system": 91,
+  "system": 92,
   "state-direct": 48,
-  "rm-outside": 41,
+  "rm-outside": 43,
   "credentials": 21,
   "pipe-shell": 15,
-  "plugin": 8
+  "self-authorize": 11
  },
  "findings": {
   "lenses": {
@@ -198,21 +209,21 @@
  },
  "subagents": {
   "fm-builder": 1112,
-  "sampo:fm-builder": 529,
+  "sampo:fm-builder": 648,
   "general-purpose": 506,
   "fm-reviewer": 208,
   "fm-recon": 41,
-  "sampo:fm-reviewer": 31
+  "sampo:fm-reviewer": 33
  },
  "gate_seconds": {
-  "runs": 410,
-  "median": 398.7
+  "runs": 425,
+  "median": 406.8
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 230,
+  "searches": 236,
   "queued": 3,
   "refused": 0
  },
@@ -332,14 +343,14 @@
  "code": {
   "model_tests": 101,
   "endpoints": 9,
-  "tests": 9423
+  "tests": 9952
  },
  "calibration": {
-  "scored": 29,
-  "pending": 588,
+  "scored": 28,
+  "pending": 616,
   "brier": {
-   "stated": 0.13456896551724137,
-   "base": 0.15761785714285712
+   "stated": 0.11357142857142857,
+   "base": 0.13732222222222223
   },
   "bars": {
    "research": 70,
@@ -364,11 +375,11 @@
     {
      "lo": 80,
      "hi": 94,
-     "n": 3,
+     "n": 2,
      "held": 0,
      "pct": 0,
-     "stated": 87,
-     "gap": 87
+     "stated": 88,
+     "gap": 88
     }
    ],
    "ship": [
@@ -420,8 +431,8 @@
     {
      "lo": 80,
      "hi": 94,
-     "n": 201,
-     "held": 183,
+     "n": 219,
+     "held": 200,
      "pct": 91
     },
     {
@@ -435,19 +446,19 @@
   }
  },
  "proof": {
-  "n": 786,
+  "n": 812,
   "counts": {
-   "meaning-notes": 419,
-   "research-uncited": 36,
-   "meaning-user": 115,
-   "perf-typed": 128,
    "typed": 75,
-   "red": 89,
+   "meaning-user": 105,
+   "meaning-notes": 426,
+   "red": 86,
+   "perf-typed": 129,
    "perf-noise": 1,
+   "research-uncited": 33,
    "ui-unshot": 7,
-   "docs": 80,
+   "docs": 109,
    "data": 1,
-   "tui-unshot": 3,
+   "tui-unshot": 2,
    "infra": 2
   },
   "history": [
@@ -502,6 +513,10 @@
    {
     "day": "2026-11-13",
     "n": 786
+   },
+   {
+    "day": "2026-11-14",
+    "n": 812
    }
   ]
  },
@@ -509,25 +524,25 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1349,
-    "precision": 0.807,
+    "fired": 1360,
+    "precision": 0.818,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 380,
-    "precision": 0.71,
+    "fired": 359,
+    "precision": 0.718,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 257,
-    "precision": 0.777,
+    "fired": 243,
+    "precision": 0.799,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 132,
+    "fired": 133,
     "precision": 0.421,
     "route": "inbox"
    },
@@ -539,13 +554,13 @@
    },
    {
     "trigger": "ci-red",
-    "fired": 57,
+    "fired": 60,
     "precision": 0.778,
     "route": "inbox"
    },
    {
     "trigger": "ci",
-    "fired": 43,
+    "fired": 45,
     "precision": 0.368,
     "route": "inbox"
    },
@@ -642,9 +657,9 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 233,
-    "hit": 0.442,
-    "base_hit": 0.378,
+    "n": 234,
+    "hit": 0.44,
+    "base_hit": 0.376,
     "lead": [
      true,
      0.0020386576652526855,
@@ -652,8 +667,8 @@
      5
     ],
     "muted": false,
-    "shown_n": 156,
-    "shown_hit": 0.462,
+    "shown_n": 157,
+    "shown_hit": 0.459,
     "overlap": 0.088,
     "base_overlap": 0.083
    }
@@ -712,6 +727,34 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-14",
+   "text": "Held-out measure read as: 25 of 164 before the fixes, 40 after, one run per arm, reported with the caveat that per-problem swings (up to 13 checks) make the gap weak evidence; next measure runs all fo",
+   "later": null,
+   "confidence": 80,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-13",
+   "text": "read T-4598: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-13",
+   "text": "Run the eight exam packs I have not read as a held-out set (163 hidden checks), on the fixed code and on the code before the fixes, once the current exam run frees the model",
+   "later": null,
+   "confidence": 85,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-13",
+   "text": "T-4547: the 30-runs-without-a-prompt clause of its criterion is dropped; the fallback with a seen stamp now compares whole seconds and counts the seen second, which is what lands",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-13",
    "text": "Snapshot before a one-way step: failing tests in plugin/tests/test_disk_pressure.py (doctor thresholds with a patched disk reading; tidy lists a merged clean old lane, skips a dirty one, an unmerged o",
@@ -2083,34 +2126,6 @@
   {
    "date": "2026-11-05",
    "text": "builder order (user-visible first): T-3092 live charts, T-3113 the pane crest, T-3101 site Cards page, T-3106 works harness, T-3103 card grids, then the rest",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3100/T-3104 order: after T-3092 (live charts) the builders take T-3101 (site Cards page), T-3106 (render-and-check harness), T-3103 (grids as data), then T-3102, T-3110, T-3105, T-3111, T-3112; targ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3104: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3099: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "standing (T-3054 miss): the merge queue puts the lanes the user is waiting to see first (the live page before internals), and while a merge waits for a quiet window no close or suite starts; the chain",
    "later": null,
    "confidence": null,
    "kind": "reversible"
