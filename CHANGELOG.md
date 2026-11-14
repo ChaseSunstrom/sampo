@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The drive no longer reads a same-second task as this turn's work when no prompt hook set the turn start (T-4547).
 - `sampo lane brief` names every missing piece of an M brief in its first refusal, and accepts the Approach section by its short heading as well as the long one (T-4545).
 - A train whose trunk moved stops within a minute and names the commit, and a revert or hand close waits for the running train's lock instead of committing beside it (T-4540).
 - Small test runs wait at most 20 s for a CPU slot and then run, and a run that waits says so once (T-4536).
