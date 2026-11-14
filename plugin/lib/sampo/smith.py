@@ -7817,6 +7817,13 @@ def _own_undo(run, p, tid, why):
     return True
 
 
+def _after_json(out):
+    """T-4592: what `task new --json --focus` printed after the task's own JSON document (stdout, indent 2, closing brace at
+    the line start): the focus gate's refusal. The whole text when no document closes in it."""
+    i = out.find("\n}\n")
+    return out[i + 3:].strip() if i >= 0 else out.strip()
+
+
 def _make_task(run, profile, repaired=False):
     pl = run.plan
     after = f" (a follow-up to {run.after_tid})" if getattr(run, "after_tid", None) else ""  # T-1340
@@ -7838,6 +7845,13 @@ def _make_task(run, profile, repaired=False):
     code, out = run.fm(*a)
     made = m.extract_json(out)
     made = made if isinstance(made, dict) else {}
+    if pl["tier"] != "M" and code and code != 124 and made.get("id"):  # T-4592: made, then focus refused it (--focus)
+        why, p = _after_json(out), core.find_project(run.root)
+        if p and _own_undo(run, p, made["id"], why):  # T-4586's answer, here too: the way back the gate asked for
+            code, out = run.fm("focus", made["id"])
+        if code:  # not an Undo: line, or still refused: the re-plan sees the gate's words, not the task's JSON
+            return _replan(run, profile, made["id"], f"fm task new --focus refused the plan: {why[:2000] or out[:500]}",
+                           repaired, code)
     if code or not made.get("id"):
         return _replan(run, profile, made.get("id"), f"fm task new refused the plan: {out[:500]}", repaired, code)
     if pl["tier"] == "M":

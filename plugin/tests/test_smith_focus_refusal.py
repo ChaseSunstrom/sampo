@@ -5,12 +5,13 @@ kept the refusal goes to the planner once, as feedback, and only a second refusa
 import os
 import shlex
 
-from test_code import CLOSE, M_PLAN, CodeCase, plan
+from test_code import CLOSE, M_PLAN, PLAN, CodeCase, plan
 from test_smith_small import DONE, FIX_EDIT
 
 # a step that deletes the repo itself: a door focus's own snapshot never covers (it names the repo and everything above it)
 HARD = dict(M_PLAN, steps=["delete ./", "fix calc.add"])
-NO_COPY = {"FM_DOOR_CAP": "1"}  # one byte: no copy of the tree fits, so the run can't supply an Undo line
+S_HARD = dict(PLAN, steps=["delete ./", "fix calc.add"])  # T-4592: the same one-way step in an S-tier plan
+NO_COPY ={"FM_DOOR_CAP": "1"}  # one byte: no copy of the tree fits, so the run can't supply an Undo line
 
 
 class FocusRefusal(CodeCase):
@@ -35,6 +36,24 @@ class FocusRefusal(CodeCase):
         self.assertTrue(os.path.isfile(os.path.join(copy[:-2], "calc.py")), f"the copy named in the Undo holds the tree: {copy}")
         self.assertNotIn("Undo:", self.steps()[1], "the step the gate did not name is left as the planner wrote it")
         self.assertIn("kept a copy of the tree", r.stdout)
+
+    def test_an_s_tier_task_made_then_refused_at_focus_for_a_missing_undo_is_supplied_and_starts(self):
+        # T-4592: `task new --focus` makes the task, then the focus gate refuses; the id is in the reply, so no re-plan
+        f, r = self.go(plan(S_HARD), FIX_EDIT, DONE, DONE, CLOSE)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.asked_about_undo(f), [], "the planner is not asked: the run had what the gate wanted")
+        self.assertEqual(self.task("T-0001")["status"], "done", r.stdout + r.stderr)
+        self.assertEqual(len(f.seen), 4, "the plan once and the steps: a re-plan would have asked the planner again")
+        self.assertEqual(self.task("T-0001")["steps_total"], 2, "the one task, made once: no second plan filed")
+        self.assertIn("Undo: cp -a", self.steps()[0])
+        self.assertNotIn("Undo:", self.steps()[1])
+        self.assertIn("kept a copy of the tree", r.stdout)
+
+    def test_an_s_tier_refusal_the_run_cannot_answer_still_goes_to_the_planner(self):
+        f, r = self.go(plan(S_HARD), plan(PLAN), FIX_EDIT, DONE, CLOSE, env=NO_COPY)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.asked_about_undo(f), [1])
+        self.assertEqual([self.task(t)["status"] for t in ("T-0001", "T-0002")], ["dropped", "done"], r.stdout)
 
     def test_no_copy_to_keep_sends_the_refusal_to_the_planner_once_and_the_new_plan_starts(self):
         f, r = self.go(plan(HARD), plan(M_PLAN), FIX_EDIT, DONE, CLOSE, env=NO_COPY)
