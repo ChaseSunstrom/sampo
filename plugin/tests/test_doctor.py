@@ -157,8 +157,16 @@ class Checks(_TmpDir):
             self.write(f"volt/.claude/worktrees/agent-{n}/f", "x")
         self.write("gitter/.claude/worktrees/agent-0/f", "x")
         os.makedirs(os.path.join(self.t, "quiet"))
-        projects = [(core.Project(name, os.path.join(self.t, name), ""), {}) for name in ("volt", "gitter", "quiet")]
+        # T-4605: each project has a real state folder: with "" a load of its briefs wrote briefs-closed.json into the
+        # working directory (plugin/tests), and one was committed by accident
+        projects = [(core.Project(name, os.path.join(self.t, name), os.path.join(self.t, "state", name)), {})
+                    for name in ("volt", "gitter", "quiet")]
+        for p, _ in projects:
+            os.makedirs(p.dir)
+        here = set(os.listdir(os.path.dirname(os.path.abspath(__file__))))
         low = d.check_disk(self.t, lambda _: Usage(900e9, 893e9, 7e9), projects)
+        self.assertEqual(set(os.listdir(os.path.dirname(os.path.abspath(__file__)))), here,
+                         "the disk check left a file in the tests folder")
         self.assertEqual(low.status, "WARN")
         self.assertIn("7 GB free", low.detail)
         self.assertIn("volt 3", low.detail)

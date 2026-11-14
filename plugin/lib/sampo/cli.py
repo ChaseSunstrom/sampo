@@ -2201,6 +2201,25 @@ def _pm_covers(p):
                 and c.code_tree(p.root, g.get("covered_by") or g["sha"]) == now)
 
 
+PM_LOOK = 5  # post-merge records a close reads, newest first: each costs a git tree read
+
+
+def _pm_green_here(p, ctree):
+    """T-4605: a post-merge full verify (lanes.pm_run) of a landed commit was green on the code tree `ctree` now: the
+    whole suite ran on this code, which covers what a train's affected-only pass left out. A verify still pending, one
+    that failed, and one of a merge a revert followed (not a commit's own tree) cover nothing."""
+    from sampo import lanes
+    if not ctree:
+        return False
+    recs = [r for r in lanes.pm_records(p).values() if r.get("state") == "green" and not r.get("after_reverts")]
+    recs.sort(key=lambda r: str(r.get("at") or ""), reverse=True)
+    for r in recs[:PM_LOOK]:
+        a = c.age_days(r.get("at"))
+        if a is not None and a < CACHE_DAYS and c.code_tree(p.root, r.get("covered_by") or r.get("sha")) == ctree:
+            return True
+    return False
+
+
 def _unlink(path):
     try:
         os.unlink(path)
@@ -6512,11 +6531,17 @@ def _cached_pass(p, checks, tree, skip=(), ctree=None, names=None, why=None):
             if bad:
                 return miss(f"{of} {bad}")
             part = next((r["affected"] for r in rs if r.get("affected")), None)
+            post = False
             if part and names is not None and not set(names) <= set(part):
-                return miss(f"{of} ran only {len(part)} affected module(s), not "
-                            f"{c.joinmore(sorted(set(names) - set(part)), 3)}")
+                # T-4605: the full suite after landing covers the rest, when it was green on this very code tree
+                ctree = ctree or c.code_tree(p.root)
+                post = _pm_green_here(p, ctree)
+                if not post:
+                    return miss(f"{of} ran only {len(part)} affected module(s), not "
+                                f"{c.joinmore(sorted(set(names) - set(part)), 3)}")
             at = f"run {ts[:10]} {ts[11:16]} UTC, code_tree {(d.get('code_tree') or d.get('tree') or '')[:12]}, from {e.get('task') or 'a train'}" \
-                + (f", the suite on {len(part)} affected module(s)" if part else "")
+                + (f", the suite on {len(part)} affected module(s)" if part else "") \
+                + (", and the post-merge full suite green on this code tree" if post else "")
             if d.get("tree") == tree:
                 return at
             if d.get("changelog") != _changelog_hash(p.root) and not _changelog_reads_clean(p):

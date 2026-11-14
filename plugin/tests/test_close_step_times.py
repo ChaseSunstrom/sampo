@@ -24,6 +24,9 @@ STEPS = re.compile(r"^Close steps \((\d+(?:\.\d)?) s\): (.+)$", re.M)
 class CloseStepTimes(ForemanTestCase):
     def setUp(self):
         super().setUp()
+        self.fixture()
+
+    def fixture(self):  # T-4605: the project test_close_reuse_row builds too, over its own ForemanTestCase
         self.fm("init")
         self.count = os.path.join(self.tmp, "count")  # outside the repo: a run must not change the tree it's judged on
         os.makedirs(os.path.join(self.repo, "tests"))
