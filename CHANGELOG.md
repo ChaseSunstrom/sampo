@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The Stop hook holds a stop once for a concern the user raised this turn that has no task, proof or answer; it reads only this turn's tail of the book and ledger (6.6 MB to 16 KB per stop), and a concern said again holds once more (T-4202).
 - a concern the user reports again after its task closed (or after a shown proof, or when its shown number is worse a day later) reopens that task, or captures a linked FIX, with a forced 'look at the real surface first' step, and sampo task finish refuses it on unit-test evidence alone (T-4189).
 - Plugin ids move to Sampo: the plugins are now sampo, sampo-ui and sampo-design in the foreman marketplace, a renames map moves existing foreman installs on their next Claude Code start, and every /foreman: command and foreman: skill Sampo writes is now sampo:, with both spellings still read (T-2879).
 - The request judge now reads going through the code to make it safe, ready or right as the whole code and a find-and-fix, and a one-criterion change run it judged whole gets the closing look, shown its own closing notes, so a defect they list becomes the next task (T-4576).
