@@ -4402,6 +4402,15 @@ def worker_confinement(root):
                                            "folders, scratch, Claude Code's folders and tool caches")
 
 
+def _close_quietly(f):
+    """T-4636: close a pipe object; one already closed, or whose flush fails (a broken pipe), says nothing."""
+    try:
+        if f is not None:
+            f.close()
+    except (OSError, ValueError):
+        pass
+
+
 def run_bounded(cmd, cwd, timeout, env=None, cap=CAP, reap=False, on_line=None, on_idle=None, on_spawn=None,
                 confine=None, stdin=None):
     """(exit code or None on timeout, output cut to head and tail). Memory stays bounded whatever the command prints;
@@ -4427,9 +4436,10 @@ def run_bounded(cmd, cwd, timeout, env=None, cap=CAP, reap=False, on_line=None, 
     if stdin is not None:  # T-1351: small (an event), so it fits the pipe before anything reads the output
         try:
             p.stdin.write(stdin.encode("utf-8", "replace"))
-            p.stdin.close()
         except OSError:  # the command never read it
             pass
+        finally:
+            _close_quietly(p.stdin)  # T-4636: a failed flush still closes it, and says nothing
     if on_spawn:
         on_spawn(p)
     head, tail, total = bytearray(), bytearray(), [0]
@@ -4452,8 +4462,12 @@ def run_bounded(cmd, cwd, timeout, env=None, cap=CAP, reap=False, on_line=None, 
                 pass
         return bool(shown)
     live = (on_line and line_seen, on_idle and (lambda *a: done.is_set() or on_idle(*a)))
-    t = threading.Thread(target=core.pump, args=(p.stdout, sink, live[0], on_idle and m.heartbeat(), live[1]),
-                         daemon=True)
+    def read():
+        try:
+            core.pump(p.stdout, sink, live[0], on_idle and m.heartbeat(), live[1])
+        finally:  # T-4636: a reader that outlives the join below (a leftover grandchild holds the write end) closes
+            _close_quietly(p.stdout)  # its own descriptor when it ends: never closed under a thread still reading it
+    t = threading.Thread(target=read, daemon=True)
     t.start()
     try:
         code = p.wait(timeout)
@@ -4470,6 +4484,8 @@ def run_bounded(cmd, cwd, timeout, env=None, cap=CAP, reap=False, on_line=None, 
             _kill_orphans()
             _subreaper(False)
     t.join(5)
+    if not t.is_alive():  # T-4636: the reader is done with it; closing never blocks (our read end) nor raises
+        _close_quietly(p.stdout)
     done.set()
     gap = total[0] - len(head) - len(tail)
     out = head.decode("utf-8", "replace") + (f"\n… ({gap} bytes cut) …\n" if gap > 0 else "") + \
