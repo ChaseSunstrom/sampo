@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code now asks its model once for the adversary lens, shown the diff of the sensitive files, when a tier S change touches a manifest or another security-sensitive file, so the close is no longer blocked for a lens the run had no way to give (T-4381).
 - sampo lane train and land no longer park a lane that clashes with main or an earlier lane only in docs/map entries: the train merges it keeping both sides' lines, says which lane and file, and captures one follow-up to read the merged entry (T-4375).
 - A merge train clears a flaky class only when the whole gate is green again, probes the base before a repeat drop, stops at a flake cap, and scrubs test overrides from one list (T-4289).
 - `sampo big` gains an integration branch `big/<ID>`, `lane brief` cuts a big task's children from it and holds each until its `after` siblings land, `sampo big run` prints the whole ready wave capped by lane slots and the load gate, and `sampo big sync` merges the build branch in (T-4222).
