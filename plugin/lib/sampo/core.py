@@ -4163,6 +4163,40 @@ def machine_text(text):
     return bool(_MACHINE.match(text or ""))
 
 
+URGE_NOTE = ("Your user's last message only urged you on: it is no request, so capture nothing for it; carry on "
+             "(the next queued task, if it names the queue).")
+URGE_TTL = 3600  # a note the session never heard (it ended, or ran no tool) is not carried to a later turn
+
+
+def _urge_file(sid):
+    if not sid or not re.fullmatch(r"[\w-]{1,100}", sid):
+        return None
+    return os.path.join(state_dir(), "sessions", f"{sid}.urge")
+
+
+def book_urge(sid):
+    """T-4612: the steer reading judged this session's newest message an urge to continue: one carry-on note waits for
+    the session's next tool result (take_urge). No usable session id books nothing."""
+    path = _urge_file(sid)
+    if path:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_atomic(path, now())
+
+
+def take_urge(sid):
+    """The booked carry-on note, once: the file goes with the first reader (os.unlink says who won), and a booking
+    older than URGE_TTL is dropped unheard. '' when nothing is booked (the hot path: one failed unlink)."""
+    path = _urge_file(sid)
+    if not path:
+        return ""
+    try:
+        at = os.stat(path).st_mtime
+        os.unlink(path)
+    except OSError:
+        return ""
+    return URGE_NOTE if time.time() - at < URGE_TTL else ""
+
+
 def is_work_request(text):
     """A plain, untagged request with a concrete target ("add a --verbose flag"): intake classifies it first."""
     t = (text or "").strip()

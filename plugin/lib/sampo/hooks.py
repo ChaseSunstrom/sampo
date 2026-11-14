@@ -4070,7 +4070,23 @@ def _refused(tool, ti, resp):
     return bool(_REFUSAL.search(f"{resp.get('stdout') or ''}\n{resp.get('stderr') or ''}"[:20000]))
 
 
+def _with_urge(out, note):
+    """T-4612: the carry-on note beside whatever else the call's PostToolUse answer holds, dropping neither."""
+    if not note:
+        return out
+    hso = dict((out or {}).get("hookSpecificOutput") or {"hookEventName": "PostToolUse"})
+    hso["additionalContext"] = " ".join(x for x in (hso.get("additionalContext"), note) if x)
+    return dict(out or {}, hookSpecificOutput=hso)
+
+
 def post_tool_use(pl, ok=True):
+    """The call's bookkeeping and notes (_post_tool_use), then, once, the note that the user's last message was only an
+    urge to continue (T-4612: the steer reading books it; a subagent's call never takes it from the main thread)."""
+    out = _post_tool_use(pl, ok)
+    return _with_urge(out, "" if pl.get("agent_id") else c.take_urge(pl.get("session_id")))
+
+
+def _post_tool_use(pl, ok=True):
     tool, ti = pl.get("tool_name", ""), pl.get("tool_input") or {}
     if tool == "Bash" and _pause_call(pl):  # T-4190: the call is over: its stamp is spent, run or not
         try:
@@ -4575,7 +4591,7 @@ def _tool_miss(pl):
 
 def post_tool_use_failure(pl):
     """Also failure memory (T-0046): a failed command whose failure a finished task already met gets a pointer to it."""
-    post_tool_use(pl, ok=False)
+    _post_tool_use(pl, ok=False)  # not post_tool_use: its answer is dropped here, and so would a booked note be
     if pl.get("agent_id"):  # T-1110: a subagent's failure is its own; the notes landed in the main thread's context
         return None  # and the failure was filed against this thread's task
     if pl.get("tool_name") != "Bash":  # T-2370: past Bash, only the miss shapes
