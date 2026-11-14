@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- stopping a lane's accept check (sampo lane rm, or its wall limit) now ends every process the check started, in whatever session or group: its test run no longer lives on holding test slots (T-4417).
 - an exam line whose run is a list or a dict is skipped by the tower's reader instead of raising TypeError, which broke sampo exam's scorecard, the kept thinking arm and the grade comparison for every line (T-4382).
 - sampo code now asks its model once for the adversary lens, shown the diff of the sensitive files, when a tier S change touches a manifest or another security-sensitive file, so the close is no longer blocked for a lens the run had no way to give (T-4381).
 - sampo lane train and land no longer park a lane that clashes with main or an earlier lane only in docs/map entries: the train merges it keeping both sides' lines, says which lane and file, and captures one follow-up to read the merged entry (T-4375).
