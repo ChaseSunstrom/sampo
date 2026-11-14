@@ -11,12 +11,13 @@ import unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for p in (os.path.join(os.path.dirname(HERE), "lib"), os.path.join(HERE, "fixtures")):
+for p in (os.path.join(os.path.dirname(HERE), "lib"), os.path.join(HERE, "fixtures"), HERE):
     if p not in sys.path:
         sys.path.insert(0, p)
 
 from sampo import replay  # noqa: E402
 import gen_evasions  # noqa: E402
+from test_guard import GuardCase, g  # noqa: E402
 
 FIX = os.path.join(HERE, "fixtures")
 CORPUS = os.path.join(FIX, "guard_evasions.jsonl")
@@ -166,6 +167,72 @@ class SnapshotForms(unittest.TestCase):
         self.assertEqual(len(given), 2, note)  # the third had no time left
         self.assertLessEqual(given[1], 0.5 - 0.3 + 0.05)
         self.assertIn("no time left", note)
+
+
+class CredentialReleaseWalks(GuardCase):
+    """T-4666: the scratch and template releases of the credentials guard must not be walkable to a real secret. Every
+    fixture (a link, a hardlink, a secret) is built in this test's own temp folder; no real credential file is named."""
+
+    def scratch(self):
+        # beside repo and home (one filesystem, so a hardlink works), never above them: a scratch root apart from both
+        scr = os.path.join(os.path.dirname(self.repo), "scr")
+        os.makedirs(scr, exist_ok=True)
+        return scr
+
+    def cctx(self):
+        return g.Ctx(cwd=self.repo, project_root=self.repo, home=self.home, foreman_home=self.fhome,
+                     scratch=[self.scratch()], allow=set(), task_id="T-0007")
+
+    def test_cred_dotdot_through_a_scratch_link_is_the_real_file(self):
+        scr = self.scratch()
+        deploy = os.path.join(self.repo, "deploy")
+        work = os.path.join(self.home, "work")
+        os.makedirs(deploy, exist_ok=True)
+        os.makedirs(work, exist_ok=True)
+        for name, target in (("lnk-deploy", deploy), ("lnk-work", work)):
+            if not os.path.lexists(os.path.join(scr, name)):
+                os.symlink(target, os.path.join(scr, name))
+        for path in (f"{scr}/lnk-deploy/../.env", f"{scr}/lnk-work/../.ssh/id_rsa", f"{scr}/lnk-deploy/../secrets.yaml"):
+            with self.subTest(path=path):
+                self.assertBlocked(g.check("Write", {"file_path": path, "content": "x"}, self.cctx()), "credentials")
+                self.assertBlocked(g.check("Bash", {"command": f"echo x > {path}"}, self.cctx()), "credentials")
+        # a plain folder, or a link that stays in scratch, is still scratch
+        os.makedirs(os.path.join(scr, "a", "b"), exist_ok=True)
+        if not os.path.lexists(os.path.join(scr, "lnk-in")):
+            os.symlink(os.path.join(scr, "a", "b"), os.path.join(scr, "lnk-in"))
+        for path in (f"{scr}/a/b/../.env", f"{scr}/lnk-in/../.env", f"{scr}/a/../redchk/.env"):
+            with self.subTest(path=path):
+                self.assertIsNone(g.check("Write", {"file_path": path, "content": "x"}, self.cctx()))
+                self.assertIsNone(g.check("Bash", {"command": f"echo x > {path}"}, self.cctx()))
+
+    def test_cred_hardlink_of_a_secret_to_a_released_name_is_refused(self):
+        folder = os.path.join(self.repo, "hl")
+        os.makedirs(folder, exist_ok=True)
+        secret = os.path.join(folder, ".env")
+        with open(secret, "w") as f:
+            f.write("K=1\n")
+        for cmd in (f"cd {folder} && ln .env .env.example", f"ln {secret} {folder}/.env.example",
+                    f"ln -f {secret} {self.scratch()}/fixture.txt", f"link {secret} {folder}/.env.sample",
+                    f"cp -l {secret} {folder}/.env.template", f"cp --link {secret} {self.scratch()}/x.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(g.check("Bash", {"command": cmd}, self.cctx()), "credentials")
+        # a symlink is no second name for the inode; a hardlink of a template, or a read-only look, is fine
+        for cmd in (f"cd {folder} && ln -s .env .env.example", f"ln {folder}/.env.example {folder}/.env.sample",
+                    f"cd {folder} && ln -s .env .env.template"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(g.check("Bash", {"command": cmd}, self.cctx()))
+        # an existing released name that already shares the secret's inode is that secret
+        for name, root in ((".env.example", folder), (".env", self.scratch()), ("secrets.yaml.template", folder)):
+            twin = os.path.join(root, name)
+            if not os.path.lexists(twin):
+                os.link(secret, twin)
+            with self.subTest(twin=twin):
+                self.assertBlocked(g.check("Write", {"file_path": twin, "content": "x"}, self.cctx()), "credentials")
+        fresh = os.path.join(self.scratch(), "fresh", ".env.example")  # one link only: a template, as before
+        os.makedirs(os.path.dirname(fresh), exist_ok=True)
+        with open(fresh, "w") as f:
+            f.write("K=\n")
+        self.assertIsNone(g.check("Write", {"file_path": fresh, "content": "x"}, self.cctx()))
 
 
 if __name__ == "__main__":

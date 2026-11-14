@@ -10,6 +10,7 @@ import functools
 import json
 import os
 import re
+import stat
 import sys
 import shlex
 
@@ -445,8 +446,22 @@ def _unliteral(tok):
     return _unresolvable(tok) or not re.search(r"\s", tok) and bool(re.search(r"\{[^{}]*(?:,|\.\.)[^{}]*\}", tok))
 
 
+class _Climbed(str):
+    """T-4666: a path normpath collapsed that had a '..' part. The kernel follows a link before it climbs, so a/link/../x
+    is not a/x: `.real` is where the raw path really goes (each prefix resolved, then climbed)."""
+    real = ""
+
+
 def _resolve(tok, base):
-    return os.path.normpath(tok if os.path.isabs(tok) else os.path.join(base, tok))
+    joined = tok if os.path.isabs(tok) else os.path.join(base, tok)
+    path = os.path.normpath(joined)
+    if ".." in joined.split("/"):  # only a climbing path pays for the walk
+        path = _Climbed(path)
+        try:
+            path.real = os.path.realpath(joined)
+        except (OSError, ValueError):
+            pass
+    return path
 
 
 def _under(path, root):
@@ -476,44 +491,64 @@ _CRED_FILES = [".netrc", ".npmrc", ".pypirc", ".git-credentials", ".claude/.cred
 
 
 def _is_credential(path, ctx):
+    """Whether a file's path or name says it holds a secret. T-4666: a file that is one inode with another name
+    (a hardlink: `ln .env .env.example`) is judged by the strict reading, which no release (scratch, template,
+    design) applies to, as its twin's name cannot be told from here."""
+    if _credential_named(path, ctx):
+        return True
+    try:
+        st = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISREG(st.st_mode) and st.st_nlink > 1 and _credential_named(path, ctx, strict=True)
+
+
+def _credential_named(path, ctx, strict=False):
     for d in _CRED_DIRS:
         if _under(path, os.path.join(ctx.home, d)):
             return True
     if path in {os.path.join(ctx.home, f) for f in _CRED_FILES}:
         return True
-    base = os.path.basename(path)
+    base = os.path.basename(path).lower()  # T-4666: .ENV and KEY.PEM are the same files on a case-insensitive disk
     if os.path.isdir(path):
         return False  # T-4143: a folder named tokens/.env holds no secret itself (a file in it is judged by its own name)
     # T-4143: a scratch fixture (redchk/host/.env under the session scratchpad, /tmp, a test's temp folder) holds what
     # the session wrote there: no secret of the user's. A scratch root that contains the home or the project (a project
-    # checked out under /tmp) never exempts: only a folder strictly apart from both counts
-    if any(_under(path, s) and not _under(ctx.home, s) and not (ctx.project_root and _under(ctx.project_root, s))
-           for s in getattr(ctx, "scratch", ()) or ()):
+    # checked out under /tmp) never exempts, for any name (T-4666: T-0169's later release let secrets.yaml through):
+    # only a folder strictly apart from both counts
+    if not strict and any(_under(path, s) and not _under(ctx.home, s)
+                          and not (ctx.project_root and _under(ctx.project_root, s))
+                          for s in getattr(ctx, "scratch", ()) or ()):
         return False
-    if re.fullmatch(r"\.env(\..+)?", base) and not re.search(r"\.(example|sample|template|dist|defaults?)$", base):
+    # T-4666: .default and .defaults hold live values; .dist and .tmpl are templates by convention
+    if re.fullmatch(r"\.env(\..+)?", base) and (strict or not re.search(r"\.(example|sample|template|dist)$", base)):
         return True
     if re.search(r"\.(pem|key|p12|pfx|keystore|jks)$", base) or re.match(r"id_(rsa|dsa|ecdsa|ed25519)(?!.*\.pub$)", base):
         return True
-    if any(_under(path, s) for s in getattr(ctx, "scratch", ()) or ()):
-        return False  # T-0169: a scratch file's name says nothing of its contents (its real path is checked too)
     stem, ext = os.path.splitext(base)
-    if ext.lower() in _DOC_EXT or ext.lower() in (".example", ".sample", ".template", ".dist", ".tmpl"):
+    if not strict and (ext in _DOC_EXT or ext in (".example", ".sample", ".template", ".dist", ".tmpl")):
         return False  # T-0386: secrets.yaml.example is the placeholder copy, as .env.example is
-    if re.search(r"(^|[._-])(secrets?|credentials?)([._-]|$)", stem.lower()):
+    if re.search(r"(^|[._-])(secrets?|credentials?)([._-]|$)", stem):
         return True
     # a design system's tokens (colours, spacing, durations) aren't auth tokens (JARVIS: design/tokens.json was refused);
     # T-3908: nor is a UI source file named for them (gallery/Tokens.svelte): markup and styles, never a token store
-    if ext.lower() in (".svelte", ".vue", ".jsx", ".tsx", ".astro", ".css", ".scss", ".sass", ".less", ".html"):
+    if not strict and ext in (".svelte", ".vue", ".jsx", ".tsx", ".astro", ".css", ".scss", ".sass", ".less", ".html"):
         return False
-    design =re.search(r"/(design|themes?|styles?|ui)/", path.lower()) or re.match(r"(design|theme|style)[._-]", stem.lower())
-    # T-3810: and a web asset folder's inside the project (plugin/web/live/board-tokens.json): what a page serves is
-    # no secret. Its review: only below the project root, so ~/.config/app/public/tokens.json stays one, and never
-    # under a dot folder (a dotfiles repo at ~ is a project too)
+    if not re.search(r"(^|[._-])tokens?([._-]|$)", stem):
+        return False
+    # T-4666: only the stems tokens, design-tokens and *.tokens, and only for a design folder or a web asset folder
+    # BELOW the project root (a ui/auth/api-tokens.json, or a /ui/ above the project, is no design file), never under
+    # a dot folder. T-3810: and a web asset folder's inside the project (plugin/web/live/board-tokens.json): what a page
+    # serves is no secret, so ~/.config/app/public/tokens.json stays one
     root = getattr(ctx, "project_root", None)
-    rel = os.path.relpath(path, root).lower() if not design and root and _under(path, root) else ""
-    design = design or (rel and not re.search(r"(^|/)\.", rel)
-                        and re.search(r"(^|/)(web|www|static|assets|public|css|s[ac]ss)/", rel))
-    return bool(re.search(r"(^|[._-])tokens?([._-]|$)", stem.lower())) and not (design and stem.lower() != "token")
+    rel = os.path.relpath(path, root).lower() if root and _under(path, root) else ""
+    if strict or not rel or re.search(r"(^|/)\.", rel):
+        return True
+    dirs = "/" + os.path.dirname(rel) + "/"
+    named = stem in ("tokens", "design-tokens", "design_tokens", "design.tokens") or stem.endswith(".tokens")
+    if named and (re.search(r"/(design|themes?|styles?|ui)/", dirs) or stem.startswith("design")):
+        return False
+    return not (stem != "token" and re.search(r"/(web|www|static|assets|public|css|s[ac]ss)/", dirs))
 
 
 _CRED_PUBLIC = {".ssh": {"known_hosts", "known_hosts.old", "authorized_keys", "authorized_keys2", "config"},
@@ -548,6 +583,33 @@ _VALUE_OPTS = {"scp": ("-i", "-F", "-o", "-c", "-J", "-l", "-P", "-S", "-D", "-X
 # security review: these options read the file they name (a list of names or patterns)
 _LIST_OPTS = {"rsync": ("--files-from", "--exclude-from", "--include-from"),
               "tar": ("-X", "-T", "--files-from", "--exclude-from", "--include-from")}
+
+
+def _link_sources(name, args):
+    """T-4666: the files a hardlinking command gives a second name (ln and link without -s, cp -l / --link): the new name
+    is one inode with the source, so a write to the released-looking name is a write to the source."""
+    base = os.path.basename(name)
+    if base not in ("ln", "link", "cp"):
+        return []
+    shorts = [a for a in args if a.startswith("-") and not a.startswith("--")]
+    longs = [a.split("=", 1)[0] for a in args if a.startswith("--") and a != "--"]
+    if base == "cp":
+        hard = any("l" in a[1:] for a in shorts) or any(len(a) >= 3 and "--link".startswith(a) for a in longs)
+    else:
+        hard = not (any("s" in a[1:] for a in shorts) or any(len(a) >= 4 and "--symbolic".startswith(a) for a in longs))
+    if not hard:
+        return []
+    pos, tdir = _positionals(args), _opt_values(args, "-t", "--target-directory")
+    if tdir:
+        return [p for p in pos if p not in tdir]
+    return pos if len(pos) == 1 else pos[:-1]
+
+
+def classify_hardlink(path, ctx):
+    """T-4666: a source that is a credential, where it is and where it really is (a link before a '..' included)."""
+    out = ["credentials"] if any(_is_credential(p, ctx) for p in _variants(path) | {getattr(path, "real", "") or path}) \
+        else []
+    return out or classify_read(path, ctx)
 
 
 def _read_targets(name, args):
@@ -884,6 +946,11 @@ def classify_write(path, ctx, real=True):
                 _under(p, d) for d in [*ctx.scratch, os.path.join(ctx.home, ".claude", "projects")]  # project (/tmp)
                 if not _under(root, d)) and not _in_briefed_lane(p, ctx):  # T-4340: this variant, as it is
             cats.append("brief")
+    # T-4666: a/link/../x was collapsed to a/x above; the kernel goes through the link first. Where the raw path really
+    # goes is judged for credentials as well (the same weakness in the other categories is a separate task)
+    real = getattr(path, "real", "")
+    if real and "credentials" not in cats and _is_credential(real, ctx):
+        cats.append("credentials")
     return list(dict.fromkeys(cats))
 
 
@@ -4378,6 +4445,9 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                 target, known, bare, cwds, lost, scan, ctx, how, f" ({hint[2:]})" if init and target not in c.redirs else "")
                       if not (lane and target == "." and f[0] == "brief")]
             found += _cargo_config_hit(target, cmd, cwds or [ctx.cwd], ctx)  # T-3607 review
+        for target in _link_sources(name, args):  # T-4666: a hardlink's source is one inode with the new name
+            found += _target_cats(target, known, bare, cwds, lost, scan, ctx, classify_hardlink,
+                                  " (hardlinked: the new name is the same file)", guess=False)
         merge = name == "git" and _git_sub(args) == "merge"  # T-0394: its refusal names sampo lane merge; T-3553: one the
         away = next((d for d in cwds if d != ctx.cwd and os.path.isfile(os.path.join(d, ".git"))), None) if merge \
             and len(cwds) > 1 else None  # walk also reads where the line began, though a cd named a worktree: that cd

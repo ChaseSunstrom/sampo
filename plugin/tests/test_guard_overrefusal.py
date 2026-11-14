@@ -189,6 +189,43 @@ class CredentialFalsePositives(GuardCase):
         self.assertIsNone(self.bash("python3 -c \"open('{repo}/deploy/.env.example', 'w').write('K=\\n')\"",
                                     cwd=self.repo))
 
+    def test_cred_a_project_under_a_scratch_root_keeps_its_secrets(self):
+        # T-4666: the project is checked out under /tmp: its secrets are its own, whatever the file is called
+        ctx = g.Ctx(cwd="/tmp/projx", project_root="/tmp/projx", home=self.home, foreman_home=self.fhome,
+                    scratch=["/tmp", self.SCRATCH], task_id="T-0007")
+        for name in ("secrets.yaml", "credentials.json", "api_token.txt", "deploy/credentials.json", ".env", "x/id_rsa"):
+            with self.subTest(name=name):
+                self.assertBlocked(g.check("Write", {"file_path": f"/tmp/projx/{name}", "content": "x"}, ctx),
+                                   "credentials")
+        self.assertIsNone(g.check("Write", {"file_path": f"{self.SCRATCH}/projx/secrets.yaml", "content": "x"}, ctx))
+
+    def test_cred_only_tokens_named_design_files_are_released(self):
+        for path in ("{repo}/ui/auth/api-tokens.json", "{repo}/design/prod-tokens.json", "{repo}/theme/auth-tokens.yaml",
+                     "{repo}/ui/session.tokens-store.json", "{home}/ui/tokens.json", "{home}/design/design-tokens.json"):
+            with self.subTest(path=path):
+                self.assertBlocked(self.write(path), "credentials")
+        for path in ("{repo}/design/tokens.json", "{repo}/ui/styles/tokens.yaml", "{repo}/design/design-tokens.json",
+                     "{repo}/ui/colors.tokens.json", "{repo}/design-tokens.json", "{repo}/plugin/web/live/board-tokens.json"):
+            with self.subTest(path=path):
+                self.assertIsNone(self.write(path))
+
+    def test_cred_names_match_in_any_letter_case(self):
+        for path in ("{repo}/.ENV", "{repo}/.Env.production", "{repo}/certs/KEY.PEM", "{repo}/ID_RSA",
+                     "{repo}/Secrets.YAML", "{repo}/deploy/CREDENTIALS.json", "{repo}/.env.DEFAULTS"):
+            with self.subTest(path=path):
+                self.assertBlocked(self.write(path), "credentials")
+        for path in ("{repo}/.ENV.EXAMPLE", "{repo}/deploy/Secrets.yaml.Template"):
+            with self.subTest(path=path):
+                self.assertIsNone(self.write(path))
+
+    def test_cred_defaults_hold_live_values_but_dist_and_tmpl_are_templates(self):
+        for path in ("{repo}/.env.default", "{repo}/.env.defaults"):
+            with self.subTest(path=path):
+                self.assertBlocked(self.write(path), "credentials")
+        for path in ("{repo}/.env.dist", "{repo}/deploy/secrets.yaml.dist", "{repo}/deploy/secrets.yaml.tmpl"):
+            with self.subTest(path=path):
+                self.assertIsNone(self.write(path))
+
     def test_cred_doc_comment_is_not_a_path(self):
         src = "package a\n\n/**\n * The pairing token, as the lock sees it.\n */\nclass Lock\n"
         self.assertIsNone(self.bash(f"cat > app/src/Lock.kt <<'EOF'\n{src}EOF", cwd=self.repo))
