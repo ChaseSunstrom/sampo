@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A Smith run that tried a tool not installed here and went on no longer ends blocked at the close on its capability miss: the close sets aside a miss no criterion's verify or keep check invokes and names it as tried and not needed, and the worker's failed run says the tool is not here and names the project's own test command (T-4593).
 - A plan criterion may name proof files, and its verify then also runs on a before-work copy of the tree with only those files laid over it: a pass there is told back and closes the criterion not proven, and the base survives a resume (T-4590).
 - A Smith run's planning is bounded: after a plan call spends its output thinking, later plan calls think within a budget; planning has a third of the time limit before optional re-asks are skipped; a fix round the clock cannot run is not counted and the stop names the clock; and a step that ends without a file its plan says it creates is told once and then says so (T-4588).
 - A Smith run whose plan focus refuses for a missing Undo line on a one-way step supplies the Undo from its own tree copy and starts, instead of ending with no edit (T-4586).
