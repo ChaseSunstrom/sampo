@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A repeat sampo focus never takes a second start snapshot (a first snapshot that failed on a loaded host no longer empties the task's diff), prints "Already in focus", and a focus that moves a task between checkouts now says it took a new start and names the old one (T-4626).
 - Closing a task the trunk already holds selects its linked tests from the commits that landed it (plus uncommitted and claimed files), not from every lane merged since its base (T-4625).
 - A close now counts on a green post-merge full suite on its own code tree when the train's affected-only pass ran too few modules, and test_doctor's projects use real state folders so no index file leaks into plugin/tests (T-4605).
 - A stale git lock (index.lock, HEAD.lock, packed-refs.lock, a refs lock) older than a minute with no live git process for its git dir is now removed and reported by sampo lane list and brief, the train's start and doctor --repair, while a fresh or process-held one is left and named (T-4616).
