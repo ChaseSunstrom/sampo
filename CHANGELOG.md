@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A fm code run that stops unfinished (out of time, model error, block), in a step or in the verify rounds, with the keep check red now puts the files it changed back to the newest state the check passed on and sets the undone work aside as a patch that the message names (T-4614).
 - The Stop hook's drive no longer lets a session end its turn to wait on a background job while an independent task is queued: it tells the session to checkpoint and start that task, naming the running job (T-4611).
 - `KeptArm` and the `Kinds` and `Compare` exam tests build their exam fixture once per class and give each test a copy; `KeptArm` grades and runs in-process except for one CLI-path test (T-4607).
 - A one-time stop command is no longer stored as a standing veto, a veto needs two key words to match by words alone, and a resume message lifts vetoes by the model's reading (T-4577).
