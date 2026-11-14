@@ -42,6 +42,7 @@ def _slack(raw):
 
 SLACK = _slack(os.environ.get("FOREMAN_HOOK_SLACK"))
 LONG_JOB_S = 20 * 60   # T-0415: a background job running longer no longer holds the drive
+FINISH_JOB_S = 2 * 3600  # T-4644: ... except the job that holds the active task's own close (queued behind CI): to here
 CONTEXT_NOTE_PCT = 60     # context use at a task boundary worth mentioning (context rot)
 CONTEXT_NOTE_TOKENS = 200_000  # T-0703: every turn re-reads the context, so past this a 1M window costs at 20%
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
@@ -4153,7 +4154,11 @@ def _post_tool_use(pl, ok=True):
     if ok and tool == "Bash" and ti.get("run_in_background"):
         m = re.search(r"\bID:?\s*([\w-]+)|backgroundTaskId\W+([\w-]+)", json.dumps(pl.get("tool_response")))
         if m:
-            _event({"kind": "bg_start", "session_id": pl.get("session_id"), "id": m.group(1) or m.group(2)})
+            row = {"kind": "bg_start", "session_id": pl.get("session_id"), "id": m.group(1) or m.group(2)}
+            closes = _text_closes(" ".join(str(ti.get(k) or "") for k in ("command", "description")))
+            if closes:  # T-4644: the tasks this job closes (their ids only: the command's text may hold a secret)
+                row["closes"] = closes
+            _event(row)
     elif ok and tool in ("Bash", "Monitor"):  # T-2790: a call the harness moved to the background after its timeout,
         # and a Monitor, run in the background too; their notices end them like any job (unparseable: nothing)
         m = re.search(r"moved to the background \(ID:\s*([\w-]+)|Monitor started \(task\s+([\w-]+)",
@@ -5438,11 +5443,39 @@ def _context(sid):
 BG_WAIT_S = 2 * 3600  # backstop: a start older than this is assumed finished (T-0096: 6 h stalled a 5-day session)
 
 
-def _running(sid, agents=None):
+_CLOSE_VERB = c.lazy(r"(?i)\b(?:finish|done|close)\b")  # (T-2020: lazy, a hook compiles only what it uses)
+_TASK_ID = c.lazy(r"(?<![\w-])T-\d+(?![\w-])")
+
+
+def _names_close(text, tid):
+    """T-4644: whether a job's own text (its command or description) holds task `tid` together with the finish, done or
+    close verb: a script that queues `sampo task finish ID`. Whole ids only (T-13350 isn't T-1335); no verb, no close
+    (a watcher that names the task is not its close)."""
+    return isinstance(text, str) and bool(_CLOSE_VERB.search(text)) and tid in _TASK_ID.findall(text)
+
+
+def _text_closes(text):
+    """The task ids (at most 5) a job's text closes: its ids when the text has the verb, else none."""
+    if not isinstance(text, str) or not _CLOSE_VERB.search(text):
+        return []
+    return list(dict.fromkeys(_TASK_ID.findall(text)))[:5]
+
+
+def _job_closes(job):
+    """T-4644: the task ids the engine's job record (a background_tasks item) closes, from its own text fields."""
+    if not isinstance(job, dict):
+        return []
+    text = " ".join(str(job[k]) for k in ("command", "description", "name", "title", "summary") if job.get(k))
+    return _text_closes(text)
+
+
+def _running(sid, agents=None, closes=None):
     """Background agents and commands of this session still running: their completion notification wakes the
     session, so drive waits instead of pushing busywork. agents, a set, gets the ids that are subagents (a start or a
-    SendMessage resume), which never turn into a service past LONG_JOB_S (T-2872)."""
+    SendMessage resume), which never turn into a service past LONG_JOB_S (T-2872). closes, a dict, gets each running
+    job's task ids its start recorded as closing (T-4644: the PostToolUse hook stores the ids, never the command)."""
     state = {}
+    shut = {}
     keep = (json.dumps(sid, ensure_ascii=False),) if isinstance(sid, str) and sid else ()  # T-2033: decode its lines only
     # T-2873: the file is every session's; 1,500 lines was under an hour of a busy one, short of BG_WAIT_S
     for e in c._tail_rows(os.path.join(c.state_dir(), "events.jsonl"), 6000, keep):
@@ -5453,8 +5486,12 @@ def _running(sid, agents=None):
             state[key] = True
             if agents is not None and (kind == "subagent_start" or e.get("agent")):
                 agents.add(key)
+            if isinstance(e.get("closes"), list):
+                shut[key] = [str(x) for x in e["closes"]]
         elif kind in ("subagent_stop", "bg_done"):
             state[key] = False
+    if closes is not None:
+        closes.update({k: v for k, v in shut.items() if state.get(k)})
     return [k for k, on in state.items() if on]
 
 
@@ -5678,7 +5715,11 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         return None  # waiting on the user's approval (AUTONOMY standard)
     bg = pl.get("background_tasks")  # T-0115: the engine's own in-flight list, when this build sends it
     scanned = set()  # T-2872: the event scan's agents (a subagent start or a resume), as the engine list marks them
-    found = _running(sid, scanned)
+    closes = {}  # T-4644: job id -> the task ids its own text closes (the engine's record, else what its start recorded)
+    found = _running(sid, scanned, closes)
+    for t in bg if isinstance(bg, list) else ():
+        if _job_closes(t):
+            closes[str(t.get("id"))] = _job_closes(t)
     live = scanned & set(found)  # the scan's agents still running (scanned holds every agent it saw start)
     running = sorted({str(t.get("id")) for t in bg if isinstance(t, dict)} | live) if isinstance(bg, list) else \
         sorted(found)  # T-2873: the engine's list can omit running subagents; the scan's live ones join it
@@ -5687,7 +5728,11 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     d["since"] = since = {k: since.get(k, now) for k in running}
     agents = ({str(t.get("id")) for t in bg if isinstance(t, dict) and t.get("type") == "agent"} if isinstance(bg, list)
               else set()) | scanned  # T-0575: a subagent (a builder can take 30 min) is work that ends, never a service
-    running = [k for k in running if k in agents or now - since[k] < LONG_JOB_S]
+    # T-4644: the job that holds this task's own close (a script waiting behind CI, then `sampo task finish ID`) is a wait,
+    # not a service, for up to FINISH_JOB_S: past LONG_JOB_S it fell out of `running` and the finish push came each Stop
+    mine = {k for k, ids in closes.items() if work["id"] in ids and k not in agents and not _headless()}  # (an agent ends)
+    running = [k for k in running if k in agents or now - since[k] < (FINISH_JOB_S if k in mine else LONG_JOB_S)]
+    closing = any(k in mine for k in running)
     # T-4525: the jobs a turn ending here waits on (not agents: they end), for the timer hook that wakes an idle session
     jobs = {k: since[k] for k in running if k not in agents}
     d.pop("wait_jobs", None) if not jobs else d.update(wait_jobs={"since": jobs, "at": now})
@@ -5739,7 +5784,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
                           max(20, DRIVE_LINE - len(lead) - len(tail) - len(jm[0] if started else block)))
             alts = [block, f"; can't move: sampo task block {offer['id']}"]
             return _line(lead + title + tail, *([jm, alts] if started else [alts, jm]))  # the job's name never cut
-        if not first or not act:
+        if not first or not act or closing:  # T-4644: a task waiting on its own queued close has no side work to name
             return None
         # T-0364: once per running set, work on what doesn't need it instead of idling (357 waits vs 11 pushes)
         d.update(count=d.get("count", 0) + 1, marks=_marks(p))
