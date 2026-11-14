@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A Smith run's planning is bounded: after a plan call spends its output thinking, later plan calls think within a budget; planning has a third of the time limit before optional re-asks are skipped; a fix round the clock cannot run is not counted and the stop names the clock; and a step that ends without a file its plan says it creates is told once and then says so (T-4588).
 - A Smith run whose plan focus refuses for a missing Undo line on a one-way step supplies the Undo from its own tree copy and starts, instead of ending with no edit (T-4586).
 - A Smith plan whose only flaw is a multi-line verify is kept: the command is written as written to a check script in the run's own folder and called in one line, so a whole M plan no longer ends with no valid plan (T-4571).
 - `sampo lane accept` runs the repo-shape run in the lane's check child and reuses a green result for the hold check (T-4563).
