@@ -1734,8 +1734,11 @@ def close_landed(p, main, ids, who="sampo lane land"):
         except Exception as e:  # noqa: BLE001 — one lane's close never costs the others theirs
             why, last = f"{type(e).__name__}: {e}", ""
         (hand if why else closed).append((tid, why or last))
+        steps = close_steps(last) if not why else ""  # T-4600: a slow close names its step in the land's own log
         print(f"{who}: left for a hand close {tid}: {c.fit(why, 400)}" if why else f"{who}: closed {tid}",
               file=sys.stderr, flush=True)  # T-3819: the reason, not hours later
+        if steps:  # its own line: the 'closed T-N' line stays what land logs and tests read
+            print(f"{who}: {tid} {c.fit(steps, 300)}", file=sys.stderr, flush=True)
     return closed, hand
 
 
@@ -1916,6 +1919,7 @@ def _close(p, main, tid):
     # T-4515: the builder's WHY-NOT-CAUGHT line goes on as the close's why-not-caught; the brief's own section wins
     own = b.section("Why not caught").strip() or not f.get("why_not_caught")
     why_arg = [] if own else [f"--why-not-caught={f['why_not_caught']}"]
+    t_finish = time.monotonic()  # T-4600: the close's wall time, lock wait included, beside the steps the finish itself reports
     try:
         with train_lock_closing(p):  # T-4540: the close commits on trunk: it waits for a running train (bounded), not beside it
             rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
@@ -1930,13 +1934,27 @@ def _close(p, main, tid):
         nb.append_log(f"land: close refused: {c.fit(' '.join(why.split()), 400)} @ {_brief_hash(nb)} {sha} {_code_id()}")
         c.save_brief(p, nb)
         return why, ""
+    finish_s = time.monotonic() - t_finish
     done = cli.need_brief(p, tid)
+    t_lane = time.monotonic()
     if path and done.meta.get("lane"):
         try:
             lanes.remove(p, done, main)
         except (c.PolicyError, cli.UsageError) as e:  # closed; only the folder is left: fm tidy offers it
             out += f"\nclosed; its lane stays: {str(e).splitlines()[0]}"
-    return "", f"{title} — {(out.strip().splitlines() or ['closed'])[-1]}"
+    steps = close_steps(out)  # T-4600: where this close's seconds went, so a slow one in a land's log names its step
+    note = (f" [{steps}; finish {finish_s:.0f} s wall, lane removal {time.monotonic() - t_lane:.0f} s]" if steps else "")
+    return "", f"{title} — {(out.strip().splitlines() or ['closed'])[-1]}{note}"
+
+
+CLOSE_STEPS = re.compile(r"Close steps \([^)]*\): [^\]\n]*")
+
+
+def close_steps(text):
+    """T-4600: the `Close steps (N s): verify …, affected … (ran), …` line a `sampo task finish` printed, '' when it
+    printed none (an older sampo, a refusal)."""
+    m = CLOSE_STEPS.search(text or "")
+    return m.group(0).strip() if m else ""
 
 
 class _Stamped:

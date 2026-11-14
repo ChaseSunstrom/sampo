@@ -5,6 +5,7 @@ refused a near-duplicate (T-1662).
 """
 import argparse
 import collections
+import contextlib
 import hashlib
 import json
 import os
@@ -1435,9 +1436,53 @@ def _queue_left_out(p, tid, say):
     return made
 
 
+@contextlib.contextmanager
+def _span(args, name):
+    """T-4600: the seconds a close step takes, added under its name in args.steps (a step may run more than once)."""
+    t0 = time.monotonic()
+    try:
+        yield
+    finally:
+        steps = getattr(args, "steps", None)
+        if steps is not None:
+            steps[name] = steps.get(name, 0.0) + time.monotonic() - t0
+
+
+def _step_note(args, name, note):
+    """T-4600: one word beside a step's seconds ('covered' when the gates' pass stood in for it, 'ran' when it ran)."""
+    notes = getattr(args, "step_notes", None)
+    if notes is not None:
+        notes[name] = note
+
+
+def _steps_line(args):
+    """T-4600: 'Close steps (N s): verify 0.1 s, affected 412.0 s (ran), …' — where the close's time went; what no named
+    step spent (the pre-checks, the guards) is 'other', so the parts add up to the whole."""
+    total = time.monotonic() - args.t_start
+    steps = dict(args.steps)
+    steps["other"] = max(0.0, total - sum(steps.values()))
+    notes = args.step_notes
+    return f"Close steps ({total:.1f} s): " + ", ".join(
+        f"{k} {v:.1f} s" + (f" ({notes[k]})" if notes.get(k) else "") for k, v in steps.items())
+
+
+def _log_steps(p, args):
+    """T-4600: the ledger's `close_steps` event: the per-step seconds of this close, kept even when it was refused (a refusal
+    after a 10-minute test run is the close that most needs its step named). Best effort: never the close's failure."""
+    try:
+        total = time.monotonic() - args.t_start
+        steps = {k: round(v, 1) for k, v in args.steps.items()}
+        steps["other"] = round(max(0.0, total - sum(args.steps.values())), 1)
+        c.log_event(p, "close_steps", task=args.id, data={"s": round(total, 1), "steps": steps,
+                                                           "notes": dict(args.step_notes)}, session=session())
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def task_finish(p, args):
     """T-3030: the close runs under a `closing` marker (task, pid), so the edit hook attributes nothing made meanwhile."""
     me = str(os.getpid())
+    args.steps, args.step_notes, args.t_start = {}, {}, time.monotonic()  # T-4600: per-step seconds, reported at the end
 
     def mark(entry):  # keyed by pid: concurrent closes each add and drop only their own entry
         with c.lock(p.dir):
@@ -1454,6 +1499,7 @@ def task_finish(p, args):
             _queue_left_out(p, args.id, say=not getattr(args, "json", False))
         return rc
     finally:
+        _log_steps(p, args)
         try:
             mark(None)
         except Exception as e:  # a lock timeout must not mask the finish result; a dead pid's entry is ignored anyway
@@ -1488,9 +1534,12 @@ def _task_finish(p, args):
         args.why_not_caught = fields["why_not_caught"]
     if b.status == "done" and args.commit:  # T-0720: a commit refused after the close is retried on its own
         _changelog_line(p, b, fields)
-        _commit_task(p, b, args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)
+        with _span(args, "commit"):
+            _commit_task(p, b, args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)
         if not getattr(args, "json", False):
-            print(_landed(p, b))
+            landed = _landed(p, b)
+            print(_steps_line(args))
+            print(landed)
         return 0
     if not args.audit:
         raise UsageError("sampo task finish needs --audit \"<how the audits were done>\"")
@@ -1574,7 +1623,8 @@ def _task_finish(p, args):
         todo.append(("final", None, args.run))
     for _, _, cmd in todo:  # T-0901 review: every one is checked before any runs, so a refusal leaves no side effects
         guard_stored(p, b, cmd)
-    results = [(kind, n, cmd, *run(cmd)) for kind, n, cmd in todo]
+    with _span(args, "verify"):  # T-4600: the criteria's and steps' own commands (and a reused full gate pass)
+        results = [(kind, n, cmd, *run(cmd)) for kind, n, cmd in todo]
     from sampo import infra as sinfra  # T-2385: the infra files the task touched, each through its own validator (a missing one is said, not run)
     infra = sinfra.for_task(p, b)
     if infra:
@@ -1618,26 +1668,31 @@ def _task_finish(p, args):
                                                 for t, x_, ev in claims))
             if getattr(args, "differently", None):  # T-0641
                 x.set_section("Would do differently", c.redact(c.plain(args.differently).strip()))
-    mutate(p, b.id, record, "finish", {"runs": len(runs), "failed": sum(1 for r in results if r[3]),
-                                       "ran": [[r[2][:200], r[3]] for r in results][:20]})  # T-0749: catch rates
+    with _span(args, "record"):
+        mutate(p, b.id, record, "finish", {"runs": len(runs), "failed": sum(1 for r in results if r[3]),
+                                           "ran": [[r[2][:200], r[3]] for r in results][:20]})  # T-0749: catch rates
     failed = [f"{kind}{f' {n}' if n else ''}: {cmd} → " + (  # T-2385: every failing infra file, not only the last output lines
         " / ".join(l for l in output.splitlines() if l.startswith("fail"))[:600] if cmd == "fm prove --infra" else
         c.run_result(code, output) + "".join("\n" + x for x in c.class_lines(c.failed_classes(output), "      "))  # T-3397
         ) for kind, n, cmd, code, output in results if code]
     if failed:
         raise c.PolicyError(f"{b.id} not finished; failing (recorded):\n  - " + "\n  - ".join(failed))
-    _close_affected(p, need_brief(p, b.id), runs, args)  # T-1117: what it changed must not break what's linked to it
+    with _span(args, "affected"):  # T-4600: the step that held 8 to 18 minutes of a land's closes
+        _close_affected(p, need_brief(p, b.id), runs, args)  # T-1117: what it changed must not break what's linked to it
     if getattr(args, "ablate", False):
         _ablate(p, need_brief(p, b.id), args)
     if args.commit:  # T-0720: a credential found now leaves the task open to fix it, not done and uncommitted
-        _commit_task(p, need_brief(p, b.id), args.commit, dry=True, with_=args.with_)
-    _close_advice(p, need_brief(p, b.id))
-    _stamp_lenses_at_tip(p, b, lenses, args, tree)
+        with _span(args, "commit"):
+            _commit_task(p, need_brief(p, b.id), args.commit, dry=True, with_=args.with_)
+    with _span(args, "advice"):
+        _close_advice(p, need_brief(p, b.id))
+        _stamp_lenses_at_tip(p, b, lenses, args, tree)
     args.task_cmd = "done"
     args.not_verified = ([f"affected tests skipped: {c.fit(args.waived_affected, 90)}"]  # T-1159
                          if getattr(args, "waived_affected", None) else []) + [
         f"claim ({t}): {c.fit(x, 90)}" for t, x, _ in claims if t != "checked"]
-    rc = cmd_task(args)
+    with _span(args, "done"):
+        rc = cmd_task(args)
     why = (getattr(args, "why_not_caught", None) or "").strip()
     # T-1763: 'none …', 'new …' or 'n/a' work had nothing earlier to catch: skipped before anything is read or printed
     why = "" if re.match(r"(?i)\s*(?:none|new|n/?a)\b", why) else why
@@ -1663,7 +1718,8 @@ def _task_finish(p, args):
     if not rc:  # T-3500: after the close's checks, so the audits they judged still cover the tree
         _changelog_line(p, b, fields)
     if args.commit and not rc:
-        _commit_task(p, need_brief(p, b.id), args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)
+        with _span(args, "commit"):
+            _commit_task(p, need_brief(p, b.id), args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)
     if not rc and not getattr(args, "json", False):
         from sampo import ledger
         try:  # T-1065: the chain head, the anchor fm verify-ledger --head checks later
@@ -1688,7 +1744,8 @@ def _task_finish(p, args):
         except Exception:  # noqa: BLE001
             pass
         try:
-            started = _sentinel(p)
+            with _span(args, "sentinel"):
+                started = _sentinel(p)
         except (OSError, subprocess.SubprocessError):
             pass  # the close has landed; the next close tries again
     if not rc and not getattr(args, "json", False):
@@ -1698,6 +1755,9 @@ def _task_finish(p, args):
             print("Full gates: green")
         elif started == "red":
             print("Full gates: red: the failure is an urgent baseline task (sampo next)")
+        with _span(args, "landed"):
+            landed = _landed(p, b)
+        print(_steps_line(args))  # T-4600: where the close's seconds went (the post-back and Landed lines stay last)
         done = c.find_brief(p, b.id)
         if done and done.status == "done" and done.red_green():  # T-1541: a close proved red then green
             try:
@@ -1709,7 +1769,7 @@ def _task_finish(p, args):
         if src:  # T-1870: outward, so named here and never done unasked
             print(f"Post it back (outward, only when wanted, once pushed): sampo inbox ticket --post {b.id} — one "
                   f"comment on {src[0]} {src[1]}")
-        print(_landed(p, b))  # T-0956: the close's last line
+        print(landed)  # T-0956: the close's last line
     return rc
 
 
@@ -1985,6 +2045,7 @@ def _close_affected(p, b, runs, args):
     waive = (getattr(args, "skip_affected", None) or "").strip()
     if waive:
         args.waived_affected = c.plain(waive)  # T-1159: the close says it only when the waiver was really used
+        _step_note(args, "affected", "waived")  # T-4600
         mutate(p, b.id, lambda x: x.append_log(f"affected tests waived: {c.plain(waive)[:200]}"), "close_affected",
                {"cmd": c.fit(cmd, 200), "waived": c.fit(waive, 200)})
         return
@@ -1994,6 +2055,7 @@ def _close_affected(p, b, runs, args):
         c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "exit": 0, "reused": hit, "s": 0},
                     session=session())
         say(f"linked tests: covered by the gates' pass ({hit})")
+        _step_note(args, "affected", "covered")  # T-4600
         return
     if why:  # T-3548: a miss says why instead of a silent rerun
         say(f"linked tests: no reusable gate pass: {why[0]}")
@@ -2002,7 +2064,9 @@ def _close_affected(p, b, runs, args):
     if ambient.passed(p, cmd):  # T-3270: the ambient run passed this command on this exact tree: nothing to rerun
         c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "exit": 0, "failing": [], "s": 0.0,
                                                           "cached": True}, session=session())
+        _step_note(args, "affected", "cached")  # T-4600
         return
+    _step_note(args, "affected", "ran")  # T-4600: it did run here: the seconds beside it are the tests'
     env, timeout = _skip_env(skip), c.load_scaled(args.timeout if args.timeout > 0 else None)
     t0 = time.monotonic()
     code, output = c.run_command(p.root, cmd, timeout, env=env)

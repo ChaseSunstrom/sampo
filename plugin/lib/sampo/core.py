@@ -3732,6 +3732,8 @@ def load_briefs(p, include_archive=False, errors=None):
     shut = {k: v for k, v in fresh.items() if len(v) == 5}
     live = {k: v for k, v in fresh.items() if len(v) == 6}
     keys = os.path.join(p.dir, BRIEF_CLOSED)
+    if not os.path.isabs(p.dir):  # T-4600: no state folder: a bare file name would land in the caller's folder (and in a code tree)
+        return out
     with contextlib.suppress(OSError):  # a read-only state folder just goes without
         new_shut = len(shut) != len(idx) or any(v is not idx.get(k) for k, v in shut.items())
         new_live = len(live) != len(opn) or any(v is not opn.get(k) for k, v in live.items())

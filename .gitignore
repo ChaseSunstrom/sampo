@@ -21,3 +21,5 @@ plugin/native/sampo-fast.sha256
 # machine-local Claude Code settings and agent worktrees (T-4130)
 .claude/settings.local.json
 .claude/worktrees/
+# the brief indexes core.load_briefs keeps beside a project's state: one a test leaked here moved every close's code tree (T-4600)
+plugin/tests/briefs-*.json
