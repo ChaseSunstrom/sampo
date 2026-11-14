@@ -1,5 +1,6 @@
 """Shared test helpers: isolated FOREMAN_HOME, scratch git repos, running the CLI."""
 import atexit
+import copy
 import functools
 import json
 import os
@@ -437,6 +438,65 @@ class SampoTestCase(unittest.TestCase):
 
 
 ForemanTestCase = SampoTestCase  # T-2748: the old name, which most test files still import
+
+
+class BuiltOnce:
+    """T-4607: a mixin (put it before ForemanTestCase) for a class whose setUp ran fm init, exam gen and exam run in each
+    of its tests (about 20 s apiece on a CI runner, 20 tests: the class hit run.py's 480 s kill). The class defines
+    build(): it runs once, in the first test's setUp, in a fixed folder; its return value is `self.fixture` in every test.
+    Each later test starts from a copy of that folder, put back at the same path, so absolute paths inside the built state
+    (the exam's run folder, the repo path in the grades) stay true. self.home and self.repo are those fixed paths.
+    The class runs as one job (run_whole, T-3166), as any class that shares a fixture does; tearDownClass removes it."""
+
+    run_whole = True
+    _built = None  # (root, fixture), per class
+
+    def setUp(self):
+        super().setUp()
+        cls = type(self)
+        work = None
+        built = cls.__dict__.get("_built")
+        if built is None:
+            root = os.path.realpath(tempfile.mkdtemp(prefix="fm-built-"))
+            atexit.register(shutil.rmtree, root, True)
+            work = os.path.join(root, "work")
+            os.makedirs(os.path.join(work, "fhome"))
+        else:
+            root = built[0]
+            work = os.path.join(root, "work")
+            shutil.rmtree(work, ignore_errors=True)
+            shutil.copytree(os.path.join(root, "pristine"), work, symlinks=True)
+        self.home, self.repo = os.path.join(work, "fhome"), os.path.join(work, "app")
+        os.environ["FOREMAN_HOME"] = self.home  # tearDown puts the saved value back
+        if built is None:
+            git_repo(work)
+            fixture = self.build()
+            shutil.copytree(work, os.path.join(root, "pristine"), symlinks=True)
+            cls._built = built = (root, fixture)
+        self.fixture = copy.deepcopy(built[1])
+
+    def build(self):
+        raise NotImplementedError
+
+    def restore(self, *paths):
+        """Put each folder under the work root back to what the build left, in place (the same absolute path): what a
+        rerun of the build's command would write there, without running it."""
+        work = os.path.dirname(self.home)
+        pristine = os.path.join(type(self).__dict__["_built"][0], "pristine")
+        for path in paths:
+            rel = os.path.relpath(path, work)
+            if rel.startswith(os.pardir):
+                raise ValueError(f"{path} is not under {work}")
+            shutil.rmtree(path, ignore_errors=True)
+            shutil.copytree(os.path.join(pristine, rel), path, symlinks=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        built = cls.__dict__.get("_built")
+        if built:
+            shutil.rmtree(built[0], ignore_errors=True)
+            cls._built = None
+        super().tearDownClass()
 
 
 # T-1361: misbehaving fake runner CLIs. One small sh script per failure mode; each ends by itself in seconds even if

@@ -6,20 +6,24 @@ import json
 import os
 import shutil
 
-from helpers import ForemanTestCase
+from helpers import BuiltOnce, ForemanTestCase
 
 from sampo import core as c
 from sampo import louhi, rune
 
 
-class Kinds(ForemanTestCase):
-    def setUp(self):
-        super().setUp()
+class Kinds(BuiltOnce, ForemanTestCase):
+    def build(self):  # T-4607: once for the class; each test starts from a copy of it (helpers.BuiltOnce)
         self.fm("init")
         g = self.fm_json("exam", "gen", "--seed", "8", "--per-kind", "1", "--lang", "python", "--kind", "bug,parts")
+        return {"gen": g, "ran": self.fm_json("exam", "run", g["run"], "--agent", "oracle")}
+
+    def setUp(self):
+        super().setUp()
+        g = self.fixture["gen"]
         self.run_id, self.by = g["run"], {s["kind"]: s for s in g["scenarios"]}
         self.run_dir = os.path.dirname(os.path.dirname(self.by["bug"]["repo"]))
-        self.ran = self.fm_json("exam", "run", self.run_id, "--agent", "oracle")
+        self.ran = self.fixture["ran"]
 
     def unfix(self, kind):
         """The oracle's work on one kind put back to the planted repo: that kind is then fixed 0 of its items."""
@@ -116,14 +120,17 @@ class Kinds(ForemanTestCase):
         self.assertTrue(any("5 false done" in x for x in text.splitlines() if x.strip().startswith("resume:")), text)
 
 
-class Compare(ForemanTestCase):
+class Compare(BuiltOnce, ForemanTestCase):
     """T-4359: a grade sets each kind beside the last graded run of the same seed, agent, model, thinking arm, split and
     scenario set; a kind that fixed fewer points is said first, in words; repeats on one code give the spread; and
     --against RUN is refused, naming the difference, when the run is not comparable."""
+    def build(self):  # T-4607: once for the class; each test starts from a copy of it (helpers.BuiltOnce)
+        self.fm("init")
+        return self.new_run()
+
     def setUp(self):
         super().setUp()
-        self.fm("init")
-        self.a = self.new_run()
+        self.a = self.fixture
 
     def new_run(self, seed="8", kinds="bug,parts"):
         g = self.fm_json("exam", "gen", "--seed", seed, "--per-kind", "1", "--lang", "python", "--kind", kinds)
