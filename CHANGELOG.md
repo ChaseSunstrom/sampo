@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code now answers the task gate itself instead of ending the run before step 1: the second reading the gate asks for on a one-way step comes from the run's own model (never a Claude child), its open points go once to the plan's author, and a plan's check command that would write over untracked data is never run without a backup: the planner is told which path (T-4466).
 - sampo code --planner now takes a planner CLI (claude, codex, gemini) as well as a model profile: the CLI plans once in its read-only mode and writes the close notes, and the --model profile does every step, so a big model's plan can be carried out by a free local one. A CLI that is not installed, a sensitive repo and an unknown name are refused before any call (T-4449).
 - stopping a lane's accept check (sampo lane rm, or its wall limit) now ends every process the check started, in whatever session or group: its test run no longer lives on holding test slots (T-4417).
 - an exam line whose run is a list or a dict is skipped by the tower's reader instead of raising TypeError, which broke sampo exam's scorecard, the kept thinking arm and the grade comparison for every line (T-4382).
