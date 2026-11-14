@@ -6641,6 +6641,24 @@ def _hub_tests(p, m, base, changed, detail=None, tree=None):
     return picked
 
 
+def _own_change(p, b, base, changed):
+    """T-4625: (base, changed) for a task the trunk already holds (a `Merge T-ID:` commit or commits ending `(T-ID)`
+    since its start): the files those commits brought in, what is uncommitted, and the files it touched or claims that
+    changed since the base, with the base moved to the commits' first parent. base..tree also holds every lane that
+    landed since (T-4607: about 480 modules for a close of two test files). A task nothing landed, or a git that can't say,
+    gives its arguments back."""
+    try:
+        landed = c.landed_change(p.root, b)
+    except (OSError, subprocess.SubprocessError):
+        landed = None
+    if not landed:
+        return base, changed
+    from sampo import map as smap
+    files, first = landed
+    mine = set(c.task_touches(p, b.id)) | _claimed(p, b, {})
+    return first, set(files) | set(smap.changed(p.root, "HEAD")) | (set(changed) & mine)  # HEAD..tree: not committed yet
+
+
 def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
     project's template; command None when no test is linked. fm check --affected and the ambient runner (T-0705).
@@ -6654,6 +6672,8 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     # T-2323: fm ship's range, from a commit; T-3696: a lane past its merge of main's branch, from that merge
     base = since or (c.lane_base(p.root, act) if act else None) or "HEAD"
     changed = set(only) if only is not None else set(smap.changed(p.root, base))
+    if act and not since and only is None and not p.lane:  # T-4625: a landed task is judged by its own landing
+        base, changed = _own_change(p, act, base, changed)
     # T-3566: the sync mirror's .md files are no code (core.code_tree and worktree_tree leave them out); those other
     # closes had committed linked ten tests (test_fixes, ...) to every close, none in a train's part
     changed = {f for f in changed if not (f.startswith(c.MIRROR_DIRS) and f.endswith(".md"))}

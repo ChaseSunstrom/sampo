@@ -1296,6 +1296,30 @@ def merged_in(root, b):
     return out
 
 
+def landed_change(root, b):
+    """T-4625: (the files, the first parent of the oldest) of the commits that put this task on the trunk, or None when
+    none did (or git can't say). A landing commit is `Merge T-ID: …` or one whose subject ends `(T-ID)`, on HEAD's
+    first-parent line since the task's start commit; its change is the diff against its first parent. The closing step
+    judges a landed task by this, not by base..tree, which also holds every lane that landed since the base."""
+    base = b.meta.get("base")
+    if not base or _git(root, "cat-file", "-t", base, timeout=10).strip() != "commit":
+        return None
+    line = _git(root, "log", "--first-parent", "--format=%H%x09%s", f"{base}..HEAD", timeout=30, fail=None)
+    ours = re.compile(rf"^Merge {re.escape(b.id)}:|\({re.escape(b.id)}\)\s*$")
+    files, first = set(), None
+    for row in (line or "").splitlines():
+        sha, _, subj = row.partition("\t")
+        if not ours.search(subj):
+            continue
+        names = _git(root, "diff", "--name-only", "--no-renames", f"{sha}^1", sha, timeout=30, fail=None)
+        parent = _git(root, "rev-parse", "--verify", "-q", f"{sha}^1", timeout=10).strip()
+        if names is None or not parent:
+            return None  # can't read it: the caller keeps the whole base..tree diff, as before
+        files |= set(names.splitlines())
+        first = parent  # newest first: the last row seen is the oldest
+    return (files, first) if first else None
+
+
 def audit_tree_past_merges(p, b, tree):
     """T-2784: the trees an audit may have been made on and still cover this task's own changes: `tree` (the working
     files) and each audit tree that differs from them only by other tasks' merged-in files (and those this task
