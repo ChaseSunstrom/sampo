@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Piped-gate refusals name the same command unpiped, spelled sampo, so a builder's piped gate run gets a runnable command back (T-4553).
 - The big-file Read outline is short (no def prefix, capped rows) and an explicit allow_large read is let through instead of refused (T-3670).
 - The test runner's summary now leads with the wall-clock time a run spent waiting for a CPU slot and its share of the run ("waited 310 s of 866 s wall for a slot (36%)"), labels the thread-summed figure "summed over jobs", and records `waited_wall_s` in the run record (T-4582).
 - `sampo pause off` now also lifts each project's own pause (naming the projects, or only the `-p` project), bare `sampo pause` reports projects paused on their own, and `sampo state` and the session start say whether the pause is the project's or everywhere (T-4601).
