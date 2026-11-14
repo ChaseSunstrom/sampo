@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code now finds the survey's SPEC field wherever it sits, including inline at the end of a one-line summary, so the specification is handed whole to the planner, and the wrap prompt asks for SPEC too (T-4566).
 - MASTER.md keeps 13 KB of room under its cap, with sections 2 and 5 moved to a docs/map shard and a lane that grows it under 4 KB of room named in the self-check (T-4562).
 - Piped-gate refusals name the same command unpiped, spelled sampo, so a builder's piped gate run gets a runnable command back (T-4553).
 - The big-file Read outline is short (no def prefix, capped rows) and an explicit allow_large read is let through instead of refused (T-3670).
