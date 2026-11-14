@@ -35,7 +35,8 @@ class ToolDetour(SurveyCase):
     def test_a_miss_a_criterions_verify_invokes_still_blocks_the_close(self):
         masked = dict(PLAN, criteria=[{"text": "calc.add adds, and the tool is absent",
                                        "verify": f"python3 test_calc.py && ! python3 -m {TOOL} -h"}])
-        f, r, ev = self.go(wants(True), *READ_ALL, SURVEY_DONE, plan(masked), TRY, FIX_EDIT, DONE, CLOSE)
+        # T-4597: the refusal goes back to the worker for two rounds (it mends nothing here), then blocks as before
+        f, r, ev = self.go(wants(True), *READ_ALL, SURVEY_DONE, plan(masked), TRY, FIX_EDIT, DONE, CLOSE, DONE, DONE)
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertEqual(self.task()["status"], "blocked")
         self.assertIn("capability miss", self.task().get("blocked_reason", "") + r.stderr + r.stdout)

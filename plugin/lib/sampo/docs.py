@@ -10,7 +10,7 @@ import shutil
 import stat
 import subprocess
 
-from sampo.tidy import _PATH_TOKEN, _looks_like_path, dead_paths, stale_commands
+from sampo.tidy import _PATH_TOKEN, _looks_like_path, dead_paths, path_part, stale_commands
 
 SKIP_DIRS = {"node_modules", "vendor", "dist", "build", "target", "venv", "__pycache__"}
 _FENCE = re.compile(r"```.*?```", re.S)
@@ -96,7 +96,7 @@ def scan(root):
             continue
         rel, here = os.path.relpath(md, root), os.path.dirname(md)
         missing = [t for t in dead_paths(text, here) if _anchored(t, root, here, tops)
-                   and not os.path.exists(os.path.join(root, t))]
+                   and not os.path.exists(os.path.join(root, path_part(t)))]  # T-4597: tests/x.py::C::t is tests/x.py
         ignored = _ignored(root, missing)
         findings += [{"file": rel, "kind": "path", "detail": t} for t in missing if t not in ignored]
         findings += [{"file": rel, "kind": "command", "detail": cmd} for cmd in stale_commands(text, root)]
@@ -363,7 +363,8 @@ def claims(root, files=None):
         rel, here = os.path.relpath(md, root), os.path.dirname(md)
         text = _FENCE.sub("", full)
         toks = [t for t in dict.fromkeys(_PATH_TOKEN.findall(text)) if _looks_like_path(t) and _anchored(t, root, here, tops)]
-        ok = {t for t in toks if os.path.exists(os.path.join(here, t.rstrip("/"))) or os.path.exists(os.path.join(root, t.rstrip("/")))}
+        ok = {t for t in toks if os.path.exists(os.path.join(here, path_part(t).rstrip("/")))
+              or os.path.exists(os.path.join(root, path_part(t).rstrip("/")))}  # T-4597: a test id is its file's path
         ignored = _ignored(root, [t for t in toks if t not in ok])
         for t in toks:
             if t not in ignored:

@@ -56,12 +56,19 @@ def _looks_like_path(tok):
     return "/" in tok or bool(re.fullmatch(r"[\w.-]+\.[A-Za-z0-9]{1,6}", tok))
 
 
+def path_part(tok):
+    """T-4597: the file of a token that names a test as path::Class::test: the text before the first '::' (a token that
+    starts with '::' has no file part and stays whole)."""
+    return tok.split("::", 1)[0] or tok
+
+
 def dead_paths(text, base):
     out = []
     for tok in _PATH_TOKEN.findall(text):
         if not _looks_like_path(tok):
             continue
-        path = os.path.expanduser(tok) if tok.startswith("~") else os.path.join(base, tok)
+        part = path_part(tok)
+        path = os.path.expanduser(part) if part.startswith("~") else os.path.join(base, part)
         if not os.path.exists(path.rstrip("/")) and tok not in out:
             out.append(tok)
     return out

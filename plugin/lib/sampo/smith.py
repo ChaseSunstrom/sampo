@@ -72,6 +72,7 @@ FM = os.path.join(PLUGIN, "bin", "fm")
 HOOK = os.path.join(PLUGIN, "hooks", "hook")
 TYPES = ("FIX", "FEATURE", "CLEAN", "PERFORMANCE", "SECURITY", "RESEARCH")
 REPAIRS, ROUNDS = 2, 3
+FINISH_FIX_ROUNDS, FINISH_CHARS = 2, 1000  # T-4597: fix rounds on fm task finish's refusal; the refusal's head and tail each
 EARLY_DONE_REFUSALS = 2  # T-3180: dones refused while no edit is made and a verify fails
 CAP = 3000            # characters of a run's head, and of its tail, the model sees
 READ_LINES, READ_MAX, LINE_MAX, READ_BYTES = 200, 400, 500, 16 << 20
@@ -281,7 +282,8 @@ EVENTS = {
     "start": "schema, request, task, worker, model, verify, resume, foreman {root, version}",
     "plan": "plan (type, tier, title, criteria [{text, verify, proof?}], steps); proof: the repo-relative files the run "
             "writes that the verify needs (T-4590)",
-    "task": "task", "resume": "task", "step": "step", "fix": "round",
+    "task": "task", "resume": "task", "step": "step",
+    "fix": "round (0: the keep check's), finish (true: a round answering fm task finish's refusal, T-4597)",
     "say": "text: the model's own words beside its actions",
     "tokens": "call_in, call_out, total_in, total_out",
     "action": "action, target, result (ok|refused|error), detail (the result, cut), key (a hash of the action's canonical "
@@ -8482,6 +8484,21 @@ def _who(run, profile):
     return profile["name"] if profile else f"worker {run.worker}"
 
 
+def _refusal_round(run, profile, out, rounds):
+    """T-4597: one fix round on fm task finish's refusal: its own text (cut, in the data envelope) is the prompt, the
+    worker mends what it names (the files the run changed, or a doc the run wrote), and finish is asked again."""
+    run.emit("fix", f"fix round {rounds} on fm task finish's refusal ({_who(run, None if run.worker else profile)}): "
+                    f"{_one_line(out, 200)}", round=rounds, finish=True)
+    text = (f"{_task_text(run)}\n\nEvery step is done and the verify passes, but fm task finish refused to close the task "
+            f"(round {rounds} of {FINISH_FIX_ROUNDS}). Its words:\n\n{run.fence(_cut(str(out).strip(), FINISH_CHARS))}"
+            "\n\nMend what it names: the files this run changed, or a document it wrote. Don't loosen a check, and don't "
+            "touch what it doesn't name")
+    if run.worker:
+        run.work(f"refusal:{rounds}", f"{text}.\n\n{DATA_NOTE}{run.lib_worker_line()}")
+    else:
+        run.phase(f"refusal:{rounds}", profile, text + ", then call done.")
+
+
 def _tool_detours(run):
     """T-4593: the tools this run tried and went on without: finish refuses on a capability miss, and a miss no
     criterion's verify (or the check script it calls) and no keep check invokes is not unfinished work. Set aside through
@@ -8511,6 +8528,7 @@ def _finish(run, profile):
             notes = slot(run, run.planner or profile, [{"role": "system", "content": CLOSE_PROMPT},
                                         {"role": "user", "content": _task_text(run)}], check_close, "set of close notes",
                          CLOSE_FIELDS)
+            run.close_notes = notes  # T-4597: a finish asked again after a refusal round doesn't ask for them again
             run.log(kind="close_notes", notes=notes)
         run.closing_review.append(notes["adversary"])
         a += [f"--lens=intent: {notes['intent']}", f"--lens=adversary: {notes['adversary']}",
@@ -8523,6 +8541,7 @@ def _finish(run, profile):
         got = run.gap_notes  # T-2948: a resumed run's answer, not asked twice
         if got is None or any(k not in got for k in need):
             got = _gap_slot(run, run.planner or profile, need)
+            run.gap_notes = got  # T-4597: likewise
             run.log(kind="gap_notes", notes=got)
         for key, section in (("decision", "Decision"), ("regression", "Regression test")):
             if key in need:
@@ -8538,9 +8557,19 @@ def _finish(run, profile):
     if not run.no_commit:
         a += ["--commit", f"{pl['title']} ({run.tid})"]
     aside = _tool_detours(run)
-    code, out = run.fm(*a)
-    if code:
-        raise Blocked(f"fm code: fm task finish refused: {_one_line(out, 400)}")
+    rounds = 0
+    while True:
+        code, out = run.fm(*a)
+        if not code:
+            break
+        # T-4597: a refusal none of the slots above answered goes back to the worker, whole, for a bounded number of rounds
+        # (it can mend a doc it wrote); one that survives them blocks with its text named, the work kept
+        if rounds >= FINISH_FIX_ROUNDS or _no_clock(run) or (profile is None and not run.worker):  # nobody to mend it
+            raise Blocked(f"fm code: fm task finish refused: {_one_line(out, 400)}"
+                          + (f" (after {rounds} fix rounds)" if rounds else ""))
+        rounds += 1
+        _refusal_round(run, profile, out, rounds)
+        run.leave_out_built()
     run.log(kind="end", status="done")
     lines = out.splitlines()
     landed = next((x for x in lines if x.startswith(f"{run.tid}: committed")), "")
