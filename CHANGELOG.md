@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The big-file Read outline is short (no def prefix, capped rows) and an explicit allow_large read is let through instead of refused (T-3670).
 - The test runner's summary now leads with the wall-clock time a run spent waiting for a CPU slot and its share of the run ("waited 310 s of 866 s wall for a slot (36%)"), labels the thread-summed figure "summed over jobs", and records `waited_wall_s` in the run record (T-4582).
 - `sampo pause off` now also lifts each project's own pause (naming the projects, or only the `-p` project), bare `sampo pause` reports projects paused on their own, and `sampo state` and the session start say whether the pause is the project's or everywhere (T-4601).
 - A Smith run whose work is done no longer ends blocked at the first sampo task finish refusal: the refusal's own text goes to the worker for at most 2 fix rounds and finish is tried again, and the docs drift check reads a test id path::Class::test as the file before the first :: (T-4597).
