@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The drive queues the next part of an open request's plan instead of stopping at an empty queue, and under full autonomy the Stop hook refuses a final reply once per part while one is left (T-4524).
 - a project with no autonomy setting of its own starts at the machine profile's standing autonomy (sampo autonomy full --standing sets it); a project's own setting still wins (T-4519).
 - A builder's WHY-NOT-CAUGHT line now counts as the why-not-caught of an M or L fix, so lane accept and the land's close stop refusing it (T-4515).
 - a Non-goals line that answered a part of the user's request is queued as a follow-up at the close and listed under 'Left out, queued next' (T-4510).
