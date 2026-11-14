@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Run records now say who held the CPU slots and for how long (`run.py --held`), the post-merge verify yields slots to waiting builders for at most 600 s, and merges pending after a revert are covered by one full run at the new HEAD (T-4570).
 - `sampo task evidence` records keep a long test run's Ran and OK or FAILED lines and say how many tests were green in the cache (T-4564).
 - The drive no longer reads a same-second task as this turn's work when no prompt hook set the turn start (T-4547).
 - `sampo lane brief` names every missing piece of an M brief in its first refusal, and accepts the Approach section by its short heading as well as the long one (T-4545).
