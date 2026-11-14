@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- a Non-goals line that answered a part of the user's request is queued as a follow-up at the close and listed under 'Left out, queued next' (T-4510).
 - sampo code takes a planner's plan of up to 30 one-line steps, and repairs a longer or multi-line one itself (joins the lines, folds the tail into the last step) instead of ending the run before step 1 (T-4506).
 - sampo lane brief, focus and next name every missing piece of an empty M plan in one refusal: the readings, the three options with their failure modes, use-what-exists, do-less, the choice with its percent, and the rival read under 80% (T-4492).
 - sampo code now answers the task gate itself instead of ending the run before step 1: the second reading the gate asks for on a one-way step comes from the run's own model (never a Claude child), its open points go once to the plan's author, and a plan's check command that would write over untracked data is never run without a backup: the planner is told which path (T-4466).
