@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo code --planner now takes a planner CLI (claude, codex, gemini) as well as a model profile: the CLI plans once in its read-only mode and writes the close notes, and the --model profile does every step, so a big model's plan can be carried out by a free local one. A CLI that is not installed, a sensitive repo and an unknown name are refused before any call (T-4449).
 - stopping a lane's accept check (sampo lane rm, or its wall limit) now ends every process the check started, in whatever session or group: its test run no longer lives on holding test slots (T-4417).
 - an exam line whose run is a list or a dict is skipped by the tower's reader instead of raising TypeError, which broke sampo exam's scorecard, the kept thinking arm and the grade comparison for every line (T-4382).
 - sampo code now asks its model once for the adversary lens, shown the diff of the sensitive files, when a tier S change touches a manifest or another security-sensitive file, so the close is no longer blocked for a lens the run had no way to give (T-4381).
