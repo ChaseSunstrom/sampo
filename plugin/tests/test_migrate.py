@@ -62,7 +62,7 @@ class Migrate(ForemanTestCase):
         e = dict(os.environ, HOME=self.h, FOREMAN_HOME=self.new, FOREMAN_INHIBITED="1", FOREMAN_NO_BACKGROUND="1",
                  FOREMAN_NO_LINK="1")
         for label, verb in drill.RESTORE_CHECKS:
-            r = subprocess.run([sys.executable, FM, verb, "-p", self.slug], cwd=self.repo, env=e,
+            r = subprocess.run([sys.executable, FM, *verb.split(), "-p", self.slug], cwd=self.repo, env=e,
                                capture_output=True, text=True, timeout=120)
             self.assertEqual(r.returncode, 0, f"{verb}: {r.stdout}{r.stderr}")
             self.assertNotIn("Traceback", r.stderr)

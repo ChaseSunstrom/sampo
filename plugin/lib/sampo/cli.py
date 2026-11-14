@@ -8940,6 +8940,8 @@ def _build_parser(only=None):
             "journals whose last line is torn, state files that aren't JSON; exit 1 on any (T-1667, T-1669)")
     s.add_argument("--fix", action="store_true", help="remove only the stale locks; a broken lane or a torn journal "
                    "is left for a person")
+    s.add_argument("--record", action="store_true", help="judge the record alone, not the lanes: their folders and "
+                   "branches belong to the machine that wrote it (what a restore rehearsal runs, T-4677)")
     s = add("migrate", lazy("sampo.homemove", "cmd_migrate"), tier=("Project and settings", 874), help="move the Sampo home "
             "and its siblings (foreman.draft, .evolve, .lanes) to the sampo names once, leaving symlinks at the old "
             "paths, a backup of the record and a manifest; safe to rerun, resumes a half-done move (T-2746). "

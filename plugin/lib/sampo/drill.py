@@ -280,7 +280,10 @@ def drill(seed, faults=3):
     return rep
 
 
-RESTORE_CHECKS = (("ledger chain", "verify-ledger"), ("fsck", "fsck"), ("readers", "state"), ("readers", "outcomes"))
+# T-4677: fsck --record: a snapshot's lane paths are folders of the machine that wrote it (gone after a host wipe, and
+# on a live machine whenever one is removed), so the rehearsal judges the record alone. Each verb is split on spaces.
+RESTORE_CHECKS = (("ledger chain", "verify-ledger"), ("fsck", "fsck --record"), ("readers", "state"),
+                  ("readers", "outcomes"))
 
 
 def restore(name=None):
@@ -308,7 +311,7 @@ def restore(name=None):
         bad = []
         for label, verb in RESTORE_CHECKS:
             n = len(day.crashes)
-            r = day.fm(verb, "-p", slug)
+            r = day.fm(*verb.split(), "-p", slug)
             if r.returncode or len(day.crashes) > n:
                 last = [ln for ln in ((r.stdout or "") + (r.stderr or "")).splitlines() if ln.strip()][-1:]
                 bad.append(f"{label} (fm {verb}, exit {r.returncode}): {last[0].strip()[:160] if last else ''}")

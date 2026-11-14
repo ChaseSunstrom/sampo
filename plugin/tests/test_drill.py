@@ -192,6 +192,19 @@ class RestoreDrill(ForemanTestCase):
         self.assertEqual({f for f in before if before[f] != after.get(f)} - {f for f in before if f.endswith("ledger.jsonl")},
                          set())  # nothing but this run's own ledger lines moved
 
+    def test_a_lane_folder_gone_from_this_machine_fails_no_restore(self):
+        # T-4677: an open task's lane path in a snapshot is a folder of the machine that wrote it; after a host wipe
+        # (what the drill rehearses) every one is gone, and the record still reads back
+        p = c.project_by_slug(os.listdir(os.path.join(self.state, "projects"))[0])
+        self.fm("task", "new", "in a lane", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "s")
+        b = c.load_briefs(p)[-1]
+        b.meta.update(lane=os.path.join(self.tmp, "gone-lane"), lane_branch="foreman/gone")
+        c.save_brief(p, b)
+        self.snap("1.0.2")
+        r = self.fm("drill", "--restore", check=False)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertRegex(r.stdout, r"✓ \S+: ledger chain, fsck, readers")
+
     def test_a_snapshot_whose_ledger_chain_is_broken_fails_naming_its_project(self):
         p = c.project_by_slug(os.listdir(os.path.join(self.state, "projects"))[0])
         led = os.path.join(p.dir, "ledger.jsonl")

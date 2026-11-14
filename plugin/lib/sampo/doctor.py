@@ -2981,13 +2981,14 @@ def _broken_lanes(projects, here=None):
     return out
 
 
-def fsck(projects=None, state=None, here=None):
+def fsck(projects=None, state=None, here=None, lanes=True):
     """T-1667: what a crash or a hand edit left broken in Sampo's own state, as {kind, path, detail, project[, task]}:
     open tasks' lanes whose folder or branch is gone, *.pid locks whose process is dead, journals (*.jsonl) whose last
     line is torn, state *.json that doesn't parse (T-1669), and files it can't read. project is None for state no
-    project owns. Reads only."""
+    project owns. Reads only. lanes False (fm fsck --record, T-4677): the record alone; a lane's folder and branch
+    belong to the machine that wrote the record, so a restore rehearsal on another home never judges them."""
     state = state or c.state_dir()
-    found = _broken_lanes([p for p, _ in c.all_projects()] if projects is None else projects, here)
+    found = _broken_lanes([p for p, _ in c.all_projects()] if projects is None else projects, here) if lanes else []
     pdir, now = os.path.join(state, "projects"), time.time()
     for root, dirs, names in os.walk(state):  # symlinked folders aren't followed
         dirs[:] = sorted(x for x in dirs if root != state or x not in FSCK_SKIP)
@@ -3160,7 +3161,7 @@ def check_headless():
 
 def cmd_fsck(args):
     here = getattr(args, "project", None) or getattr(c.find_project(os.getcwd()), "slug", None)
-    found = fsck(here=here)
+    found = fsck(here=here, lanes=not getattr(args, "record", False))
     fixed, left = fsck_fix(found) if args.fix else ([], found)
     if args.json:
         print(json.dumps({"ok": not left, "findings": left, "fixed": fixed}, indent=2, ensure_ascii=False))

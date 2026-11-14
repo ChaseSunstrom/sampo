@@ -89,6 +89,13 @@ class Fsck(ForemanTestCase):
         self.assertIn("fm fsck --fix", text)
         self.assertTrue(all(self.p.slug in ln for ln in text.splitlines() if ln.startswith(d.FSCK_KINDS)))
 
+    def test_record_leaves_lanes_to_the_machine_they_were_on(self):
+        # T-4677: a lane's folder and branch belong to the machine the record was written on; a restore rehearsal
+        # judges the record alone, or it goes red when a folder on the live machine is removed
+        r = self.fm("fsck", "--record", "--json", check=False)
+        self.assertEqual(self.kinds(json.loads(r.stdout)), [("stale lock", "sentinel.pid"), ("torn journal", "ledger.jsonl")])
+        self.assertNotIn("its folder is gone", self.fm("fsck", "--record", check=False).stdout)
+
     def test_fix_removes_only_the_stale_lock(self):
         b = next(x for x in c.load_briefs(self.p) if x.id == self.tid)
         rc, res = self.fix()
