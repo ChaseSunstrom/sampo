@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The Stop hook treats a task whose own `sampo task finish` a background job holds as waiting, so it gives no finish push and starts an independent queued task (T-4644).
 - A small run (up to 8 classes of little work) takes a reserved pool slot, so a builder's module no longer waits minutes behind full gates (T-4650).
 - The credentials guard no longer releases a real secret through a `..` after a scratch symlink, a hardlink to a released name, a project under a scratch root, a broad `tokens` name, a different letter case, or `.default(s)` (T-4666).
 - The guard's credentials category no longer refuses .env fixtures under scratch folders, folders named like credentials, or text in a cat heredoc body, while real secrets and written-and-run scripts stay refused (T-4143).
