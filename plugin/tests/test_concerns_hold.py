@@ -130,6 +130,26 @@ class Reopen(Case):
         self.assertFalse(self.held(self.stop()), "one saying holds once, and its next Stop reads no whole book")
 
 
+class WithTask(Case):
+    """T-4668: the drive's continuation runs before the hold in the Stop hook, so an open task used to silence a concern
+    with no task, proof or answer. The hold now rides in the drive's one continuation, once."""
+
+    def test_hold_with_an_open_task_is_carried_by_the_drive_continuation_once(self):
+        tid = self.task()
+        self.prompt()
+        cid = self.book()
+        out = self.stop("Continuing with the retry helper next.")
+        self.assertTrue(self.held(out), out)
+        self.assertIn(cid, out["reason"])
+        self.assertIn("the work reaches GitHub", out["reason"])
+        self.assertIn(f"Sampo drive: {tid}", out["reason"], "the drive's line is still in the same continuation")
+        self.assertEqual(out["reason"].count("Sampo concerns"), 1)
+        self.read_a_file()
+        out = self.stop("Continuing with the retry helper next.")
+        self.assertFalse(self.held(out), "the concern holds once: the next Stop is the drive alone")
+        self.assertIn(f"Sampo drive: {tid}", out.get("reason") or "", out)
+
+
 class Cost(Case):
     """The Stop hook runs in every session, so the hold reads this turn's tail of the book and the ledger, not the 30
     days of either (T-4202 review: 5,000 rows and 50,000 ledger lines were read at every Stop)."""

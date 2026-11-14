@@ -4830,9 +4830,10 @@ def _stop(pl):
             or _question_nudge(pl, p)
             or _headless_wait(pl))
         reason = nudge or (None if oneoff or "drive" in c.ablated() else _drive(p, sd, briefs, pl, g, save))  # T-1375
-        if not reason and save and not oneoff and "drive" not in c.ablated():
+        if not nudge and save and not oneoff and "drive" not in c.ablated():
             try:  # T-4202: what the user asked this turn with no task, proof or answer holds the stop once
-                reason = _concern_hold(p, sd, briefs, pl, g)
+                concern = _concern_hold(p, sd, briefs, pl, g)  # T-4668: an open task's drive line rides after it, one stop
+                reason = (concern + ("\n\n" + reason if reason else "")) if concern else reason
             except Exception:
                 log_error("Stop", _tb())
         if not reason and not oneoff:  # T-4223: a big task's turn, once per tree state; drive first, as it always was
