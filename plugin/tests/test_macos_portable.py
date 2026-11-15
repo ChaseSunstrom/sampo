@@ -295,10 +295,16 @@ class Shards(unittest.TestCase):
 
     def test_the_linux_jobs_are_unchanged(self):
         self.assertIn("os: [ubuntu-latest]", self.text)
-        self.assertIn("shard: [1, 2]", self.text)
+        # T-4687: the Linux shard count is the workflow's own (a re-split edits only the workflow): the matrix lists
+        # 1..N and the run line divides the Linux jobs by that same N; the macOS rows add no Linux shard
+        listed = re.search(r"^\s+shard: \[([\d, ]+)\]", self.text, re.M)
+        shards = [int(x) for x in listed.group(1).split(",")]
+        self.assertEqual(shards, list(range(1, len(shards) + 1)))
+        self.assertGreaterEqual(len(shards), 2)
         self.assertEqual(self.pair("deadline")[1], 1380)
         self.assertEqual(self.pair("timeout")[1], 480)
-        self.assertRegex(self.run_line, r"--shard \$\{\{ matrix\.shard \}\}/\$\{\{ matrix\.experimental && \d+ \|\| 2 \}\}")
+        divisor = re.search(r"--shard \$\{\{ matrix\.shard \}\}/\$\{\{ matrix\.experimental && \d+ \|\| (\d+) \}\}", self.run_line)
+        self.assertEqual(int(divisor.group(1)), len(shards))
 
 
 if __name__ == "__main__":

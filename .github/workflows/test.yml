@@ -19,7 +19,7 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python: ["3.12", "3.14"]
-        shard: [1, 2]  # T-1842: the whole suite took 92-100% of the deadline in one job; each job runs half the classes
+        shard: [1, 2, 3]  # T-1842: one job took 92-100% of the deadline; halves; T-4687: halves hit it too (run 43677104299), thirds (the run line's divisor below is the same number)
         include:
           - os: macos-latest  # green since 1.2.44 (T-1284); still reported, not blocking, while it settles
             python: "3.14"
@@ -43,7 +43,7 @@ jobs:
             shard: 5
     runs-on: ${{ matrix.os }}
     continue-on-error: ${{ matrix.experimental || false }}
-    timeout-minutes: ${{ matrix.experimental && 35 || 25 }}  # whole suite: macOS 1980+ s, Ubuntu 1268-1381 s (half per shard); keep the suite's --deadline 2 min under
+    timeout-minutes: ${{ matrix.experimental && 35 || 25 }}  # whole suite: macOS 1980+ s, Ubuntu 1268-1381 s at the halving, over it by T-4687 (a third per shard); fm ci-watch names a shard past 85% of its deadline; keep the suite's --deadline 2 min under
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
@@ -52,6 +52,6 @@ jobs:
       - name: git identity for the tests' commits
         run: git config --global user.name CI && git config --global user.email ci@example.invalid
       - name: suite (no claude needed; the e2e roundtrip and hook bench stay local)
-        run: python3 plugin/tests/run.py --shard ${{ matrix.shard }}/${{ matrix.experimental && 5 || 2 }} --deadline ${{ matrix.experimental && 1980 || 1380 }} --timeout ${{ matrix.experimental && 900 || 480 }}  # ends below timeout-minutes, naming what was slow (T-1809); macOS 3.14 ran LeanKind 504 s (T-2844)
+        run: python3 plugin/tests/run.py --shard ${{ matrix.shard }}/${{ matrix.experimental && 5 || 3 }} --deadline ${{ matrix.experimental && 1980 || 1380 }} --timeout ${{ matrix.experimental && 900 || 480 }}  # ends below timeout-minutes, naming what was slow (T-1809); macOS 3.14 ran LeanKind 504 s (T-2844)
         env:
           FOREMAN_CHROME: none  # the runner's chromium crashes under the parallel suite; local gates run the browser tests

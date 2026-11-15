@@ -34,8 +34,8 @@ class CiMatrix(unittest.TestCase):
         dropped = re.sub(r"(?s)(\n\s+- os: macos-latest[^\n]*\n(?:\s+\w+: [^\n]*\n)*?\s+shard: 3\n)", "\n", text, count=1)
         self.assertNotEqual(problems(dropped), [], "a dropped shard job is caught")
         # T-4633: whatever the divisor is today (3 until the macOS jobs became fifths), one more than the jobs is caught
-        miscount, n = re.subn(r"matrix\.experimental && (\d+) \|\| 2",
-                              lambda m: f"matrix.experimental && {int(m.group(1)) + 1} || 2", text)
+        miscount, n = re.subn(r"(matrix\.shard \}\}/\$\{\{ matrix\.experimental && )(\d+)",  # T-4687: not the timeout line
+                              lambda m: m.group(1) + str(int(m.group(2)) + 1), text)
         self.assertGreater(n, 0, "the run line names the experimental jobs' shard count")
         self.assertNotEqual(problems(miscount), [], "a run line that divides by more shards than jobs is caught")
 

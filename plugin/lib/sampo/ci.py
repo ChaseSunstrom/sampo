@@ -117,6 +117,57 @@ def _jobs(p, run):
     return [j for j in (jobs if isinstance(jobs, list) else []) if isinstance(j, dict)]
 
 
+NEAR_PCT = 85  # T-4687: a shard that used more of its --deadline than this is named, so the split comes before a red
+_TOOK = re.compile(r"the suite took (\d{1,6})s, \d{1,4}% of its (\d{1,6})s deadline")  # run.py's own warning line (past 75%)
+MAX_NEAR_JOBS = 12  # annotation reads per green run: a matrix is 7 jobs
+
+
+def _reading(text):
+    """(seconds used, the deadline) from run.py's warning in `text` (a log line or an annotation message), or None: a
+    zero, tiny or absurd deadline, or a run past twice its deadline, is text and no reading."""
+    m = _TOOK.search(text or "")
+    if not m:
+        return None
+    took, deadline = int(m.group(1)), int(m.group(2))
+    return (took, deadline) if 60 <= deadline <= 86400 and took <= 2 * deadline else None
+
+
+def near_deadline(log):
+    """[(job, seconds, deadline)] for the log's jobs that used over NEAR_PCT percent of their deadline. A log line is
+    `job<TAB>step<TAB>timestamp text`; text only, never followed."""
+    out = []
+    for line in str(log or "").splitlines()[:200000]:
+        got = _reading(line[:2000])
+        if got and 100 * got[0] > NEAR_PCT * got[1]:
+            out.append((c.fit(c.plain(line.split("\t", 1)[0]), 60) if "\t" in line else "a job",) + got)
+    return out
+
+
+def near_summary(near):
+    """One sentence for the watch's green line, '' when no shard is near its deadline."""
+    if not near:
+        return ""
+    return "; near its deadline: " + ", ".join(
+        f"{j} used {s}s of {d}s ({round(100 * s / d)}%)" for j, s, d in near[:6]) + " (split the suite into one more shard)"
+
+
+def _near_jobs(p, run):
+    """T-4687: the green run's jobs that used over NEAR_PCT percent of their deadline, from each job's annotations (run.py's
+    '::warning' is one); [] when they can't be read. Through gh only: the public API's 60 calls an hour are the watch's."""
+    from sampo.cli import UsageError
+    out = []
+    for j in [j for j in _jobs(p, run) if isinstance(j.get("databaseId"), int)][:MAX_NEAR_JOBS]:
+        try:
+            notes = json.loads(_gh(p, "api", f"repos/{{owner}}/{{repo}}/check-runs/{j['databaseId']}/annotations"))
+        except (UsageError, ValueError):
+            continue
+        for a in notes if isinstance(notes, list) else []:
+            got = _reading(a.get("message") if isinstance(a, dict) and isinstance(a.get("message"), str) else "")
+            if got and 100 * got[0] > NEAR_PCT * got[1]:
+                out.append((c.fit(c.plain(str(j.get("name"))), 60),) + got)
+    return out
+
+
 def _failed_jobs(p, run):
     """T-1942: a green run's failed jobs (continue-on-error ones don't fail the run)."""
     return [str(j.get("name")) for j in _jobs(p, run) if j.get("conclusion") in ("failure", "timed_out")]
@@ -287,12 +338,13 @@ def _poll(p, branch, retries, interval, max_polls, say, commit, hold):
             if run.get("conclusion") == "success":
                 _ci_verdict(p, run, commit, True)  # T-2496: blocking jobs green, whatever the non-blocking ones did
                 failed = _failed_jobs(p, run)
+                near = near_summary(_near_jobs(p, run)) if not via else ""  # T-4687: a shard close to its deadline
                 if not failed:
-                    return 0, "CI green."
+                    return 0, "CI green" + (near + "." if near else ".")
                 b = _join_or_brief(p, run, branch, failed)  # T-2468, T-2518: the same failure joins its open brief
                 n = len(failed)
                 return 0, (f"CI green, but {n} non-blocking job{'s' if n > 1 else ''} failed "
-                           f"({c.fit(c.plain(', '.join(failed)), 120)}): FIX brief {b.id}.")
+                           f"({c.fit(c.plain(', '.join(failed)), 120)}): FIX brief {b.id}{near}.")
             idle = [] if run.get("conclusion") == "cancelled" else _no_runner(p, run)
             if run.get("conclusion") == "cancelled":
                 say(f"run {run['databaseId']} cancelled (superseded or stopped): not a failure; still watching")
