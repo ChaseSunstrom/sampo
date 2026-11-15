@@ -575,10 +575,27 @@ _CRED_PUBLIC = {".ssh": {"known_hosts", "known_hosts.old", "authorized_keys", "a
                 ".aws": {"config"}}  # profiles and regions
 
 
+# T-4736 review: what one process's /proc folder holds of another's secrets: its environment (every key it was started
+# with), its memory and its open files. cwd, cmdline, status, stat and exe stay readable. A pid that is `self` is this
+# process's own, but its environ is still what the guard keeps from a command's output (_prints_environment).
+_PROC_LEAF = r"(?:environ|mem|maps|smaps|smaps_rollup|fd/[^/]*|fdinfo/[^/]*)"
+_PROC_SECRET = lazy(rf"/proc/(?P<pid>[^/]+)/(?:task/[^/]+/)?(?P<leaf>{_PROC_LEAF})/*$")
+
+
+def _proc_secret(path):
+    """Whether path is a /proc entry that holds another process's environment, memory or open files (T-4736 review): any
+    pid, a computed one too; `self` and `thread-self` only for environ (own memory and files are the caller's own)."""
+    m = _PROC_SECRET.search(os.path.normpath(path)) if path.startswith("/proc/") else None
+    return bool(m) and (m["leaf"] == "environ" or m["pid"] not in ("self", "thread-self"))
+
+
 def classify_read(path, ctx):
     """T-1224: a read of the home folder's credential folders and files (their public parts aside: *.pub, ~/.ssh's
     known_hosts, authorized_keys and config, ~/.aws/config), where the path is and where it really is. A project's .env
-    or *.key is the project's own: its reads stay ordinary."""
+    or *.key is the project's own: its reads stay ordinary. T-4736 review: and another process's /proc environ, mem,
+    maps and fd entries (_proc_secret)."""
+    if _proc_secret(path):
+        return ["credentials"]
     for p in _variants(re.sub(r"^/+", "/", path)):
         low = p.lower()  # T-4667: any letter case
         if low.endswith(".pub") or os.path.basename(low) in _CRED_PUBLIC.get(
@@ -1927,6 +1944,10 @@ _WRITE_API = lazy(
     r"""open\s*\([^)]*['"][rwxab+]*[wxa+][rwxab+]*['"]|\.write_(?:text|bytes)\s*\(|(?:write|append)FileSync|"""
     r"createWriteStream|\bos\.(?:replace|rename|remove|unlink)\b|\bshutil\.\w+\(|\.(?:unlink|rename|replace|touch)\(|"
     r"File\.write|file_put_contents|open\s*\(\s*(?:my\s+)?\$?\w+\s*,\s*['\"]?[>+]")
+# T-4736: writes the _WRITE_API text can't see: open(p, 'r', opener=f) opens with whatever flags f chooses; a writer passed
+# on as a value (map(shutil.rmtree, names), pool.map(Path.unlink, paths), map(open, names, modes))
+_OPENER = lazy(r"\bopener\b|\b(?:i?map\w*|starmap|submit)\s*\(\s*(?:[\w.]*\.)?(?:shutil\.\w+|Path\.\w+)|"
+               r"\bmap\s*\(\s*open\s*,[^,)]*,|\bopen\s*\((?:[^(),]*,){6}\s*(?:True|False|[01])\s*,")  # …, closefd, opener
 # T-0344: .replace( stays a write here even with two string arguments: os.replace('a', 'b'), an aliased os or (os) look
 # the same as str.replace to a text match, and only a proved script (_open_targets) can tell them apart
 _QUOTED = lazy(r"""(['"])((?:[~/.]|[\w.-]+/)[^'"\s]*)\1""")
@@ -2265,7 +2286,8 @@ def _open_targets(code):
     targets = []
     for n in nodes:
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "open":
-            if any(k.arg is None for k in n.keywords) or any(isinstance(a, ast.Starred) for a in n.args):
+            if any(k.arg in (None, "opener") for k in n.keywords) or any(isinstance(a, ast.Starred) for a in n.args) \
+                    or len(n.args) > 7:  # T-4736: an opener (keyword or the 8th argument) opens with any flags, whatever the mode says
                 return None
             kw = {k.arg: k.value for k in n.keywords}
             mode = n.args[1] if len(n.args) > 1 else kw.get("mode")
@@ -2534,7 +2556,38 @@ _SPAWN = {"subprocess": dict.fromkeys(("run", "call", "check_call", "check_outpu
 def _python_sources(cmd):
     """T-0345: the python code a command may run: every heredoc body (one that parses as python is read as python) and
     the code of each `python -c` (option clusters such as -uc included)."""
-    out, lines, seen, i = [], cmd.split("\n"), [], 0
+    return [src for src, _ in _python_sources_argv(cmd)]
+
+
+def _py_runs(cmd):
+    """T-4736: [(code, words, from_stdin)] for each python command in cmd: its `-c` code with the words after it (what
+    sys.argv holds beyond argv[0]), or (None, the words after a bare `-` or [] for none, True) for one that reads its
+    code from stdin, or (None, None, False) for a script file. words is None where the command takes more than it shows
+    (xargs adds from its input). A stdin reader's flag is True only when its one stdin source is the one heredoc
+    redirect on its own command (no pipe into it, no `< file`, no here-string, no second heredoc): else "mixed"."""
+    out = []
+    for c in _split(_tokens(_lines(_strip_heredocs(cmd)))):
+        argv, xargs = _strip_wrappers(c.argv)
+        if not (argv and re.match(r"^python[0-9.]*$", os.path.basename(argv[0]))):
+            continue
+        args, at = argv[1:], _shell_c_at(argv[1:])
+        for i in at:
+            out.append((args[i], None if xargs else args[i + 1:], False))
+        if at:
+            continue
+        k = next((i for i, a in enumerate(args) if not a.startswith("-") or a == "-"), None)
+        if k is None or args[k] == "-":
+            sole = len(c.feeds) == 1 and c.feeds[0][0] == "<<" and not c.piped and c.stdin is None and not c.procsub
+            out.append((None, None if xargs else args[k + 1:] if k is not None else [], True if sole else "mixed"))
+        else:
+            out.append((None, None, False))
+    return out
+
+
+def _python_sources_argv(cmd):
+    """(source, argv words after it or None when unknown) for each python source of cmd (T-4736: what sys.argv holds
+    beyond argv[0]: the words after the code of a `python -c`, after a bare `-` for a heredoc)."""
+    out, lines, seen, i, bodies = [], cmd.split("\n"), [], 0, []
     while i < len(lines):
         line = lines[i]
         i += 1
@@ -2546,18 +2599,38 @@ def _python_sources(cmd):
                 body.append(lines[i])
                 i += 1
             i += 1
-            out.append("\n".join(body))
-    for c in _split(_tokens(_lines(_strip_heredocs(cmd)))):
-        argv, _ = _strip_wrappers(c.argv)
-        if argv and re.match(r"^python[0-9.]*$", os.path.basename(argv[0])):
-            out += _shell_c(argv[1:])
+            bodies.append("\n".join(body))
+    runs = _py_runs(cmd)
+    readers = [(words, stdin) for code, words, stdin in runs if stdin]
+    if len(bodies) == 1 and len(readers) == 1 and readers[0][1] is True:  # the one case with one answer: its body, its words
+        out.append((bodies[0], readers[0][0]))
+    else:  # two heredocs, a heredoc another command reads, a pipe, `< file`, a here-string: the words aren't known
+        out += [(b, None) for b in bodies]
+    out += [(code, words) for code, words, _ in runs if code is not None]
     return out
 
 
-def _spawned_commands(code):
+_ARGV_UNK = "\x02argv"  # _spawned_commands' answer for a command taken from argv the guard can't read (T-4736)
+_RUNNERS = frozenset("sh bash dash zsh ksh csh fish env xargs sudo doas nice nohup timeout time command exec setsid stdbuf "
+                     "ionice busybox".split())  # programs that run the words after them as a command (T-4736 review)
+_CODE_RUNNERS = lazy(r"(?:python|pypy|perl|ruby|php|lua|node|nodejs|deno|bun|Rscript|julia)[0-9.]*$")
+_CODE_FLAGS = frozenset(("-c", "-e", "-E", "-r", "-p", "-pe", "-ne", "eval", "--eval", "--print"))
+_ARGV_BAD = lazy(r"[$`*?\[\]{}\x00]|^~")  # a word the outer shell may rewrite before the code sees it
+
+
+def _argv_clean(ws):
+    """ws, when it holds words the guard can be sure of: some, none of them one the shell expands ($x, `…`, a glob, ~);
+    else None (unknown: xargs, a script file, a computed word)."""
+    return ws if ws and not any(_ARGV_BAD.search(w) for w in ws) else None
+
+
+def _spawned_commands(code, argv=False):
     """T-0345: the shell commands python code starts (subprocess, os.system/popen/exec*/spawn*, pty.spawn, under any
     import alias), as text check_bash reads: a literal string as it stands, a literal list with its words quoted, any
-    other part as an unknown "$_" (so a delete of a variable is a delete of an unknown target), cwd= as a cd first."""
+    other part as an unknown "$_" (so a delete of a variable is a delete of an unknown target), cwd= as a cd first.
+    T-4736: a command taken from sys.argv (`sys.argv[1]`, `sys.argv[1:]`, a name set once from one) is the outer command
+    line's own words, which `argv` holds (False: not asked, as for a script file; None: not known): read as the command
+    those words are, or _ARGV_UNK when they can't be read (the same verdict node's process.argv gets)."""
     import ast
     try:
         tree = ast.parse(code)
@@ -2569,7 +2642,110 @@ def _spawned_commands(code):
             alias.update({a.asname or a.name: (a.name, None) for a in n.names if a.name in _SPAWN})
         elif isinstance(n, ast.ImportFrom) and n.module in _SPAWN:
             alias.update({a.asname or a.name: (n.module, a.name) for a in n.names if a.name in _SPAWN[n.module]})
-    word = lambda e: shlex.quote(e.value) if isinstance(e, ast.Constant) and isinstance(e.value, str) else '"$_"'  # noqa: E731
+    once = {}  # a name assigned in exactly one place → its value (a command held in a name, a list built first)
+    if argv is not False:
+        for n in ast.walk(tree):
+            if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
+                once.setdefault(n.targets[0].id, []).append(n.value)
+            elif isinstance(n, (ast.AugAssign, ast.AnnAssign, ast.For, ast.AsyncFor, ast.NamedExpr)):
+                for t in ast.walk(n.target):
+                    if isinstance(t, ast.Name):
+                        once.setdefault(t.id, []).extend([None, None])  # rebound some other way: not "once"
+
+    def named(e):
+        for _ in range(4):
+            if not (isinstance(e, ast.Name) and len(once.get(e.id, ())) == 1 and once[e.id][0] is not None):
+                break
+            e = once[e.id][0]
+        return e
+
+    def from_argv(e):
+        """None for an expression with nothing of argv in it; else ("s", word) for sys.argv[N], ("l", words) for
+        sys.argv[N:], ("?",) for any other use of argv or a word the guard can't read."""
+        if argv is False:
+            return None
+        e = named(e)
+
+        def has(x, d=0):  # argv in x, also through a name set once to something holding it (a = sys.argv; a[1:])
+            for y in ast.walk(x):
+                if isinstance(y, ast.Attribute) and y.attr == "argv" or isinstance(y, ast.Name) and y.id == "argv":
+                    return True
+                if d < 4 and isinstance(y, ast.Name) and (v := named(y)) is not y and has(v, d + 1):
+                    return True
+            return False
+        if not has(e):
+            return None
+        s = e.slice if isinstance(e, ast.Subscript) else None
+        full = ["-c"] + list(argv or ())
+        if isinstance(e, ast.Subscript) and isinstance(e.value, (ast.Attribute, ast.Name)) and \
+                (getattr(e.value, "attr", None) or getattr(e.value, "id", None)) == "argv":
+            if isinstance(s, ast.Constant) and type(s.value) is int and 0 <= s.value < len(full) and _argv_clean(full[s.value:s.value + 1]):
+                return ("s", full[s.value])
+            if isinstance(s, ast.Slice) and s.upper is None and s.step is None and (
+                    s.lower is None or isinstance(s.lower, ast.Constant) and type(s.lower.value) is int and s.lower.value >= 0):
+                ws = full[s.lower.value if s.lower is not None else 0:]
+                if argv is not None and _argv_clean(ws):
+                    return ("l", ws)
+        return ("?",)
+
+    bad = []
+
+    def word(e):
+        e = named(e)
+        if isinstance(e, ast.Constant) and isinstance(e.value, str):
+            return shlex.quote(e.value)
+        if (v := from_argv(e)) is not None:
+            if v[0] == "s":
+                return shlex.quote(v[1])
+            bad.append(1)
+        return '"$_"'
+
+    def words(elts):
+        parts = []
+        for e in elts:
+            if isinstance(e, ast.Starred) and (v := from_argv(e.value)) is not None and v[0] == "l":
+                parts += [shlex.quote(w) for w in v[1]]
+            elif isinstance(e, ast.Starred) and (v := from_argv(e.value)) is not None:
+                bad.append(1)
+                parts.append('"$_"')
+            else:
+                parts.append(word(e))
+        return " ".join(parts)
+    def known(e):
+        """Whether e is a program or command the code spells out: a string literal, sys.executable, or a word of argv
+        (from_argv judges those: _ARGV_UNK where it can't read it)."""
+        if isinstance(e, ast.Starred):
+            return False
+        e = named(e)
+        return (isinstance(e, ast.Constant) and isinstance(e.value, str)) or (
+            isinstance(e, ast.Attribute) and e.attr == "executable") or (
+            (v := from_argv(e)) is not None and v[0] == "s")
+
+    def computed_call(n, mod, fn, where, arg):
+        """T-4736 review: whether the command this call starts is computed (an f-string, a name from input(), a sum),
+        so what runs can't be read from the code: a string command in any part; a list's program word, or any word of a
+        list run by a shell (shell=True, sh -c, env, xargs …); an exec/spawn's path."""
+        if mod == "os" and fn not in ("system", "popen"):  # exec*/spawn*/posix_spawn*: the path comes before the argv
+            k = (int(where[:-1]) if isinstance(where, str) else where) - 1
+            path = n.args[k] if len(n.args) > k else next((x.value for x in n.keywords if x.arg in ("path", "file")), None)
+            return path is None or isinstance(path, ast.Starred) or not known(path)
+        if isinstance(where, str) or any(isinstance(a, ast.Starred) for a in n.args[:where + 1]):
+            return True
+        arg = named(arg)
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            return False
+        if not isinstance(arg, (ast.List, ast.Tuple)):
+            return from_argv(arg) is None  # a name, f-string, sum, call: computed (argv shapes are judged by `bad`)
+        if not arg.elts or not known(arg.elts[0]):
+            return True
+        first = named(arg.elts[0])
+        shell = any(k.arg == "shell" and not (isinstance(k.value, ast.Constant) and not k.value.value) for k in n.keywords)
+        if shell or (isinstance(first, ast.Constant) and os.path.basename(first.value) in _RUNNERS):
+            return any(not known(e) for e in arg.elts)
+        if isinstance(first, ast.Constant) and _CODE_RUNNERS.match(os.path.basename(first.value)):  # python3 -c CODE
+            flag = next((i for i, e in enumerate(arg.elts) if isinstance(e, ast.Constant) and e.value in _CODE_FLAGS), None)
+            return flag is not None and any(not known(e) for e in arg.elts[flag + 1:])
+        return False
     out = []
     for n in ast.walk(tree):
         f = getattr(n, "func", None) if isinstance(n, ast.Call) else None
@@ -2582,17 +2758,32 @@ def _spawned_commands(code):
         where = _SPAWN[mod].get(fn)
         if where is None:
             continue
+        bad.clear()
         if isinstance(where, str):
-            text = " ".join(word(e) for e in n.args[int(where[:-1]):])
+            text = words(n.args[int(where[:-1]):])
         else:
             arg = n.args[where] if len(n.args) > where else next(
                 (k.value for k in n.keywords if k.arg in ("args", "argv", "cmd", "command")), None)
             if arg is None:
                 continue
-            text = arg.value if isinstance(arg, ast.Constant) and isinstance(arg.value, str) else \
-                " ".join(word(e) for e in arg.elts) if isinstance(arg, (ast.List, ast.Tuple)) else '"$_"'
+            arg = named(arg)
+            v = from_argv(arg)
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                text = arg.value
+            elif isinstance(arg, (ast.List, ast.Tuple)):
+                text = words(arg.elts)
+            elif v is not None and v[0] == "s":
+                text = v[1]  # one word of argv as the shell text (or the program) the code starts
+            elif v is not None and v[0] == "l":
+                text = " ".join(shlex.quote(w) for w in v[1])
+            else:
+                text = '"$_"'
+                bad += [1] if v is not None else []
         cwd = next((k.value for k in n.keywords if k.arg == "cwd"), None)
-        out.append((f"cd {word(cwd)} && " if cwd is not None else "") + text)
+        pre = f"cd {word(cwd)} && " if cwd is not None else ""
+        out.append(pre + text)  # an unreadable argv word stands as "$_" here: what that already refuses keeps its reason
+        if bad or argv is not False and computed_call(n, mod, fn, where, arg if not isinstance(where, str) else None):
+            out.append(_ARGV_UNK)  # (a script file, argv False, keeps the old policy: a computed command is let go)
     return out
 
 
@@ -2708,7 +2899,7 @@ def _py_system_targets(code):
     # a parameter is what its calls pass; one with no call the scan can match to the arguments (a call through *a or **k,
     # a function handed on to map or partial, a lambda used as a callback, a method no call names) is unknown, whatever
     # a default says: only a def that holds a call can reach a write
-    unknown_v = ast.Constant(value="\x01")
+    unknown_v = ast.Constant(value="\x01\x01")  # T-4736: two marks: a parameter no call binds (its own reason, _UNBOUND)
     defs = [n for n in nodes if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
             and any(isinstance(x, ast.Call) for x in ast.walk(n))]
     called, passed_on, call_funcs = set(), set(), set()
@@ -2733,34 +2924,6 @@ def _py_system_targets(code):
     def skip_of(fd):  # self or cls first, unless a staticmethod
         return 0 if any(isinstance(x, ast.Name) and x.id == "staticmethod" for x in fd.decorator_list) else 1
 
-    for n in nodes:
-        if isinstance(n, ast.Call):
-            f = n.func
-            call_funcs.add(id(f))
-            if isinstance(f, ast.Name):
-                for fd in funcs.get(f.id, ()):
-                    feed(fd, n, 0)
-                for fd in classes.get(f.id, ()):
-                    feed(fd, n, 1)
-            elif isinstance(f, ast.Attribute):
-                for fd in methods.get(f.attr, ()):
-                    feed(fd, n, skip_of(fd))
-            elif isinstance(f, ast.Lambda):
-                feed(f, n, 0)
-    for n in nodes:  # a name or attribute that is no call target: the function it names may be called with anything
-        if isinstance(n, ast.Name) and id(n) not in call_funcs and isinstance(n.ctx, ast.Load):
-            passed_on.update(id(fd) for fd in funcs.get(n.id, []) + classes.get(n.id, []))
-        elif isinstance(n, ast.Attribute) and id(n) not in call_funcs and n.attr in methods:
-            passed_on.update(id(fd) for fd in methods[n.attr])
-    for fd in defs:
-        if id(fd) not in called or id(fd) in passed_on:
-            for p in all_params(fd):
-                bind(p.arg, unknown_v)
-        a = fd.args
-        for p, v in list(zip(reversed(a.posonlyargs + a.args), reversed(a.defaults))) + [
-                (p, v) for p, v in zip(a.kwonlyargs, a.kw_defaults) if v is not None]:
-            bind(p.arg, v)
-
     def elems(it, d=0):
         """[expression] each element of the iterable `it` may be (None: one it can't follow)."""
         if d > 4:
@@ -2783,6 +2946,60 @@ def _py_system_targets(code):
             if name in ("iterdir", "glob", "rglob") and isinstance(f, ast.Attribute):  # Path(d).glob(p): d/<name>
                 return [ast.BinOp(left=f.value, op=ast.Div(), right=ast.Constant(value="\x00"))]
         return None
+
+    def feed_map(fd, call):
+        """T-4736: map(f, xs), pool.map(f, xs), executor.map(f, xs, ys): f's parameters are what xs, ys hold, one iterable
+        to each parameter (every element to each: a superset of what map passes). False when an iterable is one the scan
+        can't follow, or f takes the elements through *a (the parameters stay unknown)."""
+        a = fd.args
+        params = a.posonlyargs + a.args
+        its = [elems(x) for x in call.args[1:] if not (isinstance(x, ast.Constant) and isinstance(x.value, int))]  # chunksize
+        if not its or None in its or a.vararg or a.kwarg or len(its) > len(params):
+            return False
+        called.add(id(fd))
+        for p, got in zip(params, its):
+            for elt in got:
+                bind(p.arg, elt)
+        return True
+
+    mapped = set()  # the Name nodes of a function map takes (their reads aren't a hand-over to unknown callers)
+    for n in nodes:
+        if isinstance(n, ast.Call):
+            f = n.func
+            call_funcs.add(id(f))
+            mname = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else ""
+            if mname in ("map", "imap", "imap_unordered") and len(n.args) >= 2 \
+                    and mname not in funcs and mname not in methods and mname not in binds \
+                    and not any(isinstance(x, ast.Starred) for x in n.args) \
+                    and (isinstance(n.args[0], ast.Lambda) or (
+                        isinstance(n.args[0], ast.Name) and len(funcs.get(n.args[0].id, ())) == 1
+                        and n.args[0].id not in classes)) \
+                    and feed_map(n.args[0] if isinstance(n.args[0], ast.Lambda) else funcs[n.args[0].id][0], n):
+                mapped.add(id(n.args[0]))
+            if isinstance(f, ast.Name):
+                for fd in funcs.get(f.id, ()):
+                    feed(fd, n, 0)
+                for fd in classes.get(f.id, ()):
+                    feed(fd, n, 1)
+            elif isinstance(f, ast.Attribute):
+                for fd in methods.get(f.attr, ()):
+                    feed(fd, n, skip_of(fd))
+            elif isinstance(f, ast.Lambda):
+                feed(f, n, 0)
+    for n in nodes:  # a name or attribute that is no call target: the function it names may be called with anything
+        if isinstance(n, ast.Name) and id(n) not in call_funcs and id(n) not in mapped and isinstance(n.ctx, ast.Load):
+            passed_on.update(id(fd) for fd in funcs.get(n.id, []) + classes.get(n.id, []))
+        elif isinstance(n, ast.Attribute) and id(n) not in call_funcs and n.attr in methods:
+            passed_on.update(id(fd) for fd in methods[n.attr])
+    for fd in defs:
+        if id(fd) not in called or id(fd) in passed_on:
+            for p in all_params(fd):
+                bind(p.arg, unknown_v)
+        a = fd.args
+        for p, v in list(zip(reversed(a.posonlyargs + a.args), reversed(a.defaults))) + [
+                (p, v) for p, v in zip(a.kwonlyargs, a.kw_defaults) if v is not None]:
+            bind(p.arg, v)
+
     for n in nodes:
         if isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension)):
             got = elems(n.iter)
@@ -3609,22 +3826,66 @@ def _spawn_in(code, lang):
     return out, marks
 
 
+_JS_ARGV_AT = lazy(r"(?<![\w$.])process\s*\.\s*argv\s*\[\s*(\d+)\s*\]")
+_JS_ARGV_SLICE = lazy(r"(?<![\w$.])process\s*\.\s*argv\s*\.\s*slice\s*\(\s*(\d+)\s*\)")
+
+
+def _node_argv(cmd):
+    """T-4736: the words after the code of the one `node -e` / `node -p` in cmd (process.argv[1:]), or None when there
+    isn't exactly one such command, it takes words from elsewhere (xargs), or the first word is one node would read as
+    its own option."""
+    found = []
+    for c in _split(_tokens(_lines(_strip_heredocs(cmd)))):
+        argv, xargs = _strip_wrappers(c.argv)
+        if argv and re.match(r"^(?:node|nodejs)$", os.path.basename(argv[0])):
+            if len(argv) > 2 and argv[1] in ("-e", "-p", "--eval", "--print") and not xargs:
+                found.append(argv[3:])
+            else:
+                found.append(None)
+    if len(found) != 1 or not found[0] or found[0][0].startswith("-"):
+        return None
+    return found[0]
+
+
+def _js_argv(code, words):
+    """code with the process.argv[N] and process.argv.slice(N) it spells out (N ≥ 1) replaced by the literal words the
+    outer command line holds (T-4736); one a word the shell may expand, or past the end, stays as it is (an unknown)."""
+    def put(w):
+        return json.dumps(w, ensure_ascii=False)
+
+    def one(m):
+        i = int(m.group(1))
+        return put(words[i - 1]) if 1 <= i <= len(words) and _argv_clean([words[i - 1]]) else m.group(0)
+
+    def many(m):
+        i = int(m.group(1))
+        ws = words[i - 1:] if i >= 1 else []
+        return "[" + ", ".join(put(w) for w in ws) + "]" if _argv_clean(ws) else m.group(0)
+    return _JS_ARGV_SLICE.sub(many, _JS_ARGV_AT.sub(one, code))
+
+
 def _text_spawned(cmd, ctx, dry):
     """T-4686: (command texts, marks) for the shell strings the node, perl, ruby, php, lua, R, julia and tcl code in a
     command starts; marks holds "big" and "unk" as _spawn_in gives them. The cheap gates come first: an interpreter
     other than python and one word of a spawn call."""
     if not _INTERP.search(dry) or not any(w in cmd for w in _SPAWN_WORDS):
         return [], set()
-    langs = {_LANG_OF[n] for m in _INTERP.finditer(_mask_fm(dry, ctx))
-             if (n := re.sub(r"[0-9.]+$", "", os.path.basename(m.group(1)))) in _LANG_OF}
+    names = [n for m in _INTERP.finditer(_mask_fm(dry, ctx))
+             if (n := re.sub(r"[0-9.]+$", "", os.path.basename(m.group(1)))) in _LANG_OF]
+    langs = {_LANG_OF[n] for n in names}
     if not langs:
         return [], set()
+    js = [n for n in names if _LANG_OF[n] == "js"]  # T-4736 review: node's words are node's alone, never another js
+    node_only = len(js) == 1 and js[0] in ("node", "nodejs")  # interpreter's process.argv (bun, deno, a second node)
     walk = _interp_walk(cmd, ctx)
     units = ([(t, ls) for t, ls, _ in walk[0]] if walk is not None
              else [(_interp_code(cmd), langs)])
     out, marks = [], set()
+    words = _node_argv(cmd) if node_only and "process" in cmd and "argv" in cmd else None
     for text, ls in units:
         text = text.replace('\\"', '"').replace("\\$", "$")
+        if words and "argv" in text and "js" in ls:
+            text = _js_argv(text, words)
         for lang in ls - {"py"}:
             got, mk = _spawn_in(text, lang)
             out += got
@@ -3643,6 +3904,9 @@ _FLOW_WORDS = _KEYWORDS | {"for", "case", "select", "esac", "fi", "done", "funct
 _WALK_UNITS_MAX = 200
 _TOO_BIG = ("system", "interpreter code too large to read whole (more writes, names or values than the guard follows): "
             "split it or name the paths plainly")
+_UNBOUND = ("system", "interpreter code writes through a function parameter the guard can't bind to a value (the function "
+            "is handed on to a callback, called through *args or **kwargs, or mapped over a list the code doesn't spell "
+            "out): call it with literal paths, or map it over a list written in the code")
 
 
 def _wrapper_dir(prefix):
@@ -3872,8 +4136,9 @@ def _judge_system(cands, bases, ctx, out, rel_unknown=False):
         if not c:
             continue
         if "\x01" in c:
-            if _TOO_BIG not in out:
-                out.append(_TOO_BIG)
+            why = _UNBOUND if "\x01\x01" in c else _TOO_BIG  # T-4736: an unbound parameter says so
+            if why not in out:
+                out.append(why)
             continue
         if c.startswith("\x00"):
             continue
@@ -3943,8 +4208,9 @@ def _interpreter_writes(cmd, ctx):
         return [("plugin", "interpreter code running claude's plugin, MCP or config commands" + plugin_mark("?"))]
     proved = _proved_writes(cmd, ctx)  # T-0176: a script that provably writes only its open() files
     system = _interp_system_writes(cmd, ctx)  # T-4673: the system paths it writes (the filter below keeps the guarded ones)
-    if proved is None and not _WRITE_API.search(cmd):
-        return system
+    if proved is None and not _WRITE_API.search(cmd) and not _OPENER.search(cmd) \
+            and not (ctx.unbriefed and _computed_path_write(cmd)):
+        return system  # T-4724: a computed path opened with a mode the regex can't read is a write the guard can't rule out
     found = []
     if proved is None:  # T-1458: after a provable `cd DIR &&` chain a relative name opens there, not in ctx.cwd
         units, _, starters, lead = _python_units(cmd)
@@ -4015,24 +4281,99 @@ def _fragment_ids(tree):
     return out
 
 
-def _write_path_args(tree):
-    """The path expression of each write call in parsed python: open(P, 'w'), P.write_text(…), os.x(P, …)."""
+# T-4724: what os and shutil functions only look at a path (a read; os.open, os.system and the rest stay write calls)
+#  T-4736: and the os calls that take a command or a program, not a file to change (system, popen, exec*, spawn*: the spawn
+#  scan judges their text)
+_PY_READ_CALLS = {"os": frozenset(("readlink stat lstat listdir scandir access walk statvfs getenv fspath system popen "
+                                   "execv execve execvp execvpe execl execle execlp execlpe spawnv spawnve spawnvp "
+                                   "spawnvpe spawnl spawnle spawnlp spawnlpe posix_spawn posix_spawnp").split()),
+                  "shutil": frozenset(("which", "disk_usage"))}
+_TWO_PATH_CALLS = frozenset("rename replace renames symlink link copy copy2 copyfile copytree copymode copystat move".split())
+_OPEN_MODULES = frozenset("io codecs gzip bz2 lzma tarfile".split())  # name.open(file, mode): the same call as open()
+
+
+def _opens_for_reading(call, pos):
+    """T-4724: whether an open-like call reads: no mode, or a literal string mode holding none of w, a, x and +, at
+    position `pos` or by keyword. A mode the guard can't read (a name, a built string, an expression, a * or ** that
+    could carry one) and an opener (which may open with any flags) are not reads."""
     import ast
+    if any(isinstance(a, ast.Starred) for a in call.args) or any(k.arg in (None, "opener") for k in call.keywords) \
+            or len(call.args) > pos + 6:  # the 8th argument of open() is the opener
+        return False
+    mode = call.args[pos] if len(call.args) > pos else next((k.value for k in call.keywords if k.arg == "mode"), None)
+    return mode is None or (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+                            and not set(mode.value) & set("wax+"))
+
+
+# T-4736: what a call on a string or bytes returns: the receiver of a later .replace(…) is then text, no pathlib path
+_STR_RESULT = frozenset(("read readline readlines read_text read_bytes decode encode strip lstrip rstrip lower upper "
+                         "format join split rsplit splitlines getvalue title casefold ljust rjust center zfill "
+                         "removeprefix removesuffix").split())
+
+
+def _is_text(e):
+    """T-4736: whether an expression is text, never a pathlib path: a string or bytes literal, what a read or a str
+    method returns, and str.replace of those. 'a'.replace('a', 'b') and open(f'/proc/{p}/x').read().replace(b'\\0', b' ')
+    name no file to write (the walk over the receiver reached the fragment inside the read)."""
+    import ast
+    while isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute):
+        if e.func.attr in _STR_RESULT or (isinstance(e.func.value, ast.Name) and e.func.value.id == "os"
+                                          and e.func.attr in ("readlink", "getenv", "fspath")):
+            return True
+        if e.func.attr != "replace":
+            return False
+        e = e.func.value
+    return isinstance(e, ast.Constant) and isinstance(e.value, (str, bytes))
+
+
+def _writer_ref(e):
+    """T-4736: whether an expression is a function that writes or deletes its first argument, passed on as a value
+    (os.remove, shutil.rmtree, Path.unlink, io.open with a mode list): what map() would call once per item."""
+    import ast
+    if not isinstance(e, ast.Attribute):
+        return False
+    if isinstance(e.value, ast.Name) and e.value.id in ("os", "shutil"):
+        return e.attr not in _PY_READ_CALLS[e.value.id]
+    return e.attr in ("write_text", "write_bytes", "touch", "unlink", "rename", "replace", "mkdir", "rmdir") \
+        and not (isinstance(e.value, ast.Name) and e.value.id in ("str", "bytes"))  # str.replace names no file
+
+
+def _write_path_args(tree):
+    """The path expression of each write call in parsed python: open(P, 'w'), P.write_text(…), P.open('w'),
+    io.open(P, 'w'), os.x(P, …). T-4724: an open with no mode or a literal read mode, and os.readlink, os.stat and the
+    other calls that only look at P, are reads."""
+    import ast
+    alias = {t.id for a in ast.walk(tree) if isinstance(a, ast.Assign) and _writer_ref(a.value)
+             for t in a.targets if isinstance(t, ast.Name)}  # T-4736: rm = os.remove; rm(P)
     for n in ast.walk(tree):
         if not isinstance(n, ast.Call):
             continue
         f, arg = n.func, None
+        if isinstance(f, ast.Name) and f.id in alias:
+            yield from n.args[:1]
+        if n.args and (isinstance(f, ast.Name) and f.id in ("map", "starmap") or isinstance(f, ast.Attribute)
+                       and f.attr in ("map", "imap", "imap_unordered", "starmap", "submit")) and (
+                    _writer_ref(n.args[0]) or isinstance(n.args[0], ast.Name) and n.args[0].id == "open" and len(n.args) > 2):
+            # T-4736: map(os.remove, ['a.json']), pool.map(shutil.rmtree, names), map(open, names, modes): the items are
+            # the paths written (the open with a modes list: any mode may be a write)
+            for it in n.args[1:2] if isinstance(n.args[0], ast.Name) else n.args[1:]:
+                yield from it.elts if isinstance(it, (ast.List, ast.Tuple, ast.Set)) else [it]
         if isinstance(f, ast.Name) and f.id == "open":
             kw = {k.arg: k.value for k in n.keywords}
-            mode = n.args[1] if len(n.args) > 1 else kw.get("mode")
-            readonly = mode is None or (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
-                                        and not set(mode.value) & set("wax+"))
-            arg = None if readonly else (n.args[0] if n.args else kw.get("file"))
+            arg = None if _opens_for_reading(n, 1) else (n.args[0] if n.args else kw.get("file") or n)  # open(**{…}): the call
+        elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in ("os", "shutil"):
+            if f.attr not in _PY_READ_CALLS[f.value.id]:  # os.unlink(P), os.mkdir(P): P is the first argument
+                for a in (n.args + [k.value for k in n.keywords]) if f.attr in _TWO_PATH_CALLS else n.args[:1]:
+                    yield a  # os.rename(src, DST), shutil.copy(src, DST): the target is the second
         elif isinstance(f, ast.Attribute) and f.attr in ("write_text", "write_bytes", "touch", "unlink", "rename",
                                                          "replace", "mkdir"):
-            arg = f.value
-        elif isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name) and f.value.id in ("os", "shutil") and n.args:
-            arg = n.args[0]
+            arg = None if _is_text(f.value) else f.value
+        elif isinstance(f, ast.Attribute) and f.attr == "open":
+            if isinstance(f.value, ast.Name) and f.value.id in _OPEN_MODULES:  # io.open(P, mode), gzip.open(P, mode)
+                kw = {k.arg: k.value for k in n.keywords}
+                arg = None if _opens_for_reading(n, 1) else (n.args[0] if n.args else kw.get("file") or kw.get("filename"))
+            elif not _opens_for_reading(n, 0):  # P.open(mode): P is a pathlib path
+                arg = f.value
         if arg is not None:
             yield arg
 
@@ -4047,11 +4388,37 @@ def _writes_at_computed_path(code):
     except Exception:
         return False
     frag = _fragment_ids(tree)
-    return any(id(c) in frag for arg in _write_path_args(tree) for c in ast.walk(arg))
+    bound = {}  # T-4736: p = Path(f'{n}.json'); p.open('w'): a name a write uses holds what it was assigned, one hop deep
+    for a in ast.walk(tree):
+        if isinstance(a, (ast.Assign, ast.For)) and len(bound) < 200:  # for n in sys.stdin: open(n.strip(), 'w')
+            for t in a.targets if isinstance(a, ast.Assign) else [a.target]:
+                if isinstance(t, ast.Name):
+                    bound.setdefault(t.id, []).append(a.value if isinstance(a, ast.Assign) else a.iter)
+
+    def run_time(c):  # text typed, passed, read or inherited when the script runs: the path is whatever it holds then
+        if isinstance(c, ast.Call):
+            f = c.func
+            return (isinstance(f, ast.Name) and f.id in ("input", "raw_input", "getenv")
+                    or isinstance(f, ast.Attribute) and f.attr in ("getenv", "read", "readline", "readlines"))
+        return isinstance(c, ast.Attribute) and c.attr in ("argv", "environ", "stdin")
+
+
+    def reach(arg):
+        seen, todo, out = set(), [arg], []
+        while todo and len(out) < 2000:
+            for c in ast.walk(todo.pop()):
+                out.append(c)
+                if isinstance(c, ast.Name) and c.id not in seen and len(seen) < 20:
+                    seen.add(c.id)
+                    todo += bound.get(c.id, [])
+        return out
+    return any(id(c) in frag or run_time(c) for arg in _write_path_args(tree) for c in reach(arg))
 
 
 def _computed_path_write(cmd):
-    return any(_writes_at_computed_path(code) for code in _python_units(cmd)[0])
+    """Whether python in cmd (a heredoc, T-4736: or a `-c` string) writes at a path the guard can't read."""
+    codes = _python_units(cmd)[0] + [c for c, _, _ in _py_runs(cmd) if c is not None]
+    return any(_writes_at_computed_path(code) for code in codes)
 
 
 def _text_quoted(text):
@@ -4080,6 +4447,7 @@ def _quoted_paths(cmd):
     doesn't parse keep the quote scan."""
     import ast
     units, rest, starters, _ = _python_units(cmd)
+    units = units + [c for c, _, _ in _py_runs(cmd) if c is not None] if "-c" in cmd else units  # T-4736: `-c` code too
     out, text = [], "\n".join(rest + starters)  # review: python - '/path' <<EOF: its argv is open(sys.argv[1])'s path
     for s in starters:  # T-2634: unquoted too (python3 - ~/.claude/settings.json <<EOF), each word as the shell reads it
         m = re.search(r"python[0-9.]*\s+-\s+(.*?)\s*<<", s)
@@ -4147,6 +4515,13 @@ def _interpreter_reads(cmd, ctx):
     bases = [ctx.cwd] + [_resolve(_expand(d, ctx), ctx.cwd) for d in re.findall(r"(?:^|[;&|(\n{])\s*cd\s+([^\s;&|)]+)",
                                                                               dry) if not _unresolvable(d)]
     lits = [m.group(1) for q in "'\"`" for m in re.finditer(f"{q}([^{q}\\n]*){q}", code)]
+    # T-4736 review: a /proc path with a computed pid (f'/proc/{p}/environ', '/proc/%s/mem' % p) or one joined from parts
+    # ('/proc/' + p + '/environ', os.path.join('/proc', p, 'maps')): the pid may be anyone's, `self` included
+    if any("/proc" in lit for lit in lits) and (
+            any("/proc/" in lit and _proc_secret(re.sub(r"\{[^{}]*\}|%[-\d.]*[sdri]", "N", lit)) for lit in lits)
+            or any(re.fullmatch(r"/?(?:environ|mem|maps|smaps|smaps_rollup|fd(?:/.*)?)", lit) for lit in lits)):
+        found.append(("credentials", "interpreter code reads another process's environment, memory or open files "
+                      "(/proc/PID/environ, mem, maps, fd)"))
     for lit in lits:
         if not _PATHY.match(lit):
             continue
@@ -5420,7 +5795,12 @@ def _unquote(word):
 def _shell_c(args):
     """The command strings `sh -c` runs: the word after a bare -c, and (T-0324) the first operand once any option
     cluster holds c (bash -lc, zsh -o x -ic, bash --rcfile f -ec -- CMD)."""
-    out = [args[args.index("-c") + 1]] if "-c" in args and args.index("-c") + 1 < len(args) else []
+    return [args[i] for i in _shell_c_at(args)]
+
+
+def _shell_c_at(args):
+    """The places in args of the command strings `sh -c` runs (see _shell_c); what follows each is the script's argv."""
+    out = [args.index("-c") + 1] if "-c" in args and args.index("-c") + 1 < len(args) else []
     has_c, i = False, 0
     while i < len(args):
         a = args[i]
@@ -5436,8 +5816,8 @@ def _shell_c(args):
             i += 1
         else:
             break
-    if has_c and i < len(args) and args[i] not in out:
-        out.append(args[i])
+    if has_c and i < len(args) and i not in out:
+        out.append(i)
     return out
 
 
@@ -5578,9 +5958,15 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     _DCWD[depth] = [os.path.normpath(head[1])] if head else list(dict.fromkeys(starts + [  # text read before the walk
         _cd_from(x.argv[1], s, ctx) for x in cmds if x.argv[:1] == ["cd"] and x.argv[1:2] for s in starts] + [
         r for x in cmds if x.argv[:1] == ["cd"] and x.argv[1:2] for s in starts if (r := _cd_real(x.argv[1], s, ctx))]))
-    for spawned in (x for src in _python_sources(cmd if _INTERP.search(dry) else dry) for x in _spawned_commands(src)):
-        found += check_bash(spawned, ctx, depth + 1)  # T-0345, and its review: from those folders too (`…`, sh <<<,
-    # python -c): any folder a cd names
+    for src, words in _python_sources_argv(cmd if _INTERP.search(dry) else dry):
+        last = []
+        for spawned in _spawned_commands(src, words):
+            if spawned == _ARGV_UNK:  # T-4736: a command from argv the outer words don't spell out (as node's is)
+                found += [_SPAWN_UNK] if not last and _SPAWN_UNK not in found else []  # (what the text before it
+            else:  # already refuses keeps its own, more exact reason)
+                last = check_bash(spawned, ctx, depth + 1)
+                found += last  # T-0345, and its review: from those folders too (`…`,
+    # sh <<<, python -c): any folder a cd names
     texts, marks = _text_spawned(cmd, ctx, dry)  # T-4686: and the shell strings node, perl, ruby, php, lua, R start
     for spawned in texts:
         found += check_bash(spawned, ctx, depth + 1)
