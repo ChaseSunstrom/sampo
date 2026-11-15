@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-14T16:13:30Z",
- "rev": "833707989",
+ "updated": "2026-11-15T20:05:33Z",
+ "rev": "cec00e01b",
  "capabilities": [
   {
    "n": 1,
@@ -61521,19 +61521,19 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 828,
+ "unproven": 804,
  "unproven_kinds": {
-  "typed": 75,
-  "meaning-user": 104,
-  "meaning-notes": 427,
-  "red": 86,
-  "perf-typed": 130,
-  "research-uncited": 32,
-  "docs": 127,
+  "typed": 69,
+  "meaning-user": 84,
+  "meaning-notes": 412,
+  "red": 85,
+  "perf-typed": 131,
+  "research-uncited": 26,
+  "docs": 166,
+  "ui-unshot": 7,
+  "tui-unshot": 3,
+  "infra": 4,
   "data": 1,
-  "ui-unshot": 6,
-  "tui-unshot": 2,
-  "infra": 2,
   "perf-noise": 1
  },
  "next": {
@@ -62739,27 +62739,27 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 55835,
+   "generated": 57286,
    "write": {
-    "title": 390,
-    "line": 2871,
+    "title": 402,
+    "line": 2912,
     "payoff": 36,
-    "kill test": 177,
+    "kill test": 180,
     "code": 20
    },
    "dups": {
     "exact": 15,
-    "embed": 121,
+    "embed": 126,
     "shingle": 0
    },
    "rejected": {
-    "kill": 28401,
-    "tier": 19624,
-    "novelty": 165
+    "kill": 29096,
+    "tier": 20186,
+    "novelty": 166
    },
-   "merged": 1781,
-   "kept": 2192,
-   "pending": 42
+   "merged": 1869,
+   "kept": 2256,
+   "pending": 22
   },
   "families": [
    {
@@ -62797,7 +62797,7 @@
    },
    {
     "id": "F-016199",
-    "size": 407,
+    "size": 421,
     "lead": "Store Sampo's memory as a gravitational lensing field",
     "today": "Today you can't compress and retrieve Sampo's historical context by simulating how light bends around massive objects.",
     "with_this": "With this, Sampo can access relevant past decisions with zero latency by treating data mass as gravitational wells that naturally attract relevant queries, rather than using linear search.",
@@ -62845,7 +62845,7 @@
    },
    {
     "id": "F-013109",
-    "size": 62,
+    "size": 63,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -64046,6 +64046,38 @@
     ]
    },
    {
+    "id": "F-055823",
+    "size": 1,
+    "lead": "Simulate your design system's decay over time",
+    "today": "Today you can't predict which components will become obsolete or contradictory as your app grows",
+    "with_this": "With this, you can see a timeline of your UI components' health, showing which ones will conflict or become redundant before you write new code",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "design"
+    ]
+   },
+   {
+    "id": "F-056228",
+    "size": 1,
+    "lead": "Project PRs onto every historical version of the codebase",
+    "today": "Today you can't see if a new bug fix actually broke the specific legacy version of your app that still has active users.",
+    "with_this": "With this, you can verify a single pull request against thousands of past release tags instantly, ensuring the fix holds across the entire product lifespan without deploying a test server for each.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "bugs"
+    ]
+   },
+   {
     "id": "F-010563",
     "size": 4,
     "lead": "Settle security disagreements by letting two rival fixes fight in a tournament",
@@ -64131,6 +64163,23 @@
     "evidence": "",
     "kinds": [
      "design",
+     "security"
+    ]
+   },
+   {
+    "id": "F-011454",
+    "size": 3,
+    "lead": "Self-healing data pipelines via autonomous debugging",
+    "today": "Today you can't fix a broken data feed that silently stops updating without a human checking logs every hour.",
+    "with_this": "With this, you can wake up to a fixed pipeline and a written report of what was wrong and how it was repaired, with no manual intervention required.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "data",
      "security"
     ]
    },
@@ -64251,23 +64300,6 @@
     ]
    },
    {
-    "id": "F-011454",
-    "size": 2,
-    "lead": "Self-healing data pipelines via autonomous debugging",
-    "today": "Today you can't fix a broken data feed that silently stops updating without a human checking logs every hour.",
-    "with_this": "With this, you can wake up to a fixed pipeline and a written report of what was wrong and how it was repaired, with no manual intervention required.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data",
-     "security"
-    ]
-   },
-   {
     "id": "F-011460",
     "size": 2,
     "lead": "Negotiate migration compatibility with AI agents in other repos",
@@ -64331,6 +64363,23 @@
     "kinds": [
      "docs",
      "ops"
+    ]
+   },
+   {
+    "id": "F-013986",
+    "size": 2,
+    "lead": "Automate API contract refactoring and update all clients simultaneously",
+    "today": "Today you can't refactor an API contract without manually updating all clients, which is time-consuming and error-prone.",
+    "with_this": "With this, you can see a proposed API contract refactor on your phone, and approve it to update all clients, ensuring consistency and reducing manual work.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 3,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "migrations",
+     "refactors"
     ]
    },
    {
@@ -65980,60 +66029,12 @@
     "kinds": [
      "data"
     ]
-   },
-   {
-    "id": "F-011022",
-    "size": 1,
-    "lead": "Let your codebase vote on schema changes",
-    "today": "Today you can't get consensus from distributed services on a new database schema.",
-    "with_this": "With this, you can ensure consistency across the ecosystem, as services automatically confirm or reject changes based on their local state.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 2,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "migrations"
-    ]
-   },
-   {
-    "id": "F-011142",
-    "size": 1,
-    "lead": "Auto-rout finished tasks to next eligible engineer immediately",
-    "today": "Today you can't have a finished task instantly trigger the next pending one in the queue without human triage.",
-    "with_this": "With this, you can eliminate the idle gap between tasks, cutting average cycle time by 30% for your team.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
-    ]
-   },
-   {
-    "id": "F-011182",
-    "size": 1,
-    "lead": "Predictively fork session states at critical decision points",
-    "today": "Today you can't explore multiple codebases or logic branches in parallel without manually saving and reloading entire environments.",
-    "with_this": "With this, you can test ten different architectural decisions in the same run, keeping only the branch that passes the final exam, saving days of trial-and-error.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "features"
-    ]
    }
   ],
-  "families_total": 1554,
+  "families_total": 1597,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2192
+   "total": 2256
   }
  },
  "steer": {
@@ -66067,7 +66068,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.0,
+    "idle_h": 180.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66090,7 +66091,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.2,
+    "idle_h": 181.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66113,7 +66114,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.0,
+    "idle_h": 180.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66136,7 +66137,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.0,
+    "idle_h": 180.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66159,7 +66160,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 152.8,
+    "idle_h": 180.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66182,7 +66183,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 152.9,
+    "idle_h": 180.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66205,7 +66206,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 152.6,
+    "idle_h": 180.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66228,7 +66229,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 152.6,
+    "idle_h": 180.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66251,7 +66252,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 152.7,
+    "idle_h": 180.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66274,7 +66275,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 154.4,
+    "idle_h": 182.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66297,7 +66298,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 154.0,
+    "idle_h": 181.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66320,7 +66321,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 154.0,
+    "idle_h": 181.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66343,7 +66344,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 154.1,
+    "idle_h": 181.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66366,7 +66367,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 154.1,
+    "idle_h": 182.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66389,7 +66390,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.9,
+    "idle_h": 181.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66412,7 +66413,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.8,
+    "idle_h": 181.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66435,7 +66436,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.9,
+    "idle_h": 181.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66458,7 +66459,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.8,
+    "idle_h": 181.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66481,7 +66482,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.6,
+    "idle_h": 181.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66504,7 +66505,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.6,
+    "idle_h": 181.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66527,7 +66528,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.6,
+    "idle_h": 181.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66550,7 +66551,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.6,
+    "idle_h": 181.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66573,7 +66574,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.4,
+    "idle_h": 181.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66596,7 +66597,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.4,
+    "idle_h": 181.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66619,7 +66620,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.4,
+    "idle_h": 181.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66642,7 +66643,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 153.5,
+    "idle_h": 181.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
@@ -66842,7 +66843,7 @@
    }
   ],
   "halted": null,
-  "rounds": 16,
+  "rounds": 17,
   "spent_today": 0,
   "share": 65.0
  }
