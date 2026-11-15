@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A changed test module now affects itself and its real importers only, instead of the dozens of modules the run cache listed (T-4684).
 - Land --merged checks the machine before its gate, a disk refusal sizes nothing, and the late matcher reads doctor's own line (T-4658).
 - Every reader of the statusline's usage figure (forecast, cost, doctor, lanes, watch, budget) now goes through one age rule that shows a reading older than six hours as unknown with its age, and the statusline countdown accepts millisecond resets (T-4671).
 - A queued independent task is named at every Stop of a background wait until it is focused, blocked or deferred, a detached close is seen through Sampo's own close record, the wait timer calls a close or CI watch stuck only at twice its typical time, and the end-to-end push is held while a close runs (T-4670).
