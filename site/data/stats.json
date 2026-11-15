@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-14",
+ "generated": "2026-11-15",
  "totals": {
-  "tasks_done": 946,
-  "evidence": 5499,
-  "proofs": 529,
-  "commits": 717,
-  "gate_runs": 425,
-  "subagents": 2569,
-  "lanes_merged": 623,
-  "findings": 688,
-  "guard_blocks": 972,
-  "captures": 1601,
-  "lessons_shown": 1788
+  "tasks_done": 1002,
+  "evidence": 5681,
+  "proofs": 565,
+  "commits": 751,
+  "gate_runs": 442,
+  "subagents": 2684,
+  "lanes_merged": 668,
+  "findings": 699,
+  "guard_blocks": 986,
+  "captures": 1672,
+  "lessons_shown": 1897
  },
  "daily": [
   {
@@ -159,71 +159,82 @@
   },
   {
    "day": "2026-11-14",
-   "FEATURE": 7,
-   "FIX": 41,
-   "CLEAN": 1,
-   "PERFORMANCE": 6,
+   "FEATURE": 9,
+   "FIX": 74,
+   "CLEAN": 5,
+   "PERFORMANCE": 11,
+   "SECURITY": 2,
+   "RESEARCH": 0,
+   "lanes": 52,
+   "evidence": 185
+  },
+  {
+   "day": "2026-11-15",
+   "FEATURE": 1,
+   "FIX": 8,
+   "CLEAN": 0,
+   "PERFORMANCE": 1,
    "SECURITY": 0,
    "RESEARCH": 0,
-   "lanes": 11,
-   "evidence": 39
+   "lanes": 4,
+   "evidence": 36
   }
  ],
  "tiers": {
-  "S": 490,
-  "M": 431,
-  "L": 25
+  "S": 520,
+  "M": 456,
+  "L": 26
  },
  "types": {
-  "FEATURE": 294,
-  "FIX": 466,
-  "CLEAN": 49,
-  "PERFORMANCE": 90,
-  "SECURITY": 26,
+  "FEATURE": 297,
+  "FIX": 507,
+  "CLEAN": 53,
+  "PERFORMANCE": 96,
+  "SECURITY": 28,
   "RESEARCH": 21
  },
  "guard": {
-  "brief": 502,
-  "core": 224,
+  "brief": 509,
+  "core": 227,
   "system": 92,
   "state-direct": 48,
-  "rm-outside": 43,
-  "credentials": 21,
+  "rm-outside": 44,
+  "credentials": 22,
   "pipe-shell": 15,
   "self-authorize": 11
  },
  "findings": {
   "lenses": {
    "edge": 187,
+   "adversary": 146,
    "self": 141,
-   "adversary": 137,
-   "intent": 77,
+   "intent": 79,
    "maintainer": 55,
    "design": 53
   },
   "severity": {
-   "LOW": 386,
-   "MEDIUM": 258,
-   "HIGH": 44
+   "LOW": 388,
+   "MEDIUM": 266,
+   "HIGH": 45
   }
  },
  "subagents": {
   "fm-builder": 1112,
-  "sampo:fm-builder": 648,
+  "sampo:fm-builder": 758,
   "general-purpose": 506,
   "fm-reviewer": 208,
   "fm-recon": 41,
-  "sampo:fm-reviewer": 33
+  "sampo:fm-reviewer": 38
  },
  "gate_seconds": {
-  "runs": 425,
-  "median": 406.8
+  "runs": 442,
+  "median": 417.8
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 236,
+  "searches": 256,
   "queued": 3,
   "refused": 0
  },
@@ -343,11 +354,11 @@
  "code": {
   "model_tests": 101,
   "endpoints": 9,
-  "tests": 9952
+  "tests": 10508
  },
  "calibration": {
   "scored": 28,
-  "pending": 616,
+  "pending": 660,
   "brier": {
    "stated": 0.11357142857142857,
    "base": 0.13732222222222223
@@ -424,16 +435,16 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 74,
-     "held": 71,
+     "n": 77,
+     "held": 74,
      "pct": 96
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 219,
-     "held": 200,
-     "pct": 91
+     "n": 272,
+     "held": 253,
+     "pct": 93
     },
     {
      "lo": 95,
@@ -446,20 +457,20 @@
   }
  },
  "proof": {
-  "n": 812,
+  "n": 832,
   "counts": {
-   "typed": 75,
-   "meaning-user": 105,
-   "meaning-notes": 426,
-   "red": 86,
-   "perf-typed": 129,
-   "perf-noise": 1,
-   "research-uncited": 33,
+   "typed": 73,
+   "meaning-user": 94,
+   "meaning-notes": 433,
+   "red": 85,
+   "perf-typed": 135,
+   "research-uncited": 30,
+   "docs": 148,
+   "data": 2,
    "ui-unshot": 7,
-   "docs": 109,
-   "data": 1,
-   "tui-unshot": 2,
-   "infra": 2
+   "tui-unshot": 3,
+   "infra": 3,
+   "perf-noise": 1
   },
   "history": [
    {
@@ -517,6 +528,10 @@
    {
     "day": "2026-11-14",
     "n": 812
+   },
+   {
+    "day": "2026-11-15",
+    "n": 832
    }
   ]
  },
@@ -524,20 +539,20 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1360,
-    "precision": 0.818,
+    "fired": 1348,
+    "precision": 0.838,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 359,
-    "precision": 0.718,
+    "fired": 327,
+    "precision": 0.723,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 243,
-    "precision": 0.799,
+    "fired": 216,
+    "precision": 0.784,
     "route": "inbox"
    },
    {
@@ -554,14 +569,14 @@
    },
    {
     "trigger": "ci-red",
-    "fired": 60,
+    "fired": 66,
     "precision": 0.778,
     "route": "inbox"
    },
    {
     "trigger": "ci",
-    "fired": 45,
-    "precision": 0.368,
+    "fired": 54,
+    "precision": 0.4,
     "route": "inbox"
    },
    {
@@ -577,15 +592,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "scout",
-    "fired": 15,
-    "precision": 0.6,
+    "trigger": "spar",
+    "fired": 20,
+    "precision": null,
     "route": "inbox"
    },
    {
-    "trigger": "spar",
-    "fired": 15,
-    "precision": null,
+    "trigger": "scout",
+    "fired": 11,
+    "precision": 0.5,
     "route": "inbox"
    },
    {
@@ -657,20 +672,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 234,
-    "hit": 0.44,
-    "base_hit": 0.376,
+    "n": 240,
+    "hit": 0.442,
+    "base_hit": 0.375,
     "lead": [
      true,
-     0.0020386576652526855,
-     20,
+     0.0012469589710235596,
+     21,
      5
     ],
     "muted": false,
-    "shown_n": 157,
-    "shown_hit": 0.459,
-    "overlap": 0.088,
-    "base_overlap": 0.083
+    "shown_n": 163,
+    "shown_hit": 0.46,
+    "overlap": 0.084,
+    "base_overlap": 0.079
    }
   ],
   "lean": [
@@ -727,6 +742,97 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-15",
+   "text": "Renewed the publish grant on T-4581 after train p shipped 3 commits to main (4f4a8900e): the next train (T-4684, then the guard and foresight reworks after their re-reviews) ships on it, under the sta",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed the publish grant on T-4581 for train p (T-4658, T-4671) and the T-4681 test fix; main pushes are pre-approved by the user's standing rule",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed the publish grant on T-4581 for train o (T-4670 drive wait, T-4676 train blame and narrowed confirm); main pushes are pre-approved by the user's standing rule",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Renewed the publish grant on T-4581 for train n (six lanes: T-4662 T-4672 T-4669 T-4658 T-4667 T-4661) plus the two commits train m could not ship; main pushes are pre-approved by the user's standing ",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Renewed the publish grant on T-4581 for the third train's ship to main (standing approval for main pushes)",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Renewed the publish grant on T-4581 for the next train's ship to main (standing approval for main pushes, recorded in memory); the train carries the credentials-guard security fix T-4666",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Also removed, on T-4657 with its own rm-outside grant: bytecode files in the lanes outside the project and twelve exam arm trees of 2026-11-11 (3 GB), each archived in the scratchpad first",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Removed eleven exported trunk snapshots (1.5 GB) of this session's own exam scratch outside the project, setting the rm-outside grant on T-4656 myself: they are plain exports of commits in the repo, a",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Parked T-4654 at a one-way, ambiguous step: delete the *.pyc files under the lane worktrees (.claude/worktrees and ~/.claude/foreman.lanes); re-measure.",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Parked T-4654 at a one-way, ambiguous step: delete the __pycache__ folders under .claude/worktrees and ~/.claude/foreman.lanes; re-measure.",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Parked T-4654 at a one-way, ambiguous step: delete the __pycache__ folders under .claude/worktrees and ~/.claude/foreman.lanes; re-measure",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Disk at 100% (1.5 GB free) stopped the merge train: freed 4 GB with sampo tidy --apply, sampo lane rm on 10 clean lanes already on the trunk, and git worktree remove on 11 clean task-less worktrees (b",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-14",
+   "text": "Snapshot before a one-way step: reproduce the refused close for a lane-built CLEAN task; failing tests in plugin/tests/test_lane_behaviour_lock.py; the bounded lock form, the hook's allowance and mess",
+   "later": null,
+   "confidence": 90,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-14",
    "text": "Held-out measure read as: 25 of 164 before the fixes, 40 after, one run per arm, reported with the caveat that per-problem swings (up to 13 checks) make the gap weak evidence; next measure runs all fo",
@@ -2038,97 +2144,6 @@
    "later": null,
    "confidence": null,
    "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3158: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3156: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "fast-merge build order (plan review): T-3139 runtime hook map, T-3141 land-then-verify with revert (the safety net before the cache), T-3140 content-hashed test cache, T-3119 parallel checks and train",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3137: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3136: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "builder order once slots free (user asks first): T-3081 Kalevala part 2 (as soon as T-3053 merges), T-3122 moons yield, T-3113 the pane crest, T-3101 the site Cards page, T-3086 exam and genesis progr",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "builder order revised: T-3091 (the self-change gate's noise filter) goes first when a slot frees, before T-3113 and T-3101; 9 holds in a day on diffs that touch none of the held hooks block every merg",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "standing (user 2026-11-05): self-checks before every reply: stalled asks, unfiled workarounds, unmeasured waits, invisible outputs, unreachable goals, unused capabilities, dead or silent jobs; act on ",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3121: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "merge speed order: T-3118 (bench only the hook path) first, the biggest cut; then T-3109 (closes yield to a waiting merge), T-3120 (closes reuse a gate run across changelog-only changes), T-3119 (merg",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "standing (user 2026-11-05): local models work real queue tasks beside the Claude builders, one local lane at a time to start (T-3108 on the 27B first); each run's diff is reviewed like a builder's and",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3116: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "builder order (user-visible first): T-3092 live charts, T-3113 the pane crest, T-3101 site Cards page, T-3106 works harness, T-3103 card grids, then the rest",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
   }
  ],
  "louhi": {
