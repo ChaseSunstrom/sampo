@@ -4795,6 +4795,12 @@ def _stop(pl):
         steermeter.spawn_detached(p)
     except Exception:
         log_error("Stop", _tb())
+    if not _oneoff() and not _headless():
+        try:  # T-4664: foresight's tick beside it, detached too: this session's own reply and turn handed over in a file
+            from sampo import ahead
+            ahead.spawn_detached(p, sid, msg)
+        except Exception:
+            log_error("Stop", _tb())
     try:  # T-2090: fm genesis live: task progress and exam results reach the site's Genesis page too
         from sampo import rune
         rune.kick(p)
@@ -4838,11 +4844,18 @@ def _stop(pl):
             or _headless_wait(pl))
         reason = nudge or (None if oneoff or "drive" in c.ablated() else _drive(p, sd, briefs, pl, g, save))  # T-1375
         if not nudge and save and not oneoff and "drive" not in c.ablated():
+            concern = None
             try:  # T-4202: what the user asked this turn with no task, proof or answer holds the stop once
                 concern = _concern_hold(p, sd, briefs, pl, g)  # T-4668: an open task's drive line rides after it, one stop
                 reason = (concern + ("\n\n" + reason if reason else "")) if concern else reason
             except Exception:
                 log_error("Stop", _tb())
+            if not concern:
+                try:  # T-4664: a checked foresight row continues the session once, before the user has to say it
+                    sight = _ahead_hold(p, sd, pl, g)
+                    reason = (sight + ("\n\n" + reason if reason else "")) if sight else reason
+                except Exception:
+                    log_error("Stop", _tb())
         if not reason and not oneoff:  # T-4223: a big task's turn, once per tree state; drive first, as it always was
             try:
                 reason = _big_hold(p, sd, briefs, pl, g, save)
@@ -5677,6 +5690,34 @@ def _concern_hold(p, sd, briefs, pl, g):
         return None
     _event({"kind": "concern_hold", "session_id": sid, "project": p.slug, "concerns": [x["id"] for x in rows]})
     return concerns.hold_reason(rows)
+
+
+def _ahead_hold(p, sd, pl, g):
+    """T-4664 (part B of T-4185): with the drive on, a booked, confirmed foresight row (ahead.top) continues the session
+    once with what the user would otherwise have to say: once per turn (d["ahead_turn"]) and once per row (ahead.act
+    appends the acted event before the reason is returned, so no second Stop or session takes it). Never while paused, in a
+    reply that asks the user, in a continuation's own Stop (stop_hook_active), headless, with no rows file, or while a user
+    message may be waiting (ahead.user_waiting: this session's transcript, failing closed). Reads the rows file and one
+    transcript tail, no probe and no model: the detached tick (ahead.settle) already closed the rows gone stale."""
+    sid, msg = pl.get("session_id"), pl.get("last_assistant_message") or ""
+    if not sid or sd.get("panic") or not sd["drive"] or sd["paused"] or pl.get("stop_hook_active") or _headless() \
+            or needs_user(msg):  # stricter than the concern hold: a question to the user is theirs to answer, in any autonomy
+        return None
+    from sampo import ahead
+    if not os.path.exists(os.path.join(p.dir, ahead.ROWS)):
+        return None
+    d = g["drive"].setdefault(sid, {"count": 0})
+    began = _turn_began(p, sid, d)
+    if not began or d.get("waiting_on") is not None or d.get("ahead_turn") == began:
+        return None
+    row = ahead.top(p)
+    if not row or not ahead.precision_ok(p) or ahead.user_waiting(pl.get("transcript_path"), msg):
+        return None
+    d["ahead_turn"] = began
+    ahead.act(p, row["id"], "continued", session=sid)
+    _event({"kind": "ahead_act", "session_id": sid, "project": p.slug, "row": row["id"], "probe": row.get("probe")})
+    return (ahead.lead(row) + f"\nChecked just now ({row.get('probe')}): {c.fit(c.plain(str(row.get('evidence') or '')), 300)}"
+            + ". Run it if it still applies, then carry on.")
 
 
 def _work_changed(p, at, named=()):

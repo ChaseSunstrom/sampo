@@ -352,6 +352,7 @@ def check_project(p, apply, actions):
     out += slanes.bytecode_findings(p, briefs, apply, actions, finding,  # T-4655: the idle lanes that stay, bytecode only
                                     skip=[f["path"] for f in fin if "path" in f])
     out += _roll_ledger(p, apply, actions)
+    out += _trim_ahead(p, apply, actions)  # T-4664
     out += _prune_snapshots(p, apply, actions)
     out += _prune_exam_work(p, apply, actions)  # T-2568
     out += _prune_reverted(p, apply, actions)
@@ -527,6 +528,21 @@ def _prune_door_snapshots(p, apply, actions):
     return [finding(p.slug, "old_door_snapshots", "action",
                     f"{len(old)} one-way-step snapshot(s) of tasks closed over {WORK_SNAPSHOT_DAYS}d ago",
                     "deleted (their Undo lines no longer restore anything)", auto=True)]
+
+
+def _trim_ahead(p, apply, actions):
+    """T-4664: the foresight rows file (ahead.jsonl) grows by a few rows a turn: past ahead.ROWS_MAX keep its bounded tail."""
+    from sampo import ahead
+    try:
+        size = os.path.getsize(os.path.join(p.dir, ahead.ROWS))
+    except OSError:
+        return []
+    if size <= ahead.ROWS_MAX:
+        return []
+    if apply and ahead.trim(p):
+        actions.append(("trim_ahead", size))
+    return [finding(p.slug, "trim_ahead", "action", f"{ahead.ROWS} is {size // 1024} KB",
+                    f"keep its last {ahead.ROWS_KEEP // 1024} KB", auto=True)]
 
 
 def _roll_ledger(p, apply, actions):

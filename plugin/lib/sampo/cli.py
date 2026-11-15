@@ -7431,9 +7431,13 @@ def cmd_next(args):
         shown, left = c.more([c.fit(x, 120) for x in beliefs], 3)
         over += f" · open beliefs: {'; '.join(shown + [left] if left else shown)}" if beliefs else ""
     skill = c.skill_for(b, st)  # T-1697
+    from sampo import ahead  # T-4664: a confirmed foresight row leads; a tell row rides on the Next line
+    sight = ahead.for_next(p)
+    if sight and sight["tells"]:
+        over += " · foresight: " + "; ".join(sight["tells"])
     out(args, {"task": b.id if b else None, "stage": st, "action": action, "usual_minutes": usual, "skill": skill or None,
-               "concern": {k: link[k] for k in ("id", "said", "via") if k in link} if link else None},
-        f"Next: {action}" + (f" ({skill})" if skill else "")
+               "concern": {k: link[k] for k in ("id", "said", "via") if k in link} if link else None, "ahead": sight},
+        (sight["lead"] + "\n" if sight and sight["lead"] else "") + f"Next: {action}" + (f" ({skill})" if skill else "")
         + (f" · a {b.type} {b.tier} usually takes {usual:g} min here" if usual is not None else "") + over)
 
 
@@ -8927,7 +8931,10 @@ def _build_parser(only=None):
                  "before it is believed (probe, verdict, action); the open ones listed, a false one booked as dropped; "
                  "--tick predicts once from the last turn (local model only, refused while paused; T-4662)")
     s.add_argument("--tick", action="store_true", help="predict now from the newest transcript's last reply (bounded: two "
-                                                       "model calls, at most three rows)")
+                                                       "model calls, at most three rows), then close stale rows and make a task "
+                                                       "of each capture row")
+    s.add_argument("--say", action="store_true", help="with --tick: the reply and turn the Stop hook saved for this session "
+                                                      "(what the hook starts detached), not the newest transcript's")
 
     s = add("sync", lazy("sampo.sync", "cmd_sync"), tier=("Project and settings", 790),
             help="opt-in mirror of this project's briefs, decisions and research in the repo (.sampo/)")
