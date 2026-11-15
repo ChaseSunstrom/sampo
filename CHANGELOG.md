@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A land is no longer held by an unrelated focused task, only by uncommitted changes to a lane's files or the changelog (named in the refusal), and while a train runs the drive offers a lane or waits on it and says the train holds the checkout instead of pushing a focus, waking the idle session when the train ends (T-4692).
 - The command guard now reads shell strings started from node, perl, ruby, php, lua and R as commands, judges ternary and default paths on every branch, and binds python parameters, loop targets, dynamic imports and archive extraction (T-4686).
 - sampo code no longer stops at its turn cap as stalled right after finishing steps: a step that finished inside the progress window lets the run carry on (T-4471).
 - A land's background verify now starts only after its ship was asked for and waits while a ship runs, so the two no longer compete for test slots, and a ship cut only by its time limit says it ran out of time waiting for test slots and is retried once instead of being refused as failing tests (T-4718).
