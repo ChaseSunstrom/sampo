@@ -1414,8 +1414,11 @@ def _ship_end(p, tid, head, rc, out, t0, t1):
     sha = (SHIPPED_AT.findall(out) or [head])[-1]
     from sampo import release
     red = _red(out) if rc and release.SLOTS_CUT not in out else []  # T-4718: a wait for slots names no failing test
+    lines = out.splitlines()
+    mine = [i for i, ln in enumerate(lines) if ln.startswith(("fm: ", "sampo: "))]  # T-4739: the refusal, not the run's start
+    why = _why("\n".join(lines[mine[-1]:]) if mine else out)
     line = ((out.strip().splitlines() or ["shipped"])[-1] if not rc else
-            "refused: " + _why(out) + (f"; failing {c.joinmore(red, 8)}" if red else ""))
+            "refused: " + why + (f"; failing {c.joinmore(red, 8)}" if red and not any(k in why for k in red) else ""))
     data = {"head": head, "sha": sha, "seconds": round(t1 - t0, 1), "exit": rc, "start": round(t0, 1),
             "end": round(t1, 1), "red": red[:20]}
     try:
@@ -1425,6 +1428,17 @@ def _ship_end(p, tid, head, rc, out, t0, t1):
     except Exception:  # noqa: BLE001 — a record that can't be written never undoes a ship
         pass
     return line, data
+
+
+def _ship_log(p, text):
+    """T-4739: `text` appended to the project's ship.log, where the detached ship writes its own output: a ship run in line
+    (a train by hand, a land where nothing may run in the background) leaves the same block, so the newest ship is always
+    the log's last. A log that can't be written never undoes a ship."""
+    try:
+        with open(os.path.join(p.dir, "ship.log"), "a", encoding="utf-8", errors="replace") as f:
+            f.write(text)
+    except OSError:
+        pass
 
 
 def _ship(p, keep, main=None):
@@ -1450,13 +1464,18 @@ def _ship(p, keep, main=None):
             return None
     print(f"sampo lane land: shipping on {grant.id}'s publish grant", file=sys.stderr, flush=True)
     head, t0 = (c._git(main, "rev-parse", "HEAD", timeout=10).strip() if main else ""), time.time()
+    _ship_log(p, f"{_hms()} ship of {head[:9]} on {grant.id}'s publish grant (in line, from the land)\n")  # T-4739
     try:
         rc, out, err = _sampo(["ship", "--task", grant.id],  # T-4289: its gate's tests never take a test override
                               env=c.scrubbed_env(dict(os.environ, FOREMAN_SHIP_AT=head)) if head else None)
     except Exception as e:  # noqa: BLE001 — a failed ship is said, never stops the land
         rc, out, err = 1, "", f"{type(e).__name__}: {e}"
     line = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out)
-    _ship_end(p, grant.id, head, rc, out + err, t0, time.time())
+    _, data = _ship_end(p, grant.id, head, rc, out + err, t0, time.time())
+    if rc and data["red"] and not any(k in line for k in data["red"]):  # T-4739: the summary carries the classes
+        line += f"; failing {c.joinmore(data['red'], 8)}"
+    shown = (out + err).splitlines()[-5000:]
+    _ship_log(p, "".join(ln + "\n" for ln in shown) + f"{_hms()} {c.fit(c.plain(line), 300)}\n")
     if rc:
         return grant.id, line
     if keep:  # review: only this ship's own push (its own "main at" line) spent it; else someone else's spend stands

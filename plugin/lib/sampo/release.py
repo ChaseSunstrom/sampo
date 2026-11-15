@@ -547,22 +547,71 @@ def _run_test(p, wt, base, env, test, log):
         return proc.returncode, rd.read().decode("utf-8", errors="replace")
 
 
-def _rerun_red(wt, out, code, env):
+def _rerun_red(wt, out, code, env, said=None):
     """T-3435: the classes a red run names, rerun alone after a load wait (the post-merge suite's helpers, T-3216).
-    Returns the flaky classes when every one is green alone, None when any is still red (or can't run alone)."""
+    Returns the flaky classes when every one is green alone, None when any is still red (or can't run alone).
+    T-4739: `said` (a list) gets what happened to the rerun, for the refusal that follows a None."""
     from sampo import lanes
+    said = [] if said is None else said
     if code == 124:
+        said.append("the run timed out, so it was not rerun alone")
         return None
     classes = lanes.pm_classes(out, code)
     again = lanes.pm_rerun_cmd(wt, classes)
     if not again:
+        said.append("the failure could not be rerun alone (no class named, or no runner for one)")
         return None
     c.wait_for_load("sampo ship", out=sys.stdout)
     print(f"{', '.join(classes)} failed in the full run; rerunning alone", flush=True)
     if c.run_command(wt, again, c.load_scaled(900), env=env, niced=True)[0]:  # T-4197
+        said.append("the rerun alone also failed")
         return None
     print(f"flaky (red in the full run, green alone): {', '.join(classes)}", flush=True)
     return classes
+
+
+def _red_names(out):
+    """T-4739: the classes a red full run names (run.py's `failed class:` block, else the failing tests' classes)."""
+    listed = re.findall(r"(?m)^  failed class: ([\w.]+)\s*$", out or "")
+    if listed:
+        return sorted(set(listed))
+    return sorted({t.rpartition(".")[0] or t for t in c.failing_tests(out)})  # unittest's mod.Class.test, else the name
+
+
+def _keep_output(p, tail, cmd):
+    """T-4739: the last 1 MB of a refused ship's test run, in the project's state folder (the scratch tree it ran in is
+    gone when the ship ends): its path, or "" when it can't be written. One file, the newest refused run's."""
+    path = os.path.join(p.dir, "ship-test.log")
+    try:
+        c.write_atomic(path, f"{c.now()} the test run of a refused ship: {c.fit(c.plain(cmd), 300)}\n{tail}")
+    except OSError:
+        return ""
+    return path
+
+
+def _baseline_note(p, got):
+    """T-4739: what the baseline capture said, as a clause for the refusal. A task this run filed is 'recorded in T-N';
+    one already open (the capture only found it) is named 'already open as T-N' with its age when over a day: it was
+    never this run's doing, and a three-day-old task's text can list other tests."""
+    for ln in got:
+        if m := re.search(r"\bbaseline red: captured (T-\d+)\b", ln):
+            return f"baseline recorded in {m.group(1)}"
+        if m := re.search(r"\bbaseline still red: (T-\d+)\b", ln):
+            b = c.find_brief(p, m.group(1))
+            days = c.age_days(b.meta.get("created")) if b else None
+            return f"baseline already open as {m.group(1)}" + (f" ({int(days)} days old)" if days and days >= 1 else "")
+    return ""
+
+
+def _full_refusal(p, tail, failed, said, got, cmd):
+    """T-4739: the one line a refused full run says: the failed classes (five, then a count), what the rerun alone did, the
+    baseline task and the file holding the run's output. Never the whole output."""
+    names = _red_names(tail)
+    what = (f"failing {c.joinmore(names, 5)}" if names else f"no failing class named (exit {failed})")
+    path = _keep_output(p, tail, cmd)
+    parts = [what + (f" ({'; '.join(said)})" if said else ""), _baseline_note(p, got),
+             f"full output: {path}" if path else ""]
+    return "the test failed in the scratch tree: " + "; ".join(x for x in parts if x) + "; nothing was pushed"
 
 
 SLOTS_CUT = "ran out of time waiting for test slots"  # T-4718: a ship's affected run cut by its limit, no test failed
@@ -891,7 +940,8 @@ def ship(p, args):
             # T-3482: its typical time, for selfcheck.slow_jobs while a later ship's run is live
             c.log_event(p, "ship_test", data={"cmd": c.fit(shlex.join(test), 200), "exit": failed,
                                               "s": round(time.monotonic() - t0, 1)})
-            if failed and _rerun_red(wt, tail, failed, env) is not None:
+            rerun = []  # T-4739: what the rerun alone did, for the refusal
+            if failed and _rerun_red(wt, tail, failed, env, rerun) is not None:
                 failed = 0  # T-3435: green alone is a flake; the baseline capture and the verdict get the rerun's
             from sampo import cli  # the shipped tree is vouchable, so the run files (or clears) what fm check would
             try:
@@ -899,10 +949,10 @@ def ship(p, args):
             except Exception as e:  # the verdict stands; the capture is a convenience
                 got = []
                 print(f"baseline capture failed: {e}")
-            m = re.search(r"\bT-\d+\b", " ".join(got))
             if failed:
-                _err("the test failed in the scratch tree" + (f" (baseline task {m.group(0)})" if m else "")
-                     + "; nothing was pushed")
+                for ln in got:  # T-4739: the capture's lines are in the log too, not only in the refusal
+                    print(ln)
+                _err(_full_refusal(p, tail, failed, rerun, got, shlex.join(test)))
             for ln in got:
                 print(ln)
             rules = os.path.join(wt, "plugin", "rules", "foreman.md")
