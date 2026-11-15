@@ -153,26 +153,86 @@ def _share(a, share):
         share["all"] += len(json.dumps(a))
 
 
-def scan(folder, since, share=None, sidechains=True, entries=None):
+BIG_RESULT = 6000  # T-4704: a tool result over this many characters is counted apart
+_LABEL = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,31}")
+_HOOK_ATTACHMENTS = ("hook_additional_context", "hook_system_message", "hook_blocking_error")
+
+
+def _iso_week(ts, memo={}):
+    """T-4704: "2026-W46" for a transcript stamp, None for one that is no date (memoised per day)."""
+    day = ts[:10]
+    if day not in memo:
+        try:
+            y, w, _ = datetime.date.fromisoformat(day).isocalendar()
+            memo[day] = f"{y}-W{w:02d}"
+        except ValueError:
+            memo[day] = None
+    return memo[day]
+
+
+def _label(name):
+    """A tool or attachment name as a source row: MCP tools fold to one row, and a name that is not a plain word (a
+    transcript could carry anything) shows as "other", so the section prints no transcript text."""
+    name = str(name or "")
+    if name.startswith("mcp__"):
+        return "MCP"
+    return name if _LABEL.fullmatch(name) else "other"
+
+
+def _entering(a):
+    """T-4704: (source, characters) of one transcript attachment."""
+    if a.get("type") in _HOOK_ATTACHMENTS:
+        body = a.get("content") or a.get("blockingError") or ""
+        return "hook notes", len("\n".join(map(str, body)) if isinstance(body, list) else str(body))
+    return "attachment: " + _label(a.get("type")), len(json.dumps(a))
+
+
+def _entering_blocks(x, week, seen, role):
+    """T-4704: add one content block's characters to a week's Counter by source (reply text, tool-call input, a
+    reminder against the user's own text; a tool result is added by scan, which sizes it once)."""
+    t = x.get("type")
+    if t == "tool_use":
+        if x.get("id") not in seen:  # a reply split over lines may repeat a block
+            seen.add(x.get("id"))
+            week["tool-call inputs"] += len(json.dumps(x.get("input") or {}))
+    elif t == "text":
+        text = str(x.get("text") or "")
+        week["reply text" if role == "assistant" else "reminders" if text.lstrip().startswith(
+            "<system-reminder>") else "user text"] += len(text)
+
+
+def scan(folder, since, share=None, sidechains=True, entries=None, ctx=None):
     """(assistant messages [(ts, session, usage)], tool result chars by tool name) since the cutoff. A message's usage
     repeats on each of its content blocks: counted once per message id. A `share` Counter gets what entered the
     context: "all", and Sampo's part by source (T-1257). A subagent's replies carry its parent's session id:
-    `sidechains=False` leaves them out (T-1797). `entries`: _entries already read (T-3521: fm cost reads once)."""
-    msgs, tools, names, fm_ids = {}, collections.Counter(), {}, {}
+    `sidechains=False` leaves them out (T-1797). `entries`: _entries already read (T-3521: fm cost reads once).
+    T-4704: a `ctx` dict gets, per ISO week, a Counter of the characters that entered by source (same pass)."""
+    msgs, tools, names, fm_ids, seen = {}, collections.Counter(), {}, {}, set()
     for path, e in _entries(folder, since) if entries is None else entries:
         if not sidechains and f"{os.sep}subagents{os.sep}" in path:
             continue
         n = os.path.basename(path)
         ts = str(e.get("timestamp") or "")
+        week = None
+        if ctx is not None and ts[:19] >= since and (week := _iso_week(ts)):
+            week = ctx.setdefault(week, collections.Counter())
+            if isinstance(e.get("attachment"), dict):
+                source, size = _entering(e["attachment"])
+                week[source] += size
         if share is not None and isinstance(e.get("attachment"), dict) and ts[:19] >= since:
             _share(e["attachment"], share)
         m = e.get("message")
         if not isinstance(m, dict) or ts[:19] < since:
             continue
+        if week is not None and isinstance(m.get("content"), str):  # a typed prompt arrives as a plain string
+            week["reply text" if e.get("type") == "assistant" else "reminders" if m["content"].lstrip().startswith(
+                "<system-reminder>") else "user text"] += len(m["content"])
         content = m.get("content") if isinstance(m.get("content"), list) else []
         for x in content:
             if not isinstance(x, dict):
                 continue
+            if week is not None:
+                _entering_blocks(x, week, seen, e.get("type"))
             if x.get("type") == "tool_use":
                 names[x.get("id")] = x.get("name") or "?"
                 verb = _fm_verb(str((x.get("input") or {}).get("command") or "")) if x.get("name") == "Bash" else None
@@ -181,6 +241,10 @@ def scan(folder, since, share=None, sidechains=True, entries=None):
             elif x.get("type") == "tool_result":
                 size = _size(x.get("content"))
                 tools[names.get(x.get("tool_use_id"), "?")] += size
+                if week is not None:
+                    name = names.get(x.get("tool_use_id"))
+                    week[_label(name) if name else "unknown tool"] += size
+                    week["#big"] += size > BIG_RESULT
                 if share is not None:
                     share["all"] += size
                     if x.get("tool_use_id") in fm_ids:
@@ -689,6 +753,60 @@ def _share_line(share):
             + ("\nfm output by verb: " + " · ".join(f"{k} {pct(v)}" for k, v in verbs) if verbs else ""))
 
 
+def closed_by_week(p):
+    """T-4704: {ISO week: tasks closed done in it}, from the briefs' logs (a task folded into another has no close of
+    its own)."""
+    from sampo import outcomes
+    out = collections.Counter()
+    for b in c.load_briefs(p, include_archive=True):
+        if b.status == "done" and not b.meta.get("done_in") and (wk := _iso_week(outcomes.done_at(b))):
+            out[wk] += 1
+    return out
+
+
+def context_weeks(msgs, ctx, closed):
+    """T-4704: per ISO week {replies, cache_read_per_reply, new_per_reply, closed, replies_per_closed (None without a
+    closed task), sources (characters by source), share (percent by source), big (results over BIG_RESULT)}.
+    Cache reads are the standing context re-read on every reply: the per-reply figure is its size, the replies per
+    closed task how often it is re-read for one piece of work."""
+    reads = collections.defaultdict(lambda: [0, 0, 0])
+    for ts, _, usage in msgs:
+        if wk := _iso_week(ts):
+            r = reads[wk]
+            r[0] += 1
+            r[1] += usage.get("cache_read_input_tokens") or 0
+            r[2] += (usage.get("input_tokens") or 0) + (usage.get("cache_creation_input_tokens") or 0)
+    out = {}
+    for wk in sorted(set(reads) | set(ctx)):
+        n, cache, new = reads.get(wk, (0, 0, 0))
+        src = {k: v for k, v in (ctx.get(wk) or {}).items() if not k.startswith("#") and v}
+        total, done = sum(src.values()) or 1, closed.get(wk, 0)
+        out[wk] = {"replies": n, "cache_read_per_reply": round(cache / n) if n else None,
+                   "new_per_reply": round(new / n) if n else None, "closed": done,
+                   "replies_per_closed": round(n / done, 2) if done and n else None,
+                   "sources": dict(sorted(src.items(), key=lambda kv: -kv[1])),
+                   "share": {k: round(100 * v / total, 1) for k, v in sorted(src.items(), key=lambda kv: -kv[1])},
+                   "big": int((ctx.get(wk) or {}).get("#big", 0))}
+    return out
+
+
+def context_text(weeks, top=6):
+    """T-4704: the section's lines, one per week: numbers and tool names, never a transcript's words."""
+    if not weeks:
+        return ""
+    dash = lambda v: "-" if v is None else _human(v)
+    rows = []
+    for wk, w in weeks.items():
+        per = w["replies_per_closed"]
+        rows.append(f"  {wk}: {w['replies']} replies · cache reads {dash(w['cache_read_per_reply'])}/reply · "
+                    f"new {dash(w['new_per_reply'])}/reply · replies per closed task "
+                    + ("-" if per is None else f"{per:g} ({w['closed']} closed)") + " · "
+                    + " · ".join(f"{k} {v:.0f}%" for k, v in list(w["share"].items())[:top])
+                    + f" · results {w['big']} over {BIG_RESULT} chars")
+    return ("\nWhere the context comes from, by ISO week (cache reads: the standing context re-read on every reply):\n"
+            + "\n".join(rows))
+
+
 def cmd_cost(args):
     from sampo import cli
     p = cli.resolve(args)
@@ -731,7 +849,8 @@ def cmd_cost(args):
             spent[1].update(tool)
             spent[2].update(shell)
             yield from rows
-    msgs, tools = scan(folder, since, share, entries=each_file())
+    ctx = {}  # T-4704: what entered the context per ISO week, gathered in the same pass
+    msgs, tools = scan(folder, since, share, entries=each_file(), ctx=ctx)
     totals, by_task, by_session = collections.Counter(), collections.Counter(), collections.Counter()
     lines = _timelines(p, args.days)  # T-1083 review: each turn to its own session's task
     spans, retry = retry_windows(p, args.days), collections.Counter()
@@ -758,8 +877,9 @@ def cmd_cost(args):
     active = model_s + sum(tool_s.values())
     unex = unexplained_spend(p, msgs, args.days)
     unex_line = unexplained_line(unex)
+    weeks = context_weeks(msgs, ctx, closed_by_week(p))
     data = {"days": args.days, "messages": len(msgs), "tokens": dict(totals), "input_equivalent": round(total),
-            "unexplained": unex,
+            "unexplained": unex, "context": weeks,
             "by_task": dict(by_task.most_common()), "retry_by_task": dict(retry), "by_session": dict(by_session.most_common()),
             "tool_result_chars": dict(tools.most_common()), "session_start_context": base,
             "foreman_share": {"all": share["all"], "chars": {k: v for k, v in share.most_common()
@@ -785,7 +905,7 @@ def cmd_cost(args):
             + "\nSessions: " + " · ".join(f"{s[:8]} {_human(v)}" for s, v in by_session.most_common(5))
             + _share_line(share)
             + (f"\nContext at the first reply of a session (median): {_human(base)} tokens, re-read every turn"
-               if base else "") + when)
+               if base else "") + when + context_text(weeks))
     cli.out(args, data, text)
 
 
