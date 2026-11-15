@@ -293,6 +293,11 @@ class Shards(unittest.TestCase):
         # 80%: a shard's deadline also pays for the checkout, the setup and the slowest class, which runs alone
         self.assertGreaterEqual(n * mac_deadline * 0.8, MAC_WORK_SECS, f"{n} shards of {mac_deadline} s")
 
+    def test_macos_has_six_shards_since_five_put_one_at_89_percent_of_its_deadline(self):
+        # T-4737: CI run 43740854425 (base 62e41e23c) ran five macOS shards; shard 2 used 1764 s of its 1980 s deadline,
+        # and the five summed to about 6738 s. ci-watch asks for one more shard: six.
+        self.assertGreaterEqual(len(self.mac_shards()), 6)
+
     def test_the_linux_jobs_are_unchanged(self):
         self.assertIn("os: [ubuntu-latest]", self.text)
         # T-4687: the Linux shard count is the workflow's own (a re-split edits only the workflow): the matrix lists
