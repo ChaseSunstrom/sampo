@@ -58,6 +58,11 @@ CAP = ("# map-links: a.txt\nimport unittest\n\nSUITE = {0!r}\n\n\ndef red_in(k):
        "    return '.' not in lines[-1].split(' ', 1)[1] and len(whole) == k\n\n\n"
        + "".join(f"class F{k}(unittest.TestCase):\n    def test_it(self):\n        self.assertFalse(red_in({k}), 'load')\n\n\n"
                  for k in range(1, 5)))
+# red with c.txt in the tree (and says so), and, whatever the tree, from the fourth run of the suite on (T-4676: whole
+# gate, alone, bare base: three runs; the rebuilt tree's gate is the fourth and says nothing of any file)
+FLIP = ("# map-links: c.txt\nimport os, unittest\n\nSUITE = {0!r}\n\n\nclass Flip(unittest.TestCase):\n    def test_it(self):\n"
+        "        n = len(open(SUITE).read().splitlines())\n"
+        "        here = os.path.exists('c' + '.txt')\n        self.assertFalse(here or n >= 4, 'the tree holds c.txt' if here else 'flips')\n")
 # red only with lane b's file in the tree, and says nothing of it: no rule names the lane, the map link only touches
 XCLASS = ("# map-links: b.txt\nimport os, unittest\n\n\nclass X(unittest.TestCase):\n    def test_it(self):\n"
           "        self.assertFalse(os.path.exists('b' + '.txt'), 'boom')\n")  # never the file's name in the failure text
@@ -164,20 +169,15 @@ class Flaky_(Gate):
             with open(flakes) as f:
                 self.assertNotIn("test_victim.Victim.test_it", json.load(f).get("flaky", {}))
 
-    def test_flaky_classes_past_the_cap_stop_the_train_and_drop_no_lane(self):
-        """T-4289 review: a different class red in each whole run, each green alone: after FLAKY_ROUNDS the train stops
-        ('flaky, cap reached'), nothing is judged as a lane's, nothing lands."""
-        from sampo import train
+    def test_a_different_flaky_class_each_round_drops_no_lane_and_never_reaches_the_cap(self):
+        """T-4289 review, T-4676: a different class red in each run, each green alone: the cap is the same class twice
+        (test_train_flaky_narrow), so nothing is judged as a lane's and the train lands."""
         self.green_env()
         self.base("plugin/tests/test_cap.py", CAP.format(self.suite))
-        r = self.train(self.lane(1, "a.txt"), check=False)
-        out = r.stdout + r.stderr
-        self.assertNotEqual(r.returncode, 0, out)
-        self.assertIn("flaky, cap reached", out)
-        self.assertIn(f"test_cap.F{train.FLAKY_ROUNDS + 1}", out)
-        self.assertNotIn("left out", out)
-        self.assertFalse(self.landed("a.txt"))
-        self.assertEqual([e["classes"] for e in self.events("lane_train_flaky_cap")], [[f"test_cap.F{train.FLAKY_ROUNDS + 1}"]])
+        r = self.train(self.lane(1, "a.txt"))
+        self.assertNotIn("left out", r.stdout)
+        self.assertNotIn("cap reached", r.stdout + r.stderr)
+        self.assertTrue(self.landed("a.txt"))
 
     def test_a_note_says_recorded_only_when_the_failure_named_a_test(self):
         """T-4289 review: _note_flaky returns the ids it wrote: none for output that names no failing test."""
@@ -217,9 +217,9 @@ class RedOnBase(Gate):
             self.assertNotIn("left out of a merge train", self.fm("task", "show", tid).stdout, tid)
         self.assertEqual([e["classes"] for e in self.events("lane_train_base_red")], [["test_env.Env"]])
 
-    def test_red_on_base_puts_back_the_lanes_already_dropped_for_it(self):
-        """Round one blames lane b for the class on the strength of a file its failure names (c.txt); the confirm is red
-        again with no lane left to name, the bisection ends at the base, and b goes back: the class was never its."""
+    def test_red_on_base_drops_no_lane_even_when_the_failure_names_a_lanes_file(self):
+        """T-4676 (was: round one drops lane b for the file its failure names, and the base puts it back): the classes
+        run on the bare base first, so the failure naming c.txt costs b nothing and there is nothing to put back."""
         self.base("plugin/tests/test_env.py", ENV.format(": c.txt"))
         a, b, d = self.lane(1, "a.txt"), self.lane(2, "c.txt"), self.lane(3, "d.txt")
         r = self.train(a, b, d, check=False, env=self.red)
@@ -228,29 +228,30 @@ class RedOnBase(Gate):
         self.assertIn("red on the base", out)
         for name in ("a.txt", "c.txt", "d.txt"):
             self.assertFalse(self.landed(name), name)
-        log = self.fm("task", "show", b).stdout
-        self.assertIn("left out of a merge train", log, "it was dropped in round one")
-        self.assertIn("put back: test_env.Env is red on the base", log, "and put back when the base was found red")
-        self.assertNotIn("put back", self.fm("task", "show", a).stdout, "a lane never dropped has nothing to put back")
+        for tid in (a, b, d):
+            self.assertNotIn("left out of a merge train", self.fm("task", "show", tid).stdout, tid)
         got = self.events("lane_train_base_red")
-        self.assertEqual([(e["classes"], e["restored"]) for e in got], [(["test_env.Env"], [b])])
+        self.assertEqual([(e["classes"], e["restored"]) for e in got], [(["test_env.Env"], [])])
 
-    def test_a_second_lane_dropped_for_a_class_already_dropped_for_is_checked_against_the_base(self):
-        """T-4289 review (the incident): strong blame names lane b for the class, then, with b out, lane d for the same
-        class, and so on while the base is red: the second drop probes the base first, finds it red, stops the train and
-        puts b back; d is never dropped."""
-        self.base("plugin/tests/test_env.py", ENV2)
+    def test_a_class_red_on_the_base_only_later_puts_back_the_lane_dropped_for_it(self):
+        """T-4289 review, T-4676: green on the bare base the first time (lane b dropped for c.txt, strongly), red again
+        with b out and red on the base the second time: the class was never b's, so b goes back and no other lane is
+        dropped."""
+        self.base("plugin/tests/test_flip.py", FLIP.format(self.suite))
         a, b, d = self.lane(1, "a.txt"), self.lane(2, "c.txt"), self.lane(3, "d.txt")
-        r = self.train(a, b, d, check=False, env=self.red)
+        r = self.train(a, b, d, check=False)
         out = r.stdout + r.stderr
-        self.assertNotEqual(r.returncode, 0, out)
+        self.assertNotEqual(r.returncode, 0, f"{self.gate_args()}\n{out}")
         self.assertIn("red on the base", out)
         for name in ("a.txt", "c.txt", "d.txt"):
             self.assertFalse(self.landed(name), name)
-        self.assertIn("put back: test_env.Env is red on the base", self.fm("task", "show", b).stdout)
-        self.assertNotIn("left out of a merge train", self.fm("task", "show", d).stdout, "d was never dropped for it")
+        log = self.fm("task", "show", b).stdout
+        self.assertIn("left out of a merge train", log, "it was dropped in round one: the base was green then")
+        self.assertIn("put back: test_flip.Flip is red on the base", log)
+        for tid in (a, d):
+            self.assertNotIn("left out of a merge train", self.fm("task", "show", tid).stdout, tid)
         self.assertEqual([(e["classes"], e["restored"]) for e in self.events("lane_train_base_red")],
-                         [(["test_env.Env"], [b])])
+                         [(["test_flip.Flip"], [b])])
 
     def test_a_class_a_lane_breaks_and_the_base_passes_leaves_the_lane_out_not_the_train(self):
         """T-4289 review: the lane's own break (X red only with its file in) where the base is green: dropped as before,

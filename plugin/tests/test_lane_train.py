@@ -403,7 +403,7 @@ class Train(TrainCase):
     def test_the_report_line_names_the_minutes_of_each_phase(self):
         """T-3596: the probe, gate and land minutes of a train are in its result and its report, so the slow phase shows."""
         a, ran, r, count = self._green_lane("other.txt")
-        self.assertRegex(r.stdout, r"Minutes: probe \d+\.\d, gate \d+\.\d, land \d+\.\d; 1 of 1 probe\(s\) skipped")
+        self.assertRegex(r.stdout, r"Minutes: probe \d+\.\d, gate \d+\.\d, confirm \d+\.\d, land \d+\.\d; 1 of 1 probe\(s\) skipped")
 
     def test_a_lane_whose_tested_source_moved_on_the_base_is_probed(self):
         """T-3531: the base changed a source the affected test covers (map-links): its green run no longer holds."""
@@ -570,10 +570,10 @@ class AffectedGate(TrainCase):
         r = self.train(z, a, b, d)
         out = next(ln for ln in r.stdout.splitlines() if ln.startswith(f"  left out {b}:"))
         self.assertIn("failing test_rename_scan.Foo; blamed: the failure output names b.txt", out)
-        self.assertEqual(self.gate_args()[1:], ["test_rename_scan.Foo", "test_doctor test_rename_aliases test_rename_scan"],
-                         r.stdout)
+        self.assertEqual(self.gate_args()[1:], ["test_rename_scan.Foo"] * 2 + ["test_doctor test_rename_aliases test_rename_scan"],
+                         r.stdout)  # T-4676: alone on the red tree, then alone on the bare base, then the confirm
         self.assertEqual(self.gate_runs(), 2, "the other gate: the full run and the confirm")
-        self.assertIn("in 2 gate run(s) and 1 probe(s)", r.stdout)
+        self.assertIn("in 2 gate run(s) and 2 probe(s)", r.stdout)
         self.assertIn("the failure output names b.txt", self.fm("task", "show", b).stdout)
         for name, landed in (("ban-foo", True), ("a.txt", True), ("d.txt", True), ("b.txt", False)):
             self.assertEqual(os.path.exists(os.path.join(self.repo, name)), landed, name)
@@ -584,11 +584,11 @@ class AffectedGate(TrainCase):
         self.base("plugin/tests/test_rename_aliases.py", PAIR)
         l1, l2, l3, l4 = self.lane(1, "x1"), self.lane(2, "c.txt"), self.lane(3, "x2"), self.lane(4, "d.txt")
         r = self.train(l1, l2, l3, l4)
-        self.assertEqual(self.gate_args()[1:], ["test_rename_aliases.Aliases"] * 3 + ["test_doctor test_rename_aliases"],
+        self.assertEqual(self.gate_args()[1:], ["test_rename_aliases.Aliases"] * 4 + ["test_doctor test_rename_aliases"],
                          r.stdout)
         self.assertIn(f"left out {l3}: its merge turns the gates red", r.stdout)
         self.assertIn("blamed: bisection, 2 probe(s) of only test_rename_aliases.Aliases", r.stdout)
-        self.assertIn("3 probe(s)", r.stdout.splitlines()[0])
+        self.assertIn("4 probe(s)", r.stdout.splitlines()[0])  # alone, two bisection probes, the bare base
         self.assertEqual(self.gate_runs(), 2)
         for name, landed in (("x1", True), ("c.txt", True), ("d.txt", True), ("x2", False)):
             self.assertEqual(os.path.exists(os.path.join(self.repo, name)), landed, name)
@@ -603,7 +603,7 @@ class AffectedGate(TrainCase):
         self.assertIn("the failure output names b.txt", r.stdout)
         self.assertIn(f"left out {ids[3]}: its merge turns the gates red", r.stdout)
         self.assertIn("the failure output names d.txt", r.stdout)
-        self.assertEqual(self.gate_args()[1:], ["test_rename_scan.Bar test_rename_scan.Foo",
+        self.assertEqual(self.gate_args()[1:], ["test_rename_scan.Bar test_rename_scan.Foo"] * 2 + [
                                                 "test_doctor test_rename_aliases test_rename_scan"], r.stdout)
         for name, landed in (("ban-foo", True), ("ban-bar", True), ("e.txt", True), ("b.txt", False), ("d.txt", False)):
             self.assertEqual(os.path.exists(os.path.join(self.repo, name)), landed, name)
@@ -621,7 +621,8 @@ class AffectedGate(TrainCase):
         out = next(ln for ln in r.stdout.splitlines() if ln.startswith(f"  left out {b}:"))
         self.assertIn("failing test_dep.Dep; blamed: the failure output names b.txt", out)
         reach = "test_dep test_doctor test_rename_aliases test_rename_scan"  # a's: test_dep links a.txt
-        self.assertEqual(self.gate_args()[1:], ["test_rename_scan.Foo", reach, "test_dep.Dep", reach], r.stdout)
+        self.assertEqual(self.gate_args()[1:], ["test_rename_scan.Foo"] * 2 + [reach] + ["test_dep.Dep"] * 2 + [reach],
+                         r.stdout)
         self.assertEqual(self.gate_runs(), 3, "the full run and two confirms")
         for name, landed in (("ban-foo", True), ("e.txt", True), ("a.txt", False), ("b.txt", False)):
             self.assertEqual(os.path.exists(os.path.join(self.repo, name)), landed, name)
@@ -634,8 +635,8 @@ class AffectedGate(TrainCase):
         self.base("plugin/tests/test_rename_aliases.py", ORDER)
         l1, l2, l3, l4 = self.lane(1, "x1"), self.lane(2, "c.txt"), self.lane(3, "x2"), self.lane(4, "d.txt")
         r = self.train(l1, l2, l3, l4)
-        self.assertEqual(self.gate_args()[1:], ["test_rename_aliases.Aliases"] + ["test_doctor test_rename_aliases"] * 3,
-                         r.stdout)
+        self.assertEqual(self.gate_args()[1:], ["test_rename_aliases.Aliases"] + ["test_doctor test_rename_aliases"] * 2
+                         + ["test_rename_aliases.Aliases", "test_doctor test_rename_aliases"], r.stdout)  # T-4676: the bare base
         self.assertIn(f"left out {l3}: its merge turns the gates red", r.stdout)
         self.assertIn("blamed: bisection, 2 probe(s) of the whole red gate", r.stdout)
         for name, landed in (("x1", True), ("c.txt", True), ("d.txt", True), ("x2", False)):

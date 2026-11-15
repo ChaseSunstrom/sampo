@@ -27,7 +27,7 @@ from sampo import core as c
 from sampo.lanes import CLOSE_MARK, CriterionRed, _git, _ref_ok, _verify, clear_git_locks, cpu_env, git_lock_lines, \
     pm_after_train, pm_record, pm_rerun_cmd, pm_wait, train_lock, train_lock_closing
 
-FLAKY_ROUNDS = 3  # T-4289: red rounds a train goes on past (flaky classes alone) before it judges them as a lane's again
+FLAKY_ROUNDS = 8  # T-4676: a hard bound on the rounds of flaky classes one train goes on past (the cap proper is per class)
 SKIPPED = "probe skipped"  # the note a held green run leaves; the report counts by it (T-3596)
 PROBE_JOBS = 3 # T-3531: pre-filter probes at once
 _FAILED = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([\w.]+)\)", re.M)  # unittest's red line: test (where)
@@ -285,6 +285,18 @@ def _left_for(k, names):
     or, for a bisection (k ''), the classes that failed alone (`names`), never a whole gate's failing set: a bisection
     proves only that the lane turns the gate red, not for which of its classes."""
     return {k} if k else set(names)
+
+
+def _neighbours(root, mods, cap=8):
+    """T-4676: the modules a flaky class's narrowed confirm runs: `mods` whole, then up to `cap` other test modules in the
+    tree at `root` whose `# map-links:` header names a file one of `mods` names (the runner keeps no record of which
+    classes shared a job, so the files they guard are what ties them: shared state shows in neighbours)."""
+    from sampo import map as smap
+    files = [f for f in _git(root, "ls-files", "-z").stdout.split("\0") if f]
+    tests = {_stem(f): f for f in files if f.endswith(".py") and _stem(f).startswith("test_")}
+    links = {w for m in mods if m in tests for w in smap._marked(root, tests[m])}
+    near = sorted(s for s, f in tests.items() if s not in mods and links & set(smap._marked(root, f))) if links else []
+    return sorted(mods) + near[:cap]
 
 
 _MAP_FILE = re.compile(r"docs/map/[^/\0]+\.md")
@@ -686,6 +698,7 @@ def _run(p, main, ids):
     suite = next((g for g in checks if "{names}" in tpl and bare(g) == bare(tpl.replace("{names}", ""))), None)
     passed, diffs, reaches = {}, {}, {}  # (tree, command line): its passing row; lane id: its files; lane id: its tests
     dropped = {}  # T-4289: lane id: the red classes it was left out for (put back when the base proves red on them)
+    base_green, confirm_s = set(), [0.0]  # T-4676: classes a run of their own proved green on the bare base; confirm seconds
 
     def diff(i):
         """The files lane i's branch changed since it left the base."""
@@ -720,13 +733,14 @@ def _run(p, main, ids):
                 [_stem(t) for t in ts]
         return cmd, None
 
-    def run1(cmd, names=None):
+    def run1(cmd, names=None, fresh=False):
         """(row, ran): gate `cmd` on the scratch tree as it stands, worded by form(); a passing run of the same line on
-        this very tree is reused (ran False); row None when nothing named is left. `affected` lists the modules a
+        this very tree is reused (ran False) unless `fresh` (T-4676: a base proven green earlier may be red now); row
+        None when nothing named is left. `affected` lists the modules a
         narrowed run named (cli._cached_pass reads it); a red row keeps the names it fails, its output and last lines."""
         line, mods = form(cmd, names)
         key = (_git(wt, "rev-parse", "HEAD").stdout.strip(), line)
-        if line is None or key in passed:
+        if line is None or (key in passed and not fresh):
             return passed.get(key), False
         t0 = time.monotonic()
         code, out = c.run_command(wt, line, c.load_scaled(1800), priority=True,  # T-3614, T-3757; T-4289: no test override
@@ -778,15 +792,15 @@ def _run(p, main, ids):
                 return False
         return True
 
-    def probe(sha, cmd, names):
+    def probe(sha, cmd, names, fresh=False):
         """T-3602: the red gate alone on the tree at `sha`, the suite on only its red names: its row (None: nothing
-        named is in that tree, so nothing there can fail)."""
+        named is in that tree, so nothing there can fail). `fresh`: never a held pass."""
         _git(wt, "reset", "-q", "--hard", sha)
-        row, ran = run1(cmd, names)
+        row, ran = run1(cmd, names, fresh)
         probes[0] += ran
         return row
 
-    def bisect(cmd, names):
+    def bisect(cmd, names, check=True):
         """T-3602: the lane (index + 1) that turns gate `cmd` red, by prefix: lo passes (0 = the base), hi fails. Each
         probe runs only that gate, the suite only on `names` (proven to fail alone on the whole set) or, with none, as
         the train runs it: seconds or the suite's part, where a whole gate run took minutes."""
@@ -795,16 +809,17 @@ def _run(p, main, ids):
             mid = (lo + hi) // 2
             row = probe(merged[mid - 1][1], cmd, names)
             lo, hi = (lo, mid) if row and row["exit"] else (mid, hi)
-        if hi == 1:  # the first lane is blamed on the strength of a base nobody probed: probe it before blaming
+        if hi == 1 and check:  # the first lane is blamed on the strength of a base nobody probed: probe it before blaming
             base_check(cmd, names)
         return hi
 
-    def base_check(cmd, names):
+    def base_check(cmd, names, fresh=False):
         """T-4289: the base probed in gate `cmd`, on `names` alone (all of it with none) in this very environment, before
         a lane is blamed on what a base may fail too. Red in them: base_red's refusal; a probe that says nothing (a timeout,
-        a crash) is no proof either way: the train stops and drops nothing on its account. The scratch tree is put back."""
+        a crash) is no proof either way: the train stops and drops nothing on its account. The scratch tree is put back.
+        T-4676 `fresh`: a run of its own, never a pass the train held for this base."""
         here = _git(wt, "rev-parse", "HEAD").stdout.strip()
-        row = probe(base, cmd, names)
+        row = probe(base, cmd, names, fresh)
         _git(wt, "reset", "-q", "--hard", here)
         if not row or not row["exit"]:
             return
@@ -836,10 +851,11 @@ def _run(p, main, ids):
     def confirm(need):
         """T-3602: True when the gates in `need` pass on the tree as it stands: the suite on only its names (the red
         ones, and what the left-out lanes' diffs reach: a lane may have needed them), every other gate whole (a lane
-        left out can turn any of them red). A probe's pass on this very tree counts."""
+        left out can turn any of them red). A probe's pass on this very tree counts. T-4676: its minutes are the
+        result's `confirm`."""
         c.wait_for_load("sampo lane train")
         results.clear()
-        ran = False
+        ran, t0c = False, time.monotonic()
         for cmd in (g for g in checks if g in need):
             row, fresh = run1(cmd, need[cmd])
             if row is None:  # nothing it named is left in the tree: the gate as the train runs it
@@ -849,6 +865,7 @@ def _run(p, main, ids):
             if row["exit"]:
                 break
         runs[0] += ran
+        confirm_s[0] += time.monotonic() - t0c
         return not results[-1]["exit"]
 
     try:
@@ -867,32 +884,50 @@ def _run(p, main, ids):
         need = {g: None for g in checks if g != suite or g in checks[len(results):]}
         # T-4289: flaky classes (red in the gate, green alone on the merged tree) are never taken on that word: a lane's
         # shared state looks the same. pending: (classes, gate, tree, output) cleared so far; a train whose reds were
-        # all cleared that way runs the whole gate once more on the merged tree, uncached, before it lands, and records
-        # a flake only if that run is green. notflaky: classes red again in such a rerun, judged as a lane's as before.
-        flaked, said, pending, notflaky = 0, set(), [], set()
+        # all cleared that way runs one narrowed confirm (T-4676: their modules and the modules map-linked to them, never
+        # a second whole gate) on the merged tree, uncached, before it lands, and records a flake only when a confirm is
+        # green. notflaky: classes red again in the confirm right after, judged as a lane's as before. cleared: classes
+        # green in a confirm that was red for another: red and green alone again, they are the same class twice, and the
+        # cap (the only way a flaky class stops a train) is reached.
+        flaked, said, pending, notflaky, cleared = 0, set(), [], set(), set()
         while not ok or pending:  # T-3602: blame from the red run itself; bisect only what it can't pin on one lane
             if ok:
                 passed.clear()
                 _git(wt, "reset", "-q", "--hard", merged[-1][1])
-                ok = gate()
-                last.update((r["cmd"], r) for r in results if not r["exit"])
-                if not ok:
-                    now = results[-1].get("failing") or []
-                    notflaky |= {n for fl, *_ in pending for n in fl if any(_same(f, n) for f in now)}
+                if need.get(suite, ()) is None:  # the whole suite is owed: no narrowing it
+                    t0c = time.monotonic()
+                    ok = gate()
+                    confirm_s[0] += time.monotonic() - t0c
                 else:
+                    mods = {_mod(n) for fl, *_ in pending for n in fl}
+                    nd = dict(need)
+                    need[suite] = nd[suite] = (need.get(suite) or set()) | set(_neighbours(wt, sorted(mods)))
+                    ok = confirm(nd)
+                last.update((r["cmd"], r) for r in results if not r["exit"])
+                if ok:
                     for fl, fg, ftree, fout in pending:
-                        if new := [n for n in fl if n not in said]:
+                        if new := [n for n in fl if n not in said and n not in notflaky]:
                             said.update(new)
                             ids = _note_flaky(p, fg, ftree, fout, new)
                             notes.append(("gate", f"flaky under load: {c.joinmore(new, 6)} (red in the gate, green alone on "
-                                                  "the merged tree and green in the whole gate once more; "
+                                                  "the merged tree and green in a narrowed confirm of their modules and "
+                                                  "the modules linked to them; "
                                                   + (f"recorded in flakes.json: {c.joinmore(ids, 4)}" if ids else
                                                      "nothing recorded: the failure named no test") + ", no lane blamed)"))
                             c.log_event(p, "lane_train_flaky", data={"classes": new, "lanes": [b.id for b, _ in merged],
                                                                       "cmd": fg[:200]})
-                pending = []
-                if ok:
+                    pending = []
                     break
+            if pending and results[-1]["cmd"] == suite and results[-1].get("failing"):
+                now = results[-1]["failing"]  # the run after the pending classes were cleared: who is red again
+                for n in (n for fl, *_ in pending for n in fl):
+                    if not any(_same(f, n) for f in now):
+                        cleared.add(n)
+                    elif n not in cleared:
+                        notflaky.add(n)
+                # judged as a lane's now: nothing left to confirm for them
+                pending = [([n for n in fl if n not in notflaky], *more) for fl, *more in pending
+                           if any(n not in notflaky for n in fl)]
             red, g = results[-1], results[-1]["cmd"]
             names, flaky, ftree = (red["failing"] if g == suite else []), [], ""
             if names:  # a narrowed run sees them only if they fail alone (not by order or a flake): on this tree first
@@ -903,11 +938,15 @@ def _run(p, main, ids):
                 names += [n for n in flaky if n in notflaky]  # red again in the rerun: no flake, judged as a lane's
                 flaky = [n for n in flaky if n not in notflaky]
             if flaky:
-                if flaked >= FLAKY_ROUNDS:  # nothing is learnt from yet another class: stop, drop no lane for them
+                again = [n for n in flaky if n in cleared]  # T-4676: the same class twice: red, green alone, green, red again
+                if again or flaked >= FLAKY_ROUNDS:  # nothing is learnt from yet another run: stop, drop no lane for them
+                    flaky = again or flaky
                     c.log_event(p, "lane_train_flaky_cap", data={"classes": flaky, "rounds": flaked, "alone": names,
                                                                   "cmd": g[:200]})
                     raise c.PolicyError(f"flaky, cap reached: {c.joinmore(flaky, 6)} red in the gate and green alone on the "
-                                        f"merged tree, round {flaked + 1} of them; nothing landed and no lane dropped for them"
+                                        f"merged tree, round {flaked + 1} of them"
+                                        + (", red again after a confirm that was green" if again else "") +
+                                        "; nothing landed and no lane dropped for them"
                                         + (f" (red alone too: {c.joinmore(names, 4)})" if names else "") +
                                         "; the box is too loaded for this gate: run the train again")
                 flaked += 1
@@ -918,19 +957,17 @@ def _run(p, main, ids):
             need[g] = (need.get(g) or set()) | set(names) | set(flaky) if names else None  # the suite's other tests passed here
             ids = [b.id for b, _ in merged]
             blamed = _blame(red["out"], names or red["failing"], ids, diff, reach)
-            checked = False
-            if blamed and names and all(w.startswith(_WEAK) for w, _ in blamed.values()):
-                # T-4289: a map link alone names the lane: the base first, in this very environment (a base red in the
-                # class is the base's, and no lane is dropped for it)
-                base_check(g, names)
-                checked = True
+            cls = list(names or (red["failing"] if g == suite else []))
             if not blamed:
-                n, at = probes[0], bisect(g, names)
+                n, at = probes[0], bisect(g, names, not cls)
                 only = "only " + c.joinmore(names, 4) if names else "the whole red gate"
                 blamed = {ids[at - 1]: (f"bisection, {probes[0] - n} probe(s) of {only}", "")}
-            if not checked and (again := sorted({x for _, k in blamed.values() for x in _left_for(k, names)
-                                                 if any(_same(x, y) for s in dropped.values() for y in s)})):
-                base_check(g, again)  # a class a lane was already left out for: the base may be what is red (T-4289 review)
+            # T-4676: before any lane is dropped for these classes they run once, uncached, on the bare base in this very
+            # environment (a class red there is the base's or the machine's: the train stops, no lane dropped; one already
+            # left out for, and red again without that lane, runs there again)
+            if fresh := [n for n in cls if n not in base_green or any(_same(n, y) for s in dropped.values() for y in s)]:
+                base_check(g, fresh, fresh=True)
+                base_green.update(fresh)
             texts = _texts(red["out"], red.get("failing") or [])
             for i in (i for i in ids if i in blamed):
                 rule, k = blamed[i]
@@ -990,7 +1027,8 @@ def _run(p, main, ids):
         c.log_event(p, "check_run", data={"tree": tree[:12], "code_tree": ct, "env": c.env_id(), "train": ids_in,
                                           "results": green})
         t3 = time.monotonic()
-        mins = {"probe": round((t1 - t0) / 60, 1), "gate": round((t2 - t1) / 60, 1), "land": round((t3 - t2) / 60, 1)}
+        mins = {"probe": round((t1 - t0) / 60, 1), "gate": round(max(0.0, t2 - t1 - confirm_s[0]) / 60, 1),
+                "confirm": round(confirm_s[0] / 60, 1), "land": round((t3 - t2) / 60, 1)}  # T-4676: gate + confirm = the gates
         return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "map_merged": maps,
                 "map_follow_up": map_task, "gate_runs": runs[0],
                 "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
@@ -1068,7 +1106,7 @@ def cmd(p, args, main, close=False):
         lines.append(f"  follow-up {got['map_follow_up']}: read the merged map entries (a line both sides rewrote is "
                      "kept twice)")
     m = got["minutes"]  # T-3596: where the time went; the serial closes after the train are not in it
-    lines.append(f"Minutes: probe {m['probe']}, gate {m['gate']}, land {m['land']}; "
+    lines.append(f"Minutes: probe {m['probe']}, gate {m['gate']}, confirm {m.get('confirm', 0.0)}, land {m['land']}; "
                  f"{got['probes_skipped']} of {got['lanes_probed']} probe(s) skipped (a held green run)")
     if got["affected"]:
         lines.append(f"The test gate ran {len(got['affected'])} affected test module(s), not the full suite "
@@ -1430,7 +1468,7 @@ def _train_times(p, land_id, n, got, by, wall):
     """T-4239: one train's times: the summary row (lanes landed, minutes in the gate, minutes waiting: the train's wall
     time minus its gate run, the probes, the merge and the queue before them) and, for a train that landed lanes, a
     land_train ledger event (lanes, seconds, gate_s, wait_s, at, each lane's accept time)."""
-    gate = float((got.get("minutes") or {}).get("gate") or 0)
+    gate = round(float((got.get("minutes") or {}).get("gate") or 0) + float((got.get("minutes") or {}).get("confirm") or 0), 1)
     wait = max(0.0, round(wall / 60 - gate, 1))
     row = {"train": n, "lanes": list(got["merged"]), "gate": gate, "waiting": wait, "seconds": round(wall, 1)}
     if got["merged"]:
