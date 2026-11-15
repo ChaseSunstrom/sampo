@@ -11,6 +11,10 @@
 
 ### Everything else
 
+- The slot trace's holder count now comes from the slots' own locks and the pid each holder writes in its slot file, so it counts correctly where there is no /proc/locks (macOS) (T-4708).
+- A builder's own git command that fails on a stale `index.lock` in its lane's git folder now has the lock cleared by the failure hook (older than 60 s, no live git), so the commit works on retry instead of waiting for the main thread (T-4707).
+- The self-change gate's timing check now allows each hook the base's own A/A spread and divides out a loaded bench's uniform rise, so machine noise no longer holds a lane while a real single-hook regression still does (T-3091).
+- CI runs the Ubuntu suite in thirds after halves hit the 1380 s deadline, a test holds each system's shard list to the run line's divisor, and ci-watch names a green shard that used over 85 percent of its deadline (T-4687).
 - A test that turns red on the bare base while a merge train runs no longer leaves a lane out: the train probes the base before blaming, judges lanes on the other classes, and files one FIX capture (T-4700).
 - `sampo cost` ends with a per-ISO-week section showing replies, cache-read tokens per reply, replies per closed task and the share of entering context by source, so lean-context cuts can be judged by numbers that already move (T-4704).
 - A breakage-ahead alarm now becomes a task only when its probe finds the link in the code (a clock comparison for a date, a changed name the partner refers to for a co-change), a refused alarm is logged with its reason, and a rule whose captures were dropped raises fewer until one is confirmed (T-4680).
