@@ -518,6 +518,18 @@ class DoctorNamesReclaimables(DiskCase):
         with unittest.mock.patch.object(lanes, "reclaimables", side_effect=AssertionError("sized on a roomy disk")):
             self.assertEqual(d.check_disk(self.tmp, lambda _: Usage(900e9, 300e9, 600e9), [(self.p, {})]).status, "PASS")
 
+    def test_a_verdict_only_refusal_sizes_nothing_and_doctor_still_names_what_it_could_free(self):  # T-4658
+        self.lane("T-3020", size=800_000, merged=True)
+        usage = lambda _: Usage(900e9, 897e9, 3e9)  # noqa: E731
+        with unittest.mock.patch.object(lanes, "reclaimables", side_effect=AssertionError("sized for a verdict")):
+            r = d.check_disk(self.tmp, usage, [(self.p, {})], verdict=True)
+        self.assertEqual(r.status, "FAIL")
+        self.assertIn("3 GB free", r.detail)
+        self.assertNotIn("could free", r.detail)
+        self.assertNotIn("T-3020", r.detail)
+        full = d.check_disk(self.tmp, usage, [(self.p, {})])
+        self.assertIn("T-3020", full.detail, "sampo doctor itself still names what Sampo could free")
+
     def test_a_project_that_cannot_be_read_costs_the_check_nothing(self):
         with unittest.mock.patch.object(lanes, "reclaimables", side_effect=OSError("gone")):
             r = d.check_disk(self.tmp, lambda _: Usage(900e9, 893e9, 7e9), [(self.p, {})])

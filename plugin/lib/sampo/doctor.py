@@ -41,6 +41,15 @@ class Result:
     ms: int | None = None  # T-2279: the check's wall time; None when it wasn't measured
 
 
+DISK = "disk"  # T-4658: check_disk's result name; a train's late matcher reads its line by this name
+
+
+def result_line(r):
+    """T-4658: one line of sampo doctor's report. The train's late matcher (train._machine_patterns) is built from this
+    rendering, so the line it reads can't drift from the one doctor prints."""
+    return f"{r.status:4}  {r.name:<20} {r.detail}"
+
+
 def _load_json(path):
     try:
         with open(path, encoding="utf-8") as f:
@@ -2080,22 +2089,27 @@ def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S):
     return sorted(freed, key=lambda r: -r[1]), sorted(kept, key=lambda r: -r[1])
 
 
-def check_disk(path=None, usage=None, projects=None):
+def check_disk(path=None, usage=None, projects=None, verdict=False):
     """T-1450: the disk filled on 2026-10-22 and every hook that wrote state failed (ENOSPC) with no warning first.
     T-4543: warns under 10% or 40 GB free, fails under 5 GB (lanes.disk_level), and names what Sampo could free with
     its bytes (disk_reclaimables), the way a done lane would be after `sampo tidy --apply`. A healthy disk measures
-    nothing more. Builder worktrees' counts stay (a listdir each) for what tidy can't offer."""
+    nothing more. Builder worktrees' counts stay (a listdir each) for what tidy can't offer. T-4658: `verdict` is a
+    refusal's reading (the train's machine check): the free space and the level only, nothing sized (up to 10 s)."""
     from sampo import lanes as slanes
     try:
         u = (usage or slanes.disk_usage)(path or c.state_dir())
     except OSError:
-        return Result("disk", "PASS", "not measured")
+        return Result(DISK, "PASS", "not measured")
     free = f"{u.free / 1e9:.0f} GB free ({100 * u.free / u.total:.0f}%)"
     if usage is None and slanes.disk_pinned():  # a reading set by hand is not the disk: say so
         free += " [reading pinned by FOREMAN_DISK_FREE, not the disk]"
     level = slanes.disk_level(u)
     if level == "ok":
-        return Result("disk", "PASS", free)
+        return Result(DISK, "PASS", free)
+    status = "FAIL" if level == "fail" else "WARN"
+    head = f"{free} on the disk holding Sampo's state: hooks and builders fail when it fills"
+    if verdict:
+        return Result(DISK, status, head)
     projects = c.all_projects() if projects is None else projects
     lanes = []
     for p, _ in projects:
@@ -2109,8 +2123,8 @@ def check_disk(path=None, usage=None, projects=None):
     freed, kept = disk_reclaimables(projects)  # T-4661: what tidy frees, and what it leaves, each named apart
     named = c.joinmore([f"{label} {slanes.human(size)}" for label, size in freed], 5)
     left = c.joinmore([f"{label} {slanes.human(size)}" for label, size in kept], 5)
-    return Result("disk", "FAIL" if level == "fail" else "WARN",
-                  f"{free} on the disk holding Sampo's state: hooks and builders fail when it fills"
+    return Result(DISK, status,
+                  head
                   + (f"; Sampo could free: {named} (sampo tidy --apply removes the finished lanes and the idle lanes' bytecode)"
                      if freed else "")
                   + (f"; not freed by tidy: {left}" if kept else "")
@@ -3470,7 +3484,7 @@ def cmd_doctor(args):
         for r in sorted(results, key=lambda r: r.status == "FAIL"):  # T-0844: only what needs a look; T-2567: failures
             # print last, next to the verdict, so a failure's signature is the failing check
             if r.status != "PASS" or getattr(args, "verbose", False):
-                print(f"{r.status:4}  {r.name:<20} {r.detail}")
+                print(result_line(r))
         if getattr(args, "verbose", False):
             print("\nslowest: " + ", ".join(f"{s['name']} {s['ms']} ms" for s in slowest(results)))
         print(f"\nfm doctor: {'OK' if ok else 'FAILED'} ({sum(r.status == 'PASS' for r in results)} pass, "

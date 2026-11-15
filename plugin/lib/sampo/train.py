@@ -9,6 +9,7 @@ changes reach (_affected_gate); the full suite then runs on the landed merges in
 import concurrent.futures
 import contextlib
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -164,20 +165,29 @@ def _red(out):
     return sorted(n for n in names if not any(n.startswith(m + ".") for m in names))
 
 
-MACHINE_FAIL = re.compile(r"^FAIL[ \t]+disk\b.*$", re.M)  # T-4652: doctor's disk line at its fail level
-MACHINE_OTHER = re.compile(r"^(?:FAIL|ERROR)(?::|[ \t]+(?![ \t]*disk\b))", re.M)  # any other failing line
+@functools.lru_cache(maxsize=None)
+def _machine_patterns():
+    """T-4658: (doctor's disk FAIL line, any other failing line), both built from doctor's own rendering (doctor.result_line
+    and its DISK name), so the late matcher can't drift from the line doctor prints. T-4652: doctor's disk line is the
+    machine's fail line. doctor loads here, not at import: a train reads it only at a red gate."""
+    from sampo import doctor
+    head = doctor.result_line(doctor.Result(doctor.DISK, "FAIL", "")).rstrip()
+    fail = re.compile(rf"^{re.escape(head)}\b.*$", re.M)
+    other = re.compile(rf"^(?:FAIL|ERROR)(?::|[ \t]+(?![ \t]*{re.escape(doctor.DISK)}\b))", re.M)
+    return fail, other
 
 
 def _machine_only(out):
     """T-4652: True when a red run's only failing line is doctor's disk FAIL: a machine condition, the same whatever the
     code is, never a red base. Any other failing line (a test, another doctor check) makes it a code failure."""
-    return bool(MACHINE_FAIL.search(out)) and not MACHINE_OTHER.search(out)
+    fail, other = _machine_patterns()
+    return bool(fail.search(out)) and not other.search(out)
 
 
 def _machine_refusal(p, out):
     """T-4652: the refusal for a gate red only on the machine: it names the disk line, and that no base or lane is
     blamed (nothing is dropped for it; the train stops and the gate can run again once the disk has room)."""
-    line = c.fit(MACHINE_FAIL.search(out).group(0).strip(), 200)
+    line = c.fit(_machine_patterns()[0].search(out).group(0).strip(), 200)
     c.log_event(p, "lane_train_machine", data={"line": line})
     return c.PolicyError(f"refused: the machine, not the base or a lane, fails the gate: {line}; no lane dropped for it, "
                          "nothing landed: free disk space (sampo tidy shows what Sampo could free) and run it again")
@@ -194,7 +204,7 @@ def machine_stop(p):
         return ""
     if lanes.disk_level(u) != "fail":
         return ""
-    r = doctor.check_disk()
+    r = doctor.check_disk(verdict=True)  # T-4658: the refusal needs the free space, not what could be freed (sized: 10 s)
     if r.status != "FAIL":
         return ""
     detail = r.detail if "sampo tidy" in r.detail else r.detail + "; sampo tidy shows what Sampo could free"
@@ -1934,6 +1944,11 @@ def land_merged(p, main, drop_empty=False):
         except c.LockTimeout:
             raise c.PolicyError("another sampo lane land is running; it closes the lanes it lands") from None
         on, left, empty = _merged_lanes(p, main)
+        if on:  # T-4658: the machine before any gate or close, as land() and train() check it. Nothing is checked when no
+            # merged lane waits for its close: the empty lanes' removal below frees disk, it takes none.
+            why = machine_stop(p)
+            if why:
+                raise c.PolicyError(why)
         dropped, kept = _drop_empty(p, main, empty) if drop_empty else ([], [(t, x, w) for t, x, w in empty])
         gate = "no merged lane waits for a close" if not on else ""
         if on and cli._full_pass(p):
