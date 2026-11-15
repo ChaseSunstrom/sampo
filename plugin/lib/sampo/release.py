@@ -565,6 +565,27 @@ def _rerun_red(wt, out, code, env):
     return classes
 
 
+SLOTS_CUT = "ran out of time waiting for test slots"  # T-4718: a ship's affected run cut by its limit, no test failed
+_NOT_RUN = re.compile(r"^  not run class: ([\w.]+)\s*$", re.M)
+_TEST_RED = re.compile(r"^(?:FAIL|ERROR): |^FAILED \(|^  failed class: ", re.M)
+
+
+def _cut_only(code, out):
+    """T-4718: the classes a run.py run cut at its deadline never started, when that is all that happened (exit 124, a
+    class named, no FAIL/ERROR/failed class in the output): [] otherwise, so a real red is never taken for a wait. A
+    class run.py killed "still running at the run's deadline" started and never ended: hung (or too slow), not starved
+    of slots: not a cut either (a retry would hang again)."""
+    if code != 124 or _TEST_RED.search(out) or _hung(out):
+        return []
+    return _NOT_RUN.findall(out)
+
+
+def _hung(out):
+    """The classes run.py killed at the run's deadline while they ran ('==== class' blocks naming it): they started."""
+    return [b.split("\n", 1)[0].strip() for b in re.split(r"^==== ", out, flags=re.M)[1:]
+            if "still running at the run's deadline" in b]
+
+
 def _affected_first(p, wt, base, env, only=None):
     """T-2323: fm check's affected-test selection over the range (main..the cherry-picked tip) in the scratch tree, run
     before the full suite; red stops the ship naming the failing classes. No linked test or no affected command: goes on.
@@ -579,11 +600,25 @@ def _affected_first(p, wt, base, env, only=None):
     if not cmd:
         return []
     print(f"testing the {len(tests)} affected test file(s) " + (f"of {c.joinmore(only, 5)}" if only else "first"), flush=True)
-    code, out = c.run_command(wt, cmd, 900, niced=True,  # T-4197
-                              env=dict(cli._skip_env({}), **{k: v for k, v in env.items() if k != "FOREMAN_SKIP_TESTS"}))
+    run_env = dict(cli._skip_env({}), **{k: v for k, v in env.items() if k != "FOREMAN_SKIP_TESTS"})
+    code, out = c.run_command(wt, cmd, 900, niced=True, env=run_env)  # T-4197
+    if names := _cut_only(code, out):
+        # T-4718: cut at its limit with only classes not run (train 1115d: 98% of the wall waiting for slots a verify
+        # held) is a wait, not a failure: said so, then the classes not run go once more after a load wait
+        print(f"{SLOTS_CUT} ({len(names)} classes not run): running them once more", flush=True)
+        from sampo import lanes
+        c.wait_for_load("sampo ship", out=sys.stdout)
+        code, out = c.run_command(wt, lanes.pm_rerun_cmd(wt, names) or cmd, 900, niced=True, env=run_env)
+        if again := _cut_only(code, out):
+            print(out[-4000:], flush=True)
+            _err(f"the affected tests {SLOTS_CUT} ({len(again)} classes not run), again after one retry; no test failed; "
+                 "nothing was pushed: ship again when the test slots are free")
     if code and _rerun_red(wt, out, code, env) is None:
         print(out[-4000:], flush=True)
         bad = sorted({m.group(1) for m in re.finditer(r"^(?:FAIL|ERROR): \S+ \(([\w.]+?)\.\w+\)", out, re.M)})
+        if (hung := _hung(out)) and not bad:  # T-4718: killed while running at the deadline: not a failed test, not a wait
+            _err(f"the affected tests did not finish in the scratch tree: {', '.join(hung)} still running at the run's "
+                 "deadline (hung or too slow, not waiting for slots); nothing was pushed")
         _err("the affected tests failed in the scratch tree" + (f": {', '.join(bad)}" if bad else "") + "; nothing was pushed")
     return tests
 

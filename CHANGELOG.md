@@ -13,6 +13,7 @@
 
 - The command guard now reads shell strings started from node, perl, ruby, php, lua and R as commands, judges ternary and default paths on every branch, and binds python parameters, loop targets, dynamic imports and archive extraction (T-4686).
 - sampo code no longer stops at its turn cap as stalled right after finishing steps: a step that finished inside the progress window lets the run carry on (T-4471).
+- A land's background verify now starts only after its ship was asked for and waits while a ship runs, so the two no longer compete for test slots, and a ship cut only by its time limit says it ran out of time waiting for test slots and is retried once instead of being refused as failing tests (T-4718).
 - The slot trace's holder count now comes from the slots' own locks and the pid each holder writes in its slot file, so it counts correctly where there is no /proc/locks (macOS) (T-4708).
 - A builder's own git command that fails on a stale `index.lock` in its lane's git folder now has the lock cleared by the failure hook (older than 60 s, no live git), so the commit works on retry instead of waiting for the main thread (T-4707).
 - The self-change gate's timing check now allows each hook the base's own A/A spread and divides out a loaded bench's uniform rise, so machine noise no longer holds a lane while a real single-hook regression still does (T-3091).

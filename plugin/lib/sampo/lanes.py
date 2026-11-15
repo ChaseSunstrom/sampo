@@ -3329,20 +3329,51 @@ def _pm_dead(r):
         return True
 
 
+SHIP_YIELD_POLL = 5.0  # T-4718: seconds between looks at whether a ship of the project still runs
+
+
+def ship_yield(p, cap=None):
+    """T-4718: the background verify's suite runs and a ship's affected run draw on the same test slots, and a ship
+    starved of them is cut at its limit (train 1115d: 98% of the wall waiting, 20 classes not run). So the verify waits
+    here while a ship of the project runs: the train's detached ship (its marker) or a hand `sampo ship` (its claim),
+    each checked live by pid and start time, never by a process name. It waits at most `cap` seconds (default the ship's
+    own limit: a ship ends itself by then) and returns the seconds it waited, 0.0 when no ship ran. The ship never waits
+    on a verify, so this can't deadlock. REMAINING LIMIT: a suite run is one run.py call with no per-class boundary to
+    yield at, and one already under way is never interrupted: so a ship that starts during it still contends with it.
+    A land closes that gap for its own trains (train._land_trains starts the verify only once no further train is
+    queued); a lane that turns ready after that, or a hand `sampo ship` begun mid-run, can still meet a running verify."""
+    from sampo import release, train
+    limit = release._ship_cap() if cap is None else cap
+    t0 = time.monotonic()
+
+    def running():
+        return bool(train._ship_alive(p)) or release._claim_alive(c.read_meta(p).get("ship_claim"))
+    waited = False
+    while limit > time.monotonic() - t0 and running():
+        waited = True
+        time.sleep(min(SHIP_YIELD_POLL, max(0.0, limit - (time.monotonic() - t0))))
+    return max(round(time.monotonic() - t0, 2), 0.01) if waited else 0.0
+
+
 def pm_run(p, main):
     """Settle every red merge, then verify every pending one, oldest first (the detached process's whole job). T-3446:
     with several pending, one suite run on main as it stands goes first; green there stands for every one in its history.
     T-3456: main's HEAD, not the newest merge: its tree has every revert in it, so a merge requeued after one (whose
     change may lean on the reverted merge) is judged without it, as pm_verify would; the newest merge may predate it."""
     probed = set()
+    from sampo import release
+    patience = release._ship_cap()  # T-4718: all the waiting for a project's ships this pass does, together
     for _ in range(1000):  # bounded: a requeue loop can't spin forever
         recs = pm_records(p)
         red = [s for s, r in recs.items() if r["state"] == "red"]
         if red:
-            if not _pm_revert(p, main, red[0]):
+            if not _pm_revert(p, main, red[0]):  # git only, no test slots: it never waits for a ship
                 return
             continue
         todo = [s for s, r in recs.items() if r["state"] == "pending" or (r["state"] == "running" and _pm_dead(r))]
+        if todo and (waited := ship_yield(p, patience) or 0):  # T-4718: the suite runs wait while a ship runs
+            patience -= waited
+            continue  # the records, and what main holds, may have moved meanwhile
         newest = todo[-1] if todo else None
         head = _git(main, "rev-parse", "HEAD").stdout.strip() if len(todo) > 1 else ""
         # once per (newest merge, HEAD): a red probe isn't rerun until one lands, but a revert moves HEAD (T-4570: the

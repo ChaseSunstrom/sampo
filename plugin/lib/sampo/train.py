@@ -622,10 +622,12 @@ def _after_train_run(p, main):
             c.log_event(p, "postmerge_spawn_failed", data={"why": c.fit(str(e), 200)})
 
 
-def train(p, main, ids=None):
+def train(p, main, ids=None, defer_verify=False):
     """Land the named `ids` (a bare train would land lanes nobody picked) through one gate run, one train at a time.
     Returns a dict: merged, left_out [(id, why)], gate_runs, probes, tip, branch. Raises PolicyError when nothing can
-    land, the base is red or the branch moved."""
+    land, the base is red or the branch moved. T-4718: `defer_verify` leaves the background verify (and the revert pass)
+    to the caller, who ships next and starts it after the ship was asked for (`verify_owed` says one is wanted): the
+    verify and the ship's affected run compete for the same test slots."""
     from sampo import cli
     ids = list(dict.fromkeys(ids or []))
     if not ids:
@@ -633,22 +635,27 @@ def train(p, main, ids=None):
     why = machine_stop(p)  # T-4652: a full disk fails every gate: known in a second, before any merge or test
     if why:
         raise c.PolicyError(why)
-    took = False
+    took = deferred = False
     try:
         with _train_run_lock(p):
             took = True
             for line in git_lock_lines(clear_git_locks(main)):  # T-4616: a stale lock would stop a merge or a builder's commit
                 print(f"sampo: train: {line}", file=sys.stderr, flush=True)
-            return _run(p, main, ids)
+            got = _run(p, main, ids, defer_verify)
+            if defer_verify and not got["verify_owed"]:  # a red merge waiting for its revert is the verify's work too
+                from sampo import lanes
+                got["verify_owed"] = any(r["state"] == "red" for r in lanes.pm_records(p).values())
+            deferred = defer_verify
+            return got
     finally:  # T-4540: only a train that held the lock runs the pass: a refused one spawns nothing
-        if took:
+        if took and not deferred:
             _after_train_run(p, main)
 
 
 TRUNK_POLL_S = 30.0  # T-4540: a running gate checks trunk this often (a commit there ends the gate at once)
 
 
-def _run(p, main, ids):
+def _run(p, main, ids, defer_verify=False):
     from sampo import cli
     checks = list(c.read_meta(p).get("checks") or [])
     if not checks:
@@ -1057,8 +1064,8 @@ def _run(p, main, ids):
         map_task = _map_follow_up(p, maps) if maps else ""
         part = next((r["affected"] for r in green if r.get("affected")), None)
         if part:  # T-3544: the full suite the gate skipped verifies each landed merge in the background, newest first
-            for i, (b, sha) in enumerate(merged):
-                pm_record(p, sha, b.id, main, spawn=i == len(merged) - 1)
+            for i, (b, sha) in enumerate(merged):  # T-4718: a caller that ships next starts the verify after the ship asked
+                pm_record(p, sha, b.id, main, spawn=not defer_verify and i == len(merged) - 1)
         tree = _git(main, "rev-parse", f"{tip}^{{tree}}").stdout.strip()
         ct = c.code_tree(main, tree)
         c.log_event(p, "check_run", data={"tree": tree[:12], "code_tree": ct, "env": c.env_id(), "train": ids_in,
@@ -1067,7 +1074,7 @@ def _run(p, main, ids):
         mins = {"probe": round((t1 - t0) / 60, 1), "gate": round(max(0.0, t2 - t1 - confirm_s[0]) / 60, 1),
                 "confirm": round(confirm_s[0] / 60, 1), "land": round((t3 - t2) / 60, 1)}  # T-4676: gate + confirm = the gates
         return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "map_merged": maps,
-                "map_follow_up": map_task, "gate_runs": runs[0],
+                "map_follow_up": map_task, "gate_runs": runs[0], "verify_owed": bool(part and defer_verify),
                 "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
                     w.startswith(SKIPPED) for _, w in notes), "lanes_probed": len(rows)}
     finally:
@@ -1151,9 +1158,18 @@ def _fast_forward(main, tip):
 def cmd(p, args, main, close=False):
     """sampo lane train IDS; `close` (T-4596: the multi-id sampo lane merge) also closes each task it landed, through
     close_landed: the train's gate pass serves every close, so the merge costs no gate run beyond the train's."""
-    from sampo import cli
     ids = [x for x in (args.id or "").replace(",", " ").split() if x]  # one positional: T-1,T-2
-    got = train(p, main, ids)
+    owed = [False]
+    try:  # T-4718: the verify starts after the ship below (or at the end); a train that raises leaves records: it starts too
+        got = train(p, main, ids, defer_verify=True)
+        owed[0] = bool(got.get("verify_owed"))
+        return _cmd_report(p, args, main, close, got, owed)
+    finally:
+        start_verify(p, main, owed)
+
+
+def _cmd_report(p, args, main, close, got, owed):
+    from sampo import cli
     lines = [f"Train: {len(got['merged'])} lane(s) landed on {got['branch']} ({got['tip'][:9]}) in "
              f"{got['gate_runs']} gate run(s)" + (f" and {got['probes']} probe(s) of only the failing tests"
                                                   if got["probes"] else "") + f": {', '.join(got['merged'])}"]
@@ -1180,7 +1196,11 @@ def cmd(p, args, main, close=False):
         got["closed"], got["hand"] = [t for t, _ in done], left
         lines += [f"  closed {t}: {c.fit(c.plain(x), 160)}" for t, x in done]
         lines += [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in left]
-    if got["merged"] and (sh := _ship(p, False, main)):  # T-3849: a train by hand ships too, on a grant already given
+    try:
+        sh = _ship(p, False, main) if got["merged"] else None  # T-3849: a train by hand ships too, on a grant already given
+    finally:
+        start_verify(p, main, owed)  # T-4718: in line, so the ship has ended: the verify's suite runs take the slots after
+    if sh:
         got["ship"] = sh[1]
         lines.append(f"Ship ({sh[0]}'s grant): {c.fit(c.plain(sh[1]), 300)}")
     return cli.out(args, got, "\n".join(lines))
@@ -1234,7 +1254,8 @@ def _ship_end(p, tid, head, rc, out, t0, t1):
     """T-4239: the record of one finished ship, as a ledger event (ship_done: head it read, sha it pushed, seconds, exit,
     the failing tests a red run names from its own output) and the line a land or sampo status tells. (line, data)."""
     sha = (SHIPPED_AT.findall(out) or [head])[-1]
-    red = _red(out) if rc else []
+    from sampo import release
+    red = _red(out) if rc and release.SLOTS_CUT not in out else []  # T-4718: a wait for slots names no failing test
     line = ((out.strip().splitlines() or ["shipped"])[-1] if not rc else
             "refused: " + _why(out) + (f"; failing {c.joinmore(red, 8)}" if red else ""))
     data = {"head": head, "sha": sha, "seconds": round(t1 - t0, 1), "exit": rc, "start": round(t0, 1),
@@ -1727,7 +1748,34 @@ def _code_stamp():
                  for s in [os.stat(os.path.join(d, f))])
 
 
+def start_verify(p, main, owed):
+    """T-4718: the background verify a train deferred, started now (once) when the caller owes one: after the ship was
+    asked for or ran in line, so the verify's suite runs never take the slots the ship's affected run waits for. `owed`
+    is the caller's one-item list, cleared here. It starts when the caller owes one OR a record is still pending/red
+    on disk (a land that raised or was killed during its closes never set the flag, but its records stand with no
+    runner: a young pending record even holds off the sentinel's own full run). The runner is single (it takes the
+    queue's lock), so a second start is harmless. It never raises: the landed lanes and the ship's result must stand."""
+    from sampo import lanes
+    try:
+        if not owed[0] and not any(r.get("state") in ("pending", "red") for r in lanes.pm_records(p).values()):
+            return
+        owed[0] = False
+        lanes.pm_spawn(p, main)
+    except Exception as e:  # noqa: BLE001 — a failed spawn leaves the records pending: the next train or verify takes them
+        with contextlib.suppress(Exception):
+            c.log_event(p, "postmerge_spawn_failed", data={"why": c.fit(str(e), 200)})
+
+
 def _land(p, main, batch):
+    """T-4718: the trains defer their background verify; it starts after the ship (or, whatever happens, at the end)."""
+    owed = [False]
+    try:
+        return _land_trains(p, main, batch, owed)
+    finally:
+        start_verify(p, main, owed)
+
+
+def _land_trains(p, main, batch, owed):
     from sampo import lanes
     stamp = _code_stamp()  # the code this process loaded
     briefs = c.load_briefs(p)
@@ -1832,7 +1880,8 @@ def _land(p, main, batch):
         head0 = c._git(main, "rev-parse", "HEAD", timeout=10).strip()  # T-3851: the skills this train adds
         t_train = time.monotonic()
         try:
-            got = train(p, main, ids)
+            got = train(p, main, ids, defer_verify=True)
+            owed[0] = owed[0] or bool(got.get("verify_owed"))
         except c.PolicyError as e:
             if not hasattr(e, "left"):  # a red base, a moved branch: no later batch would land either
                 stopped = str(e)  # T-4029: with the red gate's own lines, so nobody reruns it to learn them
@@ -1854,8 +1903,17 @@ def _land(p, main, batch):
                 announce_skills(main, head0, c._git(main, "rev-parse", "HEAD", timeout=10).strip())
             except Exception as e:
                 print(f"sampo lane land: new skills not announced: {c.fit(c.plain(str(e)), 160)}", file=sys.stderr)
+        # T-4718: the verify starts after the ship asked, never beside it, and (its suite run is one long run with no
+        # per-class boundary to yield at) only once no further train of this land is queued: else it would starve the
+        # next train's ship again. What is owed waits in `owed`; the land's end starts it whatever happened.
         if got["merged"]:  # T-3849: reaches the remote per train, the grant kept for the next
-            shipped = ship(False) or shipped  # T-4239: asked for, never waited on: the next train starts at once
+            try:
+                shipped = ship(False) or shipped  # T-4239: asked for, never waited on: the next train starts at once
+            finally:
+                if not ready:
+                    start_verify(p, main, owed)
+        elif not ready:
+            start_verify(p, main, owed)  # a red merge's revert pass owed by a train that landed nothing
         if ready and _code_stamp() != stamp:  # T-3973: the train changed Sampo itself: the rest runs on the new code
             restart = True
             first_ids(p, ready)  # the restarted land trains them in this order, not re-sorted
@@ -1865,7 +1923,10 @@ def _land(p, main, batch):
     for tid, why in parked:
         kind, arg = _park_kind(why)
         lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}", tip=tested.get(tid, ""))
-    last = ship(True) if landed and not restart else None  # the land's last ship spends the grant: a restart's successor does
+    try:
+        last = ship(True) if landed and not restart else None  # the land's last ship spends the grant: a restart's successor does
+    finally:
+        start_verify(p, main, owed)
     shipped = last if last and not last[1].startswith("nothing to ship") else shipped or last
     grant, said = shipped or (None, "")
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
