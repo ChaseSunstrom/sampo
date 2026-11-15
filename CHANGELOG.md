@@ -11,6 +11,9 @@
 
 ### Everything else
 
+- A breakage-ahead alarm now becomes a task only when its probe finds the link in the code (a clock comparison for a date, a changed name the partner refers to for a co-change), a refused alarm is logged with its reason, and a rule whose captures were dropped raises fewer until one is confirmed (T-4680).
+- The drive's demotion of a waited-on job to a service now reads the wait timer's per-kind table of typical times (a CI watch is waited on for 60 minutes, a close for 2 hours, a job of no kind 20), so the two never disagree (T-4679).
+- A narrow test run (up to 6 named modules) also takes the slot pool's reserved slots but the last, beside a waiting gate, and `SAMPO_SLOT_TRACE=1` prints what a slot wait read (T-4685).
 - The guard judges interpreter code that writes a system path in python, node, perl, ruby, php, lua, deno, bun, R, julia and tcl, and a relative write after a `cd` that climbs through a link by both the link's and the real folder (T-4673).
 - A probe-confirmed foresight prediction now leads `sampo next` as "Before the user has to say it" and, with the drive on, continues the session once per row, while capture rows become inbox tasks and tell rows a line in `sampo next` (T-4664).
 - A changed test module now affects itself and its real importers only, instead of the dozens of modules the run cache listed (T-4684).
