@@ -2291,6 +2291,8 @@ def _chain_dir(starters, shell, ctx):
             t = _expand(t, ctx)
             if _unresolvable(t) or not re.match(r"(/|\./|\.\./|\.\.?$)", t):
                 return None
+            if ".." in t and _walk(t, d)[1]:  # T-4673: a '..' after a link: two folders, not the one
+                return None
             d = _resolve(t, d)
         dirs.add(d)
     return dirs.pop() if len(dirs) == 1 else None
@@ -2319,7 +2321,7 @@ def _proved_writes(cmd, ctx):
         only = _chain_dir(starters, "\n".join(lead), ctx)
         bases = [only] if only else bases + [
             d for d in (_resolve(_expand(w, ctx), ctx.cwd) for w in _WORD.findall(around) if not _unresolvable(w))
-            if os.path.isdir(d)]
+            if os.path.isdir(d)] + _climb_dirs(around, ctx)  # T-4673: and where a climbing cd really goes
     import ast
     mods = {a.name for code in units for n in ast.walk(ast.parse(code)) if isinstance(n, ast.Import) for a in n.names}
     if any(os.path.exists(os.path.join(b, m + x)) for b in bases for m in mods for x in (".py", "")):
@@ -2591,6 +2593,896 @@ def _spawned_commands(code):
     return out
 
 
+# T-4673: system paths written from interpreter code. The coarse scan above reads every quoted path of a script that
+# writes anything, so it is kept to the guarded categories (a script that merely reads /etc would be refused). A system
+# path is judged only where a write call really takes it: python through its parse tree, the other languages through
+# a table of their write calls (name, receiver, which argument is the target), each target one the code spells out
+# (a literal, a literal joined to others, a name bound once to one). Reads, content arguments and data stay free.
+_SYS_GATE = lazy(r"\b(?:open|fopen|sysopen|ZipFile|connect|os\.|shutil|unlink|rm|rmdir|mkdir|rename|replace|write\w*|append\w*"
+                 r"|copy\w*|cp\w*|mv|move|link|symlink\w*|touch|chmod\w*|chown\w*|remove\w*|delete|truncate|utime\w*|create\w*"
+                 r"|file(?:[_.(=]|[ \t]+\w|[ \t]+=)|make_path|mkpath|sink|save\w*|put_contents|output|install|ln\w*|sync\w*"
+                 r"|dir\.create)")  # a stem: rm_f; (T-4673 review: no bare os, dir, set, file: words of every script)
+_PY_MODS = frozenset("os shutil io builtins codecs pathlib gzip bz2 lzma tarfile zipfile sqlite3".split())
+_PY_PATHS = frozenset("Path PurePath PosixPath PurePosixPath".split())
+_PY_CALLS = {
+    "os": {**dict.fromkeys(("remove unlink rmdir removedirs mkdir makedirs truncate chmod chown lchown lchmod chflags "
+                            "lchflags utime mkfifo mknod setxattr removexattr chroot").split(), "first"),
+           **dict.fromkeys(("rename replace renames").split(), "both"), **dict.fromkeys(("symlink link").split(), "second")},
+    "shutil": {**dict.fromkeys(("rmtree make_archive chown").split(), "first"),
+               **dict.fromkeys(("copy copy2 copyfile copytree copymode copystat unpack_archive").split(), "second"),
+               "move": "both"},
+    "sqlite3": {"connect": "first"}, "zipfile": {"ZipFile": "zip"}}
+_PY_RECV_WRITES = frozenset("write_text write_bytes touch unlink mkdir rmdir chmod lchmod symlink_to hardlink_to".split())
+_PY_WRITE_FLAGS = frozenset("O_WRONLY O_RDWR O_CREAT O_APPEND O_TRUNC O_EXCL".split())
+_PY_PASS = frozenset("resolve absolute expanduser as_posix expandvars".split())
+_PY_PASS_FN = frozenset("str fspath abspath normpath realpath expanduser expandvars".split())
+_FORMAT_FIELD = lazy(r"\{(\w*)(?:[:!][^}]*)?\}")
+_PERCENT_FIELD = lazy(r"%[-#0 +]*\d*(?:\.\d+)?[sdrifx]")
+
+
+def _py_few(items, n):
+    """items cut to n; a cut leaves the unknown "\\x01" in the last place (fails closed: a value the guard didn't read
+    may be a system path, and _interp_system_writes judges one as system), as a count of write calls past the cap does"""
+    return items if len(items) <= n else items[:n - 1] + [("\x01", False)]
+
+
+def _py_system_targets(code):
+    """T-4673: every path a python source passes to a call that writes, deletes, moves to, links or changes it (open
+    with a write mode, os/shutil/pathlib writers, the archive and database openers), as text; raises SyntaxError on code
+    that isn't python. A path is a literal or one the code builds from literals (names bound in the code, + / %, f-strings,
+    .format, Path(), os.path.join, .parent): each reading a name has counts; a part the code doesn't give is "\\x00" and a
+    path that starts with one is left out. ponytail: a value from the environment, a call or a file isn't followed."""
+    import ast
+    tree = ast.parse(code)
+    nodes = list(ast.walk(tree))
+    mods, fns, binds = {}, {}, {}
+    for n in nodes:
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if a.name.split(".")[0] in _PY_MODS:
+                    mods[a.asname or a.name.split(".")[0]] = a.name.split(".")[0] if not a.asname else a.name
+        elif isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0] in _PY_MODS:
+            for a in n.names:
+                fns[a.asname or a.name] = (n.module, a.name)
+    paths = _PY_PATHS | {k for k, (m, f) in fns.items() if m == "pathlib" and f in _PY_PATHS}
+
+    def bind(name, e):
+        binds.setdefault(name, []).append(e)
+    for n in nodes:
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    bind(t.id, n.value)
+                elif isinstance(t, (ast.Tuple, ast.List)) and isinstance(n.value, (ast.Tuple, ast.List)) \
+                        and len(t.elts) == len(n.value.elts):
+                    for a, b in zip(t.elts, n.value.elts):
+                        if isinstance(a, ast.Name):
+                            bind(a.id, b)
+        elif isinstance(n, (ast.AnnAssign, ast.NamedExpr)) and n.value is not None and isinstance(n.target, ast.Name):
+            bind(n.target.id, n.value)
+        elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name) \
+                and isinstance(n.iter, (ast.List, ast.Tuple, ast.Set)):
+            for elt in n.iter.elts:
+                bind(n.target.id, elt)
+
+    def join(a, b):
+        return os.path.join(a, b)
+
+    few, memo, busy = _py_few, {}, set()
+
+    def val(e, d=0):
+        """[(text, is_a_path_object)] the expression may be."""
+        if d > 8:  # a value built through more steps than are followed: the unknown, a path object (fails closed)
+            return [("\x01", True)]
+        if isinstance(e, ast.Constant):
+            if isinstance(e.value, str):
+                return [(e.value, False)]
+            return [(e.value.decode("utf-8", "replace"), False)] if isinstance(e.value, bytes) else []
+        if isinstance(e, ast.Name):
+            if e.id in memo:
+                return memo[e.id]
+            if e.id in busy:  # a = a + "x": the other bindings give the value
+                return []
+            busy.add(e.id)  # every binding of the name counts (T-4673 review: four hid a fifth); each name read once
+            memo[e.id] = few([v for b in binds.get(e.id, ()) for v in val(b, d + 1)], 64)
+            busy.discard(e.id)
+            return memo[e.id]
+        if isinstance(e, ast.IfExp):
+            return few(val(e.body, d + 1) + val(e.orelse, d + 1), 16)
+        if isinstance(e, ast.BoolOp):
+            return few([v for x in e.values for v in val(x, d + 1)], 16)
+        if isinstance(e, ast.BinOp) and isinstance(e.op, (ast.Add, ast.Div, ast.Mod)):
+            left = val(e.left, d + 1)
+            if isinstance(e.op, ast.Mod):
+                return [(_PERCENT_FIELD.sub("\x00", s), p) for s, p in left]
+            right = few(val(e.right, d + 1) or [("\x00", False)], 3)
+            if isinstance(e.op, ast.Div):
+                return few([(join(a, b), True) for a, _ in left for b, _ in right], 16)
+            return few([(a + b, p) for a, p in left for b, _ in right], 16)
+        if isinstance(e, ast.JoinedStr):
+            cands = [""]
+            for v in e.values:
+                opts = [v.value] if isinstance(v, ast.Constant) else (
+                    [s for s, _ in few(val(v.value, d + 1), 3)] or ["\x00"])
+                cands = [a + b for a in cands for b in opts if isinstance(b, str)]
+                cands = cands if len(cands) <= 16 else cands[:15] + ["\x01"]
+            return [(c, False) for c in cands]
+        if isinstance(e, ast.Attribute) and e.attr == "parent":
+            return [(os.path.dirname(s.rstrip("/")) or "/", True) for s, _ in val(e.value, d + 1)]
+        if isinstance(e, ast.Call):
+            f = e.func
+            name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else ""
+            if name in paths and (isinstance(f, ast.Name) or isinstance(f.value, ast.Name)):
+                return _py_join(e.args, val, join, d, ".", True)
+            if name == "join" and isinstance(f, ast.Attribute) and (
+                    getattr(f.value, "attr", getattr(f.value, "id", "")) in ("path", "posixpath")):
+                return _py_join(e.args, val, join, d, "", False)
+            if name == "joinpath" and isinstance(f, ast.Attribute):
+                return _py_join([f.value] + e.args, val, join, d, ".", True)
+            if isinstance(f, ast.Attribute) and name in _PY_PASS:
+                return val(f.value, d + 1)
+            if name in _PY_PASS_FN and e.args:
+                return val(e.args[0], d + 1)
+            if name in ("dirname",) and e.args:
+                return [(os.path.dirname(s), False) for s, _ in val(e.args[0], d + 1)]
+            if name == "format" and isinstance(f, ast.Attribute) and isinstance(f.value, ast.Constant) \
+                    and isinstance(f.value.value, str):
+                auto = iter(range(99))
+
+                def field(m):
+                    k = m.group(1)
+                    i = int(k) if k.isdigit() else next(auto) if not k else -1
+                    arg = (e.args[i] if 0 <= i < len(e.args) else None) if i >= 0 else next(
+                        (x.value for x in e.keywords if x.arg == k), None)
+                    got = val(arg, d + 1) if arg is not None else []
+                    return got[0][0] if got else "\x00"
+                return [(_FORMAT_FIELD.sub(field, f.value.value), False)]
+        return []
+
+    def arg(n, i, *kws):
+        if len(n.args) > i and not isinstance(n.args[i], ast.Starred):
+            return n.args[i]
+        return next((k.value for k in n.keywords if k.arg in kws), None)
+
+    def writes_mode(e):  # a missing mode reads; one the code doesn't give is taken as a write
+        if e is None:
+            return False
+        ms = [s for s, _ in val(e)]
+        return not ms or any(set(s) & set("wax+\x01") for s in ms)
+
+    def writes_flags(e):
+        if e is None:
+            return False
+        if isinstance(e, ast.Constant) and isinstance(e.value, int):
+            return bool(e.value & 0o3 or e.value & 0o3100 or e.value & 0o2000)
+        names = {x.attr if isinstance(x, ast.Attribute) else x.id for x in ast.walk(e) if isinstance(x, (ast.Attribute, ast.Name))}
+        known = {x for x in names if x.startswith("O_")}
+        return bool(known & _PY_WRITE_FLAGS) or not known
+
+    out = []
+
+    def add(e, need_path=False):
+        for s, p in val(e):
+            if p or not need_path or "\x01" in s:  # the unknown counts whatever it was a value of
+                out.append(s)
+    for n in nodes:
+        if not isinstance(n, ast.Call):
+            continue
+        f, mod, fn, recv = n.func, None, None, None
+        if isinstance(f, ast.Name):
+            if f.id in fns:
+                mod, fn = fns[f.id]
+            elif f.id == "open" and f.id not in binds:
+                mod, fn = "builtins", "open"
+        elif isinstance(f, ast.Attribute):
+            if isinstance(f.value, ast.Name) and f.value.id in mods:
+                mod, fn = mods[f.value.id], f.attr
+            else:
+                recv, fn = f.value, f.attr
+        if mod is not None:
+            mod = mod.split(".")[0]
+            if fn == "open" and mod in ("builtins", "io", "codecs", "gzip", "bz2", "lzma", "tarfile"):
+                if writes_mode(arg(n, 1, "mode")):
+                    add(arg(n, 0, "file", "filename", "name"))
+            elif fn == "open" and mod == "os":
+                if writes_flags(arg(n, 1, "flags")):
+                    add(arg(n, 0, "path"))
+            elif (kind := _PY_CALLS.get(mod, {}).get(fn)) == "zip":
+                if writes_mode(arg(n, 1, "mode")):
+                    add(arg(n, 0, "file"))
+            elif kind in ("first", "both"):
+                add(arg(n, 0, "path", "src"))
+                if kind == "both":
+                    add(arg(n, 1, "dst", "dest"))
+            elif kind == "second":
+                add(arg(n, 1, "dst", "dest", "link_name", "extract_dir", "base_name"))
+        elif recv is not None:
+            if fn in _PY_RECV_WRITES:
+                add(recv)
+            elif fn == "open":
+                if writes_mode(arg(n, 0, "mode")):
+                    add(recv, need_path=True)
+            elif fn in ("rename", "replace"):
+                kinds = [p for _, p in val(recv)]
+                if any(kinds):
+                    add(recv, need_path=True)
+                    add(arg(n, 0, "target"))
+        if len(out) > 256:  # past this the rest isn't read: that is judged as a path the guard can't rule out
+            out.append("\x01")
+            break
+    return out
+
+
+def _py_join(args, val, join, d, start, is_path):
+    """The candidates of a path built from `args` (Path(a, b), os.path.join(a, b)): the first part must be known, a
+    later one that isn't is "\\x00"."""
+    if not args:
+        return [(start, is_path)]
+    cands = None
+    for i, a in enumerate(args):
+        got = val(a, d + 1)
+        if not got:
+            if i == 0:
+                return []
+            got = [("\x00", False)]
+        got = _py_few(got, 3)
+        cands = [(b, is_path) for b, _ in got] if cands is None else _py_few([
+            (join(a0, b), is_path) for a0, _ in cands for b, _ in got], 16)
+    return cands
+
+
+# the other languages: (receivers that may precede the name, a bare call allowed, {name: which argument is the target})
+# kinds: first, second, both, all (every argument), open (target first, mode second), plopen (perl's open), named (R)
+_FS_NAMES = {**dict.fromkeys(("writeFile writeFileSync appendFile appendFileSync createWriteStream unlink unlinkSync rm "
+                              "rmSync rmdir rmdirSync mkdir mkdirSync truncate truncateSync chmod chmodSync chown "
+                              "chownSync lchown utimes utimesSync lutimes writeTextFile writeTextFileSync remove "
+                              "removeSync create createSync write").split(), "first"),
+             **dict.fromkeys("rename renameSync".split(), "both"),
+             **dict.fromkeys(("copyFile copyFileSync cp cpSync symlink symlinkSync link linkSync copy copySync").split(),
+                             "second"),
+             "open": "open", "openSync": "open"}
+_FILE_RB = {**dict.fromkeys("write binwrite".split(), "first"),
+            **dict.fromkeys("delete unlink chmod chown lchmod lchown utime truncate mkfifo".split(), "all"),
+            "rename": "both", "symlink": "second", "link": "second", "open": "open", "new": "open"}
+_FILEUTILS = {**dict.fromkeys(("rm rm_f rm_r rm_rf remove remove_file remove_dir remove_entry remove_entry_secure rmdir "
+                               "rmtree mkdir mkdir_p makedirs mkpath touch chmod chmod_R chown chown_R").split(), "all"),
+              **dict.fromkeys("cp cp_r copy copy_file copy_entry install ln ln_s ln_sf link symlink".split(), "second"),
+              "mv": "both", "move": "both"}
+_PERL_NAMES = {**dict.fromkeys("unlink rmdir chmod chown utime make_path remove_tree mkpath rmtree".split(), "all"),
+               **dict.fromkeys("mkdir truncate sysopen".split(), "first"), "rename": "both", "move": "both",
+               "mv": "both", "symlink": "second", "link": "second", "copy": "second", "cp": "second", "open": "plopen"}
+_PHP_NAMES = {**dict.fromkeys("file_put_contents unlink rmdir mkdir touch chmod chown chgrp".split(), "first"),
+              "rename": "both", "copy": "second", "symlink": "second", "link": "second", "move_uploaded_file": "second",
+              "fopen": "open"}
+_R_NAMES = {**dict.fromkeys(("writeLines write.csv write.csv2 write.table saveRDS write writeBin file.copy file.symlink "
+                             "file.link").split(), "second"),
+            **dict.fromkeys("file.remove unlink dir.create file.create file.append sink Sys.chmod".split(), "all"),
+            "file.rename": "both", "cat": "named", "save": "named", "file": "open"}
+_JL_NAMES = {**dict.fromkeys("rm mkdir mkpath touch chmod chown write".split(), "first"), "mv": "both", "cp": "second",
+             "symlink": "second", "open": "open"}
+_PY_TEXT = [(frozenset(["os"]), False, {"remove": "first", "unlink": "first", "rmdir": "first", "mkdir": "first",
+                                        "makedirs": "first", "chmod": "first", "rename": "both", "replace": "both",
+                                        "symlink": "second", "link": "second", "truncate": "first"}),
+            (frozenset(["shutil"]), False, {"copy": "second", "copy2": "second", "copyfile": "second",
+                                            "copytree": "second", "move": "both", "rmtree": "first"}),
+            (frozenset(["io"]), True, {"open": "open"})]
+_TEXT_ROWS = {
+    "js": [(frozenset("fs fse fsp fsPromises promises Deno Bun )".split()), False, _FS_NAMES),
+           (frozenset(), True, {**{k: v for k, v in _FS_NAMES.items() if k.endswith("Sync")}, "createWriteStream": "first"})],
+    "pl": [(frozenset(), True, _PERL_NAMES), (frozenset(["Copy", "Path"]), False, _PERL_NAMES)],
+    "rb": [(frozenset(["File", "IO"]), False, _FILE_RB), (frozenset(["Dir"]), False, dict.fromkeys(
+        "mkdir rmdir delete unlink".split(), "first")), (frozenset(["FileUtils"]), False, _FILEUTILS),
+        (frozenset(), True, {"open": "open"})],  # Kernel#open("path", "w")
+    "php": [(frozenset(), True, _PHP_NAMES)],
+    "lua": [(frozenset(["io"]), False, {"open": "open", "output": "first"}),
+            (frozenset(["os"]), False, {"remove": "first", "rename": "both"})],
+    "r": [(frozenset(), True, _R_NAMES)],
+    "jl": [(frozenset(), True, _JL_NAMES), (frozenset(["Base", "Filesystem"]), False, _JL_NAMES)],
+    "py": _PY_TEXT}
+_LANG_OF = {"node": "js", "nodejs": "js", "deno": "js", "bun": "js", "perl": "pl", "ruby": "rb", "jruby": "rb",
+            "truffleruby": "rb", "irb": "rb", "php": "php", "lua": "lua", "luajit": "lua", "Rscript": "r", "julia": "jl",
+            "tclsh": "tcl"}
+_PAREN_LESS = frozenset(["pl", "rb"])  # a call without parentheses: unlink "x"; File.delete "x"
+_R_PATH_ARGS = frozenset("file con path to dest destfile filename target".split())
+_TEXT_WRITE_MODE = lazy(r"^[rwxabcest+]{0,4}$")
+_TEXT_WRITE_FLAGS = lazy(r"\b(?:O_WRONLY|O_RDWR|O_CREAT|O_APPEND|O_TRUNC|WRONLY|RDWR|CREAT|APPEND|TRUNC|FILE_APPEND)\b|"
+                         r"\b(?:write|append|create|truncate)\s*[:=]\s*true\b")
+_T_QUOTED = lazy(r"""(?s)'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)"|`([^`\\]*(?:\\.[^`\\]*)*)`""")
+# (unrolled per quote: the one pattern `(['"`])((?:\\.|(?!\1).)*)\1` took exponential time on an unterminated quote
+# followed by backslashes, T-4673 review; each backslash here is read one way only)
+_T_INTERP = lazy(r"\$\{(\w+)\}|\$\((\w+)\)|\{\$(\w+)\}|#\{(\w+)\}|\$(\w+)")
+_T_JOIN = lazy(r"(?:path\.(?:join|resolve)|Path\.of|Paths\.get|(?:File|Pathname)\.(?:join|expand_path)|joinpath|join|resolve"
+               r"|file\.path|paste0|normalizePath)\s*\(")
+_T_BIND = lazy(r"(?:^|[;{(\s,])(?:(?:const|let|var|my|our|local|val|set|final)\s+)?[$@]?([A-Za-z_]\w*)\s*"
+               r"(?::=|<-|=)(?![=~>])\s*")
+_T_NAME = lazy(r"[$@]?([A-Za-z_]\w*)(?=\s|$|[);,])")
+_TCL_OPEN = lazy(r"""\bopen[ \t]+(\{[^}\n]*\}|"[^"\n]*"|[^\s\]\[;]+)(?:[ \t]+(\{[^}\n]*\}|"[^"\n]*"|[^\s\]\[;]+))?""")
+_TCL_FILE = lazy(r"\bfile[ \t]+(delete|rename|mkdir|copy|link|attributes)\b([^\n;\]]*)")
+_TCL_SET = lazy(r"\bset[ \t]+(\w+)[ \t]+(\{[^}\n]*\}|\"[^\"\n]*\"|\S+)")
+
+
+_CUT = "'\x01'"  # the last argument _call_args gives when its window ended before the call did: a value not read
+
+
+def _call_args(text, i, paren):
+    """The top-level arguments of the call whose argument text starts at text[i] (just past "(" when `paren`, else the
+    first word of a call written without parentheses, which ends at ; or a newline): quote- and depth-aware, bounded. A
+    call longer than the window ends in _CUT (the unknown), so what lies past the window is judged, not dropped."""
+    out, cur, depth, q, end = [], [], 0, "", min(len(text), i + 3000)
+    cut = False  # (set by the while's else: the loop ran to its window's end, no ")" or ";" closed the call)
+    while i < end:
+        c = text[i]
+        if q:
+            cur.append(c)
+            if c == "\\" and i + 1 < end:
+                cur.append(text[i + 1])
+                i += 1
+            elif c == q:
+                q = ""
+        elif c in "'\"`":
+            q = c
+            cur.append(c)
+        elif c in "([{":
+            depth += 1
+            cur.append(c)
+        elif c in ")]}":
+            if depth == 0:
+                break
+            depth -= 1
+            cur.append(c)
+        elif depth == 0 and c == ",":
+            out.append("".join(cur))
+            cur = []
+        elif depth == 0 and not paren and c in ";\n":
+            break
+        else:
+            cur.append(c)
+        i += 1
+    else:
+        cut = end < len(text)
+    out.append("".join(cur))
+    return [a.strip() for a in out if a.strip()] + ([_CUT] if cut else [])
+
+
+def _terms(e):
+    """The pieces of a concatenation (a + b, a . b, a .. b, a * b), split outside quotes and brackets."""
+    out, cur, depth, q, i = [], [], 0, "", 0
+    while i < len(e):
+        c = e[i]
+        if q:
+            cur.append(c)
+            if c == "\\" and i + 1 < len(e):
+                cur.append(e[i + 1])
+                i += 1
+            elif c == q:
+                q = ""
+        elif c in "'\"`":
+            q = c
+            cur.append(c)
+        elif c in "([{":
+            depth += 1
+            cur.append(c)
+        elif c in ")]}":
+            depth -= 1
+            cur.append(c)
+        elif depth == 0 and (c in "+*" or e.startswith("..", i) or (
+                c == "." and (e[i - 1:i] in " \t'\"`)") and e[i + 1:i + 2] in " \t'\"`$")):
+            out.append("".join(cur))
+            cur = []
+            i += 1 if e.startswith("..", i) else 0
+        else:
+            cur.append(c)
+        i += 1
+    out.append("".join(cur))
+    return [t for t in (x.strip() for x in out) if t]
+
+
+def _t_cut(items, n):
+    """items cut to n; a cut leaves the unknown "\\x01" last (a value the guard didn't read: judged as a system path)."""
+    return items if len(items) <= n else items[:n - 1] + ["\x01"]
+
+
+def _t_vals(expr, binds, depth=0):
+    """The strings a text-language expression may be, when it starts with something the code spells out."""
+    cands = [""]
+    for i, t in enumerate(_terms(expr)):
+        vs = _t_term(t, binds, depth)
+        if not vs:
+            if i == 0:
+                return []
+            vs = ["\x00"]
+        cands = _t_cut([a + b for a in cands for b in _t_cut(vs, 4)], 8)
+    return cands
+
+
+def _t_term(t, binds, depth):
+    if m := _T_QUOTED.match(t):
+        quote, body = "'\"`"[m.lastindex - 1], m.group(m.lastindex)
+        if quote == "'" or "$" not in body and "#{" not in body:
+            return [body]
+        cands, pos = [""], 0
+        for x in _T_INTERP.finditer(body):
+            cands = [c + body[pos:x.start()] for c in cands]
+            name = next(g for g in x.groups() if g)
+            if depth < 3:  # (a name holds at most five bindings, the unknown first when there were more: no slice)
+                got = [v for b in binds.get(name, ()) for v in _t_cut(_t_vals(b, binds, depth + 1), 2)]
+            else:
+                got = ["\x01"] if name in binds else []  # names bound through more hops than are followed: unknown
+            cands = _t_cut([c + v for c in cands for v in (got or ["\x00"])], 8)
+            pos = x.end()
+        return [c + body[pos:] for c in cands]
+    if m := _T_JOIN.match(t):
+        cands, paste = None, t.startswith("paste0")
+        for a in _call_args(t, m.end(), True):  # every candidate of every part, cut to eight with the unknown last
+            vs = _t_cut(_t_vals(a, binds, depth + 1) or ["\x00"], 4)
+            cands = vs if cands is None else _t_cut(
+                [c + v if paste else os.path.join(c, v) for c in cands for v in vs], 8)
+        return [c for c in cands or () if not c.startswith("\x00")]
+    if m := _T_NAME.match(t):
+        if depth >= 3:
+            return ["\x01"] if m.group(1) in binds else []
+        return [v for b in binds.get(m.group(1), ()) for v in _t_cut(_t_vals(b, binds, depth + 1), 2)]
+    return []
+
+
+def _t_bindings(code):
+    """name -> the expressions bound to it (first four; a fifth puts the unknown '\\x01' first, where every slice keeps
+    it). The key "\\x01" is set when the code binds more than 400 times: what follows isn't read."""
+    out = {}
+    for n, m in enumerate(_T_BIND.finditer(code)):
+        if n > 400:
+            out["\x01"] = ["x"]
+            break
+        a = _call_args(code, m.end(), False)
+        a = [_CUT] if a[-1:] == [_CUT] else a[:1]  # a value longer than the window: unknown, not its first part
+        if a:
+            got = out.setdefault(m.group(1), [])
+            if len(got) < 4:
+                got.append(a[0])
+            elif got[0] != "'\x01'":
+                got.insert(0, "'\x01'")
+    return out
+
+
+def _t_writes_mode(args, lang):
+    """Whether the mode argument of an open call (second argument, or perl's) is a write."""
+    if len(args) < 2:
+        return False
+    rest = ",".join(args[1:])
+    if _TEXT_WRITE_FLAGS.search(rest):
+        return True
+    lits = [x.group(x.lastindex).split(":", 1)[0] for x in _T_QUOTED.finditer(rest)]  # ruby: "w:UTF-8"
+    if lits:
+        return any(_TEXT_WRITE_MODE.match(s) and set(s) & set("wxac+") for s in lits)
+    return bool(re.match(r"[$@]?\w+$", args[1]))  # a mode held in a variable: taken as a write
+
+
+_JS_FS = r"""['"](?:node:)?fs(?:/promises)?['"]"""
+# (the name pattern starts at a word's first letter only: unanchored, `(\w+)\s*=` tried every letter of a long word and
+# took quadratic time, T-4673 round 3)
+_JS_FS_NAME = lazy(r"(?<![\w$])(\w+)\s*=\s*(?:await\s+)?require\(\s*" + _JS_FS + r"\s*\)"
+                   r"|import\s+(?:\*\s+as\s+)?(\w+)\s+from\s+" + _JS_FS)
+_JS_FS_PICK = lazy(r"\{([^{}]*)\}\s*(?:=\s*(?:await\s+)?require\(\s*|\bfrom\s+)" + _JS_FS)
+_JS_FS_MEMBER = lazy(r"(?<![\w$])(\w+)\s*=\s*require\(\s*" + _JS_FS + r"\s*\)\s*\.\s*(\w+)")  # const w = require('fs').writeFileSync
+_JS_PICKS_MAX = 400
+
+
+def _js_fs_aliases(code):
+    """T-4673 review: (the names that hold the fs module, {local name: the kind of fs call it is}, whether the code picks
+    more names than are read) for node code that binds it: `const f = require('fs')`, `import * as f from 'fs'`, `const
+    { writeFileSync: w } = require('fs')`, `import { writeFileSync as w } from 'fs'`, `const w = require('fs').writeFileSync`,
+    `const { promises: p } = require('fs')`. A picked name counts as a write call whatever its spelling."""
+    if "fs" not in code:
+        return set(), {}, False
+    recvs = {g for m in _JS_FS_NAME.finditer(code) for g in m.groups() if g}
+    bare, many = {}, False
+    for m in _JS_FS_MEMBER.finditer(code):
+        if m.group(2) in _FS_NAMES:
+            bare[m.group(1)] = _FS_NAMES[m.group(2)]
+    for m in _JS_FS_PICK.finditer(code):
+        parts = m.group(1).split(",")
+        many = many or len(parts) > _JS_PICKS_MAX  # past this the rest isn't read: judged as unknown
+        for part in parts[:_JS_PICKS_MAX]:
+            bits = re.split(r"\s+as\s+|\s*:\s*", part.strip())
+            if len(bits) in (1, 2) and re.fullmatch(r"\w+", bits[-1]):
+                if bits[0] in _FS_NAMES:
+                    bare[bits[-1]] = _FS_NAMES[bits[0]]
+                elif bits[0] == "promises":
+                    recvs.add(bits[-1])
+    return recvs, bare, many
+
+
+def _text_system_targets(code, langs):
+    """T-4673: the targets of write calls in code of the languages in `langs` (the table above), as text."""
+    out = []
+    binds = _t_bindings(code)
+    for lang in langs - {"tcl"}:
+        rows = _TEXT_ROWS[lang]
+        recvs, bare, many = _js_fs_aliases(code) if lang == "js" else (set(), {}, False)  # const f = require('fs'); { x as y }
+        if many:  # more picked names than are read: a later one may be a write call
+            out.append("\x01")
+        names = {n for _, _, kinds in rows for n in kinds} | set(bare)
+        word = re.compile(r"(?<![\w$@])(" + "|".join(sorted(map(re.escape, names), key=len, reverse=True)) + r")(?![\w$])")
+        calls = 0
+        for m in word.finditer(code):
+            before = code[max(0, m.start() - 48):m.start()]
+            r = re.search(r"(?:([A-Za-z_]\w*)|(\)))\s*(?:\.|::|->)\s*$", before)
+            if re.search(r"(?:\.|::|->)\s*$", before) and not r:
+                continue
+            recv = (r.group(1) or r.group(2)) if r else None
+            kind = next((kinds[m.group(1)] for rs, bare_ok, kinds in rows
+                         if m.group(1) in kinds and ((recv is None and bare_ok) or recv in rs)), None)
+            if kind is None and recv is None and m.group(1) in bare:
+                kind = bare[m.group(1)]
+            elif kind is None and recv in recvs:
+                kind = _FS_NAMES.get(m.group(1))
+            if kind is None:
+                continue
+            after = code[m.end():]
+            if p := re.match(r"\s*\(", after):
+                args = _call_args(code, m.end() + p.end(), True)
+            elif (lang in _PAREN_LESS and re.match(r"[ \t]+[\"'$\w]", after)  # unlink "x"; File.delete "x"
+                  or lang in _PAREN_LESS | {"lua"} and re.match(r"[\"']", after) and (code[m.start() - 1] if m.start() else " ") not in "'\""):
+                args = _call_args(code, m.end(), False)  # unlink"x" (no space: perl, ruby; lua's f"x")
+            else:
+                continue
+            calls += 1
+            if calls > 300 or binds.get("\x01"):  # past the cap, or bindings the guard stopped reading: not ruled out
+                out.append("\x01")
+                return out
+            if args and args[-1] == _CUT:  # a call longer than _call_args reads: what is past its window is unknown
+                out.append("\x01")
+            if lang == "r":
+                named = [a.split("=", 1)[1] for a in args if re.match(r"\w+\s*=(?!=)", a)
+                         and a.split("=", 1)[0].strip() in _R_PATH_ARGS]
+                args = [a for a in args if not re.match(r"\w+\s*=(?!=)", a)] if kind != "open" else args
+                out += [v for a in named for v in _t_vals(a, binds)]  # (at most eight, the unknown last: no slice)
+                if kind == "named":
+                    continue
+            picks = {"first": args[:1], "second": args[1:2], "both": args[:2], "all": args}.get(kind, [])
+            if kind == "open":
+                if _t_writes_mode(args, lang):
+                    picks = args[:1]
+            elif kind == "plopen":
+                picks = _perl_open_target(args, binds)
+                out += picks
+                continue
+            if len(picks) > 8:  # a call with more targets than are read (File.delete a1, a2 … a9): the rest is unknown
+                out.append("\x01")
+            out += [v for a in picks[:8] for v in _t_cut(_t_vals(a, binds), 3)]
+            if len(out) > 256:
+                out.append("\x01")
+                return out
+    if "tcl" in langs:
+        out += _tcl_system_targets(code)
+    return out
+
+
+def _perl_open_target(args, binds):
+    """perl's open: 2-argument (">path", the mode and path in one string) or 3-argument (mode, then path), writes only."""
+    if len(args) < 2:
+        return []
+    modes = _t_vals(args[1], binds)  # (at most eight, the unknown "\x01" last: it is a target of its own, no slice)
+    out = []
+    for v in modes:
+        if "\x01" in v:
+            out.append(v)
+            continue
+        m = re.match(r"\s*(\+?>>?|\+<)\s*(.*)$", v, re.S)
+        if not m:
+            continue
+        rest = m.group(2).strip()
+        if rest and not (rest.startswith(":") and len(args) > 2):  # ">:encoding(UTF-8)", path: a layer, not the path
+            out.append(rest)
+        elif len(args) > 2:
+            out += _t_vals(args[2], binds)
+    return out
+
+
+def _tcl_system_targets(code):
+    """T-4673: the write targets of Tcl's open (a write mode) and file delete/rename/mkdir/copy/link."""
+    sets = {m.group(1): m.group(2).strip('{}"') for m in _TCL_SET.finditer(code)}
+
+    def word(w):
+        w = w.strip().strip('{}"')
+        return sets.get(w[1:], "\x00") if w.startswith("$") else w
+    out = []
+    for m in _TCL_OPEN.finditer(code):
+        mode = (m.group(2) or "").strip('{}"')
+        if re.match(r"^(?:[wa][+bt]*|r\+[bt]*)$", mode) or re.search(r"WRONLY|RDWR|APPEND|CREAT|TRUNC", mode):
+            if not m.group(1).strip('{}"').startswith("|"):
+                out.append(word(m.group(1)))
+    for m in _TCL_FILE.finditer(code):
+        words = [w for w in m.group(2).split() if not w.startswith("-")]
+        pick = {"copy": words[-1:], "link": words[:1], "attributes": words[:1]}.get(m.group(1), words)
+        out += [word(w) for w in pick]
+    return out
+
+
+_RUN_NAME = lazy(rf"(?:{_INTERP_NAMES})")
+# T-4673 review: the files a heredoc may be saved into without ever being run (text, config, markup)
+_DATA_EXT = (".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".csv", ".tsv", ".html", ".css", ".log", ".cfg", ".conf",
+             ".ini", ".toml", ".xml", ".rst", ".svg", ".diff", ".patch")
+_RUN_FLAGS = {"py": "c", "js": "ep", "pl": "eE", "rb": "e", "php": "r", "lua": "e", "r": "e", "jl": "eE"}  # code-word flags
+_FLOW_WORDS = _KEYWORDS | {"for", "case", "select", "esac", "fi", "done", "function"}
+_WALK_UNITS_MAX = 200
+_TOO_BIG = ("system", "interpreter code too large to read whole (more writes, names or values than the guard follows): "
+            "split it or name the paths plainly")
+
+
+def _wrapper_dir(prefix):
+    """T-4673 round 3: the folder word a wrapper before a command sets (env -C DIR, env --chdir DIR or --chdir=DIR, sudo -D
+    DIR), None when there is none. `prefix` is the words _strip_wrappers dropped."""
+    for i, a in enumerate(prefix):
+        base = os.path.basename(a)
+        if base not in ("env", "sudo", "doas"):
+            continue
+        short, valued = ("-C", ("-u", "--unset")) if base == "env" else ("-D", ("-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U"))
+        j = i + 1
+        while j < len(prefix) and (prefix[j].startswith("-") or "=" in prefix[j]):
+            w = prefix[j]
+            if w.startswith("--chdir="):
+                return w[8:]
+            if w in ("--chdir", short):
+                return prefix[j + 1] if j + 1 < len(prefix) else None
+            j += 2 if w in valued else 1
+    return None
+
+
+def _cd_union(text, ctx):
+    """T-4673: every folder a cd in text may leave the shell in, for the places the walk below can't follow (and the
+    fallback): where it starts, each existing folder a cd or pushd names (quotes and -L/-P skipped), and where a climbing
+    cd through a link goes."""
+    out = [ctx.cwd]
+    for m in _CD_TARGET.finditer(text):
+        w = m.group(2)
+        if not _unresolvable(w) and os.path.isdir(d := _resolve(_expand(w, ctx), ctx.cwd)):
+            out.append(d)
+    return list(dict.fromkeys(out + _climb_dirs(text, ctx)))
+
+
+def _run_inline(lang, args):
+    """Whether an interpreter's own arguments carry its code (-c, -e, -r, --eval, deno eval): no script file to read."""
+    flags, valued, i = _RUN_FLAGS.get(lang, ""), _OPT_VALUE.get(lang, ""), 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            return False
+        if a.startswith("--"):
+            if lang == "js" and a in ("--eval", "--print"):
+                return True
+            i += a in _LONG_VALUE
+            continue
+        if a.startswith("-") and len(a) > 1:
+            for j, f in enumerate(a[1:]):
+                if f in flags:
+                    return True
+                if f in valued:
+                    i += j == len(a) - 2
+                    break
+            continue
+        return lang == "js" and a == "eval"  # the first plain word is the script (or the module of -m)
+    return False
+
+
+def _feed_is_data(c, name, argv, onward):
+    """Whether what a command reads on stdin (a heredoc, a here-string) only becomes text: it prints it, keeps it, or
+    saves it to a data file, and no pipe carries it on. A file of another name may be run later, so that is code."""
+    if onward or c.depth > 0 or name in ("dd", "cp", "install", "ln", "mv", "rsync"):  # a group may feed a process substitution
+        return False
+    targets = [r for r in c.redirs if not r.startswith("/dev/")]
+    if name in ("tee", "sponge"):
+        targets += [a for a in argv[1:] if not a.startswith("-")]
+    return all(t.lower().endswith(_DATA_EXT) for t in targets)
+
+
+def _interp_walk(cmd, ctx):
+    """T-4673 review: (units, places) read the way the shell runs the line, or None when the line has a form this does
+    not follow (the caller reads the whole line instead). A unit is (code, languages, folders): code an interpreter is
+    handed (its arguments, a heredoc or here-string it reads, and, for one that runs a script file or its stdin, the
+    text the line writes to files or into a pipe) with the folders the shell may be in where it runs. Text that merely
+    sits in the line (a commit message, a heredoc saved to a .md file) is no unit. The folders follow the cd, pushd and
+    popd commands in order: a straight cd into an existing folder replaces them, a subshell's cd ends with it, and a cd
+    that may not happen (after && or ||, in a pipe, a loop or group, in the background) adds to them."""
+    lines, bodies = _heredoc_split(cmd)
+    text = "\n".join(lines)
+    if "$'" in text or len(re.findall(r"(?<!<)<<(?!<)", text)) != len(re.findall(_HEREDOC_START, text)):
+        return None  # $'…' quoting, or a heredoc form the split doesn't know
+    if ("`" in text or "$(" in text) and (bodies or re.search(r"(?:^|[\s;&|(])(?:cd|pushd|popd)(?=\s|$|[;&|)])", text)):
+        return None  # a command inside a substitution: its heredocs and its cd are not placed
+    if _shlex_fails(_lines(text)):
+        return None  # quotes shlex can't pair: the words below would be a guess
+    cmds = _split(_tokens(_lines(text)))
+    if len(cmds) > 2000 or any(c.depth < 0 for c in cmds) or sum(op == "<<" for c in cmds for op, _ in c.feeds) != len(bodies):
+        return None
+    vague = (any(c.argv and c.argv[0] in _FLOW_WORDS for c in cmds) or bool(re.search(r"\)\s*\{", text))  # a loop, branch,
+             or "CDPATH" in text or bool(os.environ.get("CDPATH")))  # group or function: a cd there may not happen
+    memo, here, scopes, nh, steps = {}, [ctx.cwd], [], 0, []  # steps: (command, argv, name, folders, fed texts, onward)
+
+    def anywhere():
+        if "u" not in memo:
+            memo["u"] = _cd_union(text, ctx)
+        return memo["u"]
+
+    def join(a, b):
+        return list(dict.fromkeys(a + b))
+    for k, c in enumerate(cmds):
+        fed = []
+        for op, w in c.feeds:
+            if op == "<<":
+                fed.append("\n".join(bodies[nh]))
+                nh += 1
+            else:
+                fed.append(w)
+        while scopes and c.depth < scopes[-1][0]:
+            here = scopes.pop()[1]  # a subshell ended: its cd goes with it
+        top = scopes[-1][0] if scopes else 0
+        while top < c.depth:
+            top += 1
+            scopes.append((top, list(here)))
+        argv, via_xargs = _strip_wrappers(c.argv)
+        if not argv:
+            continue
+        name = os.path.basename(argv[0])
+        nxt = cmds[k + 1].op if k + 1 < len(cmds) else ""
+        onward = nxt in ("|", "|&")
+        piped = c.op in ("|", "|&") or onward
+        if name in _CDS:
+            prefix = c.argv[:len(c.argv) - len(argv)]
+            odd = any(not (p in _KEYWORDS or "=" in p or os.path.basename(p) in ("builtin", "command")) for p in prefix)
+            rest = argv[1:]
+            while rest and rest[0] in ("-L", "-P", "-e", "-@", "--"):
+                rest = rest[1:]
+            if (name == "popd" or rest[:1] == ["-"] or len(rest) > 1 or vague
+                    or name == "pushd" and (not rest or rest[0].startswith(("+", "-")))
+                    or _unliteral(rest[0] if rest else ctx.home) or re.search(r"[*?\[]", rest[0] if rest else "")):
+                here = join(here, anywhere())  # a form whose place the guard can't name: any folder the line names
+                continue
+            new = _moved(here, [], rest[0] if rest else ctx.home, True, False, ctx)[0]
+            sure = not (piped or odd) and c.op not in ("||", "&&") and nxt != "&" and all(
+                os.path.isdir(x) and os.access(x, os.X_OK) for x in new)
+            here = new if sure else join(here, new)
+            continue
+        if (name in ("eval", "source", ".", "trap", "mapfile", "readarray", "exec") or _unresolvable(argv[0])) and not piped:
+            here = join(here, anywhere())  # code or a file the guard can't read may cd
+        folders = list(here)
+        if (w := _wrapper_dir(c.argv[:len(c.argv) - len(argv)])) is not None:  # env -C DIR, sudo -D DIR: it runs there
+            folders = join(here, anywhere()) if _unliteral(w) or re.search(r"[*?\[]", w) else _moved(here, [], w, True, False, ctx)[0]
+        steps.append((c, argv, name, folders, fed, onward, via_xargs))
+    runs = [s for s in steps if _RUN_NAME.fullmatch(s[2])]
+    if len(runs) < len(_INTERP.findall(_mask_fm(text, ctx))):
+        return None  # an interpreter the walk didn't see as a command word (under a wrapper it doesn't know, in a string)
+    units, loose, places = [], [], []
+    if (bodies or any(s[4] for s in steps)) and any(_RUNS_STDIN.fullmatch(s[2]) or _unresolvable(s[1][0]) for s in steps):
+        return None  # a shell may read a heredoc or here-string as commands (its code is no interpreter's): read whole
+    for c, argv, name, folders, fed, _, via_xargs in runs:
+        lang = _LANG_OF.get(re.sub(r"[0-9.]+$", "", name), "py")
+        places = join(places, folders)
+        inline = _run_inline(lang, argv[1:])
+        if via_xargs or not inline:  # xargs hands it what the pipe carries (its code, whatever its flags)
+            loose.append((lang, folders))
+        # an inline run's every argument may be its code, whatever it looks like (unlink"x" has no space or paren)
+        units += [(a, {lang}, folders) for a in argv[1:] if inline or re.search(r"[\s(]", a)]
+        units += [(f, {lang}, folders) for f in fed]
+    if loose:  # a script file or stdin: the text this line saves or pipes may be that code
+        langs, folders = {lang for lang, _ in loose}, []
+        for _, fs in loose:
+            folders = join(folders, fs)
+        for c, argv, name, _, fed, onward, _ in steps:
+            if _RUN_NAME.fullmatch(name) or _feed_is_data(c, name, argv, onward):
+                continue
+            units += [(a, langs, folders) for a in argv[1:] if re.search(r"[\s(]", a)]
+            units += [(f, langs, folders) for f in fed]
+    if len(units) > _WALK_UNITS_MAX:
+        return None
+    return units, places or [ctx.cwd]
+
+
+def _unit_targets(code, langs):
+    """The write targets (as text) of one unit of interpreter code: python through its parse tree (text rows when it
+    does not parse), the other languages through the table."""
+    cands, text_langs = [], set(langs) - {"py"}
+    if "py" in langs:
+        try:
+            cands += _py_system_targets(code)
+        except (SyntaxError, ValueError, MemoryError, RecursionError):
+            text_langs.add("py")  # not python as written: the text table reads it
+    if text_langs:
+        cands += _text_system_targets(code.replace('\\"', '"').replace("\\$", "$"), text_langs)
+    return cands
+
+
+_CHDIR = lazy(r"(?<![\w$@])(?:f?chdir|setwd)\b")  # os.chdir, process.chdir, Dir.chdir, perl's chdir, php's, R's setwd
+_CHDIR_CD = lazy(r"(?<![\w$@.])cd\b")  # tcl's and julia's cd (a word of every shell script: only read in those)
+_CHDIR_UNK = ("system", "interpreter code changes its folder where the guard can't tell to (chdir) and then writes a "
+              "relative path: write the path in full")
+_CHDIR_MAX = 16
+
+
+def _chdir_bases(code, langs, folders, ctx):
+    """T-4673 round 3: (folders, unknown) for one unit of interpreter code: `folders` (where the shell may be when it
+    starts) widened by each place a chdir in the code may leave it, the literal targets followed in order (the code may
+    not reach one, so they add), and `unknown` when a target is not a literal (an argument, a computed name): a relative
+    write after it lands where the guard can't tell. Code with no chdir word pays one pattern search."""
+    ms = list(_CHDIR.finditer(code))
+    if langs & {"tcl", "jl"}:
+        ms = sorted(ms + list(_CHDIR_CD.finditer(code)), key=lambda m: m.start())
+    if not ms:
+        return folders, False
+    binds, dirs, unknown = _t_bindings(code), list(folders), bool(len(ms) > _CHDIR_MAX)
+    for m in ms[:_CHDIR_MAX]:
+        after = code[m.end():m.end() + 40]
+        if p := re.match(r"\s*\(", after):
+            args = _call_args(code, m.end() + p.end(), True)
+        elif re.match(r"[ \t]+[\"'$\w]", after):
+            args = _call_args(code, m.end(), False)
+        else:
+            continue  # the word without a call: a name in a string or a comment
+        vals = _t_vals(args[0], binds) if args else []
+        if not vals or any("\x00" in v or "\x01" in v for v in vals):
+            unknown = True
+            continue
+        for v in vals:
+            dirs = _moved(dirs, [], v, False, False, ctx)[0][:64]
+    return dirs, unknown
+
+
+def _judge_system(cands, bases, ctx, out, rel_unknown=False):
+    """Add to `out` the system hits of the write targets `cands`: an absolute path as it is, a relative one in each of
+    `bases` (a list, or a function that gives one when first needed; a relative path is a hit of its own when
+    `rel_unknown`: the code changed its folder to one the guard can't name). The cap marker is a hit of its own."""
+    got = None
+    for c in dict.fromkeys(cands):
+        if not c:
+            continue
+        if "\x01" in c:
+            if _TOO_BIG not in out:
+                out.append(_TOO_BIG)
+            continue
+        if c.startswith("\x00"):
+            continue
+        t = _expand(c.replace("\x00", "_"), ctx)
+        if not os.path.isabs(t) and rel_unknown and _CHDIR_UNK not in out:
+            out.append(_CHDIR_UNK)
+        if not os.path.isabs(t) and got is None:
+            got = bases() if callable(bases) else bases
+        for path, real in ([_walk(t, "/")] if os.path.isabs(t) else [_walk(t, b) for b in got]):
+            out += [h for h in _judge(classify_write, path, real, ctx, " (written from interpreter code)")
+                    if h[0] == "system" and h not in out]
+
+
+def _interp_system_writes(cmd, ctx):
+    """T-4673: [("system", why)] for each system path interpreter code writes (see the block above). Commands whose code
+    has no write-call word pay one pattern search. The code is read as the shell runs it (_interp_walk); a line that
+    walk can't follow is read whole, from every folder a cd in it names."""
+    code = _interp_code(cmd)
+    if not _SYS_GATE.search(code):
+        return []
+    out = []
+    if (walk := _interp_walk(cmd, ctx)) is not None:
+        for text, langs, folders in walk[0]:
+            folders, unknown = _chdir_bases(text, langs, folders, ctx)  # (a chdir inside the code moves its relative writes)
+            _judge_system(_unit_targets(text, langs), folders, ctx, out, unknown)
+        return out
+    langs, py = set(), False
+    for m in _INTERP.finditer(_mask_fm(_drop_data_heredocs(cmd), ctx)):
+        name = re.sub(r"[0-9.]+$", "", os.path.basename(m.group(1)))
+        if name in _LANG_OF:
+            langs.add(_LANG_OF[name])
+        else:
+            py = True
+    cands = []
+    if py:
+        for src in _python_sources(cmd):
+            cands += _unit_targets(src, {"py"})
+    if langs:
+        cands += _text_system_targets(code.replace('\\"', '"').replace("\\$", "$"), langs)
+    folders, unknown = _chdir_bases(code, langs | ({"py"} if py else set()), _cd_union(cmd, ctx), ctx) if cands else ([], False)
+    _judge_system(cands, folders, ctx, out, unknown)
+    return out
+
+
 def _interpreter_writes(cmd, ctx):
     """Interpreter code (heredoc, -c, -e) that writes files: every quoted path it names counts as a write target.
 
@@ -2615,13 +3507,21 @@ def _interpreter_writes(cmd, ctx):
     if _CLAUDE_IN_CODE.search(code) and (_EXEC_API.search(code) or ticks):
         return [("plugin", "interpreter code running claude's plugin, MCP or config commands" + plugin_mark("?"))]
     proved = _proved_writes(cmd, ctx)  # T-0176: a script that provably writes only its open() files
+    system = _interp_system_writes(cmd, ctx)  # T-4673: the system paths it writes (the filter below keeps the guarded ones)
     if proved is None and not _WRITE_API.search(cmd):
-        return []
+        return system
     found = []
     if proved is None:  # T-1458: after a provable `cd DIR &&` chain a relative name opens there, not in ctx.cwd
         units, _, starters, lead = _python_units(cmd)
-        base = (_chain_dir(starters, "\n".join(lead), ctx) if units else None) or ctx.cwd
-    for path, real in proved if proved is not None else [_walk(_expand(x, ctx), base) for x in _quoted_paths(cmd)]:
+        only = _chain_dir(starters, "\n".join(lead), ctx) if units else None
+        bases = [only or ctx.cwd]
+        if not only and re.search(r"(?:^|[\s;&|(])(?:cd|pushd)\s", cmd):
+            # T-4673: -c code (and code the chain can't pin to one folder) opens a relative name where the shell may be
+            # when it runs: the places the walk follows in order, else after any cd the line names
+            walk = _interp_walk(cmd, ctx)
+            bases = list(dict.fromkeys(bases + (walk[1] if walk is not None else _cd_union(cmd, ctx))))
+    for path, real in proved if proved is not None else [
+            _walk(_expand(x, ctx), b) for x in _quoted_paths(cmd) for b in bases]:
         what = f"{path} (written from interpreter code)" if "$" not in path else (  # T-4138: a $name the shell fills in
             "a file the script writes at a path the shell fills in, which the guard can't read (written from interpreter code)")
         hits = [(cat, what) for cat in classify_write(path, ctx)]
@@ -2632,7 +3532,7 @@ def _interpreter_writes(cmd, ctx):
     if proved is None and not found and ctx.unbriefed and _computed_path_write(cmd):
         # T-4138: no task is active and the file is named by text the script builds: not a path the scan can name
         found = [("brief", "a file the script writes at a computed path the guard can't read (written from interpreter code)")]
-    return found
+    return found + [h for h in system if h not in found]
 
 
 _PATH_LITERAL = lazy(r"""(?:[~/.]|[\w.-]+/)[^'"\s]*""")  # what _QUOTED takes between its quotes
@@ -3603,6 +4503,34 @@ def _cd_from(tgt, here, ctx):
     return os.path.normpath(t) if os.path.isabs(t) else _resolve(t, here) if here else None
 
 
+def _cd_real(tgt, here, ctx):
+    """T-4673: where `cd tgt` from here really lands when a '..' comes after a link ("" when there is none or the guard
+    can't tell). _cd_from collapses `cd link/..` to the link's folder, as bash's default cd -L does; cd -P and set -P
+    land in the link target's parent, where a later relative name is another file. A cd with no '..' pays nothing."""
+    if not here or ".." not in tgt or _unresolvable(tgt):
+        return ""
+    return _walk(_expand(tgt, ctx), here)[1]
+
+
+_CD_TARGET = lazy(r"""(?:^|[\s;&|(])(?:cd|pushd)\s+(?:-[LPe@]+\s+|--\s+)*(["']?)([^\s;&|"'<>()]+)\1""")
+
+
+def _climb_dirs(text, ctx):
+    """T-4673: the folders a `cd T` in text may land in when T has a '..' after a link, both readings (where bash's
+    cd -L collapses it, and where cd -P goes), for the code that names a relative file after such a cd; [] when no cd
+    in text climbs through a link. Only a text that has a '..' pays for the scan."""
+    if ".." not in text:
+        return []
+    out = []
+    for m in _CD_TARGET.finditer(text):
+        t = m.group(2)
+        if ".." in t and not _unresolvable(t):
+            path, real = _walk(_expand(t, ctx), ctx.cwd)
+            if real and os.path.isdir(real):
+                out += [path, real]
+    return list(dict.fromkeys(out))
+
+
 def _moved(cwds, lost, tgt, sure, cdpath, ctx):
     """T-0175 review: the places the shell may be after a cd: cwds, the ones the guard can name, and lost, the paths
     below a folder it can't name (a cd to a target it can't resolve, or a relative one CDPATH may send elsewhere). When
@@ -3614,8 +4542,10 @@ def _moved(cwds, lost, tgt, sure, cdpath, ctx):
         t = _expand(tgt, ctx)
         if os.path.isabs(t):
             new, tails = [os.path.normpath(t)], []
+            new += [r for r in (_walk(t, "/")[1],) if r]  # T-4673: cd -P lands where a '..' after a link goes
         else:
             new = [_resolve(t, b) for b in cwds]
+            new += [r for b in cwds for r in (_walk(t, b)[1],) if r]
             tails = [os.path.join(x, t) for x in lost] + ([t] if cdpath else [])
     return list(dict.fromkeys(new if sure else cwds + new)), list(dict.fromkeys(tails if sure else lost + tails))
 
@@ -4211,7 +5141,8 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     head = head if head and not _moves_text(re.sub(r"\$\{\w+\}", "$V", rest)) and not any(  # aware, nor sees c$(…) or
         _MOVERS.search(" ".join(x.argv)) or re.search(r"[^\w./+:@%,-]", word(x.argv)) for x in cmds[1:]) else None  # A=1 $C
     _DCWD[depth] = [os.path.normpath(head[1])] if head else list(dict.fromkeys(starts + [  # text read before the walk
-        _cd_from(x.argv[1], s, ctx) for x in cmds if x.argv[:1] == ["cd"] and x.argv[1:2] for s in starts]))  # below
+        _cd_from(x.argv[1], s, ctx) for x in cmds if x.argv[:1] == ["cd"] and x.argv[1:2] for s in starts] + [
+        r for x in cmds if x.argv[:1] == ["cd"] and x.argv[1:2] for s in starts if (r := _cd_real(x.argv[1], s, ctx))]))
     for spawned in (x for src in _python_sources(cmd if _INTERP.search(dry) else dry) for x in _spawned_commands(src)):
         found += check_bash(spawned, ctx, depth + 1)  # T-0345, and its review: from those folders too (`…`, sh <<<,
     # python -c): any folder a cd names
@@ -4308,7 +5239,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                 failcd = shlex.quote(tgt) if can_fail and not certain and not _unresolvable(tgt) else failcd
                 before = cwds
                 cwds, lost = _moved(cwds, lost, tgt, certain, cdpath, ctx)
-                new = [_cd_from(tgt, r, ctx) for r in rd]
+                new = [_cd_from(tgt, r, ctx) for r in rd] + [x for r in rd if (x := _cd_real(tgt, r, ctx))]
                 if dirs and not unknown and _unresolvable(tgt) and _only_unset(tgt, bare):  # T-1923: bash makes it
                     rest = _PART.sub("", tgt)  # empty: cd "$X" stays put, cd $X goes home (or to the word after it)
                     ws = [w for w in raw[idx] if _unquote(w) == dirs[0]] if raw is not None and len(raw) == len(cmds) else []

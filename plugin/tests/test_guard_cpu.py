@@ -2,6 +2,7 @@
 systemctl --user set-property makes, so it needs the same yes (category system); the meter and the goal don't."""
 import sys
 import unittest
+from unittest import mock
 
 from helpers import LIB
 from test_guard import GuardCase
@@ -31,6 +32,31 @@ class CpuCap(GuardCase):
             ("systemctl --user set-property --runtime kitty-1-0.scope CPUQuota=160%", "system"),  # unchanged
         ], self.bash)
         self.assertIsNone(self.bash("fm cpu cap 10", allow=["system"]))
+
+
+class SystemWriteGate(GuardCase):
+    """T-4673 review: interpreter code with no write-call word pays one pattern search and nothing more: `os`, `dir`,
+    `set` and `file` alone (words of nearly every script) don't open the scan, a write call does."""
+
+    def walks(self, cmd):
+        from test_guard import g as fmguard
+        seen = []
+        real = fmguard._interp_walk
+        with mock.patch.object(fmguard, "_interp_walk", lambda *a: seen.append(1) or real(*a)):
+            fmguard._interp_system_writes(cmd, self.ctx())
+        return len(seen)
+
+    def test_code_without_a_write_call_is_not_scanned(self):
+        for cmd in ("python3 -c \"import os; print(dir(), set(), file)\"", "python3 -m pytest -q tests",
+                    "node -e \"console.log(Object.keys(process.env).length)\"",
+                    "ruby -e 'puts [1, 2].sort.inspect'"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.walks(cmd), 0)
+        for cmd in ("python3 -c \"open('x', 'w')\"", "python3 -c \"import os; os.remove('x')\"",
+                    "Rscript -e 'dir.create(\"x\")'", "php -r 'file_put_contents(\"x\", 1);'",
+                    "tclsh <<'EOF'\nfile delete x\nEOF"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual(self.walks(cmd), 1)
 
 
 class ColdWriteTargets(unittest.TestCase):
