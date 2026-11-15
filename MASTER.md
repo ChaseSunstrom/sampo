@@ -441,21 +441,21 @@ Each note below is one index line: the first words of its full note and a link t
 
 ### Tasks, batches and backlog
 
-- Batches (T-0257): `sampo batch ID ID … [--title T]` builds a host brief (type… [→ ops-1](docs/map/ops-1.md)
-- Smarter nudges (T-0262): `sampo capture` and `sampo task new` say first when a… [→ ops-1](docs/map/ops-1.md)
-- Review risk (T-0885): every `sampo tour` row carries a verdict — review, glance… [→ ops-1](docs/map/ops-1.md)
-- Handoff (T-0263): `sampo tour ID` lists a task's changed files in reading order… [→ ops-1](docs/map/ops-1.md)
-- `sampo inbox spec FILE` (T-1165, `fmeco.inbox_spec`): each unchecked… [→ ops-1](docs/map/ops-1.md)
-- Backlog tools (T-1664, `fmeco`; `/sampo:backlog` asks through… [→ ops-1](docs/map/ops-1.md)
-- Waiting on the outside world (T-1183, `fmcore.until_condition`/`deferral_due`)… [→ ops-1](docs/map/ops-1.md)
-- Many ids at once (T-1877, `fmcli.task_ids`/`_task_each`)… [→ ops-1](docs/map/ops-1.md)
-- The user's uncommitted work stays out of task commits (T-1169): the first… [→ ops-1](docs/map/ops-1.md)
-- `sampo away [--json]` (T-1155, `fmaway.py`): what closed, blocked, was asked… [→ ops-1](docs/map/ops-1.md)
-- `sampo todo [--json]` (T-1157): what only the user can do now, each with what… [→ ops-1](docs/map/ops-1.md)
-- Batch edits (T-1089, `fmedit.py`): `sampo edit [--dry-run]` parses a stdin spec… [→ ops-1](docs/map/ops-1.md)
-- Queue preview (T-0114): `sampo queue --preview` lists the queue and the ranked… [→ ops-1](docs/map/ops-1.md)
-- Inbox ranking (T-0111): captured items are listed (sampo state, INBOX.md, the… [→ ops-1](docs/map/ops-1.md)
-- Across projects, machines and tools (T-0673, `fmeco`; nothing edits another… [→ ops-1](docs/map/ops-1.md)
+- Batches (T-0257): `sampo batch ID ID … [--title T]` builds a host brief (type… [→ ops-4](docs/map/ops-4.md)
+- Smarter nudges (T-0262): `sampo capture` and `sampo task new` say first when a… [→ ops-4](docs/map/ops-4.md)
+- Review risk (T-0885): every `sampo tour` row carries a verdict — review, glance… [→ ops-4](docs/map/ops-4.md)
+- Handoff (T-0263): `sampo tour ID` lists a task's changed files in reading order… [→ ops-4](docs/map/ops-4.md)
+- `sampo inbox spec FILE` (T-1165, `fmeco.inbox_spec`): each unchecked… [→ ops-4](docs/map/ops-4.md)
+- Backlog tools (T-1664, `fmeco`; `/sampo:backlog` asks through… [→ ops-4](docs/map/ops-4.md)
+- Waiting on the outside world (T-1183, `fmcore.until_condition`/`deferral_due`)… [→ ops-4](docs/map/ops-4.md)
+- Many ids at once (T-1877, `fmcli.task_ids`/`_task_each`)… [→ ops-4](docs/map/ops-4.md)
+- The user's uncommitted work stays out of task commits (T-1169): the first… [→ ops-4](docs/map/ops-4.md)
+- `sampo away [--json]` (T-1155, `fmaway.py`): what closed, blocked, was asked… [→ ops-4](docs/map/ops-4.md)
+- `sampo todo [--json]` (T-1157): what only the user can do now, each with what… [→ ops-4](docs/map/ops-4.md)
+- Batch edits (T-1089, `fmedit.py`): `sampo edit [--dry-run]` parses a stdin spec… [→ ops-4](docs/map/ops-4.md)
+- Queue preview (T-0114): `sampo queue --preview` lists the queue and the ranked… [→ ops-4](docs/map/ops-4.md)
+- Inbox ranking (T-0111): captured items are listed (sampo state, INBOX.md, the… [→ ops-4](docs/map/ops-4.md)
+- Across projects, machines and tools (T-0673, `fmeco`; nothing edits another… [→ ops-4](docs/map/ops-4.md)
 
 ### Lanes and builders
 
@@ -622,9 +622,9 @@ Each note below is one index line: the first words of its full note and a link t
 
 ### Sampo Code
 
-- Sampo Code (T-1212, `fmcode.py`)… [→ ops-3](docs/map/ops-3.md)
-- Width oracle (T-1516): `test_code_tui.HostileWidth` sweeps hostile strings over… [→ ops-3](docs/map/ops-3.md)
-- macOS portability (T-1828): `fmcodetui._runners_of_child` names a runner with… [→ ops-3](docs/map/ops-3.md)
+- Sampo Code (T-1212, `fmcode.py`)… [→ ops-4](docs/map/ops-4.md)
+- Width oracle (T-1516): `test_code_tui.HostileWidth` sweeps hostile strings over… [→ ops-4](docs/map/ops-4.md)
+- macOS portability (T-1828): `fmcodetui._runners_of_child` names a runner with… [→ ops-4](docs/map/ops-4.md)
 
 ### Running it
 
