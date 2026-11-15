@@ -43,6 +43,7 @@ def _slack(raw):
 SLACK = _slack(os.environ.get("FOREMAN_HOOK_SLACK"))
 LONG_JOB_S = 20 * 60   # T-0415: a background job running longer no longer holds the drive
 FINISH_JOB_S = 2 * 3600  # T-4644: ... except the job that holds the active task's own close (queued behind CI): to here
+JOB_TYPICAL_MIN = {"close": 60, "ci": 30}  # T-4670: minutes a queued close or a CI watch is known to take; stuck at twice that
 CONTEXT_NOTE_PCT = 60     # context use at a task boundary worth mentioning (context rot)
 CONTEXT_NOTE_TOKENS = 200_000  # T-0703: every turn re-reads the context, so past this a 1M window costs at 20%
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
@@ -4921,21 +4922,103 @@ WAIT_FRESH_S = 30      # a wait_jobs written this long before the timer started 
 _WAIT_DIR = "waitwake"
 
 
-def _stale_jobs(since, armed_at, turn_at, now, woken=(), limit=LONG_JOB_S):
-    """[(age_s, job)] of the waited jobs past `limit`, oldest first; none when the session took a turn since the wait."""
+def job_limit(kind, limit=LONG_JOB_S):
+    """T-4670: seconds a waited job of `kind` runs before it is called stuck: twice the typical time of a queued close or
+    a CI watch (JOB_TYPICAL_MIN), else the plain `limit`. An overridden plain limit scales the kinds with it."""
+    m = JOB_TYPICAL_MIN.get(kind)
+    return limit if not m else max(limit, 2 * m * 60 * limit / LONG_JOB_S)
+
+
+_CMD_OPS = frozenset(("&&", "||", "|", "|&", ";", "&", "(", ")"))   # after one of these a new command begins
+_CMD_WRAPPERS = frozenset(("nohup", "setsid", "time", "exec", "env", "nice", "command", "stdbuf", "timeout"))
+_JOB_CMD_MAX = 4000   # a longer command is not read: a bounded parse
+
+
+def _runs_ci_watch(command, depth=1):
+    """T-4670: True when `command` runs Sampo's CI watcher: the `ci-watch` verb of sampo or fm (by program name, so a path
+    or `python3 plugin/bin/sampo` counts) at a command position, read with shlex: the start, or after && || | ; &, past
+    env assignments and wrappers (nohup, env, ...). Words elsewhere (an echo, a grep pattern, a quoted string) are not it;
+    one level of `bash -c '...'` is read. Structure only, never a word list over the text."""
+    if not isinstance(command, str) or not command.strip() or len(command) > _JOB_CMD_MAX:
+        return False
+    try:
+        lex = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        toks = list(lex)
+    except ValueError:
+        return False
+    at_cmd, i = True, 0
+    while i < len(toks):
+        t = toks[i]
+        i += 1
+        if t in _CMD_OPS:
+            at_cmd = True
+            continue
+        if not at_cmd:
+            continue
+        name = os.path.basename(t)
+        if re.fullmatch(r"[A-Za-z_]\w*=.*", t) or name in _CMD_WRAPPERS:
+            while name in _CMD_WRAPPERS and i < len(toks) and (toks[i].startswith("-") or toks[i].isdigit()):
+                i += 1      # a wrapper's own flags and number (nice -n 5, timeout 60)
+            continue
+        if re.fullmatch(r"python[\d.]*", name):
+            while i < len(toks) and toks[i].startswith("-"):
+                i += 1
+            if i < len(toks):
+                name, i = os.path.basename(toks[i]), i + 1
+            else:
+                return False
+        if name in ("sampo", "fm"):
+            if i < len(toks) and toks[i] == "ci-watch":
+                return True
+        elif name in ("bash", "sh", "zsh") and depth > 0 and i + 1 < len(toks) and toks[i] == "-c":
+            if _runs_ci_watch(toks[i + 1], depth - 1):
+                return True
+        at_cmd = False
+    return False
+
+
+def job_kind(job, closing=False):
+    """T-4670: 'close' for a job that closes a task (`closing`: the drive found it in its closes), 'ci' for a job whose
+    `command` runs Sampo's CI watcher (_runs_ci_watch: its structure, never words in a description), else None."""
+    if closing:
+        return "close"
+    if isinstance(job, dict) and _runs_ci_watch(job.get("command")):
+        return "ci"
+    return None
+
+
+def _stale_jobs(since, armed_at, turn_at, now, woken=(), limit=LONG_JOB_S, kinds=None):
+    """[(age_s, job)] of the waited jobs past their limit (`limit`, or their kind's: T-4670), oldest first; none when
+    the session took a turn since the wait."""
     if turn_at and turn_at > armed_at:
         return []
-    return sorted(((now - t, k) for k, t in since.items() if now - t >= limit and k not in woken), reverse=True)
+    kinds = kinds if isinstance(kinds, dict) else {}
+    return sorted(((now - t, k) for k, t in since.items()
+                   if now - t >= job_limit(kinds.get(k), limit) and k not in woken), reverse=True)
 
 
-def wait_wake(since, armed_at, turn_at, now, woken=(), limit=LONG_JOB_S):
+def wait_wake(since, armed_at, turn_at, now, woken=(), limit=LONG_JOB_S, kinds=None):
     """T-4525: the one line that wakes an idle session whose waited background jobs ran past `limit`, else None.
     since: {job: when the drive first saw it}; armed_at: when the Stop left the wait; turn_at: the session's last
-    prompt; woken: jobs already named (once per job)."""
-    stale = _stale_jobs(since, armed_at, turn_at, now, woken, limit)
+    prompt; woken: jobs already named (once per job); kinds (T-4670): {job: 'close' | 'ci'}, a job of a kind is stuck at
+    its kind's time, not `limit`, and the line says how long it ran and what is typical."""
+    stale = _stale_jobs(since, armed_at, turn_at, now, woken, limit, kinds)
     if not stale:
         return None
-    names = ", ".join(f"{k} ({int(age // 60)} min)" for age, k in stale[:3]) + (f" and {len(stale) - 3} more" if len(stale) > 3 else "")
+    kinds = kinds if isinstance(kinds, dict) else {}
+    kind_of = {"close": "a queued close", "ci": "a CI watch"}
+
+    def name(age, k):
+        m = JOB_TYPICAL_MIN.get(kinds.get(k))
+        return (f"{k} still running after {int(age // 60)} min (typical {m} min for {kind_of[kinds[k]]})" if m
+                else f"{k} ({int(age // 60)} min)")
+    shown, more = stale[:3], f" and {len(stale) - 3} more" if len(stale) > 3 else ""
+    if all(JOB_TYPICAL_MIN.get(kinds.get(k)) for _, k in stale):
+        return (f"Sampo: {'; '.join(name(a, k) for a, k in shown)}{more}: well past its usual time, so it may be stuck "
+                f"(a wait that never ends). Inspect it (TaskOutput) or stop it (TaskStop), then go on with the queued "
+                f"work (sampo next).")
+    names = ", ".join(name(a, k) for a, k in shown) + more
     return (f"Sampo: the drive has waited on {names}, longer than the {round(limit / 60)} min a job holds it, so it may be "
             f"stuck (a wait that never ends). Inspect it (TaskOutput) or stop it (TaskStop), then go on with the queued "
             f"work (sampo next).")
@@ -5022,20 +5105,22 @@ def wait_timer(raw):
         since = {str(k): t for k, t in w["since"].items() if isinstance(t, (int, float))}
         if not since:
             return 0
-        deadline = min(since.values()) + limit
+        kinds = w.get("kinds") if isinstance(w.get("kinds"), dict) else {}  # T-4670: a queued close, a CI watch: own time
+        deadline = min(t + job_limit(kinds.get(k), limit) for k, t in since.items())
+        cap = max(job_limit(kinds.get(k), limit) for k in since) + 60
         for _ in range(3):  # one sleep; again only when the clock moved under it
             rest = deadline - time.time()
             if rest <= 0:
                 break
-            time.sleep(min(rest, limit + 60))
+            time.sleep(min(rest, cap))
         d, w = state()
         if not w or w["at"] != armed:  # the job ended, or a later Stop took over (its own timer follows)
             return 0
         now = time.time()
         since = {str(k): t for k, t in w["since"].items() if isinstance(t, (int, float))}
-        stale = _stale_jobs(since, armed, d.get("turn_at"), now, limit=limit)
+        stale = _stale_jobs(since, armed, d.get("turn_at"), now, limit=limit, kinds=kinds)
         mine = [k for _, k in stale if _wait_claim(folder, key, k)]
-        text = wait_wake({k: since[k] for k in mine}, armed, d.get("turn_at"), now, limit=limit) if mine else None
+        text = wait_wake({k: since[k] for k in mine}, armed, d.get("turn_at"), now, limit=limit, kinds=kinds) if mine else None
         if not text:
             return 0
         print(text, file=sys.stderr)
@@ -5476,6 +5561,23 @@ def _job_closes(job):
     return _text_closes(text)
 
 
+def _live_close(p, tid):
+    """T-4670: whether `sampo task finish tid` runs now, by Sampo's own record (the `closing` marker it keeps, with its
+    pid), not Claude Code's job list: a close started detached (nohup, setsid inside a foreground command) is no job
+    there. One small file read; an unreadable record is no close."""
+    try:
+        for g in (c.read_meta(p).get("closing") or {}).values():
+            if g.get("task") == tid:
+                try:
+                    os.kill(int(g["pid"]), 0)
+                    return True
+                except (KeyError, TypeError, ValueError, OSError):
+                    continue
+    except (OSError, ValueError, AttributeError, c.CorruptState):
+        pass
+    return False
+
+
 def _running(sid, agents=None, closes=None):
     """Background agents and commands of this session still running: their completion notification wakes the
     session, so drive waits instead of pushing busywork. agents, a set, gets the ids that are subagents (a start or a
@@ -5535,8 +5637,9 @@ def _drive(p, sd, briefs, pl, g, saved=True):
     d = g["drive"].setdefault(sid, {"count": 0})
     h = c.sha1(re.sub(r"(?<![\w-])\d[\d.,:]*", "#", reason).encode()).hexdigest()[:16]  # T-1331's digits stay
     last = d.get("said") or {}
+    again = d.pop("offer_again", None)  # T-4670: the same start offer, told again at a Stop of one wait: never held back
     d["said"] = {"hash": h, "ledger": _marks(p)["ledger"], "turn": d.get("turn_at"), "at": time.time()}
-    if last.get("hash") == h and last.get("turn") == d.get("turn_at") \
+    if not again and last.get("hash") == h and last.get("turn") == d.get("turn_at") \
             and not _work_changed(p, last.get("ledger", 0), set(re.findall(r"\bT-\d+", reason))) \
             and not (sd["active"] and _tools_ran(sid, last.get("at"))):
         return None
@@ -5730,6 +5833,10 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     live = scanned & set(found)  # the scan's agents still running (scanned holds every agent it saw start)
     running = sorted({str(t.get("id")) for t in bg if isinstance(t, dict)} | live) if isinstance(bg, list) else \
         sorted(found)  # T-2873: the engine's list can omit running subagents; the scan's live ones join it
+    if sd["active"] and not _headless() and not any(work["id"] in ids for k, ids in closes.items() if k in running) \
+            and _live_close(p, work["id"]):  # T-4670: a detached close no job list holds waits as a job does
+        running = sorted(set(running) | {f"close-{work['id']}"})
+        closes[f"close-{work['id']}"] = [work["id"]]
     # T-0415: a job running for LONG_JOB_S is a service (a workflow, a watch, a server), not something to wait for
     now, since = time.time(), d.setdefault("since", {})
     d["since"] = since = {k: since.get(k, now) for k in running}
@@ -5738,11 +5845,16 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     # T-4644: the job that holds this task's own close (a script waiting behind CI, then `sampo task finish ID`) is a wait,
     # not a service, for up to FINISH_JOB_S: past LONG_JOB_S it fell out of `running` and the finish push came each Stop
     mine = {k for k, ids in closes.items() if work["id"] in ids and k not in agents and not _headless()}  # (an agent ends)
+    # T-4670: each waited job's kind (a queued close, a CI watch), for the timer: it is called stuck at its kind's time
+    kinds ={k: job_kind(next((t for t in bg if isinstance(t, dict) and str(t.get("id")) == k), None) if isinstance(bg, list)
+                         else None, closing=k in closes) for k in running if k not in agents}
+    kinds = {} if _headless() else {k: v for k, v in kinds.items() if v}  # (a headless run is as before)
     running = [k for k in running if k in agents or now - since[k] < (FINISH_JOB_S if k in mine else LONG_JOB_S)]
     closing = any(k in mine for k in running)
     # T-4525: the jobs a turn ending here waits on (not agents: they end), for the timer hook that wakes an idle session
     jobs = {k: since[k] for k in running if k not in agents}
-    d.pop("wait_jobs", None) if not jobs else d.update(wait_jobs={"since": jobs, "at": now})
+    d.pop("wait_jobs", None) if not jobs else d.update(wait_jobs={"since": jobs, "at": now, "kinds": {
+        k: v for k, v in kinds.items() if k in jobs}})
     act = sd["active"]
     if running:  # background work is out; its notification wakes the session. T-3539: with no active task too (a
         # session keeping the main checkout unfocused for lane merges got 361 pushes to focus one): the wait is said
@@ -5758,7 +5870,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
             _event({"kind": "drive_wait", "session_id": sid, "project": p.slug, "task": work["id"],
                     "running": running[:5]})
         if d.get("offered_for") != work["id"]:  # T-2507: a new background set isn't a new round of offers; a new
-            d.update(offered=[], offered_for=work["id"])  # active task is (each queued task offered once per task)
+            d.update(offered=[], offered_for=work["id"], started=[])  # active task is (a lane offer once per task)
         # said on screen: a silent end reads as a stall; unfocused, once a wait ([]: still not an idle Stop)
         d["waiting_on"] = running[:3] if act or first else []
         jm = [f". Waiting on {c.joinmore(running, 3)}", f". Waiting on {c.joinmore(running, 1)}"]
@@ -5774,12 +5886,20 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         started = False
         if not offer and len(jobs) == len(running):  # T-4611: only non-agent jobs (a CI watcher) run, and no side work
             # fits them (no free lane, a research or planned task): the turn still doesn't end on a wait with an
-            # independent task queued; the user's queue isn't optional, so no pace or OFFERS_MAX here (each task once)
-            offer = _side_work(sd, briefs, work if act else {"id": None}, full, skip, p, startable=True)
+            # independent task queued; the user's queue isn't optional, so no pace or OFFERS_MAX here. T-4670: and no
+            # once-per-task skip: a session that answered the offer with "after the log" is told again at each Stop of
+            # the wait, until the task is focused, blocked or deferred (the drive's count limit bounds it)
+            # (unfocused: a task offered as a builder lane stays offered once, T-3539: the session keeps the checkout for merges)
+            kept = [] if act else [i for i in offered if i not in (d.get("started") or [])]
+            offer = _side_work(sd, briefs, work if act else {"id": None}, full, kept, p, startable=True)
             started = bool(offer)
         if offer:  # T-0401: a concrete next task, a new one each Stop, instead of one generic push and then idling
-            d.update(offered=offered + [offer["id"]], made=sorted(made | {f"{offer['id']}:{st.get(offer['id'])}"}),
-                     count=d.get("count", 0) + 1, marks=_marks(p))
+            again = started and offer["id"] in offered  # T-4670: told before and still not started
+            if started:
+                d["started"] = sorted(set(d.get("started") or []) | {offer["id"]})
+            d.update(offered=offered + [i for i in (offer["id"],) if i not in offered],
+                     made=sorted(made | {f"{offer['id']}:{st.get(offer['id'])}"}), count=d.get("count", 0) + 1,
+                     marks=_marks(p), offer_again=again or None)
             how = _start_how(offer, lanes_free(briefs, p), _economy(p))
             if started and offer.get("status") != "captured":  # (a captured one is planned first: _start_how); a checkpoint keeps the waiting task: the job's notification returns the session to it
                 how = ("sampo checkpoint, then " if act else "") + f"sampo focus {offer['id']} and work it"
@@ -5787,16 +5907,19 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
                     "offer": offer["id"], "how": how})
             block = f"; if it can't move: sampo task block {offer['id']} \"why\""
             lead, tail = f"Sampo drive: Start {offer['id']} ({offer['tier']} {offer['type']}: ", f") now: {how}"
-            title = c.fit(" ".join(offer["title"].split()),
-                          max(20, DRIVE_LINE - len(lead) - len(tail) - len(jm[0] if started else block)))
             alts = [block, f"; can't move: sampo task block {offer['id']}"]
-            return _line(lead + title + tail, *([jm, alts] if started else [alts, jm]))  # the job's name never cut
+            title = c.fit(" ".join(offer["title"].split()),  # (a repeat keeps the way out: the title gives way for both)
+                          max(20, DRIVE_LINE - len(lead) - len(tail)
+                              - (len(jm[1]) + len(alts[1]) if again else len(jm[0] if started else block))))
+            return _line(lead + title + tail, *([alts, jm] if again or not started else [jm, alts]))  # the job's name never cut
         if not first or not act or closing:  # T-4644: a task waiting on its own queued close has no side work to name
             return None
         # T-0364: once per running set, work on what doesn't need it instead of idling (357 waits vs 11 pushes)
         d.update(count=d.get("count", 0) + 1, marks=_marks(p))
         # the queue and inbox are the user's own requests, never optional: only side offers wait on pace (review)
         more = [x["id"] for x in sd["queue"] + (sd["inbox"] if full else []) if x["id"] != work["id"] and x["id"] not in blocked][:3]
+        if not more and full and any(k in closes for k in running):  # T-4670: a close is under way (this task's or another's):
+            return None  # not "check the product end to end" yet (the close ends the wait; the pass comes after it)
         if not more and full and d.get("drained") != len(briefs) and not c._round_first(p):  # T-0415: nothing queued: find
             # the next (T-2466: not while fm drive --round-first holds new work for the Genesis round)
             d["drained"] = len(briefs)  # work rather than wait; once per drain, as below, not once per set of jobs

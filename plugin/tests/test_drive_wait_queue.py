@@ -39,12 +39,14 @@ class DriveWaitQueue(HookCase):
         self.assertIn(f"sampo focus {big}", out["reason"])
         self.assertIn("checkpoint", out["reason"], "the waiting task is kept, not dropped")
 
-    def test_each_queued_task_is_offered_once_then_the_wait_is_as_before(self):
+    def test_a_queued_task_is_offered_again_until_it_is_blocked_then_the_wait_is_as_before(self):
+        # T-4670: no longer once per session (a session that answered 'after the log' idled); test_drive_wait_requeue
         self.fm("init")
         only = self.task("Survey the field", type_="RESEARCH", focus=False)
         self.assertIn(f"Start {only}", self.stop().get("reason", ""))
-        again = self.stop()
-        self.assertIsNone(again.get("decision"), "offered once: not a block on every Stop")
+        self.assertIn(f"Start {only}", self.stop().get("reason", ""), "told again at the next Stop of the wait")
+        self.fm("task", "block", only, "cannot start")
+        self.assertIsNone(self.stop().get("decision"), "blocked: the wait is as before")
 
     def test_only_dependent_tasks_wait_as_before(self):
         self.fm("init")

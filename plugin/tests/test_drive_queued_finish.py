@@ -89,12 +89,11 @@ class QueuedFinish(HookCase):
         self.assertIn(f"Start {self.queued}", first.get("reason", ""), "T-4611's path: the queued task is started")
         self.assertNotIn("task finish", first.get("reason", ""))
         self.age("bclose1", 25)  # past LONG_JOB_S: a CI watcher is a service by now, a close behind CI is not
-        for _ in range(3):
+        for _ in range(3):  # T-4670: the independent task is named again at each Stop, never the finish push
             out = self.stop(self.close_job())
-            self.assertIsNone(out.get("decision"), out)
+            self.assertIn(f"Start {self.queued}", out.get("reason", ""), out)
             self.assertNotIn("task finish", json.dumps(out))
         self.assertEqual(len(self.waits()), 1, "one wait, not one per Stop")
-        self.assertIn("background work (bclose1)", self.sent[1].get("systemMessage", ""), "said once on screen")
 
     def test_with_no_independent_task_the_hook_stays_quiet_from_the_first_stop(self):
         self.fm("task", "set", self.queued, f"depends_on={self.tid}")
@@ -112,7 +111,8 @@ class QueuedFinish(HookCase):
         self.stop(engine=False)
         self.age("bscript1", 25)
         out = self.stop(engine=False)
-        self.assertIsNone(out.get("decision"), out)
+        self.assertNotIn("task finish", json.dumps(out), out)  # (T-4670: the queued task is named again, not the finish)
+        self.assertIn(f"Start {self.queued}", out.get("reason", ""), out)
         self.assertEqual(len(self.waits()), 1)
         row = next(e for e in self.events() if e.get("kind") == "bg_start")
         self.assertEqual(row.get("closes"), [self.tid])
@@ -153,7 +153,7 @@ class QueuedFinish(HookCase):
     def test_the_job_ended_gives_the_finish_push_again(self):
         self.stop(self.close_job())
         self.age("bclose1", 25)
-        self.assertIsNone(self.stop(self.close_job()).get("decision"))
+        self.assertNotIn("task finish", self.stop(self.close_job()).get("reason", ""))  # T-4670: Start T-0002, no finish
         out = self.stop()  # the engine's list no longer holds it
         self.assertEqual(out.get("decision"), "block", out)
         self.assertIn(f"sampo task finish {self.tid}", out["reason"])
