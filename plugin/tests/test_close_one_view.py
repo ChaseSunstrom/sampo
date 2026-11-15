@@ -127,6 +127,110 @@ class Proved(Base):
         self.assertEqual(len(cli._proved_gaps(self.p, self.brief(tid))), 1)
 
 
+class TestsOnlyClaim(Base):
+    """T-4712: a plan let through as test-only despite a one-way word (recorded at focus: meta tests_only) is held to its
+    change at the close: a file outside the tests asks for the rival read the gate would have asked at plan time."""
+    ON = {"FOREMAN_NO_RIVAL": "0"}
+    # T-4719's step: tests only; T-1290's: really a non-test edit (each names its test file: the plan's positive evidence)
+    RELEASE = "failing test in plugin/tests/test_land_ship.py, bound the hook's loop, release held pushes in tearDown"
+    DELETE = "failing test in plugin/tests/test_land_ship.py, then delete the copy of the rules"
+
+    def plan(self, step):
+        tid = self.fm_json("task", "new", "Fix a test", "--type", "FEATURE", "--tier", "S", "--ac",
+                           "it works :: python3 plugin/tests/run.py test_land_ship", "--step", step, env=self.ON)["id"]
+        self.fm("focus", tid, env=self.ON)
+        return tid, self.head()
+
+    def gaps(self, tid):
+        with mock.patch.dict(os.environ, self.ON):
+            return cli._tests_only_gaps(self.p, self.brief(tid))
+
+    def test_the_gate_lets_the_plan_through_and_records_why(self):
+        tid, _ = self.plan(self.DELETE)
+        self.assertEqual(self.brief(tid).meta.get("tests_only"), "delete")
+
+    def test_a_plan_with_no_one_way_word_records_nothing_and_never_asks(self):
+        tid, base = self.plan("failing test, then fix the loop")
+        self.assertIsNone(self.brief(tid).meta.get("tests_only"))
+        self.land(tid, {"a.py": "VALUE = 2\n"}, base)
+        self.assertEqual(self.gaps(tid), [])
+
+    def test_a_change_of_test_files_alone_closes_as_today(self):  # T-4719
+        tid, base = self.plan(self.RELEASE)
+        self.land(tid, {"plugin/tests/test_land_ship.py": "X = 1\n"}, base)
+        self.assertEqual(self.gaps(tid), [])
+
+    def test_a_change_that_touches_a_non_test_file_is_refused_naming_it(self):  # T-1290
+        tid, base = self.plan(self.DELETE)
+        self.land(tid, {"plugin/tests/test_land_ship.py": "X = 1\n", "a.py": "VALUE = 2\n"}, base)
+        (gap,) = self.gaps(tid)
+        self.assertIn("a.py", gap)
+        self.assertNotIn("test_land_ship", gap)
+        self.assertIn(f"sampo second rival {tid}", gap)
+
+    def test_the_rival_read_clears_it_and_so_does_the_gate_being_off(self):
+        tid, base = self.plan(self.DELETE)
+        self.land(tid, {"a.py": "VALUE = 2\n"}, base)
+        self.assertEqual(len(self.gaps(tid)), 1)
+        with mock.patch.dict(os.environ, {"FOREMAN_NO_RIVAL": "1"}):
+            self.assertEqual(cli._tests_only_gaps(self.p, self.brief(tid)), [])
+        b = self.brief(tid)
+        b.meta["rival_at"] = "2026-01-01T00:00:00Z"
+        with mock.patch.dict(os.environ, self.ON):
+            self.assertEqual(cli._tests_only_gaps(self.p, b), [])
+
+    def test_a_file_another_lane_landed_is_not_this_tasks_change(self):
+        tid, base = self.plan(self.DELETE)
+        self.direct("T-0998", {"b.py": "VALUE = 2\n"})
+        self.land(tid, {"plugin/tests/test_land_ship.py": "X = 1\n"}, base)
+        self.direct("T-0999", {"own.py": "VALUE = 2\n"})
+        self.assertEqual(self.gaps(tid), [])
+
+    def test_the_finish_refuses_it_before_anything_runs(self):
+        tid, base = self.plan(self.DELETE)
+        self.land(tid, {"a.py": "VALUE = 2\n"}, base)
+        r = self.fm("task", "finish", tid, "--audit", "self", check=False, env=self.ON)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("let through as test-only", r.stdout + r.stderr)
+        self.assertIn(f"sampo second rival {tid}", r.stdout + r.stderr)
+
+    def test_task_done_is_no_way_round_it(self):  # review: done skipped finish's pre-checks
+        tid, base = self.plan(self.DELETE)
+        self.land(tid, {"a.py": "VALUE = 2\n"}, base)
+        r = self.fm("task", "done", tid, check=False, env=self.ON)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("let through as test-only", r.stdout + r.stderr)
+        self.assertIn(f"sampo second rival {tid}", r.stdout + r.stderr)
+
+    def test_a_refocus_after_the_plan_changed_keeps_the_record(self):  # review: the re-focus popped it
+        tid, base = self.plan(self.DELETE)
+        self.fm("task", "step", tid, "add", "release plugin/lib/x.py to users", env=self.ON)
+        self.fm("focus", tid, env=self.ON, check=False)
+        self.assertEqual(self.brief(tid).meta.get("tests_only"), "delete")
+        self.land(tid, {"a.py": "VALUE = 2\n"}, base)
+        self.assertEqual(len(self.gaps(tid)), 1)
+
+    def test_a_record_it_cannot_check_refuses_and_says_so(self):  # review: it failed open with no git root or base
+        tid, base = self.plan(self.DELETE)
+        for what in ("git_root", "task_base"):
+            with mock.patch.object(c, what, return_value=None):
+                (gap,) = self.gaps(tid)
+            self.assertIn("could not read what it changed", gap)
+            self.assertIn(f"sampo second rival {tid}", gap)
+        b = self.brief(tid)
+        b.meta["rival_at"] = "2026-01-01T00:00:00Z"
+        with mock.patch.object(c, "task_base", return_value=None), mock.patch.dict(os.environ, self.ON):
+            self.assertEqual(cli._tests_only_gaps(self.p, b), [])
+
+    def test_the_ledger_of_other_lanes_is_read_once_not_once_per_file(self):  # review: a set rebuilt per file
+        tid, base = self.plan(self.DELETE)
+        self.land(tid, {"a.py": "VALUE = 2\n", "b.py": "VALUE = 2\n", "own.py": "VALUE = 2\n"}, base)
+        with mock.patch.object(cli, "_theirs", wraps=cli._theirs) as theirs:
+            (gap,) = self.gaps(tid)
+        self.assertEqual(theirs.call_count, 1)
+        self.assertIn("a.py, b.py, own.py", gap)
+
+
 class FileMap(Base):
     def test_a_directory_another_lane_added_is_not_this_tasks_to_list(self):
         tid = self.around({"a.py": "VALUE = 2\n"}, {"plugin/newdir/x": "x\n"}, {"plugin/laterdir/x": "x\n"})
@@ -307,7 +411,7 @@ def offenders(source):
 
 
 READERS = ["affected", "_task_files", "_landed", "_owed_companions", "_self_docs_gaps", "_proved_gaps", "_file_map_gaps",
-           "_tier_drift", "_deleted", "_scaffolding"]
+           "_tier_drift", "_deleted", "_scaffolding", "_tests_only_gaps"]  # T-4712: the eleventh
 
 
 class Guard(unittest.TestCase):

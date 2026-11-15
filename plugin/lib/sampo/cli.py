@@ -947,12 +947,14 @@ def cmd_task(args):
         lesson = c.plain(args.lesson or "").strip()
         touches, risky, gone = _task_files(p, pre)
         files = list(touches)
+        tests_only = _tests_only_gaps(p, pre)  # T-4712: read here, not under the lock; no way round finish's pre-check
 
         def done(b):
             reasons = [r + _adversary_ask(risky) if r.startswith("audit missing: adversary")
                        else r for r in b.done_blockers(since, tree, ("adversary",) if risky else ())] + drift
             reasons += _child_gaps(p, b)  # T-0709: a parent closes after its children
             reasons += _scope_gaps(p, b, touches)
+            reasons += tests_only if not b.meta.get("rival_at") else []
             reasons += _kind_gaps(b, first_edit)
             if c.at_least(b.tier, "M") and not lesson and not b.section("Lessons").strip():
                 reasons.append(f"lesson missing: sampo task done {b.id} --lesson \"<what the next similar task should "
@@ -1622,7 +1624,7 @@ def _task_finish(p, args):
     gaps = [f"{named('step', n)}: its last run failed; record a passing run (sampo task evidence {b.id} --step {n} --run CMD, or finish with --run CMD)"
             for n in red] + ([f"give --run \"<cmd>\" (or record evidence): {', '.join(missing)} has no verify command or "
                               f"evidence of its own"] if missing else []) + _finish_gaps(b, args, lenses, p) + _self_docs_gaps(p, b) \
-        + _file_map_gaps(p, b) + [g for g in [b.proof_gap(then=[cmd for _, _, cmd in todo] + [args.run])] if g] \
+        + _file_map_gaps(p, b) + _tests_only_gaps(p, b) + [g for g in [b.proof_gap(then=[cmd for _, _, cmd in todo] + [args.run])] if g] \
         + _proved_gaps(p, b, then=[cmd for _, _, cmd in todo] + [args.run]) \
         + _adversary_gaps(p, b, lenses, risky) + _scope_gaps(p, b, touches) \
         + _done_only_gaps(p, b, args)  # T-1906, T-1907, T-3550, T-4585: before anything runs
@@ -2593,6 +2595,27 @@ def _file_map_gaps(p, b):
     missing = next((x[len(tag):].split(", ") for x in res.detail.split("; ") if x.startswith(tag)), [])
     new = sorted(entries & set(missing))
     return [f"file map: add a docs/map shard row (full entry) and a MASTER.md index line for {', '.join(new)}"] if new else []
+
+
+def _tests_only_gaps(p, b):
+    """T-4712: the plan gate let a one-way word through because the plan looked test-only (meta tests_only, written at
+    focus); a close whose own change holds a file outside the tests asks for the cold rival read the gate would have
+    asked at plan time, once: sampo second rival sets rival_at and the close passes. A change of test files alone closes."""
+    verb = b.meta.get("tests_only")
+    if not verb or b.meta.get("rival_at") or os.environ.get("FOREMAN_NO_RIVAL", "0") not in ("", "0"):
+        return []
+    base = c.task_base(p.root, b) if c.git_root(p.root) else None
+    if not base:  # fail closed: a claim the close can't check is not one it may wave through
+        return [f"its plan was let through as test-only despite the one-way word {verb!r}, but the close could not read "
+                f"what it changed (no git root or start point): a cold rival read first (sampo second rival {b.id})"]
+    mine = [f for f in _own_view(p, b, base).files if not f.startswith(c.MIRROR_DIRS)]  # T-4635: its own change
+    theirs = set(_theirs(p, b, mine)) if mine else set()  # T-2791: other lanes' merges aren't this task's change; one read
+    outside = sorted(f for f in mine if f not in theirs and not c.TESTISH.search(f))
+    if not outside:
+        return []
+    return [f"its plan was let through as test-only despite the one-way word {verb!r}, but it changed "
+            f"{', '.join(outside[:5])}{' …' if len(outside) > 5 else ''}: a cold rival read first "
+            f"(sampo second rival {b.id}), as the gate asks of a plan with a one-way step"]
 
 
 DIRTY_CAP = 500
@@ -4377,6 +4400,10 @@ def _focus_edit(p, target, once, blast=""):
         target.meta.pop("lane", None)
     resumed = target.status not in ("active", "verifying")  # set active by hand: its pause point is stale (review)
     target.meta["status"] = "active"
+    if (verb := c.tests_only_waiver(target)) and not target.meta.get("tests_only"):  # T-4712: the gate let a one-way word
+        target.meta["tests_only"] = verb  # through on the plan's test-only look; the close holds that claim to the files the
+        # task changed (_tests_only_gaps). Only ever added to here: a plan edited after its focus (a step or a scope added)
+        # must not erase the claim the gate acted on, and the gate skips an active task, so nothing else would hold it
     first_focus = not target.meta.get("base")
     if not target.meta.get("base") and (head := once("head", lambda: c.git_head(p.root))):
         target.meta["base"] = head  # where the task's diff starts (fm audit prep)

@@ -4691,23 +4691,58 @@ _RULED_RE = lazy(r"\bruled?[- ]out\b|\brules? out\b|\brejected\b|\bno other (?:h
 
 def _marks(text, rx, conv):
     """The (start, end) of rx's markers that run 1, 2, 3… in order, sharing the first one's delimiter ('1)' vs a nested
-    '1.') and, when the first starts a line, not indented deeper than it (a nested list inside an option)."""
-    marks, at, delim, base = [], 0, None, None
+    '1.') and the same parenthesis shape ('1)' vs an inner '(1)'), and, when the first starts a line, not indented deeper
+    than it (a nested list inside an option). T-4712: an inline marker in mid-sentence ('…; (2) the drive …') opens no
+    option when a marker of the same number opens a sentence or a line later: the later one is the option's start."""
+    marks, at, delim, shape, base = [], 0, None, None, None
+    cands = []  # (match, number, delimiter, opens with '(', indent or None, opens a line or a sentence)
     for m in rx.finditer(text):
         g = m.group(1)
-        if not (g.isalnum() and conv(g) == len(marks) + 1 and m.start() >= at):
+        if not g.isalnum():
             continue
-        d = m.group(0).rstrip(" \t")[-1:]
         lead = text[text.rfind("\n", 0, m.start(1)) + 1:m.start(1)]
         indent = len(lead) - len(lead.lstrip(" \t")) if not lead.strip(" \t(*#") else None  # None: it isn't first on its line
+        i = m.start(1)
+        while i > 0 and text[i - 1] in " \t(*#":
+            i -= 1
+        cands.append((m, conv(g), m.group(0).rstrip(" \t")[-1:], m.group(0)[0] == "(", indent,
+                      indent is not None or i == 0 or text[i - 1] in ".!?\n"))
+    strong = {}  # number -> [(start, delimiter, shape)] of the markers that open a line or a sentence
+    where = {}  # (number, delimiter, shape) -> [start]: every marker, to ask whether a run goes on past a later one
+    for m, k, d, op, indent, st in cands:
+        where.setdefault((k, d, op), []).append(m.start())
+        if st:
+            strong.setdefault(k, []).append((m.start(), d, op))
+    for m, k, d, op, indent, st in cands:
+        if not (k == len(marks) + 1 and m.start() >= at):
+            continue
         if marks and ((d != delim and rx is not _WORD_RE and indent is None)  # an inline '2.' among '1) … 2) …' is nested
-                      or (indent is not None and base is not None and indent > base)):
+                      or (op != shape and rx is not _WORD_RE and indent is None)  # an inner '(2)' among '1) … 2) …' likewise
+                      or (indent is not None and base is not None and indent > base)
+                      # an inline marker the run doesn't need: a later sentence-start one of its number AND shape, which a
+                      # k+1 follows ('1) a; 2) b; 3) c. Steps: 1) red. 2) code.' has no 3) after the later 2): both stay)
+                      or (not st and any(s > m.start() and sd == delim and so == shape
+                                         and any(t > s for t in where.get((k + 1, delim, shape), ()))
+                                         for s, sd, so in strong.get(k, ())))):
             continue
         if not marks:
-            delim, base = d, indent
+            delim, shape, base = d, op, indent
         marks.append((m.start(), m.end()))
         at = m.end()
     return marks
+
+
+def _opening(p, words=6):
+    """T-4712: the first words of an option's text, for a refusal to quote (so the author sees where the split fell)."""
+    w = p.split()
+    return " ".join(w[:words]) + (" …" if len(w) > words else "")
+
+
+def _read_as(parts):
+    """'read as: 1 'use what exists: the train's lock …', 2 '…'': what the gate took each option's text to be."""
+    if not parts:
+        return "no option marker found"
+    return "read as: " + ", ".join(f"{i} {_opening(p)!r}" for i, p in enumerate(parts[:8], 1)) + (" …" if len(parts) > 8 else "")
 
 
 def _split_options(text, bullets=True):
@@ -4763,8 +4798,8 @@ def _content_gaps(b):
         n = _distinct(parts)
         if ap.strip() and n < 3:
             dup = "; some share most of their words, so they count once" if len(parts) > _distinct(parts) else ""
-            gaps.append(f"Approach names {n} option{'s' * (n != 1)}; 3+ options needed{dup} (sampo task set {b.id} --section Approach "
-                        "--text '1) … 2) … 3) … Choice 1 (70%): why', each with words)")
+            gaps.append(f"Approach names {n} option{'s' * (n != 1)}; 3+ options needed{dup} ({_read_as(parts)}; sampo task set "
+                        f"{b.id} --section Approach --text '1) … 2) … 3) … Choice 1 (70%): why', each with words)")
         if ap.strip() and not _CHOICE_RE.search(ap):
             gaps.append(f"a choice in Approach (sampo task set {b.id} --section Approach: add 'Choice N (NN%): why')")
         elif ap.strip() and stated_confidence(ap) is None:  # T-2338: the number that routes the next step
@@ -4772,8 +4807,9 @@ def _content_gaps(b):
                         "--section Approach: write 'Choice N (NN%): why', NN from 0 to 100)")
         bare = [str(i) for i, p in enumerate(parts, 1) if not _OUTCOME_RE.search(p)]
         if bare:
-            gaps.append(f"option {', '.join(bare)} in Approach has no likely outcome or failure mode (sampo task set {b.id} "
-                        "--section Approach: add 'fails if: …' or 'likely outcome: …' to each option)")
+            gaps.append(f"option {', '.join(bare)} in Approach has no likely outcome or failure mode ({_read_as(parts)}; "
+                        f"sampo task set {b.id} --section Approach: add 'fails if: …' or 'likely outcome: …' to each option, "
+                        "and start each option at a line or a sentence, never inside another option's text)")
         ex = {i for i, p in enumerate(parts) if _EXISTS_RE.search(p)}
         less = {i for i, p in enumerate(parts) if _LESS_RE.search(p)}
         if ap.strip() and not ex:
@@ -4818,16 +4854,102 @@ _ONE_READING_RE = lazy(r"(?<!no )(?<!not )\b(?:only|just|one|single|sole)\s+(?:h
 _RIVAL_OPEN = lazy(r"- \[ \] rival (?:reading|approach): ")
 
 
-def _one_way(b):
-    """The first step's one-way verb, unless the Raw request itself names it (the user asked for that)."""
+def _one_way(b, waived=None):
+    """The first step's one-way verb, unless the Raw request itself names it (the user asked for that). A list passed as
+    `waived` gets the verb of each step the plan's test-only structure let through (T-4712: tests_only_waiver)."""
     rx, raw = (HARD_S_RE if b.tier == "S" else HARD_RE), b.section("Raw request")
+    tests = None  # T-4712: decided once, and only when a verb hit asks
     for s in b.steps():
         m = rx.search(s.text)
         if m and m.group(1).lower() in ("delete", "drop") and _CODE_OBJ.match(s.text[m.end():]):
             continue  # T-2521: a code symbol in a tracked file: git undoes its removal
         if m and not re.search(r"(?i)\b" + re.escape(m.group(1)[:5]), raw):
+            if tests is None:
+                tests = _tests_only(b)
+            if tests and not _RUNS_ONE_WAY_RE.search(s.text) and (
+                    b.meta.get("scope") or any(_TEST_PATH.search(q) for q in _ANY_PATH.findall(s.text))):
+                # positive evidence only: the plan states a scope (_tests_only made it tests alone) or this very step names
+                # a test file; a prose step with neither ("then publish the package") is held whatever the verify says
+                if waived is not None:
+                    waived.append(m.group(0).lower())
+                continue  # T-4712: the verb is only a pre-filter: a plan that touches and runs tests alone is two-way
             return m.group(0).lower()
     return ""
+
+
+def tests_only_waiver(b):
+    """T-4712: the one-way verb the plan's test-only structure let through ('' when none, or when another step holds the
+    plan anyway). `sampo focus` records it on the task (meta tests_only); the close holds the claim to the change."""
+    waived = []
+    return waived[0] if not _one_way(b, waived) and waived else ""
+
+
+# T-4712: a command a step runs that can't be taken back (a publish, a ship, a push, a recursive remove, a migration, a
+# table drop). A test-only plan holding one is still held; the verb words above only send a plan here
+_RUNS_ONE_WAY_RE = lazy(r"(?i)\b(?:(?:sampo|fm)\s+(?:ship|release|publish|deploy|migrate)|git\s+(?:-C\s+\S+\s+)?push|gh\s+release|"
+                        r"gh\s+pr\s+merge|(?:npm|cargo|twine|pip|docker)\s+(?:publish|upload|push)|rm\s+-\w*[rf]|migrate|"
+                        r"make\s+(?:deploy|release|publish)|kubectl\s+(?:apply|delete)|terraform\s+(?:apply|destroy)|"
+                        r"rsync\b.*--delete|rmtree|alembic\s+upgrade|drop\s+(?:table|database))\b")  # a floor: it only keeps a hold
+_TEST_PATH = lazy(r"(?:^|/)(?:tests?|__tests__|spec)/|(?:^|/)test_[^/]*$|_test\.\w+$|\.test\.\w+$")
+_TEST_SCRIPT = lazy(r"(?:^|/)(?:tests?/\S*run\.py|run_tests?\.\w+)$")
+_CMD_SPLIT = lazy(r"&&|\|\||[;|&\n`()]|\$\(")  # the parts of a shell line: a chain, a pipe, a background, a substitution
+_WRAPPERS = frozenset(("nice", "time", "env", "ionice", "timeout"))
+
+
+def _is_test_run(part):
+    """Whether one part of a shell line RUNS tests: its command word (past `VAR=x`, `nice`, `time`…) is pytest, python -m
+    pytest|unittest, or a tests/…run.py script. The word itself, not any word of the part: `sampo ship --tag pytest` and
+    `git push origin HEAD:pytest` run something else."""
+    w, i = part.split(), 0
+    while i < len(w) and (re.fullmatch(r"\w+=\S*", w[i]) or w[i] in _WRAPPERS or (
+            i and w[i - 1] in _WRAPPERS and (w[i].startswith("-") or w[i].isdigit()))):
+        i += 1
+    if i >= len(w):
+        return False
+    first = w[i].rsplit("/", 1)[-1]
+    if first in ("pytest", "py.test"):
+        return True
+    if re.fullmatch(r"python[\d.]*", first):
+        rest = w[i + 1:]
+        if rest[:1] == ["-m"]:
+            return rest[1:2] in (["pytest"], ["unittest"])
+        script = next((x for x in rest if not x.startswith("-")), "")
+        return bool(_TEST_SCRIPT.search(script))
+    return bool(_TEST_SCRIPT.search(w[i]))
+
+
+def _only_test_runs(cmd):
+    """T-4712 review: every part of a verify command (split on && || ; | & newline, $( ) and backticks; `2>&1` is no
+    split) is a test run and none runs a one-way command (the floor holds `pytest -k x && make deploy`)."""
+    parts = [x.strip() for x in _CMD_SPLIT.split(re.sub(r"\d*>&\d*|&>", " ", cmd)) if x.strip()]
+    return bool(parts) and all(_is_test_run(x) and not _RUNS_ONE_WAY_RE.search(x) for x in parts)
+
+
+def _tests_only(b):
+    """T-4712: whether a plan's own structure says it only touches and runs tests: it states verify commands and every one
+    is only test runs (_only_test_runs), its scope globs are all test paths, and no step names a path outside the tests
+    or runs a one-way command; an M/L plan must also state its scope (an S plan's one or two files may be unstated).
+    The verb of a step (release, publish) is read only after this says yes, and _one_way lets it through only with
+    positive evidence for the step (a stated scope, or a test path in the step itself)."""
+    try:
+        cmds = [verify_of(a.text) for a in b.acceptance()]
+        scope = getattr(b, "meta", {}).get("scope") or []
+        steps = [s.text for s in b.steps()]
+    except Exception:
+        return False
+    if not cmds or not all(cmds):
+        return False
+    for cmd in cmds:
+        if not _only_test_runs(cmd):
+            return False
+    if (not scope and b.tier != "S") or any(not _TEST_PATH.search(p) for p in scope):
+        return False  # an M/L plan with no scope hasn't said which files it touches: nothing proves it tests-only
+    return not any(_RUNS_ONE_WAY_RE.search(t) or any(not _TEST_PATH.search(p) for p in _ANY_PATH.findall(t)) for t in steps)
+
+
+# a dir/file token, with or without an extension ('docs/map'), or a bare file name ('old.csv'): data a test-only plan doesn't touch
+_ANY_PATH = lazy(r"(?<![\w/.-])(?:[\w.-]+(?:/[\w.-]+)+|[\w-]+\.(?:csv|tsv|json|jsonl|db|sqlite3?|sql|log|txt|html|md|py|sh|js|ts|"
+                 r"ya?ml|toml|cfg|ini|env|lock|bak|tar|gz|zip|pem|key)\b)")
 
 
 # T-2521: the verb's object is a code identifier (snake_case with _, dotted, backticked or called), after "the unused"
