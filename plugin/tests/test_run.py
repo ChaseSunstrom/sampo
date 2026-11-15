@@ -411,7 +411,7 @@ class DeadlineIsNotFailure(unittest.TestCase):
         import tempfile
         calls = []
 
-        def fake(cid, k, timeout=480, deadline=None, small=False, joins=None):  # T-4247, T-4267: main passes small and joins too
+        def fake(cid, k, timeout=480, deadline=None, small=False, joins=None, narrow=False):  # T-4247, T-4267, T-4685: main passes small, joins and narrow too
             calls.append(cid)
             r = results[cid]
             return r.pop(0) if isinstance(r, list) else r

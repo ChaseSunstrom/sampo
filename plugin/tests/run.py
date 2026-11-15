@@ -84,6 +84,7 @@ OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a b
 OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S"})  # T-4525: the wait timer's limits; its tests set their own
 OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its starter; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("SLOT_RESERVE")  # T-4650: the reserved slots' off switch is the operator's, never a test's
+OPERATOR_SWITCHES.add("SLOT_TRACE")  # T-4685: the slot trace is an operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
 OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record is believed; a nested run's is its own
 CGROUP_ROOT = "/sys/fs/cgroup"
@@ -159,7 +160,7 @@ def slot_count():
 
 
 @contextlib.contextmanager
-def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False):
+def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
     """T-3252: one of the machine's CPU slots, shared by every run.py on it (mine, each builder's, the ship's, the
     post-merge verify), held while the block runs: its number, or None when nested, off (SAMPO_SLOTS=0) or the wait ran
     out (the class then runs anyway: a slow run beats a hung one). A slot is a lock file, so the kernel frees it when
@@ -182,6 +183,9 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False):
     now, order, prio, mark = time.monotonic(), random.sample(ordinary, len(ordinary)), _env(PRIO_ENV) == "1", None
     end, defer, got, said = now + (min(wait, SMALL_WAIT) if small else wait), now + defer_for(wait), None, False
     low, marked = low and not prio, False
+    # T-4685: a narrow run takes the reserve's slots but the last after the pool's own, and without deferring to a priority
+    # waiter there (a gate draws on the ordinary slots alone, so it never wants the reserve)
+    extra = narrow_lane(n) if narrow and not small and not prio and not low else ()
     try:
         while True:
             if small and (got := _take(folder, fast)):
@@ -190,6 +194,8 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False):
             if not behind:
                 if got := _take(folder, order):
                     break
+            if extra and (got := _take(folder, extra)):
+                break
             if not said and time.monotonic() - now >= SAY_WAIT:
                 said = True
                 with _SAY_LOCK:  # T-4536: one line per run.py, not one per class waiting in its pool
@@ -197,6 +203,8 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False):
                         _SAID.append(True)
                         sys.stderr.write(f"run.py: waiting for a CPU slot, {time.monotonic() - now:.0f} s\n")
                         sys.stderr.flush()
+            if _env(TRACE_ENV) == "1":  # T-4685: what this refusal read
+                _trace(folder, n, small, time.monotonic() - now, narrow)
             if time.monotonic() >= end:
                 break
             if prio and not mark:
@@ -256,6 +264,25 @@ def lanes(n):
     return (tuple(range(n - r, n)), range(n - r)) if r else (EXPRESS, range(n))
 
 
+# T-4685: a narrow run (a handful of named modules) may take the reserve's slots but its last, once the pool's own are
+# held. Measured 2026-11-14: a 3-module run waited 176 s of its wall behind ONE other run.py that held all 6 ordinary
+# slots while both reserved slots sat idle; the pool is the cap, so the reserve's idle slots are inside Sampo's share.
+NARROW_MODULES = 6
+
+
+def narrow_lane(n):
+    """T-4685: the reserved slots a narrow run may take after the ordinary ones: all but the highest, which stays a small
+    run's alone. A pool with fewer than two reserved slots has none (a lone reserved slot stays small-only)."""
+    r = reserved(n)
+    return tuple(range(n - r, n - 1)) if r > 1 else ()
+
+
+def is_narrow(names, k=(), p=()):
+    """T-4685: whether a run is narrow: modules named (or -k), at most NARROW_MODULES of them, no -p glob. A whole-suite
+    run (no names, -k or -p) and a run beyond that many modules are not: they queue for the pool as before."""
+    return bool(names or k) and not p and len(names) <= NARROW_MODULES
+
+
 def small_selection(classes, jobs=(), times=None, parts=None):
     """T-4247: whether a run of these test classes is small enough for a reserved slot: at most EXPRESS_CLASSES distinct
     classes, not tests. T-4650: or, with the reserve on, at most SMALL_CLASSES that take SMALL_WORK_S s over their jobs."""
@@ -281,6 +308,80 @@ def _take(folder, names):
             continue
         return i, fd
     return None
+
+
+TRACE_ENV = "SAMPO_SLOT_TRACE"  # T-4685: =1: a run that waits prints what the slot decision read, every TRACE_EVERY s
+TRACE_EVERY = 5.0
+_TRACE, _TRACE_LOCK = {"at": None, "base": None}, threading.Lock()  # when the line was last said, the first throttle reading
+
+
+def lock_holders(locks, inodes):
+    """T-4685: {slot name: holder pid} from the text of /proc/locks and {slot name: inode}: the flock lines whose inode is
+    a slot's. A pid the kernel shows as 0 or another namespace's is still a holder."""
+    by_inode, held = {i: n for n, i in inodes.items()}, {}
+    for ln in locks.splitlines():
+        f = ln.split()
+        if len(f) > 5 and f[1] == "FLOCK":
+            try:
+                ino = int(f[5].rsplit(":", 1)[1])
+                if ino in by_inode:
+                    held[by_inode[ino]] = int(f[4])
+            except (ValueError, IndexError):
+                continue
+    return held
+
+
+def _throttle():
+    """T-4685: (periods throttled, periods) of this process's cgroup so far from cpu.stat, or None."""
+    try:
+        with open(os.path.join(_cgroup_dir() or "", "cpu.stat")) as f:
+            d = dict(ln.split()[:2] for ln in f if ln.strip())
+        return int(d["nr_throttled"]), int(d["nr_periods"])
+    except (OSError, KeyError, ValueError):
+        return None
+
+
+def trace_line(waited, small, n, held, load, cpus, throttle=None, base=None, narrow=False):
+    """T-4685: the one line SAMPO_SLOT_TRACE=1 prints on a refusal: what the decision read. held is {slot name: pid}; the
+    reserved slots are the pool's highest numbers (lanes). load is the machine's 1-minute load, which the decision does
+    not read: it is printed to set beside the holders."""
+    r = reserved(n)
+    ordinary = [s for s in held if isinstance(s, int) and s < n - r]
+    small_only = [s for s in held if s not in ordinary]
+    pids = sorted(set(held.values()))
+    kind = "small" if small else "narrow" if narrow else "ordinary"
+    line = (f"run.py: slot trace: waited {waited:.0f} s, {kind} run; pool {n} ({n - r} ordinary"
+            f"{f', {r} small-only' if r else ', express files'}); held {len(ordinary)}/{n - r} ordinary, {len(small_only)} "
+            f"small-only/express, by {len(pids)} run.py (pids {', '.join(map(str, pids)) or 'none'}); load {load:.1f} on "
+            f"{cpus} CPUs (not read by the slot)")
+    if throttle and base:
+        dp = throttle[1] - base[1]
+        line += f"; cgroup throttled {throttle[0] - base[0]} of {dp} periods since the first trace" if dp > 0 else ""
+    return line + "\n"
+
+
+def _trace(folder, n, small, waited, narrow=False):
+    """T-4685: say what this refusal read (SAMPO_SLOT_TRACE=1), at most every TRACE_EVERY s per process."""
+    with _TRACE_LOCK:
+        now = time.monotonic()
+        if _TRACE["at"] is not None and now - _TRACE["at"] < TRACE_EVERY:
+            return
+        _TRACE["at"] = now
+        inodes = {}
+        for i in (*range(n), *EXPRESS):  # an express file may not exist (the reserve is on): the rest still read
+            with contextlib.suppress(OSError):
+                inodes[i] = os.stat(os.path.join(folder, str(i))).st_ino
+        try:
+            with open("/proc/locks") as f:
+                held = lock_holders(f.read(), inodes)
+        except OSError:
+            held = {}
+        thr = _throttle()
+        if _TRACE["base"] is None:
+            _TRACE["base"] = thr
+        load = os.getloadavg()[0] if hasattr(os, "getloadavg") else 0.0
+        sys.stderr.write(trace_line(waited, small, n, held, load, os.cpu_count() or 0, thr, _TRACE["base"], narrow))
+        sys.stderr.flush()
 
 
 PRIO_ENV = "SAMPO_SLOT_PRIORITY"  # T-3614: =1 (the train's gate and probes, ship's suite, sampo check outside a lane)
@@ -1879,13 +1980,13 @@ def sandboxed(argv, tmp, env):
             sandbox.job_env(env, tmp))
 
 
-def run_one(cid, k, timeout=480, deadline=None, small=False, joins=None):
+def run_one(cid, k, timeout=480, deadline=None, small=False, joins=None, narrow=False):
     """T-3252: the class runs in one of the machine's CPU slots; waiting for it counts against neither its timeout nor
     its recorded time, and the run's deadline still applies once it starts. T-4247: small (the run's selection is at
     most EXPRESS_CLASSES classes) lets it take an express slot; the seconds it waited are kept in WAITED."""
     wait = max(0.0, deadline - time.time()) if deadline is not None else 3600.0
     t = time.monotonic()
-    with cpu_slot(wait, small=small, low=is_low()) as slot:
+    with cpu_slot(wait, small=small, low=is_low(), narrow=narrow) as slot:
         got = time.monotonic()
         WAITED[cid] = WAITED.get(cid, 0.0) + got - t
         WAIT_SPANS.append((t, got))  # T-4582: kept apart for the wall-clock wait (list.append is atomic across threads)
@@ -2225,6 +2326,7 @@ def main():
     slot = suite_slot(t0 + dl / 2) if not (a.names or a.k or a.p) else contextlib.nullcontext()
     # T-4247: at most two classes to run: they may take an express slot; T-4650: so may a few classes of little work
     small = small_selection((owner(j) for j in todo), todo, times, parts)
+    narrow = is_narrow(a.names, a.k, a.p)  # T-4685: a handful of named modules may also take the reserve's idle slots
     # T-4267: a class another run is running on the same inputs is that run's: this one does its other classes, then waits
     joins = None
     if ident:
@@ -2243,7 +2345,7 @@ def main():
         told, told_lock = set(), threading.Lock()  # T-4269: the known-red classes whose second red was said (once each)
 
         def go(c):  # T-1994: the class is in a named module, so -k alone
-            r = run_one(c, a.k or a.names, cap, end, small, joins)
+            r = run_one(c, a.k or a.names, cap, end, small, joins, narrow)
             if (known and r[1] != 0 and owner(r[0]) in known and r[2] not in (NOT_STARTED, DEFERRED)
                     and "the run's deadline" not in r[2]):
                 with told_lock:  # red again on the inputs its record had it red on: said now, not at the end

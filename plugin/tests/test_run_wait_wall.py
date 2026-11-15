@@ -49,7 +49,7 @@ class WaitWall(ForemanTestCase):
 
     def test_run_one_keeps_each_class_wait_as_a_span_and_two_at_once_overlap(self):
         @contextlib.contextmanager
-        def slot(wait, small=False, low=False):
+        def slot(wait, small=False, low=False, narrow=False):
             time.sleep(0.2)  # both threads queue at the same moment, as on a pool with no free slot
             yield 0
 
