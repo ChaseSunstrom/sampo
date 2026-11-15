@@ -3473,14 +3473,13 @@ class MergeTrain(tlt.TrainCase):
         with open(script, "w") as f:
             f.write(burn)
         argvs = [[sys.executable, script, os.path.join(self.tmp, f"burn{i}")] for i in (1, 2)]
-        t0 = time.monotonic()
         train._fan(argvs, self.tmp, 2)
-        spent = time.monotonic() - t0
         (p1, s1, e1), (p2, s2, e2) = (map(float, open(a[2]).read().split()) for a in argvs)
         self.assertNotIn(os.getpid(), (p1, p2))
         self.assertNotEqual(p1, p2)
+        # T-4727: overlap is the claim, read from the jobs' own stamps (each starts before the other ends); a wall bound
+        # under their 2 s sum failed at 2.0135 s on a two-core runner that time-sliced them, though they ran together
         self.assertLess(max(s1, s2), min(e1, e2), "the two 1 s burns ran at the same time")
-        self.assertLess(spent, 2.0, "two 1 s CPU burns cost less than their sum")
 
     def test_the_trains_lane_check_is_a_child_process(self):
         seen = os.path.join(self.tmp, "who")

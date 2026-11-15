@@ -82,6 +82,15 @@ def run_cpu(argv, cwd, env, timeout=120):
     return (after.ru_utime - before.ru_utime + after.ru_stime - before.ru_stime) * 1000, p
 
 
+def hook_bench_skip(env):
+    """T-4727: why the live hook wall-time bench does not run here, or None. A hosted CI runner is a shared box running the
+    suite four jobs at a time: its hook p95 read 183.8 ms against 150 on one sample, and says nothing about the code. The
+    workflow's step name says the hook bench stays local (sampo's own gate and `sampo doctor` run it on the developer's box)."""
+    if env.get("GITHUB_ACTIONS"):
+        return "the hook wall-time bench stays local: a shared CI runner's speed is not the hook's"
+    return None
+
+
 def check(promises, runs, timer):
     """One row per promise. Each round times bare python, then every verb, so a load swing reaches them all alike. The
     first round is warmup and is dropped; the median of the `runs` measured calls is taken per path, and the ratio is the

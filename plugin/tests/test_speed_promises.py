@@ -174,6 +174,24 @@ class Table(unittest.TestCase):
             self.assertFalse(sp.hook_check(5)[0]["ok"], "a regression in CPU time still fails")
 
 
+class SharedRunner(unittest.TestCase):
+    def test_the_hook_wall_bench_is_skipped_on_a_hosted_ci_runner_and_runs_everywhere_else(self):
+        # T-4727: CI run 43730067915 read 'hook default: p95 183.8 ms over its 150 ms budget' on a shared runner; the
+        # workflow's step name says the hook bench stays local, so the hosted runner skips it and a developer's box does not
+        self.assertIn("hook", sp.hook_bench_skip({"GITHUB_ACTIONS": "true"}))
+        self.assertIsNone(sp.hook_bench_skip({"PATH": "/usr/bin"}))
+        self.assertIsNone(sp.hook_bench_skip({"GITHUB_ACTIONS": ""}), "an empty switch is not set")
+
+    def test_the_live_hook_bench_asks_for_the_skip_and_only_the_hook_bench_does(self):
+        with mock.patch.object(sp, "hook_bench_skip", return_value="on a runner") as skip, \
+                mock.patch.object(sp, "hook_check", side_effect=AssertionError("timed a hook")):
+            case = Live("test_the_hook_budgets_hold_in_the_live_bench")
+            with self.assertRaises(unittest.SkipTest):
+                case.test_the_hook_budgets_hold_in_the_live_bench()
+        skip.assert_called_once_with(os.environ)
+        self.assertNotIn("hook_bench_skip", Live.test_the_real_verbs_keep_their_promises_in_a_scratch_project.__code__.co_names)
+
+
 class Cpu(unittest.TestCase):
     def test_a_sleeping_child_costs_no_cpu_and_a_busy_one_does(self):
         # T-3272: the promises are on CPU time, so waiting on a busy box does not count against a verb
@@ -203,6 +221,9 @@ class Live(unittest.TestCase):
         self.assertEqual({r["path"] for r in rows}, set(sp.PROMISES))
 
     def test_the_hook_budgets_hold_in_the_live_bench(self):
+        why = sp.hook_bench_skip(os.environ)
+        if why:
+            self.skipTest(why)
         rows = sp.settle(sp.hook_check(5), lambda labels, runs: sp.hook_check(runs, labels))
         self.assertEqual(sp.report(rows), "", "a hook is over its budget in two windows")
         self.assertEqual({r["path"] for r in rows}, set(sp.HOOK_PROMISES))
