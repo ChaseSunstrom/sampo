@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The command guard now reads shell strings started from node, perl, ruby, php, lua and R as commands, judges ternary and default paths on every branch, and binds python parameters, loop targets, dynamic imports and archive extraction (T-4686).
 - sampo code no longer stops at its turn cap as stalled right after finishing steps: a step that finished inside the progress window lets the run carry on (T-4471).
 - The slot trace's holder count now comes from the slots' own locks and the pid each holder writes in its slot file, so it counts correctly where there is no /proc/locks (macOS) (T-4708).
 - A builder's own git command that fails on a stale `index.lock` in its lane's git folder now has the lock cleared by the failure hook (older than 60 s, no live git), so the commit works on retry instead of waiting for the main thread (T-4707).
