@@ -282,7 +282,33 @@ PREDICTIONS = "predictions.jsonl"  # write-once rows: a next-request prediction,
 MUTE_MIN = 20  # scored rows before a kind that trails its baseline is muted
 
 
-_SLIP = re.compile(r"dropped: .*\b(?:by mistake|by accident|in error)\b", re.I)
+_OLD_SLIP = re.compile(r"dropped: .*\b(?:by mistake|by accident|in error)\b", re.I)  # T-4693: the one-time fill's only
+
+
+def _mistaken(b):
+    """T-4693: a dropped task was a mistake when its brief says so (`sampo task drop --mistake`, or a restore): a
+    recorded field, never words of the Log."""
+    return b.status == "dropped" and b.meta.get("dropped_as") == "mistake"
+
+
+def fill_dropped_as(p):
+    """T-4693: the one-time fill. Before the field existed a mistaken drop was told by words in its Log (_OLD_SLIP);
+    each dropped brief, archived ones too, whose Log reads so gets the field, so no count moves. Marked on the
+    project (dropped_as_filled) once done; a later drop is judged by its field alone. The briefs it set."""
+    if c.read_meta(p).get("dropped_as_filled"):
+        return []
+    done = []
+    try:
+        with c.lock(p.dir):
+            for b in c.load_briefs(p, include_archive=True):
+                if b.status == "dropped" and "dropped_as" not in b.meta and _OLD_SLIP.search(b.section("Log")):
+                    b.meta["dropped_as"] = "mistake"
+                    c.save_brief(p, b, touch=False)
+                    done.append(b.id)
+        c.update_meta(p, dropped_as_filled=c.now())
+    except (OSError, c.LockTimeout):  # a busy lock or a full disk: not marked, so the next look fills it
+        pass
+    return done
 
 
 def _tower_ids(p):
@@ -307,8 +333,10 @@ def _requests(p, clean=True):
     T-2554: clean also leaves out the tower's Mission briefs (filed as user before fm intake --source) and captures
     dropped as a mistake; clean=False is the old stream, for the replay's comparison."""
     skip = _tower_ids(p) if clean else set()
+    if clean:
+        fill_dropped_as(p)  # T-4693: a drop's wrongness is its field; the old ones get it first (once)
     briefs = sorted((b for b in c.load_briefs(p, include_archive=True) if b.meta.get("source") == "user"
-                     and b.id not in skip and not (clean and b.status == "dropped" and _SLIP.search(b.section("Log")))),
+                     and b.id not in skip and not (clean and _mistaken(b))),
                     key=lambda b: (str(b.meta.get("created") or ""), b.id))
     touched = {}
     for e in c.ledger_events(p, ("touched",)):
@@ -853,7 +881,7 @@ def _rate_cap(briefs, wkind, today):
     for b in reversed([b for b in mine if b.status in c.CLOSED]):
         if b.status == "done":
             break
-        drops += not _SLIP.search(b.section("Log"))
+        drops += not _mistaken(b)
     cap = max(0, WARN_MAX - drops)
     if not cap and mine:
         try:
@@ -936,6 +964,7 @@ def breakage_tick(p, today=None, budget=None):
     st = st if isinstance(st, dict) else {}
     if st.get("day") == today.isoformat():
         return []
+    fill_dropped_as(p)  # T-4693: once per project; old mistaken drops get their field before a count reads it
     sizes = {k: v for k, v in (st.get("sizes") or {}).items() if isinstance(k, str) and isinstance(v, int)
              and re.fullmatch(r"\d{4}-\d\d-\d\d", k) and (today - datetime.date.fromisoformat(k)).days <= 2 * STATE_DAYS}
     sizes[today.isoformat()] = _state_bytes(p)

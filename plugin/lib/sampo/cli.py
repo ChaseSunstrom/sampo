@@ -1100,8 +1100,11 @@ def cmd_task(args):
         return task_prove(p, args)
     if sub == "finish":
         return task_finish(p, args)
-    if sub == "drop" and not args.reason and not getattr(args, "done_in", None):
-        raise UsageError("sampo task drop needs a reason (or --done-in ID when another task did the work)")
+    if sub == "drop" and getattr(args, "mistake", False) and getattr(args, "done_in", None):
+        raise UsageError("sampo task drop: --mistake and --done-in don't go together (done-in closes it as done)")
+    if sub == "drop" and not args.reason and not getattr(args, "done_in", None) and not getattr(args, "mistake", False):
+        raise UsageError("sampo task drop needs a reason (or --done-in ID when another task did the work, or --mistake "
+                         "when the task was wrong to raise)")
     if sub in ("drop", "defer", "unblock") and _TASK_IDS.match(args.id) and not _TASK_ID.match(args.id):  # T-1877
         return _task_each(args, task_ids(p, args.id))
     if sub == "drop" and getattr(args, "done_in", None):
@@ -1121,7 +1124,8 @@ def cmd_task(args):
         return out(args, c.brief_summary(b), f"{b.id} unblocked: {b.status}.")
     if sub in ("block", "drop", "defer"):
         status = {"block": "blocked", "drop": "dropped", "defer": "deferred"}[sub]
-        reason = getattr(args, "reason", None) or ""
+        mistake = status == "dropped" and bool(getattr(args, "mistake", False))
+        reason = getattr(args, "reason", None) or ("raised by mistake" if mistake else "")
 
         def change(b):
             if status == "dropped" and b.status in ("active", "verifying") and not getattr(args, "force", False):
@@ -1129,6 +1133,11 @@ def cmd_task(args):
             if status != "dropped" and b.status in ("active", "verifying"):
                 c.pause_snapshot(p.root, b)  # T-0136
             b.meta["status"] = status
+            if status == "dropped":  # T-4693: a drop's meaning is a field foresight reads, never words of the Log
+                if mistake:
+                    b.meta["dropped_as"] = "mistake"
+                else:
+                    b.meta.pop("dropped_as", None)  # a fresh decision: the old one doesn't carry over
             until = getattr(args, "until", None)
             if until:  # T-0450: fm next names it again from then
                 b.meta["revisit"] = until
@@ -1162,10 +1171,12 @@ def cmd_task(args):
         cur = need_brief(p, args.id)
         last, until = (cur.section("Log").strip().splitlines() or [""])[-1], getattr(args, "until", None) or None
         said = f" {status}: {c.redact(reason)}" + (f" (revisit {until})" if until else "")  # as change() logs it
-        if cur.status == status and until == cur.meta.get("revisit") and (not reason or last.endswith(said)):
+        if (cur.status == status and until == cur.meta.get("revisit") and (not reason or last.endswith(said))
+                and (not mistake or cur.meta.get("dropped_as") == "mistake")):
             # T-1879: a repeat with nothing new is a no-op
             return out(args, c.brief_summary(cur), f"{cur.id} is already {status}.")
-        if cur.status in c.CLOSED and status not in c.TRANSITIONS[cur.status]:  # T-0679 chaos test: dropped → blocked
+        if cur.status in c.CLOSED and status not in c.TRANSITIONS[cur.status] and not (mistake and cur.status == status):
+            # T-0679 chaos test: dropped → blocked (T-4693: bar the one repeat that only says the drop was a mistake)
             raise c.PolicyError(f"{cur.id} is {cur.status}: reopen it first (sampo task set {cur.id} status=planned)")
         saved = []
         if status == "dropped" and cur.status in ("active", "verifying"):  # T-0895: its half-done work outlives a checkout
@@ -4184,6 +4195,9 @@ def task_set(p, args):
         if "tier" in changes and c.tier_rank(changes["tier"]) < c.tier_rank(b.tier) and b.evidence():
             raise c.PolicyError(f"{b.id}: tier can't be lowered ({b.tier} → {changes['tier']}) once work has "
                                 f"evidence; it sets which audits are required")
+        if b.status == "dropped" and changes.get("status") not in (None, "dropped"):
+            b.meta["dropped_as"] = "mistake"  # T-4693: bringing a drop back says the drop was wrong; foresight reads this
+            b.append_log("the drop was a mistake (restored)")
         for k, v in changes.items():
             if k == "title":
                 b.preamble = f"# {c.plain(v)}\n"
@@ -8264,6 +8278,9 @@ def _build_parser(only=None):
     t.add_argument("reason", nargs="?")
     t.add_argument("--done-in", metavar="ID", help="it was done as part of this other task (closed as done there)")
     t.add_argument("--force", action="store_true", help="drop a task that is active or verifying")
+    t.add_argument("--mistake", action="store_true",
+                   help="the task was wrong to raise (a false alarm, a wrong guess): recorded as a field, so foresight "
+                        "doesn't count it against the rule that raised it")  # T-4693
     t = tadd("unblock")  # T-1877
     t.add_argument("id", help=some + "; back to planned, or captured while it has no criteria")
     t.add_argument("reason", nargs="?")

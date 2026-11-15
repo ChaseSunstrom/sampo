@@ -734,7 +734,7 @@ class OwnAsks(ForemanTestCase):  # T-2554: the user model learns from the user's
         os.makedirs(os.path.join(home, "gen-2"), exist_ok=True)
         with open(os.path.join(home, "gen-2", "mission-x.md"), "w", encoding="utf-8") as f:
             f.write(f"# Mission\n\nTask: {tower} (brief 1).\n")
-        self.fm("task", "drop", slip, "captured by mistake: a sample line fed to fm intake")
+        self.fm("task", "drop", slip, "a sample line fed to fm intake", "--mistake")  # T-4693: a field, not Log words
         ids = [b.id for b, _, _ in fs._requests(self.p)]
         self.assertIn(mine, ids)
         self.assertNotIn(tower, ids, "the tower's own Mission brief isn't the user's ask")
