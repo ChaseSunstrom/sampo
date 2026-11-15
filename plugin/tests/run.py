@@ -86,6 +86,7 @@ OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its
 OPERATOR_SWITCHES.add("SLOT_RESERVE")  # T-4650: the reserved slots' off switch is the operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_TRACE")  # T-4685: the slot trace is an operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
+OPERATOR_SWITCHES.add("NO_LEFTOVER_SCAN")  # T-4720: the test base sets it itself; a caller's never reaches a test of the scan
 OPERATOR_SWITCHES.add("CARGO_CAP_BYTES")  # T-4717: the operator's cap on the shared cargo cache; a test sets its own
 OPERATOR_SWITCHES.add("CARGO_SHARED")  # T-4717: the operator's off switch for the shared cargo target; a test sets its own
 OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record is believed; a nested run's is its own
@@ -2029,6 +2030,258 @@ def run_one(cid, k, timeout=480, deadline=None, small=False, joins=None, narrow=
                 HELD[cid] = HELD.get(cid, 0.0) + time.monotonic() - got
 
 
+# T-4720: ending what a test left running. The same reading and ending is in plugin/lib/sampo/lanes.py (proc_table,
+# proc_facts, under, holders, end_procs, _family), kept as a second copy because this file must run alone (an install
+# has no tests folder, a checkout's lib is not on this file's path); test_leftover_procs.OneAnswer holds the two alike.
+HAS_PROC = os.path.isdir("/proc/self")  # macOS has none: processes are read through lsof and ps there
+
+
+def _undeleted(path):
+    """T-4720: Linux reads a working folder that was removed as '<path> (deleted)'."""
+    return path[:-10] if path.endswith(" (deleted)") else path
+
+
+def _tool(argv, timeout=10, ok=(0,)):
+    """T-4720: a program's stdout, or None when it isn't there, times out or exits with a code not in `ok`."""
+    try:
+        got = subprocess.run(argv, capture_output=True, text=True, errors="replace", timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return got.stdout if got.returncode in ok else None
+
+
+def _lsof_table(uid):
+    """T-4720: where there is no /proc (macOS): [(pid, working folder)] of the user's processes from lsof, or None."""
+    out = _tool(["lsof", "-a", "-u", str(uid), "-d", "cwd", "-Fpn"], timeout=60, ok=(0, 1))
+    if out is None:
+        return None
+    table, pid = [], None
+    for line in out.splitlines():
+        if line.startswith("p") and line[1:].isdigit():
+            pid = int(line[1:])
+        elif line.startswith("n") and pid is not None:
+            table.append((pid, line[1:]))
+            pid = None
+    return table
+
+
+def proc_table(root=None, uid=None):
+    """T-4720: [(pid, working folder)] of this user's processes, never another user's; None when nothing can read them
+    (no /proc and no lsof), so the caller ends nothing. root and uid are for tests."""
+    uid = os.getuid() if uid is None else uid
+    root = root or "/proc"
+    if root == "/proc" and not HAS_PROC:
+        return _lsof_table(uid)
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    table = []
+    for name in names:
+        if not name.isdigit():
+            continue
+        d = os.path.join(root, name)
+        try:
+            if os.stat(d).st_uid != uid:
+                continue
+            table.append((int(name), _undeleted(os.readlink(os.path.join(d, "cwd")))))
+        except OSError:  # gone, or not readable: not ours to end
+            continue
+    return table
+
+
+def _family():
+    """This process and its ancestors: never ended, whatever folder they stand in. Through /proc one stat read per
+    ancestor; without it (macOS) one `ps -A` for them all."""
+    fam, pid = {os.getpid(), os.getppid()}, os.getpid()
+    parents = None
+    for _ in range(64):
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            if parents is None:
+                parents = {}
+                for line in (_tool(["ps", "-A", "-o", "pid=,ppid="]) or "").splitlines():
+                    a = line.split()
+                    if len(a) == 2 and a[0].isdecimal() and a[1].isdecimal():
+                        parents[int(a[0])] = int(a[1])
+            pid = parents.get(pid, 0)
+        if not pid or pid in fam:
+            break
+        fam.add(pid)
+    return fam
+
+
+def _terminal(link):
+    return link.startswith(("/dev/pts/", "/dev/tty", "/dev/console"))
+
+
+def proc_facts(pids, proc=None):
+    """T-4720: {pid: (has a terminal, same mount namespace as this process, command name)} for these pids; a pid that is
+    gone is left out; None when nothing can read them (no /proc and no ps), so the caller ends nothing. A terminal is
+    the controlling one or one of stdin, stdout or stderr: that process is a person's (a shell, an editor, a claude
+    session), never a leftover. A mount namespace that differs or can't be read is another sandbox's: its /tmp is not
+    ours (a path that reads as deleted here may be live there). Same read as plugin/lib/sampo/lanes.py's."""
+    if not pids:
+        return {}
+    if proc is None and not HAS_PROC:
+        out = _tool(["ps", "-o", "pid=,tty=,comm=", "-p", ",".join(str(p) for p in pids)], ok=(0, 1))
+        if out is None:
+            return None
+        facts = {}
+        for line in out.splitlines():
+            a = line.split(None, 2)
+            if len(a) >= 2 and a[0].isdecimal():
+                facts[int(a[0])] = (a[1] not in ("?", "??", "-"), True, os.path.basename(a[2].strip()) if len(a) > 2 else "")
+        return facts
+    proc = proc or "/proc"
+    try:
+        mine = os.readlink(f"{proc}/self/ns/mnt")
+    except OSError:
+        mine = None
+    facts = {}
+    for pid in pids:
+        d = f"{proc}/{pid}"
+        try:
+            with open(d + "/stat") as f:
+                stat = f.read()
+        except OSError:
+            continue
+        try:
+            tty = int(stat.rsplit(")", 1)[1].split()[4]) != 0
+        except (IndexError, ValueError):
+            tty = True  # can't tell: a person's until shown otherwise
+        for fd in (0, 1, 2) if not tty else ():
+            with contextlib.suppress(OSError):
+                tty = tty or _terminal(os.readlink(f"{d}/fd/{fd}"))
+        try:
+            same = mine is None or os.readlink(d + "/ns/mnt") == mine
+        except OSError:
+            same = False
+        facts[pid] = (tty, same, stat[stat.find("(") + 1:stat.rfind(")")])
+    return facts
+
+
+def under(*folders):
+    """T-4720: a test on a path: is it one of these folders or inside one (a name that only starts alike is not)."""
+    roots = set()
+    for f in folders:
+        if f and os.path.realpath(f) != os.sep:  # never the root: that would name every process
+            roots.update((f.rstrip(os.sep), os.path.realpath(f)))
+
+    def match(path):
+        return any(path == r or path.startswith(r + os.sep) for r in roots)
+    return match
+
+
+def holders(match, table=None, facts=None, fds=False, ns=False, note=None):
+    """T-4720: [(pid, folder)] of this user's processes whose working folder satisfies match (and, with fds on Linux,
+    whose open files do) and that are not a person's: never this process or its ancestors, never one with a terminal
+    (proc_facts), and with ns on never one in another mount namespace. note, when given, is filled {pid: (folder, command,
+    has a terminal)} for every process that was judged. table and facts (a function of pids) are for tests; None reads
+    the machine, and a machine that can't be read names nothing. Same answer as plugin/lib/sampo/lanes.py's holders."""
+    live = table is None
+    table = proc_table() if live else table
+    if table is None:
+        return []
+    skip = _family()
+    found = {pid: path for pid, path in table if pid not in skip and match(path)}
+    if fds and live and HAS_PROC:  # a process that left the folder but still holds a file in it
+        for pid, _ in table:
+            if pid in found or pid in skip:
+                continue
+            try:
+                for fd in os.listdir(f"/proc/{pid}/fd"):
+                    with contextlib.suppress(OSError):
+                        link = _undeleted(os.readlink(f"/proc/{pid}/fd/{fd}"))
+                        if link.startswith(os.sep) and match(link):
+                            found[pid] = link
+                            break
+            except OSError:
+                continue
+    if not found:
+        return []
+    got = (proc_facts if facts is None else facts)(sorted(found))
+    if got is None:
+        return []
+    out = []
+    for pid, path in sorted(found.items()):
+        tty, same, comm = got.get(pid, (False, True, ""))  # a pid with no entry is gone
+        if ns and not same:
+            continue
+        if note is not None:
+            note[pid] = (path, comm, tty)
+        if not tty:
+            out.append((pid, path))
+    return out
+
+
+def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=os.kill):
+    """T-4720: SIGTERM what find() names, SIGKILL what is left after grace s, and read again so a process that forked a
+    replacement meanwhile goes too; bounded (grace, then three more rounds). find() is read afresh each round, so a pid
+    that is gone or reused is not signalled by an old list. Returns the pids signalled; find() None ends nothing."""
+    sent = set()
+
+    def signal_all(sig):
+        found = find()
+        for pid, _ in found or ():
+            with contextlib.suppress(OSError):  # gone already, or not ours
+                kill(pid, sig)
+                sent.add(pid)
+        return bool(found)
+
+    if not signal_all(signal.SIGTERM):
+        return sent
+    end = time.monotonic() + grace
+    while time.monotonic() < end:
+        sleep(poll)
+        if not find():
+            return sent
+    for _ in range(4):
+        if not signal_all(signal.SIGKILL):
+            break
+        sleep(poll)
+    return sent
+
+
+OWN_FOLDERS = set()  # T-4720: the class folders this run made and still holds (their lock is ours, so held() reads True)
+
+
+def clear_folder(tmp, deep=False, lock=None):
+    """T-4720: end what still lives in a test folder, then remove it (shutil.rmtree alone leaves a detached hook looping
+    in the deleted folder). On Linux one /proc scan (about 5 ms; deep also reads open files, about 60 ms on a busy
+    machine) and a stat read per hit. Without /proc (macOS) every read is an lsof over all processes, so nothing is read
+    per class: end_run and the next run's sweep do that, once each. deep forces the read. T-4728: the caller's own lock
+    (the one hold() took) is held while its processes end, then closed, then the folder goes: the lock outlives the
+    processes it guards, so a sweep never sees the folder free while something still runs in it."""
+    if HAS_PROC or deep:
+        with contextlib.suppress(Exception):  # cleaning up never fails a class
+            end_procs(lambda: holders(under(tmp), fds=deep))
+    if lock:
+        lock.close()
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
+def end_run(base=None):
+    """T-4720: at this run's end, what its own class folders (fmtest-<this pid>-*) still hold, open files too.
+    T-4728: a folder another live run holds is not ours: a pid reused in another pid namespace that shares this temp root
+    names the same prefix, and its lock says whose it is. Our own folders read as held too (our lock), so they are named."""
+    base = base or tempfile.gettempdir()
+    prefixes = tuple({os.path.join(b, f"{TMP_PREFIX}{os.getpid()}-") for b in (base, os.path.realpath(base))})
+    own = {os.path.realpath(d) for d in OWN_FOLDERS} | set(OWN_FOLDERS)
+
+    def mine(p):
+        for pre in prefixes:
+            if p.startswith(pre):
+                top = pre + p[len(pre):].partition(os.sep)[0]
+                return top in own or not held(top)
+        return False
+
+    with contextlib.suppress(Exception):
+        end_procs(lambda: holders(mine, fds=True))
+
+
 def _run_one(cid, k, timeout, deadline, slot):
     """T-1808: a class still running after timeout s is killed and fails by name, with every thread's stack
     (faulthandler on SIGABRT); its own session, so a child holding the pipes dies with it. T-1809: the run's deadline
@@ -2046,6 +2299,7 @@ def _run_one(cid, k, timeout, deadline, slot):
         tmp = tempfile.mkdtemp(prefix=f"{TMP_PREFIX}{os.getpid()}-")  # T-2019: whatever the class leaks goes with it
     except OSError as e:  # T-3236: /tmp out of space or inodes fails this class by name, not the whole run
         return cid, 1, f"run.py: couldn't make the class's temp folder: {e}\n", 0, 0.0
+    OWN_FOLDERS.add(tmp)
     lock = None
     try:  # T-4728: an exception before the class runs (the lock, the env, the spawn) leaks neither the lock nor the folder
         lock = hold(tmp)  # a sweep from another run (or pid namespace) never takes a folder a class is running in
@@ -2065,6 +2319,7 @@ def _run_one(cid, k, timeout, deadline, slot):
         if lock:
             lock.close()
         shutil.rmtree(tmp, ignore_errors=True)
+        OWN_FOLDERS.discard(tmp)
         raise
     LIVE_CLASSES.add(p.pid)  # T-4538: watch_parent kills it if this run's starter is gone
     try:
@@ -2087,9 +2342,8 @@ def _run_one(cid, k, timeout, deadline, slot):
                 COVERED[cid] = f.read()
         with contextlib.suppress(OSError, ValueError), open(os.path.join(tmp, ".runcpu")) as f:
             CPU[cid] = float(f.read())
-        if lock:
-            lock.close()
-        shutil.rmtree(tmp, ignore_errors=True)
+        clear_folder(tmp, lock=lock)  # T-4720: what a class's git hook left running in it ends first; T-4728: then the lock
+        OWN_FOLDERS.discard(tmp)
     m = re.search(r"Ran (\d+) tests?", err)
     return cid, p.returncode, err, int(m.group(1)) if m else 0, time.time() - t0  # killed: negative
 
@@ -2109,6 +2363,7 @@ def watch_parent(poll=PARENT_POLL_S):
                 for pid in list(LIVE_CLASSES):
                     with contextlib.suppress(OSError):
                         os.killpg(pid, signal.SIGKILL)
+                end_run()  # T-4720: atexit does not run after os._exit
                 os._exit(1)
 
     threading.Thread(target=watch, daemon=True, name="run-parent-watch").start()
@@ -2151,6 +2406,7 @@ def sweep(base=None):
     T-4728: dead means its pid is gone and nobody holds its lock; a removal is only ever a real folder directly under the
     temp root (never a link, never a name that resolves elsewhere)."""
     base = base or tempfile.gettempdir()
+    dead = []
     root = os.path.realpath(base)
     for name in os.listdir(base):
         m = re.match(rf"(?:{TMP_PREFIX}|fmfork-)(\d+)-", name)  # T-3572: and a run's fork server's folder
@@ -2162,10 +2418,16 @@ def sweep(base=None):
         try:
             os.kill(int(m.group(1)), 0)
         except ProcessLookupError:
-            if not held(path):
-                shutil.rmtree(path, ignore_errors=True)
+            if not held(path):  # T-4728: a held folder is a live run's, so nothing in it is a leftover (T-4720)
+                dead.append(path)
         except PermissionError:
             pass  # alive, someone else's
+    if dead:  # T-4720: one read for all of them; a hook that outlived its run must not loop on in a removed folder
+        with contextlib.suppress(Exception):
+            end_procs(lambda: holders(under(*[d for d in dead if not held(d)]), fds=True, ns=True))  # another sandbox's /tmp is not a dead run's
+    for d in dead:
+        if not held(d):  # looked at again: a run may have taken the lock since the listing
+            shutil.rmtree(d, ignore_errors=True)
 
 
 def slowest(results, n):
@@ -2309,6 +2571,7 @@ def main():
             sys.stderr.write(f"run.py: --sandbox: not available here ({why}); running plain\n")
     t0 = time.time()
     sweep()
+    atexit.register(end_run)  # T-4720: what this run's class folders still hold when it ends
     hit, ids = set(), []
     parts, whole = {}, set()
     todo = classes(a.p or ["test*.py"], a.k, hit, a.names, ids, parts, whole)

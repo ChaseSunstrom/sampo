@@ -3146,6 +3146,49 @@ def check_cut_off_lanes(projects, here=None):
                                                                               "no cut-off lanes or 0-byte refs")
 
 
+_UNREAD = object()
+
+
+def check_leftover_procs(found=_UNREAD, lines=None, kept=None):
+    """T-4720: processes standing in a deleted test folder (/tmp/fmtest-*), found by where they stand: a test's hook that
+    outlived its run and loops on (325 once, about 40 on the load average, which Sampo's load gate reads as a busy
+    host). WARN with the count, folders and a few commands; sampo tidy --apply ends them. A process with a terminal
+    (a person's shell) or in another mount namespace is no leftover: the first is listed apart as left alone, the second
+    not at all. found/lines/kept ([(pid, folder, command)]) are for tests."""
+    from sampo import lanes as slanes
+    if found is _UNREAD:
+        note = {}
+        try:
+            found = slanes.deleted_test_procs(note=note)
+            kept = [(pid, f, comm) for pid, (f, comm, tty) in sorted(note.items()) if tty]
+        except Exception:  # a table that can't be read is no finding
+            found = None
+    kept = kept or []
+    away = (f"{len(kept)} with a terminal left alone: " + ", ".join(f"{pid} {comm}".strip() for pid, _, comm in kept[:3])
+            + (", ..." if len(kept) > 3 else "")) if kept else ""
+    if found is None:
+        return Result("test leftovers", "PASS", "process table not read here (no /proc, no lsof)")
+    if not found:
+        return Result("test leftovers", "PASS", "no process stands in a deleted test folder"
+                      + (f" ({away})" if away else ""))
+    folders = sorted({slanes.test_folder(f) or f for _, f in found})
+    n = len(found)
+
+    def cmd(pid):
+        if lines is not None:
+            return lines.get(pid, "")
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                return f.read(300).replace(b"\0", b" ").decode("utf-8", "replace").strip()
+        except OSError:
+            return ""
+    shown = ", ".join(f"{pid} {cmd(pid)[:50]}".strip() for pid, _ in found[:3])
+    return Result("test leftovers", "WARN",
+                  f"{n} process{'es' if n > 1 else ''} in {len(folders)} deleted test folder{'s' if len(folders) > 1 else ''}"
+                  f" ({', '.join(folders[:3])}{', ...' if len(folders) > 3 else ''}): {shown}{', ...' if n > 3 else ''}; "
+                  "sampo tidy --apply ends them" + (f"; {away}" if away else ""))
+
+
 def check_landlock():
     """T-1607: whether fm code workers can be confined (Landlock); unavailable is a note, never a failure."""
     from sampo import landlock
@@ -3283,6 +3326,7 @@ def run_all(full=False, accept_supply=False):
     results.append(check_state_size(projects))
     results.append(check_fsck(projects))
     results.append(check_cut_off_lanes(projects, getattr(c.find_project(os.getcwd()), "slug", None)))
+    results.append(check_leftover_procs())
     results.append(check_landlock())
     results.append(check_sandbox())
     results.append(check_headless())

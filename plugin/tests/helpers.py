@@ -351,7 +351,8 @@ class SampoTestCase(unittest.TestCase):
                                                      "FOREMAN_STATE", "XDG_STATE_HOME", "FOREMAN_NO_BACKGROUND",
                                                      "FOREMAN_ONEOFF", "CLAUDE_CODE_ENTRYPOINT", "FOREMAN_DRIVE_TASK",
                                                      "FOREMAN_GUARD_CASES", "FOREMAN_NO_LINK", "FOREMAN_NO_RIVAL",
-                                                     "FOREMAN_UI_CACHE_S", "FOREMAN_DISK_FREE")}
+                                                     "FOREMAN_UI_CACHE_S", "FOREMAN_DISK_FREE",
+                                                     "FOREMAN_NO_LEFTOVER_SCAN")}
         # T-4543: no test reads the machine's free disk: on 2026-11-12 a 97%-full disk turned trunk red. 500 of 1000 GB
         # free is roomy; a test of low space pins its own reading (test_disk_pressure)
         os.environ["FOREMAN_DISK_FREE"] = "500e9/1000e9"
@@ -359,6 +360,7 @@ class SampoTestCase(unittest.TestCase):
         os.environ["FOREMAN_HOME"] = self.home
         os.environ["FOREMAN_NO_BACKGROUND"] = "1"  # a detached child writing into a test's folder races its cleanup
         os.environ["FOREMAN_NO_LINK"] = "1"  # T-1333: a test's session start never makes ~/.local/bin/fm
+        os.environ["FOREMAN_NO_LEFTOVER_SCAN"] = "1"  # T-4720: no tidy or doctor test reads the machine's leftover processes
         os.environ["FOREMAN_UI_CACHE_S"] = "0"  # T-3542: each fm ui builds its view (test_ui_cache turns it on)
         # T-1004: a suite run from a one-off or headless session (the UI harness) sees what a working session sees
         for k in ("FOREMAN_SESSION_ID", "FOREMAN_PROJECT", "FOREMAN_STATE", "FOREMAN_ONEOFF", "CLAUDE_CODE_ENTRYPOINT",

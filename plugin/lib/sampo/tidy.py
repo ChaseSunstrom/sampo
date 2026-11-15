@@ -778,8 +778,43 @@ def check_global(apply, actions, plugins=False):
             for d in shells:
                 shutil.rmtree(d, ignore_errors=True)
             actions.append(("global", "child_shells"))
+    out += leftover_findings(apply, actions)
     if plugins:
         out += _check_plugins()
+    return out
+
+
+def leftover_findings(apply, actions, reader=None, kept=None):
+    """T-4720: processes standing in a deleted test folder (/tmp/fmtest-*): a test's hook that outlived its run, looping
+    (325 of them once added about 40 to the load average, which Sampo's load gate reads as a busy host). --apply ends
+    them (SIGTERM, then SIGKILL). They are found by where they stand, never by name; only this user's, never this
+    process or its ancestors, never one with a terminal (a person's shell: listed apart, left alone) and never one in
+    another mount namespace (a sandbox's own /tmp). `reader` returns [(pid, folder)] and `kept` is [(pid, folder,
+    command)] (tests name their own children; None reads the machine)."""
+    from sampo import lanes as slanes
+    if reader is None:
+        note = {}
+        found = slanes.deleted_test_procs(note=note)
+        kept = [(pid, f, comm) for pid, (f, comm, tty) in sorted(note.items()) if tty]
+        read = slanes.deleted_test_procs
+    else:
+        read, found = reader, reader()
+    out = []
+    if found:
+        folders = {slanes.test_folder(f) or f for _, f in found}
+        n = len(found)
+        out.append(finding(None, "leftover_procs", "action",
+                           f"{n} process{'es' if n > 1 else ''} standing in {len(folders)} deleted test folder"
+                           f"{'s' if len(folders) > 1 else ''}", "end them (SIGTERM, then SIGKILL)", auto=True))
+        if apply:
+            slanes.end_procs(read)
+            actions.append(("global", "leftover_procs"))
+    if kept:
+        shown = ", ".join(f"{pid} {comm}".strip() for pid, _, comm in kept[:5]) + (", ..." if len(kept) > 5 else "")
+        out.append(finding(None, "leftover_procs_kept", "info",
+                           f"{len(kept)} process{'es' if len(kept) > 1 else ''} with a terminal "
+                           f"{'stand' if len(kept) > 1 else 'stands'} in deleted test folders (left alone): {shown}",
+                           "end them yourself if they are not in use", auto=False))
     return out
 
 

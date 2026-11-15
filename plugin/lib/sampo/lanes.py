@@ -14,6 +14,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import stat as _stat
 import subprocess
 import sys
@@ -191,6 +192,246 @@ def git_pids(targets, proc_root=None, procs=None):
     ts += [t for t in targets if t and t not in ts]
     return sorted(pid for pid, cwd, line in procs
                   if any((cwd and (cwd == t or cwd.startswith(t.rstrip("/") + "/"))) or t in line for t in ts))
+
+
+TEST_PREFIX = "fmtest-"  # T-4720: plugin/tests/run.py's TMP_PREFIX: a test class's temp folder is /tmp/fmtest-<pid>-<rand>
+
+
+def _undeleted(path):
+    return path[:-10] if path.endswith(" (deleted)") else path  # Linux reads a removed folder so
+
+
+def proc_table(root=None, uid=None):
+    """T-4720: [(pid, working folder)] of this user's processes, never another user's; None when nothing can read them
+    (no /proc and no lsof): the caller ends nothing. Same read as plugin/tests/run.py's, which cannot import this."""
+    uid = os.getuid() if uid is None else uid
+    if root is None and not os.path.isdir(PROC + "/self"):
+        out = _tool(["lsof", "-a", "-u", str(uid), "-d", "cwd", "-Fpn"], timeout=60, ok=(0, 1))
+        if out is None:
+            return None
+        table, pid = [], None
+        for line in out.splitlines():
+            if line[:1] == "p" and line[1:].isdecimal():
+                pid = int(line[1:])
+            elif line[:1] == "n" and pid is not None:
+                table.append((pid, line[1:]))
+                pid = None
+        return table
+    root = root or PROC
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return None
+    table = []
+    for name in names:
+        if not name.isdecimal():
+            continue
+        try:
+            if os.stat(os.path.join(root, name)).st_uid == uid:
+                table.append((int(name), _undeleted(os.readlink(os.path.join(root, name, "cwd")))))
+        except OSError:  # gone, or not readable: not ours to end
+            continue
+    return table
+
+
+def _family():
+    """This process and its ancestors: never ended, whatever folder they stand in. Through /proc one stat read per
+    ancestor; without it (macOS) one `ps -A` for them all."""
+    fam, pid = {os.getpid(), os.getppid()}, os.getpid()
+    parents = None
+    for _ in range(64):
+        try:
+            with open(f"{PROC}/{pid}/stat") as f:
+                pid = int(f.read().rsplit(")", 1)[1].split()[1])
+        except (OSError, ValueError, IndexError):
+            if parents is None:
+                parents = {}
+                for line in (_tool(["ps", "-A", "-o", "pid=,ppid="]) or "").splitlines():
+                    a = line.split()
+                    if len(a) == 2 and a[0].isdecimal() and a[1].isdecimal():
+                        parents[int(a[0])] = int(a[1])
+            pid = parents.get(pid, 0)
+        if not pid or pid in fam:
+            break
+        fam.add(pid)
+    return fam
+
+
+def _terminal(link):
+    return link.startswith(("/dev/pts/", "/dev/tty", "/dev/console"))
+
+
+def proc_facts(pids, proc=None):
+    """T-4720: {pid: (has a terminal, same mount namespace as this process, command name)} for these pids; a pid that is
+    gone is left out; None when nothing can read them (no /proc and no ps), so the caller ends nothing. A terminal is
+    the controlling one or one of stdin, stdout or stderr: that process is a person's (a shell, an editor, a claude
+    session), never a leftover. A mount namespace that differs or can't be read is another sandbox's: its /tmp is not
+    ours (a path that reads as deleted here may be live there). Same read as plugin/tests/run.py's."""
+    if not pids:
+        return {}
+    proc = proc or PROC
+    if proc == PROC and not os.path.isdir(PROC + "/self"):
+        out = _tool(["ps", "-o", "pid=,tty=,comm=", "-p", ",".join(str(p) for p in pids)], ok=(0, 1))
+        if out is None:
+            return None
+        facts = {}
+        for line in out.splitlines():
+            a = line.split(None, 2)
+            if len(a) >= 2 and a[0].isdecimal():
+                facts[int(a[0])] = (a[1] not in ("?", "??", "-"), True, os.path.basename(a[2].strip()) if len(a) > 2 else "")
+        return facts
+    try:
+        mine = os.readlink(f"{proc}/self/ns/mnt")
+    except OSError:
+        mine = None
+    facts = {}
+    for pid in pids:
+        d = f"{proc}/{pid}"
+        try:
+            with open(d + "/stat") as f:
+                stat = f.read()
+        except OSError:
+            continue
+        try:
+            tty = int(stat.rsplit(")", 1)[1].split()[4]) != 0
+        except (IndexError, ValueError):
+            tty = True  # can't tell: a person's until shown otherwise
+        for fd in (0, 1, 2) if not tty else ():
+            with contextlib.suppress(OSError):
+                tty = tty or _terminal(os.readlink(f"{d}/fd/{fd}"))
+        try:
+            same = mine is None or os.readlink(d + "/ns/mnt") == mine
+        except OSError:
+            same = False
+        facts[pid] = (tty, same, stat[stat.find("(") + 1:stat.rfind(")")])
+    return facts
+
+
+def under(*folders):
+    """T-4720: a test on a path: is it one of these folders or inside one (a name that only starts alike is not)."""
+    roots = set()
+    for f in folders:
+        if f and os.path.realpath(f) != os.sep:  # never the root: that would name every process
+            roots.update((f.rstrip(os.sep), os.path.realpath(f)))
+    return lambda path: any(path == r or path.startswith(r + os.sep) for r in roots)
+
+
+def holders(match, table=None, facts=None, ns=False, note=None):
+    """T-4720: [(pid, folder)] of this user's processes whose working folder satisfies match and that are not a person's:
+    never this process or its ancestors, never one with a terminal (proc_facts), and with ns on never one in another
+    mount namespace. note, when given, is filled {pid: (folder, command, has a terminal)} for every process that was
+    judged, so a caller can name what it ended and what it left. table and facts (a function of pids) are for tests;
+    None reads the machine, and a machine that can't be read names nothing."""
+    table = proc_table() if table is None else table
+    if table is None:
+        return []
+    skip = _family()
+    hits = [(pid, path) for pid, path in table if pid not in skip and match(path)]
+    if not hits:
+        return []
+    got = (proc_facts if facts is None else facts)([pid for pid, _ in hits])
+    if got is None:
+        return []
+    out = []
+    for pid, path in hits:
+        tty, same, comm = got.get(pid, (False, True, ""))  # a pid with no entry is gone
+        if ns and not same:
+            continue
+        if note is not None:
+            note[pid] = (path, comm, tty)
+        if not tty:
+            out.append((pid, path))
+    return out
+
+
+def _temp_roots():
+    roots = {tempfile.gettempdir(), "/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp"}
+    return sorted(roots | {os.path.realpath(r) for r in roots})
+
+
+def test_folder(path):
+    """T-4720: the test folder (<temp root>/fmtest-*) a path is in or is, else None. Only a folder directly under a temp
+    root with the test prefix counts: a path elsewhere that has such a name does not."""
+    for root in _temp_roots():
+        if path.startswith(root + os.sep):
+            first = path[len(root) + 1:].split(os.sep)[0]
+            if first.startswith(TEST_PREFIX):
+                return os.path.join(root, first)
+    return None
+
+
+def deleted_test_procs(table=None, facts=None, note=None):
+    """T-4720: [(pid, folder)] of this user's processes standing in a test folder that no longer exists: what a test left
+    running (325 looping hooks of test_land_ship once) after its run removed the folder. A folder that exists is a live
+    run's; a process elsewhere is never named. Not by program name: only by where it stands. Never one with a terminal
+    (a person's; it goes to note, {pid: (folder, command, True)}) and never one in another mount namespace (a sandbox's
+    own /tmp). FOREMAN_NO_LEFTOVER_SCAN=1 reads nothing (the test base sets it: a real machine's leftovers must not turn
+    a tidy or doctor test red)."""
+    if os.environ.get("FOREMAN_NO_LEFTOVER_SCAN"):
+        return []
+
+    def gone(path):
+        top = test_folder(path)
+        return top is not None and not os.path.isdir(top)
+    return holders(gone, table, facts=facts, ns=True, note=note)
+
+
+def end_procs(find, grace=3.0, poll=0.1, sleep=time.sleep, kill=os.kill):
+    """T-4720: SIGTERM what find() names, SIGKILL what is left after grace s, reading afresh each round so a gone or reused
+    pid is not signalled from an old list; bounded. Returns the pids signalled; find() None ends nothing."""
+    sent = set()
+
+    def signal_all(sig):
+        found = find()
+        for pid, _ in found or ():
+            with contextlib.suppress(OSError):
+                kill(pid, sig)
+                sent.add(pid)
+        return bool(found)
+
+    if not signal_all(signal.SIGTERM):
+        return sent
+    end = time.monotonic() + grace
+    while time.monotonic() < end:
+        sleep(poll)
+        if not find():
+            return sent
+    for _ in range(4):
+        if not signal_all(signal.SIGKILL):
+            break
+        sleep(poll)
+    return sent
+
+
+def end_lane_procs(path):
+    """T-4720: the processes living in a lane folder that was just removed (a builder's dev server, a hook): their working
+    folder is the lane's or inside it. Called only after git removed the lane, never before. Only a process with no
+    terminal is ended; a person's (a shell, an editor, a claude session started there) is left and listed. Returns
+    {"ended": [command names], "count": N, "kept": [(pid, command)]}."""
+    res = {"ended": [], "count": 0, "kept": []}
+    if not path:
+        return res
+    note = {}
+    with contextlib.suppress(Exception):
+        sent = end_procs(lambda: holders(under(path), note=note))
+        res["count"] = len(sent)
+        res["ended"] = sorted({note[pid][1] or str(pid) for pid in sent if pid in note})
+        left = {}
+        holders(under(path), note=left)  # afresh: what still stands there, after the ending
+        res["kept"] = sorted((pid, comm or "?") for pid, (_, comm, tty) in left.items() if tty)
+    return res
+
+
+def lane_procs_text(res):
+    """The lane-removal words for end_lane_procs's result: '' when it ended and left nothing."""
+    out = []
+    if res["count"]:
+        out.append(f"ended {res['count']} leftover process{'es' if res['count'] > 1 else ''}: {', '.join(res['ended'])}")
+    if res["kept"]:
+        n = len(res["kept"])
+        out.append(f"{n} process{'es' if n > 1 else ''} still stand{'' if n > 1 else 's'} in the removed lane: "
+                   + ", ".join(f"{pid} {comm}" for pid, comm in res["kept"][:5]) + (f", {n - 5} left out" if n > 5 else ""))
+    return "; ".join(out)
 
 
 def _lock_files(gitdir, common):
@@ -620,9 +861,14 @@ def cmd_lane(args):
             return cli.out(args, {"id": b.id, "path": None, "branch_kept": [], **({"dropped": drop} if drop else {})},
                              f"{b.id}: builder slot freed.")
         raise cli.UsageError(f"{b.id} isn't in a lane")
-    path, kept = remove(p, b, main, drop)
-    return cli.out(args, {"id": b.id, "path": path, "branch_kept": kept, **({"dropped": drop} if drop else {})},
+    procs = {}
+    path, kept = remove(p, b, main, drop, ended=procs)
+    words = lane_procs_text(procs) if procs else ""
+    return cli.out(args, {"id": b.id, "path": path, "branch_kept": kept, **({"dropped": drop} if drop else {}),
+                          **({"procs": {"ended": procs["ended"], "count": procs["count"],
+                                        "kept": [list(k) for k in procs["kept"]]}} if words else {})},
                      f"{b.id}: lane {path} removed" + (f"; branch {', '.join(kept)} kept (not merged)" if kept else "")
+                     + (f"; {words}" if words else "")
                      + (f"; the next fm lane brief {b.id} starts from the drop" if drop else "") + ".")
 
 
@@ -3571,11 +3817,12 @@ def _save_drop(p, tid, drop):
         c.write_atomic(_drop_path(p, tid), json.dumps(drop))
 
 
-def remove(p, b, main, drop=None, keep=False):
+def remove(p, b, main, drop=None, keep=False, ended=None):
     """fm lane rm (and fm tidy --apply, T-0186): the lane's folder, its registration and its branch if merged; never
     uncommitted or ignored files (PolicyError). (path, the branches kept because they aren't merged). drop (T-1823,
     fm lane rm --why): the main thread drops the work, so a locked unmerged worktree goes too (its branch stays) and
-    the drop stays on the brief for the next builder brief."""
+    the drop stays on the brief for the next builder brief. ended (T-4720), a dict, receives end_lane_procs's result:
+    what was ended there (no terminal) and what was left (a person's), for the caller's line."""
     from sampo import cli
     import fmguard
     path = b.meta["lane"]
@@ -3620,6 +3867,9 @@ def remove(p, b, main, drop=None, keep=False):
             r = _git(main, "worktree", "remove", path)
         if r.returncode:
             raise cli.UsageError(f"git worktree remove failed: {r.stderr.strip()[:300]}")
+    procs = end_lane_procs(path)  # T-4720: git removed the folder (or it was gone): what is left running in it (no terminal) goes with it
+    if ended is not None:
+        ended.update(procs)
     from sampo import bus
     from sampo import train as _train
     _train.stop_check(b)  # T-4286: the check sampo lane accept started for this lane ends with it (its own session only)
@@ -3638,7 +3888,7 @@ def remove(p, b, main, drop=None, keep=False):
         if x.status in ("active", "verifying"):
             x.meta["status"] = "planned"  # not the main checkout's active task by accident
         x.append_log(f"lane removed: {path}" + (f" (cut off; kept in {wreck})" if wreck else "") + (f" (branch {', '.join(kept)} kept: not merged)" if kept else "")
-                     + (f"; dropped: {drop['why']}" if drop else ""))
+                     + (f"; dropped: {drop['why']}" if drop else "") + (f"; {lane_procs_text(procs)}" if lane_procs_text(procs) else ""))
     cli.mutate(p, b.id, take_back, "lane_rm", {"path": path, "branch_kept": kept,
                                                  **({"dropped": drop["why"]} if drop else {})})
     if drop is not None:
@@ -3654,11 +3904,17 @@ def stale(p, briefs, apply, actions, finding):
     if not c.git_root(main):
         return []
     out = []
+    busy = None  # T-4720: read once, only when something is to be removed (finished_findings does the same)
     for b in briefs:
         if b.meta.get("lane") and b.status in c.CLOSED:
             out.append(finding(p.slug, "stale_lane", "action", f"{b.id} is {b.status}; its lane {b.meta['lane']} remains",
                                f"fm lane rm {b.id}", auto=True))
             if apply:
+                busy = _busy_dirs() if busy is None else busy
+                if _in_use(b.meta["lane"], busy):  # a person's shell or editor stands in it: never pulled from under them
+                    out[-1].update(severity="warn", auto=False,
+                                   fix=f"a process is working in {b.meta['lane']}: end it or leave the folder, then fm lane rm {b.id}")
+                    continue
                 try:
                     remove(p, b, main)
                     actions.append(("lane_rm", b.id))
@@ -4346,6 +4602,7 @@ def _remove_finished(main, row):
             if back.returncode:
                 why += f"; and putting its lock back failed: {(back.stderr.strip() or f'exit {back.returncode}')[:200]}"
         return why
+    end_lane_procs(path)  # T-4720: what still stands in the removed folder goes with it
     _git(main, "worktree", "prune")
     if row["branch"] and _LANE_BRANCH.match(row["branch"]):
         _git(main, "branch", "-d", row["branch"])  # -d: the commits stay when the branch somehow isn't merged
