@@ -1795,8 +1795,9 @@ _WRAPPER_VALUED = {"nice": ("-n", "--adjustment"), "ionice": ("-c", "-n", "-p", 
 _CDS = ("cd", "pushd", "popd")  # T-1923: the builtins that move the shell
 
 
-def _strip_wrappers(argv):
-    """Drop env assignments and exec wrappers (sudo, env, timeout, xargs, npx…). Returns (argv, via_xargs)."""
+def _strip_wrappers(argv, dropped=None):
+    """Drop env assignments and exec wrappers (sudo, env, timeout, xargs, npx…). Returns (argv, via_xargs). A list given
+    as `dropped` gets the words dropped, as read (an env -S string split into its words: T-4686)."""
     i = 0
     while i < len(argv):
         a = argv[i]
@@ -1854,6 +1855,8 @@ def _strip_wrappers(argv):
             i += 1
         else:
             break
+    if dropped is not None:
+        dropped += argv[:i]
     return argv[i:], any(os.path.basename(a) == "xargs" for a in argv[:i])
 
 
@@ -1918,7 +1921,7 @@ _DOWNLOAD_SUBST = lazy(r"(\$\(|`)\s*(curl|wget|fetch)\b")
 
 _INTERP_NAMES = (r"(?:python|perl|ruby|php|pypy|ipython|lua)[0-9.]*|py|jruby|truffleruby|irb|node|nodejs|deno|bun"
                  r"|luajit|Rscript|julia|tclsh")  # T-1585 review: pypy, ipython, lua, R, julia, tcl
-_INTERP = lazy(rf"(?:^|[\s;&|(/`])({_INTERP_NAMES})(?=\s|$|[;&|)`])")
+_INTERP = lazy(rf"(?:^|[\s;&|(/`])({_INTERP_NAMES}|R(?=\s+-))(?=\s|$|[;&|)`])")  # T-4686: R -e CODE (a bare R is a word)
 _TEXT_TICKS = lazy(r"(?:python[0-9.]*|py|node|nodejs|deno|bun)$")  # a backtick is only text in these
 _WRITE_API = lazy(
     r"""open\s*\([^)]*['"][rwxab+]*[wxa+][rwxab+]*['"]|\.write_(?:text|bytes)\s*\(|(?:write|append)FileSync|"""
@@ -2601,7 +2604,8 @@ def _spawned_commands(code):
 _SYS_GATE = lazy(r"\b(?:open|fopen|sysopen|ZipFile|connect|os\.|shutil|unlink|rm|rmdir|mkdir|rename|replace|write\w*|append\w*"
                  r"|copy\w*|cp\w*|mv|move|link|symlink\w*|touch|chmod\w*|chown\w*|remove\w*|delete|truncate|utime\w*|create\w*"
                  r"|file(?:[_.(=]|[ \t]+\w|[ \t]+=)|make_path|mkpath|sink|save\w*|put_contents|output|install|ln\w*|sync\w*"
-                 r"|dir\.create)")  # a stem: rm_f; (T-4673 review: no bare os, dir, set, file: words of every script)
+                 r"|dir\.create|__import__|import_module|getattr\s*\("
+                 r"|extract\w*)")  # a stem: rm_f; (T-4673 review: no bare os, dir, set, file: words of every script)
 _PY_MODS = frozenset("os shutil io builtins codecs pathlib gzip bz2 lzma tarfile zipfile sqlite3".split())
 _PY_PATHS = frozenset("Path PurePath PosixPath PurePosixPath".split())
 _PY_CALLS = {
@@ -2624,6 +2628,17 @@ def _py_few(items, n):
     """items cut to n; a cut leaves the unknown "\\x01" in the last place (fails closed: a value the guard didn't read
     may be a system path, and _interp_system_writes judges one as system), as a count of write calls past the cap does"""
     return items if len(items) <= n else items[:n - 1] + [("\x01", False)]
+
+
+def _py_dyn_module(e):
+    """The module name `__import__('os')` or `importlib.import_module('os')` gives (T-4686), else ''."""
+    import ast
+    if isinstance(e, ast.Call) and e.args and isinstance(e.args[0], ast.Constant) and isinstance(e.args[0].value, str):
+        f = e.func
+        if (isinstance(f, ast.Name) and f.id in ("__import__", "import_module")) or (
+                isinstance(f, ast.Attribute) and f.attr == "import_module"):
+            return e.args[0].value.split(".")[0]
+    return ""
 
 
 def _py_system_targets(code):
@@ -2660,10 +2675,127 @@ def _py_system_targets(code):
                             bind(a.id, b)
         elif isinstance(n, (ast.AnnAssign, ast.NamedExpr)) and n.value is not None and isinstance(n.target, ast.Name):
             bind(n.target.id, n.value)
-        elif isinstance(n, (ast.For, ast.AsyncFor)) and isinstance(n.target, ast.Name) \
-                and isinstance(n.iter, (ast.List, ast.Tuple, ast.Set)):
-            for elt in n.iter.elts:
-                bind(n.target.id, elt)
+    # T-4686: a function's parameters are what its calls pass (and its defaults); a loop or comprehension target is each
+    # element of what it walks; `m = __import__('os')` makes m the module, as an import does
+    funcs, methods, classes = {}, {}, {}
+    for n in nodes:
+        if isinstance(n, ast.ClassDef):
+            for b in n.body:
+                if isinstance(b, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    methods.setdefault(b.name, []).append(b)
+                    if b.name == "__init__":
+                        classes.setdefault(n.name, []).append(b)
+    method_ids = {id(b) for bs in methods.values() for b in bs}
+    for n in nodes:
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if id(n) not in method_ids:
+                funcs.setdefault(n.name, []).append(n)
+        elif isinstance(n, ast.Assign) and isinstance(n.value, ast.Lambda):
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    funcs.setdefault(t.id, []).append(n.value)
+        elif isinstance(n, ast.Assign) and (dm := _py_dyn_module(n.value)):
+            for t in n.targets:
+                if isinstance(t, ast.Name) and dm in _PY_MODS:
+                    mods[t.id] = dm
+        elif isinstance(n, ast.Assign) and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name) \
+                and n.value.func.id == "getattr" and len(n.value.args) == 2 and isinstance(n.value.args[0], ast.Name) \
+                and n.value.args[0].id in mods and isinstance(n.value.args[1], ast.Constant) \
+                and isinstance(n.value.args[1].value, str):  # g = getattr(os, 'remove'): g is os.remove
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    fns[t.id] = (mods[n.value.args[0].id], n.value.args[1].value)
+    # a parameter is what its calls pass; one with no call the scan can match to the arguments (a call through *a or **k,
+    # a function handed on to map or partial, a lambda used as a callback, a method no call names) is unknown, whatever
+    # a default says: only a def that holds a call can reach a write
+    unknown_v = ast.Constant(value="\x01")
+    defs = [n for n in nodes if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
+            and any(isinstance(x, ast.Call) for x in ast.walk(n))]
+    called, passed_on, call_funcs = set(), set(), set()
+
+    def all_params(fd):
+        a = fd.args
+        return a.posonlyargs + a.args + a.kwonlyargs + [x for x in (a.vararg, a.kwarg) if x]
+
+    def feed(fd, call, skip):
+        called.add(id(fd))
+        a = fd.args
+        if any(isinstance(v, ast.Starred) for v in call.args) or any(k.arg is None for k in call.keywords):
+            passed_on.add(id(fd))  # the arguments aren't ones the scan can match
+            return
+        for p, v in zip((a.posonlyargs + a.args)[skip:], call.args):
+            bind(p.arg, v)
+        names = {x.arg for x in a.args + a.kwonlyargs}
+        for k in call.keywords:
+            if k.arg in names:
+                bind(k.arg, k.value)
+
+    def skip_of(fd):  # self or cls first, unless a staticmethod
+        return 0 if any(isinstance(x, ast.Name) and x.id == "staticmethod" for x in fd.decorator_list) else 1
+
+    for n in nodes:
+        if isinstance(n, ast.Call):
+            f = n.func
+            call_funcs.add(id(f))
+            if isinstance(f, ast.Name):
+                for fd in funcs.get(f.id, ()):
+                    feed(fd, n, 0)
+                for fd in classes.get(f.id, ()):
+                    feed(fd, n, 1)
+            elif isinstance(f, ast.Attribute):
+                for fd in methods.get(f.attr, ()):
+                    feed(fd, n, skip_of(fd))
+            elif isinstance(f, ast.Lambda):
+                feed(f, n, 0)
+    for n in nodes:  # a name or attribute that is no call target: the function it names may be called with anything
+        if isinstance(n, ast.Name) and id(n) not in call_funcs and isinstance(n.ctx, ast.Load):
+            passed_on.update(id(fd) for fd in funcs.get(n.id, []) + classes.get(n.id, []))
+        elif isinstance(n, ast.Attribute) and id(n) not in call_funcs and n.attr in methods:
+            passed_on.update(id(fd) for fd in methods[n.attr])
+    for fd in defs:
+        if id(fd) not in called or id(fd) in passed_on:
+            for p in all_params(fd):
+                bind(p.arg, unknown_v)
+        a = fd.args
+        for p, v in list(zip(reversed(a.posonlyargs + a.args), reversed(a.defaults))) + [
+                (p, v) for p, v in zip(a.kwonlyargs, a.kw_defaults) if v is not None]:
+            bind(p.arg, v)
+
+    def elems(it, d=0):
+        """[expression] each element of the iterable `it` may be (None: one it can't follow)."""
+        if d > 4:
+            return None
+        if isinstance(it, (ast.List, ast.Tuple, ast.Set)):
+            return list(it.elts)
+        if isinstance(it, ast.Name):
+            got = [elems(b, d + 1) for b in binds.get(it.id, ())]
+            return None if not got or None in got else [x for g in got for x in g]
+        if isinstance(it, ast.Call):
+            f = it.func
+            name = f.id if isinstance(f, ast.Name) else f.attr if isinstance(f, ast.Attribute) else ""
+            if name in ("sorted", "list", "set", "tuple", "reversed", "iter", "frozenset") and it.args:
+                return elems(it.args[0], d + 1)
+            if name in ("glob", "iglob") and it.args and (isinstance(f, ast.Name) or (
+                    isinstance(f.value, ast.Name) and f.value.id == "glob")):  # a name the pattern matches
+                return [ast.BinOp(left=it.args[0], op=ast.Add(), right=ast.Constant(value="\x00"))]
+            if name in ("listdir", "scandir") and it.args:  # a name in the folder
+                return [ast.BinOp(left=it.args[0], op=ast.Add(), right=ast.Constant(value="/\x00"))]
+            if name in ("iterdir", "glob", "rglob") and isinstance(f, ast.Attribute):  # Path(d).glob(p): d/<name>
+                return [ast.BinOp(left=f.value, op=ast.Div(), right=ast.Constant(value="\x00"))]
+        return None
+    for n in nodes:
+        if isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension)):
+            got = elems(n.iter)
+            if got is None:
+                continue
+            for elt in got:
+                if isinstance(n.target, ast.Name):
+                    bind(n.target.id, elt)
+                elif isinstance(n.target, (ast.Tuple, ast.List)) and isinstance(elt, (ast.Tuple, ast.List)) \
+                        and len(n.target.elts) == len(elt.elts):
+                    for a, b in zip(n.target.elts, elt.elts):
+                        if isinstance(a, ast.Name):
+                            bind(a.id, b)
 
     def join(a, b):
         return os.path.join(a, b)
@@ -2765,20 +2897,8 @@ def _py_system_targets(code):
         for s, p in val(e):
             if p or not need_path or "\x01" in s:  # the unknown counts whatever it was a value of
                 out.append(s)
-    for n in nodes:
-        if not isinstance(n, ast.Call):
-            continue
-        f, mod, fn, recv = n.func, None, None, None
-        if isinstance(f, ast.Name):
-            if f.id in fns:
-                mod, fn = fns[f.id]
-            elif f.id == "open" and f.id not in binds:
-                mod, fn = "builtins", "open"
-        elif isinstance(f, ast.Attribute):
-            if isinstance(f.value, ast.Name) and f.value.id in mods:
-                mod, fn = mods[f.value.id], f.attr
-            else:
-                recv, fn = f.value, f.attr
+
+    def call_one(n, mod, fn, recv):
         if mod is not None:
             mod = mod.split(".")[0]
             if fn == "open" and mod in ("builtins", "io", "codecs", "gzip", "bz2", "lzma", "tarfile"):
@@ -2807,6 +2927,42 @@ def _py_system_targets(code):
                 if any(kinds):
                     add(recv, need_path=True)
                     add(arg(n, 0, "target"))
+            elif fn in ("extractall", "extract"):  # an archive's members land under the folder (none given: here)
+                dest = arg(n, 0 if fn == "extractall" else 1, "path")
+                if dest is not None:
+                    add(dest)
+                else:
+                    out.append(".")
+
+    def module_of(e):
+        if isinstance(e, ast.Name) and e.id in mods:
+            return mods[e.id].split(".")[0]
+        return _py_dyn_module(e) if _py_dyn_module(e) in _PY_MODS else ""
+
+    def getattr_call(e):  # getattr(<one of the modules>, name)
+        return isinstance(e, ast.Call) and isinstance(e.func, ast.Name) and e.func.id == "getattr" \
+            and len(e.args) >= 2 and bool(module_of(e.args[0]))
+    for n in nodes:
+        if not isinstance(n, ast.Call):
+            continue
+        f, mod, fn, recv, calls = n.func, None, None, None, []
+        if getattr_call(n):  # getattr(os, name): a name the code doesn't spell out may be any writer of the module
+            if any(re.search(r"[\x00\x01]", s) or not s for s, _ in val(n.args[1]) or [("", 0)]):
+                out.append("\x01")
+        if isinstance(f, ast.Name):
+            if f.id in fns:
+                mod, fn = fns[f.id]
+            elif f.id == "open" and f.id not in binds:
+                mod, fn = "builtins", "open"
+        elif isinstance(f, ast.Attribute):
+            if mm := module_of(f.value):
+                mod, fn = mm, f.attr
+            else:
+                recv, fn = f.value, f.attr
+        elif getattr_call(f):  # getattr(os, 'remove')(p)
+            calls = [(module_of(f.args[0]), s, None) for s, _ in val(f.args[1]) if not re.search(r"[\x00\x01]", s)]
+        for c in calls or [(mod, fn, recv)]:
+            call_one(n, *c)
         if len(out) > 256:  # past this the rest isn't read: that is judged as a path the guard can't rule out
             out.append("\x01")
             break
@@ -2880,7 +3036,7 @@ _TEXT_ROWS = {
     "jl": [(frozenset(), True, _JL_NAMES), (frozenset(["Base", "Filesystem"]), False, _JL_NAMES)],
     "py": _PY_TEXT}
 _LANG_OF = {"node": "js", "nodejs": "js", "deno": "js", "bun": "js", "perl": "pl", "ruby": "rb", "jruby": "rb",
-            "truffleruby": "rb", "irb": "rb", "php": "php", "lua": "lua", "luajit": "lua", "Rscript": "r", "julia": "jl",
+            "truffleruby": "rb", "irb": "rb", "php": "php", "lua": "lua", "luajit": "lua", "Rscript": "r", "R": "r", "julia": "jl",
             "tclsh": "tcl"}
 _PAREN_LESS = frozenset(["pl", "rb"])  # a call without parentheses: unlink "x"; File.delete "x"
 _R_PATH_ARGS = frozenset("file con path to dest destfile filename target".split())
@@ -2890,7 +3046,7 @@ _TEXT_WRITE_FLAGS = lazy(r"\b(?:O_WRONLY|O_RDWR|O_CREAT|O_APPEND|O_TRUNC|WRONLY|
 _T_QUOTED = lazy(r"""(?s)'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)"|`([^`\\]*(?:\\.[^`\\]*)*)`""")
 # (unrolled per quote: the one pattern `(['"`])((?:\\.|(?!\1).)*)\1` took exponential time on an unterminated quote
 # followed by backslashes, T-4673 review; each backslash here is read one way only)
-_T_INTERP = lazy(r"\$\{(\w+)\}|\$\((\w+)\)|\{\$(\w+)\}|#\{(\w+)\}|\$(\w+)")
+_T_INTERP = lazy(r"\$\{(\w+)\}|\$\((\w+)\)|\{\$(\w+)\}|#\{(\w+)\}|\$(\w+)|\$\{([^{}]+)\}|#\{([^{}]+)\}")  # (last two: an expression, bound to nothing = unknown)
 _T_JOIN = lazy(r"(?:path\.(?:join|resolve)|Path\.of|Paths\.get|(?:File|Pathname)\.(?:join|expand_path)|joinpath|join|resolve"
                r"|file\.path|paste0|normalizePath)\s*\(")
 _T_BIND = lazy(r"(?:^|[;{(\s,])(?:(?:const|let|var|my|our|local|val|set|final)\s+)?[$@]?([A-Za-z_]\w*)\s*"
@@ -2982,8 +3138,73 @@ def _t_cut(items, n):
     return items if len(items) <= n else items[:n - 1] + ["\x01"]
 
 
+_T_ALT_MAX = 8
+
+
+def _t_alts(e):
+    """T-4686: the alternatives of a text-language expression that picks one: `c ? a : b`, `a || b`, `a ?? b`, `a // b`,
+    `a ?: b`, with the outer parentheses of the whole expression peeled. [e] when it picks nothing; a
+    condition (the piece before a `?`) is no alternative. More than _T_ALT_MAX pieces end in "\\x01" (the unknown)."""
+    e = e.strip()
+    while e.startswith("(") and e.endswith(")"):  # one pair around all of it, not `(a) + (b)`
+        d = 0
+        for i, c in enumerate(e):
+            d += (c == "(") - (c == ")")
+            if d == 0 and i < len(e) - 1:
+                break
+        else:
+            e = e[1:-1].strip()
+            continue
+        break
+    pieces, seps, cur, depth, q, i = [], [], [], 0, "", 0
+    while i < len(e):
+        c = e[i]
+        if q:
+            cur.append(c)
+            if c == "\\" and i + 1 < len(e):
+                cur.append(e[i + 1])
+                i += 1
+            elif c == q:
+                q = ""
+            i += 1
+            continue
+        sep = ""
+        if c in "'\"`":
+            q = c
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        elif depth == 0:
+            spaced = e[i - 1:i] in (" ", "\t", ")", "]", "'", '"')  # (`x.empty?`, `a?.b` and `A::B` are no ternary)
+            if e.startswith(("||", "??"), i) or (e.startswith("//", i) and spaced):
+                sep = e[i:i + 2]
+            elif c == "?" and spaced and e[i + 1:i + 2] != ".":
+                sep = "?:" if e[i + 1:i + 2] == ":" else "?"
+            elif c == ":" and spaced and e[i + 1:i + 2] != ":" and "?" in seps:
+                sep = ":"
+        if sep:
+            pieces.append("".join(cur))
+            seps.append(sep)
+            cur = []
+            i += len(sep)
+            continue
+        cur.append(c)
+        i += 1
+    if not seps:
+        return [e]
+    pieces.append("".join(cur))
+    keep = [p.strip() for p, s in zip(pieces, seps + [""]) if s != "?" and p.strip()]
+    return keep[:_T_ALT_MAX - 1] + ["'\x01'"] if len(keep) > _T_ALT_MAX else keep or [e]
+
+
 def _t_vals(expr, binds, depth=0):
     """The strings a text-language expression may be, when it starts with something the code spells out."""
+    if depth < 6 and (alts := _t_alts(expr)) != [expr.strip()]:  # T-4686: `c ? a : b`, `a || b`, `(a)`: each branch
+        out = []
+        for a in alts:
+            out += _t_cut(_t_vals(a, binds, depth + 1), 4)
+        return _t_cut(out, 8)
     cands = [""]
     for i, t in enumerate(_terms(expr)):
         vs = _t_term(t, binds, depth)
@@ -3199,7 +3420,221 @@ def _tcl_system_targets(code):
     return out
 
 
-_RUN_NAME = lazy(rf"(?:{_INTERP_NAMES})")
+# T-4686: the shell strings node, perl, ruby, php, lua, R, julia and tcl code starts (what _spawned_commands does for
+# python), read as commands by check_bash: `execSync('tee /etc/x')` is `tee /etc/x`, a list `spawnSync('sh', ['-c', S])`
+# is `sh -c S`, a part the code computes is "$_" (an unknown). The call is found by name (the table), its arguments
+# read as the write scan reads them (_call_args, _t_vals: literals, names bound once, concatenations, each branch of
+# a ternary); a command the code builds from something it doesn't spell out is left to the shell's own judgement.
+_SPAWN_WORDS = ("exec", "spawn", "system", "popen", "passthru", "execute", "`", "%x", "qx", "capture", "pipeline",
+                "readpipe", "shell", "open", "Bun.")
+_SPAWN_RX = {
+    "js": lazy(r"(?<![\w$])(?:execSync|execFileSync|execFile|exec|spawnSync|spawn)\s*\("),
+    "pl": lazy(r"(?<![\w$@%>])(?:system|exec|readpipe)(?![\w$])"),
+    "rb": lazy(r"(?<![\w$@])(?:system|exec|spawn|popen|capture2e?|capture3|popen2e?|popen3)(?![\w$?!])"),
+    "php": lazy(r"(?<![\w$>])(?:system|exec|shell_exec|passthru|popen|proc_open|pcntl_exec)\s*\("),
+    "lua": lazy(r"(?<![\w.])(?:os\.execute|io\.popen)(?![\w$])"),
+    "r": lazy(r"(?<![\w.])(?:system2?|shell)\s*\("),
+    "tcl": lazy(r"(?<![\w$])exec[ \t]+")}
+_SPAWN_TICKS = lazy(r"`(?:[^`\\]|\\.)*`")
+_SPAWN_QX = lazy(r"""(?<![\w$@%>])(?:qx\s*([({\[</|!'"])|qx(\#)|%x([({\[</|!'"\#]))""")
+_SPAWN_PIPE_OPEN = lazy(r"(?<![\w$@%>])open\s*\(")
+_SPAWN_CWD = lazy(r"\b(?:cwd|chdir)\s*(?::|=>)\s*([^,}\n]+)")
+_SPAWN_CAP = 48
+_SPAWN_CLOSE = {"(": ")", "{": "}", "[": "]", "<": ">"}
+
+
+def _spawn_words(e, binds):
+    """The words an array expression holds ([a, b], c("a"), array(), qw(a b)) as lists of candidate strings, or None
+    when `e` isn't one."""
+    e = e.strip()
+    if m := re.match(r"qw\s*([(\[{/<])(.*)[)\]}/>]$", e, re.S):
+        return [[w] for w in m.group(2).split()]
+    if m := re.match(r"(?:\[|(?:c|array|list|vector)\s*\(|\barray\s*\()", e):
+        return [_t_cut(_t_vals(a, binds) or ["\x00"], 4) for a in _call_args(e, m.end(), True)]
+    return None
+
+
+def _spawn_shell(cands):
+    """Shell text from the candidate strings of a command (an unknown part: "$_")."""
+    return re.sub(r"[\x00\x01]+", "$_", cands)
+
+
+_SPAWN_UNK = ("system", "interpreter code starts a shell command the guard can't read (the command is computed, not "
+              "spelled out): write the command out")
+
+
+def _spawn_texts(args, binds, lang, name):
+    """(the command texts one spawn call may start, marks) from its (comma-separated) argument expressions. `marks` holds
+    "big" when a cut dropped values or combinations (the unknown), "unk" when the whole command is one the code doesn't
+    spell out (it starts with a computed part, or with nothing the scan can read)."""
+    marks = set()
+    args = [a for a in args if a != _CUT]
+    if lang == "rb" and args and args[0].startswith("{"):  # system({"ENV" => "1"}, "rm", …): the first argument is env
+        args = args[1:]
+    if not args:
+        return [], marks
+    words = _spawn_words(args[0], binds)
+    if words is None and lang == "js" and name != "exec" and name != "execSync" and len(args) > 1:
+        tail = _spawn_words(args[1], binds)  # spawnSync('rm', ['/etc/x']): the program, then its argument list
+        words = [_t_cut(_t_vals(args[0], binds) or ["\x00"], 4)] + tail if tail is not None else None
+    if words is None and lang == "r" and name == "system2":
+        tail = [a.split("=", 1)[1] if re.match(r"args\s*=(?!=)", a) else a for a in args[1:2] + [x for x in args[2:] if re.match(r"args\s*=", x)]]
+        tail = _spawn_words(tail[0], binds) if tail else None
+        words = [_t_cut(_t_vals(args[0], binds) or ["\x00"], 4)] + (tail or [])
+    if words is None and lang in ("pl", "rb") and len(args) > 1 and name != "readpipe":  # several words: no shell
+        rest = [a for a in args if not re.match(r"\{|:?\w+\s*(?:=>|:(?!:))", a)]
+        words = [_t_cut(_t_vals(a, binds) or ["\x00"], 4) for a in rest]
+    if words is not None:  # a program and its arguments, quoted: what the shell sees as separate words
+        texts = [[]]
+        for vs in words:
+            if any("\x01" in v for v in vs):  # a cut left the unknown last
+                marks.add("big")
+            texts = [t + [v] for t in texts for v in vs]
+            if len(texts) > 16:  # combinations past the sixteenth are dropped: not read, so unknown
+                marks.add("big")
+                texts = texts[:16]
+        return [" ".join('"$_"'.join(shlex.quote(p) for p in re.split(r"[\x00\x01]+", w)) for w in t) for t in texts], marks
+    vals = _t_vals(args[0], binds)
+    if not vals or any(re.match(r"\s*[\x00\x01]", v) for v in vals):  # the command itself is computed
+        marks.add("unk")
+    if any("\x01" in v for v in vals):
+        marks.add("big")
+    return [_spawn_shell(v) for v in _t_cut(vals or ["\x00"], 8)], marks
+
+
+_JS_CP = r"""['"](?:node:)?child_process['"]"""
+_JS_FNS = "execSync|execFileSync|execFile|exec|spawnSync|spawn"
+_JS_DESTR = lazy(r"\{([^{}]*)\}\s*=\s*require\s*\(\s*" + _JS_CP + r"\s*\)|\bimport\s*\{([^{}]*)\}\s*from\s*" + _JS_CP)
+_JS_FN_ALIAS = lazy(r"\b(?:const|let|var)\s+([\w$]+)\s*=\s*(?:(?:require\s*\(\s*" + _JS_CP + r"\s*\)|[\w$]+)\s*\.\s*)?("
+                    + _JS_FNS + r")\s*(?=[;,\n)]|$)")
+
+
+def _js_aliases(code):
+    """{alias: the child_process function it is} for `const {execSync: x} = require('child_process')`, `import {exec as
+    x} from 'child_process'` and `const x = cp.execSync` (T-4686 review: a call through the alias read as no spawn)."""
+    out = {}
+    for m in _JS_DESTR.finditer(code):
+        for part in (m.group(1) or m.group(2) or "").split(","):
+            if (p := re.fullmatch(r"\s*(" + _JS_FNS + r")\s*(?::|\bas\b)\s*([\w$]+)\s*", part)):
+                out[p.group(2)] = p.group(1)
+    for m in _JS_FN_ALIAS.finditer(code):
+        out[m.group(1)] = m.group(2)
+    return {a: n for a, n in out.items() if a != n}
+
+
+def _spawn_body(code, start, opener):
+    """(the body of a qx{…} or %x(…) that opens before `start`, whether its close was found): brackets nest, a backslash
+    skips a character, the same character closes a quote-like opener. The search is bounded."""
+    close = _SPAWN_CLOSE.get(opener, opener)
+    depth, i, stop = 1, start, min(len(code), start + 3000)
+    while i < stop:
+        c = code[i]
+        if c == "\\":
+            i += 2
+            continue
+        if opener != close and c == opener:
+            depth += 1
+        elif c == close:
+            depth -= 1
+            if depth == 0:
+                return code[start:i], True
+        i += 1
+    return code[start:stop], False
+
+
+def _spawn_in(code, lang):
+    """(command texts, marks) for the spawn calls of one language in `code`: marks is the set of "big" (a cap or a cut
+    left something unread) and "unk" (a command the code doesn't spell out)."""
+    binds, out, marks = _t_bindings(code), [], set()
+
+    def add(texts, cwd="", mk=()):
+        marks.update(mk)
+        for t in texts:
+            if len(out) >= _SPAWN_CAP:
+                marks.add("big")
+                return
+            out.append(cwd + t)
+
+    def put(res, cwd=""):
+        add(res[0], cwd, res[1])
+    if lang in ("pl", "rb", "php", "jl"):  # `cmd` runs it (a template string in node: no)
+        for m in _SPAWN_TICKS.finditer(code):
+            vals = _t_vals(m.group(0), binds)
+            add((_spawn_shell(v) for v in _t_cut(vals or ["\x00"], 4)),
+                mk=["unk"] if not vals or any(re.match(r"\s*[\x00\x01]", v) for v in vals) else ())
+    if lang in ("pl", "rb"):  # qx{…}, %x(…)
+        for m in _SPAWN_QX.finditer(code):
+            body, closed = _spawn_body(code, m.end(), next(g for g in m.groups() if g))
+            add([_spawn_shell(body)], mk=([] if closed else ["big"]) + (["unk"] if re.match(r"\s*(?:[$@]|#\{)", body) else []))
+    if lang == "js" and "child_process" not in code and not re.search(r"\bBun\.spawn|\bDeno\.run", code):
+        return out, marks  # (exec and spawn are RegExp and other methods too: only where the code has the module)
+    if lang == "js" and re.search(r"\bBun\.spawn(?:Sync)?\s*\(\s*\[", code):
+        for m in re.finditer(r"\bBun\.spawn(?:Sync)?\s*\(", code):
+            put(_spawn_texts(_call_args(code, m.end(), True)[:1], binds, "js", "spawn"))
+    if lang == "pl":
+        for m in _SPAWN_PIPE_OPEN.finditer(code):  # open(F, "cmd |"), open(F, "| cmd"), open(F, "-|", "cmd", args)
+            args = _call_args(code, m.end(), True)
+            if len(args) > 1:
+                for v in _t_cut(_t_vals(args[1], binds), 4):
+                    s = v.strip()
+                    if s in ("-|", "|-") and len(args) > 2:
+                        put(_spawn_texts(args[2:], binds, "pl", "system"))
+                    elif s.startswith("|") or s.endswith("|") and not s.startswith((">", "<")):
+                        add([_spawn_shell(s.strip("|"))])
+    rx = _SPAWN_RX.get(lang)
+    calls = [(m, None) for m in rx.finditer(code)] if rx else []
+    if lang == "js" and (aliases := _js_aliases(code)):  # x('rm …') where x is execSync under another name
+        calls += [(m, aliases) for m in re.finditer(r"(?<![\w$.])(" + "|".join(map(re.escape, aliases)) + r")\s*\(", code)]
+    for m, aliases in calls:
+        after = code[m.end():]
+        name = re.sub(r"^.*\.", "", m.group(0).strip().rstrip("(").strip())
+        if aliases:
+            name = aliases[m.group(1)]
+        if m.group(0).rstrip().endswith("("):
+            args = _call_args(code, m.end(), True)
+        elif p := re.match(r"\s*\(", after):
+            args = _call_args(code, m.end() + p.end(), True)
+        elif lang in ("pl", "rb", "lua", "tcl") and re.match(r"[ \t]*[\"'$\w]", after):
+            args = _call_args(code, m.end(), False)
+        else:
+            continue
+        if lang == "tcl":  # exec rm /etc/x: the words are the command (a $name left as one)
+            add([_spawn_shell(" ".join(a.strip('{}"') for a in re.findall(r'\{[^}]*\}|"[^"]*"|\S+', after.split("\n")[0].split(";")[0])))])
+            continue
+        cwd = ""
+        if lang in ("js", "rb") and (c := _SPAWN_CWD.search(" ".join(args[1:]))):
+            cvs = _t_vals(c.group(1), binds)
+            cwd = "cd " + (shlex.quote(cvs[0]) if len(cvs) == 1 and not re.search(r"[\x00\x01]", cvs[0]) else '"$_"') + " && "
+        put(_spawn_texts(args, binds, lang, name), cwd)
+    return out, marks
+
+
+def _text_spawned(cmd, ctx, dry):
+    """T-4686: (command texts, marks) for the shell strings the node, perl, ruby, php, lua, R, julia and tcl code in a
+    command starts; marks holds "big" and "unk" as _spawn_in gives them. The cheap gates come first: an interpreter
+    other than python and one word of a spawn call."""
+    if not _INTERP.search(dry) or not any(w in cmd for w in _SPAWN_WORDS):
+        return [], set()
+    langs = {_LANG_OF[n] for m in _INTERP.finditer(_mask_fm(dry, ctx))
+             if (n := re.sub(r"[0-9.]+$", "", os.path.basename(m.group(1)))) in _LANG_OF}
+    if not langs:
+        return [], set()
+    walk = _interp_walk(cmd, ctx)
+    units = ([(t, ls) for t, ls, _ in walk[0]] if walk is not None
+             else [(_interp_code(cmd), langs)])
+    out, marks = [], set()
+    for text, ls in units:
+        text = text.replace('\\"', '"').replace("\\$", "$")
+        for lang in ls - {"py"}:
+            got, mk = _spawn_in(text, lang)
+            out += got
+            marks |= mk
+            if len(out) > _SPAWN_CAP:
+                return out[:_SPAWN_CAP], marks | {"big"}
+    return list(dict.fromkeys(out)), marks
+
+
+_RUN_NAME = lazy(rf"(?:{_INTERP_NAMES}|R)")
 # T-4673 review: the files a heredoc may be saved into without ever being run (text, config, markup)
 _DATA_EXT = (".md", ".markdown", ".txt", ".json", ".yaml", ".yml", ".csv", ".tsv", ".html", ".css", ".log", ".cfg", ".conf",
              ".ini", ".toml", ".xml", ".rst", ".svg", ".diff", ".patch")
@@ -3321,7 +3756,8 @@ def _interp_walk(cmd, ctx):
         while top < c.depth:
             top += 1
             scopes.append((top, list(here)))
-        argv, via_xargs = _strip_wrappers(c.argv)
+        prefix = []  # (the words dropped, an env -S string split into its own: its --chdir DIR is seen)
+        argv, via_xargs = _strip_wrappers(c.argv, prefix)
         if not argv:
             continue
         name = os.path.basename(argv[0])
@@ -3329,7 +3765,6 @@ def _interp_walk(cmd, ctx):
         onward = nxt in ("|", "|&")
         piped = c.op in ("|", "|&") or onward
         if name in _CDS:
-            prefix = c.argv[:len(c.argv) - len(argv)]
             odd = any(not (p in _KEYWORDS or "=" in p or os.path.basename(p) in ("builtin", "command")) for p in prefix)
             rest = argv[1:]
             while rest and rest[0] in ("-L", "-P", "-e", "-@", "--"):
@@ -3347,7 +3782,7 @@ def _interp_walk(cmd, ctx):
         if (name in ("eval", "source", ".", "trap", "mapfile", "readarray", "exec") or _unresolvable(argv[0])) and not piped:
             here = join(here, anywhere())  # code or a file the guard can't read may cd
         folders = list(here)
-        if (w := _wrapper_dir(c.argv[:len(c.argv) - len(argv)])) is not None:  # env -C DIR, sudo -D DIR: it runs there
+        if (w := _wrapper_dir(prefix)) is not None:  # env -C DIR, sudo -D DIR: it runs there
             folders = join(here, anywhere()) if _unliteral(w) or re.search(r"[*?\[]", w) else _moved(here, [], w, True, False, ctx)[0]
         steps.append((c, argv, name, folders, fed, onward, via_xargs))
     runs = [s for s in steps if _RUN_NAME.fullmatch(s[2])]
@@ -5146,7 +5581,13 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     for spawned in (x for src in _python_sources(cmd if _INTERP.search(dry) else dry) for x in _spawned_commands(src)):
         found += check_bash(spawned, ctx, depth + 1)  # T-0345, and its review: from those folders too (`…`, sh <<<,
     # python -c): any folder a cd names
-    plain, prev = re.sub(r"(?<![\w./-])cd[ \t]+[\w./+:@%,][\w./+:@%,-]*(?=[ \t]*(?:[;&|)\n]|$))", "", shell), None
+    texts, marks = _text_spawned(cmd, ctx, dry)  # T-4686: and the shell strings node, perl, ruby, php, lua, R start
+    for spawned in texts:
+        found += check_bash(spawned, ctx, depth + 1)
+    for mark, finding in (("big", _TOO_BIG), ("unk", _SPAWN_UNK)):
+        if mark in marks and finding not in found:
+            found.append(finding)
+    plain, prev =re.sub(r"(?<![\w./-])cd[ \t]+[\w./+:@%,][\w./+:@%,-]*(?=[ \t]*(?:[;&|)\n]|$))", "", shell), None
     while plain != prev:  # T-1924: the walk names every folder a literal cd may reach; any other mover (cd $(…), $C,
         plain, prev = re.sub(r"`[^`]*`|\$\([^()]*\)", "$S", plain), plain  # eval) keeps each tail, read from the
     clean = not _moves_text(plain) and not any(  # folders before it, as the coarse catch it was (review: c$(…), A=1 $C)
