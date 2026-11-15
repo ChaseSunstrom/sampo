@@ -635,8 +635,8 @@ class AffectedGate(TrainCase):
         self.base("plugin/tests/test_rename_aliases.py", ORDER)
         l1, l2, l3, l4 = self.lane(1, "x1"), self.lane(2, "c.txt"), self.lane(3, "x2"), self.lane(4, "d.txt")
         r = self.train(l1, l2, l3, l4)
-        self.assertEqual(self.gate_args()[1:], ["test_rename_aliases.Aliases"] + ["test_doctor test_rename_aliases"] * 2
-                         + ["test_rename_aliases.Aliases", "test_doctor test_rename_aliases"], r.stdout)  # T-4676: the bare base
+        self.assertEqual(self.gate_args()[1:], ["test_rename_aliases.Aliases"] * 2 + ["test_doctor test_rename_aliases"] * 3,
+                         r.stdout)  # T-4676: the bare base, T-4700: before the blame (the bisection) rather than after it
         self.assertIn(f"left out {l3}: its merge turns the gates red", r.stdout)
         self.assertIn("blamed: bisection, 2 probe(s) of the whole red gate", r.stdout)
         for name, landed in (("x1", True), ("c.txt", True), ("d.txt", True), ("x2", False)):

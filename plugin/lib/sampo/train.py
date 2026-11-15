@@ -708,7 +708,8 @@ def _run(p, main, ids):
     suite = next((g for g in checks if "{names}" in tpl and bare(g) == bare(tpl.replace("{names}", ""))), None)
     passed, diffs, reaches = {}, {}, {}  # (tree, command line): its passing row; lane id: its files; lane id: its tests
     dropped = {}  # T-4289: lane id: the red classes it was left out for (put back when the base proves red on them)
-    base_green, confirm_s = set(), [0.0]  # T-4676: classes a run of their own proved green on the bare base; confirm seconds
+    base_green, base_bad, confirm_s = set(), set(), [0.0]  # T-4676: classes a run of their own proved green on the bare
+    # base (T-4700: red, base_bad); confirm seconds
 
     def diff(i):
         """The files lane i's branch changed since it left the base."""
@@ -828,18 +829,24 @@ def _run(p, main, ids):
         a lane is blamed on what a base may fail too. Red in them: base_red's refusal; a probe that says nothing (a timeout,
         a crash) is no proof either way: the train stops and drops nothing on its account. The scratch tree is put back.
         T-4676 `fresh`: a run of its own, never a pass the train held for this base."""
+        row, bad = base_split(cmd, names, fresh)
+        if row and row["exit"] and (not names or bad):
+            raise base_red(row, names)
+
+    def base_split(cmd, names, fresh=False):
+        """T-4700: (the base's row for gate `cmd` on `names` alone, the names it is red in): base_check's probe, the
+        verdict left to the caller. A row red in none of `names` says nothing of them; an inconclusive one stops the train."""
         here = _git(wt, "rev-parse", "HEAD").stdout.strip()
         row = probe(base, cmd, names, fresh)
         _git(wt, "reset", "-q", "--hard", here)
         if not row or not row["exit"]:
-            return
+            return row, []
         if _inconclusive(row, names):
             c.log_event(p, "lane_train_base_inconclusive", data={"base": base[:9], "exit": row["exit"], "names": list(names)})
             raise c.PolicyError(f"base probe inconclusive: the base {base[:9]} of {branch} ended {row['exit']} with no failing "
                                 f"class named, so it is not proven red or green ({c.joinmore(list(names), 4) or 'the gate'}); "
                                 f"no lane dropped on its account: {_why_red(row)}")
-        if not names or any(_same(f, n) for f in row["failing"] for n in names):
-            raise base_red(row, names)
+        return row, [n for n in names if any(_same(f, n) for f in row["failing"])]
 
     def base_red(row, names):
         """T-4289: the refusal for a base found red: the classes of `names` red on it (the whole row's when none is
@@ -964,24 +971,44 @@ def _run(p, main, ids):
                 if not names:  # nothing else is red: on to the whole gate again, before anything lands
                     ok = True
                     continue
+            # T-4676/T-4700: before a lane is blamed or dropped for these classes they run once, uncached, on the bare base in
+            # this very environment: a class red there is the base's or the machine's (a test that turned red with time), never
+            # a lane's. All of them red, or one a lane was already left out for, or none narrowed: the train stops and drops
+            # no lane (the lanes put back). Some of them: they leave the blame (named in the result, one FIX capture) and the
+            # lanes are judged on the rest. A class a run proved either way is not run again in this train.
+            cls, shown = list(names or (red["failing"] if g == suite else [])), red
+            brow, based = None, []
+            if todo := [n for n in cls if n not in base_bad and (n not in base_green or
+                                                                  any(_same(n, y) for s in dropped.values() for y in s))]:
+                brow, based = base_split(g, todo, fresh=True)
+                base_green.update(n for n in todo if n not in based)
+                base_bad.update(based)
+            if bad := [n for n in cls if n in base_bad]:
+                have = list((brow or {}).get("failing") or [])
+                row = dict(brow or {"cmd": g, "tail": []},
+                           failing=have + [n for n in bad if not any(_same(f, n) for f in have)])
+                rest = [n for n in names if n not in bad]
+                if not rest or any(_same(n, y) for s in dropped.values() for y in s for n in bad):
+                    _base_red_capture(p, bad, base)
+                    raise base_red(row, bad)
+                names, cls = rest, [n for n in cls if n in rest]
+                shown = dict(red, failing=[f for f in red["failing"] if not any(_same(f, n) for n in bad)])
+                if based:  # said once: the memo holds them red for the rest of the train
+                    made = _base_red_capture(p, based, base)
+                    notes.append(("gate", f"red on the bare base too, so not any lane's: {c.joinmore(based, 6)}"
+                                          + (f" (captured {made})" if made else "")))
+                    c.log_event(p, "lane_train_base_red_kept", data={"base": base[:9], "classes": based, "lanes_judged_on": rest})
             need[g] = (need.get(g) or set()) | set(names) | set(flaky) if names else None  # the suite's other tests passed here
             ids = [b.id for b, _ in merged]
             blamed = _blame(red["out"], names or red["failing"], ids, diff, reach)
-            cls = list(names or (red["failing"] if g == suite else []))
             if not blamed:
                 n, at = probes[0], bisect(g, names, not cls)
                 only = "only " + c.joinmore(names, 4) if names else "the whole red gate"
                 blamed = {ids[at - 1]: (f"bisection, {probes[0] - n} probe(s) of {only}", "")}
-            # T-4676: before any lane is dropped for these classes they run once, uncached, on the bare base in this very
-            # environment (a class red there is the base's or the machine's: the train stops, no lane dropped; one already
-            # left out for, and red again without that lane, runs there again)
-            if fresh := [n for n in cls if n not in base_green or any(_same(n, y) for s in dropped.values() for y in s)]:
-                base_check(g, fresh, fresh=True)
-                base_green.update(fresh)
             texts = _texts(red["out"], red.get("failing") or [])
             for i in (i for i in ids if i in blamed):
                 rule, k = blamed[i]
-                why = "its merge turns the gates red: " + _why_red(red, rule, texts[k].rstrip().splitlines()[-15:]
+                why = "its merge turns the gates red: " + _why_red(shown, rule, texts[k].rstrip().splitlines()[-15:]
                                                                    if k else None)
                 left.append((i, why))
                 dropped[i] = _left_for(k, names)  # T-4289: what it was left out for (put back if the base is red on it)
@@ -1069,6 +1096,27 @@ def _map_follow_up(p, maps):
         pass
     c.log_event(p, "map_union", data={"lanes": {i: fs for i, fs in maps}, "followup": made})
     return made
+
+
+def _base_red_capture(p, classes, base):
+    """T-4700: one captured FIX (source discovered) for test classes red on the bare base a train found at the moment a
+    lane would be left out for them (a test that turned red with time: outputs ageing, a date rolling over), unless one
+    with that title is open. Returns the task's id, '' when none was made (the train never waits on it)."""
+    from sampo import cli
+    title = f"Base test red on its own: {c.joinmore(sorted(classes), 4)} (red on the bare base)"
+    text = (f"{title}\n\nA lane train ran {c.joinmore(sorted(classes), 8)} alone on the bare base {base[:9]} when a lane was to "
+            "be left out for it, and it failed there: no lane broke it, so none was left out for it. Find why the base "
+            "turns red with time (the machine's old outputs, a date) and make the test hold on any day.")
+    try:
+        with c.lock(p.dir, timeout=5):
+            if any(b.title == title for b in c.load_briefs(p) if b.status not in c.CLOSED):
+                return ""
+            n = cli._create(p, title, "FIX", "S", "captured", raw=text, source="discovered", net=False)
+            c.log_event(p, "capture", task=n.id, data={"source": "discovered", "type": "FIX", "from": "train_base_red"})
+            c.regen_views(p)
+            return n.id
+    except Exception:  # noqa: BLE001 — a busy lock or a full disk costs the capture, never the train's verdict
+        return ""
 
 
 def _fast_forward(main, tip):
