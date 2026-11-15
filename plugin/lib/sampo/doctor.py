@@ -2054,7 +2054,7 @@ def _old_outputs():
     return n, size
 
 
-def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S):
+def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S, details=None):
     """T-4661: ([(label, bytes)], [(label, bytes)]) of what Sampo's disk line names, each list largest first. The first
     is what `sampo tidy --apply` frees: finished lanes (done, no-task, scratch) of each project, the idle lanes' bytecode
     (T-4655), old outputs. The second is what tidy leaves: the build output a kept lane holds (T-4575), named apart so
@@ -2073,6 +2073,8 @@ def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S):
             if build:
                 label = f"{os.path.basename(p.root.rstrip(os.sep))}: {build[0]}" if len(projects) > 1 else build[0]
                 kept.append((label, build[1]))
+                if details is not None and len(build) > 2:  # T-4717: each lane's target folder, the cache against its cap
+                    details.extend(build[2])
             # T-4655: the idle lanes' bytecode (tidy --apply removes its *.pyc; a finished lane is counted whole above)
             bytecode = slanes.lane_bytecode_output(p, skip=[r["path"] for r in done],
                                                    budget=max(0.0, deadline - time.monotonic()))
@@ -2114,13 +2116,14 @@ def check_disk(path=None, usage=None, projects=None, verdict=False):
     lanes = []
     for p, _ in projects:
         try:
-            n = len(os.listdir(os.path.join(p.root, ".claude", "worktrees")))
+            n = len([x for x in os.listdir(os.path.join(p.root, ".claude", "worktrees")) if not x.startswith(".")])  # T-4717: not the .cargo folder
         except OSError:
             continue
         if n:
             lanes.append((n, os.path.basename(p.root.rstrip(os.sep))))
     where = c.joinmore([f"{name} {n}" for n, name in sorted(lanes, reverse=True)], 5)
-    freed, kept = disk_reclaimables(projects)  # T-4661: what tidy frees, and what it leaves, each named apart
+    folders = []
+    freed, kept = disk_reclaimables(projects, details=folders)  # T-4661: what tidy frees, and what it leaves, each named apart
     named = c.joinmore([f"{label} {slanes.human(size)}" for label, size in freed], 5)
     left = c.joinmore([f"{label} {slanes.human(size)}" for label, size in kept], 5)
     return Result(DISK, status,
@@ -2128,6 +2131,8 @@ def check_disk(path=None, usage=None, projects=None, verdict=False):
                   + (f"; Sampo could free: {named} (sampo tidy --apply removes the finished lanes and the idle lanes' bytecode)"
                      if freed else "")
                   + (f"; not freed by tidy: {left}" if kept else "")
+                  + (f"; build folders: {c.joinmore(folders, 8)} (sampo tidy --apply prunes the shared cache oldest-first past "
+                     "its cap; a lane's own target goes with the lane)" if folders else "")
                   + (f"; builder worktrees: {where} (git worktree list; fm lane rm the merged ones)" if where else ""))
 
 

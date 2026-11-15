@@ -351,6 +351,8 @@ def check_project(p, apply, actions):
     out += fin
     out += slanes.bytecode_findings(p, briefs, apply, actions, finding,  # T-4655: the idle lanes that stay, bytecode only
                                     skip=[f["path"] for f in fin if "path" in f])
+    out += slanes.cargo_cache_findings(p, apply, actions, finding,  # T-4717: the shared cargo cache's cap, the kept lanes' targets
+                                       skip=[f["path"] for f in fin if "path" in f])
     out += _roll_ledger(p, apply, actions)
     out += _trim_ahead(p, apply, actions)  # T-4664
     out += _prune_snapshots(p, apply, actions)

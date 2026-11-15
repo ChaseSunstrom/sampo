@@ -1640,21 +1640,128 @@ def cargo_target(root, slug=None, environ=None):
     if not os.path.isfile(os.path.join(main, "Cargo.toml")):
         return None, ""
     environ = os.environ if environ is None else environ
+    if cargo_shared_off(environ):
+        return None, f"{CARGO_SHARED_VAR}=0: every lane builds into its own target folder"
     for name in CARGO_KEPT:
         if environ.get(name):
             return None, f"{name} is already {environ[name]} in the environment: kept"
+    shared = cargo_shared_dir(slug or (find_project(root) or _project(slug_for(main), main)).slug)
     home = environ.get("CARGO_HOME") or os.path.join(os.path.expanduser("~"), ".cargo")
-    for folder in dict.fromkeys((os.path.join(main, ".cargo"), os.path.join(root, ".cargo"), home)):
+    # T-4717: cargo reads every ancestor's .cargo/config[.toml] of the folder it runs in, the project's and the lane's
+    # (and the lanes' parent, where Sampo's own marked file may sit: never the user's choice), then cargo home
+    folders = []
+    for start in (main, root):
+        d = os.path.abspath(start)
+        while True:
+            folders.append(os.path.join(d, ".cargo"))
+            if os.path.dirname(d) == d:
+                break
+            d = os.path.dirname(d)
+    for folder in dict.fromkeys(folders + [home]):
         for name in ("config.toml", "config"):
-            val = _cargo_config_dir(os.path.join(folder, name))
-            if val:
-                return None, f"build.target-dir is already {val} in {os.path.join(folder, name)}: kept"
-    return cargo_shared_dir(slug or (find_project(root) or _project(slug_for(main), main)).slug), ""
+            path = os.path.join(folder, name)
+            val = _cargo_config_dir(path)
+            if val and not cargo_config_ours(path):
+                return None, f"build.target-dir is already {val} in {path}: kept"
+    return shared, ""
 
 
 def cargo_shared_dir(slug):
     """T-4575: where a project's lanes share cargo's build output (whether or not one is set now: doctor sizes it)."""
     return os.path.join(state_dir(), "cache", "cargo-target", slug)
+
+
+CARGO_CAP_VAR = "SAMPO_CARGO_CAP_BYTES"
+CARGO_CAP_MAX = 40 * 10**9  # T-4717: the shared cache's cap is a tenth of the disk, at most this
+CARGO_MARK = "# Sampo (T-4717): this lane's cargo builds go to the project's one shared target folder."
+
+
+def cargo_cap_bytes(total=None, environ=None):
+    """T-4717: the shared cargo cache's cap in bytes: SAMPO_CARGO_CAP_BYTES when it is a positive integer, else a tenth
+    of the disk holding Sampo's state (`total`, read when not given), at most CARGO_CAP_MAX. On 2026-11-15 the cache
+    held 35 GB beside 61 GB of the project's own target and 36 GB of lane copies, and free space fell 10 GB an hour."""
+    environ = os.environ if environ is None else environ
+    try:
+        # mirror_env moves SAMPO_X to FOREMAN_X at import: read the name the code uses, then the one a caller built
+        n = int(str(environ.get("FOREMAN_" + CARGO_CAP_VAR[6:]) or environ.get(CARGO_CAP_VAR) or "").strip())
+    except ValueError:
+        n = 0
+    if n > 0:
+        return n
+    if total is None:
+        try:
+            total = shutil.disk_usage(state_dir()).total
+        except OSError:
+            return CARGO_CAP_MAX
+    return int(min(total * 0.10, CARGO_CAP_MAX))
+
+
+def cargo_config_ours(path):
+    """T-4717: whether a cargo config file is the one Sampo wrote for a lane (its first line is CARGO_MARK)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return f.readline().rstrip("\n") == CARGO_MARK
+    except (OSError, ValueError):
+        return False
+
+
+CARGO_SHARED_VAR = "SAMPO_CARGO_SHARED"  # =0: no shared target folder at all, every lane builds into its own
+
+
+def cargo_shared_off(environ=None):
+    """T-4717: the operator's off switch (SAMPO_CARGO_SHARED=0, or FOREMAN_ as mirror_env renames it): sharing the one
+    target folder makes lanes' builds wait on one another and drops ./target/... paths inside a lane."""
+    environ = os.environ if environ is None else environ
+    return str(environ.get("FOREMAN_" + CARGO_SHARED_VAR[6:]) or environ.get(CARGO_SHARED_VAR) or "").strip() == "0"
+
+
+def lane_cargo_config(root, environ=None):
+    """T-4717: the path of the marked .cargo/config.toml in the folder that holds this project's lane worktrees
+    (<repo>.lanes/ or <repo>/.claude/worktrees/) that points the lanes' own cargo commands at the project's shared
+    target folder; '' when none is in place. T-4575's variable reaches only commands Sampo spawns; a builder's own `cargo
+    build` skipped the brief's `export` and each lane built its own target/ (36 GB across seven lanes). Cargo reads every
+    parent folder's config (a lane's own still wins), so the one file needs no export and no file in any lane, and it
+    touches neither a lane's files nor the repo's info/exclude. Written once, at focus or lane creation (git is asked
+    here, so never on a hook's every call), only for a lane of a Rust project, only when the user chose nothing (the
+    environment, a config of the project's, the lane's, any ancestor's or cargo home's: cargo_target), nothing of the
+    user's is in that folder's .cargo, and, inside the repo, git ignores the file. A file of ours that no longer fits
+    (the user chose since, the switch is off, the shared path moved) is rewritten or removed."""
+    environ = os.environ if environ is None else environ
+    if not os.path.isfile(os.path.join(root, ".git")) or not os.path.isfile(os.path.join(root, "Cargo.toml")):
+        return ""  # two stats, no git, for a lane that is no Rust lane
+    main = main_worktree(root)
+    if not main:
+        return ""
+    real = os.path.realpath
+    parent = os.path.dirname(real(root))
+    homes = (real(main) + ".lanes", real(os.path.join(main, ".claude", "worktrees")))
+    if parent not in homes:
+        return ""
+    folder = os.path.join(parent, ".cargo")
+    path = os.path.join(folder, "config.toml")
+    shared = cargo_target(root, environ=environ)[0]
+    ours = cargo_config_ours(path)
+    if not shared:
+        if ours:  # the user chose since (or turned sharing off): Sampo's file must not outrank it
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+        return ""
+    if os.path.islink(folder) or os.path.lexists(os.path.join(folder, "config")) or (os.path.lexists(path) and not ours):
+        return ""  # something of the user's is there
+    if any(ch in shared for ch in "'\n\r"):
+        return ""  # a TOML literal string takes neither
+    text = f"{CARGO_MARK}\n# It applies to every lane below this folder; a lane's own config wins.\n[build]\ntarget-dir = '{shared}'\n"
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == text:
+                return path
+    except OSError:
+        pass
+    if parent.startswith(real(main) + os.sep) and _git(main, "check-ignore", "-q", "--", os.path.relpath(path, real(main)),
+                                                      fail=None, timeout=10) is None:
+        return ""  # inside the repo and git would list it: not written
+    write_atomic(path, text)
+    return path
 
 
 def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None, watch=None,

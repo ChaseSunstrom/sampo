@@ -183,6 +183,7 @@ class DoctorCountsLaneBuildOutput(DiskCase):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as f:
             f.write(os.urandom(size))
+        write(os.path.join(lane, "target", "CACHEDIR.TAG"), "Signature: 8a477f597d28d172789f06886806bc55\n")  # T-4717: cargo's mark
 
     def test_target_folders_in_unfinished_lanes_are_named_with_their_bytes(self):
         a = self.lane("T-4001", size=100, old=False)

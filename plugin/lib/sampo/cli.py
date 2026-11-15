@@ -4531,6 +4531,11 @@ def cmd_focus(args):
         if c.stage(target) != stage_before:
             c.log_event(p, "stage", task=target.id, data={"from": stage_before, "to": c.stage(target)}, session=session())
         c.export_mirror(p)
+    if p.lane:  # T-4717: a builder's own cargo commands reach the project's shared target folder (a hint: never fails a focus)
+        try:
+            c.lane_cargo_config(p.lane)
+        except Exception:
+            pass
     try:
         if snapped:
             _save_dirty(p, target, snapped)  # T-1169: keyed by task, read at its close

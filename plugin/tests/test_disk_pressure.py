@@ -548,6 +548,8 @@ class DoctorSplitsWhatTidyCannotFree(DiskCase):
         os.makedirs(target)
         with open(os.path.join(target, "big.rlib"), "wb") as f:
             f.write(os.urandom(size))
+        with open(os.path.join(path, "target", "CACHEDIR.TAG"), "w") as f:  # T-4717: only cargo's own output is named
+            f.write("Signature: 8a477f597d28d172789f06886806bc55\n")
         return path
 
     def test_build_output_tidy_leaves_is_named_apart_from_what_tidy_frees(self):

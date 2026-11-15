@@ -86,6 +86,8 @@ OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its
 OPERATOR_SWITCHES.add("SLOT_RESERVE")  # T-4650: the reserved slots' off switch is the operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_TRACE")  # T-4685: the slot trace is an operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
+OPERATOR_SWITCHES.add("CARGO_CAP_BYTES")  # T-4717: the operator's cap on the shared cargo cache; a test sets its own
+OPERATOR_SWITCHES.add("CARGO_SHARED")  # T-4717: the operator's off switch for the shared cargo target; a test sets its own
 OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record is believed; a nested run's is its own
 CGROUP_ROOT = "/sys/fs/cgroup"
 LIVE_CLASSES = set()  # T-4538: the class processes running now (each leads its own session, so its pid is its group)
