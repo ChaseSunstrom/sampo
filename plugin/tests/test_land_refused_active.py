@@ -22,9 +22,16 @@ class RefusedWhileActive(LandCase):
         path = os.path.join(c.find_project(self.repo).dir, "land.log")
         return open(path).read() if os.path.exists(path) else ""
 
+    def dirty(self, *names):
+        """T-4692: the active task's uncommitted work in files the lanes change: the one thing that holds a land."""
+        for name in names:
+            with open(os.path.join(self.repo, name), "w") as f:
+                f.write("mine\n")
+
     def test_a_refusal_for_an_active_task_is_one_line_in_the_land_log(self):
         self.lane(1, "a.txt", when=OLD)
         busy = self.busy()
+        self.dirty("a.txt")
         r = self.land(check=False)
         self.assertNotEqual(r.returncode, 0)
         lines = [ln for ln in self.land_log().splitlines() if busy in ln]
@@ -39,6 +46,7 @@ class RefusedWhileActive(LandCase):
         self.lane(1, "a.txt", when=OLD)
         self.lane(2, "b.txt", when=OLD)
         busy = self.busy()
+        self.dirty("a.txt")
         out = self.fm("next").stdout
         self.assertIn(f"{busy} is active in the main checkout and holds the land of 2 finished lane(s)", out)
         self.assertIn(f"finish {busy}, or sampo task set {busy} status=planned", out)

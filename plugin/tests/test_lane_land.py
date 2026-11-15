@@ -502,10 +502,12 @@ class Land(LandCase):
         a = self.lane(1, "a.txt", when=OLD)
         busy = first(self.fm("task", "new", "Mine", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step",
                              "s", "--json", "--focus").stdout)["id"]
+        with open(os.path.join(self.repo, "a.txt"), "w") as f:  # T-4692: held by uncommitted work in a lane's file
+            f.write("mine\n")
         r = self.land(check=False)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn(busy, r.stderr)
-        self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")))
+        self.assertEqual(open(os.path.join(self.repo, "a.txt")).read(), "mine\n", "the focused task's file is kept")
         self.assertFalse(self.brief(a).meta.get("lane_stop"))
 
     def test_a_second_land_is_refused_while_one_runs(self):

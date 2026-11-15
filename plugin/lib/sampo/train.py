@@ -1222,6 +1222,52 @@ def landing(p):
         return True
 
 
+def train_live(p):
+    """T-4692: True while a train of this project runs: it holds the train's own lock (a whole run, the kernel drops it with
+    the process, so a dead train leaves nothing behind) and the holder is not a hand close's trunk commit (the close's
+    marker names a live pid: _closing). Read from the lock, never from a process name."""
+    try:
+        with train_lock(p, timeout=0):
+            return False
+    except c.LockTimeout:
+        return not _closing(p)
+    except OSError:
+        return False
+
+
+def held_by_active(p, main, ids=None, briefs=None):
+    """T-4692: why a task active in the main checkout holds the land, or '' when it does not. The land closes each lane's
+    task by its id, so an unrelated focus holds nothing; what it holds is uncommitted work in the files the land writes
+    there: a lane's changed files (the fast-forward would overwrite them) and the changelog every close adds a line to.
+    Those are named. The focused task being one of the lanes itself holds too (its close is its own). `ids` are the
+    lanes to land (default: the finished ones waiting on a merge). 2026-11-14 (T-4681): a focus made during a land left
+    two lanes for hand closes; the blanket hold had made every focus a lost lane or a refusal."""
+    from sampo import lanes
+    busy = c.active_brief_fast(p)
+    if not busy:
+        return ""
+    head = f"{busy.id} is active in the main checkout"
+    tail = f"finish {busy.id} (or sampo task set {busy.id} status=planned), then land"
+    try:
+        briefs = briefs if briefs is not None else c.load_briefs(p)
+        ids = list(ids) if ids is not None else lanes.awaiting_merge(p, briefs)
+        if busy.id in ids:
+            return f"{head} and is one of the lanes to land: {tail}"
+        by = {b.id: b for b in briefs}
+        watch = {"CHANGELOG.md"}
+        for i in ids:
+            b = by.get(i)
+            tip = (b.meta.get("lane_branch") or f"foreman/{i}") if b else ""
+            if tip:
+                watch |= {f for f in _git(main, "diff", "--name-only", "-z", f"HEAD...{tip}").stdout.split("\0") if f}
+        st = _git(main, "status", "--porcelain", "-z", "-uall", "--no-renames").stdout
+        hit = sorted({e[3:] for e in st.split("\0") if len(e) > 3} & watch)
+    except Exception:  # noqa: BLE001 — what can't be read can't be shown clear: the old hold stands
+        return f"{head}, where sampo lane land closes each lane's task: {tail}"
+    return (f"{head} with uncommitted changes to {c.joinmore(hit, 4, ', ')}, which the land writes: {tail}"
+            if hit else "")
+
+
 def _sampo(argv, env=None):
     """(exit code, stdout, stderr) of one sampo verb, the checks its command line runs, in a fresh process: a land
     outlives the trains it merges, so its own code would judge their verbs and docs as unknown (T-3970)."""
@@ -1688,14 +1734,11 @@ def land(p, main, batch=None):
     that conflicts with the branch is parked before any criteria or gate run); each landed lane is removed and its task
     closed from its brief's Close fields through sampo task finish's own checks; the rest are parked (lane_stop and a
     Log line), which awaiting_merge leaves out until the lane has a new commit. Nothing is forced, reset or granted;
-    a task already holding the publish grant ships after. One land at a time, never beside an active main task."""
+    a task already holding the publish grant ships after. One land at a time; an active main task holds it only by uncommitted changes to a lane's file or the changelog."""
     why = machine_stop(p)  # T-4652: the disk refuses the land at once, before a lane is parked or a batch trains
     if why:
         raise c.PolicyError(why)
-    busy = c.active_brief_fast(p)
-    if busy:
-        why = (f"{busy.id} is active in the main checkout, where sampo lane land focuses each lane's task to "
-               f"close it: finish {busy.id} (or sampo task set {busy.id} status=planned), then land")
+    if why := held_by_active(p, main):  # T-4692: an unrelated focus holds nothing; uncommitted lane files do
         _note_refusal(p, why)
         raise c.PolicyError(why)
     with contextlib.ExitStack() as held:
@@ -2043,10 +2086,8 @@ def land_merged(p, main, drop_empty=False):
     one is removed, its task returned to the queue, never closed. {"closed", "left": [(id, why)], "gate",
     "empty": [(id, note)], "dropped": [ids]}."""
     from sampo import cli
-    busy = c.active_brief_fast(p)
-    if busy:
-        raise c.PolicyError(f"{busy.id} is active in the main checkout, where sampo lane land focuses each lane's task "
-                            f"to close it: finish {busy.id} (or sampo task set {busy.id} status=planned), then land")
+    if why := held_by_active(p, main, ids=[]):  # T-4692: merged lanes are on the trunk: only the changelog is left to hold
+        raise c.PolicyError(why)
     with contextlib.ExitStack() as held:
         try:
             held.enter_context(c.lock(os.path.join(p.dir, "land"), timeout=1))
@@ -2145,9 +2186,8 @@ def _close(p, main, tid):
     Only audits made after the lane's tip commit count, and the close's lenses name that tip."""
     from sampo import cli
     from sampo import lanes
-    busy = c.active_brief_fast(p)
-    if busy:
-        return f"{busy.id} became active in the main checkout, so land closes nothing more", ""
+    if why := held_by_active(p, main, ids=[]):  # T-4692: a focus that came meanwhile holds only by an uncommitted changelog
+        return f"{why.split(': finish')[0]}, so land closes nothing more", ""
     b = cli.need_brief(p, tid)
     path = b.meta.get("lane") or ""
     if b.status == "done":  # T-3907: closed inside its lane; the merge was all it lacked

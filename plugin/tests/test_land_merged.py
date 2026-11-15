@@ -139,6 +139,8 @@ class Merged(LandCase):
         self.hand_merge(1)
         self.fm("task", "new", "Main work", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s",
                 "--focus")
+        with open(self.changelog, "a") as f:  # T-4692: held only by uncommitted work in a file every close writes
+            f.write("- the focused task's own line (T-9990).\n")
         r = self.sweep(check=False)
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(self.done(ids[0]))

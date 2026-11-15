@@ -6140,10 +6140,19 @@ def next_for(p, briefs=None, checks=True, concerns=None):
         done, recovery = finished_lanes(p, briefs), ""
     if done:
         merge = f"builder lane(s) finished, their work waits on a merge: {merge_hint(done)} (review the branch first)"
-        busy = active_brief_fast(p)  # T-4526: a land refuses beside an active main task, so that task holds every lane
-        if busy:
+        busy = active_brief_fast(p)  # T-4526: a land refuses beside an active main task that has uncommitted lane files
+        held = ""
+        if busy:  # T-4692: an unrelated focus holds nothing (the land closes by id); uncommitted lane files do, named
+            try:
+                from sampo import train as strain
+                held = strain.held_by_active(p, main_worktree(p.root) or p.root, done, briefs)
+            except Exception:  # a git that can't be read keeps the old hold
+                held = f"{busy.id} is active"
+        if held:
+            files = re.search(r"uncommitted changes to (.*?), which the land writes", held)
             merge = (f"{busy.id} is active in the main checkout and holds the land of {len(done)} finished lane(s) waiting "
-                     f"on a merge: finish {busy.id}, or sampo task set {busy.id} status=planned, then sampo lane land")
+                     f"on a merge" + (f" (uncommitted: {files.group(1)})" if files else "")
+                     + f": finish {busy.id}, or sampo task set {busy.id} status=planned, then sampo lane land")
         try:
             from sampo import train as strain
             if strain.landing(p):  # a land under way takes these: a second `sampo lane land` would race it

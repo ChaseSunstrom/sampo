@@ -43,7 +43,7 @@ def _slack(raw):
 SLACK = _slack(os.environ.get("FOREMAN_HOOK_SLACK"))
 LONG_JOB_S = 20 * 60   # T-0415: a background job running longer no longer holds the drive
 FINISH_JOB_S = 2 * 3600  # T-4644: ... except the job that holds the active task's own close (queued behind CI): to here
-JOB_TYPICAL_MIN = {"close": 60, "ci": 30}  # T-4670: minutes a queued close or a CI watch is known to take; stuck at twice that
+JOB_TYPICAL_MIN = {"close": 60, "ci": 30, "train": 60}  # T-4670: minutes a queued close, a CI watch or (T-4692) a train is known to take; stuck at twice that (within the timer hook's 7500 s)
 CONTEXT_NOTE_PCT = 60     # context use at a task boundary worth mentioning (context rot)
 CONTEXT_NOTE_TOKENS = 200_000  # T-0703: every turn re-reads the context, so past this a 1M window costs at 20%
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
@@ -4941,6 +4941,10 @@ def _stop(pl):
     elif reloading:
         out["systemMessage"] = ("Sampo: this turn ended so Claude Code reloads the Sampo UI you changed; the drive "
                                 "picks up by itself (type continue if it doesn't)")
+    elif waiting_on and "train" in waiting_on:  # T-4692: no focus now: lane, review or read-only work meanwhile
+        out["systemMessage"] = (f"Sampo: a train holds the checkout (typically up to {JOB_TYPICAL_MIN['train']} min): no task "
+                                "is focused meanwhile; do lane briefs, reviews of returned lanes or read-only research, and "
+                                "the drive continues when it ends (type continue to go on now)")
     elif waiting_on:
         out["systemMessage"] = (f"Sampo: the drive waits for background work ({', '.join(waiting_on)}) and continues "
                                 f"when it finishes (type continue to go on now)")
@@ -4954,6 +4958,7 @@ def _stop(pl):
 
 WAIT_SETTLE_S = 6      # the drive hook runs beside the timer: its wait_jobs is read after it has had time to write
 WAIT_FRESH_S = 30      # a wait_jobs written this long before the timer started is from this Stop or its close neighbour
+WAIT_TRAIN_POLL_S = 15  # T-4692: how often the timer reads a waited train's lock (one flock try)
 _WAIT_DIR = "waitwake"
 
 
@@ -5050,7 +5055,7 @@ def wait_wake(since, armed_at, turn_at, now, woken=(), limit=LONG_JOB_S, kinds=N
     if not stale:
         return None
     kinds = kinds if isinstance(kinds, dict) else {}
-    kind_of = {"close": "a queued close", "ci": "a CI watch"}
+    kind_of = {"close": "a queued close", "ci": "a CI watch", "train": "a train"}
 
     def name(age, k):
         m = JOB_TYPICAL_MIN.get(kinds.get(k))
@@ -5151,15 +5156,26 @@ def wait_timer(raw):
         kinds = w.get("kinds") if isinstance(w.get("kinds"), dict) else {}  # T-4670: a queued close, a CI watch: own time
         deadline = min(t + job_limit(kinds.get(k), limit) for k, t in since.items())
         cap = max(job_limit(kinds.get(k), limit) for k in since) + 60
-        for _ in range(3):  # one sleep; again only when the clock moved under it
-            rest = deadline - time.time()
-            if rest <= 0:
-                break
-            time.sleep(min(rest, cap))
+        waits_train = kinds.get("train") == "train" and "train" in since
+        if waits_train:  # T-4692: no notification ends a train (not this session's job): its lock is read, to the deadline
+            poll = _wait_env("FOREMAN_WAIT_TRAIN_POLL_S", WAIT_TRAIN_POLL_S, 0.05, 120)
+            while time.time() < deadline and _train_live(p):
+                time.sleep(min(poll, max(deadline - time.time(), 0.01)))
+        else:
+            for _ in range(3):  # one sleep; again only when the clock moved under it
+                rest = deadline - time.time()
+                if rest <= 0:
+                    break
+                time.sleep(min(rest, cap))
         d, w = state()
         if not w or w["at"] != armed:  # the job ended, or a later Stop took over (its own timer follows)
             return 0
         now = time.time()
+        if waits_train and now < deadline and (not d.get("turn_at") or d["turn_at"] <= armed) \
+                and not _train_live(p) and _wait_claim(folder, key, f"train-end-{int(armed)}"):
+            print("Sampo: the train that held the checkout has ended: go on with the queued work (sampo next).",
+                  file=sys.stderr)
+            return 2
         since = {str(k): t for k, t in w["since"].items() if isinstance(t, (int, float))}
         stale = _stale_jobs(since, armed, d.get("turn_at"), now, limit=limit, kinds=kinds)
         mine = [k for _, k in stale if _wait_claim(folder, key, k)]
@@ -5805,6 +5821,9 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     if not work and full and not scope:  # T-0097: in full autonomy the user's captured requests are work too
         work = next((w for w in sd["inbox"] if w["id"] not in waiting and w["id"] not in held and w["id"] not in blocked), None)
     from sampo import lanes as slanes
+    # T-4692: a train of this project runs (its own lock, read here, never a process name) and no task is in hand: the
+    # train holds the checkout, so nothing is told to focus (a focus made during a train left two lanes for hand closes)
+    train = bool(not sd["active"] and not _headless() and _train_live(p))
     recovery, key = "", []
     if not work and full and not scope:  # T-2354: a lane that stopped before its merge has one recovery: do it
         try:
@@ -5825,7 +5844,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         done = [] if work else c.finished_lanes(p, briefs)
     if done:
         from sampo import train as strain
-        if strain.landing(p):  # T-3500: a land under way takes these; a merge named beside it would race it
+        if strain.landing(p) or train:  # T-3500: a land under way takes these; a merge named beside it would race it
             done = []
     if not work and (held or done):  # said once per set of lanes; each builder's notification wakes the session
         if d.get("lanes") == held + ["done"] + done or not saved:
@@ -5908,6 +5927,8 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
             and _live_close(p, work["id"]):  # T-4670: a detached close no job list holds waits as a job does
         running = sorted(set(running) | {f"close-{work['id']}"})
         closes[f"close-{work['id']}"] = [work["id"]]
+    if train:  # T-4692: the train is a waited job (kind "train": its own typical time, a wake when it ends)
+        running = sorted(set(running) | {"train"})
     # T-0415: a job running for LONG_JOB_S is a service (a workflow, a watch, a server), not something to wait for
     now, since = time.time(), d.setdefault("since", {})
     d["since"] = since = {k: since.get(k, now) for k in running}
@@ -5920,6 +5941,8 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     kinds ={k: job_kind(next((t for t in bg if isinstance(t, dict) and str(t.get("id")) == k), None) if isinstance(bg, list)
                          else None, closing=k in closes) for k in running if k not in agents}
     kinds = {} if _headless() else {k: v for k, v in kinds.items() if v}  # (a headless run is as before)
+    if train:
+        kinds["train"] = "train"
     # T-4679: a job past its kind's time (the timer's table, job_limit) is a service; no kind, the plain LONG_JOB_S
     running = [k for k in running if k in agents or drive_waits_on(now - since[k], kinds.get(k), k in mine)]
     closing = any(k in mine for k in running)
@@ -5946,6 +5969,8 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         # said on screen: a silent end reads as a stall; unfocused, once a wait ([]: still not an idle Stop)
         d["waiting_on"] = running[:3] if act or first else []
         jm = [f". Waiting on {c.joinmore(running, 3)}", f". Waiting on {c.joinmore(running, 1)}"]
+        if "train" in running and train:  # T-4692: one line says why nothing is focused
+            jm = [". A train holds the checkout; waiting on it", ". A train holds the checkout"]
         if _headless() or d.get("count", 0) >= DRIVE_MAX or not saved:  # (the wait is still said on screen)
             return None
         offered = d.get("offered") or []
@@ -5956,7 +5981,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         offer = (_side_work(sd, briefs, work if act else {"id": None}, full, skip, p, lane_only=not act)
                  if len(offered) < OFFERS_MAX and not pace else None)
         started = False
-        if not offer and len(jobs) == len(running):  # T-4611: only non-agent jobs (a CI watcher) run, and no side work
+        if not offer and len(jobs) == len(running) and not train:  # T-4611 (T-4692: never a focus while a train runs): only non-agent jobs (a CI watcher) run, and no side work
             # fits them (no free lane, a research or planned task): the turn still doesn't end on a wait with an
             # independent task queued; the user's queue isn't optional, so no pace or OFFERS_MAX here. T-4670: and no
             # once-per-task skip: a session that answered the offer with "after the log" is told again at each Stop of
@@ -5979,6 +6004,8 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
                     "offer": offer["id"], "how": how})
             block = f"; if it can't move: sampo task block {offer['id']} \"why\""
             lead, tail = f"Sampo drive: Start {offer['id']} ({offer['tier']} {offer['type']}: ", f") now: {how}"
+            if train:  # T-4692: the one line that says why no focus: it leads, so no cut drops it
+                lead = f"Sampo drive: a train holds the checkout; start {offer['id']} ({offer['tier']} {offer['type']}: "
             alts = [block, f"; can't move: sampo task block {offer['id']}"]
             title = c.fit(" ".join(offer["title"].split()),  # (a repeat keeps the way out: the title gives way for both)
                           max(20, DRIVE_LINE - len(lead) - len(tail)
@@ -6060,6 +6087,16 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     _event({"kind": "drive", "session_id": sid, "project": p.slug, "task": work["id"]})
     d.update(count=d.get("count", 0) + 1, marks=_marks(p))
     return reason
+
+
+def _train_live(p):
+    """T-4692: whether a train of this project runs now (train.train_live: its own lock, not a hand close's commit)."""
+    try:
+        from sampo import train as strain
+        return strain.train_live(p)
+    except Exception:  # a lock that can't be read never traps the drive
+        log_error("Stop", _tb())
+    return False
 
 
 def _merge_waits(p):
