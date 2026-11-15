@@ -11,6 +11,7 @@ couldn't run. A gate that can't run refuses with the reason, and the per-commit 
 import hashlib
 import hmac
 import json
+import math
 import os
 import platform
 import re
@@ -30,6 +31,8 @@ FLOOR_MS = 5.0  # under this, a rise is jitter whatever its share
 RUNS = 10  # bench runs per tree per pair
 PAIRS = 3  # T-2992: base and branch benched in turn this many times
 HOLD = PAIRS  # T-3131: a rise must show in every pair (2 of 3 across 16 hooks held identical trees by chance)
+SPREAD_CAP = 0.30  # T-3091: a hook's own bench-to-bench spread widens its bar by at most this (RISE + 0.30: the bar reaches 1.45)
+MACHINE_MIN = 5  # T-3091: hooks needed for a median ratio that stands for the machine
 TAIL_RISE, TAIL_FLOOR_MS = 0.5, 25.0  # T-3131 review: a p95 rise this big, in every pair, is a tail slowdown, not noise
 WALL_RISE, WALL_FLOOR_MS = 1.0, 100.0  # T-2363: on a loaded bench, a wall-time rise this big is a hook that waits
 CORPUS = 2000  # recent real commands replayed, newest first (fmreplay.corpus)
@@ -258,10 +261,12 @@ def _base_verdicts(base, cmds, cache):
     return [seen[json.dumps(x)] for x in cmds]
 
 
-def _paired(base, new, cache=None):
+def _paired(base, new, cache=None, excused=None):
     """T-2992: (held rows, base's injected chars, branch's) from PAIRS benches of base then branch in turn, so load that
     comes and goes lands on both; a hook's rise holds when it shows in HOLD pairs (a one-off spike doesn't).
-    T-3176: with a cache the base's PAIRS benches are reused (or kept after a fresh run); the branch always runs."""
+    T-3176: with a cache the base's PAIRS benches are reused (or kept after a fresh run); the branch always runs.
+    T-3091: `excused`, a list, gets {hook, raw, divisor, bar} for each hook a plain +RISE would have held that its spread
+    or the machine's share passed."""
     old = (cache or {}).get("bench")
     # T-3119: a timing bench never runs beside another (parallel lane checks would skew each other's p95); every
     # other check runs at once. ponytail: one machine-wide lock, any process; a stuck holder times out after an hour
@@ -275,21 +280,101 @@ def _paired(base, new, cache=None):
                     cache["bench"], cache["load"] = [a for a, _ in runs], _load_pc()
     except c.LockTimeout as e:  # the gate's own refusal ("couldn't run"), not a crash
         raise RuntimeError(f"another hook bench held the bench lock for an hour: {e}") from None
-    seen = [_slower(a[0], z[0]) for a, z in runs]
+    # T-3091: the base's own PAIRS benches are the base against itself (in the same window unless the base came from the
+    # cache): each hook's CPU spread over them widens that hook's bar, and the median ratio across all hooks is the
+    # machine's share, divided out only when EVERY base bench ran loaded (one loaded pair would drop its row and with it
+    # the hold) and never past what the base itself moved (see _machine)
+    bases = [a[0] for a, _ in runs]
+    spread, wall = _spread(bases), _wall_spread(bases)
+    steady = all(_loaded(b) for b in bases)
+    notes = [{} for _ in runs]
+    seen = [_slower(a[0], z[0], spread=spread, machine=_machine(a[0], z[0], spread) if steady else 1.0, wall=wall, note=n)
+            for (a, z), n in zip(runs, notes)]
     rows = {k: next(s[k] for s in seen if k in s) for k in {k for s in seen for k in s}
             if sum(k in s for s in seen) >= HOLD}
+    if excused is not None:  # held at plain RISE in HOLD pairs, passed by its spread or the divisor
+        for k in sorted({k for n in notes for k in n}):
+            got = [n[k] for n in notes if k in n]
+            if len(got) >= HOLD and k not in rows:
+                excused.append({"hook": k, "raw": round(max(g["raw"] for g in got), 4),
+                                "divisor": max(g["divisor"] for g in got), "bar": round(max(g["bar"] for g in got), 4)})
     return rows, runs[0][0][1], runs[0][1][1]
 
 
+def _num(x):
+    """x when it is a finite real number (a NaN or inf reads as missing: it must never silence a comparison)."""
+    return x if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) else None
+
+
 def _ms(v, loaded):
-    x = v.get("cpu_p95") if loaded else v.get("p95")
-    return x if isinstance(x, (int, float)) and not isinstance(x, bool) else None
+    return _num(v.get("cpu_p95") if loaded else v.get("p95"))
 
 
-def _slower(base, branch):
+def _loaded(*benches):
+    return any((_num(v.get("load")) or 0) > 1 for b in benches for v in b.values() if isinstance(v, dict))
+
+
+def _basis(v, loaded):
+    """The number a rise is judged on: the median CPU time when the bench has it, else the p95 (CPU p95 if loaded)."""
+    return _num(v.get("cpu_p50")) or _ms(v, loaded)
+
+
+def _range(xs):
+    xs = [x for x in xs if x and x > 0]
+    return (max(xs) - min(xs)) / min(xs) if len(xs) >= 2 else None
+
+
+def _spread(benches):
+    """T-3091: {hook: (max - min) / min of its judged CPU basis across the base's own benches}, capped at SPREAD_CAP: how
+    far the same code moves from one bench to the next in this window. Only hooks with two readings. With a cached base
+    the benches are the base's from an earlier window, not the branch's own."""
+    loaded, out = _loaded(*benches), {}
+    for k in set().union(*benches) if benches else ():
+        got = _range([_basis(b[k], loaded) for b in benches if isinstance(b.get(k), dict)])
+        if got is not None and math.isfinite(got):
+            out[k] = min(got, SPREAD_CAP)
+    return out
+
+
+def _wall_spread(benches):
+    """T-3091: the same for the wall median, for the quiet bench's wall-wait row only (it never widens the CPU bar)."""
+    out = {}
+    for k in set().union(*benches) if benches else ():
+        got = _range([_num(b[k].get("p50")) for b in benches if isinstance(b.get(k), dict)])
+        if got is not None and math.isfinite(got):
+            out[k] = min(got, SPREAD_CAP)
+    return out
+
+
+def _machine(base, branch, spread=None):
+    """T-3091: the median over hooks of branch/base on the judged basis, when the base ran loaded and at least
+    MACHINE_MIN hooks have both numbers: a rise every hook shares is taken as the machine, not a change in one hook.
+    It is never below 1.0 and never above 1 + the median of `spread` (what the base itself moved from bench to bench):
+    a bigger shared rise is the branch's, however loaded the bench. 1.0 on a quiet base, with too few hooks, or with no
+    spread measured (nothing is excused without evidence)."""
+    if not _loaded(base):
+        return 1.0
+    ratios = sorted(r for k, v in branch.items() if isinstance(v, dict) and isinstance(base.get(k), dict)
+                    for x1, x0 in [(_basis(v, True), _basis(base[k], True))] if x1 and x0
+                    for r in [x1 / x0] if math.isfinite(r))
+    moved = sorted(s for s in (spread or {}).values() if _num(s) is not None)
+    if len(ratios) < MACHINE_MIN or not moved:
+        return 1.0
+    mid, mid2 = len(ratios) // 2, len(moved) // 2
+    got = ratios[mid] if len(ratios) % 2 else (ratios[mid - 1] + ratios[mid]) / 2
+    cap = 1 + (moved[mid2] if len(moved) % 2 else (moved[mid2 - 1] + moved[mid2]) / 2)
+    return round(max(1.0, min(got, cap)), 4)
+
+
+def _slower(base, branch, spread=None, machine=1.0, wall=None, note=None):
     """Hooks whose p95 rose past RISE (and FLOOR_MS) or past the base's budget, on one basis (CPU time if either run
-    was loaded). A new fixture takes the base's tightest budget; the branch's own budgets are never read."""
-    loaded = any(v.get("load", 0) > 1 for v in list(base.values()) + list(branch.values()))
+    was loaded). A new fixture takes the base's tightest budget; the branch's own budgets are never read.
+    T-3091: a median rise must also pass that hook's CPU `spread` (its movement across the base's own benches) and is
+    judged after dividing the branch's median by `machine` (see _machine); the quiet bench's wall-wait row uses the
+    `wall` spread; the budget, tail and loaded-wall rows read raw numbers. `note`, when given, gets {hook: {raw, divisor,
+    bar, held}} for every hook whose raw rise passes plain RISE, so the caller can say who an allowance excused."""
+    machine = machine if _num(machine) and machine > 0 else 1.0
+    loaded = _loaded(base, branch)
     tight = min((v["budget"] for v in base.values() if isinstance(v.get("budget"), (int, float))), default=None)
     rows = {}
     for k, v in branch.items():
@@ -303,8 +388,14 @@ def _slower(base, branch):
         budget = bk.get("budget", tight)
         if b1 is None:
             continue
+        bar = 1 + RISE + (spread or {}).get(k, 0.0)  # T-3091: past RISE and this hook's own CPU spread
+        wbar = 1 + RISE + (wall or {}).get(k, 0.0)
+        raw1 = b1
+        b1 = b1 / machine
         over = isinstance(budget, (int, float)) and p1 is not None and p1 > budget and not (p0 is not None and p0 > budget)
-        rise = b0 is not None and b0 > 0 and b1 > b0 * (1 + RISE) and b1 - b0 >= FLOOR_MS
+        rise = b0 is not None and b0 > 0 and b1 > b0 * bar and b1 - b0 >= FLOOR_MS
+        if note is not None and b0 is not None and b0 > 0 and raw1 > b0 * (1 + RISE) and raw1 - b0 >= FLOOR_MS:
+            note[k] = {"hook": k, "raw": raw1 / b0, "divisor": machine, "bar": bar, "held": bool(rise)}
         tail = both and p0 and p1 is not None and p1 > p0 * (1 + TAIL_RISE) and p1 - p0 >= TAIL_FLOOR_MS
         q = "p50" if bk.get("p50") and v.get("p50") else "p95"  # T-2605: load spikes inflate p95
         w1, w0 = v.get(q), bk.get(q)
@@ -312,11 +403,12 @@ def _slower(base, branch):
         # CPU time misses a hook that sleeps or waits on I/O: loaded, a doubling past 100 ms of wall isn't load noise;
         # quiet (T-3131 review), the wall median rising past RISE and FLOOR_MS is a wait
         waits = walls and ((loaded and w1 >= w0 * (1 + WALL_RISE) and w1 - w0 >= WALL_FLOOR_MS) or
-                           (not loaded and both and q == "p50" and w1 > w0 * (1 + RISE) and w1 - w0 >= FLOOR_MS))
+                           (not loaded and both and q == "p50" and w1 > w0 * wbar and w1 - w0 >= FLOOR_MS))
         if over:
             rows[k] = f"hook {k} {tag} {p0} -> {p1} ms (past its {budget} ms budget)"
         elif rise:
-            rows[k] = f"hook {k} {'median CPU' if both else tag} {b0} -> {b1} ms (+{(b1 - b0) * 100 / b0:.0f}%)"
+            rows[k] = (f"hook {k} {'median CPU' if both else tag} {b0} -> {raw1} ms "
+                       f"(+{(raw1 - b0) * 100 / b0:.0f}% raw, bar +{(bar - 1) * 100:.0f}%, machine x{machine})")
         elif waits:
             rows[k] = f"hook {k} {q} {w0} -> {w1} ms wall (+{(w1 - w0) * 100 / w0:.0f}%; its CPU time didn't rise: it waits)"
         elif tail:
@@ -482,8 +574,16 @@ def gate(p, b, main, ref, files):
         if benched and not timed:
             c.log_event(p, "self_gate_timing_skipped", task=b.id, data={"sha": sha, "files": benched[:20]})
         if timed:  # timings, and the injected chars a cut needs
-            slow, s0, s1 = _paired(base, new, cache)
+            excused = []
+            slow, s0, s1 = _paired(base, new, cache, excused)
             out += list(slow.values())
+            for e in excused[:30]:  # T-3091: a pass can be checked by hand
+                c.log_event(p, "self_gate_excused", task=b.id, data=dict(e, sha=sha))
+            if excused:
+                top = max(excused, key=lambda e: e["raw"])
+                print(f"self-change gate: {len(excused)} hook{'s' if len(excused) != 1 else ''} rose past +{RISE * 100:.0f}% "
+                      f"but passed within their own spread or the machine's share; largest raw rise "
+                      f"+{(top['raw'] - 1) * 100:.0f}% ({top['hook']}); see the self_gate_excused events", file=sys.stderr)
             f0, f1 = _footprint(base, s0), _footprint(new, s1)
         out += [f"footprint {k} {w} -> {cur} (+{int((cur - w) * 100 // w)}%) with no always-on cut to pay for it"
                 for k, w, cur in doctor.grown(f0, f1) if not k.endswith(" ms")]

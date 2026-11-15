@@ -3877,7 +3877,7 @@ for drop in drops:
     if drop == "footprint":
         doctor.grown = lambda a, b: []
     if drop == "hook":
-        g._slower = lambda a, b: {}
+        g._slower = lambda a, b, **kw: {}
     if drop == "guard":
         g._verdicts = lambda plugin, cmds: ["same"] * len(cmds)
     if drop == "verbs":

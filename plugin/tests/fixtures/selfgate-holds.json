@@ -1,0 +1,13 @@
+{
+  "note": "T-3091: the 8 self-change holds of 2026-11-04/05 (T-3023, T-3026 x3, T-3029, T-3034, T-3053, T-3047), rebuilt as rises on the recorded A/A benches in selfgate-aa/ (load ~2 per core). The ledger kept each hold's verdict rows, not its benches, so a hold is its recorded hook and rise (ratio of the branch's timings to the base's) applied in the pairs it showed in; T-3026's first hold is the one with every hook up ~35% together. Seven of the eight show in only 2 of the 3 pairs, so the HOLD = 3 rule passes them with or without T-3091's allowances; only T-3026 first (all 3 pairs) reaches the new code, and there the machine divisor is clamped to what the base itself moved, so that rise is still HELD (8 hooks): a uniform +35% on a loaded bench is not excused as the machine, and the number was not tuned to pass.",
+  "holds": [
+    {"task": "T-3023", "ratio": {"PreToolUse:Edit": 1.16}, "pairs": [0, 1]},
+    {"task": "T-3026 first", "ratio": {"*": 1.35}, "pairs": [0, 1, 2]},
+    {"task": "T-3026 second", "ratio": {"SessionStart": 1.40}, "pairs": [0, 2]},
+    {"task": "T-3026 third", "ratio": {"Notification": 1.22}, "pairs": [1, 2]},
+    {"task": "T-3029", "ratio": {"UserPromptSubmit": 1.28}, "pairs": [0, 1]},
+    {"task": "T-3034", "ratio": {"PreToolUse:Bash:block": 1.2005}, "pairs": [0, 1]},
+    {"task": "T-3053", "ratio": {"PostToolUse": 1.2521}, "pairs": [0, 2]},
+    {"task": "T-3047", "ratio": {"PreCompact": 1.3097}, "pairs": [1, 2]}
+  ]
+}

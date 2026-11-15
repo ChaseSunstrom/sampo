@@ -3,6 +3,8 @@ median wall time even when load inflates the p95, and a small median wobble is n
 T-2992: base and branch are benched interleaved over 3 pairs; only a rise seen in 2 of 3 pairs holds."""
 # map-links: plugin/lib/sampo/louhi.py
 # (T-3577: LoadedWallCheck execs louhi's planted hook wait; a louhi-only change must run it)
+import json
+import os
 import unittest
 from unittest import mock
 
@@ -141,6 +143,252 @@ class AaFixtures(unittest.TestCase):  # T-3131: the same tree benched against it
         self.assertEqual(rows, {})
 
 
+class MachineAndSpread(unittest.TestCase):
+    """T-3091: a rise holds only past RISE plus that hook's spread across the base's own benches (the base against itself
+    in the same window, no extra bench), and after dividing out the median ratio across all hooks on a loaded bench."""
+    FIX = os.path.join(os.path.dirname(__file__), "fixtures")
+    FIELDS = ("p50", "p95", "cpu_p50", "cpu_p95")
+
+    def aa(self, name):
+        with open(os.path.join(self.FIX, "selfgate-aa", name + ".json"), encoding="utf-8") as f:
+            return json.load(f)["bench"]
+
+    def scaled(self, bench, ratio):
+        """bench with each hook's timings times ratio[hook] (ratio['*'] for the others)."""
+        out = {}
+        for k, v in bench.items():
+            r = ratio.get(k, ratio.get("*", 1.0))
+            out[k] = dict(v, **{f: round(v[f] * r, 3) for f in self.FIELDS if f in v})
+        return out
+
+    def pairs(self, base, branch):
+        """The rows `_paired` holds when its benches read base[i] then branch[i], i in turn; the call count too."""
+        from sampo import selfgate as g
+        seq, calls = {"base": iter(base), "new": iter(branch)}, []
+
+        def bench(tree):
+            calls.append(tree)
+            return next(seq[tree]), {}
+        with mock.patch.object(g, "_bench", bench):
+            rows, _, _ = g._paired("base", "new")
+        return rows, calls
+
+    def replay(self, hold):
+        base = [self.aa(f"{i}a") for i in (1, 2, 3)]
+        branch = [self.scaled(self.aa(f"{i}b"), hold["ratio"] if n in hold["pairs"] else {}) for n, i in enumerate((1, 2, 3))]
+        return self.pairs(base, branch)[0]
+
+    def test_the_reconstructed_holds_of_2026_11_04_and_05_pass_except_the_one_only_the_machine_divisor_excused(self):
+        """The ledger kept each hold's verdict rows, not its benches: these 8 are rebuilt rises, not recordings. Seven
+        show in 2 of the 3 pairs, so the HOLD = 3 rule passes them on trunk without T-3091's spread or divisor: only
+        "T-3026 first" (every hook up 35% in all 3 pairs) exercises the new code. The divisor is clamped to what the base
+        itself moved (a loaded bench's own spread), so a 35% rise in every hook is no longer excused as 'the machine':
+        that hold is refused, and that is the right outcome (B1), not a number tuned to pass."""
+        with open(os.path.join(self.FIX, "selfgate-holds.json"), encoding="utf-8") as f:
+            holds = json.load(f)["holds"]
+        self.assertEqual(len(holds), 8)
+        every_pair = [h["task"] for h in holds if len(h["pairs"]) == 3]
+        self.assertEqual(every_pair, ["T-3026 first"], "the only reconstructed hold that reaches the new code")
+        for hold in holds:
+            rows = self.replay(hold)
+            if hold["task"] in every_pair:
+                self.assertGreaterEqual(len(rows), 5, "a uniform +35% on a loaded bench is a change, not the machine")
+            else:
+                self.assertEqual(rows, {}, hold["task"])
+
+    def flat(self, n=16, load=3.0, cpu=100.0):
+        """n steady hooks, loaded; three base benches wobbling 5% against each other (the base against itself)."""
+        one = {f"h{i}": {"cpu_p50": cpu, "p50": cpu, "p95": cpu, "cpu_p95": cpu, "load": load, "budget": 1000}
+               for i in range(n)}
+        return [self.scaled(one, {"*": w}) for w in (1.0, 1.05, 1.02)]
+
+    def test_every_hook_up_40_percent_on_a_loaded_bench_is_held(self):
+        base = self.flat()
+        rows, _ = self.pairs(base, [self.scaled(b, {"*": 1.4}) for b in base])
+        self.assertEqual(len(rows), 16, rows)
+
+    def test_every_hook_of_the_recorded_a_a_benches_up_40_percent_is_held(self):
+        rows = self.replay({"ratio": {"*": 1.4}, "pairs": [0, 1, 2]})
+        self.assertGreaterEqual(len(rows), 10, rows)
+
+    def test_three_of_five_hooks_up_50_percent_on_a_loaded_bench_are_held(self):
+        base = self.flat(5)
+        rows, _ = self.pairs(base, [self.scaled(b, {"h0": 1.5, "h1": 1.5, "h2": 1.5}) for b in base])
+        self.assertEqual(sorted(rows), ["h0", "h1", "h2"], rows)
+
+    def test_nine_of_sixteen_hooks_up_40_percent_on_a_loaded_bench_are_held(self):
+        base = self.flat(16)
+        rows, _ = self.pairs(base, [self.scaled(b, {f"h{i}": 1.4 for i in range(9)}) for b in base])
+        self.assertEqual(sorted(rows), sorted(f"h{i}" for i in range(9)), rows)
+
+    def test_the_machine_divisor_never_exceeds_what_the_base_itself_moved(self):
+        from sampo import selfgate as g
+        base = self.flat(8)[0]
+        up = self.scaled(base, {"*": 1.35})
+        every = {k: 0.30 for k in base}
+        self.assertAlmostEqual(g._machine(base, up, every), 1.30, places=2, msg="the base moved 30%: that much, no more")
+        self.assertAlmostEqual(g._machine(base, up, {k: 0.05 for k in base}), 1.05, places=2)
+        self.assertEqual(g._machine(base, up, {}), 1.0, "no spread measured: nothing is excused")
+        self.assertEqual(g._machine(base, self.scaled(base, {"*": 0.8}), every), 1.0, "a faster branch never raises the bar")
+
+    def test_a_hooks_wall_wobble_does_not_widen_its_cpu_bar(self):
+        def bench(cpu, wall):
+            return dict({"Stop": {"cpu_p50": cpu, "p50": wall, "p95": wall, "cpu_p95": cpu, "load": 0, "budget": 500}},
+                        **{f"h{i}": {"cpu_p50": 50.0, "p50": 50.0, "p95": 50.0, "cpu_p95": 50.0, "load": 0, "budget": 500}
+                           for i in range(6)})
+        base = [bench(100.0, 40.0), bench(102.0, 55.0), bench(100.0, 50.0)]  # CPU 2% apart, wall 37% apart
+        from sampo import selfgate as g
+        self.assertLess(g._spread([b for b in base])["Stop"], 0.05)
+        rows, _ = self.pairs(base, [bench(120.0, 50.0), bench(122.0, 50.0), bench(120.0, 50.0)])
+        self.assertIn("Stop", rows, "CPU +20% against a 2% CPU spread: held, whatever the wall clock did")
+
+    def test_the_wall_wait_row_on_a_quiet_bench_keeps_the_wall_spread(self):
+        def bench(wall):
+            return dict({"Stop": {"cpu_p50": 100.0, "p50": wall, "p95": wall, "cpu_p95": 100.0, "load": 0, "budget": 500}},
+                        **{f"h{i}": {"cpu_p50": 50.0, "p50": 50.0, "p95": 50.0, "cpu_p95": 50.0, "load": 0, "budget": 500}
+                           for i in range(6)})
+        base = [bench(40.0), bench(52.0), bench(46.0)]  # wall 30% apart
+        rows, _ = self.pairs(base, [bench(55.0), bench(66.0), bench(60.0)])  # +25% on each: inside its own wall spread
+        self.assertEqual(rows, {})
+        rows, _ = self.pairs(base, [bench(90.0), bench(100.0), bench(95.0)])
+        self.assertIn("Stop", rows)
+
+    def test_a_held_row_prints_the_raw_percent_the_bar_and_the_divisor(self):
+        import re
+        base = self.flat(8)
+        rows, _ = self.pairs(base, [self.scaled(b, {"h0": 1.6}) for b in base])
+        self.assertRegex(rows["h0"], r"\(\+60% raw, bar \+(1[5-9]|2\d)%, machine x1\.0\)", rows)
+        up = [self.scaled(b, {"*": 1.1, "h0": 1.8}) for b in base]
+        rows, _ = self.pairs(base, up)
+        self.assertRegex(rows["h0"], r"\(\+8\d% raw, bar \+\d+%, machine x1\.0\d*\)", rows)
+
+    def test_a_hook_excused_by_its_spread_is_recorded_with_its_raw_rise_and_bar(self):
+        from sampo import selfgate as g
+
+        def bench(ms):
+            return dict({"Stop": {"cpu_p50": ms, "p50": ms, "p95": ms, "cpu_p95": ms, "load": 0, "budget": 500}},
+                        **{f"h{i}": {"cpu_p50": 50.0, "p50": 50.0, "p95": 50.0, "cpu_p95": 50.0, "load": 0, "budget": 500}
+                           for i in range(6)})
+        base = [bench(40.0), bench(45.0), bench(50.0)]
+        seq, excused = {"base": iter(base), "new": iter([bench(48.0), bench(54.0), bench(60.0)])}, []
+        with mock.patch.object(g, "_bench", lambda tree: (next(seq[tree]), {})):
+            rows, _, _ = g._paired("base", "new", None, excused)
+        self.assertEqual(rows, {})
+        self.assertEqual([e["hook"] for e in excused], ["Stop"])
+        e = excused[0]
+        self.assertAlmostEqual(e["raw"], 1.2, places=2)
+        self.assertAlmostEqual(e["divisor"], 1.0, places=2)
+        self.assertGreater(e["bar"], 1.2)
+
+    def test_a_hook_held_at_the_plain_bar_nowhere_is_not_recorded(self):
+        from sampo import selfgate as g
+        base = self.flat(8)
+        seq, excused = {"base": iter(base), "new": iter([self.scaled(b, {"h0": 1.05}) for b in base])}, []
+        with mock.patch.object(g, "_bench", lambda tree: (next(seq[tree]), {})):
+            g._paired("base", "new", None, excused)
+        self.assertEqual(excused, [])
+
+    def test_the_gate_logs_each_excused_hook_and_says_how_many_on_one_line(self):
+        import io
+        from contextlib import redirect_stderr
+        entry = {"hook": "Stop", "raw": 1.2, "divisor": 1.0, "bar": 1.4}
+
+        def paired(base, new, cache=None, excused=None):
+            excused.append(entry)
+            excused.append(dict(entry, hook="Notification", raw=1.31))
+            return {}, {}, {}
+        err = io.StringIO()
+        with redirect_stderr(err):
+            out, _, events = GateEndToEnd().run_gate("plugin/lib/json.py", "x = 1\n", paired=paired)
+        self.assertEqual(out, [], "an excused hook is a pass, not a refusal")
+        self.assertEqual(events.count("self_gate_excused"), 2)
+        lines = [x for x in err.getvalue().splitlines() if x.startswith("self-change gate:")]
+        self.assertEqual(len(lines), 1, err.getvalue())
+        line = lines[0]
+        self.assertIn("2 hooks", line)
+        self.assertIn("+31%", line)
+        self.assertIn("Notification", line)
+
+    def test_a_pair_that_ran_loaded_alone_does_not_excuse_a_uniform_rise(self):
+        loaded = lambda b: {k: dict(v, load=3.0) for k, v in b.items()}  # noqa: E731
+        quiet = lambda b: {k: dict(v, load=0.2) for k, v in b.items()}  # noqa: E731
+        base = [loaded(self.aa("1a")), quiet(self.aa("2a")), quiet(self.aa("3a"))]
+        branch = [loaded(self.scaled(self.aa("1b"), {"*": 1.4})), quiet(self.scaled(self.aa("2b"), {"*": 1.4})),
+                  quiet(self.scaled(self.aa("3b"), {"*": 1.4}))]
+        rows, _ = self.pairs(base, branch)
+        self.assertGreaterEqual(len(rows), 10, "the divisor needs the whole window loaded, not one pair of it")
+
+    def test_a_nan_never_silences_a_hooks_rise(self):
+        from sampo import selfgate as g
+        nan = float("nan")
+        base = self.flat(8)
+        self.assertEqual(g._spread([{"Stop": {"cpu_p50": nan}}, {"Stop": {"cpu_p50": 10.0}}]), {})
+        one = self.scaled(base[0], {"*": 1.35})
+        one["h7"] = dict(one["h7"], cpu_p50=nan, cpu_p95=nan)
+        self.assertTrue(1.0 <= g._machine(base[0], one, {k: 0.3 for k in one}) <= 1.3)
+        rows, _ = self.pairs(base, [dict(self.scaled(b, {"h0": 1.6}), h7=dict(b["h7"], cpu_p50=nan, cpu_p95=nan)) for b in base])
+        self.assertIn("h0", rows)
+
+    def test_one_hook_up_60_percent_in_every_pair_still_refuses(self):
+        rows = self.replay({"ratio": {"PreCompact": 1.6}, "pairs": [0, 1, 2]})
+        self.assertEqual(list(rows), ["PreCompact"], rows)
+
+    def test_one_hook_up_60_percent_among_a_machine_up_20_percent_still_refuses(self):
+        rows = self.replay({"ratio": {"PreCompact": 1.6 * 1.2, "*": 1.2}, "pairs": [0, 1, 2]})
+        self.assertEqual(list(rows), ["PreCompact"], rows)
+        self.assertIn("machine", rows["PreCompact"])
+
+    def test_a_uniform_rise_on_a_quiet_bench_is_the_branch_not_the_machine(self):
+        quiet = lambda b: {k: dict(v, load=0.2) for k, v in b.items()}  # noqa: E731
+        base = [quiet(self.aa(f"{i}a")) for i in (1, 2, 3)]
+        branch = [quiet(self.scaled(self.aa(f"{i}b"), {"*": 1.35})) for i in (1, 2, 3)]
+        rows, _ = self.pairs(base, branch)
+        self.assertGreaterEqual(len(rows), 10, "every hook up 35% with nothing else running: a shared import, held")
+
+    def test_a_hook_that_wobbles_in_the_bases_own_benches_needs_a_rise_past_its_spread(self):
+        def bench(ms, others=()):
+            return dict({"Stop": {"cpu_p50": ms, "p50": ms, "p95": ms, "cpu_p95": ms, "load": 0, "budget": 500}},
+                        **{f"h{i}": {"cpu_p50": 50.0, "p50": 50.0, "p95": 50.0, "cpu_p95": 50.0, "load": 0, "budget": 500}
+                           for i in range(6)})
+        base = [bench(40.0), bench(45.0), bench(50.0)]  # the base against itself: 25% apart
+        rows, _ = self.pairs(base, [bench(48.0), bench(54.0), bench(60.0)])  # +20% each pair
+        self.assertEqual(rows, {}, "a +20% rise from a hook that moves 25% on its own is not a finding")
+        rows, _ = self.pairs(base, [bench(70.0), bench(75.0), bench(80.0)])  # +60%+: past RISE plus the spread
+        self.assertIn("Stop", rows)
+
+    def test_a_steady_hook_still_holds_at_fifteen_percent(self):
+        steady = {"Stop": {"cpu_p50": 100.0, "p50": 100.0, "p95": 100.0, "cpu_p95": 100.0, "load": 0, "budget": 500}}
+        rows, _ = self.pairs([steady] * 3, [self.scaled(steady, {"Stop": 1.2})] * 3)
+        self.assertIn("Stop", rows)
+
+    def test_the_spread_is_capped_so_a_noisy_base_cannot_excuse_everything(self):
+        from sampo import selfgate as g
+        wild = [{"Stop": {"cpu_p50": x, "load": 0}} for x in (10.0, 30.0, 90.0)]
+        self.assertEqual(g._spread(wild), {"Stop": g.SPREAD_CAP})
+
+    def test_the_machine_ratio_needs_enough_hooks_and_a_loaded_bench(self):
+        from sampo import selfgate as g
+        one = {"Stop": {"cpu_p50": 100.0, "load": 3.0}}
+        self.assertEqual(g._machine(one, {"Stop": {"cpu_p50": 200.0, "load": 3.0}}), 1.0, "one hook: no median to trust")
+        base = self.aa("1a")
+        wide = {k: 0.5 for k in base}
+        self.assertAlmostEqual(g._machine(base, self.scaled(base, {"*": 1.35}), wide), 1.35, places=2)
+        calm = {k: dict(v, load=0.1) for k, v in base.items()}
+        self.assertEqual(g._machine(calm, self.scaled(calm, {"*": 1.35}), wide), 1.0)
+
+    def test_the_spread_and_the_machine_cost_no_extra_bench_and_microseconds(self):
+        import time
+        rows, calls = self.pairs([self.aa(f"{i}a") for i in (1, 2, 3)], [self.aa(f"{i}b") for i in (1, 2, 3)])
+        self.assertEqual(calls, ["base", "new"] * 3, "the same six benches as before: the spread comes from the base's own three")
+        from sampo import selfgate as g
+        a, z = self.aa("1a"), self.aa("1b")
+        t = time.perf_counter()
+        for _ in range(100):
+            sp = g._spread([a, a, a])
+            g._slower(a, z, spread=sp, machine=g._machine(a, z, sp))
+        self.assertLess((time.perf_counter() - t) / 100, 0.01, "well under 10 ms per pair")
+
+
 class WhichDiffsAreTimed(unittest.TestCase):  # T-3139: time hooks only when the diff touches what a hook process imported
     MAP = {"Stop": ["plugin/lib/sampo/hooks.py", "plugin/lib/sampo/core.py"], "PostToolUse": ["plugin/lib/sampo/core.py"]}
 
@@ -208,7 +456,7 @@ class WhichDiffsAreTimed(unittest.TestCase):  # T-3139: time hooks only when the
 
 
 class GateEndToEnd(unittest.TestCase):  # T-3139: git-built trees, the timing bench faked
-    def run_gate(self, path, text):
+    def run_gate(self, path, text, paired=None):
         import os
         import subprocess
         import tempfile
@@ -236,10 +484,10 @@ class GateEndToEnd(unittest.TestCase):  # T-3139: git-built trees, the timing be
                 mock.patch.object(g, "_verdicts", return_value=[]), mock.patch.object(g, "_footprint", return_value={}), \
                 mock.patch("sampo.doctor.grown", return_value=[]), \
                 mock.patch.object(g, "_hook_modules", return_value={"Stop": ["plugin/lib/sampo/core.py"]}), \
-                mock.patch.object(g, "_paired", return_value=({}, {}, {})) as paired, \
+                mock.patch.object(g, "_paired", side_effect=paired, **({} if paired else {"return_value": ({}, {}, {})})) as pm, \
                 mock.patch.object(g.c, "log_event", side_effect=lambda *a, **k: events.append(a[1])):
             out = g.gate(p, b, main, tip, [path])
-        return out, paired, events
+        return out, pm, events
 
     def test_a_web_only_diff_skips_the_timing_bench_and_says_so(self):
         out, paired, events = self.run_gate("plugin/web/live/live.js", "x = 2\n")

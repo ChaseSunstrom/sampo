@@ -2549,6 +2549,24 @@ class SelfChangeGate(ForemanTestCase):
         self.assertIn("self-change gate", r.stderr)  # a waiver of the criteria never waives the gate
         self.assertIn(f"fm ask {self.tid} core", r.stderr)
 
+    def test_a_hold_keeps_the_lanes_worktree_and_branch_so_a_retry_needs_no_rebuild(self):  # T-3091
+        self.branch({"plugin/lib/fmguard.py": "x = 2\n"})
+        lane = os.path.join(self.tmp, "held-lane")
+        self.git("worktree", "add", "-q", lane, "foreman/x")
+        with open(os.path.join(lane, "scratch.txt"), "w") as f:  # untracked work in the folder must survive too
+            f.write("kept\n")
+        b = c.find_brief(self.p, self.tid)
+        b.meta["lane_branch"], b.meta["lane"] = "foreman/x", lane
+        c.save_brief(self.p, b)
+        for attempt in (1, 2):  # the retry meets the same lane
+            r = self.fm("lane", "merge", self.tid, "--unverified", "no checks here", check=False)
+            self.assertNotEqual(r.returncode, 0, attempt)
+            self.assertIn("self-change gate holds", r.stderr)
+            self.assertTrue(os.path.isfile(os.path.join(lane, "scratch.txt")), f"attempt {attempt}: the folder is kept")
+            self.assertIn("held-lane", self.git("worktree", "list"), "still registered")
+            self.assertIn("foreman/x", self.git("branch", "--list", "foreman/x"))
+        self.assertEqual(c.find_brief(self.p, self.tid).meta.get("lane"), lane, "the brief still names its lane")
+
 
 class RouteBase(ForemanTestCase):
     """T-2353: seeded lane histories for the probe-down route (closed S tasks with a builder model, fates passed in)."""
