@@ -3180,6 +3180,28 @@ def _pm_unread(main, sha, files, classes):
     return out
 
 
+VERIFY_GONE = "the verify scratch worktree was removed by something else"  # T-4728
+
+
+def _tree_lost(wt):
+    """T-4728: True when a scratch worktree's folder is gone or no longer a worktree (its .git file goes with it)."""
+    return not os.path.exists(os.path.join(wt, ".git"))
+
+
+def _pm_tree_lost(p, sha, r, tries, wt):
+    """T-4728: True (and recorded) when the verify tree of `sha` is gone: a run in it ended 127, which is no red suite, so
+    no merge is reverted for it. The record goes back to pending (unverified after three tries), as an unrunnable tree does."""
+    return _tree_lost(wt) and _pm_lost_record(p, sha, r, tries)
+
+
+def _pm_lost_record(p, sha, r, tries):
+    """T-4728: record that the verify tree of `sha` was lost (see _pm_tree_lost); always True."""
+    c.log_event(p, "postmerge_unrunnable", task=r["task"], data={"sha": sha, "tries": tries, "why": VERIFY_GONE})
+    pm_set(p, sha, state="pending" if tries < 3 else "unverified", tries=tries, note=VERIFY_GONE)
+    print(f"sampo lane verify: {VERIFY_GONE} ({sha[:9]}); nothing reverted, the next pass runs it again", file=sys.stderr)
+    return True
+
+
 def pm_verify(p, main, sha):
     """Run the full suite on the merge in a throwaway worktree; green records it, red reverts that commit."""
     from sampo import cli
@@ -3207,6 +3229,8 @@ def pm_verify(p, main, sha):
         code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600),
                                   env=cpu_env(p, gate=False), niced=True,
                                   low=True)  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
+        if _pm_tree_lost(p, sha, r, tries, wt):  # T-4728: a run in a removed folder ends 127: no merge is reverted for it
+            return False
         flaky =inherited = unrelated = []
         reds = pm_classes(out, code) if code and code != 124 else []
         files, reach = _pm_files(main, sha), reds
@@ -3232,6 +3256,7 @@ def pm_verify(p, main, sha):
                     named = {m.rpartition(".")[0] or m for m in _FAILED.findall(pout)}
                     if pcode and set(reach) <= named:
                         inherited = reach
+        vanished = _tree_lost(wt)  # T-4728: judged before the finally removes it: the reruns above ran in this tree too
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -3267,6 +3292,8 @@ def pm_verify(p, main, sha):
         cli.mutate(p, r["task"], lambda x: (x.append_log(f"verified: the full suite is green on {sha[:9]}"),
                                             x.meta.update(lane_verified=sha)), "lane_verified", {"sha": sha})
         return True
+    if vanished and _pm_lost_record(p, sha, r, tries):  # T-4728: no revert for a loss
+        return False
     pm_set(p, sha, state="red", classes=reach or reds or pm_classes(out, code), reached_by=files[:20])
     return _pm_revert(p, main, sha) or True
 
@@ -3419,6 +3446,8 @@ def _pm_green_at(p, main, sha, reds=None):
         full = _pm_uncached_due(p)
         code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600), env=cpu_env(p, gate=False),
                                   niced=True, low=True)  # T-4197; T-4570
+        if _tree_lost(wt):  # T-4728: a run in a removed folder is no red suite: stop the pass, the merge stays pending
+            raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
         if code:
             if reds is not None and code != 124:  # a timeout names nothing
                 reds.extend(k for k in pm_classes(out, code) if not k.startswith("suite exit"))
@@ -3439,7 +3468,10 @@ def _pm_cmd_green_at(main, sha, cmd):
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         c.wait_for_load(f"lane verify {sha[:9]}")  # as pm_verify's alone-rerun waits
-        return not c.run_command(wt, cmd, c.load_scaled(900), niced=True, low=True)[0]  # T-4197: a lane verify's run; T-4570
+        code = c.run_command(wt, cmd, c.load_scaled(900), niced=True, low=True)[0]  # T-4197: a lane verify's run; T-4570
+        if _tree_lost(wt):  # T-4728: 127 from a removed folder is no red class: the bisection would blame a merge
+            raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
+        return not code
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)

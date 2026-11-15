@@ -3008,6 +3008,30 @@ class PostMergeVerify(ForemanTestCase):
         slanes.pm_run(self.p, self.repo)
         self.assertEqual(self.state(sha), "reverted")
 
+    # a suite that removes the scratch worktree it runs in (the verify's own, named fm-verify-*/wt) and fails: what the
+    # 2026-11-15 removal looked like from inside (T-4728); the same line runs fine anywhere else
+    EATEN = ("case \"$(basename \"$(dirname \"$PWD\")\")\" in fm-verify-*) rm -rf \"$PWD\"; echo 'FAIL: test_x (test_mod.Cls.test_x)'; "
+             "exit 1;; esac")
+
+    def test_a_verify_tree_removed_under_the_run_reverts_no_merge(self):  # T-4728
+        os.environ["FM_POSTMERGE_CMD"] = self.EATEN
+        sha = self.land("a", bad=True)
+        slanes.pm_run(self.p, self.repo)
+        self.assertNotEqual(self.state(sha), "reverted", "a run in a removed folder is no red suite")
+        self.assertEqual(self.state(sha), "pending", "it is run again by the next pass")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "bad.txt")), "nothing was reverted")
+        self.assertIn("removed by something else", slanes.pm_records(self.p)[sha].get("note", ""))
+        self.assertTrue(c.ledger_events(self.p, ["postmerge_unrunnable"]))
+
+    def test_a_bisection_tree_removed_under_the_run_names_no_merge(self):  # T-4728
+        os.environ["FM_POSTMERGE_CMD"] = self.EATEN
+        sha = self.land("a")
+        with self.assertRaises(c.PolicyError) as got:
+            slanes._pm_cmd_green_at(self.repo, sha, self.EATEN)
+        self.assertIn("removed by something else", str(got.exception))
+        with self.assertRaises(c.PolicyError):
+            slanes._pm_green_at(self.p, self.repo, sha)
+
     def test_a_red_the_first_parent_cannot_run_is_the_merges_own_and_reverts(self):
         # T-3224: the merge added the red class; on the first parent run.py finds no such test and exits 1 too
         os.environ["FM_POSTMERGE_RERUN"] = "ls bad*.txt >/dev/null 2>&1 || { echo 'run.py: no test matches test_mod'; " \

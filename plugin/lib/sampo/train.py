@@ -29,6 +29,7 @@ from sampo.lanes import CLOSE_MARK, CriterionRed, _git, _ref_ok, _verify, clear_
     pm_after_train, pm_record, pm_rerun_cmd, pm_wait, train_lock, train_lock_closing
 
 FLAKY_ROUNDS = 8  # T-4676: a hard bound on the rounds of flaky classes one train goes on past (the cap proper is per class)
+WT_GONE = "the train's scratch worktree was removed by something else"  # T-4728: said by the first loss and the second
 SKIPPED = "probe skipped"  # the note a held green run leaves; the report counts by it (T-3596)
 PROBE_JOBS = 3 # T-3531: pre-filter probes at once
 _FAILED = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([\w.]+)\)", re.M)  # unittest's red line: test (where)
@@ -38,6 +39,33 @@ _COUNT = re.compile(r"^FAILED \((\d+) classes", re.M)  # run.py's summary count
 _FIXTURES = ("setUpModule", "tearDownModule", "setUpClass", "tearDownClass")  # unittest names the module or class
 _FRAME = re.compile(r'^\s*File ".*", line \d+.*$', re.M)  # a traceback frame: the test and the code on its stack
 _stem = lambda t: os.path.basename(t).rsplit(".", 1)[0]  # noqa: E731  a test file's module name
+
+
+class _Lost(Exception):
+    """T-4728: a scratch worktree the train made is no longer a worktree: something else removed it."""
+
+
+def _lost_check(wt):
+    """T-4728: raise _Lost when `wt`'s folder is gone or no longer holds a worktree (its .git file goes with it). A run in
+    a vanished folder ends 127, which reads as a red base or a guilty lane: it is checked before and after each run."""
+    if not os.path.exists(os.path.join(wt, ".git")):
+        raise _Lost(wt)
+
+
+def _rebuilding(p, what, attempt):
+    """T-4728: run `attempt()`, a whole piece of work on its own scratch tree that raises _Lost when the tree goes. The
+    first loss says so and runs it again on a new tree; a second raises PolicyError naming the loss, so what it was
+    judging (a lane, the base) is never called red for a loss. `attempt` removes its own tree (try/finally)."""
+    for n in (1, 2):
+        try:
+            return attempt()
+        except _Lost as e:
+            with contextlib.suppress(Exception):
+                c.log_event(p, "lane_train_wt_gone", data={"n": n, "what": what, "tree": os.path.basename(str(e))})
+            if n == 1:
+                print(f"sampo lane train: {WT_GONE} ({what}); rebuilding it once", file=sys.stderr)
+    raise c.PolicyError(f"{WT_GONE} again ({what}): the second loss, so it stops here with nothing landed, no lane blamed "
+                        "and the base not called red; run it again")
 
 
 def _mod(k):
@@ -108,10 +136,16 @@ def _base_red(p, main, base, sub):
                 return ""
     except (OSError, ValueError):
         pass
+    return _rebuilding(p, "the base probe", lambda: _base_red_once(main, base, sub))  # T-4728
+
+
+def _base_red_once(main, base, sub):
+    """_base_red's run on one scratch tree; raises _Lost when something else removes the tree (the caller reruns it once)."""
     wt = tempfile.mkdtemp(prefix="sampo-base-")
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode:
             return ""
+        _lost_check(wt)
         ts = [t for t in sub[2] if os.path.exists(os.path.join(wt, t))]
         if not ts:
             return ""
@@ -120,7 +154,10 @@ def _base_red(p, main, base, sub):
             c.wait_for_load("sampo lane train")
             if shutil.which("nice"):
                 cmd = "nice -n 10 bash -c " + shlex.quote(cmd)
-            return c.run_command(wt, cmd, c.load_scaled(1800))
+            _lost_check(wt)
+            got = c.run_command(wt, cmd, c.load_scaled(1800))
+            _lost_check(wt)  # a run in a vanished folder ends 127: that is the loss, not a red base
+            return got
 
         code, out = go(run)
         if code not in (0, 5, 124):  # one flake rerun of the same affected tests
@@ -395,12 +432,28 @@ def _probe(p, main, base, b, tip, notes, tests=True):
             return "conflicts with the base" + (f": {c.joinmore(files, 8)}" if files else "")
     if not tests:  # T-3770: the gate runs this lane's affected tests itself, and a red gate names its lane (T-3602)
         return ""
+
+    def attempt():  # T-4728: the tree can be removed under it; a second loss is the train's to stop, not this lane's fault
+        seen = []
+        return _probe_once(p, main, base, b, tip, seen, cli), seen
+    try:
+        why, seen = _rebuilding(p, f"the probe of {b.id}", attempt)
+    except c.PolicyError as e:  # starts with WT_GONE: the train raises it (a child's result names a lane's reason)
+        return str(e)
+    notes.extend(seen)
+    return why
+
+
+def _probe_once(p, main, base, b, tip, notes, cli):
+    """_probe's work on one scratch tree (base + the lane merged); raises _Lost when something else removes the tree."""
     wt = tempfile.mkdtemp(prefix="sampo-probe-")
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode or _git(
                 wt, "-c", "user.name=sampo", "-c", "user.email=sampo@localhost", "merge", "--no-ff", "--no-edit",
                 tip).returncode:
+            _lost_check(wt)  # a merge git could not run in a vanished folder is no refusal of the lane
             return ""
+        _lost_check(wt)
         pw = c.Project(p.slug, wt, p.dir, p.lane)
         try:
             cmd, tests, changed = cli.affected(pw, since=base)
@@ -417,8 +470,10 @@ def _probe(p, main, base, b, tip, notes, tests=True):
             cwd, cmd, _ = c.normalize_verify(wt, cmd)  # T-3411's cwd fix first: the nice wrapper would hide it
             if shutil.which("nice"):  # the probe yields to whatever else the machine runs
                 cmd = "nice -n 10 bash -c " + shlex.quote(cmd)
+            _lost_check(wt)
             code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True,  # T-3614: ahead of lane runs
                                       env=cpu_env(p))  # T-3757: a CPU rise is red here too
+            _lost_check(wt)  # a run in a vanished folder ends 127: that is the loss, not a red lane
             return code, set(_red(out))
 
         def again(classes):  # the red classes alone where the runner names them (pm_rerun_cmd), else cmd again
@@ -697,6 +752,8 @@ def _run(p, main, ids, defer_verify=False):
         seen = []
         if not why:
             why, seen = _child_result(next(outs))
+            if why.startswith(WT_GONE):  # T-4728: a probe's tree lost twice: the train stops, no lane is left out for it
+                raise c.PolicyError(why)
         notes += seen
         left.append((b.id, why)) if why else cands.append((b, tip))
     t1 = time.monotonic()
@@ -707,7 +764,8 @@ def _run(p, main, ids, defer_verify=False):
     if r.returncode:
         raise c.PolicyError(f"git worktree add failed: {r.stderr.strip()[:300]}")
     runs, probes, results, sub = [0], [0], [], None
-    tips = {b.id: t for b, t in cands}
+    olds, head, lost = [wt], [base], [0]  # T-4728: the folders the train made; the commit the tree is at; losses so far
+    tips ={b.id: t for b, t in cands}
     meta = c.read_meta(p)
     tpl, other = meta.get("affected") or "", tuple(meta.get("affected_by") or ())
     bare = lambda s: " ".join(s.split())  # noqa: E731
@@ -729,10 +787,11 @@ def _run(p, main, ids, defer_verify=False):
         """The tests lane i's diff reaches, as the probes pick them (cli.affected on the scratch tree); none without
         an affected command or a map."""
         if i not in reaches:
+            ensure_wt()  # T-4728: a tree removed since the last step is rebuilt, not read as "reaches nothing"
             try:
                 ts = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=base, only=sorted(diff(i)))[1]
             except Exception:
-                ts = []
+                return set()  # not cached: a later call, on a sound tree, may know
             reaches[i] = {t for t in ts if not t.endswith(other)}  # another runner's tests: its own gate
         return reaches[i]
 
@@ -741,6 +800,7 @@ def _run(p, main, ids, defer_verify=False):
         `names` the suite runs only those whose module is in the tree (None, []: none is), a class left out when its
         module runs whole; the suite otherwise runs the batch's affected tests found there (T-3544: a prefix or the
         base lacks a later lane's new test file); any other gate runs as configured."""
+        ensure_wt()  # T-4728
         if names and cmd == suite:
             have = {_stem(f) for f in _git(wt, "ls-files", "-z").stdout.split("\0") if f}
             ns = sorted(n for n in set(names) if _mod(n) in have and ("." not in n or _mod(n) not in names))
@@ -751,18 +811,58 @@ def _run(p, main, ids, defer_verify=False):
                 [_stem(t) for t in ts]
         return cmd, None
 
+    def wt_gone():
+        """T-4728: True when the scratch tree's folder is no longer a worktree (its .git file is gone with it)."""
+        return not os.path.exists(os.path.join(wt, ".git"))
+
+    def ensure_wt():
+        """T-4728: the scratch tree is the train's own, yet something else removed it (2026-11-15: a probe then ran in a folder
+        that was not there and the train stopped on "base probe inconclusive ... exit 127"). Said by what it is: the first loss
+        rebuilds the tree once, in a new folder at the commit it had reached (every state of it is a commit, kept by the
+        repo), and the train goes on; a second loss stops it, nothing landed. Only the train's own folders are ever removed."""
+        nonlocal wt
+        if not wt_gone():
+            return
+        lost[0] += 1
+        c.log_event(p, "lane_train_wt_gone", data={"n": lost[0], "at": head[0][:9]})
+        if lost[0] > 1:
+            raise c.PolicyError(f"{WT_GONE} again, at {head[0][:9]}: the second loss in this train, so it stops here with "
+                                "nothing landed and no lane blamed; run it again")
+        new = tempfile.mkdtemp(prefix="sampo-train-")  # a fresh path: the dead registration is the finally's to prune
+        olds.append(new)  # the finally removes each folder the train made, and only those
+        r = _git(main, "worktree", "add", "-q", "--detach", new, head[0])
+        if r.returncode:
+            raise c.PolicyError(f"{WT_GONE}, and it could not be rebuilt at {head[0][:9]}: {r.stderr.strip()[:300]}")
+        wt = new
+        notes.append(("gate", f"{WT_GONE}; rebuilt it once at {head[0][:9]} and went on"))
+
+    def here():
+        ensure_wt()
+        return _git(wt, "rev-parse", "HEAD").stdout.strip()
+
+    def reset(sha):
+        ensure_wt()
+        _git(wt, "reset", "-q", "--hard", sha)
+        head[0] = sha
+
     def run1(cmd, names=None, fresh=False):
         """(row, ran): gate `cmd` on the scratch tree as it stands, worded by form(); a passing run of the same line on
         this very tree is reused (ran False) unless `fresh` (T-4676: a base proven green earlier may be red now); row
         None when nothing named is left. `affected` lists the modules a
-        narrowed run named (cli._cached_pass reads it); a red row keeps the names it fails, its output and last lines."""
+        narrowed run named (cli._cached_pass reads it); a red row keeps the names it fails, its output and last lines.
+        T-4728: a run the tree was removed under is run again on the rebuilt one (a second loss stops the train)."""
+        ensure_wt()
         line, mods = form(cmd, names)
-        key = (_git(wt, "rev-parse", "HEAD").stdout.strip(), line)
+        key = (here(), line)
         if line is None or (key in passed and not fresh):
             return passed.get(key), False
         t0 = time.monotonic()
-        code, out = c.run_command(wt, line, c.load_scaled(1800), priority=True,  # T-3614, T-3757; T-4289: no test override
-                                  env=c.scrubbed_env(cpu_env(p)), watch=trunk_watch, watch_every=TRUNK_POLL_S)
+        while True:
+            ensure_wt()
+            code, out = c.run_command(wt, line, c.load_scaled(1800), priority=True,  # T-3614, T-3757; T-4289: no test override
+                                      env=c.scrubbed_env(cpu_env(p)), watch=trunk_watch, watch_every=TRUNK_POLL_S)
+            if not wt_gone():
+                break
         row = {"cmd": cmd, "exit": code, "s": round(time.monotonic() - t0, 1), **({"affected": mods} if mods else {})}
         if code:
             if _machine_only(out):  # T-4652: the disk, not the code: no base is called red and no lane blamed for it
@@ -774,12 +874,21 @@ def _run(p, main, ids, defer_verify=False):
 
     def build(start, lanes):
         """Reset the scratch tree to `start`, merge `lanes`; [(brief, sha after)] of those that merged."""
-        _git(wt, "reset", "-q", "--hard", start)
+        reset(start)
         out = []
         for b, tip in lanes:
+            n = len(left)
+            ensure_wt()
             sha = _merge_in(wt, b, tip, left, kept_maps)
+            if not sha and wt_gone():  # T-4728: the tree went under the merge: that is no conflict, and no lane is left out for it
+                del left[n:]
+                ensure_wt()  # a second loss stops the train here
+                sha = _merge_in(wt, b, tip, left, kept_maps)
+                if not sha and wt_gone():
+                    ensure_wt()
             if sha:
                 out.append((b, sha))
+                head[0] = sha
         return out
 
     def moved():
@@ -813,7 +922,7 @@ def _run(p, main, ids, defer_verify=False):
     def probe(sha, cmd, names, fresh=False):
         """T-3602: the red gate alone on the tree at `sha`, the suite on only its red names: its row (None: nothing
         named is in that tree, so nothing there can fail). `fresh`: never a held pass."""
-        _git(wt, "reset", "-q", "--hard", sha)
+        reset(sha)
         row, ran = run1(cmd, names, fresh)
         probes[0] += ran
         return row
@@ -843,9 +952,9 @@ def _run(p, main, ids, defer_verify=False):
     def base_split(cmd, names, fresh=False):
         """T-4700: (the base's row for gate `cmd` on `names` alone, the names it is red in): base_check's probe, the
         verdict left to the caller. A row red in none of `names` says nothing of them; an inconclusive one stops the train."""
-        here = _git(wt, "rev-parse", "HEAD").stdout.strip()
+        was = here()
         row = probe(base, cmd, names, fresh)
-        _git(wt, "reset", "-q", "--hard", here)
+        reset(was)
         if not row or not row["exit"]:
             return row, []
         if _inconclusive(row, names):
@@ -894,6 +1003,7 @@ def _run(p, main, ids, defer_verify=False):
 
     try:
         merged = build(base, cands)
+        ensure_wt()
         sub = _affected_gate(p, wt, base, checks)
         if moved():  # a lane merged meanwhile: don't spend a gate run on a base that is gone
             raise c.PolicyError(moved_why("since the train started"))
@@ -917,7 +1027,7 @@ def _run(p, main, ids, defer_verify=False):
         while not ok or pending:  # T-3602: blame from the red run itself; bisect only what it can't pin on one lane
             if ok:
                 passed.clear()
-                _git(wt, "reset", "-q", "--hard", merged[-1][1])
+                reset(merged[-1][1])
                 if need.get(suite, ()) is None:  # the whole suite is owed: no narrowing it
                     t0c = time.monotonic()
                     ok = gate()
@@ -925,6 +1035,7 @@ def _run(p, main, ids, defer_verify=False):
                 else:
                     mods = {_mod(n) for fl, *_ in pending for n in fl}
                     nd = dict(need)
+                    ensure_wt()  # T-4728
                     need[suite] = nd[suite] = (need.get(suite) or set()) | set(_neighbours(wt, sorted(mods)))
                     ok = confirm(nd)
                 last.update((r["cmd"], r) for r in results if not r["exit"])
@@ -955,7 +1066,7 @@ def _run(p, main, ids, defer_verify=False):
             red, g = results[-1], results[-1]["cmd"]
             names, flaky, ftree = (red["failing"] if g == suite else []), [], ""
             if names:  # a narrowed run sees them only if they fail alone (not by order or a flake): on this tree first
-                row = probe(_git(wt, "rev-parse", "HEAD").stdout.strip(), g, names)
+                row = probe(here(), g, names)
                 ftree = _git(wt, "rev-parse", "HEAD^{tree}").stdout.strip()
                 split = _alone(row, names, red["out"])
                 names, flaky = split or ([], [])
@@ -1040,7 +1151,7 @@ def _run(p, main, ids, defer_verify=False):
             raise _none("nothing landed: ", left)
         _mark_green(p)  # T-3625: this env's gate went green
         t2 = time.monotonic()
-        tip =_git(wt, "rev-parse", "HEAD").stdout.strip()
+        tip = here()  # T-4728: a tree lost since the last gate is rebuilt, never read as an empty tip
         if moved():
             raise c.PolicyError(moved_why("while the train ran"))
         ids_in = [b.id for b, _ in merged]
@@ -1078,8 +1189,9 @@ def _run(p, main, ids, defer_verify=False):
                 "probes": probes[0], "tip": tip, "branch": branch, "affected": part, "minutes": mins, "probes_skipped": sum(
                     w.startswith(SKIPPED) for _, w in notes), "lanes_probed": len(rows)}
     finally:
-        _git(main, "worktree", "remove", "--force", wt)
-        shutil.rmtree(wt, ignore_errors=True)
+        for folder in olds:  # T-4728: each one the train made (the first, and one rebuilt after a loss), nothing else
+            _git(main, "worktree", "remove", "--force", folder)
+            shutil.rmtree(folder, ignore_errors=True)
         _git(main, "worktree", "prune")
 
 
@@ -2765,19 +2877,32 @@ def _batch_check(p, main, b, tip, peers, run=None):
     base = _git(main, "rev-parse", "HEAD").stdout.strip()
     if not base:
         return []
+    try:  # T-4728: a tree removed under the batch is rebuilt once; lost twice, no batch: each lane is checked alone
+        return _rebuilding(p, "the batch check", lambda: _batch_once(p, main, b, tip, peers, run, base))
+    except c.PolicyError as e:
+        print(f"sampo lane accept: {e}", file=sys.stderr)
+        return []
+
+
+def _batch_once(p, main, b, tip, peers, run, base):
+    """_batch_check's work on one scratch tree; raises _Lost when something else removes the tree."""
     wt = tempfile.mkdtemp(prefix="sampo-batch-")
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode:
             return []
         merged, log = [], []
         for x, t in [(b, tip), *peers]:
+            _lost_check(wt)
             if _merge_in(wt, x, t, log, kept={}):
                 merged.append((x, t))
             elif x.id == b.id:
+                _lost_check(wt)
                 return []
         if len(merged) < 2:
             return []
-        what, _ = _outcome(*run(_batch_argv(base), wt))
+        got = run(_batch_argv(base), wt)
+        _lost_check(wt)  # a run in a vanished folder is no red batch
+        what, _ = _outcome(*got)
         if what != "green":
             _mark_members(p, main, merged, f"batch check of {len(merged)} lanes was {'red' if what == 'red' else 'cut off'} "
                                            "on {tip}: each lane is checked alone in turn", solo=True)

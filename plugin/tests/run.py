@@ -2044,18 +2044,26 @@ def _run_one(cid, k, timeout, deadline, slot):
         tmp = tempfile.mkdtemp(prefix=f"{TMP_PREFIX}{os.getpid()}-")  # T-2019: whatever the class leaks goes with it
     except OSError as e:  # T-3236: /tmp out of space or inodes fails this class by name, not the whole run
         return cid, 1, f"run.py: couldn't make the class's temp folder: {e}\n", 0, 0.0
-    argv, env =[sys.executable, "-X", "faulthandler", "-c", BOOT, "0" if SANDBOX else str(os.getpid()), "-q", cid,
-                 *extra], child_env(tmp)
-    env[SLOT_ENV] = "none" if slot is None else str(slot)  # T-3442: with no slot too, its runs never queue again
-    env["RUNPY_CPU"] = os.path.join(tmp, ".runcpu")  # T-3757: what the class's processes cost, written as it exits
-    if COVER_PY:  # T-3593: its processes append the repo files they read here, the venv's python first on PATH
-        env["RUNPY_COVER"] = os.path.join(tmp, ".runcover")
-        env["PATH"] = os.path.dirname(COVER_PY[0]) + os.pathsep + env.get("PATH", os.defpath)
-    if SANDBOX:  # its own pid namespace: it dies with bwrap (--die-with-parent), not by a parent pid check
-        argv, env = sandboxed(argv, tmp, env)
-    p = subprocess.Popen(argv, cwd=HERE,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL,
-                         start_new_session=True, env=env)
+    lock = None
+    try:  # T-4728: an exception before the class runs (the lock, the env, the spawn) leaks neither the lock nor the folder
+        lock = hold(tmp)  # a sweep from another run (or pid namespace) never takes a folder a class is running in
+        argv, env = [sys.executable, "-X", "faulthandler", "-c", BOOT, "0" if SANDBOX else str(os.getpid()), "-q", cid,
+                     *extra], child_env(tmp)
+        env[SLOT_ENV] = "none" if slot is None else str(slot)  # T-3442: with no slot too, its runs never queue again
+        env["RUNPY_CPU"] = os.path.join(tmp, ".runcpu")  # T-3757: what the class's processes cost, written as it exits
+        if COVER_PY:  # T-3593: its processes append the repo files they read here, the venv's python first on PATH
+            env["RUNPY_COVER"] = os.path.join(tmp, ".runcover")
+            env["PATH"] = os.path.dirname(COVER_PY[0]) + os.pathsep + env.get("PATH", os.defpath)
+        if SANDBOX:  # its own pid namespace: it dies with bwrap (--die-with-parent), not by a parent pid check
+            argv, env = sandboxed(argv, tmp, env)
+        p = subprocess.Popen(argv, cwd=HERE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL,
+                             start_new_session=True, env=env)
+    except BaseException:
+        if lock:
+            lock.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
     LIVE_CLASSES.add(p.pid)  # T-4538: watch_parent kills it if this run's starter is gone
     try:
         _, err = p.communicate(timeout=timeout)
@@ -2077,6 +2085,8 @@ def _run_one(cid, k, timeout, deadline, slot):
                 COVERED[cid] = f.read()
         with contextlib.suppress(OSError, ValueError), open(os.path.join(tmp, ".runcpu")) as f:
             CPU[cid] = float(f.read())
+        if lock:
+            lock.close()
         shutil.rmtree(tmp, ignore_errors=True)
     m = re.search(r"Ran (\d+) tests?", err)
     return cid, p.returncode, err, int(m.group(1)) if m else 0, time.time() - t0  # killed: negative
@@ -2102,17 +2112,56 @@ def watch_parent(poll=PARENT_POLL_S):
     threading.Thread(target=watch, daemon=True, name="run-parent-watch").start()
 
 
+RUNLOCK = ".runlock"
+
+
+def hold(folder):
+    """T-4728: the open lock file a live run keeps on its temp folder (flock, released when the file closes or the process
+    ends, however it ends); None where flock isn't there. A pid says nothing of a run in another pid namespace that shares
+    this temp root (its pid reads as dead, or as another process's), a lock does."""
+    if fcntl is None:
+        return None
+    try:
+        f = open(os.path.join(folder, RUNLOCK), "w")
+        fcntl.flock(f, fcntl.LOCK_EX)
+    except OSError:
+        return None
+    return f
+
+
+def held(folder):
+    """T-4728: True when a live run holds `folder`'s lock. A folder with no lock file is nobody's."""
+    if fcntl is None:
+        return False
+    try:
+        with open(os.path.join(folder, RUNLOCK)) as f:  # read only: it never creates the file
+            try:
+                fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def sweep(base=None):
-    """T-2019: a run killed before its cleanup leaves its classes' temp dirs; the next run removes dead runs' ones."""
+    """T-2019: a run killed before its cleanup leaves its classes' temp dirs; the next run removes dead runs' ones.
+    T-4728: dead means its pid is gone and nobody holds its lock; a removal is only ever a real folder directly under the
+    temp root (never a link, never a name that resolves elsewhere)."""
     base = base or tempfile.gettempdir()
+    root = os.path.realpath(base)
     for name in os.listdir(base):
         m = re.match(rf"(?:{TMP_PREFIX}|fmfork-)(\d+)-", name)  # T-3572: and a run's fork server's folder
         if not m:
             continue
+        path = os.path.join(base, name)
+        if os.path.islink(path) or os.path.dirname(os.path.realpath(path)) != root:
+            continue
         try:
             os.kill(int(m.group(1)), 0)
         except ProcessLookupError:
-            shutil.rmtree(os.path.join(base, name), ignore_errors=True)
+            if not held(path):
+                shutil.rmtree(path, ignore_errors=True)
         except PermissionError:
             pass  # alive, someone else's
 

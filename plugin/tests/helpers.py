@@ -27,7 +27,29 @@ if LIB not in sys.path:
 
 # T-0283: tests never reach the real claude. A stub dir a test puts first on PATH still wins; a stub that can't run (no
 # shebang: ENOEXEC) makes the PATH lookup move on — to this lockout, not to the paid binary further along.
-_LOCKOUT = tempfile.mkdtemp(prefix="fm-test-lockout-")
+# T-4728: every folder this process makes in the temp root lives in ONE folder named for it (run.py's fmtest-<pid>- shape)
+# whose lock a live process holds: a bare /tmp name (fm-test-repo-x, fm-test-lockout-x) belonged to no run, so a run killed
+# before its atexit left it for ever and a sweep of the shared root could not tell a live run's from a dead one's.
+OWN = tempfile.mkdtemp(prefix=f"fmtest-{os.getpid()}-")
+_OWNER = os.getpid()
+try:
+    import fcntl as _fcntl
+    _OWN_LOCK = open(os.path.join(OWN, ".runlock"), "w")
+    _fcntl.flock(_OWN_LOCK, _fcntl.LOCK_EX)  # what run.py's hold() takes: a sweep (even from another pid namespace) keeps OWN
+except (ImportError, OSError):  # no flock (Windows): the pid alone says it is alive
+    _OWN_LOCK = None
+
+
+def _drop_own():
+    if os.getpid() != _OWNER:  # a forked child that exits normally must not take its parent's folder with it
+        return
+    if _OWN_LOCK:
+        _OWN_LOCK.close()
+    shutil.rmtree(OWN, ignore_errors=True)
+
+
+atexit.register(_drop_own)
+_LOCKOUT = tempfile.mkdtemp(prefix="lockout-", dir=OWN)
 with open(os.path.join(_LOCKOUT, "claude"), "w") as _f:
     _f.write("#!/bin/sh\necho 'fm tests: the real claude is locked out (a stub on PATH is missing or could not run)' >&2"
              "\nexit 97\n")
@@ -36,7 +58,7 @@ os.environ["PATH"] = _LOCKOUT + os.pathsep + os.environ.get("PATH", "")
 os.environ["FOREMAN_NATIVE_BIN"] = os.path.join(_LOCKOUT, "none")  # T-0992: nor fmcore's ~/.local/bin fallback
 atexit.register(shutil.rmtree, _LOCKOUT, True)
 # T-2166: fm genesis put files a tower doc only after a cold read says CLEAN; a test that files one puts this first
-CLEAN_READER = tempfile.mkdtemp(prefix="fm-test-reader-")
+CLEAN_READER = tempfile.mkdtemp(prefix="reader-", dir=OWN)
 with open(os.path.join(CLEAN_READER, "claude"), "w") as _f:
     _f.write("#!/bin/sh\ncat >/dev/null\n"
              "echo '{\"type\": \"result\", \"is_error\": false, \"total_cost_usd\": 0, \"result\": \"CLEAN\"}'\n")
@@ -285,7 +307,7 @@ def stub_corpus_replay(repo, drifted=0, days=0, cases=3):
 def _repo_template(seed=None):
     """T-3581: the scratch repo up to its commit (init, identity, README added), made once a process. T-3678: with a
     seed (message, ((path, text), ...)), init is committed here and the seed's files are added for git_repo's commit."""
-    base = tempfile.mkdtemp(prefix="fm-test-repo-")
+    base = tempfile.mkdtemp(prefix="fm-test-repo-", dir=OWN)  # T-4728: inside this process's own folder, never bare in /tmp
     atexit.register(shutil.rmtree, base, True)
     root = os.path.join(base, "app")
     subprocess.run(["git", "init", "-q", "-b", "main", root], check=True)
@@ -457,7 +479,7 @@ class BuiltOnce:
         work = None
         built = cls.__dict__.get("_built")
         if built is None:
-            root = os.path.realpath(tempfile.mkdtemp(prefix="fm-built-"))
+            root = os.path.realpath(tempfile.mkdtemp(prefix="fm-built-", dir=OWN))  # T-4728
             atexit.register(shutil.rmtree, root, True)
             work = os.path.join(root, "work")
             os.makedirs(os.path.join(work, "fhome"))

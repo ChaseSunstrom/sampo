@@ -38,6 +38,7 @@ REAPPLY = ("mirror_env", "claude_path")
 # (PYTHON covers PYTHONPATH, PYTHONHASHSEED and every other interpreter setting)
 START_ENV = ("PYTHON", "LC_", "LANG", "TZ")
 _LOCK = threading.Lock()
+_LOCKS = []  # T-4728: the open lock files on the servers' folders, held until this process ends
 _SERVER = {}  # pid -> (socket path, process), or (None, None) when it couldn't start: one try per test process
 SHARED = "FOREMAN_FORK_SERVER"  # T-3572: run.py's server, which its classes call through: JSON [its LIB, its socket]
 SPENT = [0.0]  # T-3757: the CPU s this process's forked calls took, as the server measured each one ending
@@ -266,6 +267,12 @@ def _server():
             return got[0]
         base = tempfile.gettempdir()  # the class TMPDIR run.py removes after the class, so a killed server leaks nothing
         folder = tempfile.mkdtemp(prefix=f"fmfork-{os.getpid()}-", dir=base if len(base) < 60 else ("/tmp" if os.path.isdir("/tmp") else None))
+        try:  # T-4728: a lock on the folder (run.py's hold()): its sweep, even from another pid namespace, leaves a live server's
+            import fcntl
+            _LOCKS.append(open(os.path.join(folder, ".runlock"), "w"))
+            fcntl.flock(_LOCKS[-1], fcntl.LOCK_EX)
+        except (ImportError, OSError):
+            pass
         path, p = os.path.join(folder, "s"), None
         env = {k: v for k, v in os.environ.items() if not k.startswith("FOREMAN_")}
         try:
