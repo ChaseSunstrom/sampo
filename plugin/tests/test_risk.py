@@ -283,7 +283,11 @@ class RiskOff(HookCase):
         self.assertIn("risk budget off (by you", r.detail)
 
     def block(self, cmd, sid="s1"):
-        return self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": sid})
+        pl = {"tool_name": "Bash", "tool_input": {"command": cmd}, "session_id": sid}
+        r = self.hook("PreToolUse", pl)
+        if r.returncode == 0:  # T-4742: the call ran: PostToolUse settles the block it was the rewrite of
+            self.hook("PostToolUse", dict(pl, tool_response=""))
+        return r
 
     def test_a_block_the_session_rewrites_and_passes_spends_no_point(self):
         self.fm("init")
@@ -297,22 +301,23 @@ class RiskOff(HookCase):
         self.assertEqual(self.block("ls", sid="s1").returncode, 0)  # unrelated call: the block stays spent
         self.assertEqual(self.fm_json("risk")["spent"], 1)
 
-    def test_forgiveness_skips_sure_categories_other_programs_and_stops_after_three_a_day(self):
+    def test_forgiveness_skips_other_programs_and_stops_after_the_days_cap(self):
         # T-3812 (security review of T-3752): an agent probing the guard could clear each point with a similar
-        # allowed call; a credentials or system block is rarely a false refusal, a rewrite runs the same program,
-        # and a session is forgiven three times a day at most
+        # allowed call; a rewrite runs the same program, and a session is forgiven a few times a day at most.
+        # T-4742: the day's cap is per project and half the risk cap (3 of 6); a credentials block is never forgiven, a
+        # system one only when the guard's own record says it was a mechanical collision (test_risk_collisions)
         self.fm("init")
         self.task()
         self.assertEqual(self.block("echo K=1 > .env").returncode, 2)  # credentials
         self.assertEqual(self.block("echo K=1 > .env.example").returncode, 0)
-        self.assertEqual(self.fm_json("risk")["spent"], 1, "a credentials block is never forgiven")
-        self.assertEqual(self.block("rm -rf /usr/local/zzz-cache", sid="s4").returncode, 2)  # system
+        self.assertEqual(self.fm_json("risk")["spent"], 1, "a credentials block is never a collision")
+        self.assertEqual(self.block("rm -rf /usr/local/zzz-cache", sid="s4").returncode, 2)  # system: a real target
         self.assertEqual(self.block("rm -rf ./zzz-cache", sid="s4").returncode, 0)
-        self.assertEqual(self.fm_json("risk")["spent"], 2, "nor a system one")
+        self.assertEqual(self.fm_json("risk")["spent"], 2, "a system block with no hint spends")
         self.assertEqual(self.block("rm -rf ~/zzz-cache", sid="s2").returncode, 2)
         self.assertEqual(self.block("ls ~/zzz-cache", sid="s2").returncode, 0)
         self.assertEqual(self.fm_json("risk")["spent"], 3, "another program is no rewrite")
-        for n in range(4):
+        for n in range(5):
             self.assertEqual(self.block(f"rm -rf ~/zzz-{n}", sid="s3").returncode, 2)
             self.assertEqual(self.block(f"rm -rf ./zzz-{n}", sid="s3").returncode, 0)
-        self.assertEqual(self.fm_json("risk")["spent"], 4, "the fourth forgiveness in a day is refused")
+        self.assertEqual(self.fm_json("risk")["spent"], 3 + 5 - 3, "the fourth forgiveness in a day is refused")

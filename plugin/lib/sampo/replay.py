@@ -93,15 +93,16 @@ def _result_text(r):
     return r if isinstance(r, str) else ""
 
 
-def mine(days=7):
+def mine(days=7, root=None):
     """T-1187: [{command, cwd, rule, message, label, session}] for each guard refusal in this project's transcripts
+    (T-4742: the project at `root`, which sampo guard mine -p names; else the one the folder it runs in belongs to)
     (a Bash call whose error result opens with the guard's wording; text that merely quotes it is ignored). label,
     from the session's next Bash call: retried-unchanged, rewritten-not-refused, rewritten-refused or abandoned.
     ponytail: 'next call' stands in for 'the retry'; an unrelated next command reads as a rewrite."""
     from sampo import claude
     import fmguard as g
     home = os.path.expanduser("~")
-    root = os.path.realpath(g.project_root_for(os.getcwd(), home) or os.getcwd())  # None at $HOME or /
+    root = os.path.realpath(root or g.project_root_for(os.getcwd(), home) or os.getcwd())  # None at $HOME or /
     root = c.main_worktree(root) or root  # T-1203: a builder's linked worktree: the sessions are the main checkout's
     # Claude Code names the folder after the session's cwd (root, a subdirectory, a worktree under it; a long name gets a
     # hash suffix), so every folder starting with the root's name is a candidate and the calls' own cwd decides
@@ -164,7 +165,10 @@ def mine(days=7):
 
 def cmd_mine(args, cli):
     args.days = min(max(args.days, 1), 365)
-    found = mine(args.days)
+    root = None
+    if getattr(args, "project", None):  # T-4742: -p named a project: its sessions, wherever this runs
+        root = cli.resolve(args).root
+    found = mine(args.days, root)
     rules = {}
     for r in found:
         rules[r["rule"].split(":")[0]] = rules.get(r["rule"].split(":")[0], 0) + 1

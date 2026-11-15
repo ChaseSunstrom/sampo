@@ -9169,7 +9169,8 @@ def _build_parser(only=None):
     s.add_argument("--max-polls", type=int, default=120)
     s = add("risk", lazy("sampo.risk", "cmd_risk"), tier=("Project and settings", 780), help="today's risk budget: destructive guard blocks, failed closes and "
                                                       "reverts spend points; past the cap autonomy steps down a notch")
-    s.add_argument("action", nargs="?", choices=["show", "set", "off", "on"], default="show")
+    s.add_argument("action", nargs="?", choices=["show", "set", "off", "on", "replay"], default="show")
+    s.add_argument("--days", type=int, default=7, help="replay: how many UTC days back (default 7, at most 30; read-only)")
     s.add_argument("--here", action="store_true", help="off/on: this project only (default: every project; the user's to run)")
     s.add_argument("--day", type=float, help="set: the daily cap in points (the user's to set)")
     s.add_argument("--because", help="set: why (logged)")

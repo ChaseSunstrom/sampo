@@ -7436,7 +7436,23 @@ def _build_outs(name, args, argv):
 def _build_cats(path, ctx):
     """T-3607: a build output folder's categories: what it is under and what lies under it; never confine or brief, as
     a build's own target/ is written unasked (a lane builds into the shared cargo target folder)."""
-    return [k for k in dict.fromkeys(classify_write(path, ctx) + classify_tree(path, ctx)) if k not in ("confine", "brief")]
+    cats = [k for k in dict.fromkeys(classify_write(path, ctx) + classify_tree(path, ctx)) if k not in ("confine", "brief")]
+    if "state-direct" in cats and _cargo_assigned(path, ctx):  # T-4742: the one folder of Sampo's state a build owns
+        cats = [k for k in cats if k != "state-direct"]  # (every other category the path has stays)
+    return cats
+
+
+def _cargo_assigned(path, ctx):
+    """T-4742: whether path is the cargo target folder Sampo assigned this project (ctx.cargo_target: the folder, or a
+    function giving it) or inside it: as written with no '..' in it (the lexical a/link/../x is not where the kernel
+    goes), and as it really resolves (a link out of the folder is no longer inside). Its siblings, the cache folder
+    above it and the rest of state stay refused. The caller drops only state-direct, and only for a cargo, rustc or
+    rustup call's own outputs."""
+    d = getattr(ctx, "cargo_target", None)
+    d = d() if callable(d) else d
+    if not d or not isinstance(path, str) or not os.path.isabs(path) or ".." in path.split("/"):
+        return False
+    return _under(path, d) and _under(os.path.realpath(path), os.path.realpath(d))
 
 
 def _cargo_settings(args, cmds, pre):

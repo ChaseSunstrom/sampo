@@ -2739,7 +2739,9 @@ def _pre_tool_use(raw):
                                   "rule": getattr(block, "rule", None)},  # T-0672 (committed fallback may lack it)
                             session=pl.get("session_id"))
                 from sampo import risk  # T-3752: a rewrite that passes next takes the point back
-                risk.note_block(p, pl.get("session_id"), tool, _target(pl.get("tool_input") or {}), block.category)
+                risk.note_block(p, pl.get("session_id"), tool, _target(pl.get("tool_input") or {}), block.category,
+                                getattr(block, "rule", None), str(block.detail))  # T-4742: kept as comparison fields
+                risk.announce(p)  # T-4742: once a day, detached: a step-down the user was never told of
                 if block.category == "plugin" and not pl.get("agent_id"):  # T-2370: the session wanted a tool it lacks
                     _capability_miss(p, pl.get("session_id"), "", name=(guard.plugin_target(block.detail) or "?").split("@")[0],
                                      kind="plugin")
@@ -2749,12 +2751,6 @@ def _pre_tool_use(raw):
                                                  "permissionDecisionReason": reason}}))
         print(reason, file=sys.stderr)
         return 2
-    try:
-        if p:
-            from sampo import risk
-            risk.forgive(p, pl.get("session_id"), tool, _target(pl.get("tool_input") or {}))  # T-3752
-    except Exception:
-        log_error("PreToolUse", _tb())
     unread = []  # T-0275: scripts the guard allowed unread (over its time budget): logged, and noted below
     try:
         unread = getattr(guard, "take_unread", lambda: [])()
@@ -3234,6 +3230,8 @@ def _guard_ctx(pl, fmguard, lanes=()):
                       unbriefed=p.root if p and not act and not _quiet() else None)  # T-0308: Bash writes too
     if lanes and ctx.unbriefed:
         ctx.briefed_lanes = tuple(lanes)
+    if p:  # T-4742: read only when a cargo, rustc or rustup call names a folder under state (fmguard._cargo_assigned)
+        ctx.cargo_target = lambda: c.cargo_assigned_dir(p)
     return ctx, p, act
 
 
@@ -4119,6 +4117,21 @@ def _post_tool_use(pl, ok=True):
     if not ok:
         rec["error"] = str(pl.get("error") or "").split("\n")[0][:120]
     _event(rec)
+    if p and pl.get("session_id") and os.path.isdir(os.path.join(p.dir, "risk")):  # no block ever noted here: one stat
+        # T-3752/T-4742: a rewrite that ran settles the block it answers, once every deny path let it pass. The import is
+        # light (risk loads difflib, hashlib and subprocess where it uses them) and forgive's first act is one stat of
+        # this session's pending file, so a session that was never blocked pays that stat and nothing else
+        try:
+            from sampo import risk
+            risk.forgive(p, pl.get("session_id"), tool, _target(ti))
+        except Exception:
+            log_error("PostToolUse", _tb())
+    if p and ok and tool == "Bash" and "revert" in _target(ti) and "git" in _target(ti):
+        try:  # a revert spends 3 points: a step-down it causes is told too (once a day, detached)
+            from sampo import risk
+            risk.announce(p)
+        except Exception:
+            log_error("PostToolUse", _tb())
     from sampo import anergy  # T-2563: closes a permission prompt with the person's time
     anergy.record("done", pl)
     if p and tool == "AskUserQuestion":

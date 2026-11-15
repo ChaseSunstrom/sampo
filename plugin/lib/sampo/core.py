@@ -1671,6 +1671,16 @@ def cargo_shared_dir(slug):
     return os.path.join(state_dir(), "cache", "cargo-target", slug)
 
 
+def cargo_assigned_dir(p):
+    """T-4742: the cargo target folder Sampo assigns this project's builds, for the guard to let cargo, rustc and rustup
+    write into: cargo_shared_dir for a project whose main checkout holds a Cargo.toml (and the shared folder isn't
+    switched off), else None. Only that folder: the guard still refuses every other path under state."""
+    main = main_worktree(p.root) or p.root
+    if cargo_shared_off(os.environ) or not os.path.isfile(os.path.join(main, "Cargo.toml")):
+        return None
+    return cargo_shared_dir(p.slug)
+
+
 CARGO_CAP_VAR = "SAMPO_CARGO_CAP_BYTES"
 CARGO_CAP_MAX = 40 * 10**9  # T-4717: the shared cache's cap is a tenth of the disk, at most this
 CARGO_MARK = "# Sampo (T-4717): this lane's cargo builds go to the project's one shared target folder."
@@ -2638,7 +2648,16 @@ def log_event(p, event, task=None, data=None, session=None):
         rec["ts"] = now()  # in landing order, so fm tidy's monthly roll never reorders the chain
         rec = {"prev": prev, **rec} if prev else rec
         f.write(("\n" if cut else "").encode() + (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
+    if event in SPENDING_EVENTS and (event != "close_affected" or (data or {}).get("exit")):
+        try:  # T-4742: a point the budget counts was just spent: a step-down it causes is told (once a day, detached)
+            from sampo import risk
+            risk.announce(p)
+        except Exception:
+            pass
     return rec
+
+
+SPENDING_EVENTS = ("close_affected", "lane_red_after_merge")  # a failed close (exit set) and Sampo's own revert of a red merge
 
 
 LEDGER_ARCHIVE = lazy(r"ledger-\d{4}-\d\d\.jsonl")
@@ -6734,6 +6753,12 @@ def state_dict(p, briefs=None):
     days = age_days(since)
     panic = panicked()
     autonomy = "standard" if panic else effective_autonomy(p, meta)
+    step_down = None
+    try:  # T-4742: a full-autonomy project the risk budget stepped down is said first, once a day told to the user
+        from sampo import risk
+        step_down = risk.step_down(p, meta, everything)
+    except Exception:  # a note never costs the state
+        pass
     open_ids = {b.id for b in everything if b.status not in ("done", "dropped")}
     known = {b.id for b in everything}  # T-3573: once, not once per blocked task
     active = None
@@ -6753,6 +6778,7 @@ def state_dict(p, briefs=None):
         "cycles": cycles, "dangling": [list(d) for d in dangling],
         "sensitive": bool(meta.get("sensitive")), "drive": meta.get("drive", True), "paused": bool(meta.get("paused")),
         "autonomy": autonomy, "panic": panic, "panic_by": (pause_info() or {}).get("by") if panic else None,
+        "risk_step_down": step_down,
         "pending": pending_tasks(meta),
         "asks": [{"task": a.get("task"), "allow": list(a.get("allow") or [])}
                  for a in meta.get("pending_approvals") or [] if isinstance(a, dict) and a.get("task")],
@@ -6817,6 +6843,8 @@ def pause_note(sd):
 def render_state(sd, ts=None):
     a = sd["active"]
     out = [f"# STATE — {sd['project']}", f"_Generated {ts or now()} by sampo from the briefs; do not edit._", ""]
+    if (sd.get("risk_step_down") or {}).get("line"):  # T-4742
+        out += [f"**{sd['risk_step_down']['line']}**", ""]
     if sd.get("panic"):
         out += ["**PAUSED everywhere (sampo pause), " + (pause_line() or "") + ": no drive, sampo run, serve, night or lane "
                 "launches; autonomy standard.**", ""]
