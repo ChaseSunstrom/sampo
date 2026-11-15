@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo cost` ends with a per-ISO-week section showing replies, cache-read tokens per reply, replies per closed task and the share of entering context by source, so lean-context cuts can be judged by numbers that already move (T-4704).
 - A breakage-ahead alarm now becomes a task only when its probe finds the link in the code (a clock comparison for a date, a changed name the partner refers to for a co-change), a refused alarm is logged with its reason, and a rule whose captures were dropped raises fewer until one is confirmed (T-4680).
 - The drive's demotion of a waited-on job to a service now reads the wait timer's per-kind table of typical times (a CI watch is waited on for 60 minutes, a close for 2 hours, a job of no kind 20), so the two never disagree (T-4679).
 - A narrow test run (up to 6 named modules) also takes the slot pool's reserved slots but the last, beside a waiting gate, and `SAMPO_SLOT_TRACE=1` prints what a slot wait read (T-4685).
