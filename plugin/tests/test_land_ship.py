@@ -6,10 +6,12 @@ and each ship's duration."""
 import json
 import os
 import re
+import shutil
 import signal
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -29,6 +31,53 @@ def until(cond, secs=90, what="the condition"):
     raise AssertionError(f"{what} didn't hold within {secs}s")
 
 
+def hold_hook(tmp, pushlog):
+    """The origin's pre-receive hook: logs each push and holds push N until the file go-N exists in tmp. The hold ends
+    by itself, refusing the push, once tmp is gone (the test died before its tearDown) or after 6000 rounds (T-4719)."""
+    return (f'#!/bin/sh\nwhile read old new ref; do echo "$old $new $ref" >> {pushlog}; done\n'
+            f'n=$(wc -l < {pushlog} | tr -d " ")\n'
+            f'i=0\nwhile [ ! -e {tmp}/go-$n ]; do\n'
+            f'  [ -d {tmp} ] && [ $i -lt 6000 ] || exit 1\n'
+            f'  sleep 0.05; i=$((i+1))\ndone\n')
+
+
+class HoldHook(unittest.TestCase):
+    """T-4719: 325 of these hooks were found still looping on one machine, most over a day old, in test folders long
+    deleted: a test that died before its tearDown left the hook waiting for a go file that could never appear."""
+
+    def held(self, tmp):
+        hook = os.path.join(tmp, "hook")
+        with open(hook, "w") as f:
+            f.write(hold_hook(tmp, os.path.join(tmp, "pushes")))
+        os.chmod(hook, 0o755)
+        p = subprocess.Popen([hook], stdin=subprocess.PIPE, text=True, cwd="/")
+        p.stdin.write("a b refs/heads/main\n")
+        p.stdin.close()
+        self.addCleanup(lambda: (p.poll() is None and p.kill(), p.wait()))
+        until(lambda: os.path.exists(os.path.join(tmp, "pushes")), 30, "the hook to log its push")
+        return p
+
+    def test_the_hook_ends_by_itself_once_its_test_folder_is_gone(self):
+        tmp = tempfile.mkdtemp(prefix="fmtest-hold-")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        p = self.held(tmp)
+        time.sleep(0.3)
+        self.assertIsNone(p.poll(), "the push is held while the folder is there and no go file is")
+        shutil.rmtree(tmp)
+        try:
+            code = p.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.fail("the hook still loops after its test folder was removed: it leaks past the test")
+        self.assertNotEqual(code, 0, "a hold that ends because the folder went refuses the push")
+
+    def test_the_hook_lets_the_push_through_on_its_go_file_and_counts_its_rounds(self):
+        with tempfile.TemporaryDirectory(prefix="fmtest-hold-") as tmp:
+            p = self.held(tmp)
+            open(os.path.join(tmp, "go-1"), "a").close()
+            self.assertEqual(p.wait(timeout=15), 0)
+            self.assertRegex(hold_hook(tmp, "x"), r"-lt \d+", "the loop counts its rounds: bounded even if the folder stays")
+
+
 class ShipCase(LandCase):
     """A land whose ships are real detached `sampo ship` processes (the other suites run them in line, FOREMAN_NO_BACKGROUND),
     pushing to an origin whose pre-receive hook logs each push and holds push N until the file go-N exists."""
@@ -43,9 +92,7 @@ class ShipCase(LandCase):
         self.pushlog = os.path.join(self.tmp, "pushes")
         hook = os.path.join(self.origin, "hooks", "pre-receive")
         with open(hook, "w") as f:
-            f.write(f'#!/bin/sh\nwhile read old new ref; do echo "$old $new $ref" >> {self.pushlog}; done\n'
-                    f'n=$(wc -l < {self.pushlog} | tr -d " ")\n'
-                    f'while [ ! -e {self.tmp}/go-$n ]; do sleep 0.05; done\n')
+            f.write(hold_hook(self.tmp, self.pushlog))
         os.chmod(hook, 0o755)
         self.p = c.find_project(self.repo)
 
