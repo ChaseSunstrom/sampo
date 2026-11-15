@@ -469,9 +469,8 @@ DEP = ("# map-links: a.txt\nimport os, unittest\n\n\nclass Dep(unittest.TestCase
        "        self.assertTrue(os.path.exists('a.txt') or not os.path.exists('b.txt'))\n")
 
 
-class AffectedGate(TrainCase):
-    """T-3544: the train's full-suite gate (the affected template's runner with no names) runs only the tests the
-    batch's merged changes reach plus the rule tests; the full suite moves to the post-merge verify."""
+class AffectedBase(TrainCase):
+    """T-3544's fixture (T-4705 shares it): a suite whose runs are logged, set as the gate and the affected template."""
     def setUp(self):
         super().setUp()
         self.suite = os.path.join(self.tmp, "suite-runs")  # one line per suite run: its folder and its arguments
@@ -498,6 +497,11 @@ class AffectedGate(TrainCase):
         """The suite's runs in a probe's scratch tree (T-3474's pre-filter), not the train's."""
         with open(self.suite) as f:
             return [ln for ln in f if ln.startswith("sampo-probe-")]
+
+
+class AffectedGate(AffectedBase):
+    """T-3544: the train's full-suite gate (the affected template's runner with no names) runs only the tests the
+    batch's merged changes reach plus the rule tests; the full suite moves to the post-merge verify."""
 
     def test_a_gate_that_runs_the_affected_tests_needs_no_probe_of_them(self):  # T-3770
         """The gate is the affected suite, so it runs each lane's tests on the merged tree once; no lane's tests run

@@ -2000,13 +2000,13 @@ def _known_flaky(p):
         return set()
 
 
-def _gates_cover(p, tests, why=None):
+def _gates_cover(p, tests, why=None, keep=None):
     """T-3526: the gates' full pass on this code tree (_full_pass) when it ran `tests` (a close's linked test files),
     else None. A train's affected-only pass (T-3544) covers only the modules it ran. T-3566: counted as the train picks
     them (train._affected_gate): the affected template must run part of a gate (suite_gate), its tests count by module
     name, and another runner's (affected_by: the .tsx part any plugin/ change links) count only when a gate runs that
     runner (the pass ran it in full), else nothing is reused; read off the close command, that part kept 0 of 6 closes
-    on a green train. `why`: _cached_pass."""
+    on a green train. `why`, `keep`: _cached_pass."""
     meta, say = c.read_meta(p), (lambda m: why.append(m) if why is not None else None)  # noqa: E731
     checks, by = meta.get("checks") or [], meta.get("affected_by") or {}
     if not suite_gate(p.root, meta.get("affected") or "", checks):
@@ -2014,7 +2014,7 @@ def _gates_cover(p, tests, why=None):
     gated = tuple(e for e, tpl in by.items() if suite_gate(p.root, tpl, checks))
     if loose := sorted({e for e in by if e not in gated and any(t.endswith(e) for t in tests)}):
         return say(f"no gate runs the {c.joinmore(loose, 3)} tests")
-    return _full_pass(p, [os.path.basename(t).rsplit(".", 1)[0] for t in tests if not t.endswith(gated)], why)
+    return _full_pass(p, [os.path.basename(t).rsplit(".", 1)[0] for t in tests if not t.endswith(gated)], why, keep)
 
 
 def suite_gate(root, template, checks):
@@ -2056,7 +2056,7 @@ def _close_affected(p, b, runs, args):
     command already passed in this finish, or the gates' full pass on this code tree covers it: nothing to run."""
     skip = {}
     try:
-        cmd, tests, _ = affected(p, b, skipped=skip)
+        cmd, tests, changed = affected(p, b, skipped=skip)
     except UsageError:
         return
     if not cmd or (runs.get(cmd) or (1,))[0] == 0:
@@ -2070,11 +2070,13 @@ def _close_affected(p, b, runs, args):
         return
     say = (lambda m: None) if getattr(args, "json", False) else print
     why = []
-    if hit := _gates_cover(p, tests, why):  # T-3526: a train's full suite ran these on this code tree
+    keep = {"task": b.id, "files": set(changed) | set(tests)}  # T-4705: what a train's pass must have seen unchanged
+    if hit := _gates_cover(p, tests, why, keep):  # T-3526: a train's full suite ran these on this code tree
         c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "exit": 0, "reused": hit, "s": 0},
                     session=session())
         say(f"linked tests: covered by the gates' pass ({hit})")
-        _step_note(args, "affected", "covered")  # T-4600
+        by = keep.get("by")  # T-4705: the train whose pass held, by the task's files, over later commits
+        _step_note(args, "affected", "covered" + (f" by train of {' '.join(by[:3])}{' …' if len(by) > 3 else ''}" if by else ""))
         return
     if why:  # T-3548: a miss says why instead of a silent rerun
         say(f"linked tests: no reusable gate pass: {why[0]}")
@@ -6488,14 +6490,14 @@ def _left_out(skip):
 FULL_CHECK = re.compile(r"(?:sampo|fm|\S*/bin/(?:sampo|fm)) check")
 
 
-def _full_pass(p, names=None, why=None):
+def _full_pass(p, names=None, why=None, keep=None):
     """T-3120: the reusable pass for the configured gates on the working files now (see _cached_pass), else None."""
     checks = list(c.read_meta(p).get("checks") or [])
     snap = c.worktree_tree(p.root)
     if not checks or not snap:
         return None
     skip = red_first_tests(p, c.active_brief(c.load_briefs(p), p.lane), checks)
-    return _cached_pass(p, checks, snap[:12], skip, c.code_tree(p.root, snap), names, why)
+    return _cached_pass(p, checks, snap[:12], skip, c.code_tree(p.root, snap), names, why, keep)
 
 
 def _tree_diff(root, a, b):
@@ -6504,7 +6506,40 @@ def _tree_diff(root, a, b):
     return f": {len(files)} file(s) differ: {c.joinmore(files, 3)}" if files else ""
 
 
-def _cached_pass(p, checks, tree, skip=(), ctree=None, names=None, why=None):
+def _train_kept(p, root, keep, d, ctree):
+    """T-4705: '' when the train row `d` (on another code tree) still proves `keep["task"]`'s change: the task landed in
+    that very train (its newest lane_merge names it) and none of `keep["files"]` (the files it changed and the tests
+    linked to them) differs between the train's code tree and `ctree`; else why not. Sets keep["by"] to the train's ids.
+    Anything git can't say (a pruned tree, a timeout) is no cover."""
+    train = d.get("train") or []
+    if not train or keep.get("task") not in train:
+        return "its train did not hold this task"
+    if not keep.get("files"):
+        return "no changed file to hold it by"
+    merges = c.ledger_tail(p, 2000, kinds=("lane_merge",))
+    last = next((m for m in reversed(merges) if m.get("task") == keep["task"]), None)
+    if not last or (last.get("data") or {}).get("train") != train:
+        return "the task was merged again outside that train"
+    # Not a base diff (the task's own view, _own_view, says which files it changed, not whether they held since a
+    # train's tree): the named files' blob ids in the train's code tree and in this one, a file missing from both equal.
+    files = sorted(keep["files"])
+    if len(files) > 500:
+        return "too many files to compare"
+    seen = []
+    for tree in (d["code_tree"], ctree):
+        r = c._git(root, "--literal-pathspecs", "ls-tree", "-r", "-z", "--full-tree", tree, "--", *files, timeout=10, proc=True)
+        if r.returncode != 0:
+            return "git could not read its code tree"  # a pruned tree, a timeout: no cover
+        seen.append({row.split("\t", 1)[1]: row.split("\t", 1)[0] for row in r.stdout.split("\0") if "\t" in row})
+    differ = [f for f in files if seen[0].get(f) != seen[1].get(f)]
+    if differ:
+        keep["differ"] = differ
+        return f"{c.joinmore(differ, 3)} changed since"
+    keep["by"] = list(train)
+    return ""
+
+
+def _cached_pass(p, checks, tree, skip=(), ctree=None, names=None, why=None, keep=None):
     """When the newest full fm check run on this tree (or its code tree: T-3380, T-3120; runs on other code are passed
     over: T-3566) had these gates, and all passed: its time. `ctree`: the code tree of the same snapshot as `tree`
     (computed here when not given).
@@ -6528,12 +6563,18 @@ def _cached_pass(p, checks, tree, skip=(), ctree=None, names=None, why=None):
             # aside).
             # T-3566: a run on other code says nothing about this code, so the newest run on this code tree decides: a
             # lane's sentinel run logged after a train's hid its pass from five closes
+            held = False  # T-4705: the row is another code tree's, but this task's files are the same on both
             if d.get("tree") != tree:
                 ctree = ctree or (c.code_tree(p.root) if d.get("code_tree") else None)
                 if not d.get("code_tree") or d["code_tree"] != ctree:
-                    other = other or (f"{of} was on another code tree{_tree_diff(p.root, d['code_tree'], ctree)}"
-                                      if d.get("code_tree") else f"{of} was on another tree")
-                    continue
+                    no = _train_kept(p, p.root, keep, d, ctree) if keep and d.get("code_tree") and ctree else "no keep"
+                    if no:
+                        other = other or (f"{of} was on another code tree{_tree_diff(p.root, d['code_tree'], ctree)}"
+                                          if d.get("code_tree") else f"{of} was on another tree")
+                        if keep and keep.get("differ"):
+                            other = f"{other}; this task's {c.joinmore(keep['differ'], 3)} changed since"
+                        continue
+                    held = True
             age = c.age_days(e.get("ts"))  # T-3120: no readable time is stale, not fresh
             bad = next((m for b, m in (
                 (d.get("env") != c.env_id(), "ran in another environment"),
@@ -6548,7 +6589,7 @@ def _cached_pass(p, checks, tree, skip=(), ctree=None, names=None, why=None):
             if part and names is not None and not set(names) <= set(part):
                 # T-4605: the full suite after landing covers the rest, when it was green on this very code tree
                 ctree = ctree or c.code_tree(p.root)
-                post = _pm_green_here(p, ctree)
+                post = not held and _pm_green_here(p, ctree)  # a held row's suite says nothing of the later code
                 if not post:
                     return miss(f"{of} ran only {len(part)} affected module(s), not "
                                 f"{c.joinmore(sorted(set(names) - set(part)), 3)}")
@@ -6557,9 +6598,11 @@ def _cached_pass(p, checks, tree, skip=(), ctree=None, names=None, why=None):
                 + (", and the post-merge full suite green on this code tree" if post else "")
             if d.get("tree") == tree:
                 return at
+            if held:
+                at += f"; this task's files unchanged since the train of {c.joinmore(keep.get('by') or [], 3)}"
             if d.get("changelog") != _changelog_hash(p.root) and not _changelog_reads_clean(p):
                 return miss(f"{of} never read this CHANGELOG.md, which doesn't read clean")  # no bad line rides in
-            return f"{at} on the same code tree"
+            return at if held else f"{at} on the same code tree"
     return miss(other or "no full gate run is recorded")
 
 
