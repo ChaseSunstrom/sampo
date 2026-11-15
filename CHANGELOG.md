@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- Test runs sharing /tmp now hold a lock their sweeper honours, and a merge train whose scratch worktree vanishes rebuilds it once and names the cause (T-4728).
+- The live hook wall-time bench is skipped on hosted CI runners, and the merge train's two-burns test asserts that the jobs overlapped instead of a 2 s wall bound (T-4727).
 - A Rust lane's own cargo commands now build into the project's one shared target through a git-excluded lane `.cargo/config.toml`, the shared cache has a cap with an oldest-first prune under `sampo tidy --apply`, a landed lane's own `target/` is removed, and doctor and tidy name these folders with sizes (T-4717).
 - The plan gate no longer reads an inner "(1) … (2) …" list as new options and quotes each option's opening words when it refuses, and a test-only fix is no longer held as one-way for a word like "release" in a step (T-4712).
 - A land is no longer held by an unrelated focused task, only by uncommitted changes to a lane's files or the changelog (named in the refusal), and while a train runs the drive offers a lane or waits on it and says the train holds the checkout instead of pushing a focus, waking the idle session when the train ends (T-4692).
