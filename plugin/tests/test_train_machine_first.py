@@ -114,7 +114,10 @@ class MachineLine(unittest.TestCase):
         self.assertFalse(train._machine_only(""))
 
     def test_the_matcher_reads_the_line_doctor_renders_for_a_real_fail(self):
-        r = d.check_disk(None, lambda _: Usage(900e9, 898e9, 2e9), [])
+        # T-4694: the test brings its own "nothing to free": the real state folder's old outputs aged into the line
+        # mid-train on 2026-11-15 and the trunk went red (two lanes left out, an hour of bisecting)
+        with unittest.mock.patch.object(d, "disk_reclaimables", return_value=([], [])):
+            r = d.check_disk(None, lambda _: Usage(900e9, 898e9, 2e9), [])
         self.assertEqual(r.status, "FAIL")
         line = d.result_line(r)
         self.assertEqual(line, DISK_LINE, "the pinned example is doctor's own rendering")
