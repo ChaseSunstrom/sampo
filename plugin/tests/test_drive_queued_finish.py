@@ -121,8 +121,8 @@ class QueuedFinish(HookCase):
         self.assertIn(f"sampo task finish {self.tid}", self.stop(engine=False).get("reason", ""), "ended: pushed again")
 
     def test_a_job_that_names_no_close_of_this_task_is_a_service_after_the_limit_as_before(self):
-        for jobs in ([self.CI], [self.job("sampo task finish T-9999 --audit x")],
-                     [self.job(f"watch the pipeline for {self.tid}")]):
+        # (T-4679: another task's close is the 'close' kind, held to its kind's limit like the timer's: test_drive_job_table)
+        for jobs in ([self.CI], [self.job(f"watch the pipeline for {self.tid}")]):
             self.setUp_again()
             self.stop(*jobs)
             self.age(jobs[0]["id"], 25)

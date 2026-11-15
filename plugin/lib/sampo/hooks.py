@@ -4942,6 +4942,14 @@ def job_limit(kind, limit=LONG_JOB_S):
     return limit if not m else max(limit, 2 * m * 60 * limit / LONG_JOB_S)
 
 
+def drive_waits_on(age_s, kind, mine=False, limit=LONG_JOB_S):
+    """T-4679: whether the drive still waits on a job `age_s` seconds old (else it is a service); the complement of the
+    timer's _stale_jobs, both through job_limit, so the two never disagree. `mine`: the job that holds the active task's
+    own close (T-4644) is kept up to FINISH_JOB_S, or its kind's limit when that is longer."""
+    lim = job_limit(kind, limit)
+    return age_s < (max(lim, FINISH_JOB_S) if mine else lim)
+
+
 _CMD_OPS = frozenset(("&&", "||", "|", "|&", ";", "&", "(", ")"))   # after one of these a new command begins
 _CMD_WRAPPERS = frozenset(("nohup", "setsid", "time", "exec", "env", "nice", "command", "stdbuf", "timeout"))
 _JOB_CMD_MAX = 4000   # a longer command is not read: a bounded parse
@@ -5890,7 +5898,8 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     kinds ={k: job_kind(next((t for t in bg if isinstance(t, dict) and str(t.get("id")) == k), None) if isinstance(bg, list)
                          else None, closing=k in closes) for k in running if k not in agents}
     kinds = {} if _headless() else {k: v for k, v in kinds.items() if v}  # (a headless run is as before)
-    running = [k for k in running if k in agents or now - since[k] < (FINISH_JOB_S if k in mine else LONG_JOB_S)]
+    # T-4679: a job past its kind's time (the timer's table, job_limit) is a service; no kind, the plain LONG_JOB_S
+    running = [k for k in running if k in agents or drive_waits_on(now - since[k], kinds.get(k), k in mine)]
     closing = any(k in mine for k in running)
     # T-4525: the jobs a turn ending here waits on (not agents: they end), for the timer hook that wakes an idle session
     jobs = {k: since[k] for k in running if k not in agents}
