@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A probe-confirmed foresight prediction now leads `sampo next` as "Before the user has to say it" and, with the drive on, continues the session once per row, while capture rows become inbox tasks and tell rows a line in `sampo next` (T-4664).
 - A changed test module now affects itself and its real importers only, instead of the dozens of modules the run cache listed (T-4684).
 - Land --merged checks the machine before its gate, a disk refusal sizes nothing, and the late matcher reads doctor's own line (T-4658).
 - Every reader of the statusline's usage figure (forecast, cost, doctor, lanes, watch, budget) now goes through one age rule that shows a reading older than six hours as unknown with its age, and the statusline countdown accepts millisecond resets (T-4671).
