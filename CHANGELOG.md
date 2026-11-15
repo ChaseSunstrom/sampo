@@ -11,6 +11,11 @@
 
 ### Everything else
 
+- A queued independent task is named at every Stop of a background wait until it is focused, blocked or deferred, a detached close is seen through Sampo's own close record, the wait timer calls a close or CI watch stuck only at twice its typical time, and the end-to-end push is held while a close runs (T-4670).
+- A train confirms a flaky class with one narrowed uncached run of its modules and their map-linked neighbours instead of a second whole gate, names the confirm minutes in its result, and runs the classes about to cost a lane once on the bare base first, stopping with a refusal when they are red there (T-4676).
+- `sampo ahead` asks a local model what the user would otherwise have to say next, books the checked predictions as write-once rows, and acts on none of them (T-4662).
+- Usage readings past their reset or older than 6 h are unknown, and a weekly lean names when its figure was read (T-4669).
+- macOS now lists git processes through ps and lsof when `/proc` is absent, so stale git locks are swept there; process start times and the boot id fall back to ps and sysctl; and the bounded-run test makes its outliving child with Python's `os.setsid` (T-4672).
 - Idle lanes of open tasks whose builder returned are tidied, and doctor names what tidy cannot free apart from its disk line (T-4661).
 - A path that climbs with `..` after a symlink is judged by where it really goes in every guard category, interpreter-made hardlinks of a credential are refused, and home credential folders match in any letter case (T-4667).
 - Variant cards and their brief drafts no longer share the think setting, and a brief file a paid writer made is drafted again by the local writer (T-4659).

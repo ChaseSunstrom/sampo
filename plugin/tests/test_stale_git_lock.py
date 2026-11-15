@@ -235,7 +235,11 @@ class StaleGitLock(ForemanTestCase):
         self.assertTrue(os.path.exists(path))
 
     def test_a_proc_that_answers_is_never_replaced_by_ps(self):
-        with self.tables(AssertionError, AssertionError):
+        # T-4681: a process root of the test's own that answers (a folder that lists), so this holds where the
+        # machine has no /proc (macOS: the real root is absent there, and ps is rightly asked)
+        root = os.path.join(self.tmp, "proc-answers")
+        os.makedirs(os.path.join(root, "1"))
+        with mock.patch.object(slanes, "PROC", root, create=True), self.tables(AssertionError, AssertionError):
             self.assertIsNotNone(slanes._git_procs())
 
     def test_an_unreadable_process_table_leaves_the_lock_alone(self):
