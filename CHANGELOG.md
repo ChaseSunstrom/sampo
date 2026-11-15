@@ -11,7 +11,11 @@
 
 ### Everything else
 
+- The guard reads a computed-path open with no mode or a read mode as a read, binds `map`/`Pool.map` over literal paths, and judges an argv spawn the same way in node and python by the outer command line's own words (T-4736).
+- Test leftovers: processes a test left in its deleted /tmp folder are ended by the run, tidy and lane removal, never a person's terminal process or another sandbox's, and doctor counts them (T-4720).
 - Test runs sharing /tmp now hold a lock their sweeper honours, and a merge train whose scratch worktree vanishes rebuilds it once and names the cause (T-4728).
+- A hand close of a lane the train already merged and gated reads its affected tests as covered when the task's files are unchanged since the train's tree, compared by blob id (T-4705)
+- test_leftover_procs compares the process name without case, as macOS names it Python (T-4753)
 - The live hook wall-time bench is skipped on hosted CI runners, and the merge train's two-burns test asserts that the jobs overlapped instead of a 2 s wall bound (T-4727).
 - A Rust lane's own cargo commands now build into the project's one shared target through a git-excluded lane `.cargo/config.toml`, the shared cache has a cap with an oldest-first prune under `sampo tidy --apply`, a landed lane's own `target/` is removed, and doctor and tidy name these folders with sizes (T-4717).
 - The plan gate no longer reads an inner "(1) … (2) …" list as new options and quotes each option's opening words when it refuses, and a test-only fix is no longer held as one-way for a word like "release" in a step (T-4712).

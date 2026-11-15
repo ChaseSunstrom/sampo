@@ -448,7 +448,7 @@ class PersonsAreKept(TempRoot):
             for got in (run.proc_facts([plain.pid, person.pid]), slanes.proc_facts([plain.pid, person.pid])):
                 self.assertEqual(got[plain.pid][:2], (False, True))
                 self.assertEqual(got[person.pid][:2], (True, True))
-                self.assertTrue(got[plain.pid][2].startswith("python"), got)
+                self.assertTrue(got[plain.pid][2].lower().startswith("python"), got)  # macOS names it Python
 
     def test_the_ancestors_without_a_proc_come_from_one_ps_and_equal_the_proc_ones(self):
         with_proc = (run._family(), slanes._family())
@@ -697,11 +697,11 @@ class LaneRemoval(ForemanTestCase, Children):
         self.assertFalse(os.path.isdir(path))
         self.assertEnds(hook)
         self.assertAlive(person)
-        self.assertRegex(out, r"ended 1 leftover process: python")
-        self.assertRegex(out, rf"1 process still stands in the removed lane: {person.pid} python")
+        self.assertRegex(out, r"ended 1 leftover process: [Pp]ython")  # macOS names it Python
+        self.assertRegex(out, rf"1 process still stands in the removed lane: {person.pid} [Pp]ython")
         log = self.fm("task", "show", tid).stdout
-        self.assertRegex(log, r"ended 1 leftover process: python")
-        self.assertRegex(log, rf"1 process still stands in the removed lane: {person.pid} python")
+        self.assertRegex(log, r"ended 1 leftover process: [Pp]ython")
+        self.assertRegex(log, rf"1 process still stands in the removed lane: {person.pid} [Pp]ython")
 
     @unittest.skipUnless(have_table(), "no process table here (no /proc, no lsof)")
     def test_removing_a_lane_with_nothing_running_in_it_says_nothing_of_processes(self):
