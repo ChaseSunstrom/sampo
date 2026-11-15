@@ -2,6 +2,7 @@
 project) looks for problems nobody raised (CI red on the default branch, a changed model, window or CC version) and
 caches them; session start reads those caches and the state it already has (blocked pile, tidy), never the network,
 and names each problem with its action."""
+import ast
 import datetime
 import glob
 import json
@@ -624,8 +625,8 @@ def _cochange(p, head):
     for chunk in c._git(p.root, "log", f"--max-count={PAIR_COMMITS}", "--name-only", "--format=%x00%H",
                         timeout=60).split("\0")[1:]:
         lines = chunk.strip().splitlines()
-        if lines:
-            commits[lines[0]] = set(lines[1:])
+        if lines:  # T-4680: git prints a blank line after the hash; it is no file (it paired with every busy file)
+            commits[lines[0]] = {x for x in lines[1:] if x}
     one, two = {}, {}
     for sha, files in commits.items():
         if sha in new or len(files) > 30:
@@ -640,6 +641,226 @@ def _cochange(p, head):
         out += [(sha, x, y) for (x, y), k in two.items() if x in files and y not in files and k >= PAIR_MIN
                 and k / one[x] >= PAIR_SHARE and os.path.exists(os.path.join(p.root, y))]
     return out
+
+
+# ---------------------------------------------------------------- T-4680: a warning's own probe
+# A date or a co-change pair is only a lead: the alarm becomes a task when the code shows the link (the date reaches a
+# comparison with the clock; the untouched file refers to a name the commit changed), else it is booked as skipped.
+DATA_EXT = (".toml", ".json", ".yml", ".yaml", ".ini", ".cfg", ".conf")  # config: no code of its own to read
+PROBE_BYTES, SKIP_MAX, PROBATION_DAYS = 512 * 1024, 20, 7
+_CLOCK_NAME = re.compile(r"_*(?:utc)?_?(?:now|today)|current_date")  # a now()/today() helper, datetime.now, date.today
+_CLOCK_TEXT = re.compile(r"\b(?:now|today|utcnow)\s*\(|\bDate\.now\b|new Date\(\s*\)|\btime\.Now\b|::now\(|\bcurrent_(?:date|timestamp)\b")
+_FROZEN_PATCH = re.compile(r"datetime|time\.time|\bnow\b|\btoday\b|_today")
+
+
+def _text(root, rel):
+    path = os.path.join(root, rel)
+    try:
+        if os.path.islink(path) or os.path.getsize(path) > PROBE_BYTES:
+            return ""
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
+def _parse(src):
+    try:
+        return ast.parse(src)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return None
+
+
+def _clock_compared(tree):
+    """True when the module compares or subtracts a read of the wall clock (time.time(), X.now(), X.today(), a now()
+    helper, or a name bound from one): the present time reaches a test of some other value."""
+    bare = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "time"
+            for a in n.names if a.name in ("time", "time_ns")}
+
+    def clock(n):
+        if not isinstance(n, ast.Call):
+            return False
+        f = n.func
+        if isinstance(f, ast.Attribute):
+            return bool(_CLOCK_NAME.fullmatch(f.attr)) or (f.attr in ("time", "time_ns") and isinstance(f.value, ast.Name)
+                                                           and f.value.id == "time")
+        return isinstance(f, ast.Name) and (bool(_CLOCK_NAME.fullmatch(f.id)) or f.id in bare)
+    tainted = {t.id for n in ast.walk(tree) if isinstance(n, ast.Assign) and any(clock(m) for m in ast.walk(n.value))
+               for t in n.targets if isinstance(t, ast.Name)}
+    reads = lambda x: any(clock(m) or isinstance(m, ast.Name) and m.id in tainted for m in ast.walk(x))  # noqa: E731
+    return any(reads(n) for n in ast.walk(tree) if isinstance(n, ast.Compare)
+               or isinstance(n, ast.BinOp) and isinstance(n.op, ast.Sub))
+
+
+def _frozen(tree):
+    """A module that freezes or patches the clock compares its dates with a fake one."""
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call):
+            name = n.func.attr if isinstance(n.func, ast.Attribute) else n.func.id if isinstance(n.func, ast.Name) else ""
+            if name == "freeze_time" or name == "patch" and n.args and isinstance(n.args[0], ast.Constant) \
+                    and isinstance(n.args[0].value, str) and _FROZEN_PATCH.search(n.args[0].value):
+                return True
+    return False
+
+
+def _imported(tree):
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            out |= {a.name for a in n.names}
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            out |= {n.module} | {f"{n.module}.{a.name}" for a in n.names}
+        elif isinstance(n, ast.ImportFrom):
+            out |= {a.name for a in n.names}
+    return out
+
+
+def _date_links(p, cands):
+    """{file: why or None} for each file holding a date. A python file is linked when it (or a module it imports, or one
+    that imports it) compares a clock read and does not freeze the clock; a data file when code that names it does, or
+    when no code in the repo names it (its reader is outside, so nothing contradicts the alarm); other code by a
+    clock call in its text. ponytail: reads the repo's python once a day, only when a date is about to pass."""
+    root = p.root
+    files = [x for x in c._git(root, "ls-files", "-z", timeout=60).split("\0") if x][:20000]
+    py = [x for x in files if x.endswith(".py")]
+    index = {}
+    for f in py:  # every module path suffix names the file: sampo/core.py is core and sampo/core
+        parts = f[:-3].split("/")
+        parts = parts[:-1] if parts[-1] == "__init__" else parts
+        for i in range(len(parts)):
+            index.setdefault("/".join(parts[i:]), []).append(f)
+    trees = {}
+
+    def tree(rel):
+        if rel not in trees:
+            trees[rel] = _parse(_text(root, rel))
+        return trees[rel]
+    live = lambda rel: (t := tree(rel)) is not None and _clock_compared(t) and not _frozen(t)  # noqa: E731
+    out, later = {}, {}
+    for rel in sorted({r[0] for r in cands}):
+        if rel.endswith(".py"):
+            t = tree(rel)
+            if t is None or _frozen(t):
+                out[rel] = None
+            elif _clock_compared(t):
+                out[rel] = "the file compares the clock"
+            else:
+                near = next((f for m in sorted(_imported(t)) for f in index.get(m.replace(".", "/"), []) if f != rel
+                             and live(f)), None)
+                out[rel] = f"{near} compares the clock" if near else None
+                if not near:
+                    later[rel] = os.path.basename(rel)[:-3]
+        elif rel.endswith(DATA_EXT):
+            out[rel] = "no code in the repo names it"
+            later[rel] = os.path.basename(rel)
+        else:
+            out[rel] = "the file reads the clock" if _CLOCK_TEXT.search(_text(root, rel)) else None
+    named = {}
+    for f in py if later else ():  # one pass: who names a file left over (a py module that imports it, a data file)
+        src = _text(root, f)
+        for rel, needle in later.items():
+            if f != rel and needle in src:
+                named.setdefault(rel, []).append(f)
+    for rel in later:
+        for f in named.get(rel, []):
+            t = tree(f)
+            if rel.endswith(".py"):
+                mods = {m.replace(".", "/") for m in _imported(t)} if t else set()
+                if not any(rel in index.get(m, []) for m in mods):
+                    continue
+            elif t is not None and not live(f):
+                out[rel] = None  # something reads it and never compares the clock: data against fixed data
+                continue
+            if live(f):
+                out[rel] = f"{f} compares the clock"
+                break
+    return out
+
+
+def _defs(src):
+    """{name: a dump of its definition} for each function, each class's header and method names, each top-level
+    assignment: what a commit can change that another file calls or names. None when the text is not python."""
+    tree = _parse(src) if src.strip() else ast.Module(body=[], type_ignores=[])
+    if tree is None:
+        return None
+    out = {}
+    put = lambda k, v: out.__setitem__(k, out.get(k, "") + v)  # noqa: E731
+    for n in ast.walk(tree):
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            put(n.name, ast.dump(n))
+        elif isinstance(n, ast.ClassDef):
+            put(n.name, repr(([ast.dump(b) for b in n.bases], [ast.dump(d) for d in n.decorator_list],
+                              sorted(m.name for m in n.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))))))
+    for n in tree.body:
+        for t in n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AnnAssign) else []:
+            if isinstance(t, ast.Name):
+                put(t.id, ast.dump(n.value) if n.value is not None else "")
+    return out
+
+
+def _names_in(src, py):
+    """The identifiers a file refers to: a python file's names, attributes, imports, keyword arguments, definitions and
+    the words of its strings; any other file's words."""
+    tree = _parse(src) if py else None
+    if tree is None:
+        return set(re.findall(r"\w+", src))
+    out = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name):
+            out.add(n.id)
+        elif isinstance(n, ast.Attribute):
+            out.add(n.attr)
+        elif isinstance(n, ast.alias):
+            out |= set(n.name.split("."))
+        elif isinstance(n, ast.ImportFrom) and n.module:
+            out |= set(n.module.split("."))
+        elif isinstance(n, ast.keyword) and n.arg:
+            out.add(n.arg)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out.add(n.name)
+        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out |= set(re.findall(r"\w+", n.value))
+    return out
+
+
+def _cochange_link(p, sha, x, y, memo):
+    """Why y (the partner the commit left alone) is affected by what sha changed in x, else None: a python x by a
+    function, class or constant it added, removed or changed that y names; any other x by y naming the file."""
+    src_y = memo.get(("y", y))
+    if src_y is None:
+        src_y = memo[("y", y)] = _text(p.root, y)
+    if not x.endswith(".py"):
+        return f"{y} names {x}" if x and (x in src_y or os.path.basename(x) in src_y) else None
+    if ("x", sha, x) not in memo:
+        old = _defs(c._git(p.root, "show", f"{sha}^:{x}", timeout=20)) or {}
+        new = _defs(c._git(p.root, "show", f"{sha}:{x}", timeout=20))
+        memo[("x", sha, x)] = None if new is None else {n for n in old.keys() | new.keys() if old.get(n) != new.get(n)
+                                                        and len(n) > 2 and not n.startswith("__")}
+    names = memo[("x", sha, x)]
+    if not names:
+        return None
+    hit = sorted(names & _names_in(src_y, y.endswith(".py")))
+    return f"{y} refers to {hit[0]}, changed in {x}" if hit else None
+
+
+def _rate_cap(briefs, wkind, today):
+    """(warnings a kind may file today, drops behind a lowered cap): WARN_MAX less the captures of its trigger dropped
+    since the last one confirmed (done); a mistaken drop doesn't count. At none left the rule is log-only, bar one
+    probation capture once PROBATION_DAYS have passed since its newest, so a confirmed one can still restore it."""
+    mine = sorted((b for b in briefs if b.meta.get("trigger") == f"foresight-{wkind}"),
+                  key=lambda b: (str(b.meta.get("created") or ""), b.id))
+    drops = 0
+    for b in reversed([b for b in mine if b.status in c.CLOSED]):
+        if b.status == "done":
+            break
+        drops += not _SLIP.search(b.section("Log"))
+    cap = max(0, WARN_MAX - drops)
+    if not cap and mine:
+        try:
+            cap = int((today - datetime.date.fromisoformat(str(mine[-1].meta.get("created"))[:10])).days >= PROBATION_DAYS)
+        except ValueError:
+            pass
+    return cap, drops
 
 
 def _state_days(sizes, budget):
@@ -725,21 +946,49 @@ def breakage_tick(p, today=None, budget=None):
     live = {(r.get("wkind"), r.get("target"), r.get("line")) for r in rows if r.get("kind") == "warning"
             and r.get("id") not in scored}
     soon = (today + datetime.timedelta(days=DATE_DAYS)).isoformat()
+    dated = _dates(p, today)
+    links, memo = (_date_links(p, dated) if dated else {}), {}  # T-4680: each alarm's own probe, run only when it could file
     found = [("date", rel, n, d, f"Breakage ahead: {rel}:{n} holds the date {d}, which passes in "
-              f"{(datetime.date.fromisoformat(d) - today).days} days", {"date": d}) for rel, n, d in _dates(p, today)]
+              f"{(datetime.date.fromisoformat(d) - today).days} days", {"date": d}, lambda rel=rel: links.get(rel))
+             for rel, n, d in dated]
     found += [("cochange", y, None, soon, f"Breakage ahead: {sha[:7]} changed {x} without {y}, which changed with it "
-               f"in most past commits", {"file": x, "sha": sha}) for sha, x, y in _cochange(p, st.get("head"))]
+               f"in most past commits", {"file": x, "sha": sha},
+               lambda sha=sha, x=x, y=y: _cochange_link(p, sha, x, y, memo))
+              for sha, x, y in _cochange(p, st.get("head"))]
     days = _state_days(sizes, budget)
     if days is not None:
         found.append(("state", "state", None, (today + datetime.timedelta(days=days)).isoformat(),
                       f"Breakage ahead: this project's state ({sizes[today.isoformat()] // 2**20} MB) reaches its "
-                      f"{budget // 2**20} MB budget in about {days} days at its 30-day trend (fm tidy --apply)", {}))
-    new, per = [], {}
-    for wkind, target, line, until, text, extra in found:
+                      f"{budget // 2**20} MB budget in about {days} days at its 30-day trend (fm tidy --apply)", {},
+                      lambda: "the trend"))
+    new, per, skips = [], {}, {(r.get("wkind"), r.get("target"), r.get("line"), r.get("at_key")) for r in rows
+                               if r.get("kind") == "warning-skip"}
+    caps, briefs, booked = {}, None, []
+
+    def skip(wkind, target, line, extra, why):  # T-4680: an alarm not filed is booked once, with why (SKIP_MAX a tick)
+        k = (wkind, target, line, str(extra.get("sha") or extra.get("date")))
+        if k in skips or len(booked) >= SKIP_MAX:
+            return
+        skips.add(k)
+        booked.append(k)
+        c.append_line(os.path.join(p.dir, PREDICTIONS), json.dumps(
+            {"kind": "warning-skip", "id": f"S-{len(rows) + len(booked)}-{int(time.time())}", "wkind": wkind, "target": target,
+             "line": line, "at_key": k[3], "at": c.now(), "why": why}) + "\n")
+    for wkind, target, line, until, text, extra, probe in found:
         if (wkind, target, line) in live or per.get(wkind, 0) >= WARN_MAX:
             continue
+        if wkind not in caps:
+            briefs = c.load_briefs(p, include_archive=True) if briefs is None else briefs
+            caps[wkind] = _rate_cap(briefs, wkind, today)
+        if per.get(wkind, 0) >= caps[wkind][0]:  # dropped captures lowered what this rule raises: log only
+            skip(wkind, target, line, extra, f"rate: {caps[wkind][1]} of its captures dropped since one was confirmed")
+            continue
+        why = probe()
+        if not why:
+            skip(wkind, target, line, extra, "probe: the code shows no link to what changed or to the clock")
+            continue
         key = f"foresight-{wkind} {target}" + (f":{line}" if line else "")
-        b, made = eco.capture_once(p, f"{c.plain(text)}\n{key}", "FIX", "foresight", key=key,
+        b, made = eco.capture_once(p, f"{c.plain(text)}\n{key}\nProbe: {c.plain(why)}", "FIX", "foresight", key=key,
                                      trigger=f"foresight-{wkind}")
         if not (b and made):
             continue

@@ -449,6 +449,9 @@ class DraftAhead(ForemanTestCase):  # T-2407 (#3): the top prediction planned ah
         self.assertEqual(kinds["draft-ahead"]["n"], 1)
 
 
+CLOCK = "import datetime\nOK = datetime.date.today() < datetime.date(2100, 1, 1)\n"  # T-4680: a date counts when its file compares the clock
+
+
 class BreakageWarnings(ForemanTestCase):  # T-2408 (#3): dates about to pass, stale co-change partners, state growth
     def setUp(self):
         super().setUp()
@@ -487,7 +490,7 @@ class BreakageWarnings(ForemanTestCase):  # T-2408 (#3): dates about to pass, st
         self.assertFalse([b for b in c.load_briefs(c.find_project(self.repo)) if str(b.meta.get("trigger", "")).startswith("foresight")])
 
     def test_a_date_passing_within_14_days_is_filed_through_the_trigger_table_and_a_far_one_is_not(self):
-        self.commit({"lic.py": f"EXPIRES = \"{self.day(5)}\"\n", "far.py": f"LATER = \"{self.day(40)}\"\n"}, "dates")
+        self.commit({"lic.py": f"EXPIRES = \"{self.day(5)}\"\n{CLOCK}", "far.py": f"LATER = \"{self.day(40)}\"\n{CLOCK}"}, "dates")
         self.tick()
         w = self.rows("warning")
         self.assertEqual([(x["wkind"], x["target"], x["line"]) for x in w], [("date", "lic.py", 1)])
@@ -499,12 +502,14 @@ class BreakageWarnings(ForemanTestCase):  # T-2408 (#3): dates about to pass, st
 
     def test_a_commit_without_its_usual_co_change_partner_is_warned_and_one_with_it_is_not(self):
         self.tick()
+        api = lambda i: f"def fetch(x):\n    return x + {i}\n"  # noqa: E731  # T-4680: the partner calls what the commit changes
+        client = lambda i: f"from api import fetch\n\ndef go(x):\n    return fetch(x)  # {i}\n"  # noqa: E731
         for i in range(fs.PAIR_MIN - 1):
-            self.commit({"api.py": f"v = {i}\n", "api_client.py": f"v = {i}\n"}, f"pair {i}")
-        self.commit({"api.py": "v = 9\n", "api_client.py": "v = 9\n"}, "both")
+            self.commit({"api.py": api(i), "api_client.py": client(i)}, f"pair {i}")
+        self.commit({"api.py": api(9), "api_client.py": client(9)}, "both")
         self.tick(1)
         self.assertEqual(self.rows("warning"), [])
-        self.commit({"api.py": "v = 10\n"}, "alone")
+        self.commit({"api.py": api(10)}, "alone")
         self.tick(2)
         self.assertEqual([(x["wkind"], x["target"]) for x in self.rows("warning")], [("cochange", "api_client.py")])
 
@@ -520,12 +525,12 @@ class BreakageWarnings(ForemanTestCase):  # T-2408 (#3): dates about to pass, st
         self.assertEqual([x["wkind"] for x in self.rows("warning")], ["state"])
 
     def test_warnings_are_scored_hit_acted_on_or_missed_by_their_window(self):
-        self.commit({"a.py": f"D = \"{self.day(5)}\"\n", "b.py": f"D = \"{self.day(6)}\"\n",
-                     "c.py": f"D = \"{self.day(7)}\"\n"}, "dates")
+        self.commit({"a.py": f"D = \"{self.day(5)}\"\n{CLOCK}", "b.py": f"D = \"{self.day(6)}\"\n{CLOCK}",
+                     "c.py": f"D = \"{self.day(7)}\"\n{CLOCK}"}, "dates")
         self.tick()
         w = {x["target"]: x for x in self.rows("warning")}
-        self.commit({"a.py": "D = None\n"}, "T-0999: unrelated cleanup drops the date")  # another task: a hit
-        self.commit({"b.py": "D = None\n"}, f"{w['b.py']['task']}: fix from the warning")  # its own fix: acted on
+        self.commit({"a.py": f"D = None\n{CLOCK}"}, "T-0999: unrelated cleanup drops the date")  # another task: a hit
+        self.commit({"b.py": f"D = None\n{CLOCK}"}, f"{w['b.py']['task']}: fix from the warning")  # its own fix: acted on
         self.tick(3)
         scores = {x["id"]: x for x in self.rows("warning-score")}
         self.assertTrue(scores[w["a.py"]["id"]]["hit"])
