@@ -306,8 +306,32 @@ def _take(folder, names):
         except OSError:
             os.close(fd)
             continue
+        with contextlib.suppress(OSError):  # T-4708: the holder's pid, for the trace where /proc/locks is not there (macOS)
+            os.ftruncate(fd, 0)
+            os.pwrite(fd, str(os.getpid()).encode(), 0)
         return i, fd
     return None
+
+
+def slot_holders(folder, n):
+    """T-4708: {slot name: holder pid} of the slots held now, from the slots' own state on any system: a shared flock try
+    on each (it fails exactly while another open file holds the slot, and is let go at once) and the pid the holder wrote
+    in the file (0 if unreadable). The slots are the pool's 0..n-1 and the express files that exist."""
+    held = {}
+    for i in (*range(n), *EXPRESS):
+        try:
+            fd = os.open(os.path.join(folder, str(i)), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:
+            try:
+                held[i] = int(os.pread(fd, 32, 0).decode() or 0)
+            except (OSError, ValueError):
+                held[i] = 0
+        os.close(fd)  # closing it lets go of a lock the try took
+    return held
 
 
 TRACE_ENV = "SAMPO_SLOT_TRACE"  # T-4685: =1: a run that waits prints what the slot decision read, every TRACE_EVERY s
@@ -367,15 +391,16 @@ def _trace(folder, n, small, waited, narrow=False):
         if _TRACE["at"] is not None and now - _TRACE["at"] < TRACE_EVERY:
             return
         _TRACE["at"] = now
+        held = slot_holders(folder, n)  # T-4708: what the slots say, on any system; /proc/locks (Linux) refines the pids
         inodes = {}
-        for i in (*range(n), *EXPRESS):  # an express file may not exist (the reserve is on): the rest still read
+        for i in held:
             with contextlib.suppress(OSError):
                 inodes[i] = os.stat(os.path.join(folder, str(i))).st_ino
         try:
             with open("/proc/locks") as f:
-                held = lock_holders(f.read(), inodes)
+                held.update(lock_holders(f.read(), inodes))
         except OSError:
-            held = {}
+            pass
         thr = _throttle()
         if _TRACE["base"] is None:
             _TRACE["base"] = thr

@@ -192,6 +192,39 @@ class OwnShare(ForemanTestCase):
         self.assertIn("load 90.0 on", lines[0])
         self.assertIn(f"by 1 run.py (pids {os.getpid()})", lines[0], "this process holds the fake run's locks")
 
+    def test_the_trace_counts_the_holders_without_proc_locks_as_macos_has_none(self):
+        """T-4708: macOS has no /proc/locks, and the holder count read only that: 'held 0/6, by 0 run.py' with the pool
+        full. The count is the slots' own lock state (a probe), and the pid the holder wrote in its slot file."""
+        self.fill(range(8))
+        real_open = open
+
+        def no_proc(path, *a, **kw):
+            if str(path).startswith("/proc/locks"):
+                raise FileNotFoundError(path)
+            return real_open(path, *a, **kw)
+
+        err = io.StringIO()
+        with mock.patch("builtins.open", no_proc), mock.patch.object(run.sys, "stderr", err), \
+                mock.patch.dict(run._TRACE, {"at": None, "base": None}), mock.patch.dict(os.environ, {run.TRACE_ENV: "1"}):
+            self.assertRaises(FileNotFoundError, open, "/proc/locks")
+            self.take(wait=0.3)
+        lines = [ln for ln in err.getvalue().splitlines() if "slot trace" in ln]
+        self.assertEqual(len(lines), 1)
+        self.assertIn("held 6/6 ordinary, 2 small-only/express", lines[0])
+        self.assertIn(f"by 1 run.py (pids {os.getpid()})", lines[0])
+
+    def test_a_probe_of_the_slots_leaves_a_free_slot_free_and_a_held_one_held(self):
+        self.fill([1, 3])
+        self.assertEqual(run.slot_holders(self.folder, 8), {1: os.getpid(), 3: os.getpid()})
+        self.assertEqual(run._take(self.folder, [0, 1, 2])[0], 0, "the probe let go of every slot it tried")
+        self.assertEqual(run._take(self.folder, [2])[0], 2)
+
+    def test_a_slot_file_without_a_pid_is_still_held(self):
+        got = run._take(self.folder, [4])
+        self.fds.append(got[1])
+        os.truncate(os.path.join(self.folder, "4"), 0)
+        self.assertEqual(run.slot_holders(self.folder, 8), {4: 0})
+
 
 if __name__ == "__main__":
     import unittest
