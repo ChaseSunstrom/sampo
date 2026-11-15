@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A test that turns red on the bare base while a merge train runs no longer leaves a lane out: the train probes the base before blaming, judges lanes on the other classes, and files one FIX capture (T-4700).
 - `sampo cost` ends with a per-ISO-week section showing replies, cache-read tokens per reply, replies per closed task and the share of entering context by source, so lean-context cuts can be judged by numbers that already move (T-4704).
 - A breakage-ahead alarm now becomes a task only when its probe finds the link in the code (a clock comparison for a date, a changed name the partner refers to for a co-change), a refused alarm is logged with its reason, and a rule whose captures were dropped raises fewer until one is confirmed (T-4680).
 - The drive's demotion of a waited-on job to a service now reads the wait timer's per-kind table of typical times (a CI watch is waited on for 60 minutes, a close for 2 hours, a job of no kind 20), so the two never disagree (T-4679).
