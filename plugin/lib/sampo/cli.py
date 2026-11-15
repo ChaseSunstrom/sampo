@@ -6599,6 +6599,47 @@ def _runnable(template, tests):
     return tests
 
 
+def _test_importers(root, files):
+    """T-4684: the test modules that really import one of `files` (changed .py files of a tests folder), directly or
+    through another module that does, read from the imports of the .py files under each file's folder: a module's name
+    says nothing (test_support.py may be a helper, helpers.py may be imported by no one). A name only in a comment or a
+    string is no import. Bounded: 4000 files of at most 1 MB are read; a file that doesn't parse is no importer."""
+    import ast
+    texts, refs, seen = {}, {}, set(files)
+    for d in sorted({os.path.dirname(f) for f in files}):
+        for here, dirs, names in os.walk(os.path.join(root, d)):
+            dirs[:] = [x for x in dirs if not x.startswith(".") and x not in ("__pycache__", "node_modules")]
+            for n in names:
+                rel = os.path.relpath(os.path.join(here, n), root)
+                try:
+                    if n.endswith(".py") and rel not in texts and len(texts) < 4000 and os.path.getsize(os.path.join(root, rel)) <= 1 << 20:
+                        with open(os.path.join(root, rel), encoding="utf-8", errors="replace") as f:
+                            texts[rel] = f.read()
+                except OSError:
+                    continue
+
+    def imported(rel):  # the last part of each module a file imports, and of each name it imports from one
+        if rel not in refs:
+            refs[rel] = set()
+            try:
+                for node in ast.walk(ast.parse(texts[rel])):
+                    if isinstance(node, ast.Import):
+                        refs[rel].update(a.name.split(".")[-1] for a in node.names)
+                    elif isinstance(node, ast.ImportFrom):
+                        refs[rel].update(([node.module.split(".")[-1]] if node.module else []) + [a.name for a in node.names])
+            except (SyntaxError, ValueError, RecursionError):
+                pass
+        return refs[rel]
+    todo = list(files)
+    while todo:
+        stem = os.path.basename(todo.pop()).rsplit(".", 1)[0]
+        for rel, text in texts.items():
+            if rel not in seen and stem in text and stem in imported(rel):
+                seen.add(rel)
+                todo.append(rel)
+    return {f for f in seen - set(files) if c.TESTISH.search(os.path.basename(f)) and c.CODE.search(f)}
+
+
 HOOK_BUDGET = (("plugin/lib/sampo/hooks.py", "plugin/lib/sampo/core.py"), "plugin/tests/test_core.py")  # T-2307
 RULE_TESTS = ("test_doctor", "test_models", "test_left_out", "test_rename_scan",  # T-2992: self-docs, ModelRules, left-out, rename scan: in every affected set
               "test_rename_aliases", "test_redefinitions", "test_suite_hygiene")  # T-3544: repo-shape scans a new module or test trips with no map link (T-3316)
@@ -6773,12 +6814,19 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     # T-0952: a test that historically changes with a changed file (the map's co-change pairs, either way round):
     # hooks.json has no test named after it, but the wiring tests change with it
     istest = lambda f: c.TESTISH.search(os.path.basename(f)) and c.CODE.search(f)  # noqa: E731
+    # T-4684: no code imports a test, so what a run record or a co-change pair says of a changed test-folder .py file is
+    # noise (a change to test_stale_git_lock.py alone listed 64 modules and timed out a close): it affects itself and
+    # what really imports it, read from the imports, never from its name. The lock (T-4648) already names no more.
+    tpy = {f for f in changed if f.endswith(".py") and c.TESTISH.search(f) and c.CODE.search(f)} if lock is None else set()
+    wide = changed - tpy
+    importers = _test_importers(p.root, sorted(tpy)) if tpy else set()
+    fresh = any(c._git(p.root, "cat-file", "-e", f"{base}:{f}", proc=True).returncode for f in sorted(tpy & own)[:50])
     pairs = {} if lock is not None else m.get("pairs") or {}  # T-4648: the lock names the linked tests, no more
     # T-1467: a file that co-changes with many tests (CHANGELOG.md, edited by every task) carries no signal; its
     # pairs ran ~28 test files on every close. Its direct map links (tests_for) still count.
     fan = collections.Counter(b for a, bs in pairs.items() if istest(a) for b in bs)
     fan.update({f: sum(1 for t in ts if istest(t)) for f, ts in pairs.items()})
-    narrow = {f for f in changed if fan[f] <= HUB_PAIRS}
+    narrow = {f for f in wide if fan[f] <= HUB_PAIRS}
     paired = {t for f in narrow for t in pairs.get(f, []) if istest(t)} | {
         a for a, bs in pairs.items() if istest(a) and any(b in narrow for b in bs)}
     meta = c.read_meta(p)
@@ -6786,23 +6834,23 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     by = meta.get("affected_by") or {}  # T-1135: extension -> its own runner's template
     if not template and not by:
         raise UsageError("no affected-tests command: sampo check affected '<cmd with {tests} or {names}>'")
-    broke = {t for f in changed for t in (m.get("broke") or {}).get(f, [])} if lock is None else set()  # T-2148: tests a file once turned red
+    broke = {t for f in wide for t in (m.get("broke") or {}).get(f, [])} if lock is None else set()  # T-2148: tests a file once turned red
     # T-2307: a hook-path module's import budget is tested in test_core (LaterImports), which no map link names
     budget = {HOOK_BUDGET[1]} if changed & set(HOOK_BUDGET[0]) and os.path.isfile(os.path.join(p.root, HOOK_BUDGET[1])) else set()
     rules = {f"plugin/tests/{t}.py" for t in RULE_TESTS if os.path.isfile(os.path.join(p.root, "plugin", "tests", t + ".py"))} \
-        if changed else set()  # T-2992: a builder's missing MASTER bullet or fm shim fails in its own lane
+        if wide or fresh else set()  # T-2992: a builder's missing MASTER bullet or fm shim fails in its own lane; T-4684: a NEW test module trips them too (T-3316), a changed one doesn't
     if lock is not None:  # T-4648: the bounded lock: the linked tests of the scope's files, no hub, rule or budget extras
         budget = rules = set()
         every = sorted(set(smap.tests_for(m, sorted(changed))) | own, key=lambda t: _lock_rank(t, changed))
         lock["linked"] = len(every)
         every = every[:LOCK_MODULES]
     else:
-        tree = c.worktree_tree(p.root) if changed else None
-        picked = _hub_tests(p, m, base, sorted(changed), detail, tree)  # T-3306: a hub file's symbols, not the whole file
+        tree = c.worktree_tree(p.root) if wide else None
+        picked = _hub_tests(p, m, base, sorted(wide), detail, tree)  # T-3306: a hub file's symbols, not the whole file
         # T-3603: the tests the run cache saw run a changed function (T-3670: one that drives a hook only by its JSON)
-        ran = set(smap.ran_tests(p.root, base, tree, sorted(changed))) if changed else set()
-        every = sorted(set(smap.tests_for(m, sorted(changed - set(picked)))) | set().union(*picked.values())
-                       | own | paired | broke | budget | rules | ran)
+        ran = set(smap.ran_tests(p.root, base, tree, sorted(wide))) if wide else set()
+        every = sorted(set(smap.tests_for(m, sorted(wide - set(picked)))) | set().union(*picked.values())
+                       | own | importers | paired | broke | budget | rules | ran)
     fill = lambda tpl, ts: tpl.replace("{tests}", " ".join(shlex.quote(t) for t in ts)).replace(  # noqa: E731
         "{names}", " ".join(shlex.quote(os.path.basename(t).rsplit(".", 1)[0]) for t in ts))
 
