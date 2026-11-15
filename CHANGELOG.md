@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The guard judges interpreter code that writes a system path in python, node, perl, ruby, php, lua, deno, bun, R, julia and tcl, and a relative write after a `cd` that climbs through a link by both the link's and the real folder (T-4673).
 - A probe-confirmed foresight prediction now leads `sampo next` as "Before the user has to say it" and, with the drive on, continues the session once per row, while capture rows become inbox tasks and tell rows a line in `sampo next` (T-4664).
 - A changed test module now affects itself and its real importers only, instead of the dozens of modules the run cache listed (T-4684).
 - Land --merged checks the machine before its gate, a disk refusal sizes nothing, and the late matcher reads doctor's own line (T-4658).
