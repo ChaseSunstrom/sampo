@@ -66,6 +66,21 @@ class RustCase(DiskCase):
             write(os.path.join(lane, "target", "CACHEDIR.TAG"), TAG)
         return big
 
+    def disk(self, folder):
+        """What the filesystem allocates below `folder` (not the folder's own block): every file and folder under it,
+        read by this test's own walk. A folder costs 0 on tmpfs, 4096 on ext4, more elsewhere (T-4741: sizes a test
+        asserts come from here, never from numbers that held on one machine's filesystem)."""
+        total = 0
+        for top, dirs, files in os.walk(folder):
+            total += sum(os.lstat(os.path.join(top, n)).st_blocks * 512 for n in dirs + files)
+        return total
+
+    def cap_leaving(self, *gone):
+        """A cap that is exactly what the cache holds once the entries `gone` (relative paths) are removed, whatever
+        the filesystem allocates for a folder."""
+        info, total = lanes._cache_tree(self.shared, time.monotonic() + 30)
+        return total - sum(info[os.path.join(self.shared, *g.split("/"))][0] for g in gone)
+
     def cap(self, n):
         patch = unittest.mock.patch.dict(os.environ, {CAP: str(n)})
         patch.start()
@@ -234,7 +249,7 @@ class ThePrune(RustCase):
     def test_the_oldest_entries_go_first_until_the_cache_is_under_its_cap(self):
         for name, age in (("a-1", 30), ("b-2", 20), ("c-3", 10), ("d-4", 5)):
             self.entry(f"debug/incremental/{name}/s.bin", age)
-        self.cap(BLOCK * 2 + 4096)
+        self.cap(self.cap_leaving("debug/incremental/a-1", "debug/incremental/b-2"))
         r = self.prune()
         left = sorted(os.listdir(os.path.join(self.shared, "debug", "incremental")))
         self.assertEqual(left, ["c-3", "d-4"], "the two oldest went, the rest fit the cap")
@@ -450,7 +465,7 @@ class TheLaneOwnTarget(RustCase):
         grown = self.grow(lane)
         mine = self.fake(os.path.join(self.repo, "target", "debug", "deps", "x.rlib"), 500)
         src = self.fake(os.path.join(lane, "src", "main.rs"), 1)
-        self.assertTrue(lanes.drop_lane_target(lane, self.repo))
+        self.assertTrue(lanes.drop_lane_target(lane, self.repo, held=[]))  # no /proc on macOS: nothing is read, nothing removed
         self.assertFalse(os.path.exists(os.path.dirname(os.path.dirname(os.path.dirname(grown)))))
         self.assertTrue(os.path.isfile(src))
         self.assertTrue(os.path.isfile(mine), "the project's own target folder is never touched")
@@ -541,15 +556,17 @@ class DoctorAndTidyNameThem(RustCase):
     def test_doctor_names_each_lane_target_folder_and_the_cache_against_its_cap(self):
         a = self.lane("T-5030", old=False)
         b = self.lane("agent-b", old=False)
-        self.target(a, 150)  # 1.2 MB
-        self.target(b, 60)  # 0.5 MB
-        self.entry("debug/deps/s.rlib", 5, blocks=30)  # 245 KB
+        self.target(a, 150)  # 1.2 MB of files
+        self.target(b, 60)  # 0.5 MB of files
+        self.entry("debug/deps/s.rlib", 5, blocks=30)  # 245 KB of files
         self.cap(2_000_000)
         r = d.check_disk(self.tmp, self.low, [(self.p, {})])
         self.assertEqual(r.status, "WARN")
-        self.assertRegex(r.detail, r"T-5030 target 1\.[2-3] MB")
-        self.assertRegex(r.detail, r"agent-b target 4\d\d KB|agent-b target 0\.[4-5] MB|agent-b target 49\d KB")
-        self.assertRegex(r.detail, r"shared cargo cache 2\d\d KB of 2\.0 MB")
+        for text in (f"T-5030 target {lanes.human(self.disk(os.path.join(a, 'target')))}",
+                     f"agent-b target {lanes.human(self.disk(os.path.join(b, 'target')))}",
+                     f"shared cargo cache {lanes.human(self.disk(self.shared))} of 2.0 MB"):
+            self.assertIn(text, r.detail)
+        self.assertGreaterEqual(self.disk(os.path.join(b, "target")), BLOCK * 60, "at least the bytes the test wrote")
         self.assertIn("lane build output (2 target folders, shared)", r.detail, "the existing label stands")
 
     def test_doctor_does_not_count_the_parent_config_folder_as_a_lane(self):
@@ -598,18 +615,34 @@ class DoctorAndTidyNameThem(RustCase):
         self.assertIn("could not size", found[0]["detail"])
 
     def test_tidy_lists_a_cache_over_its_cap_and_apply_prunes_it_oldest_first(self):
-        env = {"HOME": self.fake_home, CAP: str(BLOCK * 2)}
         for i, age in enumerate((40, 30, 20, 10)):
             self.entry(f"debug/incremental/e{i}/s.bin", age)
+        cap = self.cap_leaving("debug/incremental/e0", "debug/incremental/e1")
+        env = {"HOME": self.fake_home, CAP: str(cap)}
         report = json.loads(self.fm("tidy", "--json", env=env).stdout)  # a process mirrors SAMPO_X to FOREMAN_X at start
         found = [f for f in report["findings"] if f["kind"] == "cargo_cache"]
         self.assertEqual(len(found), 1, report)
-        self.assertGreater(found[0]["bytes"], BLOCK * 2)
+        self.assertGreater(found[0]["bytes"], cap)
         self.assertTrue(found[0]["auto"])
         self.assertTrue(os.path.isdir(os.path.join(self.shared, "debug", "incremental", "e0")), "a report removes nothing")
         self.fm("tidy", "--json", "--apply", env=env)
         left = sorted(os.listdir(os.path.join(self.shared, "debug", "incremental")))
-        self.assertEqual(left, ["e2", "e3"])
+        # a host without /proc (macOS) cannot say what a process holds: the prune removes nothing there (its own test:
+        # test_without_a_view_of_open_files_nothing_is_removed); the in-process test below prunes with a view given
+        self.assertEqual(left, ["e2", "e3"] if os.path.isdir("/proc/self") else ["e0", "e1", "e2", "e3"])
+
+    def test_tidy_apply_prunes_oldest_first_with_the_open_files_given(self):
+        """The same prune on every host: the holders are given (nothing is held), so /proc is not needed."""
+        from sampo import tidy
+        for i, age in enumerate((40, 30, 20, 10)):
+            self.entry(f"debug/incremental/e{i}/s.bin", age)
+        self.cap(self.cap_leaving("debug/incremental/e0", "debug/incremental/e1"))
+        actions = []
+        with unittest.mock.patch.object(lanes, "_held_paths", return_value=[]):
+            found = lanes.cargo_cache_findings(self.p, True, actions, tidy.finding)
+        self.assertEqual([f["kind"] for f in found], ["cargo_cache"])
+        self.assertEqual(actions, [("cargo_cache", self.p.slug)])
+        self.assertEqual(sorted(os.listdir(os.path.join(self.shared, "debug", "incremental"))), ["e2", "e3"])
 
     def test_tidy_names_a_kept_lanes_target_folder_with_its_size_and_removes_nothing(self):
         a = self.lane("T-5032", old=False)
@@ -618,7 +651,8 @@ class DoctorAndTidyNameThem(RustCase):
         found = [f for f in report["findings"] if f["kind"] == "lane_target"]
         self.assertEqual(len(found), 1, report)
         self.assertIn("T-5032", found[0]["detail"])
-        self.assertRegex(found[0]["detail"], r"1[56]\d KB|0\.2 MB|1\.\d MB")
+        self.assertIn(f"target {lanes.human(self.disk(os.path.join(a, 'target')))} ", found[0]["detail"])
+        self.assertGreaterEqual(found[0]["bytes"], BLOCK * 20, "at least the bytes the test wrote")
         self.assertTrue(os.path.isfile(big), "an unfinished lane's build output is its builder's")
 
     def test_a_project_without_rust_gets_neither_line(self):
