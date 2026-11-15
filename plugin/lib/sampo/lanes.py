@@ -279,6 +279,24 @@ def clear_git_locks(main, **kw):
     return remove_stale(git_locks(main, **kw))
 
 
+_LOCK_FAILURE = re.compile(r"Unable to create '[^'\n]*\.lock': File exists")
+
+
+def clear_on_lock_failure(cwd, err):
+    """T-4707: a git command run in a lane (a linked worktree) failed with `Unable to create '….lock': File exists`: the
+    stale locks of that repository are cleared (clear_git_locks: older than the bound and no live git for the folder; a
+    younger or held one stays). A main checkout or a plain repo is not a lane, and a failure that names no lock is not
+    this one: nothing is touched. The rows (what became of each lock), [] when nothing applied."""
+    if not cwd or not _LOCK_FAILURE.search(str(err or "")[-4000:]):
+        return []
+    try:
+        root = c.git_root(cwd)
+        main = c.main_worktree(root) if root else None
+        return clear_git_locks(main) if main else []
+    except (OSError, subprocess.SubprocessError):
+        return []
+
+
 def git_lock_lines(rows, bound=GIT_LOCK_AGE_S):
     """T-4616: one line per lock found: what was removed, and what was left and why."""
     out = []

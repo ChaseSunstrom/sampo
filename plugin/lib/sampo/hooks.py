@@ -4604,9 +4604,31 @@ def _tool_miss(pl):
     return _capability_miss(p, pl.get("session_id"), err, name=name, kind=kind) if p else None
 
 
+def _lane_lock_cleared(pl):
+    """T-4707: a Bash command that failed on `….lock': File exists` in a lane (a linked worktree): the stale git locks of
+    the repository are cleared (lanes.clear_on_lock_failure: older than the bound, no live git for the folder), the
+    removal logged, and one line says what happened so the command can be run again. '' when nothing applied."""
+    if pl.get("tool_name") != "Bash" or "File exists" not in str(pl.get("error") or ""):
+        return ""
+    try:
+        from sampo import lanes
+        rows = lanes.clear_on_lock_failure(_cwd(pl), pl.get("error"))
+        done = [r for r in rows if r["state"] == "removed"]
+        if done:
+            p = c.find_project(c.main_worktree(c.git_root(_cwd(pl))) or _cwd(pl))
+            if p:
+                c.log_event(p, "index_lock_removed", None, {"why": "; ".join(lanes.git_lock_lines(done))[:300]},
+                            session=pl.get("session_id"))
+        return c.joinmore(lanes.git_lock_lines(rows), 3, " ") + (" Run the command again." if done else "") if rows else ""
+    except Exception:
+        log_error("PostToolUseFailure", _tb())
+        return ""
+
+
 def post_tool_use_failure(pl):
     """Also failure memory (T-0046): a failed command whose failure a finished task already met gets a pointer to it."""
     _post_tool_use(pl, ok=False)  # not post_tool_use: its answer is dropped here, and so would a booked note be
+    lock_note = _lane_lock_cleared(pl)  # T-4707: before the subagent return: a builder's commit is the usual victim
     if pl.get("agent_id"):  # T-1110: a subagent's failure is its own; the notes landed in the main thread's context
         return None  # and the failure was filed against this thread's task
     if pl.get("tool_name") != "Bash":  # T-2370: past Bash, only the miss shapes
@@ -4630,7 +4652,7 @@ def post_tool_use_failure(pl):
             return {"hookSpecificOutput": {"hookEventName": "PostToolUseFailure", "additionalContext": fix}} if fix else None
         from sampo import recall
         act = c.active_brief_fast(p, p.lane)
-        note = " ".join(filter(None, [fix, recall.note_failure(p, act.id if act else None, err),
+        note = " ".join(filter(None, [lock_note, fix, recall.note_failure(p, act.id if act else None, err),
                                       _capability_miss(p, pl.get("session_id"), err, act,
                                                        (pl.get("tool_input") or {}).get("command"))]))
         if re.search(r"(?m)^(Traceback|FAIL:|ERROR:|\s+at .+:\d+)", err):  # T-0706: a red run comes with suspects
