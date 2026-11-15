@@ -222,8 +222,9 @@ def git_branch(cwd):
 
 def until(epoch):
     try:
-        s = max(0, int(float(epoch) - time.time()))
-    except (TypeError, ValueError):
+        from sampo import core as c  # T-4671: a reset in milliseconds is the same instant, as every reader takes it
+        s = max(0, int(c.epoch_seconds(float(epoch)) - time.time()))
+    except (TypeError, ValueError, OverflowError):
         return ""
     return f"↻{s // 3600}h{s % 3600 // 60:02d}m" if s >= 3600 else f"↻{s // 60}m"
 

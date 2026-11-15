@@ -1150,7 +1150,9 @@ def cmd_task(args):
             from sampo import budget as sbudget
             at = sbudget.forecast().get("seven_day", {}).get("resets_at")
             if not at:
-                raise UsageError("--until reset: no usage reading with a reset time yet (the statusline writes one)")
+                why = sbudget.unknown_why("seven_day")  # T-4671: a reading too old to stand names its age
+                raise UsageError("--until reset: no usage reading with a reset time yet (the statusline writes one)"
+                                 if not why else f"--until reset: the weekly usage reading is unknown ({why})")
             args.until = datetime.datetime.fromtimestamp(at + 59).strftime("%Y-%m-%dT%H:%M")  # never a minute early
         elif until and not re.fullmatch(r"\d{4}-\d\d-\d\d(T([01]\d|2[0-3]):[0-5]\d)?", until):
             raise UsageError("--until takes a date, YYYY-MM-DD[THH:MM], reset, \"when PATH changes\", "

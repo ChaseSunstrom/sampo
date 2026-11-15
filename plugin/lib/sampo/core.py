@@ -205,6 +205,18 @@ def iso(epoch):
     return datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+MS_EPOCH = 1e11  # T-4669: an epoch above this is milliseconds (1e11 s is the year 5138)
+
+
+def epoch_seconds(t):
+    """T-4671: a time Claude Code reports (the statusline's resets_at) as epoch seconds, whether it came in seconds or in
+    milliseconds; None when it is not a number. The one place that unit rule lives: the usage reader and the statusline's
+    countdown both go through it."""
+    if not isinstance(t, (int, float)):
+        return None
+    return t / 1000 if t > MS_EPOCH else t
+
+
 def parse_ts(ts):
     try:
         if type(ts) is str and len(ts) == 20 and ts.isascii() and ts[4] + ts[7] + ts[10] + ts[13] + ts[16] + ts[19] == "--T::Z":

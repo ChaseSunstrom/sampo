@@ -42,6 +42,10 @@ def _latest_session(project):
         if not isinstance(snap, dict):  # T-1097: a side file (sid.outlined-<agent>.json is a list), not a snapshot
             continue
         if snap.get("project") in (project, None):
+            try:
+                snap["_read"] = os.path.getmtime(path)  # T-4671: when it was read: the age rule needs it
+            except OSError:
+                pass
             return snap
     return None
 
@@ -183,10 +187,16 @@ def render(d, width=100):
         out.append("  (no samples)")
     s = d["session"]
     if s:
-        rl = ((s.get("rate_limits") or {}).get("five_hour") or {}).get("used_percentage")
+        from sampo import budget  # T-4671: the one age rule: a 5-hour figure read long ago is unknown, not today's
+        rls = s.get("rate_limits")
+        now = time.time()
+        got = budget.reading(((rls if isinstance(rls, dict) else {}).get("five_hour")), s.get("_read") or now, now)
+        rl = None if got is None else got[0]
+        five = "" if got is None else f" · 5h {rl}%" if rl is not None else \
+            f" · 5h unknown (read {budget._ago(now - (s.get('_read') or now))})"
         hit = s.get("cache_hit_ratio")
         out.append(f"Session: {s.get('model') or '?'} · ctx {s.get('context_pct')}% · ${s.get('cost_usd')}"
-                   + (f" · 5h {rl}%" if rl is not None else "") + (f" · cache {int(hit * 100)}%" if hit is not None else ""))
+                   + five + (f" · cache {int(hit * 100)}%" if hit is not None else ""))
     else:
         out.append("Session: no statusline snapshot yet")
     return [c.plain(line)[:width] for line in out]  # titles and events are user text: no terminal sequences

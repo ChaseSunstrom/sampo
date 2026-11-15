@@ -208,7 +208,6 @@ def _recent_snaps():
 
 
 READ_STALE_S = 6 * 3600  # T-4669: a statusline reading this old is not the usage now (unknown, never over)
-MS_EPOCH = 1e11  # T-4669: a reset time above this is milliseconds since the epoch (1e11 s is year 5138)
 
 
 def _ago(s):
@@ -218,38 +217,71 @@ def _ago(s):
     return f"{int(s // 60)} min ago" if s < 3600 else f"{s / 3600:.0f} h ago"
 
 
-def _limits():
-    """T-4669: (rate_limits(), when the snapshot it comes from was read, as epoch seconds or None). A window is a reading
-    only while its reset is still ahead (a passed reset reads 0) and the snapshot is no older than READ_STALE_S: a
-    reading past its reset, with no usable reset time, or that old is unknown, and unknown is never over."""
-    now = time.time()
+def reading(w, read, now=None):
+    """T-4671: THE age rule, the one place it lives: every reader of a statusline figure asks here. One window of a
+    snapshot ({used_percentage, resets_at}) that was read at epoch `read` gives (used %, its reset as epoch seconds or
+    None), or None when it holds no figure. A window whose reset has passed reads 0 (it emptied since the snapshot); one
+    read more than READ_STALE_S ago, whose reset (or whose lack of one) cannot say it still stands, gives used None:
+    unknown, never over and never the old figure. A reset in milliseconds is read as the same instant in seconds."""
+    now = now or time.time()
+    w = w if isinstance(w, dict) else {}
+    used, resets = w.get("used_percentage"), c.epoch_seconds(w.get("resets_at"))
+    if not isinstance(used, (int, float)) or isinstance(used, bool):
+        return None
+    if resets is not None and resets <= now:
+        return 0, resets
+    return (None if now - read > READ_STALE_S else used), resets
+
+
+def _windows(now=None):
+    """T-4671: what the newest usable statusline snapshot says, through `reading`: {used: {window: %, week_gone: share
+    of the week gone by}, resets: {window: epoch seconds}, read: when that snapshot was read, stale: {window: when the
+    newest snapshot whose figure for it was too old to stand was read}}. `read` is None with no usable figure."""
+    now, stale = now or time.time(), {}
     for path in _recent_snaps():
         try:
             with open(path, encoding="utf-8") as f:
                 rl = json.load(f).get("rate_limits") or {}
             read = os.path.getmtime(path)
-            out = {}
-            for k in ("five_hour", "seven_day"):
-                w = rl.get(k) or {}
-                used, resets = w.get("used_percentage"), w.get("resets_at")
-                if not isinstance(used, (int, float)) or isinstance(used, bool):
+            out, resets = {}, {}
+            for k in WINDOWS:
+                got = reading(rl.get(k), read, now)
+                if got is None:
                     continue
-                known = isinstance(resets, (int, float))
-                if known and resets > MS_EPOCH:
-                    resets = resets / 1000  # a millisecond epoch: the same instant in seconds
-                if known and resets <= now:
-                    out[k] = 0  # it emptied since the snapshot
+                if got[0] is None:
+                    stale.setdefault(k, read)
                     continue
-                if now - read > READ_STALE_S:
-                    continue  # read too long ago for its reset (or its absence) to say it still stands
-                out[k] = used
-                if k == "seven_day" and known and 0 < resets - now <= 7 * 86400:  # else (no reset, skew) pace unknown
-                    out["week_gone"] = 1 - (resets - now) / (7 * 86400)
+                out[k] = got[0]
+                if got[1] is not None:
+                    resets[k] = got[1]
+                if k == "seven_day" and got[1] is not None and 0 < got[1] - now <= 7 * 86400:  # else pace unknown
+                    out["week_gone"] = 1 - (got[1] - now) / (7 * 86400)
         except (OSError, ValueError, AttributeError):
             continue
         if out:
-            return out, read
-    return {}, None
+            return {"used": out, "resets": resets, "read": read, "stale": stale}
+    return {"used": {}, "resets": {}, "read": None, "stale": stale}
+
+
+def _limits():
+    """T-4669: (rate_limits(), when the snapshot it comes from was read, as epoch seconds or None): see `reading`."""
+    w = _windows()
+    return w["used"], w["read"]
+
+
+def unknown_why(window=None, now=None):
+    """T-4671: why a usage figure is unknown although a statusline snapshot holds one, 'last read 9 h ago, over the 6 h a
+    reading stands'; None when none does or the figure stands. `window` (five_hour, seven_day): that window's figure;
+    none: every figure (none stands). What a reader shows beside 'unknown'."""
+    now = now or time.time()
+    w = _windows(now)
+    if window:
+        at = None if w["used"].get(window) is not None else w["stale"].get(window)
+    else:
+        at = None if w["used"] else max(w["stale"].values(), default=None)
+    if at is None:
+        return None
+    return f"last read {_ago(now - at)}, over the {READ_STALE_S // 3600} h a reading stands"
 
 
 def rate_limits():
@@ -264,29 +296,21 @@ WINDOWS = {"five_hour": 5 * 3600, "seven_day": 7 * 86400}
 def forecast(now=None):
     """T-0973: per usage window in the newest statusline snapshot, {used, resets_at, projected (percent at reset at
     the pace so far), full_at (when it fills, if before the reset; else None)}. A straight line from the window's
-    start: early in a window the projection swings, which the caller says."""
+    start: early in a window the projection swings, which the caller says. T-4671: the readings come through `reading`
+    (_windows): one too old to stand, or whose reset has passed, gives no window (see unknown_why)."""
     now = now or time.time()
-    for path in _recent_snaps():
-        try:
-            with open(path, encoding="utf-8") as f:
-                rl = json.load(f).get("rate_limits") or {}
-        except (OSError, ValueError, AttributeError):
-            continue
-        out = {}
-        for k, span in WINDOWS.items():
-            w = rl.get(k) or {}
-            used, resets = w.get("used_percentage"), w.get("resets_at")
-            if not isinstance(used, (int, float)) or isinstance(used, bool) or not isinstance(resets, (int, float)) \
-                    or not 0 < resets - now <= span:
-                continue  # no reading, a reset already past, or a millisecond epoch: no pace to tell
-            gone = span - (resets - now)
-            rate = used / gone if gone > 0 else 0  # percent per second so far
-            full_at = now + (100 - used) / rate if rate and used < 100 else (now if used >= 100 else None)
-            out[k] = {"used": used, "resets_at": resets, "projected": round(used + rate * (resets - now), 1),
-                      "full_at": full_at if full_at is not None and full_at < resets else None}
-        if out:
-            return out
-    return {}
+    w = _windows(now)
+    out = {}
+    for k, span in WINDOWS.items():
+        used, resets = w["used"].get(k), w["resets"].get(k)
+        if used is None or resets is None or not 0 < resets - now <= span:
+            continue  # no reading that stands, a reset already past, or one too far out: no pace to tell
+        gone = span - (resets - now)
+        rate = used / gone if gone > 0 else 0  # percent per second so far
+        full_at = now + (100 - used) / rate if rate and used < 100 else (now if used >= 100 else None)
+        out[k] = {"used": used, "resets_at": resets, "projected": round(used + rate * (resets - now), 1),
+                  "full_at": full_at if full_at is not None and full_at < resets else None}
+    return out
 
 
 def samples():
@@ -306,7 +330,7 @@ def note_snapshot(rate_limits_obj, now=None):
     w = rate_limits_obj.get("seven_day") if isinstance(rate_limits_obj, dict) else None
     if not isinstance(w, dict):
         return
-    used, resets = w.get("used_percentage"), w.get("resets_at")
+    used, resets = w.get("used_percentage"), c.epoch_seconds(w.get("resets_at"))  # T-4671: seconds or milliseconds
     if not _num(used) or not _num(resets) or not 0 < resets - now <= WINDOWS["seven_day"]:
         return
     path = _path("usage-samples.jsonl")
@@ -542,7 +566,8 @@ def _horizon_text():
 def _pace_text(week, pc):
     """T-3902: used %, the last 3 h's rate, the allowance to the horizon and the projection there, and the state."""
     if week is None:
-        return "no reading yet (a statusline snapshot supplies it)"
+        why = unknown_why("seven_day")  # T-4671: a reading too old to stand is unknown, said with its age
+        return f"unknown ({why})" if why else "no reading yet (a statusline snapshot supplies it)"
     if pc is None:
         return f"{week:g}% used · no horizon, so the 75% floor applies (sampo budget set --until TIME)"
     rate = "unknown (under two samples 15 min apart)" if pc["rate"] is None else f"{pc['rate']:g}%/h"

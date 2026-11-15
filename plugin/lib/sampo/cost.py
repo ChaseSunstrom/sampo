@@ -335,9 +335,11 @@ def _forecast(args, cli):
     rows = [f"{names[k]}: {v['used']:g}% used, on pace for {v['projected']:g}% at its reset ({clock(v['resets_at'])})"
             + (f"; fills about {clock(v['full_at'])}, before the reset" if v["full_at"] else "")
             for k, v in w.items()]
-    return cli.out(args, {"windows": w}, "\n".join(rows) + "\n(a straight line from the window's start: early on it "
-                     "swings)" if rows else "fm cost --forecast: no usage snapshot yet (the status line writes one "
-                     "each turn once Claude Code reports rate limits)")
+    why = budget.unknown_why()  # T-4671: a reading too old to stand is unknown, said with its age
+    return cli.out(args, {"windows": w, "unknown": why}, "\n".join(rows) + "\n(a straight line from the window's start: "
+                   "early on it swings)" if rows else f"fm cost --forecast: usage unknown ({why})" if why else
+                   "fm cost --forecast: no usage snapshot yet (the status line writes one each turn once Claude Code "
+                   "reports rate limits)")
 
 
 UNEXPLAINED_GAP_S = 1800  # a turn this far from every ledger event of its session has no Foreman work around it (T-1079)
