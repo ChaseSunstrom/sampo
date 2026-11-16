@@ -1597,6 +1597,9 @@ def _task_finish(p, args):
     --lens "<lens>: <result>", all done the --audit way), sets Docs impact, then fm task done. Anything that fails
     stops it before the audits; the failing runs stay recorded."""
     b = need_brief(p, args.id)
+    args.timeout_sized = getattr(args, "timeout", None) is None  # T-4832: no --timeout: the linked tests' limit is sized
+    if args.timeout_sized:
+        args.timeout = 600  # the fixed limit the close has always had (scaled by load)
     claims = parse_claims(getattr(args, "claim", None))  # a bad tag stops it before anything runs
     lane = c._git(p.root, "rev-parse", "--abbrev-ref", "HEAD").strip() == (b.meta.get("lane_branch") or f"foreman/{b.id}")
     if lane and not args.commit:  # T-4049: in its own lane, the close commits what it wrote
@@ -2180,6 +2183,24 @@ def _argv(root, cmd):
     return [os.path.realpath(exe)] + args + ([] if here == "." or here in args else [f"(in {here})"])
 
 
+def _close_limit(p, tests, cmd, env):
+    """T-4832: the close's linked-test run limit in s, sized from the set's recorded seconds as ship's affected stage is
+    (release._affected_limit, T-4788): (None, why) when the set is over the ceiling or the share (the next full gate
+    covers it: refused at once, no CPU spent), (0, "") when there is no record to size by (the fixed limit stands), else
+    (the limit, its line). A sizing that can't be read never fails the close."""
+    from sampo import release
+    try:
+        times, suite, jobs = release._run_times(p.root, cmd, env)
+        limit, line = release._affected_limit(tests, times, suite, c.host_load(), jobs)
+    except Exception:  # sizing only: the fixed limit stands
+        return 0, ""
+    if limit is None:
+        return None, line
+    if limit == release.AFFECTED_OLD and not line:
+        return 0, ""
+    return limit, line
+
+
 def _close_affected(p, b, runs, args):
     """T-1117: the tests linked (fm map) to what this task changed run at its close (one rerun for a flake), and a
     failure refuses it unless the last full gate run of another task already had it (then it's noted: that run's
@@ -2223,9 +2244,10 @@ def _close_affected(p, b, runs, args):
         return
     if res:
         left = {t for t in tests if t in res["paths"] or os.path.basename(t).rsplit(".", 1)[0] in res["run"]}
-        small, _, _ = affected(p, b, among=left)
+        small, small_tests, _ = affected(p, b, among=left)
         if small:
             cmd, note = small, f"ran {len(res['run'])} of {len(res['run']) + res['covered']}"
+            tests = small_tests  # T-4832: the set that runs is what the sizing reads
             say(f"linked tests: {res['covered']} of {len(res['run']) + res['covered']} covered by the gates' pass "
                 f"({res['by']}); running {c.joinmore(res['run'], 4)}")
         else:
@@ -2237,9 +2259,22 @@ def _close_affected(p, b, runs, args):
                                                           "cached": True}, session=session())
         _step_note(args, "affected", "cached")  # T-4600
         return
-    _step_note(args, "affected", note)  # T-4600: it did run here: the seconds beside it are the tests'
     env, venv = _venv_env(p.root, _skip_env(skip), cmd)  # T-4150: the close's run is the one that said "a module is missing"
-    timeout = c.load_scaled(args.timeout if args.timeout > 0 else None)
+    fixed = c.load_scaled(args.timeout if args.timeout > 0 else None)  # the fixed limit the close has always had
+    timeout, sized = fixed, None
+    if getattr(args, "timeout_sized", False):  # T-4832: an explicit --timeout is the limit; else the record decides
+        limit, line = _close_limit(p, tests, cmd, env)
+        if limit is None:  # over the ceiling or the share: refused now, not after a timeout's worth of CPU
+            c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "sized": c.fit(line, 200),
+                                                              "refused": "too big", "s": 0.0}, session=session())
+            raise c.PolicyError(f"{b.id} not finished: the linked tests are too many to run in a close ({line}); the next "
+                                "full gate (a train or sampo check) covers this tree: finish again after it, or waive on "
+                                "the record: --skip-affected \"<why>\"")
+        if limit and fixed:  # T-4832 review: the record only decides the refusal; a set that runs never times out sooner
+            timeout, sized = max(limit, fixed), limit
+        if line:
+            say(f"linked tests: {line}")
+    _step_note(args, "affected", note)  # T-4600: it did run here: the seconds beside it are the tests'
     if venv:
         say(f"linked tests: {_venv_note(venv)}")
     t0 = time.monotonic()
@@ -2251,15 +2286,17 @@ def _close_affected(p, b, runs, args):
         args.timings.append((cmd, secs))
     names = c.failing_tests(output) if code else []
     c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "exit": code, "failing": names[:20],
-                                                      "s": round(secs, 1), "cached": False,
+                                                      "s": round(secs, 1), "cached": False, "limit": timeout,
+                                                      "fixed_s": fixed, **({"sized_s": sized} if sized else {}),
                                                       **({"miss": c.fit(why[0], 300)} if why else {}),
                                                       **({"residual": {"ran": res["run"][:20], "covered": res["covered"]}}
                                                          if res else {})}, session=session())
     if not code:
         return
-    if code == 124:
-        raise c.PolicyError(f"{b.id} not finished: the tests linked to its changes timed out ({cmd}). Rerun with a "
-                            f"longer --timeout, or waive on the record: --skip-affected \"<why>\"")
+    if code == 124:  # T-4832: the sized limit ran out: the same advice as a set refused at once
+        raise c.PolicyError(f"{b.id} not finished: the tests linked to its changes timed out{f' at {timeout:.0f} s' if timeout else ''} ({cmd}). "
+                            "The next full gate (a train or sampo check) covers this tree: finish again after it, or rerun "
+                            "with a longer --timeout, or waive on the record: --skip-affected \"<why>\"")
     env_why = failure_class(output)
     if env_why:
         say(f"{b.id}: the linked tests couldn't run here ({env_why}): {cmd}; not held against the close")
@@ -8605,7 +8642,10 @@ def _build_parser(only=None):
                                                        "fields' CHANGELOG:); a close in the task's lane needs one (T-4054)")
     t.add_argument("--ablate", action="store_true", help="T-1067: revert each hunk alone against the linked tests and "
                                                          "report the ones no test notices (slow)")
-    t.add_argument("--timeout", type=float, default=600)
+    t.add_argument("--timeout", type=float, default=None,
+                   help="run limit in s for the linked tests (T-4832: unset, the limit is 600 s scaled by load, raised to "
+                        "the set's sized limit from its recorded seconds, and a set over the ceiling is refused at once; "
+                        "set, that limit is used as given and nothing is sized)")
     t.add_argument("--commit", metavar="MESSAGE", help="then commit the task's own files with this message")
     t.add_argument("--with", dest="with_", action="append", metavar="FILE",
                    help="with --commit: also commit FILE, which was already uncommitted when the task was focused "
