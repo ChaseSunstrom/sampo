@@ -1339,6 +1339,9 @@ class BuilderContractOneSource(unittest.TestCase):
             self.assertIn("Never use run_in_background", flat)
             self.assertIn("never end your turn while a job of yours is still running", flat)
             self.assertIn("never sleep to wait", flat)
+            # T-4826: the harness moves a long call to the background anyway; say how to wait for it
+            self.assertIn("timeout parameter", flat)
+            self.assertIn("timeout 590 tail --pid=PID -f /dev/null", flat)
 
 
 class _LaneRepo(ForemanTestCase):
