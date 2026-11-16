@@ -3003,6 +3003,61 @@ def twins_lines(rows):
     return [f"- {c.fit(x['old'], 70)!r} changed, still at {c.joinmore(x['still'], 3)}" for x in rows]
 
 
+SCAN_FAILED = "the private-term scan could not run: run it again"  # T-4783: no advice to amend; nothing was found
+
+
+def lane_files(main, tip):
+    """T-4783: the paths the lane at `tip` changes against main (--no-renames, so a file moved away is listed by its old
+    path too: T-0382), or None when git could not list them (a nonzero exit, a timeout, an OS error). The runner turns a
+    failure into empty output, and an empty list would read as "the lane changes no file": the guard loop would run over
+    nothing and the self-change gate would judge nothing, so every caller holds the lane on None."""
+    from sampo import cli
+    try:
+        r = _git(main, "diff", "--name-only", "--no-renames", "-z", f"HEAD...{tip}")
+    except (cli.UsageError, OSError):
+        return None
+    return None if r.returncode else [f for f in r.stdout.split("\0") if f]
+
+
+def scan_failed(p, b, tip, cause):
+    """T-4783: ('scan', SCAN_FAILED), after logging private_scan_failed with the cause (an exception class or "git exit N",
+    never git's output) and the tip's short id: the hold for a scan or a file listing that could not run."""
+    c.log_event(p, "private_scan_failed", task=b.id, data={"cause": cause, "tip": tip[:9]})
+    return "scan", SCAN_FAILED
+
+
+def private_refusal(p, b, main, tip):
+    """T-4783 (T-3999): (kind, why) for the lane `b` at `tip`: ('', '') when clean; ('hit', why) when its commits
+    (messages, added lines) or its changed files hold one of the user's private terms (sampo private) or a secrets-file
+    value, naming commits, files and line numbers, never the term; ('scan', SCAN_FAILED) when the scan could not run
+    (a git call that failed or timed out reads as empty output, which would read as "no commits, no files": so each
+    return code is checked, and the files are listed here, one path for both callers). The one check `merge` and the
+    train's hold step (train._held) both call, so the two paths can't drift apart again: a train once landed such a lane
+    that only ship met, after others sat on it. A failed scan holds the lane and logs private_scan_failed with the
+    exception class or the git exit status only, never git's output."""
+    from sampo import cli, release
+    cause, held, where, lines = "", [], [], {}
+    try:
+        revs = _git(main, "rev-list", f"HEAD..{tip}")
+        files = None if revs.returncode else lane_files(main, tip)
+        if revs.returncode:
+            cause = f"git exit {revs.returncode}"
+        elif files is None:
+            cause = "file listing failed"
+        else:
+            held, where = release._private_hits(main, revs.stdout.split(), tip, set(files))
+            lines = release.private_lines(main, tip, where) if where else {}
+    except (cli.UsageError, OSError) as e:  # the scan's own message may quote git; the lane is out either way
+        cause = type(e).__name__
+    if cause:
+        return scan_failed(p, b, tip, cause)
+    if not (held or where):
+        return "", ""
+    at = f" (lines {'; '.join(f'{f}:' + ','.join(map(str, n)) for f, n in lines.items())})" if lines else ""
+    return "hit", ("a private term (sampo private list) or a secrets-file value is in "
+                   f"{release.private_where(held, where)}{at}")
+
+
 def merge(p, b, main, unverified=None):
     """T-0377: merge a reviewed builder branch into the main checkout (--no-ff) through fm. On Sampo's own repo the
     guard refuses `git merge` (a tree write over core); here every file the branch changes must pass the guard as a
@@ -3024,17 +3079,17 @@ def merge(p, b, main, unverified=None):
                       state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(), scratch=[],
                       allow=set(b.meta.get("allow") or []), task_id=b.id, standing=set(meta.get("standing") or {}),
                       trusted=bool(c.trusted()))
-    # T-0382: --no-renames, so a file moved away is listed by its old path too (a rename deletes it from main)
-    files = [f for f in _git(main, "diff", "--name-only", "--no-renames", "-z", f"HEAD...{tip}").stdout.split("\0")
-             if f]
     # T-3999: ship refused a private term only once 47 commits sat on the one that added it (T-3932's test named a
     # real remote); here, the lane's own commits and files are judged as ship judges them, while amending is cheap
-    from sampo import release
-    held, where = release._private_hits(main, _git(main, "rev-list", f"HEAD..{tip}").stdout.split(), tip, set(files))
-    if held or where:
-        raise c.PolicyError(f"{b.id}: a private term (sampo private list) or a secrets-file value is in "
-                            f"{release.private_where(held, where)}; nothing was merged: redact it in the lane and amend "
+    kind, found = private_refusal(p, b, main, tip)  # T-4783: the train's hold step asks the same function
+    if kind == "scan":
+        raise c.PolicyError(f"{b.id}: {found}; nothing was merged")
+    if kind:
+        raise c.PolicyError(f"{b.id}: {found}; nothing was merged: redact it in the lane and amend "
                             "the commits that carry it, then merge again")
+    files = lane_files(main, tip)  # T-4783: None is a listing that failed, never "no files": the guard would judge nothing
+    if files is None:
+        raise c.PolicyError(f"{b.id}: {scan_failed(p, b, tip, 'file listing failed')[1]}; nothing was merged")
     # T-0403: the main thread is often mid-task, so uncommitted edits the branch doesn't touch stay and the merge goes
     # ahead, as git's own does; a staged change (the merge commit would record it) or an overlapping edit refuses
     entries, staged, dirty, i = _git(main, "status", "--porcelain", "-z", "--untracked-files=no").stdout.split("\0"), [], set(), 0

@@ -376,11 +376,17 @@ def _refuse_private(root, picks, tip, hits=None):
              "was pushed: redact it (sampo sync export for .sampo/; amend or rebase a commit that carries it), then ship again")
 
 
+def private_values():
+    """T-4783: the secrets-file values the private-term scan looks for besides the terms: a secret-named line only (a base
+    URL or a port there is no secret), eight characters or more. Empty when the file is unset, open to others or unreadable."""
+    from sampo import models, sandbox
+    return [v for k, v in models.secret_pairs() if len(v) >= 8 and sandbox.secret(k)]
+
+
 def _private_hits(root, picks, tip, paths=None):
     """(commits, files) of _refuse_private's scan, files named redacted; paths: only those files of tip's tree (T-3551:
     the tower checks the files its commit touches, so a file already on main can't hold its pushes back)."""
-    from sampo import models, sandbox  # a secret-named line only: a base URL or a port there is no secret
-    terms, values = c.private_terms(), [v for k, v in models.secret_pairs() if len(v) >= 8 and sandbox.secret(k)]
+    terms, values = c.private_terms(), private_values()
     if not terms and not values:
         return [], []
     def bad(text):
@@ -413,6 +419,23 @@ def _private_hits(root, picks, tip, paths=None):
             f = f.replace(v, "[REDACTED]")
         return c.redact_local(f)
     return commits, [shown(f) for f in files]
+
+
+def private_lines(root, tip, files, cap=5):
+    """T-4783: {file: [line numbers]} of the lines of tip's `files` that hold a private term or a secrets-file value:
+    numbers only, never the text (the files come from _private_hits, a path that holds a term already redacted: it
+    reads no blob, so it has no lines). At most `cap` files and `cap` numbers each."""
+    from sampo import models, sandbox
+    terms, values = c.private_terms(), [v for k, v in models.secret_pairs() if len(v) >= 8 and sandbox.secret(k)]
+    out = {}
+    for f in list(files)[:cap]:
+        r = c._git(root, "show", f"{tip}:{f}", timeout=60, proc=True)
+        if r.returncode or "\0" in r.stdout:  # no such path (a redacted name) or a binary
+            continue
+        nums = [i for i, ln in enumerate(r.stdout.splitlines(), 1) if c.has_private(ln, terms) or any(v in ln for v in values)]
+        if nums:
+            out[f] = nums[:cap]
+    return out
 
 
 def _push_main(p, tid, sha, remote, by):

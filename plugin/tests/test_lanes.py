@@ -195,7 +195,7 @@ class Lanes(ForemanTestCase):
         out = r.stdout + r.stderr
         self.assertNotEqual(r.returncode, 0, out)
         self.assertIn(f"private term (sampo private list) or a secrets-file value is in commit {leak[:8]} and file "
-                      "remote.py; nothing was merged", out)
+                      "remote.py (lines remote.py:1); nothing was merged", out)  # T-4783: the line too, never the term
         self.assertNotIn("example-private", out, "the term itself is never printed")
         self.assertEqual(self.git("rev-parse", "HEAD").strip(), before)
         with open(os.path.join(self.lane, "remote.py"), "w") as f:

@@ -574,6 +574,304 @@ class OneId(TrainCase):
         self.assertIn("no gate ran", r.stdout)
 
 
+class PrivateTerm(TrainCase):
+    """T-4783: the private-term check `lane merge` runs (T-3999) runs for every lane of a train, in the hold step, before
+    any probe or gate: a lane that adds a term is left out naming file and line (never the term); the others land.
+    The list is an invented one, set the way test_release sets its own (sampo private add)."""
+    TERM = "zorblat-private.example"
+
+    def setUp(self):
+        super().setUp()
+        self.fm("private", "add", self.TERM)
+
+    def dirty(self, n, name="remote.py"):
+        return self.lane(n, name, f'A = 1\nHOST = "llm.{self.TERM}"\nB = 2\n')
+
+    def counted(self):
+        """(calls, patch): release._private_hits wrapped to count its calls (this process only)."""
+        from unittest import mock
+        from sampo import release
+        calls, real = [], release._private_hits
+        return calls, mock.patch.object(release, "_private_hits",
+                                        side_effect=lambda *a, **k: calls.append(a[2]) or real(*a, **k))
+
+    def test_a_train_leaves_out_the_lane_that_adds_a_term_naming_file_and_line_and_lands_the_other(self):
+        bad, good = self.dirty(1), self.lane(2, "ok.txt")
+        r = self.train(bad, good)
+        out = r.stdout + r.stderr
+        self.assertIn(bad, out)
+        self.assertIn("remote.py", out)
+        self.assertRegex(out, r"remote\.py:2\b", "the line, as the merge note names it")
+        self.assertNotIn("zorblat", out, "the term itself is never printed")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "ok.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "remote.py")))
+        self.assertNotIn("zorblat", self.git("log", "-p", "--format=%B", "HEAD"), "it never reached the trunk")
+        self.assertTrue(self.meta(good)["lane_stop"].startswith("merged"), self.meta(good))
+        self.assertFalse(self.meta(bad).get("lane_stop", "").startswith("merged"))
+        self.assertEqual(self.gate_runs(), 1, "one gate run, on the lane that stayed")
+
+    def test_a_train_of_only_that_lane_lands_nothing_and_runs_no_gate(self):
+        bad = self.dirty(1)
+        r = self.train(bad, self.dirty(2, "other.py"), check=False)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("remote.py", out)
+        self.assertIn("other.py", out)
+        self.assertNotIn("zorblat", out)
+        self.assertEqual(self.gate_runs(), 0)
+
+    def test_a_term_in_a_commit_the_lane_later_cleans_still_leaves_it_out(self):
+        tid = self.dirty(1)
+        path = os.path.join(self.tmp, "lane1")
+        with open(os.path.join(path, "remote.py"), "w") as f:
+            f.write("A = 1\n")
+        self.git("commit", "-qam", "clean it", cwd=path)  # the first commit still carries the term
+        r = self.train(tid, self.lane(2, "ok.txt"))
+        out = r.stdout + r.stderr
+        self.assertIn("private term", out)
+        self.assertIn(self.git("rev-parse", "--short=8", "foreman/lane1~1"), out, "the commit that carries it")
+        self.assertNotIn("zorblat", out)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "remote.py")))
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "ok.txt")))
+
+    def test_a_one_id_merge_of_that_lane_is_refused_once_with_no_gate_run(self):
+        bad = self.dirty(1)
+        calls, patch = self.counted()
+        from sampo import core as c, lanes
+        p = c.find_project(self.repo)
+        with patch, self.assertRaises(c.PolicyError) as ctx:
+            lanes.merge(p, c.find_brief(p, bad), self.repo)
+        self.assertEqual(len(calls), 1, "asked once: not twice, not never")
+        msg = str(ctx.exception)
+        self.assertIn("remote.py:2", msg)
+        self.assertNotIn("zorblat", msg)
+        self.assertEqual(self.gate_runs(), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "remote.py")))
+
+    def test_a_clean_one_id_merge_asks_once_and_the_train_of_one_does_not_ask_again(self):
+        tid = self.lane(1, "a.txt")
+        calls, patch = self.counted()
+        from sampo import core as c, lanes
+        p = c.find_project(self.repo)
+        with patch:
+            lanes.merge(p, c.find_brief(p, tid), self.repo)
+        self.assertEqual(len(calls), 1, "merge asked; the judged tip is not asked again in the train")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")))
+
+    def test_every_lane_of_a_multi_id_train_is_asked_in_the_hold_step(self):
+        ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt"), self.lane(3, "c.txt")]
+        calls, patch = self.counted()
+        from sampo import core as c, train
+        with patch:
+            train.train(c.find_project(self.repo), self.repo, ids)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sorted(calls), sorted(self.git("rev-parse", f"foreman/lane{n}") for n in (1, 2, 3)))
+
+    def refusal(self, tid, n=1):
+        """lanes.private_refusal for the task tid's lane n: (kind, why)."""
+        from sampo import core as c, lanes
+        p = c.find_project(self.repo)
+        return lanes.private_refusal(p, c.find_brief(p, tid), self.repo, self.git("rev-parse", f"foreman/lane{n}"))
+
+    def failing(self, verb, rc=124):
+        """lanes._git where only the `verb` call (rev-list, diff) fails as a timeout does: empty stdout, a return code."""
+        import subprocess
+        from unittest import mock
+        from sampo import lanes
+        real = lanes._git
+        return mock.patch.object(lanes, "_git", side_effect=lambda root, *a, **k: subprocess.CompletedProcess(
+            ["git", *a], rc, "", "boom: output text") if a[:1] == (verb,) else real(root, *a, **k))
+
+    def failing_listing_again(self):
+        """lanes._git where the file listing (diff --name-only) fails from its second call with the same arguments on:
+        the private check's own listing passes, the guard's listing after it fails (T-4783)."""
+        import subprocess
+        from unittest import mock
+        from sampo import lanes
+        real, seen = lanes._git, {}
+
+        def run(root, *a, **k):
+            if "--name-only" in a and "--diff-filter=U" not in a:
+                seen[a] = seen.get(a, 0) + 1
+                if seen[a] > 1:
+                    return subprocess.CompletedProcess(["git", *a], 128, "", "boom: output text")
+            return real(root, *a, **k)
+        return mock.patch.object(lanes, "_git", side_effect=run)
+
+    def scan_events(self):
+        from sampo import core as c
+        return [e for e in c.ledger_tail(c.find_project(self.repo), 300) if e.get("event") == "private_scan_failed"]
+
+    def test_a_failing_rev_list_holds_the_lane_and_says_the_scan_could_not_run(self):
+        tid = self.lane(1, "ok.txt")
+        with self.failing("rev-list"):
+            kind, why = self.refusal(tid)
+        self.assertEqual(kind, "scan", why)
+        self.assertIn("could not run: run it again", why)
+        self.assertNotIn("redact", why, "no advice to amend commits for a scan that did not run")
+        self.assertNotIn("boom", why)
+        [ev] = self.scan_events()
+        self.assertEqual(ev["task"], tid)
+        self.assertEqual(ev["data"].get("cause"), "git exit 124")
+        self.assertNotIn("boom", json.dumps(ev), "git's output text is never logged")
+
+    def test_a_failing_diff_holds_the_lane(self):
+        tid = self.lane(1, "ok.txt")
+        with self.failing("diff", rc=1):
+            kind, why = self.refusal(tid)
+        self.assertEqual(kind, "scan", why)
+        self.assertEqual(self.scan_events()[0]["data"].get("cause"), "file listing failed")
+
+    def test_a_listing_that_fails_after_the_private_check_holds_the_one_id_merge(self):
+        tid = self.lane(1, "ok.txt")
+        from sampo import core as c, lanes
+        p = c.find_project(self.repo)
+        with self.failing_listing_again(), self.assertRaises(c.PolicyError) as ctx:
+            lanes.merge(p, c.find_brief(p, tid), self.repo)
+        self.assertIn("could not run: run it again", str(ctx.exception))
+        self.assertNotIn("boom", str(ctx.exception))
+        self.assertEqual(self.scan_events()[0]["data"].get("cause"), "file listing failed")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "ok.txt")))
+        self.assertEqual(self.gate_runs(), 0)
+
+    def test_a_listing_that_fails_after_the_private_check_holds_the_lane_of_a_train_not_lands_it_unguarded(self):
+        from sampo import core as c, train
+        ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt")]
+        with self.failing_listing_again(), self.assertRaises(c.PolicyError) as ctx:
+            train.train(c.find_project(self.repo), self.repo, ids)
+        self.assertEqual([i for i, _ in ctx.exception.left], ids)
+        for _, why in ctx.exception.left:
+            self.assertIn("could not run: run it again", why)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")))
+        self.assertEqual(self.gate_runs(), 0)
+
+    def test_a_listing_that_times_out_is_none_not_an_empty_list(self):
+        from unittest import mock
+        from sampo import cli, lanes
+        tip = self.git("rev-parse", "HEAD")
+        self.assertEqual(lanes.lane_files(self.repo, tip), [])
+        with mock.patch.object(lanes, "_git", side_effect=cli.UsageError("git timed out")):
+            self.assertIsNone(lanes.lane_files(self.repo, tip))
+
+    def test_a_train_holds_both_lanes_when_the_files_cannot_be_listed(self):
+        from sampo import core as c, train
+        ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt")]
+        with self.failing("diff"), self.assertRaises(c.PolicyError) as ctx:
+            train.train(c.find_project(self.repo), self.repo, ids)
+        self.assertEqual([i for i, _ in ctx.exception.left], ids)
+        for _, why in ctx.exception.left:
+            self.assertIn("could not run: run it again", why)
+            self.assertNotIn("redact", why)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")))
+        self.assertEqual(self.gate_runs(), 0)
+
+    def test_an_os_error_in_the_scan_holds_the_lane_and_the_train_goes_on(self):
+        from unittest import mock
+        from sampo import core as c, release, train
+        ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt")]
+        real, seen = release.tempfile.mkdtemp, []
+
+        def flaky(*a, **k):
+            if k.get("prefix") == "sampo-private-" and not seen:  # the scratch folder of the first lane's scan only
+                seen.append(1)
+                raise OSError(28, "no space left")
+            return real(*a, **k)
+        with mock.patch.object(release.tempfile, "mkdtemp", side_effect=flaky):
+            got = train.train(c.find_project(self.repo), self.repo, ids)
+        self.assertEqual(got["merged"], [ids[1]])
+        self.assertEqual([i for i, _ in got["left_out"]], [ids[0]])
+        self.assertIn("could not run: run it again", got["left_out"][0][1])
+        self.assertEqual(self.scan_events()[0]["data"].get("cause"), "OSError")
+
+    def test_a_scan_that_fails_in_a_one_id_merge_is_refused_with_the_rerun_advice(self):
+        tid = self.lane(1, "ok.txt")
+        from sampo import core as c, lanes
+        p = c.find_project(self.repo)
+        with self.failing("rev-list"), self.assertRaises(c.PolicyError) as ctx:
+            lanes.merge(p, c.find_brief(p, tid), self.repo)
+        self.assertIn("could not run: run it again", str(ctx.exception))
+        self.assertNotIn("amend", str(ctx.exception))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "ok.txt")))
+
+    def test_a_term_only_in_a_commit_message_leaves_the_lane_out_naming_the_commit(self):
+        tid = self.lane(1, "ok.txt")
+        path = os.path.join(self.tmp, "lane1")
+        self.git("commit", "-q", "--amend", "-m", f"fix the host llm.{self.TERM}", cwd=path)
+        kind, why = self.refusal(tid)
+        self.assertEqual(kind, "hit", why)
+        self.assertIn(self.git("rev-parse", "--short=8", "foreman/lane1"), why)
+        self.assertNotIn(" file", why, "no file holds it")
+        self.assertNotIn("zorblat", why)
+        r = self.train(tid, self.lane(2, "b.txt"))
+        self.assertNotIn("zorblat", r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "ok.txt")))
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "b.txt")))
+
+    def test_a_merge_commit_inside_the_lane_that_brings_the_term_leaves_it_out(self):
+        tid = self.lane(1, "ok.txt")
+        path = os.path.join(self.tmp, "lane1")
+        who = ("-c", "user.name=t", "-c", "user.email=t@localhost")
+        self.git("checkout", "-q", "-b", "side", "HEAD~1", cwd=path)
+        with open(os.path.join(path, "side.py"), "w") as f:
+            f.write(f'HOST = "llm.{self.TERM}"\n')
+        self.git("add", "side.py", cwd=path)
+        self.git(*who, "commit", "-qm", "side", cwd=path)
+        self.git("checkout", "-q", "foreman/lane1", cwd=path)
+        self.git(*who, "merge", "-q", "--no-ff", "-m", "bring the side in", "side", cwd=path)
+        self.assertEqual(len(self.git("rev-list", "--merges", "HEAD~1..foreman/lane1", cwd=path).split()), 1)
+        self.git("branch", "-q", "-D", "side", cwd=path)
+        r = self.train(tid, self.lane(2, "b.txt"))
+        out = r.stdout + r.stderr
+        self.assertIn("side.py:1", out)
+        self.assertNotIn("zorblat", out)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "side.py")))
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "b.txt")))
+
+    def test_unverified_on_a_one_id_merge_still_runs_the_private_check(self):
+        tid = self.dirty(1, "remote.py")
+        r = self.fm("lane", "merge", tid, "--unverified", "the criterion needs a service this box lacks", check=False)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("remote.py:2", out)
+        self.assertNotIn("zorblat", out)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "remote.py")))
+
+    def test_no_term_list_asks_nothing_of_a_clean_lane_and_the_train_says_so(self):
+        self.fm("private", "rm", self.TERM)
+        tid = self.lane(1, "a.txt")
+        self.assertEqual(self.refusal(tid), ("", ""))
+        r = self.train(tid)
+        out = r.stdout + r.stderr
+        self.assertIn("the private-term check had no term list", out)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")))
+
+    def test_an_unreadable_term_list_holds_nothing_but_the_train_says_so(self):
+        from sampo import core as c
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("{not json")
+        r = self.train(self.lane(1, "a.txt"))
+        out = r.stdout + r.stderr
+        self.assertIn("the private-term check had no term list", out)
+        self.assertNotIn(c.PRIVATE_TERMS, out, "no path in the line")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")))
+
+    def test_no_term_list_but_a_secrets_file_says_that_only_its_values_were_scanned(self):
+        self.fm("private", "rm", self.TERM)
+        path = os.path.join(self.tmp, "invented-secrets.env")
+        with open(path, "w") as f:
+            f.write("INVENTED_API_KEY=invented-value-0123456789\n")
+        os.chmod(path, 0o600)
+        r = self.train(self.lane(1, "a.txt"), env={"SAMPO_SECRETS": path})
+        out = r.stdout + r.stderr
+        self.assertIn("had no term list", out)
+        self.assertIn("only the secrets-file values were scanned", out)
+        self.assertNotIn("invented-value", out)
+
+    def test_a_train_with_a_term_list_prints_no_such_line(self):
+        r = self.train(self.lane(1, "a.txt"))
+        self.assertNotIn("had no term list", r.stdout + r.stderr)
+
+
 class AffectedBase(TrainCase):
     """T-3544's fixture (T-4705 shares it): a suite whose runs are logged, set as the gate and the affected template."""
     def setUp(self):

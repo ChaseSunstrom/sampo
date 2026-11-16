@@ -532,15 +532,23 @@ MOVED = "the lane moved while merging: run it again"  # T-4756: its tip is not t
 
 
 def _held(p, b, main, tip):
-    """The reason `sampo lane merge` would refuse this lane's files (guard, self-change gate), or ''."""
+    """The reason `sampo lane merge` would refuse this lane (private term, guard, self-change gate), or ''. T-4783: the
+    private-term check is lanes.private_refusal, the function `merge` calls, first: a lane that carries a term never
+    reaches a probe or a gate (the train once landed one that only ship met). Its reason names commit, file and line."""
     import fmguard
-    from sampo import selfgate
+    from sampo import lanes, selfgate
     meta = c.read_meta(p)
     ctx = fmguard.Ctx(cwd=main, project_root=main, home=os.path.expanduser("~"), foreman_home=c.foreman_home(),
                       state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(), scratch=[],
                       allow=set(b.meta.get("allow") or []), task_id=b.id, standing=set(meta.get("standing") or {}),
                       trusted=bool(c.trusted()))
-    files = [f for f in _git(main, "diff", "--name-only", "--no-renames", "-z", f"HEAD...{tip}").stdout.split("\0") if f]
+    kind, found = lanes.private_refusal(p, b, main, tip)
+    if kind:
+        return found + ("" if kind == "scan" else
+                        "; left out: redact it in the lane and amend the commits that carry it, then land it again")
+    files = lanes.lane_files(main, tip)  # T-4783: after the private check; None is a failed listing, held like a failed scan
+    if files is None:
+        return lanes.scan_failed(p, b, tip, "file listing failed")[1]
     for f in files:
         blk = fmguard.check("Write", {"file_path": os.path.join(main, f), "content": ""}, ctx)
         if blk:
@@ -735,6 +743,11 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     left, notes = [], []  # notes: (id, what a probe saw that still let the lane on)
     kept_maps = {}  # T-4375: lane id: the docs/map files its merge resolved keeping both sides' lines
     cands, rows = [], []  # (brief, tip) in order; (brief, tip, why so far) in order
+    if not c.private_terms():  # T-4783: an unset or unreadable list holds nothing: say so, never the path
+        from sampo import release
+        print("sampo: train: the private-term check had no term list (none set, or it can't be read)"
+              + (", so only the secrets-file values were scanned" if release.private_values() else "")
+              + ": sampo private add TERM sets one", file=sys.stderr, flush=True)
     for tid in ids:
         b = cli.need_brief(p, tid)
         br = b.meta.get("lane_branch") or f"foreman/{b.id}"
