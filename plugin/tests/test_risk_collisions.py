@@ -506,25 +506,40 @@ class Collisions(HookCase):
 
 
 class CargoTarget(HookCase):
-    """T-4742: cargo, rustc and rustup write the target folder Sampo assigns, and nothing else under Sampo's state."""
+    """T-4742, T-4764: cargo, rustc and rustup write the target folder Sampo assigns the lane they run in, and nothing
+    else under Sampo's state: not another lane's folder, not the retired shared one."""
 
     def setUp(self):
         super().setUp()
         with open(os.path.join(self.repo, "Cargo.toml"), "w") as f:
             f.write('[package]\nname = "x"\nversion = "0.1.0"\n')
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True, capture_output=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "rust"], check=True, capture_output=True)
         self.fm("init")
-        self.dir = c.cargo_shared_dir(self.project().slug)
-        self.cache = os.path.dirname(os.path.dirname(self.dir))  # state/cache
+        slug = self.project().slug
+        self.lane = os.path.realpath(self.make_lane("lane-a"))
+        self.other = os.path.realpath(self.make_lane("lane-b"))
+        self.dir = c.cargo_lane_dir(slug, self.lane)
+        self.other_dir = c.cargo_lane_dir(slug, self.other)
+        self.old = c.cargo_shared_dir(slug)  # T-4575's retired shared folder
+        self.cache = os.path.dirname(os.path.dirname(os.path.dirname(self.dir)))  # state/cache/cargo-lanes/<slug>/<lane>: state/cache
 
-    def verdict(self, cmd):
-        return json.loads(self.fm("guard", "try", cmd, "--cwd", self.repo, "--json").stdout)
+    def make_lane(self, name):
+        path = os.path.join(self.tmp, "lanes", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", f"foreman/{name}", path],
+                       check=True, capture_output=True)
+        return path
 
-    def allowed(self, cmd):
-        v = self.verdict(cmd)
+    def verdict(self, cmd, cwd=None):
+        return json.loads(self.fm("guard", "try", cmd, "--cwd", cwd or self.lane, "--json").stdout)
+
+    def allowed(self, cmd, cwd=None):
+        v = self.verdict(cmd, cwd)
         self.assertEqual(v["decision"], "allow", (cmd, v))
 
-    def refused(self, cmd, cat="state-direct"):
-        v = self.verdict(cmd)
+    def refused(self, cmd, cat="state-direct", cwd=None):
+        v = self.verdict(cmd, cwd)
         self.assertEqual((v["decision"], v["category"]), ("deny", cat), (cmd, v))
 
     def test_the_assigned_folder_is_written_by_cargo_rustc_and_rustup(self):
@@ -537,13 +552,33 @@ class CargoTarget(HookCase):
 
     def test_everything_else_under_state_stays_refused(self):
         self.refused(f"CARGO_TARGET_DIR={self.cache}/other cargo build")  # a sibling folder
-        self.refused(f"cargo build --target-dir {self.cache}/cargo-target")  # the folder above every project's
+        self.refused(f"cargo build --target-dir {self.cache}/cargo-lanes")  # the folder above every project's
+        self.refused(f"cargo build --target-dir {os.path.dirname(self.dir)}")  # the folder above every lane's
         self.refused(f"cargo build --target-dir {self.dir}-other")  # a name that merely starts alike
-        self.refused(f"cargo build --target-dir {self.cache}/cargo-target/another-project")
+        self.refused(f"cargo build --target-dir {self.cache}/cargo-lanes/another-project")
         self.refused(f"cargo build --target-dir {c.state_dir()}/projects")
         self.refused(f"cargo build --target-dir {self.dir}/../other")  # '..' out of it
-        self.refused(f"cargo build --target-dir {self.dir}/../../../projects")
+        self.refused(f"cargo build --target-dir {self.dir}/../../../../projects")
         self.refused(f"CARGO_TARGET_DIR={self.dir}/x/../../y cargo build")
+
+    def test_a_lane_may_not_write_another_lanes_folder_and_each_may_write_its_own(self):
+        """T-4764: the folder Sampo hands a lane is the only one its cargo calls may write (both directions)."""
+        self.refused(f"CARGO_TARGET_DIR={self.other_dir} cargo build")
+        self.refused(f"cargo build --target-dir {self.other_dir}/debug")
+        self.refused(f"rustc main.rs --out-dir {self.other_dir}/out")
+        self.allowed(f"cargo build --target-dir {self.dir}")
+        self.assertNotEqual(self.dir, self.other_dir)
+        self.allowed(f"cargo build --target-dir {self.other_dir}", cwd=self.other)
+        self.refused(f"cargo build --target-dir {self.dir}", cwd=self.other)
+        self.refused(f"CARGO_TARGET_DIR={self.dir}/debug cargo build", cwd=self.other)
+
+    def test_the_retired_shared_folder_is_no_longer_writable(self):
+        self.refused(f"CARGO_TARGET_DIR={self.old} cargo build")
+        self.refused(f"cargo build --target-dir {self.old}/debug")
+        self.refused(f"cargo build --target-dir {os.path.dirname(self.old)}")
+
+    def test_the_main_checkout_has_no_lane_folder_to_write(self):
+        self.refused(f"cargo build --target-dir {self.dir}", cwd=self.repo)
 
     def test_only_a_cargo_rustc_or_rustup_call_may_write_there(self):
         self.refused(f"echo x > {self.dir}/a")
@@ -562,7 +597,7 @@ class CargoTarget(HookCase):
         self.refused(f"cargo build --target-dir {self.dir}/link/x")
         self.refused(f"CARGO_TARGET_DIR={self.dir}/link/x cargo build")
 
-    def test_a_project_without_cargo_toml_or_with_the_shared_folder_off_has_no_such_folder(self):
+    def test_a_project_without_cargo_toml_or_with_the_lane_folders_off_has_no_such_folder(self):
         os.remove(os.path.join(self.repo, "Cargo.toml"))
         self.refused(f"cargo build --target-dir {self.dir}")
 

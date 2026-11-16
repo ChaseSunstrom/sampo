@@ -4597,9 +4597,14 @@ def cmd_focus(args):
         if c.stage(target) != stage_before:
             c.log_event(p, "stage", task=target.id, data={"from": stage_before, "to": c.stage(target)}, session=session())
         c.export_mirror(p)
-    if p.lane:  # T-4717: a builder's own cargo commands reach the project's shared target folder (a hint: never fails a focus)
+    cargo_line = ""
+    if p.lane:  # T-4717, T-4764: a builder's own cargo commands reach the lane's own target folder (a hint: never fails a focus)
         try:
             c.lane_cargo_config(p.lane)
+            cargo_line = c.cargo_focus_line(p.lane, p.slug)
+            from sampo import lanes
+            pruned = lanes.auto_prune(p)  # T-4764: the cap holds without `sampo tidy`: at most once in ten minutes
+            cargo_line = f"{cargo_line}\n{pruned}" if pruned and cargo_line else (pruned or cargo_line)
         except Exception:
             pass
     try:
@@ -4635,7 +4640,7 @@ def cmd_focus(args):
            if was_active and not first_focus and not shifted and target.meta.get("base") else "")
         + (f"\nNote: {shifted}" if shifted else "")
         + (f"\nStale since it started (gone from the repo now): {', '.join(stale)} — re-check the brief." if stale else "")
-        + (f"\n{related}" if related else "") + (f"\n{record}" if record else "")
+        + (f"\n{related}" if related else "") + (f"\n{record}" if record else "") + (f"\n{cargo_line}" if cargo_line else "")
         + f"\nDone needs: {', '.join(g for g, _ in gates(target.type, target.tier))} (sampo gates {target.id})")
 
 

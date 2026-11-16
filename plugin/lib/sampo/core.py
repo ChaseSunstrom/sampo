@@ -1616,39 +1616,29 @@ CARGO_KEPT = (CARGO_VAR, "CARGO_BUILD_TARGET_DIR")  # the two names cargo reads 
 CARGO_CONFIG_MAX = 1 << 20  # bytes of a cargo config read: a larger file is not one
 
 
-def _cargo_config_dir(path):
-    """build.target-dir of one cargo config file, '' when it has none, can't be read or isn't TOML."""
+def _cargo_config_build(path):
+    """The [build] table of one cargo config file, {} when it has none, can't be read or isn't TOML."""
     import tomllib
     try:
         with open(path, "rb") as f:
             data = tomllib.loads(f.read(CARGO_CONFIG_MAX).decode("utf-8"))
     except (OSError, ValueError):  # a torn file is tomllib's ValueError, a bad byte UnicodeDecodeError's
-        return ""
+        return {}
     build = data.get("build")
-    val = build.get("target-dir") if isinstance(build, dict) else ""
+    return build if isinstance(build, dict) else {}
+
+
+def _cargo_config_dir(path):
+    """build.target-dir of one cargo config file, '' when it has none, can't be read or isn't TOML."""
+    val = _cargo_config_build(path).get("target-dir")
     return val if isinstance(val, str) else ""
 
 
-def cargo_target(root, slug=None, environ=None):
-    """T-4575: (dir, note) for a Rust project's lanes. Builder lanes each compiled into their own target folder (8.6 to
-    15 GB in 40 minutes, 99% disk, twice), so a project whose checkout root holds a Cargo.toml has ONE shared
-    CARGO_TARGET_DIR under Sampo's state (cache/, which fsck and sync leave alone), outside the repo and its lanes:
-    cargo locks it, so lane builds queue rather than duplicate. `root` is the checkout or any lane of it. (None, "")
-    for a project without a Cargo.toml; (None, why) when the user already chose (the environment, or build.target-dir
-    in the project's .cargo/config[.toml], the lane's own, or cargo home's): kept, never overridden."""
-    main = main_worktree(root) or root
-    if not os.path.isfile(os.path.join(main, "Cargo.toml")):
-        return None, ""
-    environ = os.environ if environ is None else environ
-    if cargo_shared_off(environ):
-        return None, f"{CARGO_SHARED_VAR}=0: every lane builds into its own target folder"
-    for name in CARGO_KEPT:
-        if environ.get(name):
-            return None, f"{name} is already {environ[name]} in the environment: kept"
-    shared = cargo_shared_dir(slug or (find_project(root) or _project(slug_for(main), main)).slug)
+def _cargo_config_files(main, root, environ):
+    """Every cargo config file cargo reads for a command run in `root` of the project at `main`: each ancestor's
+    .cargo/config.toml and .cargo/config (the project's and the lane's, and the lanes' parent, where Sampo's own
+    marked file may sit), then cargo home's."""
     home = environ.get("CARGO_HOME") or os.path.join(os.path.expanduser("~"), ".cargo")
-    # T-4717: cargo reads every ancestor's .cargo/config[.toml] of the folder it runs in, the project's and the lane's
-    # (and the lanes' parent, where Sampo's own marked file may sit: never the user's choice), then cargo home
     folders = []
     for start in (main, root):
         d = os.path.abspath(start)
@@ -1657,33 +1647,279 @@ def cargo_target(root, slug=None, environ=None):
             if os.path.dirname(d) == d:
                 break
             d = os.path.dirname(d)
-    for folder in dict.fromkeys(folders + [home]):
-        for name in ("config.toml", "config"):
-            path = os.path.join(folder, name)
-            val = _cargo_config_dir(path)
-            if val and not cargo_config_ours(path):
-                return None, f"build.target-dir is already {val} in {path}: kept"
-    return shared, ""
+    return [os.path.join(folder, name) for folder in dict.fromkeys(folders + [home]) for name in ("config.toml", "config")]
+
+
+CARGO_LANES = "cargo-lanes"  # T-4764: cache/cargo-lanes/<slug>/<lane>: one target folder per lane
+CARGO_OLD = "cargo-target"  # T-4575's one shared folder per project: retired (lanes.retire_cargo_shared)
+CARGO_LANE_MARK = ".sampo-lane"  # in a lane's folder: the lane's real path, so a folder whose lane is gone is found
+
+
+def cargo_lanes_base(slug):
+    """T-4764: the folder that holds one project's lane target folders (state/cache/, which fsck and sync leave alone)."""
+    return os.path.join(state_dir(), "cache", CARGO_LANES, slug)
+
+
+def cargo_lane_name(lane):
+    """T-4764: the folder name for a lane: its folder's name (cleaned to letters, digits, `.`, `_`, `-`, 48 at most, never
+    leading with a dot) and a hash of its real path, so two lanes never share a name and no path text reaches the
+    file system as it came."""
+    real = os.path.realpath(lane)
+    stem = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(real))[:48].lstrip(".") or "lane"
+    return f"{stem}-{sha1(real.encode('utf-8', 'surrogateescape')).hexdigest()[:10]}"
+
+
+def cargo_lane_dir(slug, lane):
+    """T-4764: the cargo target folder of one lane (whether or not it exists yet)."""
+    return os.path.join(cargo_lanes_base(slug), cargo_lane_name(lane))
+
+
+CARGO_GATE = "gate"  # T-4764: the stable folder of a project's throwaway worktrees; no hash suffix, so it is no lane folder's name
+GATE_LOCK = "gate.lock"  # beside it: the run that holds this flock for its whole command owns the stable folder; its mtime is the last use
+GATE_PRIVATE = lazy(r"^gate-p(\d+)-[0-9a-f]{6}$")  # a run that finds the stable folder busy builds in one of these (pid of its Sampo process)
+
+
+def cargo_gate_dir(slug):
+    """T-4764: the stable cargo target folder a project's throwaway worktrees share (the gate's and the train's checkouts,
+    made fresh for every run): a warm build each time, and no new 8 to 15 GB folder per run. It is safe only while ONE
+    run uses it: two runs of different code in one folder are the original defect again (cargo issue 12516: a test
+    binary relinked under a run). Only the train serialises its own runs; a post-merge verify and a ship run detached
+    beside it. So run_command takes a lock for the whole command (cargo_gate_slot): the holder builds here, a run that
+    finds it busy builds into a private gate-p<pid>-<hex> folder that goes when its command ends. Neither name matches
+    lanes.LANE_FOLDER (what the prune, the orphan sweep and every removal accept). `sampo tidy` removes this folder
+    when no run or process holds it and it is unused for 14 days or over the lane cap, and a private folder whose run
+    died (tidy, and the prune a lane start or focus runs)."""
+    return os.path.join(cargo_lanes_base(slug), CARGO_GATE)
+
+
+@_contextmanager
+def cargo_gate_slot(gate, touch=True):
+    """T-4764: the cargo target folder one throwaway run builds into, for the whole `with`: `gate` (the stable folder)
+    when a non-blocking flock on the lock file beside it (GATE_LOCK) is ours, else a private folder
+    <lanes base>/gate-p<pid>-<6 hex> made by nobody but cargo and removed, by that exact path, when the block ends
+    (also when it raises). A lock that cannot be taken (a file system without flock, a read-only folder) means the
+    private folder too: never the shared one unlocked. `touch`: the lock file's mtime marks the stable folder used, at
+    entry and exit (tidy asks without it, so asking does not make an unused folder look used). The lock is released
+    when this process ends, however it ends: a killed Sampo process frees it while its children (cargo, the tests) may
+    still run in the stable folder, so a second run can then share it (an accepted residual, not guarded)."""
+    base = os.path.dirname(gate)
+    lock = os.path.join(base, GATE_LOCK)
+    fd = None
+    try:
+        os.makedirs(base, exist_ok=True)
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, ValueError):
+        if fd is not None:
+            with contextlib.suppress(OSError):
+                os.close(fd)
+        fd = None
+    if fd is not None:
+        try:
+            if touch:
+                with contextlib.suppress(OSError):
+                    os.utime(fd)
+            yield gate
+        finally:
+            if touch:
+                with contextlib.suppress(OSError):
+                    os.utime(fd)
+            with contextlib.suppress(OSError):
+                os.close(fd)  # closing the descriptor releases the flock
+        return
+    private = os.path.join(base, f"gate-p{os.getpid()}-{os.urandom(3).hex()}")
+    try:
+        yield private
+    finally:
+        if GATE_PRIVATE.match(os.path.basename(private)) and os.path.dirname(private) == base:
+            shutil.rmtree(private, ignore_errors=True)  # its own exact path: a link inside goes as a link
+
+
+def _head_detached(root):
+    """Whether the linked worktree at `root` has a detached HEAD, read from its git folder's HEAD file (no git process).
+    False when it can't be read."""
+    try:
+        with open(os.path.join(root, ".git"), encoding="utf-8", errors="replace") as f:
+            line = f.readline().strip()
+        if not line.startswith("gitdir:"):
+            return False
+        gitdir = os.path.join(root, line[7:].strip())
+        with open(os.path.join(gitdir, "HEAD"), encoding="utf-8", errors="replace") as f:
+            head = f.readline().strip()
+    except OSError:
+        return False
+    return bool(head) and not head.startswith("ref:")
+
+
+CARGO_THROWAWAY_PREFIXES = ("sampo-base-", "sampo-probe-", "sampo-train-", "sampo-batch-", "fm-verify-", "fm-hunks-",
+                            "fm-prove-", "fm-at-", "fm-bench-", "fm-stack-", "fm-train-")  # the mkdtemp prefixes of Sampo's own
+
+
+def cargo_throwaway(root):
+    """T-4764: whether `root` is a throwaway worktree Sampo made for one run: a linked worktree with a detached HEAD,
+    outside the project's lane homes (<main>.lanes/, <main>/.claude/worktrees/), that IS a temp folder of Sampo's own
+    or sits one level below one: directly in the temp folder under a CARGO_THROWAWAY_PREFIXES name (train, base, probe,
+    batch), or in such a folder (fm-verify-*/wt) or in a TemporaryDirectory (tmp*/ship, tmp*/rel: release.py). A
+    detached worktree of the user's (a scratch checkout, a bisect) is none of these: it gets a folder of its own, like a
+    lane, never the gate's. A lane is a branch checkout in a lane home, detached or not."""
+    if not os.path.isfile(os.path.join(root, ".git")):
+        return False
+    main = main_worktree(root)
+    if not main:
+        return False
+    real = os.path.realpath
+    path = real(root)
+    if os.path.dirname(path) in (real(main) + ".lanes", real(os.path.join(main, ".claude", "worktrees"))):
+        return False
+    tmp = real(gettempdir())
+    parent = os.path.dirname(path)
+    leaf = os.path.basename(path)
+    if parent == tmp:
+        made = leaf.startswith(CARGO_THROWAWAY_PREFIXES)
+    elif os.path.dirname(parent) == tmp:
+        folder = os.path.basename(parent)
+        made = (folder.startswith(CARGO_THROWAWAY_PREFIXES) and leaf in ("wt", "base")) \
+            or (folder.startswith("tmp") and leaf in ("ship", "rel"))
+    else:
+        made = False
+    return made and _head_detached(root)
+
+
+def cargo_folder(slug, root):
+    """T-4764: the cargo target folder Sampo assigns the worktree `root`: the project's gate folder for a throwaway one,
+    else the lane's own."""
+    return cargo_gate_dir(slug) if cargo_throwaway(root) else cargo_lane_dir(slug, root)
 
 
 def cargo_shared_dir(slug):
-    """T-4575: where a project's lanes share cargo's build output (whether or not one is set now: doctor sizes it)."""
-    return os.path.join(state_dir(), "cache", "cargo-target", slug)
+    """T-4575: the project's old shared cargo folder. T-4764 retired it: two lanes sharing one folder run each other's
+    compiled crate when their sources differ (cargo issue 12516), so it is only sized and removed now."""
+    return os.path.join(state_dir(), "cache", CARGO_OLD, slug)
+
+
+def cargo_owned(path):
+    """T-4764: whether a CARGO_TARGET_DIR value is a folder Sampo handed out (a lane's, or T-4575's shared one), so a
+    stale one in a lane's environment is replaced and never read as the user's choice."""
+    if not path or not isinstance(path, str):
+        return False
+    path = os.path.normpath(os.path.abspath(path))
+    return any(path.startswith(os.path.join(state_dir(), "cache", name) + os.sep) for name in (CARGO_LANES, CARGO_OLD))
+
+
+def cargo_choice(main, root, environ):
+    """(Rust project, why Sampo hands out no folder): '' when it does. The user's own choice stands (the environment, or
+    build.target-dir in a config cargo reads), and so does the switch SAMPO_CARGO_SHARED=0."""
+    if not os.path.isfile(os.path.join(main, "Cargo.toml")):
+        return False, ""
+    if cargo_shared_off(environ):
+        return True, f"{CARGO_SHARED_VAR}=0: every lane builds into its own target/ folder"
+    for name in CARGO_KEPT:
+        if environ.get(name) and not cargo_owned(environ[name]):
+            return True, f"{name} is already {environ[name]} in the environment: kept"
+    for path in _cargo_config_files(main, root, environ):
+        val = _cargo_config_dir(path)
+        if val and not cargo_config_ours(path):
+            return True, f"build.target-dir is already {val} in {path}: kept"
+    return True, ""
+
+
+def cargo_target(root, slug=None, environ=None):
+    """T-4764: (dir, note) for one lane of a Rust project: the lane's own CARGO_TARGET_DIR under Sampo's state
+    (cache/cargo-lanes/<slug>/<lane>), outside the repo, so builds never mix and the folder goes with the lane. T-4575
+    gave all lanes one shared folder (8.6 to 15 GB per lane in 40 minutes had filled the disk twice), but two worktrees
+    of one workspace share a fingerprint slot for a path crate (cargo issue 12516), so a lane ran another lane's code.
+    `root` is the lane's worktree: the main checkout keeps its own target/ ((None, "")), as does a project without a
+    Cargo.toml. (None, why) when the user already chose (the environment, or build.target-dir in a cargo config)."""
+    main = main_worktree(root)
+    environ = os.environ if environ is None else environ
+    rust, note = cargo_choice(main or root, root, environ)
+    if not rust or note or not main:
+        return None, note
+    return cargo_folder(slug or (find_project(root) or _project(slug_for(main), main)).slug, root), ""
+
+
+def cargo_mark_lane(folder, lane):
+    """Write the lane's real path into its target folder (made if missing), once, so tidy finds the folders whose lane
+    is gone. A failed write leaves the folder as it was."""
+    path = os.path.join(folder, CARGO_LANE_MARK)
+    text = os.path.realpath(lane) + "\n"
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            if f.read() == text:
+                return
+    except OSError:
+        pass
+    with contextlib.suppress(OSError, ValueError):
+        os.makedirs(folder, exist_ok=True)
+        write_atomic(path, text)
+
+
+def cargo_wrapper(root, environ=None):
+    """T-4764: the sccache executable to wrap rustc with, '' when none is on PATH or the user set a wrapper (the
+    environment, or build.rustc-wrapper in a config cargo reads). One target folder per lane compiles every third-party
+    crate once per lane; sccache shares those compiles across the lanes (each lane's own crates stay per lane). Sampo
+    installs nothing."""
+    environ = os.environ if environ is None else environ
+    if any(n in environ for n in ("RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER",
+                                  "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER")):
+        return ""
+    found = shutil.which("sccache", path=environ.get("PATH") or os.defpath)
+    if not found:
+        return ""
+    main = main_worktree(root) or root
+    for path in _cargo_config_files(main, root, environ):
+        build = _cargo_config_build(path)
+        if ("rustc-wrapper" in build or "rustc-workspace-wrapper" in build) and not cargo_config_ours(path):
+            return ""
+    return found
+
+
+def cargo_lane_env(root, environ=None, slug=None):
+    """T-4764: what Sampo adds to a command it runs in `root` (a lane's worktree): {CARGO_TARGET_DIR: the lane's own
+    folder} for a Rust lane (the user's choice stands, a Sampo-handed value from an older run is replaced), plus
+    CARGO_BUILD_RUSTC_WRAPPER=sccache when sccache is installed. {} when nothing applies or a read fails."""
+    environ = os.environ if environ is None else environ
+    try:
+        target = cargo_target(root, slug, environ)[0]
+        if not target:
+            return {}
+        out = {CARGO_VAR: target}
+        wrapper = cargo_wrapper(root, environ)
+        if wrapper:
+            out["CARGO_BUILD_RUSTC_WRAPPER"] = wrapper
+        if os.path.basename(target) != CARGO_GATE:  # the gate's folder is no lane's: a marker would let the orphan sweep take it
+            cargo_mark_lane(target, root)
+        return out
+    except (OSError, subprocess.SubprocessError, PolicyError, ValueError):
+        return {}
+
+
+def cargo_focus_line(root, slug=None):
+    """T-4764: the line `sampo focus` prints in a Rust lane: its own target folder and the export for a bare cargo
+    command ('' for any other lane, or when the user chose a folder)."""
+    folder = cargo_lane_env(root, slug=slug).get(CARGO_VAR)
+    if not folder:
+        return ""
+    line = (f"Cargo: this lane builds into its own target folder (two lanes sharing one run each other's compiled crates). "
+            f"Sampo's runs carry it; before a bare cargo command: export {CARGO_VAR}={shlex.quote(folder)}")
+    hint = cargo_ignore_hint(root)  # T-4764: git is why a bare cargo command would go to ./target: say so with the fix
+    return f"{line}. {hint}" if hint else line
 
 
 def cargo_assigned_dir(p):
-    """T-4742: the cargo target folder Sampo assigns this project's builds, for the guard to let cargo, rustc and rustup
-    write into: cargo_shared_dir for a project whose main checkout holds a Cargo.toml (and the shared folder isn't
-    switched off), else None. Only that folder: the guard still refuses every other path under state."""
-    main = main_worktree(p.root) or p.root
-    if cargo_shared_off(os.environ) or not os.path.isfile(os.path.join(main, "Cargo.toml")):
+    """T-4742, T-4764: the cargo target folder Sampo assigns this session's builds, for the guard to let cargo, rustc and
+    rustup write into: the lane's own folder when the session works in a lane of a project whose main checkout holds a
+    Cargo.toml (and the switch isn't off), else None. Only that one folder: another lane's, the retired shared one and
+    every other path under state stay refused."""
+    if not p.lane or cargo_shared_off(os.environ) or not os.path.isfile(os.path.join(main_worktree(p.lane) or p.root, "Cargo.toml")):
         return None
-    return cargo_shared_dir(p.slug)
+    return cargo_folder(p.slug, p.lane)
 
 
 CARGO_CAP_VAR = "SAMPO_CARGO_CAP_BYTES"
-CARGO_CAP_MAX = 40 * 10**9  # T-4717: the shared cache's cap is a tenth of the disk, at most this
-CARGO_MARK = "# Sampo (T-4717): this lane's cargo builds go to the project's one shared target folder."
+CARGO_CAP_MAX = 40 * 10**9  # T-4717: the lane folders' cap is a tenth of the disk, at most this
+CARGO_MARK = "# Sampo (T-4764): this lane's cargo builds go to the lane's own target folder."
+CARGO_MARK_OLD = "# Sampo (T-4717): this lane's cargo builds go to the project's one shared target folder."
 
 
 def cargo_cap_bytes(total=None, environ=None):
@@ -1707,35 +1943,47 @@ def cargo_cap_bytes(total=None, environ=None):
 
 
 def cargo_config_ours(path):
-    """T-4717: whether a cargo config file is the one Sampo wrote for a lane (its first line is CARGO_MARK)."""
+    """T-4717: whether a cargo config file is one Sampo wrote for a lane (its first line is CARGO_MARK, or T-4717's)."""
     try:
         with open(path, encoding="utf-8") as f:
-            return f.readline().rstrip("\n") == CARGO_MARK
+            return f.readline().rstrip("\n") in (CARGO_MARK, CARGO_MARK_OLD)
     except (OSError, ValueError):
         return False
 
 
-CARGO_SHARED_VAR = "SAMPO_CARGO_SHARED"  # =0: no shared target folder at all, every lane builds into its own
+CARGO_SHARED_VAR = "SAMPO_CARGO_SHARED"  # =0: Sampo hands out no target folder at all, every lane builds into its own target/
 
 
 def cargo_shared_off(environ=None):
-    """T-4717: the operator's off switch (SAMPO_CARGO_SHARED=0, or FOREMAN_ as mirror_env renames it): sharing the one
-    target folder makes lanes' builds wait on one another and drops ./target/... paths inside a lane."""
+    """T-4717: the operator's off switch (SAMPO_CARGO_SHARED=0, or FOREMAN_ as mirror_env renames it): Sampo's own target
+    folder for a lane moves ./target/... paths out of the lane."""
     environ = os.environ if environ is None else environ
     return str(environ.get("FOREMAN_" + CARGO_SHARED_VAR[6:]) or environ.get(CARGO_SHARED_VAR) or "").strip() == "0"
 
 
-def lane_cargo_config(root, environ=None):
-    """T-4717: the path of the marked .cargo/config.toml in the folder that holds this project's lane worktrees
-    (<repo>.lanes/ or <repo>/.claude/worktrees/) that points the lanes' own cargo commands at the project's shared
-    target folder; '' when none is in place. T-4575's variable reaches only commands Sampo spawns; a builder's own `cargo
-    build` skipped the brief's `export` and each lane built its own target/ (36 GB across seven lanes). Cargo reads every
-    parent folder's config (a lane's own still wins), so the one file needs no export and no file in any lane, and it
-    touches neither a lane's files nor the repo's info/exclude. Written once, at focus or lane creation (git is asked
-    here, so never on a hook's every call), only for a lane of a Rust project, only when the user chose nothing (the
-    environment, a config of the project's, the lane's, any ancestor's or cargo home's: cargo_target), nothing of the
-    user's is in that folder's .cargo, and, inside the repo, git ignores the file. A file of ours that no longer fits
-    (the user chose since, the switch is off, the shared path moved) is rewritten or removed."""
+def cargo_ignore_hint(root, environ=None):
+    """T-4764: why a lane's marked .cargo/config.toml isn't there when git is the cause, with the exact .gitignore line
+    that fixes it; '' otherwise (written, the user's own config stands, no Rust lane). Writes nothing."""
+    why = []
+    try:
+        lane_cargo_config(root, environ, why=why, write=False)
+    except (OSError, subprocess.SubprocessError, PolicyError, ValueError):
+        return ""
+    return why[0] if why else ""
+
+
+def lane_cargo_config(root, environ=None, why=None, write=True):
+    """T-4764: the path of the marked .cargo/config.toml in a lane's worktree that points the lane's own cargo commands
+    (a builder's bare `cargo build`, which skips the brief's `export`: T-4717 saw 36 GB across seven lanes) at the lane's
+    own target folder; '' when none is in place. Only for a lane of a Rust project that Sampo made (in <repo>.lanes/ or
+    <repo>/.claude/worktrees/), only when the user chose nothing (the environment, or any config cargo reads: cargo_target)
+    and nothing of the user's is in the lane's .cargo, and only when git already ignores the file in the lane (the
+    user's .gitignore: Sampo writes neither the repo's info/exclude nor a file a `git add -A` would commit). Written once, at
+    focus or lane creation (git is asked here, so never on a hook's every call). A file of ours that no longer fits (the
+    user chose since, the switch is off) is removed. T-4717's file in the lanes' parent folder pointed every lane at the
+    one shared folder: removed here too, as it would outrank nothing but still send a lane without its own file there.
+    `why` (a list) takes one line naming the cause when git's ignore rules are the only thing keeping the file away;
+    write=False only looks (no file written or removed, no marker made)."""
     environ = os.environ if environ is None else environ
     if not os.path.isfile(os.path.join(root, ".git")) or not os.path.isfile(os.path.join(root, "Cargo.toml")):
         return ""  # two stats, no git, for a lane that is no Rust lane
@@ -1747,31 +1995,59 @@ def lane_cargo_config(root, environ=None):
     homes = (real(main) + ".lanes", real(os.path.join(main, ".claude", "worktrees")))
     if parent not in homes:
         return ""
-    folder = os.path.join(parent, ".cargo")
+    if write:
+        cargo_drop_parent_config(parent)
+    folder = os.path.join(real(root), ".cargo")
     path = os.path.join(folder, "config.toml")
-    shared = cargo_target(root, environ=environ)[0]
+    target = cargo_target(root, environ=environ)[0]
     ours = cargo_config_ours(path)
-    if not shared:
-        if ours:  # the user chose since (or turned sharing off): Sampo's file must not outrank it
+    if not target:
+        if ours and write:  # the user chose since (or turned the switch off): Sampo's file must not outrank it
             with contextlib.suppress(OSError):
                 os.unlink(path)
         return ""
+    if write:
+        cargo_mark_lane(target, root)
     if os.path.islink(folder) or os.path.lexists(os.path.join(folder, "config")) or (os.path.lexists(path) and not ours):
         return ""  # something of the user's is there
-    if any(ch in shared for ch in "'\n\r"):
+    if any(ch in target for ch in "'\n\r"):
         return ""  # a TOML literal string takes neither
-    text = f"{CARGO_MARK}\n# It applies to every lane below this folder; a lane's own config wins.\n[build]\ntarget-dir = '{shared}'\n"
+    wrapper = cargo_wrapper(root, environ)
+    if wrapper and any(ch in wrapper for ch in "'\n\r"):
+        wrapper = ""
+    text = (f"{CARGO_MARK}\n# Its own folder per lane: two lanes of one workspace must not share a compiled crate.\n"
+            f"[build]\ntarget-dir = '{target}'\n" + (f"rustc-wrapper = '{wrapper}'\n" if wrapper else ""))
     try:
         with open(path, encoding="utf-8") as f:
             if f.read() == text:
                 return path
     except OSError:
         pass
-    if parent.startswith(real(main) + os.sep) and _git(main, "check-ignore", "-q", "--", os.path.relpath(path, real(main)),
-                                                      fail=None, timeout=10) is None:
-        return ""  # inside the repo and git would list it: not written
-    write_atomic(path, text)
-    return path
+    if _git(real(root), "check-ignore", "-q", "--", ".cargo/config.toml", fail=None, timeout=10) is None:
+        if why is not None:  # a bare `cargo build` then builds into the lane's ./target, and nothing said so
+            why.append(f"git does not ignore .cargo/config.toml here, so Sampo did not write the lane's cargo config and a bare "
+                       f"cargo command builds into the lane's own ./target: add the line `.cargo/config.toml` to .gitignore "
+                       f"(or export {CARGO_VAR}={shlex.quote(target)} first)")
+        return ""  # git would list it: not written
+    if write:
+        write_atomic(path, text)
+    return path if write else ""
+
+
+def cargo_drop_parent_config(parent):
+    """T-4764: remove T-4717's marked .cargo/config.toml in a lanes' parent folder (it named the one shared folder), by
+    its exact path and only when it carries Sampo's mark; the .cargo folder goes too when that leaves it empty. True
+    when a file was removed."""
+    path = os.path.join(parent, ".cargo", "config.toml")
+    if os.path.islink(os.path.dirname(path)) or not cargo_config_ours(path):
+        return False
+    try:
+        os.unlink(path)
+    except OSError:
+        return False
+    with contextlib.suppress(OSError):
+        os.rmdir(os.path.dirname(path))  # only when empty
+    return True
 
 
 def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None, watch=None,
@@ -1788,13 +2064,10 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         _drop_racy_pyc(root)
     if env is None:  # T-1114: fm check sets the skip list itself; an inherited one would leave tests out silently
         env = {k: v for k, v in os.environ.items() if k != "FOREMAN_SKIP_TESTS"}
-    if root and os.path.isfile(os.path.join(root, ".git")) and not env.get(CARGO_VAR):  # T-4575: a linked worktree: a lane
-        try:  # of a Rust project (or the gate's throwaway one) builds into the project's one shared folder, unless the
-            shared = cargo_target(root, environ=env)[0] if main_worktree(root) else None  # user chose another; a submodule's
-        except (OSError, subprocess.SubprocessError, PolicyError, ValueError):  # .git file is not a lane; a read that fails
-            shared = None  # leaves the run as it was
-        if shared:
-            env = {**env, CARGO_VAR: shared}
+    if root and os.path.isfile(os.path.join(root, ".git")):  # T-4575, T-4764: a linked worktree: a lane of a Rust project
+        add = cargo_lane_env(root, env)  # (or the gate's throwaway one) builds into its own folder, unless the user chose
+        if add:  # another; a submodule's .git file is not a lane; a read that fails leaves the run as it was
+            env = {**env, **add}
     if priority and not env.get(SLOT_PRIORITY):
         env = {**env, SLOT_PRIORITY: "1"}
     if low and not env.get(SLOT_LOW):
@@ -1803,6 +2076,18 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         env = {**env, RUN_ID_ENV: str(run_id)}
     if timeout:  # T-3338: tests/run.py ends its own run under the timeout, naming what was slow, not killed unnamed
         env = {**env, "FM_RUN_DEADLINE": str(max(1, int(timeout) - min(30, int(timeout) // 10)))}
+    gate = env.get(CARGO_VAR)
+    if gate and os.path.basename(gate) == CARGO_GATE and cargo_owned(gate):
+        # T-4764: a throwaway worktree's run builds into the gate's stable folder only while it holds that folder's lock
+        # for the whole command; a run that finds it busy (a post-merge verify beside a ship) gets a private one, gone after.
+        # A killed Sampo process frees the lock while its children may still run (accepted residual)
+        with cargo_gate_slot(gate) as folder:
+            return _run_bash(root, cmd, {**env, CARGO_VAR: folder}, stdin, niced, timeout, watch, watch_every)
+    return _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every)
+
+
+def _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every):
+    """run_command's process: `bash -c cmd` in `root` under `env`: (exit code, redacted output)."""
     try:  # its own process group, so a timeout kills the servers and workers it started too; no stdin to wait on
         argv = nice_argv(["bash", "-c", cmd]) if niced else ["bash", "-c", cmd]
         pr = subprocess.Popen(argv, cwd=root, stdin=stdin, stdout=subprocess.PIPE,

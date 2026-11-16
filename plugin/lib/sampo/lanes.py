@@ -833,8 +833,7 @@ def cmd_lane(args):
         if r.returncode:
             raise cli.UsageError(f"git worktree add failed: {r.stderr.strip()[:300]}")
         path = os.path.realpath(path)
-        with contextlib.suppress(Exception):  # T-4717: a Rust lane's own cargo commands reach the shared target (a hint)
-            c.lane_cargo_config(path)
+        pruned = lane_new_cargo(p, path)  # T-4717, T-4764: a Rust lane's own cargo commands reach its own target folder (a hint)
 
         def give(x):
             x.meta["lane"] = path
@@ -845,7 +844,8 @@ def cmd_lane(args):
             x.append_log(f"lane: {path} on {branch}")
         cli.mutate(p, b.id, give, "lane_new", {"path": path, "branch": branch})
         return cli.out(args, {"id": b.id, "path": path, "branch": branch},
-                         f"{b.id}: lane {path} on {branch}. Work there: cd into it and start claude; fm focus {b.id}.")
+                         f"{b.id}: lane {path} on {branch}. Work there: cd into it and start claude; fm focus {b.id}."
+                         + (f"\n{pruned}" if pruned else ""))
     why = (getattr(args, "why", None) or "").strip()
     if why and p.lane:  # like --unverified: a builder can't judge its own work
         raise c.PolicyError("--why is for the main thread: a builder can't drop its own work")
@@ -1300,7 +1300,7 @@ def _ignored(path):
 def _is_cache(path, rel):
     """T-1685: a cache removing the lane may delete: a known cache path, or an ignored folder git lists whole that
     holds nothing else (a Sampo lane's state/ with only the guard's script cache in it)."""
-    if _CACHE.search(rel) or _LANE_CACHE.search(rel):
+    if _CACHE.search(rel) or _LANE_CACHE.search(rel) or _own_cargo_config(path, rel):
         return True
     full = os.path.join(path, rel)
     if not rel.endswith("/") or os.path.islink(full.rstrip("/")) or not os.path.isdir(full):
@@ -1308,9 +1308,16 @@ def _is_cache(path, rel):
     for root, _, files in os.walk(full):
         for f in files:
             r = os.path.relpath(os.path.join(root, f), path)
-            if not (_CACHE.search(r) or _LANE_CACHE.search(r)):
+            if not (_CACHE.search(r) or _LANE_CACHE.search(r) or _own_cargo_config(path, r)):
                 return False
     return True
+
+
+def _own_cargo_config(path, rel):
+    """T-4764: the lane's own `.cargo/config.toml` that Sampo wrote (its mark on the first line; core.lane_cargo_config):
+    a file removing the lane may delete. A user's file of that name is not."""
+    return rel == ".cargo/config.toml" and not os.path.islink(os.path.join(path, rel)) \
+        and c.cargo_config_ours(os.path.join(path, rel))
 
 
 def resume(p, b, main, args, ended=False, recover=None, after=""):
@@ -3167,38 +3174,32 @@ def cpu_env(p, gate=True):
     return {**env, "SAMPO_CPU_GATE": "1"} if gate else env
 
 
-def cargo_target(p):
-    """T-4575: (the one shared CARGO_TARGET_DIR of this Rust project's lanes or None, a note when the user's own choice
-    is kept): core.cargo_target on the project's checkout, under the project's own slug."""
-    return c.cargo_target(p.root, p.slug)
-
-
 def lane_env(p, base=None):
-    """T-4575: the environment of a command Sampo spawns for a lane (a copy of `base`, else this process's minus
-    FOREMAN_SKIP_TESTS, as run_command reads it): a Rust project's carries the shared CARGO_TARGET_DIR, unless the
-    caller's already has one (the user's choice stands)."""
+    """T-4575, T-4764: the environment of a command Sampo spawns for a lane (a copy of `base`, else this process's minus
+    FOREMAN_SKIP_TESTS, as run_command reads it): a Rust lane's carries its own CARGO_TARGET_DIR (and sccache as the
+    rustc wrapper when it is installed), unless the caller's has the user's own choice (that stands). A project of the
+    main checkout (p.lane unset) adds nothing: the run's root is the one that names the folder (core.run_command), so a
+    gate run in a throwaway worktree gets that worktree's folder and no two roots ever share one."""
     env = dict({k: v for k, v in os.environ.items() if k != "FOREMAN_SKIP_TESTS"} if base is None else base)
-    try:  # a read that fails (or a project with no checkout path: a test's stand-in) leaves the environment as it was
-        shared = c.cargo_target(p.root, p.slug, env)[0] if isinstance(p.root, str) else None
-    except (OSError, subprocess.SubprocessError, c.PolicyError, ValueError):
-        shared = None
-    if shared and not env.get(c.CARGO_VAR):
-        env[c.CARGO_VAR] = shared
+    if isinstance(p.root, str) and p.lane:  # a project with no checkout path is a test's stand-in
+        env.update(c.cargo_lane_env(p.root, env, p.slug))
     return env
 
 
 def cargo_brief(p):
-    """T-4575: the builder brief's build-output section ([] for a project without a Cargo.toml): the line to export
-    before any cargo command, or the user's own setting that stays."""
-    shared, kept = cargo_target(p)
-    if shared:
-        return ["## Build output (Rust)", f"All lanes of this project share one cargo target folder, outside the repo "
-                f"(each lane's own target/ took 8 to 15 GB and filled the disk). Before any cargo command in your "
-                f"worktree run, in the same shell command:", "", f"    export {c.CARGO_VAR}={shlex.quote(shared)}", "",
-                "Sampo's own runs in your lane (`sampo task evidence`, the gates) carry it already. cargo locks the "
-                "folder, so a build may wait on another lane's build (\"Blocking waiting for file lock\"): wait, "
-                "never delete the folder or set another.", ""]
-    return ["## Build output (Rust)", f"{kept[:1].upper()}{kept[1:]}. Leave it as it is: Sampo sets no shared target folder.", ""] if kept else []
+    """T-4575, T-4764: the builder brief's build-output section ([] for a project without a Cargo.toml). The lane does
+    not exist yet when the brief is written (Claude Code makes it), so the section says how the lane finds its own folder
+    (`sampo focus` prints the line), or names the user's own setting that stays."""
+    main = c.main_worktree(p.root) or p.root
+    rust, kept = c.cargo_choice(main, main, os.environ)
+    if rust and not kept:
+        return ["## Build output (Rust)", "Every lane builds into its own cargo target folder, outside the repo (a target/ "
+                "in each lane took 8 to 15 GB and filled the disk; one folder shared by two lanes lets a lane run the other's "
+                "code: cargo issue 12516). `sampo focus` prints the `export CARGO_TARGET_DIR=…` line for your lane: run it "
+                "in the same shell command before any bare cargo command. Sampo's own runs in your lane (`sampo task "
+                "evidence`, the gates) carry it already. Never set another lane's folder (the guard refuses writes there) "
+                "and never delete the folder: it goes with the lane.", ""]
+    return ["## Build output (Rust)", f"{kept[:1].upper()}{kept[1:]}. Leave it as it is: Sampo sets no target folder.", ""] if kept else []
 
 
 UNCACHED_EVERY, UNCACHED_S = 6, 4 * 3600
@@ -3868,6 +3869,10 @@ def remove(p, b, main, drop=None, keep=False, ended=None):
         if r.returncode:
             raise cli.UsageError(f"git worktree remove failed: {r.stderr.strip()[:300]}")
     procs = end_lane_procs(path)  # T-4720: git removed the folder (or it was gone): what is left running in it (no terminal) goes with it
+    drop_lane_cargo_dir(p.slug, path)  # T-4764: the lane's own cargo target folder goes with the lane (never while held)
+    line = auto_prune(p, force=True)  # T-4764: and the cap is looked at: the folders over it go, oldest first
+    if line:
+        print(line, file=sys.stderr)
     if ended is not None:
         ended.update(procs)
     from sampo import bus
@@ -3988,16 +3993,23 @@ def human(n):
         else f"{n:.0f} B"
 
 
+WALK_CHECK_EVERY = 256  # a size walk looks at its clock every this many entries
+
+
 def dir_bytes(path, deadline=None):
     """Disk a folder holds (allocated blocks, symlinks not followed, a hard-linked file once), or None when
-    `deadline` (a time.monotonic() value) passes first."""
-    total, seen, todo = 0, set(), [path]
+    `deadline` (a time.monotonic() value) passes first: checked at every folder and every WALK_CHECK_EVERY entries (one
+    folder of a million files is no single unbounded step)."""
+    total, seen, todo, n = 0, set(), [path], 0
     while todo:
         if deadline is not None and time.monotonic() >= deadline:
             return None
         try:
             with os.scandir(todo.pop()) as it:
                 for e in it:
+                    n += 1
+                    if deadline is not None and n % WALK_CHECK_EVERY == 0 and time.monotonic() >= deadline:
+                        return None
                     try:
                         st = e.stat(follow_symlinks=False)
                         if e.is_dir(follow_symlinks=False):
@@ -4048,11 +4060,23 @@ def _busy_dirs():
                 except OSError:  # gone, or another user's
                     pass
         return out
-    try:  # no procfs (macOS): lsof prints "n<path>" per process
-        r = subprocess.run(["lsof", "-Fn", "-d", "cwd"], capture_output=True, text=True, timeout=10)
-        return [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("n/")]
+    return _lsof_paths(["-d", "cwd"], 10) or []
+
+
+def _lsof_paths(args, timeout, full=False):
+    """T-4764: the paths `lsof -Fn <args>` lists ("n<path>" per open file or working directory), for a system without
+    /proc (macOS): one helper for _busy_dirs and _held_paths. None when lsof is missing, fails or runs out of `timeout`
+    (an unreadable list is no list: the caller says so, never reads it as 'nothing is held'). `full`: the call asks for
+    EVERY open file (no filter), so an empty answer is no answer (this very process holds some): exit 1 with nothing
+    printed is lsof failing (a sandbox, no permission), and reads as None, not as an empty list."""
+    try:
+        r = subprocess.run(["lsof", "-Fn", *args], capture_output=True, text=True, errors="replace", timeout=timeout)
     except (OSError, subprocess.SubprocessError):
-        return []
+        return None
+    if r.returncode not in (0, 1):  # 1: lsof found nothing for a filter; anything else is an error
+        return None
+    paths = [ln[1:] for ln in r.stdout.splitlines() if ln.startswith("n/")]
+    return paths if paths or not full else None
 
 
 def _in_use(path, busy):
@@ -4261,10 +4285,11 @@ def _lane_targets(main, skip, deadline):
 
 def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S):
     """T-4575: (label, bytes, details) of the cargo build output of this project's lanes that stay: the target/ folder of
-    each lane worktree (under <repo>.lanes/ or <repo>/.claude/worktrees/) that holds a Cargo.toml, and the shared folder.
-    `skip` are the lanes already counted whole (finished() rows: tidy removes them with their target/). None when
-    there is none. T-4717: `details` names each lane's folder and the shared cache against its cap (["T-5030 target
-    1.2 GB", "shared cargo cache 3.1 GB of 4.0 GB"]); a sizing that ran out of `budget` says so ("could not size"),
+    each lane worktree (under <repo>.lanes/ or <repo>/.claude/worktrees/) that holds a Cargo.toml, each lane's own
+    cargo folder under Sampo's cache (T-4764), and the old shared folder. `skip` are the lanes already counted whole
+    (finished() rows: tidy removes them with their target/ and their cargo folder). None when there is none. `details`
+    names each lane's folder and the folders against their cap (["T-5030 target 1.2 GB", "lane T-5031 cargo folder
+    3.1 GB", "cargo lane folders 4.3 GB of 4.0 GB"]); a sizing that ran out of `budget` says so ("could not size"),
     never nothing. Only a target/ proven cargo's output counts (_cargo_output). Reads only: doctor names it, nothing is
     deleted."""
     deadline = time.monotonic() + budget
@@ -4276,17 +4301,45 @@ def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S):
     if rows is None:
         return unsized
     n, total = len(rows), sum(size for _, size in rows)
+    skipped = {os.path.realpath(s) for s in skip}
+    folders, root = [], _lanes_root(p.slug)
+    for name, path in _lane_folders(root) if root else []:
+        lane = _lane_marker(path)
+        if lane and os.path.realpath(lane) in skipped:
+            continue
+        size = dir_bytes(path, deadline)
+        if size is None:
+            return unsized
+        folders.append((os.path.basename(lane) if lane else name, size))
     shared = c.cargo_shared_dir(p.slug)
-    held = dir_bytes(shared, deadline) if os.path.isdir(shared) else 0
-    if held is None:
+    old = dir_bytes(shared, deadline) if os.path.isdir(shared) and not os.path.islink(shared) else 0
+    if old is None:
         return unsized
-    if not n and not held:
+    gate = 0  # T-4764: the gate's and train's throwaway checkouts' stable folder, and the private ones of overlapping runs
+    for _, path in _gate_folders(root) if root else []:
+        size = dir_bytes(path, deadline)
+        if size is None:
+            return unsized
+        gate += size
+    own = sum(size for _, size in folders)
+    if not n and not folders and not old and not gate:
         return None
-    what = ", ".join(([f"{n} target folder{'s' if n > 1 else ''}"] if n else []) + (["shared"] if held else []))
+    what = ", ".join(([f"{n} target folder{'s' if n > 1 else ''}"] if n else [])
+                     + ([f"{len(folders)} cargo folder{'s' if len(folders) > 1 else ''}"] if folders else [])
+                     + (["gate"] if gate else []) + (["old shared"] if old else []))
     details = [f"{os.path.basename(path)} target {human(size)}" for path, size in sorted(rows, key=lambda r: -r[1])]
-    if held:
-        details.append(f"shared cargo cache {human(held)} of {human(c.cargo_cap_bytes())}")
-    return f"lane build output ({what})", total + held, details
+    details += [f"lane {name} cargo folder {human(size)}" for name, size in sorted(folders, key=lambda r: -r[1])]
+    if folders:
+        details.append(f"cargo lane folders {human(own)} of {human(c.cargo_cap_bytes())} cap per project")
+    if gate:
+        details.append(f"gate cargo folder {human(gate)} (one gate or train run at a time builds in it, a run beside it in a private "
+                       f"folder; outside the lane cap; sampo tidy --apply removes it when unused for {GATE_UNUSED_DAYS} days "
+                       f"or over {human(c.cargo_cap_bytes())})")
+    if old:
+        details.append(f"old shared cargo folder {human(old)} (sampo tidy --apply removes it: T-4764)")
+    if len(folders) > 1 and not shutil.which("sccache"):
+        details.append("installing sccache would share the third-party compiles between the lanes (Sampo uses it when found)")
+    return f"lane build output ({what})", total + own + gate + old, details
 
 
 # ---- T-4717: the shared cargo cache has a cap; a landed lane's own target/ goes; tidy and doctor name both
@@ -4294,16 +4347,21 @@ def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S):
 CARGO_FRESH_S = 3600  # an entry used within this long is never pruned
 
 
-def _held_paths():
+def _held_paths(deadline=None):
     """T-4717: every path some process holds: its working directory, its program, each open file (/proc/<pid>/cwd, exe,
-    fd/*). None where there is no /proc to read (the caller then removes nothing: it can't tell what is in use). A
-    process of another user, or one that ends meanwhile, is skipped."""
+    fd/*). Without /proc (macOS) from `lsof -Fn` (every process's open files and working directory; an empty answer is
+    lsof failing, not 'nothing is open'). None where neither can be read, or when `deadline` (a time.monotonic() value)
+    passes first (the caller then removes nothing and says so: it can't tell what is in use). A process of another
+    user, or one that ends meanwhile, is skipped."""
     if not os.path.isdir("/proc/self"):
-        return None
+        left = 30 if deadline is None else min(30, deadline - time.monotonic())
+        return _lsof_paths([], left, full=True) if left > 0 else None
     out = []
     for d in os.listdir("/proc"):
         if not d.isdigit():
             continue
+        if deadline is not None and time.monotonic() >= deadline:
+            return None
         for name in ("cwd", "exe"):
             try:
                 out.append(os.readlink(f"/proc/{d}/{name}"))
@@ -4320,6 +4378,11 @@ def _held_paths():
     return [x.removesuffix(" (deleted)") for x in out if x.startswith("/")]
 
 
+def _read_held(deadline=None):
+    """_held_paths(), bounded by `deadline` when there is one."""
+    return _held_paths() if deadline is None else _held_paths(deadline)
+
+
 def _holds(held, path):
     """Whether some held path is `path` or inside it."""
     return any(h == path or h.startswith(path + os.sep) for h in held)
@@ -4334,7 +4397,7 @@ def _cache_tree(root, deadline):
     cache root), every file straight in a `deps` folder, and the cache root's own total. Regular files only count
     (their allocated blocks, a hard-linked file once); a link is never followed, sized or listed. The newest use of
     a folder is the newest mtime or atime among the files below it. _SizingOut when `deadline` passes."""
-    info, seen = {}, set()
+    info, seen, count = {}, set(), [0]
 
     def walk(path, depth):
         if time.monotonic() >= deadline:
@@ -4348,6 +4411,9 @@ def _cache_tree(root, deadline):
             return total, newest
         in_deps = os.path.basename(path) == "deps"
         for e in entries:
+            count[0] += 1
+            if count[0] % WALK_CHECK_EVERY == 0 and time.monotonic() >= deadline:  # one folder of a million files is no single step
+                raise _SizingOut()
             try:
                 st = e.stat(follow_symlinks=False)
             except OSError:
@@ -4362,6 +4428,8 @@ def _cache_tree(root, deadline):
                         size = 0
                     seen.add((st.st_dev, st.st_ino))
                 used = max(st.st_mtime, st.st_atime)
+                if depth == 0 and e.name == c.CARGO_LANE_MARK:
+                    used = 0.0  # Sampo's own marker: reading it (every run, every tidy) must not make a folder look used
                 total, newest = total + size, max(newest, used)
                 if in_deps and depth <= 4:
                     info[e.path] = (size, used, False)
@@ -4373,86 +4441,291 @@ def _cache_tree(root, deadline):
     return info, total
 
 
-def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False):
-    """T-4717: bring this project's shared cargo cache (core.cargo_shared_dir of the registered project: no other
-    folder, never a link, never one that resolves outside Sampo's cache) under its cap, oldest first, in stages: the
-    entries of each `incremental` folder (rebuilt from the sources), then the files of each `deps` folder, then whole
-    profile folders. Never an entry used in the last hour, never one a live process holds (its cwd or open file is in
-    it), never one below a `.cargo-lock` a cargo build holds (probed per entry; held or unreadable = skipped; the
-    holders are read again before each stage), never a link or a path outside the cache. When the open files can't be
-    read (no /proc) or the sizing runs out of `budget`, nothing is removed and `why` says so (`unsized` too for the
-    latter). `dry` reports what would go. {before, after, cap, removed:
-    [(path relative to the cache, bytes)], skipped: [(path, why)], why}. The project's own target/ and its lanes are
-    other folders: never read here."""
+LANE_FOLDER = re.compile(r"^[A-Za-z0-9._-]+-[0-9a-f]{10}$")  # core.cargo_lane_name's shape: nothing else is ever removed
+
+
+def _lanes_root(slug):
+    """T-4764: the real path of this project's folder of lane cargo folders (core.cargo_lanes_base), or None when it is
+    not there, is a link, or resolves anywhere but directly under Sampo's cache/cargo-lanes."""
+    base = c.cargo_lanes_base(slug)
+    outer = os.path.realpath(os.path.join(c.state_dir(), "cache", c.CARGO_LANES))
+    if os.path.islink(base) or not os.path.isdir(base):
+        return None
+    real = os.path.realpath(base)
+    return real if os.path.dirname(real) == outer else None
+
+
+def _lane_folders(root):
+    """[(name, path)] of the lane cargo folders directly in `root`: a real folder (never a link) with a name of Sampo's
+    own scheme."""
+    out = []
+    try:
+        for e in os.scandir(root):
+            if LANE_FOLDER.match(e.name) and e.is_dir(follow_symlinks=False):
+                out.append((e.name, e.path))
+    except OSError:
+        pass
+    return sorted(out)
+
+
+def _lane_marker(folder):
+    """The lane path a lane cargo folder was made for (its .sampo-lane file), '' when there is none."""
+    try:
+        with open(os.path.join(folder, c.CARGO_LANE_MARK), encoding="utf-8", errors="replace") as f:
+            text = f.read(4096).strip()
+    except OSError:
+        return ""
+    return text if text.startswith("/") and "\n" not in text else ""
+
+
+def _is_lane_name(name):
+    return bool(LANE_FOLDER.match(name))
+
+
+def _is_gate_name(name):
+    """The gate's stable folder, or a private one a busy run made (core.GATE_PRIVATE)."""
+    return name == c.CARGO_GATE or bool(c.GATE_PRIVATE.match(name))
+
+
+def _lane_folder_blocker(root, path, held):
+    """T-4764: why the lane cargo folder `path` may not be removed now, '' when it may (see _folder_blocker)."""
+    return _folder_blocker(root, path, held, _is_lane_name)
+
+
+def _folder_blocker(root, path, held, name_ok):
+    """T-4764: why the cargo folder `path` may not be removed now, '' when it may: it must be a real folder (never a
+    link) directly in `root` with a name `name_ok` accepts (a lane's, or the gate's: one name scheme per caller, so a
+    lane's removal never takes the gate's folder and the reverse), no live process may hold it (`held`: None means the
+    open files could not be read), and no cargo build may hold a .cargo-lock in it."""
+    if os.path.islink(path) or os.path.dirname(path) != root or os.path.realpath(path) != path \
+            or not name_ok(os.path.basename(path)) or not os.path.isdir(path):
+        return "not one of Sampo's lane folders" if name_ok is _is_lane_name else "not one of Sampo's gate folders"
+    if held is None:
+        return "no view of the open files on this system"
+    if _holds(held, path):
+        return "a live process holds it"
+    if _build_running(path, path, True):
+        return "a cargo build holds its lock"
+    return ""
+
+
+def _rmtree_until(path, deadline=None):
+    """Remove the folder `path` (exact path; a link inside goes as a link, its target stays), stopping when `deadline` (a
+    time.monotonic() value) passes: what is left is a smaller cargo folder, finished by the next removal. True when the
+    folder is gone. No deadline: shutil.rmtree."""
+    if deadline is None:
+        shutil.rmtree(path, ignore_errors=True)
+        return not os.path.lexists(path)
+    n = 0
+    for top, dirs, files in os.walk(path, topdown=False):  # a folder's children are gone before its own turn
+        for name in files + [d for d in dirs if os.path.islink(os.path.join(top, d))]:
+            n += 1
+            if n % WALK_CHECK_EVERY == 0 and time.monotonic() >= deadline:
+                return False
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(top, name))
+        if time.monotonic() >= deadline:
+            return False
+        for d in dirs:
+            if not os.path.islink(os.path.join(top, d)):
+                with contextlib.suppress(OSError):
+                    os.rmdir(os.path.join(top, d))
+    with contextlib.suppress(OSError):
+        os.rmdir(path)
+    return not os.path.lexists(path)
+
+
+def _drop_lane_folder(root, path, held, deadline=None):
+    """Remove one lane cargo folder by its exact path after _lane_folder_blocker. True when it is gone (`deadline`: see
+    _rmtree_until; a folder only partly removed in time is not gone)."""
+    if _lane_folder_blocker(root, path, held):
+        return False
+    return _rmtree_until(path, deadline)
+
+
+def drop_lane_cargo_dir(slug, lane, held=None, deadline=None):
+    """T-4764: remove a lane's cargo target folder with the lane (rebuilt on demand): the one folder core.cargo_lane_dir
+    names for this lane, by exact path, never a pattern, never a link, never while a process holds it or a cargo build
+    holds its lock (or when the open files can't be read). True when a folder was removed. `deadline` bounds the
+    reading of the holders and the removal (what a run under the train's lock passes: a part-removed folder is left to
+    the cap's prune). Never raises."""
+    try:
+        root = _lanes_root(slug)
+        path = os.path.join(root, c.cargo_lane_name(lane)) if root else ""
+        if not path or not os.path.lexists(path):
+            return False
+        return _drop_lane_folder(root, path, _read_held(deadline) if held is None else held, deadline)
+    except (OSError, ValueError):
+        return False
+
+
+def _lane_infos(root, deadline):
+    """({path: (bytes, newest use)} of each lane cargo folder in `root`, total bytes). _SizingOut when time runs out."""
+    out, total = {}, 0
+    for _, path in _lane_folders(root):
+        info, size = _cache_tree(path, deadline)
+        out[path] = (size, info.get(path, (0, 0.0, True))[1])
+        total += size
+    return out, total
+
+
+def _open_task_lanes(p):
+    """T-4764: the real paths of the lanes of this project's tasks that are not closed (a task in review still has its lane's
+    code to run again). An empty set when the briefs can't be read: the order is then by use alone."""
+    try:
+        return {os.path.realpath(b.meta["lane"]) for b in c.load_briefs(p) if b.meta.get("lane") and b.status not in c.CLOSED}
+    except Exception:
+        return set()
+
+
+def prune_cargo_cache(p, cap=None, now=None, held=None, budget=None, dry=False, deadline=None):
+    """T-4717, T-4764: bring this project's lane cargo folders (core.cargo_lanes_base of the registered project: no
+    other folder, never a link, never one that resolves outside Sampo's cache) under their cap, whole folders, the
+    least recently used first (a lane whose task is still open after the others: _open_task_lanes). Never a folder used in the last hour, never one a live process holds (its cwd or open
+    file is in it, or in its lane's worktree), never one with a `.cargo-lock` a cargo build holds (held or unreadable =
+    skipped; the holders are read once, after the sizing, unless `held` is given), never a link or a path outside
+    the cache. When the open files can't be read (no /proc) or the sizing runs out of `budget`, nothing is removed and
+    `why` says so (`unsized` too for the latter). `deadline` (a time.monotonic() value) bounds the whole run, the
+    sizing, the reading of the holders and each removal: when it passes the rest is left (`out_of_time`, `why` names
+    what stays, for `sampo tidy --apply`). `dry` reports what would go. {before, after, cap, removed: [(folder name,
+    bytes)], skipped: [(name, why)], why}. The project's own target/ and the lanes' worktrees are other folders:
+    never read here."""
     cap = c.cargo_cap_bytes() if cap is None else cap
     now = time.time() if now is None else now
     res = {"before": 0, "after": 0, "cap": cap, "removed": [], "skipped": [], "why": ""}
-    shared = c.cargo_shared_dir(p.slug)
-    base = os.path.realpath(os.path.join(c.state_dir(), "cache", "cargo-target"))
-    if os.path.islink(shared) or not os.path.isdir(shared) or os.path.dirname(os.path.realpath(shared)) != base:
-        if os.path.islink(shared):
+    root = _lanes_root(p.slug)
+    if root is None:
+        if os.path.islink(c.cargo_lanes_base(p.slug)):
             res["why"] = "the cache folder is a link: left alone"
         return res
-    root = os.path.realpath(shared)
+    if deadline is None:
+        deadline = time.monotonic() + (TIDY_SCAN_S if budget is None else budget)
+        bounded = False  # the budget bounds the sizing alone: tidy's removals run to the end
+    else:
+        bounded = True
     try:
-        info, total = _cache_tree(root, time.monotonic() + (TIDY_SCAN_S if budget is None else budget))
+        infos, total = _lane_infos(root, deadline)
     except _SizingOut:
         res["why"] = "sizing the cache ran out of time: nothing removed"
-        res["unsized"] = True
+        res["unsized"] = res["out_of_time"] = True
         return res
     res["before"] = res["after"] = total
     if total <= cap:
         return res
-    held_given = held
+    reread = held is None and not bounded and not dry  # tidy's unbounded run looks again before each later removal
     if held is None:
-        held = _held_paths()
+        held = _read_held(deadline if bounded else None)
     if held is None:
         res["why"] = "no view of the open files on this system: nothing removed"
+        res["out_of_time"] = bounded and time.monotonic() >= deadline
         return res
-
-    def rel_depth(path):
-        return len(os.path.relpath(path, root).split(os.sep))
-
-    def parent_is(path, name, max_depth):
-        parent = os.path.dirname(path)
-        return os.path.basename(parent) == name and rel_depth(parent) <= max_depth
-    stages = (
-        [k for k, v in info.items() if v[2] and parent_is(k, "incremental", 3)],  # A: an incremental entry
-        [k for k, v in info.items() if not v[2] and parent_is(k, "deps", 4)],  # C: a build file
-        [k for k, v in info.items() if v[2] and k != root and rel_depth(k) == 1],  # B: a whole profile folder
-    )
-    gone = []  # (path, bytes) removed so far: a folder's bytes left are its sizing less what went from inside it
-    fresh = held_given is None
-    for stage in stages:
-        if fresh:  # a build may have started since the last stage: look again at what the processes hold
-            held = _held_paths()
+    first = True
+    open_lanes = _open_task_lanes(p)  # T-4764: a lane whose task still waits (building, in review) goes last, not first
+    waiting = lambda k: 1 if (_lane_marker(k) and os.path.realpath(_lane_marker(k)) in open_lanes) else 0
+    for path in sorted(infos, key=lambda k: (waiting(k), infos[k][1], k)):
+        if res["after"] <= cap:
+            break
+        size, used = infos[path]
+        name = os.path.basename(path)
+        if now - used < CARGO_FRESH_S or size <= 0:  # fresh = in use; nothing to free = not worth a removal
+            continue
+        if bounded and time.monotonic() >= deadline:
+            res["out_of_time"] = True
+            res["why"] = "ran out of time: the rest is left for sampo tidy --apply"
+            break
+        if reread and not first:  # a build may have started since the last look
+            held = _read_held()
             if held is None:
-                res["why"] = "no view of the open files on this system: the rest left"
+                res["why"] = "no view of the open files on this system: the rest is left"
                 break
-        for path in sorted(stage, key=lambda k: (info[k][1], k)):
-            if res["after"] <= cap:
+        first = False
+        lane = _lane_marker(path)
+        if lane and _holds(held, os.path.realpath(lane)):
+            res["skipped"].append((name, "a live process works in its lane"))
+            continue
+        why = _lane_folder_blocker(root, path, held)
+        if why:
+            res["skipped"].append((name, why))
+            continue
+        if not dry and not _drop_lane_folder(root, path, held, deadline if bounded else None):
+            if bounded and time.monotonic() >= deadline and os.path.lexists(path):
+                res["out_of_time"] = True  # part of it went: the next prune or tidy finishes it
+                res["why"] = f"ran out of time part way through {name}: the rest is left for sampo tidy --apply"
+                res["skipped"].append((name, "removal ran out of time"))
                 break
-            if any(path == g or path.startswith(g + os.sep) for g, _ in gone):
-                continue
-            size, used, is_dir = info[path]
-            size -= sum(b for g, b in gone if g.startswith(path + os.sep))
-            rel = os.path.relpath(path, root)
-            if now - used < CARGO_FRESH_S:
-                continue
-            if _holds(held, path):
-                res["skipped"].append((rel, "a live process holds it"))
-                continue
-            if _build_running(root, path, is_dir):
-                res["skipped"].append((rel, "a cargo build holds its lock"))
-                continue
-            if size <= 0:  # nothing to free: an empty folder is not worth a removal
-                continue
-            if not dry and not _remove_cache_entry(root, path, is_dir):
-                res["skipped"].append((rel, "could not be removed"))
-                continue
-            gone.append((path, size))
-            res["removed"].append((rel, size))
-            res["after"] -= size
+            res["skipped"].append((name, "could not be removed"))
+            continue
+        res["removed"].append((name, size))
+        res["after"] -= size
+    return res
+
+
+def orphan_lane_folders(p, now=None, held=None, dry=False, skipped=None):
+    """T-4764: the lane cargo folders whose lane is gone (the path in the folder's .sampo-lane file is no longer there),
+    unused for an hour: [(name, bytes)] that were removed (with `dry`, that would be), same refusals as the cap's
+    (_lane_folder_blocker). A folder with no marker is left to the cap. A folder the refusals keep is appended to the
+    list `skipped` as (name, why), so the caller can say what stays and why."""
+    now = time.time() if now is None else now
+    root = _lanes_root(p.slug)
+    out = []
+    for name, path in _lane_folders(root) if root else []:
+        lane = _lane_marker(path)
+        if not lane or os.path.lexists(lane):
+            continue
+        try:
+            info, size = _cache_tree(path, time.monotonic() + TIDY_SCAN_S)
+        except _SizingOut:
+            continue
+        if now - info.get(path, (0, 0.0, True))[1] < CARGO_FRESH_S:
+            continue
+        held_now = _held_paths() if held is None else held
+        why = _lane_folder_blocker(root, path, held_now)
+        if not why and not dry and not _drop_lane_folder(root, path, held_now):
+            why = "could not be removed"
+        if why:
+            if skipped is not None:
+                skipped.append((name, why))
+            continue
+        out.append((name, size))
+    return out
+
+
+def retire_cargo_shared(p, held=None, dry=False, budget=None):
+    """T-4764: remove the project's old shared cargo folder (T-4575's cache/cargo-target/<slug>, retired: two lanes
+    sharing it ran each other's compiled crates). Only that exact folder: a real folder (never a link) directly under
+    Sampo's cache/cargo-target, not held by a process, with no cargo build's lock held in it. {present, bytes (None
+    when the sizing ran out), removed, why}. The empty cargo-target folder goes after the last project's."""
+    shared = c.cargo_shared_dir(p.slug)
+    held_given = held
+    res = {"present": False, "bytes": 0, "removed": False, "why": ""}
+    base = os.path.realpath(os.path.join(c.state_dir(), "cache", c.CARGO_OLD))
+    if not os.path.lexists(shared):
+        return res
+    res["present"] = True
+    if os.path.islink(shared) or not os.path.isdir(shared) or os.path.dirname(os.path.realpath(shared)) != base:
+        res["why"] = "not a plain folder of Sampo's cache: left alone"
+        return res
+    res["bytes"] = dir_bytes(shared, time.monotonic() + (TIDY_SCAN_S if budget is None else budget))
+    if dry:
+        return res
+    held = _held_paths() if held is None else held
+    real = os.path.realpath(shared)
+    if held is None:
+        res["why"] = "no view of the open files on this system"
+    elif _holds(held, real):
+        res["why"] = "a live process holds it"
+    elif _build_running(real, real, True):
+        res["why"] = "a cargo build holds its lock"
+    elif held_given is None and ((again := _held_paths()) is None or _holds(again, real) or _build_running(real, real, True)):
+        res["why"] = "a live process holds it"  # T-4764: looked at once more right before the removal (the sizing took a while)
+    else:
+        shutil.rmtree(real, ignore_errors=True)
+        res["removed"] = not os.path.lexists(real)
+        if not res["removed"]:
+            res["why"] = "could not be removed"
+        else:
+            with contextlib.suppress(OSError):
+                os.rmdir(base)  # only when empty
     return res
 
 
@@ -4497,27 +4770,14 @@ def _build_running(root, path, is_dir):
     return any(_lock_held(os.path.join(f, ".cargo-lock")) for f in dict.fromkeys(folders))
 
 
-def _remove_cache_entry(root, path, is_dir):
-    """Remove one cache entry: only a real file or folder (never a link) whose real path is inside `root`, the cache
-    folder itself never. True when it is gone."""
-    try:
-        if os.path.islink(path) or os.path.realpath(path) != path or not path.startswith(root + os.sep):
-            return False
-        if is_dir:
-            shutil.rmtree(path, ignore_errors=True)
-        else:
-            os.remove(path)
-    except OSError:
-        return False
-    return not os.path.lexists(path)
-
-
-def drop_lane_target(lane, main, held=None):
+def drop_lane_target(lane, main, held=None, deadline=None):
     """T-4717: remove a Rust lane's own target/ folder (a landed lane's build output, rebuilt on demand): True when it
     is gone. Only a folder proven cargo's output (_cargo_output: a real folder, cargo's CACHEDIR.TAG, nothing in it
     tracked by git) in a linked worktree under the project's lane homes that holds a Cargo.toml; anything else is left
     as it is. Never the main checkout's, never one a live process holds (or when the open files can't be read). The
-    folder is not sized first (a 20 GB walk would hold the merge): the lane's sources, branch and registration stay."""
+    folder is not sized first (a 20 GB walk would hold the merge): the lane's sources, branch and registration stay.
+    `deadline` (a time.monotonic() value) bounds the removal (what a merge under the train's lock passes: a part-removed
+    target/ goes with the lane). True only when the folder is gone."""
     real = os.path.realpath
     path = real(lane)
     target = os.path.join(path, "target")
@@ -4525,63 +4785,321 @@ def drop_lane_target(lane, main, held=None):
             or not os.path.isfile(os.path.join(path, "Cargo.toml")) or real(target) != target or not _cargo_output(path):
         return False
     if held is None:
-        held = _held_paths()
+        held = _read_held(deadline)
     if held is None or _holds(held, target) or _build_running(path, target, True):
         return False
-    shutil.rmtree(target, ignore_errors=True)  # never follows a link inside it: a link goes, its target stays
-    return not os.path.lexists(target)
+    return _rmtree_until(target, deadline)  # never follows a link inside it: a link goes, its target stays
+
+
+GATE_UNUSED_DAYS = 14  # the gate's stable folder goes (tidy) when no run used it for this long, or when it is over the lane cap
+GATE_LEFTOVER_S = 86400  # a private gate folder whose pid is still alive is a leftover only after this long unused (a dead pid's: at once)
+
+
+def _gate_folders(root):
+    """[(name, path)] of the gate's folders directly in `root`: the stable one and each private one a busy run made
+    (core.GATE_PRIVATE), real folders only (never a link)."""
+    out = []
+    try:
+        for e in os.scandir(root):
+            if _is_gate_name(e.name) and e.is_dir(follow_symlinks=False):
+                out.append((e.name, e.path))
+    except OSError:
+        pass
+    return sorted(out)
+
+
+def _pid_alive(pid):
+    """Whether process `pid` exists (a process of another user counts as alive)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (OSError, OverflowError, ValueError):
+        return True
+    return True
+
+
+def gate_cargo_folder(p, now=None, held=None, dry=False, deadline=None):
+    """T-4764: the gate's stable cargo folder (core.cargo_gate_dir: the throwaway checkouts of the gate and the train
+    build into it, one run at a time: core.cargo_gate_slot) against its tidy rule. {present, bytes (None when the
+    sizing ran out), used (its newest use: the files below it and the lock file beside it), stale, removed, why}.
+    Stale when no run used it for GATE_UNUSED_DAYS or it is over the lane cap (core.cargo_cap_bytes); never one used in
+    the last hour. Removed (not `dry`) only while this process holds the gate's lock (so no run is in it and none
+    starts), and the same refusals as a lane folder's apply (_folder_blocker: no process holds it, no cargo build's
+    lock is held in it, never a link, exact path). A run that starts meanwhile builds in a private folder."""
+    now = time.time() if now is None else now
+    res = {"present": False, "bytes": 0, "used": 0.0, "stale": False, "removed": False, "why": ""}
+    root = _lanes_root(p.slug)
+    gate = os.path.join(root, c.CARGO_GATE) if root else ""
+    if not gate or not os.path.lexists(gate):
+        return res
+    res["present"] = True
+    if os.path.islink(gate) or not os.path.isdir(gate):
+        res["why"] = "not a plain folder of Sampo's cache: left alone"
+        return res
+    try:
+        info, size = _cache_tree(gate, time.monotonic() + TIDY_SCAN_S if deadline is None else deadline)
+    except _SizingOut:
+        res["bytes"] = None
+        res["why"] = "sizing it ran out of time"
+        return res
+    used = info.get(gate, (0, 0.0, True))[1]
+    for mark in (gate, os.path.join(root, c.GATE_LOCK)):  # the folder's own time too: a new one holds no file yet
+        with contextlib.suppress(OSError):
+            used = max(used, os.stat(mark).st_mtime)
+    res.update(bytes=size, used=used)
+    if now - used < CARGO_FRESH_S:
+        return res
+    res["stale"] = now - used >= GATE_UNUSED_DAYS * 86400 or size > c.cargo_cap_bytes()
+    if not res["stale"] or dry:
+        return res
+    with c.cargo_gate_slot(gate, touch=False) as folder:
+        if folder != gate:
+            res["why"] = "a run holds it"
+            return res
+        held = _read_held(deadline) if held is None else held
+        why = _folder_blocker(root, gate, held, _is_gate_name)
+        if why:
+            res["why"] = why
+        else:
+            res["removed"] = _rmtree_until(gate, deadline)
+            if not res["removed"]:
+                res["why"] = "could not be removed (or ran out of time)"
+    return res
+
+
+def sweep_gate_leftovers(p, now=None, held=None, dry=False, deadline=None, skipped=None):
+    """T-4764: the private gate folders (core.GATE_PRIVATE: what a run builds in when it finds the stable folder busy)
+    that no run will remove any more: the process named in the folder's name is gone, or is alive but the folder has
+    been unused for GATE_LEFTOVER_S (a reused pid). [(name, bytes)] removed (with `dry`, that would be), by exact path
+    with the same refusals as a lane folder's (_folder_blocker: held by a process, a cargo build's lock). A folder the
+    refusals keep is appended to `skipped` as (name, why). Stops when `deadline` passes."""
+    now = time.time() if now is None else now
+    root = _lanes_root(p.slug)
+    out = []
+    for name, path in _gate_folders(root) if root else []:
+        m = c.GATE_PRIVATE.match(name)
+        if not m:
+            continue
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        try:
+            info, size = _cache_tree(path, time.monotonic() + TIDY_SCAN_S if deadline is None else deadline)
+        except _SizingOut:
+            continue
+        used = info.get(path, (0, 0.0, True))[1]
+        with contextlib.suppress(OSError):
+            used = max(used, os.stat(path).st_mtime)  # a new folder holds no file yet
+        if _pid_alive(int(m.group(1))) and now - used < GATE_LEFTOVER_S:
+            continue  # its run is still going (or just ended and is removing it)
+        if held is None:
+            held = _read_held(deadline)
+            if held is None:  # no view of the open files (or no time left to read them): stop, never read again per folder
+                if skipped is not None:
+                    skipped.append((name, "no view of the open files on this system"))
+                break
+        why = _folder_blocker(root, path, held, _is_gate_name)
+        if not why and not dry and not _rmtree_until(path, deadline):
+            why = "could not be removed (or ran out of time)"
+        if why:
+            if skipped is not None:
+                skipped.append((name, why))
+            continue
+        out.append((name, size))
+    return out
+
+
+AUTO_PRUNE_EVERY_S = 600  # T-4764: a lane's start or focus looks at the cap at most this often; a removal always does
+AUTO_PRUNE_BUDGET_S = 8.0  # and the whole run (sizing, reading the holders, removals) stops here: what is left goes to tidy
+PRUNE_STAMP = ".pruned"  # in the project's cargo-lanes folder; no lane folder's name, so nothing sweeps it
+DROP_BUDGET_S = 5.0  # what a lane's own folder may take to go inside a merge (the train's lock is held)
+
+
+def auto_prune(p, force=False, budget=AUTO_PRUNE_BUDGET_S, held=None):
+    """T-4764: hold the lane cargo folders to their cap without `sampo tidy`: prune_cargo_cache's rules (oldest first, never
+    one used in the last hour or held by a process or a build), looked at when a lane folder is assigned (`lane new`,
+    `focus`: at most once in AUTO_PRUNE_EVERY_S, by a stamp file) and when a lane is removed (`force`). The private gate
+    folders of dead runs go with it (sweep_gate_leftovers). ONE deadline of `budget` seconds covers everything this does
+    (sizing, one reading of the holders, each removal: a folder part removed when it passes is finished by the next
+    prune): a focus never waits longer, and what was left, or could not be sized, is named with `sampo tidy --apply` as
+    the way. One line, '' when nothing went and nothing was left. Never raises."""
+    try:
+        root = _lanes_root(p.slug)
+        if root is None:
+            return ""
+        stamp = os.path.join(root, PRUNE_STAMP)
+        if not force:
+            with contextlib.suppress(OSError):
+                if time.time() - os.stat(stamp).st_mtime < AUTO_PRUNE_EVERY_S:
+                    return ""
+        with contextlib.suppress(OSError):
+            c.write_atomic(stamp, f"{int(time.time())}\n")
+        deadline = time.monotonic() + budget
+        gone = []
+        if any(c.GATE_PRIVATE.match(n) for n, _ in _gate_folders(root)):  # rare: the holders are read for it, once for both
+            if held is None:
+                held = _read_held(deadline)
+            gone = sweep_gate_leftovers(p, held=held, deadline=deadline)
+        r = prune_cargo_cache(p, held=held, deadline=deadline)
+        parts = []
+        if gone:
+            parts.append(f"Cargo: removed {len(gone)} private gate folder{'s' if len(gone) > 1 else ''} of runs that ended "
+                         f"({human(sum(n for _, n in gone))}).")
+        if r["removed"]:
+            names = [n for n, _ in r["removed"]]
+            more = f" and {len(names) - 3} more" if len(names) > 3 else ""
+            parts.append(f"Cargo: the lane folders were over their cap of {human(r['cap'])}: pruned {len(names)} "
+                         f"({human(sum(n for _, n in r['removed']))}; the least recently used first): {', '.join(names[:3])}{more}")
+        if r.get("out_of_time"):
+            left = [n for n, _ in r["skipped"] if n] if r["skipped"] else []
+            parts.append("Cargo: the lane folders may be over their cap: the check ran out of its "
+                         f"{budget:g} s ({r['why'] or 'sizing them took too long'}); `sampo tidy --apply` prunes them"
+                         + (f" (left: {c.joinmore(left, 3)})" if left else ""))
+        return " ".join(parts)
+    except Exception:
+        return ""
+
+
+def lane_new_cargo(p, path):
+    """T-4717, T-4764: a new lane's cargo setup: its marked config (a hint) and a look at the cap; the line auto_prune
+    names ('' when nothing was pruned). Never raises."""
+    with contextlib.suppress(Exception):
+        c.lane_cargo_config(path)
+    return auto_prune(p)
 
 
 def drop_landed_target(p, b, main):
-    """T-4717: after a lane's merge and its record: its own target/ goes (best effort: a landed lane's build output is
-    rebuilt, and Sampo's own commands build into the shared folder). Never raises."""
+    """T-4717, T-4764: after a lane's merge and its record (the merge runs under the train's lock, so nothing here waits
+    long): its own target/ goes, and so does its cargo folder under Sampo's cache (best effort: a landed lane's build
+    output is rebuilt on demand; the folder's removal is bounded by DROP_BUDGET_S, what is left goes with the next
+    prune), and the prune stamp is cleared so the next `lane new` or `focus` looks at the cap at once instead of waiting
+    out its ten minutes. The cap itself is not walked here: a sizing of many GB under the train's lock would hold every
+    other merge. Never raises."""
     try:
         path = b.meta.get("lane")
-        return bool(path) and os.path.isdir(path) and drop_lane_target(path, main)
+        if not path:
+            return False
+        until = time.monotonic() + DROP_BUDGET_S
+        held = _read_held(until)  # once for both drops, inside the budget
+        gone = done = False
+        if held is not None:  # no view of the open files: nothing is removed (and nothing is read again)
+            gone = drop_lane_cargo_dir(p.slug, path, held=held, deadline=until)
+            done = bool(os.path.isdir(path) and drop_lane_target(path, main, held=held, deadline=until)) or gone
+        root = _lanes_root(p.slug)
+        if root:
+            with contextlib.suppress(OSError):
+                os.unlink(os.path.join(root, PRUNE_STAMP))
+        return done
     except Exception:
         return False
 
 
 def cargo_cache_findings(p, apply, actions, finding, skip=()):
-    """T-4717: fm tidy: the shared cargo cache against its cap (an APPLY item when over it; --apply prunes it oldest
-    first, prune_cargo_cache's rules), and an INFO item naming each kept lane's own target/ folder with its size (never
-    removed: its builder may be building in it; a finished lane goes whole with it)."""
+    """T-4717, T-4764: fm tidy: the old shared cargo folder (an APPLY item: retire_cargo_shared removes it), the lane
+    cargo folders whose lane is gone (APPLY), the lane cargo folders against their cap (an APPLY item when over it;
+    --apply prunes whole folders oldest first, prune_cargo_cache's rules), T-4717's marked config in the lanes' parent
+    folder (removed on --apply, no item), and an INFO item naming each kept lane's own target/ folder with its size
+    (never removed: its builder may be building in it; a finished lane goes whole with it)."""
     main = c.main_worktree(p.root) or p.root
     if not c.git_root(main) or not os.path.isfile(os.path.join(main, "Cargo.toml")):
         return []
     out = []
+    if apply:
+        for home in _lane_homes(main):
+            if c.cargo_drop_parent_config(home):
+                actions.append(("cargo_config", home))
+    old = retire_cargo_shared(p, dry=not apply)
+    if old["present"]:
+        item = finding(p.slug, "cargo_shared", "action",
+                       f"the old shared cargo folder holds {human(old['bytes']) if old['bytes'] is not None else 'an unsized amount'}"
+                       " (two lanes sharing one ran each other's compiled crates: each lane has its own folder now)",
+                       "sampo tidy --apply removes it", auto=True, bytes=old["bytes"] or 0)
+        out.append(item)
+        if apply:
+            if old["removed"]:
+                actions.append(("cargo_shared", p.slug))
+                item["detail"] += "; removed"
+            else:
+                item.update(severity="warn", auto=False, fix=old["why"] or "left as it is")
+    left = []
+    orphans = orphan_lane_folders(p, dry=not apply, skipped=left)
+    if left:  # T-4764: a folder of a gone lane that stays is named with why (an unreadable view of the open files is no 'free')
+        out.append(finding(p.slug, "cargo_lane_orphan_kept", "info",
+                           f"{len(left)} cargo folder{'s' if len(left) > 1 else ''} of lanes that are gone stay: "
+                           + "; ".join(f"{n} ({why})" for n, why in left[:5]),
+                           "they go on a later run when nothing holds them"))
+    if orphans:
+        item = finding(p.slug, "cargo_lane_orphan", "action",
+                       f"{len(orphans)} cargo folder{'s' if len(orphans) > 1 else ''} of lanes that are gone "
+                       f"({human(sum(n for _, n in orphans))}): {', '.join(n for n, _ in orphans[:5])}",
+                       "sampo tidy --apply removes them", auto=True, bytes=sum(n for _, n in orphans))
+        out.append(item)
+        if apply:
+            actions.append(("cargo_lane_orphan", len(orphans)))
+            item["detail"] += "; removed"
+    stays = []
+    leftovers = sweep_gate_leftovers(p, dry=not apply, skipped=stays)  # T-4764: a busy run's private gate folder whose run died
+    if leftovers:
+        item = finding(p.slug, "cargo_gate_leftover", "action",
+                       f"{len(leftovers)} private gate cargo folder{'s' if len(leftovers) > 1 else ''} of runs that ended "
+                       f"({human(sum(n for _, n in leftovers))}): {', '.join(n for n, _ in leftovers[:5])}",
+                       "sampo tidy --apply removes them", auto=True, bytes=sum(n for _, n in leftovers))
+        out.append(item)
+        if apply:
+            actions.append(("cargo_gate_leftover", len(leftovers)))
+            item["detail"] += "; removed"
+    if stays:
+        out.append(finding(p.slug, "cargo_gate_kept", "info",
+                           f"{len(stays)} private gate cargo folder{'s' if len(stays) > 1 else ''} of ended runs stay: "
+                           + "; ".join(f"{n} ({why})" for n, why in stays[:5]), "they go on a later run when nothing holds them"))
+    gate = gate_cargo_folder(p, dry=not apply)  # T-4764: the gate's stable folder: unused for 14 days, or over the lane cap
+    if gate["stale"]:
+        item = finding(p.slug, "cargo_gate", "action",
+                       f"the gate's cargo folder holds {human(gate['bytes'])} and is "
+                       + (f"over the lane cap of {human(c.cargo_cap_bytes())}" if gate["bytes"] > c.cargo_cap_bytes()
+                          else f"unused for {GATE_UNUSED_DAYS} days"),
+                       "sampo tidy --apply removes it when no run holds it (the next gate run rebuilds)", auto=True,
+                       bytes=gate["bytes"])
+        out.append(item)
+        if apply:
+            if gate["removed"]:
+                actions.append(("cargo_gate", p.slug))
+                item["detail"] += "; removed"
+            else:
+                item.update(severity="warn", auto=False, fix=gate["why"] or "left as it is")
     r = prune_cargo_cache(p, dry=True)
     if r.get("unsized"):  # never nothing: the cache may be over its cap, only this run could not tell
-        out.append(finding(p.slug, "cargo_cache", "info", "could not size the shared cargo cache in time (it may be over its cap)",
+        out.append(finding(p.slug, "cargo_cache", "info", "could not size the lane cargo folders in time (they may be over their cap)",
                            "run sampo tidy again when the machine is quieter"))
     if r["before"] > r["cap"]:
         item = finding(p.slug, "cargo_cache", "action",
-                       f"shared cargo cache {human(r['before'])} is over its cap of {human(r['cap'])} (oldest entries first, "
-                       "none used in the last hour or held by a process)",
-                       "sampo tidy --apply prunes it oldest-first to the cap", auto=True, bytes=r["before"], cap=r["cap"])
+                       f"lane cargo folders {human(r['before'])} are over their cap of {human(r['cap'])} (whole folders, "
+                       "least recently used first; none used in the last hour or held by a process)",
+                       "sampo tidy --apply prunes them oldest-first to the cap", auto=True, bytes=r["before"], cap=r["cap"])
         out.append(item)
         if apply:
             done = prune_cargo_cache(p)
             freed = sum(n for _, n in done["removed"])
             if done["removed"]:
                 actions.append(("cargo_cache", p.slug))
-                item["detail"] += f"; pruned {human(freed)} in {len(done['removed'])} entries"
+                item["detail"] += f"; pruned {human(freed)} in {len(done['removed'])} folder(s)"
             if done["after"] > done["cap"] or done["why"]:
                 item.update(severity="warn", auto=False,
                             fix=done["why"] or "what is left was used in the last hour or is held by a process")
     rows = _lane_targets(main, skip, time.monotonic() + TIDY_SCAN_S) or []
     for path, size in sorted(rows, key=lambda x: -x[1]):
         if size:
+            hint = c.cargo_ignore_hint(path)  # T-4764: git not ignoring the lane's cargo config is a cause worth naming
             out.append(finding(p.slug, "lane_target", "info",
                                f"lane {os.path.basename(path)} holds its own build output: target {human(size)} (a Rust lane "
-                               "builds into the shared cargo cache; this one is from before the lanes' config, a command that "
-                               "chose its own folder, or SAMPO_CARGO_SHARED=0)",
+                               "builds into its own folder under Sampo's cache; this one is from before that, a command that "
+                               "chose its own folder, or SAMPO_CARGO_SHARED=0)" + (f". Cause here: {hint}" if hint else ""),
                                "it goes with the lane (fm lane rm), or at its merge",
                                bytes=size, lane=path))
     return out
 
 
-def _remove_finished(main, row):
+def _remove_finished(main, row, slug=None):
     """Take one finished lane out, never forced: git itself refuses a worktree with uncommitted files. A lock held by a
     Claude Code agent is lifted only while that agent is still dead (checked again here, the scan was a moment ago) and
     put back if git still refuses; a re-lock that fails is said too. The lane's branch goes with it (git branch -d,
@@ -4603,6 +5121,8 @@ def _remove_finished(main, row):
                 why += f"; and putting its lock back failed: {(back.stderr.strip() or f'exit {back.returncode}')[:200]}"
         return why
     end_lane_procs(path)  # T-4720: what still stands in the removed folder goes with it
+    if slug:
+        drop_lane_cargo_dir(slug, path)  # T-4764: the lane's cargo folder goes with it (best effort, never while held)
     _git(main, "worktree", "prune")
     if row["branch"] and _LANE_BRANCH.match(row["branch"]):
         _git(main, "branch", "-d", row["branch"])  # -d: the commits stay when the branch somehow isn't merged
@@ -4628,7 +5148,7 @@ def finished_findings(p, briefs, apply, actions, finding):
                            bytes=r["bytes"]))
         if not apply:
             continue
-        why = "a process is working in it" if _in_use(r["path"], busy) else _remove_finished(main, r)
+        why = "a process is working in it" if _in_use(r["path"], busy) else _remove_finished(main, r, p.slug)
         if why:
             out[-1].update(severity="warn", auto=False, fix=why)
         else:
