@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- The test run no longer hangs on a class that leaves a detached child on macOS, and the guard now finishes a script read that ran out of budget instead of failing open, with CPU-scaled time bounds in the tests (T-4758).
+- `sampo lane merge` with one id is now a train of one, with the same gate as a multi-id train and the gate named in its output, so a red lane can no longer reach the trunk through a helper that passes one id (T-4756).
 - The test runner shares the ordinary CPU slots fairly between runs, so a second run gets a slot within one job instead of waiting for the first run's whole queue, and removes slot files left beyond the pool (T-4688).
 - Three CI-only test failures fixed: a long macOS temp root cut a gate's shown command, macOS ends no processes per class so the ending-tests ask for the read, and Python 3.14 parses a 100000-deep rules file the old interpreters rejected (T-4778).
 - `sampo code` gains an `unprovable` action: when a criterion's own tool fails in the sandbox, the harness runs the model's probe and, if it fails the same way, waives that criterion (two a run) and lists it as not proven in the close; a verify that cannot fail ('true') is refused for every task type (T-4292).
