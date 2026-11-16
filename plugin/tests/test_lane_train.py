@@ -845,15 +845,18 @@ class PrivateTerm(TrainCase):
         self.assertIn("the private-term check had no term list", out)
         self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")))
 
-    def test_an_unreadable_term_list_holds_nothing_but_the_train_says_so(self):
+    def test_an_unreadable_term_list_holds_every_lane_and_the_train_says_so_once(self):
+        # T-4804: unreadable is not unset: a scan that read no terms from a damaged list would merge what it can't judge
         from sampo import core as c
         with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
             f.write("{not json")
-        r = self.train(self.lane(1, "a.txt"))
+        r = self.train(self.lane(1, "a.txt"), check=False)
         out = r.stdout + r.stderr
-        self.assertIn("the private-term check had no term list", out)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertEqual(out.count("the private-term list exists but cannot be read"), 1, out)
+        self.assertNotIn("had no term list", out, "unreadable is not 'none set'")
         self.assertNotIn(c.PRIVATE_TERMS, out, "no path in the line")
-        self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")))
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")), "held: nothing was merged")
 
     def test_no_term_list_but_a_secrets_file_says_that_only_its_values_were_scanned(self):
         self.fm("private", "rm", self.TERM)

@@ -2752,7 +2752,7 @@ def _lock_holder(fd):
         pid, at, cmd = os.pread(fd, 300, 0).decode("utf-8", "replace").split(" ", 2)
         held = max(0.0, time.time() - float(at))
         return (f" (last known holder: pid {int(pid)}, took it {held:.1f} s ago: "
-                f"{fit(plain(redact_local(redact(cmd))), 120)})", held)
+                f"{fit(plain(redact_display(redact(cmd))), 120)})", held)
     except (OSError, ValueError):
         return "", None
 
@@ -2827,15 +2827,87 @@ PRIVATE_TERMS = "private-terms.json"  # T-3529: in the state folder (git-ignored
 _PRIVATE_RES = {}
 
 
+class PrivateTermsUnreadable(ValueError):
+    """T-4804: the private-term list exists but can't be read as a list (a directory, bad JSON, not a list, not UTF-8,
+    no permission). A ValueError, so every boundary that already catches one (the hooks, export_mirror) holds it. Its
+    text is PRIVATE_UNREADABLE and nothing else: never a term, a path or a line of the file."""
+
+
+PRIVATE_UNREADABLE = ("the private-term list exists but cannot be read (sampo doctor names it); nothing was written or "
+                      "sent")
+_PRIVATE_SAID = set()
+
+
+def _private_read(state=None):
+    """(the usable terms, the count of unusable entries). Raises PrivateTermsUnreadable for a list that exists
+    and isn't a JSON list of strings: a directory, a dangling link, a 0-byte or blank file (the commonest truncation),
+    bad JSON, an object, not UTF-8, no permission, a non-string entry. Only a missing path or a literal [] is no terms."""
+    p = os.path.join(state or state_dir(), PRIVATE_TERMS)
+    try:
+        with open(p, encoding="utf-8") as f:
+            raw = f.read()
+        data = json.loads(raw)  # '' and blank text are a decode error: a truncated list is damage, not 'no terms'
+    except FileNotFoundError:
+        if os.path.lexists(p):  # a link to nothing: the list was there
+            raise PrivateTermsUnreadable(PRIVATE_UNREADABLE) from None
+        return [], 0
+    except (OSError, ValueError):
+        raise PrivateTermsUnreadable(PRIVATE_UNREADABLE) from None
+    if not isinstance(data, list) or not all(isinstance(t, str) for t in data):
+        raise PrivateTermsUnreadable(PRIVATE_UNREADABLE)
+    ok = sorted({t.strip().lower() for t in data if private_ok(t)})
+    return ok, sum(1 for t in data if not private_ok(t))
+
+
 def private_terms(state=None):
     """T-3529: the user's private terms, lowercased: host globs (*.home.example.test covers it and every host under
-    it) and plain words, kept by sampo private add|rm|list in the state folder only."""
+    it) and plain words, kept by sampo private add|rm|list in the state folder only. [] means NO terms: a list that is
+    absent or the literal []. T-4804: one that exists and can't be read raises PrivateTermsUnreadable, never [] (a
+    caller that redacts, scans or exports would take [] for 'nothing private' and let the user's own terms through);
+    a reader that only decorates local output calls private_terms_lenient."""
+    return _private_read(state)[0]
+
+
+def private_short(state=None):
+    """T-4804: how many entries the list holds that private_ok drops (under 3 characters, which would redact
+    everything, or holding a space or control character); 0 when the list is absent or unreadable."""
     try:
-        with open(os.path.join(state or state_dir(), PRIVATE_TERMS), encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError):
-        return []
-    return sorted({t.strip().lower() for t in data if private_ok(t)}) if isinstance(data, list) else []
+        return _private_read(state)[1]
+    except PrivateTermsUnreadable:
+        return 0
+
+
+def private_short_line(n):
+    return f"{n} entries in the private-term list are unusable (sampo private list; each needs 3+ characters, no spaces)"
+
+
+def private_terms_lenient(state=None):
+    """T-4804: private_terms for a reader whose output stays on this machine (a board, a status line, a hook's own
+    note): an unreadable list gives [] and one line on stderr per process (never a term or a path), not a refusal. Said
+    once too: unusable entries."""
+    try:
+        terms, short = _private_read(state)
+    except PrivateTermsUnreadable:
+        terms, short = [], 0
+        if "said" not in _PRIVATE_SAID:
+            _PRIVATE_SAID.add("said")
+            try:
+                sys.stderr.write("sampo: the private-term list could not be read: local output is not redacted for it "
+                                 "(sampo doctor)\n")
+            except (OSError, ValueError):
+                pass
+    if short and "short" not in _PRIVATE_SAID:
+        _PRIVATE_SAID.add("short")
+        try:
+            sys.stderr.write("sampo: " + private_short_line(short) + "\n")
+        except (OSError, ValueError):
+            pass
+    return terms
+
+
+def redact_display(text):
+    """T-4804: redact_local for output that stays on this machine: an unreadable list redacts the rest and says once."""
+    return redact_local(text, private_terms_lenient())
 
 
 def private_ok(term):
@@ -7437,6 +7509,13 @@ def export_mirror(p):
         from sampo import sync
         try:
             sync.export(p)
+        except PrivateTermsUnreadable:  # T-4804: the mirror goes stale; never silently (one fixed line a process)
+            if "mirror" not in _PRIVATE_SAID:
+                _PRIVATE_SAID.add("mirror")
+                try:
+                    sys.stderr.write("sampo: the .sampo mirror was not updated: " + PRIVATE_UNREADABLE + "\n")
+                except (OSError, ValueError):
+                    pass
         except (OSError, ValueError):
             pass  # a read-only checkout or a bad brief costs the mirror update, never the fm command
 

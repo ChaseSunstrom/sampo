@@ -165,10 +165,12 @@ def ahead(p):
         return None
     src = max(enumerate(past), key=lambda x: (len(wp & set(x[1][1])), x[0]))[1][0]  # most shared paths, then newest
     body = lambda name: re.sub(r"(?m)^#+\s*", "", src.section(name)).strip() or "(none)"  # noqa: E731
-    plan = c.redact(f"Speculative: Sampo predicted the next request is a {want.get('type')} touching "
+    # T-4817: the plan is committed to a branch that may be pushed: private terms and this machine's layout go too;
+    # strict, so an unreadable term list raises before any worktree is made (the tick's note says the fixed line)
+    plan = c.redact_local(c.redact(f"Speculative: Sampo predicted the next request is a {want.get('type')} touching "
                     f"{', '.join(sorted(wp)) or 'no known paths'} ({pred['id']}); this is the plan of {src.id} "
                     f"({c.plain(src.title)}), the closest past one. A plan only, no code; never pushed or merged.\n\n"
-                    f"Approach:\n{body('Approach (options → choice → why)')}\n\nSteps:\n{body('Steps')}\n")
+                    f"Approach:\n{body('Approach (options → choice → why)')}\n\nSteps:\n{body('Steps')}\n"))
     tid = "ahead-" + re.sub(r"[^\w.-]", "-", pred["id"])
     wt = _wt(p, tid)
     os.makedirs(os.path.dirname(wt), exist_ok=True)

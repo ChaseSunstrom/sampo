@@ -130,6 +130,48 @@ class Profile(SampoTestCase):
         self.assertLessEqual(len(ctx.encode()), profile.BRIEF_MAX)
         self.assertEqual(json.loads(out.stdout)["hookSpecificOutput"]["hookEventName"], "SubagentStart")
 
+    def test_an_unreadable_private_term_list_withholds_the_profile_from_every_agent(self):
+        # T-4804 review: the profile reaches a session, a subagent, a builder's brief, the MCP tool and the rules files;
+        # with the list damaged the user's own terms can't be redacted, so none of it goes out and one fixed line says why
+        from sampo import profile
+        self.built()
+        before = self.profile_text()
+        listing = os.path.join(self.home, "state", "private-terms.json")
+        for body in ("{not json", ""):  # a damaged list, and a truncated (0-byte) one
+            with open(listing, "w") as f:
+                f.write(body)
+            ctx = self.context(self.hook("SessionStart", {"source": "startup"}, env=self.env))
+            self.assertIn(profile.WITHHELD, ctx)
+            self.assertNotIn("Keep replies", ctx)
+            self.assertNotIn("Full autonomy", ctx)
+            self.assertEqual(self.hook("SubagentStartContext", {"agent_type": "general-purpose", "agent_id": "a1"},
+                                       env=self.env).stdout.strip(), "")
+            for verb in ("rebuild", "check"):
+                got = self.fm("profile", verb, env=self.env, check=False)
+                self.assertNotEqual(got.returncode, 0, verb)
+                self.assertIn(profile.WITHHELD, got.stdout + got.stderr)
+                self.assertNotIn("Traceback", got.stderr)
+            self.assertEqual(self.profile_text(), before, "a refused rebuild writes nothing")
+        with open(listing, "w") as f:
+            f.write("[]")
+        ctx = self.context(self.hook("SessionStart", {"source": "startup"}, env=self.env))
+        self.assertIn("Keep replies short and quiet", ctx)
+        self.assertNotIn(profile.WITHHELD, ctx)
+        self.assertEqual(self.fm("profile", "check", env=self.env).returncode, 0)
+
+    def test_a_damaged_private_term_list_gives_no_items_to_the_steer_meter_either(self):
+        # T-4804 round 3: items() read profile.md raw and fed 12 lines into the steer-meter prompt
+        from sampo import profile, steermeter
+        self.built()
+        self.assertTrue(profile.items(), "a readable list gives the items")
+        self.assertTrue(steermeter._standing())
+        listing = os.path.join(self.home, "state", "private-terms.json")
+        for body in ("{not json", ""):
+            with open(listing, "w") as f:
+                f.write(body)
+            self.assertEqual(profile.items(), [], body)
+            self.assertEqual(steermeter._standing(), [], body)
+
     def machine_like(self):
         """A profile shaped like a real machine's: long seed rules, then more memories than any digest holds."""
         os.makedirs(self.cc, exist_ok=True)

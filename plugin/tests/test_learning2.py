@@ -82,6 +82,22 @@ class Playbook(Base):
         self.assertIn("Add the migration", text)
         self.assertIn("T-0003", text)
 
+    def test_the_playbook_draft_refuses_an_unreadable_private_term_list(self):
+        # T-4817: the draft is meant for the repo, so it is redacted for the user's own terms (strict): a damaged list
+        # is one fixed line and no file
+        for t in ("one", "two", "three"):
+            self.done(f"Add the {t} migration", "Write the failing test", "Add the migration", "Run the gate")
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("")
+        got = self.fm("repeats", "--draft", check=False)
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn(c.PRIVATE_UNREADABLE, got.stdout + got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+        self.assertEqual(glob.glob(os.path.join(self.p.dir, "research", "playbook-draft-*.md")), [])
+        os.remove(os.path.join(c.state_dir(), c.PRIVATE_TERMS))
+        self.fm("repeats", "--draft")
+        self.assertTrue(glob.glob(os.path.join(self.p.dir, "research", "playbook-draft-*.md")))
+
 
 class Lesions(Base):
     def test_a_new_model_gets_a_lesion_night_job_until_its_files_are_ablated(self):

@@ -364,6 +364,8 @@ def export(p):
             continue
         try:
             text = _outgoing(rel, _read(src))  # the mirror is committed: no secret from any older note may reach it
+        except c.PrivateTermsUnreadable:
+            raise  # T-4804: the list broke mid-export: stop, never skip a file's scrub
         except ValueError:
             continue
         if m:
@@ -434,6 +436,8 @@ def _stamps(p):
         with open(os.path.join(p.dir, STAMPS), encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) and data.get("v") == _version() else {}  # older stamps: rewrite all
+    except c.PrivateTermsUnreadable:  # T-4804: a ValueError, but never 'no stamps': the export would rewrite on no list
+        raise
     except (OSError, ValueError):
         return {}
 
@@ -566,6 +570,7 @@ def cmd_sync(args):
     p = cli.resolve(args)
     if args.action == "on":
         with c.lock(p.dir):
+            was = bool(c.read_meta(p).get("sync"))
             try:
                 move(p)
                 res = import_(p)  # a clone that already has a mirror takes it before writing its own
@@ -573,6 +578,11 @@ def cmd_sync(args):
                 meta["sync"] = True
                 c.write_meta(p, meta)
                 n = export(p)
+            except c.PrivateTermsUnreadable as e:  # T-4804: nothing was exported; sync is as it was, and it says so
+                meta = c.read_meta(p)
+                meta["sync"] = was
+                c.write_meta(p, meta)
+                raise cli.UsageError(f"{e}; sync is left {'on' if was else 'off'} as it was") from None
             except (OSError, ValueError) as e:
                 meta = c.read_meta(p)
                 meta["sync"] = False
@@ -601,14 +611,17 @@ def cmd_sync(args):
                                                                                     "deletes it)."))
     if args.action in ("import", "export"):
         with c.lock(p.dir):
-            if args.action == "export":
-                move(p, retry=True)
-                res = {"written": export(p)}
-                text = f"{res['written']} file(s) written to {mirror(p)}."
-            else:
-                res = import_(p)
-                text = (f"{res['added']} added, {res['updated']} updated from {mirror(p)}."
-                        + "".join(f"\n  conflict: {x}" for x in res["conflicts"]))
+            try:
+                if args.action == "export":
+                    move(p, retry=True)
+                    res = {"written": export(p)}
+                    text = f"{res['written']} file(s) written to {mirror(p)}."
+                else:
+                    res = import_(p)
+                    text = (f"{res['added']} added, {res['updated']} updated from {mirror(p)}."
+                            + "".join(f"\n  conflict: {x}" for x in res["conflicts"]))
+            except c.PrivateTermsUnreadable as e:  # T-4804: the fixed line, nothing written
+                raise cli.UsageError(str(e)) from None
             c.log_event(p, "sync_" + args.action, data=dict(res), session=cli.session())
             c.regen_views(p)
         return cli.out(args, res, text)
@@ -626,8 +639,11 @@ def cmd_private(args):
     sampo ship refuses a push carrying one. A term is never printed or logged: a digest and a count are."""
     from sampo import cli
     path, term = os.path.join(c.state_dir(), c.PRIVATE_TERMS), (args.term or "").strip().lower()
+    try:  # T-4804: add and rm would overwrite a damaged list with one term: never; list says it can't read it
+        terms = c.private_terms() if args.action == "list" else None
+    except c.PrivateTermsUnreadable as e:
+        raise cli.UsageError(str(e)) from None
     if args.action == "list":
-        terms = c.private_terms()
         if terms and sys.stdout.isatty():
             return print("\n".join(terms))
         return print(f"{len(terms)} private terms ({', '.join(c.private_digest([t]) for t in terms) or 'none'}); "
@@ -636,7 +652,10 @@ def cmd_private(args):
         raise cli.UsageError("a private term is a host glob (*.home.example.test) or a word: 3 or more characters "
                              "besides * and dots, no spaces or control characters")
     with c.lock(c.state_dir()):
-        terms = c.private_terms()
+        try:
+            terms = c.private_terms()
+        except c.PrivateTermsUnreadable as e:
+            raise cli.UsageError(str(e)) from None
         if args.action == "rm" and term not in terms:
             raise cli.UsageError(f"no private term with digest {c.private_digest([term])}; sampo private list")
         terms = sorted(set(terms) - {term} if args.action == "rm" else set(terms) | {term})

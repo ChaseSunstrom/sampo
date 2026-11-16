@@ -418,6 +418,23 @@ class DraftAhead(ForemanTestCase):  # T-2407 (#3): the top prediction planned ah
         self.book(20, beats=False)  # now it trails: muted, so nothing is drafted
         self.assertIsNone(self.ahead())
 
+    def test_an_unreadable_private_term_list_stops_the_plan_before_any_worktree(self):
+        # T-4817: the plan is committed to a branch that may be pushed, so it is redacted for the user's own terms
+        # (strict); a damaged list raises the fixed line (the night tick's note), makes no worktree, files no draft
+        import subprocess
+        self.setup_requests()
+        self.book(12)
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w", encoding="utf-8") as f:
+            f.write("")  # a truncated list
+        with self.assertRaises(c.PrivateTermsUnreadable) as e:
+            self.ahead()
+        self.assertEqual(str(e.exception), c.PRIVATE_UNREADABLE)
+        self.assertIsNone(self.draft())
+        self.assertEqual(subprocess.run(["git", "-C", self.repo, "branch", "--list", "draft/*"], capture_output=True,
+                                        text=True).stdout.strip(), "")
+        os.remove(os.path.join(c.state_dir(), c.PRIVATE_TERMS))
+        self.assertTrue(self.ahead(), "repaired: the plan is made")
+
     def test_a_draft_older_than_three_days_is_removed_and_scored_as_expired(self):
         self.setup_requests()
         self.book(12)

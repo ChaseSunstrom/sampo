@@ -670,7 +670,7 @@ def commands(p, tail=1500):
             continue
         m = SAMPO_CMD.search(str(e.get("target") or "").split("\n", 1)[0])
         if m:
-            terms = c.private_terms() if terms is None else terms
+            terms = c.private_terms_lenient() if terms is None else terms
             rest = re.split(r"\s*(?:&&|\|\||;|\|)\s*", m.group(1), maxsplit=1)[0]
             cmd = c.redact_local(c.redact(c.plain(" ".join(("sampo " + rest).split()))), terms)
             out.append({"at": str(e.get("ts") or ""), "cmd": c.fit(cmd, 96),

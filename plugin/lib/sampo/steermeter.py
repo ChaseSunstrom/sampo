@@ -437,7 +437,7 @@ def _epoch(at):
 
 def _text160(text):
     """What a row keeps of a message: redacted, one line, cut to 160 (also how two entries of one message are matched)."""
-    return c.fit(c.plain(" ".join(c.redact_local(c.redact(text or "")).split())), 160)
+    return c.fit(c.plain(" ".join(c.redact_display(c.redact(text or "")).split())), 160)
 
 
 def _session(path, done, horizon):

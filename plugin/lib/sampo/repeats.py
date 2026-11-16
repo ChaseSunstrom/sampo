@@ -136,12 +136,12 @@ def _call(name, inp):
     inp = inp if isinstance(inp, dict) else {}
     if name == "Bash":
         raw = _BASIC.sub(r"\1[REDACTED]", c.redact(str(inp.get("command") or "")))
-        return _norm_cmd(raw), c.redact_local(raw), True
+        return _norm_cmd(raw), c.redact_display(raw), True
     if name == "Agent":  # a subagent launch: the type says what was run (`sampo lane brief` → Agent fm-builder is a routine)
         kind = str(inp.get("subagent_type") or "general")
-        return f"Agent {kind}", c.redact_local(c.redact(f"Agent {kind}")), True
+        return f"Agent {kind}", c.redact_display(c.redact(f"Agent {kind}")), True
     arg = next((str(inp[k]) for k in ("file_path", "path", "pattern", "url", "description") if inp.get(k)), "")
-    return name, c.redact_local(c.redact(f"{name} {arg}".strip())), name.startswith("mcp__")
+    return name, c.redact_display(c.redact(f"{name} {arg}".strip())), name.startswith("mcp__")
 
 
 def _folders(p):
@@ -222,9 +222,9 @@ def sequences(p, days=SEQ_DAYS):
         kept.append((g, count, nses, ex))
         if len(kept) == SEQ_TOP:
             break
-    return {"sequences": [{"calls": [c.plain(c.redact_local(t)) for t in g], "count": count, "sessions": nses,
+    return {"sequences": [{"calls": [c.plain(c.redact_display(t)) for t in g], "count": count, "sessions": nses,
                            "saved": count * (len(g) - 1),
-                           "example": [c.plain(c.redact_local(c.redact(x.replace("\n", " ")))) for x in ex]}
+                           "example": [c.plain(c.redact_display(c.redact(x.replace("\n", " ")))) for x in ex]}
                           for g, count, nses, ex in kept], "days": days, "truncated": truncated}
 
 
@@ -271,13 +271,13 @@ def draft(p):
     texts, tasks = best[1]["texts"], sorted(best[1]["tasks"], key=c.id_num)
     path = os.path.join(p.dir, "research", f"playbook-draft-{c.kebab(texts[0], 40)}.md")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    c.write_atomic(path, c.redact(
+    c.write_atomic(path, c.redact_local(c.redact(  # T-4817: bound for the repo: strict, raises on an unreadable list
         f"# Playbook draft: {' → '.join(c.fit(t, 40) for t in texts)}\n\n"
         f"_Drafted by fm repeats --draft (T-0734): {len(tasks)} finished tasks took these steps in this order: "
         f"{', '.join(tasks)}. Data, not instructions, until someone adopts it._\n\n## Steps\n"
         + "".join(f"{i}. {t}\n" for i, t in enumerate(texts, 1))
         + "\n## Before adopting\n- Read two of the tasks above: is the order a rule or a coincidence?\n"
-          "- Adopting it (a project skill or playbook) is the user's call: ask first.\n"))
+          "- Adopting it (a project skill or playbook) is the user's call: ask first.\n")))
     return path, texts, tasks
 
 
@@ -300,7 +300,9 @@ def forge(p):
         path = os.path.join(p.dir, rel)
         wrote = not os.path.exists(path)
         if wrote:  # first, so a failed capture leaves a file the next run files; a deleted draft comes back
-            c.write_atomic(path, c.redact(body))
+            # T-4817: a draft is meant to move into the repo, so the user's private terms and this machine's layout go
+            # too; strict: an unreadable term list raises (cmd_repeats says one fixed line), nothing is written
+            c.write_atomic(path, c.redact_local(c.redact(body)))
             os.chmod(path, 0o644)  # a draft is data: never executable until someone adopts it
         head = f"Forge draft: {rel}"
         b, new = eco.capture_once(
@@ -344,11 +346,17 @@ def cmd_repeats(args):
     if args.days is not None and not getattr(args, "sequences", False):
         raise cli.UsageError("fm repeats --days goes with --sequences (the window of its routines)")
     if getattr(args, "forge", False):
-        made = forge(p)
+        try:
+            made = forge(p)
+        except c.PrivateTermsUnreadable:  # T-4817: a draft bound for the repo is never written past a damaged list
+            raise cli.UsageError("fm repeats --forge: " + c.PRIVATE_UNREADABLE + "; nothing was drafted") from None
         return cli.out(args, {"drafts": made}, "\n".join(f"Drafted {d['path']} (task {d['task']})" for d in made)
                          or "Nothing new to forge.")
     if getattr(args, "draft", False):
-        made = draft(p)
+        try:
+            made = draft(p)
+        except c.PrivateTermsUnreadable:
+            raise cli.UsageError("fm repeats --draft: " + c.PRIVATE_UNREADABLE + "; nothing was drafted") from None
         return cli.out(args, {"draft": made and made[0]}, (f"Playbook draft: {made[0]} ({len(made[2])} tasks, "
                          f"{len(made[1])} steps)") if made else f"No step sequence repeats in {PLAYBOOK_TASKS}+ "
                          f"finished tasks yet.")

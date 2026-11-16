@@ -547,6 +547,9 @@ def _route(b, base, route, name, out, root, wait_for, res):
                     return  # nothing of the route is written
                 title = title or " ".join(text.split("\n", 1)[0].split())[:80]  # TEXT_JS puts document.title first
                 pngs[scheme] = b.png()
+            except c.PrivateTermsUnreadable:  # T-4804: not scanned, so nothing is written; a status of its own
+                res["failed"].append({"route": route, "error": c.PRIVATE_UNREADABLE, "private_list": "unreadable"})
+                return
             except (OSError, RuntimeError, EOFError, ValueError) as e:
                 res["failed"].append({"route": route, "error": shot.safe(str(e))[:300]})
                 return
@@ -1012,8 +1015,11 @@ def check(readme_path):
             if size > SVG_KB * 1024:
                 flag(src, f"over {SVG_KB} KB")
             with open(path, encoding="utf-8", errors="replace") as f:
-                for kind, _ in private_hits(f.read(2 << 20)):
-                    flag(src, f"private text: {kind}")
+                try:
+                    for kind, _ in private_hits(f.read(2 << 20)):
+                        flag(src, f"private text: {kind}")
+                except c.PrivateTermsUnreadable:  # T-4804: a check, not a write: it says it could not look
+                    flag(src, "private text: not scanned (the private-term list cannot be read: sampo doctor)")
         m = _PAIR.match(src.split("#")[0].split("?")[0])
         if m:
             other = f"{m.group(1)}-{'light' if m.group(2).lower() == 'dark' else 'dark'}{m.group(3)}"

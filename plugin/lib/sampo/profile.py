@@ -98,18 +98,45 @@ def _home(text):
     return bool(c._HOMES.search(text) or c._CLAUDE_HOMES.search(text) or (len(home) > 1 and home in text))
 
 
+UNREADABLE_KIND = "private list unreadable"
+WITHHELD = "the profile is withheld: the private-term list cannot be read (sampo doctor names it)"
+
+
+def unreadable():
+    """T-4804: whether the private-term list exists and can't be read. The profile reaches other agents' context (a
+    session start, a subagent, a builder's brief, the MCP tool) and the codex/gemini rules files: with the list damaged
+    nothing can be redacted for the user's own terms, so it is withheld, never read as 'no terms'."""
+    try:
+        c.private_terms()
+    except c.PrivateTermsUnreadable:
+        return True
+    return False
+
+
+def withheld():
+    """The one fixed line a hand-out says in place of the profile (names no term, no path), or '' when it is not
+    withheld (no profile built, or a readable list)."""
+    return WITHHELD if os.path.exists(path()) and unreadable() else ""
+
+
 def leaks(text, deep=False):
-    """The kinds of private data the text holds (names only, never the values)."""
+    """The kinds of private data the text holds (names only, never the values); an unreadable private-term list is a
+    leak of its own kind (UNREADABLE_KIND), never a clean scan."""
     rx = _login_re(_logins(deep))
-    found = {"secret": bool(c.secret_kinds(text)), "private": c.has_private(text), "home": _home(text),
+    try:
+        private = c.has_private(text, c.private_terms())
+    except c.PrivateTermsUnreadable:
+        private = None
+    found = {"secret": bool(c.secret_kinds(text)), "private": bool(private), "home": _home(text),
              "ip": bool(c._IPV4.search(text)), "email": bool(_EMAIL.search(text)),
              "domain": any(not _public(m.group(0)) for m in _DOMAIN.finditer(text)),
-             "login": bool(rx and rx.search(text))}
+             "login": bool(rx and rx.search(text)), UNREADABLE_KIND: private is None}
     return [k for k, v in found.items() if v]
 
 
 def scrub(text, deep=True):
-    """text with everything leaks() looks for replaced: <host>, <user>, ~, <private>, the secret redactions."""
+    """text with everything leaks() looks for replaced: <host>, <user>, ~, <private>, the secret redactions. Raises
+    PrivateTermsUnreadable when the list can't be read: a scrub that skipped the user's terms would pass them on."""
     text = c.redact_local(c.redact(text))
     text = c._IPV4.sub("<host>", text)
     text = _EMAIL.sub("<user>@<host>", text)
@@ -273,7 +300,11 @@ def rebuild(if_stale=False):
 # ---------------------------------------------------------------- what agents get
 
 def items():
+    """The profile's '- ' lines; [] with no profile, a leak in it, or an unreadable private-term list (T-4804: the
+    same gate as digest(), since a caller such as the steer meter hands these lines to a model)."""
     text = _read(path()) or ""
+    if not text or leaks(text):
+        return []
     return [ln[2:] for ln in text.splitlines() if ln.startswith("- ")]
 
 
@@ -396,8 +427,8 @@ def live_line(sid=None):
 def note(sid=None, new_folder=False, short=False):
     """What an agent starting now is told: the digest, then (a session) the new-folder line and the live line."""
     d = digest(short)
-    if not d:
-        return ""
+    if not d:  # a session's start says why the profile is missing; a subagent (every one pays it) says nothing
+        return "" if short else withheld()
     return "\n".join(filter(None, [d, NEW_FOLDER if new_folder else "", "" if short else live_line(sid)]))
 
 
@@ -408,6 +439,8 @@ def refresh():
             return
     except OSError:
         pass
+    if unreadable():  # the rebuild would refuse: no process for it
+        return
     subprocess.Popen([os.path.join(c.PLUGIN_ROOT, "bin", "fm"), "profile", "rebuild", "--if-stale"],
                      stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      start_new_session=True)
@@ -420,6 +453,8 @@ def check():
     text = _read(path())
     if text is None:
         return []
+    if unreadable():  # one fixed problem: the per-line scan can't judge a private term without the list
+        return [WITHHELD]
     probs = [f"{len(text)} chars, over the {FULL_MAX} budget"] if len(text) > FULL_MAX else []
     for i, ln in enumerate(text.splitlines(), 1):
         kinds = leaks(ln, deep=True)
@@ -454,6 +489,8 @@ def link(tool, off=False):
     rules = agents._files(tool)["rules"]
     body = None if off else full().strip()
     if not off and not body:
+        if withheld():
+            raise c.PolicyError("sampo profile link: " + WITHHELD)
         raise c.PolicyError("no profile to link (sampo profile rebuild builds it; sampo profile check names a leak)")
     have = _read(rules)
     if have is not None or body:
@@ -471,8 +508,14 @@ def link(tool, off=False):
 def cmd_profile(args):
     from sampo import cli
     act = args.action
+
+    def rebuilt(**kw):  # T-4804: an unreadable private-term list refuses, with the fixed line, before anything is written
+        try:
+            return rebuild(**kw)
+        except c.PrivateTermsUnreadable:
+            raise c.PolicyError("sampo profile: " + WITHHELD + "; nothing was written") from None
     if act == "rebuild":
-        got = rebuild(if_stale=args.if_stale)
+        got = rebuilt(if_stale=args.if_stale)
         if got is None:
             return cli.out(args, {"built": False}, None if args.if_stale else
                            "nothing to build: no seed and no user or feedback memories (sampo profile edit adds lines)")
@@ -486,6 +529,8 @@ def cmd_profile(args):
         return 0
     if act == "check":
         probs = check()
+        if probs == [WITHHELD]:
+            raise c.PolicyError("sampo profile check: " + WITHHELD)
         if probs:
             raise c.PolicyError("sampo profile check: " + "; ".join(probs) + " (sampo profile rebuild scrubs it)")
         return cli.out(args, {"ok": True, "chars": len(_read(path()) or "")}, "profile: clean, within budget")
@@ -498,7 +543,7 @@ def cmd_profile(args):
         editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
         if editor and sys.stdin.isatty():
             subprocess.run([*editor.split(), seed])
-            got = rebuild()
+            got = rebuilt()
             return cli.out(args, {"seed": seed, "built": got}, f"seed: {seed}; profile rebuilt")
         return cli.out(args, {"seed": seed}, f"the seed is {seed}: one '- ' line per preference; then sampo profile "
                                              "rebuild")

@@ -1052,6 +1052,21 @@ def check_pause():
         Result("pause", "PASS", "not paused")
 
 
+def check_private_terms():
+    """T-4804: the private-term list, when it exists, reads as a list. A FAIL when it can't: every outward scan, the
+    mirror export and the genesis export refuse while it is broken (never a term, a path or the file's text here)."""
+    try:
+        terms, short = c._private_read()
+    except c.PrivateTermsUnreadable:
+        return Result("private terms", "FAIL", c.PRIVATE_UNREADABLE + ": repair or remove private-terms.json in the state "
+                      "folder (sampo private list reads it once it is a JSON list of strings)")
+    n = len(terms)
+    if short:  # T-4804: dropped on purpose (a 2-letter word would redact everything), but never silently
+        return Result("private terms", "WARN", f"{n} set; " + c.private_short_line(short) if n else
+                      "no usable term: " + c.private_short_line(short))
+    return Result("private terms", "PASS", f"{n} set" if n else "none set (sampo private add TERM)")
+
+
 def check_steers(p, run=False):
     """T-2167: in a Genesis tower project every rule cited from a user steer has a check (--full runs them; fm genesis
     sweep always does). A FAIL, so fm check stops a commit that leaves a steer rule unchecked; a rule whose
@@ -3353,6 +3368,7 @@ def run_all(full=False, accept_supply=False):
     results.append(check_night_timers(here))
     results.append(check_risk_off(here))
     results.append(check_pause())
+    results.append(check_private_terms())
     results.append(check_anergy())
     results.append(check_predictions(here))
     results.append(check_model_backends(here))

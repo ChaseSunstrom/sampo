@@ -389,7 +389,10 @@ def private_values():
 def _private_hits(root, picks, tip, paths=None):
     """(commits, files) of _refuse_private's scan, files named redacted; paths: only those files of tip's tree (T-3551:
     the tower checks the files its commit touches, so a file already on main can't hold its pushes back)."""
-    terms, values = c.private_terms(), private_values()
+    try:
+        terms, values = c.private_terms(), private_values()
+    except c.PrivateTermsUnreadable:  # T-4804: 'no terms' from a list that can't be read would push unscanned
+        _err(c.PRIVATE_UNREADABLE + "; nothing was pushed: repair or remove private-terms.json in the state folder, then ship")
     if not terms and not values:
         return [], []
     def bad(text):
@@ -420,7 +423,7 @@ def _private_hits(root, picks, tip, paths=None):
     def shown(f):  # a path that holds a term or a value is named redacted
         for v in values:
             f = f.replace(v, "[REDACTED]")
-        return c.redact_local(f)
+        return c.redact_local(f, terms)
     return commits, [shown(f) for f in files]
 
 
@@ -429,7 +432,11 @@ def private_lines(root, tip, files, cap=5):
     numbers only, never the text (the files come from _private_hits, a path that holds a term already redacted: it
     reads no blob, so it has no lines). At most `cap` files and `cap` numbers each."""
     from sampo import models, sandbox
-    terms, values = c.private_terms(), [v for k, v in models.secret_pairs() if len(v) >= 8 and sandbox.secret(k)]
+    try:
+        terms = c.private_terms()
+    except c.PrivateTermsUnreadable:  # T-4804: a local diagnostic: no line numbers from a list that can't be read
+        return {}
+    values = [v for k, v in models.secret_pairs() if len(v) >= 8 and sandbox.secret(k)]
     out = {}
     for f in list(files)[:cap]:
         r = c._git(root, "show", f"{tip}:{f}", timeout=60, proc=True)

@@ -28,7 +28,7 @@ SLOW = {"train": 30, "library": 30, "state": 10, "deps": 5, "tests": 10, "comman
 
 
 def _terms():
-    return live._cached(("private_terms",), live.SLOW_S, c.private_terms)
+    return live._cached(("private_terms",), live.SLOW_S, c.private_terms_lenient)  # T-4804: a display, never a refusal
 
 
 def _t(s, n):

@@ -78,8 +78,11 @@ for _k in ("SAMPO_CALLS", "FOREMAN_CALLS"):  # T-3014: a test run under sampo ch
 from sampo import core as _core  # noqa: E402
 # T-3529: the user's own private terms (sampo private add), read before a test points FOREMAN_HOME at its own folder
 # (and from the state path itself: state_dir() could move state to a fallback); none (CI): a made-up one
-PRIVATE_TERMS = _core.private_terms(os.environ.get("FOREMAN_STATE") or os.path.join(_core.foreman_home(), "state")) \
-    or ["*.home.example-private.test"]
+try:  # T-4804: an unreadable real list raises: the tests then use the made-up one, as for none
+    PRIVATE_TERMS = _core.private_terms(os.environ.get("FOREMAN_STATE") or os.path.join(_core.foreman_home(), "state")) \
+        or ["*.home.example-private.test"]
+except _core.PrivateTermsUnreadable:
+    PRIVATE_TERMS = ["*.home.example-private.test"]
 PRIVATE_TERMS_REAL = PRIVATE_TERMS != ["*.home.example-private.test"]  # T-4100: the tests themselves use the made-up one
 
 

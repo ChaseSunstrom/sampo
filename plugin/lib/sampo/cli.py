@@ -7668,6 +7668,8 @@ def _sync_in(args):
             with c.lock(p.dir):
                 sync.import_(p)
                 c.regen_views(p)
+    except c.PrivateTermsUnreadable:  # T-4804: the mirror's changes were not taken in: a fixed line, the command goes on
+        print("sampo: .sampo changes were not imported: " + c.PRIVATE_UNREADABLE, file=sys.stderr)
     except (UsageError, OSError, ValueError, c.LockTimeout):
         pass
 

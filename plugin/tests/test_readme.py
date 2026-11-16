@@ -232,6 +232,40 @@ class Diagram(SampoTestCase):
         self.assertEqual(got.returncode, 0, got.stdout[-3000:] + got.stderr[-2000:])
 
 
+class UnreadableList(SampoTestCase):
+    def test_an_unreadable_private_list_stops_a_scan_that_guards_a_file_written_to_the_repo(self):
+        # T-4804: private_hits is the gate before a README figure is written: no terms read is not 'no private text'
+        self.fm("init")
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("not json")
+        with self.assertRaises(c.PrivateTermsUnreadable):
+            readme.private_hits("plain words")
+        write(self.repo, "arch.json", json.dumps(SPEC))
+        got = self.fm("readme", "diagram", "arch.json", check=False)
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("the private-term list exists but cannot be read", got.stdout + got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "docs", "assets", "diagrams")), "nothing was written")
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("[]")
+        self.assertEqual(self.fm("readme", "diagram", "arch.json", check=False).returncode, 0, "readable again: it draws")
+
+    def test_a_route_shot_under_an_unreadable_list_is_a_status_of_its_own_and_writes_nothing(self):
+        # T-4804: _route's scan raised inside a handler for ValueError: it read as a generic 'failed' with the error text
+        from unittest import mock
+        from sampo import shot
+        self.fm("init")
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("{not json")
+        out = os.path.join(self.tmp, "shots")
+        os.makedirs(out)
+        res = {"notes": [], "refused": [], "failed": []}
+        with mock.patch.object(shot, "load", return_value=[]), mock.patch.object(readme, "_text", return_value="plain\nbody"):
+            readme._route(mock.MagicMock(), "http://127.0.0.1:1/", "/", "home", out, self.repo, None, res)
+        self.assertEqual(res["failed"], [{"route": "/", "error": c.PRIVATE_UNREADABLE, "private_list": "unreadable"}])
+        self.assertEqual((res["refused"], os.listdir(out)), ([], []), "not scanned: not written")
+
+
 class Check(SampoTestCase):
     def test_check_flags_each_problem_by_file(self):
         write(self.repo, "img/plain.png", b"\x89PNG small", "wb")

@@ -1,5 +1,6 @@
 """fm sync: an opt-in, committed mirror of the project's Sampo state (.sampo/) that another clone imports (T-0022).
 Authorization never travels: grants are stripped on export and ignored on import."""
+import json
 import os
 import re
 import subprocess
@@ -433,6 +434,87 @@ class Sync(ForemanTestCase):
         self.assertEqual(read_text(os.path.join(self.mirror, rel)), "endpoint http://<host>/v1 for <private>\n")
         self.assertEqual(sync.export(p), 0, "rewritten once")
         self.assertEqual(sync.import_(p)["conflicts"], [], "the redacted copy reads as unchanged")
+
+    def test_an_unreadable_private_list_stops_the_export_and_import_and_writes_nothing(self):
+        # T-4804: the mirror is committed and pushed: with a list that exists and can't be read, 'no terms' would let the
+        # user's domain through in a file nobody redacts again. One fixed line, no term, no path; the files stay as they were
+        from sampo import sync
+        self.fm("sync", "on")
+        p = c.find_project(self.repo)
+        rel = "research/later-notes.md"
+        with open(os.path.join(p.dir, rel), "w") as f:
+            f.write("endpoint http://llm.home.example-private.test/v1 for Wombatcorp\n")
+        list_path = os.path.join(c.state_dir(), c.PRIVATE_TERMS)
+        with open(list_path, "w") as f:
+            f.write('["wombat')  # damaged
+        before = {r: read_text(os.path.join(self.mirror, r)) for r in sync._walk(self.mirror)}
+        stamps = read_text(os.path.join(p.dir, sync.STAMPS)) if os.path.exists(os.path.join(p.dir, sync.STAMPS)) else None
+        with self.assertRaises(c.PrivateTermsUnreadable):
+            sync.export(p)
+        with self.assertRaises(c.PrivateTermsUnreadable):
+            sync.import_(p)
+        self.assertEqual({r: read_text(os.path.join(self.mirror, r)) for r in sync._walk(self.mirror)}, before)
+        self.assertNotIn(rel, before, "the note was never mirrored")
+        self.assertEqual(read_text(os.path.join(p.dir, sync.STAMPS)) if os.path.exists(os.path.join(p.dir, sync.STAMPS))
+                         else None, stamps)
+        got = self.fm("sync", "export", check=False)
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("cannot be read", got.stdout + got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+        for text in (got.stdout, got.stderr):
+            self.assertNotIn("example-private", text)
+            self.assertNotIn(list_path, text)
+        self.assertNotIn(rel, {r for r in sync._walk(self.mirror)}, "nothing written by the CLI either")
+
+    def test_a_command_goes_on_when_the_mirror_cannot_be_updated_for_an_unreadable_list(self):
+        # T-4804: export_mirror is on every state write, hooks included: the refusal costs the mirror update, never the command
+        self.fm("sync", "on")
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("not json")
+        got = self.fm("task", "new", "after the list broke", "--type", "FIX", "--tier", "S", check=False)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+        self.assertNotIn("after-the-list-broke", " ".join(os.listdir(os.path.join(self.mirror, "tasks"))),
+                         "and the new brief did not reach the mirror")
+
+    def test_an_unreadable_list_is_said_where_it_costs_the_mirror_and_never_cleared_by_the_stamps(self):
+        # T-4804 review: a stale mirror is visible (export_mirror, the pre-command import), the export stamps never read
+        # a damaged list as 'no stamps', and `sync on` leaves sync as it was and says so
+        from sampo import sync
+        self.fm("sync", "on")
+        p = c.find_project(self.repo)
+        list_path = os.path.join(c.state_dir(), c.PRIVATE_TERMS)
+        with open(list_path, "w") as f:
+            f.write("")  # truncated: empty
+        with self.assertRaises(c.PrivateTermsUnreadable):
+            sync._stamps(p)
+        got = self.fm("task", "new", "after the list broke", "--type", "FIX", "--tier", "S", check=False)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertIn("the .sampo mirror was not updated: " + c.PRIVATE_UNREADABLE, got.stderr)
+        self.assertEqual(got.stderr.count("was not updated"), 1)
+        with open(os.path.join(self.mirror, "decisions.md"), "a") as f:  # a pull changed a mirrored file
+            f.write("\nChosen by hand.\n")
+        got = self.fm("status", check=False)
+        self.assertIn(".sampo changes were not imported: " + c.PRIVATE_UNREADABLE, got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+        got = self.fm("sync", "on", check=False)
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn("sync is left on as it was", got.stdout + got.stderr)
+        self.assertTrue(c.read_meta(p).get("sync"))
+        self.fm("sync", "off")
+        got = self.fm("sync", "on", check=False)
+        self.assertIn("sync is left off as it was", got.stdout + got.stderr)
+        self.assertFalse(c.read_meta(p).get("sync"))
+
+    def test_a_readable_list_exports_as_before(self):
+        # T-4804: the criterion's other half; test_a_private_term_added_later_... holds the detail
+        from sampo import sync
+        self.fm("sync", "on")
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            json.dump([], f)
+        self.assertEqual(sync.export(c.find_project(self.repo)), 0)
+        os.remove(os.path.join(c.state_dir(), c.PRIVATE_TERMS))
+        self.assertEqual(sync.export(c.find_project(self.repo)), 0, "absent: no terms")
 
     def test_the_mirror_does_not_change_the_worktree_id(self):
         before = c.worktree_id(self.repo)

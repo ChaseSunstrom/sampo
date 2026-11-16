@@ -105,6 +105,30 @@ class Release(Base):
         self.assertEqual(git(self.fx, "log", "-1", "--format=%s").strip(), "base")
 
 
+class UnreadableList(Base):
+    def test_an_unreadable_private_list_stops_the_scan_a_push_relies_on(self):
+        # T-4804: 'no terms' from a list that exists and can't be read would let a push through unscanned: the scan refuses
+        # with the fixed line (no term, no path) and says nothing was pushed; the diagnostic that only names line numbers
+        # (private_lines) goes on, locally, with none
+        from sampo import cli, release
+        path = os.path.join(c.state_dir(), c.PRIVATE_TERMS)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write('["wombat')
+        tip = git(self.fx, "rev-parse", "HEAD").strip()
+        with self.assertRaises(cli.UsageError) as e:
+            release._private_hits(self.fx, [], tip)
+        self.assertIn("the private-term list exists but cannot be read", str(e.exception))
+        self.assertIn("nothing was pushed", str(e.exception))
+        for text in (str(e.exception),):
+            self.assertNotIn(path, text)
+            self.assertNotIn("wombat", text)
+        self.assertEqual(release.private_lines(self.fx, tip, ["CHANGELOG.md"]), {})
+        with open(path, "w") as f:  # readable again: the scan runs as before
+            f.write("[]")
+        self.assertEqual(release._private_hits(self.fx, [], tip), ([], []))
+
+
 class Canary(Base):
     def test_canary_runs_each_local_projects_sentinel(self):
         p = self.release("1.0.1", "--canary")

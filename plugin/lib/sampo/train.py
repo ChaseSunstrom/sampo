@@ -743,9 +743,15 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     left, notes = [], []  # notes: (id, what a probe saw that still let the lane on)
     kept_maps = {}  # T-4375: lane id: the docs/map files its merge resolved keeping both sides' lines
     cands, rows = [], []  # (brief, tip) in order; (brief, tip, why so far) in order
-    if not c.private_terms():  # T-4783: an unset or unreadable list holds nothing: say so, never the path
+    try:  # T-4804: unreadable is not unset: the merge scan refuses each lane on it (held, nothing pushed); this only says so
+        none = not c.private_terms()
+    except c.PrivateTermsUnreadable:
+        none = False  # its own line below, not the 'had no term list' one as well
+        print("sampo: train: " + c.PRIVATE_UNREADABLE + ": every lane is held by the private-term scan until it is repaired "
+              "(sampo doctor)", file=sys.stderr, flush=True)
+    if none:  # T-4783: an unset list holds nothing: say so, never the path
         from sampo import release
-        print("sampo: train: the private-term check had no term list (none set, or it can't be read)"
+        print("sampo: train: the private-term check had no term list (none set)"
               + (", so only the secrets-file values were scanned" if release.private_values() else "")
               + ": sampo private add TERM sets one", file=sys.stderr, flush=True)
     for tid in ids:

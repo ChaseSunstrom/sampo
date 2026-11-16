@@ -144,6 +144,24 @@ class Repeats(ForemanTestCase):
         self.assertFalse(any("ghp_" in open(x).read() for x in paths))
         self.assertTrue(any("[REDACTED" in open(x).read() for x in paths))
 
+    def test_forge_refuses_an_unreadable_private_term_list(self):
+        # T-4817: a forge draft is meant for the repo and is redacted for the user's own terms (strict), so a damaged
+        # list is one fixed line and nothing written, not a draft with the terms in it (the playbook draft: test_learning2)
+        p = c.find_project(self.repo)
+        research = os.path.join(p.dir, "research")
+        before = sorted(os.listdir(research)) if os.path.isdir(research) else []
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        n = len(c.load_briefs(p))
+        got = self.fm("repeats", "--forge", check=False)
+        self.assertNotEqual(got.returncode, 0)
+        self.assertIn(c.PRIVATE_UNREADABLE, got.stdout + got.stderr)
+        self.assertNotIn("Traceback", got.stderr)
+        self.assertEqual(sorted(os.listdir(research)) if os.path.isdir(research) else [], before, "nothing written")
+        self.assertEqual(len(c.load_briefs(p)), n, "no task filed for a draft that was not written")
+        os.remove(os.path.join(c.state_dir(), c.PRIVATE_TERMS))
+        self.assertTrue(self.fm_json("repeats", "--forge")["drafts"])
+
     def test_forge_skips_dismissed_shapes(self):
         self.fm("repeats", "dismiss", "npm run build && npm run lint")
         self.fm("repeats", "dismiss", "Write a failing test.")

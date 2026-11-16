@@ -206,7 +206,7 @@ def _call(p, name, args):
                 return f.read(200_000), False
         if name == "profile":  # T-3672
             from sampo import profile
-            return profile.full() or "(no profile: sampo profile rebuild builds one)", False
+            return profile.full() or profile.withheld() or "(no profile: sampo profile rebuild builds one)", False
         if name == "checks":  # review: the request's "check results", read from the ledger in-process
             run = next((e for e in reversed(c.ledger_tail(p, 5000, kinds=("check_run",))) if e.get("event") == "check_run"), None)
             if not run:

@@ -422,7 +422,7 @@ def _lock_busy(event, e):
     r = lock_busy() or {"since": c.now(), "by": {}}
     n = r["by"].get(event)
     r["by"][event] = (n if isinstance(n, int) else 0) + 1
-    r.update(last=c.now(), holder=c.fit(c.redact_local(c.redact(str(e))), 300), held=getattr(e, "held", None))
+    r.update(last=c.now(), holder=c.fit(c.redact_display(c.redact(str(e))), 300), held=getattr(e, "held", None))
     try:
         os.makedirs(os.path.dirname(_lock_busy_path()), exist_ok=True)
         c.write_atomic(_lock_busy_path(), json.dumps(r))
@@ -978,6 +978,8 @@ def _sync_import(p):
         return None
     try:
         res = sync.import_(p)
+    except c.PrivateTermsUnreadable:  # T-4804: a held import is said, in a fixed line, not logged and forgotten
+        return "sampo sync: the mirror was not read: " + c.PRIVATE_UNREADABLE
     except (OSError, ValueError):
         log_error("SessionStart", _tb())
         return None
