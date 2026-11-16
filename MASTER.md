@@ -278,6 +278,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmwatch` (`sampo ui --demo`: a canned view from `ui-demo.json` with every key… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmmodelup` (T-3742: `sampo models`), models stay newest and best: settings keep an alias, a refusal fallback… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmwhich` (T-1699: `sampo which TASK`, the skills, playbooks and commands that… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmworkflowlint` (T-2564): a local actionlint for `.github/workflows/*.yml`, no install: `python3 -I plugin/lib/sampo/workflowlint.py` prints `file:line: finding` for YAML, missing keys, run/uses, `${{ }}`, needs, matrix and bash -n faults… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmworks` (T-3106: `sampo works check FILE...`: each SVG sanitised, rendered headless in light… [→ files-lib-4](docs/map/files-lib-4.md)
 
 ### mods/, site/ and demo/
