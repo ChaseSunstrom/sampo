@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- A close now runs only the linked tests no passing gate row covered, and a prose-only change keeps only the run-cache picks whose test names the file, so a train's near-complete pass no longer sends a close through 300 seconds of re-runs (T-4822).
+- Sampo can build and install the native sampo-fast guard binary after an offline locked build and a probe against the Python hook, from `sampo doctor --repair` or install.sh, and any doubt leaves the Python hook in charge (T-3608).
 - Lane checks in a project take turns: SAMPO_LANE_CHECKS run at once (default 2), the rest wait as 'check queued' and their deadline starts only when they do, and a check stopped at its deadline names its limit and how many classes ran (T-4491).
 - `sampo cost --outputs` weighs each tool's output by how often later calls re-read it (by tool and Bash command word, main thread against subagents), and `sampo quiet` keeps a cut failed run's full output in a file named on its ✗ line (T-4825).
 - The guard's script budget timer firing at once no longer crashes with an unbound variable, and the StageClock, old-shared-folder and script-read-speed tests no longer assume Linux or a quiet runner (T-4820).
