@@ -32,12 +32,17 @@ def script_budget():
         return 0.2  # the guard's default box
 
 
-# T-1777: the script case is a hook plus the guard's CPU time box for one cold script read (the bench's script never
-# finishes inside it), so its budget is a hook's plus the box (300 left ~85 ms for startup, which load ate)
+# T-1777: the script case is a hook plus the guard's CPU time box for one cold script read (an upper bound: T-4758, the
+# bench's script now finishes inside it), so its budget is a hook's plus the box (300 left ~85 ms for startup, which load ate)
 BUDGET_MS = {"default": 150, "MessageDisplay": 100}
 BUDGET_MS["PreToolUse:Bash:script"] = BUDGET_MS["default"] + round(script_budget() * 1000)
 # T-1192: a real-shaped build script (functions, case, quoting, substitutions, a heredoc) the guard reads when a command
-# runs it (T-0275); repeated to ~40 KB and rewritten before every run, so each run is a cold read, not a cached one
+# runs it (T-0275), rewritten before every run, so each run is a cold read, not a cached one. T-4758: a script the guard
+# cannot read to the end inside its budgets is refused (exit 2); its read costs ~40 ms CPU a block (0.6 KB; it was
+# quadratic: 8 blocks 1.9 s, 64 blocks 44 s, now 0.3 s and 2.5 s), and the case's latency budget is a hook's plus the
+# guard's first budget (script_budget(), 0.2 s), so the case is the 4 blocks that fit in it: a script the guard reads
+# to the end and allows, which is what doctor's "hook exit codes" expects (exit 0)
+SCRIPT_BLOCKS = 4
 SCRIPT_BLOCK = r'''
 build_{n}() {{
   local target="${{1:-all}}" out="$BUILD_DIR/{n}"
@@ -139,7 +144,7 @@ def _write_script(repo, run):
     """The build script, new bytes each run (a comment carries the run number), so the guard reads it cold."""
     with open(os.path.join(repo, "src", "build.sh"), "w") as f:
         f.write(f"#!/bin/bash\n# run {run}\nset -euo pipefail\nBUILD_DIR=${{BUILD_DIR:-build}}\n"
-                + "".join(SCRIPT_BLOCK.format(n=n) for n in range(64)) + 'build_0 "$@"\n')
+                + "".join(SCRIPT_BLOCK.format(n=n) for n in range(SCRIPT_BLOCKS)) + 'build_0 "$@"\n')
 
 
 def run_bench(runs=30, only=None):  # only: a predicate on fixture names (T-2359 times the guard's alone)

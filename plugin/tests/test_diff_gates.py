@@ -6,7 +6,7 @@ import subprocess
 import sys
 import time
 
-from helpers import ForemanTestCase
+from helpers import ForemanTestCase, cpu_scale
 
 from sampo import core as c
 
@@ -243,7 +243,10 @@ class DiffGates(ForemanTestCase):
         self.assertEqual(c.lint_verify("python3 plugin/tests/run.py test_diff_gates -k test_lint_names", root), [])
         self.assertEqual(c.lint_verify("python3 plugin/tests/run.py test_tail_rows_with_keep 2>&1", root), [],
                          "a test's name, found across every module; 2>&1 isn't a name")
-        self.assertLess(time.process_time() - t, 1.0)  # CPU: lint_verify reads files in this process
+        spent = time.process_time() - t
+        # CPU: lint_verify reads files in this process. T-4758: 0.7 s here, 1.39 s on a CI runner: a bound of 1.5 s on a
+        # quiet box, times the runner's own measured speed
+        self.assertLess(spent, 1.5 * cpu_scale())
 
     def test_run_py_repeats_p(self):
         # T-0389: `run.py -p a.py -p b.py` kept only the last -p and ran b.py alone, silently

@@ -878,7 +878,7 @@ SANDBOX_DROP = ("FOREMAN_", "CLAUDE", "GIT_")  # T-2822: what a sandbox's env do
 # one list from this file (override_prefixes). FM_POSTMERGE_CMD and _RERUN are the operator's post-merge settings,
 # read by the train and land process itself (lanes.py): no gate or test class takes them (a land keeps them: keep=).
 TEST_OVERRIDES = ("FM_STALL", "FM_HEARTBEAT", "FM_DOOR_CAP", "FM_PROMPT_VARIANT", "FM_GUARD_SCRIPT_BUDGET",
-                  "FM_ABLATE_BUDGET", "FM_PROVE_ALLOW", "FM_POSTMERGE_CMD", "FM_POSTMERGE_RERUN")
+                  "FM_GUARD_SCRIPT_HARD", "FM_ABLATE_BUDGET", "FM_PROVE_ALLOW", "FM_POSTMERGE_CMD", "FM_POSTMERGE_RERUN")
 
 
 def override_names(env, keep=()):

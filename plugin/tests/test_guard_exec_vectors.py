@@ -2,7 +2,10 @@
 bash -c; a payload the guard can't read is refused, a harmless look-alike passes."""
 import json
 import os
+import re
 import shlex
+import sys
+import types
 from unittest import mock
 
 from test_guard import GuardCase, g
@@ -387,17 +390,184 @@ class ScriptCache(GuardCase):
         self.assertLessEqual(len(entries), 200)
         self.assertFalse(any(e["p"] == gone for e in entries.values()))
 
-    def test_past_the_budget_the_script_is_allowed_unread_and_noted(self):
+    def test_past_both_budgets_the_script_is_refused_not_allowed_unread(self):
+        # T-4758 round 3: a script the guard could not read to the end is refused, whatever words it holds (a rule keyed
+        # on words is a denylist: `r=r; "$r"m -rf /etc` has no `rm` in it). The reason says how to get out.
         p = self.script("slow.sh", "echo hi\n" * 4000)
-        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001"}):
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}):
+            g.take_unread()
+            r = self.bash(f"bash {p}")
+            self.assertBlocked(r, "system")
+            self.assertRegex(r.detail, r"too long to read in time.*split it into smaller scripts or run its steps as "
+                                       r"separate commands")
+            self.assertEqual([x[1].split(":")[0] for x in g.take_unread()], ["refused"], "counted, not allowed unread")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "5"}):  # the refusal is cached
+            self.assertBlocked(self.bash(f"bash {p}"), "system")
+
+    def test_a_padded_script_is_refused_whatever_it_holds_and_whichever_file_it_runs(self):
+        # T-4758 round 3 (confirmed holes): the cut-off read never reached what follows the padding. None of these has
+        # a word a denylist would key on, or its word is in a file the top script runs.
+        pad = "echo hi\n" * 4000
+        b = self.script("b.sh", "rm -rf /opt/data\n")
+        cases = {"runs.sh": f"bash {b}\n", "force.sh": "git push --force origin main\n", "key.sh": "cat ~/.ssh/id_rsa\n",
+                 "cron.sh": "echo x >> /etc/cron.d/y\n", "tee.sh": "echo x | tee /etc/cron.d/y\n", "cp.sh": "cp x /etc/cron.d/y\n",
+                 "py.sh": 'python3 -c "import shutil; shutil.rmtree(\'/home\')"\n', "var.sh": 'r=r; "$r"m -rf /etc\n',
+                 "comment.sh": "# find the log\nls\n", "plain.sh": "ls\n"}
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}):
+            for name, text in cases.items():
+                p = self.script(f"pd-{name}", pad + text)
+                with self.subTest(name=name):
+                    self.assertBlocked(self.bash(f"bash {p}"), "system")
+                    why = [d for c, d in g.findings("Bash", {"command": f"bash {p}"}, self.ctx()) if c == "system"]
+                    self.assertTrue(any(re.search(r"too long to read in time.*split it into smaller scripts or run its "
+                                                  r"steps as separate commands", d) for d in why), why)
+            g.take_unread()
+        # a script it runs that could not be read to the end: the top script is short, the one it runs is long
+        long_inner = self.script("long-inner.sh", "echo hi\n" * 4000 + "ls\n")
+        outer = self.script("short-outer.sh", f"echo start\nbash {long_inner}\n")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}):
+            self.assertBlocked(self.bash(f"bash {outer}"), "system")
+
+    def test_every_script_past_the_first_budget_gets_the_hard_read_not_only_one_with_a_destructive_word(self):
+        pad = "echo hi\n" * 100
+        inner = self.script("hr-inner.sh", "rm -rf /opt/data\n")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "20"}):
+            g.take_unread()
+            ok = self.script("hr-ok.sh", pad + "git status\n")  # read to the end, clean: allowed, no note
+            self.assertIsNone(self.bash(f"bash {ok}"))
+            self.assertEqual(g.take_unread(), [])
+            r = self.script("hr-runs.sh", pad + f"bash {inner}\n")  # and the file it runs is read too: the real verdict
+            self.assertBlocked(self.bash(f"bash {r}"), "rm-outside")
+
+    def fake_fs(self, writable=(), mine=(), broken=(), dirs=(), other=()):
+        """The stat/access readers the system-script check uses, over the real test files (a root-owned file needs
+        root to make): every path is owned by root and unwritable unless named (`mine`: this user's, `other`: a second
+        unprivileged account's)."""
+        def stat(path):
+            if path in broken:
+                raise OSError(13, "denied")
+            isdir = path in dirs or os.path.isdir(path)
+            return types.SimpleNamespace(st_mode=(0o040755 if isdir else 0o100755),
+                                         st_uid=1000 if path in mine else 2000 if path in other else 0)
+        return mock.patch.dict(g._SYS_FS, {"stat": stat, "access": lambda path, mode: path in writable,
+                                           "euid": lambda: 1000})
+
+    def padded(self, name, tail="ls\n"):
+        return self.script(name, "echo hi\n" * 4000 + tail)
+
+    def test_a_system_script_past_both_budgets_runs_unread_like_a_binary(self):
+        # T-4758 round 3b: a regular file another user owns, that this user cannot write, in directories this user cannot
+        # write, is no more dangerous unread than a binary: allowed, with the unread note
+        p = self.padded("sys-ok.sh")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}), \
+                self.fake_fs():
             g.take_unread()
             self.assertIsNone(self.bash(f"bash {p}"))
-            unread = g.take_unread()
-        self.assertEqual([u[0] for u in unread], [p])
-        self.assertIn("budget", unread[0][1])
-        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "5"}):  # the unread verdict is cached with its note
-            self.assertIsNone(self.bash(f"bash {p}"))
-            self.assertEqual([u[0] for u in g.take_unread()], [p])
+            un = g.take_unread()
+            self.assertEqual([x[0] for x in un], [p])
+            self.assertTrue(un[0][1].startswith("system:"), un)
+            self.assertIsNone(self.bash(f"bash {p}"))  # cached: the exemption is checked again, not the parse
+            self.assertEqual([x[0] for x in g.take_unread()], [p])
+
+    def test_a_script_is_not_a_system_script_when_this_user_can_write_it_or_its_directories(self):
+        pad_env = {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}
+        sub = os.path.join(self.d, "sys-sub")
+        os.makedirs(sub, exist_ok=True)
+        sysfile = self.padded("sys-target.sh")
+        sibling = self.padded("sys-sibling.sh")
+        link = os.path.join(sub, "link.sh")
+        if os.path.lexists(link):
+            os.remove(link)
+        os.symlink(sibling, link)
+        up = os.path.dirname(self.d)
+        cases = {
+            "writable file": (sysfile, dict(writable={sysfile})),
+            "writable parent": (sysfile, dict(writable={self.d})),
+            "writable grandparent": (sysfile, dict(writable={up})),
+            "file owned by me": (sysfile, dict(mine={sysfile})),
+            "parent owned by me": (sysfile, dict(mine={self.d})),
+            "file owned by a second unprivileged account": (sysfile, dict(other={sysfile})),
+            "parent owned by a second unprivileged account": (sysfile, dict(other={self.d})),
+            "grandparent owned by a second unprivileged account": (sysfile, dict(other={up})),
+            "symlink target owned by a second account": (link, dict(other={sibling})),
+            "symlink in a writable place to a system sibling": (link, dict(writable={sub})),
+            "stat error on the file": (sysfile, dict(broken={sysfile})),
+            "stat error on a parent": (sysfile, dict(broken={self.d})),
+        }
+        for name, (script, kw) in cases.items():
+            with self.subTest(name=name), mock.patch.dict(os.environ, pad_env), self.fake_fs(**kw):
+                g.take_unread()
+                self.assertBlocked(self.bash(f"bash {script}"), "system")
+                self.assertEqual([x for x in g.take_unread() if x[1].startswith("system:")], [])
+
+    def test_a_system_script_that_runs_a_user_writable_file_stays_refused(self):
+        inner = self.padded("sys-inner.sh")
+        outer = self.script("sys-outer.sh", f"echo start\nbash {inner}\n")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}), \
+                self.fake_fs(writable={inner}):
+            self.assertBlocked(self.bash(f"bash {outer}"), "system")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}), \
+                self.fake_fs():  # both system files: as a binary that runs a binary (a copy: the refusal above is cached)
+            self.assertIsNone(self.bash(f"bash {self.script('sys-outer2.sh', f'echo start{chr(10)}bash {inner}{chr(10)}')}"))
+
+    def test_a_system_script_naming_more_than_eight_files_needs_every_one_a_system_file(self):
+        names = [self.script(f"sys-many{i}.sh", "ls\n") for i in range(10)]
+        env = {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}
+        top = self.script("sys-many.sh", "echo hi\n" * 400 + "".join(f"bash {n}\n" for n in names))
+        with mock.patch.dict(os.environ, env), self.fake_fs(writable={names[9]}):  # the tenth is never read
+            self.assertBlocked(self.bash(f"bash {top}"), "system")
+        top2 = self.script("sys-many2.sh", "echo hi\n" * 401 + "".join(f"bash {n}\n" for n in names))
+        with mock.patch.dict(os.environ, env), self.fake_fs():
+            self.assertIsNone(self.bash(f"bash {top2}"))
+
+    def test_a_file_named_past_the_eighth_that_appears_later_invalidates_a_cached_allow(self):
+        # T-4758: a run target past the eighth is not read, but it is a dependency of the verdict: absent at verdict time
+        # and created (user-writable) afterwards, the cached allow must not stand
+        names = [self.script(f"sys-late{i}.sh", "ls\n") for i in range(9)]
+        late = os.path.join(self.d, "sys-late-ninth.sh")
+        if os.path.lexists(late):
+            os.remove(late)
+        env = {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}
+        top = self.script("sys-late.sh", "echo hi\n" * 400 + "".join(f"bash {n}\n" for n in names + [late]))
+        with mock.patch.dict(os.environ, env), self.fake_fs():
+            self.assertIsNone(self.bash(f"bash {top}"))  # the tenth does not exist: nothing user-writable is run
+            with open(late, "w") as f:
+                f.write("ls\n")
+            with self.fake_fs(writable={late}):
+                self.assertBlocked(self.bash(f"bash {top}"), "system")
+
+    def test_a_cached_system_script_is_refused_once_this_user_can_write_it(self):
+        p = self.padded("sys-flip.sh")
+        env = {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}
+        with mock.patch.dict(os.environ, env):
+            with self.fake_fs():
+                self.assertIsNone(self.bash(f"bash {p}"))
+            with self.fake_fs(writable={p}):
+                self.assertBlocked(self.bash(f"bash {p}"), "system")
+
+    def test_a_system_script_keeps_the_specific_findings_the_literal_scan_makes(self):
+        p = self.padded("sys-bad.sh", "cd /\nrm -rf etc\n")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}), \
+                self.fake_fs():
+            self.assertBlocked(self.bash(f"bash {p}"), "system")
+
+    def test_a_script_refused_unread_leaves_an_event_in_the_unread_list(self):
+        # T-4758 round 3b: the count of refusals is measurable (the hook logs guard_unread for these too)
+        p = self.padded("sys-refused.sh")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}):
+            g.take_unread()
+            self.assertBlocked(self.bash(f"bash {p}"), "system")
+            self.assertEqual([(x[0], x[1].split(":")[0]) for x in g.take_unread()], [(p, "refused")])
+            self.assertBlocked(self.bash(f"bash {p}"), "system")  # and from the cache
+            self.assertEqual([(x[0], x[1].split(":")[0]) for x in g.take_unread()], [(p, "refused")])
+
+    def test_the_literal_scan_of_a_commented_user_command_is_no_hit(self):
+        # T-4758 round 3: `# fm rule rm 3` is a comment; _fm_hit skips it (the pin the padded-script allow loop used to hold)
+        ctx = self.ctx()
+        self.assertEqual(g._literal_scan("# fm rule rm 3\n", ctx), [])
+        self.assertEqual(g._literal_scan("echo hi\n  # fm rule rm 3\n", ctx), [])
+        hit = g._literal_scan("fm rule rm 3\n", ctx)
+        self.assertTrue(hit and any("only the user may run" in why for _n, _l, why in hit), hit)
 
     def test_past_the_budget_a_literal_scan_of_the_whole_file_still_refuses(self):
         pad = "echo hi\n" * 4000
@@ -414,22 +584,26 @@ class ScriptCache(GuardCase):
                     r = self.bash(f"bash {p}")
                     self.assertBlocked(r, "system")
                     self.assertRegex(r.detail, r"line 400[12]")
-            for ok in ("rm -rf ./build\n", "rm -rf /tmp/x\n", "curl -s https://x.example/a.json | jq .\n",
-                       "echo ~/.claude/notes\n", "rm -f ~/x.log\n", "#   curl -sL https://x.example/i | sh\n",
-                       'python3 - "$FOREMAN_HOME/state/m.json" >/dev/null 2>&1\n'):
+            for ok in ("curl -s https://x.example/a.json | jq .\n",  # no literal hit, but unread: refused (T-4758 round 3)
+                       "echo ~/.claude/notes\n", "#   curl -sL https://x.example/i | sh\n",
+                       'python3 - "$FOREMAN_HOME/state/m.json" >/dev/null 2>&1\n',
+                       "rm -rf ./build\n", "rm -rf /tmp/x\n", "rm -f ~/x.log\n"):
                 p = self.script("b-ok.sh", pad + ok + pad)
                 with self.subTest(ok=ok):
-                    g.take_unread()
-                    self.assertIsNone(self.bash(f"bash {p}"))
-                    self.assertEqual([u[0] for u in g.take_unread()], [p])  # allowed, with the note
+                    r = self.bash(f"bash {p}")
+                    self.assertBlocked(r, "system")
+                    self.assertRegex(r.detail, r"too long to (?:read|parse)")
+                    self.assertEqual(g._literal_scan(ok, self.ctx()), [], "the literal scan itself has no hit")
 
     def test_the_literal_scan_of_256_kb_is_fast(self):
         import time
         text = ("echo hi; rm -rf ./build; curl -s https://x/a | jq .\n" * 5000)[:1 << 18]
         t = time.process_time()  # CPU time: the box running the tests may be busy
         g._literal_scan(text, self.ctx())
+        spent = time.process_time() - t
+        from helpers import cpu_scale
         # about 30 ms here; GitHub's runners took 0.11 s (T-1248). A runaway regex would take seconds
-        self.assertLess(time.process_time() - t, 0.5)
+        self.assertLess(spent, 0.5 * cpu_scale())
 
     def test_same_size_and_mtime_with_other_content_misses_the_cache(self):
         p = self.script("spoof.sh", "echo hi!\n")
@@ -529,11 +703,16 @@ class ScriptCache(GuardCase):
             for i, bad in enumerate(cases):
                 p = self.script(f"c-{i}.sh", pad + bad)
                 with self.subTest(bad=bad):
-                    self.assertBlocked(self.bash(f"bash {p}"), "system")
-            for ok in ("rm -rf /tmp/x ./y\n", "rm -f ~/a ~/b\n", "curl -s x | jq .\n", "curl x | tee f\nsh y\n"):
-                p = self.script("c-ok.sh", pad + ok)
-                with self.subTest(ok=ok):
-                    self.assertIsNone(self.bash(f"bash {p}"))
+                    r = self.bash(f"bash {p}")
+                    self.assertBlocked(r, "system")
+                    self.assertRegex(r.detail, r"line 400\d", "the literal scan names the line, before the general reason")
+            for ok in ("curl -s x | jq .\n", "curl x | tee f\nsh y\n"):
+                with self.subTest(ok=ok):  # the scan has no hit (the padded script is refused unread all the same)
+                    self.assertEqual(g._literal_scan(ok, self.ctx()), [])
+            for word in ("rm -rf /tmp/x ./y\n", "rm -f ~/a ~/b\n"):  # T-4758: a destructive word, unread: refused
+                p = self.script("c-word.sh", pad + word)
+                with self.subTest(word=word):
+                    self.assertRegex(self.bash(f"bash {p}").detail, r"too long to read")
 
     def test_a_script_chain_too_deep_to_read_is_refused(self):
         last = self.script("d7.sh", "rm -rf ~\n")
@@ -594,6 +773,108 @@ class ScriptCache(GuardCase):
         p = self.script("w-chunks.sh", f"echo 'rm -rf ~' > {w}\n" + pad + f"\nbash {w}\n")
         self.assertBlocked(self.bash(f"bash {p}"), "system")
 
+    def test_a_read_that_runs_out_of_time_is_finished_not_allowed(self):
+        # T-4758: GitHub's slow runner spent the 0.2 s budget on a 220-line script; the literal scan found no `rm -rf ~`
+        # in "cd /" then "rm -rf etc", so the script ran unread. Every script past the first budget gets a second,
+        # longer read (10x the budget, FM_GUARD_SCRIPT_HARD) rather than the allow.
+        pad = "echo hi\n" * 100
+        p = self.script("cd-slow.sh", "cd /\n" + pad + "\nrm -rf etc\n")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "20"}):
+            g.take_unread()  # the first read is always out of time; the second has room
+            r = self.bash(f"bash {p}")
+            self.assertBlocked(r, "rm-outside")  # read to the end, so the same verdict as an unhurried read
+            self.assertEqual(g.take_unread(), [])
+            self.assertBlocked(self.bash(f"bash {p}"), "rm-outside")  # and cached as such
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "20"}):
+            ok = self.script("slow-ok.sh", "cd build\n" + pad + "\nrm -rf out\n")  # finished, clean: allowed, no note
+            g.take_unread()
+            self.assertIsNone(self.bash(f"bash {ok}"))
+            self.assertEqual(g.take_unread(), [])
+
+    def test_a_script_not_finished_reading_is_refused_where_a_cd_out_precedes_a_removal(self):
+        # T-4758: both reads out of time. The literal scan cannot see a relative target after a cd out of the folder: it
+        # names that removal in the reason (the script is refused whatever it holds: round 3).
+        pad = "echo hi\n" * 4000
+        bad = {"a.sh": "cd /\nrm -rf etc\n", "b.sh": "pushd ~\nrm -r Documents\n", "c.sh": "cd ..\nmv a b\n",
+               "d.sh": "echo x; (cd / && rm -rf usr)\n", "e.sh": "cd\nrm -rf -- .config\n", "f.sh": "cd /\nfind . -delete\n",
+               "g.sh": "cd /var\nchmod -R 777 lib\n", "h.sh": "cd /\nsudo rm -rf etc\n", "i.sh": "cd /\ndd if=x of=boot\n"}
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}):
+            for name, text in bad.items():
+                p = self.script(f"nf-{name}", pad + text + pad)
+                with self.subTest(name=name):
+                    r = self.bash(f"bash {p}")
+                    self.assertBlocked(r, "system")
+                    self.assertRegex(r.detail, r"line 400\d: .*(destructive|removal)")
+                    self.assertBlocked(self.bash(f"bash {p}"), "system")  # the refusal is cached too
+            p = self.script("nf-o5.sh", pad + "cd /\nls etc\n" + pad)  # nothing to name: still refused, the general reason
+            self.assertBlocked(self.bash(f"bash {p}"), "system")
+            self.assertEqual(g._unfinished_removal("cd /\nls etc\n"), [])
+
+    def test_a_script_too_long_to_read_that_holds_a_destructive_word_is_refused_whatever_it_removes(self):
+        # T-4758 review: both reads out of time, the literal scan allowed an absolute `rm -rf /opt/data`, a padded script
+        # reached an allow. An unread script is refused, with the way out in the reason (a destructive word or not).
+        pad = "echo hi\n" * 4000
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"}):
+            for name, text in {"abs.sh": "rm -rf /opt/data\n", "cd.sh": "cd build\nrm -rf out\n", "var.sh": 'cd "$D"\nrm -rf out\n',
+                               "mv.sh": "mv /srv/a /srv/b\n"}.items():
+                p = self.script(f"tl-{name}", pad + text + pad)
+                with self.subTest(name=name):
+                    r = self.bash(f"bash {p}")
+                    self.assertBlocked(r, "system")
+                    self.assertRegex(r.detail, r"too long to read.*split")
+                    self.assertBlocked(self.bash(f"bash {p}"), "system")  # cached
+            p = self.script("tl-clean.sh", pad)  # nothing in it a word would key on: refused all the same
+            r = self.bash(f"bash {p}")
+            self.assertBlocked(r, "system")
+            self.assertRegex(r.detail, r"too long to read.*split")
+
+    def test_what_the_first_read_found_survives_a_second_read_that_runs_out(self):
+        # T-4758 review: `rm -rf /home/other/x` on line 1, then padding: the first read finds it and runs out, the hard
+        # read runs out too, and the findings of the first must not be dropped by the reset between them.
+        calls = []
+        self.cats = lambda p: [c for c, _ in g.findings("Bash", {"command": f"bash {p}"}, self.ctx())]
+
+        def partway(text, ctx, depth, found):
+            calls.append(len(found))
+            if len(calls) == 1:
+                found.append(("rm-outside", "rm -rf /home/other/x: removal outside the project"))
+            raise g._OverBudget()
+
+        p = self.script("partway.sh", "rm -rf /home/other/x\n" + "echo hi\n" * 4000)
+        with mock.patch.object(g, "_check_script", side_effect=partway):
+            r = self.bash(f"bash {p}")
+        self.assertEqual(calls, [0, 0], "the script was not read twice")
+        self.assertIsNotNone(r)
+        self.assertIn("rm-outside", self.cats(p), "the first read's finding was dropped")
+
+    def test_a_long_script_with_a_removal_on_line_one_is_refused_by_the_real_clock(self):
+        # the same on the real clock: budgets small enough that 30000 lines cannot be read, long enough to read line 1
+        text = "rm -rf /home/other/x\n" + "echo hi\n" * 30000
+        p = self.script("line1.sh", text)
+        self.bash(f"bash {self.script('warm.sh', 'rm -rf /home/other/y' + chr(10) + 'echo hi' + chr(10) * 150)}")  # lazy regexes built
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.05", "FM_GUARD_SCRIPT_HARD": "0.05"}):
+            self.assertIsNotNone(self.bash(f"bash {p}"))
+            self.assertIn("rm-outside", [c for c, _ in g.findings("Bash", {"command": f"bash {p}"}, self.ctx())])
+
+    def test_an_unfinished_removal_is_seen_through_keywords_assignments_quotes_and_cd_paths(self):
+        for text in ("if cd /; then rm -rf etc; fi", "cd /; \\rm -rf etc", "cd /; X=1 rm -rf etc", 'cd /; "rm" -rf etc',
+                     "cd ./a/../..\nrm -rf etc", "cd /\nX=1 Y=2 sudo rm -rf etc", "while cd /; do rm -rf etc; done",
+                     "cd '/'\n'rm' etc", "cd /\n! rm -rf etc", "cd /\ncommand \\rm etc"):
+            with self.subTest(text=text):
+                self.assertTrue(g._unfinished_removal(text), text)
+        for text in ("cd build/..\nrm -rf out", "cd a/../b\nrm -rf out", "if cd build; then rm -rf out; fi", "X=1 rm -rf out",
+                     "cd /\nX=1 ls etc"):
+            with self.subTest(ok=text):
+                self.assertEqual(g._unfinished_removal(text), [], text)
+
+    def test_a_long_run_of_wrappers_in_the_unfinished_scan_is_not_quadratic(self):
+        import time
+        from helpers import cpu_scale
+        text = "cd /\n" + "sudo " * 40000 + "rm etc\n"
+        t = time.process_time()
+        self.assertTrue(g._unfinished_removal(text))
+        self.assertLess(time.process_time() - t, 0.5 * cpu_scale())
+
     def test_the_literal_scan_catches_self_authorize_and_fetched_code(self):
         pad = "echo hi\n" * 4000
         bad = ["fm rule rm 3", "fm pause off", "fm posture lite", "fm approve-reads on", "fm rollback --yes",
@@ -605,10 +886,9 @@ class ScriptCache(GuardCase):
                 p = self.script(f"sa-{i}.sh", pad + line + "\n")
                 with self.subTest(line=line):
                     self.assertBlocked(self.bash(f"bash {p}"), "system")
-            for ok in ("fm rule list", "fm pause on", "fm posture full", "fm task new x", "# fm rule rm 3"):
-                p = self.script("sa-ok.sh", pad + ok + "\n")
-                with self.subTest(ok=ok):
-                    self.assertIsNone(self.bash(f"bash {p}"))
+            for ok in ("fm rule list", "fm pause on", "fm posture full", "fm task new x", "# fm rule add 3", "# fm rule rm 3"):
+                with self.subTest(ok=ok):  # the scan itself finds nothing (the padded script is refused unread anyway)
+                    self.assertEqual(g._literal_scan(ok + "\n", self.ctx()), [])
 
     def test_a_comment_ending_in_a_backslash_does_not_hide_the_next_line(self):
         p = self.script("cmt.sh", "# note \\\nrm -rf ~\n")
@@ -650,11 +930,14 @@ class ScriptCache(GuardCase):
 
     def test_the_literal_scan_is_not_quadratic_on_hostile_lines(self):
         import time
+        from helpers import cpu_scale
         for text in ("rm -" + "r" * 250000 + "\n", "curl " * 50000 + "\n", "NODE_OPTIONS=" * 20000 + "\n",
                      "echo " + "x" * 5000 + "; rm -rf ~\n"):
             t = time.process_time()
             hits = g._literal_scan(text, self.ctx())
-            self.assertLess(time.process_time() - t, 0.5, text[:20])  # T-1248: room for a slow CI runner
+            spent = time.process_time() - t
+            # T-4758: 1.06 s on a CI runner, against a bound written for a quiet box; scaled by the runner's own speed
+            self.assertLess(spent, 0.5 * cpu_scale(), text[:20])
         self.assertTrue(hits)  # the danger after 5000 characters on one line is still found
 
 
@@ -673,6 +956,131 @@ class ScriptReadSpeed(GuardCase):  # T-1778
         with mock.patch.object(g, "_possible", wraps=g._possible) as possible:
             g.check_bash('cp a "$(cat f)/x"', self.ctx())
         self.assertGreater(possible.call_count, 0, "a typed command still guesses")
+
+    def _build_script(self, blocks):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
+        import bench_hooks  # the real-shaped build script (functions, case, quoting, substitutions, a heredoc)
+        d = os.path.join(os.path.dirname(self.home), "scripts4758")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, f"build{blocks}.sh")
+        with open(p, "w") as f:
+            f.write("#!/bin/bash\nset -euo pipefail\nBUILD_DIR=${BUILD_DIR:-build}\n"
+                    + "".join(bench_hooks.SCRIPT_BLOCK.format(n=i) for i in range(blocks)) + 'build_0 "$@"\n')
+        return p
+
+    def _read_cost(self, blocks):
+        import time
+        p = self._build_script(blocks)
+        g.take_unread()
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "1000"}):  # the budgets are not what is measured
+            t = time.process_time()
+            inp = {"command": f"bash {p}"}
+            found = g.findings("Bash", inp, self.ctx())
+            verdict = g.check("Bash", inp, self.ctx(), found=found)
+            return time.process_time() - t, verdict, g.take_unread(), found
+
+    def test_a_script_of_many_functions_is_read_to_the_end_in_time_that_grows_with_its_size(self):
+        # T-4758: 64 functions (37 KB) took 44 s: each piece was read again with the 40 lines carried before it, and
+        # the `$(ls …)` of every carried `for` line was read to the end again for each substitution (n^2 in the lines
+        # carried); 8 blocks (4.7 KB) took 1.9 s, 16 about 8. Now ~40 ms a block, and the cap of 256 folders is a piece's.
+        from helpers import cpu_scale
+        scale = cpu_scale()
+        small, _v, _u, _f = self._read_cost(4)
+        big, verdict, unread, _f = self._read_cost(32)
+        self.assertIsNone(verdict, "32 functions of an ordinary build script are allowed, and read to the end")
+        self.assertEqual(unread, [])
+        self.assertLess(big, 4.0 * scale, "32 blocks (18 KB): 1.3 s on a quiet box, 15 s with the carry's quadratic")
+        self.assertLess(big, 20 * small, "8 times the text costs about 11 times (quadratic: 80)")
+        # the cap of nested folders is counted for a piece, not for the whole script: 64 functions each name a folder
+        spent, verdict, unread, found = self._read_cost(64)
+        self.assertEqual([m for _c, m in found if "too many folders" in m], [])
+        self.assertIsNone(verdict)
+        self.assertEqual(unread, [])
+        self.assertLess(spent, 8.0 * scale, "64 blocks (37 KB): 2.5 s on a quiet box, 44 s before")
+
+    def _plain_cost(self, steps, budget):
+        import time
+        lines = ["#!/bin/bash", "set -eu", 'out="${OUT:-build}"']
+        for i in range(steps):
+            lines += [f"# step {i}: make the folder and note the file it holds",
+                      f'mkdir -p "$out/d{i}" && echo "step {i} of the build" > "$out/d{i}/log"',
+                      f'if [ -f "$out/d{i}/log" ]; then cp "$out/d{i}/log" "$out/d{i}/log.bak"; fi']
+        d = os.path.join(os.path.dirname(self.home), "scripts4758")
+        os.makedirs(d, exist_ok=True)
+        p = os.path.join(d, f"plain{steps}.sh")
+        with open(p, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        g.take_unread()
+        t = time.process_time()
+        inp = {"command": f"bash {p}"}
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": str(budget)}):
+            verdict = g.check("Bash", inp, self.ctx(), found=g.findings("Bash", inp, self.ctx()))
+        return time.process_time() - t, verdict, g.take_unread(), os.path.getsize(p)
+
+    def test_a_script_of_ordinary_commands_costs_in_proportion_to_its_size_to_the_largest_the_guard_reads(self):
+        # T-4758: a read's cost is linear in the commands (no step grows with what is carried or counted): 220 KB of plain
+        # commands, near the 256 KB limit, took 3.7 s on a quiet box (17 ms a KB); 55 KB took 0.9 s. The 2 s the hard
+        # budget gives reads about 110 KB of such a script: the bound a hook run has
+        from helpers import cpu_scale
+        scale = cpu_scale()
+        small, _v, _u, size_small = self._plain_cost(250, 1000)
+        big, verdict, unread, size_big = self._plain_cost(1000, 1000)
+        self.assertTrue(190_000 < size_big < 250_000, size_big)  # under the 256 KB the guard reads
+        self.assertIsNone(verdict)
+        self.assertEqual(unread, [])
+        self.assertLess(big, 7.0 * scale, "220 KB: 3.7 s on a quiet box")
+        self.assertLess(big, 6 * small, f"4 times the text ({size_small} B to {size_big} B) costs about 4 times (quadratic: 16)")
+        # inside the budgets the hook has (0.2 s, then 2 s: scaled to the runner) 65 KB of plain commands read to the end
+        spent, verdict, unread, size = self._plain_cost(300, 0.2 * scale)
+        self.assertIsNone(verdict, f"{size} B read in {spent:.2f} s")
+        self.assertEqual(unread, [])
+
+    def test_a_carried_substitution_that_changes_nothing_is_read_as_one_word(self):
+        # T-4758: _state_lines carries the lines a later piece depends on; a `$( … )` in one that writes, moves or sets
+        # nothing is $S there (its piece was read with the body), so carried lines don't multiply the tail reads
+        for line, want in (('for f in $(ls "$out" 2>/dev/null); do cat $f >> "$out/S"; done',
+                            'for f in $S; do cat $f >> "$out/S"; done'),
+                           ('x=1; echo `date -u` >> log', "x=1; echo $S >> log"),
+                           ("a > $(b) ; c > $(d e)", "a > $S ; c > $S"),
+                           ('echo $(ls $(pwd)) >> o', "echo $S >> o")):
+            self.assertEqual(g._inert_subst(line), want)
+        for line in ('cat >> $(mktemp > a)', 'echo $(cd x) >> o', 'echo $(cp a b) >> o', 'echo $(x=1) >> o',
+                     'echo $(echo ")") >> o', "echo $(echo ')') >> o", 'echo $(echo \\)) >> o', 'echo $(tee f) >> o',
+                     'echo $(. ./x) >> o', 'echo $(eval y) >> o', 'echo "$((1+2))" >> o'):
+            self.assertEqual(g._inert_subst(line), line, line)
+
+    def test_a_carried_substitution_in_command_position_is_kept(self):
+        # T-4758: a bare $S where the command word was might be a cd, and the folders it leaves the carried lines in
+        # multiply (dtx_diff: `basename $0` ARCH=… >x, four such lines, 256 pairs): the word that names a command stays
+        for line in ("`basename $0` ARCH=x > out", "x=1; $(basename $0) y >> out", "if $(which a) ; then echo b >> o; fi",
+                     "FOO=1 $(which a) >> o"):
+            self.assertEqual(g._inert_subst(line), line, line)
+        self.assertEqual(g._inert_subst("echo $(which a) >> o"), "echo $S >> o")
+
+    def test_a_script_is_cut_where_the_shell_has_no_quote_open_and_nowhere_else(self):
+        # T-4758: pieces were cut where the counts of ' " ` were even: wg-quick (an apostrophe in a "…" and one in a
+        # comment, a \` and a $'\n') had no such place and was one 11 KB piece (25 s); the cut is made where a lexer
+        # that reads them as the shell does finds none open
+        line = 'echo "it\'s a long line of plain text to fill the piece out, it\'s plain"  # don\'t count this \' either\n'
+        text = line * 40 + "x=$'a\\n'; y=\"`echo \\`date\\``\"\n" + line * 40
+        pieces = list(g._script_chunks(text, limit=2000))
+        self.assertGreater(len(pieces), 3, [len(p) for p in pieces])
+        self.assertEqual("\n".join(pieces), text, "a cut never drops text")
+        for piece in pieces[:-1]:
+            lex = g._QuoteLexer()
+            for ln in piece.split("\n"):
+                lex.feed(ln)
+            self.assertTrue(lex.closed(), "a piece ends outside every quote")
+        # never inside an open quote, a substitution, a heredoc or after a backslash
+        for body in ("echo 'one\n" + "two\n" * 400 + "three'\n", "echo $(\n" + "ls\n" * 400 + ")\n",
+                     "cat <<EOF\n" + "text it's\n" * 400 + "EOF\n", "echo a \\\n" + "b \\\n" * 400 + "c\n"):
+            pieces = list(g._script_chunks(body, limit=2000))
+            self.assertEqual("\n".join(pieces), body)
+            for piece in pieces[:-1]:
+                lex = g._QuoteLexer()
+                for ln in piece.split("\n"):
+                    lex.feed(ln)
+                self.assertTrue(lex.closed() and not piece.rstrip().endswith("\\"), piece[:30])
 
     def test_lines_are_joined_and_heredocs_found_as_before(self):
         # the cheap checks first: a line not ending in \ never joins the next; a line with no << starts no heredoc
@@ -696,18 +1104,18 @@ class ScriptReadSpeed(GuardCase):  # T-1778
 
 
 class ScriptHook(HookCase):
-    def test_the_hook_notes_and_logs_an_unread_script(self):
+    def test_the_hook_refuses_a_script_it_could_not_read_to_the_end(self):
+        # T-4758 round 3: it was allowed with a note (T-0275); an unread script is refused, with the way out in the reason
         self.task()
         p = os.path.join(self.tmp, "slow.sh")
         with open(p, "w") as f:
             f.write("echo hi\n" * 4000)
         r = self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": f"bash {p}"}},
-                      env={"FM_GUARD_SCRIPT_BUDGET": "0.000001"})
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("too long", self.ctx_of(r))
-        self.assertIn("literal scan", self.ctx_of(r))  # it isn't run unread: the fallback scan read it (T-0275)
-        self.assertNotIn("ran unread", self.ctx_of(r))
+                      env={"FM_GUARD_SCRIPT_BUDGET": "0.000001", "FM_GUARD_SCRIPT_HARD": "0.000001"})
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertRegex(r.stderr, r"too long to read in time.*split it into smaller scripts or run its steps as "
+                                   r"separate commands")
         with open(os.path.join(self.project().dir, "ledger.jsonl")) as f:
             evs = [json.loads(x) for x in f]
-        hit = [e for e in evs if e["event"] == "guard_unread"]
-        self.assertEqual(hit[0]["data"]["path"], p)
+        ev = [e for e in evs if e["event"] == "guard_unread"]  # the count of refusals is measurable
+        self.assertEqual([(e["data"]["path"], e["data"]["reason"].split(":")[0]) for e in ev], [(p, "refused")])

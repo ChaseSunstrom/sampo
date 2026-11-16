@@ -2738,6 +2738,9 @@ def _pre_tool_use(raw):
                             data={"category": block.category, "detail": str(block.detail)[:200],
                                   "rule": getattr(block, "rule", None)},  # T-0672 (committed fallback may lack it)
                             session=pl.get("session_id"))
+                for path, why in getattr(guard, "take_unread", lambda: [])():  # T-4758: the refusals are counted too
+                    c.log_event(p, "guard_unread", task=act.id if act else None, data={"path": path, "reason": why},
+                                session=pl.get("session_id"))
                 from sampo import risk  # T-3752: a rewrite that passes next takes the point back
                 risk.note_block(p, pl.get("session_id"), tool, _target(pl.get("tool_input") or {}), block.category,
                                 getattr(block, "rule", None), str(block.detail))  # T-4742: kept as comparison fields
@@ -2860,8 +2863,9 @@ def _pre_tool_use(raw):
     try:
         warn = " ".join(f"Sampo: the user's rule {n} ({r['pattern']}) matches this call: {r.get('why') or 'take care'}."
                         for n, r, _ in hits[:2])  # what's left after the blocks above: warns
-        slow = " ".join(f"Sampo: the script {path} (or one it runs) was too long for the guard to parse in time; "
-                        "a literal scan of it found nothing to refuse." for path, _ in unread[:2])
+        slow = " ".join(f"Sampo: the script {path} (or one it runs) is a system file (root's, in directories you "
+                        "cannot write) and was too long for the guard to parse in time; it runs unread, like a binary."
+                        for path, why in unread[:2] if why.startswith("system"))
         builders = (("fix", lambda: _fix_note(pl, p)), ("deps", lambda: _dep_note(pl, p)),
                     ("veto", lambda: _veto_note(pl, p)), ("scope", lambda: _scope_note(pl, p, act)),
                     ("lessons", lambda: _tripwire_note(pl, p, act)), ("steps", lambda: _step_note(pl, p, act)),

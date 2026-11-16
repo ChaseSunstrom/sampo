@@ -150,7 +150,15 @@ class TrunkMoves(TrainCase):
         # the gate waits for `go`, which this test never makes: it can only end by being stopped (or after 150 s, red)
         self.fm("check", "add", f"touch {started}; for i in $(seq 1 300); do test -e {go} && exit 0; sleep 0.5; done; exit 1")
         out = {}
-        t = threading.Thread(target=lambda: out.update(r=self.train(tid, check=False)))
+
+        def train_side():
+            # T-4758: fm()'s default 30 s (scaled by the load) ended this read on a slow macOS runner: the train had not
+            # exited yet, and the test died on a missing result instead of the real one; the bounds below are the test's
+            try:
+                out["r"] = self.fm("lane", "train", tid, check=False, timeout=180)
+            except BaseException as e:  # a thread's exception is lost: say it where the test reads
+                out["error"] = f"{type(e).__name__}: {e}"
+        t = threading.Thread(target=train_side)
         t.start()
         try:
             deadline = time.monotonic() + 60
@@ -166,6 +174,7 @@ class TrunkMoves(TrainCase):
             t.join(60)
         self.assertFalse(t.is_alive(), "the train went on with its gate after trunk moved")
         self.assertLess(elapsed, 60, f"stopped {elapsed:.0f} s after the move")
+        self.assertNotIn("error", out, out.get("error"))
         r = out["r"]
         self.assertNotEqual(r.returncode, 0, r.stdout)
         self.assertIn(moved[:9], r.stdout + r.stderr, "the refusal names the commit that moved trunk")

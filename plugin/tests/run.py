@@ -2491,9 +2491,16 @@ def _run_one(cid, k, timeout, deadline, slot):
             env["PATH"] = os.path.dirname(COVER_PY[0]) + os.pathsep + env.get("PATH", os.defpath)
         if SANDBOX:  # its own pid namespace: it dies with bwrap (--die-with-parent), not by a parent pid check
             argv, env = sandboxed(argv, tmp, env)
-        p = subprocess.Popen(argv, cwd=HERE,
-                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, stdin=subprocess.DEVNULL,
-                             start_new_session=True, env=env)
+        # T-4758: its stderr goes to a file, not a pipe: a process the class leaves behind in its own session keeps the pipe
+        # open, and without a subreaper (macOS) nothing ends it with the class, so the read of the pipe waited for the
+        # class's whole timeout and, after the kill, for ever (RunSweeps took 1218 s there). A wait on the class itself ends
+        # when the class does.
+        errf = open(os.path.join(tmp, ".runerr"), "wb")
+        try:
+            p = subprocess.Popen(argv, cwd=HERE, stdout=subprocess.DEVNULL, stderr=errf, stdin=subprocess.DEVNULL,
+                                 start_new_session=True, env=env)
+        finally:
+            errf.close()
     except BaseException:
         if lock:
             lock.close()
@@ -2501,8 +2508,9 @@ def _run_one(cid, k, timeout, deadline, slot):
         OWN_FOLDERS.discard(tmp)
         raise
     LIVE_CLASSES.add(p.pid)  # T-4538: watch_parent kills it if this run's starter is gone
+    tail = ""
     try:
-        _, err = p.communicate(timeout=timeout)
+        p.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         p.send_signal(signal.SIGABRT)  # the stack, to stderr
         try:
@@ -2511,18 +2519,24 @@ def _run_one(cid, k, timeout, deadline, slot):
             pass
         with contextlib.suppress(ProcessLookupError):
             os.killpg(p.pid, signal.SIGKILL)
-        _, err = p.communicate()
-        err += f"\nrun.py: {cid} {why}\n"
+        p.wait()
+        tail = f"\nrun.py: {cid} {why}\n"
+    else:  # passed or failed on its own: what it left in its process group goes now (no subreaper to sweep it on macOS)
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(p.pid, signal.SIGKILL)
     finally:
-        LIVE_CLASSES.discard(p.pid)  # T-4538: after communicate reaped it, so the pid cannot name another group
+        LIVE_CLASSES.discard(p.pid)  # T-4538: after p.wait reaped it, so the pid cannot name another group
         if COVER_PY:
             with contextlib.suppress(OSError), open(os.path.join(tmp, ".runcover"), encoding="utf-8",
                                                     errors="surrogateescape") as f:
                 COVERED[cid] = f.read()
         with contextlib.suppress(OSError, ValueError), open(os.path.join(tmp, ".runcpu")) as f:
             CPU[cid] = float(f.read())
+        with contextlib.suppress(OSError), open(os.path.join(tmp, ".runerr"), encoding="utf-8", errors="replace") as f:
+            tail = f.read() + tail  # T-4758: read before the folder goes
         clear_folder(tmp, lock=lock)  # T-4720: what a class's git hook left running in it ends first; T-4728: then the lock
         OWN_FOLDERS.discard(tmp)
+    err = tail
     m = re.search(r"Ran (\d+) tests?", err)
     return cid, p.returncode, err, int(m.group(1)) if m else 0, time.time() - t0  # killed: negative
 

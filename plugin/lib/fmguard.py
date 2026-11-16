@@ -1018,7 +1018,13 @@ def _heredoc_starts(seen, line):
         return []
     before = "".join(x + "\n" for x in seen)
     return [(m.group(1), m.group(2)) for m in re.finditer(_HEREDOC_START, line)
-            if _inner_quote(_strip_comments(before + line[:m.start()])) is None]
+            if _open_quote(before + line[:m.start()]) is None]
+
+
+def _open_quote(prefix):
+    """_inner_quote(_strip_comments(prefix)), remembered: a script's chunks and the tails inside them are read again and
+    again, each time through the same prefixes (T-4758: the quote scan was the guard's largest single cost)."""
+    return _pure(prefix, lambda p: _inner_quote(_strip_comments(p)), "oq")
 
 
 def _inner_quote(prefix):
@@ -2057,8 +2063,17 @@ def _subst_bodies(text, tails=True, clean=False):
 def _real_fm(argv, ctx):
     """argv runs Sampo's own fm: bare `fm` (the caller has ruled out PATH, alias and function changes), or its real
     path, directly or as python's script. Anything else named fm is just a program (automated review of T-0153)."""
-    fm_bins = {os.path.realpath(os.path.join(ctx.foreman_home, "plugin", "bin", p)) for p in FM_PROGRAMS}
-    same = lambda path: os.path.realpath(os.path.join(ctx.cwd, os.path.expanduser(path))) in fm_bins
+    fm_bins = _FS_MEMO.get(("fm", ctx.foreman_home))  # T-4758: asked once a reading, not once a command (each ask
+    if fm_bins is None:  # walks the path with an lstat per folder: the biggest cost of a long script's read)
+        fm_bins = _FS_MEMO["fm", ctx.foreman_home] = {
+            os.path.realpath(os.path.join(ctx.foreman_home, "plugin", "bin", p)) for p in FM_PROGRAMS}
+
+    def same(path):
+        joined = os.path.join(ctx.cwd, os.path.expanduser(path))
+        real = _FS_MEMO.get(("real", joined))
+        if real is None:
+            real = _FS_MEMO["real", joined] = os.path.realpath(joined)
+        return real in fm_bins
     if not argv:
         return False
     if argv[0] in FM_PROGRAMS:
@@ -2072,6 +2087,14 @@ def _mask_fm(cmd, ctx):
     """The command with each top-level fm command blanked to `fm`: its arguments are data to fm (its --run values are
     checked on their own, substitutions inside are read recursively), so an interpreter named in an fm task's text isn't
     interpreter code (T-0153). Heredoc bodies are kept; where the quote scan can't follow, nothing is blanked."""
+    key = ("mask", cmd, ctx.foreman_home, ctx.cwd)  # T-4758: five readers of one command ask for the same text
+    got = _FS_MEMO.get(key)
+    if got is None:
+        got = _FS_MEMO[key] = _mask_fm_read(cmd, ctx)
+    return got
+
+
+def _mask_fm_read(cmd, ctx):
     shell, bodies = _heredocs(cmd)
     if ("$'" in shell or len(re.findall(r"(?<!<)<<(?!<)", shell)) != len(re.findall(_HEREDOC_START, shell))
             or "#" in shell or re.search(r"\bPATH\b|\balias\b|\bhash\b|\bfunction\s+" + FM_NAME_RE + r"\b|\b" + FM_NAME_RE + r"\s*\(\s*\)", shell)):
@@ -5483,6 +5506,10 @@ def _mask_substs(shell):
         shell = t
 
 
+_PURE = {}  # text -> _masked(text): bounded, never stale (the reading looks at the text alone)
+_FS_MEMO = {}  # what a reading asked the file system or Sampo's own layout (cleared when a top-level reading starts)
+
+
 def _mask_quotes(text):
     """T-0384: the text inside '…' and "…" as underscores, same length, the quotes kept: a quoted ( | ; & or keyword
     is a literal, never a branch (a jq filter or sed script made the whole line read as branchy). A # comment is
@@ -5490,8 +5517,27 @@ def _mask_quotes(text):
     Escapes and comments as _strip_comments reads them; unchanged (fails closed) under $'…', an unclosed quote or a
     backtick or ${…} operator inside double quotes, whose own quotes don't pair with the outer ones. T-3799: a $( … )
     inside double quotes is code: kept, with its own quotes masked the same way (unpaired: unchanged, as before)."""
-    got = _masked(text)
-    return text if got is None else got
+    got = _pure(text, _masked)  # T-4758: the same text is masked by a dozen readers, and by each tail of a script's
+    return text if got is None else got  # pieces (a pure function of its text: the cost went with the square of its size)
+
+
+_PURE_CHARS = [0]
+
+
+def _pure(text, fn, kind=""):
+    """fn(text), remembered: only for a function of its text alone (never stale), the memory bounded by the characters
+    held (a script's prefixes are long) as well as the entries."""
+    key = (kind, text)
+    try:
+        return _PURE[key]
+    except KeyError:
+        pass
+    if _PURE_CHARS[0] > 4_000_000 or len(_PURE) > 20000:
+        _PURE.clear()
+        _PURE_CHARS[0] = 0
+    _PURE_CHARS[0] += len(text) + 1
+    got = _PURE[key] = fn(text)
+    return got
 
 
 def _subst_end(text, k):
@@ -5954,6 +6000,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     # git command read here is saved where it runs, not in the hook's cwd
     if not depth:
         _DCWD.clear()  # T-1921 review: fmmcp calls this directly, in a process that lives on
+        _FS_MEMO.clear()  # T-4758: what one reading learned from the file system lasts that reading
         _DCWD["line"] = cmd  # T-3600: the whole command, where a loop a nested reading sits in starts (_loop_values)
         if _subst_depth(cmd) > 8:  # T-2668: every level re-reads its tails, so work grows ~n^4 until the cap above
             return [("rm-outside", "command nesting too deep to analyse: split the command")]  # fires: 500 deep hung
@@ -6893,20 +6940,86 @@ def _script_text(path, cwd, shebang=False, data=None, assume_x=False):
 def _script_chunks(text, limit=2000):
     """A script's text cut at blank lines into pieces check_bash reads on their own: reading it whole is quadratic
     (a 21 KB deploy script took 12 s). A piece stays open while a quote or a heredoc is open in it; a cut never
-    drops text."""
-    out, cur = [], []
+    drops text. A generator: the quotes of a piece are read when the piece is wanted, so a read cut off by its time budget
+    has not spent it on the text past the cut (a removal on line 1 of a long script is judged first)."""
+    cur = []
+    lex = _QuoteLexer()  # T-4758: where a quote is open as the shell reads it
     for line in text.split("\n"):
         cur.append(line)
+        lex.feed(line)
         chunk = "\n".join(cur)
         if len(chunk) < limit // 4:
             continue
         open_here = any(not re.search(rf"^\s*{re.escape(m.group(1))}\s*$", chunk[m.end():], re.M)
                         for m in re.finditer(r"<<-?\s*['\"]?(\w+)['\"]?", chunk))
-        if not open_here and chunk.count("'") % 2 == 0 and chunk.count('"') % 2 == 0 and chunk.count("`") % 2 == 0 \
-                and chunk.count("$(") <= chunk.count(")") and not chunk.rstrip().endswith("\\"):
-            out.append(chunk)
+        # a count of quotes is wrong for what a line holds that isn't one (`"it's"`, `\``, a # comment), and a piece
+        # that no cut ends costs more than its size grows (wg-quick: one 11 KB piece, 25 s): where the quotes are
+        # even, or the reading of them has none open, is a place to cut
+        balanced = chunk.count("'") % 2 == 0 and chunk.count('"') % 2 == 0 and chunk.count("`") % 2 == 0 \
+            and chunk.count("$(") <= chunk.count(")")
+        if not open_here and (balanced or lex.closed()) and not chunk.rstrip().endswith("\\"):
+            yield chunk
             cur = []
-    return out + (["\n".join(cur)] if cur else [])
+    if cur:
+        yield "\n".join(cur)
+
+
+class _QuoteLexer:
+    """Whether the lines fed so far end outside every quote, `…` and $( … ), as _strip_comments reads them (a # starts
+    a comment at the start of a word, each substitution is a fresh context), one pass over the script. A heredoc's
+    body is not read: its apostrophes are text. ponytail: a case pattern's `)` inside a $( … ) is read as its end."""
+
+    def __init__(self):
+        self.st, self.esc, self.docs = [["", None, 0]], False, []  # contexts [kind, quote, paren depth]; heredoc ends
+
+    def closed(self):
+        return len(self.st) == 1 and self.st[0][1] is None and not self.esc and not self.docs
+
+    def feed(self, line):
+        if self.docs:
+            if re.match(rf"^\s*{re.escape(self.docs[0])}\s*$", line):
+                self.docs.pop(0)
+            return
+        st, s, i = self.st, line + "\n", 0
+        while i < len(s):
+            ch, top = s[i], st[-1]
+            if self.esc:
+                self.esc = False
+            elif ch == "\\" and top[1] != "'":
+                self.esc = True
+            elif top[1] == "'":
+                top[1] = None if ch == "'" else "'"
+            elif top[1] == "A":  # $'…': a backslash escapes (above), a ' ends it
+                top[1] = None if ch == "'" else "A"
+            elif ch == "`":
+                if top[0] == "`" and top[1] is None:
+                    st.pop()
+                else:
+                    st.append(["`", None, 0])
+            elif ch == "$" and s[i + 1:i + 2] == "(":
+                st.append(["$(", None, 0])
+                i += 2
+                continue
+            elif ch == "$" and s[i + 1:i + 2] == "'" and top[1] is None:
+                top[1] = "A"
+                i += 2
+                continue
+            elif top[1] == '"':
+                top[1] = None if ch == '"' else '"'
+            elif ch in "'\"":
+                top[1] = ch
+            elif ch == "#" and (i == 0 or s[i - 1] in " \t\n;&|(<>"):
+                break
+            elif ch == "(" and top[0] == "$(":
+                top[2] += 1
+            elif ch == ")" and top[0] == "$(":
+                if top[2]:
+                    top[2] -= 1
+                else:
+                    st.pop()
+            i += 1
+        if len(st) == 1 and st[0][1] is None:  # a heredoc operator in a quote or a comment is not one
+            self.docs += [m.group(1) for m in re.finditer(r"<<-?\s*['\"]?(\w+)['\"]?", line)]
 
 
 def _check_script(text, ctx, depth, acc):
@@ -6917,13 +7030,21 @@ def _check_script(text, ctx, depth, acc):
     # only what no script of the user's does innocently: a deploy script reboots, installs plugins, reads .env, and
     # splits words on IFS (replay of 3 real scripts: reboot, plugin, system and credentials refusals were all benign)
     state = []  # what earlier pieces did that a later one depends on: cd, literal assignments, files written
+    outer_seen = _DCWD.get("seen")
     for chunk in _script_chunks(text):
         # core: a script of Foreman's own (evals) writes its checkout; only its state folder counts
         _NO_GUESS.append(1)  # T-1778: a guessed target's finding names it ($, "not known"): dropped below, so not made
+        # T-4758: each piece counts its own (text, folder) pairs against the cap of 256 (check_bash), as a command of that
+        # size would: a script's functions each name a folder or two, and 64 of them (37 KB) ran past it as one reading
+        _DCWD["seen"] = {}
         try:
             got = check_bash("\n".join(state[-40:] + [chunk]), ctx, depth + 1)
         finally:
             _NO_GUESS.pop()
+            if outer_seen is None:
+                _DCWD.pop("seen", None)
+            else:
+                _DCWD["seen"] = outer_seen
         deep = False
         for f in got:
             if f == ("system", "script nests too deep to read") or f[0] == "system" and f[1].endswith(_DEEP):
@@ -6964,21 +7085,79 @@ def _state_lines(chunk):
         line = _HEREDOC_OP.sub("", line)
         if line.strip() and not line.lstrip().startswith("#") and len(line) < 400 and "<<" not in line \
                 and not line.rstrip().endswith("\\") and _STATE_LINE.match(line):
-            out.append(line)
+            out.append(_inert_subst(line))
     return out
+
+
+_STATE_WORD = lazy(r"[<>=]|\b(?:cd|pushd|popd|tee|cp|mv|install|ln|eval|source|exec)\b|(?<![\w./-])\.(?=\s)")
+
+
+def _inert_subst(line):
+    """A carried line with each innermost `$( … )` and `…` that holds nothing a later piece depends on (no write, no cd,
+    no assignment, no substitution inside) read as `$S` (T-4758): the piece it came from was read with the body, and
+    every `$(` in the text is read again to its end, so n of them in the carried lines cost n^2 with each piece (24
+    `for f in $(ls "$out")` lines: 3 KB, 2.8 s)."""
+    prev = None
+    while prev != line:
+        prev = line
+        line = re.sub(r"\$\(((?:[^()`$]|\$(?![(]))*)\)|`((?:[^`$]|\$(?![(]))*)`", _inert_body, line)
+    return line
+
+
+def _inert_body(m):
+    body = m.group(1) if m.group(1) is not None else m.group(2)
+    # the word that names the command stays as it was: a bare $S there reads as a name that may be a cd, and the
+    # folders it might leave the carried lines in multiply (dtx_diff: `basename $0` ARCH=… >x, four lines, 256 pairs)
+    before = re.sub(r"\S*$", "", m.string[:m.start()])
+    if re.search(r"(?:^|[;&|({!]|\b(?:then|do|else|elif|if|while|until|time))\s*(?:\w+=\S*\s+)*$", before):
+        return m.group(0)
+    # a quote or backslash in it may hide a paren from the match (`$(echo ")")`), so only plain double quotes, in pairs
+    body = re.sub(r"(?:&|\d?)>>?\s*/dev/null\b|\d?>&\d\b", "", body)  # a redirect to nowhere writes nothing
+    if _STATE_WORD.search(body) or "'" in body or "\\" in body or body.count('"') % 2:
+        return m.group(0)
+    return "$S"
 
 
 class _OverBudget(BaseException):  # not an Exception: check_bash's own handlers must not swallow it
     pass
 
 
-_UNREAD = []  # (path, why) of scripts this call left unread (the hook logs and notes them)
+_UNREAD = []  # (path, why) of scripts this call left unread: "system: …" allowed like a binary, "refused: …" blocked
 _IN_SCRIPT = []  # non-empty while a script is being read: the outermost read owns the clock
+_SYS_FS = {"stat": os.stat, "access": os.access, "euid": os.geteuid}  # the readers _system_script uses: a test swaps them
 
 
 def take_unread():
+    """The scripts this call could not read to the end, (path, why): the hook logs each as a guard_unread event (so the
+    count of refusals is measurable) and notes the allowed ones."""
     out, _UNREAD[:] = list(_UNREAD), []
     return out
+
+
+def _system_script(lex, real):
+    """True when the script file `real` (the resolved path of `lex`, the path as named) is no more dangerous unread than a
+    binary (T-4758): a regular file root owns, this user cannot write, in directories (along both paths: a link in a
+    place this user writes could be pointed elsewhere) that root owns and this user cannot write. Root, not any other
+    account: a second unprivileged account this user can reach could plant a long script in its own home.
+    Any stat error is False: the exemption is refused on doubt."""
+    import stat as st
+    try:
+        euid = _SYS_FS["euid"]()
+        s = _SYS_FS["stat"](real)
+        if not st.S_ISREG(s.st_mode) or s.st_uid != 0 or euid == 0 or _SYS_FS["access"](real, os.W_OK):
+            return False
+        for start in dict.fromkeys((lex, real)):
+            d = os.path.dirname(start)
+            while True:
+                if _SYS_FS["stat"](d).st_uid != 0 or _SYS_FS["access"](d, os.W_OK):
+                    return False
+                parent = os.path.dirname(d)
+                if parent == d:
+                    break
+                d = parent
+        return True
+    except (OSError, ValueError):
+        return False
 
 
 def _script_budget():
@@ -6989,6 +7168,59 @@ def _script_budget():
 
 
 _BUDGET = 0.2  # CPU seconds. 0.5 gave a cold hook p95 of 331 ms over 330 real scripts (goal 300); 0.2 trims the tail
+
+
+def _script_hard():
+    """The second read's CPU seconds (FM_GUARD_SCRIPT_HARD), 10x the first's by default (T-4758): a slow runner spends the
+    first on a 220-line script, and the literal scan after it cannot see a relative target after a `cd /`."""
+    try:
+        return float(os.environ.get("FM_GUARD_SCRIPT_HARD") or _script_budget() * 10)
+    except ValueError:
+        return _script_budget() * 10
+
+
+_WRAPPER_WORDS = frozenset(("sudo", "doas", "command", "builtin", "exec", "time", "nohup", "nice", "then", "do", "else", "elif",
+                            "if", "while", "until", "!"))
+_UNFINISHED_VERBS = {"rm", "rmdir", "mv", "shred", "truncate", "unlink", "find", "chmod", "chown", "dd"}
+
+
+def _unfinished_removal(text):
+    """(line number, line, why) for each removal in a script read only by literals, after a `cd`/`pushd` that leaves the
+    folder (an absolute or ~ path, `..`, or none), that names a relative target: what the cut-off read would have
+    judged by the folder it stood in. Narrow on purpose: `cd build; rm -rf out`, a variable target and an absolute one
+    (the literal scan's) stay allowed, as does a removal with no cd out before it (T-4758)."""
+    out, left = [], False
+    for n, raw in enumerate(text.split("\n"), 1):
+        line = raw.split(" #", 1)[0] if not raw.lstrip().startswith("#") else ""
+        for seg in re.split(r"[;&|\n(){}`]+", line):
+            words = seg.split()
+            i = 0  # an index, not words[1:] again and again: a run of `sudo` is linear
+            while i < len(words) and (re.sub(r"[\\'\"]", "", words[i]) in _WRAPPER_WORDS or _ASSIGN.match(words[i])):
+                i += 1
+            if i >= len(words):
+                continue
+            verb = re.sub(r"[\\'\"]", "", words[i]).rsplit("/", 1)[-1]
+            args = [re.sub(r"[\\'\"]", "", w) for w in words[i + 1:]]
+            plain = [a for a in args if a != "--" and not (a.startswith("-") and len(a) > 1)]
+            if verb in ("cd", "pushd"):
+                t = plain[0] if plain else ""
+                if t and "$" not in t and not t.startswith(("/", "~", "-")):
+                    t = os.path.normpath(t)  # ./a/../.. leaves the folder, build/.. does not
+                if not t or "$" not in t and t.startswith(("/", "~", "..", "-")):
+                    left = True
+            elif left and verb in _UNFINISHED_VERBS:
+                if verb == "find":
+                    hit = "-delete" in args and not any(a.startswith(("/", "~", "$")) for a in plain[:1])
+                elif verb in ("chmod", "chown"):
+                    hit = any(a in ("-R", "-r") or (a.startswith("-") and "R" in a) for a in args) \
+                        and any(not a.startswith(("/", "~", "$", "-")) and "$" not in a for a in plain[1:])
+                elif verb == "dd":
+                    hit = any(a.startswith("of=") and not a[3:].startswith(("/", "~", "$", "&")) and "$" not in a for a in args)
+                else:
+                    hit = any(a and not a.startswith(("/", "~", "$")) and "$" not in a for a in plain)
+                if hit:
+                    out.append((n, raw.strip(), "a removal by a relative path after a cd out of the folder"))
+    return out
 
 
 def _script_cache_path(ctx):
@@ -7227,9 +7459,12 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
     """Findings for the script file a command runs, cached by the sha256 of its bytes (and of this guard file) in
     Sampo's state folder, where the guard refuses direct writes: a script run again costs a hash, not a parse (the
     hook runs before every Bash call: a 20 KB script took seconds to parse cold). One cold read has a time budget
-    (FM_GUARD_SCRIPT_BUDGET, CPU seconds, default _BUDGET). Past it the whole file gets the literal scan instead
-    (_literal_scan): a hit is refused, none is allowed unread and noted in _UNREAD; either is cached. The file's own
-    size over the limit is refused (_script_text)."""
+    (FM_GUARD_SCRIPT_BUDGET, CPU seconds, default _BUDGET). Past it the script is read again with 10x the time
+    (_script_hard); past that too it is refused as too long to read (T-4758), the literal scan (_literal_scan) of it
+    and of the scripts it runs naming what it finds first; either is cached. One that no user could have written
+    (_system_script: every file it touched is root's, in directories this user cannot write) is allowed
+    unread past both budgets, like a binary, with the note; the exemption is checked again on a cache hit. The file's
+    own size over the limit is refused (_script_text)."""
     if re.search(r"[$`*?\[]", script):
         return []
     p = os.path.realpath(os.path.join(cwd, os.path.expanduser(script)))
@@ -7257,11 +7492,12 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
              ctx.unbriefed, tuple(getattr(ctx, "briefed_lanes", ())), kind, assume_x, _guard_hash())).encode()).hexdigest()[:16]))
     path = _script_cache_path(ctx)
     hit = None if nested or key is None else _cache_load(path).get(key)
-    if hit and all(_file_digest(dp) == dd for dp, dd in hit.get("n", [])):  # the scripts it read, unchanged
+    if hit and all(_file_digest(dp) == dd for dp, dd in hit.get("n", [])) \
+            and all(_system_script(a, b) for a, b in hit.get("s", [])):  # the scripts it read, unchanged; still system files
         if hit.get("u"):
             _UNREAD.append((p, hit["u"]))
         return [tuple(f) for f in hit["f"]]
-    found, unread = [], None
+    found, unread, system = [], None, []
     if not nested:
         _TEXTS.clear()
         _DEPS.clear()
@@ -7281,32 +7517,58 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
                 signal.setitimer(signal.ITIMER_PROF, _script_budget())
             except ValueError:  # not the main thread: no clock (ponytail: only the main thread is time-boxed)
                 old = None
-        if why:
-            found.append(("system", why))
-        elif text is not None and (got or kind) == "py":
-            for spawned in _spawned_commands(text):  # only a command written out: computed ones ("$_")
-                if '"$_"' not in spawned:  # flag every demo script that builds a path (replay: 27 false denials)
-                    found += check_bash(spawned, ctx, depth + 1)
-        elif text is not None:
-            _check_script(text, ctx, depth, found)
+        pre = list(found)
+
+        def read():
+            if why:
+                found.append(("system", why))
+            elif text is not None and (got or kind) == "py":
+                for spawned in _spawned_commands(text):  # only a command written out: computed ones ("$_")
+                    if '"$_"' not in spawned:  # flag every demo script that builds a path (replay: 27 false denials)
+                        found.extend(check_bash(spawned, ctx, depth + 1))
+            elif text is not None:
+                _check_script(text, ctx, depth, found)
+        read()
     except _OverBudget:
         if nested:
             raise  # the outermost read owns the clock and decides
-        unread = f"read past its {_script_budget():g} s budget; only scanned for literals"
+        finished = too_long = False
+        if old is not None:
+            # T-4758: a slow machine spends the budget on a short script, and the literal scan below cannot judge what
+            # the cut-off read never reached (a relative target after `cd /`, a file `bash X` runs, a word split across
+            # a variable): every script past the first budget is read again, to the end, with 10x the time. One not
+            # read to the end then is refused, whatever words it holds: a rule keyed on words is a denylist.
+            first = list(found)  # what the cut-off read had found: kept if the second one is cut off too
+            found[:] = pre
+            try:
+                signal.setitimer(signal.ITIMER_PROF, _script_hard())
+                read()
+                finished = True
+            except _OverBudget:
+                found[:] = first + [f for f in found if f not in first]
+                too_long = True
         # never an empty verdict for a script not fully read: the whole text by plain regexes, and the scripts it runs
         # (bash X, source X, ./X: up to 8 files, one level of those too)
-        todo, seen = list(_TEXTS), set()
+        todo, seen = ([] if finished else list(_TEXTS)), set()
+        reached = [(lex, p)] + [(sp, sp) for sp, _ in _TEXTS]  # every file the cut-off reads touched: (as named, resolved)
         while todo and len(seen) < 8:
             sp, st = todo.pop(0)
             if sp in seen:
                 continue
             seen.add(sp)
             found += [("system", f"{sp} line {n}: {line[:80]} ({why}; the script was too long to parse in time)")
-                      for n, line, why in _literal_scan(st, ctx)]
-            for target in _run_targets(st)[:8]:  # ponytail: 8 files; a script past that, or named by a variable, is unread
+                      for n, line, why in _literal_scan(st, ctx) + _unfinished_removal(st)]
+            targets = _run_targets(st)
+            for target in targets[8:]:  # not read, but a file it names must still be a system file to be exempt
+                lex = os.path.normpath(os.path.join(cwd, os.path.expanduser(target)))
+                if os.path.isfile(os.path.realpath(lex)):
+                    reached.append((lex, os.path.realpath(lex)))
+                _DEPS.append((lex, _file_digest(lex)))  # a file created or changed later invalidates a cached allow
+            for target in targets[:8]:  # ponytail: 8 files; a script past that, or named by a variable, is unread
                 lex = os.path.normpath(os.path.join(cwd, os.path.expanduser(target)))
                 tp, raw = os.path.realpath(lex), None
                 if tp not in seen and os.path.isfile(tp):
+                    reached.append((lex, tp))
                     try:
                         with open(tp, "rb") as f:
                             raw = f.read(_SCRIPT_LIMIT + 1)
@@ -7315,6 +7577,21 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
                 _DEPS.append((lex, hashlib.sha256(raw).hexdigest() if raw is not None else ""))  # absent: stays absent
                 if raw is not None and len(raw) <= _SCRIPT_LIMIT:
                     todo.append((tp, raw.decode("utf-8", "replace")))
+        known = {b for _a, b in reached}
+        deeper = any(os.path.isfile(tp) and tp not in known  # a file the unread ones name that no check above looked at
+                     for _sp, st in todo for tp in (os.path.realpath(os.path.join(cwd, os.path.expanduser(t)))
+                                                    for t in _run_targets(st)))
+        if too_long and not deeper and all(_system_script(a, b) for a, b in reached):
+            # a system file (every file it touched: root's, unwritable here, in unwritable directories) is no more
+            # dangerous unread than a binary, which is allowed unread; what the scans above found stands
+            system = list(dict.fromkeys(reached))
+            unread = (f"system: read past its {_script_budget():g} s, then {_script_hard():g} s budget; a file root "
+                      "owns, in directories you cannot write: allowed unread, like a binary")
+        elif too_long:  # the literal scan above cannot judge what it never reached: not an allow, whatever the text holds
+            unread = f"refused: read past its {_script_budget():g} s, then {_script_hard():g} s budget"
+            found.append(("system", f"{p}: the script was too long to read in time ({_script_budget():g} s, then "
+                                    f"{_script_hard():g} s), so it, or a script it runs, was not read to the end: split it "
+                                    "into smaller scripts or run its steps as separate commands"))
     finally:
         _IN_SCRIPT.pop()
         if old is not None:
@@ -7325,7 +7602,7 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
     if unread:
         _UNREAD.append((p, unread))
     if key:
-        _cache_store(path, key, {"p": p, "f": found, "u": unread, "at": time.time(),
+        _cache_store(path, key, {"p": p, "f": found, "u": unread, "s": [list(x) for x in system], "at": time.time(),
                                  "n": [[dp, dd] for dp, dd in dict.fromkeys(_DEPS)]})
     return found
 

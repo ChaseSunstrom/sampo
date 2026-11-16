@@ -291,7 +291,8 @@ class Scrub(Gate):
     def test_run_py_children_never_inherit_a_callers_override(self):
         from sampo import core as c
         keep = {"FM_STALL_CACHE_S": "0", "FM_STALL_MIN": "0", "FM_HEARTBEAT": "0.1", "FM_STALL": "1", "FM_POSTMERGE_CMD": "x",
-                "FM_PROMPT_VARIANT": "v", "FM_DOOR_CAP": "1", "FM_GUARD_SCRIPT_BUDGET": "0", "FM_ABLATE_BUDGET": "0",
+                "FM_PROMPT_VARIANT": "v", "FM_DOOR_CAP": "1", "FM_GUARD_SCRIPT_BUDGET": "0", "FM_GUARD_SCRIPT_HARD": "0",
+                "FM_ABLATE_BUDGET": "0",
                 "FM_PROVE_ALLOW": "/x", "FM_RUN_DEADLINE": "99", "FM_TEST_TIMES": "/t", "PIP_QUIET": "1"}
         with mock.patch.dict(os.environ, keep):
             env = run.child_env("/tmp/x")

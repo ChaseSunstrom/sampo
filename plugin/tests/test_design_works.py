@@ -10,7 +10,7 @@ import types
 import unittest
 from unittest import mock
 
-from helpers import ForemanTestCase, headless_chrome
+from helpers import ForemanTestCase, cpu_scale, headless_chrome
 from sampo import works
 
 NS = 'xmlns="http://www.w3.org/2000/svg"'
@@ -219,9 +219,9 @@ class StaticGates(unittest.TestCase):
         over = works.inspect(page(works.MAX_RULES + 1, "<g/>"), "scene")
         self.assertEqual([g["got"] for g in over["gates"] if g["gate"] == "xml"],
                          [f"over {works.MAX_RULES} stylesheet rules naming a url(#…)"])
-        start = time.monotonic()
+        start = time.process_time()  # T-4758: in-process work, so CPU (a runner took 15.7 s of wall against 10)
         worst = works.inspect(page(works.MAX_RULES, "<g/>" * 19000), "scene")  # every rule on every element
-        self.assertLess(time.monotonic() - start, 10)
+        self.assertLess(time.process_time() - start, 5 * cpu_scale())  # 1.8 s on a quiet box; scaled by the runner's speed
         self.assertIn("xml", failed(worst))
 
     def test_the_harness_rules_come_after_the_work_and_hidden_text_is_gone(self):

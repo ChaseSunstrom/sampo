@@ -6,6 +6,7 @@ folder, sampo tidy --apply ends it, and a removed lane takes its processes with 
 whose working folder (or open file, on Linux) is in such a folder qualify, never one matched by name, never this
 process or its ancestors. The tests start their own looping children in temp folders; a real process reader is used
 only where a child of the test is the one looked for."""
+import contextlib
 import json
 import os
 import shutil
@@ -262,8 +263,94 @@ class RunSweeps(Children):
             self.assertEqual(code, 0, err)
             with open(pidf) as f:
                 pid = int(f.read())
+        if not run.HAS_PROC:  # no /proc: a class reads nothing, the end of the run does (T-4720 cost design)
+            run.end_run()
         until(lambda: not os.path.exists(f"/proc/{pid}") if HAS_PROC else cwd_of(pid) is None, 15,
               "the class's detached child to end")
+
+
+class NoSubreaper(Children):
+    """T-4758: macOS has no subreaper (BOOT's prctl is Linux's), so a class's detached child is not ended when the class
+    is: it keeps the class's stderr open, and the pipe read run.py waited on never ended (RunSweeps took 1218 s there, until
+    the run's deadline killed it). Simulated on Linux by BOOT without the prctl; the macOS-only call is that prctl."""
+
+    LEAKY = ("import os, subprocess, sys, tempfile, unittest\nclass S(unittest.TestCase):\n"
+             "    def test_s(self):\n"
+             f"        p = subprocess.Popen([sys.executable, '-c', {LOOP!r}], start_new_session=True,\n"
+             "                             cwd=tempfile.mkdtemp(), stdin=subprocess.DEVNULL)\n"  # stderr: the class's own
+             "        open(%r, 'w').write(str(p.pid))\n")
+
+    def test_a_class_whose_detached_child_keeps_its_stderr_open_returns_when_the_class_ends(self):
+        import threading
+        from unittest import mock
+        no_prctl = run.BOOT.replace("ctypes.CDLL(None).prctl(36, 1)", "raise OSError('no prctl here')")
+        self.assertNotEqual(no_prctl, run.BOOT, "BOOT no longer names the subreaper prctl this test removes")
+        with tempfile.TemporaryDirectory() as d:
+            pidf = os.path.join(d, "pid")
+            with open(os.path.join(d, "test_leaky.py"), "w") as f:
+                f.write(self.LEAKY % pidf)
+            out = {}
+            with mock.patch.object(run, "HERE", d), mock.patch.object(run, "BOOT", no_prctl):
+                t = threading.Thread(target=lambda: out.update(r=run.run_one("test_leaky.S", [], timeout=20)), daemon=True)
+                t.start()
+                t.join(40)
+                if os.path.exists(pidf):  # frees the pipe a red run waits on, so its thread ends too
+                    with open(pidf) as f:
+                        with contextlib.suppress(OSError, ValueError):
+                            os.kill(int(f.read()), signal.SIGKILL)
+                t.join(30)
+            self.assertTrue("r" in out, "run_one never returned: the pipe a detached child holds kept it waiting")
+            _, code, err, tests, secs = out["r"]
+            self.assertEqual(code, 0, err)
+            self.assertEqual(tests, 1)
+            self.assertLess(secs, 15, "it waited for the class's timeout")
+
+
+class GroupEnds(Children):
+    """T-4758 review: a class that passes leaves no process of its group behind (a grandchild that is not in a session of
+    its own, on a platform with no subreaper to sweep it)."""
+
+    SAME_GROUP = ("import os, subprocess, sys, tempfile, unittest\nclass S(unittest.TestCase):\n"
+                  "    def test_s(self):\n"
+                  f"        p = subprocess.Popen([sys.executable, '-c', {LOOP!r}], cwd='/',\n"  # not in the class's folder
+                  "                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                  "        open(%r, 'w').write(str(p.pid))\n")
+
+    def test_a_passing_class_leaves_nothing_of_its_process_group_running(self):
+        from unittest import mock
+        no_prctl = run.BOOT.replace("ctypes.CDLL(None).prctl(36, 1)", "raise OSError('no prctl here')")
+        self.assertNotEqual(no_prctl, run.BOOT)
+        with tempfile.TemporaryDirectory() as d:
+            pidf = os.path.join(d, "pid")
+            with open(os.path.join(d, "test_group.py"), "w") as f:
+                f.write(self.SAME_GROUP % pidf)
+            with mock.patch.object(run, "HERE", d), mock.patch.object(run, "BOOT", no_prctl):
+                _, code, err, tests, _ = run.run_one("test_group.S", [], timeout=60)
+            with open(pidf) as f:
+                pid = int(f.read())
+            self.addCleanup(self._kill, pid)
+            self.assertEqual((code, tests), (0, 1), err)
+            deadline = time.time() + 10
+            while time.time() < deadline and self._alive(pid):
+                time.sleep(0.1)
+            self.assertFalse(self._alive(pid), "the class passed and left its grandchild running")
+
+    @staticmethod
+    def _alive(pid):
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        try:  # a zombie is gone as far as this is concerned
+            with open(f"/proc/{pid}/stat") as f:
+                return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+        except OSError:
+            return True
+
+    @staticmethod
+    def _kill(pid):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)  # only the pid this test's own class recorded
 
 
 HOLDER = ("import fcntl, os, sys\n"
@@ -754,6 +841,48 @@ class LaneRemoval(ForemanTestCase, Children):
         self.assertNotEqual(p.returncode, 0)
         self.assertTrue(os.path.isdir(path))
         self.assertAlive(kid)
+
+
+class NoProc:
+    """T-4758: the macOS read on Linux. /proc reads as absent, so the working folders come from the real lsof and the
+    command names from the real ps, as they do on a Mac; the classes below run their parents' tests that way. Whatever
+    is only true of /proc (open files) skips itself. Nothing here is a made-up table: the same children, the same tools."""
+
+    def setUp(self):
+        super().setUp()
+        # this module's own HAS_PROC too: Children.clear asks for the deep read where it is False, as it does on a Mac
+        for target, name, value in ((run, "HAS_PROC", False), (slanes, "PROC", "/no-such-proc"),
+                                    (sys.modules[__name__], "HAS_PROC", False)):
+            patch = unittest.mock.patch.object(target, name, value)
+            patch.start()
+            self.addCleanup(patch.stop)
+
+
+NEEDS_TOOLS = unittest.skipUnless(shutil.which("lsof") and shutil.which("ps"), "needs lsof and ps")
+
+
+@NEEDS_TOOLS
+class RunClearsFolderNoProc(NoProc, RunClearsFolder):
+    """reruns: the same children with /proc read as absent, the lsof and ps way a Mac reads them (T-4758)."""
+
+    @unittest.skip("open files are read from /proc")
+    def test_a_child_that_left_the_folder_but_holds_a_file_in_it_goes_on_a_deep_read(self):
+        pass
+
+
+@NEEDS_TOOLS
+class RunSweepsNoProc(NoProc, RunSweeps):
+    """reruns: the sweeps with /proc read as absent (T-4758)."""
+
+
+@NEEDS_TOOLS
+class PersonsAreKeptNoProc(NoProc, PersonsAreKept):
+    """reruns: the kept persons with /proc read as absent (T-4758)."""
+
+
+@NEEDS_TOOLS
+class HeldFoldersNoProc(NoProc, HeldFolders):
+    """reruns: the held folders with /proc read as absent (T-4758)."""
 
 
 if __name__ == "__main__":

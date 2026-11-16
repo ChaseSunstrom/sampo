@@ -70,12 +70,33 @@ class CappedScope(unittest.TestCase):  # T-4018
 
 class ScriptBudget(unittest.TestCase):  # T-1777
     def test_the_script_case_is_a_hook_plus_the_guards_time_box(self):
-        # the bench's 37 KB script never finishes inside the guard's CPU box (a full read took 124 s), so the case
-        # costs a hook's startup plus that box: a hook's budget plus the box, moving with it
+        # a cold script read costs at most the guard's CPU box (T-4758: the bench's script now finishes inside it), so the
+        # case costs a hook's startup plus that box: a hook's budget plus the box, moving with it
         sys.path.insert(0, os.path.join(bench_hooks.PLUGIN, "lib"))  # the test's own process; the bench no longer does
         import fmguard
         self.assertEqual(bench_hooks.BUDGET_MS["PreToolUse:Bash:script"],
                          bench_hooks.BUDGET_MS["default"] + round(fmguard._script_budget() * 1000))
+
+
+class ScriptCase(unittest.TestCase):  # T-4758
+    def test_the_benched_script_is_one_the_guard_reads_to_the_end(self):
+        # doctor's "hook exit codes" expects the script case to exit 0: a script the guard cannot read inside its budgets
+        # (the old 37 KB one took 44 s to parse; 4 KB takes 1.9 s: the cost grows with the square of the size) is refused,
+        # so the probe must be one the guard reads and allows, cold (the run number in it makes each run a new digest)
+        import tempfile
+        sys.path.insert(0, os.path.join(bench_hooks.PLUGIN, "lib"))
+        import fmguard
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = os.path.join(tmp, "app")
+            os.makedirs(os.path.join(repo, "src"))
+            fhome = os.path.join(tmp, "fhome")
+            os.makedirs(os.path.join(fhome, "state", "projects", "x"))
+            ctx = fmguard.Ctx(cwd=repo, project_root=repo, home=tmp, foreman_home=fhome, scratch=["/tmp"], allow=set(),
+                              task_id="T-0007")
+            bench_hooks._write_script(repo, 0)
+            fmguard.take_unread()
+            self.assertIsNone(fmguard.check("Bash", {"command": "bash src/build.sh"}, ctx))
+            self.assertEqual(fmguard.take_unread(), [], "the guard ran out of its budgets reading the bench's script")
 
 
 class Isolation(unittest.TestCase):  # T-3132

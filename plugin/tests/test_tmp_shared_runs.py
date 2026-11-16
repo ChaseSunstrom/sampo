@@ -96,12 +96,13 @@ class SharedTempRoot(unittest.TestCase):
             pid = os.getpid()
             returncode = 0
 
-            def communicate(self, timeout=None):
+            def wait(self, timeout=None):  # T-4758: run.py waits on the class itself; its stderr is a file in the folder
                 seen.append(run.held(self.tmp))
-                return "", "Ran 1 test in 0.0s\n"
+                return 0
 
         def popen(argv, **kw):
             Fake.tmp = kw["env"]["TMPDIR"]
+            kw["stderr"].write(b"Ran 1 test in 0.0s\n")
             return Fake()
 
         with mock.patch.object(run.subprocess, "Popen", side_effect=popen):

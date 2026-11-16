@@ -111,6 +111,25 @@ def busy_factor(cap=8.0):
     return core.load_factor(cap, "" if host == CALM_HOST else host)
 
 
+QUIET_LOOP_CPU = 0.021  # CPU seconds the loop in cpu_scale takes on a quiet developer box (measured: 0.021 to 0.0225)
+
+
+def cpu_scale(cap=12.0):
+    """T-4758: how many times slower this runner's CPU is than a quiet box, measured now by a fixed pure-Python loop in
+    this process (the median of three, in CPU seconds like the bounds it scales), at least 1 and at most `cap`. A test
+    that bounds in-process CPU work takes `nominal * cpu_scale()`: a hosted runner at 2-4x gets 2-4x the room and a
+    real regression (a loop gone quadratic, 50x) still fails. The wall-clock load factor (busy_factor) is for a hang
+    guard; this is for a bound on work done, which a slow CPU inflates and a busy queue does not."""
+    runs = []
+    for _ in range(3):
+        t = time.process_time()
+        x = 0
+        for i in range(300000):
+            x += i * i % 7
+        runs.append(time.process_time() - t)
+    return min(cap, max(1.0, sorted(runs)[1] / QUIET_LOOP_CPU))
+
+
 def read_text(path, encoding="utf-8", limit=-1):
     with open(path, encoding=encoding) as f:
         return f.read(limit)

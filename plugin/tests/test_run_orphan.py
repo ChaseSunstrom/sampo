@@ -133,7 +133,12 @@ class Orphan(unittest.TestCase):
         while not gone(pid) and time.monotonic() - t0 < 10:
             time.sleep(0.1)
         self.assertTrue(gone(pid), "run.py outlived its parent")
-        self.assertTrue(gone(int(read(os.path.join(self.d, "pid")))), "its class kept running")
+        # T-4758: run.py is gone the moment it kills the class's group; without the kernel's parent-death signal (macOS)
+        # the class pid is reaped a beat later, so it gets what is left of the same ten seconds, not one look
+        cls = int(read(os.path.join(self.d, "pid")))
+        while not gone(cls) and time.monotonic() - t0 < 10:
+            time.sleep(0.1)
+        self.assertTrue(gone(cls), "its class kept running")
         self.assertFalse(os.path.exists(os.path.join(self.d, "done")))
         self.assertTrue(self.slots_free(), "a CPU slot is still held")
 

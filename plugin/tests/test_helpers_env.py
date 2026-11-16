@@ -131,5 +131,22 @@ class GateKeyIsolation(unittest.TestCase):
             t.tearDown()
 
 
+class CpuScale(unittest.TestCase):
+    def test_a_slow_runner_scales_a_cpu_bound_and_a_quiet_box_does_not(self):
+        # T-4758: CI runs measured 1.4 to 2.1 times the bounds written on a quiet box
+        sys.path.insert(0, HERE)
+        import helpers
+        clock = iter([0, 0.021, 0, 0.021, 0, 0.021])
+        with mock.patch.object(helpers.time, "process_time", lambda: next(clock)):
+            self.assertEqual(helpers.cpu_scale(), 1.0)  # a quiet box: the bound as written
+        clock = iter([0, 0.063, 0, 0.063, 0, 0.9])
+        with mock.patch.object(helpers.time, "process_time", lambda: next(clock)):
+            self.assertAlmostEqual(helpers.cpu_scale(), 3.0)  # the median of three, so one spike does not widen it
+        clock = iter([0, 5.0] * 3)
+        with mock.patch.object(helpers.time, "process_time", lambda: next(clock)):
+            self.assertEqual(helpers.cpu_scale(), 12.0)  # capped: a real regression still fails
+        self.assertGreaterEqual(helpers.cpu_scale(), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()
