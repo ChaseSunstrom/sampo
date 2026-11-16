@@ -7022,7 +7022,41 @@ class _QuoteLexer:
             self.docs += [m.group(1) for m in re.finditer(r"<<-?\s*['\"]?(\w+)['\"]?", line)]
 
 
-def _check_script(text, ctx, depth, acc):
+_NAMED = lazy(r"^\S+ (?:line|from line) \d+: ")  # a finding a script read has already named its script and line for
+
+
+def _read_piece(src, ctx, depth):
+    """check_bash over one script piece (with the carried lines in front, if the caller put them there), reading
+    each piece's own (text, folder) pairs against the cap of 256 and keeping no guessed target."""
+    outer_seen = _DCWD.get("seen")
+    _NO_GUESS.append(1)  # T-1778: a guessed target's finding names it ($, "not known"): dropped by the caller, so not made
+    # T-4758: each piece counts its own (text, folder) pairs against the cap of 256 (check_bash), as a command of that
+    # size would: a script's functions each name a folder or two, and 64 of them (37 KB) ran past it as one reading
+    _DCWD["seen"] = {}
+    try:
+        return check_bash(src, ctx, depth + 1)
+    finally:
+        _NO_GUESS.pop()
+        if outer_seen is None:
+            _DCWD.pop("seen", None)
+        else:
+            _DCWD["seen"] = outer_seen
+
+
+def _named_finding(f, chunk, first, path, ctx, depth):
+    """T-4774 review: a pipe-shell finding from a script names the script and the line, so the agent need not search:
+    `PATH line N: <the typed form's message>`. The line's text is never quoted: a download line can carry a token or an
+    authorization header. The line is the one that gives the finding read alone; a finding no single line gives (a
+    pipeline broken by a continuation) names the piece's first line instead."""
+    if not path or _NAMED.match(f[1]):  # one from a script further down the chain already says where
+        return f
+    for n, line in enumerate(chunk.split("\n")):
+        if line.strip() and not line.lstrip().startswith("#") and f in _read_piece(line, ctx, depth):
+            return (f[0], f"{path} line {first + n}: {f[1]}")
+    return (f[0], f"{path} from line {first}: {f[1]}")
+
+
+def _check_script(text, ctx, depth, acc, path=None):
     """check_bash over a script file's pieces, keeping what is certain: a target a variable holds ("not known before
     it runs", `$HOME/x`) is every script's `rm -rf "$DIR"`, and one that reads .env is a deploy script: counting them
     refused 4 of 10 real scripts. ponytail: a literal danger (rm -rf ~, a pipe into a shell) is what is caught.
@@ -7030,21 +7064,18 @@ def _check_script(text, ctx, depth, acc):
     # only what no script of the user's does innocently: a deploy script reboots, installs plugins, reads .env, and
     # splits words on IFS (replay of 3 real scripts: reboot, plugin, system and credentials refusals were all benign)
     state = []  # what earlier pieces did that a later one depends on: cd, literal assignments, files written
-    outer_seen = _DCWD.get("seen")
+    first = 1  # the script's line number of the piece's first line
     for chunk in _script_chunks(text):
         # core: a script of Foreman's own (evals) writes its checkout; only its state folder counts
-        _NO_GUESS.append(1)  # T-1778: a guessed target's finding names it ($, "not known"): dropped below, so not made
-        # T-4758: each piece counts its own (text, folder) pairs against the cap of 256 (check_bash), as a command of that
-        # size would: a script's functions each name a folder or two, and 64 of them (37 KB) ran past it as one reading
-        _DCWD["seen"] = {}
-        try:
-            got = check_bash("\n".join(state[-40:] + [chunk]), ctx, depth + 1)
-        finally:
-            _NO_GUESS.pop()
-            if outer_seen is None:
-                _DCWD.pop("seen", None)
-            else:
-                _DCWD["seen"] = outer_seen
+        got = _read_piece("\n".join(state[-40:] + [chunk]), ctx, depth)
+        # T-4774 review: the carried lines (a `curl … > f` of an earlier piece) are in front of this piece, and a
+        # download anywhere in the text it reads makes a pipe into a shell "downloaded": a pipe-shell finding is the
+        # piece's own, read without them (a pipeline never straddles two pieces). A finding from a nested script is
+        # already named with its own path and may need the carried state (a `cd` finds it): it is kept as read.
+        # Not caught, by this choice: `curl x > f` in an earlier piece, then `cat f | sh` far later (typed, refused)
+        if state and any(f[0] == "pipe-shell" and not _NAMED.match(f[1]) for f in got):
+            got = [f for f in got if f[0] != "pipe-shell" or _NAMED.match(f[1])] + [
+                f for f in _read_piece(chunk, ctx, depth) if f[0] == "pipe-shell"]
         deep = False
         for f in got:
             if f == ("system", "script nests too deep to read") or f[0] == "system" and f[1].endswith(_DEEP):
@@ -7056,10 +7087,16 @@ def _check_script(text, ctx, depth, acc):
                     deep = True
                     continue
                 f = ("system", "script nests too deep to read")
-            elif not ((f[0] in ("rm-outside", "self-authorize", "state-direct") or f[0] == "core" and "/state" in f[1]
+            # T-4774: pipe-shell is every one a download the line's own words feed to a shell (curl … | sh, sh -c "$(curl
+            # …)", eval, <(curl …)): the same finding and message as the typed form, certain in script text, and a
+            # name a variable holds ("| $SH") carries a $, so the rule below drops it
+            elif not ((f[0] in ("rm-outside", "self-authorize", "state-direct", "pipe-shell")
+                       or f[0] == "core" and "/state" in f[1]
                        or f[0] == "system" and ("is written earlier in this command" in f[1] or "too deep" in f[1]))
                       and "$" not in f[1] and not re.search(r"not known|unresolvable|from stdin", f[1])):
                 continue
+            if f[0] == "pipe-shell":
+                f = _named_finding(f, chunk, first, path, ctx, depth)
             if f not in acc:  # the carried lines are read again with each piece
                 acc.append(f)
         # T-1931: the part past the cap was never read: scan it for literals, as a script too long to parse.
@@ -7068,6 +7105,7 @@ def _check_script(text, ctx, depth, acc):
             acc += [f for f in dict.fromkeys(("system", f"{line[:80]} ({why}; {_DEEP}")
                                              for _n, line, why in _literal_scan(chunk, ctx)) if f not in acc]
         state += _state_lines(chunk)
+        first += chunk.count("\n") + 1
     return acc
 
 
@@ -7527,7 +7565,7 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
                     if '"$_"' not in spawned:  # flag every demo script that builds a path (replay: 27 false denials)
                         found.extend(check_bash(spawned, ctx, depth + 1))
             elif text is not None:
-                _check_script(text, ctx, depth, found)
+                _check_script(text, ctx, depth, found, path=p)
         read()
     except _OverBudget:
         if nested:
