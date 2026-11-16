@@ -21,10 +21,11 @@ import run
 
 POOL = 8  # the scenario's pool: two large runs fill it (or, with a reserve, everything but the reserved slots)
 LIMIT = 30  # a small run still waiting after this long is killed: that is the "before" figure, a floor
-HOLD = ("import sys, threading, time; sys.path.insert(0, %r); import run\n"
+# one os.write per slot: print() writes the number and the newline apart, and two threads ran them together ("25")
+HOLD = ("import os, sys, threading, time; sys.path.insert(0, %r); import run\n"
         "def hold():\n"
         "    with run.cpu_slot(wait=120, poll=0.02) as s:\n"
-        "        print(s, flush=True); time.sleep(300)\n"
+        "        os.write(1, f'{s}\\n'.encode()); time.sleep(300)\n"
         "ts = [threading.Thread(target=hold, daemon=True) for _ in range(int(sys.argv[1]))]\n"
         "[t.start() for t in ts]\n"
         "time.sleep(300)\n")
