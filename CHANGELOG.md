@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A download piped into a shell is now refused inside a script file the command runs, with the same message and grant as the typed line, in a function body and down a chain of scripts (T-4774).
 - The macOS test of `sampo tidy --apply` on lane cargo folders now expects the prune by whether the host can see open files (`/proc` or `lsof`), not by `/proc` alone, and mocked-macOS tests pin that the same folders go as with `/proc` (T-4792).
 - The PreToolUse hook records where its time goes (a stage clock with a 1 s watchdog that survives the 5 s kill) and the bench times a one-line command per stage beside a real test run, finding about 32 ms of Python start with no waiting stage (T-4780).
 - A plan repair now changes only the field the refusal names and a criterion that is the request's own words is refused, so a concrete first plan is no longer replaced by the request verbatim (T-4293).
