@@ -535,7 +535,8 @@ def _held(p, b, main, tip):
     """The reason `sampo lane merge` would refuse this lane (private term, guard, self-change gate), or ''. T-4783: the
     private-term check is lanes.private_refusal, the function `merge` calls, first: a lane that carries a term never
     reaches a probe or a gate (the train once landed one that only ship met). Its reason names commit, file and line.
-    T-4785: the body is lanes.land_holds, shared with fm serve's integrate and the pull-request train."""
+    T-4785: the body is lanes.land_holds, shared with fm serve's integrate and the pull-request train.
+    T-4805 exempt: a hold with no landing of its own; _run records the landing (lanes.log_landed) after it fast-forwards."""
     from sampo import lanes
     return lanes.land_holds(p, b, main, tip)
 
@@ -726,7 +727,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     left, notes = [], []  # notes: (id, what a probe saw that still let the lane on)
     kept_maps = {}  # T-4375: lane id: the docs/map files its merge resolved keeping both sides' lines
     cands, rows = [], []  # (brief, tip) in order; (brief, tip, why so far) in order
-    from sampo import release
+    from sampo import lanes, release
     try:  # T-4804: unreadable is not unset: the merge scan refuses each lane on it (held, nothing pushed); this only says so
         c.private_terms()
     except c.PrivateTermsUnreadable:
@@ -1183,7 +1184,8 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                 cli.mutate(p, b.id, lambda x: x.meta.update(lane_stop=f"refused {c.now()}: the train's fast-forward failed"),
                            "lane_merge", {"train": ids_in, "undone": True})
             raise c.PolicyError(f"fast-forward of {branch} to {tip[:9]} refused: {(ff.stderr or ff.stdout).strip()[:300]}")
-        maps = [(i, kept_maps[i]) for i in ids_in if i in kept_maps]  # T-4375: only the lanes that landed this way
+        lanes.log_landed(p, ",".join(ids_in), base, tip)  # T-4805: only now it landed; ship and release read it to skip these
+        maps =[(i, kept_maps[i]) for i in ids_in if i in kept_maps]  # T-4375: only the lanes that landed this way
         map_task = _map_follow_up(p, maps) if maps else ""
         part = next((r["affected"] for r in green if r.get("affected")), None)
         if part:  # T-3544: the full suite the gate skipped verifies each landed merge in the background, newest first

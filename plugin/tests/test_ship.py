@@ -1018,3 +1018,188 @@ class Ship(ForemanTestCase):
             self.assertNotEqual(r.returncode, 0)
         self.assertNotIn("add a", self.main_log())
         self.assertTrue(self.granted())
+
+
+class ShipDirectCommits(ForemanTestCase):
+    """T-4805: a commit made straight on the trunk reaches origin main through fm ship; the self-change gate judges it
+    against its parent first (a lane-landed commit the train already judged is not judged twice)."""
+    CASES = "plugin/tests/fixtures/guard_cases.jsonl"
+    ALLOW = "plugin/tests/fixtures/guard_allow.jsonl"
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.origin = os.path.join(self.tmp, "origin.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True)
+        sh(self.repo, "remote", "add", "origin", self.origin)
+        self.put({"plugin/lib/fmguard.py": "x = 1\n",
+                  self.CASES: '{"id": "c1", "cmd": "rm -rf ~", "cwd": ".", "should": "block"}\n',
+                  self.ALLOW: '{"id": "a1", "cmd": "ls", "cwd": ".", "should": "allow"}\n'})
+        sh(self.repo, "add", "-A")
+        sh(self.repo, "commit", "-qm", "base")
+        sh(self.repo, "push", "-q", "origin", "HEAD:main")
+        sh(self.repo, "checkout", "-q", "-b", "work")
+        self.p = c.find_project(self.repo)
+        self.tid = json.loads(self.fm("task", "new", "land", "--type", "FEATURE", "--tier", "S", "--json").stdout)["id"]
+        self.fm("task", "step", self.tid, "add", "land it")
+        self.fm("task", "ac", self.tid, "add", "landed", "--verify", "true")
+        self.fm("focus", self.tid)
+        b = c.find_brief(self.p, self.tid)
+        b.meta["allow"] = ["publish"]
+        c.save_brief(self.p, b)
+
+    def put(self, files):
+        for rel, text in files.items():
+            os.makedirs(os.path.dirname(os.path.join(self.repo, rel)), exist_ok=True)
+            with open(os.path.join(self.repo, rel), "w") as f:
+                f.write(text)
+
+    def commit(self, files, msg):
+        self.put(files)
+        sh(self.repo, "add", "-A")
+        sh(self.repo, "commit", "-qm", msg)
+        return sh(self.repo, "rev-parse", "HEAD").strip()
+
+    def main_log(self):
+        return sh(self.origin, "log", "--format=%s", "main").split("\n")
+
+    def ship(self, keep_cache=False):
+        """(refusal text or '', how many times the guard was replayed): release.ship in this process, the gate's judge faked
+        the way test_lanes.SelfChangeGate fakes it (the base tree is replayed first, the commit's tree second)."""
+        import argparse
+        import contextlib
+        import io
+        from unittest import mock
+
+        from sampo import cli, release, selfgate
+        seen = []
+
+        def verdicts(tree, cmds):
+            seen.append(tree)
+            return ["allow" if cmd == "ls" or (len(seen) % 2 == 0 and cmd.startswith("rm")) else "destructive"
+                    for cmd, _ in cmds]
+        for name in () if keep_cache else ("selfgate-base.json", "selfgate-base-push.json"):
+            if os.path.exists(os.path.join(self.p.dir, name)):
+                os.remove(os.path.join(self.p.dir, name))
+        args = argparse.Namespace(remote="origin", commits=[], test="true", check=False, head=False, task=None,
+                                  chance=None, watch=False)
+        with mock.patch.object(selfgate, "_verdicts", verdicts), \
+                mock.patch.object(selfgate, "_bench", lambda t: ({"Stop": {"p95": 100.0, "budget": 500}}, {"SessionStart": 2000})), \
+                mock.patch.object(selfgate, "_corpus", lambda: []), contextlib.redirect_stdout(io.StringIO()):
+            try:
+                release.ship(self.p, args)
+                return "", len(seen)
+            except cli.UsageError as e:
+                return str(e), len(seen)
+
+    def landed(self, base, tip):  # what lanes.merge and the train record after a landing
+        c.log_event(self.p, "lane_landed", task=self.tid, data={"base": base, "tip": tip, "tasks": [self.tid]})
+
+    def granted(self):
+        return "publish" in (c.find_brief(self.p, self.tid).meta.get("allow") or [])
+
+    def test_direct_guard_weakening_is_held_before_any_push_naming_the_commit(self):
+        sha = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard")
+        why, _ = self.ship()
+        self.assertIn(sha[:8], why)
+        self.assertIn("loosen the guard", why)
+        self.assertIn("rm -rf ~", why, "what the guard now allows")
+        self.assertIn("nothing was pushed", why)
+        self.assertIn(f"fm ask {self.tid} core", why)
+        self.assertNotIn("loosen the guard", self.main_log(), "held before the push")
+        self.assertTrue(self.granted(), "the publish grant is kept")
+        refused = [e for e in c.ledger_events(self.p, ("self_change_refused",)) if (e.get("data") or {}).get("sha") == sha]
+        self.assertTrue(refused, "the refusal is on record for the user's yes to answer")
+
+    def test_direct_guard_weakening_after_a_lane_landed_commit_is_still_held(self):
+        base = sh(self.repo, "rev-parse", "HEAD").strip()
+        lane = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "lane work")
+        self.landed(base, lane)
+        sha = self.commit({"plugin/lib/fmguard.py": "x = 3\n"}, "then a direct one")
+        why, _ = self.ship()
+        self.assertIn(sha[:8], why)
+        self.assertNotIn(lane[:8], why, "the lane's commit is the train's")
+
+    def test_lane_landed_not_rejudged_but_pushed(self):
+        base = sh(self.repo, "rev-parse", "HEAD").strip()
+        lane = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "lane work")
+        self.landed(base, lane)
+        why, judged = self.ship()
+        self.assertEqual(why, "")
+        self.assertEqual(judged, 0, "the gate was not run on a commit a lane landed")
+        self.assertIn("lane work", self.main_log())
+
+    def test_lane_landed_not_rejudged_a_lane_commit_under_a_merge_is_covered_too(self):
+        base = sh(self.repo, "rev-parse", "HEAD").strip()
+        sh(self.repo, "checkout", "-q", "-b", "lane")
+        inner = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "inner lane commit")
+        sh(self.repo, "checkout", "-q", "work")
+        sh(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "Merge T-1", "lane")
+        merge = sh(self.repo, "rev-parse", "HEAD").strip()
+        self.landed(base, merge)
+        why, judged = self.ship()
+        self.assertEqual((why, judged), ("", 0), inner)
+
+    def test_lane_landed_not_rejudged_but_a_direct_commit_touching_no_judged_file_runs_no_gate(self):
+        self.commit({"README.md": "hi\n", "plugin/tests/test_x.py": "pass\n", "plugin/rules/foreman.md": "r\n"}, "docs only")
+        why, judged = self.ship()
+        self.assertEqual((why, judged), ("", 0))
+        self.assertIn("docs only", self.main_log())
+        self.assertFalse(self.granted(), "pushed: the grant is spent")
+
+    def yes(self):  # the user's answer to fm ask ID core, after the refusals
+        c.log_event(self.p, "approval_granted", task=self.tid, data={"allow": ["core"]})
+
+    def test_direct_guard_weakening_two_held_commits_one_yes_the_rerun_passes_both(self):
+        """T-4805 review: approved() honoured only the last refused sha, so a yes covered B, the rerun re-judged A, logged a
+        new refusal and un-approved B: it never converged."""
+        a = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard once")
+        b = self.commit({"plugin/lib/fmguard.py": "x = 3\n"}, "and twice")
+        why, _ = self.ship()
+        self.assertIn(a[:8], why)
+        self.assertIn(b[:8], why)
+        self.yes()
+        why, judged = self.ship()
+        self.assertEqual((why, judged), ("", 0), "both are covered by the one yes: nothing is replayed")
+        self.assertIn("and twice", self.main_log())
+
+    def test_a_yes_for_one_commit_does_not_cover_one_refused_after_it(self):
+        a = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard once")
+        self.assertIn(a[:8], self.ship()[0])
+        self.yes()
+        b = self.commit({"plugin/lib/fmguard.py": "x = 3\n"}, "and a later one")
+        why, _ = self.ship()
+        self.assertIn(b[:8], why)
+        self.assertNotIn(a[:8], why, "the yes still covers the first")
+
+    def test_a_direct_commit_after_the_cutoff_is_judged_and_one_before_it_is_not(self):
+        """T-4805 review: lanes landed before lane_landed existed have no record; the first ship after the change must not
+        re-judge every one. Commits reachable from the first commit carrying log_landed are judged; later direct ones are."""
+        self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "old direct commit")
+        self.commit({"plugin/lib/sampo/lanes.py": "def log_landed(p, tid, base, tip):\n    pass\n"}, "the change")
+        new = self.commit({"plugin/lib/fmguard.py": "x = 3\n"}, "a direct commit after it")
+        why, _ = self.ship()
+        self.assertIn(new[:8], why)
+        self.assertNotIn("old direct", why)
+
+    def test_the_hold_keeps_its_own_base_cache_apart_from_the_trains(self):
+        """T-4805 review: each judged commit has another parent, so the one-file base cache missed every time and was
+        overwritten under the next lane train; the push hold has its own file."""
+        path = os.path.join(self.p.dir, "selfgate-base.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("train's cache")
+        self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard")
+        self.assertIn("loosen", self.ship(keep_cache=True)[0])
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(f.read(), "train's cache")
+
+    def test_a_gate_that_cannot_run_holds_the_direct_commit(self):
+        from unittest import mock
+
+        from sampo import selfgate
+        sha = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard")
+        with mock.patch.object(selfgate, "_tree", side_effect=OSError("disk full")):
+            why, _ = self.ship()
+        self.assertIn(sha[:8], why)
+        self.assertIn("couldn't run", why)
+        self.assertNotIn("loosen the guard", self.main_log())

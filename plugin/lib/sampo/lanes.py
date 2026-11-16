@@ -3114,6 +3114,30 @@ class Hold(str):
         return h
 
 
+def log_landed(p, tid, base, tip):
+    """T-4805: one lane_landed ledger event for a landing that moved the trunk from base to tip, written after it
+    succeeded (never for a refused or undone one). `fm ship` and `fm release --push` read it to know that every commit in
+    base..tip was judged by the lane gate, so only the trunk's direct commits are judged at the push. A failed write is
+    only a later re-judgement of those commits, never a landing that stops."""
+    if not (base and tip and base != tip):
+        return
+    try:
+        c.log_event(p, "lane_landed", task=tid, data={"base": base, "tip": tip, "tasks": [t for t in tid.split(",") if t]})
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def log_merged(p, tid, main, merge_sha, lane_tip=""):
+    """T-4805: log_landed for a --no-ff merge commit of main: the range is the merge's own first parent to the merge. The
+    trunk's head read before the merge (and before the lock) can be a commit older than the first parent, one a direct
+    commit made meanwhile would make the range cover, and so skip the judge. Nothing when merge_sha isn't a two-parent
+    merge, or its second parent isn't lane_tip (an up-to-date merge moved nothing)."""
+    r = _git(main, "rev-parse", f"{merge_sha}^1", f"{merge_sha}^2")
+    got = r.stdout.split() if not r.returncode else []
+    if len(got) == 2 and (not lane_tip or got[1] == lane_tip):
+        log_landed(p, tid, got[0], merge_sha)
+
+
 def merge(p, b, main, unverified=None):
     """T-0377: merge a reviewed builder branch into the main checkout (--no-ff) through fm. On Sampo's own repo the
     guard refuses `git merge` (a tree write over core); here every file the branch changes must pass the guard as a
@@ -3221,6 +3245,7 @@ def merge(p, b, main, unverified=None):
         raise cli.UsageError(f"git merge {branch} failed and was aborted: {(r.stderr or r.stdout).strip()[:300]}"
                                + (f"\nConflict brief: {brief}" if brief else ""))
     merge.last = branch
+    log_merged(p, b.id, main, c.git_head(main), tip)  # T-4805: what fm ship and fm release --push read to skip it
     cli.mutate(p, b.id, lambda x: (x.append_log(f"merged {branch} ({len(files)} file(s))"),
                                      x.meta.update(lane_stop=f"merged {c.now()}")), "lane_merge",
                  {"branch": branch, "files": files[:50]})

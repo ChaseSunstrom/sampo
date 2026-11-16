@@ -2,6 +2,7 @@
 wrapper over it, is tested in test_release_py.py.)"""
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -493,3 +494,235 @@ class LandAfterShips(ReleaseCase):
         r = self.rel("9.9.9", "--push", check=False)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual(sh(origin, "log", "-1", "--format=%s", "main").strip(), "Foreman 9.9.9")
+
+
+class PushHold(ForemanTestCase):
+    """T-4805: fm release --push merges the release onto origin main; a commit made straight on the trunk in what it
+    merges is judged by the self-change gate against its parent first, as fm ship's is."""
+    CASES = "plugin/tests/fixtures/guard_cases.jsonl"
+    ALLOW = "plugin/tests/fixtures/guard_allow.jsonl"
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        put(self.repo, "plugin/lib/fmguard.py", "x = 1\n")
+        put(self.repo, self.CASES, '{"id": "c1", "cmd": "rm -rf ~", "cwd": ".", "should": "block"}\n')
+        put(self.repo, self.ALLOW, '{"id": "a1", "cmd": "ls", "cwd": ".", "should": "allow"}\n')
+        put(self.repo, "CHANGELOG.md", "# Changelog\n")
+        sh(self.repo, "add", "-A")
+        sh(self.repo, "commit", "-qm", "base")
+        self.origin = os.path.join(self.tmp, "origin.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", self.origin], check=True)
+        sh(self.repo, "remote", "add", "origin", self.origin)
+        sh(self.repo, "push", "-q", "origin", "HEAD:main")
+        sh(self.repo, "checkout", "-q", "-b", "work")
+        self.p = c.find_project(self.repo)
+        self.tid = json.loads(self.fm("task", "new", "ship", "--type", "FEATURE", "--tier", "S", "--json").stdout)["id"]
+        self.fm("task", "step", self.tid, "add", "ship it")
+        self.fm("task", "ac", self.tid, "add", "shipped", "--verify", "true")
+        self.fm("focus", self.tid)
+        b = c.find_brief(self.p, self.tid)
+        b.meta["allow"] = ["publish"]
+        c.save_brief(self.p, b)
+
+    def commit(self, files, msg):
+        for rel, text in files.items():
+            put(self.repo, rel, text)
+        sh(self.repo, "add", "-A")
+        sh(self.repo, "commit", "-qm", msg)
+        return sh(self.repo, "rev-parse", "HEAD").strip()
+
+    def push(self):
+        """(refusal text or '', guard replays): release._push in this process, the judge faked as test_lanes does."""
+        from unittest import mock
+
+        from sampo import cli, release, selfgate
+        seen = []
+
+        def verdicts(tree, cmds):
+            seen.append(tree)
+            return ["allow" if cmd == "ls" or (len(seen) % 2 == 0 and cmd.startswith("rm")) else "destructive"
+                    for cmd, _ in cmds]
+        for name in ("selfgate-base.json", "selfgate-base-push.json"):
+            if os.path.exists(os.path.join(self.p.dir, name)):
+                os.remove(os.path.join(self.p.dir, name))
+        ctx = {"root": self.repo, "version": "9.9.9", "p": self.p, "remote": "origin",
+               "state": {"sha": sh(self.repo, "rev-parse", "HEAD").strip()}}
+        with mock.patch.object(selfgate, "_verdicts", verdicts), \
+                mock.patch.object(selfgate, "_bench", lambda t: ({"Stop": {"p95": 100.0, "budget": 500}}, {"SessionStart": 2000})), \
+                mock.patch.object(selfgate, "_corpus", lambda: []):
+            try:
+                release._push(ctx)
+                return "", len(seen)
+            except cli.UsageError as e:
+                return str(e), len(seen)
+
+    def test_direct_guard_weakening_in_what_release_merges_is_held_before_the_push(self):
+        sha = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard")
+        self.commit({"CHANGELOG.md": "# Changelog\n\n## 9.9.9\n"}, "Foreman 9.9.9")
+        before = sh(self.origin, "rev-parse", "main").strip()
+        why, _ = self.push()
+        self.assertIn(sha[:8], why)
+        self.assertIn("rm -rf ~", why)
+        self.assertIn("nothing was pushed", why)
+        self.assertEqual(sh(self.origin, "rev-parse", "main").strip(), before, "origin main did not move")
+        self.assertIn("publish", c.find_brief(self.p, self.tid).meta.get("allow") or [], "the grant is kept")
+
+    def test_a_release_whose_commits_a_lane_landed_or_touch_no_judged_file_runs_no_gate(self):
+        base = sh(self.repo, "rev-parse", "HEAD").strip()
+        lane = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "lane work")
+        c.log_event(self.p, "lane_landed", task=self.tid, data={"base": base, "tip": lane, "tasks": [self.tid]})
+        self.commit({"CHANGELOG.md": "# Changelog\n\n## 9.9.9\n"}, "Foreman 9.9.9")
+        why, judged = self.push()
+        self.assertEqual((why, judged), ("", 0))
+        self.assertEqual(sh(self.origin, "log", "-1", "--format=%s", "main").strip(), "Foreman 9.9.9")
+
+    def test_direct_guard_weakening_by_moving_the_guard_or_its_cases_away_is_held(self):
+        """T-4805 review: a rename lists only the new path unless git is told --no-renames, so a moved guard judged nothing."""
+        before = sh(self.origin, "rev-parse", "main").strip()
+        for src, dst in (("plugin/lib/fmguard.py", "docs/old_guard.py"), (self.CASES, "docs/old_cases.jsonl")):
+            os.makedirs(os.path.join(self.repo, "docs"), exist_ok=True)
+            sh(self.repo, "mv", src, dst)
+            sh(self.repo, "commit", "-qm", f"move {src} away")
+            sha = sh(self.repo, "rev-parse", "HEAD").strip()
+            self.commit({"CHANGELOG.md": f"# Changelog\n\n## {src}\n"}, "Foreman 9.9.9")
+            why, _ = self.push()
+            self.assertIn(sha[:8], why, src)
+            self.assertEqual(sh(self.origin, "rev-parse", "main").strip(), before, "origin main did not move")
+            sh(self.repo, "reset", "-q", "--hard", "HEAD~2")
+
+    def test_a_listing_that_fails_or_a_commit_with_no_parent_is_a_hold_never_a_pass(self):
+        """T-4805 review: git's failure read as an empty file list (skipped), and a root commit had no parent (skipped)."""
+        from unittest import mock
+
+        from sampo import cli, release
+        b = c.find_brief(self.p, self.tid)
+        root_sha = sh(self.repo, "rev-list", "--max-parents=0", "HEAD").strip()
+        with self.assertRaises(cli.UsageError) as got:
+            release._push_hold(self.p, b, self.repo, [root_sha], "fm ship")
+        self.assertIn(root_sha[:8], str(got.exception))
+        sha = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard")
+        real = c._git
+
+        def failing(root, *args, **kw):
+            if "diff" in args:
+                return subprocess.CompletedProcess(args, 128, "", "fatal: bad object")
+            return real(root, *args, **kw)
+        with mock.patch.object(c, "_git", failing), self.assertRaises(cli.UsageError) as got:
+            release._push_hold(self.p, b, self.repo, [sha], "fm ship")
+        self.assertIn(sha[:8], str(got.exception))
+        self.assertIn("list", str(got.exception))
+
+    def test_a_commit_a_later_ship_left_out_is_still_judged_but_a_picked_one_is_not(self):
+        """T-4805 review: --not SHIPPED skipped the commits `fm ship <later commit>` left out, which the release's merge then
+        pushes; only a commit whose patch origin main already has is skipped."""
+        left = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard")
+        later = self.commit({"README.md": "later\n"}, "a later commit")
+        sh(self.repo, "update-ref", "refs/foreman/shipped", later)
+        self.commit({"CHANGELOG.md": "# Changelog\n\n## 9.9.9\n"}, "Foreman 9.9.9")
+        why, _ = self.push()
+        self.assertIn(left[:8], why)
+
+    def test_a_commit_whose_patch_origin_main_already_has_under_another_sha_is_not_judged(self):
+        sh(self.repo, "checkout", "-q", "-b", "alt", "origin/main")
+        self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "picked")
+        sh(self.repo, "push", "-q", "origin", "alt:main")
+        sh(self.repo, "checkout", "-q", "work")
+        self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "the same patch, another sha")
+        self.commit({"CHANGELOG.md": "# Changelog\n\n## 9.9.9\n"}, "Foreman 9.9.9")
+        why, judged = self.push()
+        self.assertEqual((why, judged), ("", 0))
+
+    def test_lane_merge_records_the_range_from_the_merges_own_first_parent(self):
+        """T-4805 review: pre_merge was read before the lock; a direct commit made in that window became the merge's first
+        parent and the range pre_merge..merge covered it, so it skipped the judge. The range starts at merge^1."""
+        from sampo import lanes
+        sh(self.repo, "checkout", "-q", "-b", "lane")
+        self.commit({"lane.txt": "lane\n"}, "lane commit")
+        sh(self.repo, "checkout", "-q", "work")
+        direct = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "loosen the guard")
+        sh(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "Merge T-1", "lane")
+        merge = sh(self.repo, "rev-parse", "HEAD").strip()
+        lanes.log_merged(self.p, self.tid, self.repo, merge)
+        ev = c.ledger_events(self.p, ("lane_landed",), since="")
+        self.assertEqual([(e["data"]["base"], e["data"]["tip"]) for e in ev], [(direct, merge)])
+        self.commit({"CHANGELOG.md": "# Changelog\n\n## 9.9.9\n"}, "Foreman 9.9.9")
+        why, _ = self.push()
+        self.assertIn(direct[:8], why)
+        self.assertNotIn(merge[:8], why)
+
+    def test_a_pr_the_train_merged_is_recorded_from_the_merge_commit_github_made(self):
+        """T-4805 review: the PR train ran the holds but logged nothing, so fm ship judged the merged PR again."""
+        from sampo import pr
+        before = sh(self.repo, "rev-parse", "HEAD").strip()
+        sh(self.repo, "checkout", "-q", "-b", "prb")
+        head = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "the PR's commit")
+        sh(self.repo, "checkout", "-q", "work")
+        sh(self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "Merge PR", "prb")
+        merge = sh(self.repo, "rev-parse", "HEAD").strip()
+        sh(self.repo, "push", "-q", "origin", "HEAD:main")
+        pr._record_landing(self.p, c.find_brief(self.p, self.tid), "main", head)
+        ev = c.ledger_events(self.p, ("lane_landed",), since="")
+        self.assertEqual([(e["data"]["base"], e["data"]["tip"]) for e in ev], [(before, merge)])
+
+    def test_every_landing_path_records_what_it_landed(self):
+        """T-4805 review: each function that runs land_holds (the lane merge, the train, fm serve, the PR train) and then
+        lands calls lanes.log_landed or log_merged, or says `T-4805 exempt:` (a hold with no landing of its own)."""
+        import ast
+        import glob
+        lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")
+        found = {}
+        for path in sorted(glob.glob(os.path.join(lib, "*.py"))):
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            for fn in ast.walk(ast.parse(src)):
+                if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) and fn.name != "land_holds":
+                    text = "\n".join(src.splitlines()[fn.lineno - 1:fn.end_lineno])
+                    if re.search(r"\bland_holds\(", text):
+                        found[f"{os.path.basename(path)}:{fn.name}"] = bool(re.search(r"\blog_(landed|merged)\(|\b_record_landing\(|T-4805 exempt:", text))
+        for must in ("lanes.py:merge", "serve.py", "pr.py"):
+            self.assertTrue([k for k in found if k.startswith(must)], f"the scan no longer sees {must}: {sorted(found)}")
+        self.assertEqual([k for k, ok in found.items() if not ok], [], "a landing that records nothing and has no exemption")
+
+    def test_lane_landing_writes_the_lane_landed_record_the_hold_reads(self):
+        """T-4805: lanes.log_landed writes one event for a moved trunk (none for an unmoved one), and both landing paths
+        (`sampo lane merge` and the merge train) call it, so the hold never judges what a lane landed."""
+        from sampo import lanes
+        base = sh(self.repo, "rev-parse", "HEAD").strip()
+        tip = self.commit({"plugin/lib/fmguard.py": "x = 2\n"}, "lane work")
+        lanes.log_landed(self.p, "T-0001,T-0002", base, base)
+        lanes.log_landed(self.p, "T-0001,T-0002", base, tip)
+        ev = c.ledger_events(self.p, ("lane_landed",), since="")
+        self.assertEqual([(e["data"]["base"], e["data"]["tip"], e["data"]["tasks"]) for e in ev],
+                         [(base, tip, ["T-0001", "T-0002"])])
+        here = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")
+        for name in ("lanes.py", "train.py"):
+            with open(os.path.join(here, name), encoding="utf-8") as f:
+                self.assertIn("log_landed(p, ", f.read(), f"{name} no longer records its landing")
+
+    def test_every_push_path_is_held_or_exempt(self):
+        """T-4805: each function that pushes a ref to a remote's main (or merges a pull request) calls the push hold or
+        land_holds, or says `T-4805 exempt:` and why. The sites are found in the source, so a new one can't pass unseen."""
+        import ast
+        import glob
+        lib = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib", "sampo")
+        site = re.compile(r'"push"[^\n]*(?:refs/heads/|\bmain\b|--force)|\b_push_main\(|"pr", "merge"')
+        held = re.compile(r"\b_push_hold\(|\bland_holds\(|T-4805 exempt:")
+        found = {}
+        for path in sorted(glob.glob(os.path.join(lib, "*.py"))):
+            with open(path, encoding="utf-8") as f:
+                src = f.read()
+            for node in ast.parse(src).body:
+                if isinstance(node, ast.ClassDef):
+                    funcs = [n for n in node.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+                elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    funcs = [node]
+                else:
+                    continue
+                for fn in funcs:
+                    text = "\n".join(src.splitlines()[fn.lineno - 1:fn.end_lineno])
+                    if site.search(text):
+                        found[f"{os.path.basename(path)}:{fn.name}"] = bool(held.search(text))
+        for must in ("release.py:ship", "release.py:_push", "release.py:_push_main", "rune.py", "pr.py:train"):
+            self.assertTrue([k for k in found if k.startswith(must)], f"the scan no longer sees {must}: {sorted(found)}")
+        self.assertEqual([k for k, ok in found.items() if not ok], [], "a push path with no hold and no T-4805 exemption")

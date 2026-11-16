@@ -84,6 +84,24 @@ def _retest(p, b, n, base):
     return True, "", head
 
 
+def _record_landing(p, b, base, head):
+    """T-4805: the lane_landed record of a PR the train merged (the holds above judged its head), so fm ship and fm release
+    --push don't judge it again as a direct commit: the merge commit GitHub made, found on the fetched base as the one whose
+    second parent is the merged head. A fetch or a search that fails records nothing (a later re-judgement, never a stop)."""
+    from sampo import lanes
+    try:
+        if _git(p.root, "fetch", "-q", "origin", base).returncode:
+            return
+        lines = _git(p.root, "rev-list", "--parents", "--min-parents=2", "-n", "200", f"origin/{base}").stdout.splitlines()
+        for ln in lines:
+            sha, *parents = ln.split()
+            if len(parents) == 2 and parents[1] == head:
+                lanes.log_merged(p, b.id if b else "", p.root, sha, head)
+                return
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def post(p, b, body, number=None):
     """T-1167: fm pr ID --post: the rendered body as a comment on the PR (--pr N, else the current branch's), behind
     the task's publish grant like the train's, spent before the call so one yes posts once."""
@@ -159,6 +177,7 @@ def train(p, args):
             spend()  # after the holds: a held PR burns no yes
             _gh(p, "pr", "merge", str(n), "--merge", "--match-head-commit", head)  # a push since the re-test refuses
             merged.append(n)
+            _record_landing(p, b, x["baseRefName"], head)
             lines.append(f"#{n} re-tested green and merged")
     except Exception as e:  # a failed merge: what merged before it is still reported, then the error
         lines.append(f"train stopped: {e}")

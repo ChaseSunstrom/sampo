@@ -707,8 +707,10 @@ def _integrate_lane(p, tid, path):
         held = f"the checks before landing could not run ({type(e).__name__})"
     if held:
         return f"kept in {path}: {c.fit(c.plain(held), 200)}" + (f"; fm ask {tid} core, then merge" if "self-change" in held else "")
+    before = git(p.root, "rev-parse", "HEAD").stdout.strip()  # a fast-forward starts only from the head it read (the train's way)
     if git(p.root, "merge", "-q", "--ff-only", tip).returncode:
         return f"kept in {path}: {branch} moved on; rebase the lane again"
+    lanes.log_landed(p, tid, before, tip)  # T-4805: what fm ship and fm release --push read to skip it
     try:
         rm = _fm(p.root, "lane", "rm", tid)
     except Exception as e:  # T-4785 re-check: it landed; a failed removal is not a kept lane (the caller would say "kept")

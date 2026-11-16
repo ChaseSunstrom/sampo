@@ -308,6 +308,107 @@ _NEED_GRANT = ("--push needs the active task's publish grant: fm ask ID publish 
                "has given standing permission to release, fm task set ID --allow publish")
 
 
+def _direct(p, root, commits):
+    """T-4805: of commits, the ones no recorded lane landing carried: a lane_landed event (written by `sampo lane merge` and
+    the merge train after the landing, never read from a commit message) names the base and tip it moved the trunk
+    between, and every commit in base..tip, the lane's own included, was judged by that landing's gate. Events older than the
+    oldest commit (less a day for clock skew) can't name it, so only newer ones are walked."""
+    if not commits:
+        return []
+    stamps = [int(x) for x in _git(root, "log", "--no-walk", "--format=%ct", *commits, ok=True).split() if x.isdigit()]
+    since = c.iso(min(stamps) - 86400) if stamps else ""
+    landed = set()
+    for e in c.ledger_events(p, ("lane_landed",), since=since):
+        d = e.get("data") or {}
+        if isinstance(d.get("base"), str) and isinstance(d.get("tip"), str):
+            landed.update(_git(root, "rev-list", f"{d['base']}..{d['tip']}", ok=True).split())
+    return [s for s in commits if s not in landed]
+
+
+PUSH_CACHE = "selfgate-base-push.json"  # T-4805: the hold's base cache, apart from the lane train's selfgate-base.json
+LANDED_BY = "def log_landed("  # T-4805: the line whose arrival in lanes.py began the lane_landed records
+
+
+def _listed(root, s):
+    """(first parent, the files s changed against it, renames listed as the delete and the add: a moved guard is seen) or None
+    when git can't say (no first parent, as a root commit, or a failed command): the caller holds, as lanes.lane_files
+    returning None does (T-4783)."""
+    parent = c._git(root, "rev-parse", "--verify", "-q", f"{s}^1", timeout=60, proc=True)
+    if parent.returncode or not parent.stdout.strip():
+        return None
+    parent = parent.stdout.strip()
+    got = c._git(root, "diff", "--name-only", "--no-renames", "-z", parent, s, timeout=120, proc=True)
+    if got.returncode:
+        return None
+    return parent, [f for f in got.stdout.split("\0") if f]
+
+
+def _before_records(root, commits):
+    """T-4805: the commits reachable from the first-parent commit that added lanes.py's log_landed (the landing of the record
+    this hold reads): lanes landed before it left no record, and re-judging all of them at the first ship after would be
+    unbounded; they count as judged. Nothing when the history doesn't show it (then every direct commit is judged).
+    The cutoff is a trust boundary: it is the landing of T-4805 itself (the train's merge of this lane, judged by
+    land_holds); commits from before it are trusted as landed through the gates of their day."""
+    first = _git(root, "log", "--first-parent", "--reverse", "--format=%H", f"-S{LANDED_BY}", commits[-1], "--",
+                 "plugin/lib/sampo/lanes.py", ok=True).split()
+    return set(_git(root, "rev-list", first[0], ok=True).split()) if first else set()
+
+
+def _push_hold(p, b, root, commits, by):
+    """T-4805: refuse the push when a commit in it was made straight on the trunk (no recorded lane landing carried it)
+    and touches a file the self-change gate judges: each such commit is judged against its first parent, as `fm lane
+    merge` judges a lane, in a scratch worktree at that parent. The same ask-and-yes passes it (fm ask ID core, after the
+    refusal of this commit; one yes covers every commit refused before it), the standing yes only quality rows. A gate that
+    can't run or a listing git can't give holds. A direct commit touching no judged file runs nothing; a lane-landed one
+    was judged when it landed, and one from before landings were recorded counts as judged. Nothing is pushed and the grant
+    is kept. The base half of the judge is cached in its own file (a different parent per commit would miss the train's)."""
+    from sampo import selfgate
+    todo, held = [], []
+    direct = _direct(p, root, commits)
+    if direct:
+        old = _before_records(root, commits)
+        direct = [s for s in direct if s not in old]
+    for s in direct:
+        got = _listed(root, s)
+        if got is None:
+            held.append((s, ["couldn't list the files it changed (no first parent, or git failed): held rather than passed"]))
+        elif any(selfgate._judged(f) or f in selfgate.CASES for f in got[1]):
+            todo.append((s, got[0], got[1]))
+    if todo:
+        with tempfile.TemporaryDirectory() as tmp:
+            wt = os.path.join(tmp, "hold")
+            _git(root, "worktree", "add", "-q", "--detach", wt, todo[0][1])
+            try:
+                for s, parent, files in todo:
+                    _git(wt, "checkout", "-q", "--detach", parent)
+                    try:
+                        rows = selfgate.gate(p, b, wt, s, files, PUSH_CACHE)
+                    except Exception as e:  # noqa: BLE001 — a judge that can't run is a hold, never a pass
+                        rows = [f"the self-change gate couldn't run ({type(e).__name__}: {c.fit(str(e), 160)})"]
+                    if rows:
+                        held.append((s, rows))
+            finally:
+                _git(root, "worktree", "remove", "--force", wt, ok=True)
+    if held:
+        what = "; ".join(f"{s[:8]} {c.fit(c.plain(_git(root, 'log', '-1', '--format=%s', s, ok=True).strip()), 60)}: "
+                         + c.joinmore(rows, 3, "; ") for s, rows in held[:3])
+        _err(f"the self-change gate holds {c.joinmore([s[:8] for s, _ in held], 5)}, made straight on the trunk with no lane "
+             f"landing them: {what}; nothing was pushed and the grant is kept. The user's yes passes it (a guard row, a "
+             f"removed case or a gate that couldn't run is theirs alone; the standing yes covers only footprint, verbs "
+             f"and hook rows): fm ask {b.id} core --why \"…\", then {by} again")
+
+
+def _release_commits(root, main, sha):
+    """T-4805: the first-parent commits of the release sha that main lacks and whose patch main doesn't already have
+    (git cherry): fm ship lands its picks as cherry-picks under other shas, and those were held at the ship. A commit a
+    later `fm ship <commit>` left out is not one of them, so the release's merge pushing it is judged here."""
+    mine = _git(root, "rev-list", "--first-parent", "--reverse", sha, "--not", main, ok=True).split()
+    if not mine:
+        return []
+    have = {ln[2:].strip() for ln in _git(root, "cherry", main, sha, ok=True).splitlines() if ln.startswith("- ")}
+    return [s for s in mine if s not in have]
+
+
 def _push(ctx):
     root, v, p, remote = ctx["root"], ctx["version"], ctx["p"], ctx["remote"]
     b = _grant(p)
@@ -326,6 +427,7 @@ def _push(ctx):
             landed = _git(wt, "rev-parse", "HEAD").strip()
             say_no_list("release")  # T-4785
             _refuse_private(wt, _git(wt, "rev-list", f"{main}..{landed}").split(), landed)  # T-3529: as fm ship does
+            _push_hold(p, b, root, _release_commits(root, main, sha), "fm release --push")  # T-4805: a direct commit is judged
             _push_main(p, b.id, landed, remote, "fm release --push")
         finally:
             _git(root, "worktree", "remove", "--force", wt, ok=True)
@@ -467,7 +569,8 @@ def private_lines(root, tip, files, cap=5):
 
 def _push_main(p, tid, sha, remote, by):
     """Push sha to remote's main from the repo (a relative remote URL resolves there). The grant is spent first, so one
-    yes is one push even for two racing callers, and given back if git push fails (T-1943)."""
+    yes is one push even for two racing callers, and given back if git push fails (T-1943).
+    T-4805 exempt: the primitive; its two callers, ship and _push, hold first (_push_hold), and a test scans for that."""
     _spend(p, tid, by)
     try:
         _git(p.root, "push", "-q", remote, f"{sha}:refs/heads/main")
@@ -1118,6 +1221,7 @@ def ship(p, args):
                       "one commit, without it", flush=True)
                 hits = _private_hits(root, sent, head)  # the one commit main gets: its message, its lines, its tree
             _refuse_private(root, sent, head, hits)
+            _push_hold(p, b, root, picks, "fm ship")  # T-4805: a commit made straight on the trunk is judged like a lane's
             from sampo import ambient
             c.wait_while(lambda: c.gates_live(p) or ambient.running(p),  # T-1978: never two suites at once
                          "a running fm check or ambient test run", "fm ship", out=sys.stdout)
@@ -1283,7 +1387,9 @@ def _manifest(root):
 def run_any(p, args, root, state, state_path):
     """T-2390: fm release VERSION outside Sampo's repo, a checkpoint after each of ANY_STEPS (state/release.json, as
     Sampo's own). A red or unproven fm prove --release stops before the commit; --push without this repo's active
-    task's publish grant stops after the local tag and names the push."""
+    task's publish grant stops after the local tag and names the push.
+    T-4805 exempt: the self-change gate judges Sampo's own plugin/ (it returns nothing in a tree without
+    plugin/lib/fmguard.py), and this runs only outside Sampo's repo, so a hold here would judge no file."""
     import datetime
     v = args.version
     rel, rx, cur = _manifest(root)

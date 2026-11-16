@@ -1710,6 +1710,10 @@ def publish(p, settle=False):
                     return _record(p, "refused: a private term (sampo private list) or a secrets-file value is in "
                                    + (c.joinmore(files, 5) if files else "the commit") + "; nothing was pushed: "
                                    "redact it where the tower, the stats or the cards read it, and the next publish retries")
+                # T-4805 exempt: no plugin hold belongs here. This commit is made in the scratch tree by this function,
+                # from site data only, and the check above refuses any file outside site/genesis, the stats file and
+                # the cards: it can touch nothing the self-change gate judges (plugin/lib, hooks, bin, settings). The
+                # trunk's own direct commits are judged where they ride out, in fm ship and fm release --push.
                 git(p.root, "push", "-q", remote, f"{sha}:refs/heads/main")
             finally:
                 git(p.root, "worktree", "remove", "--force", wt, ok=True)

@@ -210,10 +210,13 @@ def _near(a, b):
     return max(a, b) <= min(a, b) * LOAD_BAND
 
 
-def _load(p, key):
+CACHE_FILE = "selfgate-base.json"  # the lane train's; T-4805: the push hold keeps its own (release.py) so it never overwrites this
+
+
+def _load(p, key, name=CACHE_FILE):
     """The saved base half when its MAC verifies under the user's key, it is for this key and under a day old, else {}.
     The bench is dropped (the replay kept) when the host's load now is not within LOAD_BAND of the load it ran at."""
-    path = os.path.join(p.dir, "selfgate-base.json")
+    path = os.path.join(p.dir, name)
     if not os.path.exists(path):
         return {}
     try:
@@ -235,10 +238,10 @@ def _load(p, key):
     return {}
 
 
-def _save(p, key, cache):
+def _save(p, key, cache, name=CACHE_FILE):
     cache.setdefault("at", time.time())
     cache.setdefault("load", _load_pc())
-    path = os.path.join(p.dir, "selfgate-base.json")
+    path = os.path.join(p.dir, name)
     secret = _secret()
     if secret is None:
         return
@@ -511,16 +514,22 @@ QUALITY_ROWS = ("footprint ", "verbs ", "hook ")  # T-3219: rows the standing ye
 
 
 def approved(p, b, sha):
-    """The user's yes to `fm ask ID core` on this task, given after its last self-change refusal of this commit."""
-    last, yes = None, False
+    """The user's yes to `fm ask ID core` on this task, given after its last self-change refusal of this commit. T-4805: per
+    commit, so one yes covers every commit refused before it (the push hold can refuse several at once); a commit refused
+    again after the yes needs another."""
+    pending, covered = set(), set()
     for e in c.ledger_events(p, ("self_change_refused", "approval_granted"), since=str(b.meta.get("created") or "")):
         if e.get("task") != b.id:
             continue
         if e.get("event") == "self_change_refused":
-            last, yes = (e.get("data") or {}).get("sha"), False
-        elif last is not None and "core" in ((e.get("data") or {}).get("allow") or []):
-            yes = True
-    return yes and last == sha
+            s = (e.get("data") or {}).get("sha")
+            if isinstance(s, str):
+                pending.add(s)
+                covered.discard(s)
+        elif "core" in ((e.get("data") or {}).get("allow") or []):
+            covered |= pending
+            pending = set()
+    return sha in covered
 
 
 def _judged(f):
@@ -532,9 +541,10 @@ def _benched(f):  # what a hook can run or read: any plugin file but tests and p
     return (f.startswith("plugin/") and not f.startswith("plugin/tests/") and not f.endswith(".md")) or f == "CHANGELOG.md"
 
 
-def gate(p, b, main, ref, files):
+def gate(p, b, main, ref, files, cache_name=CACHE_FILE):
     """[refusal lines] for a commit that changes Sampo's own plugin/, [] when it holds, isn't one, or the user said yes
-    after its last refusal of this same commit. Each refusal is a self_change_refused ledger event with the sha."""
+    after its last refusal of this same commit. Each refusal is a self_change_refused ledger event with the sha.
+    cache_name is the file its base half is cached in (T-4805: the push hold's own, not the lane train's)."""
     if not os.path.isfile(os.path.join(main, "plugin", "lib", "fmguard.py")) or not any(
             f.startswith("plugin/") for f in files):
         return []
@@ -554,7 +564,7 @@ def gate(p, b, main, ref, files):
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
                 shutil.copyfile(src, dst)
         key = _key(base)
-        cache = _load(p, key)  # T-3176: the base half, rerun only when the base, settings, machine or a day changed
+        cache = _load(p, key, cache_name)  # T-3176: the base half, rerun only when the base, settings, machine or a day changed
         was, now = _cases(main, head), _cases(main, judged)
         out += [f"guard case {i or '?'} removed or changed by the branch: {c.fit(c.redact(cmd), 100)}"
                 for (cmd, cwd), i in was.items() if (cmd, cwd) not in now]
@@ -588,7 +598,7 @@ def gate(p, b, main, ref, files):
         out += [f"footprint {k} {w} -> {cur} (+{int((cur - w) * 100 // w)}%) with no always-on cut to pay for it"
                 for k, w, cur in doctor.grown(f0, f1) if not k.endswith(" ms")]
         if cache.get("bench") or cache.get("verdicts"):
-            _save(p, key, cache)
+            _save(p, key, cache, cache_name)
         v0, v1 = _verbs(base), _verbs(new)  # T-2363: a verb added with none removed is growth too (gen-0 §6)
         added = [v for v in v1 if v not in v0]
         if added and not [v for v in v0 if v not in v1]:
