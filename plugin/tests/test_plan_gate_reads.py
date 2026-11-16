@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 import helpers  # noqa: F401 (puts plugin/lib on the import path before sampo)
+from helpers import ForemanTestCase
 from sampo import core as c
 
 AP = "Approach (options → choice → why)"
@@ -178,6 +179,80 @@ class OneWayByStructure(unittest.TestCase):
 
     def test_the_raw_request_naming_the_verb_still_waives_it(self):
         self.assertEqual(c._one_way(brief("S", ap="", steps=("publish the notes",), raw="publish the notes")), "")
+
+
+class DoorReadsWhatTheStepActsOn(ForemanTestCase):  # T-4821: a path a step talks about is not a path it acts on
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def step_door(self, step):  # the row fm focus's door gate reads for step 1
+        from sampo import doors as sdoors
+        tid = self.fm_json("task", "new", "Tidy the repo", "--type", "FIX", "--tier", "S", "--raw", "Tidy the repo",
+                           "--ac", "Tidy the repo :: true", "--step", step)["id"]
+        return next(d for d in sdoors.classify(self.p, c.find_brief(self.p, tid)) if d["where"] == "step 1")
+
+    def test_a_test_name_and_a_platform_path_the_step_only_talks_about_are_two_way(self):  # T-4820: marked one-way
+        d = self.step_door("A failing test test_apply_removes_it reads /proc as a platform fact. The removed lock stays out.")
+        self.assertEqual((d["door"], d["paths"]), ("two-way", []), d)
+
+    def test_a_step_that_removes_an_untracked_path_is_still_one_way_beside_a_talked_about_path(self):
+        os.makedirs(os.path.join(self.repo, "data"), exist_ok=True)
+        with open(os.path.join(self.repo, "data", "old.csv"), "w") as f:
+            f.write("a,b\n")
+        d = self.step_door("Read /proc for the platform fact; then delete data/old.csv")
+        self.assertEqual((d["door"], d["paths"]), ("local", ["data/old.csv"]), d)
+
+    def make(self, *rels):  # untracked files the step can name
+        for rel in rels:
+            full = os.path.join(self.repo, rel)
+            os.makedirs(os.path.dirname(full) or self.repo, exist_ok=True)
+            with open(full, "w") as f:
+                f.write("x\n")
+
+    def test_a_clause_that_refers_back_to_the_destroy_keeps_its_name_one_way(self):  # T-4821 review
+        self.make("data/rows.csv")
+        d = self.step_door("Delete old rows. They are in data/rows.csv")
+        self.assertEqual(d["door"], "local", d)
+        self.assertIn("data/rows.csv", d["paths"], d)
+
+    def test_a_list_after_a_destroy_clause_keeps_each_name_one_way(self):  # T-4821 review
+        self.make("logs/old.log", "cache.db", "tmp.sqlite")
+        d = self.step_door("Remove logs/old.log; cache.db; tmp.sqlite")
+        self.assertEqual(d["door"], "local", d)
+        self.assertEqual(sorted(d["paths"]), ["cache.db", "logs/old.log", "tmp.sqlite"], d)
+
+    def test_a_bulleted_list_under_a_destroy_clause_keeps_each_bullet_one_way(self):  # T-4821 review
+        # a brief step is one line (fm folds a newline into a space), so this reads the classifier's text directly
+        from sampo import doors as sdoors
+        self.make("data/a.csv", "data/b.csv")
+        names = set(sdoors._acted("Delete the following:\n- data/a.csv\n- data/b.csv"))
+        self.assertLessEqual({"data/a.csv", "data/b.csv"}, names, names)
+
+    def test_a_test_name_after_a_destroy_clause_stays_out(self):  # T-4821 review: other prose is not a continuation
+        self.make("test_apply.py")
+        d = self.step_door("Delete old rows. Then run test_apply.py after")
+        self.assertNotIn("test_apply.py", d["paths"], d)
+
+    def test_an_abbreviation_does_not_split_the_clause_its_target_is_in(self):  # T-4821 review
+        self.make("data/app.db", "old.db", "tmp/x")
+        for step, want in (("Remove the stale db (cf. data/app.db)", "data/app.db"),
+                           ("Remove the stale db (CF. data/app.db)", "data/app.db"),
+                           ("Delete tmp/, etc. and old.db", "old.db"),
+                           ("Delete tmp/, ETC. and old.db", "old.db")):
+            d = self.step_door(step)
+            self.assertIn(want, d["paths"], (step, d))
+
+    def test_vs_does_not_split_the_clause_its_target_is_in(self):  # T-4821 review round 2
+        self.make("data/app.db", "old.db")
+        d = self.step_door("Remove the stale db, vs. data/app.db")
+        self.assertIn("data/app.db", d["paths"], d)
+
+    def test_eg_does_not_split_the_clause_its_target_is_in(self):  # T-4821 review round 2
+        self.make("data/app.db", "old.db")
+        d = self.step_door("Delete tmp/, eg. old.db")
+        self.assertIn("old.db", d["paths"], d)
 
 
 if __name__ == "__main__":

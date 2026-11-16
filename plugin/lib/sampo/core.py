@@ -5164,12 +5164,16 @@ def door_park(b):
     return None
 
 
+def door_gap(label):
+    """T-2342: the words for one door gap (one source for the plan gate, focus and the lane brief)."""
+    return (f"an Undo: line on {label} (one-way, untracked data: 'Undo: cp -a SNAPSHOT/. .' with a SNAPSHOT that exists; "
+            f"'none' and 'n/a' don't count)" if label.startswith("step") else
+            f"a {label} that doesn't delete untracked data (or name the path in the request, plainly)")
+
+
 def door_gaps(b):
     """T-2342: the Undo line each marked one-way step still needs before fm focus lets the task start."""
-    return [f"an Undo: line on {label} (one-way, untracked data: 'Undo: cp -a SNAPSHOT/. .' with a SNAPSHOT that exists; "
-            f"'none' and 'n/a' don't count)" if label.startswith("step") else
-            f"a {label} that doesn't delete untracked data (or name the path in the request, plainly)"
-            for label, _ in _door_open(b)]
+    return [door_gap(label) for label, _ in _door_open(b)]
 
 
 def waits_on_user(b, pending, autonomy="standard"):

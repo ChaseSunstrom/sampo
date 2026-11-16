@@ -148,12 +148,45 @@ def _cmd_targets(cmd):
     return out
 
 
+_CLAUSE = re.compile(r"(?i)(?<!\be\.g\.)(?<!\bi\.e\.)(?<!\beg\.)(?<!\bcf\.)(?<!\betc\.)(?<!\bvs\.)(?<=[.!?;])\s+|[\n;]+")
+# T-4821: sentence and clause ends; an abbreviation (e.g., i.e., cf., etc., vs.) is not one
+_REFER = re.compile(r"(?i)\b(they|them|it|its|these|those|the following|the above|each|both)\b")
+_JOIN = {"and", "or", "plus", "also"}
+_BULLET = re.compile(r"^\s*(?:[-*•+>]|\d+[.)])\s*")
+
+
+def _continues(clause):
+    """T-4821 review: a clause that carries on the destroy before it: a list of names or bullets, or one that refers back
+    to the names ('They are in data/rows.csv'). Other prose is its own clause, so 'run test_x after' stays out.
+    Known miss (fails open): a target in a following clause with no pronoun and no bare list ('Delete old rows. Target:
+    data/rows.csv') is not read as acted on. Over-marking fails closed. No path-like rule is added for it: that would
+    mark 'run test_x.py after' again."""
+    if _REFER.search(clause):
+        return True
+    words = [w for w in _BULLET.sub("", clause).split() if w]
+    return not words or len(words) == 1 or all(w.lower() in _JOIN or "/" in w or "." in w for w in words)
+
+
+def _acted(head):
+    """T-4821: the names a prose step acts on. A clause with a destroying word counts, as does a clause that continues
+    it (_continues); other prose is left out, so a path another clause merely talks about (a platform fact, a test's
+    name) is not a door. Over-marking fails closed."""
+    on = False
+    for clause in _CLAUSE.split(head):
+        if _DESTROY.search(clause):
+            on = True
+        elif not _continues(clause):
+            on = False
+        if on:
+            yield from (*_tokens(clause), *_bare(clause))
+
+
 def _one(where, text, shell, ctx_of, root, local_only=False):
     head = text.split("Undo:", 1)[0]
     cmds = [text] if shell else _TICK.findall(head)
     toks = [t for cmd in cmds for t in _cmd_targets(cmd)]
-    if not shell and _DESTROY.search(head):
-        toks += [*_tokens(head), *_bare(head)]
+    if not shell:
+        toks += list(_acted(head))
     # T-3677: a local door needs a path, so the gate skips the guard (~9 ms of its patterns compiled) when none is named
     cats = _cats(cmds, ctx_of()) if cmds and (toks or not local_only) else []
     paths, named, flag = [], [], None
@@ -184,6 +217,28 @@ def classify(p, b, local_only=False):
         if cmd:
             rows.append(_one(f"verify {a.n}", cmd, True, ctx_of, p.root, local_only))
     return rows
+
+
+def brief_gaps(p, b):
+    """T-4821: the door gaps a builder brief refuses on, read with no write (no snapshot, Undo line, decision or park).
+    A step that names the repo itself or a folder above it gets no copy and parks at focus, so the brief refuses it too.
+    Paths inside the repo that git doesn't track are not refused here: a lane's checkout has none of them, so focus sees
+    no door there either."""
+    out = []
+    acs = {str(a.n): c.verify_of(a.text) for a in b.acceptance() if not a.checked}
+    undone = [str(x) for x in b.meta.get("door_undone") or []]
+    for d in classify(p, b, local_only=True):
+        kind, _, n = d["where"].partition(" ")
+        if d["door"] != "local" or not d["root"]:
+            continue
+        if kind == "step":
+            step = next((s for s in b.steps() if str(s.n) == n and not s.done), None)
+            if step is not None and not c.undo_ok(step.text):
+                out.append(c.door_gap(f"step {n}"))
+        elif kind == "verify" and acs.get(n):  # focus parks a root verify door too (gate), so the brief refuses it
+            if not c.undo_ok(acs[n]) and c.door_hash(acs[n]) not in undone:
+                out.append(c.door_gap(f"verify {n}"))
+    return out
 
 
 def overwritten(root, cmd):

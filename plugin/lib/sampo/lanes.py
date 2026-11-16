@@ -2656,7 +2656,8 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         if waits := (resume_branch is None and big.unmet(p, b, anchor)):  # a lane that already ran is recovered, not held
             raise c.PolicyError(f"{b.id} waits on {', '.join(waits)}: it is cut from big/{anchor.id} once their commits are on it "
                                 f"({'; '.join(big.why_waits(p, anchor, waits))})")
-    gaps = c.plan_gaps(b, c.effective_autonomy(p))
+    from sampo import doors as sdoors  # T-4821: focus's door gaps for a root door, read with no write (after the cheap refusals)
+    gaps = list(dict.fromkeys([*c.plan_gaps(b, c.effective_autonomy(p)), *sdoors.brief_gaps(p, b)]))
     if gaps:  # T-0823: the builder's first act is fm focus, which refuses these
         raise c.PolicyError(f"{b.id} isn't planned enough for a builder: missing {', '.join(gaps)} (fm task set/ac/step)")
     if not [v for _, v in b.verify_cmds() if v]:

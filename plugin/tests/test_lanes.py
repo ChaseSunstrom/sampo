@@ -640,6 +640,46 @@ class Lanes(ForemanTestCase):
         self.assertTrue(refused())
         self.assertIn('model: "sonnet"', self.fm("lane", "brief", fresh).stdout)
 
+    def test_lane_brief_refuses_the_one_way_door_focus_refuses_before_a_launch(self):  # T-4821: T-4820's brief, then focus refused
+        tid = json.loads(self.fm("task", "new", "Clear the sweep", "--type", "FIX", "--tier", "S", "--raw", "Clear the sweep",
+                                 "--ac", "clear :: true", "--step", "delete ./", "--json").stdout)["id"]
+        gap = "an Undo: line on step 1"
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn(f"{tid} isn't planned enough for a builder", r.stderr + r.stdout)
+        self.assertIn(gap, r.stderr + r.stdout)
+        focus = self.fm("focus", tid, check=False)
+        self.assertIn(gap, focus.stderr + focus.stdout, "the same refusal focus gives")
+        self.assertFalse(os.path.exists(os.path.join(c.find_project(self.repo).dir, "audits", f"{tid}.builder.md")),
+                         "no brief is written for a builder that focus would refuse")
+
+    def test_lane_brief_refuses_a_root_verify_door_focus_parks_on(self):  # T-4821 review round 2: verify N, as focus gates it
+        tid = json.loads(self.fm("task", "new", "Check the sweep", "--type", "FIX", "--tier", "S", "--raw", "Check the sweep",
+                                 "--ac", "clear :: rm -rf ./", "--step", "Clear the sweep notes", "--json").stdout)["id"]
+        gap = c.door_gap("verify 1")
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)
+        self.assertIn(gap, r.stderr + r.stdout)
+        focus = self.fm("focus", tid, check=False)
+        self.assertIn(gap, focus.stderr + focus.stdout, "the same refusal focus gives")
+
+    def test_a_brief_refused_for_another_reason_leaves_the_task_file_byte_identical(self):  # T-4821 review: classify only
+        os.makedirs(os.path.join(self.repo, "data"), exist_ok=True)
+        with open(os.path.join(self.repo, "data", "old.csv"), "w") as f:
+            f.write("a,b\n")
+        tid = json.loads(self.fm("task", "new", "Drop the old export", "--type", "FIX", "--tier", "S",
+                                 "--raw", "Drop the old export", "--ac", "clear", "--step", "delete data/old.csv",
+                                 "--json").stdout)["id"]
+        path = c.find_brief(c.find_project(self.repo), tid).path
+        with open(path, "rb") as f:
+            before = f.read()
+        r = self.fm("lane", "brief", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout)  # refused: its criterion has no verify command
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), before, "a refused brief writes nothing into the task")
+        self.assertFalse(os.path.isdir(os.path.join(c.find_project(self.repo).dir, "door-snapshots")),
+                         "a brief takes no snapshot")
+
     def test_brief_ready_briefs_every_ready_task_and_skips_the_rest(self):  # T-3293
         mk = lambda t: first(self.fm("task", "new", t, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",  # noqa: E731
                                      "--step", "s", "--json").stdout)["id"]
