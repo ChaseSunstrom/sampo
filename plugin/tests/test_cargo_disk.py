@@ -124,6 +124,12 @@ class RustCase(DiskCase):
     def names(self, *paths):
         return [os.path.basename(x) for x in paths]
 
+    def sees_holders(self):
+        """Whether this host can say what its processes hold: /proc (Linux) or lsof (macOS). A prune removes nothing
+        without that view and prunes with it, so a test that runs a subprocess (where nothing can be mocked) expects
+        by this, never by whether /proc is there (T-4792: macOS has lsof, and its prune ran)."""
+        return lanes._held_paths() is not None
+
 
 class TheLaneConfig(RustCase):
     """A builder's own cargo commands reach the lane's folder through the lane's own marked config, where git ignores it."""
@@ -682,6 +688,27 @@ class TheHoldersWithoutProc(RustCase):
         r = lanes.prune_cargo_cache(self.p)
         self.assertEqual(self.removed(r), self.names(free))
         self.assertTrue(os.path.isdir(held))
+
+    def test_the_host_that_lists_holders_through_lsof_prunes_the_same_folders_as_one_with_proc(self):
+        """T-4792: macOS CI ran the subprocess tidy test with lsof as its view and got the pruned folders where the test
+        expected none (it read 'no /proc' as 'no view'). Mocked as macOS gives it: no /proc, lsof lists processes that
+        hold nothing in the cache; the findings, the prune and the doctor name what they name with /proc."""
+        from sampo import tidy
+        paths = [self.kept(f"e{i}", age) for i, age in enumerate((40, 30, 20, 10))]
+        self.cap(self.cap_leaving(paths[0], paths[1]))
+        self.no_proc("p1\nn/\nn/usr/lib/dyld\nf3\nn/dev/null\n")
+        self.assertTrue(self.sees_holders(), "lsof gives a view, so /proc's absence is no refusal")
+        actions = []
+        found = lanes.cargo_cache_findings(self.p, True, actions, tidy.finding)
+        self.assertEqual([f["kind"] for f in found], ["cargo_cache"])
+        self.assertEqual(actions, [("cargo_cache", self.slug)])
+        self.assertEqual(sorted(os.listdir(self.base)), sorted(self.names(paths[2], paths[3])), "the same two as with /proc")
+
+    def test_the_old_shared_folder_goes_on_a_host_with_lsof_as_it_does_with_proc(self):
+        entry = self.old_entry(blocks=2)
+        self.no_proc("p1\nn/\nn/dev/null\n")
+        self.assertTrue(lanes.retire_cargo_shared(self.p)["removed"])
+        self.assertFalse(os.path.exists(entry))
 
     def test_without_lsof_nothing_is_removed_and_the_report_says_why(self):
         a = self.kept("a", 60)
@@ -1356,9 +1383,11 @@ class DoctorAndTidyNameThem(RustCase):
         self.assertTrue(os.path.isdir(paths[0]), "a report removes nothing")
         self.fm("tidy", "--json", "--apply", env=env)
         left = sorted(os.listdir(self.base))
-        # a host without /proc (macOS) cannot say what a process holds: the prune removes nothing there (its own test:
-        # test_without_a_view_of_open_files_nothing_is_removed); the in-process test below prunes with a view given
-        self.assertEqual(left, sorted(self.names(paths[2], paths[3])) if os.path.isdir("/proc/self") else sorted(self.names(*paths)))
+        # a host that cannot say what a process holds (no /proc and no lsof) prunes nothing (its own test:
+        # test_without_a_view_of_open_files_nothing_is_removed); one that can (Linux's /proc, macOS's lsof: T-4792) prunes
+        # the two oldest. The in-process tests below pin both with the view mocked.
+        want = self.names(paths[2], paths[3]) if self.sees_holders() else self.names(*paths)
+        self.assertEqual(left, sorted(want), f"view of open files here: {self.sees_holders()}; tidy said: {report}")
 
     def test_tidy_apply_prunes_oldest_first_with_the_open_files_given(self):
         """The same prune on every host: the holders are given (nothing is held), so /proc is not needed."""
