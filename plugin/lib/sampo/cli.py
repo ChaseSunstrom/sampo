@@ -684,7 +684,11 @@ def cmd_rule(args):
     p = resolve(args)
     if args.action == "rm":
         n = int(args.arg) if str(args.arg or "").isdigit() else None
-        if n is None or not c.drop_rule(p, n):
+        try:
+            gone = n is not None and c.drop_rule(p, n)
+        except ValueError as e:  # T-4154: a rules file nothing can read is not rewritten
+            raise UsageError(f"sampo rule rm: {e}")
+        if not gone:
             raise UsageError("sampo rule rm N (N from sampo rule list)")
         return out(args, {"removed": n}, f"Rule {n} removed.")
     if args.action == "add":
@@ -706,7 +710,11 @@ def cmd_rule(args):
             trials.add(p, f"rule add {pattern}", args.moves, args.by)
         return out(args, dict(rec, n=n), f"Rule {n}: {rec['action']} {rec['on']} matching {rec['pattern']}"
                                          f"{' — ' + rec['why'] if rec['why'] else ''}.")
+    del c.RULES_LOST[:]
     v = c.rules(p)
+    if c.RULES_LOST:  # T-4154: say it, not "No rules.": the user's rules exist but can't be read
+        raise UsageError(f"rules file unreadable ({c.RULES_LOST[0]}): fix or delete {c._rules_path(p)} "
+                         f"and its good copy {c._rules_path(p)}.good (that copy stands in for it once one loaded)")
     out(args, v, "\n".join(f"{i}. {x['action']} {x['on']} /{x['pattern']}/ — {x.get('why') or 'no reason given'} "
                            f"({str(x.get('at', ''))[:10]})" for i, x in enumerate(v, 1)) or "No rules.")
 

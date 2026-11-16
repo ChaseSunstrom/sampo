@@ -2760,14 +2760,40 @@ def _pre_tool_use(raw):
                             session=pl.get("session_id"))
     except Exception:
         log_error("PreToolUse", _tb())
+    rule_note = ""  # T-4146: a rule the check couldn't use says so (once a session to the model), and is skipped
+    rule_down = ""  # T-4154: the rules as a whole couldn't be checked (no readable file or copy, or the check raised)
+    c.RULE_FAULTS.clear()
+    del c.RULES_LOST[:]
     try:
         hits = _rule_hits(pl, p)
+    except Exception as e:  # T-4154: not read as "no rules": what only reads still runs, what writes is refused below
+        log_error("PreToolUse", _tb())
+        hits = []
+        rule_down = f"the rule check failed ({type(e).__name__}); sampo doctor shows the error"
+    if c.RULES_LOST and not rule_down:
+        rule_down = "rules file unreadable: " + c.RULES_LOST[0]
+    try:
         if hits:
             c.note_rule_hits(p, hits)  # T-1115: fm tidy lists rules that never fire
-    except Exception:  # the guard's half: fails closed
+    except Exception:
         log_error("PreToolUse", _tb())
-        hits = [(0, {"action": "block", "pattern": "?", "why": "the rule check failed (sampo doctor shows the error)"},
-                 False)]
+    if c.RULE_FAULTS and not rule_note:
+        what = "; ".join(f"{w}: {why}" for w, why in c.RULE_FAULTS)  # core caps the list at 8
+        rule_note = (f"Sampo: the user's rules couldn't all be used ({what}), so those are skipped; the rest hold. "
+                     "sampo rule list shows them, sampo rule rm N removes a broken one.")
+    user_rule = ""  # T-4154: what the user's own eyes get on every call the fault lasts (systemMessage), not once, not the model
+    if rule_down:
+        user_rule = (f"Sampo: the user's rules can't be checked ({rule_down}); commands that write are refused until it's "
+                     "fixed, and read-only commands run without being checked against the user's rules.")
+    elif c.RULE_FAULTS:
+        user_rule = ("Sampo: some of the user's rules can't be used (" + "; ".join(f"{w}: {why}" for w, why in c.RULE_FAULTS)
+                     + "); sampo rule list shows them.")
+    if rule_down and (tool == "Bash" or tool in FILE_TOOLS) and not _rules_down_allows(pl):
+        why = f"Sampo: rules file unreadable: sampo rule list ({rule_down}). Only commands that read run until the user fixes it."
+        print(json.dumps({"systemMessage": user_rule, "hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": why}}))
+        print(why, file=sys.stderr)
+        return 2
     stop = [(n, r, slow) for n, r, slow in hits if r["action"] == "block" or slow]
     if stop:
         n, r, slow = stop[0]
@@ -2775,8 +2801,9 @@ def _pre_tool_use(raw):
                f"refused; the user can simplify it (sampo rule rm {n}, then sampo rule add)." if slow else
                f"Sampo: the user's rule {n} blocks this ({r['pattern']}): {r.get('why') or 'no reason given'}. "
                "Do it another way, or ask the user; only they remove a rule (sampo rule rm).")
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                                 "permissionDecisionReason": why}}))
+        print(json.dumps(dict({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                      "permissionDecisionReason": why}},
+                              **({"systemMessage": user_rule} if user_rule else {}))))
         print(why, file=sys.stderr)
         return 2
     if p and tool in FILE_TOOLS:  # T-3331: a second live session's edit in the main checkout goes to its own lane
@@ -2827,6 +2854,8 @@ def _pre_tool_use(raw):
         log_error("PreToolUse", _tb())
         saved = None
     if _quiet():
+        if user_rule:
+            print(json.dumps({"systemMessage": user_rule}))
         return 0  # T-0077: the guard has spoken; no brief requirement or notes in a session another tool drives
     try:
         warn = " ".join(f"Sampo: the user's rule {n} ({r['pattern']}) matches this call: {r.get('why') or 'take care'}."
@@ -2842,10 +2871,13 @@ def _pre_tool_use(raw):
                     ("design", lambda: _design_note(pl, p, act)), ("readme", lambda: _readme_note(pl, p, act)),
                     ("gates", lambda: _gates_note(pl, p)), ("closing", lambda: _closing_note(pl, p)))
         off = c.ablated()  # T-1375: a bench arm's features switched off (never the guard, which spoke above)
-        note = " ".join(_said_once(pl, list(filter(None, [made, saved, slow, warn]
+        note = " ".join(_said_once(pl, list(filter(None, [made, saved, slow, warn, rule_note]
                                                    + [_each(b) for name, b in builders if name not in off]))))
+        emit = dict({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}} if note else {},
+                    **({"systemMessage": user_rule} if user_rule else {}))
+        if emit:
+            print(json.dumps(emit))
         if note:
-            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}}))
             _log_inject("PreToolUse", note, pl)
     except Exception:
         log_error("PreToolUse", _tb())
@@ -3788,6 +3820,16 @@ def _in_project(path, p):
 
 
 _EDIT_VERBS = "edit write change modify touch update overwrite create"
+
+
+def _rules_down_allows(pl):
+    """T-4154: with the user's rules unreadable, a call may still run when it only reads (the guard's own judgement,
+    fmguard.read_only) or is the one call that shows the fault: `sampo rule list`. Any edit tool is a write."""
+    if pl.get("tool_name") != "Bash":
+        return False
+    import fmguard
+    cmd = str((pl.get("tool_input") or {}).get("command") or "")
+    return fmguard.read_only(cmd) or fmguard.is_rule_list(cmd)
 
 
 def _rule_hits(pl, p):

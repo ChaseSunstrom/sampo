@@ -5579,15 +5579,101 @@ def _rules_path(p):
     return os.path.join(p.dir, "rules.json")
 
 
-def rules(p):
-    """T-0971: the user's fm rule list: {pattern, on (bash|path), action (block|warn), why, at}, oldest first."""
+RULE_FAULTS = []  # T-4146: what the rule check couldn't use this call, [(what, why)]; the PreToolUse hook clears and reads it
+
+
+def _rule_fault(what, why):
+    if (what, why) not in RULE_FAULTS and len(RULE_FAULTS) < 8:
+        RULE_FAULTS.append((what, why))
+
+
+RULES_LOST = []  # T-4154: why the rules file couldn't be read and no good copy stood in; the hook clears and reads it
+
+
+def _read_rules(path):
+    with open(path, encoding="utf-8") as f:
+        raw = f.read()
+    v = json.loads(raw)
+    if not isinstance(v, list):
+        raise ValueError("not a list")
+    return raw, v
+
+
+_RULE_READ_ERRORS = (OSError, ValueError, RecursionError)  # RecursionError: json.loads of a deeply nested file
+
+
+def _valid_rules(v, say=False):
+    """The entries of a loaded rule list that are rules; with say, each one dropped is a per-rule fault."""
+    ok = []
+    for i, x in enumerate(v, 1):
+        if isinstance(x, dict) and isinstance(x.get("pattern"), str) and x.get("on") in ("bash", "path") \
+                and x.get("action") in ("block", "warn"):
+            ok.append(x)
+        elif say:
+            _rule_fault(f"rules.json entry {i}", "not a rule (a pattern, on bash|path, action block|warn); skipped")
+    return ok
+
+
+def _keep_good(p, ok, held):
+    """T-4154: the copy a good load leaves beside the file holds only the entries that are rules, as text; it is
+    compared as text (no parse on the common path) and written under the same lock that decides it (held: the caller
+    has it), from a fresh read of the file. A lock busy for 0.3 s or a full disk skips the write: never costs the guard."""
+    path = _rules_path(p)
+    good = path + ".good"
     try:
-        with open(_rules_path(p), encoding="utf-8") as f:
-            v = json.load(f)
-    except (OSError, ValueError):
-        return []
-    return [x for x in v if isinstance(x, dict) and isinstance(x.get("pattern"), str) and x.get("on") in ("bash", "path")
-            and x.get("action") in ("block", "warn")] if isinstance(v, list) else []
+        try:
+            with open(good, encoding="utf-8") as f:
+                if f.read() == json.dumps(ok):
+                    return
+        except OSError:
+            pass
+        if held:
+            write_atomic(good, json.dumps(ok))
+            return
+        with lock(p.dir, timeout=0.3):
+            write_atomic(good, json.dumps(_valid_rules(_read_rules(path)[1])))
+    except (OSError, ValueError, RecursionError, LockTimeout):
+        pass
+
+
+def rules(p, held=False):
+    """T-0971: the user's fm rule list: {pattern, on (bash|path), action (block|warn), why, at}, oldest first.
+    T-4154: every successful load leaves a copy beside the file (rules.json.good); a file that is unreadable, not a
+    list, or gone while the copy stands is read from the copy and noted in RULE_FAULTS (the rules are never dropped).
+    With no copy to fall back on RULES_LOST says so and the hook refuses only what writes. An entry that is not a
+    rule is a per-rule fault and is left out of the copy. held: the caller holds the project lock."""
+    path = _rules_path(p)
+    try:
+        v = _read_rules(path)[1]
+    except _RULE_READ_ERRORS as e:
+        why = "rules.json is missing" if isinstance(e, FileNotFoundError) else fit(plain(str(e)), 80)
+        try:
+            v = _read_rules(path + ".good")[1]
+        except FileNotFoundError:
+            if isinstance(e, FileNotFoundError):
+                return []  # no rules were ever stored
+            v = None
+        except _RULE_READ_ERRORS:
+            v = None
+        if v is None:
+            _rule_fault("rules.json", why)
+            RULES_LOST.append(why)
+            return []
+        _rule_fault("rules.json", why + "; using the last good copy")
+        return _valid_rules(v)
+    ok = _valid_rules(v, say=True)
+    _keep_good(p, ok, held)
+    return ok
+
+
+def _store_rules(p, v):
+    """Write the list and its good copy together (the caller holds the lock): a removed rule can't come back from it."""
+    text = json.dumps(v)
+    write_atomic(_rules_path(p), text)
+    try:
+        write_atomic(_rules_path(p) + ".good", text)
+    except OSError:
+        pass
 
 
 def rule_last_hits(p):
@@ -5616,21 +5702,28 @@ def add_rule(p, pattern, on, action, why):
         raise ValueError(f"a rule's pattern is 1 to {RULE_MAX} characters")
     try:
         re.compile(pattern)
-    except re.error as e:
-        raise ValueError(f"not a regular expression: {e}")
+    except Exception as e:  # T-4154: re.error, and what it raises past that (OverflowError for a{99999999999}, RecursionError)
+        raise ValueError(f"not a regular expression: {type(e).__name__}: {e}")
     rec = {"pattern": pattern, "on": on, "action": action, "why": fit(plain(str(why or "").strip()), 200), "at": now()}
     with lock(p.dir, timeout=2):
-        write_atomic(_rules_path(p), json.dumps(rules(p) + [rec]))
+        del RULES_LOST[:]
+        have = rules(p, held=True)
+        if RULES_LOST:  # storing over a file nothing could read would erase it: the user fixes the file first
+            raise ValueError(f"rules file unreadable ({RULES_LOST[0]}): {_rules_path(p)}")
+        _store_rules(p, have + [rec])
     return rec
 
 
 def drop_rule(p, n):
     """Remove the n-th rule (1 = the oldest, as fm rule list numbers them); False when there is none."""
     with lock(p.dir, timeout=2):
-        v = rules(p)
+        del RULES_LOST[:]
+        v = rules(p, held=True)
+        if RULES_LOST:
+            raise ValueError(f"rules file unreadable ({RULES_LOST[0]}): {_rules_path(p)}")
         if not 1 <= n <= len(v):
             return False
-        write_atomic(_rules_path(p), json.dumps(v[:n - 1] + v[n:]))
+        _store_rules(p, v[:n - 1] + v[n:])
     return True
 
 
@@ -5664,7 +5757,10 @@ def rule_hits(p, on, text):
                 try:
                     if re.search(cur[1]["pattern"], text):
                         hits.append((*cur, False))
-                except re.error:  # edited by hand past add_rule's compile check
+                except TimeoutError:
+                    raise
+                except Exception as e:  # edited by hand past add_rule's compile check (re.error, OverflowError, …):
+                    _rule_fault(f"rule {cur[0]}", fit(plain(str(e)), 80))  # T-4146: this rule is skipped, the rest hold
                     continue
         except TimeoutError:
             hits.append((*cur, True))

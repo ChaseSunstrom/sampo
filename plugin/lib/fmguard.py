@@ -4854,7 +4854,7 @@ def read_only(cmd):
         bad = _READS.get(argv[0])
         if bad is None or _bad_flag(argv[1:], bad):
             return False
-        if argv[0] == "uniq" and len([a for a in argv[1:] if not a.startswith("-")]) > 1:  # uniq IN OUT writes OUT
+        if argv[0] == "uniq" and len([a for a in argv[1:] if a == "-" or not a.startswith("-")]) > 1:  # uniq IN OUT writes OUT
             return False
     return bool(parts)
 
@@ -4880,16 +4880,28 @@ def _keeps_folders(c, argv):
     return bad is not None and not _bad_flag(argv[1:], bad)
 
 
-def lone_fm_ask(cmd):
-    """The arguments of `fm ask …` when it is the whole command (nothing chained, piped, redirected or substituted):
-    a permission prompt then approves exactly that request."""
+def lone_fm_call(cmd):
+    """The arguments of a Sampo call when it is the whole command (nothing chained, piped, redirected or substituted)."""
     if "`" in cmd or "$(" in cmd or "\n" in cmd.strip():
         return None
     cmds = _split(_tokens(_strip_heredocs(cmd)))
     if len(cmds) != 1 or cmds[0].redirs or cmds[0].procsub:
         return None
     calls = fm_calls(cmd)
-    return calls[0] if len(calls) == 1 and calls[0][:1] == ["ask"] else None
+    return calls[0] if len(calls) == 1 else None
+
+
+def is_rule_list(cmd):
+    """T-4154: the command is exactly `sampo rule list` (or `fm rule list`): the bare name, found on PATH, nothing
+    before it (no wrapper, assignment, path or interpreter), nothing after it (no flag, quote, operator or expansion)."""
+    return re.fullmatch(r"(?:sampo|fm) +rule +list", cmd.strip(" \t")) is not None
+
+
+def lone_fm_ask(cmd):
+    """The arguments of `fm ask …` when it is the whole command (nothing chained, piped, redirected or substituted):
+    a permission prompt then approves exactly that request."""
+    call = lone_fm_call(cmd)
+    return call if call and call[:1] == ["ask"] else None
 
 
 # T-0151: variables are resolved only in a straight-line command (simple commands joined by ; or newlines): a pipe, &&,
@@ -5018,6 +5030,40 @@ _REACHES_PYTHON = lazy(r"PYTHON\w*|LD_\w*|PATH|HOME|ENV|BASH_ENV|IFS")  # read b
 _BRACES = lazy(r"\{[^{}]*(?:,|\.\.)[^{}]*\}")  # a brace expansion bash would turn into several words
 
 
+# T-4154: the read verbs of Sampo that print and write nothing in the folder python runs in (never evidence --run, lane,
+# tidy: _FM_KEEPS also holds verbs that record), with the only flags they take here
+_FM_PRINTS = {("task", "show"), ("task", "list"), ("status",), ("next",), ("queue",), ("inbox",)}
+_READ_ONLY_NAMES = (set(_READS) | {"git", "sampo", "fm"}) - {"which"}
+
+
+def _reads_only(name, args):
+    """T-4154: a command beside `curl … | python3 -c …` that only reads, so no module python could import is planted:
+    a _READS program without the flags that make it write or run something (uniq IN OUT writes OUT), git's read
+    subcommands without --output/--ext-diff/--textconv, or a Sampo verb of _FM_PRINTS with plain words, --json and
+    -p PROJECT. The same lists read_only() and _keeps_folders() trust."""
+    if name == "git":
+        return args[:1] != [] and args[0] in _GIT_READS and not _bad_flag(args[1:], _GIT_BAD)
+    if name in ("sampo", "fm"):
+        words, i = [], 0
+        while i < len(args):
+            if args[i] in ("-p", "--project") and i + 1 < len(args):
+                i += 2  # its value is the project, not a verb word
+                continue
+            if args[i].startswith("-") and args[i] != "--json":
+                return False
+            if not args[i].startswith("-"):
+                words.append(args[i])
+            i += 1
+        # the whole reader form: the verb words, then only the id a show takes (`inbox swipe`, `queue X` are others)
+        return any(tuple(words[:len(v)]) == v and (len(words) == len(v) or v == ("task", "show") and len(words) ==
+                                                   len(v) + 1 and re.fullmatch(r"T-\d+", words[-1]) is not None)
+                   for v in _FM_PRINTS)
+    bad = _READS.get(name)
+    if bad is None or _bad_flag(args, bad):
+        return False
+    return not (name == "uniq" and len([w for w in args if w == "-" or not w.startswith("-")]) > 1)  # a bare - is stdin, an operand
+
+
 def _writes_nothing(x, cwds):
     """T-0344 review: a command beside the python that can't create a file python would then import: no output
     redirect, and curl or wget only with flags that keep their download on stdout (any other flag, -o/-O, a config
@@ -5033,10 +5079,12 @@ def _writes_nothing(x, cwds):
         return not any(m.group(1) in os.environ or _REACHES_PYTHON.fullmatch(m.group(1)) for m in sets)
     a, _ = _strip_wrappers(x.argv)
     real = _system_files(a[0], cwds) if a else None
-    if x.argv != a or real is None or os.path.basename(a[0]) not in _DATA_TOOLS or any(
+    if x.argv != a or real is None or os.path.basename(a[0]) not in _DATA_TOOLS | _READ_ONLY_NAMES or any(
             os.path.basename(p) != os.path.basename(a[0]) for p in real):
         return False
     name, args = os.path.basename(a[0]), a[1:]
+    if name not in _DATA_TOOLS:  # T-4154: a reader that is no download tool (ls, git log, sampo task show) writes no file
+        return _reads_only(name, args)
     if name == "printf" and _setter(name, args):
         return False
     if name == "sed":
