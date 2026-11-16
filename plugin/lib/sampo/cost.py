@@ -201,18 +201,98 @@ def _entering_blocks(x, week, seen, role):
             "<system-reminder>") else "user text"] += len(text)
 
 
-def scan(folder, since, share=None, sidechains=True, entries=None, ctx=None):
+TRIGGERS = ("user", "tool result", "agent finished", "agent waiting", "shell finished", "monitor event",
+            "other notification", "stop hook", "compaction", "other")  # T-4815: what started a turn, most specific first
+# a gap holding several (a person typing while a tool ran) takes the first of these
+_RANK = ("user", "compaction", "stop hook", "agent waiting", "monitor event", "shell finished", "agent finished",
+         "other notification", "tool result", "other")
+AVOIDABLE = ("agent waiting", "monitor event", "stop hook", "other notification")  # turns nobody asked for
+_WAITING = re.compile(r"\bis waiting\b.{0,80}\bbackground\b", re.S)  # the harness's own words for an agent that ended its turn on its own background work: the one place no field says it
+_SUMMARY = re.compile(r"<summary>(.{0,400}?)</summary>", re.S)
+
+
+def _notification(text):
+    """T-4815: a background-task notification's kind from the wrapper's own tags (event: a monitor's; usage or
+    subagent_tokens: an agent's; output-file: a shell command's). An agent that only says it is waiting on its own
+    background work is told apart by the harness's summary words (_WAITING), the one text match here."""
+    if not isinstance(text, str):
+        return "other notification"
+    ev = text.find("<event>")
+    agent = [i for i in map(text.find, ("<result>", "<subagent_tokens>", "<usage>")) if i >= 0]
+    if ev >= 0 and not (agent and min(agent) < ev):  # the wrapper's own tag comes first: an agent's result may quote one
+        return "monitor event"
+    if agent:
+        m = _SUMMARY.search(text)
+        return "agent waiting" if m and _WAITING.search(m.group(1)) else "agent finished"
+    return "shell finished" if "<output-file>" in text else "other notification"
+
+
+def trigger_of(e):
+    """T-4815: what one transcript record contributes toward starting the next reply (None: nothing), from its type and
+    fields: a user line's origin (human, task-notification) and tool_result blocks, a Stop-event hook_blocking_error
+    attachment (its meta user line is the continuation), a compact boundary. No message text is read but a
+    notification's wrapper (see _notification)."""
+    t = e.get("type")
+    if t == "user":
+        m, o = e.get("message"), e.get("origin")
+        content = m.get("content") if isinstance(m, dict) else None
+        kind = o.get("kind") if isinstance(o, dict) else None
+        if e.get("isCompactSummary"):
+            return "compaction"
+        if kind == "task-notification":
+            return _notification(content)
+        if kind == "human":
+            return "user"
+        if e.get("isMeta"):
+            return "other"
+        if isinstance(content, list):
+            types = {x.get("type") for x in content if isinstance(x, dict)}
+            return "tool result" if "tool_result" in types else "user" if types & {"text", "image"} else "other"
+        return "user" if isinstance(content, str) else "other"
+    if t == "attachment":
+        a = e.get("attachment")
+        if isinstance(a, dict) and a.get("type") == "hook_blocking_error" and a.get("hookEvent") == "Stop":
+            return "stop hook"
+    elif t == "system" and e.get("subtype") == "compact_boundary":
+        return "compaction"
+    return None
+
+
+def trigger_rows(msgs):
+    """T-4815: {kind: {"turns", "cache_read"}} over scan(kinds=True)'s messages, most re-read first."""
+    rows = {}
+    for _, _, u, kind in msgs:
+        r = rows.setdefault(kind, {"turns": 0, "cache_read": 0})
+        r["turns"] += 1
+        r["cache_read"] += u.get("cache_read_input_tokens") or 0
+    return dict(sorted(rows.items(), key=lambda kv: -kv[1]["cache_read"]))
+
+
+def scan(folder, since, share=None, sidechains=True, entries=None, ctx=None, kinds=False):
     """(assistant messages [(ts, session, usage)], tool result chars by tool name) since the cutoff. A message's usage
     repeats on each of its content blocks: counted once per message id. A `share` Counter gets what entered the
     context: "all", and Sampo's part by source (T-1257). A subagent's replies carry its parent's session id:
     `sidechains=False` leaves them out (T-1797). `entries`: _entries already read (T-3521: fm cost reads once).
-    T-4704: a `ctx` dict gets, per ISO week, a Counter of the characters that entered by source (same pass)."""
+    T-4704: a `ctx` dict gets, per ISO week, a Counter of the characters that entered by source (same pass).
+    T-4815: `kinds` adds a fourth item to each message, what started its turn (TRIGGERS), read in the same pass from
+    the records between it and the previous reply of the same file."""
     msgs, tools, names, fm_ids, seen = {}, collections.Counter(), {}, {}, set()
+    started, gap, gap_path = {}, set(), None
     for path, e in _entries(folder, since) if entries is None else entries:
         if not sidechains and f"{os.sep}subagents{os.sep}" in path:
             continue
         n = os.path.basename(path)
         ts = str(e.get("timestamp") or "")
+        if kinds and ts[:19] >= since:
+            if path != gap_path:
+                gap, gap_path = set(), path  # a new file: the records of the last one started nothing here
+            if e.get("type") == "assistant":
+                key = (e.get("message") or {}).get("id") or (n, ts) if isinstance(e.get("message"), dict) else (n, ts)
+                if key not in started:  # a reply split over lines: the first line took the gap
+                    started[key] = next((k for k in _RANK if k in gap), "other")
+                    gap = set()
+            elif (k := trigger_of(e)):
+                gap.add(k)
         week = None
         if ctx is not None and ts[:19] >= since and (week := _iso_week(ts)):
             week = ctx.setdefault(week, collections.Counter())
@@ -252,6 +332,8 @@ def scan(folder, since, share=None, sidechains=True, entries=None, ctx=None):
                         share["fm:" + fm_ids[x["tool_use_id"]]] += size  # by verb (T-1276)
         if e.get("type") == "assistant" and isinstance(m.get("usage"), dict):
             msgs[m.get("id") or (n, ts)] = (ts, e.get("sessionId") or n[:-6], m["usage"])
+    if kinds:
+        return [row + (started.get(key, "other"),) for key, row in msgs.items()], tools
     return list(msgs.values()), tools
 
 
@@ -837,7 +919,7 @@ def cmd_cost(args):
         raise cli.UsageError(f"no Claude Code transcripts for this project at {folder}")
     share = collections.Counter()
     if getattr(args, "sessions", False):  # a subagent's own context isn't its parent's per-turn figure
-        return _sessions(scan(folder, _since(args.days), sidechains=False)[0], args, cli)
+        return _sessions(scan(folder, _since(args.days), sidechains=False, kinds=True)[0], args, cli)
     since, spent = _since(args.days), [0.0, collections.Counter(), collections.Counter()]
 
     def each_file():  # T-3521: one read of the transcripts for tokens and time (3.1 GB a week was parsed twice, 48-75 s
@@ -931,10 +1013,11 @@ def _sessions(msgs, args, cli):
     """T-0703: per session, the context every turn re-reads (the 78% of spend that is cache reads), its weighted split
     and the cache busts: turns that re-wrote over half of a context past BUST_MIN tokens."""
     rows = {}
-    for ts, sid, u in sorted(msgs, key=lambda x: x[0]):
+    for ts, sid, u, *kind in sorted(msgs, key=lambda x: x[0]):
         r = rows.setdefault(sid, {"session": sid, "turns": 0, "busts": 0, "ctx": 0, "prev": 0, "prev_t": None,
                                   "causes": collections.Counter(), "tokens": collections.Counter(), "h1": 0,
-                                  "bust_cost": 0.0, "ttl": None})
+                                  "bust_cost": 0.0, "ttl": None, "kinds": []})
+        r["kinds"].append((ts, sid, u, kind[0] if kind else "other"))
         ctx = sum(u.get(k) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
         w = u.get("cache_creation_input_tokens") or 0
         t, h = _epoch(ts), one_hour(u)
@@ -957,10 +1040,21 @@ def _sessions(msgs, args, cli):
         out.append({"session": r["session"], "turns": r["turns"], "avg_context": r["ctx"] // r["turns"],
                     "over": r["ctx"] // r["turns"] > SESSION_OVER,
                     "busts": r["busts"], "bust_causes": dict(sorted(r["causes"].items())), "tokens": dict(r["tokens"]),
+                    "triggers": trigger_rows(r["kinds"]),
                     "input_equivalent": round(sum(spend.values())), "bust_cost": round(r["bust_cost"]),
                     "split": {name: round(100 * spend[k] / (sum(spend.values()) or 1)) for k, name in SPLIT.items()}})
     out.sort(key=lambda s: -s["input_equivalent"])
     over = sum(s["over"] for s in out)
+    by_trigger = trigger_rows(k for r in rows.values() for k in r["kinds"])
+    reread = sum(v["cache_read"] for v in by_trigger.values()) or 1
+    for v in by_trigger.values():
+        v["share_of_cache_read"] = round(100 * v["cache_read"] / reread)
+    avoid = max((k for k in by_trigger if k in AVOIDABLE), key=lambda k: by_trigger[k]["cache_read"], default=None)
+    largest = {"kind": avoid, **by_trigger[avoid]} if avoid else None
+
+    def kinds_line(t, top=None):
+        n = lambda v: f"{v['turns']} turn{'s' * (v['turns'] != 1)}"
+        return ", ".join(f"{k} {n(v)} ({_human(v['cache_read'])})" for k, v in list(t.items())[:top])
     text = (f"Sessions, last {args.days:g} day(s), costliest first, main thread only (the context a turn re-reads is "
             "most of the cost):\n"
             + "\n".join(f"  {s['session'][:12]}: {s['turns']} turns, {_human(s['avg_context'])} context per turn, "
@@ -971,12 +1065,18 @@ def _sessions(msgs, args, cli):
                            + f") ≈ {_human(s['bust_cost'])} lost" if s["busts"] else "")
                         + (" ⚠ over 200k a reply: compacted late (one started after fm install-user and a restart "
                            "shouldn't)" if s["over"] else "")
+                        + f"\n      started by: {kinds_line(s['triggers'], 6)}"
                         for s in out[:15]) + (f"\n  {over} session(s) average over 200k a reply" if over else "")
+            + "\nTurns by what started them, all sessions (in brackets the cache-read tokens those turns re-read): "
+            + kinds_line(by_trigger)
+            + (f"\nLargest avoidable kind: {avoid} ({largest['turns']} turns, {_human(largest['cache_read'])} re-read, "
+               f"{largest['share_of_cache_read']}% of all re-read; avoidable = {', '.join(AVOIDABLE)})" if avoid else "")
             + ("\n  Busts: a ttl one outlasted the cache (5 min, or 1 h when the session writes 1 h): fewer long idle "
                "gaps. A context edit changed the prefix: CLAUDE.md, rules, tools or MCP servers edited mid-session, "
                "or a model switch." if any(s["busts"] for s in out[:15]) else "")
             if out else f"No token usage in the last {args.days:g} day(s).")
-    return cli.out(args, {"days": args.days, "sessions": out}, text)
+    return cli.out(args, {"days": args.days, "sessions": out, "by_trigger": by_trigger, "largest_avoidable": largest},
+                   text)
 
 
 def _by_model(p, args, cli):

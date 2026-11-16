@@ -190,3 +190,149 @@ class ContextSources(ForemanTestCase):
         data = self.fm_json("cost", env=env)
         self.assertEqual(data["context"][week(ts)]["replies"], 1)
         self.assertIn("tokens", data)
+
+
+def note(ts, body, origin=None):
+    """A background-task notification as the harness writes it: a user line whose origin says so."""
+    return {"type": "user", "timestamp": ts, "origin": origin or {"kind": "task-notification", "producer": "session-task"},
+            "message": {"content": "<task-notification>" + body + "</task-notification>"}}
+
+
+AGENT = '<task-id>a1</task-id><status>completed</status><summary>Agent "SECRETNAME" {what}</summary>' \
+        "<result>SECRETRESULT is waiting on a background run</result><usage>u</usage><subagent_tokens>9</subagent_tokens>"
+SHELL = '<task-id>b1</task-id><output-file>f</output-file><status>completed</status><summary>Background command ' \
+        '"SECRETNAME" completed (exit code 0)</summary>'
+MONITOR = '<task-id>b2</task-id><event>SECRETEVENT</event><summary>Monitor event: "SECRETNAME"</summary>'
+HUMAN = {"type": "user", "timestamp": "", "origin": {"kind": "human"}, "message": {"content": "SECRETTYPED"}}
+
+
+def stop(ts, event="Stop"):
+    return {"type": "attachment", "timestamp": ts, "attachment": {
+        "type": "hook_blocking_error", "hookEvent": event, "blockingError": "SECRETBLOCK"}}
+
+
+def at(rec, ts):
+    return dict(rec, timestamp=ts)
+
+
+class TurnTriggers(ForemanTestCase):
+    """T-4815: each main-thread turn is counted by what started it, from the transcript's own record fields; only the
+    agent-waiting-versus-finished split reads a harness summary's words."""
+
+    def setUp(self):
+        super().setUp()
+        self.folder = os.path.join(self.tmp, "transcripts")
+        os.makedirs(self.folder)
+
+    def write(self, lines, name="s1.jsonl"):
+        with open(os.path.join(self.folder, name), "a") as f:
+            f.write("".join(json.dumps(x) + "\n" for x in lines))
+
+    def kinds(self, days=30):
+        msgs, _ = cost.scan(self.folder, cost._since(days), sidechains=False, kinds=True)
+        return [m[3] for m in sorted(msgs, key=lambda m: m[0])]
+
+    def run_of(self, *gaps):
+        """One reply after each gap (a list of records between two replies); timestamps rise a second per record."""
+        lines, n = [], 0
+        for i, gap in enumerate(gaps):
+            for rec in gap:
+                n += 1
+                lines.append(at(rec, stamp().replace(".000Z", f".{n:03d}Z")))
+            n += 1
+            lines.append(reply(f"m{i}", stamp().replace(".000Z", f".{n:03d}Z"), []))
+        self.write(lines)
+
+    def test_every_kind_of_trigger_is_named_from_the_records(self):
+        ts = stamp()
+        self.run_of(
+            [HUMAN],
+            [user(ts, result("a", 5))],
+            [note(ts, AGENT.format(what="finished"))],
+            [note(ts, AGENT.format(what="is waiting on 2 background tasks"))],
+            [note(ts, SHELL)],
+            [note(ts, MONITOR)],
+            [stop(ts), {"type": "user", "timestamp": ts, "isMeta": True, "message": {"content": "SECRETBLOCK"}}],
+            [{"type": "system", "subtype": "compact_boundary", "timestamp": ts}],
+            [])
+        self.assertEqual(self.kinds(), ["user", "tool result", "agent finished", "agent waiting", "shell finished",
+                                        "monitor event", "stop hook", "compaction", "other"])
+
+    def test_only_the_summary_decides_waiting_never_the_result(self):
+        self.run_of([note(stamp(), AGENT.format(what="finished"))])
+        self.assertEqual(self.kinds(), ["agent finished"], "the result says waiting; the summary says finished")
+
+    def test_an_agent_result_quoting_a_wrapper_tag_stays_an_agent(self):
+        body = AGENT.format(what="finished").replace("SECRETRESULT", "<event>x</event>")
+        self.run_of([note(stamp(), body)], [note(stamp(), MONITOR.replace("</summary>", "</summary><usage>u</usage>"))])
+        self.assertEqual(self.kinds(), ["agent finished", "monitor event"])
+
+    def test_a_typed_prompt_without_an_origin_is_a_user_turn_and_a_meta_line_is_not(self):
+        ts = stamp()
+        self.run_of([{"type": "user", "timestamp": ts, "message": {"content": "SECRETTYPED"}}],
+                    [{"type": "user", "timestamp": ts, "isMeta": True, "message": {"content": "SECRETMETA"}}])
+        self.assertEqual(self.kinds(), ["user", "other"])
+
+    def test_a_post_tool_hook_error_is_not_a_stop_hook_continuation(self):
+        ts = stamp()
+        self.run_of([stop(ts, "PostToolUse"), user(ts, result("a", 5))])
+        self.assertEqual(self.kinds(), ["tool result"])
+
+    def test_a_person_beats_a_tool_result_and_a_notification_beats_one_too(self):
+        ts = stamp()
+        self.run_of([user(ts, result("a", 5)), HUMAN], [user(ts, result("a", 5)), note(ts, SHELL)])
+        self.assertEqual(self.kinds(), ["user", "shell finished"])
+
+    def test_a_reply_split_over_lines_has_the_trigger_of_its_first_line(self):
+        ts = stamp()
+        self.write([at(HUMAN, ts), reply("m1", ts, [use("a", "Bash", command="x")]), stop(ts), reply("m1", ts, [])])
+        self.assertEqual(self.kinds(), ["user"])
+
+    def test_the_first_record_of_each_file_starts_a_fresh_gap(self):
+        ts = stamp()
+        self.write([at(HUMAN, ts)], "a.jsonl")
+        self.write([reply("m9", ts, [])], "b.jsonl")
+        self.assertEqual(self.kinds(), ["other"], "the person's line was another file's")
+
+    def test_odd_shapes_count_as_other_and_never_raise(self):
+        ts = stamp()
+        self.run_of([{"type": "user", "origin": 7, "message": {"content": [None, 3]}}],
+                    [{"type": "user", "origin": {"kind": "task-notification"}, "message": {"content": 5}}],
+                    [{"type": "attachment", "attachment": "nope"}, {"type": "system", "subtype": None}])
+        self.assertEqual(self.kinds(), ["other", "other notification", "other"])
+
+    def test_rows_sum_turns_and_cache_reads_by_kind(self):
+        ts = stamp()
+        self.write([at(HUMAN, ts), reply("m1", ts, [], cache=1000), user(ts, result("a", 5)),
+                    reply("m2", ts, [], cache=3000), user(ts, result("a", 5)), reply("m3", ts, [], cache=5000)])
+        msgs, _ = cost.scan(self.folder, cost._since(30), sidechains=False, kinds=True)
+        rows = cost.trigger_rows(msgs)
+        self.assertEqual(rows["user"], {"turns": 1, "cache_read": 1000})
+        self.assertEqual(rows["tool result"], {"turns": 2, "cache_read": 8000})
+
+    def test_sessions_print_and_export_the_kinds_with_numbers_only(self):
+        self.fm("init")
+        cfg = os.path.join(self.tmp, "cfg")
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(folder)
+        ts = stamp()
+        with open(os.path.join(folder, "s1.jsonl"), "w") as f:
+            f.write("".join(json.dumps(x) + "\n" for x in [
+                at(HUMAN, ts), reply("m1", ts, [], cache=1000),
+                note(ts, AGENT.format(what="is waiting on 1 background task")), reply("m2", ts, [], cache=2000),
+                note(ts, MONITOR), reply("m3", ts, [], cache=3000),
+                stop(ts), reply("m4", ts, [], cache=4000),
+                user(ts, result("a", 5)), reply("m5", ts, [], cache=5000)]))
+        env = {"CLAUDE_CONFIG_DIR": cfg}
+        data = self.fm_json("cost", "--sessions", env=env)
+        s = data["sessions"][0]["triggers"]
+        self.assertEqual(s["agent waiting"], {"turns": 1, "cache_read": 2000})
+        self.assertEqual(s["tool result"], {"turns": 1, "cache_read": 5000})
+        self.assertEqual(data["by_trigger"]["monitor event"]["cache_read"], 3000)
+        self.assertEqual(data["largest_avoidable"]["kind"], "stop hook")
+        self.assertEqual(data["largest_avoidable"]["share_of_cache_read"], round(100 * 4000 / 15000))
+        out = self.fm("cost", "--sessions", env=env).stdout
+        self.assertIn("Turns by what started them", out)
+        self.assertIn("stop hook 1 turn", out)
+        self.assertIn("Largest avoidable kind: stop hook", out)
+        self.assertNotIn("SECRET", out + json.dumps(data))
