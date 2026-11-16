@@ -11,6 +11,9 @@
 
 ### Everything else
 
+- An unreadable private-term list now refuses export, repository writes and pushes with a fixed line instead of reading as no terms, and `sampo doctor` flags it (T-4804).
+- `sampo cost --sessions` counts each main-thread turn by what started it (user, tool result, agent finished or waiting, shell finished, monitor event, stop hook, compaction) with the cache-read tokens it re-read, and names the largest avoidable kind (T-4815).
+- run.py ends a run killed from outside (SIGTERM, SIGINT) as --deadline does: the classes still running are named and killed, the rest not run, exit 143 or 130 (T-4399).
 - sampo code: the rule for a bare 'continue' rides with the record of unfinished work instead of every plan prompt, plan calls think while action turns do not, and a plan call that spends its budget thinking is asked again from its own notes (T-4358).
 - The live view's Board: the reference board look (numbered neon panels with corner brackets and animated mechanisms) from one shared panel kit, every panel a real Sampo part on live data: lanes as clusters, the merge train through its gate, CPU against the goal, the loop from your words to a brief, library, models, commands, state and tests (T-3659).
 - sampo code sends a plan check that fails on its own (a tool not installed, a wrong flag) back to the planner at plan time, and in a fix round asks the planner to repair a check that failed the same way twice only when that failure is judged the check's own; a repair is taken only when it fails at the task's base commit and passes on the work, the ask is journaled and resumed, and the ju… (T-4362).
