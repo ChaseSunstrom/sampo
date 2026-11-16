@@ -85,6 +85,7 @@ OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S", "WAIT_TRAIN_POLL_S"})
 OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its starter; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("SLOT_RESERVE")  # T-4650: the reserved slots' off switch is the operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_TRACE")  # T-4685: the slot trace is an operator's, never a test's
+OPERATOR_SWITCHES.add("SLOT_FAIR")  # T-4688: the fair share's off switch is the operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
 OPERATOR_SWITCHES.add("NO_LEFTOVER_SCAN")  # T-4720: the test base sets it itself; a caller's never reaches a test of the scan
 OPERATOR_SWITCHES.add("CARGO_CAP_BYTES")  # T-4717: the operator's cap on the shared cargo cache; a test sets its own
@@ -186,6 +187,9 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
     now, order, prio, mark = time.monotonic(), random.sample(ordinary, len(ordinary)), _env(PRIO_ENV) == "1", None
     end, defer, got, said = now + (min(wait, SMALL_WAIT) if small else wait), now + defer_for(wait), None, False
     low, marked = low and not prio, False
+    fair = fair_on()
+    if fair:
+        tidy_slots(folder, n)
     # T-4685: a narrow run takes the reserve's slots but the last after the pool's own, and without deferring to a priority
     # waiter there (a gate draws on the ordinary slots alone, so it never wants the reserve)
     extra = narrow_lane(n) if narrow and not small and not prio and not low else ()
@@ -194,7 +198,15 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
             if small and (got := _take(folder, fast)):
                 break
             behind = not prio and ((time.monotonic() < defer and _prio_waiting(folder)) or (low and _builder_waiting(folder)))
-            if not behind:
+            # T-4688: a run holding its share leaves a freed slot to a waiting run that holds less (a gate held all six for
+            # 10+ minutes: each job that ended took the next at once, so a second run never found one free)
+            share = fair and not behind and _yield_open() and _over_share(folder, n, order, prio)
+            if share:
+                _yield_begin()  # one window for the process (FAIR_MAX), then a cooldown: a stuck waiter costs it once
+            if share and mark:  # a prio run that refuses for a waiter must not hold the marker that waiter defers to
+                _unmark(mark)
+                mark = None
+            if not behind and not share:
                 if got := _take(folder, order):
                     break
             if extra and (got := _take(folder, extra)):
@@ -210,7 +222,7 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
                 _trace(folder, n, small, time.monotonic() - now, narrow)
             if time.monotonic() >= end:
                 break
-            if prio and not mark:
+            if prio and not mark and not share:
                 mark = _mark(folder)
             elif not prio and not low and not marked:  # T-4570: an ordinary run waiting is what a low class yields to
                 marked = _wait_enter(folder)
@@ -219,9 +231,7 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
         if marked:
             _wait_leave()
         if mark:
-            with contextlib.suppress(OSError):
-                os.unlink(mark[1])
-            os.close(mark[0])
+            _unmark(mark)
     if not got:
         yield None
         return
@@ -309,11 +319,180 @@ def _take(folder, names):
         except OSError:
             os.close(fd)
             continue
+        try:  # T-4688: a file the pool's tidy removed after this open is a lock on nothing: another run makes a new one
+            if os.stat(os.path.join(folder, str(i))).st_ino != os.fstat(fd).st_ino:
+                raise OSError
+        except OSError:
+            os.close(fd)
+            continue
         with contextlib.suppress(OSError):  # T-4708: the holder's pid, for the trace where /proc/locks is not there (macOS)
             os.ftruncate(fd, 0)
             os.pwrite(fd, str(os.getpid()).encode(), 0)
         return i, fd
     return None
+
+
+FAIR_ENV = "SAMPO_SLOT_FAIR"  # T-4688: =0 puts back the old rule (any free slot is taken) and leaves the stale slot files
+FAIR_MAX = 120.0  # T-4688: a process refuses a slot for another run's share at most this long in all, from its first refusal
+FAIR_COOL = 300.0  # T-4688: after that window it does not refuse again for this long (one window, as _LOW's, not one per job)
+FAIR_STUCK = 15.0  # T-4688: a waiter whose slots did not change in this long of refusals for it is stuck, not waited for
+TIDY_AGE = 5.0  # T-4688: tidy_slots leaves a slot file touched more recently than this (a holder's take writes its pid)
+TEMP_AGE = 60.0  # T-4688: a marker's temp file nobody holds is an orphan after this long
+_TIDIED = set()  # T-4688: the (folder, pool size) whose slot files beyond the pool this process has already removed
+_YIELD, _YIELD_LOCK = {"end": None, "cool": None, "seen": {}, "stuck": {}}, threading.Lock()  # window, cooldown, stuck clocks
+
+
+def _yield_open():
+    """T-4688: whether this process may still refuse a slot for another run's share: not in the cooldown that follows its
+    window (FAIR_MAX from its first refusal, one window for every class of the run, not one per job)."""
+    with _YIELD_LOCK:
+        now = time.monotonic()
+        if _YIELD["cool"] is not None:
+            if now < _YIELD["cool"]:
+                return False
+            _YIELD["end"] = _YIELD["cool"] = None
+            _YIELD["seen"].clear()
+        if _YIELD["end"] is not None and now >= _YIELD["end"]:
+            _YIELD["cool"] = _YIELD["end"] + FAIR_COOL  # from the window's end, not from this first call after it
+            return False
+        return True
+
+
+def _yield_begin():
+    """T-4688: this process refused a slot for another run's share: its window starts at the first such refusal."""
+    with _YIELD_LOCK:
+        if _YIELD["end"] is None:
+            _YIELD["end"] = time.monotonic() + FAIR_MAX
+
+
+def fair_on():
+    """T-4688: whether runs share the ordinary slots fairly (SAMPO_SLOT_FAIR=0 turns it off)."""
+    return _env(FAIR_ENV) != "0"
+
+
+def fair_cap(ordinary, runs):
+    """T-4688: how many of the `ordinary` slots one of `runs` runs may hold while another waits: its equal share, rounded
+    up, and never under one (every run keeps one). Runs under 1 count as 1."""
+    return max(1, -(-ordinary // max(1, runs)))
+
+
+def _unmark(mark):
+    """T-3614: take a waiting marker back, (fd, path) as _mark made it."""
+    with contextlib.suppress(OSError):
+        os.unlink(mark[1])
+    os.close(mark[0])
+
+
+def _waiter_pids(folder):
+    """T-4688: {pid: whether it is a priority run} of the runs waiting for a slot now: the live wait- and prio- markers (a
+    marker nobody holds is a dead waiter's and is removed), the pid being the one in the marker's name."""
+    pids = {}
+    try:
+        names = [x for x in os.listdir(folder) if x.startswith(("wait-", "prio-"))]
+    except OSError:
+        return pids
+    for name in names:
+        path = os.path.join(folder, name)
+        try:
+            fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except OSError:  # held: its waiter is alive
+            with contextlib.suppress(ValueError, IndexError):
+                pid = int(name.split("-")[1])
+                pids[pid] = pids.get(pid, False) or name.startswith("prio-")
+        else:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+        finally:
+            os.close(fd)
+    return pids
+
+
+def _over_share(folder, n, ordinary, prio=False):
+    """T-4688: whether this run leaves a free ordinary slot to another run: it holds its share of the ordinary slots
+    (fair_cap over the runs holding one or waiting for one) and another run that waits holds less than that share. A run
+    holding none never refuses; a waiter at its share is not waited for, so no slot idles while two runs both want it. A
+    priority run (the merge train's gate, T-3614) keeps at least half the ordinary slots as its share, so ten waiting
+    builders do not cut it to a tenth."""
+    me = os.getpid()
+    waiting = {p: is_prio for p, is_prio in _waiter_pids(folder).items() if p != me}
+    with _YIELD_LOCK:
+        for key in ("seen", "stuck"):  # a waiter that died is forgotten
+            for pid in [p for p in _YIELD[key] if p not in waiting]:
+                del _YIELD[key][pid]
+    if not waiting:
+        return False
+    holders = slot_holders(folder, n)
+    if all(slot in holders for slot in ordinary):  # none free: nothing to leave (the clocks restart; a found-stuck waiter stays so)
+        with _YIELD_LOCK:
+            _YIELD["seen"].clear()
+        return False
+    held = {}
+    for slot, pid in holders.items():
+        if pid and slot in ordinary:
+            held[pid] = held.get(pid, 0) + 1
+    cap = fair_cap(len(ordinary), len(set(held) | set(waiting) | {me}))
+    half = -(-len(ordinary) // 2)
+    own = max(cap, half) if prio else cap
+    if held.get(me, 0) < own:
+        return False
+    now, entitled = time.monotonic(), False
+    with _YIELD_LOCK:
+        for pid, is_prio in waiting.items():
+            count = held.get(pid, 0)
+            if count >= (max(cap, half) if is_prio else cap):
+                continue
+            if _YIELD["stuck"].get(pid) == count:  # found stuck at this count: it stays so across full-then-free cycles
+                continue
+            _YIELD["stuck"].pop(pid, None)  # it took or let go a slot since: it is not the stuck waiter it was
+            was = _YIELD["seen"].get(pid)
+            if not was or was[0] != count:  # new, or it took a slot since: the clock starts again
+                was = _YIELD["seen"][pid] = (count, now)
+            if now - was[1] < FAIR_STUCK:
+                entitled = True
+            else:  # a waiter left a free slot this long and took none is alive but stuck
+                _YIELD["stuck"][pid] = count
+    return entitled
+
+
+def tidy_slots(folder, n):
+    """T-4688: remove the slot files beyond the pool that nobody holds (the pool shrank from 16 to 8 and left 8 to 15, and the
+    express files x0 and x1 once the reserve took their place), and the temp files of a marker whose process died between
+    creating it and renaming it: once per process and pool size. A file is removed only under its own exclusive lock, which
+    a holder's lock refuses; _take checks the file it locked is still the one named. A slot file touched in the last
+    TIDY_AGE s is left, and so is a temp file younger than TEMP_AGE. Residual: a run.py from before this change opens then
+    locks without the inode check, so it can still take a file this removes in the moment between; the age keeps that to
+    a file that sat idle, which a run of the old code takes only when its pool is the larger."""
+    if (folder, n) in _TIDIED:
+        return
+    _TIDIED.add((folder, n))
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return
+    wall = time.time()
+    for name in names:
+        slot = name.isascii() and name.isdigit() and str(int(name)) == name and int(name) >= n
+        temp = name.startswith((".prio-", ".wait-"))
+        if not (slot or temp or (name in EXPRESS and reserved(n))):
+            continue
+        path = os.path.join(folder, name)
+        try:
+            fd = os.open(path, os.O_RDWR | getattr(os, "O_NOFOLLOW", 0))
+        except OSError:
+            continue
+        try:
+            if wall - os.fstat(fd).st_mtime < (TEMP_AGE if temp else TIDY_AGE):
+                continue
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.unlink(path)
+        except OSError:
+            pass
+        finally:
+            os.close(fd)
 
 
 def slot_holders(folder, n):
