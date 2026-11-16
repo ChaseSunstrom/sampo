@@ -650,6 +650,9 @@ def _affected_first(p, wt, base, env, only=None):
         return []
     print(f"testing the {len(tests)} affected test file(s) " + (f"of {c.joinmore(only, 5)}" if only else "first"), flush=True)
     run_env = dict(cli._skip_env({}), **{k: v for k, v in env.items() if k != "FOREMAN_SKIP_TESTS"})
+    run_env, venv = cli._venv_env(wt, run_env, cmd)  # T-4150: the project's own interpreter, as the close runs it
+    if venv:
+        print(cli._venv_note(venv), flush=True)
     code, out = c.run_command(wt, cmd, 900, niced=True, env=run_env)  # T-4197
     if names := _cut_only(code, out):
         # T-4718: cut at its limit with only classes not run (train 1115d: 98% of the wall waiting for slots a verify

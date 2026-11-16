@@ -468,11 +468,12 @@ def _probe_once(p, main, base, b, tip, notes, cli):
             return ""
         def run(cmd):  # (exit, the classes it names red)
             cwd, cmd, _ = c.normalize_verify(wt, cmd)  # T-3411's cwd fix first: the nice wrapper would hide it
+            env, _ = cli._venv_env(wt, cpu_env(p), cmd)  # T-4150: the project's own interpreter, as the lane ran it
             if shutil.which("nice"):  # the probe yields to whatever else the machine runs
                 cmd = "nice -n 10 bash -c " + shlex.quote(cmd)
             _lost_check(wt)
             code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True,  # T-3614: ahead of lane runs
-                                      env=cpu_env(p))  # T-3757: a CPU rise is red here too
+                                      env=env)  # T-3757: a CPU rise is red here too
             _lost_check(wt)  # a run in a vanished folder ends 127: that is the loss, not a red lane
             return code, set(_red(out))
 

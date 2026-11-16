@@ -77,6 +77,86 @@ class CheckPaths(ForemanTestCase):
         self.assertEqual(self.count("src-gate"), 3, "T-1963: gate 1 never saw a src/gen.py gate 2 wrote, so it reruns")
 
 
+class GateSkip(ForemanTestCase):
+    """T-4140: a project gate no changed file maps to is skipped with its reason; an unmapped one is never guessed at;
+    the close (sampo check --fresh, which train and ship also run) runs every gate."""
+    write, count = CheckPaths.write, CheckPaths.count
+
+    def commit(self, files, msg):
+        for rel, body in files.items():
+            self.write(rel, body)
+        for args in (["add", "-A"], ["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", msg]):
+            subprocess.run(["git", "-C", self.repo, *args], check=True, capture_output=True)
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("check", "add", f"echo x >> {os.path.join(self.tmp, 'mapped-gate')}")
+        self.fm("check", "add", f"echo x >> {os.path.join(self.tmp, 'unmapped-gate')}")
+        self.fm("check", "paths", "1", "src/**")
+        self.fm("check", "affected", "true {tests}")
+        self.commit({"src/app.py": "a = 1\n", "docs/a.md": "a\n"}, "seed")
+        self.fm("task", "new", "edit", "--type", "FIX", "--tier", "S", "--ac", "a :: true", "--step", "s", "--focus")
+
+    def test_gate_skip_the_full_check_skips_a_mapped_gate_and_says_why_and_fresh_runs_it(self):
+        self.fm("check")
+        self.write("docs/a.md", "b\n")
+        out = self.fm("check").stdout
+        self.assertEqual((self.count("mapped-gate"), self.count("unmapped-gate")), (1, 2))
+        self.assertIn("skipped: nothing under src/** changed", out)
+        self.fm("check", "--fresh")
+        self.assertEqual((self.count("mapped-gate"), self.count("unmapped-gate")), (2, 3), "the close runs every gate")
+
+    def gates(self, *extra):
+        data = json.loads(self.fm("check", "--affected", "--json", *extra).stdout)
+        return {g["cmd"].split(" ")[-1].rsplit("/", 1)[-1]: g for g in data["gates"]}
+
+    def test_gate_skip_affected_names_each_gate_with_its_reason_and_runs_none(self):
+        self.fm("check")  # a passing full run: the pass the skip is measured from (_paths_unchanged)
+        self.write("docs/a.md", "b\n")
+        by = self.gates()
+        self.assertFalse(by["mapped-gate"]["run"])
+        self.assertIn("nothing under src/** changed since its pass", by["mapped-gate"]["why"])
+        self.assertTrue(by["unmapped-gate"]["run"])
+        self.assertIn("sampo check paths 2", by["unmapped-gate"]["why"], "an unmapped gate says how to map it")
+        self.assertEqual((self.count("mapped-gate"), self.count("unmapped-gate")), (1, 1), "--affected runs no gate")
+        text = self.fm("check", "--affected").stdout
+        self.assertIn("nothing under src/** changed since its pass", text)
+
+    def test_gate_skip_without_a_recent_pass_the_full_check_runs_even_a_mapped_gate(self):
+        # T-4155: "skipped" is said only when the full check really skips it (_paths_unchanged); no pass yet: it runs
+        self.write("docs/a.md", "b\n")
+        mapped = self.gates()["mapped-gate"]
+        self.assertTrue(mapped["run"], mapped)
+        self.assertIn("no recent pass", mapped["why"])
+        self.assertNotIn("skipped", mapped["why"])
+
+    def test_gate_skip_a_changed_file_under_its_paths_runs_it(self):
+        self.fm("check")
+        self.write("src/app.py", "a = 2\n")
+        mapped = self.gates()["mapped-gate"]
+        self.assertTrue(mapped["run"])
+        self.assertIn("src/**", mapped["why"])
+
+    def test_gate_skip_the_suite_gate_the_affected_template_runs_a_part_of_is_not_listed(self):
+        # T-4155: matched by its template, as the close does: `python3 -m pytest -q` is not told to be path-mapped
+        self.fm("check", "add", "python3 -m pytest -q")
+        self.fm("check", "affected", "python3 -m pytest -q {tests}")
+        self.write("docs/a.md", "b\n")
+        data = json.loads(self.fm("check", "--affected", "--json").stdout)
+        cmds = [g["cmd"] for g in data["gates"]]
+        self.assertFalse([x for x in cmds if "pytest" in x], cmds)
+        self.assertEqual(len(cmds), 2, "the other two gates are still named")
+
+    def test_gate_skip_the_lines_are_bounded_and_their_failure_is_said(self):
+        # T-4155: many gates are counted past GATE_LINES; a gate-line failure is a gates_error, not an empty list
+        from sampo import cli
+        text = cli._gate_text([{"cmd": f"g{n}", "run": True, "why": "x"} for n in range(cli.GATE_LINES + 3)])
+        self.assertEqual(text.count("\n  gate "), cli.GATE_LINES)
+        self.assertIn("… 3 more gate(s)", text)
+        self.assertIn("gate lines unavailable (KeyError: 'x')", cli._gate_text([], "KeyError: 'x'"))
+
+
 RED = "import unittest\n\n\nclass Red(unittest.TestCase):\n    def test_red(self):\n        self.fail('not yet')\n"
 GREEN = "import unittest\n\n\nclass Green(unittest.TestCase):\n    def test_green(self):\n        pass\n"
 

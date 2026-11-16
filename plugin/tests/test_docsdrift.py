@@ -127,6 +127,71 @@ class TaskDocsDrift(_Repo):
         self.assertEqual(blockers, ["docs impact names rules/foreman.md, which doesn't exist "
                                     "(one of mods/rules/foreman.md, plugin/rules/foreman.md?)"])
 
+    def test_id_a_pytest_id_names_its_file_and_an_existing_file_is_not_missing(self):
+        # T-4148: `tests/test_app.py::App::test_it` read as a missing path; the file before :: is what is checked
+        write(self.repo, {"tests/test_app.py": "x = 1\n"})
+        self.append("README.md", "Run `tests/test_app.py::App::test_it` and `tests/test_app.py::test_other[param]`; "
+                                 "not `tests/test_gone.py::Gone::test_it`.\n")
+        details = [f["detail"] for f in docs.scan(self.repo) if f["file"] == "README.md"]
+        self.assertNotIn("tests/test_app.py", " ".join(details))
+        self.assertIn("tests/test_gone.py::Gone::test_it", details, "a test file that is gone is still drift, as written")
+        self.assertEqual(len([d for d in details if "test_gone" in d]), 1, details)
+        blockers, _ = docs.task_docs(self.repo, "README.md")
+        self.assertEqual([b for b in blockers if "tests/test_app.py" in b], [])
+        self.assertEqual(len([b for b in blockers if "tests/test_gone.py" in b]), 1, blockers)
+
+    def test_id_a_bare_doc_name_that_one_tracked_doc_has_is_that_doc(self):
+        # T-4148: "docs impact names verification.md, which doesn't exist" (11 refusals) for docs/verification.md
+        write(self.repo, {"docs/verification.md": "# Verifying\nSee `src/app.py`.\n"})
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        self.append("docs/verification.md", "And `src/never-written.py`.\n")
+        blockers, notes = docs.task_docs(self.repo, "verification.md")
+        self.assertEqual(len(blockers), 1, blockers)
+        self.assertIn("src/never-written.py", blockers[0], "its drift is checked as docs/verification.md's")
+        self.assertFalse([b for b in blockers if "doesn't exist" in b], blockers)
+        self.assertTrue(any("docs/verification.md" in n for n in notes), notes)  # says which doc it took it for
+
+    def test_id_a_bare_doc_name_two_docs_share_is_still_missing_and_names_both(self):
+        write(self.repo, {"docs/verification.md": "# A\n", "ops/verification.md": "# B\n"})
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        blockers, _ = docs.task_docs(self.repo, "verification.md")
+        self.assertEqual(blockers, ["docs impact names verification.md, which doesn't exist "
+                                    "(one of docs/verification.md, ops/verification.md?)"])
+
+    def commit_all(self):
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"],
+                       check=True)
+
+    def test_id_a_bare_name_of_a_doc_the_task_never_touched_stays_missing(self):
+        # T-4155: vendor/x/CHANGELOG.md is tracked and unchanged: "CHANGELOG.md" named in a docs impact is not it
+        write(self.repo, {"vendor/x/CHANGELOG.md": "# Vendored\n"})
+        self.commit_all()
+        blockers, notes = docs.task_docs(self.repo, "CHANGELOG.md")
+        self.assertEqual(blockers, ["docs impact names CHANGELOG.md, which doesn't exist (vendor/x/CHANGELOG.md?)"])
+        self.assertFalse([n for n in notes if "taken as" in n], notes)
+        self.append("vendor/x/CHANGELOG.md", "more\n")  # the task changed it: now it is that doc
+        blockers, notes = docs.task_docs(self.repo, "CHANGELOG.md")
+        self.assertEqual(blockers, [])
+        self.assertTrue(any("taken as vendor/x/CHANGELOG.md" in n for n in notes), notes)
+
+    def test_id_a_bare_name_of_a_doc_removed_from_disk_stays_missing(self):
+        # T-4155: git ls-files still lists a tracked doc that was deleted on disk; there is no doc to have updated
+        write(self.repo, {"docs/verification.md": "# Verifying\n"})
+        self.commit_all()
+        os.unlink(os.path.join(self.repo, "docs", "verification.md"))
+        blockers, notes = docs.task_docs(self.repo, "verification.md")
+        self.assertEqual(blockers, ["docs impact names verification.md, which doesn't exist (docs/verification.md?)"])
+        self.assertFalse([n for n in notes if "taken as" in n], notes)
+
+    def test_id_an_ignore_entry_matches_the_file_of_a_pytest_id(self):
+        # T-4155: findings are named by the file part of path::Class::test; git's ignore rules must see that file too
+        self.append(".gitignore", "src/gen_*.py\n")
+        self.append("README.md", "Run `src/gen_x.py::T::test_it`, not `src/other_gone.py::T::test_it`.\n")
+        details = [f["detail"] for f in docs.scan(self.repo) if f["file"] == "README.md"]
+        self.assertFalse([d for d in details if "gen_x" in d], details)
+        self.assertIn("src/other_gone.py::T::test_it", details)
+
     def test_task_docs_docs_proof_a_renamed_flag_blocks_and_prose_checks_nothing(self):
         # T-2381: the static rung of fm prove --docs runs on the lines the task added to the docs it names
         write(self.repo, {"bin/mycli": cli("/dev/null"), "CHANGELOG.md": "# Changes\n"})

@@ -81,7 +81,8 @@ def run(p):
             if cmd:
                 before = c.worktree_tree(p.root)  # T-3270: the verdict is for the tree the run began on
                 # T-4267: at nice 10 like the lane gates (T-4197): an edit's check never competes with a gate
-                code, output = c.run_command(p.root, cmd, 600, niced=True)
+                env, _ = cli._venv_env(p.root, cli._skip_env({}), cmd)  # T-4150: the project's own interpreter
+                code, output = c.run_command(p.root, cmd, 600, niced=True, env=env)
                 _record(p, cmd, tests, code, output)
                 _write_pass(p, cmd, before, code)
             if not os.path.exists(os.path.join(d, "dirty")):

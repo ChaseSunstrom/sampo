@@ -97,8 +97,15 @@ def scan(root):
         rel, here = os.path.relpath(md, root), os.path.dirname(md)
         missing = [t for t in dead_paths(text, here) if _anchored(t, root, here, tops)
                    and not os.path.exists(os.path.join(root, path_part(t)))]  # T-4597: tests/x.py::C::t is tests/x.py
-        ignored = _ignored(root, missing)
-        findings += [{"file": rel, "kind": "path", "detail": t} for t in missing if t not in ignored]
+        # T-4155: ignore entries match the file (a path::Class::test id is no path git could ignore), as the finding is named
+        ignored = _ignored(root, list(dict.fromkeys(path_part(t) for t in missing)))
+        # T-4148: a gone test file is one finding however many of its ids (path::Class::test) the doc cites; the finding
+        # keeps the first id as written (T-4597), so the doc line can be found
+        first = {}
+        for t in missing:
+            if path_part(t) not in ignored:
+                first.setdefault(path_part(t), t)
+        findings += [{"file": rel, "kind": "path", "detail": d} for d in first.values()]
         findings += [{"file": rel, "kind": "command", "detail": cmd} for cmd in stale_commands(text, root)]
     return findings
 
@@ -418,6 +425,21 @@ def _added_text(root, rel):
         return ""
 
 
+def _touched_docs(root):
+    """T-4155: the files the working tree changes against HEAD, and the untracked ones (root-relative); empty when git
+    can't say, so a name is then never taken for a doc on a guess."""
+    try:
+        changed = subprocess.run(["git", "-C", root, "diff", "--name-only", "--relative", "HEAD", "--"],
+                                 capture_output=True, text=True, timeout=30)
+        fresh = subprocess.run(["git", "-C", root, "ls-files", "--others", "--exclude-standard"],
+                               capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    if changed.returncode or fresh.returncode:
+        return set()
+    return set(changed.stdout.splitlines()) | set(fresh.stdout.splitlines())
+
+
 def task_docs(root, docs_impact):
     """For fm task done (M/L): (blockers, notes). Docs the task says it updated must exist and add no drift; drift in
     other docs, and old drift in the ones it updated, is reported, not blocking, so an old problem never holds up
@@ -430,9 +452,21 @@ def task_docs(root, docs_impact):
     except (OSError, subprocess.SubprocessError):
         tracked = []
     meant = {n: [t for t in tracked if t.endswith("/" + n)] for n in gone}
+    # T-4148: a bare file name ("verification.md": 11 refusals for docs/verification.md) that exactly one tracked doc
+    # has is that doc, as `git add verification.md` would find it; a name with a folder part may be a typo and still
+    # blocks, with the hint (T-1995). The doc it was taken for is checked for drift in its place.
+    # It must be on disk (git ls-files lists a doc `rm` deleted) and one the task's working tree changed against HEAD (a
+    # vendor/x/CHANGELOG.md nobody touched is no doc this task updated): else it stays missing, with the hint.
+    cand = {n: meant[n][0] for n in gone if "/" not in n and len(meant[n]) == 1
+            and os.path.exists(os.path.join(root, meant[n][0]))}
+    touched = _touched_docs(root) if cand else set()
+    took = {n: t for n, t in cand.items() if t in touched}
+    if took:
+        named = (named - set(took)) | set(took.values())
+        gone = [n for n in gone if n not in took]
     blockers = [f"docs impact names {n}, which doesn't exist" + (f" ({meant[n][0]}?)" if len(meant[n]) == 1 else
                 f" (one of {', '.join(meant[n][:3])}?)" if meant[n] else "") for n in gone]  # T-2000: up to three
-    notes = []
+    notes = [f"docs impact names {n}: taken as {t}, the one tracked doc of that name" for n, t in sorted(took.items())]
     added = {}
     for f in scan(root):
         line = f"{f['file']}: {f['kind']} {f['detail']}"

@@ -2109,7 +2109,10 @@ def _close_affected(p, b, runs, args):
         _step_note(args, "affected", "cached")  # T-4600
         return
     _step_note(args, "affected", "ran")  # T-4600: it did run here: the seconds beside it are the tests'
-    env, timeout = _skip_env(skip), c.load_scaled(args.timeout if args.timeout > 0 else None)
+    env, venv = _venv_env(p.root, _skip_env(skip), cmd)  # T-4150: the close's run is the one that said "a module is missing"
+    timeout = c.load_scaled(args.timeout if args.timeout > 0 else None)
+    if venv:
+        say(f"linked tests: {_venv_note(venv)}")
     t0 = time.monotonic()
     code, output = c.run_command(p.root, cmd, timeout, env=env)
     if code and code != 124:
@@ -6532,6 +6535,49 @@ def _skip_env(skip):
     return dict(env, FOREMAN_SKIP_TESTS=",".join(sorted(skip))) if skip else env
 
 
+VENV_DIRS = (".venv", "venv")  # a Python project's own environment, by the two names tools give it (mint.DEP_DIRS)
+
+
+def _venv_env(root, env, cmd=None):
+    """T-4150: (env, which) with the project's own virtualenv first on PATH, as `activate` does: the linked tests
+    ran under whatever python3 the shell had, so a module only the project's .venv holds read as "a module is missing"
+    (12 refusals in one session). Every place that runs a project's linked tests takes its environment from here
+    (check --affected, the close, ship's first run, the train probe, the ambient run). A lane is a worktree and the
+    venv is untracked, so it isn't there: the main checkout's is used (read only; nothing installs or writes through
+    it), and since an editable install in it points at the main checkout's source, the lane's folder (and its src/)
+    goes first on PYTHONPATH so the lane's own edit is what the tests import; `which` then says "the main checkout's
+    .venv". One already on PATH, none, or `cmd` being this repo's own stdlib runner (plugin/tests/run.py: any .venv
+    must not change how Sampo tests itself) leaves env as it was and `which` None. Reuses mint._deps's pairing of PATH
+    and VIRTUAL_ENV."""
+    active = env.get("VIRTUAL_ENV")
+    if active and os.path.join(active, "bin") in (env.get("PATH") or "").split(os.pathsep):
+        return env, None
+    if cmd and _run_py_names(cmd) and os.path.isdir(os.path.join(root, "plugin", "lib", "sampo")):  # a Sampo tree
+        return env, None
+    roots = [root]
+    try:
+        main = c.main_worktree(root)
+    except (OSError, subprocess.SubprocessError):
+        main = None
+    if main and main != os.path.realpath(root):
+        roots.append(main)
+    for base in roots:
+        for d in VENV_DIRS:
+            bin_ = os.path.join(base, d, "bin")
+            if os.path.isfile(os.path.join(bin_, "python3")) or os.path.isfile(os.path.join(bin_, "python")):
+                got = {**env, "PATH": bin_ + os.pathsep + (env.get("PATH") or ""), "VIRTUAL_ENV": os.path.join(base, d)}
+                if base == root:
+                    return got, d
+                lane = [x for x in (root, os.path.join(root, "src")) if os.path.isdir(x)]
+                got["PYTHONPATH"] = os.pathsep.join(lane + [x for x in (env.get("PYTHONPATH") or "").split(os.pathsep) if x])
+                return got, f"the main checkout's {d}"
+    return env, None
+
+
+def _venv_note(which):
+    return f"python from {which}" if which.startswith("the ") else f"python from the project's {which}"
+
+
 def _left_out(skip):
     """The line fm check prints for what red_first_tests left out."""
     by = {}
@@ -6938,7 +6984,8 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
         if wide or fresh else set()  # T-2992: a builder's missing MASTER bullet or fm shim fails in its own lane; T-4684: a NEW test module trips them too (T-3316), a changed one doesn't
     if lock is not None:  # T-4648: the bounded lock: the linked tests of the scope's files, no hub, rule or budget extras
         budget = rules = set()
-        every = sorted(set(smap.tests_for(m, sorted(changed))) | own, key=lambda t: _lock_rank(t, changed))
+        every = sorted((t for t in set(smap.tests_for(m, sorted(changed))) | own  # T-4149: a deleted file takes no slot
+                        if os.path.exists(os.path.join(p.root, t))), key=lambda t: _lock_rank(t, changed))
         lock["linked"] = len(every)
         every = every[:LOCK_MODULES]
     else:
@@ -6958,7 +7005,15 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
         d = os.path.dirname(run) + "/" if run and os.path.dirname(run) else ""
         return [t for t in ts if t.startswith(d)]
 
+    absent = [x for x in every if not os.path.exists(os.path.join(p.root, x))]
+    had = set((c._git(p.root, "ls-tree", "-r", "--name-only", base, "--", *absent, timeout=30, fail="") or "").splitlines()
+              ) if absent else set()
+
     def build(every):
+        # T-4149: a test file the diff deleted (or renamed away: --no-renames lists both names, the new one is in `own`)
+        # is no test to run: pytest exits 4 on a path that isn't there, and the affected run could never pass
+        # (T-4155: only a file the base had; one git never knew is a new test the caller names, and stays in the run)
+        every = [x for x in every if os.path.exists(os.path.join(p.root, x)) or x not in had]
         rest = [x for x in every if not any(x.endswith(e) for e in by)]
         groups = [("", template, home(template, _runnable(template, rest)))] if template else []
         groups += [(e, t, home(t, [x for x in every if x.endswith(e)])) for e, t in by.items()]
@@ -7051,6 +7106,45 @@ def _check_lock(p, args):
     return 1 if code else 0
 
 
+GATE_LINES = 6  # a project with many gates names this many, then counts the rest
+
+
+def _gate_lines(p):
+    """T-4140: what --affected leaves to the full gates, per project gate (not a suite the affected command runs a part
+    of: its template, and each of affected_by's, is matched by suite_gate as the close matches it). A gate with declared
+    paths (sampo check paths N GLOB…, the project's own mapping) says "skipped" only when the full check really would
+    skip it now (_paths_unchanged: its newest run passed, recently, in this environment, nothing under its paths changed
+    since); with paths but no such pass it says it runs; with none it says how to map it. Returns [{"cmd", "run",
+    "why"}]; close, train and ship still run every gate (sampo check --fresh)."""
+    meta = c.read_meta(p)
+    checks, paths = list(meta.get("checks") or []), meta.get("check_paths") or {}
+    templates = [t for t in [meta.get("affected"), *(meta.get("affected_by") or {}).values()] if t]
+    suites = {g for t in templates if (g := suite_gate(p.root, t, checks))}
+    snap = c.worktree_tree(p.root)
+    tree = snap[:12] if snap else None
+    rows = []
+    for n, cmd in enumerate(checks, 1):
+        if cmd in suites:
+            continue
+        globs, shown = paths.get(cmd), c.fit(cmd, 100)
+        if not globs:
+            rows.append({"cmd": shown, "run": True,
+                         "why": f"no paths declared, the full check runs it; map it: sampo check paths {n} GLOB…"})
+        elif skipped := _paths_unchanged(p, cmd, globs, tree):
+            rows.append({"cmd": shown, "run": False, "why": c.fit(skipped[0], 200)})
+        else:
+            rows.append({"cmd": shown, "run": True, "why": c.fit(
+                f"the full check runs it (no recent pass here, or a change under {', '.join(globs)})", 200)})
+    return rows
+
+
+def _gate_text(rows, error=None):
+    if error:
+        return f"\n  ! gate lines unavailable ({error}); the full check still runs every gate"
+    shown ="".join(f"\n  gate {r['cmd']}: {r['why']}" for r in rows[:GATE_LINES])
+    return shown + (f"\n  … {len(rows) - GATE_LINES} more gate(s)" if len(rows) > GATE_LINES else "")
+
+
 def _check_affected(p, args):
     """Only the tests linked (fm map) to files changed since the task started, with the project's template."""
     skip = {}  # T-1101: another open task's red-first test files, left out as the full gates leave them out
@@ -7065,23 +7159,35 @@ def _check_affected(p, args):
     if cmd:
         guard_stored(p, act, cmd)  # T-0901: the template is a stored command
     # T-1131: a changed test file is always in `tests` (T-0875) unless the template's runner can't run it: say so
-    odd = sorted(f for f in changed if c.TESTISH.search(os.path.basename(f)) and c.CODE.search(f) and f not in tests
-                 and os.path.basename(f).rsplit(".", 1)[0] not in skip)
+    testish = sorted(f for f in changed if c.TESTISH.search(os.path.basename(f)) and c.CODE.search(f) and f not in tests
+                     and os.path.basename(f).rsplit(".", 1)[0] not in skip)
+    # T-4149: a test file the diff deleted is dropped from the command (nothing to run), said apart from one the runner can't run
+    gone = [f for f in testish if not os.path.exists(os.path.join(p.root, f))]
+    odd = [f for f in testish if f not in gone]
     note = (f"\n! {len(odd)} changed test file(s) this affected command can't run: {', '.join(odd[:5])}"
             f"{' …' if len(odd) > 5 else ''}; run their own suite") if odd else ""
+    note += (f"\n  {len(gone)} deleted test file(s) left out of the command: {', '.join(gone[:5])}"
+             f"{' …' if len(gone) > 5 else ''}") if gone else ""
     sd = _self_docs_affected(p)  # T-4279: every affected run, a docs-only edit with no linked test included
     sd_fail = f"\n✗ self docs: {sd.detail}" if sd is not None and sd.status == "FAIL" else ""  # the file and line named
     sd_json = None if sd is None else {"status": sd.status, "detail": sd.detail}
+    gates_error = None
+    try:  # T-4140: say which project gates the full check would skip or run; a hint, never a verdict
+        gates = _gate_lines(p)
+    except Exception as e:  # an empty list would read as "no gates": the failure is said, in text and JSON
+        gates, gates_error = [], f"{type(e).__name__}: {c.fit(c.plain(str(e)), 150)}"
     if not tests:
         return out(args, {"tests": [], "changed": sorted(changed), "unrunnable": odd, "skipped_tests": skip, "hubs": hubs,
-                          "self_docs": sd_json, "exit": int(bool(sd_fail)), "cut_off": False, "failed": []},  # T-4286
+                          "self_docs": sd_json, "exit": int(bool(sd_fail)), "cut_off": False, "failed": [],  # T-4286
+                          "gates": gates, "gates_error": gates_error, "deleted_tests": gone},
                    (f"all {len(skip)} linked test module(s) skipped (other lanes' red-first tests); run the full "
                     f"gates: sampo check\n! {_left_out(skip)}" if skip else
                     f"No tests linked to the {len(changed)} changed file(s); run the full gates: sampo check") + note
-                   + sd_fail) or int(bool(sd_fail))
+                   + _gate_text(gates, gates_error) + sd_fail) or int(bool(sd_fail))
     run_id = c.new_run_id(cmd)  # T-4268: the record its run.py leaves is stamped with this id
+    env, venv = _venv_env(p.root, _skip_env(skip), cmd)  # T-4150: the project's own interpreter
     code, output = c.run_command(p.root, cmd, c.load_scaled(args.timeout if args.timeout > 0 else None),
-                                 env=_skip_env(skip), niced=bool(p.lane), run_id=run_id)  # T-4197: a lane's affected tests
+                                 env=env, niced=bool(p.lane), run_id=run_id)  # T-4197: a lane's affected tests
     exit_code = code or int(bool(sd_fail))
     named = _named(p.root, cmd, run_id, code, output)  # a deadline or a pipe lost the names: the record has them
     rec = c.run_record(p.root, cmd, run_id) if code else None  # T-4286: sampo lane accept reads these, never the text
@@ -7098,14 +7204,16 @@ def _check_affected(p, args):
             tree=c.worktree_id(p.root), ran=True),
             "evidence", {"step": args.step, "ac": args.ac, "cmd": "fm check --affected", "result": result[:200]})
     out(args, {"tests": tests, "exit": exit_code, "changed": sorted(changed), "skipped_tests": skip, "unrunnable": odd,
-               "hubs": hubs, "self_docs": sd_json, **held},
+               "hubs": hubs, "self_docs": sd_json, "venv": venv, "gates": gates, "gates_error": gates_error,
+               "deleted_tests": gone, **held},
         f"{'✗' if code else '✓'} affected tests only ({len(tests)}): {cmd} → {c.run_result(code, output)}"
+        + (f"\n  {_venv_note(venv)}" if venv else "")
         + "".join("\n" + l for l in c.class_lines(c.failed_classes(output))) * bool(code)  # T-3397: every one
         + "".join("\n" + l for l in named)
         + "".join(f"\n  hub {f}: " + (f"{len(i['tests'])} test(s) by {', '.join((i['symbols'] or [])[:6]) or 'its path'}"
                                       if i["tests"] is not None else f"all {i['linked']} linked (change not mappable)")
                   for f, i in hubs.items())
-        + (f"\n! {_left_out(skip)}" if skip else "") + note + sd_fail
+        + (f"\n! {_left_out(skip)}" if skip else "") + note + _gate_text(gates, gates_error) + sd_fail
         + "\n(the full gates still decide before commit and done: sampo check)")
     return 1 if exit_code else 0
 
