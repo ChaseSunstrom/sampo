@@ -1279,10 +1279,17 @@ def _fast_forward(main, tip):
                 f"'{tag}' (git stash list)")
 
 
+def _ids(args):
+    """The ids a train was named: the first positional and every one after it (T-4833: `train T-1 T-2` read only T-1
+    and landed it alone, naming no other), each split on commas too (T-1,T-2)."""
+    words = [args.id or ""] + list(getattr(args, "more", None) or [])
+    return [x for w in words for x in w.replace(",", " ").split() if x]
+
+
 def cmd(p, args, main, close=False):
     """sampo lane train IDS; `close` (T-4596: the multi-id sampo lane merge) also closes each task it landed, through
     close_landed: the train's gate pass serves every close, so the merge costs no gate run beyond the train's."""
-    ids = [x for x in (args.id or "").replace(",", " ").split() if x]  # one positional: T-1,T-2
+    ids = _ids(args)
     owed = [False]
     try:  # T-4718: the verify starts after the ship below (or at the end); a train that raises leaves records: it starts too
         got = train(p, main, ids, defer_verify=True)

@@ -436,6 +436,16 @@ class Train(TrainCase):
         self.assertEqual(self.gate_runs(), 1)
         self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")))
 
+    def test_space_separated_ids_all_train(self):
+        # T-4833: `sampo lane train T-1 T-2` read only the first id and landed T-1 alone, naming no other
+        a, b = self.lane(1, "a.txt"), self.lane(2, "b.txt")
+        r = self.fm("lane", "train", a, b)
+        self.assertIn(a, r.stdout)
+        self.assertIn(b, r.stdout)
+        for name in ("a.txt", "b.txt"):
+            self.assertTrue(os.path.exists(os.path.join(self.repo, name)), name)
+        self.assertEqual(self.gate_runs(), 1)
+
     def test_a_red_base_stops_the_train_instead_of_blaming_a_lane(self):
         with open(os.path.join(self.repo, "BREAK"), "w") as f:
             f.write("x\n")

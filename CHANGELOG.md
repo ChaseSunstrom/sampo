@@ -12,6 +12,8 @@
 ### Everything else
 
 - sampo private add and rm now rebuild the profile and its linked AGENTS.md and GEMINI.md at once, so a new private term leaves them at once, and the rebuild runs outside the state lock (T-4819).
+- A profile build with no items (no seed, no memories) now removes the old profile.md and Sampo's block in each linked AGENTS.md or GEMINI.md, keeping the user's own text and the link, so an older copy can't keep a private term added since (T-4831).
+- sampo lane train T-1 T-2 trains every id it is given: it read only the first and landed it alone, naming no other (T-4833).
 - Serve's integrate, the pull-request train and the train now share one landing hold (`lanes.land_holds`: private term, failed scan, guard, self-change gate), an unreadable private-term list holds a lane and refuses ship and release, a builder can no longer run gate-changing `sampo check` verbs, and the Bash guard reads a sampo verb the shell computes (joined literals, variables, expansio… (T-4785).
 - A close now runs only the linked tests no passing gate row covered, and a prose-only change keeps only the run-cache picks whose test names the file, so a train's near-complete pass no longer sends a close through 300 seconds of re-runs (T-4822).
 - Sampo can build and install the native sampo-fast guard binary after an offline locked build and a probe against the Python hook, from `sampo doctor --repair` or install.sh, and any doubt leaves the Python hook in charge (T-3608).
