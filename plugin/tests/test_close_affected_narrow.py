@@ -106,6 +106,19 @@ class Narrow(ForemanTestCase):
         self.write("plugin/lib/mod.py", "X = 2\n")
         self.assertIn("test_b.py", self.names())
 
+    def test_an_agent_definition_change_runs_the_modules_that_read_that_file_and_no_other(self):
+        """T-4822: reading is the truth (the run cache records each file a class read, through a computed path or a
+        listing too), so a change to one agent .md file runs the classes that read it, never one that read another."""
+        self.seed({"plugin/agents/fm-x.md": "# x\n", "plugin/agents/fm-y.md": "# y\n",
+                   "plugin/tests/test_a.py": CASE.format(n="1"), "plugin/tests/test_b.py": CASE.format(n="1"),
+                   "plugin/tests/test_c.py": CASE.format(n="1")})
+        self.record(**{"test_a.T": ["*", "plugin/agents/fm-x.md", "plugin/tests/test_a.py"],
+                       "test_b.T": ["*", "plugin/agents/fm-x.md", "plugin/tests/test_b.py"],
+                       "test_c.T": ["*", "plugin/agents/fm-y.md", "plugin/tests/test_c.py"]})
+        self.focus()
+        self.write("plugin/agents/fm-x.md", "# x, changed\n")
+        self.assertEqual(self.names(), ["test_a.py", "test_b.py"])
+
 
 class Close(ForemanTestCase):
     """A close of a test-only change after a train's gate pass that ran that module."""

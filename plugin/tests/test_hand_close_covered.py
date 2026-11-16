@@ -65,7 +65,7 @@ class HandClose(AffectedBase):
         before = self.suite_runs()
         out = self.finish(a)
         self.assertGreater(self.suite_runs(), before, out)
-        self.assertEqual(self.affected_note(out), "ran")
+        self.assertTrue(self.affected_note(out).startswith("ran"), out)  # T-4822: "ran 1 of 3": the edited module only
 
     def test_a_later_change_to_a_file_the_task_changed_runs_the_tests_again(self):
         _, b = self.landed()

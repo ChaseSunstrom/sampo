@@ -77,14 +77,25 @@ class CloseAffectedReuse(ForemanTestCase):
         # T-3548: an untracked scripts/ kept every close off the train's pass, and each reran its tests silently
         tid = self.close()
         self.fm("check", env={"FOREMAN_SENTINEL": "off"})
+        self.write("calc.py", SRC + "# tidy\n# and again, after the pass\n")  # T-4822: a file the linked test reads
+        out, ev = self.finish(tid)
+        self.assertEqual(self.runs(), 2, "the code the test reads moved: the linked tests run")
+        self.assertIn("linked tests: no reusable gate pass: the newest full gate run (", out)
+        self.assertIn("was on another code tree: 1 file(s) differ: calc.py", out)
+        self.assertIn("calc.py", ev["miss"])
+
+    def test_a_stray_file_no_test_links_leaves_the_pass_standing(self):
+        # T-4822: it differs from the pass's tree, but what could it break? The close judges it as it judges the task's
+        # own change: by the tests linked to it, here none
+        tid = self.close()
+        self.fm("check", env={"FOREMAN_SENTINEL": "off"})
         os.makedirs(os.path.join(self.repo, "scripts"))
         self.write("scripts/stray.py", "x = 1\n")
         self.fm("task", "log", tid, "scope: a stray untracked file, not this task's")
         out, ev = self.finish(tid)
-        self.assertEqual(self.runs(), 2, "the code tree moved: the linked tests run")
-        self.assertIn("linked tests: no reusable gate pass: the newest full gate run (", out)
-        self.assertIn("was on another code tree: 1 file(s) differ: scripts/stray.py", out)
-        self.assertIn("scripts/stray.py", ev["miss"])
+        self.assertEqual(self.runs(), 1, "nothing depends on the stray file: the pass's run stands")
+        self.assertIn("covered by the gates' pass", out)
+        self.assertEqual(ev["residual"]["ran"], [])
 
     def test_no_pass_at_all_says_so(self):
         out, _ = self.finish(self.close())
@@ -126,6 +137,18 @@ class CloseAffectedReuse(ForemanTestCase):
         out, ev = self.finish(tid)
         self.assertEqual(self.runs(), before, "a test the train's selection covers ran again")
         self.assertIn("the suite on 1 affected module(s)", ev.get("reused", ""), out)
+
+    def test_a_whole_suite_gates_test_the_difference_reaches_still_runs(self):
+        # T-4822 review: a test whose extension a gate runs in full is no module name, so the residual never asked
+        # whether the files differing since the pass reach it: it must run again, the one module the pass held must not
+        tid = self.ui_close(gated=True)
+        self.write("ui/calc.test.tsx", "test('adds three', () => {})\n")  # after the train's pass
+        self.fm("task", "log", tid, "scope: ui/calc.test.tsx, the test of what it changed, edited after the pass")
+        before = self.runs()
+        out, ev = self.finish(tid)
+        self.assertEqual(self.runs(), before + 1, "only the .tsx runner: test_calc's pass stands: " + out)
+        self.assertIn("ui/calc.test.tsx", ev["residual"]["ran"])
+        self.assertNotIn("test_calc", ev["residual"]["ran"])
 
     def test_another_runners_tests_no_gate_runs_are_run(self):
         # T-3566 review: with no gate for the .tsx runner no pass ran those tests, so the close runs them

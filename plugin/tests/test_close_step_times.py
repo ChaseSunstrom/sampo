@@ -102,12 +102,11 @@ class CloseStepTimes(ForemanTestCase):
     def test_a_changed_tree_still_runs_them_and_names_the_file(self):
         tid = self.task()
         self.fm("check", env={"FOREMAN_SENTINEL": "off"})
-        self.write("scripts/stray.py", "x = 1\n")
-        self.fm("task", "log", tid, "scope: a stray untracked file, not this task's")
+        self.write("calc.py", SRC + "# tidy\n# changed after the pass\n")  # T-4822: code a linked test reads
         before = self.runs()
         out = self.finish(tid)
         self.assertEqual(self.runs(), before + 1)
-        self.assertIn("1 file(s) differ: scripts/stray.py", out)
+        self.assertIn("1 file(s) differ: calc.py", out)
         self.assertEqual(self.steps_of(out)[1]["affected"][1], "ran")
 
     def test_a_state_index_file_in_an_ignored_path_leaves_the_pass_standing(self):

@@ -373,6 +373,7 @@ ALLOWED = {  # name: why it reads a diff itself, and why that is no close-time r
     "_cmd_check": "sampo check: the files a gate run wrote, one tree against the next",
     "_paths_unchanged": "a gate's cached pass: the tree it passed on against the tree now, no task involved",
     "_tree_diff": "files between two trees a caller names, no task base",
+    "_residual": "T-4822: the files between a gate row's code tree and the code tree now (two trees, no task base)",
     "_hub_tests": "symbols of the files changed between a base and a tree the caller (affected) hands it, already the view's",
     "_audit_scan": "sampo audit scan: any diff (a branch, a PR checkout), no task needed",
     "cmd_audit": "the audit brief's diff is the whole range the reviewer reads, by design (a separate reader, not a gate)",

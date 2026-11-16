@@ -2074,14 +2074,78 @@ def _gates_cover(p, tests, why=None, keep=None):
     name, and another runner's (affected_by: the .tsx part any plugin/ change links) count only when a gate runs that
     runner (the pass ran it in full), else nothing is reused; read off the close command, that part kept 0 of 6 closes
     on a green train. `why`, `keep`: _cached_pass."""
-    meta, say = c.read_meta(p), (lambda m: why.append(m) if why is not None else None)  # noqa: E731
+    names = _gate_names(p, tests, lambda m: why.append(m) if why is not None else None)
+    return None if names is None else _full_pass(p, names, why, keep)
+
+
+def _gate_names(p, tests, say, gated_out=None):
+    """T-3566: the module names of `tests` a gate's pass can have run (see _gates_cover), or None, with `say(why)`
+    called, when some gate cannot stand in for them. Tests of an extension a gate runs in full (a .tsx suite) are no
+    names: a pass on the same code ran them whole; a list passed as `gated_out` (T-4822) gets their paths."""
+    meta = c.read_meta(p)
     checks, by = meta.get("checks") or [], meta.get("affected_by") or {}
     if not suite_gate(p.root, meta.get("affected") or "", checks):
         return say("the affected-tests command runs part of no gate")
     gated = tuple(e for e, tpl in by.items() if suite_gate(p.root, tpl, checks))
     if loose := sorted({e for e in by if e not in gated and any(t.endswith(e) for t in tests)}):
         return say(f"no gate runs the {c.joinmore(loose, 3)} tests")
-    return _full_pass(p, [os.path.basename(t).rsplit(".", 1)[0] for t in tests if not t.endswith(gated)], why, keep)
+    if gated_out is not None:
+        gated_out.extend(t for t in tests if t.endswith(gated))
+    return [os.path.basename(t).rsplit(".", 1)[0] for t in tests if not t.endswith(gated)]
+
+
+def _residual(p, tests, keep):
+    """T-4822: a close's linked tests that a passing gate row covers in part: {"run": the module names left to run,
+    "covered": how many the row stands for, "by": its provenance}, or None when no row helps. T-4820's close reran 407
+    modules (361 s) after the train that held its code, for the one module the train's set lacked; T-4826's, 311 s, for
+    three files that differed from the train's tree. A row (a flawless one: _row_flaw) on code tree X covers each module
+    it ran (all of them for a full run) except those the files differing between X and now reach: the tests
+    `affected(since=X, only=those files)` names, so what a change could break is judged as a change on X. Of the newest
+    flawless rows, the one leaving the fewest. A CHANGELOG the row never saw must read clean, as for a whole reuse.
+    None when git or the map can't say, or more than RESIDUAL_FILES files differ."""
+    gated = []  # tests of an extension a gate runs whole: judged against the difference too, never assumed covered
+    names = _gate_names(p, tests, lambda m: None, gated)
+    checks = list(c.read_meta(p).get("checks") or [])
+    snap = c.worktree_tree(p.root) if names and checks else None
+    if not snap:
+        return None
+    skip = red_first_tests(p, c.active_brief(c.load_briefs(p), p.lane), checks)
+    ctree, best, tried = c.code_tree(p.root, snap), None, 0
+    for e in reversed(c.ledger_tail(p, 2000)):
+        d = e.get("data") or {}
+        if e.get("event") != "check_run" or not d.get("code_tree") or _row_flaw(e, checks, skip) or tried >= 3:
+            continue
+        tried += 1
+        part = next((r["affected"] for r in d.get("results") or [] if r.get("affected")), None)
+        cov, files, reach = set(names) if part is None else set(names) & set(part), [], []
+        if d["code_tree"] != ctree:
+            r = c._git(p.root, "diff", "--name-only", "--no-renames", d["code_tree"], ctree, timeout=10, proc=True)
+            files = [f for f in r.stdout.split("\n") if f] if r.returncode == 0 else None
+            if files is None or len(files) > RESIDUAL_FILES:
+                continue  # a pruned tree, a timeout, a wide difference: this row says nothing
+            try:
+                hit = affected(p, since=d["code_tree"], only=set(files))[1]
+            except (UsageError, OSError, ValueError, subprocess.SubprocessError):
+                continue
+            cov -= {os.path.basename(t).rsplit(".", 1)[0] for t in hit}
+            reach = [t for t in gated if t in set(hit)]  # a whole-suite gate's test the difference reaches runs again
+        run = [n for n in names if n not in cov]
+        total = len(names) + len(gated)
+        if len(run) + len(reach) < total and (best is None or len(run) + len(reach) < len(best["run"])):
+            ts = str(e.get("ts", ""))
+            best = {"run": run + reach, "paths": reach, "covered": total - len(run) - len(reach), "row": d, "by": (
+                f"run {ts[:10]} {ts[11:16]} UTC, code_tree {d['code_tree'][:12]}, from {e.get('task') or 'a train'}"
+                + (f", the suite on {len(part)} affected module(s)" if part else "")
+                + (f"; {len(files)} file(s) differ since: {c.joinmore(files, 3)}" if files else ""))}
+            if not best["run"]:
+                break
+    # a CHANGELOG the row never saw is read (test_docs.Judgment, up to 300 s) only when nothing is left to run: a close
+    # that runs tests reads no changelog, as before; one that runs none must not let a bad line ride in
+    if best and not best["run"] and best["row"].get("changelog") != _changelog_hash(p.root) and not _changelog_reads_clean(p):
+        return None
+    if best:
+        best.pop("row")
+    return best
 
 
 def suite_gate(root, template, checks):
@@ -2147,6 +2211,24 @@ def _close_affected(p, b, runs, args):
         return
     if why:  # T-3548: a miss says why instead of a silent rerun
         say(f"linked tests: no reusable gate pass: {why[0]}")
+    res = _residual(p, tests, keep)  # T-4822: a pass that covered most of them leaves the close the rest
+    note = "ran"
+    if res and not res["run"]:
+        c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "exit": 0, "reused": res["by"], "s": 0,
+                                                          "residual": {"ran": [], "covered": res["covered"]}},
+                    session=session())
+        say(f"linked tests: covered by the gates' pass ({res['by']})")
+        _step_note(args, "affected", "covered")
+        return
+    if res:
+        left = {t for t in tests if t in res["paths"] or os.path.basename(t).rsplit(".", 1)[0] in res["run"]}
+        small, _, _ = affected(p, b, among=left)
+        if small:
+            cmd, note = small, f"ran {len(res['run'])} of {len(res['run']) + res['covered']}"
+            say(f"linked tests: {res['covered']} of {len(res['run']) + res['covered']} covered by the gates' pass "
+                f"({res['by']}); running {c.joinmore(res['run'], 4)}")
+        else:
+            res = None
     guard_stored(p, b, cmd)
     from sampo import ambient
     if ambient.passed(p, cmd):  # T-3270: the ambient run passed this command on this exact tree: nothing to rerun
@@ -2154,7 +2236,7 @@ def _close_affected(p, b, runs, args):
                                                           "cached": True}, session=session())
         _step_note(args, "affected", "cached")  # T-4600
         return
-    _step_note(args, "affected", "ran")  # T-4600: it did run here: the seconds beside it are the tests'
+    _step_note(args, "affected", note)  # T-4600: it did run here: the seconds beside it are the tests'
     env, venv = _venv_env(p.root, _skip_env(skip), cmd)  # T-4150: the close's run is the one that said "a module is missing"
     timeout = c.load_scaled(args.timeout if args.timeout > 0 else None)
     if venv:
@@ -2169,7 +2251,9 @@ def _close_affected(p, b, runs, args):
     names = c.failing_tests(output) if code else []
     c.log_event(p, "close_affected", task=b.id, data={"cmd": c.fit(cmd, 200), "exit": code, "failing": names[:20],
                                                       "s": round(secs, 1), "cached": False,
-                                                      **({"miss": c.fit(why[0], 300)} if why else {})}, session=session())
+                                                      **({"miss": c.fit(why[0], 300)} if why else {}),
+                                                      **({"residual": {"ran": res["run"][:20], "covered": res["covered"]}}
+                                                         if res else {})}, session=session())
     if not code:
         return
     if code == 124:
@@ -6605,6 +6689,7 @@ def failure_class(output):
     return next((why for rx, why in _ENV_FAILURES if rx.search(tail)), None)
 
 
+RESIDUAL_FILES = 300  # T-4822: files differing between a gate row's code tree and now, past which the row covers nothing
 CACHE_DAYS = 0.5  # a cached pass older than this reruns: time, caches and services outside the tree drift too
 
 
@@ -6826,13 +6911,7 @@ def _cached_pass(p, checks, tree, skip=(), ctree=None, names=None, why=None, kee
                             other = f"{other}; this task's {c.joinmore(keep['differ'], 3)} changed since"
                         continue
                     held = True
-            age = c.age_days(e.get("ts"))  # T-3120: no readable time is stale, not fresh
-            bad = next((m for b, m in (
-                (d.get("env") != c.env_id(), "ran in another environment"),
-                ([r.get("cmd") for r in rs] != checks, "ran other gates"),
-                ((d.get("skip_tests") or []) != sorted(skip), "skipped other red-first tests"),
-                (any(r.get("exit") for r in rs), "failed"),
-                (age is None or age >= CACHE_DAYS, "is too old to reuse")) if b), None)
+            bad = _row_flaw(e, checks, skip)
             if bad:
                 return miss(f"{of} {bad}")
             part = next((r["affected"] for r in rs if r.get("affected")), None)
@@ -6855,6 +6934,20 @@ def _cached_pass(p, checks, tree, skip=(), ctree=None, names=None, why=None, kee
                 return miss(f"{of} never read this CHANGELOG.md, which doesn't read clean")  # no bad line rides in
             return at if held else f"{at} on the same code tree"
     return miss(other or "no full gate run is recorded")
+
+
+def _row_flaw(e, checks, skip):
+    """Why the check_run ledger row `e` cannot stand for a pass of these gates (another environment, other gates or
+    skipped tests, a failure, too old), else None. Shared by _cached_pass and the residual pass (T-4822)."""
+    d = e.get("data") or {}
+    rs = d.get("results") or []
+    age = c.age_days(e.get("ts"))  # T-3120: no readable time is stale, not fresh
+    return next((m for b, m in (
+        (d.get("env") != c.env_id(), "ran in another environment"),
+        ([r.get("cmd") for r in rs] != checks, "ran other gates"),
+        ((d.get("skip_tests") or []) != sorted(skip), "skipped other red-first tests"),
+        (any(r.get("exit") for r in rs), "failed"),
+        (age is None or age >= CACHE_DAYS, "is too old to reuse")) if b), None)
 
 
 def _changelog_hash(root):
@@ -7079,7 +7172,8 @@ def _own_view(p, b, base, changed=None, landing=True, span=None):
     return _OwnView(p, b, base, changed, landing, span)
 
 
-def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False, lock=None):
+def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False, lock=None,
+             among=None):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
     project's template; command None when no test is linked. fm check --affected and the ambient runner (T-0705).
     `hold` (T-4286): the run always holds the repo-shape classes, whatever files changed. `shape_green` (T-4563): the
@@ -7087,7 +7181,8 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
     Another open task's red-first test files are left out (T-1718); a dict passed as skipped gets them {module: task}.
     `only`: exactly these files as the changed ones (T-3533: fm ship's files main moved past the gated tree).
     `lock` (T-4648): a dict the bounded behaviour lock passes; only the tests linked to `only` and its own test files, the
-    ones named like those files first, at most LOCK_MODULES of them; it gets {"linked": how many there were}."""
+    ones named like those files first, at most LOCK_MODULES of them; it gets {"linked": how many there were}.
+    `among` (T-4822): only these test files of the set (a close's residual: what no passing gate run covered)."""
     from sampo import map as smap
     import shlex
     act = b or (None if since else c.active_brief(c.load_briefs(p), p.lane))  # T-1117 review: the closing task's base, active or not
@@ -7146,7 +7241,9 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
         ran = set(smap.ran_tests(p.root, base, tree, sorted(wide))) if wide else set()
         every = sorted(set(smap.tests_for(m, sorted(wide - set(picked)))) | set().union(*picked.values())
                        | own | importers | paired | broke | budget | rules | ran)
-    fill = lambda tpl, ts: tpl.replace("{tests}", " ".join(shlex.quote(t) for t in ts)).replace(  # noqa: E731
+    if among is not None:
+        every = [x for x in every if x in among]
+    fill =lambda tpl, ts: tpl.replace("{tests}", " ".join(shlex.quote(t) for t in ts)).replace(  # noqa: E731
         "{names}", " ".join(shlex.quote(os.path.basename(t).rsplit(".", 1)[0]) for t in ts))
 
     def home(tpl, ts):  # T-2836: a {names} runner finds tests by bare name, so only the ones in its own folder

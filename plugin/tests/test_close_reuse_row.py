@@ -81,7 +81,9 @@ class CloseReuseRow(ForemanTestCase):
         self.commit("a train landed another lane")
         out = self.close(b)
         self.assertGreater(self.runs(), ran, "a code change between the closes must rerun the linked tests")
-        self.assertEqual(self.steps_of(out)[1]["affected"][1], "ran", out)
+        # T-4822: the module that reads the changed file reruns, the one the pass held does not
+        self.assertEqual(self.runs(), ran + 1, out)
+        self.assertTrue(self.steps_of(out)[1]["affected"][1].startswith("ran"), out)
 
     # a train's affected-only pass names the modules it ran: the full suite after landing (the post-merge verify)
     # covers the rest, so a close whose linked tests the pass never ran may count on a green verify of the same code
@@ -131,6 +133,75 @@ class CloseReuseRow(ForemanTestCase):
         self._train_row(["test_other"])  # the train's pass on the code as it is now
         why = []
         self.assertIsNone(self._pass(["test_calc"], why), why)
+
+    # T-4822: a pass that covers most of the linked tests leaves the close only the rest. T-4820's close ran 407 modules
+    # for 361 s because the train's set lacked ONE module the close's own set held; T-4826's, 311 s, because three files
+    # differed from the train's tree: the all-or-nothing rule reran everything either time
+    def _two_changed(self):
+        tid = self.new("Both")
+        self.write("calc.py", base.SRC + "# tidy\n")
+        self.write("calc2.py", base.SRC.replace("add", "sub") + "# tidy\n")
+        return tid
+
+    def _note(self, out):
+        return self.steps_of(out)[1]["affected"][1]
+
+    def test_a_pass_that_ran_all_but_one_linked_module_leaves_the_close_that_one(self):
+        tid = self._two_changed()
+        self._train_row(["test_calc"])  # the train's set lacked test_calc2
+        before = self.runs()
+        out = self.close(tid)
+        self.assertEqual(self.runs(), before + 1, "only the module the pass never ran: " + out)
+        self.assertTrue(self._note(out).startswith("ran 1 of 2"), out)
+        self.assertIn("test_calc2", out)
+        ev = c.ledger_events(self.p, ("close_affected",))[-1]["data"]
+        self.assertEqual(ev["residual"]["ran"], ["test_calc2"])
+        self.assertEqual(ev["residual"]["covered"], 1)
+
+    def test_a_pass_on_other_code_leaves_the_close_only_what_depends_on_the_difference(self):
+        tid = self._two_changed()
+        self.fm("check", env={"FOREMAN_SENTINEL": "off"})  # a full pass on the merged code
+        self.write("calc2.py", base.SRC.replace("add", "sub") + "# tidy\n# changed after the pass\n")
+        before = self.runs()
+        out = self.close(tid)
+        self.assertEqual(self.runs(), before + 1, "test_calc does not read calc2.py: " + out)
+        self.assertTrue(self._note(out).startswith("ran 1 of 2"), out)
+
+    def test_a_pass_on_other_code_with_nothing_depending_on_the_difference_covers_the_close(self):
+        tid = self._two_changed()
+        self.fm("check", env={"FOREMAN_SENTINEL": "off"})
+        self.write("lonely.py", "X = 1\n")  # code no test links
+        self.fm("task", "log", tid, "scope: a file of another lane, no test links it")
+        before = self.runs()
+        out = self.close(tid)
+        self.assertEqual(self.runs(), before, out)
+        self.assertEqual(self._note(out).split(" ")[0], "covered", out)
+        self.assertIn("linked tests: covered by the gates' pass", out)
+
+    def test_the_changelog_is_read_only_when_the_residual_leaves_nothing_to_run(self):
+        # T-4822 review: test_docs.Judgment (up to 300 s) ran on nearly every close after a train; a close that runs
+        # tests reads no changelog (as before), one that would run none must not let a bad line ride in
+        from unittest import mock
+        tests = ["tests/test_calc.py", "tests/test_calc2.py"]
+        self.write("CHANGELOG.md", "# Changelog\n\n- a line the rows never saw (T-1)\n")  # no row holds its hash
+        with mock.patch.object(cli, "_changelog_reads_clean", return_value=False) as reads:
+            self._train_row(["test_calc"])
+            got = cli._residual(self.p, tests, {})
+            self.assertEqual(got["run"], ["test_calc2"], got)
+            reads.assert_not_called()
+            self._train_row(["test_calc", "test_calc2"])
+            self.assertIsNone(cli._residual(self.p, tests, {}), "nothing left to run and a changelog that reads dirty")
+            reads.assert_called()
+
+    def test_a_failed_or_foreign_pass_leaves_nothing(self):
+        tid = self._two_changed()
+        c.log_event(self.p, "check_run", data={
+            "tree": "0" * 12, "code_tree": c.code_tree(self.repo), "env": "another-machine", "train": ["T-1"],
+            "results": [dict(TREE, affected=["test_calc", "test_calc2"])]})
+        before = self.runs()
+        out = self.close(tid)
+        self.assertEqual(self.runs(), before + 2, "a pass from another environment covers no module: " + out)
+        self.assertEqual(self._note(out), "ran", out)
 
     def test_the_post_merge_suite_of_a_reverted_merge_covers_nothing(self):
         self._train_row(["test_other"])
