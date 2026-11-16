@@ -11,6 +11,12 @@
 
 ### Everything else
 
+- sampo code's close now reads the gate for the audits it still owes (a manifest change owes the adversary one), asks each lens as a model turn of its own, retries a lens the gate still names after a refusal once, and ends blocked on an empty or hollow reply instead of closing with no audit (T-4283).
+- test_cargo_disk takes its sizes from its own walk of the filesystem and its cap from the cache's own entries, and hands the prune its open files where macOS has no /proc, so it holds on tmpfs, ext4 and macOS (T-4741).
+- The risk budget no longer spends a point on a refused call the session rewrote and passed, tells the user once a day when it steps a full-autonomy project down, lets cargo write its Sampo-assigned target folder, and `sampo risk replay` shows the change per day (T-4742).
+- Foresight now reads a `dropped_as` field on a dropped task's brief, set by `sampo task drop --mistake` or a restore and filled once for old Log wording, instead of matching words in the Log (T-4693).
+- CI runs the macOS suite in sixths, since fifths put one shard at 89% of its deadline (T-4737).
+- A refused ship now names the failed classes, whether the rerun alone failed, the baseline task it filed (with its age when older) and the file holding the test output, and a land's in-line ship writes the same ship.log block as the detached ship (T-4739).
 - The guard reads a computed-path open with no mode or a read mode as a read, binds `map`/`Pool.map` over literal paths, and judges an argv spawn the same way in node and python by the outer command line's own words (T-4736).
 - Test leftovers: processes a test left in its deleted /tmp folder are ended by the run, tidy and lane removal, never a person's terminal process or another sandbox's, and doctor counts them (T-4720).
 - Test runs sharing /tmp now hold a lock their sweeper honours, and a merge train whose scratch worktree vanishes rebuilds it once and names the cause (T-4728).
