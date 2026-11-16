@@ -11,6 +11,11 @@
 
 ### Everything else
 
+- `fm code` gives any model Agent Skills: the prompt lists enabled-plugin and open-licence skills within a per-model budget, the `skill` action loads one fenced body or one confined ref and journals it, and scripts run only through the guard (T-1390).
+- The README's tables are drawn as numbered Board panels in the Board's own colours, with commands on chips that never split across lines and alt text naming each row (T-4771).
+- Discovered and followup captures now fold into a near-duplicate open task, append to the follow-ups of the task whose scope names the file, or file within a learned per-trigger daily allowance, with the rest held and drained best-first the next day (T-4743).
+- `sampo check --affected` no longer lists deleted or renamed test files, runs linked tests with the project's `.venv` python, and names each project gate with why the full check skips or runs it; docs impact takes a bare doc name one tracked doc has and reads `file.py::test` ids by their file (T-4155).
+- The command guard no longer refuses a download piped to a stdin-reading python beside read-only commands or a quoted `cat <<'EOF' | bash`, and a broken user rule now fails open with one note per session instead of blocking every command (T-4154).
 - sampo code's close now reads the gate for the audits it still owes (a manifest change owes the adversary one), asks each lens as a model turn of its own, retries a lens the gate still names after a refusal once, and ends blocked on an empty or hollow reply instead of closing with no audit (T-4283).
 - test_cargo_disk takes its sizes from its own walk of the filesystem and its cap from the cache's own entries, and hands the prune its open files where macOS has no /proc, so it holds on tmpfs, ext4 and macOS (T-4741).
 - The risk budget no longer spends a point on a refused call the session rewrote and passed, tells the user once a day when it steps a full-autonomy project down, lets cargo write its Sampo-assigned target folder, and `sampo risk replay` shows the change per day (T-4742).
