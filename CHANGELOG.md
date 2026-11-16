@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Every lane of a Rust project now builds into its own cargo folder under Sampo's cache, removed with its lane, pruned oldest-first under a cap, the old shared folder retired and a lane barred from writing another's, so two lanes can no longer run each other's compiled crates (T-4764).
 - `fm code` gives any model Agent Skills: the prompt lists enabled-plugin and open-licence skills within a per-model budget, the `skill` action loads one fenced body or one confined ref and journals it, and scripts run only through the guard (T-1390).
 - The README's tables are drawn as numbered Board panels in the Board's own colours, with commands on chips that never split across lines and alt text naming each row (T-4771).
 - Discovered and followup captures now fold into a near-duplicate open task, append to the follow-ups of the task whose scope names the file, or file within a learned per-trigger daily allowance, with the rest held and drained best-first the next day (T-4743).
