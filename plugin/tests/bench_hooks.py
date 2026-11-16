@@ -7,6 +7,8 @@ Also imported by `fm doctor`.
 import json
 import os
 import resource
+import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -183,12 +185,99 @@ def run_bench(runs=30, only=None):  # only: a predicate on fixture names (T-2359
     return results
 
 
+ONE_LINE = "cd {repo} && df -h / | tail -n 1"  # T-4780: the short command whose PreToolUse hook the harness timed out
+
+
+def _pct(xs, q):
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(len(xs) * q))] if xs else 0.0
+
+
+def fixed_tmp_dir():
+    """T-4780: a fresh folder under /tmp: the hook writes its bench files only under fixed temp roots (never TMPDIR)."""
+    return tempfile.mkdtemp(prefix="sampo-bench-", dir="/tmp" if os.path.isdir("/tmp") else None)
+
+
+def _stop_group(proc):
+    """End a child started with start_new_session and everything it started (a run.py's class subprocesses)."""
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except OSError:
+            break
+        try:
+            proc.wait(timeout=30 if sig == signal.SIGTERM else 10)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def stage_bench(runs=200, command=ONE_LINE, entry="fast", beside=None):
+    """T-4780: per-stage wall time (ms) of the PreToolUse hook for one short command, `runs` calls one after the other
+    through the entry Claude Code runs (hooks/fast), in a scratch project. The hook writes its own stage clock rows
+    (SAMPO_HOOK_STAGES); wall is timed here around the process. `beside`: test module names; a real
+    `python3 plugin/tests/run.py <those>` runs while the calls are made (started here, stopped here when the calls are
+    done; only the calls made while it ran are counted, so the figures are the hook's beside a test run and nothing
+    else: no load of our own is made up). Returns {"wall", "cpu": {p50, p99, max}, "stages": {name: {p50, p99, max}},
+    "runs" (counted), "load", "pressure"}."""
+    test = None
+    sink_dir = fixed_tmp_dir()
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        repo, env = _scratch_project(tmp)
+        sink = os.path.join(sink_dir, "stages.jsonl")
+        env["SAMPO_HOOK_STAGES"] = sink
+        body = json.dumps({"session_id": "bench", "cwd": repo, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                           "tool_input": {"command": command.format(repo=repo)}})
+        if beside:
+            # its own session, so the whole group can be stopped; SAMPO_SLOT=1 makes it a nested run (run.py never
+            # waits on, or takes, the machine's real test slots for it)
+            test = subprocess.Popen([sys.executable, os.path.join(HERE, "run.py"), *beside], cwd=os.path.dirname(PLUGIN),
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                                    env=dict(os.environ, SAMPO_SLOT="1"))
+        wall, cpu, counted, load, pressure = [], [], [], 0.0, 0.0
+        try:
+            for _ in range(runs):
+                t0, r0 = time.perf_counter(), resource.getrusage(resource.RUSAGE_CHILDREN)
+                subprocess.run([os.path.join(PLUGIN, "hooks", entry), "PreToolUse"], input=body, capture_output=True, text=True,
+                               env=env, cwd=repo)
+                r1 = resource.getrusage(resource.RUSAGE_CHILDREN)
+                wall.append((time.perf_counter() - t0) * 1000)
+                cpu.append((r1.ru_utime - r0.ru_utime + r1.ru_stime - r0.ru_stime) * 1000)
+                counted.append(test is None or test.poll() is None)
+                if len(wall) % 20 == 0:
+                    load, pressure = max(load, load_per_core()), max(pressure, cpu_pressure())
+        finally:
+            if test is not None:
+                _stop_group(test)  # also when it had finished: its leftover children
+        try:
+            with open(sink, encoding="utf-8") as f:
+                rows = [json.loads(ln) for ln in f if ln.strip()]
+        except OSError:
+            rows = []
+        shutil.rmtree(sink_dir, ignore_errors=True)
+    if len(rows) == len(counted):  # one row per call, in order
+        rows = [r for r, c in zip(rows, counted) if c]
+    wall, cpu = [x for x, c in zip(wall, counted) if c], [x for x, c in zip(cpu, counted) if c]
+    stages = {}
+    for k in ("start", "imports", "state", "parse", "check", "rules", "asks", "snapshot", "after", "total"):
+        xs = [r[k] for r in rows if isinstance(r.get(k), (int, float))]
+        stages[k] = {"p50": round(statistics.median(xs), 1) if xs else 0.0, "p99": round(_pct(xs, 0.99), 1),
+                     "max": round(max(xs), 1) if xs else 0.0}
+    out = {"runs": len(wall), "stage_rows": len(rows), "load": round(max(load, load_per_core()), 2),
+           "pressure": max(pressure, cpu_pressure()), "stages": stages}
+    for name, xs in (("wall", wall), ("cpu", cpu)):
+        out[name] = {"p50": round(statistics.median(xs), 1) if xs else 0.0, "p99": round(_pct(xs, 0.99), 1),
+                     "max": round(max(xs), 1) if xs else 0.0}
+    return out
+
+
 def hook_modules(only=None):
     """T-3139: {fixture: [plugin files the hook's process imported]}, one untimed run per fixture, the hook entry
     dumping its sys.modules into the file SAMPO_HOOK_MODULES names (the gate's map of which diffs can slow a hook)."""
     with open(os.path.join(HERE, "fixtures", "hook_payloads.json")) as f:
         fixtures = json.load(f)
     got = {}
+    sink_dir = fixed_tmp_dir()
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         repo, env = _scratch_project(tmp)
         env["CLAUDE_ENV_FILE"] = os.path.join(tmp, "envfile")
@@ -199,7 +288,7 @@ def hook_modules(only=None):
             event = name.split(":")[0]
             body = json.dumps(dict({"session_id": "bench", "cwd": repo, "hook_event_name": event},
                                    **json.loads(json.dumps(payload).replace("{cwd}", repo))))
-            out = os.path.join(tmp, "modules.jsonl")
+            out = os.path.join(sink_dir, "modules.jsonl")
             if name.endswith(":script"):
                 _write_script(repo, 0)
             for _ in range(2):  # state-gated lazy imports show on a later run
@@ -212,6 +301,7 @@ def hook_modules(only=None):
                         files.update(json.loads(ln))
                 os.remove(out)
             got[name] = sorted(files)
+    shutil.rmtree(sink_dir, ignore_errors=True)
     return got
 
 
@@ -238,6 +328,11 @@ def injection_sizes():
 def main():
     if "--modules" in sys.argv:  # T-3139
         print(json.dumps(hook_modules()))
+        return 0
+    if "--stages" in sys.argv:  # T-4780: the one-line command's per-stage wall time
+        mods = sys.argv[sys.argv.index("--beside") + 1:] if "--beside" in sys.argv else None  # modules to run beside
+        print(json.dumps(stage_bench(int(sys.argv[sys.argv.index("--runs") + 1]) if "--runs" in sys.argv else 200,
+                                     beside=mods)))
         return 0
     runs = int(sys.argv[sys.argv.index("--runs") + 1]) if "--runs" in sys.argv else 30
     res = run_bench(runs)

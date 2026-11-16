@@ -239,6 +239,119 @@ def _run(event, raw):
 
 _REV = None
 _TIMING = {}  # T-3352: the PreToolUse call's tool name and the instant the guard had decided
+SLOW_HOOK_MS = 1000  # T-4780: a call over this logs its stages (one line); the harness kills a hook at 5 s
+STAGES = {}  # T-4780: the stage clock's marks (CLOCK_BOOTTIME seconds), set by stage_start and mark
+STAGE_MARKS = ("state", "parse", "check", "rules", "asks", "snapshot")  # in the order a PreToolUse call reaches them
+TEMP_ROOTS = ("/tmp", "/var/tmp", "/dev/shm", "/var/folders")  # T-4780: fixed, never read from the environment
+
+
+def _now():
+    """CLOCK_BOOTTIME s (counts suspend, as /proc's start time does); macOS has no such clock: monotonic there."""
+    return time.clock_gettime(getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC))
+
+
+def temp_append(path, text):
+    """T-4780: append text to `path` only when its folder is under a fixed temp root (TMPDIR and the like come from
+    the same environment as the path, which a project's settings can set), and never through a link at the end.
+    A refusal or failure returns False; nothing else is written."""
+    folder, name = os.path.split(os.path.abspath(path))
+    real = os.path.realpath(folder)
+    if not name or not any(real == r or real.startswith(r + os.sep) for r in map(os.path.realpath, TEMP_ROOTS)):
+        return False
+    fd = os.open(os.path.join(real, name), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
+        f.write(text)
+    return True
+
+
+def stage_start(t0, event):
+    """T-4780: the hook's stage clock. hooks/hook calls it once its imports are done, with the time of its first line
+    (CLOCK_BOOTTIME s); mark() adds the guard's stages; at exit one line goes to the hooks log for a call over
+    SLOW_HOOK_MS, naming where the time went. It reads no input and records no command text. SAMPO_HOOK_STAGES (a file
+    under a fixed temp root) gets a JSON row for every call: the bench's per-stage timing. Never changes the answer.
+    t0 None (the clock failed at the first line): nothing is recorded."""
+    STAGES.clear()
+    if t0 is None:
+        return
+    import atexit
+    STAGES.update(t0=t0, event=event, imports=_now())
+    atexit.register(_stage_done)
+    if event in ("PreToolUse", "BeforeTool"):  # the guard's events: a call the harness kills at 5 s never reaches
+        import _thread  # atexit, so one thread (builtin: no import cost) looks once, at SLOW_HOOK_MS, and logs
+        _thread.start_new_thread(_watch, (SLOW_HOOK_MS / 1000, t0))  # where the call is then
+
+
+def _watch(limit_s, t0):
+    """T-4780: still running after limit_s: one line naming the stages done and the last mark reached. The 5 s kill
+    leaves no other trace; a call that finishes later also logs its totals (_stage_done). t0 names the call it watches."""
+    try:
+        time.sleep(limit_s)
+        if STAGES.get("done") or STAGES.get("t0") != t0:
+            return
+        ms = stage_ms()
+        last = next((n for n in reversed(STAGE_MARKS) if n in STAGES), "imports")
+        hl = c.host_load()
+        load = f"{hl[0] / hl[1]:.1f}" if hl and hl[1] > 0 else "?"
+        log_error(str(STAGES.get("event") or "hook"), f"hook still running at {limit_s * 1000:g} ms, last mark {last} "
+                  "(ms so far): " + " ".join(f"{k} {v:g}" for k, v in ms.items() if k != "total") + f"; load per cpu {load}")
+    except Exception:
+        pass
+
+
+def mark(name):
+    if STAGES:
+        STAGES[name] = _now()
+
+
+def _born():
+    """When this process was forked (boot-clock s; Linux only: elsewhere the caller reads 0): exec keeps it, so a wrapper shell's time is in it."""
+    with open("/proc/self/stat", "rb") as f:
+        rest = f.read().rpartition(b")")[2].split()
+    return int(rest[19]) / os.sysconf("SC_CLK_TCK")
+
+
+def stage_ms():
+    """{stage: ms} for this call so far: start (fork to hooks/hook's first line: the wrapper shell, the interpreter),
+    imports (the library), state (project, task, meta reads), parse (the guard's findings), check, rules (the user's
+    rules), asks (recording and prompting an ask, the taint and other checks), snapshot (the Bash snapshot note), after
+    (the notes' builders, the timing row), total. Absent marks (a call the guard never ran) leave their stage out."""
+    s, now = dict(STAGES), _now()
+    if "t0" not in s:
+        return {}
+    out, prev = {}, s["imports"]
+    try:
+        out["start"] = round((s["t0"] - _born()) * 1000, 1)
+    except (OSError, ValueError, IndexError):
+        out["start"] = 0.0
+    out["imports"] = round((s["imports"] - s["t0"]) * 1000, 1)
+    for name in STAGE_MARKS:
+        if name in s:
+            out[name] = round((s[name] - prev) * 1000, 1)
+            prev = s[name]
+    out["after"] = round((now - prev) * 1000, 1)
+    out["total"] = round(sum(out.values()), 1)
+    return out
+
+
+def _stage_done():
+    try:
+        ms = stage_ms()
+        STAGES["done"] = 1  # the watchdog thread reads this
+        if not ms:
+            return
+        sink = os.environ.get("FOREMAN_HOOK_STAGES")  # SAMPO_HOOK_STAGES, as core.mirror_env renames it
+        if sink:
+            try:  # a sink that cannot be written (folder gone, a link) never costs the slow-call line below
+                temp_append(sink, json.dumps(dict(ms, event=STAGES.get("event"))) + "\n")
+            except Exception:
+                pass
+        if ms["total"] >= SLOW_HOOK_MS:
+            hl = c.host_load()
+            load = f"{hl[0] / hl[1]:.1f}" if hl and hl[1] > 0 else "?"
+            log_error(str(STAGES.get("event") or "hook"), "slow hook (ms): " + " ".join(f"{k} {v:g}" for k, v in ms.items())
+                      + f"; load per cpu {load}")
+    except Exception:
+        pass  # a stage clock is only a record
 
 
 def _rev():
@@ -2530,8 +2643,12 @@ def _credential_read(pl):
 
 def _guard_decision(pl, guard, lanes=()):
     ctx, p, act = _guard_ctx(pl, guard, lanes)
+    mark("state")  # T-4780: the stage clock
     found = guard.findings(pl.get("tool_name", ""), pl.get("tool_input"), ctx)
-    return ctx, p, act, found, guard.check(pl.get("tool_name", ""), pl.get("tool_input"), ctx, found)
+    mark("parse")
+    block = guard.check(pl.get("tool_name", ""), pl.get("tool_input"), ctx, found)
+    mark("check")
+    return ctx, p, act, found, block
 
 
 def cmd_guard_try(args):
@@ -2773,6 +2890,7 @@ def _pre_tool_use(raw):
         log_error("PreToolUse", _tb())
         hits = []
         rule_down = f"the rule check failed ({type(e).__name__}); sampo doctor shows the error"
+    mark("rules")
     if c.RULES_LOST and not rule_down:
         rule_down = "rules file unreadable: " + c.RULES_LOST[0]
     try:
@@ -2844,6 +2962,7 @@ def _pre_tool_use(raw):
         log_error("PreToolUse", _tb())
         decision = None
     _TIMING["guard"] = time.monotonic()  # the guard has decided (before the snapshot note and the builders)
+    mark("asks")
     if decision:  # fm ask: Claude Code's own permission prompt carries the request to the user
         _TIMING["decided"] = decision[0]
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": decision[0],
@@ -2856,6 +2975,7 @@ def _pre_tool_use(raw):
     except Exception:
         log_error("PreToolUse", _tb())
         saved = None
+    mark("snapshot")
     if _quiet():
         if user_rule:
             print(json.dumps({"systemMessage": user_rule}))

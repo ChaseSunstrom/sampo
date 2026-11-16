@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import unittest
+import unittest.mock
 
 sys.path.insert(0, os.path.dirname(__file__))
 import bench_hooks  # noqa: E402
@@ -165,6 +166,65 @@ class NoBackground(unittest.TestCase):  # T-4344
             self.assertIn("_scratch_project", calls, f"{fn.name} runs the hook with an environment of its own")
 
 
+class StageBench(unittest.TestCase):  # T-4780
+    """The PreToolUse hook timed out (5 s, onFailure block) on short one-line commands while a merge train ran. Its
+    own work is measured per stage, for 200 calls one after the other, beside a real `run.py` of test modules (started
+    by the bench, stopped when the calls are done; no load of our own). The bound is on the hook's own stage clock
+    (total p99 under a second); the wall figure is printed, never asserted."""
+
+    def test_a_one_line_command_beside_a_test_run_is_under_a_second_at_p99(self):
+        res = bench_hooks.stage_bench(runs=200, beside=["test_guard", "test_fast_equiv"])
+        self.assertGreaterEqual(res["runs"], 50, "the test run ended before enough calls were made beside it")
+        self.assertEqual(res["stage_rows"], res["runs"], "one stage row per counted call")
+        # wall is recorded, not gated: on a loaded machine a fork's wait for a CPU says nothing about the hook's code
+        print(f"T-4780 one-line hook beside test_guard + test_fast_equiv: wall p50/p99 {res['wall']['p50']}/"
+              f"{res['wall']['p99']} ms, hook's own total p99 {res['stages']['total']['p99']} ms, load {res['load']}")
+        self.assertLess(res["stages"]["total"]["p99"], 1000, res)
+        for k in ("start", "imports", "state", "parse", "check", "rules", "asks", "snapshot", "after"):
+            self.assertIn(k, res["stages"])
+        # the cause the numbers name: the Python start and imports, CPU-bound, not a wait in the guard
+        self.assertLess(res["stages"]["state"]["p50"] + res["stages"]["parse"]["p50"] + res["stages"]["check"]["p50"], 50)
+
+    def test_the_bench_counts_only_calls_made_while_the_test_run_lived(self):
+        res = bench_hooks.stage_bench(runs=3, beside=["test_nonexistent_module_4780"])  # run.py exits at once
+        self.assertLessEqual(res["runs"], 3)
+        self.assertEqual(res["stage_rows"], res["runs"])
+
+    def test_the_nested_run_is_its_own_session_and_a_nested_slot_run(self):
+        seen = {}
+        real = bench_hooks.subprocess.Popen
+
+        def popen(*a, **kw):  # subprocess.run goes through Popen too: keep the run.py one
+            if any(str(x).endswith("run.py") for x in a[0]):
+                seen.update(kw)
+            return real(*a, **kw)
+        with unittest.mock.patch.object(bench_hooks.subprocess, "Popen", popen):
+            bench_hooks.stage_bench(runs=1, beside=["test_nonexistent_module_4780"])
+        self.assertTrue(seen.get("start_new_session"), "its own session: the group can be stopped whole")
+        self.assertEqual(seen["env"].get("SAMPO_SLOT"), "1", "nested: it never takes the machine's real test slots")
+
+    def test_stopping_the_nested_run_stops_what_it_started_too(self):
+        import signal
+        import subprocess
+        import sys
+        import time
+        code = ("import subprocess,sys,time\n"
+                "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+                "print(p.pid, flush=True); time.sleep(120)")
+        proc = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True, start_new_session=True)
+        grand = int(proc.stdout.readline())
+        bench_hooks._stop_group(proc)
+        for _ in range(50):
+            try:
+                os.kill(grand, 0)
+            except OSError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(grand, signal.SIGKILL)
+            self.fail("the grandchild outlived the group's stop")
+
+
 class Modules(unittest.TestCase):  # T-3139
     def test_a_hook_run_records_the_plugin_files_its_process_imported(self):
         got = bench_hooks.hook_modules(only=lambda n: n == "Stop")
@@ -179,12 +239,29 @@ class Modules(unittest.TestCase):  # T-3139
     def test_the_hook_writes_only_under_the_temp_dir(self):
         import json
         import subprocess
-        import tempfile
-        with tempfile.TemporaryDirectory() as t:
+        import shutil
+        t = bench_hooks.fixed_tmp_dir()  # T-4780: a fixed temp root, whatever TMPDIR is
+        try:
             ok = os.path.join(t, "ok.jsonl")
             subprocess.run([bench_hooks.HOOK, "Stop"], input="{}", text=True, capture_output=True,
                            env=dict(os.environ, SAMPO_HOOK_MODULES=ok))
             self.assertTrue(json.loads(open(ok).readline()))
+            # T-4780: TMPDIR comes from the same environment as the path: pointing it at a folder changes nothing
+            elsewhere = os.path.expanduser("~/.sampo-modules-tmpdir-test")
+            os.makedirs(elsewhere, exist_ok=True)
+            try:
+                subprocess.run([bench_hooks.HOOK, "Stop"], input="{}", text=True, capture_output=True,
+                               env=dict(os.environ, TMPDIR=elsewhere, SAMPO_HOOK_MODULES=os.path.join(elsewhere, "x.jsonl")))
+                self.assertFalse(os.path.exists(os.path.join(elsewhere, "x.jsonl")), "TMPDIR is not honoured")
+                link = os.path.join(t, "link.jsonl")
+                os.symlink(os.path.join(elsewhere, "target.jsonl"), link)
+                subprocess.run([bench_hooks.HOOK, "Stop"], input="{}", text=True, capture_output=True,
+                               env=dict(os.environ, SAMPO_HOOK_MODULES=link))
+                self.assertFalse(os.path.exists(os.path.join(elsewhere, "target.jsonl")), "a link is not followed")
+            finally:
+                shutil.rmtree(elsewhere, ignore_errors=True)
+        finally:
+            shutil.rmtree(t, ignore_errors=True)
         bad = os.path.expanduser("~/.sampo-modules-dump-test")
         subprocess.run([bench_hooks.HOOK, "Stop"], input="{}", text=True, capture_output=True,
                        env=dict(os.environ, SAMPO_HOOK_MODULES=bad))

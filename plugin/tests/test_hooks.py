@@ -4650,3 +4650,190 @@ class LockRetry(HookCase):  # T-3535: the Stop counters and the SessionStart hea
                 unittest.mock.patch.object(py, "heal", lambda root: calls.append(root) or ([], [])):
             hooks.session_start({"session_id": "s3820c", "cwd": self.repo, "source": "startup"})
         self.assertEqual(len(calls), 3, "no boot id: every session, as before")
+
+
+class StageClock(ForemanTestCase):
+    """T-4780: the PreToolUse hook timed out (5 s, onFailure block) three times in a day on one-line commands while a
+    train ran; the hook now records where its time goes, and logs one line for a call over SLOW_HOOK_MS."""
+
+    def sink_dir(self):
+        """A folder under a fixed temp root (the hook never reads TMPDIR for this), removed with the test."""
+        import shutil
+        import tempfile
+        d = tempfile.mkdtemp(prefix="sampo-t4780-", dir="/tmp")
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def test_a_call_records_its_stages_for_the_bench(self):
+        sink = os.path.join(self.sink_dir(), "stages.jsonl")
+        self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "cd /tmp && df -h / | tail -n 1"}},
+                  env={"SAMPO_HOOK_STAGES": sink})
+        with open(sink) as f:
+            row = json.loads(f.readline())
+        self.assertEqual(row["event"], "PreToolUse")
+        for k in ("start", "imports", "state", "parse", "check", "after", "total"):
+            self.assertIsInstance(row.get(k), float, k)
+        self.assertAlmostEqual(row["total"], sum(v for k, v in row.items() if isinstance(v, float) and k != "total"),
+                               delta=0.5)
+        self.assertGreater(row["start"], 0, "fork to first line is the interpreter's start: never zero")
+
+    def test_the_sink_only_writes_under_the_temp_folder(self):
+        bad = os.path.expanduser("~/.sampo-stages-dump-test")
+        self.hook("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "true"}}, env={"SAMPO_HOOK_STAGES": bad})
+        self.assertFalse(os.path.exists(bad))
+
+    def test_the_sink_does_not_trust_tmpdir_or_follow_a_link(self):
+        """A project's settings env block sets TMPDIR and the sink path together: TMPDIR cannot widen where the hook
+        writes; a link at the end of the path is not followed (to a config or state file)."""
+        import shutil
+        elsewhere = os.path.expanduser("~/.sampo-t4780-elsewhere")  # not under any temp root
+        os.makedirs(elsewhere)
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        row = os.path.join(elsewhere, "stages.jsonl")
+        call = {"tool_name": "Bash", "tool_input": {"command": "true"}}
+        self.hook("PreToolUse", call, env={"TMPDIR": elsewhere, "SAMPO_HOOK_STAGES": row})
+        self.assertFalse(os.path.exists(row), "TMPDIR is not honoured")
+        target = os.path.join(elsewhere, "config.json")
+        with open(target, "w") as f:
+            f.write("{}\n")
+        link = os.path.join(self.sink_dir(), "link.jsonl")
+        os.symlink(target, link)
+        self.hook("PreToolUse", call, env={"SAMPO_HOOK_STAGES": link})
+        with open(target) as f:
+            self.assertEqual(f.read(), "{}\n", "a link is not followed")
+        from sampo import hooks
+        with self.assertRaises(OSError):
+            hooks.temp_append(link, "x\n")
+        self.assertFalse(hooks.temp_append(row, "x\n"))
+        self.assertFalse(os.path.exists(row))
+
+    def test_a_host_without_the_boot_clock_still_runs_the_guard(self):
+        """macOS has no time.CLOCK_BOOTTIME: the line that read it ended the hook (exit 1 reads as allow, so the
+        guard was off). With it removed the hook answers, and still refuses what it refused."""
+        code = ("import runpy, sys, time\ndel time.CLOCK_BOOTTIME\nsys.argv = [sys.argv[1], 'PreToolUse']\n"
+                "runpy.run_path(sys.argv[0], run_name='__main__')")
+        payload = {"session_id": "sess-1", "cwd": self.repo, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+                   "tool_input": {"command": "sampo check | head"}}
+        r = subprocess.run([sys.executable, "-c", code, HOOK], input=json.dumps(payload), capture_output=True,
+                           text=True, cwd=self.repo, timeout=60, env=dict(os.environ, FOREMAN_HOME=self.home))
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
+        from sampo import hooks
+        saved = hooks.time.CLOCK_BOOTTIME
+        del hooks.time.CLOCK_BOOTTIME
+        try:
+            self.assertIsInstance(hooks._now(), float)
+        finally:
+            hooks.time.CLOCK_BOOTTIME = saved
+        hooks.stage_start(None, "PreToolUse")  # a clock that failed at the first line: nothing recorded
+        self.assertEqual(hooks.STAGES, {})
+
+    def test_only_a_slow_call_logs_one_line_without_the_command(self):
+        from sampo import hooks
+        log = os.path.join(c.state_dir(), "logs", "hooks.log")
+        secret = "echo SECRET-TOKEN-4780"
+
+        def finish(over):  # born 10 ms before the first line, 50 ms of imports, then `over` s to the end
+            now = hooks._now()
+            with unittest.mock.patch.object(hooks.time, "clock_gettime", return_value=now), \
+                    unittest.mock.patch("_thread.start_new_thread"):  # no real watchdog in the test process
+                hooks.stage_start(now - 0.05, "PreToolUse")
+            with unittest.mock.patch.object(hooks, "_born", return_value=now - 0.06), \
+                    unittest.mock.patch.object(hooks.time, "clock_gettime", return_value=now + over):
+                hooks._stage_done()
+        try:
+            finish(0.2)
+            self.assertFalse(os.path.exists(log), "under a second: nothing is logged")
+            finish(1.5)
+        finally:
+            hooks.STAGES.clear()
+        with open(log) as f:
+            lines = f.read().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r" PreToolUse slow hook \(ms\): start 10 imports 50 after 1500 total 1560;")
+        self.assertIn("load per cpu", lines[0])
+        self.assertNotIn(secret, lines[0])
+
+    def test_a_call_the_harness_kills_still_leaves_its_stages_in_the_log(self):
+        """A hook killed at 5 s never reaches atexit: a watchdog thread logs where the call is at SLOW_HOOK_MS."""
+        from sampo import hooks
+        log = os.path.join(c.state_dir(), "logs", "hooks.log")
+        now = hooks._now()
+        started = []
+        try:
+            with unittest.mock.patch("_thread.start_new_thread", lambda fn, args: started.append((fn, args))):
+                hooks.stage_start(now - 1.2, "PreToolUse")
+            self.assertEqual(len(started), 1, "one watchdog per call")
+            hooks.STAGES["imports"] = now - 1.15  # 50 ms of imports
+            hooks.mark("state")  # then a stall in the guard's reading, the next 1.15 s
+            fn, args = started[0]
+            self.assertEqual(args[0], hooks.SLOW_HOOK_MS / 1000)
+            with unittest.mock.patch.object(hooks, "_born", return_value=now - 1.21), \
+                    unittest.mock.patch.object(hooks.time, "sleep"):
+                fn(*args)
+        finally:
+            hooks.STAGES.clear()
+        with open(log) as f:
+            lines = f.read().splitlines()
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r" PreToolUse hook still running at 1000 ms, last mark state \(ms so far\): start 10 imports 50 state ")
+        self.assertNotIn("total", lines[0])
+
+    def test_a_finished_call_or_another_one_is_not_logged_by_the_watchdog(self):
+        from sampo import hooks
+        log = os.path.join(c.state_dir(), "logs", "hooks.log")
+        now = hooks._now()
+        try:
+            with unittest.mock.patch("_thread.start_new_thread"):
+                hooks.stage_start(now - 1.2, "PreToolUse")
+            with unittest.mock.patch.object(hooks.time, "sleep"):
+                hooks.STAGES["done"] = 1
+                hooks._watch(1.0, now - 1.2)  # finished in time
+                del hooks.STAGES["done"]
+                hooks._watch(1.0, now - 9.0)  # a later call owns the clock now
+        finally:
+            hooks.STAGES.clear()
+        self.assertFalse(os.path.exists(log))
+
+    def test_a_sink_that_cannot_be_written_does_not_stop_the_slow_call_line(self):
+        from sampo import hooks
+        log = os.path.join(c.state_dir(), "logs", "hooks.log")
+        missing = os.path.join(self.sink_dir(), "no-such-folder", "stages.jsonl")  # under a root, folder absent
+        now = hooks._now()
+        try:
+            with unittest.mock.patch.object(hooks.time, "clock_gettime", return_value=now), \
+                    unittest.mock.patch("_thread.start_new_thread"), \
+                    unittest.mock.patch.dict(os.environ, {"FOREMAN_HOOK_STAGES": missing}):
+                hooks.stage_start(now - 0.05, "PreToolUse")
+                with unittest.mock.patch.object(hooks, "_born", return_value=now - 0.06), \
+                        unittest.mock.patch.object(hooks.time, "clock_gettime", return_value=now + 1.5):
+                    hooks._stage_done()
+        finally:
+            hooks.STAGES.clear()
+        with open(log) as f:
+            self.assertRegex(f.read(), r"slow hook \(ms\): ")
+
+    def test_the_real_watchdog_logs_a_call_stalled_past_a_second_and_only_for_the_guards_events(self):
+        """No mock: a child process starts the clock, stalls 1.3 s in its own code (the test is not slowed: the
+        stall is the child's), and the line from the thread is in the log before the child ends. A child that
+        was started for another event has no thread."""
+        lib = os.path.join(os.path.dirname(os.path.dirname(HOOK)), "lib")
+        log = os.path.join(c.state_dir(), "logs", "hooks.log")
+        code = ("import sys, time\nsys.path.insert(0, sys.argv[1])\nfrom sampo import hooks\n"
+                "hooks.stage_start(hooks._now(), sys.argv[2])\ntime.sleep(1.3)\n")
+        for event in ("Stop", "PreToolUse"):
+            r = subprocess.run([sys.executable, "-c", code, lib, event], capture_output=True, text=True, timeout=60,
+                               cwd=self.repo, env=dict(os.environ, FOREMAN_HOME=self.home))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            if event == "Stop":  # (atexit logs the finished call's totals: this is the watchdog's own line only)
+                with open(log) as f:
+                    self.assertNotIn("still running", f.read())
+        with open(log) as f:
+            mine = [ln for ln in f.read().splitlines() if "still running" in ln]
+        self.assertEqual(len(mine), 1, mine)
+        self.assertRegex(mine[0], r" PreToolUse hook still running at 1000 ms, last mark imports \(ms so far\): ")
+
+    def test_a_broken_clock_never_changes_the_answer(self):
+        from sampo import hooks
+        with unittest.mock.patch.object(hooks, "stage_ms", side_effect=OSError("no /proc")):
+            hooks._stage_done()  # no raise

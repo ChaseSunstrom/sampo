@@ -6,6 +6,12 @@ One entry point per event (see hooks.json). Non-guard failures exit 0; the PreTo
 """
 import os
 import sys
+import time
+
+try:  # T-4780: the stage clock's first mark (hooks.stage_start reads it). macOS has no CLOCK_BOOTTIME; no clock failure
+    _T0 = time.clock_gettime(getattr(time, "CLOCK_BOOTTIME", time.CLOCK_MONOTONIC))  # may end the guard's hook
+except Exception:
+    _T0 = None
 
 ARGV = sys.argv[1:]
 AGENT = ARGV[1] if ARGV[:1] == ["--agent"] and len(ARGV) > 1 else None  # T-0324: Codex, Gemini CLI, opencode
@@ -15,21 +21,28 @@ PLUGIN = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 LIB = os.path.join(PLUGIN, "lib")
 sys.path.insert(0, LIB)
 STDIN = None
-def _temp_path(path):
-    import tempfile
-    return os.path.realpath(path).startswith(os.path.realpath(tempfile.gettempdir()) + os.sep)
+def _temp_open(path):
+    """T-4780: an append fd for `path` only when its folder is under a fixed temp root (TMPDIR comes from the same
+    environment as the path: a project's settings can set both), never through a link at the end; else None."""
+    folder, name = os.path.split(os.path.abspath(path))
+    real = os.path.realpath(folder)
+    if name and any(real == r or real.startswith(r + os.sep)
+                    for r in map(os.path.realpath, ("/tmp", "/var/tmp", "/dev/shm", "/var/folders"))):
+        return os.open(os.path.join(real, name), os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
 
 
-if os.environ.get("SAMPO_HOOK_MODULES") and _temp_path(os.environ["SAMPO_HOOK_MODULES"]):  # T-3139: the bench asks
-    import atexit  # which plugin files this process imported (only into a temp-dir file)
+if os.environ.get("SAMPO_HOOK_MODULES"):  # T-3139: the bench asks which plugin files this process imported
+    import atexit  # (only into a file under a fixed temp root)
 
     def _dump_modules(out=os.environ["SAMPO_HOOK_MODULES"]):
         try:
             top = os.path.dirname(PLUGIN) + os.sep
             files = sorted({f[len(top):] for f in (getattr(m, "__file__", None) for m in list(sys.modules.values()))
                             if isinstance(f, str) and f.startswith(PLUGIN + os.sep)})
-            with open(out, "a", encoding="utf-8") as fh:
-                fh.write(__import__("json").dumps(files) + "\n")
+            fd = _temp_open(out)
+            if fd is not None:
+                with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                    fh.write(__import__("json").dumps(files) + "\n")
         except Exception:
             pass
     atexit.register(_dump_modules)
@@ -156,5 +169,9 @@ except Exception as exc:  # broken install: never block unless this is the guard
             sys.exit(2)
     hooks.log_error(EVENT, f"the working copy of Sampo's library failed to import ({exc!r}); using the "
                              f"committed library (fix plugin/lib)")
+try:  # T-4780: stage clock (outside the dispatch sampo-fast mirrors); a failure here never changes the answer
+    hooks.stage_start(_T0, EVENT)
+except Exception:
+    pass
 _data = STDIN.decode("utf-8", "replace") if STDIN is not None else sys.stdin.read()
 sys.exit(agents.hook(AGENT, EVENT, _data) if AGENT else hooks.run(EVENT, _data))
