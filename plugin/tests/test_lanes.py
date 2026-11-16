@@ -1327,6 +1327,19 @@ class BuilderContractOneSource(unittest.TestCase):
                           .replace("<SHAPE>", " ".join(slanes.c.repo_shape_modules())), text)  # T-4542
         self.assertNotIn("<ID>", text)
 
+    def test_builders_and_reproducers_run_checks_in_the_foreground(self):
+        # T-4816: a builder that backgrounds its run and ends its turn wakes the main thread to read "still waiting"
+        from sampo import lanes as slanes
+        text = slanes.contract("T-9", "abc123", "/main")
+        repro = read_text(os.path.join(os.path.dirname(__file__), "..", "agents", "fm-reproducer.md"))
+        for body in (text, repro):
+            flat = " ".join(body.split())
+            self.assertIn("in the foreground", flat)
+            self.assertIn("600000 ms", flat)
+            self.assertIn("Never use run_in_background", flat)
+            self.assertIn("never end your turn while a job of yours is still running", flat)
+            self.assertIn("never sleep to wait", flat)
+
 
 class _LaneRepo(ForemanTestCase):
     """git(), lane() and base(); no tests of its own (T-3815), so AndonClear shares them without rerunning BoardLanes."""

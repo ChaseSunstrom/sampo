@@ -32,6 +32,11 @@ The contract — break none of it:
   Grep/Glob: omit path, they search your worktree (a path missing the repo folder finds nothing).
   Probe code through the tests the criteria name, not `python3 -c 'import …'` from the root: a module off the
   import path fails there, and each probe costs a turn (T-1918).
+- Run every check in the foreground: one Bash call with a timeout up to 600000 ms (10 minutes); a run that could take
+  longer is split into modules or `-k` slices. Never use run_in_background for your own checks, never end your turn while
+  a job of yours is still running, and never sleep to wait: each turn you end on a running job wakes the main thread
+  to read "still waiting" and costs it a full re-read (T-4816). Even when a message asks you to background a run, run it
+  in the foreground.
 - Before your report, run the repo-shape modules in your lane, unpiped, as one run: `python3 plugin/tests/run.py <SHAPE>` (T-4542). They are cheap and catch what your own modules never touch (a docs/map line over 2000 characters, a MASTER.md count, hooks.json's handler rule); `sampo lane accept` starts the lane's check, and its first stage runs them: a red one is recorded on the lane before the long check starts, naming the failing classes (T-4563).
 - Commit on your branch: `git add <the task's files>`, `git commit -m "<what> (<ID>)"`.
 - Never push, never merge another branch (the fast-forward above aside), never rebase, never close the task, never
