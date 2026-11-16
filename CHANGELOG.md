@@ -11,6 +11,9 @@
 
 ### Everything else
 
+- The test runner shares the ordinary CPU slots fairly between runs, so a second run gets a slot within one job instead of waiting for the first run's whole queue, and removes slot files left beyond the pool (T-4688).
+- Three CI-only test failures fixed: a long macOS temp root cut a gate's shown command, macOS ends no processes per class so the ending-tests ask for the read, and Python 3.14 parses a 100000-deep rules file the old interpreters rejected (T-4778).
+- `sampo code` gains an `unprovable` action: when a criterion's own tool fails in the sandbox, the harness runs the model's probe and, if it fails the same way, waives that criterion (two a run) and lists it as not proven in the close; a verify that cannot fail ('true') is refused for every task type (T-4292).
 - Every lane of a Rust project now builds into its own cargo folder under Sampo's cache, removed with its lane, pruned oldest-first under a cap, the old shared folder retired and a lane barred from writing another's, so two lanes can no longer run each other's compiled crates (T-4764).
 - `fm code` gives any model Agent Skills: the prompt lists enabled-plugin and open-licence skills within a per-model budget, the `skill` action loads one fenced body or one confined ref and journals it, and scripts run only through the guard (T-1390).
 - The README's tables are drawn as numbered Board panels in the Board's own colours, with commands on chips that never split across lines and alt text naming each row (T-4771).
