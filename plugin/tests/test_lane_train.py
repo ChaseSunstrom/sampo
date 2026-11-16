@@ -469,6 +469,111 @@ DEP = ("# map-links: a.txt\nimport os, unittest\n\n\nclass Dep(unittest.TestCase
        "        self.assertTrue(os.path.exists('a.txt') or not os.path.exists('b.txt'))\n")
 
 
+class OneId(TrainCase):
+    """T-4756: `lane merge` with one id is a train of one: the same gate, named in its output. (T-4742 reached the trunk
+    ungated through a helper that passed one id: the plain merge ran no gate.)"""
+    def merged(self, name):
+        return os.path.exists(os.path.join(self.repo, name))
+
+    def test_a_lane_that_turns_the_gate_red_does_not_reach_the_trunk(self):
+        before = self.git("rev-parse", "HEAD")
+        tid = self.lane(1, "BREAK")
+        r = self.fm("lane", "merge", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.merged("BREAK"))
+        self.assertEqual(self.git("rev-parse", "HEAD"), before, "the trunk did not move")
+        self.assertIn(tid, r.stdout + r.stderr)
+        self.assertIn("gate", (r.stdout + r.stderr).lower())
+        self.assertFalse(self.meta(tid).get("lane_stop", "").startswith("merged"))
+
+    def test_a_lane_whose_affected_test_fails_is_refused_naming_the_test(self):
+        self.fm("check", "affected", "python3 -m unittest {tests}")
+        bad = self.lane(1, "test_bad.py", "import unittest\nclass Bad(unittest.TestCase):\n"
+                                          "    def test_it(self):\n        self.assertTrue(False)\n")
+        r = self.fm("lane", "merge", bad, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("test_bad.Bad", r.stdout + r.stderr)
+        self.assertFalse(self.merged("test_bad.py"))
+
+    def test_a_green_lane_lands_through_one_gate_run_and_the_output_names_the_gate(self):
+        tid = self.lane(1, "a.txt")
+        r = self.fm("lane", "merge", tid)
+        self.assertTrue(self.merged("a.txt"))
+        self.assertEqual(self.gate_runs(), 1, r.stdout)
+        self.assertIn("gate", r.stdout)
+        self.assertIn("train of one", r.stdout)
+        self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), self.meta(tid))
+        self.assertIn("fm lane rm", r.stdout, "the single-lane next steps stay")
+
+    def test_an_unverified_waiver_does_not_waive_the_gate(self):
+        tid = self.lane(1, "BREAK", ac="false")
+        r = self.fm("lane", "merge", tid, "--unverified", "the criterion needs a service this box lacks", check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.merged("BREAK"))
+
+    def test_a_commit_to_the_lane_between_the_judgment_and_the_train_does_not_land(self):
+        """T-4756 review: `lane merge` judges the lane at one tip; a commit the criteria's own run adds to the branch
+        (the gap between that judgment and the train's read of the tip) was judged by nothing: refused, not merged."""
+        late = ("echo late > late.txt && git add late.txt && git -c user.name=t -c user.email=t@localhost "
+                "commit -qm late")
+        tid = self.lane(1, "a.txt", ac=late)
+        r = self.fm("lane", "merge", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("the lane moved while merging: run it again", r.stdout + r.stderr)
+        self.assertFalse(self.merged("late.txt"))
+        self.assertFalse(self.merged("a.txt"))
+        self.assertEqual(self.gate_runs(), 0, "no gate ran on commits nothing judged")
+        self.assertFalse(self.meta(tid).get("lane_stop", "").startswith(("merged", "refused")), self.meta(tid))
+        refused = [e for e in c.ledger_tail(c.find_project(self.repo), 300)
+                   if e.get("task") == tid and (e.get("data") or {}).get("kind") == "merge_refused"]
+        self.assertEqual(refused, [], "a moved lane is not a refusal: a plain retry must not count as one")
+
+    def test_a_one_id_conflict_writes_the_conflict_event_and_brief(self):
+        """T-4756 review: the plain merge's conflict leaves a lane_conflict event, the conflict brief and a conflict
+        stop mark; the gated one-id merge leaves the same."""
+        tid = self.lane(1, "same.txt", "lane\n")
+        with open(os.path.join(self.repo, "same.txt"), "w") as f:
+            f.write("trunk\n")
+        self.git("add", "same.txt")
+        self.git("-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-qm", "trunk same")
+        before = self.git("rev-parse", "HEAD")
+        r = self.fm("lane", "merge", tid, check=False)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("same.txt", out)
+        self.assertEqual(self.git("rev-parse", "HEAD"), before)
+        self.assertTrue(self.meta(tid)["lane_stop"].startswith("conflict"), self.meta(tid))
+        brief = out.split("Conflict brief: ")[1].split()[0]
+        text = open(brief).read()
+        self.assertIn("same.txt", text)
+        self.assertIn("<<<<<<<", text, "the hunks the builder must resolve")
+        [ev] = [e for e in c.ledger_tail(c.find_project(self.repo), 300) if e.get("event") == "lane_conflict"]
+        self.assertEqual(ev["task"], tid)
+        self.assertIn("same.txt", ev["data"]["files"])
+
+    def test_the_report_names_the_gate_and_the_functions_changed_of_the_trains_merge(self):
+        """T-4756 review: the train fast-forwards a merge commit built in a scratch tree: the report says so (no
+        `--no-ff` claim), HEAD is that merge commit (first parent the old trunk, second the lane tip), and the
+        functions-changed lines read it."""
+        before = self.git("rev-parse", "HEAD")
+        tid = self.lane(1, "mod.py", "def hello():\n    return 1\n")
+        tip = self.git("rev-parse", f"foreman/lane{1}")
+        r = self.fm("lane", "merge", tid)
+        self.assertNotIn("--no-ff", r.stdout)
+        self.assertIn("gate: a train of one", r.stdout)
+        self.assertIn("Functions changed:", r.stdout)
+        self.assertIn("hello", r.stdout)
+        self.assertEqual(self.git("rev-parse", "HEAD^1"), before)
+        self.assertEqual(self.git("rev-parse", "HEAD^2"), tip)
+
+    def test_a_project_with_no_checks_merges_plainly_and_says_no_gate_ran(self):
+        self.fm("check", "rm", "1")
+        tid = self.lane(1, "a.txt")
+        r = self.fm("lane", "merge", tid)
+        self.assertTrue(self.merged("a.txt"))
+        self.assertIn("no gate ran", r.stdout)
+
+
 class AffectedBase(TrainCase):
     """T-3544's fixture (T-4705 shares it): a suite whose runs are logged, set as the gate and the affected template."""
     def setUp(self):

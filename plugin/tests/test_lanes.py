@@ -3487,8 +3487,12 @@ class MergeTrain(tlt.TrainCase):
         self.assertFalse(os.path.exists(os.path.join(self.repo, "c.txt")), fresh)
 
     def test_a_merge_of_one_id_is_still_the_single_lane_merge(self):
+        # T-4756: the single-lane report (not the train's), but through the gate: one gate run, named
         tid = self.lane(1, "a.txt")
-        self.assertNotIn("Train:", self.fm("lane", "merge", tid).stdout)
+        out = self.fm("lane", "merge", tid).stdout
+        self.assertNotIn("Train:", out)
+        self.assertIn("a train of one ran 1 gate run(s)", out)
+        self.assertEqual(self.gate_runs(), 1)
 
     def test_each_lanes_check_runs_in_its_own_process_and_two_checks_overlap(self):
         burn = ("import os, sys, time\nt = time.time()\nwhile time.process_time() < 1: pass\n"

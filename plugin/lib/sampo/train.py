@@ -528,6 +528,9 @@ def _ran_green(p, b, tests, changed):
     return last if last and all(t in named or os.path.basename(t).rsplit(".", 1)[0] in named for t in tests) else ""
 
 
+MOVED = "the lane moved while merging: run it again"  # T-4756: its tip is not the one `lane merge` judged
+
+
 def _held(p, b, main, tip):
     """The reason `sampo lane merge` would refuse this lane's files (guard, self-change gate), or ''."""
     import fmguard
@@ -553,14 +556,16 @@ def _none(head, left):
     return e
 
 
-def _check(p, main, base, b, tip, probe_tests):
+def _check(p, main, base, b, tip, probe_tests, judged=False):
     """(why this lane can't land or '', notes): the lane's own acceptance commands re-run in its worktree, as `lane merge`
-    does, then conflicts and red tests against the base (T-3474), all before any gate run."""
+    does, then conflicts and red tests against the base (T-3474), all before any gate run. T-4756: `judged` is a lane
+    `lane merge` already ran the criteria of (or waived them, logged) at this tip: only the probe runs."""
     from sampo import cli
     seen = []
     try:
         try:
-            _verify(b)
+            if not judged:
+                _verify(b)
         except CriterionRed as e:  # T-3629: red once, green on a rerun is a load flake, as _probe treats it
             _verify(b, only=e.n)  # that criterion alone: the others passed
             seen.append((b.id, f"flaky (red once, green on a rerun): {str(e).splitlines()[0][:160]}"))
@@ -572,10 +577,10 @@ def _check(p, main, base, b, tip, probe_tests):
 MARK = "SAMPO-CHECK "  # the line a lane's check process prints its result on (its stdout holds the criteria's own too)
 
 
-def _child_argv(p, main, base, tid, tip, probe_tests):
+def _child_argv(p, main, base, tid, tip, probe_tests, judged=False):
     """T-3119: the command line of one lane's check process: `python -m sampo.train JSON`, run in the main checkout."""
     arg = json.dumps({"project": [p.slug, p.root, p.dir, p.lane], "main": main, "base": base, "id": tid, "tip": tip,
-                      "tests": bool(probe_tests)})
+                      "tests": bool(probe_tests), "judged": bool(judged)})
     return [sys.executable, "-m", "sampo.train", arg]
 
 
@@ -634,7 +639,8 @@ def _main(arg):
     if "accept" in a:  # T-4286: sampo lane accept's detached check of one lane
         return _accept_check_child(a["accept"])
     p = c.Project(*a["project"])
-    why, seen = _check(p, a["main"], a["base"], cli.need_brief(p, a["id"]), a["tip"], a["tests"])
+    why, seen = _check(p, a["main"], a["base"], cli.need_brief(p, a["id"]), a["tip"], a["tests"],
+                    bool(a.get("judged")))
     print(MARK + json.dumps({"why": why, "seen": seen}))
     return 0
 
@@ -678,8 +684,11 @@ def _after_train_run(p, main):
             c.log_event(p, "postmerge_spawn_failed", data={"why": c.fit(str(e), 200)})
 
 
-def train(p, main, ids=None, defer_verify=False):
+def train(p, main, ids=None, defer_verify=False, judged=None):
     """Land the named `ids` (a bare train would land lanes nobody picked) through one gate run, one train at a time.
+    T-4756: `judged` {id: tip}: lanes whose criteria, guard and self-change gate `lane merge` already ran at that tip (it
+    sends a single id here, as a train of one): the train runs no second judgment of a lane still at that tip, only its
+    probe and gates; a lane whose branch moved since is refused (the new commits were judged by nothing).
     Returns a dict: merged, left_out [(id, why)], gate_runs, probes, tip, branch. Raises PolicyError when nothing can
     land, the base is red or the branch moved. T-4718: `defer_verify` leaves the background verify (and the revert pass)
     to the caller, who ships next and starts it after the ship was asked for (`verify_owed` says one is wanted): the
@@ -697,7 +706,7 @@ def train(p, main, ids=None, defer_verify=False):
             took = True
             for line in git_lock_lines(clear_git_locks(main)):  # T-4616: a stale lock would stop a merge or a builder's commit
                 print(f"sampo: train: {line}", file=sys.stderr, flush=True)
-            got = _run(p, main, ids, defer_verify)
+            got = _run(p, main, ids, defer_verify, judged=dict(judged or {}))
             if defer_verify and not got["verify_owed"]:  # a red merge waiting for its revert is the verify's work too
                 from sampo import lanes
                 got["verify_owed"] = any(r["state"] == "red" for r in lanes.pm_records(p).values())
@@ -711,7 +720,8 @@ def train(p, main, ids=None, defer_verify=False):
 TRUNK_POLL_S = 30.0  # T-4540: a running gate checks trunk this often (a commit there ends the gate at once)
 
 
-def _run(p, main, ids, defer_verify=False):
+def _run(p, main, ids, defer_verify=False, judged=None):
+    judged = judged or {}
     from sampo import cli
     checks = list(c.read_meta(p).get("checks") or [])
     if not checks:
@@ -734,7 +744,8 @@ def _run(p, main, ids, defer_verify=False):
             rows.append((b, None, f"no branch {br}"))
         else:
             tip = _git(main, "rev-parse", "--verify", f"{br}^{{commit}}").stdout.strip()
-            rows.append((b, tip, _held(p, b, main, tip)))
+            rows.append((b, tip, MOVED if b.id in judged and judged[b.id] != tip else
+                         "" if judged.get(b.id) == tip else _held(p, b, main, tip)))
 
     # T-3770: when the gate is the suite the affected template runs (T-3544), it runs every lane's affected tests on the
     # merged tree, and a red one bisects on its red classes alone (T-3602): a probe per lane ran them all twice (the
@@ -747,7 +758,8 @@ def _run(p, main, ids, defer_verify=False):
     # candidate order, so the left-out list and notes read as a serial run's. T-3119: each lane's check is its own
     # process (its own interpreter, no GIL shared), the lane's criteria and probe tests under it
     t0 = time.monotonic()  # T-3596: the phases' minutes, in the result and the report line
-    outs = iter(_fan([_child_argv(p, main, base, b.id, tip, probe_tests) for b, tip, why in rows if not why], main,
+    outs = iter(_fan([_child_argv(p, main, base, b.id, tip, probe_tests, judged.get(b.id) == tip)
+                      for b, tip, why in rows if not why], main,
                      1 if c.host_strain(2.0) else PROBE_JOBS))
     for b, tip, why in rows:
         seen = []

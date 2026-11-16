@@ -811,9 +811,11 @@ def cmd_lane(args):
             pairs = twins(main, "HEAD^1", "HEAD")
         except (OSError, subprocess.SubprocessError):
             pairs = []
-        return cli.out(args, {"id": b.id, "merged": merged, "functions": fns, "twins": pairs}, f"{b.id}: merged "
-                       f"{merge.last} into {main} (--no-ff); next: fm lane rm {b.id}, fm focus {b.id}, re-run its "
-                       f"criteria, fm task finish"
+        gate = merge.gate  # T-4756: the output says whether a gate ran
+        return cli.out(args, {"id": b.id, "merged": merged, "functions": fns, "twins": pairs, "gate": gate},
+                       f"{b.id}: merged {merge.last} into {main}{'' if gate.startswith('gate:') else ' (--no-ff)'}; "
+                       f"next: fm lane rm {b.id}, fm focus {b.id}, "
+                       f"re-run its criteria, fm task finish\n{gate}"
                        + (f"\nFunctions changed:\n{functions_line(fns)}" if functions_line(fns) else "")
                        + ("\nChanged text still found elsewhere (a writer and a reader may now disagree; the review "
                           "settles each):\n" + "\n".join(twins_lines(pairs)) if pairs else ""))
@@ -3082,6 +3084,10 @@ def merge(p, b, main, unverified=None):
             c.log_event(p, "enforce", task=b.id, data={"kind": "merge_refused", "reason": str(e)[:300], "branch": branch})
             stop_mark(p, b.id, "refused")
             raise
+    if meta.get("checks"):  # T-4756: one id is a train of one: the gate every train runs, never a bare git merge
+        return _merge_gated(p, b, main, branch, tip, files)
+    merge.gate = ("no gate ran: this project has no checks, so the lane merged on its criteria alone; "
+                  "sampo check add '<cmd>' configures one")
     pre_merge = c.git_head(main)  # T-0804: the task's diff starts here, not at the old focus snapshot
     pre_tree = c.worktree_tree(main)  # T-0812: and from these files, or focus re-snapshots them after the merge
     keys = ("base", "base_tree", "paused_tree")
@@ -3121,6 +3127,60 @@ def merge(p, b, main, unverified=None):
                  {"branch": branch, "files": files[:50]})
     pm_record(p, c.git_head(main), b.id, main)  # T-3141: the full suite runs on this merge, in the background
     drop_landed_target(p, b, main)  # T-4717: the landed lane's own build output (a Rust lane's target/) goes, after the record
+    return files
+
+
+def _gated_conflict(p, b, main, branch, tip):
+    """T-4756: what the plain merge writes on a conflict, for a one-id merge the train refused: the lane_conflict event
+    and the conflict brief (its hunks from a merge-tree of HEAD and the tip: main holds no conflict to diff). '' when
+    git finds none (the train judged a clash git no longer reports)."""
+    r = _git(main, "merge-tree", "--write-tree", "--name-only", "--no-messages", "HEAD", tip)
+    if r.returncode != 1:
+        return ""
+    lines = r.stdout.splitlines()
+    files = [f for f in lines[1:] if f]
+    if not files:
+        return ""
+    c.log_event(p, "lane_conflict", task=b.id, data={"files": files[:50], "branch": branch})
+    hunks = _git(main, "diff", "HEAD", lines[0], "--", *files).stdout
+    return _conflict_brief(p, b, main, branch, files, hunks) or ""
+
+
+def _merge_gated(p, b, main, branch, tip, files):
+    """T-4756: `merge` of one lane through the merge train (a train of one): its probe and gate runs on base+lane in a
+    scratch tree and the trunk only fast-forwards to a green result; the criteria, guard and self-change gate were
+    judged by `merge` just now at `tip`, so the train skips them for a lane still at that tip (a lane that moved since
+    is refused: judged {id: tip}). T-4742 reached the trunk ungated when a helper passed one id: the plain merge ran
+    no gate. The train writes the base, the lane_merge event and the verify record itself. A red or conflicting lane is
+    refused as the plain merge refuses one (an enforce event, a lane_stop mark; a conflict also the lane_conflict
+    event and the conflict brief), naming the train's reason; any other stop (a train running, a full disk) marks
+    nothing."""
+    from sampo import train
+    try:
+        got = train.train(p, main, [b.id], judged={b.id: tip})
+    except c.PolicyError as e:
+        left = getattr(e, "left", None)
+        if left:
+            why = left[0][1]
+            kind, arg = train._park_kind(why)
+            brief = ""
+            if why.startswith(train.MOVED):
+                pass  # nothing judged the new commits and nothing is wrong with the lane: no event, no mark, merge again
+            else:
+                c.log_event(p, "enforce", task=b.id, data={"kind": "merge_refused", "reason": f"gate: {why}"[:300],
+                                                           "branch": branch})
+                if kind == "conflict":
+                    brief = _gated_conflict(p, b, main, branch, tip)
+                stop_mark(p, b.id, kind, arg)
+            raise c.PolicyError(f"{b.id}: the merge gate (a train of one) refused {branch}; nothing was merged: {why}"
+                                + (f"\nConflict brief: {brief}" if brief else "")) from e
+        raise
+    if b.id not in got["merged"]:  # a train that returns without the lane would be a lie to the caller
+        raise c.PolicyError(f"{b.id}: the merge gate (a train of one) did not land {branch}; nothing was merged")
+    merge.last = branch
+    merge.gate = (f"gate: a train of one ran {got['gate_runs']} gate run(s) ({'; '.join(c.read_meta(p).get('checks') or [])}) "
+                  f"on {branch} merged onto the base before it landed")
+    drop_landed_target(p, b, main)  # T-4717: the landed lane's own build output (a Rust lane's target/) goes
     return files
 
 
@@ -3768,12 +3828,14 @@ def recovery_after(p, b):
     return f"The merge was refused: {_last_refusal(p, b.id) or 'a criterion was red'}\nFix it, re-run every criterion, commit."
 
 
-def _conflict_brief(p, b, main, branch, files):
+def _conflict_brief(p, b, main, branch, files, hunks=None):
     """T-0446: while a lane's merge is still in conflict, write what clashed (files, their conflict hunks, the tasks
-    on each side) and the steps that resolve it on the lane's branch, where the guard lets the builder's task edit."""
+    on each side) and the steps that resolve it on the lane's branch, where the guard lets the builder's task edit.
+    T-4756: `hunks` when the merge ran in a scratch tree (the train's), where main holds no conflict to diff."""
     if not files:
         return None
-    hunks = _git(main, "diff", "--", *files).stdout
+    if hunks is None:
+        hunks = _git(main, "diff", "--", *files).stdout
     path_of = b.meta.get("lane") or "<the lane's worktree>"
     head = _git(main, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip() or "HEAD"
     mine = [f"- {e.get('task')}: {(e.get('data') or {}).get('file', '')}" for e in c.ledger_tail(p, 500)
