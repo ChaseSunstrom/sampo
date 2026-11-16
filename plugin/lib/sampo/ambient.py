@@ -13,6 +13,8 @@ from sampo.core import subprocess  # T-3577: imported on first use
 RERUNS = 3  # edits that land during a run trigger at most this many reruns, then the next edit starts a new one
 FAILED = c.lazy(r"^(?:FAIL|ERROR): (\S+)|^FAILED (\S+)", re.M)  # unittest 'FAIL: name (mod.Class.name)', pytest 'FAILED path::name'
 RED_STEP = c.lazy(r"(?i)\b(fail|red\b|reproduc|repro\b)")  # a step that wants a red run, which a pass won't verify
+ENDED_LINE = re.compile(r"^INCOMPLETE \(ended from outside\)\s*$", re.M)  # run.py's last line when an outside end ended it (T-4399)
+RED_NOTE = "Ambient tests: ✗"  # the start of a red note: a no-verdict or skip note never replaces an unread one (T-4823)
 
 
 def _dir(p):
@@ -79,12 +81,24 @@ def run(p):
                 c.log_event(p, "ambient_refused", data={"cmd": c.fit(cmd, 200), "why": c.fit(str(e), 300)})
                 cmd = None
             if cmd:
-                before = c.worktree_tree(p.root)  # T-3270: the verdict is for the tree the run began on
                 # T-4267: at nice 10 like the lane gates (T-4197): an edit's check never competes with a gate
                 env, _ = cli._venv_env(p.root, cli._skip_env({}), cmd)  # T-4150: the project's own interpreter
-                code, output = c.run_command(p.root, cmd, 600, niced=True, env=env)
-                _record(p, cmd, tests, code, output)
-                _write_pass(p, cmd, before, code)
+                limit, said = _limit(p, cmd, tests, env)  # T-4823: sized from the set's recorded seconds (T-4788)
+                if limit is None:  # too big for an early warning: no run, no record; one note per set, later skips only logged
+                    c.log_event(p, "ambient_skipped", data={"tests": len(tests), "why": c.fit(said, 200)})
+                    if _skipped(p) != cmd and _say(p, f"Ambient tests skipped: {c.fit(said, 200)}", keep_red=True):
+                        c.write_atomic(os.path.join(_dir(p), "skipped"), cmd)
+                else:
+                    _forget_skip(p)  # a run starts the set again: its next skip is noted again
+                    before = c.worktree_tree(p.root)  # T-3270: the verdict is for the tree the run began on
+                    code, output = c.run_command(p.root, cmd, limit, niced=True, env=env)
+                    cut = _no_verdict(code, output, limit)
+                    if cut:  # T-4823: no verdict is no red and no pass: last.json and the pass record stay as they were
+                        _say(p, f"Ambient tests: {cut}: {c.fit(cmd, 150)}", keep_red=True)  # never over an unread red
+                        c.log_event(p, "ambient_cut", data={"tests": len(tests), "exit": code, "limit": limit})
+                    else:
+                        _record(p, cmd, tests, code, output)
+                        _write_pass(p, cmd, before, code)
             if not os.path.exists(os.path.join(d, "dirty")):
                 break
     except Exception as e:  # never a crash in a detached run: one line in the folder says why
@@ -94,6 +108,70 @@ def run(p):
             os.unlink(pid)
         except OSError:
             pass
+
+
+def _limit(p, cmd, tests, env):
+    """T-4823: (the run's limit in s, or None to skip it, what to say), sized as ship's affected stage is (T-4788): the
+    set's recorded seconds (release._run_times, a child read of run.py's record) through release._affected_limit. A
+    sizing that raises gets the old limit: a detached run never crashes on its own sizing."""
+    from sampo import release
+    try:
+        times, suite, jobs = release._run_times(p.root, cmd, {k: v for k, v in env.items() if not k.startswith("GIT_")})
+        return release._affected_limit(tests, times, suite, c.host_load(), jobs)
+    except Exception as e:
+        c.log_event(p, "ambient_sizing_failed", data={"why": c.fit(c.plain(str(e)), 200)})
+        return release.AFFECTED_OLD, ""
+
+
+def _no_verdict(code, out, limit):
+    """T-4823: what a run that never reached a verdict says, or None when it has one. A red line in the output is a red
+    whatever ended the run (a runner that printed FAIL and then hung still failed). Otherwise a run its limit ended
+    exits 124 (run.py's own deadline, or the timeout run_command kills it at); an outside end exits 128 + the signal
+    (130 or 143) and run.py says 'INCOMPLETE (ended from outside)' last; a test's own message saying so is no end (T-4399)."""
+    from sampo import release
+    out = out or ""
+    if release._TEST_RED.search(out) or FAILED.search(out):
+        return None
+    if code == 124:
+        return f"timed out after {limit} s (no verdict)"
+    if code in (130, 143) or (code > 128 and ENDED_LINE.search(out)):
+        return "ended from outside (no verdict)"
+    return None
+
+
+def _say(p, text, keep_red=False):
+    """The note for the model's next tool call (one, then gone; see note). keep_red: a note that must not replace an
+    unread red one (T-4823: a no-verdict or skip note never hides a flip of the same detached run). True when written."""
+    path = os.path.join(_dir(p), "note.json")
+    if keep_red and _unread_red(path):
+        return False
+    c.write_atomic(path, json.dumps({"text": text, "ts": c.now()}))
+    return True
+
+
+def _unread_red(path):
+    try:
+        with open(path) as f:
+            text = json.load(f).get("text")
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(text, str) and text.startswith(RED_NOTE)
+
+
+def _skipped(p):
+    """T-4823: the command whose skip note was written last, until a run starts that set again (one note per set)."""
+    try:
+        with open(os.path.join(_dir(p), "skipped")) as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def _forget_skip(p):
+    try:
+        os.unlink(os.path.join(_dir(p), "skipped"))
+    except OSError:
+        pass
 
 
 def _last_failing(p):
@@ -130,7 +208,7 @@ def _record(p, cmd, tests, code, output):
     else:
         text = None
     if text:
-        c.write_atomic(os.path.join(d, "note.json"), json.dumps({"text": text, "ts": c.now()}))
+        _say(p, text)
     c.log_event(p, "ambient_run", task=act.id if act else None, data={"tests": len(tests), "exit": code,
                                                                        "flip": bool(text)})
 

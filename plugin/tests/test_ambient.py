@@ -269,3 +269,159 @@ class Ambient(HookCase):
         out = json.loads(self.fm("check", "--affected", "--json").stdout)
         self.assertIn("test_calc.py", out["tests"])
         self.assertNotIn("widget.test.tsx", out["tests"])
+
+    def last(self):
+        try:
+            with open(os.path.join(self.project().dir, "ambient", "last.json")) as f:
+                return json.load(f)
+        except OSError:
+            return None
+
+    def test_a_timed_out_ambient_run_is_no_verdict(self):  # T-4823
+        # a run its limit ends (exit 124) is no red: its note says it timed out, and last.json and the pass record keep
+        # the previous verdict; a run run.py ended from outside ('ended from outside') is no verdict either
+        from unittest import mock
+        from sampo import ambient, release
+        p = self.project()
+        self.fm("check", "ambient", "on")
+        self.edit(GOOD + "# touched\n")  # green: the verdict the timed-out runs must leave alone
+        green, verdict = self.last(), self.verdict()
+        self.assertEqual((green["exit"], verdict["exit"]), (0, 0))
+        self.fm("check", "affected", "python3 -c 'import time; time.sleep(60)' {names}")
+        self.write("calc.py", GOOD + "# slow\n")
+        with mock.patch.object(release, "_affected_limit", return_value=(2, "limit 2 s")):
+            ambient.run(p)
+        text = ambient.note(p) or ""
+        self.assertIn("timed out after 2 s (no verdict)", text)
+        self.assertNotIn("now fail", text)
+        self.assertEqual(self.last(), green)
+        self.assertEqual(self.verdict(), verdict)
+        self.fm("check", "affected", "python3 -c \"import sys; print('INCOMPLETE (ended from outside)'); "
+                                     "sys.exit(143)\" {names}")
+        self.write("calc.py", GOOD + "# ended\n")
+        ambient.run(p)
+        text = ambient.note(p) or ""
+        self.assertIn("ended from outside (no verdict)", text)
+        self.assertNotIn("now fail", text)
+        self.assertEqual(self.last(), green)
+        self.assertEqual(self.verdict(), verdict)
+
+    def test_a_run_killed_after_a_red_line_is_recorded_red(self):  # T-4823
+        # a runner that printed a FAIL line and then hung past its limit (exit 124) has failed: its red is recorded
+        from unittest import mock
+        from sampo import ambient, release
+        p = self.project()
+        self.fm("check", "ambient", "on")
+        self.edit(GOOD + "# touched\n")  # green first: the red must replace it
+        self.assertEqual(self.last()["exit"], 0)
+        self.fm("check", "affected", "python3 -c \"import time; print('FAIL: test_calc.T.test_x', flush=True); "
+                                     "time.sleep(60)\" {names}")
+        self.write("calc.py", GOOD + "# slow red\n")
+        with mock.patch.object(release, "_affected_limit", return_value=(2, "limit 2 s")):
+            ambient.run(p)
+        text = ambient.note(p) or ""
+        self.assertIn("now fail", text)
+        self.assertIn("test_calc.T.test_x", text)
+        self.assertNotIn("no verdict", text)
+        self.assertNotEqual(self.last()["exit"], 0)
+
+    def test_a_failing_test_that_says_ended_from_outside_is_a_red(self):  # T-4823
+        # a test's own message may say 'ended from outside' (run.py's T-4399 tests do): an exit 1 is a red, not an end
+        from unittest import mock
+        from sampo import ambient, release
+        p = self.project()
+        self.fm("check", "ambient", "on")
+        self.edit(GOOD + "# touched\n")
+        self.fm("check", "affected", "python3 -c \"print('FAIL: test_calc.T.test_x'); "
+                                     "print('AssertionError: ended from outside'); import sys; sys.exit(1)\" {names}")
+        self.write("calc.py", GOOD + "# red\n")
+        with mock.patch.object(release, "_affected_limit", return_value=(60, "limit 60 s")):
+            ambient.run(p)
+        text = ambient.note(p) or ""
+        self.assertIn("now fail", text)
+        self.assertNotIn("no verdict", text)
+        self.assertEqual(self.last()["exit"], 1)
+
+    def test_a_skip_or_timeout_note_never_replaces_an_unread_red(self):  # T-4823
+        # a red in a detached run's first pass, an edit during it, and a rerun that times out: the unread red note stays
+        from unittest import mock
+        from sampo import ambient, release
+        p = self.project()
+        self.fm("check", "ambient", "on")
+        self.edit(GOOD + "# touched\n")
+        self.write("calc.py", GOOD + "# red\n")
+        dirty = os.path.join(p.dir, "ambient", "dirty")
+        seen = []
+
+        def runs(root, cmd, limit, **kw):
+            seen.append(limit)
+            if len(seen) == 1:
+                open(dirty, "w").close()  # an edit landed during this run: the rerun follows
+                return 1, "FAIL: test_calc.T.test_x\n"
+            return 124, ""
+
+        with mock.patch.object(release, "_affected_limit", return_value=(2, "limit 2 s")), \
+                mock.patch.object(c, "run_command", side_effect=runs):
+            ambient.run(p)
+        self.assertEqual(len(seen), 2)
+        text = ambient.note(p) or ""
+        self.assertIn("now fail", text)
+        self.assertNotIn("timed out", text)
+
+    def test_an_over_ceiling_set_is_noted_once(self):  # T-4823
+        # the skip note says so once for the set; the later skips of the same command are only logged, until a run
+        from unittest import mock
+        from sampo import ambient, release
+        p = self.project()
+        self.fm("check", "ambient", "on")
+        self.write("calc.py", GOOD + "# touched\n")
+        suite = {"test_calc"} | {f"m{i}" for i in range(9)}
+        host = {"FOREMAN_HOST": "load=0,cpus=16"}
+        big = {"test_calc.T": 16000.0, **{f"m{i}.T": 10000.0 for i in range(9)}}
+        small = {"test_calc.T": 3000.0, **{f"m{i}.T": 1000.0 for i in range(9)}}
+
+        def run_with(record, ran):
+            with mock.patch.dict(os.environ, host), mock.patch.object(release, "_run_times", **record), \
+                    mock.patch.object(c, "run_command", side_effect=ran) as run:
+                ambient.run(p)
+            return run
+
+        first = run_with({"return_value": (big, suite, 16)}, lambda *a, **k: (0, ""))
+        first.assert_not_called()
+        self.assertIn("over the 1500 s limit", ambient.note(p) or "")
+        again = run_with({"return_value": (big, suite, 16)}, lambda *a, **k: (0, ""))
+        again.assert_not_called()
+        self.assertIsNone(ambient.note(p), "the same over-ceiling set is not noted twice")
+        run_with({"return_value": (small, suite, 16)}, lambda *a, **k: (0, ""))  # a run ends the set's skipping
+        run_with({"return_value": (big, suite, 16)}, lambda *a, **k: (0, ""))
+        self.assertIn("over the 1500 s limit", ambient.note(p) or "", "a set that runs again is noted again")
+
+    def test_the_ambient_limit_is_sized_from_the_recorded_seconds(self):  # T-4823
+        # the limit comes from release._affected_limit over the set's recorded seconds, as ship's affected stage sizes
+        # it (T-4788); a set that would not finish under its ceiling is skipped with one note and no run; a sizing
+        # that raises gets the old limit, never a crash in the detached run
+        from unittest import mock
+        from sampo import ambient, release
+        p = self.project()
+        self.fm("check", "ambient", "on")
+        self.write("calc.py", GOOD + "# touched\n")
+        suite = {"test_calc"} | {f"m{i}" for i in range(9)}
+        host = {"FOREMAN_HOST": "load=0,cpus=16"}
+        big = {"test_calc.T": 16000.0, **{f"m{i}.T": 10000.0 for i in range(9)}}
+        small = {"test_calc.T": 3000.0, **{f"m{i}.T": 1000.0 for i in range(9)}}
+
+        def run_with(record):
+            with mock.patch.dict(os.environ, host), mock.patch.object(release, "_run_times", **record), \
+                    mock.patch.object(c, "run_command", wraps=c.run_command) as run:
+                ambient.run(p)
+            return run
+
+        run = run_with({"return_value": (big, suite, 16)})  # 16000 s over 16 workers: about 1560 s, over the ceiling
+        run.assert_not_called()
+        self.assertIn("over the 1500 s limit", ambient.note(p) or "", "one note, and no run")
+        self.assertIsNone(self.last(), "a skipped set records no verdict")
+        run = run_with({"return_value": (small, suite, 16)})  # 3000 s over 16 workers x 1.5 + 60 s: 341 s
+        self.assertEqual(run.call_args[0][2], 341)
+        self.assertEqual(self.last()["exit"], 0)
+        run = run_with({"side_effect": RuntimeError("boom")})
+        self.assertEqual(run.call_args[0][2], release.AFFECTED_OLD, "a sizing that raises gets the old limit")
