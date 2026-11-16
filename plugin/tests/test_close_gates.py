@@ -136,7 +136,8 @@ class CloseGates(ForemanTestCase):
         env = {"FOREMAN_SENTINEL": "off", "FOREMAN_SLOW_CLOSE_S": "0.5"}
         r = self.fm("task", "finish", tid, "--audit", "self", "--run", "sleep 1", check=False, env=env)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertRegex(r.stdout, r"Slowest: sleep 1 \d+ s \(of \d+ s\)")
+        # train 1115k: at load 28 the linked tests took 2 s and outlasted the sleep; the line names whichever was slowest
+        self.assertRegex(r.stdout, r"Slowest: (?:sleep 1|python3 tests/run\.py \S+) \d+ s \(of \d+ s\)")
         self.assertIn("s", self.events("close_affected")[-1]["data"])
 
     def test_a_flaky_linked_test_gets_one_rerun(self):
