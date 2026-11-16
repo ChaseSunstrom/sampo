@@ -16,7 +16,8 @@ SLEEPER = ("import os, subprocess, time, unittest\n"
            "class S(unittest.TestCase):\n"
            "    def test_s(self):\n"
            "        kid = subprocess.Popen(['sleep', '60'])  # a child in the class's own session\n"
-           "        open('kid.pid', 'w').write(str(kid.pid))\n"
+           "        open('kid.tmp', 'w').write(str(kid.pid))\n"
+           "        os.replace('kid.tmp', 'kid.pid')  # T-4828: whole or absent, never an empty file\n"
            "        time.sleep(60)\n")
 QUICK = "import unittest\nclass Q(unittest.TestCase):\n    def test_q(self):\n        pass\n"
 # a class that shrugs off the run's SIGABRT (faulthandler's stack dump is then not written), so the run waits its 5 s
@@ -50,12 +51,32 @@ def _run(d, *args):
 def _sleeping(d, timeout=120):
     """waits until the sleeping class runs (kid.pid is its last line before the sleep); a run under load can be slow"""
     end = time.time() + timeout
-    while not os.path.exists(os.path.join(d, "kid.pid")):
+    while True:  # T-4828: a file seen between its creation and its write reads empty: wait for the number
+        try:
+            with open(os.path.join(d, "kid.pid")) as f:
+                text = f.read().strip()
+        except FileNotFoundError:
+            text = ""
+        if text.isdigit():
+            return int(text)
         if time.time() > end:
             raise AssertionError("the sleeping class never started")
         time.sleep(0.1)
-    with open(os.path.join(d, "kid.pid")) as f:
-        return int(f.read())
+
+
+class PidFile(unittest.TestCase):
+    def test_an_empty_pid_file_is_waited_on_not_read_as_a_number(self):
+        # T-4828: under load the reader met kid.pid between its creation and its write, and int('') failed the class
+        import tempfile
+        import threading
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "kid.pid"), "w").close()
+            later = threading.Timer(0.3, lambda: open(os.path.join(d, "kid.pid"), "w").write("4242"))
+            later.start()
+            try:
+                self.assertEqual(_sleeping(d, timeout=10), 4242)
+            finally:
+                later.join()
 
 
 def _alive(pid):
