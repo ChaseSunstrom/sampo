@@ -43,6 +43,40 @@ class PrivateTerms(ForemanTestCase):
             self.assertNotEqual(self.fm("private", "add", bad, check=False).returncode, 0, repr(bad))
         self.assertEqual(c.private_terms(), [HOST])
 
+    def test_add_and_rm_rebuilds_the_profile_and_the_linked_rules_at_once(self):
+        # T-4819: a term already written into the profile and into a linked AGENTS.md or GEMINI.md is replaced by
+        # <private> by the add itself, not at the next rebuild; rm puts the word back; a rebuild that fails never
+        # fails the add. Every path is a temp folder: the test's HOME, CLAUDE_CONFIG_DIR and CODEX_HOME.
+        cc, codex, home = (os.path.join(self.tmp, n) for n in ("cc", "codex", "home"))
+        os.makedirs(os.path.join(home, ".gemini"))
+        os.makedirs(codex)
+        env = {"CLAUDE_CONFIG_DIR": cc, "CODEX_HOME": codex, "HOME": home, "LOGNAME": "alice", "USER": "alice"}
+        profile_dir = os.path.join(c.state_dir(), "profile")
+        os.makedirs(profile_dir)
+        with open(os.path.join(profile_dir, "seed.md"), "w") as f:  # the user's own line, the word not yet private
+            f.write(f"- The user keeps the lab notes at {WORD} office.\n")
+        profile_md = os.path.join(profile_dir, "profile.md")
+        rules = {"codex": os.path.join(codex, "AGENTS.md"), "gemini": os.path.join(home, ".gemini", "GEMINI.md")}
+        self.fm("profile", "rebuild", env=env)
+        for tool in rules:
+            self.fm("profile", "link", tool, env=env)
+        for path in (profile_md, *rules.values()):
+            self.assertIn(WORD, read_text(path), path)
+        self.fm("private", "add", WORD, env=env)
+        for path in (profile_md, *rules.values()):
+            self.assertNotIn(WORD, read_text(path).lower(), path)
+            self.assertIn("<private>", read_text(path), path)
+        self.fm("private", "rm", WORD, env=env)
+        for path in (profile_md, *rules.values()):
+            self.assertIn(WORD, read_text(path).lower(), f"rm lets the word back in at once: {path}")
+        os.remove(profile_md)  # a rebuild that cannot write: the add still stands and says so on stderr
+        os.makedirs(profile_md)
+        got = self.fm("private", "add", "otherword", env=env)
+        self.assertEqual(got.returncode, 0, got.stderr)
+        self.assertIn("profile", got.stderr)
+        self.assertNotIn("otherword", got.stdout + got.stderr)
+        self.assertIn("otherword", c.private_terms())
+
     def test_private_list_tells_an_absent_list_from_an_unreadable_one(self):  # T-4785 (d)
         path = os.path.join(c.state_dir(), c.PRIVATE_TERMS)
         if os.path.exists(path):

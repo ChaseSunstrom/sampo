@@ -662,6 +662,12 @@ def cmd_private(args):
         if not os.path.exists(path):
             os.close(os.open(path, os.O_CREAT | os.O_WRONLY, 0o600))  # write_atomic keeps this mode
         c.write_atomic(path, json.dumps(terms))
+    try:  # T-4819: the profile and its linked AGENTS.md / GEMINI.md drop a new term, or take back a removed one, now
+        from sampo import profile  # outside the state lock: a rebuild scans every memory
+        profile.rebuild()
+    except Exception as e:  # a failed rebuild never fails the add: the next rebuild or session start retries it
+        print(f"sampo private: the profile did not rebuild ({type(e).__name__}); run sampo profile rebuild",
+              file=sys.stderr)
     try:
         p = cli.resolve(args, create=False)
     except cli.UsageError:
