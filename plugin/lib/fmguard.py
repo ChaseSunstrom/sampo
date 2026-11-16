@@ -7540,22 +7540,15 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
         _TEXTS.clear()
         _DEPS.clear()
     _IN_SCRIPT.append(1)
-    old = None
+    old, live = None, [False]
     try:
         text, why, got = _script_text(script, cwd, shebang=kind == "exec", data=data, assume_x=assume_x)
         if text is not None:
             _TEXTS.append((p, text))
             if kind == "exec":  # the #! line is a command too: env -S bash -c '…' runs its -c string, not the body
                 found += check_bash(_shebang(data[:256].split(b"\n")[0].decode("utf-8", "replace"))[1], ctx, depth + 1)
-        if not nested:
-            def over(*_):
-                raise _OverBudget()
-            try:
-                old = signal.signal(signal.SIGPROF, over)  # CPU time, not wall: a busy machine mustn't trip it
-                signal.setitimer(signal.ITIMER_PROF, _script_budget())
-            except ValueError:  # not the main thread: no clock (ponytail: only the main thread is time-boxed)
-                old = None
-        pre = list(found)
+        pre = list(found)  # `pre` and `read` are bound before the timer is set: one that fires at once (macOS, T-4820)
+        #                    would otherwise reach the handler below with neither
 
         def read():
             if why:
@@ -7566,7 +7559,20 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
                         found.extend(check_bash(spawned, ctx, depth + 1))
             elif text is not None:
                 _check_script(text, ctx, depth, found, path=p)
+        if not nested:
+            def over(*_):
+                if live[0]:  # T-4820: a fire after the last read ended (the scan, the cleanup) is not an over-budget read
+                    raise _OverBudget()
+            try:
+                live[0] = True
+                old = signal.signal(signal.SIGPROF, over)  # CPU time, not wall: a busy machine mustn't trip it
+                signal.setitimer(signal.ITIMER_PROF, _script_budget())
+            except ValueError:  # not the main thread: no clock (ponytail: only the main thread is time-boxed)
+                old = None
         read()
+        live[0] = False  # the read ended in time: the timer, still armed, is now harmless and is cancelled below
+        if old is not None:
+            signal.setitimer(signal.ITIMER_PROF, 0)
     except _OverBudget:
         if nested:
             raise  # the outermost read owns the clock and decides
@@ -7585,6 +7591,8 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
             except _OverBudget:
                 found[:] = first + [f for f in found if f not in first]
                 too_long = True
+            live[0] = False  # no timer decides anything from here: the scan and the cleanup run to the end (T-4820)
+            signal.setitimer(signal.ITIMER_PROF, 0)
         # never an empty verdict for a script not fully read: the whole text by plain regexes, and the scripts it runs
         # (bash X, source X, ./X: up to 8 files, one level of those too)
         todo, seen = ([] if finished else list(_TEXTS)), set()

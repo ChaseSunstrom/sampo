@@ -1486,7 +1486,26 @@ class TheOldSharedFolder(RustCase):
         self.assertTrue(found[0]["auto"])
         self.assertTrue(os.path.isfile(entry), "a report removes nothing")
         self.fm("tidy", "--json", "--apply", env={"HOME": self.fake_home})
-        self.assertEqual(os.path.exists(entry), not os.path.isdir("/proc/self"))
+        # T-4820: where /proc is missing (macOS) the open files come from lsof (T-4764), so apply removes the folder
+        # there too; it keeps it only where neither view can be had (the old rule, written before lsof)
+        self.assertEqual(os.path.exists(entry), lanes._held_paths() is None)
+
+    def test_without_proc_the_open_files_come_from_lsof_and_the_folder_goes_or_stays_by_what_it_says(self):
+        # T-4820: the macOS path on any host: no /proc/self, an lsof that lists what is open (not this folder)
+        entry = self.old_entry()
+        real = os.path.isdir
+        no_proc = unittest.mock.patch.object(lanes.os.path, "isdir", lambda p: False if p == "/proc/self" else real(p))
+        with no_proc, unittest.mock.patch.object(lanes, "_lsof_paths", return_value=["/usr/lib/x", "/elsewhere/y"]):
+            r = lanes.retire_cargo_shared(self.p)
+        self.assertTrue(r["removed"], r)
+        self.assertFalse(os.path.exists(entry))
+        entry = self.old_entry()
+        with no_proc, unittest.mock.patch.object(lanes, "_lsof_paths", return_value=[os.path.join(self.old, "debug", "x")]):
+            r = lanes.retire_cargo_shared(self.p)
+        self.assertFalse(r["removed"], "a file open inside it holds it")
+        with no_proc, unittest.mock.patch.object(lanes, "_lsof_paths", return_value=None):
+            self.assertFalse(lanes.retire_cargo_shared(self.p)["removed"], "no view: nothing is removed")
+        self.assertTrue(os.path.isfile(entry))
 
     def test_apply_in_process_with_the_open_files_given(self):
         from sampo import tidy

@@ -407,6 +407,54 @@ class ScriptCache(GuardCase):
         with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "5"}):  # the refusal is cached
             self.assertBlocked(self.bash(f"bash {p}"), "system")
 
+    def test_a_budget_timer_that_fires_the_moment_it_is_set_is_a_verdict_not_a_crash(self):
+        # T-4820: on macOS CI the timer fired before `pre = list(found)` ran: UnboundLocalError out of the guard. Simulate
+        # it on any host: the first setitimer of the read calls the SIGPROF handler at once, as a 1 us timer can.
+        import signal
+        p = self.script("early.sh", "echo hi\nrm -rf /opt/data\n")
+        real, fired = signal.setitimer, []
+
+        def at_once(which, secs, *rest):
+            if which == signal.ITIMER_PROF and secs and not fired:
+                fired.append(secs)
+                signal.getsignal(signal.SIGPROF)(signal.SIGPROF, None)  # raises _OverBudget here, as a signal would
+            return real(which, secs, *rest)
+        g.take_unread()
+        with mock.patch.object(signal, "setitimer", at_once):
+            r = self.bash(f"bash {p}")  # never an UnboundLocalError: the second read judges the script
+        self.assertEqual(len(fired), 1, "the first timer fired at once")
+        self.assertBlocked(r, "rm-outside")
+
+    def test_a_timer_that_fires_after_the_last_read_ended_cannot_end_the_hook(self):
+        # T-4820 review: the hard timer stayed armed through the literal scan and the cleanup, so a fire there (a loaded
+        # macOS runner) raised _OverBudget out of _script_verdict. Both reads are cut off at once here, and the handler is
+        # called again inside the scan, as a late SIGPROF would: the verdict is the same refusal, not an exception.
+        import signal
+        p = self.script("late.sh", "echo hi\nrm -rf /opt/data\n")
+        real, calls = signal.setitimer, []
+
+        def at_once(which, secs, *rest):
+            if which == signal.ITIMER_PROF and secs:
+                calls.append(secs)
+                signal.getsignal(signal.SIGPROF)(signal.SIGPROF, None)  # both reads are cut off the moment they start
+            return real(which, secs, *rest)
+        real_scan, late = g._literal_scan, []
+
+        def scan(*a, **kw):
+            late.append(1)
+            handler = signal.getsignal(signal.SIGPROF)
+            if callable(handler):
+                handler(signal.SIGPROF, None)  # the hard timer firing during the scan
+            return real_scan(*a, **kw)
+        g.take_unread()
+        with mock.patch.object(signal, "setitimer", at_once), mock.patch.object(g, "_literal_scan", scan):
+            r = self.bash(f"bash {p}")
+        self.assertEqual(len(calls), 2, "the first and the hard timer both fired at once")
+        self.assertTrue(late, "the scan ran")
+        self.assertBlocked(r, "system")
+        self.assertEqual([x[1].split(":")[0] for x in g.take_unread()], ["refused"])
+        self.assertEqual(signal.getsignal(signal.SIGPROF), signal.SIG_DFL, "the old handler is back on every path")
+
     def test_a_padded_script_is_refused_whatever_it_holds_and_whichever_file_it_runs(self):
         # T-4758 round 3 (confirmed holes): the cut-off read never reached what follows the padding. None of these has
         # a word a denylist would key on, or its word is in a file the top script runs.
@@ -1058,9 +1106,17 @@ class ScriptReadSpeed(GuardCase):  # T-1778
         self.assertLess(big, 21.0 * scale, "220 KB: 3.7 s on a quiet box")
         self.assertLess(big, 6 * small, f"4 times the text ({size_small} B to {size_big} B) costs about 4 times (measured "
                                         f"3.6 to 4.1; quadratic: 16): {small:.3f} s to {big:.3f} s")
-        # inside the budgets the hook has (0.2 s, then 2 s: scaled to the runner) 65 KB of plain commands read to the end
-        spent, verdict, unread, size = self._plain_cost(300, 0.2 * scale)
-        self.assertIsNone(verdict, f"{size} B read in {spent:.2f} s")
+        # inside the budgets the hook has (0.2 s, then 2 s, the product's own: not scaled) a script of plain commands sized
+        # to what THIS runner just measured reads to the end: 65 KB (300 steps) on a quiet box. T-4820: a fixed 300 steps
+        # at budgets scaled by a loop timed earlier was refused on a slow Ubuntu runner (0.207 s, then 2.07 s CPU spent
+        # without finishing); the size is now what the 250-step read above says fits in under a third of the hard budget
+        # (0.6 s of 2 s), never under 120 steps (31 KB), and 250 steps costing over 20 s (20x the quiet box's ~1 s) is a
+        # uniform slowdown of the read itself, which sizing to the measure would hide.
+        self.assertLess(small, 20.0 * scale, f"250 plain steps took {small:.1f} s: the per-step read cost slowed")
+        per_step = max(small, 1e-6) / 250
+        steps = max(120, min(300, int(0.6 / per_step)))
+        spent, verdict, unread, size = self._plain_cost(steps, g._BUDGET)
+        self.assertIsNone(verdict, f"{steps} steps, {size} B read in {spent:.2f} s")
         self.assertEqual(unread, [])
 
     def test_a_carried_substitution_that_changes_nothing_is_read_as_one_word(self):

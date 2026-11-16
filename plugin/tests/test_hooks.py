@@ -4671,11 +4671,29 @@ class StageClock(ForemanTestCase):
         with open(sink) as f:
             row = json.loads(f.readline())
         self.assertEqual(row["event"], "PreToolUse")
-        for k in ("start", "imports", "state", "parse", "check", "after", "total"):
+        for k in ("imports", "state", "parse", "check", "after", "total") + (("start",) if os.path.exists("/proc/self/stat") else ()):
             self.assertIsInstance(row.get(k), float, k)
         self.assertAlmostEqual(row["total"], sum(v for k, v in row.items() if isinstance(v, float) and k != "total"),
                                delta=0.5)
-        self.assertGreater(row["start"], 0, "fork to first line is the interpreter's start: never zero")
+        if os.path.exists("/proc/self/stat"):  # T-4820: macOS has no procfs: there the row has no start stage
+            self.assertGreater(row["start"], 0, "fork to first line is the interpreter's start: never zero")
+        else:
+            self.assertNotIn("start", row)
+
+    def test_a_host_without_procfs_leaves_the_start_out_not_an_error(self):
+        """T-4820: the same row on a host with no /proc/self/stat (macOS): no start stage (a 0.0 would read as an instant
+        start), every other stage still there and the total the sum of those."""
+        from sampo import hooks
+        try:
+            now = hooks._now()
+            hooks.STAGES.update(t0=now - 0.05, event="PreToolUse", imports=now - 0.04)
+            with unittest.mock.patch.object(hooks, "_born", side_effect=FileNotFoundError("/proc/self/stat")):
+                ms = hooks.stage_ms()
+        finally:
+            hooks.STAGES.clear()
+        self.assertNotIn("start", ms)
+        self.assertGreater(ms["imports"], 0)
+        self.assertAlmostEqual(ms["total"], sum(v for k, v in ms.items() if k != "total"), delta=0.2)
 
     def test_the_sink_only_writes_under_the_temp_folder(self):
         bad = os.path.expanduser("~/.sampo-stages-dump-test")
@@ -4710,7 +4728,8 @@ class StageClock(ForemanTestCase):
     def test_a_host_without_the_boot_clock_still_runs_the_guard(self):
         """macOS has no time.CLOCK_BOOTTIME: the line that read it ended the hook (exit 1 reads as allow, so the
         guard was off). With it removed the hook answers, and still refuses what it refused."""
-        code = ("import runpy, sys, time\ndel time.CLOCK_BOOTTIME\nsys.argv = [sys.argv[1], 'PreToolUse']\n"
+        # T-4820: `del` of a clock the host never had (macOS) is an AttributeError: delete it only where it exists
+        code = ("import runpy, sys, time\nif hasattr(time, 'CLOCK_BOOTTIME'):\n    del time.CLOCK_BOOTTIME\nsys.argv = [sys.argv[1], 'PreToolUse']\n"
                 "runpy.run_path(sys.argv[0], run_name='__main__')")
         payload = {"session_id": "sess-1", "cwd": self.repo, "hook_event_name": "PreToolUse", "tool_name": "Bash",
                    "tool_input": {"command": "sampo check | head"}}
@@ -4719,12 +4738,15 @@ class StageClock(ForemanTestCase):
         self.assertEqual(r.returncode, 2, r.stderr)
         self.assertEqual(json.loads(r.stdout)["hookSpecificOutput"]["permissionDecision"], "deny")
         from sampo import hooks
-        saved = hooks.time.CLOCK_BOOTTIME
-        del hooks.time.CLOCK_BOOTTIME
+        saved = getattr(hooks.time, "CLOCK_BOOTTIME", None)
+        if saved is not None:
+            del hooks.time.CLOCK_BOOTTIME
         try:
+            self.assertFalse(hasattr(hooks.time, "CLOCK_BOOTTIME"))
             self.assertIsInstance(hooks._now(), float)
         finally:
-            hooks.time.CLOCK_BOOTTIME = saved
+            if saved is not None:
+                hooks.time.CLOCK_BOOTTIME = saved
         hooks.stage_start(None, "PreToolUse")  # a clock that failed at the first line: nothing recorded
         self.assertEqual(hooks.STAGES, {})
 

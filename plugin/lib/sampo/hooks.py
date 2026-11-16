@@ -304,7 +304,7 @@ def mark(name):
 
 
 def _born():
-    """When this process was forked (boot-clock s; Linux only: elsewhere the caller reads 0): exec keeps it, so a wrapper shell's time is in it."""
+    """When this process was forked (boot-clock s; Linux only: elsewhere it raises and the caller leaves the start stage out): exec keeps it, so a wrapper shell's time is in it."""
     with open("/proc/self/stat", "rb") as f:
         rest = f.read().rpartition(b")")[2].split()
     return int(rest[19]) / os.sysconf("SC_CLK_TCK")
@@ -322,7 +322,7 @@ def stage_ms():
     try:
         out["start"] = round((s["t0"] - _born()) * 1000, 1)
     except (OSError, ValueError, IndexError):
-        out["start"] = 0.0
+        pass  # T-4820: no procfs (macOS): the stage is absent, not a 0.0 that would read as an instant start in the bench
     out["imports"] = round((s["imports"] - s["t0"]) * 1000, 1)
     for name in STAGE_MARKS:
         if name in s:
