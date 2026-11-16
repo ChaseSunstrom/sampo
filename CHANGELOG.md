@@ -11,6 +11,9 @@
 
 ### Everything else
 
+- The post-merge verify no longer idles behind a stream of waiting runs (429 s down to 88 s in the scenario), a gate keeps all but one first slot per run, and the run's closing line counts the slot time left to each fair-share reason (T-4789).
+- The ScriptReadSpeed size tests now assert that cost grows in proportion to size, with both sizes measured back to back on uncached reads, and keep only a loose absolute bound, so a slower CI runner no longer fails them (T-4806).
+- The ship's affected-tests stage is sized from run.py's recorded test time and the free CPUs, skips a set the full check covers, and reports a cut with healthy classes as running out of time instead of a hang (T-4788).
 - A download piped into a shell is now refused inside a script file the command runs, with the same message and grant as the typed line, in a function body and down a chain of scripts (T-4774).
 - The macOS test of `sampo tidy --apply` on lane cargo folders now expects the prune by whether the host can see open files (`/proc` or `lsof`), not by `/proc` alone, and mocked-macOS tests pin that the same folders go as with `/proc` (T-4792).
 - The PreToolUse hook records where its time goes (a stage clock with a 1 s watchdog that survives the 5 s kill) and the bench times a one-line command per stage beside a real test run, finding about 32 ms of Python start with no waiting stage (T-4780).
