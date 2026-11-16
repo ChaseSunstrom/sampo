@@ -82,6 +82,7 @@ OPERATOR_SWITCHES.add("BENCH_MIN_FREE_GB")  # T-3747: the operator's disk budget
 OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND_STAMP"})
 OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a big task; a hold test sets its own
 OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S", "WAIT_TRAIN_POLL_S"})  # T-4525, T-4692: the wait timer's limits; its tests set their own
+OPERATOR_SWITCHES.add("LANE_CHECKS")  # T-4491: how many lane checks run at once; an accept test sets its own
 OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its starter; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("SLOT_RESERVE")  # T-4650: the reserved slots' off switch is the operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_TRACE")  # T-4685: the slot trace is an operator's, never a test's
@@ -3288,6 +3289,8 @@ def _suite(a):
                     "argv": sys.argv[1:], "whole": entire, "selection": "" if entire else sel.strip(),
                     "ok": not failed and not cpu_red and bool(total or skip) and not ENDED, "ran": total, "cached": sum(skip.values()),
                     "n_failed": len(names), "n_not_run": len(stopped), **slot_fields(t0, time.time()),
+                    "classes": len({owner(r[0]) for r in results}),  # T-4491: the deadline line says 'N of M classes ran'
+                    "classes_not_run": len({owner(r[0]) for r in stopped}),
                     "failed": ents[:FAILS_MAX],
                     "not_run": [r[0] for r in stopped][:NOT_RUN_MAX]}
             if rtree:  # T-4269: what each red class read, so a later run on the same inputs knows it red; and the flaky ones

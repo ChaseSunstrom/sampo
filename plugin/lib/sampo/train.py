@@ -2568,9 +2568,21 @@ def spawn_land(p, main):
 
 CHECK_TRIES = 2  # a check cut off at its deadline is started once more (its green classes are cached), then reported
 CHECK_WALL_S = 4 * 3600  # a check process still running after this is killed and counts as cut off
+LANE_CHECKS_ENV = "SAMPO_LANE_CHECKS"
+LANE_CHECKS_MAX = 64
+TURN_POLL_S = 0.5  # T-4491: a queued check looks for a free slot this often
+
+
+def lane_checks():
+    """T-4491: how many lane checks run at once in a project (SAMPO_LANE_CHECKS, default 2, at least 1, at most
+    LANE_CHECKS_MAX: each slot is an open lock file). A further one waits as 'check queued' until a running one ends."""
+    try:
+        return min(LANE_CHECKS_MAX, max(1, int(os.environ.get(LANE_CHECKS_ENV) or 2)))
+    except ValueError:
+        return 2
 _SCRUBBED = ("FM_STALL", c.RUN_ID_ENV, "FOREMAN_TEST_RUN_ID")  # env prefixes a lane's check never inherits: a test's override, a nested run's id (the legacy name too)
 _CHECK_KEYS = ("check_state", "check_tip", "check_pid", "check_ticks", "check_log", "check_tries", "check_failed",
-               "check_solo", "check_shape")  # T-4563: the tip the repo-shape modules ran green at
+               "check_queued", "check_solo", "check_shape")  # T-4563: the tip the repo-shape modules ran green at
 BATCH_MAX = 8  # T-4528: lanes (the turn's own included) checked as one candidate; the rest wait their own turn
 
 
@@ -2664,6 +2676,9 @@ def _check_hold(b, sha, main):
     if not st or m.get("check_tip") != sha or st == "green":
         return None
     if st == "running" and _check_alive(m):
+        if m.get("check_queued"):  # T-4491: its process waits for one of the project's lane_checks() slots
+            return (f"held: check queued behind {lane_checks()} running at most (pid {m.get('check_pid')}); it starts "
+                    "when one ends and joins the land when green")
         return f"held: check running (pid {m.get('check_pid')}); it joins the land when green"
     if _clean_run(b, sha, main):
         return None
@@ -2678,8 +2693,8 @@ def _check_hold(b, sha, main):
 
 
 def check_notes(briefs, main, ids=None):
-    """T-4286: {task id: 'checking' | 'check red: CLASSES' | 'check cut off'} for the lanes whose own check holds them at
-    their current tip (sampo lane list, sampo next): one git call per lane that has a check on record."""
+    """T-4286: {task id: 'checking' | 'check queued' | 'check red: CLASSES' | 'check cut off'} for the lanes whose own check
+    holds them at their current tip (sampo lane list, sampo next): one git call per lane that has a check on record."""
     out = {}
     for b in briefs:
         if (ids is not None and b.id not in ids) or b.meta.get("check_state") in (None, "", "green"):
@@ -2687,7 +2702,8 @@ def check_notes(briefs, main, ids=None):
         why = _check_hold(b, _lane_tip(main, b), main)
         if why:
             st = b.meta["check_state"]
-            out[b.id] = ("checking" if st == "running" and _check_alive(b.meta) else
+            out[b.id] = ("check queued" if st == "running" and _check_alive(b.meta) and b.meta.get("check_queued") else
+                         "checking" if st == "running" and _check_alive(b.meta) else
                          f"check red: {b.meta.get('check_failed') or '?'}" if st == "red" else
                          "check cut off" if st == "cut_off" else
                          "check ended: accept again" if _restartable(b.meta) else "check ended: run it in the lane")
@@ -2770,7 +2786,7 @@ def _start_check(p, b, main, tip, since, tries):
         if _check_seen(x.meta) != seen:
             raise _ClaimLost(x.meta)
         x.meta.update(check_state="running", check_tip=tip, check_pid=me, check_ticks=_ticks(me), check_tries=tries)
-        for k in ("check_failed", "check_log"):
+        for k in ("check_failed", "check_log", "check_queued"):
             x.meta.pop(k, None)
     cli.mutate(p, b.id, claim, "check", {"check_state": "running"})
     try:
@@ -2839,24 +2855,43 @@ def _run_check(argv, cwd):
             signal.signal(signal.SIGTERM, before)
 
 
-@contextlib.contextmanager
-def _check_turn(p, waits=None):
-    """T-4416: one lane's accept check at a time in a project. Five started together (2026-11-11: 1,275 test modules for
-    16 slots) were each still running after 15 to 25 minutes and a 59-module one was cut off at its run's deadline; in
-    turn the work is the same and the first result comes after one run. An flock on the state's check/turn.lock, held
-    by the check's own process around its run and released by the kernel however that process ends. Free: taken at
-    once. Held: `waits()` once (the task is told), then the process blocks; no signal handler is set here, so the
-    SIGTERM of sampo lane rm (stop_check) ends a waiting one. The land's gate and ship do not take it."""
-    d = os.path.join(p.dir, "check")
-    os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, "turn.lock"), "a") as f:
+def _take_slot(slots):
+    """T-4491: an flock on the first free slot of `slots` (open files), True; False when every one is held."""
+    for f in slots:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
         except OSError:
-            if waits:
-                waits()
-            fcntl.flock(f, fcntl.LOCK_EX)
+            continue
+    return False
+
+
+@contextlib.contextmanager
+def _check_turn(p, waits=None, started=None):
+    """T-4416, T-4491: at most lane_checks() lane checks at a time in a project. Five started together (2026-11-11: 1,275
+    test modules for 16 slots) were each still running after 15 to 25 minutes and a 59-module one was cut off at its
+    run's deadline; in turn the work is the same and the first result comes after one run. One flock per slot
+    (check/turn-N.lock), held by the check's own process around its run and released by the kernel however that process
+    ends. A free slot is taken at once. With none free, `waits()` once (the task is told: check queued), then the process
+    polls for one every TURN_POLL_S, with no session open; `started()` once it has one, if it waited. No signal handler
+    is set here, so the SIGTERM of sampo lane rm (stop_check) ends a waiting one. The land's gate and ship do not take it."""
+    d = os.path.join(p.dir, "check")
+    os.makedirs(d, exist_ok=True)
+    slots = [open(os.path.join(d, f"turn-{i}.lock"), "a") for i in range(lane_checks())]
+    try:
+        waited = False
+        while not _take_slot(slots):
+            if not waited:
+                waited = True
+                if waits:
+                    waits()
+            time.sleep(TURN_POLL_S)
+        if waited and started:
+            started()
         yield
+    finally:
+        for f in slots:
+            f.close()
 
 
 def _outcome(r, timed_out):
@@ -2873,14 +2908,17 @@ def _outcome(r, timed_out):
 
 def _batch_peers(p, main, me, tip):
     """T-4528: the lanes whose check waits its turn behind this one, as (brief, tip), oldest task first, at most
-    BATCH_MAX - 1: its process alive, claimed at the lane's current tip on its first try, and not marked for a solo run
+    BATCH_MAX - 1: its process alive and queued (T-4491: with several slots, a check running in another one is no peer:
+    marking it green mid-run would send it to a redundant solo check), claimed at the lane's current tip on its first
+    try, and not marked for a solo run
     (a batch that went red or was cut off marks its members). T-4563: and whose repo-shape modules ran green at that tip
     (_shape_clear: a batch's run holds the classes, not the other modules). One git call per lane that passes the task's
     own record."""
     out = []
     for x in c.load_briefs(p):
         m = x.meta
-        if x.id == me or m.get("check_state") != "running" or not _check_alive(m) or int(m.get("check_tries") or 1) != 1:
+        if (x.id == me or m.get("check_state") != "running" or not m.get("check_queued") or not _check_alive(m)
+                or int(m.get("check_tries") or 1) != 1):
             continue
         t = _lane_tip(main, x)
         if t and m.get("check_tip") == t and m.get("check_solo") != t and _shape_clear(x, t, main):
@@ -2960,7 +2998,8 @@ def _batch_once(p, main, b, tip, peers, run, base):
             return []
         wrote = _mark_members(p, main, merged, f"check green on {{tip}} as one of a batch of {len(merged)} lanes checked "
                                                f"together on {base[:9]} (one run)", check_state="green", check_pid=None,
-                              check_ticks=None, check_failed=None, check_solo=None, accepted_at=round(time.time(), 1))
+                              check_ticks=None, check_failed=None, check_solo=None, check_queued=None,
+                              accepted_at=round(time.time(), 1))
         if wrote:
             _queue(p, main, wrote)
         return wrote
@@ -2989,8 +3028,9 @@ def _accept_check_child(a):
         if verdict == "moved":
             return 0
     r, timed_out = None, False
-    with _check_turn(p, lambda: _set_check(p, b.id, "check waits its turn: another lane's check is running (one at a "
-                                                    "time in a project, T-4416)")):
+    with _check_turn(p, lambda: _set_check(p, b.id, f"check queued: {lane_checks()} lane check(s) run at once in this "
+                                                    "project (T-4491); it starts when one ends", check_queued="1"),
+                     lambda: _set_check(p, b.id, check_queued=None)):
         cur = cli.need_brief(p, b.id)
         if _lane_tip(main, cur) == tip:  # a tip that moved during the wait: no suite for nothing
             if cur.meta.get("check_state") == "green" and cur.meta.get("check_tip") == tip:
@@ -3014,14 +3054,14 @@ def _accept_check_child(a):
     what, got = _outcome(r, timed_out)
     if what == "green":
         _set_check(p, b.id, f"check green on {tip[:9]}", check_state="green", check_pid=None, check_ticks=None,
-                   check_failed=None, accepted_at=round(time.time(), 1))
+                   check_failed=None, check_queued=None, accepted_at=round(time.time(), 1))
         _queue(p, main, b.id)
         return 0
     if what == "red":
         failed = " ".join(str(x) for x in got.get("failed") or [])[:500]
         _set_check(p, b.id, f"its lane's check is red: {failed or 'no failing class recorded'} (tip {tip[:9]}; no retry "
                             "until the tip moves)", check_state="red", check_failed=failed, check_pid=None, check_ticks=None,
-                   check_shape=None)  # T-4563: a red check no longer rests on the shape modules' green
+                   check_shape=None, check_queued=None)  # T-4563: a red check no longer rests on the shape modules' green
         return 1
     try:
         if tries < CHECK_TRIES and _start_check(p, b, main, tip, a.get("since"), tries + 1):
@@ -3031,10 +3071,12 @@ def _accept_check_child(a):
     if got is None and not timed_out:  # T-4410: it ended on its own (a usage error, a crash): nothing was cut off
         last = next((x.strip() for x in reversed((r.stdout or "").splitlines()) if x.strip()), "no output")
         what = f"check gave no result {tries}x on {tip[:9]} (exit {r.returncode}): {c.redact(last)[:200]}"
-    else:
-        what = f"check cut off {tries}x at its deadline on {tip[:9]}"
-    _set_check(p, b.id, f"{what}: run sampo check --affected --hold --evidence {b.id} in the lane",
-               check_state="cut_off", check_pid=None, check_ticks=None)
+        tail = f"run sampo check --affected --hold --evidence {b.id} in the lane"
+    else:  # T-4491: the deadline line cli's check printed (its limit, the classes that ran, the larger rerun), when it did
+        dl = c.redact(str((got or {}).get("deadline") or ""))[:400]
+        what = f"check cut off {tries}x on {tip[:9]}" if dl else f"check cut off {tries}x at its deadline on {tip[:9]}"
+        tail = dl or f"run sampo check --affected --hold --evidence {b.id} in the lane"
+    _set_check(p, b.id, f"{what}: {tail}", check_state="cut_off", check_pid=None, check_ticks=None, check_queued=None)
     return 1
 
 

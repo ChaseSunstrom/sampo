@@ -7240,6 +7240,28 @@ def _gate_text(rows, error=None):
     return shown + (f"\n  … {len(rows) - GATE_LINES} more gate(s)" if len(rows) > GATE_LINES else "")
 
 
+def deadline_line(timeout, limit, rec, hold=False, evidence=None, code=124):
+    """T-4491: the one line an affected check stopped at its deadline prints: its time limit (`limit` seconds, scaled from
+    `timeout`; None is 'no limit'), the classes that ran of how many (the run's record; 'not recorded' without one), and
+    the command that reruns it with a larger --timeout (twice the one asked for). The lane's record keeps this line too.
+    A run ended from outside (`code` 143 SIGTERM or 130 SIGINT, T-4399) was not stopped by a deadline: it says so and
+    suggests no larger timeout, only the same command again."""
+    if rec and rec.get("classes"):
+        classes = int(rec["classes"])
+        not_run = rec.get("classes_not_run")  # run.py counts classes (a split class's jobs are one class)
+        if not_run is None:
+            not_run = rec.get("n_not_run") or len(rec.get("not_run") or [])
+        ran = f"{max(0, classes - int(not_run))} of {classes} classes ran"
+    else:
+        ran = "classes ran not recorded"
+    tail = (" --hold" if hold else "") + (f" --evidence {evidence}" if evidence else "")
+    if code in (130, 143):
+        return f"ended from outside (exit {code}): {ran}; run it again: sampo check --affected{tail}"
+    bigger = 2 * (timeout if timeout and timeout > 0 else 600)
+    at = "no limit" if limit is None else f"{limit:g} s"
+    return f"stopped at its deadline ({at}): {ran}; rerun with a larger one: sampo check --affected --timeout {bigger:g}{tail}"
+
+
 def _check_affected(p, args):
     """Only the tests linked (fm map) to files changed since the task started, with the project's template."""
     skip = {}  # T-1101: another open task's red-first test files, left out as the full gates leave them out
@@ -7281,12 +7303,15 @@ def _check_affected(p, args):
                    + _gate_text(gates, gates_error) + sd_fail) or int(bool(sd_fail))
     run_id = c.new_run_id(cmd)  # T-4268: the record its run.py leaves is stamped with this id
     env, venv = _venv_env(p.root, _skip_env(skip), cmd)  # T-4150: the project's own interpreter
-    code, output = c.run_command(p.root, cmd, c.load_scaled(args.timeout if args.timeout > 0 else None),
-                                 env=env, niced=bool(p.lane), run_id=run_id)  # T-4197: a lane's affected tests
+    limit = c.load_scaled(args.timeout if args.timeout > 0 else None)
+    code, output = c.run_command(p.root, cmd, limit, env=env, niced=bool(p.lane),
+                                 run_id=run_id)  # T-4197: a lane's affected tests
     exit_code = code or int(bool(sd_fail))
     named = _named(p.root, cmd, run_id, code, output)  # a deadline or a pipe lost the names: the record has them
     rec = c.run_record(p.root, cmd, run_id) if code else None  # T-4286: sampo lane accept reads these, never the text
-    held = {"run_id": run_id, "cut_off": code == 124 or bool(rec and rec.get("not_run")),
+    cut = code == 124 or bool(rec and rec.get("not_run"))
+    stop = deadline_line(args.timeout, limit, rec, hold=hold, evidence=args.evidence, code=code) if cut else ""  # T-4491
+    held = {"run_id": run_id, "cut_off": cut, "deadline": stop,
             "failed": sorted({f["class"] for f in (rec or {}).get("failed") or [] if f.get("class")})}
     if args.evidence:  # T-1747: recorded as what it is, never as the full gates (close still needs fm check)
         result = c.run_result(exit_code, output)
@@ -7309,6 +7334,7 @@ def _check_affected(p, args):
                                       if i["tests"] is not None else f"all {i['linked']} linked (change not mappable)")
                   for f, i in hubs.items())
         + (f"\n! {_left_out(skip)}" if skip else "") + note + _gate_text(gates, gates_error) + sd_fail
+        + (f"\n! {stop}" if stop else "")
         + "\n(the full gates still decide before commit and done: sampo check)")
     return 1 if exit_code else 0
 
@@ -10333,7 +10359,9 @@ def _build_parser(only=None):
                                                        "nothing recorded, unless the audits given plus those on record cover what the "
                                                        "close requires for its diff (intent; one of adversary/edge/operator/maintainer; "
                                                        "adversary too when the diff is security-sensitive; T-4487), then it lands first "
-                                                       "(T-3922; T-4286: a lane with no run at its tip is checked first, detached); "
+                                                       "(T-3922; T-4286: a lane with no run at its tip is checked first, detached; "
+                                                       "T-4491: at most SAMPO_LANE_CHECKS (default 2) of a project's lane checks run at "
+                                                       "once, the rest wait as 'check queued'); "
                                                        "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
                                       "stats", "verify", "train", "precheck", "land", "andon", "accept"])
@@ -10344,7 +10372,8 @@ def _build_parser(only=None):
                         "repeat the whole --audit LENS HOW RESULT per lens, never two values (T-3922, T-4391)")
     s.add_argument("--no-check", action="store_true", help="accept: don't start the lane's affected check; refused when the "
                                                            "lane has no run at its tip that held the repo-shape classes "
-                                                           "(T-4286)")
+                                                           "(T-4286); a project runs at most SAMPO_LANE_CHECKS (default 2) lane "
+                                                           "checks at once, the rest wait as 'check queued' (T-4491)")
     s.add_argument("--bg", action="store_true", help="land: start it detached (log in the state's land.log) and return at "
                                                      "once, never waited on (T-3922)")
     s.add_argument("--merged", action="store_true", help="land: close the task of every lane already on the trunk (a "

@@ -3,13 +3,16 @@ niced, never waited on); green queues the lane, red leaves it out with the faili
 tip moves, a cut-off check is started once more. The check always holds the four repo-shape classes, and a merge-commit
 tip is checked against the whole branch's files. The detached start is one function (train._spawn_check) these tests
 replace: none of them starts a real check or leaves a process behind."""
-# map-links: plugin/lib/sampo/train.py
+# map-links: plugin/lib/sampo/train.py plugin/lib/sampo/cli.py
 import contextlib
+import fcntl
 import io
 import json
 import os
 import subprocess
 import sys
+import threading
+import time
 import types
 import unittest
 from unittest import mock
@@ -26,9 +29,10 @@ CMD = "python3 plugin/tests/run.py test_docs.PluginFiles test_left_out.LeftOut t
 ASKED_ROW = [["self", "read the diff", "no findings"]]
 
 
-def stub(exit_code=0, failed=(), cut_off=False, text=None):
-    """A stand-in for the lane's `sampo check --affected --json`: prints what the real one's JSON carries."""
-    data = {"exit": exit_code, "failed": list(failed), "cut_off": cut_off, "tests": [], "changed": []}
+def stub(exit_code=0, failed=(), cut_off=False, text=None, **extra):
+    """A stand-in for the lane's `sampo check --affected --json`: prints what the real one's JSON carries (extra keys
+    too, as cli's held record adds them: T-4491's deadline line)."""
+    data = {"exit": exit_code, "failed": list(failed), "cut_off": cut_off, "tests": [], "changed": [], **extra}
     shown = json.dumps(data, indent=2)  # T-4418: over many lines, as cli.out prints it; one line was never the real form
     return [sys.executable, "-c", f"import sys; print({text!r} or ''); print({shown!r}); sys.exit({exit_code})"]
 
@@ -665,8 +669,169 @@ class NamedTask(AcceptCase):
         self.assertIn("f1.txt", json.loads(r.stdout)["changed"], r.stderr[-300:])
 
 
-if __name__ == "__main__":
-    unittest.main()
+def probe(d, gate=None):
+    """A stand-in check (T-4491): it holds the file `busy` in d while it runs, and leaves `overlap` there when another one
+    finds it held; with a gate file it waits for that file to exist before it ends. Then a green result."""
+    code = "\n".join([
+        "import json, os, time",
+        f"d, gate = {d!r}, {gate!r}",
+        "try:",
+        "    os.close(os.open(os.path.join(d, 'busy'), os.O_CREAT | os.O_EXCL))",
+        "except FileExistsError:",
+        "    open(os.path.join(d, 'overlap'), 'w').close()",
+        "else:",
+        "    end = time.time() + 30",
+        "    while gate and not os.path.exists(gate) and time.time() < end:",
+        "        time.sleep(0.05)",
+        "    time.sleep(0.2)",
+        "    os.remove(os.path.join(d, 'busy'))",
+        "print(json.dumps({'exit': 0, 'failed': [], 'cut_off': False, 'tests': [], 'changed': []}))",
+    ])
+    return [sys.executable, "-c", code]
+
+
+class Queued(AcceptCase):
+    """T-4491: sampo lane accept runs at most SAMPO_LANE_CHECKS checks at a time (default 2). A further check waits as
+    'check queued' (its own detached process, no session open) and starts when a running one ends."""
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ, {"SAMPO_LANE_CHECKS": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def hold(self, n=1):
+        """n slots taken the way another lane's check process takes one: an flock on its own open file."""
+        d = os.path.join(self.p.dir, "check")
+        os.makedirs(d, exist_ok=True)
+        held = [open(os.path.join(d, f"turn-{i}.lock"), "a") for i in range(n)]
+        for f in held:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        self.addCleanup(lambda: [f.close() for f in held])
+        return held
+
+    def start(self, tid, n, argv):
+        t = threading.Thread(target=self.child, args=(tid, n, argv), daemon=True)
+        t.start()
+        return t
+
+    def notes(self):
+        return train.check_notes(c.load_briefs(self.p), self.repo)
+
+    def until(self, done, seconds=30):
+        end = time.time() + seconds
+        while time.time() < end and not done():
+            time.sleep(0.05)
+
+    def test_three_accepts_with_one_slot_are_queued_and_run_one_check_at_a_time(self):  # queued
+        tids = [self.a_lane(n, name=f"f{n}.txt") for n in (1, 2, 3)]
+        for tid in tids:
+            self.accept(tid)
+        held = self.hold(1)  # the one slot is another lane's check: all three wait behind it
+        threads = [self.start(tid, n, probe(self.tmp)) for n, tid in zip((1, 2, 3), tids)]
+        self.until(lambda: all(self.notes().get(t) == "check queued" for t in tids))
+        self.assertEqual([self.notes().get(t) for t in tids], ["check queued"] * 3, "sampo lane list says queued")
+        held[0].close()
+        for t in threads:
+            t.join(60)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "overlap")), "two checks ran at once with one slot")
+        self.assertEqual([self.meta_of(t)["check_state"] for t in tids], ["green"] * 3)
+
+    def test_with_two_slots_a_third_check_is_queued_behind_the_two_running(self):  # queued
+        os.environ.pop("SAMPO_LANE_CHECKS", None)  # the default: two at a time (restored by the setUp's patch)
+        tids = [self.a_lane(n, name=f"f{n}.txt") for n in (1, 2, 3)]
+        for tid in tids:
+            self.accept(tid)
+        gate = os.path.join(self.tmp, "gate")
+        held = self.hold(1)  # one slot is taken elsewhere: the first of ours runs, the other two queue
+        threads = [self.start(tid, n, probe(self.tmp, gate)) for n, tid in zip((1, 2, 3), tids)]
+        want = ["checking", "check queued", "check queued"]
+        self.until(lambda: sorted(self.notes().get(t, "") for t in tids) == sorted(want))
+        self.assertEqual(sorted(self.notes().get(t, "") for t in tids), sorted(want))
+        open(gate, "w").close()
+        held[0].close()
+        for t in threads:
+            t.join(60)
+        self.assertEqual([self.meta_of(t)["check_state"] for t in tids], ["green"] * 3, "the queued ones start when one ends")
+
+
+class Deadline(AcceptCase):
+    """T-4491: a check stopped at its deadline says so in one line (the limit, the classes that ran of how many, the
+    rerun with a larger one), and the lane's record keeps that line."""
+
+    def test_a_check_stopped_at_its_deadline_records_the_deadline_line(self):  # deadline
+        tid = self.a_lane(1)
+        self.accept(tid)
+        line = (f"stopped at its deadline (540 s): 315 of 1685 classes ran; rerun with a larger one: "
+                f"sampo check --affected --timeout 1200 --hold --evidence {tid}")
+        self.child(tid, 1, stub(124, cut_off=True, deadline=line), tries=2)
+        self.assertEqual(self.meta_of(tid)["check_state"], "cut_off")
+        self.assertIn(line, open(self.brief(tid).path).read())
+
+    def test_the_deadline_line_names_the_limit_the_classes_that_ran_and_the_larger_rerun(self):  # deadline
+        line = cli.deadline_line(600, 540, {"classes": 1685, "n_not_run": 1370}, hold=True, evidence="T-1")
+        for part in ("stopped at its deadline (540 s)", "315 of 1685 classes ran", "sampo check --affected --timeout 1200",
+                     "--hold", "--evidence T-1"):
+            self.assertIn(part, line)
+        self.assertNotIn("\n", line, "one line")
+
+    def test_a_deadline_with_no_run_record_still_names_the_limit_and_the_rerun(self):  # deadline
+        line = cli.deadline_line(600, 540, None)
+        self.assertIn("(540 s)", line)
+        self.assertIn("--timeout 1200", line)
+        self.assertIn("classes ran not recorded", line)
+
+    def test_a_run_ended_from_outside_is_not_called_a_deadline_and_suggests_no_larger_timeout(self):  # deadline
+        for code in (143, 130):
+            line = cli.deadline_line(600, 540, {"classes": 1685, "n_not_run": 1370}, hold=True, evidence="T-1", code=code)
+            self.assertIn(f"ended from outside (exit {code})", line)
+            self.assertIn("315 of 1685 classes ran", line)
+            self.assertNotIn("deadline", line)
+            self.assertNotIn("--timeout", line, "a larger timeout would not have kept it from being killed")
+            self.assertNotIn("\n", line)
+        self.assertIn("stopped at its deadline", cli.deadline_line(600, 540, None, code=124))
+
+    def test_no_limit_says_so_instead_of_failing(self):  # deadline
+        line = cli.deadline_line(0, None, {"classes": 10, "n_not_run": 4}, code=124)
+        self.assertIn("no limit", line)
+        self.assertIn("6 of 10 classes ran", line)
+
+
+class QueuedFlag(AcceptCase):
+    """T-4491: check_queued is a state of waiting: a check that has its turn never carries it, however it ends."""
+
+    def stale(self, tid):
+        cli.mutate(self.p, tid, lambda b: b.meta.update(check_queued="1"), "check", {})
+
+    def test_a_green_check_leaves_no_queued_flag(self):  # queued
+        tid = self.a_lane(1)
+        self.accept(tid)
+        self.stale(tid)
+        self.child(tid, 1, stub(0))
+        self.assertNotIn("check_queued", self.meta_of(tid))
+
+    def test_a_red_check_leaves_no_queued_flag(self):  # queued
+        tid = self.a_lane(1)
+        self.accept(tid)
+        self.stale(tid)
+        self.child(tid, 1, stub(1, ["test_x.X"]))
+        self.assertEqual(self.meta_of(tid)["check_state"], "red")
+        self.assertNotIn("check_queued", self.meta_of(tid))
+
+    def test_a_restarted_check_claims_without_the_queued_flag(self):  # queued
+        tid = self.a_lane(1)
+        self.accept(tid)
+        self.stale(tid)
+        b = cli.need_brief(self.p, tid)
+        with mock.patch.object(train, "_spawn_check", return_value=(1234, "/x.log")):
+            train._start_check(self.p, b, self.repo, self.tip(1), None, 2)
+        self.assertNotIn("check_queued", self.meta_of(tid))
+
+    def test_the_number_of_slots_is_bounded(self):  # queued
+        with mock.patch.dict(os.environ, {"SAMPO_LANE_CHECKS": "100000"}):
+            self.assertEqual(train.lane_checks(), 64)
+        with mock.patch.dict(os.environ, {"SAMPO_LANE_CHECKS": "0"}):
+            self.assertEqual(train.lane_checks(), 1)
 
 
 class ChildPath(unittest.TestCase):
@@ -688,3 +853,7 @@ class ChildPath(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "sampo.train", arg], capture_output=True, text=True, timeout=60,
                            env=dict(os.environ, PYTHONPATH=lib + os.pathsep))
         self.assertEqual(r.stdout.strip(), "None", r.stderr)
+
+
+if __name__ == "__main__":  # T-4491: last, so every class above is defined when it runs
+    unittest.main()

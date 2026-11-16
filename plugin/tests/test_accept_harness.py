@@ -2,7 +2,8 @@
 are what it runs; the checker is not the lane's older copy, which may not know an option or may carry a check bug the
 trunk has fixed), and a check that ends on its own without a result says so with its exit code and last output line
 instead of 'cut off at its deadline'. T-4416: the checks of several accepted lanes take turns (one runs at a time in
-a project), so none is cut off by the others and the first result comes after one run."""
+a project), so none is cut off by the others and the first result comes after one run. T-4491: SAMPO_LANE_CHECKS
+(default 2) of them run at once, the rest wait as 'check queued'."""
 # map-links: plugin/lib/sampo/train.py
 import fcntl
 import json
@@ -140,12 +141,16 @@ def marks(path, exit_code=0):
 
 class Turn(AcceptCase):
     def another_check_runs(self):
-        """The turn held the way another lane's check process holds it (an flock on its own open file)."""
+        """Every turn held the way other lanes' check processes hold them (an flock on each slot's own open file):
+        SAMPO_LANE_CHECKS checks run at once, so a check that starts now has to wait for one of them to end."""
         d = os.path.join(self.p.dir, "check")
         os.makedirs(d, exist_ok=True)
-        held = open(os.path.join(d, "turn.lock"), "a")
-        fcntl.flock(held, fcntl.LOCK_EX)
-        self.addCleanup(held.close)
+        held = []
+        for i in range(train.lane_checks()):
+            f = open(os.path.join(d, f"turn-{i}.lock"), "a")
+            fcntl.flock(f, fcntl.LOCK_EX)
+            held.append(f)
+        self.addCleanup(lambda: [f.close() for f in held])
         return held
 
     def log_of(self, tid):
@@ -163,12 +168,13 @@ class Turn(AcceptCase):
         held = self.another_check_runs()
         t = threading.Thread(target=self.child, args=(tid, 1, marks(ran)), daemon=True)
         t.start()
-        self.until(lambda: "waits its turn" in self.log_of(tid) or os.path.exists(ran))
-        self.assertFalse(os.path.exists(ran), "its command started while another lane's check ran")
-        self.assertIn("waits its turn", self.log_of(tid))
+        self.until(lambda: "check queued" in self.log_of(tid) or os.path.exists(ran))
+        self.assertFalse(os.path.exists(ran), "its command started while the lane checks were all running")
+        self.assertIn("check queued", self.log_of(tid))
         hold = train._check_hold(self.brief(tid), self.tip(1), self.repo) or ""  # waits
-        self.assertIn("check running", hold, "a check that waits is still the lane's one check")
-        held.close()
+        self.assertIn("check queued", hold, "a check that waits is still the lane's one check")
+        for f in held:
+            f.close()
         t.join(30)
         self.assertTrue(os.path.exists(ran), "it starts when the other one ends")
         self.assertEqual(self.meta_of(tid)["check_state"], "green")
@@ -178,7 +184,7 @@ class Turn(AcceptCase):
         self.accept(tid)
         self.child(tid, 1, stub(0))
         self.assertEqual(self.meta_of(tid)["check_state"], "green")
-        self.assertNotIn("waits its turn", self.log_of(tid))
+        self.assertNotIn("check queued", self.log_of(tid))
 
     def test_a_lane_whose_tip_moved_while_it_waited_its_turn_runs_nothing(self):  # turn
         tid = self.a_lane(1)
@@ -189,13 +195,14 @@ class Turn(AcceptCase):
         held = self.another_check_runs()
         t = threading.Thread(target=train._accept_check_child, args=(a,), daemon=True)
         t.start()
-        self.until(lambda: "waits its turn" in self.log_of(tid) or os.path.exists(ran))
+        self.until(lambda: "check queued" in self.log_of(tid) or os.path.exists(ran))
         lane = os.path.join(self.tmp, "lane1")
         with open(os.path.join(lane, "later.txt"), "w") as f:
             f.write("more\n")
         self.git("add", "later.txt", cwd=lane)
         self.git("commit", "-q", "-m", "more work", cwd=lane)
-        held.close()
+        for f in held:
+            f.close()
         t.join(30)
         self.assertFalse(os.path.exists(ran), "a check of a tip the lane has left is a suite for nothing")
         self.assertIn("the lane tip moved", self.log_of(tid))

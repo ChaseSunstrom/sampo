@@ -47,13 +47,16 @@ class BatchCase(AcceptCase):
             return done(argv, 1, failed=["test_x.X"])
         return done(argv, 0)
 
-    def waiting(self, *ns, files=None, texts=None):
-        """Lanes 1..n accepted (their checks claimed, no process behind them): the ids, in order."""
+    def waiting(self, *ns, files=None, texts=None, queued=True):
+        """Lanes 1..n accepted (their checks claimed, no process behind them): the ids, in order. `queued`: each waits for
+        a turn (T-4491: only a lane whose check is queued is a peer; one running in another slot is not)."""
         ids = []
         for n in ns:
             name = (files or {}).get(n, f"f{n}.txt")
             tid = self.lane(n, name, text=(texts or {}).get(n), when="2025-12-31T00:00:00Z")
             self.accept(tid)
+            if queued:
+                cli.mutate(self.p, tid, lambda b: b.meta.update(check_queued="1"), "check", {})
             ids.append(tid)
         return ids
 
@@ -158,6 +161,21 @@ class Grouping(BatchCase):
         self.turn(ids[-1], n)  # the rest take their own turn: they batch among themselves, in one more run
         self.assertEqual(self.states(*ids), ["green"] * n)
         self.assertEqual(len(self.ran), 2)
+
+
+class Slots(BatchCase):
+    def test_a_lane_whose_check_runs_in_another_slot_is_not_a_peer_and_is_not_marked(self):  # T-4491
+        ids = self.waiting(1, 2, queued=False)  # two checks running at once, neither queued
+        self.assertEqual(self.turn(ids[0], 1), 0)
+        self.assertEqual(len(self.ran), 1, "one run: lane 1's own")
+        self.assertEqual(os.path.basename(self.ran[0][1]), "lane1", "no batch built over a lane that is already running")
+        self.assertEqual(self.states(*ids), ["green", "running"], "lane 2's running check is not marked from outside")
+
+    def test_a_queued_lane_still_joins_the_batch_of_a_running_one(self):  # T-4491
+        ids = self.waiting(1, queued=False) + self.waiting(2)
+        self.turn(ids[0], 1)
+        self.assertTrue({"f1.txt", "f2.txt"} <= self.ran[0][2], "the queued lane rides with it")
+        self.assertEqual(self.states(*ids), ["green", "green"])
 
 
 class Fallback(BatchCase):
