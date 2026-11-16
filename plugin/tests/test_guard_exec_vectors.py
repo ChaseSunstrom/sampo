@@ -960,6 +960,12 @@ class ScriptReadSpeed(GuardCase):  # T-1778
             g.check_bash('cp a "$(cat f)/x"', self.ctx())
         self.assertGreater(possible.call_count, 0, "a typed command still guesses")
 
+    def _nonce(self):
+        # T-4806: a read is cached by the sha256 of the file, so a measurement repeated on the same text times the cache;
+        # each file ends in a line no other has (the same size to within a few bytes)
+        self._runs = getattr(self, "_runs", 0) + 1
+        return f"# read {self._runs}\n"
+
     def _build_script(self, blocks):
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
         import bench_hooks  # the real-shaped build script (functions, case, quoting, substitutions, a heredoc)
@@ -968,7 +974,8 @@ class ScriptReadSpeed(GuardCase):  # T-1778
         p = os.path.join(d, f"build{blocks}.sh")
         with open(p, "w") as f:
             f.write("#!/bin/bash\nset -euo pipefail\nBUILD_DIR=${BUILD_DIR:-build}\n"
-                    + "".join(bench_hooks.SCRIPT_BLOCK.format(n=i) for i in range(blocks)) + 'build_0 "$@"\n')
+                    + "".join(bench_hooks.SCRIPT_BLOCK.format(n=i) for i in range(blocks)) + 'build_0 "$@"\n'
+                    + self._nonce())
         return p
 
     def _read_cost(self, blocks):
@@ -982,24 +989,39 @@ class ScriptReadSpeed(GuardCase):  # T-1778
             verdict = g.check("Bash", inp, self.ctx(), found=found)
             return time.process_time() - t, verdict, g.take_unread(), found
 
+    @staticmethod
+    def _together(small, big):
+        """T-4806: a size test asserts the property (cost in proportion to size), so it measures both sizes in the same
+        stretch of time, small and big twice each in turn, and keeps each size's cheaper run: a runner that slows or
+        speeds up between a one-time scale loop and the work moves both sizes together and leaves the ratio alone.
+        small and big are functions of no arguments returning (cost, ...); the results are the cheaper of each."""
+        a1, b1, a2, b2 = small(), big(), small(), big()
+        return min(a1, a2, key=lambda r: r[0]), min(b1, b2, key=lambda r: r[0])
+
     def test_a_script_of_many_functions_is_read_to_the_end_in_time_that_grows_with_its_size(self):
         # T-4758: 64 functions (37 KB) took 44 s: each piece was read again with the 40 lines carried before it, and
         # the `$(ls …)` of every carried `for` line was read to the end again for each substitution (n^2 in the lines
         # carried); 8 blocks (4.7 KB) took 1.9 s, 16 about 8. Now ~40 ms a block, and the cap of 256 folders is a piece's.
+        # T-4806: the property is the ratio, measured together; the absolute bound is only a loose backstop (CI: 10.2 s
+        # against a 7 s bound written for a quiet box, on a runner whose speed moved after the scale loop was timed)
         from helpers import cpu_scale
         scale = cpu_scale()
-        small, _v, _u, _f = self._read_cost(4)
-        big, verdict, unread, _f = self._read_cost(32)
+        (small, _v, _u, _f), (big, verdict, unread, _f) = self._together(lambda: self._read_cost(4),
+                                                                          lambda: self._read_cost(32))
         self.assertIsNone(verdict, "32 functions of an ordinary build script are allowed, and read to the end")
         self.assertEqual(unread, [])
-        self.assertLess(big, 4.0 * scale, "32 blocks (18 KB): 1.3 s on a quiet box, 15 s with the carry's quadratic")
-        self.assertLess(big, 20 * small, "8 times the text costs about 11 times (quadratic: 80)")
+        self.assertLess(big, 12.0 * scale, "32 blocks (18 KB): 1.3 s on a quiet box, 15 s with the carry's quadratic")
+        self.assertLess(big, 20 * small, f"8 times the text costs about 11 times (measured 11 to 12.5; quadratic: 64 to 80): "
+                                         f"{small:.3f} s to {big:.3f} s")
         # the cap of nested folders is counted for a piece, not for the whole script: 64 functions each name a folder
-        spent, verdict, unread, found = self._read_cost(64)
+        (half, _v, _u, _f), (spent, verdict, unread, found) = self._together(lambda: self._read_cost(32),
+                                                                             lambda: self._read_cost(64))
         self.assertEqual([m for _c, m in found if "too many folders" in m], [])
         self.assertIsNone(verdict)
         self.assertEqual(unread, [])
-        self.assertLess(spent, 8.0 * scale, "64 blocks (37 KB): 2.5 s on a quiet box, 44 s before")
+        self.assertLess(spent, 24.0 * scale, "64 blocks (37 KB): 2.5 s on a quiet box, 44 s before")
+        self.assertLess(spent, 3.5 * half, f"twice the text costs about twice (measured 1.7 to 2.2; quadratic: 4): "
+                                           f"{half:.3f} s to {spent:.3f} s")
 
     def _plain_cost(self, steps, budget):
         import time
@@ -1012,7 +1034,7 @@ class ScriptReadSpeed(GuardCase):  # T-1778
         os.makedirs(d, exist_ok=True)
         p = os.path.join(d, f"plain{steps}.sh")
         with open(p, "w") as f:
-            f.write("\n".join(lines) + "\n")
+            f.write("\n".join(lines) + "\n" + self._nonce())
         g.take_unread()
         t = time.process_time()
         inp = {"command": f"bash {p}"}
@@ -1024,15 +1046,18 @@ class ScriptReadSpeed(GuardCase):  # T-1778
         # T-4758: a read's cost is linear in the commands (no step grows with what is carried or counted): 220 KB of plain
         # commands, near the 256 KB limit, took 3.7 s on a quiet box (17 ms a KB); 55 KB took 0.9 s. The 2 s the hard
         # budget gives reads about 110 KB of such a script: the bound a hook run has
+        # T-4806: the property is the ratio, measured together (CI measured 10.2 s against 7 s x scale: the runner slowed
+        # after the scale loop was timed); the absolute bound is only a loose backstop, far under the quadratic's
         from helpers import cpu_scale
         scale = cpu_scale()
-        small, _v, _u, size_small = self._plain_cost(250, 1000)
-        big, verdict, unread, size_big = self._plain_cost(1000, 1000)
+        (small, _v, _u, size_small), (big, verdict, unread, size_big) = self._together(
+            lambda: self._plain_cost(250, 1000), lambda: self._plain_cost(1000, 1000))
         self.assertTrue(190_000 < size_big < 250_000, size_big)  # under the 256 KB the guard reads
         self.assertIsNone(verdict)
         self.assertEqual(unread, [])
-        self.assertLess(big, 7.0 * scale, "220 KB: 3.7 s on a quiet box")
-        self.assertLess(big, 6 * small, f"4 times the text ({size_small} B to {size_big} B) costs about 4 times (quadratic: 16)")
+        self.assertLess(big, 21.0 * scale, "220 KB: 3.7 s on a quiet box")
+        self.assertLess(big, 6 * small, f"4 times the text ({size_small} B to {size_big} B) costs about 4 times (measured "
+                                        f"3.6 to 4.1; quadratic: 16): {small:.3f} s to {big:.3f} s")
         # inside the budgets the hook has (0.2 s, then 2 s: scaled to the runner) 65 KB of plain commands read to the end
         spent, verdict, unread, size = self._plain_cost(300, 0.2 * scale)
         self.assertIsNone(verdict, f"{size} B read in {spent:.2f} s")
