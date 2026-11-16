@@ -462,13 +462,19 @@ class NoValidSlot(CodeError):
 class _Flaw(str):
     """T-4386: what a plan gate says is wrong (it reads as that text everywhere) that also carries, as data, the number
     of the one criterion it is about (1-based; None when it is about the plan as a whole): nothing reads the number
-    back out of the words."""
+    back out of the words. T-4293: and, the same way, the one field a repair may change: `field` is (part, n, keys),
+    part "criterion" (n its number, keys the halves of it that are wrong) or "title"; `named` the numbers of the
+    criteria the refusal is about (a whole-plan repair must keep every other)."""
     criterion = None
+    field = None
+    named = ()
 
 
-def _flaw(text, n):
+def _flaw(text, n, keys=("verify",), aside=True):
+    """A refusal about criterion n's `keys` (T-4293). aside=False: not one _set_aside may drop (the run needs it fixed)."""
     f = _Flaw(text)
-    f.criterion = n
+    f.criterion = n if aside else None
+    f.field, f.named = ("criterion", n, tuple(keys)), (n,)
     return f
 
 
@@ -1031,10 +1037,44 @@ def _missing_target(verify, out, root):
     return ""
 
 
-def check_plan(v, change=None):
+ECHO_RATIO = 0.8  # T-4293: a criterion this much of the request's length, and inside it, is the request
+ECHO_WHY = "a criterion must name something a command can show"
+
+
+def _fold(text):
+    """T-4293: a text as its words, lower-cased and single-spaced: case, spacing and punctuation never tell two texts apart."""
+    return " ".join(re.findall(r"\w+", (text or "").casefold()))
+
+
+def echoes(text, request):
+    """T-4293: whether a criterion's text is the request's own words: equal after folding, or one inside the other with
+    the shorter at ECHO_RATIO of the longer's length or more. A text that quotes a few words of a long request is far
+    shorter than it, so it is no echo; this reads lengths and the text itself, never what either means."""
+    a, b = _fold(text), _fold(request)
+    if not a or not b:
+        return False
+    lo, hi = (a, b) if len(a) <= len(b) else (b, a)
+    return len(lo) >= ECHO_RATIO * len(hi) and f" {lo} " in f" {hi} "
+
+
+def _bare(verify):
+    """T-4293: whether a verify is only a program: one word that names no file, so it holds nothing of its own (`make`,
+    `pytest`). A verify with a file or an argument (`python3 test_calc.py`, `make test`) is something a command shows."""
+    body = script_body(verify) or verify
+    try:
+        words = shlex.split(body.replace("\n", " ; "))
+    except ValueError:
+        return False
+    return len(words) < 2 and not any(_targets(body))
+
+
+def check_plan(v, change=None, request=None):
     """None when v is a usable plan, else what's wrong with it (quoted back to the model). T-3688: given `change`, the
     request's word asking for one (small-model mode), an answer, a RESEARCH plan and a verify that can't fail are
-    refused too: the repairs, and the field ladder past them, end with a plan that changes something."""
+    refused too: the repairs, and the field ladder past them, end with a plan that changes something. T-4293: given
+    the `request`, a criterion whose text is the request's own words (`echoes`) and whose verify is only a program
+    (`_bare`) is refused: it names nothing a command can show (exam goal-c-0b1e05: a repair came back with the request
+    as its title and first criterion, and was taken); a verify with a file or an argument of its own is the check."""
     if not isinstance(v, dict):
         return "the reply holds no JSON object"
     if change and (is_answer(v) or v.get("type") == "RESEARCH"):
@@ -1053,9 +1093,14 @@ def check_plan(v, change=None):
         return "criteria must be a list of 1 to 8 objects"
     for i, cr in enumerate(crit, 1):
         if not isinstance(cr, dict) or not all(isinstance(cr.get(k), str) and cr[k].strip() for k in ("text", "verify")):
-            return _flaw(f"criterion {i} needs both text and verify, as text", i)
+            return _flaw(f"criterion {i} needs both text and verify, as text", i, ("text", "verify"))
         if "::" in cr["text"] or "\n" in cr["text"] + cr["verify"]:
-            return _flaw(f"criterion {i}: text and verify are one line each, and text has no '::'", i)
+            return _flaw(f"criterion {i}: text and verify are one line each, and text has no '::'", i, ("text", "verify"))
+        # a narrow backstop, not a proof that the criterion adds something: only a one-word verify is refused with an
+        # echo (the one-field repair and _lost are the real protection); a verify with a file or argument passes
+        if request and echoes(cr["text"], request) and _bare(cr["verify"]):
+            return _flaw(f"Criterion {i}'s text is the request's own words, and its verify is only a program: {ECHO_WHY} "
+                         "(say, in words of your own, what is true once the work is done)", i, ("text",))
         body = script_body(cr["verify"]) or cr["verify"]  # T-4571: a stored script is judged by its own text
         if _cant_fail(body):  # T-4292, review round 3: for every task type, not only a request that asks for a change
             return _flaw(f"criterion {i}'s verify `{body}` can't fail (it ends in an echo, true or exit 0, or "
@@ -1493,19 +1538,24 @@ def _ask(run, profile, messages, what, decides=False, **kw):
     return r
 
 
-def slot(run, profile, messages, check, what, fields=()):
+def slot(run, profile, messages, check, what, fields=(), given=None):
     """Ask for one JSON slot; on a bad answer quote the error back, at most REPAIRS times. Then (T-1765), given
-    fields, the slot-format ladder: one plain-text question a field, the slot assembled from the answers and checked."""
+    fields, the slot-format ladder: one plain-text question a field, the slot assembled from the answers and checked.
+    T-4293: `given` is a reply already got and already in `messages` (a whole plan the one-field question was answered
+    with): it is the first answer, so it costs no call of its own."""
     err = v = None
     if what == "plan":
         run.form_gap = None  # T-4282: a new plan answer; _form_rescue says when this one was cut to S
     for _ in range(REPAIRS + 1):
         # T-4358: the plan and its repairs think; the ladder's one-field questions and the form question below do not
-        r = _ask(run, profile, messages, what, decides=what == "plan")
+        if given is not None:
+            r, given = given, None
+        else:
+            r = _ask(run, profile, messages, what, decides=what == "plan")
+            messages.append({"role": "assistant", "content": r["text"]})
         v = m.extract_json(r["text"])
         if v is None and r["tool_calls"]:
             v = r["tool_calls"][0]["args"]
-        messages.append({"role": "assistant", "content": r["text"]})
         note = None
         if what == "plan":  # T-4506: the harness repairs a plan's steps (fit_steps) before the check judges them
             v, note = fit_plan(run, v)  # T-4571: and a verify over several lines (fit_verifies)
@@ -1667,6 +1717,99 @@ def _form_note(run):
     if gap:
         run.emit("note", f"plan filed as S: its M form was not met: {gap}", downgrade=gap)
         run_friction("plan filed as S", gap)
+
+
+def _lost(first, new, named=()):
+    """T-4293: the criteria of plan `first`, not among the numbers `named` (the ones a refusal is about), that plan `new`
+    no longer holds: no criterion of it has both the same text (folded) and the same verify, so a kept text with a swapped
+    verify is a change. Their texts, in order; [] when either side holds no criteria list (an answer, a plan without one)."""
+    a, b = (x.get("criteria") if isinstance(x, dict) else None for x in (first, new))
+    if not isinstance(a, list) or not isinstance(b, list):
+        return []
+
+    def pair(c):
+        return _fold(c.get("text")), str(c.get("verify") or "").strip()
+    kept = {pair(c) for c in b if isinstance(c, dict)}
+    return [str(c.get("text")) for i, c in enumerate(a, 1) if isinstance(c, dict) and i not in named
+            and pair(c) not in kept]
+
+
+def _repair_field(run, profile, msgs, first, why, check, problem=None):
+    """T-4293: a refusal that names one criterion's field (`why.field`, set by _flaw, never read out of its words; a
+    title refusal names none: nothing asks for it alone) is repaired in that field alone: one targeted question quotes
+    the refusal and asks for a JSON object holding only that field's keys. The answer is merged into a copy of
+    `first` (only those keys: any other the reply holds is dropped), so the rest of the plan
+    stays as the planner wrote it (exam goal-c-0b1e05: a whole replacement lost the first plan's concrete criteria).
+    It must pass `check` and `problem` (a callback giving the harness's own refusal of a plan, or None). A reply that
+    is a whole plan instead is not judged here: its raw reply is handed back as the third value, the first answer of
+    the whole-plan repair (_whole), which judges it as any whole plan and keeps what the refusal did not name.
+    Returns (the repaired plan, None, None), or (None, why it could not be, the whole-plan reply or None) for the
+    caller's whole-plan fallback. One question at most; a model failure takes it back out of the conversation."""
+    part, n, keys = getattr(why, "field", None) or (None, None, ())
+    crit = first.get("criteria") if isinstance(first, dict) else None
+    if not (part == "criterion" and isinstance(crit, list) and isinstance(n, int) and 1 <= n <= len(crit)
+            and isinstance(crit[n - 1], dict)):
+        return None, None, None
+    label = f"Criterion {n}'s {' and '.join(keys)}"
+    # as long as the whole-plan ask it stands in for (a server that cuts a long prompt reads the conversation's size)
+    msgs.append({"role": "user", "content": f"{why} Reply with only a JSON object with {' and '.join(keys)} for "
+                                            f"criterion {n}."})
+    try:
+        r = _ask(run, profile, msgs, "plan")
+    except m.ModelError:
+        msgs.pop()  # the question that got no reply: the conversation stays user/assistant in turn
+        return None, None, None
+    msgs.append({"role": "assistant", "content": r["text"]})
+    patch = m.extract_json(r["text"])
+    if not isinstance(patch, dict):
+        return None, "the reply held no JSON object", None
+    if "criteria" in patch:  # a whole plan instead of the field: the whole-plan repair takes it as its first answer
+        return None, "the reply was a whole plan", r
+    if not all(isinstance(patch.get(k), str) and patch[k].strip() for k in keys):
+        return None, f"the reply gave no text for {', '.join(keys)}", None
+    fixed = dict(first, criteria=[dict(c, **{k: patch[k].strip() for k in keys}) if i == n else c
+                                  for i, c in enumerate(crit, 1)])
+    fixed, note = fit_plan(run, fixed)
+    left = check(fixed) or (problem(fixed) if problem else None)
+    if left:
+        return None, f"the reply fails the plan's checks: {_one_line(str(left), 300)}", None
+    if note:
+        run.emit("note", note)
+    run.emit("note", f"the plan's {label[0].lower() + label[1:]} was repaired alone: the rest of the plan stays as the "
+                     "planner wrote it", repaired_field=f"criterion {n} {','.join(keys)}")
+    return fixed, None, None
+
+
+def _whole(run, profile, msgs, check, first, named=(), given=None):
+    """T-4293: a whole-plan repair (the slot's ask, its first answer `given` when the one-field question already got
+    one) that keeps every criterion of `first` the refusal did not name: a replacement that loses one is sent back
+    once, naming what it lost; a second such replacement is taken, as before."""
+    new = slot(run, profile, msgs, check, "plan", PLAN_FIELDS, given)
+    lost = _lost(first, new, named)
+    if not lost:
+        return new
+    keep = len(msgs)
+    msgs.append({"role": "user", "content": (
+        f"That plan drops {len(lost)} criteri{'on' if len(lost) == 1 else 'a'} the refusal did not name: "
+        f"{'; '.join(_one_line(x, 200) for x in lost[:5])}. Keep each as it was and change only what was refused. "
+        "Reply with only the corrected plan as a JSON object.")})
+    try:
+        again = slot(run, profile, msgs, check, "plan", PLAN_FIELDS)
+    except NoValidSlot:
+        del msgs[keep:]  # the failed second ask leaves no turn behind: the conversation ends on the plan that stands
+        again = new  # the plan that stands is the first replacement
+    else:
+        if is_answer(again):
+            again = new
+    left = _lost(first, again, named)
+    if left:  # whichever plan stands, it lost these, and the run says so
+        run.emit("note", f"the replacement plan dropped {len(left)} criteri{'on' if len(left) == 1 else 'a'} nobody "
+                         f"named and they stayed dropped: {'; '.join(_one_line(x, 120) for x in left[:5])}",
+                 dropped=left)
+        run_friction("plan repair dropped criteria", "; ".join(left))
+    else:
+        run.emit("note", f"the replacement plan dropped {len(lost)} criteria nobody named: asked once more to keep them")
+    return again
 
 
 # ---------------------------------------------------------------- the run
@@ -7232,7 +7375,7 @@ def _wants_work(run, profile, msgs, word):
                 "look and report; the user wants the work done: plan the look as step 1 and the changes after it, with "
                 "a verify that fails now and passes once the changes are made.")
     change = asks_change(run.request) or "an outcome stated as a fact"
-    check = lambda x: check_plan(x, change)
+    check = lambda x: check_plan(x, change, run.request)
     first, keep, gap = v, len(msgs), run.form_gap
     msgs.append({"role": "user", "content": seed})
     try:  # the slot's own repairs, ladder and M-form rescue; _plan's re-plan round follows for the plan it returns
@@ -7330,7 +7473,7 @@ def _plan(run, profile, dry=False):
     profile = run.planner or profile  # T-2945: --planner asks the plan (and its re-plan); steps stay on --model
     word = (getattr(run, "small", False) and not getattr(run, "ask", False)
             and asks_change(run.request))  # T-2878, T-3688: a change is planned, not answered
-    run.plan_check = check = (lambda v: check_plan(v, word)) if word else check_plan
+    run.plan_check = check = lambda v: check_plan(v, word, run.request)  # T-4293: and a criterion that is the request
     survey = _survey(run, profile)  # T-4425: a model plans a change from what a read-only survey of the documents found
     measure = _measure(run, profile, dry)  # T-4579: a speed-up is timed and profiled first (no edits), the facts go on
     _keep_begin(run, profile, dry)  # T-4425: and the project's own tests, run once, are the keep check when green
@@ -7385,9 +7528,26 @@ def _plan(run, profile, dry=False):
     _plan_measure(run, profile, msgs, check, dry)  # T-4595: a speed-up the plan says, where no judge spoke: measured now
     why = None if dry else _plan_problem(run, profile)  # --dry-plan runs nothing; T-4362: the first pass reads own failures
     if why:  # one re-plan
-        msgs.append({"role": "user", "content": f"{why} Reply with only the corrected plan as a JSON object."})
+        def prob(v):  # T-4293: the harness's own refusal of a plan that is not run.plan yet
+            kept, run.plan = run.plan, v
+            try:
+                return _plan_problem(run)
+            finally:
+                run.plan = kept
+        fixed, reason, loose = _repair_field(run, profile, msgs, run.plan, why, check, prob)  # the field it names, alone
+        before, named = run.plan, getattr(why, "named", ())
+        if fixed is not None:
+            run.plan, why = fixed, None
+            if aside and before is mine:  # the repaired copy of the trimmed plan is the plan they belong to
+                mine = fixed
+    if why:
+        if loose is None:
+            msgs.append({"role": "user", "content": f"{why} Reply with only the corrected plan as a JSON object."
+                         + (f"\nThe one-field question did not settle it: {reason}." if reason else "")})
         try:
-            run.plan = slot(run, profile, msgs, check, "plan", PLAN_FIELDS)
+            run.plan = _whole(run, profile, msgs, check, before, named, loose)
+            if is_answer(run.plan):  # an answer repairs nothing: the plan it was asked about stands, refused as it was
+                run.plan = before
         except NoValidSlot as e:
             got = _set_aside(run, e.candidate, check, dry=True)
             if not got:
@@ -8371,8 +8531,9 @@ def _plan_problem(run, profile=None):
         bodies[n] = body = script_body(cr["verify"]) or cr["verify"]
         why = _shell_syntax(body)  # T-4445: a cut verify (`python3 -c "`) blocked finished work at the close
         if why:
-            return (f"Criterion {n}'s verify `{body}` is not a complete shell command ({why}). Give the whole "
-                    "command, every quote closed (a long program belongs in a test file the steps write).")
+            return _flaw(f"Criterion {n}'s verify `{body}` is not a complete shell command ({why}). Give the whole "
+                         "command, every quote closed (a long program belongs in a test file the steps write).",
+                         n, aside=False)
         why = run.guard("Bash", {"command": body}) or (run.guard("Bash", {"command": cr["verify"]}) if body != cr["verify"] else None)
         if why and _NO_TASK in why[:60]:  # the guard's last category (brief): any other refusal is named before it
             waits.add(n)
@@ -8392,11 +8553,11 @@ def _plan_problem(run, profile=None):
     if isinstance(scenario, str) and scenario and run.plan["type"] in CHANGE_TYPES and bodies:  # T-4579: the measured scenario is what the plan proves
         first = run.plan["criteria"][0]["verify"]
         if not any(runs_scenario(t, scenario) for t in (bodies[1], first)):  # T-4583: run as a step, not mentioned
-            return (f"refused: the plan's first criterion must run the measured scenario `{scenario}` (the command the "
-                    "request's slowness was timed with), whole, as a command of its own step, as in `timeout N "
-                    "<command>` (a mention in echo, a comment or a quoted argument runs nothing); its verify "
-                    f"`{_one_line(bodies[1], 200)}` does not, so it times a part or nothing, and that is not the "
-                    "slowness the user sees. Put that first, a check of one part may follow it.")
+            return _flaw(f"refused: the plan's first criterion must run the measured scenario `{scenario}` (the command the "
+                         "request's slowness was timed with), whole, as a command of its own step, as in `timeout N "
+                         "<command>` (a mention in echo, a comment or a quoted argument runs nothing); its verify "
+                         f"`{_one_line(bodies[1], 200)}` does not, so it times a part or nothing, and that is not the "
+                         "slowness the user sees. Put that first, a check of one part may follow it.", 1, aside=False)
     # T-2878: small-model mode checks every change type (T-3688: check_plan refuses a change request's RESEARCH plan)
     small = getattr(run, "small", False)
     if run.plan["type"] not in (CHANGE_TYPES if small else ("FIX", "FEATURE")):
@@ -8412,9 +8573,9 @@ def _plan_problem(run, profile=None):
         # cascade3, perf-log-rollup: `genlog > /tmp/day.log` ended the run before step 1).
         hit = doors.overwritten(run.root, bodies[n])
         if hit:
-            return (f"Criterion {n}'s verify `{bodies[n]}` would write over or remove {core.joinmore(hit, 5)}, "
-                    "which is there now and which git doesn't track: give the same check, writing only to a fresh "
-                    "place it makes itself (a folder from mktemp -d) or nowhere.")
+            return _flaw(f"Criterion {n}'s verify `{bodies[n]}` would write over or remove {core.joinmore(hit, 5)}, "
+                         "which is there now and which git doesn't track: give the same check, writing only to a fresh "
+                         "place it makes itself (a folder from mktemp -d) or nowhere.", n, aside=False)
         own = doors.unmade(run.root, bodies[n])
         code, out = run_bounded(cr["verify"], run.root, VERIFY_TIMEOUT, run.env(), 200, confine=run.confine())
         for path in own:
@@ -8424,19 +8585,21 @@ def _plan_problem(run, profile=None):
                 except OSError:
                     pass
         if code == 0:
-            return (f"Criterion {n}'s verify `{bodies[n]}` already passes before any work, so it proves nothing: "
-                    "give a verify that fails now and passes once the work is done.")
+            return _flaw(f"Criterion {n}'s verify `{bodies[n]}` already passes before any work, so it proves nothing: "
+                         "give a verify that fails now and passes once the work is done.", n, aside=False)
         if code:  # a timeout (None) is no first failure to read
             failed.append((n, code, out))
     own = _own_failure(run, profile, failed) if failed and profile else []
     if own:
         run.emit("note", f"plan check {core.joinmore([str(n) for n, *_ in own], 5)}: the verify fails on its own, "
                          "not for want of the work: sent back to the planner", own_failure=[n for n, *_ in own])
-        return "\n".join(
+        why = _Flaw("\n".join(
             f"Criterion {n}'s verify `{run.plan['criteria'][n - 1]['verify']}` fails on its own (exit {code}): the "
             f"command is wrong or can't run here, so no work could make it pass. Its output:\n"
             f"{run.fence(_cut(run.redact(out), 400))}\nGive a check that this project can run and that fails now "
-            "because of the work still to do." for n, code, out in own)
+            "because of the work still to do." for n, code, out in own))
+        why.named = tuple(n for n, *_ in own)  # T-4293: a whole-plan repair keeps every criterion but these
+        return why
     return None
 
 
