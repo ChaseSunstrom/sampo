@@ -126,7 +126,8 @@ class Isolation(unittest.TestCase):  # T-3132
 
     def test_a_branch_cant_loosen_its_own_script_limit(self):
         import tempfile
-        for val, want in (("600.0", 1.0), ("0.4", 0.4), ("float('nan')", 0.2), ("-3", 0.2)):
+        for val, want in (("600.0", 1.0), ("0.4", 0.4), ("float('nan')", 0.2), ("-3", 0.2), ("0", 0.2),
+                          ("float('inf')", 0.2)):
             with tempfile.TemporaryDirectory() as t:
                 lib = os.path.join(t, "plugin", "lib")
                 os.makedirs(lib)

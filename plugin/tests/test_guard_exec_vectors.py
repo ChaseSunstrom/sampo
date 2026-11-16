@@ -1008,6 +1008,14 @@ class ScriptReadSpeed(GuardCase):  # T-1778
             g.check_bash('cp a "$(cat f)/x"', self.ctx())
         self.assertGreater(possible.call_count, 0, "a typed command still guesses")
 
+    def test_bench_hooks_prints_na_for_a_stage_with_no_rows(self):  # T-4824
+        # a stage no hook call wrote a row for is "n/a", never 0 ms: a 0.0 reads as a measurement that was not made
+        import bench_hooks
+        s = bench_hooks.stage_summary([{"total": 2.0, "state": 1.0}])
+        self.assertEqual(s["total"], {"p50": 2.0, "p99": 2.0, "max": 2.0})
+        self.assertEqual(s["asks"], {"p50": "n/a", "p99": "n/a", "max": "n/a"})
+        self.assertEqual(bench_hooks.stage_summary([])["start"], {"p50": "n/a", "p99": "n/a", "max": "n/a"})
+
     def _nonce(self):
         # T-4806: a read is cached by the sha256 of the file, so a measurement repeated on the same text times the cache;
         # each file ends in a line no other has (the same size to within a few bytes)
@@ -1110,9 +1118,11 @@ class ScriptReadSpeed(GuardCase):  # T-1778
         # to what THIS runner just measured reads to the end: 65 KB (300 steps) on a quiet box. T-4820: a fixed 300 steps
         # at budgets scaled by a loop timed earlier was refused on a slow Ubuntu runner (0.207 s, then 2.07 s CPU spent
         # without finishing); the size is now what the 250-step read above says fits in under a third of the hard budget
-        # (0.6 s of 2 s), never under 120 steps (31 KB), and 250 steps costing over 20 s (20x the quiet box's ~1 s) is a
-        # uniform slowdown of the read itself, which sizing to the measure would hide.
-        self.assertLess(small, 20.0 * scale, f"250 plain steps took {small:.1f} s: the per-step read cost slowed")
+        # (0.6 s of 2 s), never under 120 steps (31 KB). T-4824: the 120-step floor is read in the hard budget (2 s, the
+        # product's own, not scaled), so it fits only while 120 steps cost under it: 250 steps under 2 s x 250/120 (4.2 s).
+        # Past that the floor itself is refused, and sizing to the measure would hide the uniform slowdown of the read.
+        self.assertLess(small, g._BUDGET * 10 * 250 / 120,
+                        f"250 plain steps took {small:.2f} s: the 120-step floor no longer fits the 2 s hard read")
         per_step = max(small, 1e-6) / 250
         steps = max(120, min(300, int(0.6 / per_step)))
         spent, verdict, unread, size = self._plain_cost(steps, g._BUDGET)
@@ -1185,6 +1195,54 @@ class ScriptReadSpeed(GuardCase):  # T-1778
         for cmd in ("env -i PATH=/usr/bin:/bin HOME=/tmp/fm-home python3 plugin/tests/run.py",
                     'env -i PATH="$PATH" python3 plugin/tests/run.py test_replay'):
             self.assertIsNone(self.bash(cmd))
+
+
+class ScriptBudgetEnv(GuardCase):  # T-4824
+    """FM_GUARD_SCRIPT_BUDGET and FM_GUARD_SCRIPT_HARD come from the environment: a value that is not a positive finite
+    number falls back to the default, and a huge one is capped. -1 raised ItimerError out of the guard; nan left the
+    SIGPROF handler installed with the read untimed."""
+    BAD = ("-1", "0", "-0.5", "nan", "inf", "-inf", "1e999", "text", "", "  ")
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.d = os.path.join(os.path.dirname(cls.home), "scripts-budget-env")
+        os.makedirs(cls.d, exist_ok=True)
+
+    def script(self, name, text):
+        p = os.path.join(self.d, name)
+        with open(p, "w") as f:
+            f.write(text)
+        return p
+
+    def test_script_budget_env_bad_values_fall_back_to_the_default(self):
+        for val in self.BAD:
+            with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": val, "FM_GUARD_SCRIPT_HARD": val}):
+                self.assertEqual(g._script_budget(), g._BUDGET, repr(val))
+                self.assertEqual(g._script_hard(), g._BUDGET * 10, repr(val))
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.5", "FM_GUARD_SCRIPT_HARD": "1000"}):
+            self.assertEqual(g._script_budget(), 0.5)
+            self.assertEqual(g._script_hard(), 60.0, "a huge value is capped at 60 CPU seconds")
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "5", "FM_GUARD_SCRIPT_HARD": "-1"}):
+            self.assertEqual(g._script_budget(), 5.0)
+            self.assertEqual(g._script_hard(), 50.0, "a bad hard value falls back to 10x the budget it has")
+
+    def test_script_budget_env_bad_values_leave_every_script_read_timed(self):
+        import signal
+        for i, val in enumerate(self.BAD):
+            p = self.script(f"bad{i}.sh", f"echo {i}\nls\n")
+            armed, before = [], signal.getsignal(signal.SIGPROF)
+            real = signal.setitimer
+
+            def record(which, secs, *rest, _real=real, _armed=armed):
+                _armed.append((which, secs))
+                return _real(which, secs, *rest)
+            g.take_unread()
+            with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": val, "FM_GUARD_SCRIPT_HARD": val}), \
+                    mock.patch.object(signal, "setitimer", record):
+                self.assertIsNone(self.bash(f"bash {p}"), repr(val))  # never raises out of the guard
+            self.assertIn((signal.ITIMER_PROF, g._BUDGET), armed, f"{val!r}: the read was not timed")
+            self.assertIs(signal.getsignal(signal.SIGPROF), before, f"{val!r}: the SIGPROF handler was left installed")
 
 
 class BuilderCheckConfine(GuardCase):

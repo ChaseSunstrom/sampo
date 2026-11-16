@@ -8,6 +8,7 @@ text can always be obfuscated; deny rules and git are the other layers.
 import collections
 import functools
 import json
+import math
 import os
 import re
 import stat
@@ -7308,23 +7309,35 @@ def _system_script(lex, real):
         return False
 
 
-def _script_budget():
+_SCRIPT_CAP = 60.0  # CPU seconds: far above the 2 s hard read; a larger FM_GUARD_SCRIPT_* value is capped to it
+
+
+def _env_seconds(name, default):
+    """T-4824: a FM_GUARD_SCRIPT_* value in CPU seconds: a positive finite number, capped at _SCRIPT_CAP. Text, zero, a
+    negative, nan or inf is the default, so the guard never raises on its own environment (-1 made setitimer raise
+    ItimerError out of it) and every script read stays timed (nan left the SIGPROF handler installed, untimed)."""
     try:
-        return float(os.environ.get("FM_GUARD_SCRIPT_BUDGET") or _BUDGET)
+        v = float(os.environ.get(name) or default)
     except ValueError:
-        return _BUDGET
+        v = float("nan")
+    if not math.isfinite(v) or v <= 0:
+        v = float(default)
+    return min(v, _SCRIPT_CAP)
+
+
+def _script_budget():
+    """The first read's CPU seconds (FM_GUARD_SCRIPT_BUDGET, see _env_seconds), default _BUDGET."""
+    return _env_seconds("FM_GUARD_SCRIPT_BUDGET", _BUDGET)
 
 
 _BUDGET = 0.2  # CPU seconds. 0.5 gave a cold hook p95 of 331 ms over 330 real scripts (goal 300); 0.2 trims the tail
 
 
 def _script_hard():
-    """The second read's CPU seconds (FM_GUARD_SCRIPT_HARD), 10x the first's by default (T-4758): a slow runner spends the
-    first on a 220-line script, and the literal scan after it cannot see a relative target after a `cd /`."""
-    try:
-        return float(os.environ.get("FM_GUARD_SCRIPT_HARD") or _script_budget() * 10)
-    except ValueError:
-        return _script_budget() * 10
+    """The second read's CPU seconds (FM_GUARD_SCRIPT_HARD, see _env_seconds), 10x the first's by default (T-4758): a
+    slow runner spends the first on a 220-line script, and the literal scan after it cannot see a relative target after
+    a `cd /`."""
+    return _env_seconds("FM_GUARD_SCRIPT_HARD", _script_budget() * 10)
 
 
 _WRAPPER_WORDS = frozenset(("sudo", "doas", "command", "builtin", "exec", "time", "nohup", "nice", "then", "do", "else", "elif",

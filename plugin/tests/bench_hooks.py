@@ -29,7 +29,7 @@ def script_budget():
         r = subprocess.run([sys.executable, "-I", "-c", code, os.path.join(PLUGIN, "lib")],
                            capture_output=True, text=True, timeout=30)
         v = float(r.stdout.strip().splitlines()[-1])
-        return min(v, 5 * 0.2) if v >= 0 else 0.2  # clamped: a branch can't loosen its own limit (nan/negative: default)
+        return min(v, 5 * 0.2) if 0 < v < float("inf") else 0.2  # clamped: a branch can't loosen its own limit (as the guard's: T-4824)
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         return 0.2  # the guard's default box
 
@@ -193,6 +193,22 @@ def _pct(xs, q):
     return xs[min(len(xs) - 1, int(len(xs) * q))] if xs else 0.0
 
 
+STAGES = ("start", "imports", "state", "parse", "check", "rules", "asks", "snapshot", "after", "total")
+
+
+def stage_summary(rows):
+    """T-4824: {stage: {p50, p99, max}} over the hook's stage rows (ms). A stage no row carries is "n/a", not 0: a 0.0
+    reads as a measured time, and the stage was not measured at all."""
+    stages = {}
+    for k in STAGES:
+        xs = [r[k] for r in rows if isinstance(r.get(k), (int, float))]
+        if xs:
+            stages[k] = {"p50": round(statistics.median(xs), 1), "p99": round(_pct(xs, 0.99), 1), "max": round(max(xs), 1)}
+        else:
+            stages[k] = {"p50": "n/a", "p99": "n/a", "max": "n/a"}
+    return stages
+
+
 def fixed_tmp_dir():
     """T-4780: a fresh folder under /tmp: the hook writes its bench files only under fixed temp roots (never TMPDIR)."""
     return tempfile.mkdtemp(prefix="sampo-bench-", dir="/tmp" if os.path.isdir("/tmp") else None)
@@ -258,13 +274,8 @@ def stage_bench(runs=200, command=ONE_LINE, entry="fast", beside=None):
     if len(rows) == len(counted):  # one row per call, in order
         rows = [r for r, c in zip(rows, counted) if c]
     wall, cpu = [x for x, c in zip(wall, counted) if c], [x for x, c in zip(cpu, counted) if c]
-    stages = {}
-    for k in ("start", "imports", "state", "parse", "check", "rules", "asks", "snapshot", "after", "total"):
-        xs = [r[k] for r in rows if isinstance(r.get(k), (int, float))]
-        stages[k] = {"p50": round(statistics.median(xs), 1) if xs else 0.0, "p99": round(_pct(xs, 0.99), 1),
-                     "max": round(max(xs), 1) if xs else 0.0}
     out = {"runs": len(wall), "stage_rows": len(rows), "load": round(max(load, load_per_core()), 2),
-           "pressure": max(pressure, cpu_pressure()), "stages": stages}
+           "pressure": max(pressure, cpu_pressure()), "stages": stage_summary(rows)}
     for name, xs in (("wall", wall), ("cpu", cpu)):
         out[name] = {"p50": round(statistics.median(xs), 1) if xs else 0.0, "p99": round(_pct(xs, 0.99), 1),
                      "max": round(max(xs), 1) if xs else 0.0}
