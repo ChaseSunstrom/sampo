@@ -534,19 +534,25 @@ def suggest(root, files=None, n=None):
 
 # ---------------------------------------------------------------- search, with installed plugins' skills
 
-def plugin_skills():
+def plugin_skills(for_prompt=False):
     """[{name: plugin:skill, description, path, enabled}] for installed plugins other than Sampo. A disabled
-    plugin's SKILL.md is still worth reading as a reference, so it is listed and marked."""
+    plugin's SKILL.md is still worth reading as a reference, so it is listed and marked. for_prompt (T-1390, a model's
+    prompt) marks enabled from the user's own settings alone, and adds plugin_path (the plugin's folder, for a
+    confinement check) and held (T-1396's screening of the raw name and description: hidden characters, a broad claim)."""
     from sampo import plugins as splugins
     out = []
-    for pid, info in sorted(splugins.installed().items()):
+    for pid, info in sorted(splugins.installed(project=not for_prompt).items()):
         if not info.get("path") or pid.split("@")[0] in c.NAMESPACES:
             continue
         for f in sorted(glob.glob(os.path.join(info["path"], "skills", "*", "SKILL.md"))):
             fm = splugins._frontmatter(f)
             # another plugin's text: no escape sequences reach the terminal
-            out.append({"name": c.plain(f"{pid.split('@')[0]}:{fm.get('name') or os.path.basename(os.path.dirname(f))}"),
-                        "description": c.plain(fm.get("description", "")), "path": f, "enabled": info.get("enabled")})
+            row = {"name": c.plain(f"{pid.split('@')[0]}:{fm.get('name') or os.path.basename(os.path.dirname(f))}"),
+                   "description": c.plain(fm.get("description", "")), "path": f, "enabled": info.get("enabled")}
+            if for_prompt:
+                row["plugin_path"] = info["path"]
+                row["held"] = _held_text(f"{fm.get('name', '')} {fm.get('description', '')}")
+            out.append(row)
     return out
 
 

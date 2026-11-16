@@ -589,14 +589,15 @@ def pin_covers_code(pid):
     return bool(_pin_source(pid)[0])
 
 
-def installed():
+def installed(project=True):
     """{id: {"path", "enabled"}} for installed plugins, enabled as Claude Code resolves it here: user settings, then
-    this project's .claude/settings.json and settings.local.json."""
+    this project's .claude/settings.json and settings.local.json. project=False (T-1390) reads the user's settings
+    alone: a repository's own file must not switch a plugin's text into a model's prompt."""
     data = (_json(os.path.join(claude_dir(), "plugins", "installed_plugins.json"), {}) or {}).get("plugins") or {}
     root = c.git_root(os.getcwd()) or os.getcwd()
     enabled = {}
     for f in (os.path.join(claude_dir(), "settings.json"), os.path.join(root, ".claude", "settings.json"),
-              os.path.join(root, ".claude", "settings.local.json")):
+              os.path.join(root, ".claude", "settings.local.json"))[:3 if project else 1]:
         enabled.update((_json(f, {}) or {}).get("enabledPlugins") or {})
     out = {}
     for pid, entries in data.items():
