@@ -21,6 +21,10 @@ class Slots(ForemanTestCase):
         for k in (run.SLOT_ENV, "FOREMAN_SLOT", "FOREMAN_SLOTS", "SAMPO_SLOT_PRIORITY", "FOREMAN_SLOT_PRIORITY"):
             os.environ.pop(k, None)  # this test's own runner set one of them
         self.addCleanup(self.patch.stop)
+        for name, value in (("_HELD", {"n": 0, "until": 0.0}), ("_DEFER", {"first": None})):  # T-4789: one process, many tests
+            patched = mock.patch.object(run, name, value)
+            patched.start()
+            self.addCleanup(patched.stop)
 
     def priority_waiter(self, flag):
         """T-3614: a priority run.py's class waiting for a slot in another process; it touches flag once it has one."""

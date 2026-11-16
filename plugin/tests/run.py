@@ -197,15 +197,38 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
         while True:
             if small and (got := _take(folder, fast)):
                 break
-            behind = not prio and ((time.monotonic() < defer and _prio_waiting(folder)) or (low and _builder_waiting(folder)))
+            # T-4789: why this pass leaves a free slot alone (the closing line counts it), and one read of the folder for it
+            why, snap = None, {}
+            if not prio:
+                # T-4789: a run holding none yet defers only to a priority run that holds none either (its first slot goes
+                # first, T-3614); a gate holding slots leaves the others their first, else its marker held a stream of short
+                # runs off and the gate unmarked at every first slot it left: a race it lost. Held is this process's own
+                # count (with a grace after its last), not the slot files, which read a builder between two jobs as none.
+                # Fair off: the old rule, a priority waiter is deferred to whatever this run holds, for DEFER_MAX at most
+                # across the process (every call restarted its own, so a marked waiter holding none held a class 300 s each)
+                # A priority episode is one waiter's stay: a pass that sees no priority waiter ends it, so the next waiter (a
+                # ship's gate after a small priority run) gets its own bounded deferral
+                now_m, prio_w = time.monotonic(), _prio_waiting(folder)
+                if not prio_w:
+                    _DEFER["first"] = None
+                if now_m < defer and (_DEFER["first"] is None or now_m < _DEFER["first"] + DEFER_MAX) and prio_w and (
+                        not fair or _holding() or _prio_first(folder, n, order, snap)):
+                    why = LEFT_PRIO
+                    if _DEFER["first"] is None:
+                        _DEFER["first"] = now_m
+                elif low and _builder_waiting(folder, order if fair else None, n, snap):
+                    why = LEFT_LOW
+            behind = bool(why)
             # T-4688: a run holding its share leaves a freed slot to a waiting run that holds less (a gate held all six for
             # 10+ minutes: each job that ended took the next at once, so a second run never found one free)
-            share = fair and not behind and _yield_open() and _over_share(folder, n, order, prio)
+            share = fair and not behind and _yield_open() and _over_share(folder, n, order, prio, snap)
+            if share:
+                why = LEFT_SHARE
             if share:
                 _yield_begin()  # one window for the process (FAIR_MAX), then a cooldown: a stuck waiter costs it once
-            if share and mark:  # a prio run that refuses for a waiter must not hold the marker that waiter defers to
-                _unmark(mark)
-                mark = None
+            # T-4789: a prio run that refuses a free slot keeps its marker: the waiter it leaves it to holds none, and a run
+            # holding none does not defer to a marker whose run holds a slot (the unmark let the other runs win 15 threads to
+            # 3 for the rest)
             if not behind and not share:
                 if got := _take(folder, order):
                     break
@@ -222,11 +245,14 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
                 _trace(folder, n, small, time.monotonic() - now, narrow)
             if time.monotonic() >= end:
                 break
-            if prio and not mark and not share:
+            if prio and not mark:
                 mark = _mark(folder)
             elif not prio and not low and not marked:  # T-4570: an ordinary run waiting is what a low class yields to
-                marked = _wait_enter(folder)
+                marked = _wait_enter(folder, small and fair)  # the -s marker is T-4688's: fair off, the old rule
+            began = time.monotonic()
             time.sleep(poll * random.uniform(1, 5))  # spread the retries of many waiters
+            if why and _free_slot(folder, n, order):  # T-4789: a slot is still free after the pass: the count is a lower bound
+                _left_add(why, began, time.monotonic())
     finally:
         if marked:
             _wait_leave()
@@ -235,18 +261,129 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
     if not got:
         yield None
         return
+    counted = got[0] in ordinary  # T-4789: a reserve or express slot is not the pool's: it does not make a run a holder
+    if counted:
+        _held_add(1)
     try:
         yield got[0]
     finally:
         os.close(got[1])  # closing it frees the slot
+        if counted:
+            _held_add(-1)
 
 
 EXPRESS = ("x0", "x1")  # T-4247: the express slots' lock files, beside the pool's "0".."N-1" in the same folder
 EXPRESS_CLASSES = 2  # T-4247: a run of at most this many classes may take an express slot
 DEFER_MAX = 300.0  # T-4247: a non-priority run leaves freed slots to a waiting priority run at most this long
+_DEFER = {"first": None}  # T-4789: when this process first deferred to the priority waiter now there: its DEFER_MAX runs from
+# there, whichever class asks, and a pass that sees no priority waiter clears it (the next waiter gets its own)
 SMALL_WAIT = 20.0  # T-4536: a small run waits at most this long for a slot (express or pool), then runs with none
 SAY_WAIT = 5.0  # T-4536: a run that has waited this long writes one 'waiting for a CPU slot, N s' line to stderr
 _SAID, _SAY_LOCK = [], threading.Lock()  # T-4536: the line is said once per run.py process, whichever class waited first
+# T-4789: the reasons a run leaves a free slot alone (the closing line counts the wall seconds of each) and their spans
+LEFT_SHARE, LEFT_PRIO, LEFT_LOW = "fair share", "a priority run", "the post-merge verify's yield"
+LEFT_KEEP = 2048  # spans kept per reason before they are merged into their union (a long run polls tens of thousands of times)
+_LEFT, _LEFT_LOCK = {}, threading.Lock()
+
+
+LEFT_GAP = 0.1  # T-4789: spans of one reason this close (s) are one span: back-to-back passes differ by a file scan
+_HELD, _HELD_LOCK = {"n": 0, "until": 0.0}, threading.Lock()  # T-4789: slots this process holds now, and when its last ended
+HOLD_GRACE = 1.0  # T-4789: a process whose last slot just ended still counts as holding one this long (s)
+
+
+def _held_add(delta):
+    """T-4789: this process took (+1) or let go (-1) of a slot; the last one let go starts the grace."""
+    with _HELD_LOCK:
+        _HELD["n"] += delta
+        if delta < 0:
+            _HELD["until"] = time.monotonic() + HOLD_GRACE
+
+
+def _holding():
+    """T-4789: whether this process holds a slot, or let its last go less than HOLD_GRACE s ago: a builder whose job just
+    ended is between two jobs, not a run holding none (the slot files read it holding none for an instant at every
+    turnover, and it raced the gate for the freed slot as a first slot, T-3614)."""
+    with _HELD_LOCK:
+        return _HELD["n"] > 0 or time.monotonic() < _HELD["until"]
+
+
+def _left_add(why, start, end):
+    """T-4789: a pass of cpu_slot left a free slot alone for `why` from start to end (time.monotonic()). A span within
+    LEFT_GAP s of the last one is one span with it (back-to-back passes), so a long wait keeps a few spans, not tens of
+    thousands to sort; past LEFT_KEEP they are merged into their union."""
+    with _LEFT_LOCK:
+        spans = _LEFT.setdefault(why, [])
+        if spans and max(start - spans[-1][1], spans[-1][0] - end) < LEFT_GAP:
+            spans[-1] = (min(start, spans[-1][0]), max(end, spans[-1][1]))
+            return
+        spans.append((start, end))
+        if len(spans) > LEFT_KEEP:
+            spans[:] = merged_spans(spans)
+
+
+def left_now():
+    """T-4789: a copy of the spans kept so far, by reason."""
+    with _LEFT_LOCK:
+        return {why: list(spans) for why, spans in _LEFT.items()}
+
+
+def _holders(folder, n, snap=None):
+    """T-4789: {slot: pid} of the held slots; `snap` (one dict per pass of cpu_slot) keeps the one read for the others."""
+    if snap is None:
+        return slot_holders(folder, n)
+    if "holders" not in snap:
+        snap["holders"] = slot_holders(folder, n)
+    return snap["holders"]
+
+
+def _waiters(folder, snap=None):
+    """T-4789: _waiter_pids, read once per `snap`."""
+    if snap is None:
+        return _waiter_pids(folder)
+    if "waiters" not in snap:
+        snap["waiters"] = _waiter_pids(folder)
+    return snap["waiters"]
+
+
+def _prio_first(folder, n, ordinary, snap=None):
+    """T-4789: whether a waiting priority run holds none of the `ordinary` slots yet: its first slot goes before any other
+    run's (T-3614), and once it holds one it owes the others theirs."""
+    held = {pid for slot, pid in _holders(folder, n, snap).items() if slot in ordinary}
+    return any(kind == "prio" and pid not in held for pid, kind in _waiters(folder, snap).items())
+
+
+def _free_slot(folder, n, ordinary):
+    """T-4789: whether one of the `ordinary` slots is free now."""
+    held = slot_holders(folder, n)
+    return any(s not in held for s in ordinary)
+
+
+def merged_spans(spans):
+    """T-4789: the union of (start, end) spans as sorted, disjoint spans (what wall_wait adds up)."""
+    out = []
+    for a, b in sorted(s for s in spans if s[1] > s[0]):
+        if out and a <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], b))
+        else:
+            out.append((a, b))
+    return out
+
+
+def left_note(left, run_s=0.0):
+    """T-4789: the summary's '; left free slots to others: fair share A s, a priority run B s, ... of R s wall' for each
+    reason that kept a free slot from this run over 1 s of its wall clock (the union of its spans, as waited_note's
+    wall), else ''. Fair share and the verify's yield are the runs' own waits for a slot that was free."""
+    parts = [(why, wall_wait(spans)) for why, spans in left.items()]
+    parts = [f"{why} {w:.0f} s" for why, w in sorted(parts, key=lambda p: -p[1]) if w > 1]
+    if not parts:
+        return ""
+    wall = max([run_s, *(wall_wait(s) for s in left.values())])
+    return f"; left free slots to others: {', '.join(parts)} of {wall:.0f} s wall"
+
+
+def slot_notes(waits, wait_spans, left, run_s):
+    """T-4789: the closing line's slot notes: what the run waited for a slot (waited_note), then what it left free to others."""
+    return waited_note(waits, wait_spans, run_s) + left_note(left, run_s)
 
 
 def defer_for(wait):
@@ -384,9 +521,11 @@ def _unmark(mark):
 
 
 def _waiter_pids(folder):
-    """T-4688: {pid: whether it is a priority run} of the runs waiting for a slot now: the live wait- and prio- markers (a
-    marker nobody holds is a dead waiter's and is removed), the pid being the one in the marker's name."""
+    """T-4688: {pid: its kind} of the runs waiting for a slot now: the live wait- and prio- markers (a marker nobody holds
+    is a dead waiter's and is removed), the pid being the one in the marker's name. T-4789: the kind is "prio" (a priority
+    run), "small" (a wait- marker ending -s: a run of a few classes, that wants its first slot and no more) or "wait"."""
     pids = {}
+    rank = {"wait": 0, "small": 1, "prio": 2}
     try:
         names = [x for x in os.listdir(folder) if x.startswith(("wait-", "prio-"))]
     except OSError:
@@ -402,7 +541,9 @@ def _waiter_pids(folder):
         except OSError:  # held: its waiter is alive
             with contextlib.suppress(ValueError, IndexError):
                 pid = int(name.split("-")[1])
-                pids[pid] = pids.get(pid, False) or name.startswith("prio-")
+                kind = "prio" if name.startswith("prio-") else "small" if name.endswith("-s") else "wait"
+                if rank[kind] >= rank[pids.get(pid, "wait")]:
+                    pids[pid] = kind
         else:
             with contextlib.suppress(OSError):
                 os.unlink(path)
@@ -411,21 +552,26 @@ def _waiter_pids(folder):
     return pids
 
 
-def _over_share(folder, n, ordinary, prio=False):
+def _over_share(folder, n, ordinary, prio=False, snap=None):
     """T-4688: whether this run leaves a free ordinary slot to another run: it holds its share of the ordinary slots
     (fair_cap over the runs holding one or waiting for one) and another run that waits holds less than that share. A run
     holding none never refuses; a waiter at its share is not waited for, so no slot idles while two runs both want it. A
     priority run (the merge train's gate, T-3614) keeps at least half the ordinary slots as its share, so ten waiting
-    builders do not cut it to a tenth."""
+    builders do not cut it to a tenth.
+    T-4789: a gate (a priority run, or the full suite another is queued behind on the suite lock) owes a waiting run its
+    FIRST slot and no more: an ordinary waiter is entitled to one slot, not to the equal share (a ship's run of 3846 CPU-s
+    on half the pool took its whole deadline; the full suite took 45 min beside builders). A waiter in a small run is
+    entitled to its first slot whoever I am, and is not counted in the divisor (it asks for a reserved slot, not a share).
+    A priority waiter keeps its half."""
     me = os.getpid()
-    waiting = {p: is_prio for p, is_prio in _waiter_pids(folder).items() if p != me}
+    waiting = {p: kind for p, kind in _waiters(folder, snap).items() if p != me}
     with _YIELD_LOCK:
         for key in ("seen", "stuck"):  # a waiter that died is forgotten
             for pid in [p for p in _YIELD[key] if p not in waiting]:
                 del _YIELD[key][pid]
     if not waiting:
         return False
-    holders = slot_holders(folder, n)
+    holders = _holders(folder, n, snap)
     if all(slot in holders for slot in ordinary):  # none free: nothing to leave (the clocks restart; a found-stuck waiter stays so)
         with _YIELD_LOCK:
             _YIELD["seen"].clear()
@@ -434,16 +580,31 @@ def _over_share(folder, n, ordinary, prio=False):
     for slot, pid in holders.items():
         if pid and slot in ordinary:
             held[pid] = held.get(pid, 0) + 1
-    cap = fair_cap(len(ordinary), len(set(held) | set(waiting) | {me}))
+    gate = prio or _gate_held(folder)
+    cap = fair_cap(len(ordinary), len(set(held) | {p for p, k in waiting.items() if k != "small"} | {me}))
     half = -(-len(ordinary) // 2)
-    own = max(cap, half) if prio else cap
+    runs = set(held) | {p for p, k in waiting.items() if k != "small"} | {me}
+
+    def pshare(pid):
+        # a priority run's share: half the pool, or every slot but one for each other run (its first slot): ten waiting
+        # builders do not cut it to a tenth, and one short run beside it does not cost it a half
+        return max(cap, half, len(ordinary) - len(runs - {pid}))
+    own = pshare(me) if gate else cap
+    if not gate and "prio" in waiting.values():
+        own = 1  # beside a priority run still below its share I have my first slot and leave the rest
+    if gate and "prio" not in waiting.values():
+        # a gate beside waiters that are no priority runs keeps one free slot for a first slot and takes the rest: half
+        # the pool for 5 streams of short runs was a run of 28.6 s that is 13.3 s on its own, and the ship's deadline
+        own = 1
+        if sum(1 for slot in ordinary if slot not in holders) > 1:
+            return False
     if held.get(me, 0) < own:
         return False
     now, entitled = time.monotonic(), False
     with _YIELD_LOCK:
-        for pid, is_prio in waiting.items():
+        for pid, kind in waiting.items():
             count = held.get(pid, 0)
-            if count >= (max(cap, half) if is_prio else cap):
+            if count >= (pshare(pid) if kind == "prio" else 1 if gate or kind == "small" else cap):
                 continue
             if _YIELD["stuck"].get(pid) == count:  # found stuck at this count: it stays so across full-then-free cycles
                 continue
@@ -476,7 +637,7 @@ def tidy_slots(folder, n):
     wall = time.time()
     for name in names:
         slot = name.isascii() and name.isdigit() and str(int(name)) == name and int(name) >= n
-        temp = name.startswith((".prio-", ".wait-"))
+        temp = name.startswith((".prio-", ".wait-", ".suite-"))
         if not (slot or temp or (name in EXPRESS and reserved(n))):
             continue
         path = os.path.join(folder, name)
@@ -594,11 +755,12 @@ def _trace(folder, n, small, waited, narrow=False):
 PRIO_ENV = "SAMPO_SLOT_PRIORITY"  # T-3614: =1 (the train's gate and probes, ship's suite, sampo check outside a lane)
 
 
-def _mark(folder, prefix="prio-"):
+def _mark(folder, prefix="prio-", suffix=""):
     """T-3614: a waiting priority run's marker, (fd, path): locked before it takes its prio- name, so a prio- file
     nobody holds is a dead waiter's. None when it can't be made (the run then just competes). T-4570: prefix wait-
-    is an ordinary waiting run's, made the same way."""
-    name = f"{prefix}{os.getpid()}-{random.getrandbits(32):08x}"
+    is an ordinary waiting run's, made the same way. T-4789: suffix -s marks a small run's wait-; the prefix suite- is a
+    full suite waiting on the machine's suite lock."""
+    name = f"{prefix}{os.getpid()}-{random.getrandbits(32):08x}{suffix}"
     tmp, path = os.path.join(folder, "." + name), os.path.join(folder, name)
     try:
         fd = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -626,13 +788,14 @@ def is_low():
     return _env(LOW_ENV) == "1"
 
 
-def _wait_enter(folder):
+def _wait_enter(folder, small=False):
     """T-4570: a class of this process starts waiting for a slot: the process's one wait- marker is made for the first.
-    True when counted (the caller then calls _wait_leave); the marker may be missing (the verify just doesn't yield)."""
+    True when counted (the caller then calls _wait_leave); the marker may be missing (the verify just doesn't yield).
+    T-4789: a small run's marker says so (-s), so a long run does not count it as one of the runs sharing the slots."""
     with _WAIT_LOCK:
         _WAIT["n"] += 1
         if not _WAIT["mark"]:
-            _WAIT["mark"] = _mark(folder, "wait-")
+            _WAIT["mark"] = _mark(folder, "wait-", "-s" if small else "")
     return True
 
 
@@ -648,13 +811,33 @@ def _wait_leave():
             os.close(fd)
 
 
-def _builder_waiting(folder):
+def _builder_waiting(folder, ordinary=None, n=0, snap=None):
     """T-4570: whether a low class leaves a freed slot to a waiting ordinary run: one holds a wait- marker and this
-    process's window (LOW_MAX from its first yield, one window for every class of the run) is still open."""
+    process's window (LOW_MAX from its first yield, one window for every class of the run) is still open.
+    T-4789: only to a run that holds no slot yet (its first), and not while a run is queued behind this one's full suite
+    on the suite lock: a run waiting with five slots of its own was a reason to yield, and the verify sat at zero jobs
+    for 387 of 429 s beside a stream of short runs, free slots under it the whole time. `ordinary` are the pool's slots a
+    holder is counted on (None: the old rule, any wait- marker)."""
     with _LOW_LOCK:
         if _LOW["until"] is not None and time.monotonic() >= _LOW["until"]:
             return False
-    if not _prio_waiting(folder, "wait-"):
+    if ordinary is not None:
+        if _gate_held(folder):
+            return False
+        # (this process's own marker counts: a run's classes are all low or none is, so it holds one only for a thread that
+        # is not low, and that thread's first slot is as much a first as another run's. The invariant it relies on: a low
+        # process never writes a wait- marker, cpu_slot's `elif not prio and not low and not marked` makes one only for a
+        # class that is not low, so it can never yield to itself; letting a low class write one would recreate the self-yield)
+        waiting = {p for p, kind in _waiters(folder, snap).items() if kind != "prio"}
+        if not waiting:
+            return False
+        held = _holders(folder, n, snap)
+        needy = waiting - {pid for slot, pid in held.items() if slot in ordinary}
+        if not needy:
+            return False  # every waiting run holds a slot already: nobody here waits for a first one
+        if sum(1 for slot in ordinary if slot not in held) > len(needy):
+            return False  # a free slot for each run waiting for its first, and one more: that one is mine
+    elif not _prio_waiting(folder, "wait-"):
         return False
     with _LOW_LOCK:
         if _LOW["until"] is None:
@@ -703,6 +886,14 @@ def _slot_folder():
 
 
 SUITE_ENV = "SAMPO_NO_SUITE_SLOT"  # T-3541: =1 runs a full suite without the machine-wide slot
+_SUITE = {"held": False}  # T-4789: this process holds the machine's suite lock now (its full suite is running)
+
+
+def _gate_held(folder):
+    """T-4789: whether this run is a gate: it holds the machine's suite lock and another full suite is queued for it (a
+    suite- marker, made while that run waits on the lock): the run everything behind it waits for, so it keeps its slots
+    beyond a waiting run's first, as a priority run does."""
+    return _SUITE["held"] and _prio_waiting(folder, "suite-")
 
 
 def _holder(fd):
@@ -727,7 +918,7 @@ def suite_slot(until):
         with contextlib.suppress(OSError):
             os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
             fd = os.open(path, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    said = 0.0
+    said, mark = 0.0, None
     try:
         while fd is not None:
             try:
@@ -738,6 +929,7 @@ def suite_slot(until):
                 with contextlib.suppress(OSError):
                     os.ftruncate(fd, 0)
                     os.pwrite(fd, json.dumps({"pid": os.getpid(), "cwd": os.getcwd(), "at": time.time()}).encode(), 0)
+                _SUITE["held"] = True
                 break
             now = time.time()
             if now >= until:
@@ -747,9 +939,18 @@ def suite_slot(until):
                 sys.stderr.write(f"run.py: waiting for {_holder(fd)}\n")
                 sys.stderr.flush()
                 said = now
+            if not mark:  # T-4789: the holder sees a full suite is queued behind it (it keeps its slots: _gate_held)
+                folder = _slot_folder() if fcntl else None
+                mark = _mark(folder, "suite-") if folder else None
             time.sleep(0.2)  # the next suite starts within 0.2 s of the slot freeing
+        if mark:
+            _unmark(mark)
+            mark = None
         yield
     finally:
+        _SUITE["held"] = False
+        if mark:
+            _unmark(mark)
         if fd is not None:
             os.close(fd)  # closing it frees the slot
 
@@ -3050,7 +3251,7 @@ def main():
     me = resource.getrusage(resource.RUSAGE_SELF) if resource else None
     spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     sys.stderr.write(f"\nRan {total} tests in {time.time() - t0:.1f}s ({len(todo)} jobs, {a.j} at a time; "
-                     f"slowest: {slow}; cpu {spent:.1f} s{waited_note(WAITED, WAIT_SPANS, time.time() - t0)}){cached}\n\n"
+                     f"slowest: {slow}; cpu {spent:.1f} s{slot_notes(WAITED, WAIT_SPANS, left_now(), time.time() - t0)}){cached}\n\n"
                      f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip or joined else 'NO TESTS RAN'}\n")
     if stopped:
         sys.stderr.write(f"not run (deadline): {len(stopped)}\n" + "".join(f"  not run class: {r[0]}\n" for r in stopped))

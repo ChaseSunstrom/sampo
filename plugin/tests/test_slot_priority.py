@@ -21,7 +21,8 @@ class LowYieldsToBuilders(ForemanTestCase):
                   run.LOW_ENV, "FOREMAN_SLOT_LOW"):
             os.environ.pop(k, None)
         self.addCleanup(self.patch.stop)
-        for name, val in (("_SAID", []), ("_LOW", {"until": None})):
+        for name, val in (("_SAID", []), ("_LOW", {"until": None}), ("_DEFER", {"first": None}),
+                          ("_HELD", {"n": 0, "until": 0.0})):
             m = mock.patch.object(run, name, val)
             m.start()
             self.addCleanup(m.stop)
@@ -116,11 +117,43 @@ class LowYieldsToBuilders(ForemanTestCase):
         mark = run._mark(self.folder, "prio-")
         self.addCleanup(lambda: (os.close(mark[0]), os.path.exists(mark[1]) and os.unlink(mark[1])))
         for low in (False, True):
+            # T-4789: the bound is one priority episode's for the whole process, so the second call (the same waiter, the
+            # same process) would not wait again: each round stands for a separate waiter's episode
+            run._DEFER["first"] = None
             start = time.monotonic()
             with mock.patch.object(run, "DEFER_MAX", 0.3):
                 with run.cpu_slot(wait=1000, poll=0.01, low=low) as s:
                     self.assertEqual(s, 0)
             self.assertGreaterEqual(time.monotonic() - start, 0.25, "a gate waiting leaves the slot to it first")
+
+    def test_a_pass_that_sees_no_priority_waiter_ends_the_episode_so_the_next_waiter_is_waited_for(self):
+        # the production clear of _DEFER["first"] (nothing here resets it by hand)
+        marks = []
+
+        def waiter_arrives():
+            marks.append(run._mark(self.folder, "prio-"))
+
+        def waiter_leaves():
+            fd, path = marks.pop()
+            os.close(fd)
+            os.path.exists(path) and os.unlink(path)
+
+        self.addCleanup(lambda: [waiter_leaves() for _ in list(marks)])
+
+        def call():
+            start = time.monotonic()
+            with mock.patch.object(run, "DEFER_MAX", 0.3), run.cpu_slot(wait=1000, poll=0.01, low=True) as s:
+                self.assertEqual(s, 0)
+            return time.monotonic() - start
+
+        waiter_arrives()
+        self.assertGreaterEqual(call(), 0.25, "episode one: the waiter goes first")
+        self.assertIsNotNone(run._DEFER["first"], "and the process has spent a deferral on it")
+        waiter_leaves()
+        self.assertLess(call(), 0.2, "no priority waiter: the slot is taken at once")
+        self.assertIsNone(run._DEFER["first"], "and that pass ended the episode")
+        waiter_arrives()
+        self.assertGreaterEqual(call(), 0.25, "episode two: the next waiter is waited for again")
 
     def test_a_process_with_many_waiters_leaves_one_marker_and_removes_it(self):
         free = self.hold()

@@ -741,6 +741,56 @@ class SuiteSlot(unittest.TestCase):
         self.assertIn("going ahead beside it", err)
 
 
+class LeftNote(unittest.TestCase):
+    """T-4789: the closing line says how long this run left a free slot to others, for each reason."""
+
+    def test_each_reason_over_a_second_is_named_longest_first_against_the_wall(self):
+        left = {run.LEFT_SHARE: [(0.0, 4.0), (10.0, 12.0)], run.LEFT_PRIO: [(1.0, 9.0)], run.LEFT_LOW: [(5.0, 5.5)]}
+        note = run.left_note(left, 30.0)
+        self.assertEqual(note, "; left free slots to others: a priority run 8 s, fair share 6 s of 30 s wall")
+
+    def test_overlapping_spans_of_one_reason_count_once(self):
+        left = {run.LEFT_SHARE: [(0.0, 5.0), (2.0, 6.0), (4.0, 8.0)]}
+        self.assertEqual(run.merged_spans(left[run.LEFT_SHARE]), [(0.0, 8.0)])
+        self.assertEqual(run.left_note(left, 20.0), "; left free slots to others: fair share 8 s of 20 s wall")
+
+    def test_a_run_that_left_nothing_adds_nothing(self):
+        self.assertEqual(run.left_note({}, 50.0), "")
+        self.assertEqual(run.left_note({run.LEFT_SHARE: [(0.0, 0.9)]}, 50.0), "")
+
+    def test_the_wall_is_never_under_the_longest_reason(self):  # a run_s of 0 (an unknown wall) still reads sensibly
+        self.assertIn("of 8 s wall", run.left_note({run.LEFT_SHARE: [(0.0, 8.0)]}, 0.0))
+
+    def test_the_closing_lines_slot_notes_say_the_wait_then_what_was_left(self):
+        left = {run.LEFT_SHARE: [(0.0, 8.0)]}
+        waits, spans = {"a": 40.0}, [(0.0, 20.0)]
+        note = run.slot_notes(waits, spans, left, 50.0)
+        self.assertEqual(note, run.waited_note(waits, spans, 50.0) + "; left free slots to others: fair share 8 s of 50 s wall")
+        self.assertTrue(note.startswith("; waited 20 s of 50 s wall"), note)
+        self.assertEqual(run.slot_notes({}, [], {}, 50.0), "", "a run that waited and left nothing says nothing")
+
+    def test_a_pass_that_left_a_slot_for_a_moment_is_one_span_with_the_next(self):
+        with mock.patch.object(run, "_LEFT", {}):
+            for start, end in ((0.0, 1.0), (1.05, 2.0), (5.0, 6.0), (4.95, 5.0), (2.5, 3.0)):
+                run._left_add("why", start, end)
+            self.assertEqual(sorted(run._LEFT["why"]), [(0.0, 2.0), (2.5, 3.0), (4.95, 6.0)], "gaps under LEFT_GAP join, others stay")
+            self.assertEqual(run.left_note(run.left_now(), 10.0), "; left free slots to others: why 4 s of 10 s wall")
+
+    def test_a_long_wait_keeps_few_spans_and_the_union_is_the_same(self):
+        with mock.patch.object(run, "_LEFT", {}), mock.patch.object(run, "LEFT_KEEP", 5):
+            run._left_add("why", 0.0, 100.0)
+            for i in range(10):  # a disjoint span, then one inside the first: neither joins the last, the inner ones compact away
+                run._left_add("why", 200.0 + i * 10, 201.0 + i * 10)
+                run._left_add("why", float(i), i + 1.0)
+            self.assertLess(len(run._LEFT["why"]), 21, "compacted past LEFT_KEEP")
+            self.assertAlmostEqual(run.wall_wait(run._LEFT["why"]), 110.0)
+
+        with mock.patch.object(run, "_LEFT", {}):
+            for i in range(10000):  # back to back passes: one span
+                run._left_add("why", i * 0.06, i * 0.06 + 0.06)
+            self.assertEqual(len(run._LEFT["why"]), 1)
+
+
 # T-3625: FOREMAN_/SAMPO_ names (prefix cut) that reach a test class on purpose: paths, identity and the harness's
 # own isolation or test knobs. Any other name Sampo reads must be an operator switch (run.OPERATOR_SWITCHES).
 HARNESS_ENV = set("""ABLATE AMBIENT_SYNC BENCH BENCH_SESSIONS CALLCARDS CALLS CARDS CGROUP CHECK_LOG CHROME CLAIMS_REMOTE CODE_ATTENDED
