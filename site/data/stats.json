@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-15",
+ "generated": "2026-11-16",
  "totals": {
-  "tasks_done": 1002,
-  "evidence": 5681,
-  "proofs": 565,
-  "commits": 751,
-  "gate_runs": 442,
-  "subagents": 2684,
-  "lanes_merged": 668,
-  "findings": 699,
-  "guard_blocks": 986,
-  "captures": 1672,
-  "lessons_shown": 1897
+  "tasks_done": 1050,
+  "evidence": 5897,
+  "proofs": 589,
+  "commits": 767,
+  "gate_runs": 458,
+  "subagents": 2953,
+  "lanes_merged": 705,
+  "findings": 766,
+  "guard_blocks": 1010,
+  "captures": 1762,
+  "lessons_shown": 2009
  },
  "daily": [
   {
@@ -170,71 +170,82 @@
   },
   {
    "day": "2026-11-15",
-   "FEATURE": 1,
-   "FIX": 8,
+   "FEATURE": 3,
+   "FIX": 33,
+   "CLEAN": 2,
+   "PERFORMANCE": 5,
+   "SECURITY": 2,
+   "RESEARCH": 0,
+   "lanes": 31,
+   "evidence": 204
+  },
+  {
+   "day": "2026-11-16",
+   "FEATURE": 3,
+   "FIX": 9,
    "CLEAN": 0,
    "PERFORMANCE": 1,
    "SECURITY": 0,
    "RESEARCH": 0,
-   "lanes": 4,
-   "evidence": 36
+   "lanes": 10,
+   "evidence": 48
   }
  ],
  "tiers": {
-  "S": 520,
-  "M": 456,
-  "L": 26
+  "S": 535,
+  "M": 488,
+  "L": 27
  },
  "types": {
-  "FEATURE": 297,
-  "FIX": 507,
-  "CLEAN": 53,
-  "PERFORMANCE": 96,
-  "SECURITY": 28,
+  "FEATURE": 302,
+  "FIX": 541,
+  "CLEAN": 55,
+  "PERFORMANCE": 101,
+  "SECURITY": 30,
   "RESEARCH": 21
  },
  "guard": {
-  "brief": 509,
-  "core": 227,
-  "system": 92,
-  "state-direct": 48,
-  "rm-outside": 44,
-  "credentials": 22,
-  "pipe-shell": 15,
-  "self-authorize": 11
+  "brief": 517,
+  "core": 230,
+  "system": 96,
+  "state-direct": 49,
+  "rm-outside": 47,
+  "credentials": 24,
+  "pipe-shell": 16,
+  "self-authorize": 13
  },
  "findings": {
   "lenses": {
-   "edge": 187,
-   "adversary": 146,
-   "self": 141,
-   "intent": 79,
+   "edge": 191,
+   "self": 190,
+   "adversary": 155,
+   "intent": 80,
    "maintainer": 55,
    "design": 53
   },
   "severity": {
-   "LOW": 388,
-   "MEDIUM": 266,
-   "HIGH": 45
+   "LOW": 420,
+   "MEDIUM": 295,
+   "HIGH": 51
   }
  },
  "subagents": {
   "fm-builder": 1112,
-  "sampo:fm-builder": 758,
+  "sampo:fm-builder": 991,
   "general-purpose": 506,
   "fm-reviewer": 208,
-  "fm-recon": 41,
-  "sampo:fm-reviewer": 38
+  "sampo:fm-reviewer": 72,
+  "fm-recon": 41
  },
  "gate_seconds": {
-  "runs": 442,
-  "median": 417.8
+  "runs": 458,
+  "median": 426.1
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 256,
+  "searches": 273,
   "queued": 3,
   "refused": 0
  },
@@ -354,11 +365,11 @@
  "code": {
   "model_tests": 101,
   "endpoints": 9,
-  "tests": 10508
+  "tests": 11367
  },
  "calibration": {
   "scored": 28,
-  "pending": 660,
+  "pending": 701,
   "brier": {
    "stated": 0.11357142857142857,
    "base": 0.13732222222222223
@@ -435,15 +446,15 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 77,
-     "held": 74,
-     "pct": 96
+     "n": 86,
+     "held": 83,
+     "pct": 97
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 272,
-     "held": 253,
+     "n": 329,
+     "held": 306,
      "pct": 93
     },
     {
@@ -457,19 +468,19 @@
   }
  },
  "proof": {
-  "n": 832,
+  "n": 815,
   "counts": {
-   "typed": 73,
-   "meaning-user": 94,
-   "meaning-notes": 433,
+   "typed": 69,
+   "meaning-user": 83,
+   "meaning-notes": 419,
+   "docs": 174,
    "red": 85,
-   "perf-typed": 135,
-   "research-uncited": 30,
-   "docs": 148,
-   "data": 2,
+   "perf-typed": 132,
+   "research-uncited": 26,
    "ui-unshot": 7,
    "tui-unshot": 3,
-   "infra": 3,
+   "infra": 5,
+   "data": 1,
    "perf-noise": 1
   },
   "history": [
@@ -532,6 +543,10 @@
    {
     "day": "2026-11-15",
     "n": 832
+   },
+   {
+    "day": "2026-11-16",
+    "n": 815
    }
   ]
  },
@@ -539,26 +554,32 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1348,
-    "precision": 0.838,
+    "fired": 1369,
+    "precision": 0.836,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 327,
-    "precision": 0.723,
+    "fired": 318,
+    "precision": 0.716,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 216,
-    "precision": 0.784,
+    "fired": 204,
+    "precision": 0.78,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 133,
+    "fired": 134,
     "precision": 0.421,
+    "route": "inbox"
+   },
+   {
+    "trigger": "ci-red",
+    "fired": 73,
+    "precision": 0.778,
     "route": "inbox"
    },
    {
@@ -568,33 +589,27 @@
     "route": "inbox"
    },
    {
-    "trigger": "ci-red",
-    "fired": 66,
-    "precision": 0.778,
-    "route": "inbox"
-   },
-   {
     "trigger": "ci",
-    "fired": 54,
-    "precision": 0.4,
+    "fired": 61,
+    "precision": 0.442,
     "route": "inbox"
    },
    {
     "trigger": "baseline",
-    "fired": 35,
-    "precision": 0.697,
+    "fired": 34,
+    "precision": 0.688,
+    "route": "inbox"
+   },
+   {
+    "trigger": "spar",
+    "fired": 25,
+    "precision": null,
     "route": "inbox"
    },
    {
     "trigger": "genesis-anticipation",
     "fired": 23,
     "precision": 0.0,
-    "route": "inbox"
-   },
-   {
-    "trigger": "spar",
-    "fired": 20,
-    "precision": null,
     "route": "inbox"
    },
    {
@@ -628,6 +643,12 @@
     "route": "inbox"
    },
    {
+    "trigger": "foresight-date",
+    "fired": 4,
+    "precision": 0.0,
+    "route": "inbox"
+   },
+   {
     "trigger": "recurring-failure",
     "fired": 4,
     "precision": 0.0,
@@ -640,15 +661,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "did-not-hold",
+    "trigger": "ahead",
     "fired": 2,
-    "precision": 1.0,
+    "precision": null,
     "route": "inbox"
    },
    {
-    "trigger": "foresight-date",
+    "trigger": "did-not-hold",
     "fired": 2,
-    "precision": 0.0,
+    "precision": 1.0,
     "route": "inbox"
    },
    {
@@ -672,20 +693,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 240,
-    "hit": 0.442,
-    "base_hit": 0.375,
+    "n": 250,
+    "hit": 0.448,
+    "base_hit": 0.38,
     "lead": [
      true,
-     0.0012469589710235596,
-     21,
+     0.0007568597793579102,
+     22,
      5
     ],
     "muted": false,
-    "shown_n": 163,
-    "shown_hit": 0.46,
-    "overlap": 0.084,
-    "base_overlap": 0.079
+    "shown_n": 173,
+    "shown_hit": 0.468,
+    "overlap": 0.078,
+    "base_overlap": 0.074
    }
   ],
   "lean": [
@@ -742,6 +763,146 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-16",
+   "text": "T-4789: kept 'reproduce first' over the rival read's divisor fixes: the one sample of the slot folder showed no waiters while the run idled, so the divisor is unproven; the rival's two-tier divisor an",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-16",
+   "text": "Renewed T-4581's publish grant (nineteenth) to ship train 1115p's landings and the CI fix to the public main: main pushes are pre-approved by the user's standing rule",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-16",
+   "text": "T-4758 (unread scripts refused) may land: on its current head the guard reads all 726 real scripts on this machine and 381 user-owned ones inside its budgets (0 refused as too long; the trunk refuses ",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-16",
+   "text": "T-4758 (unread scripts refused) stays out of the trunk until the guard's script parse is near-linear: its builder measured 1.9 s CPU at 4.7 KB and 44 s at 37 KB, so the rule would refuse every ordinar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-16",
+   "text": "Raised the builder cap from 2 to 3 for T-4771",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-16",
+   "text": "Ship train 1115l (T-4154, T-4155, T-4283, T-4768) to GitHub main on a publish grant renewed by the session (eighteenth renewal)",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-16",
+   "text": "T-4758: a script the command guard cannot read to the end within its hard budget is refused outright, instead of allowed after a word scan",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed T-4581's publish grant after the ship at 54b6023ca (seventeenth renewal; main pushes are pre-approved by the user's standing rule)",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed T-4581's publish grant after the ship at 67b434bf6 (sixteenth renewal; main pushes are pre-approved by the user's standing rule)",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "T-4742: excusals stay capped at half the risk cap per project per day, so a day like the other project's 2026-11-15 still steps down; widening it is the user's call",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed T-4581's publish grant (fifteenth) after train 1115h shipped 6 commits to main at 9a0e556a7; the user's standing rule pre-approves main pushes",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed T-4581's publish grant (fourteenth) after a hand ship put 7 commits on main at 9b8f6ad59 (train 1115g's own ship had been refused on a test it did not name; the re-run passed); the user's stan",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed T-4581's publish grant (thirteenth) after train 1115f shipped 7 commits to main at 62e41e23c; the user's standing rule pre-approves main pushes",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed T-4581's publish grant (twelfth renewal) after the ship of 5 commits to main at 6fd32b4c8; the user's standing rule pre-approves releases and main pushes",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed the publish grant on T-4581 for the next train's ship to GitHub main (eleventh renewal; main pushes are pre-approved by the user's standing rule); the last ship put 3 commits on main at 3f1223",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "T-3091: criteria 1 and 2 reworded to what is true: the per-lane low-load bench was never run and the named lanes merged long ago; the finding note says so plainly instead of claiming the bench",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed the publish grant on T-4581 for the next train's ship to GitHub main (tenth renewal; main pushes are pre-approved by the user's standing rule); the last ship put 11 commits on main at c46fe8ec",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Renewed the publish grant on T-4581 for the next train's ship to GitHub main (ninth renewal; main pushes are pre-approved by the user's standing rule)",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "Set the builder limit to 2 at once (it read 12): the user's 2026-11-08 instruction was fewer subagents, two lanes at most; two builders (T-4680, T-4679) and a four-lane train are running, so the drive",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-15",
+   "text": "read T-4690: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
   {
    "date": "2026-11-15",
    "text": "Renewed the publish grant on T-4581 after train p shipped 3 commits to main (4f4a8900e): the next train (T-4684, then the guard and foresight reworks after their re-reviews) ships on it, under the sta",
@@ -2001,146 +2162,6 @@
   {
    "date": "2026-11-05",
    "text": "read T-3204: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3203: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3177 parked, branch kept (f5e8ec11): the machine-wide test slot pool at 2x cpu matches unpooled at 2 concurrent runs (19.1 vs 18.7 s) and is ~13% slower at 4 (median 45.6 vs 40.2 s, wider spread) wh",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3177: don't merge the pool at cpu_count slots (2-run bench 28.2 s pooled vs 21.4 s unpooled: test jobs wait on subprocesses, so 16 slots idle cores); default to 2x cpu_count slots (FM_TEST_SLOTS ove",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3044 builder on Opus, not the router's haiku: the user routes UI work to Opus (2026-11-05); haiku's M-lane rework record is 1/20 with too little history",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "Restart the card writer: general grid, target 12000 (all 2880 cells ~4 each), local gemma first then Haiku, 3 workers; UI grid waits for the Opus route (T-3106 family), per the user's routing",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3106 builder on Opus, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3189, T-3154, T-3164 builders on sonnet, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3168, T-3143, T-3170 builders on sonnet, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3188 builder on sonnet, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3180 and T-3176 builders on sonnet, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "Route S lanes to haiku (provisional)",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3171 builder on sonnet, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3034 and T-3101 builders on Opus, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3166 builder on sonnet, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3160 builder on Opus, not the routed haiku",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3140's test cache is not merged now: the branch (c5970e7a) is kept and the task blocked; the speed goes after the slowest classes instead (T-3166 widened: run.py runs a big class's tests in parallel",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "Hold main-checkout test runs and closes after T-3151's close until the queued merges (T-3087, T-3108, then T-3053's chain) land",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3161: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "T-3157 calling cards: approved in full autonomy after the cold plan review; built as parts, the thin slice T-3160 first (ten Opus-written cards, the call action, with/without measured) before more for",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-05",
-   "text": "read T-3159: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
    "later": null,
    "confidence": null,
    "kind": "costly"
