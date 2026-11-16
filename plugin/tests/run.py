@@ -2783,6 +2783,17 @@ def _run_one(cid, k, timeout, deadline, slot):
     return cid, p.returncode, err, int(m.group(1)) if m else 0, time.time() - t0  # killed: negative
 
 
+def kill_orphans():
+    """T-4829: SIGKILL each live class's group once its starter is gone. A killpg that fails is said on stderr with its
+    errno and the pgid, not swallowed: CI's macOS orphan check reported only 'its class kept running'."""
+    for pid in list(LIVE_CLASSES):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except OSError as e:
+            sys.stderr.write(f"run.py: killpg({pid}, SIGKILL) failed: errno {e.errno} ({e.strerror})\n")
+            sys.stderr.flush()
+
+
 def watch_parent(poll=PARENT_POLL_S):
     """T-4538: a run whose starter has exited (a check killed mid-run; nobody reads its result) ends now, its classes
     with it, so their CPU slots are freed. A run started detached on purpose sets SAMPO_KEEP_ORPHAN=1 and keeps going.
@@ -2795,9 +2806,7 @@ def watch_parent(poll=PARENT_POLL_S):
         while True:
             time.sleep(poll)
             if os.getppid() != parent:
-                for pid in list(LIVE_CLASSES):
-                    with contextlib.suppress(OSError):
-                        os.killpg(pid, signal.SIGKILL)
+                kill_orphans()
                 end_run()  # T-4720: atexit does not run after os._exit
                 os._exit(1)
 
