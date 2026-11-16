@@ -201,6 +201,120 @@ class SampoSpelling(HookCase):
         self.assertEqual((got.get("next"), got.get("task show") or got.get("task")), (2, 1), got)
 
 
+class OutputsReread(HookCase):
+    """T-4825: sampo cost --outputs: each tool result's characters, re-read on every later call until a compaction,
+    by tool and Bash command word, main thread against subagents; aggregates only."""
+
+    def test_bash_kind_names_the_program_not_the_command(self):
+        from sampo import cost
+        for cmd, kind in (("cd /x && timeout 60 python3 /r/plugin/tests/run.py test_x", "tests"),
+                          ("cd /a; cd b\nnice -n 5 ionice -c 3 sampo task show T-1", "sampo task"),
+                          ("python3 plugin/bin/sampo cost --days 3", "sampo cost"),
+                          ("fm next", "sampo next"), ("FOO=1 BAR='a b' git -C /x log -3", "git log"),
+                          ("git status | head", "git status"), ("python3 -c 'print(1)'", "python3 inline"),
+                          ("python3 - <<'EOF'\nprint(1)\nEOF", "python3 inline"), ("python3 tools/x.py a", "python3 script"),
+                          ("bash run.sh", "bash script"), ("env FOO=1 stdbuf -oL /usr/bin/grep -rn x .", "grep"),
+                          ("# a comment\nsed -n 1,5p secret.txt", "sed"), ("", "shell"), ("cd /x", "shell"),
+                          ("echo $(whoami)", "echo"), ("$(evil) x", "other"),
+                          ("sampo -p someproject task show T-1", "sampo"), ("sampo --json xyzzy", "sampo"),
+                          ("python3 plugin/bin/sampo -p foo cost", "sampo"), ("sampo --json cost --outputs", "sampo cost")):
+            self.assertEqual(cost._bash_kind(cmd), kind, cmd)
+
+    def test_reread_by_kind_with_compaction_dedupe_subagents_and_the_cutoff(self):
+        self.fm("init")
+        cfg = os.path.join(self.tmp, "cfg")
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(os.path.join(folder, "s1", "subagents"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        at = lambda days=0, s=0: (now - datetime.timedelta(days=days) + datetime.timedelta(seconds=s)).strftime(  # noqa: E731
+            "%Y-%m-%dT%H:%M:%S.000Z")
+        use = lambda i, name, **inp: {"type": "tool_use", "id": i, "name": name, "input": inp}  # noqa: E731
+        call = lambda mid, read, blocks, s, days=0: {"type": "assistant", "timestamp": at(days, s), "sessionId": "s1",  # noqa: E731
+                                                     "message": {"id": mid, "usage": {"cache_read_input_tokens": read},
+                                                                 "content": blocks}}
+        got_back = lambda s, i, n, days=0: {"type": "user", "timestamp": at(days, s), "message": {"content": [  # noqa: E731
+            {"type": "tool_result", "tool_use_id": i, "content": "x" * (n - 2)}]}}  # json.dumps adds two quotes
+        a1 = use("a1", "Bash", command="cd /x && timeout 60 python3 /r/plugin/tests/run.py test_x")
+        main = [call("m1", 100, [a1], 0), call("m1", 100, [use("a2", "Read", file_path="/x/f")], 0),  # a split reply
+                got_back(1, "a1", 400), got_back(1, "a2", 800),
+                call("m2", 1000, [], 2), call("m2", 1000, [], 2),  # live: tests 400, Read 800, counted once
+                {"type": "system", "subtype": "compact_boundary", "timestamp": at(0, 3)},
+                call("m3", 500, [use("a3", "mcp__x__y")], 4),  # nothing live after the compaction
+                got_back(5, "a3", 100), call("m4", 400, [], 6),
+                call("old1", 9999, [use("o1", "Read", file_path="/x/g")], 0, days=30), got_back(1, "o1", 8000, days=30)]
+        sub = [call("ms1", 200, [use("b1", "Bash", command="sed -n 1,5p /secret/path.txt")], 0), got_back(1, "b1", 200),
+               call("ms2", 300, [], 2)]
+        for name, rows in (("s1.jsonl", main), (os.path.join("s1", "subagents", "agent-1.jsonl"), sub)):
+            with open(os.path.join(folder, name), "w") as f:
+                f.write("\n".join(json.dumps(x) for x in rows) + "\n")
+        env = {"CLAUDE_CONFIG_DIR": cfg}
+        got = self.fm_json("cost", "--outputs", env=env)
+        self.assertEqual((got["main"]["calls"], got["main"]["cache_read_tokens"], got["main"]["avg_context_read"]),
+                         (4, 2000, 500), "m1 and m2 once each; the 30-day-old call left out")
+        self.assertEqual((got["sub"]["calls"], got["sub"]["cache_read_tokens"], got["sub"]["avg_context_read"]),
+                         (2, 500, 250))
+        kinds = {k["kind"]: k for k in got["kinds"]}
+        self.assertEqual({k: v["reread_tokens"] for k, v in kinds.items()},
+                         {"main tests": 100, "main Read": 200, "main mcp": 25, "sub sed": 50})
+        self.assertEqual((kinds["main Read"]["results"], kinds["main Read"]["avg_tokens"]), (1, 200))
+        self.assertEqual(got["tool_output_reread_tokens"], 375)
+        self.assertEqual(got["share_of_cache_read"], 15.0)  # 375 of 2,500
+        self.assertEqual(kinds["main Read"]["share_of_cache_read"], 8.0)
+        text = self.fm("cost", "--outputs", env=env).stdout
+        self.assertIn("main Read", text)
+        self.assertIn("15%", text)
+        for private in ("secret", "/x/f", "test_x", "/r/plugin"):
+            self.assertNotIn(private, text + json.dumps(got), "aggregates only: no command, path or text")
+
+    def _project(self):
+        cfg = os.path.join(self.tmp, "cfg")
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(folder)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        at = lambda days=0, s=0: (now - datetime.timedelta(days=days) + datetime.timedelta(seconds=s)).strftime(  # noqa: E731
+            "%Y-%m-%dT%H:%M:%S.000Z")
+        use = lambda i, name, **inp: {"type": "tool_use", "id": i, "name": name, "input": inp}  # noqa: E731
+        call = lambda mid, read, blocks, s=0, days=0: {"type": "assistant", "timestamp": at(days, s),  # noqa: E731
+                                                       "message": {"id": mid, "usage": {"cache_read_input_tokens": read},
+                                                                   "content": blocks}}
+        got_back = lambda s, i, n, days=0: {"type": "user", "timestamp": at(days, s), "message": {"content": [  # noqa: E731
+            {"type": "tool_result", "tool_use_id": i, "content": "x" * (n - 2)}]}}  # json.dumps adds two quotes
+        write = lambda name, rows: open(os.path.join(folder, name), "w").write(  # noqa: E731
+            "\n".join(json.dumps(x) for x in rows) + "\n")
+        return cfg, call, use, got_back, write
+
+    def test_the_cutoff_limits_the_totals_not_what_is_already_in_context(self):
+        """A result read before the window is still in context for the window's first calls, and a result inside
+        the window whose tool_use is older keeps its kind (T-4825 review)."""
+        cfg, call, use, got_back, write = self._project()
+        write("w.jsonl", [call("oc", 9999, [use("o1", "Read", file_path="/x/a"), use("o2", "Bash", command="git status")],
+                               days=30),
+                          got_back(1, "o1", 4000, days=30),
+                          call("w1", 4000, []), got_back(1, "o2", 800), call("w2", 4000, [])])
+        got = self.fm_json("cost", "--outputs", "--days", "7", env={"CLAUDE_CONFIG_DIR": cfg})
+        self.assertEqual((got["main"]["calls"], got["main"]["cache_read_tokens"]), (2, 8000), "the 30-day call is out")
+        kinds = {k["kind"]: k for k in got["kinds"]}
+        self.assertEqual({k: v["reread_tokens"] for k, v in kinds.items()},
+                         {"main Read": 2000, "main git status": 200}, "o1 in context for w1 and w2; o2 for w2")
+        self.assertEqual(kinds["main git status"]["results"], 1, "a result whose tool_use is older keeps its kind")
+        self.assertEqual(kinds["main Read"]["results"], 0, "a result before the window is not counted as one")
+        self.assertEqual(got["share_of_cache_read"], 27.5)
+
+    def test_a_forked_file_copying_history_counts_each_call_once_and_a_corrupt_id_is_skipped(self):
+        cfg, call, use, got_back, write = self._project()
+        history = [call("h1", 100, [use("a1", "Read", file_path="/x/a")]), got_back(1, "a1", 400), call("h2", 100, [])]
+        write("a.jsonl", history)
+        write("b.jsonl", history + [call("h3", 100, [])])  # a resumed session copies the history into a new file
+        write("c.jsonl", [call("c1", 50, [{"type": "tool_use", "id": ["x"], "name": "Read", "input": {}},
+                                          {"type": "tool_use", "id": {"y": 1}, "name": "Read", "input": {}}]),
+                          {"type": "user", "timestamp": "2099-01-01T00:00:00.000Z", "message": {"content": [
+                              {"type": "tool_result", "tool_use_id": {"z": 1}, "content": "abc"}]}},
+                          call("c2", 50, [])])
+        got = self.fm_json("cost", "--outputs", env={"CLAUDE_CONFIG_DIR": cfg})
+        self.assertEqual((got["main"]["calls"], got["main"]["cache_read_tokens"]), (5, 400),
+                         "h1, h2, h3, c1, c2 once each: 100+100+100+50+50")
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

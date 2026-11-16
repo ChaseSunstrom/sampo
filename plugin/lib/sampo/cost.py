@@ -3,6 +3,7 @@ Code's own transcripts, and which Sampo skills, playbooks and commands actually 
 import bisect
 import collections
 import datetime
+import hashlib
 import itertools
 import json
 import os
@@ -66,13 +67,14 @@ def _mtime(path):
         return 0.0
 
 
-def _entries(folder, since, need=None, newest=False):
+def _entries(folder, since, need=None, newest=False, context=False):
     """(file path, entry) for each transcript line on or after the cutoff. T-1116: a file not written since the
     cutoff is skipped unopened, and a line is parsed only when one of its timestamps reaches the cutoff (the newest
     counts: a nested older one can't hide the entry's own). T-3193: `need`, a substring a wanted line always holds,
     skips the rest before any regex or parse. T-3521: request blobs are skipped unparsed, and the line's last stamp (the
     entry's own) is read first: only when it is older are all of them searched. T-3921: newest, the files newest first
-    (a reader that stops early keeps the latest)."""
+    (a reader that stops early keeps the latest). T-4825: context, every line of a file written since the cutoff (a
+    reader that needs what the older lines left in context)."""
     cutoff = since[:19]
     try:
         cut = datetime.datetime.strptime(since[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
@@ -91,7 +93,7 @@ def _entries(folder, since, need=None, newest=False):
                     if need and need not in line or line.startswith(_BLOB):
                         continue
                     last = _TS.match(line, max(line.rfind('"timestamp":'), 0))
-                    if not (last and last.group(1) >= cutoff):
+                    if not context and not (last and last.group(1) >= cutoff):
                         stamps = _TS.findall(line)
                         if stamps and max(stamps) < cutoff:
                             continue
@@ -335,6 +337,176 @@ def scan(folder, since, share=None, sidechains=True, entries=None, ctx=None, kin
     if kinds:
         return [row + (started.get(key, "other"),) for key, row in msgs.items()], tools
     return list(msgs.values()), tools
+
+
+_WRAPPERS = {"timeout", "nice", "env", "time", "stdbuf", "ionice", "command", "exec"}
+_LEAD_SKIP = {"cd", "set", "export"}
+_SHELL_ARG = re.compile(r"-\S*|\d+[smhd]?|[A-Za-z_]\w*=\S*")  # a wrapper's options, its numbers, an env assignment
+_WORD = re.compile(r"[\w][\w.+-]{0,39}")
+
+
+def _words(seg):
+    import shlex
+    try:
+        return shlex.split(seg)
+    except ValueError:  # an unbalanced quote: the plain split names the program well enough
+        return seg.split()
+
+
+def _after_options(words, takes=()):
+    """The first word that is not an option (or an option's value, for those in `takes`)."""
+    skip = False
+    for w in words:
+        if skip:
+            skip = False
+        elif w in takes:
+            skip = True
+        elif not w.startswith("-"):
+            return w
+    return ""
+
+
+_VERBS = []
+
+
+def _sampo_kind(rest):
+    """"sampo VERB" when the first word after the options is one of sampo's verbs, else "sampo" (an option's value,
+    as in `sampo -p NAME task show`, is not a verb)."""
+    if not _VERBS:
+        import argparse
+        from sampo import cli
+        sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+        _VERBS.append(frozenset(sub.choices))
+    verb = _after_options(rest)
+    return f"sampo {verb}" if verb in _VERBS[0] and _WORD.fullmatch(verb) else "sampo"
+
+
+def _bash_kind(cmd):
+    """T-4825: what a Bash command ran, as a short kind: leading cd/set/export segments, env assignments and wrappers
+    (timeout, nice, …, with their numbers) dropped; the tests runner, a sampo verb, a git subcommand, python's inline or
+    script use, else the program's basename. Never more than the program and a verb: no path, argument or text."""
+    for seg in re.split(r"&&|;|\n", cmd or ""):
+        words = _words(seg)
+        while words and (os.path.basename(words[0]) in _WRAPPERS or re.fullmatch(r"[A-Za-z_]\w*=.*", words[0])):
+            wrapper = os.path.basename(words[0]) in _WRAPPERS
+            words = words[1:]
+            while wrapper and words and _SHELL_ARG.fullmatch(words[0]):
+                words = words[1:]
+        if not words or words[0].startswith("#") or os.path.basename(words[0]) in _LEAD_SKIP:
+            continue
+        prog = os.path.basename(words[0])
+        rest = words[1:]
+        if re.fullmatch(r"python[0-9.]*", prog):
+            i = 0
+            while i < len(rest) and rest[i].startswith("-") and rest[i] != "-":  # interpreter options before the script
+                if rest[i] == "-c":
+                    return "python3 inline"
+                if rest[i] == "-m":
+                    return "tests" if rest[i + 1:i + 2] in (["unittest"], ["pytest"]) else "python3 module"
+                i += 2 if rest[i] in ("-W", "-X") else 1
+            first = rest[i] if i < len(rest) else ""
+            if first == "-":
+                return "python3 inline"
+            if first.endswith("tests/run.py"):
+                return "tests"
+            if os.path.basename(first) in ("sampo", "fm"):
+                return _sampo_kind(rest[i + 1:])
+            return "python3 script" if first.endswith(".py") else "python3"
+        if prog in ("sampo", "fm"):
+            return _sampo_kind(rest)
+        if prog == "git":
+            verb = _after_options(rest, ("-C", "-c"))
+            return f"git {verb}" if _WORD.fullmatch(verb) else "git"
+        if prog in ("bash", "sh"):
+            return "bash inline" if "-c" in rest else "bash script" if _after_options(rest) else prog
+        return prog if _WORD.fullmatch(prog) else "other"
+    return "shell"
+
+
+def _tool_kind(name, inp):
+    if not isinstance(name, str):
+        return "unknown"
+    if name.startswith("mcp__"):
+        return "mcp"
+    if name == "Bash":
+        return _bash_kind(str((inp or {}).get("command") or "") if isinstance(inp, dict) else "")
+    return name if _WORD.fullmatch(name) else "other"
+
+
+def outputs_reread(folder, since, entries=None):
+    """T-4825: tool outputs weighed by how often they are re-read. Per file, in order: a running count of the live
+    tool-result characters by kind; each assistant call (once per message id) adds every live kind's characters to that
+    kind's re-read total and its cache-read tokens to its side's; a compact_boundary clears the live counts. A result's
+    kind is its tool_use's tool (every MCP tool "mcp"; Bash by command word); main thread or sub by the file's place.
+    The cutoff limits only the totals: older lines of a file still fill the live counts and kinds. A message id counts
+    once across all files (a resumed session copies history into a new one). One line at a time; memory is one file's
+    tool ids and kinds plus 8 bytes per call. Returns the figures; no text of the transcripts."""
+    side = {"main": collections.Counter(), "sub": collections.Counter()}
+    reread, results, chars = collections.Counter(), collections.Counter(), collections.Counter()
+    cur, live, kinds_of, seen = None, collections.Counter(), {}, set()  # seen: across files, as scan() dedupes
+    for path, e in _entries(folder, since, context=True) if entries is None else entries:
+        if path != cur:  # a file's own context: a resumed session's copy of the history replays it from the top
+            cur, live, kinds_of = path, collections.Counter(), {}
+        ts = str(e.get("timestamp") or "")
+        in_window = ts[:19] >= since  # the cutoff limits the totals, not what is already in context
+        who = "sub" if f"{os.sep}subagents{os.sep}" in path else "main"
+        if e.get("type") == "system" and e.get("subtype") == "compact_boundary":
+            live.clear()
+            continue
+        m = e.get("message")
+        if not isinstance(m, dict):
+            continue
+        if e.get("type") == "assistant":
+            if isinstance(m.get("content"), list):
+                for x in m["content"]:
+                    if isinstance(x, dict) and x.get("type") == "tool_use" and isinstance(x.get("id"), str):
+                        kinds_of[x["id"]] = _tool_kind(x.get("name"), x.get("input"))
+            if in_window and isinstance(m.get("usage"), dict):
+                mid = m.get("id") if isinstance(m.get("id"), str) and m["id"] else f"{path}\0{ts}"
+                key = hashlib.blake2b(mid.encode("utf-8", "replace"), digest_size=8).digest()  # bounded memory
+                if key not in seen:
+                    seen.add(key)
+                    side[who]["calls"] += 1
+                    side[who]["cache_read"] += m["usage"].get("cache_read_input_tokens") or 0
+                    for kind, n in live.items():
+                        reread[f"{who} {kind}"] += n
+        elif isinstance(m.get("content"), list):
+            for x in m["content"]:
+                if isinstance(x, dict) and x.get("type") == "tool_result":
+                    tid = x.get("tool_use_id")
+                    kind = kinds_of.get(tid, "unknown") if isinstance(tid, str) else "unknown"
+                    n = _size(x.get("content"))
+                    live[kind] += n
+                    if in_window:
+                        results[f"{who} {kind}"] += 1
+                        chars[f"{who} {kind}"] += n
+    cache = side["main"]["cache_read"] + side["sub"]["cache_read"]
+    rows = [{"kind": k, "results": results[k], "avg_tokens": round(chars[k] / results[k] / 4) if results[k] else 0,
+             "reread_tokens": round(v / 4), "share_of_cache_read": round(100 * v / 4 / cache, 1) if cache else 0.0}
+            for k, v in reread.most_common()]
+    total = sum(r["reread_tokens"] for r in rows)
+    return {"main": {"calls": side["main"]["calls"], "cache_read_tokens": side["main"]["cache_read"],
+                     "avg_context_read": side["main"]["cache_read"] // (side["main"]["calls"] or 1)},
+            "sub": {"calls": side["sub"]["calls"], "cache_read_tokens": side["sub"]["cache_read"],
+                    "avg_context_read": side["sub"]["cache_read"] // (side["sub"]["calls"] or 1)},
+            "tool_output_reread_tokens": total,
+            "share_of_cache_read": round(100 * total / cache, 1) if cache else 0.0, "kinds": rows}
+
+
+def _outputs(folder, args, cli):
+    got = {"days": args.days, **outputs_reread(folder, _since(args.days))}
+    if not (got["main"]["calls"] or got["sub"]["calls"]):
+        return cli.out(args, got, f"No assistant calls in {folder} for the last {args.days:g} day(s).")
+    side = lambda k: (f"{got[k]['calls']:,} calls, {_human(got[k]['cache_read_tokens'])} cache-read tokens, "  # noqa: E731
+                      f"{_human(got[k]['avg_context_read'])} context read per call")
+    text = (f"Tool outputs re-read, last {args.days:g} day(s) (tokens ≈ characters / 4; each output counted again on every "
+            f"later call until a compaction):\n  main: {side('main')}\n  sub:  {side('sub')}\n"
+            f"  tool outputs re-read: {_human(got['tool_output_reread_tokens'])} tokens, "
+            f"{got['share_of_cache_read']:g}% of all cache reads\nLargest, by re-read (results, average size, share of cache "
+            "reads):\n" + "\n".join(f"  {r['kind']}: {r['results']:,} results, {_human(r['avg_tokens'])} each, "
+                                    f"{_human(r['reread_tokens'])} re-read, {r['share_of_cache_read']:g}%"
+                                    for r in got["kinds"][:15]))
+    return cli.out(args, got, text)
 
 
 BURN_CONTEXT = 150_000  # T-1800: a session averaging more context than this per reply compacts too late
@@ -917,6 +1089,8 @@ def cmd_cost(args):
     folder = transcripts_dir(p.root)
     if not os.path.isdir(folder):
         raise cli.UsageError(f"no Claude Code transcripts for this project at {folder}")
+    if getattr(args, "outputs", False):
+        return _outputs(folder, args, cli)
     share = collections.Counter()
     if getattr(args, "sessions", False):  # a subagent's own context isn't its parent's per-turn figure
         return _sessions(scan(folder, _since(args.days), sidechains=False, kinds=True)[0], args, cli)

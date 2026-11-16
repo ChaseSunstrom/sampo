@@ -4668,8 +4668,63 @@ def _ready_stdin():
     return subprocess.DEVNULL
 
 
+QUIET_KEEP_FILES = 20  # T-4825: how many cut runs sampo quiet keeps for a project
+QUIET_KEEP_BYTES = 2_000_000  # and the most of one run's output a kept file holds, in bytes (the middle is cut past it)
+QUIET_KEEP_MIN_AGE = 3600  # a kept file is never pruned before this many seconds: its reader may not have opened it yet
+
+
+def _keep_quiet(output):
+    """T-4825 (rtk's tee/recall): the whole output of a failed run `sampo quiet` cut, in a file under Sampo's state
+    (outputs/quiet/<project>, never the repo tree), readable by the user alone; the project's folder keeps the newest
+    QUIET_KEEP_FILES, except any younger than QUIET_KEEP_MIN_AGE. The path, or None when it can't be written (the tail
+    on screen is then all there is)."""
+    import time
+    try:
+        slug = c.find_project(os.getcwd()).slug
+    except Exception:  # no project here: its own folder
+        slug = "none"
+    folder = os.path.join(c.state_dir(), "outputs", "quiet", slug)
+    data = output.encode("utf-8", "replace")
+    if len(data) > QUIET_KEEP_BYTES:
+        half = QUIET_KEEP_BYTES // 2
+        head, tail = data[:half].decode("utf-8", "ignore"), data[-half:].decode("utf-8", "ignore")
+        data = (head + f"\n[Sampo: {len(data) - 2 * half:,} bytes cut from the middle of this output]\n" + tail
+                ).encode("utf-8")
+    base = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 10**9:09d}-{os.getpid()}"
+    try:
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        os.chmod(folder, 0o700)  # outputs can hold secrets: the user's eyes only, whatever made the folder
+        for n in range(20):  # O_EXCL: never write through a file or link that is already there
+            path = os.path.join(folder, f"{base}{'' if not n else f'-{n}'}.txt")
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+                break
+            except FileExistsError:
+                continue
+        else:
+            return None
+        with os.fdopen(fd, "wb") as f:
+            f.write(data + b"\n")
+    except (OSError, ValueError):
+        return None
+    try:
+        files = [os.path.join(folder, n) for n in os.listdir(folder) if n.endswith(".txt")]
+        files.sort(key=lambda f: (os.path.getmtime(f), f))
+        young = time.time() - QUIET_KEEP_MIN_AGE
+        for old in files[:-QUIET_KEEP_FILES]:
+            try:
+                if os.path.getmtime(old) < young:
+                    os.remove(old)
+            except OSError:  # a second run took it first
+                pass
+    except OSError:
+        pass
+    return path
+
+
 def cmd_quiet(args):
-    """R3: a noisy command's output costs context on every run; show one line when it passes, the tail when not."""
+    """R3: a noisy command's output costs context on every run; show one line when it passes, the tail when not (T-4825:
+    and keep the whole of a cut run in a file, its path on the ✗ line)."""
     import time
     words = args.words[1:] if args.words[:1] == ["--"] else args.words
     if not words:
@@ -4682,8 +4737,9 @@ def cmd_quiet(args):
     lines = [l for l in output.rstrip().splitlines() if l.strip()]
     if code:
         timed = f"{lines[-1]}; " if code == 124 and lines and lines[-1].startswith("timed out after") else ""
+        kept = _keep_quiet(output.rstrip()) if len(lines) > args.tail else None  # a cut run only: the tail shows the rest
         print("\n".join(lines[-args.tail:]) + f"\n✗ exit {code} ({timed}{secs:.1f} s; last {min(len(lines), args.tail)} "
-                                                 f"of {len(lines)} lines)")
+                                                 f"of {len(lines)} lines" + (f"; full output: {kept}" if kept else "") + ")")
     else:
         print(f"✓ exit 0 ({secs:.1f} s) · {lines[-1][:200] if lines else '(no output)'}")
     return code
@@ -8788,6 +8844,8 @@ def _build_parser(only=None):
     s.add_argument("--sweep", action="store_true", help=argparse.SUPPRESS)  # T-1810: the Stop hook's detached sweep
     s.add_argument("--sessions", action="store_true",
                    help="per session: turns, context per turn, the cache read/write/output split and cache busts")
+    s.add_argument("--outputs", action="store_true", help="tool outputs by how often later calls re-read them: share of "
+                   "cache reads by tool and Bash command word, main thread and subagents (T-4825)")
     s = add("burden", lazy("sampo.cost", "cmd_burden"), tier=("Reports", 1000), help="Sampo's own cost on real sessions per version: bookkeeping "
                                                           "turns, refusals, injected context (T-0712)")
     s.add_argument("--days", type=float, default=14)
@@ -8807,7 +8865,8 @@ def _build_parser(only=None):
                                            "prints the hook to source")
     s.add_argument("--shell", choices=["bash", "zsh"])
     s.add_argument("words", nargs="*")
-    s = add("quiet", cmd_quiet, tier=("Finding your way", 410), help="run a noisy command: one line on success, the tail on failure")
+    s = add("quiet", cmd_quiet, tier=("Finding your way", 410), help="run a noisy command: one line on success, the tail on failure "
+              "(a cut failure's full output is kept in a file under state/outputs/quiet/<project>, its path on the ✗ line; the last 20 stay, none under an hour old is removed)")
     s.add_argument("--tail", type=int, default=40)
     s.add_argument("--timeout", type=float, default=1800)
     s.add_argument("words", nargs=argparse.REMAINDER)
