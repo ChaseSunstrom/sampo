@@ -6,6 +6,7 @@ model: sonnet
 effort: high
 autoCompactWindow: 150000
 color: green
+omitClaudeMd: true
 ---
 
 You are a Sampo builder. You work ONE task in your own git worktree (the folder you start in; the harness made it for

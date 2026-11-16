@@ -1344,6 +1344,14 @@ class BuilderContractOneSource(unittest.TestCase):
                           .replace("<SHAPE>", " ".join(slanes.c.repo_shape_modules())), text)  # T-4542
         self.assertNotIn("<ID>", text)
 
+    def test_brief_driven_agents_omit_claude_md(self):
+        # T-3856: builders, reviewers and reproducers take everything from their brief, so the main session's CLAUDE.md,
+        # rules and auto memory stay out of them (about 6% of what subagents re-read, and that memory names hosts)
+        here = os.path.join(os.path.dirname(__file__), "..", "agents")
+        for name in ("fm-builder", "fm-reviewer", "fm-reproducer", "fm-scout", "fm-recon", "fm-debugger"):
+            head = read_text(os.path.join(here, name + ".md")).split("---")[1]
+            self.assertIn("omitClaudeMd: true", head.splitlines(), name)
+
     def test_builders_and_reproducers_run_checks_in_the_foreground(self):
         # T-4816: a builder that backgrounds its run and ends its turn wakes the main thread to read "still waiting"
         from sampo import lanes as slanes
