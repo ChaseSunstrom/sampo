@@ -87,6 +87,13 @@ class Children(unittest.TestCase):
         until(lambda: p.poll() is not None or os.path.exists(ready), 15, "the child to take its terminal")
         return p
 
+    def clear(self, d, **kw):
+        """T-4778: run.clear_folder as the test needs it: it ends processes on its own only where /proc is (a scan of about
+        5 ms); on macOS every read is an lsof over all processes, so a class's clear reads nothing there (CostPerClass) and
+        the end of the run does. A test of the ending asks for the read, as end_run does."""
+        kw.setdefault("deep", not HAS_PROC)
+        return run.clear_folder(d, **kw)
+
     def folder(self, prefix=None):
         d = tempfile.mkdtemp(prefix=prefix or f"{run.TMP_PREFIX}t4720-")
         self.addCleanup(shutil.rmtree, d, True)
@@ -130,7 +137,7 @@ class RunClearsFolder(Children):
     def test_a_detached_child_looping_in_a_test_folder_is_gone_once_the_folder_is_cleared(self):
         d = self.folder()
         kid = self.loop(d)  # its own session: the class's process group never reached it
-        run.clear_folder(d)
+        self.clear(d)
         self.assertEnds(kid)
         self.assertFalse(os.path.exists(d))
 
@@ -138,7 +145,7 @@ class RunClearsFolder(Children):
     def test_a_child_in_another_folder_is_left_alone(self):
         d, other = self.folder(), self.folder()
         mine, theirs = self.loop(d), self.loop(other)
-        run.clear_folder(d)
+        self.clear(d)
         self.assertEnds(mine)
         self.assertAlive(theirs)
         self.assertTrue(os.path.isdir(other))
@@ -150,7 +157,7 @@ class RunClearsFolder(Children):
         os.mkdir(sibling)
         self.addCleanup(shutil.rmtree, sibling, True)
         theirs = self.loop(sibling)
-        run.clear_folder(d)
+        self.clear(d)
         self.assertAlive(theirs)
 
     @unittest.skipUnless(have_table(), "no process table here (no /proc, no lsof)")
@@ -159,7 +166,7 @@ class RunClearsFolder(Children):
         sub = os.path.join(d, "a", "b")
         os.makedirs(sub)
         kid = self.loop(sub)
-        run.clear_folder(d)
+        self.clear(d)
         self.assertEnds(kid)
 
     @unittest.skipUnless(have_table(), "no process table here (no /proc, no lsof)")
@@ -322,7 +329,7 @@ class HeldFolders(Children):
             os.mkdir(own)
             lock = run.hold(own)
             kid = self.loop(own)
-            run.clear_folder(own, lock=lock)
+            self.clear(own, lock=lock)
             self.assertEnds(kid)
             self.assertTrue(lock.closed)
             self.assertFalse(os.path.exists(own))
@@ -479,7 +486,7 @@ class PersonsAreKept(TempRoot):
     def test_a_class_folder_clear_leaves_a_terminal_process(self):
         d = self.folder()
         person, hook = self.loop_tty(d), self.loop(d)
-        run.clear_folder(d)
+        self.clear(d)
         self.assertEnds(hook)
         self.assertAlive(person)
 
@@ -510,6 +517,17 @@ class CostPerClass(TempRoot):
                 os.mkdir(os.path.join(base, f"{run.TMP_PREFIX}{gone.pid}-x"))
                 run.sweep(base)
             self.assertEqual(table.call_count, 3)
+
+    def test_a_test_of_the_ending_asks_for_the_read_where_there_is_no_proc(self):
+        # T-4778: macOS's clear_folder reads nothing per class (above), so the tests that need a process ended asked for
+        # nothing there and waited 15 s for a child that was never signalled; on Linux they stay on the cheap scan
+        d = self.folder()
+        for has_proc, deep in ((False, True), (True, False)):
+            with unittest.mock.patch(f"{__name__}.HAS_PROC", has_proc), \
+                    unittest.mock.patch.object(run, "clear_folder") as clear:
+                self.clear(d)
+                self.clear(d, deep=not deep)
+            self.assertEqual([c.kwargs["deep"] for c in clear.call_args_list], [deep, not deep])
 
     def test_with_a_proc_a_class_folder_with_nothing_in_it_costs_one_scan_and_no_fact_reads(self):
         d = self.folder()

@@ -5981,10 +5981,15 @@ def rules(p, held=False):
     T-4154: every successful load leaves a copy beside the file (rules.json.good); a file that is unreadable, not a
     list, or gone while the copy stands is read from the copy and noted in RULE_FAULTS (the rules are never dropped).
     With no copy to fall back on RULES_LOST says so and the hook refuses only what writes. An entry that is not a
-    rule is a per-rule fault and is left out of the copy. held: the caller holds the project lock."""
+    rule is a per-rule fault and is left out of the copy; a file of entries with no rule among them (T-4778) is
+    unreadable like a damaged one, an empty list is the user's own removal. held: the caller holds the project lock."""
     path = _rules_path(p)
     try:
         v = _read_rules(path)[1]
+        if v and not _valid_rules(v):
+            # T-4778: entries and not one a rule (a deep list some interpreters parse, a list of numbers) is damage,
+            # not the user's choice: it must not replace the copy. An empty list is the user removing every rule.
+            raise ValueError(f"none of its {len(v)} entries is a rule")
     except _RULE_READ_ERRORS as e:
         why = "rules.json is missing" if isinstance(e, FileNotFoundError) else fit(plain(str(e)), 80)
         try:

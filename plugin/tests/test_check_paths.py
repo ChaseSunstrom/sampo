@@ -80,7 +80,16 @@ class CheckPaths(ForemanTestCase):
 class GateSkip(ForemanTestCase):
     """T-4140: a project gate no changed file maps to is skipped with its reason; an unmapped one is never guessed at;
     the close (sampo check --fresh, which train and ship also run) runs every gate."""
-    write, count = CheckPaths.write, CheckPaths.count
+    write = CheckPaths.write
+
+    def count(self, name):
+        path = os.path.join(self.gdir, name)
+        return open(path).read().count("x") if os.path.exists(path) else 0
+
+    def gate(self, name):
+        """T-4778: the gate's command names itself first: --affected shows a command cut to 100 characters, and macOS's
+        temp root (/private/var/folders/..) put the end of `echo x >> <path>/mapped-gate` past the cut"""
+        return f": {name}; echo x >> {os.path.join(self.gdir, name)}"
 
     def commit(self, files, msg):
         for rel, body in files.items():
@@ -90,9 +99,12 @@ class GateSkip(ForemanTestCase):
 
     def setUp(self):
         super().setUp()
+        # T-4778: a deep marker folder, as macOS's temp root is: the gate's full command is over the 100 characters shown
+        self.gdir = os.path.join(self.tmp, "deep-" + "d" * 60, "folder")
+        os.makedirs(self.gdir)
         self.fm("init")
-        self.fm("check", "add", f"echo x >> {os.path.join(self.tmp, 'mapped-gate')}")
-        self.fm("check", "add", f"echo x >> {os.path.join(self.tmp, 'unmapped-gate')}")
+        self.fm("check", "add", self.gate("mapped-gate"))
+        self.fm("check", "add", self.gate("unmapped-gate"))
         self.fm("check", "paths", "1", "src/**")
         self.fm("check", "affected", "true {tests}")
         self.commit({"src/app.py": "a = 1\n", "docs/a.md": "a\n"}, "seed")
@@ -109,7 +121,7 @@ class GateSkip(ForemanTestCase):
 
     def gates(self, *extra):
         data = json.loads(self.fm("check", "--affected", "--json", *extra).stdout)
-        return {g["cmd"].split(" ")[-1].rsplit("/", 1)[-1]: g for g in data["gates"]}
+        return {g["cmd"].split(" ")[1].rstrip(";"): g for g in data["gates"]}
 
     def test_gate_skip_affected_names_each_gate_with_its_reason_and_runs_none(self):
         self.fm("check")  # a passing full run: the pass the skip is measured from (_paths_unchanged)

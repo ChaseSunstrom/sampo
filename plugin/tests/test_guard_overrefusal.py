@@ -709,15 +709,82 @@ class RuleError(ForemanTestCase):
             self.assertEqual([r["pattern"] for r in json.load(f)], ["ok"])
 
     def test_rule_error_a_file_nested_past_the_recursion_limit_is_unreadable_not_a_crash(self):
+        # T-4778: whether json.loads of a 100000-deep file raises RecursionError depends on the interpreter's own limit
+        # (CI's Python 3.14 parsed it: a list of one entry that is no rule, so RULES_LOST never came). The raise is made
+        # here, as the interpreters that limit the depth make it; the hook runs in its own process, so the refusal of a
+        # write once the rules are unreadable is pinned by the tests above, and the real file by the next test
+        from unittest import mock
         from sampo import core
         p = core.find_project(self.repo)
         with open(self.rules, "w") as f:
             f.write("[" * 100000 + "]" * 100000)
         del core.RULES_LOST[:]
-        self.assertEqual(core.rules(p), [])
+        with mock.patch.object(core.json, "loads", side_effect=RecursionError("maximum recursion depth exceeded")):
+            self.assertEqual(core.rules(p), [])
         self.assertTrue(core.RULES_LOST)
-        self.assertEqual(self.bash("touch x.txt")[0], 2)
+        self.assertIn("recursion", core.RULES_LOST[0])
+
+    def damaged_file_keeps_the_rule(self, text):
+        """T-4778: a last good copy holds a rule that forbids `touch`; the file is then `text`; the real hook (its own
+        process) still refuses the touch, says it fell back to the copy, and leaves the copy as it was."""
+        self.put(("^touch ", "block", "no touching"))
+        self.assertEqual(self.bash("ls")[0], 0)  # a good load writes rules.json.good
+        with open(self.rules + ".good") as f:
+            good = f.read()
+        with open(self.rules, "w") as f:
+            f.write(text)
+        rc, said = self.bash("touch x.txt")
+        self.assertEqual(rc, 2, said)
+        self.assertIn("no touching", said)
         self.assertEqual(self.bash("ls")[0], 0)
+        self.assertIn("last good copy", self.user_sees("ls")[1], "the user is told")
+        with open(self.rules + ".good") as f:
+            self.assertEqual(f.read(), good, "damage never overwrites the last good copy")
+
+    def test_rule_error_a_deeply_nested_file_falls_back_to_the_last_good_copy_whatever_the_interpreter_does(self):
+        # T-4778: an interpreter that raises RecursionError says the file is unreadable; Python 3.14 parses it into a list
+        # of one entry that is no rule. Both fall back, and the user's `touch` rule holds (T-4154: damage must not switch
+        # the rules off)
+        self.damaged_file_keeps_the_rule("[" * 100000 + "]" * 100000)
+
+    def test_rule_error_a_file_with_entries_and_no_rule_among_them_falls_back_to_the_last_good_copy(self):
+        for text in ('"just a string"', "[1, 2, 3]", '["junk", null, {"pattern": 5}]'):
+            with self.subTest(text=text):
+                self.damaged_file_keeps_the_rule(text)
+
+    def test_rule_error_an_empty_list_is_the_user_removing_every_rule_so_no_fallback(self):
+        import json
+        self.put(("^touch ", "block", "no touching"))
+        self.assertEqual(self.bash("ls")[0], 0)
+        with open(self.rules, "w") as f:
+            f.write("[]")
+        self.assertEqual(self.bash("touch x.txt")[0], 0)
+        with open(self.rules + ".good") as f:
+            self.assertEqual(json.load(f), [], "the copy follows the user's edit")
+
+    def test_rule_error_a_file_with_some_rules_and_some_faults_applies_the_rules_and_names_the_faults(self):
+        import json
+        self.put(("^touch ", "block", "no touching"))
+        with open(self.rules) as f:
+            rule = json.load(f)[0]
+        with open(self.rules, "w") as f:
+            json.dump(["junk", rule, 7], f)
+        rc, said = self.bash("touch x.txt")
+        self.assertEqual(rc, 2, said)
+        self.assertIn("no touching", said)
+        said = self.user_sees("ls")[1]
+        self.assertIn("entry 1", said)
+        self.assertNotIn("last good copy", said, "a file with a rule in it is read, not replaced")
+        with open(self.rules + ".good") as f:
+            self.assertEqual([r["pattern"] for r in json.load(f)], ["^touch "])
+
+    def test_rule_error_a_file_with_no_rule_and_no_copy_is_unreadable_and_refuses_what_writes(self):
+        for text in ("[" * 100000 + "]" * 100000, "[1, 2]"):
+            with self.subTest(text=text[:8]):
+                with open(self.rules, "w") as f:
+                    f.write(text)
+                self.assertEqual(self.bash("touch x.txt")[0], 2)
+                self.assertEqual(self.bash("ls")[0], 0)
 
     def test_rule_error_the_guards_own_refusals_still_hold_without_the_rules(self):
         # the nearest dangerous twin: failing open on the user's rules is not failing open on the guard
