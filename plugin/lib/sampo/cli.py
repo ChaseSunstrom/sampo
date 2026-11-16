@@ -91,7 +91,14 @@ def mutate(p, tid, fn, event, data=None):
     with c.lock(p.dir):
         b = need_brief(p, tid)
         before = c.stage(b)  # T-1137: in-memory only, no extra loads
+        was = b.status
         result = fn(b)
+        if b.status in ("dropped", "deferred") and was != b.status:  # T-4743: a host that won't run: no one reads its follow-ups
+            try:  # (every path that drops or defers goes through here: task drop/defer/set, the inbox swipe)
+                from sampo import triggers
+                triggers.refile_follow(p, b)
+            except Exception as e:  # the findings stay in its Follow-ups section, unmarked; the drop still stands
+                print(f"sampo: warning: {b.id}'s follow-ups not filed as captures ({type(e).__name__}: {e})", file=sys.stderr)
         c.save_brief(p, b)
         if b.status in c.CLOSED:  # T-3398: a closed task holds no file leases; open ones (blocked too) keep theirs (T-2870, T-3432)
             try:
@@ -323,6 +330,25 @@ def cmd_capture(args):
     type_ = c.WORK_TAGS.get(type_, type_)
     if type_ not in c.TYPES:
         raise UsageError(f"unknown type {args.type!r}; one of {', '.join(c.TYPES)}")
+    via_fold = False  # T-4743: only a capture that went the fold's way counts against the trigger's allowance
+    if text and not (args.from_file or args.anyway or args.urgent):  # T-4743: a discovered or followup item an open task
+        from sampo import triggers  # owns goes onto it, and a trigger past its daily allowance holds it; never a user's ask
+        via_fold = True
+        try:
+            with c.lock(p.dir):
+                kind, tid = triggers.fold(p, text, type_, args.source, scope=args.scope or (), raw=raw,
+                                          priority="urgent" if args.urgent else None)
+        except c.CorruptState as e:  # an unreadable held list never costs the finding: it files as an ordinary task
+            kind, via_fold = None, False
+            print(f"sampo: {e}; filing this as an ordinary captured task, without the fold", file=sys.stderr)
+        if kind:
+            c.regen_views(p, mirror=False)
+            return out(args, {"folded": kind, "task": tid, "held": kind == "held"},
+                       {"folded": f"Not filed: folded into {tid} (it nearly repeats it), on its log.",
+                        "appended": f"Not filed: appended to {tid}'s follow-ups (it names a file in its scope).",
+                        "held": f"Not filed yet: held, {args.source} is past its allowance of "
+                                f"{triggers.allowance(p, args.source)} a day (sampo triggers --held; filed best-first "
+                                f"once there's room)."}[kind]) or 0
     near = _near(p, args, text, type_) if text else None  # T-1662 review: before a paste is read and kept
     if near and near[0] is not None:
         return near[0]
@@ -340,7 +366,11 @@ def cmd_capture(args):
                     raw=raw, scope=args.scope or (), source=args.source,
                     depends=list(dict.fromkeys(c._REF_RE.findall(args.text or ""))),  # T-0334: as fm intake does
                     priority="urgent" if args.urgent else "normal", explore=explore)
-        c.log_event(p, "capture", task=b.id, data={"source": args.source, "type": type_}, session=session())
+        from sampo import triggers  # T-4743: a capture that went the fold's way is marked: that is what the allowance counts
+        c.log_event(p, "capture", task=b.id, session=session(), data=dict(
+            {"source": args.source, "type": type_},
+            **({"via": "fold"} if via_fold and not triggers.exempt(
+                type_, args.source, "urgent" if args.urgent else None) else {})))
         _shadow_intake(p, text, b)
         c.export_mirror(p)
     c.regen_views(p, mirror=False)  # T-3582: every brief re-read, after the project lock
@@ -773,6 +803,9 @@ def cmd_task(args):
     if sub == "dissent":  # T-0642
         from sampo import second
         return second.task_dissent(p, args)
+    if sub == "follow":  # T-4743: the follow-ups captured on a task
+        from sampo import triggers
+        return triggers.task_follow(p, args)
     if sub in ("split", "capsule"):  # T-0709
         from sampo import split
         return (split.task_split if sub == "split" else split.task_capsule)(p, args)
@@ -974,6 +1007,8 @@ def cmd_task(args):
             from sampo import concerns  # T-4189: nor round a repeated report's surface step
             reasons += toolproof.safe_gaps(p, b) + miss.safe_gaps(p, b) + incident.safe_gaps(p, b) \
                 + grants.safe_secret_gaps(p, b) + concerns.safe_gaps(p, b)
+            from sampo import triggers  # T-4743: nor round a follow-up appended to this task that no one settled
+            reasons += triggers.safe_follow_gaps(p, b)
             if reasons:
                 lead = "" if hasattr(args, "audit") else (  # T-0849: fm task done, not finish's own close
                     f" — one call settles most of it: sampo task finish {b.id} --run \"<test cmd>\" --audit \"<how>\""
@@ -1653,6 +1688,8 @@ def _task_finish(p, args):
     from sampo import grants  # T-2383: a secret the task's grant names must not be in this session's transcript
     gaps += toolproof.safe_gaps(p, b) + miss.safe_gaps(p, b) + incident.safe_gaps(p, b, closing=True) \
         + grants.safe_secret_gaps(p, b)
+    from sampo import triggers  # T-4743: a follow-up appended to this task must be settled (done, taken, or dropped with a why)
+    gaps += triggers.safe_follow_gaps(p, b)
     from sampo import concerns  # T-4189: a task reopened by a repeated report needs a run on the real surface
     gaps += concerns.safe_gaps(p, b, then=[(n, cmd) for kind, n, cmd in todo if kind == "step" and cmd])
     if gaps:  # T-0704: every gap in one refusal (135 finishes in 14 days were refused and retried one gap at a time)
@@ -3341,6 +3378,8 @@ def task_done_in(p, args):
         b.meta["status"], b.meta["done_in"] = "done", h.id
         b.append_log(f"done in {h.id}" + (f": {args.reason}" if args.reason else ""))
         h.append_log(f"includes {b.id}: {b.title}")
+        from sampo import triggers  # T-4743: nothing will read this closed task's follow-ups: they become captures
+        triggers.refile_follow(p, b)
         c.save_brief(p, b)
         c.save_brief(p, h)
         c.log_event(p, "task_done_in", task=b.id, data={"host": h.id, "reason": args.reason or ""}, session=session())
@@ -3990,6 +4029,8 @@ def _settle_batch(p, h, done):
             if done:
                 b.meta["status"], b.meta["done_in"] = "done", h.id
                 b.append_log(f"done in {h.id} (batch)")
+                from sampo import triggers  # T-4743: no one will settle this closed member's appended follow-ups
+                triggers.refile_follow(p, b)
                 c.log_event(p, "task_done_in", task=b.id, data={"host": h.id, "reason": "batch"}, session=session())
             else:
                 b.append_log(f"unbatched: {h.id} was dropped")
@@ -5430,32 +5471,66 @@ def cmd_research(args):
             with open(path, encoding="utf-8", errors="replace") as f:
                 new = f.read().rstrip("\n") + "\n\n" + new
         c.write_atomic(path, new)
-        made, logged = [], []
-        from sampo import recall
+        made, logged, appended, held, left, n_items, unread = [], [], [], 0, [], 0, ""
+        from sampo import triggers
         for x in noticed:
-            type_ = "FIX" if re.search(r"(?i)\b(bug|broken|drops?|crash|fails?|wrong|leak)\b", x) else "FEATURE"
-            same, other, _ = recall.near_tasks(p, _title(x), type_=type_)
-            near = c.find_brief(p, (same or other)[0]) if same or other else None
-            if near is not None:  # T-1726: what an open task already covers goes onto it, not into a second task
-                near.append_log(f"noticed by an agent (research {name}): {x}")
-                c.save_brief(p, near)
-                logged.append(near.id)
+            tag, priority = c._TAG_LINE.match(x), None  # "SECURITY: …", "FIX!: …": the finder's own mark is kept
+            if tag and tag.group("tag").upper() in c.WORK_TAGS and tag.group("text").strip():
+                x, priority = tag.group("text").strip(), "urgent" if tag.group("mod") == "!" else None
+                type_ = c.WORK_TAGS[tag.group("tag").upper()]
+            else:
+                type_ = "FIX" if re.search(r"(?i)\b(bug|broken|drops?|crash|fails?|wrong|leak)\b", x) else "FEATURE"
+            if triggers.exempt(type_, "discovered", priority):  # a SECURITY or urgent finding is filed at once: no fold, no allowance
+                if _title(x).lower() not in {b.title.lower() for b in c.load_briefs(p) if b.status not in c.CLOSED}:
+                    tid = triggers.file_item(p, {"text": x, "raw": f"{x}\n(noticed by an agent; research {name})", "type": type_,
+                                                 "source": "discovered", "from": name, "tier": c.guess_tier(type_, x),
+                                                 "priority": priority})
+                    made.append(tid)
+                    n_items += 1
                 continue
-            b = _create(p, _title(x), type_, c.guess_tier(type_, x), "captured", raw=f"{x}\n(noticed by an agent; "
-                        f"research {name})", source="discovered")
-            made.append(b.id)
-            c.log_event(p, "capture", task=b.id, data={"source": "discovered", "type": type_, "from": name},
-                        session=session())
+            # T-1726: what an open task already covers goes onto it, not into a second task; T-4743: so does what names a
+            # file in an open task's scope (its follow-ups)
+            try:
+                kind, tid = triggers.fold(p, x, type_, "discovered", under=args.task, limit=False,
+                                          note=f"noticed by an agent (research {name})")
+            except c.CorruptState as e:  # T-4743: an unreadable held list never costs a finding: it files as a task
+                unread = str(e)
+                made.append(triggers.file_item(p, {"text": x, "raw": f"{x}\n(noticed by an agent; research {name})",
+                                                   "type": type_, "source": "discovered", "from": name, "direct": True,
+                                                   "tier": c.guess_tier(type_, x)}))
+                n_items += 1
+                continue
+            if kind == "folded":
+                logged.append(tid)
+            elif kind == "appended":
+                appended.append(tid)
+            else:
+                left.append((x, type_))
+        for e in triggers.group_items(left, name):  # the items about one file are one task, each a step; the daily allowance holds a group
+            try:
+                tid = triggers.file_or_hold(p, e)
+            except c.CorruptState as ex:  # the group files whole, as a task of its own
+                unread = str(ex)
+                tid = triggers.file_item(p, dict(e, direct=True))
+            held += tid is None
+            if tid:
+                made.append(tid)
+                n_items += len(e.get("steps") or [1])
         c.log_event(p, "research", task=args.task, data={"name": name, "chars": len(text), "noticed": made},
                     session=session())
         c.regen_views(p)  # (and fm sync's mirror)
     from sampo import ideas
     spread = ideas.canary_spread(text)  # T-2686: a canary any search finds proves nothing about the idea
-    out(args, {"path": path, "noticed": made, "logged": logged, "canary_spread": spread}, f"Saved {path}" + (
+    out(args, {"path": path, "noticed": made, "logged": logged, "appended": appended, "held": held,
+               "canary_spread": spread}, f"Saved {path}" + (
         f"; ⚠ {spread[1]} of {spread[2]} canaries are '{c.fit(c.plain(spread[0]), 40)}': a canary must be a built feature "
         "near the idea (its nouns or module), so regrounding those verdicts is due" if spread else "") + (
-        f"; {len(made)} noticed item(s) captured: {', '.join(made)}" if made else "") + (
-        f"; {len(logged)} logged onto open tasks: {', '.join(dict.fromkeys(logged))}" if logged else ""))
+        f"; {n_items} noticed item(s) captured" + (f" as {len(made)} task(s)" if len(made) != n_items else "")
+        + f": {', '.join(made)}" if made else "") + (
+        f"; {len(logged)} logged onto open tasks: {', '.join(dict.fromkeys(logged))}" if logged else "") + (
+        f"; {len(appended)} appended to the follow-ups of open tasks: {', '.join(dict.fromkeys(appended))}" if appended else "")
+        + (f"; {held} held past the daily allowance (sampo triggers --held)" if held else "")
+        + (f"; ⚠ the held list can't be read, so these were filed as tasks without the fold ({unread})" if unread else ""))
 
 
 _PROMISE = re.compile(r"(?i)\bI(?:['’]ll| will)\s+(?:also|later|follow up (?:on|with)|come back to|circle back to)"
@@ -5479,9 +5554,15 @@ def capture_promises(p, text, sid=None):
             title = _title(f"Promised: {x}")
             if title.lower() in have:
                 continue
-            b = _create(p, title, "FEATURE", "S", "captured", raw=f"{x}\n(promised in Claude's reply; captured so it "
-                                                                  f"isn't lost)", source="followup", net=False)
-            c.log_event(p, "capture", task=b.id, data={"source": "promise"}, session=sid)
+            from sampo import triggers  # T-4743: a promise an open task covers goes onto it; past the allowance it waits
+            raw = f"{x}\n(promised in Claude's reply; captured so it isn't lost)"
+            try:
+                if triggers.fold(p, f"Promised: {x}", "FEATURE", "followup", raw=raw, note="promised in Claude's reply")[0]:
+                    continue
+            except c.CorruptState:  # an unreadable held list stops the fold, never the promise: it files as a task
+                pass
+            b = _create(p, title, "FEATURE", "S", "captured", raw=raw, source="followup", net=False)
+            c.log_event(p, "capture", task=b.id, data={"source": "promise", "via": "fold"}, session=sid)
             made.append(b.id)
         if made:
             c.regen_views(p)
@@ -8167,7 +8248,8 @@ def _build_parser(only=None):
     task_help = {  # T-1908: fm task -h, fm help and fm which read these
         "dissent": "add or resolve an objection raised against the plan",
         "split": "partition the task's files over the work graph into child tasks",
-        "capsule": "a split child's bounded return to its parent", "finding": "record one reviewer finding and if it held",
+        "capsule": "a split child's bounded return to its parent",
+        "follow": "list, settle (done, capture or drop with a why) the follow-ups captured on a task", "finding": "record one reviewer finding and if it held",
         "revert": "what undoing the task would touch, and the command that undoes it",
         "packet": "one redacted markdown handoff of the task", "new": "plan a task: its type, tier, criteria and steps",
         "show": "print a task's brief", "card": "write a proved task's SVG title card",
@@ -8196,6 +8278,13 @@ def _build_parser(only=None):
     t.add_argument("--dry-run", action="store_true", help="show the partition only")
     t = tadd("capsule")  # T-0709
     t.add_argument("id")
+    t = tadd("follow")  # T-4743
+    t.add_argument("id")
+    t.add_argument("keys", nargs="*", help="the follow-ups (f-xxxxxxxx) to settle; none lists them")
+    t.add_argument("--done", action="store_true", help="settled: handled in this task (no key: every open one)")
+    t.add_argument("--capture", action="store_true", help="file each as a task of its own")
+    t.add_argument("--drop", action="store_true", help="not needed (needs --why)")
+    t.add_argument("--why", help="why a dropped follow-up isn't needed")
     t = tadd("finding")  # T-0743
     t.add_argument("id")
     t.add_argument("lens", help=", ".join(c.AUDIT_LENSES))
@@ -9094,6 +9183,10 @@ def _build_parser(only=None):
     s.add_argument("--budget", type=int, help="set: captures a day before it adds to its open one (0: none)")
     s.add_argument("--burst", type=int, help="set: seconds after a filing in which it adds to its open one (0: none)")
     s.add_argument("--tier-cap", type=str.upper, choices=c.TIERS, help="set: the largest tier it may queue")
+    s.add_argument("--held", action="store_true", help="the discovered and followup items over today's allowance, "
+                                                       "filed best-first once the day has room (T-4743)")
+    s.add_argument("--replay", action="store_true", help="tasks the last --days filed before against after the fold, "
+                                                         "append and allowance (reads only; T-4743)")
 
     s = add("repeats", lazy("sampo.repeats", "cmd_repeats"), tier=("Reports", 1030),
             help="commands and procedures this project keeps repeating, and what project tool each could become")

@@ -348,6 +348,17 @@ def _title_tokens(text):
     return out, names
 
 
+def near_share(q, names, scope, d, theirs, other):
+    """T-4743: the share of stems two titles have (q, names and d, theirs from _title_tokens; scope and other their scopes)
+    when they are one request, else None: the test near_tasks applies to each task, kept in one place so a replay of
+    old captures (triggers --replay) judges "near" as a live capture does."""
+    if len(q & d) < 2 or len(q & d) / len(q | d) < NEAR or theirs != names:
+        return None
+    if scope and other and not any(s == o or c.glob_match(s, o) or c.glob_match(o, s) for s in scope for o in other):
+        return None
+    return len(q & d) / len(q | d)
+
+
 def near_tasks(p, title, scope=(), type_=None):
     """T-1662: (same, other, done): the (id, title, type) of the open task of this type, the open task of another
     type, and the done task whose title is closest to this one, past NEAR and 2 or more shared tokens; None where
@@ -358,12 +369,9 @@ def near_tasks(p, title, scope=(), type_=None):
         kind = "done" if b.status == "done" else None if b.status in c.CLOSED else \
             "same" if b.type == type_ else "other"
         d, theirs = _title_tokens(b.title)
-        if not kind or len(q & d) < 2 or len(q & d) / len(q | d) < NEAR or theirs != names:
+        j = near_share(q, names, scope, d, theirs, b.meta.get("scope") or []) if kind else None
+        if j is None:
             continue
-        other = b.meta.get("scope") or []
-        if scope and other and not any(s == o or c.glob_match(s, o) or c.glob_match(o, s) for s in scope for o in other):
-            continue
-        j = len(q & d) / len(q | d)
         if j > best.get(kind, (0,))[0]:
             best[kind] = (j, b.id, b.title, b.type)
     return tuple(best[k][1:] if k in best else None for k in ("same", "other", "done"))

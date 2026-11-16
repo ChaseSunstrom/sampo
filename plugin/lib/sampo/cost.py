@@ -1112,6 +1112,12 @@ def cmd_digest(args):
         from sampo import triggers
         moved = triggers.settle_routes(p)
         lines += [f"Trigger routes moved: {', '.join(f'{t} -> {r}' for t, r in moved.items())}"] if moved else []
+        if triggers.held(p):  # T-4743: items that waited past midnight file now, best first, as far as today has room
+            with c.lock(p.dir, timeout=1):
+                got = triggers.drain_due(p)
+            lines += [f"Held captures filed: {', '.join(got)}"] if got else []
+    except c.CorruptState as e:  # the held list can't be read: said, never written over (sampo fsck)
+        lines += [f"Held captures: {e}"]
     except Exception:  # a digest never fails on a derived report
         pass
     from sampo import anergy  # T-2563: prompts approved by reflex, with the rule that would retire each (never applied here)

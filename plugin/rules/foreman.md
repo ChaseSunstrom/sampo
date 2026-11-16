@@ -24,7 +24,7 @@ capture → expand → ground → plan → execute → verify → reflect → re
 
 ## Focus lock: one active task; finishing beats starting
 - Steer about the active task → apply, `sampo task log ID "steer: …"`, continue. New request → `sampo capture`, give its id, continue. Question → answer, continue. Bare urge → no capture, next queued task. `NOW:`/`TAG!:` → `sampo checkpoint`, focus it. Pause → `sampo checkpoint`, wait. Ambiguous → treat as new.
-- Discovered work → `sampo capture --source discovered` (inline only if it blocks the criteria). Out-of-scope edits → widen scope with a logged reason or capture.
+- Discovered work → `sampo capture --source discovered` (`--urgent` if security or baseline-breaking; inline only if it blocks the criteria). Out-of-scope edits → widen scope with a logged reason or capture.
 
 ## Evidence and state
 - Nothing is done without fresh evidence: `sampo task evidence ID --step N --run "<cmd>"` (typed only when it can't run here); gates: `sampo check [--evidence ID --step N]` (`--affected` while iterating); commit only after it exits 0. Every task closes in one call: `sampo task finish ID --audit "<how>" [--lens "edge: <result>" …] [--docs …] [--lesson …] [--commit "<msg>"]` (commits its own files after a clean close).
