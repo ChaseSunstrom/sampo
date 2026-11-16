@@ -5,38 +5,37 @@
 <text x="20" y="30" font-size="15" class="b">Tasks closed per day</text>
 <text x="420" y="33" font-size="22" class="i" font-weight="650" text-anchor="end">1,990</text>
 <text x="420" y="49" font-size="11.5" class="m" text-anchor="end">in 30 days</text>
-<text x="20" y="49" font-size="11.5" class="m" xml:space="preserve">each task id&#x27;s first commit, git log · measured</text>
-<text x="20" y="64" font-size="11.5" class="m" xml:space="preserve">2026-11-08</text>
+<text x="20" y="49" font-size="11.5" class="m" xml:space="preserve">each task id&#x27;s first commit, git log · measured 2026-11-08</text>
 <line x1="48" y1="244.0" x2="420" y2="244.0" stroke="#0F1722" stroke-opacity=".16"/>
 <text x="40" y="248.0" font-size="11" class="m" text-anchor="end">0</text>
-<line x1="48" y1="205.2" x2="420" y2="205.2" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="40" y="209.2" font-size="11" class="m" text-anchor="end">50</text>
-<line x1="48" y1="166.5" x2="420" y2="166.5" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="40" y="170.5" font-size="11" class="m" text-anchor="end">100</text>
-<line x1="48" y1="127.8" x2="420" y2="127.8" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="40" y="131.8" font-size="11" class="m" text-anchor="end">150</text>
-<line x1="48" y1="89.0" x2="420" y2="89.0" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="40" y="93.0" font-size="11" class="m" text-anchor="end">200</text>
-<rect x="50.0" y="159.5" width="8.4" height="84.5" rx="2" fill="#2F62E0"/>
-<rect x="112.0" y="211.4" width="8.4" height="32.5" rx="2" fill="#2F62E0"/>
-<rect x="124.4" y="133.9" width="8.4" height="110.0" rx="2" fill="#2F62E0"/>
-<rect x="136.8" y="117.7" width="8.4" height="126.3" rx="2" fill="#2F62E0"/>
-<rect x="186.4" y="208.3" width="8.4" height="35.6" rx="2" fill="#2F62E0"/>
-<rect x="198.8" y="211.4" width="8.4" height="32.5" rx="2" fill="#2F62E0"/>
-<rect x="211.2" y="120.0" width="8.4" height="124.0" rx="2" fill="#2F62E0"/>
-<rect x="223.6" y="154.9" width="8.4" height="89.1" rx="2" fill="#2F62E0"/>
-<rect x="273.2" y="236.2" width="8.4" height="7.8" rx="2" fill="#2F62E0"/>
-<rect x="285.6" y="172.7" width="8.4" height="71.3" rx="2" fill="#2F62E0"/>
-<rect x="298.0" y="140.9" width="8.4" height="103.1" rx="2" fill="#2F62E0"/>
-<rect x="310.4" y="143.2" width="8.4" height="100.8" rx="2" fill="#2F62E0"/>
-<rect x="322.8" y="147.9" width="8.4" height="96.1" rx="2" fill="#2F62E0"/>
-<rect x="335.2" y="172.7" width="8.4" height="71.3" rx="2" fill="#2F62E0"/>
-<rect x="347.6" y="150.2" width="8.4" height="93.8" rx="2" fill="#2F62E0"/>
-<rect x="360.0" y="199.1" width="8.4" height="45.0" rx="2" fill="#2F62E0"/>
-<rect x="372.4" y="158.0" width="8.4" height="86.0" rx="2" fill="#2F62E0"/>
-<rect x="384.8" y="183.6" width="8.4" height="60.5" rx="2" fill="#2F62E0"/>
-<rect x="397.2" y="129.3" width="8.4" height="114.7" rx="2" fill="#2F62E0"/>
-<rect x="409.6" y="186.7" width="8.4" height="57.4" rx="2" fill="#2F62E0"/>
+<line x1="48" y1="201.5" x2="420" y2="201.5" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="40" y="205.5" font-size="11" class="m" text-anchor="end">50</text>
+<line x1="48" y1="159.0" x2="420" y2="159.0" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="40" y="163.0" font-size="11" class="m" text-anchor="end">100</text>
+<line x1="48" y1="116.5" x2="420" y2="116.5" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="40" y="120.5" font-size="11" class="m" text-anchor="end">150</text>
+<line x1="48" y1="74.0" x2="420" y2="74.0" stroke="#0F1722" stroke-opacity=".07"/>
+<text x="40" y="78.0" font-size="11" class="m" text-anchor="end">200</text>
+<rect x="50.0" y="151.3" width="8.4" height="92.7" rx="2" fill="#2F62E0"/>
+<rect x="112.0" y="208.3" width="8.4" height="35.7" rx="2" fill="#2F62E0"/>
+<rect x="124.4" y="123.3" width="8.4" height="120.7" rx="2" fill="#2F62E0"/>
+<rect x="136.8" y="105.4" width="8.4" height="138.6" rx="2" fill="#2F62E0"/>
+<rect x="186.4" y="204.9" width="8.4" height="39.1" rx="2" fill="#2F62E0"/>
+<rect x="198.8" y="208.3" width="8.4" height="35.7" rx="2" fill="#2F62E0"/>
+<rect x="211.2" y="108.0" width="8.4" height="136.0" rx="2" fill="#2F62E0"/>
+<rect x="223.6" y="146.2" width="8.4" height="97.8" rx="2" fill="#2F62E0"/>
+<rect x="273.2" y="235.5" width="8.4" height="8.5" rx="2" fill="#2F62E0"/>
+<rect x="285.6" y="165.8" width="8.4" height="78.2" rx="2" fill="#2F62E0"/>
+<rect x="298.0" y="130.9" width="8.4" height="113.0" rx="2" fill="#2F62E0"/>
+<rect x="310.4" y="133.5" width="8.4" height="110.5" rx="2" fill="#2F62E0"/>
+<rect x="322.8" y="138.6" width="8.4" height="105.4" rx="2" fill="#2F62E0"/>
+<rect x="335.2" y="165.8" width="8.4" height="78.2" rx="2" fill="#2F62E0"/>
+<rect x="347.6" y="141.2" width="8.4" height="102.8" rx="2" fill="#2F62E0"/>
+<rect x="360.0" y="194.7" width="8.4" height="49.3" rx="2" fill="#2F62E0"/>
+<rect x="372.4" y="149.7" width="8.4" height="94.3" rx="2" fill="#2F62E0"/>
+<rect x="384.8" y="177.7" width="8.4" height="66.3" rx="2" fill="#2F62E0"/>
+<rect x="397.2" y="118.2" width="8.4" height="125.8" rx="2" fill="#2F62E0"/>
+<rect x="409.6" y="181.1" width="8.4" height="62.9" rx="2" fill="#2F62E0"/>
 <text x="54.2" y="262" font-size="11" class="m" text-anchor="middle">Oct 9</text>
 <text x="240.2" y="262" font-size="11" class="m" text-anchor="middle">Oct 24</text>
 <text x="413.8" y="262" font-size="11" class="m" text-anchor="middle">Nov 7</text>

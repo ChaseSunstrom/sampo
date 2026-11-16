@@ -36,7 +36,7 @@ The discipline layer for coding agents: Claude Code, Codex, Gemini CLI, opencode
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/what-it-does-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/what-it-does-light.svg">
-  <img src="demo/figures/what-it-does-dark.svg" width="880" alt="What it does: a table of 9 rows (Sampo, So that); its text follows">
+  <img src="demo/figures/what-it-does-dark.svg" width="880" alt="What it does: a table of 9 rows (Sampo, So that): Finds the work; Plans before it edits; Builds in parallel; Lands in one gate run; Proves it; Ships it; Improves itself; Guards bypass mode; Stays cheap. Its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
@@ -125,7 +125,7 @@ Or from inside Claude Code:
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/quick-start-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/quick-start-light.svg">
-  <img src="demo/figures/quick-start-dark.svg" width="880" alt="Quick start: a table of 4 rows (Then, How); its text follows">
+  <img src="demo/figures/quick-start-dark.svg" width="880" alt="Quick start: a table of 4 rows (Then, How): Ask for something; Watch it first; See where things stand; Let it run. Its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
@@ -217,7 +217,7 @@ DONE-WHEN: all tests pass and the CSV opens in Excel
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/talking-to-it-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/talking-to-it-light.svg">
-  <img src="demo/figures/talking-to-it-dark.svg" width="880" alt="Talking to it: a table of 4 rows (You say, What happens); its text follows">
+  <img src="demo/figures/talking-to-it-dark.svg" width="880" alt="Talking to it: a table of 4 rows (You say, What happens): NOW: · PAUSE · STATUS; &quot;super improve it&quot;; FULL AUTO; &quot;is sampo ok?&quot; · &quot;clean up&quot; · &quot;this repo is sensitive&quot;. Its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
@@ -256,7 +256,7 @@ Sampo is built for bypass mode (no tool-call prompts), which the installer offer
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/the-ward-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/the-ward-light.svg">
-  <img src="demo/figures/the-ward-dark.svg" width="880" alt="The Ward: a table of 6 rows (Area, Stopped until you grant it); its text follows">
+  <img src="demo/figures/the-ward-dark.svg" width="880" alt="The Ward: a table of 6 rows (Area, Stopped until you grant it): Deletes; Git; Secrets; System; Outward; Sampo itself. Its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
@@ -315,7 +315,7 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/features-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/features-light.svg">
-  <img src="demo/figures/features-dark.svg" width="880" alt="Features: a table of 14 rows (What you get, Try); its text follows">
+  <img src="demo/figures/features-dark.svg" width="880" alt="Features: a table of 14 rows (What you get, Try): Plans; Knows your stack; Verifies; Shows what happened; Runs unattended; Learns a fix once; Changes many spots; Improves itself; Proves migrations, data and releases; Runs incidents; Checks infra files; Finds problems unasked; Improves itself, per aspect; Stays light. Its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
@@ -611,7 +611,7 @@ The app never talks to a server: it runs `sampo … --json` on this machine, and
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/headless-on-a-server-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/headless-on-a-server-light.svg">
-  <img src="demo/figures/headless-on-a-server-dark.svg" width="880" alt="Headless on a server: a table of 4 rows (`sampo serve`, `sampo run`); its text follows">
+  <img src="demo/figures/headless-on-a-server-dark.svg" width="880" alt="Headless on a server: a table of 4 rows (sampo serve, sampo run): What; Start; You; When it fails. Its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
@@ -750,7 +750,7 @@ Some calls can go to a model: a request's type and size, whether two items are t
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/when-not-to-use-sampo-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/when-not-to-use-sampo-light.svg">
-  <img src="demo/figures/when-not-to-use-sampo-dark.svg" width="880" alt="When not to use Sampo: a table of 6 rows (Skip it for, Why, and what instead); its text follows">
+  <img src="demo/figures/when-not-to-use-sampo-dark.svg" width="880" alt="When not to use Sampo: a table of 6 rows (Skip it for, Why, and what instead): Quick one-off questions or scripts; Native Windows; Approving every command yourself; Tight token budgets; Installing no plugins; Code that must not leave the machine. Its text follows">
 </picture></p>
 <details><summary>As text</summary>
 
@@ -776,7 +776,7 @@ curl -fsSL https://raw.githubusercontent.com/ChaseSunstrom/sampo/main/plugin/tem
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/documentation-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/documentation-light.svg">
-  <img src="demo/figures/documentation-dark.svg" width="880" alt="Documentation: a table of 5 rows (Doc, What&#x27;s in it); its text follows">
+  <img src="demo/figures/documentation-dark.svg" width="880" alt="Documentation: a table of 5 rows (Doc, What&#x27;s in it): MASTER.md; INSTALL.md; CHANGELOG.md; BUILD_PROMPT.md; The site. Its text follows">
 </picture></p>
 <details><summary>As text</summary>
 

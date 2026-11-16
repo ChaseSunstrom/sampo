@@ -1,34 +1,59 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 427" width="880" height="427" role="img" aria-label="When not to use Sampo: a table of 6 rows (Skip it for, Why, and what instead); its text follows">
-<title>When not to use Sampo: a table of 6 rows (Skip it for, Why, and what instead); its text follows</title>
-<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#3A4556}.i{fill:#0F1722}.m{fill:#5B6679}.b{font-weight:600;fill:#0F1722}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#2F62E0}.l{fill:#2F62E0}</style>
-<rect x="0.5" y="0.5" width="879" height="426" rx="12" fill="#FFFFFF" stroke="#0F1722" stroke-opacity=".12"/>
-<path d="M0.5 40V12.5A12 12 0 0 1 12.5 0.5H867.5A12 12 0 0 1 879.5 12.5V40Z" fill="#F6F7F9"/>
-<line x1="0.5" y1="40" x2="879.5" y2="40" stroke="#0F1722" stroke-opacity=".12"/>
-<text x="16" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">SKIP IT FOR</text>
-<text x="200.529" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">WHY, AND WHAT INSTEAD</text>
-<text x="16" y="68" font-size="14" xml:space="preserve"><tspan class="b">Quick one-off</tspan></text>
-<text x="16" y="89" font-size="14" xml:space="preserve"><tspan class="b">questions or scripts</tspan></text>
-<text x="200.5" y="68" font-size="14" xml:space="preserve">Planning, evidence and audits are overhead for a five-minute job; even an S task has a brief. Plain</text>
-<text x="200.5" y="89" font-size="14" xml:space="preserve">Claude Code is faster.</text>
-<line x1="16" y1="108" x2="864" y2="108" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="136" font-size="14" xml:space="preserve"><tspan class="b">Native Windows</tspan></text>
-<text x="200.5" y="136" font-size="14" xml:space="preserve">Sampo needs Linux, macOS or WSL.</text>
-<line x1="16" y1="155" x2="864" y2="155" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="183" font-size="14" xml:space="preserve"><tspan class="b">Approving every</tspan></text>
-<text x="16" y="204" font-size="14" xml:space="preserve"><tspan class="b">command yourself</tspan></text>
-<text x="200.5" y="183" font-size="14" xml:space="preserve">It&#x27;s built for bypass mode with the Ward as the brake. It works in the default mode too, but its</text>
-<text x="200.5" y="204" font-size="14" xml:space="preserve">drive keeps stopping at prompts.</text>
-<line x1="16" y1="223" x2="864" y2="223" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="251" font-size="14" xml:space="preserve"><tspan class="b">Tight token budgets</tspan></text>
-<text x="200.5" y="251" font-size="14" xml:space="preserve">Brainstorms, second plans and audits run extra model sessions (capped by <tspan class="c">sampo budget</tspan>). Turn</text>
-<text x="200.5" y="272" font-size="14" xml:space="preserve">them down, or skip Sampo.</text>
-<line x1="16" y1="291" x2="864" y2="291" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="319" font-size="14" xml:space="preserve"><tspan class="b">Installing no plugins</tspan></text>
-<text x="200.5" y="319" font-size="14" xml:space="preserve"><tspan class="c">plugin/templates/CLAUDE.lite.md</tspan> is the discipline in under 40 lines for a CLAUDE.md, with</text>
-<text x="200.5" y="340" font-size="14" xml:space="preserve">nothing enforcing it. <tspan class="c">sampo bench duel --vs snippet</tspan> measures what it&#x27;s worth.</text>
-<line x1="16" y1="359" x2="864" y2="359" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="387" font-size="14" xml:space="preserve"><tspan class="b">Code that must not</tspan></text>
-<text x="16" y="408" font-size="14" xml:space="preserve"><tspan class="b">leave the machine</tspan></text>
-<text x="200.5" y="387" font-size="14" xml:space="preserve">Mark the repo sensitive (<tspan class="c">sampo sensitive on</tspan>) so outward tools are refused, or don&#x27;t use</text>
-<text x="200.5" y="408" font-size="14" xml:space="preserve">cloud-facing features there.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 442" width="880" height="442" role="img" aria-label="When not to use Sampo: a table of 6 rows (Skip it for, Why, and what instead): Quick one-off questions or scripts; Native Windows; Approving every command yourself; Tight token budgets; Installing no plugins; Code that must not leave the machine. Its text follows">
+<title>When not to use Sampo: a table of 6 rows (Skip it for, Why, and what instead): Quick one-off questions or scripts; Native Windows; Approving every command yourself; Tight token budgets; Installing no plugins; Code that must not leave the machine. Its text follows</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#46526a}.b{font-weight:600;fill:#0f1722}.i{fill:#0f1722}.d{fill:#5b6679}.h{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;letter-spacing:.08em}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#0f1722}.k{fill:#0a7ea8;fill-opacity:.11;stroke:#0a7ea8;stroke-opacity:.38}</style>
+<rect x="0.5" y="0.5" width="879" height="441" fill="#f6f7f9" stroke="#d5dce7"/>
+<rect x="1" y="1" width="878" height="37" fill="#ffffff"/>
+<path d="M0.5 38H879.5M0.5 66H879.5" stroke="#d5dce7"/>
+<rect x="14" y="11" width="24.4" height="17" fill="#0a7ea8"/>
+<text x="19" y="23.5" font-size="11" class="h" style="fill:#ffffff">07</text>
+<text x="50.4" y="23.5" font-size="11.5" class="h i">WHEN NOT TO USE SAMPO</text>
+<text x="864" y="23.5" font-size="10.5" class="h" text-anchor="end" style="fill:#0a7ea8">6 ROWS</text>
+<text x="46" y="56" font-size="10" class="h d">SKIP IT FOR</text>
+<text x="293.4" y="56" font-size="10" class="h d">WHY, AND WHAT INSTEAD</text>
+<text x="14" y="91.5" font-size="10.5" class="h d">01</text>
+<text x="46" y="92" font-size="14" class="b" xml:space="preserve">Quick one-off questions or</text>
+<text x="46" y="112" font-size="14" class="b" xml:space="preserve">scripts</text>
+<text x="293.4" y="92" font-size="14" xml:space="preserve">Planning, evidence and audits are overhead for a five-minute job; even an S task has a</text>
+<text x="293.4" y="112" font-size="14" xml:space="preserve">brief. Plain Claude Code is faster.</text>
+<rect x="1" y="128" width="878" height="42" fill="#ffffff"/>
+<path d="M14 128H864" stroke="#e8ecf2"/>
+<text x="14" y="153.5" font-size="10.5" class="h d">02</text>
+<text x="46" y="154" font-size="14" class="b" xml:space="preserve">Native Windows</text>
+<text x="293.4" y="154" font-size="14" xml:space="preserve">Sampo needs Linux, macOS or WSL.</text>
+<path d="M14 170H864" stroke="#e8ecf2"/>
+<text x="14" y="195.5" font-size="10.5" class="h d">03</text>
+<text x="46" y="196" font-size="14" class="b" xml:space="preserve">Approving every command</text>
+<text x="46" y="216" font-size="14" class="b" xml:space="preserve">yourself</text>
+<text x="293.4" y="196" font-size="14" xml:space="preserve">It&#x27;s built for bypass mode with the Ward as the brake. It works in the default mode</text>
+<text x="293.4" y="216" font-size="14" xml:space="preserve">too, but its drive keeps stopping at prompts.</text>
+<rect x="1" y="232" width="878" height="62" fill="#ffffff"/>
+<path d="M14 232H864" stroke="#e8ecf2"/>
+<text x="14" y="257.5" font-size="10.5" class="h d">04</text>
+<text x="46" y="258" font-size="14" class="b" xml:space="preserve">Tight token budgets</text>
+<text x="293.4" y="258" font-size="14" xml:space="preserve">Brainstorms, second plans and audits run extra model sessions (capped by</text>
+<rect x="293.4" y="263.9" width="98.7" height="18.6" rx="3" class="k"/>
+<text x="297.4" y="277.5" font-size="12.6" textLength="90.7" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo budget</text>
+<text x="394.1" y="278" font-size="14" xml:space="preserve">). Turn them down, or skip Sampo.</text>
+<path d="M14 294H864" stroke="#e8ecf2"/>
+<text x="14" y="319.5" font-size="10.5" class="h d">05</text>
+<text x="46" y="320" font-size="14" class="b" xml:space="preserve">Installing no plugins</text>
+<rect x="293.4" y="305.9" width="242.4" height="18.6" rx="3" class="k"/>
+<text x="297.4" y="319.5" font-size="12.6" textLength="234.4" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">plugin/templates/CLAUDE.lite.md</text>
+<text x="541.4" y="320" font-size="14" xml:space="preserve">is the discipline in under 40 lines for a</text>
+<text x="293.4" y="340" font-size="14" textLength="252.8" lengthAdjust="spacing" xml:space="preserve">CLAUDE.md, with nothing enforcing it.</text>
+<rect x="551.8" y="325.9" width="227.2" height="18.6" rx="3" class="k"/>
+<text x="555.8" y="339.5" font-size="12.6" textLength="219.2" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo bench duel --vs snippet</text>
+<text x="784.7" y="340" font-size="14" xml:space="preserve">measures</text>
+<text x="293.4" y="360" font-size="14" xml:space="preserve">what it&#x27;s worth.</text>
+<rect x="1" y="376" width="878" height="62" fill="#ffffff"/>
+<path d="M14 376H864" stroke="#e8ecf2"/>
+<text x="14" y="401.5" font-size="10.5" class="h d">06</text>
+<text x="46" y="402" font-size="14" class="b" xml:space="preserve">Code that must not leave the</text>
+<text x="46" y="422" font-size="14" class="b" xml:space="preserve">machine</text>
+<text x="293.4" y="402" font-size="14" textLength="162.2" lengthAdjust="spacing" xml:space="preserve">Mark the repo sensitive (</text>
+<rect x="457.5" y="387.9" width="144.1" height="18.6" rx="3" class="k"/>
+<text x="461.5" y="401.5" font-size="12.6" textLength="136.1" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo sensitive on</text>
+<text x="603.6" y="402" font-size="14" xml:space="preserve">) so outward tools are refused, or</text>
+<text x="293.4" y="422" font-size="14" xml:space="preserve">don&#x27;t use cloud-facing features there.</text>
+<path d="M1 13V1H13M867 441H879V429" fill="none" stroke="#0a86b0" stroke-width="2"/>
 </svg>

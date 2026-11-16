@@ -77,6 +77,151 @@ class Tables(ForemanTestCase):
             self.assertEqual(bad, [], n)
 
 
+class BoardLook(ForemanTestCase):
+    """T-4771: a table is drawn as one of the Board's numbered panels, in the Board's (and the mod's) tokens."""
+
+    def setUp(self):
+        super().setUp()
+        self.rf = load()
+        with open(os.path.join(REPO, "README.md"), encoding="utf-8") as f:
+            self.tables = self.rf.tables(f.read())
+        with open(os.path.join(REPO, "plugin", "web", "live", "board-tokens.json"), encoding="utf-8") as f:
+            self.tokens = json.load(f)
+
+    def svg(self, theme, rows, head=("Area", "What"), number=3):
+        return self.rf.table_svg({"slug": "t", "heading": "The ward", "head": list(head), "rows": rows}, theme,
+                                 number=number)
+
+    def test_every_table_figure_uses_only_the_boards_tokens(self):
+        import re
+        for t in self.tables:
+            for theme in ("dark", "light"):
+                with open(os.path.join(FIGS, f"{t['slug']}-{theme}.svg"), encoding="utf-8") as f:
+                    svg = f.read()
+                used = {c.lower() for c in re.findall(r"#[0-9a-fA-F]{6}\b", svg)}
+                palette = {v.lower() for v in self.tokens[theme].values()}
+                self.assertLessEqual(used, palette, f"{t['slug']}-{theme}: {sorted(used - palette)}")
+                self.assertIn(self.tokens[theme]["bracket"].lower(), used, t["slug"])
+
+    def test_each_table_is_numbered_in_readme_order_and_titled_by_its_heading(self):
+        for i, t in enumerate(self.tables, 1):
+            with open(os.path.join(FIGS, f"{t['slug']}-dark.svg"), encoding="utf-8") as f:
+                svg = f.read()
+            self.assertIn(f">{i:02d}</text>", svg, t["slug"])
+            self.assertIn(f">{self.rf.esc(t['heading'].upper())}</text>", svg, t["slug"])
+            self.assertIn(f">{len(t['rows'])} ROW", svg, t["slug"])
+
+    def test_code_sits_on_a_chip_and_text_after_it_starts_past_the_chip(self):
+        import re
+        svg = self.svg("dark", [["**Deletes**", "run `sampo find` then more words after it"]])
+        chip = re.search(r'<rect x="([\d.]+)" y="[\d.]+" width="([\d.]+)" height="[\d.]+" rx="3"[^>]*/>\s*'
+                         r'<text x="([\d.]+)"[^>]*class="c"[^>]*>sampo find</text>\s*<text x="([\d.]+)"', svg)
+        self.assertTrue(chip, svg)
+        rx, rw, tx, after = (float(chip.group(k)) for k in range(1, 5))
+        self.assertGreater(tx, rx)
+        self.assertGreater(after, rx + rw)
+
+    def test_positioned_runs_and_chips_stay_inside_the_figure(self):
+        import re
+        long = " ".join(["words `sampo capture --incident` more text and `sampo prove --migration`"] * 4)
+        for theme in ("dark", "light"):
+            svg = self.svg(theme, [["**A label that is long enough to wrap**", long], ["`x`", "`" + "y" * 200 + "`"]])
+            w = float(re.search(r'viewBox="0 0 ([\d.]+)', svg).group(1))
+            for x, n in re.findall(r'<text x="([\d.]+)"[^>]*textLength="([\d.]+)"', svg):
+                self.assertLessEqual(float(x) + float(n), w - 12, (x, n))
+            for x, cw in re.findall(r'<rect x="([\d.]+)" y="[\d.]+" width="([\d.]+)" height="[\d.]+" rx="3"', svg):
+                self.assertLessEqual(float(x) + float(cw), w - 12, (x, cw))
+
+    def test_no_chip_touches_the_text_beside_it(self):
+        """Review (rsvg -w 900): '(STANDARD AUTONOMY', 'it.[sampo bench', 'Board;[sampo lane max]': a chip's box covered
+        the character before it. Each text run beside a chip, measured by the drawing's own width() (an upper bound of
+        the real fonts, which renderers that ignore textLength draw at), ends a clear pixel before the chip and starts
+        one past it, in every figure and in a source with no space between a bracket and a chip."""
+        import html
+        import re
+        el = re.compile(r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="[\d.]+" rx="3"[^>]*/>'
+                        r'|<text x="([\d.]+)" y="([\d.]+)" font-size="14"(?: class="(\w+)")?[^>]*>([^<]*)</text>')
+        sources = {}
+        for t in self.tables:
+            for theme in ("dark", "light"):
+                with open(os.path.join(FIGS, f"{t['slug']}-{theme}.svg"), encoding="utf-8") as f:
+                    sources[f"{t['slug']}-{theme}"] = f.read()
+        sources["bracket"] = self.svg("dark", [["**A**", "one summary at the end (`STANDARD AUTONOMY` switches back); "
+                                                 "it. `sampo bench duel`, Board;`sampo lane max`/`x`"]])
+        seen = 0
+        for name, svg in sources.items():
+            items = []  # (kind, x0, x1, baseline, text)
+            for m in el.finditer(svg):
+                if m.group(1):
+                    x, y, cw = (float(m.group(k)) for k in (1, 2, 3))
+                    items.append(("chip", x, x + cw, round(y + 14 * self.rf.CODE + 1.5, 1), ""))
+                else:
+                    text, style = html.unescape(m.group(7)), {"b": "b"}.get(m.group(6) or "", "")
+                    x = float(m.group(4))
+                    items.append(("text", x, x + self.rf.width([(text, style)], 14), float(m.group(5)), text))
+            for i, (kind, x0, x1, base, _) in enumerate(items):
+                if kind != "chip":
+                    continue
+                seen += 1
+                for j in (i - 1, i + 1):
+                    if 0 <= j < len(items) and items[j][0] == "text" and abs(items[j][3] - base) < 0.3:
+                        other = items[j]
+                        if j < i:
+                            self.assertLessEqual(other[2] + 1, x0, f"{name}: {other[4]!r} runs into the chip at {x0}")
+                        else:
+                            self.assertGreaterEqual(other[1], x1 + 1, f"{name}: {other[4]!r} starts inside the chip")
+        self.assertGreater(seen, 40)
+
+    def test_text_before_a_chip_drawn_in_noto_sans_ends_just_short_of_it(self):
+        """Review (rsvg -w 900): 'main;     sampo ship', 'and      curl | sh', 'nothingenforcing': per-glyph classes erred
+        10% either way, and librsvg ignores textLength, so a run before a chip left a hole or ran into it. Measured in
+        Noto Sans (the font librsvg draws the stack in), every such run in every figure ends 1 px to one space + CLEAR
+        + 2 px (+1% for kerning) before its chip."""
+        import html
+        import re
+        try:
+            from PIL import ImageFont
+            fonts = {k: ImageFont.truetype(f"/usr/share/fonts/noto/NotoSans-{v}.ttf", 1000)
+                     for k, v in (("", "Regular"), ("b", "Bold"))}
+        except (ImportError, OSError) as e:
+            self.skipTest(f"no PIL or Noto Sans here: {e}")
+        pair = re.compile(r'<text x="([\d.]+)" y="[\d.]+" font-size="14"(?: class="(\w+)")?[^>]*>([^<]*)</text>\s*'
+                          r'<rect x="([\d.]+)" y="[\d.]+" width="[\d.]+" height="[\d.]+" rx="3"')
+        most = self.rf.width([(" ", "")], 14) + self.rf.CLEAR + 2
+        seen = 0
+        for t in self.tables:
+            with open(os.path.join(FIGS, f"{t['slug']}-dark.svg"), encoding="utf-8") as f:
+                svg = f.read()
+            starts = set(re.findall(r'<text x="([\d.]+)" y="[\d.]+" font-size="10" class="h d"', svg))
+            for x, cls, text, chip in pair.findall(svg):
+                if chip in starts:  # the chip opens a line of the next column, nothing is before it
+                    continue
+                text = html.unescape(text)
+                real = fonts["b" if cls == "b" else ""].getlength(text) * 14 / 1000
+                gap = float(chip) - float(x) - real  # kerning narrows a long run by up to ~1%
+                self.assertTrue(1 <= gap <= most + 0.01 * real, f"{t['slug']}: {text!r} ends {gap:.1f} px before it")
+                seen += 1
+        self.assertGreater(seen, 10)
+
+    def test_a_command_that_fits_its_column_stays_on_one_chip(self):  # review: `sampo task prove` split over 2 lines
+        lines = self.rf.wrap([("Gates that ", ""), ("sampo task prove", "code")], 160, 14)
+        self.assertIn(("sampo task prove", "code"), lines[-1])
+        self.assertEqual(sum(s == "code" for ln in lines for _, s in ln), 1)
+
+    def test_dark_and_light_share_one_layout(self):
+        import re
+        rows = [["**Deletes**", "recursive `rm -rf` outside the project"], ["**Git**", "force-pushes"]]
+        geo = lambda s: re.findall(r'\b(?:x|y|width|height|textLength)="([\d.]+)"', s)
+        self.assertEqual(geo(self.svg("dark", rows)), geo(self.svg("light", rows)))
+
+    def test_alt_text_names_the_rows(self):
+        t = next(t for t in self.tables if t["slug"] == "the-ward")
+        alt = self.rf._alt(t)
+        for label in ("Deletes", "Git", "Secrets"):
+            self.assertIn(label, alt)
+        self.assertNotIn("*", alt)
+
+
 @unittest.skipUnless(headless_chrome(), "no headless Chromium here")
 class Rendered(ForemanTestCase):
     def test_every_figure_passes_works_check_as_a_figure(self):

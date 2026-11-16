@@ -1,32 +1,52 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 312" width="880" height="312" role="img" aria-label="Headless on a server: a table of 4 rows (`sampo serve`, `sampo run`); its text follows">
-<title>Headless on a server: a table of 4 rows (`sampo serve`, `sampo run`); its text follows</title>
-<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#3A4556}.i{fill:#0F1722}.m{fill:#5B6679}.b{font-weight:600;fill:#0F1722}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#2F62E0}.l{fill:#2F62E0}</style>
-<rect x="0.5" y="0.5" width="879" height="311" rx="12" fill="#FFFFFF" stroke="#0F1722" stroke-opacity=".12"/>
-<path d="M0.5 40V12.5A12 12 0 0 1 12.5 0.5H867.5A12 12 0 0 1 879.5 12.5V40Z" fill="#F6F7F9"/>
-<line x1="0.5" y1="40" x2="879.5" y2="40" stroke="#0F1722" stroke-opacity=".12"/>
-<text x="16" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em"></text>
-<text x="128.264" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">SAMPO SERVE</text>
-<text x="508.708" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">SAMPO RUN</text>
-<text x="16" y="68" font-size="14" xml:space="preserve"><tspan class="b">What</tspan></text>
-<text x="128.3" y="68" font-size="14" xml:space="preserve">Claude Code Remote Control as a systemd user</text>
-<text x="128.3" y="89" font-size="14" xml:space="preserve">unit</text>
-<text x="508.7" y="68" font-size="14" xml:space="preserve">The queue in fresh <tspan class="c">claude -p</tspan> sessions, one task</text>
-<text x="508.7" y="89" font-size="14" xml:space="preserve">each</text>
-<line x1="16" y1="108" x2="864" y2="108" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="136" font-size="14" xml:space="preserve"><tspan class="b">Start</tspan></text>
-<text x="128.3" y="136" font-size="14" xml:space="preserve">Ask Claude to &quot;serve this repo&quot; (one yes grants</text>
-<text x="128.3" y="157" font-size="14" xml:space="preserve"><tspan class="c">remote</tspan>)</text>
-<text x="508.7" y="136" font-size="14" xml:space="preserve"><tspan class="c">sampo run</tspan> (<tspan class="c">--max-usd</tspan> caps the spend)</text>
-<line x1="16" y1="176" x2="864" y2="176" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="204" font-size="14" xml:space="preserve"><tspan class="b">You</tspan></text>
-<text x="128.3" y="204" font-size="14" xml:space="preserve">Send requests from claude.ai/code or the Claude</text>
-<text x="128.3" y="225" font-size="14" xml:space="preserve">app</text>
-<text x="508.7" y="204" font-size="14" xml:space="preserve">Come back to closed tasks</text>
-<line x1="16" y1="244" x2="864" y2="244" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="272" font-size="14" xml:space="preserve"><tspan class="b">When it</tspan></text>
-<text x="16" y="293" font-size="14" xml:space="preserve"><tspan class="b">fails</tspan></text>
-<text x="128.3" y="272" font-size="14" xml:space="preserve">Restarts; stops after five failed restarts in ten</text>
-<text x="128.3" y="293" font-size="14" xml:space="preserve">minutes</text>
-<text x="508.7" y="272" font-size="14" xml:space="preserve">Waits out a usage limit; blocks a stuck task with the</text>
-<text x="508.7" y="293" font-size="14" xml:space="preserve">reason</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 318" width="880" height="318" role="img" aria-label="Headless on a server: a table of 4 rows (sampo serve, sampo run): What; Start; You; When it fails. Its text follows">
+<title>Headless on a server: a table of 4 rows (sampo serve, sampo run): What; Start; You; When it fails. Its text follows</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#46526a}.b{font-weight:600;fill:#0f1722}.i{fill:#0f1722}.d{fill:#5b6679}.h{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;letter-spacing:.08em}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#0f1722}.k{fill:#b85000;fill-opacity:.11;stroke:#b85000;stroke-opacity:.38}</style>
+<rect x="0.5" y="0.5" width="879" height="317" fill="#f6f7f9" stroke="#d5dce7"/>
+<rect x="1" y="1" width="878" height="37" fill="#ffffff"/>
+<path d="M0.5 38H879.5M0.5 66H879.5" stroke="#d5dce7"/>
+<rect x="14" y="11" width="24.4" height="17" fill="#b85000"/>
+<text x="19" y="23.5" font-size="11" class="h" style="fill:#ffffff">06</text>
+<text x="50.4" y="23.5" font-size="11.5" class="h i">HEADLESS ON A SERVER</text>
+<text x="864" y="23.5" font-size="10.5" class="h" text-anchor="end" style="fill:#b85000">4 ROWS</text>
+<text x="46" y="56" font-size="10" class="h d"></text>
+<text x="154.8" y="56" font-size="10" class="h d">SAMPO SERVE</text>
+<text x="512.5" y="56" font-size="10" class="h d">SAMPO RUN</text>
+<text x="14" y="91.5" font-size="10.5" class="h d">01</text>
+<text x="46" y="92" font-size="14" class="b" xml:space="preserve">What</text>
+<text x="154.8" y="92" font-size="14" xml:space="preserve">Claude Code Remote Control as a systemd user</text>
+<text x="154.8" y="112" font-size="14" xml:space="preserve">unit</text>
+<text x="512.5" y="92" font-size="14" textLength="123.1" lengthAdjust="spacing" xml:space="preserve">The queue in fresh</text>
+<rect x="641.2" y="77.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="645.2" y="91.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">claude -p</text>
+<text x="722.9" y="92" font-size="14" xml:space="preserve">sessions, one task</text>
+<text x="512.5" y="112" font-size="14" xml:space="preserve">each</text>
+<rect x="1" y="128" width="878" height="62" fill="#ffffff"/>
+<path d="M14 128H864" stroke="#e8ecf2"/>
+<text x="14" y="153.5" font-size="10.5" class="h d">02</text>
+<text x="46" y="154" font-size="14" class="b" xml:space="preserve">Start</text>
+<text x="154.8" y="154" font-size="14" xml:space="preserve">Ask Claude to &quot;serve this repo&quot; (one yes grants</text>
+<rect x="154.8" y="159.9" width="53.4" height="18.6" rx="3" class="k"/>
+<text x="158.8" y="173.5" font-size="12.6" textLength="45.4" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">remote</text>
+<text x="210.2" y="174" font-size="14" xml:space="preserve">)</text>
+<rect x="512.5" y="139.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="516.5" y="153.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo run</text>
+<text x="594.2" y="154" font-size="14" textLength="4.2" lengthAdjust="spacing" xml:space="preserve">(</text>
+<rect x="600.4" y="139.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="604.4" y="153.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">--max-usd</text>
+<text x="682.1" y="154" font-size="14" xml:space="preserve">caps the spend)</text>
+<path d="M14 190H864" stroke="#e8ecf2"/>
+<text x="14" y="215.5" font-size="10.5" class="h d">03</text>
+<text x="46" y="216" font-size="14" class="b" xml:space="preserve">You</text>
+<text x="154.8" y="216" font-size="14" xml:space="preserve">Send requests from claude.ai/code or the Claude</text>
+<text x="154.8" y="236" font-size="14" xml:space="preserve">app</text>
+<text x="512.5" y="216" font-size="14" xml:space="preserve">Come back to closed tasks</text>
+<rect x="1" y="252" width="878" height="62" fill="#ffffff"/>
+<path d="M14 252H864" stroke="#e8ecf2"/>
+<text x="14" y="277.5" font-size="10.5" class="h d">04</text>
+<text x="46" y="278" font-size="14" class="b" xml:space="preserve">When it fails</text>
+<text x="154.8" y="278" font-size="14" xml:space="preserve">Restarts; stops after five failed restarts in ten</text>
+<text x="154.8" y="298" font-size="14" xml:space="preserve">minutes</text>
+<text x="512.5" y="278" font-size="14" xml:space="preserve">Waits out a usage limit; blocks a stuck task with the</text>
+<text x="512.5" y="298" font-size="14" xml:space="preserve">reason</text>
+<path d="M1 13V1H13M867 317H879V305" fill="none" stroke="#0a86b0" stroke-width="2"/>
 </svg>

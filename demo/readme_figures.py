@@ -37,6 +37,29 @@ THEMES = {
               "muted": "#5B6679", "accent": "#2F62E0", "line": "#0F1722", "blue": "#2F62E0", "green": "#0E8A5F",
               "red": "#C62828", "grey": "#A9B1C0"},
 }
+# T-4771: a table is one of the Board's numbered panels, in the Board's tokens (the mod's too: board-tokens.json is
+# the one palette the live Board, board.css and the Claude Code mod share; a test keeps the copies equal)
+with open(os.path.join(HERE, "..", "plugin", "web", "live", "board-tokens.json"), encoding="utf-8") as _f:
+    BOARD = json.load(_f)
+ACCENTS = ("cyan", "yellow", "green", "pink", "violet", "orange")  # board.css's data-accent set, by panel number
+# code size per body size; a chip's padding inside its box and its clearance outside it, px; a mono glyph's advance
+CODE, CHIP, CLEAR, MONO_EM = 0.9, 4, 2, 0.6
+# Advances in thousandths of an em of Noto Sans Regular and Bold (measured with PIL), the widest of the sans fonts the
+# figures name or fall back to: librsvg ignores textLength and draws the run at these, so a chip lands where the layout
+# put it; browsers honour textLength, so a narrower Segoe UI or SF run is spaced out by a few percent, never overlaps
+# (T-4771 review: per-glyph classes erred 10% either way: 'main;     sampo ship' and 'nothingenforcing').
+GLYPHS = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~·—–…“”‘’→×"
+ADVANCE = {"": (260, 269, 408, 646, 572, 831, 732, 225, 300, 300, 551, 572, 268, 322, 268, 372, 572, 572, 572, 572, 572,
+                572, 572, 572, 572, 572, 268, 268, 572, 572, 572, 434, 899, 639, 650, 632, 730, 556, 519, 728, 741, 339,
+                273, 619, 524, 907, 760, 781, 605, 781, 622, 549, 556, 731, 600, 930, 586, 566, 572, 329, 372, 329, 572,
+                444, 281, 561, 615, 480, 615, 564, 344, 615, 618, 258, 258, 534, 258, 935, 618, 605, 615, 615, 413, 479,
+                361, 618, 508, 786, 529, 510, 470, 380, 551, 380, 572, 268, 1000, 500, 791, 359, 359, 175, 175, 600, 572),
+           "b": (260, 282, 479, 646, 572, 902, 750, 266, 339, 339, 542, 572, 285, 320, 281, 415, 572, 572, 572, 572, 572,
+                 572, 572, 572, 572, 572, 281, 285, 572, 572, 572, 477, 898, 692, 665, 642, 732, 560, 549, 724, 765, 389,
+                 331, 664, 559, 943, 813, 791, 621, 791, 656, 551, 577, 756, 650, 967, 670, 626, 579, 331, 415, 331, 572,
+                 411, 365, 599, 632, 516, 632, 597, 387, 632, 650, 299, 298, 620, 298, 975, 650, 625, 632, 632, 447, 502,
+                 434, 650, 571, 856, 578, 571, 493, 394, 551, 394, 572, 281, 1000, 500, 855, 445, 445, 217, 217, 589, 572)}
+ADVANCE = {k: dict(zip(GLYPHS, (a / 1000 for a in v))) for k, v in ADVANCE.items()}
 
 
 # ---- text: inline Markdown to styled runs, widths, wrapping
@@ -62,19 +85,21 @@ def inline(cell):
     return [r for r in runs if r[0]]
 
 
-NARROW, WIDE, EM = set("iljtf.,:;'|!()[]{} ·"), set("mwMW@%&#$"), set("—…")
+def _advance(c, adv):
+    """One glyph's advance in em: Noto Sans's when the table has it, else wide for East Asian glyphs, else a capital."""
+    return adv.get(c) or (1.0 if unicodedata.east_asian_width(c) in "WF" else 0.75)
 
 
 def width(line, size):
-    """An estimate of a line's width in px (ponytail: per-glyph classes, not real font metrics; wraps err wide)."""
+    """A line's width in px by Noto Sans's advances (ADVANCE; no kerning, which only narrows). A code run is a chip:
+    mono at CODE of the size, plus its padding (counted once per run, so runs are merged first)."""
     total = 0.0
-    for text, style in line:
+    for text, style in _merge(line):
         if style == "code":
-            total += 0.61 * len(text)
+            total += MONO_EM * CODE * len(text) + 2 * (CHIP + CLEAR) / size
             continue
-        em = sum(0.3 if c in NARROW else 1.0 if c in EM or unicodedata.east_asian_width(c) in "WF" else 0.86 if c in WIDE
-                 else 0.69 if c.isupper() else 0.57 for c in text)
-        total += em * (1.06 if style == "b" else 1.0)
+        adv = ADVANCE["b" if style == "b" else ""]
+        total += sum(_advance(c, adv) for c in text)
     return total * size
 
 
@@ -82,6 +107,9 @@ def wrap(runs, maxw, size):
     """Lines of runs, each no wider than maxw by width(); a word wider than a line is cut by characters."""
     words = []
     for text, style in runs:
+        if style == "code" and width([(text, style)], size) <= maxw:  # one chip: a command is not split over lines
+            words.append((text, style))
+            continue
         words += [(w, style) for w in re.findall(r"\S+\s*|\s+", text)]
     lines, line = [], []
     for word, style in words:
@@ -172,9 +200,16 @@ def picture(slug, alt, w):
             "</picture></p>"]
 
 
+def _plain(cell):
+    return "".join(r[0] for r in inline(cell)).strip()
+
+
 def _alt(t):
-    head = [h for h in t["head"] if h] or ["the table"]
-    return f"{t.get('heading', t['slug'])}: a table of {len(t['rows'])} rows ({', '.join(head)}); its text follows"
+    """What the picture holds: its heading, its columns and each row's label (T-4771: the content, not 'a table')."""
+    head = [_plain(h) for h in t["head"] if _plain(h)] or ["the table"]
+    labels = [_plain(r[0]) for r in t["rows"] if r and _plain(r[0])]
+    return (f"{t.get('heading', t['slug'])}: a table of {len(t['rows'])} rows ({', '.join(head)}): "
+            f"{'; '.join(labels)}. Its text follows")
 
 
 def wrapped(text):
@@ -216,46 +251,114 @@ def _line_svg(x, y, runs, size, base=""):
     return f'<text x="{x:g}" y="{y:g}" font-size="{size}"{cls} xml:space="preserve">{spans}</text>'
 
 
-def table_svg(t, theme, w=W):
-    th, size, lh, pad, vpad, head_h = THEMES[theme], 14, 21, 16, 13, 40
+def _widths(runs, cols, avail, size, gap):
+    """Column widths (each with its trailing gap) filling avail: natural widths when they fit; otherwise each column
+    keeps its longest word and the rest is shared by need. A short first column (the row labels) stays on one line."""
+    nat = [max([width(rr[c], size) for rr in runs] + [40]) + gap for c in range(cols)]
+    low = [max([max((width([(wd, s)], size) for t_, s in rr[c] for wd in t_.split()), default=0) for rr in runs]
+               + [40]) + gap for c in range(cols)]
+    low = [min(x, avail * 0.45) for x in low]
+    if cols > 1:
+        low[0] = max(low[0], min(nat[0], avail * 0.27))
+    if sum(nat) <= avail:
+        return [x * avail / sum(nat) for x in nat]
+    spare, give = avail - sum(low), sum(nat) - sum(low)
+    return [lo + (n - lo) * spare / give for lo, n in zip(low, nat)]
+
+
+def _num(v):
+    return f"{v:.1f}".rstrip("0").rstrip(".")
+
+
+def _runs_svg(x, y, line, size, code_cls):
+    """One wrapped line as positioned runs: a code run is a chip (a tinted rect under mono text); a plain run before a
+    chip is pinned to its width() (textLength): browsers fit it, librsvg draws Noto Sans at that width already, so the
+    chip lands where the layout put it; the runs after the last chip flow as the font lays them. A space between runs in the source stays a space; a chip also keeps
+    CLEAR px off whatever is beside it (a bracket or a full stop with no space), except at the line's start."""
+    out, last = [], max((i for i, (_, s) in enumerate(line) if s == "code"), default=-1)
+    cs = size * CODE
+    space = width([(" ", "")], size)
+    for i, (text, style) in enumerate(line):
+        if i and text[:1].isspace():
+            x += space
+        after = space if i + 1 < len(line) and text[-1:].isspace() and text.strip() else 0
+        text = text.strip()
+        if not text:
+            continue
+        if style == "code":
+            n = MONO_EM * cs * len(text)
+            x += CLEAR if out else 0
+            out.append(f'<rect x="{_num(x)}" y="{_num(y - cs - 1.5)}" width="{_num(n + 2 * CHIP)}" '
+                       f'height="{_num(cs + 6)}" rx="3" class="k"/>')
+            out.append(f'<text x="{_num(x + CHIP)}" y="{_num(y - 0.5)}" font-size="{_num(cs)}" textLength="{_num(n)}" '
+                       f'lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">{esc(text)}</text>')
+            x += n + 2 * CHIP + CLEAR
+        else:
+            cls = {"b": "b", "link": "i"}.get(style, code_cls)
+            cls = f' class="{cls}"' if cls else ""
+            est = width([(text, style)], size)
+            pin = f' textLength="{_num(est)}" lengthAdjust="spacing"' if i < last else ""
+            out.append(f'<text x="{_num(x)}" y="{_num(y)}" font-size="{size}"{cls}{pin} '
+                       f'xml:space="preserve">{esc(text)}</text>')
+            x += est
+        x += after
+    return out
+
+
+def table_svg(t, theme, w=W, number=1):
+    """A README table as a Board panel (board.css): L-brackets, a header with the panel's number chip, its heading and
+    a row count in the accent, a column-head strip, then numbered rows; code on tinted chips. Both themes share one
+    layout, so only the colours differ."""
+    tk, accent = BOARD[theme], BOARD[theme][ACCENTS[(number - 1) % len(ACCENTS)]]
+    size, lh, vpad, head_h, sub_h, gut, gap = 14, 20, 11, 38, 28, 46, 22
     cols = max(len(t["head"]), *(len(r) for r in t["rows"])) if t["rows"] else len(t["head"])
     rows = [(r + [""] * cols)[:cols] for r in t["rows"]]
-    runs = [[inline(c) if i else [(txt, "b" if s == "" else s) for txt, s in inline(c)] for i, c in enumerate(r)]
-            for r in rows]
-    nat = [max([width(rr[c], size) for rr in runs] + [40]) + 2 * pad for c in range(cols)]
-    low = [max([max((width([(wd, s)], size) for t_, s in rr[c] for wd in t_.split()), default=0) for rr in runs]
-               + [40]) + 2 * pad for c in range(cols)]
-    low = [min(x, w * 0.45) for x in low]
-    if sum(nat) <= w:
-        widths = [x * w / sum(nat) for x in nat]
-    else:
-        spare, give = w - sum(low), sum(nat) - sum(low)
-        widths = [lo + (n - lo) * spare / give for lo, n in zip(low, nat)]
-    cells = [[wrap(rr[c], widths[c] - 2 * pad, size) for c in range(cols)] for rr in runs]
-    heights = [max(len(c) for c in row) * lh + 2 * vpad for row in cells]
-    h = head_h + sum(heights)
-    out = _open(w, h, _alt(t), th)
-    out.append(f'<path d="M0.5 {head_h}V12.5A12 12 0 0 1 12.5 0.5H{w - 12.5}A12 12 0 0 1 {w - 0.5} 12.5V{head_h}Z" '
-               f'fill="{th["band"]}"/>')
-    out.append(f'<line x1="0.5" y1="{head_h}" x2="{w - 0.5}" y2="{head_h}" stroke="{th["line"]}" '
-               f'stroke-opacity=".12"/>')
-    x = 0.0
+    runs = [[[(txt, "b" if s in ("", "link") else s) for txt, s in inline(c)] if i == 0 else inline(c)
+             for i, c in enumerate(r)] for r in rows]
+    widths = _widths(runs, cols, w - gut, size, gap)
+    cells = [[wrap(rr[c], widths[c] - gap, size) for c in range(cols)] for rr in runs]
+    heights = [max([len(c) for c in row] + [1]) * lh + 2 * vpad for row in cells]
+    top = head_h + sub_h
+    h = top + sum(heights) + 4
+    dark = theme == "dark"
+    title = t.get("heading", t["slug"])
+    out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}" width="{w}" height="{h}" role="img" '
+           f'aria-label="{esc(_alt(t))}">', f"<title>{esc(_alt(t))}</title>",
+           f"<style>text{{font-family:{SANS};fill:{tk['muted']}}}.b{{font-weight:600;fill:{tk['ink']}}}"
+           f".i{{fill:{tk['ink']}}}.d{{fill:{tk['dim']}}}"
+           f".h{{font-family:{MONO};font-weight:600;letter-spacing:.08em}}"
+           f".c{{font-family:{MONO};fill:{accent if dark else tk['ink']}}}"
+           f".k{{fill:{accent};fill-opacity:{'.13' if dark else '.11'};stroke:{accent};"
+           f"stroke-opacity:{'.28' if dark else '.38'}}}</style>",
+           f'<rect x="0.5" y="0.5" width="{w - 1}" height="{h - 1}" fill="{tk["bg"]}" stroke="{tk["line"]}"/>',
+           f'<rect x="1" y="1" width="{w - 2}" height="{head_h - 1}" fill="{tk["panel"]}"/>',
+           f'<path d="M0.5 {head_h}H{w - 0.5}M0.5 {top}H{w - 0.5}" stroke="{tk["line"]}"/>']
+    chip = f"{number:02d}"
+    out.append(f'<rect x="14" y="11" width="{_num(len(chip) * 7.2 + 10)}" height="17" fill="{accent}"/>')
+    out.append(f'<text x="19" y="23.5" font-size="11" class="h" style="fill:{tk["on"]}">{chip}</text>')
+    out.append(f'<text x="{_num(len(chip) * 7.2 + 36)}" y="23.5" font-size="11.5" class="h i">{esc(title.upper())}</text>')
+    count = f"{len(rows)} ROW{'' if len(rows) == 1 else 'S'}"
+    out.append(f'<text x="{w - 16}" y="23.5" font-size="10.5" class="h" text-anchor="end" '
+               f'style="fill:{accent}">{count}</text>')
+    x = gut
     for c, name in enumerate(t["head"][:cols]):
-        label = "".join(r[0] for r in inline(name)).upper()
-        out.append(f'<text x="{x + pad:g}" y="25" font-size="11.5" class="m" font-weight="600" '
-                   f'letter-spacing=".07em">{esc(label)}</text>')
+        out.append(f'<text x="{_num(x)}" y="{head_h + 18}" font-size="10" class="h d">{esc(_plain(name).upper())}</text>')
         x += widths[c]
-    y = head_h
+    y = top
     for r, row in enumerate(cells):
+        if r % 2:
+            out.append(f'<rect x="1" y="{y}" width="{w - 2}" height="{heights[r]}" fill="{tk["panel"]}"/>')
         if r:
-            out.append(f'<line x1="{pad}" y1="{y:g}" x2="{w - pad}" y2="{y:g}" stroke="{th["line"]}" '
-                       f'stroke-opacity=".07"/>')
-        x = 0.0
+            out.append(f'<path d="M{gut - 32} {y}H{w - 16}" stroke="{tk["grid"]}"/>')
+        out.append(f'<text x="14" y="{y + vpad + 14.5}" font-size="10.5" class="h d">{r + 1:02d}</text>')
+        x = gut
         for c, lines in enumerate(row):
             for k, ln in enumerate(lines):
-                out.append(_line_svg(round(x + pad, 1), y + vpad + 15 + k * lh, ln, size))
+                out += _runs_svg(x, y + vpad + 15 + k * lh, ln, size, "" if c else "b")
             x += widths[c]
         y += heights[r]
+    out.append(f'<path d="M1 13V1H13M{w - 13} {h - 1}H{w - 1}V{h - 13}" fill="none" '
+               f'stroke="{tk["bracket"]}" stroke-width="2"/>')
     return "\n".join(out + ["</svg>"]) + "\n"
 
 
@@ -517,9 +620,9 @@ def refresh(root, data=None, names=()):
 def figures(text, data):
     """{relative path: bytes} for every figure README.md and data.json call for."""
     out = {}
-    for t in tables(text):
+    for n, t in enumerate(tables(text), 1):
         for theme in THEMES:
-            out[f"demo/figures/{t['slug']}-{theme}.svg"] = table_svg(t, theme)
+            out[f"demo/figures/{t['slug']}-{theme}.svg"] = table_svg(t, theme, number=n)
     for name, c in (data or {}).get("charts", {}).items():
         for theme in THEMES:
             out[f"demo/figures/chart-{name}-{theme}.svg"] = DRAW[c["kind"]](c, THEMES[theme])

@@ -1,24 +1,40 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 296" width="880" height="296" role="img" aria-label="Documentation: a table of 5 rows (Doc, What&#x27;s in it); its text follows">
-<title>Documentation: a table of 5 rows (Doc, What&#x27;s in it); its text follows</title>
-<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#3A4556}.i{fill:#0F1722}.m{fill:#5B6679}.b{font-weight:600;fill:#0F1722}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#2F62E0}.l{fill:#2F62E0}</style>
-<rect x="0.5" y="0.5" width="879" height="295" rx="12" fill="#FFFFFF" stroke="#0F1722" stroke-opacity=".12"/>
-<path d="M0.5 40V12.5A12 12 0 0 1 12.5 0.5H867.5A12 12 0 0 1 879.5 12.5V40Z" fill="#F6F7F9"/>
-<line x1="0.5" y1="40" x2="879.5" y2="40" stroke="#0F1722" stroke-opacity=".12"/>
-<text x="16" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">DOC</text>
-<text x="176.1" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">WHAT&#x27;S IN IT</text>
-<text x="16" y="68" font-size="14" xml:space="preserve"><tspan class="c">MASTER.md</tspan></text>
-<text x="176.1" y="68" font-size="14" xml:space="preserve">The system map: how to prompt it, every file, how the parts interact, operations and limitations. Start</text>
-<text x="176.1" y="89" font-size="14" xml:space="preserve">here.</text>
-<line x1="16" y1="108" x2="864" y2="108" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="136" font-size="14" xml:space="preserve"><tspan class="c">INSTALL.md</tspan></text>
-<text x="176.1" y="136" font-size="14" xml:space="preserve">Installation steps written for an agent to follow, asking before each change.</text>
-<line x1="16" y1="155" x2="864" y2="155" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="183" font-size="14" xml:space="preserve"><tspan class="c">CHANGELOG.md</tspan></text>
-<text x="176.1" y="183" font-size="14" xml:space="preserve">Release notes.</text>
-<line x1="16" y1="202" x2="864" y2="202" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="230" font-size="14" xml:space="preserve"><tspan class="c">BUILD_PROMPT.md</tspan></text>
-<text x="176.1" y="230" font-size="14" xml:space="preserve">The spec Sampo was built from, including the plugin choices (§4.6 and Appendix A).</text>
-<line x1="16" y1="249" x2="864" y2="249" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="277" font-size="14" xml:space="preserve"><tspan class="l">The site</tspan></text>
-<text x="176.1" y="277" font-size="14" xml:space="preserve">A page per feature, with recorded runs.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 300" width="880" height="300" role="img" aria-label="Documentation: a table of 5 rows (Doc, What&#x27;s in it): MASTER.md; INSTALL.md; CHANGELOG.md; BUILD_PROMPT.md; The site. Its text follows">
+<title>Documentation: a table of 5 rows (Doc, What&#x27;s in it): MASTER.md; INSTALL.md; CHANGELOG.md; BUILD_PROMPT.md; The site. Its text follows</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#46526a}.b{font-weight:600;fill:#0f1722}.i{fill:#0f1722}.d{fill:#5b6679}.h{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;letter-spacing:.08em}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#0f1722}.k{fill:#9a6a00;fill-opacity:.11;stroke:#9a6a00;stroke-opacity:.38}</style>
+<rect x="0.5" y="0.5" width="879" height="299" fill="#f6f7f9" stroke="#d5dce7"/>
+<rect x="1" y="1" width="878" height="37" fill="#ffffff"/>
+<path d="M0.5 38H879.5M0.5 66H879.5" stroke="#d5dce7"/>
+<rect x="14" y="11" width="24.4" height="17" fill="#9a6a00"/>
+<text x="19" y="23.5" font-size="11" class="h" style="fill:#ffffff">08</text>
+<text x="50.4" y="23.5" font-size="11.5" class="h i">DOCUMENTATION</text>
+<text x="864" y="23.5" font-size="10.5" class="h" text-anchor="end" style="fill:#9a6a00">5 ROWS</text>
+<text x="46" y="56" font-size="10" class="h d">DOC</text>
+<text x="193.4" y="56" font-size="10" class="h d">WHAT&#x27;S IN IT</text>
+<text x="14" y="91.5" font-size="10.5" class="h d">01</text>
+<rect x="46" y="77.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="50" y="91.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">MASTER.md</text>
+<text x="193.4" y="92" font-size="14" xml:space="preserve">The system map: how to prompt it, every file, how the parts interact, operations and limitations. Start</text>
+<text x="193.4" y="112" font-size="14" xml:space="preserve">here.</text>
+<rect x="1" y="128" width="878" height="42" fill="#ffffff"/>
+<path d="M14 128H864" stroke="#e8ecf2"/>
+<text x="14" y="153.5" font-size="10.5" class="h d">02</text>
+<rect x="46" y="139.9" width="83.6" height="18.6" rx="3" class="k"/>
+<text x="50" y="153.5" font-size="12.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">INSTALL.md</text>
+<text x="193.4" y="154" font-size="14" xml:space="preserve">Installation steps written for an agent to follow, asking before each change.</text>
+<path d="M14 170H864" stroke="#e8ecf2"/>
+<text x="14" y="195.5" font-size="10.5" class="h d">03</text>
+<rect x="46" y="181.9" width="98.7" height="18.6" rx="3" class="k"/>
+<text x="50" y="195.5" font-size="12.6" textLength="90.7" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">CHANGELOG.md</text>
+<text x="193.4" y="196" font-size="14" xml:space="preserve">Release notes.</text>
+<rect x="1" y="212" width="878" height="42" fill="#ffffff"/>
+<path d="M14 212H864" stroke="#e8ecf2"/>
+<text x="14" y="237.5" font-size="10.5" class="h d">04</text>
+<rect x="46" y="223.9" width="121.4" height="18.6" rx="3" class="k"/>
+<text x="50" y="237.5" font-size="12.6" textLength="113.4" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">BUILD_PROMPT.md</text>
+<text x="193.4" y="238" font-size="14" xml:space="preserve">The spec Sampo was built from, including the plugin choices (§4.6 and Appendix A).</text>
+<path d="M14 254H864" stroke="#e8ecf2"/>
+<text x="14" y="279.5" font-size="10.5" class="h d">05</text>
+<text x="46" y="280" font-size="14" class="b" xml:space="preserve">The site</text>
+<text x="193.4" y="280" font-size="14" xml:space="preserve">A page per feature, with recorded runs.</text>
+<path d="M1 13V1H13M867 299H879V287" fill="none" stroke="#0a86b0" stroke-width="2"/>
 </svg>

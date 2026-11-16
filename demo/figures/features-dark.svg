@@ -1,103 +1,170 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1181" width="880" height="1181" role="img" aria-label="Features: a table of 14 rows (What you get, Try); its text follows">
-<title>Features: a table of 14 rows (What you get, Try); its text follows</title>
-<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#B4BDCE}.i{fill:#E8ECF4}.m{fill:#8893A7}.b{font-weight:600;fill:#E8ECF4}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#7AA2FF}.l{fill:#7AA2FF}</style>
-<rect x="0.5" y="0.5" width="879" height="1180" rx="12" fill="#131822" stroke="#FFFFFF" stroke-opacity=".12"/>
-<path d="M0.5 40V12.5A12 12 0 0 1 12.5 0.5H867.5A12 12 0 0 1 879.5 12.5V40Z" fill="#10141C"/>
-<line x1="0.5" y1="40" x2="879.5" y2="40" stroke="#FFFFFF" stroke-opacity=".12"/>
-<text x="16" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em"></text>
-<text x="164.166" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">WHAT YOU GET</text>
-<text x="599.945" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">TRY</text>
-<text x="16" y="68" font-size="14" xml:space="preserve"><tspan class="b">Plans</tspan></text>
-<text x="164.2" y="68" font-size="14" xml:space="preserve">Briefs with type, tier, criteria and steps; M and L work</text>
-<text x="164.2" y="89" font-size="14" xml:space="preserve">lists approaches first; the queue orders itself</text>
-<text x="599.9" y="68" font-size="14" xml:space="preserve"><tspan class="c">sampo queue</tspan></text>
-<line x1="16" y1="108" x2="864" y2="108" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="136" font-size="14" xml:space="preserve"><tspan class="b">Knows your</tspan></text>
-<text x="16" y="157" font-size="14" xml:space="preserve"><tspan class="b">stack</tspan></text>
-<text x="164.2" y="136" font-size="14" xml:space="preserve">Over 1,000 stack cards in 29 areas; a card&#x27;s pitfalls arrive</text>
-<text x="164.2" y="157" font-size="14" xml:space="preserve">with the first edit of a file it covers</text>
-<text x="599.9" y="136" font-size="14" xml:space="preserve"><tspan class="c">sampo lib</tspan></text>
-<line x1="16" y1="176" x2="864" y2="176" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="204" font-size="14" xml:space="preserve"><tspan class="b">Verifies</tspan></text>
-<text x="164.2" y="204" font-size="14" xml:space="preserve">Gates that reuse a pass on an identical tree; a fix needs a</text>
-<text x="164.2" y="225" font-size="14" xml:space="preserve">test that failed first</text>
-<text x="599.9" y="204" font-size="14" xml:space="preserve"><tspan class="c">sampo check</tspan> · <tspan class="c">sampo task prove</tspan></text>
-<line x1="16" y1="244" x2="864" y2="244" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="272" font-size="14" xml:space="preserve"><tspan class="b">Shows what</tspan></text>
-<text x="16" y="293" font-size="14" xml:space="preserve"><tspan class="b">happened</tspan></text>
-<text x="164.2" y="272" font-size="14" xml:space="preserve">A branch ranked by review risk; any line traced back to</text>
-<text x="164.2" y="293" font-size="14" xml:space="preserve">the words you asked in</text>
-<text x="599.9" y="272" font-size="14" xml:space="preserve"><tspan class="c">sampo tour</tspan> · <tspan class="c">sampo why</tspan></text>
-<line x1="16" y1="312" x2="864" y2="312" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="340" font-size="14" xml:space="preserve"><tspan class="b">Runs</tspan></text>
-<text x="16" y="361" font-size="14" xml:space="preserve"><tspan class="b">unattended</tspan></text>
-<text x="164.2" y="340" font-size="14" xml:space="preserve">Drive mode, full auto, one fresh session per task, budgeted</text>
-<text x="164.2" y="361" font-size="14" xml:space="preserve">nightly jobs</text>
-<text x="599.9" y="340" font-size="14" xml:space="preserve"><tspan class="c">sampo run</tspan> · <tspan class="c">sampo night</tspan></text>
-<line x1="16" y1="380" x2="864" y2="380" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="408" font-size="14" xml:space="preserve"><tspan class="b">Learns a fix</tspan></text>
-<text x="16" y="429" font-size="14" xml:space="preserve"><tspan class="b">once</tspan></text>
-<text x="164.2" y="408" font-size="14" xml:space="preserve">A failure that was fixed before gets its fix offered next time,</text>
-<text x="164.2" y="429" font-size="14" xml:space="preserve">in any project</text>
-<text x="599.9" y="408" font-size="14" xml:space="preserve"><tspan class="c">sampo fix list</tspan></text>
-<line x1="16" y1="448" x2="864" y2="448" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="476" font-size="14" xml:space="preserve"><tspan class="b">Changes many</tspan></text>
-<text x="16" y="497" font-size="14" xml:space="preserve"><tspan class="b">spots</tspan></text>
-<text x="164.2" y="476" font-size="14" xml:space="preserve">Batches of exact replacements, applied all or none, inside</text>
-<text x="164.2" y="497" font-size="14" xml:space="preserve">the task&#x27;s scope</text>
-<text x="599.9" y="476" font-size="14" xml:space="preserve"><tspan class="c">sampo edit</tspan> · <tspan class="c">sampo sub</tspan></text>
-<line x1="16" y1="516" x2="864" y2="516" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="544" font-size="14" xml:space="preserve"><tspan class="b">Improves itself</tspan></text>
-<text x="164.2" y="544" font-size="14" xml:space="preserve">Rule changes backtested on your real sessions;</text>
-<text x="164.2" y="565" font-size="14" xml:space="preserve">self-improvement kept only when evals agree</text>
-<text x="599.9" y="544" font-size="14" xml:space="preserve"><tspan class="c">/sampo:improve</tspan></text>
-<line x1="16" y1="584" x2="864" y2="584" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="612" font-size="14" xml:space="preserve"><tspan class="b">Proves</tspan></text>
-<text x="16" y="633" font-size="14" xml:space="preserve"><tspan class="b">migrations, data</tspan></text>
-<text x="16" y="654" font-size="14" xml:space="preserve"><tspan class="b">and releases</tspan></text>
-<text x="164.2" y="612" font-size="14" xml:space="preserve">Migrations up, down, up on a throwaway database; data</text>
-<text x="164.2" y="633" font-size="14" xml:space="preserve">commands on a copy, invariants checked; the release built</text>
-<text x="164.2" y="654" font-size="14" xml:space="preserve">offline, run from a throwaway prefix, tagged by <tspan class="c">sampo</tspan></text>
-<text x="164.2" y="675" font-size="14" xml:space="preserve"><tspan class="c">release V</tspan> in any repo</text>
-<text x="599.9" y="612" font-size="14" xml:space="preserve"><tspan class="c">sampo prove --migration</tspan>, <tspan class="c">--data</tspan>,</text>
-<text x="599.9" y="633" font-size="14" xml:space="preserve"><tspan class="c">--release</tspan></text>
-<line x1="16" y1="694" x2="864" y2="694" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="722" font-size="14" xml:space="preserve"><tspan class="b">Runs incidents</tspan></text>
-<text x="164.2" y="722" font-size="14" xml:space="preserve"><tspan class="c">sampo capture --incident &#x27;&lt;impact&gt;&#x27; --signal</tspan></text>
-<text x="164.2" y="743" font-size="14" xml:space="preserve"><tspan class="c">CMD</tspan> opens an urgent FIX only when the harm signal is red,</text>
-<text x="164.2" y="764" font-size="14" xml:space="preserve">keeps a UTC timeline, closes only on the same signal green</text>
-<text x="164.2" y="785" font-size="14" xml:space="preserve">twice plus one follow-up, and leaves the signal for <tspan class="c">sampo</tspan></text>
-<text x="164.2" y="806" font-size="14" xml:space="preserve"><tspan class="c">sentinel</tspan></text>
-<text x="599.9" y="722" font-size="14" xml:space="preserve"><tspan class="c">sampo capture --incident</tspan></text>
-<line x1="16" y1="825" x2="864" y2="825" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="853" font-size="14" xml:space="preserve"><tspan class="b">Checks infra</tspan></text>
-<text x="16" y="874" font-size="14" xml:space="preserve"><tspan class="b">files</tspan></text>
-<text x="164.2" y="853" font-size="14" xml:space="preserve">Dockerfiles, compose, Terraform, Helm, Kubernetes, CI</text>
-<text x="164.2" y="874" font-size="14" xml:space="preserve">workflows, shell, systemd units: each through its own</text>
-<text x="164.2" y="895" font-size="14" xml:space="preserve">validator on a copy, offline; no validator installed, unproven</text>
-<text x="599.9" y="853" font-size="14" xml:space="preserve"><tspan class="c">sampo prove --infra</tspan></text>
-<line x1="16" y1="914" x2="864" y2="914" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="942" font-size="14" xml:space="preserve"><tspan class="b">Finds problems</tspan></text>
-<text x="16" y="963" font-size="14" xml:space="preserve"><tspan class="b">unasked</tspan></text>
-<text x="164.2" y="942" font-size="14" xml:space="preserve">Untested code, undeclared imports, SQL built from input,</text>
-<text x="164.2" y="963" font-size="14" xml:space="preserve">slow loops, flaky tests, stale docs, leaked keys: no model,</text>
-<text x="164.2" y="984" font-size="14" xml:space="preserve">worst first; proven on a copy</text>
-<text x="599.9" y="942" font-size="14" xml:space="preserve"><tspan class="c">sampo find --rank [--ladder]</tspan></text>
-<text x="599.9" y="963" font-size="14" xml:space="preserve">(tools: trusted only), <tspan class="c">sampo prove</tspan></text>
-<text x="599.9" y="984" font-size="14" xml:space="preserve"><tspan class="c">--capture N</tspan>/<tspan class="c">--docs</tspan>,</text>
-<text x="599.9" y="1005" font-size="14" xml:space="preserve"><tspan class="c">/sampo:initiative</tspan></text>
-<line x1="16" y1="1024" x2="864" y2="1024" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="1052" font-size="14" xml:space="preserve"><tspan class="b">Improves</tspan></text>
-<text x="16" y="1073" font-size="14" xml:space="preserve"><tspan class="b">itself, per</tspan></text>
-<text x="16" y="1094" font-size="14" xml:space="preserve"><tspan class="b">aspect</tspan></text>
-<text x="164.2" y="1052" font-size="14" xml:space="preserve">Kalevala: a Rune tower per aspect, generations toward one</text>
-<text x="164.2" y="1073" font-size="14" xml:space="preserve">goal you write; a rewrite stays only if it closed more exam</text>
-<text x="164.2" y="1094" font-size="14" xml:space="preserve">scenarios</text>
-<text x="599.9" y="1052" font-size="14" xml:space="preserve"><tspan class="c">sampo kalevala status</tspan> · <tspan class="c">sampo</tspan></text>
-<text x="599.9" y="1073" font-size="14" xml:space="preserve"><tspan class="c">rune step</tspan></text>
-<line x1="16" y1="1113" x2="864" y2="1113" stroke="#FFFFFF" stroke-opacity=".07"/>
-<text x="16" y="1141" font-size="14" xml:space="preserve"><tspan class="b">Stays light</tspan></text>
-<text x="164.2" y="1141" font-size="14" xml:space="preserve">Only the Ward and write validators run in line; every hook</text>
-<text x="164.2" y="1162" font-size="14" xml:space="preserve">call stays under its budget (the chart below)</text>
-<text x="599.9" y="1141" font-size="14" xml:space="preserve"><tspan class="c">sampo doctor</tspan></text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 1218" width="880" height="1218" role="img" aria-label="Features: a table of 14 rows (What you get, Try): Plans; Knows your stack; Verifies; Shows what happened; Runs unattended; Learns a fix once; Changes many spots; Improves itself; Proves migrations, data and releases; Runs incidents; Checks infra files; Finds problems unasked; Improves itself, per aspect; Stays light. Its text follows">
+<title>Features: a table of 14 rows (What you get, Try): Plans; Knows your stack; Verifies; Shows what happened; Runs unattended; Learns a fix once; Changes many spots; Improves itself; Proves migrations, data and releases; Runs incidents; Checks infra files; Finds problems unasked; Improves itself, per aspect; Stays light. Its text follows</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#98a4ba}.b{font-weight:600;fill:#d6deeb}.i{fill:#d6deeb}.d{fill:#717e97}.h{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;letter-spacing:.08em}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#9d8cff}.k{fill:#9d8cff;fill-opacity:.13;stroke:#9d8cff;stroke-opacity:.28}</style>
+<rect x="0.5" y="0.5" width="879" height="1217" fill="#0a0e16" stroke="#1c2433"/>
+<rect x="1" y="1" width="878" height="37" fill="#0e1420"/>
+<path d="M0.5 38H879.5M0.5 66H879.5" stroke="#1c2433"/>
+<rect x="14" y="11" width="24.4" height="17" fill="#9d8cff"/>
+<text x="19" y="23.5" font-size="11" class="h" style="fill:#0a0e16">05</text>
+<text x="50.4" y="23.5" font-size="11.5" class="h i">FEATURES</text>
+<text x="864" y="23.5" font-size="10.5" class="h" text-anchor="end" style="fill:#9d8cff">14 ROWS</text>
+<text x="46" y="56" font-size="10" class="h d"></text>
+<text x="279.1" y="56" font-size="10" class="h d">WHAT YOU GET</text>
+<text x="628.4" y="56" font-size="10" class="h d">TRY</text>
+<text x="14" y="91.5" font-size="10.5" class="h d">01</text>
+<text x="46" y="92" font-size="14" class="b" xml:space="preserve">Plans</text>
+<text x="279.1" y="92" font-size="14" xml:space="preserve">Briefs with type, tier, criteria and steps; M and L</text>
+<text x="279.1" y="112" font-size="14" xml:space="preserve">work lists approaches first; the queue orders</text>
+<text x="279.1" y="132" font-size="14" xml:space="preserve">itself</text>
+<rect x="628.4" y="77.9" width="91.2" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="91.5" font-size="12.6" textLength="83.2" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo queue</text>
+<rect x="1" y="148" width="878" height="62" fill="#0e1420"/>
+<path d="M14 148H864" stroke="#141b28"/>
+<text x="14" y="173.5" font-size="10.5" class="h d">02</text>
+<text x="46" y="174" font-size="14" class="b" xml:space="preserve">Knows your stack</text>
+<text x="279.1" y="174" font-size="14" xml:space="preserve">Over 1,000 stack cards in 29 areas; a card&#x27;s</text>
+<text x="279.1" y="194" font-size="14" xml:space="preserve">pitfalls arrive with the first edit of a file it covers</text>
+<rect x="628.4" y="159.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="173.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo lib</text>
+<path d="M14 210H864" stroke="#141b28"/>
+<text x="14" y="235.5" font-size="10.5" class="h d">03</text>
+<text x="46" y="236" font-size="14" class="b" xml:space="preserve">Verifies</text>
+<text x="279.1" y="236" font-size="14" xml:space="preserve">Gates that reuse a pass on an identical tree; a fix</text>
+<text x="279.1" y="256" font-size="14" xml:space="preserve">needs a test that failed first</text>
+<rect x="628.4" y="221.9" width="91.2" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="235.5" font-size="12.6" textLength="83.2" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo check</text>
+<text x="725.2" y="236" font-size="14" xml:space="preserve">·</text>
+<rect x="628.4" y="241.9" width="129" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="255.5" font-size="12.6" textLength="121" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo task prove</text>
+<rect x="1" y="272" width="878" height="62" fill="#0e1420"/>
+<path d="M14 272H864" stroke="#141b28"/>
+<text x="14" y="297.5" font-size="10.5" class="h d">04</text>
+<text x="46" y="298" font-size="14" class="b" xml:space="preserve">Shows what happened</text>
+<text x="279.1" y="298" font-size="14" xml:space="preserve">A branch ranked by review risk; any line traced</text>
+<text x="279.1" y="318" font-size="14" xml:space="preserve">back to the words you asked in</text>
+<rect x="628.4" y="283.9" width="83.6" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="297.5" font-size="12.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo tour</text>
+<text x="717.6" y="298" font-size="14" textLength="3.8" lengthAdjust="spacing" xml:space="preserve">·</text>
+<rect x="727" y="283.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="731" y="297.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo why</text>
+<path d="M14 334H864" stroke="#141b28"/>
+<text x="14" y="359.5" font-size="10.5" class="h d">05</text>
+<text x="46" y="360" font-size="14" class="b" xml:space="preserve">Runs unattended</text>
+<text x="279.1" y="360" font-size="14" xml:space="preserve">Drive mode, full auto, one fresh session per task,</text>
+<text x="279.1" y="380" font-size="14" xml:space="preserve">budgeted nightly jobs</text>
+<rect x="628.4" y="345.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="359.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo run</text>
+<text x="710" y="360" font-size="14" textLength="3.8" lengthAdjust="spacing" xml:space="preserve">·</text>
+<rect x="719.4" y="345.9" width="91.2" height="18.6" rx="3" class="k"/>
+<text x="723.4" y="359.5" font-size="12.6" textLength="83.2" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo night</text>
+<rect x="1" y="396" width="878" height="62" fill="#0e1420"/>
+<path d="M14 396H864" stroke="#141b28"/>
+<text x="14" y="421.5" font-size="10.5" class="h d">06</text>
+<text x="46" y="422" font-size="14" class="b" xml:space="preserve">Learns a fix once</text>
+<text x="279.1" y="422" font-size="14" xml:space="preserve">A failure that was fixed before gets its fix offered</text>
+<text x="279.1" y="442" font-size="14" xml:space="preserve">next time, in any project</text>
+<rect x="628.4" y="407.9" width="113.8" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="421.5" font-size="12.6" textLength="105.8" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo fix list</text>
+<path d="M14 458H864" stroke="#141b28"/>
+<text x="14" y="483.5" font-size="10.5" class="h d">07</text>
+<text x="46" y="484" font-size="14" class="b" xml:space="preserve">Changes many spots</text>
+<text x="279.1" y="484" font-size="14" xml:space="preserve">Batches of exact replacements, applied all or</text>
+<text x="279.1" y="504" font-size="14" xml:space="preserve">none, inside the task&#x27;s scope</text>
+<rect x="628.4" y="469.9" width="83.6" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="483.5" font-size="12.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo edit</text>
+<text x="717.6" y="484" font-size="14" textLength="3.8" lengthAdjust="spacing" xml:space="preserve">·</text>
+<rect x="727" y="469.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="731" y="483.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo sub</text>
+<rect x="1" y="520" width="878" height="62" fill="#0e1420"/>
+<path d="M14 520H864" stroke="#141b28"/>
+<text x="14" y="545.5" font-size="10.5" class="h d">08</text>
+<text x="46" y="546" font-size="14" class="b" xml:space="preserve">Improves itself</text>
+<text x="279.1" y="546" font-size="14" xml:space="preserve">Rule changes backtested on your real sessions;</text>
+<text x="279.1" y="566" font-size="14" xml:space="preserve">self-improvement kept only when evals agree</text>
+<rect x="628.4" y="531.9" width="113.8" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="545.5" font-size="12.6" textLength="105.8" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">/sampo:improve</text>
+<path d="M14 582H864" stroke="#141b28"/>
+<text x="14" y="607.5" font-size="10.5" class="h d">09</text>
+<text x="46" y="608" font-size="14" class="b" xml:space="preserve">Proves migrations, data and</text>
+<text x="46" y="628" font-size="14" class="b" xml:space="preserve">releases</text>
+<text x="279.1" y="608" font-size="14" xml:space="preserve">Migrations up, down, up on a throwaway</text>
+<text x="279.1" y="628" font-size="14" xml:space="preserve">database; data commands on a copy, invariants</text>
+<text x="279.1" y="648" font-size="14" xml:space="preserve">checked; the release built offline, run from a</text>
+<text x="279.1" y="668" font-size="14" textLength="188" lengthAdjust="spacing" xml:space="preserve">throwaway prefix, tagged by</text>
+<rect x="472.7" y="653.9" width="121.4" height="18.6" rx="3" class="k"/>
+<text x="476.7" y="667.5" font-size="12.6" textLength="113.4" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo release V</text>
+<text x="279.1" y="688" font-size="14" xml:space="preserve">in any repo</text>
+<rect x="628.4" y="593.9" width="181.9" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="607.5" font-size="12.6" textLength="173.9" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo prove --migration</text>
+<text x="812.2" y="608" font-size="14" xml:space="preserve">,</text>
+<rect x="628.4" y="613.9" width="53.4" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="627.5" font-size="12.6" textLength="45.4" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">--data</text>
+<text x="683.7" y="628" font-size="14" textLength="3.8" lengthAdjust="spacing" xml:space="preserve">,</text>
+<rect x="693.1" y="613.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="697.1" y="627.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">--release</text>
+<rect x="1" y="704" width="878" height="142" fill="#0e1420"/>
+<path d="M14 704H864" stroke="#141b28"/>
+<text x="14" y="729.5" font-size="10.5" class="h d">10</text>
+<text x="46" y="730" font-size="14" class="b" xml:space="preserve">Runs incidents</text>
+<rect x="279.1" y="715.9" width="272.6" height="18.6" rx="3" class="k"/>
+<text x="283.1" y="729.5" font-size="12.6" textLength="264.6" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo capture --incident &#x27;&lt;impact&gt;&#x27;</text>
+<rect x="279.1" y="735.9" width="98.7" height="18.6" rx="3" class="k"/>
+<text x="283.1" y="749.5" font-size="12.6" textLength="90.7" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">--signal CMD</text>
+<text x="383.5" y="750" font-size="14" xml:space="preserve">opens an urgent FIX only when</text>
+<text x="279.1" y="770" font-size="14" xml:space="preserve">the harm signal is red, keeps a UTC timeline,</text>
+<text x="279.1" y="790" font-size="14" xml:space="preserve">closes only on the same signal green twice plus</text>
+<text x="279.1" y="810" font-size="14" xml:space="preserve">one follow-up, and leaves the signal for</text>
+<rect x="279.1" y="815.9" width="113.8" height="18.6" rx="3" class="k"/>
+<text x="283.1" y="829.5" font-size="12.6" textLength="105.8" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo sentinel</text>
+<rect x="628.4" y="715.9" width="189.4" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="729.5" font-size="12.6" textLength="181.4" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo capture --incident</text>
+<path d="M14 846H864" stroke="#141b28"/>
+<text x="14" y="871.5" font-size="10.5" class="h d">11</text>
+<text x="46" y="872" font-size="14" class="b" xml:space="preserve">Checks infra files</text>
+<text x="279.1" y="872" font-size="14" xml:space="preserve">Dockerfiles, compose, Terraform, Helm,</text>
+<text x="279.1" y="892" font-size="14" xml:space="preserve">Kubernetes, CI workflows, shell, systemd units:</text>
+<text x="279.1" y="912" font-size="14" xml:space="preserve">each through its own validator on a copy, offline;</text>
+<text x="279.1" y="932" font-size="14" xml:space="preserve">no validator installed, unproven</text>
+<rect x="628.4" y="857.9" width="151.6" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="871.5" font-size="12.6" textLength="143.6" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo prove --infra</text>
+<rect x="1" y="948" width="878" height="102" fill="#0e1420"/>
+<path d="M14 948H864" stroke="#141b28"/>
+<text x="14" y="973.5" font-size="10.5" class="h d">12</text>
+<text x="46" y="974" font-size="14" class="b" xml:space="preserve">Finds problems unasked</text>
+<text x="279.1" y="974" font-size="14" xml:space="preserve">Untested code, undeclared imports, SQL built</text>
+<text x="279.1" y="994" font-size="14" xml:space="preserve">from input, slow loops, flaky tests, stale docs,</text>
+<text x="279.1" y="1014" font-size="14" xml:space="preserve">leaked keys: no model, worst first; proven on a</text>
+<text x="279.1" y="1034" font-size="14" xml:space="preserve">copy</text>
+<rect x="628.4" y="959.9" width="219.7" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="973.5" font-size="12.6" textLength="211.7" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo find --rank [--ladder]</text>
+<text x="628.4" y="994" font-size="14" xml:space="preserve">(tools: trusted only),</text>
+<rect x="628.4" y="999.9" width="181.9" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="1013.5" font-size="12.6" textLength="173.9" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo prove --capture N</text>
+<text x="812.2" y="1014" font-size="14" xml:space="preserve">/</text>
+<rect x="628.4" y="1019.9" width="53.4" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="1033.5" font-size="12.6" textLength="45.4" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">--docs</text>
+<text x="683.7" y="1034" font-size="14" textLength="3.8" lengthAdjust="spacing" xml:space="preserve">,</text>
+<rect x="693.1" y="1019.9" width="136.5" height="18.6" rx="3" class="k"/>
+<text x="697.1" y="1033.5" font-size="12.6" textLength="128.5" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">/sampo:initiative</text>
+<path d="M14 1050H864" stroke="#141b28"/>
+<text x="14" y="1075.5" font-size="10.5" class="h d">13</text>
+<text x="46" y="1076" font-size="14" class="b" xml:space="preserve">Improves itself, per aspect</text>
+<text x="279.1" y="1076" font-size="14" xml:space="preserve">Kalevala: a Rune tower per aspect, generations</text>
+<text x="279.1" y="1096" font-size="14" xml:space="preserve">toward one goal you write; a rewrite stays only if</text>
+<text x="279.1" y="1116" font-size="14" xml:space="preserve">it closed more exam scenarios</text>
+<rect x="628.4" y="1061.9" width="166.8" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="1075.5" font-size="12.6" textLength="158.8" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo kalevala status</text>
+<text x="800.8" y="1076" font-size="14" xml:space="preserve">·</text>
+<rect x="628.4" y="1081.9" width="121.4" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="1095.5" font-size="12.6" textLength="113.4" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo rune step</text>
+<rect x="1" y="1132" width="878" height="82" fill="#0e1420"/>
+<path d="M14 1132H864" stroke="#141b28"/>
+<text x="14" y="1157.5" font-size="10.5" class="h d">14</text>
+<text x="46" y="1158" font-size="14" class="b" xml:space="preserve">Stays light</text>
+<text x="279.1" y="1158" font-size="14" xml:space="preserve">Only the Ward and write validators run in line;</text>
+<text x="279.1" y="1178" font-size="14" xml:space="preserve">every hook call stays under its budget (the chart</text>
+<text x="279.1" y="1198" font-size="14" xml:space="preserve">below)</text>
+<rect x="628.4" y="1143.9" width="98.7" height="18.6" rx="3" class="k"/>
+<text x="632.4" y="1157.5" font-size="12.6" textLength="90.7" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo doctor</text>
+<path d="M1 13V1H13M867 1217H879V1205" fill="none" stroke="#4cc9f0" stroke-width="2"/>
 </svg>

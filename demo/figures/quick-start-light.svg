@@ -1,26 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 333" width="880" height="333" role="img" aria-label="Quick start: a table of 4 rows (Then, How); its text follows">
-<title>Quick start: a table of 4 rows (Then, How); its text follows</title>
-<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#3A4556}.i{fill:#0F1722}.m{fill:#5B6679}.b{font-weight:600;fill:#0F1722}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#2F62E0}.l{fill:#2F62E0}</style>
-<rect x="0.5" y="0.5" width="879" height="332" rx="12" fill="#FFFFFF" stroke="#0F1722" stroke-opacity=".12"/>
-<path d="M0.5 40V12.5A12 12 0 0 1 12.5 0.5H867.5A12 12 0 0 1 879.5 12.5V40Z" fill="#F6F7F9"/>
-<line x1="0.5" y1="40" x2="879.5" y2="40" stroke="#0F1722" stroke-opacity=".12"/>
-<text x="16" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">THEN</text>
-<text x="161.072" y="25" font-size="11.5" class="m" font-weight="600" letter-spacing=".07em">HOW</text>
-<text x="16" y="68" font-size="14" xml:space="preserve"><tspan class="b">Ask for</tspan></text>
-<text x="16" y="89" font-size="14" xml:space="preserve"><tspan class="b">something</tspan></text>
-<text x="161.1" y="68" font-size="14" xml:space="preserve"><tspan class="c">fix the login timeout on slow wifi</tspan>, in plain words. That&#x27;s the whole interface.</text>
-<line x1="16" y1="108" x2="864" y2="108" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="136" font-size="14" xml:space="preserve"><tspan class="b">Watch it first</tspan></text>
-<text x="161.1" y="136" font-size="14" xml:space="preserve"><tspan class="c">sampo demo</tspan> runs the real <tspan class="c">sampo</tspan> and Ward hook on a seeded bug in a throwaway repo: no model calls,</text>
-<text x="161.1" y="157" font-size="14" xml:space="preserve">nothing left behind.</text>
-<line x1="16" y1="176" x2="864" y2="176" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="204" font-size="14" xml:space="preserve"><tspan class="b">See where</tspan></text>
-<text x="16" y="225" font-size="14" xml:space="preserve"><tspan class="b">things stand</tspan></text>
-<text x="161.1" y="204" font-size="14" xml:space="preserve">Bare <tspan class="c">sampo</tspan> in a project says what&#x27;s next; <tspan class="c">sampo help</tspan> answers &quot;can it…?&quot; in plain words; <tspan class="c">sampo</tspan></text>
-<text x="161.1" y="225" font-size="14" xml:space="preserve"><tspan class="c">which NEED</tspan> searches past fixes, your tools, MCP servers, binaries, skills and plugins at once, and</text>
-<text x="161.1" y="246" font-size="14" xml:space="preserve">says which hits need a grant.</text>
-<line x1="16" y1="265" x2="864" y2="265" stroke="#0F1722" stroke-opacity=".07"/>
-<text x="16" y="293" font-size="14" xml:space="preserve"><tspan class="b">Let it run</tspan></text>
-<text x="161.1" y="293" font-size="14" xml:space="preserve">Say <tspan class="c">FULL AUTO</tspan>: it works the whole queue, then finds its own next work. <tspan class="c">sampo watch --web</tspan> opens</text>
-<text x="161.1" y="314" font-size="14" xml:space="preserve">the Board; <tspan class="c">sampo lane max</tspan> sets how many builders run at once.</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 318" width="880" height="318" role="img" aria-label="Quick start: a table of 4 rows (Then, How): Ask for something; Watch it first; See where things stand; Let it run. Its text follows">
+<title>Quick start: a table of 4 rows (Then, How): Ask for something; Watch it first; See where things stand; Let it run. Its text follows</title>
+<style>text{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;fill:#46526a}.b{font-weight:600;fill:#0f1722}.i{fill:#0f1722}.d{fill:#5b6679}.h{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600;letter-spacing:.08em}.c{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#0f1722}.k{fill:#9a6a00;fill-opacity:.11;stroke:#9a6a00;stroke-opacity:.38}</style>
+<rect x="0.5" y="0.5" width="879" height="317" fill="#f6f7f9" stroke="#d5dce7"/>
+<rect x="1" y="1" width="878" height="37" fill="#ffffff"/>
+<path d="M0.5 38H879.5M0.5 66H879.5" stroke="#d5dce7"/>
+<rect x="14" y="11" width="24.4" height="17" fill="#9a6a00"/>
+<text x="19" y="23.5" font-size="11" class="h" style="fill:#ffffff">02</text>
+<text x="50.4" y="23.5" font-size="11.5" class="h i">QUICK START</text>
+<text x="864" y="23.5" font-size="10.5" class="h" text-anchor="end" style="fill:#9a6a00">4 ROWS</text>
+<text x="46" y="56" font-size="10" class="h d">THEN</text>
+<text x="231.2" y="56" font-size="10" class="h d">HOW</text>
+<text x="14" y="91.5" font-size="10.5" class="h d">01</text>
+<text x="46" y="92" font-size="14" class="b" xml:space="preserve">Ask for something</text>
+<rect x="231.2" y="77.9" width="265" height="18.6" rx="3" class="k"/>
+<text x="235.2" y="91.5" font-size="12.6" textLength="257" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">fix the login timeout on slow wifi</text>
+<text x="498.2" y="92" font-size="14" xml:space="preserve">, in plain words. That&#x27;s the whole interface.</text>
+<rect x="1" y="108" width="878" height="62" fill="#ffffff"/>
+<path d="M14 108H864" stroke="#e8ecf2"/>
+<text x="14" y="133.5" font-size="10.5" class="h d">02</text>
+<text x="46" y="134" font-size="14" class="b" xml:space="preserve">Watch it first</text>
+<rect x="231.2" y="119.9" width="83.6" height="18.6" rx="3" class="k"/>
+<text x="235.2" y="133.5" font-size="12.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo demo</text>
+<text x="320.4" y="134" font-size="14" textLength="83.8" lengthAdjust="spacing" xml:space="preserve">runs the real</text>
+<rect x="409.9" y="119.9" width="45.8" height="18.6" rx="3" class="k"/>
+<text x="413.9" y="133.5" font-size="12.6" textLength="37.8" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo</text>
+<text x="461.3" y="134" font-size="14" xml:space="preserve">and Ward hook on a seeded bug in a throwaway repo: no</text>
+<text x="231.2" y="154" font-size="14" xml:space="preserve">model calls, nothing left behind.</text>
+<path d="M14 170H864" stroke="#e8ecf2"/>
+<text x="14" y="195.5" font-size="10.5" class="h d">03</text>
+<text x="46" y="196" font-size="14" class="b" xml:space="preserve">See where things stand</text>
+<text x="231.2" y="196" font-size="14" textLength="30.6" lengthAdjust="spacing" xml:space="preserve">Bare</text>
+<rect x="267.5" y="181.9" width="45.8" height="18.6" rx="3" class="k"/>
+<text x="271.5" y="195.5" font-size="12.6" textLength="37.8" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo</text>
+<text x="318.9" y="196" font-size="14" textLength="188" lengthAdjust="spacing" xml:space="preserve">in a project says what&#x27;s next;</text>
+<rect x="512.6" y="181.9" width="83.6" height="18.6" rx="3" class="k"/>
+<text x="516.6" y="195.5" font-size="12.6" textLength="75.6" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo help</text>
+<text x="601.8" y="196" font-size="14" xml:space="preserve">answers &quot;can it…?&quot; in plain words;</text>
+<rect x="231.2" y="201.9" width="129" height="18.6" rx="3" class="k"/>
+<text x="235.2" y="215.5" font-size="12.6" textLength="121" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo which NEED</text>
+<text x="365.8" y="216" font-size="14" xml:space="preserve">searches past fixes, your tools, MCP servers, binaries, skills and plugins at</text>
+<text x="231.2" y="236" font-size="14" xml:space="preserve">once, and says which hits need a grant.</text>
+<rect x="1" y="252" width="878" height="62" fill="#ffffff"/>
+<path d="M14 252H864" stroke="#e8ecf2"/>
+<text x="14" y="277.5" font-size="10.5" class="h d">04</text>
+<text x="46" y="278" font-size="14" class="b" xml:space="preserve">Let it run</text>
+<text x="231.2" y="278" font-size="14" textLength="22.7" lengthAdjust="spacing" xml:space="preserve">Say</text>
+<rect x="259.5" y="263.9" width="76" height="18.6" rx="3" class="k"/>
+<text x="263.5" y="277.5" font-size="12.6" textLength="68" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">FULL AUTO</text>
+<text x="337.5" y="278" font-size="14" textLength="370.2" lengthAdjust="spacing" xml:space="preserve">: it works the whole queue, then finds its own next work.</text>
+<rect x="713.4" y="263.9" width="136.5" height="18.6" rx="3" class="k"/>
+<text x="717.4" y="277.5" font-size="12.6" textLength="128.5" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo watch --web</text>
+<text x="231.2" y="298" font-size="14" textLength="112.8" lengthAdjust="spacing" xml:space="preserve">opens the Board;</text>
+<rect x="349.6" y="283.9" width="113.8" height="18.6" rx="3" class="k"/>
+<text x="353.6" y="297.5" font-size="12.6" textLength="105.8" lengthAdjust="spacingAndGlyphs" class="c" xml:space="preserve">sampo lane max</text>
+<text x="469.1" y="298" font-size="14" xml:space="preserve">sets how many builders run at once.</text>
+<path d="M1 13V1H13M867 317H879V305" fill="none" stroke="#0a86b0" stroke-width="2"/>
 </svg>
