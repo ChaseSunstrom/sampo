@@ -433,6 +433,96 @@ def _tool_kind(name, inp):
     return name if _WORD.fullmatch(name) else "other"
 
 
+_NO_CONTEXT = ("prompt_snapshot", "deferred_tools_record")  # T-4830: sent to no model call, so in no context
+_UI_ONLY = ("hook_non_blocking_error", "command_permissions")  # T-4830: shown to the user, never sent to the model
+
+
+def _field(v):
+    """T-4830: the characters of one transcript field that the model reads: a string's length, a list's items, a dict's
+    content (or its text, or its blocking error), and a dict with none of those counted as its JSON. A number, a flag or
+    nothing is no text."""
+    if isinstance(v, str):
+        return len(v)
+    if isinstance(v, list):
+        return sum(_field(x) for x in v)
+    if isinstance(v, dict):
+        for key in ("content", "text", "blockingError"):
+            if key in v:
+                return _field(v[key])
+        return len(json.dumps(v))
+    return 0
+
+
+# T-4830: the fields whose text a context holds, by attachment type; a type not here counts its non-metadata fields
+_MODEL_FIELDS = {
+    "skill_listing": ("content",),
+    "instructions": ("content", "files"),
+    "queued_command": ("prompt",),  # a user's steer, or a task notification the model reads
+    "edited_text_file": ("filename", "snippet"),
+    "agent_listing_delta": ("addedTypes", "removedTypes"),
+}
+_META_KEYS = frozenset(("type", "uuid", "parentUuid", "sessionId", "toolUseID", "isSidechain", "entrypoint", "cwd",
+                        "version", "gitBranch", "slug", "userType", "requestId", "stdout", "stderr", "exitCode",
+                        "durationMs", "command", "updatedToolOutput", "updatedMCPToolOutput"))
+
+
+def _is_meta(key):
+    """T-4830: a field that is the record's own bookkeeping, not text: a type, an id, a timestamp, or a hook's output."""
+    k = str(key).lower()
+    return key in _META_KEYS or k == "id" or k.endswith(("id", "uuid")) or "time" in k or k.startswith("hook")
+
+
+def _model_attachment(a):
+    """T-4830: (source, characters) of the text one attachment puts in a context, or None when it puts none there: a
+    hook's UI-only record, a prompt snapshot, a deferred-tool record. A hook note counts its content or blocking error;
+    a mapped type counts its mapped fields; any other type counts its non-metadata fields, so it is never silently 0."""
+    kind = a.get("type")
+    if kind in _NO_CONTEXT or kind in _UI_ONLY:
+        return None
+    if kind in _HOOK_ATTACHMENTS or kind == "hook_success":
+        source, n = "hook notes", _field(a.get("content")) or _field(a.get("blockingError"))
+    elif kind in _MODEL_FIELDS:
+        source, n = "attachment: " + _label(kind), sum(_field(a.get(f)) for f in _MODEL_FIELDS[kind])
+    else:
+        source, n = "attachment: " + _label(kind), sum(_field(v) for k, v in a.items() if not _is_meta(k))
+    return (source, n) if n else None
+
+
+def _count(v):
+    """A usage count from a transcript line: a whole number, else 0 (a corrupt line is not a crash)."""
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else 0
+
+
+def _settle(reply, parts):
+    """T-4830: a reply's parts join the context when the next reply starts: its text and its tool-call inputs, and, when
+    the reply holds a thinking block, its thinking, estimated as its output tokens at 4 characters less those two (the
+    transcripts keep no thinking text, and a reply without a block has none to estimate)."""
+    if reply is None:
+        return
+    if reply["text"]:
+        parts["reply text"] += reply["text"]
+    if reply["input"]:
+        parts["tool input"] += reply["input"]
+    thinking = max(0, reply["out"] * 4 - reply["text"] - reply["input"]) if reply["thinking"] else 0
+    if thinking:
+        parts["thinking"] += thinking
+
+
+def _user_kind(e, text):
+    """T-4830: what a user entry's text is in context: a compact summary, a task notice, a reminder, or the user's own."""
+    if e.get("isCompactSummary"):
+        return "compact summary"
+    origin = e.get("origin")
+    if isinstance(origin, dict) and origin.get("kind") == "task-notification":
+        return "task notice"
+    return "reminders" if text.lstrip().startswith("<system-reminder>") else "user text"
+
+
+def _side_tokens(counter, who):
+    """T-4830: one side's re-read tokens, each kind rounded as its row is, so the per-call figures add up to the rows."""
+    return sum(round(v / 4) for k, v in counter.items() if k.split(" ", 1)[0] == who)
+
+
 def outputs_reread(folder, since, entries=None):
     """T-4825: tool outputs weighed by how often they are re-read. Per file, in order: a running count of the live
     tool-result characters by kind; each assistant call (once per message id) adds every live kind's characters to that
@@ -440,39 +530,75 @@ def outputs_reread(folder, since, entries=None):
     kind is its tool_use's tool (every MCP tool "mcp"; Bash by command word); main thread or sub by the file's place.
     The cutoff limits only the totals: older lines of a file still fill the live counts and kinds. A message id counts
     once across all files (a resumed session copies history into a new one). One line at a time; memory is one file's
-    tool ids and kinds plus 8 bytes per call. Returns the figures; no text of the transcripts."""
+    tool ids and kinds plus 8 bytes per call. Returns the figures; no text of the transcripts.
+    T-4830: the other parts in context (a reply's text, its tool inputs and, for a reply with a thinking block, its
+    thinking; attachments by the text they send, never a hook's UI-only stdout; the user's text and reminders; a compact
+    summary; a task notice; an image) are re-read the same way, as parts. Each side's
+    per-call figures split its context read into tool outputs, other parts, and what the transcripts do not hold."""
     side = {"main": collections.Counter(), "sub": collections.Counter()}
     reread, results, chars = collections.Counter(), collections.Counter(), collections.Counter()
-    cur, live, kinds_of, seen = None, collections.Counter(), {}, set()  # seen: across files, as scan() dedupes
+    parts_reread = collections.Counter()
+    cur, live, live_parts, kinds_of, reply = None, collections.Counter(), collections.Counter(), {}, None
+    seen = set()  # across files, as scan() dedupes
     for path, e in _entries(folder, since, context=True) if entries is None else entries:
         if path != cur:  # a file's own context: a resumed session's copy of the history replays it from the top
-            cur, live, kinds_of = path, collections.Counter(), {}
+            cur, live, live_parts, kinds_of, reply = path, collections.Counter(), collections.Counter(), {}, None
         ts = str(e.get("timestamp") or "")
         in_window = ts[:19] >= since  # the cutoff limits the totals, not what is already in context
         who = "sub" if f"{os.sep}subagents{os.sep}" in path else "main"
         if e.get("type") == "system" and e.get("subtype") == "compact_boundary":
             live.clear()
+            live_parts.clear()
+            reply = None  # the reply still open is in the context that the compaction drops
+            continue
+        if e.get("type") in _NO_CONTEXT:
+            continue
+        if e.get("type") == "attachment":
+            got = _model_attachment(e["attachment"]) if isinstance(e.get("attachment"), dict) else None
+            if got:
+                live_parts[got[0]] += got[1]
             continue
         m = e.get("message")
         if not isinstance(m, dict):
             continue
         if e.get("type") == "assistant":
-            if isinstance(m.get("content"), list):
-                for x in m["content"]:
-                    if isinstance(x, dict) and x.get("type") == "tool_use" and isinstance(x.get("id"), str):
-                        kinds_of[x["id"]] = _tool_kind(x.get("name"), x.get("input"))
-            if in_window and isinstance(m.get("usage"), dict):
-                mid = m.get("id") if isinstance(m.get("id"), str) and m["id"] else f"{path}\0{ts}"
-                key = hashlib.blake2b(mid.encode("utf-8", "replace"), digest_size=8).digest()  # bounded memory
-                if key not in seen:
-                    seen.add(key)
-                    side[who]["calls"] += 1
-                    side[who]["cache_read"] += m["usage"].get("cache_read_input_tokens") or 0
-                    for kind, n in live.items():
-                        reread[f"{who} {kind}"] += n
+            mid = m.get("id") if isinstance(m.get("id"), str) and m["id"] else f"{path}\0{ts}"
+            if reply is None or reply["id"] != mid:  # a reply's entries are consecutive: the last one's parts settle here
+                _settle(reply, live_parts)
+                reply = {"id": mid, "text": 0, "input": 0, "out": 0, "tools": set(), "thinking": False}
+            content = m.get("content") if isinstance(m.get("content"), list) else []
+            for x in content:
+                if not isinstance(x, dict):
+                    continue
+                if x.get("type") == "tool_use" and isinstance(x.get("id"), str):
+                    kinds_of[x["id"]] = _tool_kind(x.get("name"), x.get("input"))
+                    if x["id"] not in reply["tools"]:  # a reply split over lines may repeat a block
+                        reply["tools"].add(x["id"])
+                        reply["input"] += len(json.dumps(x.get("input") or {}))
+                elif x.get("type") == "text":
+                    reply["text"] += len(str(x.get("text") or ""))
+                elif x.get("type") in ("thinking", "redacted_thinking"):
+                    reply["thinking"] = True  # the block is the one sign that the reply's output holds thinking
+            usage = m.get("usage")
+            if isinstance(usage, dict):
+                reply["out"] = max(reply["out"], _count(usage.get("output_tokens")))
+                if in_window:
+                    key = hashlib.blake2b(mid.encode("utf-8", "replace"), digest_size=8).digest()  # bounded memory
+                    if key not in seen:
+                        seen.add(key)
+                        side[who]["calls"] += 1
+                        side[who]["cache_read"] += _count(usage.get("cache_read_input_tokens"))
+                        for kind, n in live.items():
+                            reread[f"{who} {kind}"] += n
+                        for kind, n in live_parts.items():
+                            parts_reread[f"{who} {kind}"] += n
+        elif isinstance(m.get("content"), str):
+            live_parts[_user_kind(e, m["content"])] += len(m["content"])
         elif isinstance(m.get("content"), list):
             for x in m["content"]:
-                if isinstance(x, dict) and x.get("type") == "tool_result":
+                if not isinstance(x, dict):
+                    continue
+                if x.get("type") == "tool_result":
                     tid = x.get("tool_use_id")
                     kind = kinds_of.get(tid, "unknown") if isinstance(tid, str) else "unknown"
                     n = _size(x.get("content"))
@@ -480,32 +606,56 @@ def outputs_reread(folder, since, entries=None):
                     if in_window:
                         results[f"{who} {kind}"] += 1
                         chars[f"{who} {kind}"] += n
+                elif x.get("type") == "text":
+                    text = str(x.get("text") or "")
+                    live_parts[_user_kind(e, text)] += len(text)
+                elif x.get("type") == "image":
+                    live_parts["image"] += IMAGE_CHARS
     cache = side["main"]["cache_read"] + side["sub"]["cache_read"]
     rows = [{"kind": k, "results": results[k], "avg_tokens": round(chars[k] / results[k] / 4) if results[k] else 0,
              "reread_tokens": round(v / 4), "share_of_cache_read": round(100 * v / 4 / cache, 1) if cache else 0.0}
             for k, v in reread.most_common()]
     total = sum(r["reread_tokens"] for r in rows)
-    return {"main": {"calls": side["main"]["calls"], "cache_read_tokens": side["main"]["cache_read"],
-                     "avg_context_read": side["main"]["cache_read"] // (side["main"]["calls"] or 1)},
-            "sub": {"calls": side["sub"]["calls"], "cache_read_tokens": side["sub"]["cache_read"],
-                    "avg_context_read": side["sub"]["cache_read"] // (side["sub"]["calls"] or 1)},
+    parts = [{"kind": k, "reread_tokens": round(v / 4), "share_of_cache_read": round(100 * v / 4 / cache, 1) if cache else 0.0}
+             for k, v in parts_reread.most_common()]
+    parts_total = sum(r["reread_tokens"] for r in parts)
+    figures = {}
+    for who in ("main", "sub"):
+        calls = side[who]["calls"]
+        avg = side[who]["cache_read"] // (calls or 1)
+        tools = round(_side_tokens(reread, who) / calls) if calls else 0
+        others = round(_side_tokens(parts_reread, who) / calls) if calls else 0
+        figures[who] = {"calls": calls, "cache_read_tokens": side[who]["cache_read"], "avg_context_read": avg,
+                        "tool_outputs_per_call": tools, "parts_per_call": others,
+                        "unaccounted_per_call": max(0, avg - tools - others)}
+    return {"main": figures["main"], "sub": figures["sub"],
             "tool_output_reread_tokens": total,
-            "share_of_cache_read": round(100 * total / cache, 1) if cache else 0.0, "kinds": rows}
+            "share_of_cache_read": round(100 * total / cache, 1) if cache else 0.0, "kinds": rows,
+            "parts_reread_tokens": parts_total,
+            "parts_share_of_cache_read": round(100 * parts_total / cache, 1) if cache else 0.0, "parts": parts}
 
 
 def _outputs(folder, args, cli):
     got = {"days": args.days, **outputs_reread(folder, _since(args.days))}
     if not (got["main"]["calls"] or got["sub"]["calls"]):
         return cli.out(args, got, f"No assistant calls in {folder} for the last {args.days:g} day(s).")
-    side = lambda k: (f"{got[k]['calls']:,} calls, {_human(got[k]['cache_read_tokens'])} cache-read tokens, "  # noqa: E731
-                      f"{_human(got[k]['avg_context_read'])} context read per call")
-    text = (f"Tool outputs re-read, last {args.days:g} day(s) (tokens ≈ characters / 4; each output counted again on every "
-            f"later call until a compaction):\n  main: {side('main')}\n  sub:  {side('sub')}\n"
+    def side(k):
+        g = got[k]
+        return (f"{g['calls']:,} calls, {_human(g['cache_read_tokens'])} cache-read tokens, "
+                f"{_human(g['avg_context_read'])} context read per call\n"
+                f"        per call: {_human(g['tool_outputs_per_call'])} tool outputs, {_human(g['parts_per_call'])} other "
+                f"parts, {_human(g['unaccounted_per_call'])} not in the transcripts (system prompt, tool schemas)")
+    text = (f"Context re-read, last {args.days:g} day(s) (tokens ≈ characters / 4; each output or part counted again on "
+            f"every later call until a compaction):\n  main: {side('main')}\n  sub:  {side('sub')}\n"
             f"  tool outputs re-read: {_human(got['tool_output_reread_tokens'])} tokens, "
             f"{got['share_of_cache_read']:g}% of all cache reads\nLargest, by re-read (results, average size, share of cache "
             "reads):\n" + "\n".join(f"  {r['kind']}: {r['results']:,} results, {_human(r['avg_tokens'])} each, "
                                     f"{_human(r['reread_tokens'])} re-read, {r['share_of_cache_read']:g}%"
-                                    for r in got["kinds"][:15]))
+                                    for r in got["kinds"][:15])
+            + f"\n  other parts re-read: {_human(got['parts_reread_tokens'])} tokens, "
+            f"{got['parts_share_of_cache_read']:g}% of all cache reads\nLargest other parts, by re-read (share of cache "
+            "reads):\n" + "\n".join(f"  {r['kind']}: {_human(r['reread_tokens'])} re-read, {r['share_of_cache_read']:g}%"
+                                    for r in got["parts"][:15]))
     return cli.out(args, got, text)
 
 

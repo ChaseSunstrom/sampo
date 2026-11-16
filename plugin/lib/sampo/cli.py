@@ -8942,8 +8942,9 @@ def _build_parser(only=None):
     s.add_argument("--sweep", action="store_true", help=argparse.SUPPRESS)  # T-1810: the Stop hook's detached sweep
     s.add_argument("--sessions", action="store_true",
                    help="per session: turns, context per turn, the cache read/write/output split and cache busts")
-    s.add_argument("--outputs", action="store_true", help="tool outputs by how often later calls re-read them: share of "
-                   "cache reads by tool and Bash command word, main thread and subagents (T-4825)")
+    s.add_argument("--outputs", action="store_true", help="context by how often later calls re-read it: share of cache "
+                   "reads by tool output and Bash command word, and by other parts; main thread and subagents "
+                   "(T-4825, T-4830)")
     s = add("burden", lazy("sampo.cost", "cmd_burden"), tier=("Reports", 1000), help="Sampo's own cost on real sessions per version: bookkeeping "
                                                           "turns, refusals, injected context (T-0712)")
     s.add_argument("--days", type=float, default=14)

@@ -314,6 +314,113 @@ class OutputsReread(HookCase):
         self.assertEqual((got["main"]["calls"], got["main"]["cache_read_tokens"]), (5, 400),
                          "h1, h2, h3, c1, c2 once each: 100+100+100+50+50")
 
+    def test_context_parts_split_reply_attachments_compaction_and_snapshots(self):
+        """T-4830: every part that sits in a context counts by kind, main and sub: a reply split over entries (its
+        thinking estimated over the whole reply, never below 0), attachments by type, the user's text and reminders, a
+        compact summary and a task notice. A prompt snapshot and a deferred-tool record are sent as no text and count
+        nothing; a compaction clears the parts with the tool results; the tool total stays tool results only."""
+        cfg, _, _, _, write = self._project()
+        folder = os.path.join(cfg, "projects", "".join(ch if ch.isalnum() else "-" for ch in self.repo))
+        os.makedirs(os.path.join(folder, "s1", "subagents"))
+        now = datetime.datetime.now(datetime.timezone.utc)
+        at = lambda s=0: (now + datetime.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # noqa: E731
+        att = lambda s, a: {"type": "attachment", "timestamp": at(s), "attachment": a}  # noqa: E731
+        said = lambda s, content, **extra: {"type": "user", "timestamp": at(s), **extra,  # noqa: E731
+                                            "message": {"content": content}}
+        reply = lambda s, mid, block, out, read: {"type": "assistant", "timestamp": at(s), "sessionId": "s1",  # noqa: E731
+                                                  "message": {"id": mid, "content": [block],
+                                                              "usage": {"output_tokens": out,
+                                                                        "cache_read_input_tokens": read}}}
+        skill = {"type": "skill_listing", "content": "- sampo:next: " + "s" * 60}
+        skill_chars = len(skill["content"])  # the listing's text, not its JSON
+        tool_in = len(json.dumps({"file_path": "/x/a"}))  # the tool input's characters
+        thinking = 50 * 4 - 20 - tool_in  # output tokens at 4 characters, less the reply's text and tool input
+        reminder, task = len("<system-reminder>") + 60, len("<task-notification>") + 80
+        main = [said(0, "p" * 40),  # the prompt: a plain string
+                att(1, {"type": "hook_additional_context", "content": ["n" * 100], "hookEvent": "PreToolUse"}),
+                att(1, {"type": "hook_success", "content": "", "hookName": "PostToolUse:Bash",
+                        "stdout": json.dumps({"updatedToolOutput": "o" * 5000})}),  # UI only: no text reaches the model
+                att(1, {"type": "hook_non_blocking_error", "content": "e" * 500}),  # UI only
+                att(1, {"type": "command_permissions", "content": "p" * 500}),  # UI only
+                att(1, {"type": "instructions",  # the files' text
+                        "files": [{"path": "/x/CLAUDE.md", "content": "m" * 200}]}),
+                att(1, {"type": "queued_command", "prompt": "s" * 70, "commandMode": "prompt",
+                        "uuid": "u" * 36}),  # the steer: its prompt counts, its metadata does not
+                att(1, {"type": "edited_text_file", "filename": "f" * 30, "snippet": "s" * 100}),
+                att(1, {"type": "zz_future", "detail": "d" * 90, "uuid": "u" * 36, "count": 3}),  # no map: the fallback
+                att(2, skill),
+                att(3, {"type": "prompt_snapshot", "content": "q" * 5000}),
+                {"type": "deferred_tools_record", "timestamp": at(3), "content": "d" * 5000},
+                reply(4, "r1", {"type": "thinking", "thinking": "", "signature": "sig"}, 50, 1000),  # one reply, three entries
+                reply(4, "r1", {"type": "text", "text": "t" * 20}, 50, 1000),
+                reply(4, "r1", {"type": "tool_use", "id": "u1", "name": "Read", "input": {"file_path": "/x/a"}}, 50, 1000),
+                said(5, [{"type": "tool_result", "tool_use_id": "u1", "content": "z" * 398},  # 400: a tool's
+                         {"type": "text", "text": "<system-reminder>" + "w" * 60}]),  # a reminder, not the tool's
+                reply(6, "r2", {"type": "text", "text": "u" * 10}, 5, 2000),
+                {"type": "system", "subtype": "compact_boundary", "timestamp": at(7)},
+                said(8, "c" * 300, isCompactSummary=True),
+                att(9, skill),  # re-attached after the compaction
+                said(10, "<task-notification>" + "k" * 80, origin={"kind": "task-notification"}),
+                reply(11, "r3", {"type": "text", "text": "v" * 100}, 1, 3000),  # one output token holds no 100 characters
+                reply(12, "r4", {"type": "text", "text": "x"}, 1, 4000)]
+        sub = [said(0, "b" * 120), reply(1, "sr1", {"type": "text", "text": ""}, 0, 20)]
+        write("w.jsonl", main)
+        write(os.path.join("s1", "subagents", "agent-1.jsonl"), sub)
+        got = self.fm_json("cost", "--outputs", env={"CLAUDE_CONFIG_DIR": cfg})
+        self.assertEqual((got["main"]["calls"], got["main"]["cache_read_tokens"]), (4, 10000))
+        self.assertEqual((got["sub"]["calls"], got["sub"]["cache_read_tokens"]), (1, 20))
+        want = {"main user text": 2 * 40, "main hook notes": 2 * 100, "main attachment: skill_listing": 4 * skill_chars,
+                "main attachment: instructions": 2 * 200, "main attachment: queued_command": 2 * 70,
+                "main attachment: edited_text_file": 2 * 130, "main attachment: zz_future": 2 * 90,
+                "main reply text": 20 + 100, "main tool input": tool_in, "main thinking": thinking,
+                "main reminders": reminder, "main compact summary": 2 * 300, "main task notice": 2 * task,
+                "sub user text": 120}
+        self.assertEqual({k["kind"]: k["reread_tokens"] for k in got["parts"]}, {k: round(v / 4) for k, v in want.items()})
+        self.assertEqual(got["parts_reread_tokens"], sum(round(v / 4) for v in want.values()))
+        self.assertEqual({k["kind"]: k["reread_tokens"] for k in got["kinds"]}, {"main Read": 100},
+                         "the Read result, 400 characters, counted in the one call that held it")
+        self.assertEqual(got["tool_output_reread_tokens"], 100, "tool results only: no part is in this total")
+        self.assertEqual(got["share_of_cache_read"], round(100 * 100 / 10020, 1))
+        main_parts = sum(round(v / 4) for k, v in want.items() if k.startswith("main"))  # tokens, as the report rounds
+        self.assertEqual(got["main"]["tool_outputs_per_call"], 25)  # 100 tokens re-read over 4 calls
+        self.assertEqual(got["main"]["parts_per_call"], round(main_parts / 4))
+        self.assertEqual(got["main"]["unaccounted_per_call"], 2500 - 25 - round(main_parts / 4),
+                         "the context the transcripts do not hold: system prompt, tool schemas")
+        self.assertEqual(got["sub"]["parts_per_call"], 30)
+        self.assertEqual(got["sub"]["unaccounted_per_call"], 0, "20 cache-read tokens under 30 of parts: never below 0")
+        self.assertFalse(any("snapshot" in k["kind"] or "deferred" in k["kind"] for k in got["parts"]))
+        text = self.fm("cost", "--outputs", env={"CLAUDE_CONFIG_DIR": cfg}).stdout
+        self.assertIn("not in the transcripts", text)
+        self.assertIn("main reply text", text)
+        self.assertNotIn("/x/a", text + json.dumps(got), "aggregates only: no tool input, path or text")
+
+    def test_a_reply_with_no_thinking_block_estimates_no_thinking(self):
+        """T-4830: thinking is estimated only for a reply that holds a thinking block. A reply of three tool calls and
+        no thinking block gives no thinking, though its output tokens (the tokenizer's slack, the JSON separators) are
+        there."""
+        cfg, _, use, _, write = self._project()
+        now = datetime.datetime.now(datetime.timezone.utc)
+        at = lambda s: (now + datetime.timedelta(seconds=s)).strftime("%Y-%m-%dT%H:%M:%S.000Z")  # noqa: E731
+        tools = [use("t1", "Read", file_path="/x/a"), use("t2", "Read", file_path="/x/b"),
+                 use("t3", "Read", file_path="/x/c")]
+        rows = [{"type": "user", "timestamp": at(0), "message": {"content": "p" * 40}}]
+        rows += [{"type": "assistant", "timestamp": at(1), "message": {"id": "r1", "content": [block],
+                                                                    "usage": {"output_tokens": 200,
+                                                                              "cache_read_input_tokens": 1000}}}
+                 for block in tools]
+        rows += [{"type": "user", "timestamp": at(2), "message": {"content": [
+            {"type": "tool_result", "tool_use_id": t, "content": "z" * 10} for t in ("t1", "t2", "t3")]}}]
+        rows += [{"type": "assistant", "timestamp": at(3), "message": {"id": "r2", "content": [
+            {"type": "text", "text": "done"}], "usage": {"output_tokens": 1, "cache_read_input_tokens": 2000}}}]
+        write("w.jsonl", rows)
+        got = self.fm_json("cost", "--outputs", env={"CLAUDE_CONFIG_DIR": cfg})
+        self.assertEqual(got["main"]["calls"], 2)
+        kinds = {k["kind"] for k in got["parts"]}
+        self.assertNotIn("main thinking", kinds, "no thinking block: the output tokens are not thinking")
+        tool_in = sum(len(json.dumps(t["input"])) for t in tools)
+        self.assertIn("main tool input", kinds)
+        self.assertEqual({k["kind"]: k["reread_tokens"] for k in got["parts"]}["main tool input"], round(tool_in / 4))
+
 
 if __name__ == "__main__":
     import unittest
