@@ -3995,6 +3995,9 @@ class Brief:
             raise PolicyError(f"{self.id} acceptance criterion {n} has no evidence; record it with "
                               f"`sampo task evidence {self.id} --ac {n} --run \"<cmd>\"`")
         self._refuse_failed_run(ac=n)
+        self._tick(n)
+
+    def _tick(self, n):
         lines, k = [], 0
         for line in self.section("Acceptance criteria").splitlines():
             m = _AC_RE.match(line)
@@ -4006,6 +4009,58 @@ class Brief:
         if k < n:
             raise KeyError(f"no acceptance criterion {n}")
         self.set_section("Acceptance criteria", "\n".join(lines) + "\n")
+
+    def waive_ac(self, n, probe, line):
+        """T-4292: criterion n cannot be proved here (its tool fails in this sandbox and the harness's own self-check
+        `probe` failed the same way, which the harness that calls this has checked: fm code's unprovable action, in
+        process; there is no CLI path). Typed evidence, never a [ran] line, so the close lists the criterion as not
+        verified; the box is ticked so the task can close, and the log says why. The brief itself still requires a failed
+        run of the criterion on record."""
+        acs = self.acceptance()
+        if not 1 <= n <= len(acs):
+            raise KeyError(f"no acceptance criterion {n}")
+        if acs[n - 1].checked:
+            raise PolicyError(f"{self.id} criterion {n} is already checked; nothing to waive")
+        if not verify_of(acs[n - 1].text):
+            raise PolicyError(f"{self.id} criterion {n} has no verify command to waive")
+        if n in self.waived_acs():
+            raise PolicyError(f"{self.id} criterion {n} is already waived")
+        self._waive_needs_red_run(n, line)
+        self.add_evidence(probe, f"waived: the probe fails the same way ({str(line)[:120]})", ac=n)
+        self._tick(n)
+        self.append_log(f"criterion {n} waived, not verified: the probe `{probe}` fails the same way ({str(line)[:120]})")
+
+    def red_ran_line(self, n):
+        """T-4292: the newest [ran] evidence line of criterion n when that run failed and no later run of the same
+        command passed, else None."""
+        runs = [l for l in self.evidence() if _RAN_MARK in l and (m := _EV_RE.match(l))
+                and (m.group(1), int(m.group(2))) == ("ac", n)]
+        if not runs or "` → ✗ exit" not in runs[-1]:
+            return None
+        cmd = runs[-1].split("`")[1] if runs[-1].count("`") >= 2 else None
+        later = self.evidence()
+        later = later[later.index(runs[-1]) + 1:]
+        if cmd and any(_RAN_MARK in l and f"`{cmd}` → exit 0" in l for l in later):
+            return None
+        return runs[-1]
+
+    def _waive_needs_red_run(self, n, line):
+        """T-4292: a waiver ticks a red criterion, so the brief re-checks what it can itself, whoever calls: the criterion's
+        newest run must be a failure on record. (Round 3: the signature comparison of the self-check's line with the
+        failure lives in the harness, smith._selfcheck_why, which also builds the self-check; no typed caller exists.)"""
+        red = self.red_ran_line(n)
+        if red is None:
+            raise PolicyError(f"{self.id} criterion {n}: no failed run of its command on record (or its newest run "
+                              "passed), so there is nothing to waive; run it with --ac first")
+
+    def waived_acs(self):
+        """T-4292: {criterion number: its evidence line} for the criteria waived as unprovable here."""
+        out = {}
+        for ln in self.evidence():
+            m = _EV_RE.match(ln)
+            if m and m.group(1) == "ac" and "→ waived: " in ln and _RAN_MARK not in ln:
+                out[int(m.group(2))] = ln
+        return out
 
     def done_blockers(self, since=None, tree=None, need=()):
         reasons = []

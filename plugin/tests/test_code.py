@@ -246,8 +246,8 @@ class EndToEnd(CodeCase):
         self.assertIn("never import Sampo's modules in a python3 -c one-liner", f.said(1))
 
     def test_a_green_verify_before_any_edit_leaves_the_step_open(self):  # T-3124
-        green = dict(PLAN, criteria=[{"text": "it holds", "verify": "true"}])
-        f = self.serve("openai", plan(green), call("run", cmd="true"),
+        green = dict(PLAN, criteria=[{"text": "it holds", "verify": "test -f calc.py"}])  # T-4292: `true` cannot fail, refused for every type
+        f = self.serve("openai", plan(green), call("run", cmd="test -f calc.py"),
                        call("write", file="notes.txt", content="x\n"), call("done", summary="noted"))
         self.code("note it", "--model", "fake", "--no-commit", check=False)
         self.assertEqual(f.script, [], "the green run before the write didn't end the step: the write and done were asked for")
@@ -789,7 +789,7 @@ class Review(CodeCase):
     def test_a_re_plan_that_cannot_stand_is_dropped_for_the_plan_in_hand_with_the_clause_set_aside(self):
         # T-3016 review: the refused task is dropped only once its replacement passes the plan's checks; T-4386: a
         # re-plan that cannot stand leaves the plan in hand, and its clause is the one thing set aside
-        weak = dict(M_PLAN, criteria=[{"text": "keep the tests as they are", "verify": "true"}])
+        weak = dict(M_PLAN, criteria=[{"text": "keep the tests as they are", "verify": "test -f calc.py"}])  # T-4292: green, not `true`
         self.serve("anthropic", plan(M_PLAN), {"text": "hmm"}, {"text": "nope"}, plan(weak), plan(weak),  # T-4363: one more round
                    call("edit", file="calc.py", old="a - b", new="a + b"), call("done", summary="x"), CLOSE)
         r = self.code("fix add, and keep the tests as they are", "--model", "fake", check=False)

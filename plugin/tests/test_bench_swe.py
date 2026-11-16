@@ -51,7 +51,9 @@ def tc(name, **args):
 
 
 def reply(*calls):
-    return {"text": "", "tool_calls": list(calls), "stop": "tool_calls", "usage": {"in": 10, "out": 5}}
+    # in: 0 is "the server didn't say" (check_truncated): a made-up 10 read as a server that truncated any prompt over ~8000
+    # characters, so each line added to Smith's system prompt turned this module red
+    return {"text": "", "tool_calls": list(calls), "stop": "tool_calls", "usage": {"in": 0, "out": 5}}
 
 
 def unittest_cmd(inst, files):
@@ -182,7 +184,7 @@ class SweBench(unittest.TestCase):
         self.assertEqual((got["test_sym"], got["test_sym2"]), ("PASSED", "FAILED"))
 
     BARE_EDIT = reply(tc("edit", file="calc.py", old="a - b", new="a + b"))
-    STOP = {"text": "fixed", "tool_calls": [], "stop": "stop", "usage": {"in": 10, "out": 5}}
+    STOP = {"text": "fixed", "tool_calls": [], "stop": "stop", "usage": {"in": 0, "out": 5}}
 
     def test_both_harnesses_run_per_instance_on_one_pull_and_are_tagged(self):
         seen = []

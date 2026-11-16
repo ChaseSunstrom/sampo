@@ -117,7 +117,7 @@ class LeanPlanner(CodeCase):
         os.makedirs(bin_)
         init = {"type": "system", "subtype": "init", "mcp_servers": [{"name": "evil", "status": "connected"}],
                 "tools": ["Read"], "plugins": []}
-        plan = {"type": "FIX", "tier": "S", "title": "t", "criteria": [{"text": "adds", "verify": "true"}], "steps": ["s"]}
+        plan = {"type": "FIX", "tier": "S", "title": "t", "criteria": [{"text": "adds", "verify": "test -f calc.py"}], "steps": ["s"]}
         result = {"type": "result", "is_error": False, "result": json.dumps(plan), "usage": {}}
         with open(os.path.join(bin_, "claude"), "w") as f:
             f.write(f"#!/bin/sh\necho '{json.dumps(init)}'\nsleep 20\necho '{json.dumps(result)}'\n")

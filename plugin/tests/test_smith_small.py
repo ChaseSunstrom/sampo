@@ -98,7 +98,8 @@ class FixPlanCheck(unittest.TestCase):
                     "python3 test_calc.py; echo done", "python3 -m pytest -q | tail -5",
                     "sh -c 'python3 test_calc.py || exit 0'", "printf ok"):
             with self.subTest(cmd=cmd):
-                self.assertIsNone(smith.check_plan(self.verify(cmd)), "outside a fix request, as before")
+                # T-4292: for every task type, not only a request that asks for a change
+                self.assertIn("can't fail", smith.check_plan(self.verify(cmd)) or "")
                 self.assertIn("can't fail", smith.check_plan(self.verify(cmd), change="check"))
 
     def test_a_verify_that_can_fail_stands(self):
@@ -735,7 +736,7 @@ class PlanForm(CodeCase):
     def test_m_form_downgrade_of_a_plan_the_replan_replaced_is_not_reported(self):
         # the first plan is cut to S in the planner's hands; its verify already passes, so it is planned again, whole:
         # the plan that stands was never downgraded, and no note, event or friction line says it was
-        passes = dict(M_ONE, criteria=[{"text": "calc.add adds two numbers", "verify": "true"}])
+        passes = dict(M_ONE, criteria=[{"text": "calc.add adds two numbers", "verify": "test -f calc.py"}])  # T-4292: not `true`
         f, r = self.go(*[plan(passes)] * 3, {"text": "nope"}, plan(M_PLAN), FIX_EDIT, DONE, CLOSE)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertEqual((self.task()["tier"], self.task()["status"]), ("M", "done"), r.stdout + r.stderr)
@@ -743,7 +744,7 @@ class PlanForm(CodeCase):
         self.assertEqual(self.downgrades(), [])
 
     def test_m_form_downgrade_twice_over_a_replan_is_reported_once_for_the_plan_that_stands(self):
-        passes = dict(M_ONE, criteria=[{"text": "calc.add adds two numbers", "verify": "true"}])
+        passes = dict(M_ONE, criteria=[{"text": "calc.add adds two numbers", "verify": "test -f calc.py"}])
         f, r = self.go(*[plan(passes)] * 3, {"text": "nope"}, *[plan(M_ONE)] * 3, {"text": "nope"}, FIX_EDIT, DONE,
                        CLOSE)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

@@ -1099,11 +1099,20 @@ def cmd_task(args):
             print(f"sampo: warning: {w}", file=sys.stderr)
         grade, why = b.grade()
         guessed = b.unverified() if c.at_least(b.tier, "M") else []  # T-0254: a warning, not a gate
-        own = {a.n for a in b.acceptance() if c.verify_of(a.text) and any(  # T-0900: proven by its own command
+        waived = {}  # T-4292: a criterion whose newest record is a waiver was never proved, whatever ran before it
+        for ln in b.evidence():
+            m = c._EV_RE.match(ln)
+            if m and m.group(1) == "ac":
+                if "→ waived: " in ln and c._RAN_MARK not in ln:
+                    waived[int(m.group(2))] = ln
+                else:
+                    waived.pop(int(m.group(2)), None)
+        own = {a.n for a in b.acceptance() if c.verify_of(a.text) and a.n not in waived and any(  # T-0900: proven by its own command
             ln.startswith(f"- (ac {a.n}) ") and c._RAN_MARK in ln for ln in b.evidence())}
         # T-1159: one list: what finish was told it didn't check (waiver, claims) first, then criteria no command proved
         by_hand = list(getattr(args, "not_verified", None) or []) + [
             f"criterion {a.n}: " + c.fit(re.sub(r" — verify with `.*`$", "", a.text), 90)
+            + (" (waived, not provable here)" if a.n in waived else "")
             for a in b.acceptance() if a.n not in own]
         try:  # T-2391: each rollup kind this close still needs (docs, infra, data, perf, research, hollow), with its command;
             # the per-criterion kinds (typed, red, inconclusive) are the criterion lines above
@@ -4416,7 +4425,7 @@ def task_ac(p, args):
         return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion {n} edited.{_warned(warns)}")
     ev = args.evidence
 
-    def check(b):
+    def check(b):  # T-4292: no waive here: fm code's harness writes a waiver in-process (Brief.waive_ac), nothing typed can
         if ev:
             b.add_evidence(ev[0], ev[1], ac=n)
         b.check_ac(n)

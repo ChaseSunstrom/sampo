@@ -88,7 +88,7 @@ class Plans(CodeCase):
         got, _ = smith.fit_plan(run, quiet)
         self.assertNotIn("\n", got["criteria"][0]["verify"])
         self.assertIn("can't fail", smith.check_plan(got, "fix") or "")
-        self.assertIsNone(smith.check_plan(got), "outside small mode the rule is not asked, as before")
+        self.assertIn("can't fail", smith.check_plan(got) or "", "T-4292: asked for every task type")
         exits = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "python3 test_calc.py\nexit 0"}])
         self.assertIn("can't fail", smith.check_plan(smith.fit_plan(run, exits)[0], "fix") or "")
 
