@@ -11,6 +11,10 @@
 
 ### Everything else
 
+- sampo ship and sampo release --push now judge commits made straight on the trunk with the self-change gate before pushing: a moved guard file is seen, a failed listing is held, one core yes per commit passes (a refusal logged by the old code has no sha, so a yes given for it covers nothing), commits a lane landed are skipped because every landing path (lane merge, train, serve, the PR t… (T-4805).
+- sampo cost --outputs counts every part of a context, not only tool results: thinking (an upper bound, only for replies with a thinking block), the model's own text, tool input, attachments by type (only the text the model receives: hook stdout and UI-only types count nothing, unknown types fall back to their non-metadata fields), compact summaries and task notices, main and subagents, w… (T-4830).
+- FM_GUARD_SCRIPT_BUDGET and FM_GUARD_SCRIPT_HARD fall back to the default on a value that is not a positive finite number and cap a huge one at 60 s, so the guard never raises on its own env and every script read stays timed; bench_hooks prints n/a for a stage with no rows (T-4824).
+- The door gate keeps the names a step lists after its destroy clause and reads abbreviations and lists as one clause, and a lane brief refuses a one-way step or verify that focus would park on, read-only, so a brief refused for another reason changes nothing (T-4821).
 - sampo private add and rm now rebuild the profile and its linked AGENTS.md and GEMINI.md at once, so a new private term leaves them at once, and the rebuild runs outside the state lock (T-4819).
 - A profile build with no items (no seed, no memories) now removes the old profile.md and Sampo's block in each linked AGENTS.md or GEMINI.md, keeping the user's own text and the link, so an older copy can't keep a private term added since (T-4831).
 - sampo lane train T-1 T-2 trains every id it is given: it read only the first and landed it alone, naming no other (T-4833).
