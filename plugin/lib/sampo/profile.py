@@ -285,7 +285,8 @@ def rebuild(if_stale=False):
             pass
         return None
     text, n = build()
-    if not text:
+    if not text:  # T-4831: no seed and no memories: no profile, and no copy of an older one left where it was linked
+        _clear()
         return None
     if _read(path()) != text or if_stale:
         _write(path(), text)
@@ -295,6 +296,23 @@ def rebuild(if_stale=False):
         except c.PolicyError:
             pass
     return {"path": path(), "items": n, "chars": len(text)}
+
+
+def _clear():
+    """T-4831: an empty build leaves no profile: profile.md goes, and so does Sampo's block in each linked tool's rules
+    file (the user's own text there and the opt-in stay, so the next build that has items links again)."""
+    from sampo import agents
+    try:
+        os.remove(path())
+    except FileNotFoundError:
+        pass
+    for tool in _links():
+        rules = agents._files(tool)["rules"]
+        have = _read(rules)
+        if have is not None:
+            new = agents._block(have, BEGIN, END, None)
+            if new != have:
+                c.write_atomic(rules, new)
 
 
 # ---------------------------------------------------------------- what agents get

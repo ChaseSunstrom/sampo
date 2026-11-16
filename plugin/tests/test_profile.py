@@ -5,7 +5,7 @@ import os
 import subprocess
 import sys
 
-from helpers import FM, HOOK, SampoTestCase, git_repo
+from helpers import FM, HOOK, SampoTestCase, git_repo, read_text
 
 SEED = ("# notes\n<!-- sampo-profile:begin -->\n# The user\n- Full autonomy, standing:\n  - Never ask; decide and report.\n"
         "- Visual taste: crafted, animated, real data.\n<!-- sampo-profile:end -->\n")
@@ -266,6 +266,30 @@ class Profile(SampoTestCase):
         with open(rules) as f:
             self.assertEqual(f.read(), "# mine\n")
         self.assertNotEqual(self.fm("profile", "link", "vim", env=env, check=False).returncode, 0)
+
+    def test_an_empty_build_removes_the_old_profile_and_its_linked_block(self):
+        # T-4831: with no seed and no memories left, the old profile.md and the block it put in a linked AGENTS.md
+        # stayed, holding whatever they held (a private term added since included); the user's own text and the opt-in stay
+        import shutil
+        self.built()
+        codex = os.path.join(self.tmp, "codex")
+        os.makedirs(codex)
+        rules = os.path.join(codex, "AGENTS.md")
+        with open(rules, "w") as f:
+            f.write("# mine\n")
+        env = dict(self.env, CODEX_HOME=codex)
+        self.fm("profile", "link", "codex", env=env)
+        self.assertIn("Keep replies short", read_text(rules))
+        os.remove(os.path.join(self.home, "state", "profile", "seed.md"))
+        os.remove(os.path.join(self.cc, "CLAUDE.md"))
+        shutil.rmtree(os.path.join(self.cc, "projects"))
+        self.fm("profile", "rebuild", env=env)
+        self.assertFalse(os.path.exists(os.path.join(self.home, "state", "profile", "profile.md")))
+        self.assertEqual(read_text(rules), "# mine\n")
+        self.assertIn("no profile", self.fm("profile", "show", env=env).stdout)
+        self.seed()
+        self.fm("profile", "rebuild", env=env)
+        self.assertIn("Full autonomy, standing", read_text(rules), "the opt-in stands: a later build links again")
 
     def test_opencode_session_start_carries_the_digest(self):
         self.built()
