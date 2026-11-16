@@ -339,5 +339,348 @@ class Cut(unittest.TestCase):
         self.assertIn(release.SLOTS_CUT, line)
 
 
+# T-4788: ship-1116a: 208 affected files (6429 tests, 3846 CPU s) at load 13-16 hit the 900 s limit with two healthy
+# classes 10 s into their run, and the ship blamed them as hung. A cut run is worded from its own totals.
+HEALTHY_CUT = ("\n==== test_slow.Slow\nrun.py: still running at the run's deadline (10s in): killed (T-1809)\n"
+               "Thread 0x1 (most recent call first):\n  File \"x.py\", line 1 in wait\n\n"
+               "==== test_slow2.Slow2\nrun.py: still running at the run's deadline (11s in): killed (T-1809)\n\n"
+               "Ran 6429 tests in 880.0s (20 jobs, 6 at a time; slowest: test_x.X 3s; cpu 3846.0 s)\n\n"
+               "INCOMPLETE (stopped at its deadline)\nnot run (deadline): 5\n  not run class: test_slow.Slow\n"
+               "  not run class: test_slow2.Slow2\n  not run class: test_a.A\n  not run class: test_b.B\n"
+               "  not run class: test_c.C\nrun.py: stopped at its deadline\n")
+SUITE = {f"test_m{i}" for i in range(30)}
+
+
+def suite_times(mine, theirs, mine_n=3):
+    """Recorded class times: test_m0..test_m<mine_n-1> take `mine` s each, the other modules `theirs` s each."""
+    return {f"test_m{i}.C": float(mine if i < mine_n else theirs) for i in range(30)}
+
+
+class Scaled(unittest.TestCase):
+    """T-4788: the affected stage's limit follows the set's recorded time and the machine's free CPUs; a set too big for
+    it is skipped (the full check covers it); a run cut with healthy classes running goes on to the full check."""
+    setUp = Cut.setUp
+    limit = None
+
+    def affected(self, *results):
+        it = iter(results)
+
+        def run(root, cmd, timeout=600, **k):
+            self.runs.append(cmd)
+            self.limit = timeout
+            return next(it)
+        with mock.patch.object(c, "run_command", side_effect=run), contextlib.redirect_stdout(io.StringIO()) as out:
+            try:
+                return release._affected_first(self.p, self.wt, "base", {}), "", out.getvalue()
+            except cli.UsageError as e:
+                return None, str(e), out.getvalue()
+
+    def plan(self, times, load=4, cpus=16, tests=("plugin/tests/test_m0.py", "plugin/tests/test_m1.py",
+                                                     "plugin/tests/test_m2.py"), suite=SUITE, jobs=0):
+        patches = (mock.patch.object(cli, "affected", return_value=("python3 plugin/tests/run.py", list(tests), None)),
+                   mock.patch.object(release, "_run_times", return_value=(times, set(suite), jobs)),
+                   mock.patch.object(c, "host_load", return_value=(load, cpus)))
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_scaled_a_set_over_a_third_of_the_suite_is_skipped_with_one_line_naming_the_counts(self):
+        self.plan(suite_times(2000, 10), tests=[f"plugin/tests/test_m{i}.py" for i in range(4)])
+        got, err, said = self.affected()
+        self.assertEqual((got, err, self.runs), ([], "", []), "no run: the full check covers it")
+        self.assertEqual(len(said.strip().splitlines()), 1, said)
+        self.assertIn("affected set is 4 of 30 test files", said)
+        self.assertIn("the full check covers it", said)
+
+    def test_scaled_the_208_file_case_is_skipped_by_share_and_by_time(self):
+        suite = {f"test_n{i}" for i in range(587)}
+        times = {f"test_n{i}.C": 3846 / 208 if i < 208 else 7.0 for i in range(587)}
+        self.plan(times, load=14, tests=[f"plugin/tests/test_n{i}.py" for i in range(208)], suite=suite)
+        got, err, said = self.affected()
+        self.assertEqual(self.runs, [])
+        self.assertIn("affected set is 208 of 587 test files", said)
+        self.assertIn("3846", said)
+        self.assertIn("the full check covers it", said)
+
+    def test_scaled_a_smaller_set_gets_a_limit_from_its_recorded_cpu_time_and_the_free_cpus(self):
+        self.plan(suite_times(400, 200), load=14)  # 1200 CPU s over 2 free CPUs: 600 s, times 1.5, plus 60
+        got, err, said = self.affected((0, "OK\n"))
+        self.assertEqual(err, "")
+        self.assertEqual(self.limit, 960)
+        self.assertIn("1200 recorded s", said)
+        self.assertNotIn("CPU s", said, "the record is wall seconds per class, not CPU seconds")
+
+    def test_scaled_the_limit_has_a_floor_on_a_quiet_machine(self):
+        self.plan(suite_times(400, 200), load=1)  # 1200 CPU s over 15 free CPUs: 80 s: the floor
+        self.affected((0, "OK\n"))
+        self.assertEqual(self.limit, release.AFFECTED_FLOOR)
+
+    def test_scaled_a_set_that_cannot_finish_under_the_ceiling_is_skipped(self):
+        self.plan(suite_times(1500, 600), load=14)  # 4500 of 20100 CPU s: under a third, but 3435 s at 2 CPUs
+        got, err, said = self.affected()
+        self.assertEqual(self.runs, [])
+        self.assertIn("would take", said)
+        self.assertIn("the full check covers it", said)
+
+    def test_scaled_no_record_falls_back_to_the_file_count_and_says_so(self):
+        self.plan({}, tests=[f"plugin/tests/test_m{i}.py" for i in range(12)])
+        got, err, said = self.affected()
+        self.assertEqual(self.runs, [])
+        self.assertIn("by file count", said)
+        self.assertIn("12 of 30", said)
+
+    def test_scaled_no_record_and_a_small_set_keeps_the_old_limit(self):
+        self.plan({})
+        self.affected((0, "OK\n"))
+        self.assertEqual(self.limit, 900)
+
+    def test_scaled_a_run_cut_with_healthy_classes_running_blames_none_and_goes_on(self):
+        self.plan({"test_slow.Slow": 3.0, "test_slow2.Slow2": 4.0})
+        got, err, said = self.affected((124, HEALTHY_CUT))
+        self.assertEqual((err, len(self.runs)), ("", 1), "no retry, no refusal")
+        self.assertEqual(got, [])
+        self.assertIn("ran out of time", said)
+        self.assertIn("15 of 20 classes done", said)
+        self.assertIn("3 not started", said)
+        self.assertIn("2 running", said)
+        self.assertIn("test_slow.Slow 10 s in", said)
+        self.assertIn("no test failed", said)
+        self.assertIn("the full check", said)
+        self.assertNotIn("hung", said)
+
+    def test_scaled_a_class_with_no_record_a_few_seconds_in_is_not_called_hung(self):
+        self.plan({})
+        got, err, said = self.affected((124, HEALTHY_CUT))
+        self.assertEqual(err, "")
+        self.assertNotIn("hung", said)
+
+    def test_scaled_a_class_far_over_its_recorded_time_is_still_hung(self):
+        out = HEALTHY_CUT.replace("(10s in)", "(700s in)")
+        self.plan({"test_slow.Slow": 3.0, "test_slow2.Slow2": 4.0})
+        got, err, said = self.affected((124, out))
+        self.assertEqual(len(self.runs), 1)
+        self.assertIn("test_slow.Slow", err)
+        self.assertNotIn("test_slow2.Slow2", err, "only the class far over its time is named")
+        self.assertIn("hung", err)
+        self.assertIn("nothing was pushed", err)
+
+    def test_scaled_a_real_failure_beside_the_running_classes_still_stops_the_ship(self):
+        self.plan({"test_slow.Slow": 3.0, "test_slow2.Slow2": 4.0})
+        got, err, said = self.affected((124, RED_OUT + HEALTHY_CUT), (1, RED_OUT))
+        self.assertIn("the affected tests failed in the scratch tree: test_bad.Bad", err)
+        self.assertNotIn("ran out of time", said)
+
+    def test_scaled_a_cut_of_a_files_only_run_is_not_a_pass_the_full_run_follows(self):
+        self.plan({"test_slow.Slow": 3.0, "test_slow2.Slow2": 4.0})
+        with mock.patch.object(c, "run_command", side_effect=lambda *a, **k: (124, HEALTHY_CUT)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(release._affected_first(self.p, self.wt, "base", {}, only=["plugin/x.py"]))
+
+    def test_scaled_a_hung_class_the_stage_let_through_is_refused_by_the_full_check_and_kept_in_its_output(self):
+        line = release._full_refusal(self.p, HUNG_OUT, 124, [], [], "python3 plugin/tests/run.py")
+        self.assertIn("nothing was pushed", line)
+        path = release._keep_output(self.p, HUNG_OUT, "x")
+        with open(path, encoding="utf-8") as f:
+            self.assertIn("test_hung.Hung", f.read())
+
+    def test_scaled_the_times_come_from_the_trees_own_run_py(self):
+        tree = tempfile.mkdtemp(prefix="ship-times-")
+        self.addCleanup(shutil.rmtree, tree, True)
+        tests = os.path.join(tree, "plugin", "tests")
+        os.makedirs(tests)
+        for n in ("run.py", "test_a.py", "test_b.py", "helper.py"):
+            open(os.path.join(tests, n), "w").close()
+        with open(os.path.join(tests, "run.py"), "w") as f:
+            f.write("def load_times():\n    return {'test_a.A': 2.5, 'test_a.A.test_x': 1.0}\n")
+        times, suite, _ = release._run_times(tree, "python3 plugin/tests/run.py a")
+        self.assertEqual((times, suite), ({"test_a.A": 2.5, "test_a.A.test_x": 1.0}, {"test_a", "test_b"}))
+        with open(os.path.join(tests, "run.py"), "w") as f:
+            f.write("raise SystemExit(3)\n")
+        self.assertEqual(release._run_times(tree, "python3 plugin/tests/run.py a"), ({}, {"test_a", "test_b"}, 0))
+        self.assertEqual(release._run_times(tree, "python3 -m pytest -q a"), ({}, set(), 0), "another runner: no record")
+
+    def stub_tree(self, run_py, names=("run.py", "test_a.py")):
+        tree = tempfile.mkdtemp(prefix="ship-times-")
+        self.addCleanup(shutil.rmtree, tree, True)
+        tests = os.path.join(tree, "plugin", "tests")
+        os.makedirs(tests)
+        for n in names:
+            open(os.path.join(tests, n), "w").close()
+        with open(os.path.join(tests, "run.py"), "w") as f:
+            f.write(run_py)
+        return tree
+
+    # --- T-4788 review: sizing never crashes a ship, and the record is trusted only as far as it is sane
+    def test_scaled_a_record_of_all_zeros_is_no_record_not_a_division_by_zero(self):
+        self.plan(suite_times(0, 0))
+        got, err, _ = self.affected((0, "OK\n"))
+        self.assertEqual((err, self.limit), ("", release.AFFECTED_OLD), "no usable record: the old limit")
+        self.plan(suite_times(0, 0), tests=[f"plugin/tests/test_m{i}.py" for i in range(12)])
+        got, err, said = self.affected()
+        self.assertIn("by file count", said)
+
+    def test_scaled_a_host_with_no_cpus_or_no_reading_does_not_crash_the_sizing(self):
+        for host in ((3, 0), None):
+            with self.subTest(host=host):
+                self.plan(suite_times(400, 200))
+                with mock.patch.object(c, "host_load", return_value=host):
+                    got, err, said = self.affected((0, "OK\n"))
+                self.assertEqual(err, "")
+                self.assertGreaterEqual(self.limit, release.AFFECTED_FLOOR)
+
+    def test_scaled_any_error_in_the_sizing_falls_back_to_the_old_limit(self):
+        self.plan(suite_times(400, 200))
+        with mock.patch.object(release, "_affected_limit", side_effect=ZeroDivisionError("x")):
+            got, err, said = self.affected((0, "OK\n"))
+        self.assertEqual((err, self.limit), ("", release.AFFECTED_OLD))
+        self.plan(suite_times(400, 200))
+        with mock.patch.object(release, "_run_times", side_effect=RuntimeError("x")):
+            got, err, said = self.affected((0, "OK\n"))
+        self.assertEqual((err, self.limit), ("", release.AFFECTED_OLD))
+
+    def test_scaled_the_record_keeps_only_finite_non_negative_seconds(self):
+        tree = self.stub_tree("def load_times():\n    return {'test_a.A': float('nan'), 'test_a.B': -3.0, "
+                              "'test_a.C': float('inf'), 'test_a.D': 2.0, 'test_a.E': True, 'test_a.F': 0.0}\n")
+        times, _, _ = release._run_times(tree, "python3 plugin/tests/run.py a")
+        self.assertEqual(times, {"test_a.D": 2.0, "test_a.F": 0.0})
+
+    def test_scaled_the_times_child_gets_the_ships_env_not_the_hooks_git_vars(self):
+        seen = os.path.join(tempfile.mkdtemp(prefix="ship-env-"), "seen")
+        self.addCleanup(shutil.rmtree, os.path.dirname(seen), True)
+        tree = self.stub_tree("import os\ndef load_times():\n    open(%r, 'w').write(repr((os.environ.get('GIT_DIR'), "
+                              "os.environ.get('SHIP_MARK'))))\n    return {}\n" % seen)
+        with mock.patch.dict(os.environ, {"GIT_DIR": "/not/the/repo"}):
+            release._run_times(tree, "python3 plugin/tests/run.py a", {"SHIP_MARK": "yes", "PATH": os.environ["PATH"]})
+        with open(seen) as f:
+            self.assertEqual(f.read(), repr((None, "yes")))
+        with mock.patch.dict(os.environ, {"GIT_DIR": "/not/the/repo"}):  # no env given: the process's, minus GIT_*
+            release._run_times(tree, "python3 plugin/tests/run.py a")
+        with open(seen) as f:
+            self.assertEqual(f.read(), repr((None, None)))
+
+    def test_scaled_a_times_child_that_hangs_is_killed_with_everything_it_started(self):
+        pidfile = os.path.join(tempfile.mkdtemp(prefix="ship-hang-"), "pid")
+        self.addCleanup(shutil.rmtree, os.path.dirname(pidfile), True)
+        tree = self.stub_tree("import subprocess, sys, time\ndef load_times():\n    p = subprocess.Popen([sys.executable, "
+                              "'-c', 'import time; time.sleep(120)'])\n    open(%r, 'w').write(str(p.pid))\n"
+                              "    time.sleep(120)\n" % pidfile)
+        t0 = time.monotonic()
+        got = release._run_times(tree, "python3 plugin/tests/run.py a", wait=2)
+        self.assertEqual(got, ({}, {"test_a"}, 0), "no record when the reader hangs")
+        self.assertLess(time.monotonic() - t0, 60)
+        with open(pidfile) as f:
+            pid = int(f.read())
+        for _ in range(100):  # the kill has landed; init reaps the orphan
+            try:
+                os.kill(pid, 0)
+                with open(f"/proc/{pid}/stat") as f:
+                    if f.read().rpartition(")")[2].split()[0] == "Z":
+                        break
+            except (OSError, ValueError):
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(pid, 9)
+            self.fail("the reader's own child was left running")
+
+    def test_scaled_a_reader_that_prints_an_object_or_junk_is_no_record_not_a_crash(self):
+        for shown in ("{'a': 1}", "'text'", "[]", "[1]", "[{}, 'x']", "None"):
+            with self.subTest(shown=shown):
+                tree = self.stub_tree(f"import json\nprint(json.dumps({shown}))\nraise SystemExit(0)\n")
+                self.assertEqual(release._run_times(tree, "python3 plugin/tests/run.py a"), ({}, {"test_a"}, 0))
+
+    def test_scaled_a_child_the_reader_left_running_after_a_clean_exit_is_ended_too(self):
+        pidfile = os.path.join(tempfile.mkdtemp(prefix="ship-left-"), "pid")
+        self.addCleanup(shutil.rmtree, os.path.dirname(pidfile), True)
+        tree = self.stub_tree("import subprocess, sys\ndef load_times():\n    p = subprocess.Popen([sys.executable, "
+                              "'-c', 'import time; time.sleep(120)'], stdout=subprocess.DEVNULL)\n"
+                              "    open(%r, 'w').write(str(p.pid))\n    return {'test_a.A': 1.0}\n" % pidfile)
+        got = release._run_times(tree, "python3 plugin/tests/run.py a")
+        self.assertEqual(got[0], {"test_a.A": 1.0}, "the reader itself ended cleanly with its record")
+        with open(pidfile) as f:
+            pid = int(f.read())
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+                with open(f"/proc/{pid}/stat") as f:
+                    if f.read().rpartition(")")[2].split()[0] == "Z":
+                        break
+            except (OSError, ValueError):
+                break
+            time.sleep(0.05)
+        else:
+            os.kill(pid, 9)
+            self.fail("the reader's child outlived the read")
+
+    def test_scaled_the_divisor_is_capped_at_the_jobs_the_run_will_use(self):
+        self.plan(suite_times(400, 200), load=1, jobs=4)  # 1200 s over min(15 free, 4 jobs): 300 s, times 1.5, plus 60
+        self.affected((0, "OK\n"))
+        self.assertEqual(self.limit, 510)
+        self.plan(suite_times(400, 200), load=1, jobs=0)  # no -j known: the free CPUs alone
+        self.affected((0, "OK\n"))
+        self.assertEqual(self.limit, release.AFFECTED_FLOOR)
+
+    def test_scaled_the_jobs_are_the_commands_own_j_else_run_pys_default(self):
+        tree = self.stub_tree("def load_times():\n    return {}\ndef slot_count():\n    return 6\n"
+                              "def usable_cpus(folder=None):\n    return 5\ndef _cgroup_dir():\n    return None\n")
+        self.assertEqual(release._run_times(tree, "python3 plugin/tests/run.py a")[2], 5)
+        self.assertEqual(release._run_times(tree, "python3 plugin/tests/run.py -j 2 a")[2], 2)
+        self.assertEqual(release._run_times(tree, "python3 plugin/tests/run.py -j3 a")[2], 3)
+
+    def test_scaled_the_real_run_py_is_read_once_through_its_own_load_times(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.dirname(os.path.dirname(here))
+        rec = os.path.join(tempfile.mkdtemp(prefix="ship-rec-"), "times.json")
+        self.addCleanup(shutil.rmtree, os.path.dirname(rec), True)
+        with open(rec, "w") as f:
+            json.dump({"test_a.A": 1.5, "test_a.A.test_x": 0.5}, f)
+        times, suite, jobs = release._run_times(root, "python3 plugin/tests/run.py a",
+                                                dict(os.environ, FM_TEST_TIMES=rec))
+        self.assertEqual(times, {"test_a.A": 1.5, "test_a.A.test_x": 0.5})
+        self.assertIn("test_train_ship_order", suite)
+        self.assertGreaterEqual(jobs, 1, "run.py's own -j default")
+
+    # --- T-4788 review: a files-only run that did not run everything is not a pass
+    def test_scaled_only_a_real_fail_beside_a_killed_class_is_not_a_pass_when_the_failed_one_is_green_alone(self):
+        self.plan({"test_slow.Slow": 3.0})
+        out = RED_OUT + HEALTHY_CUT
+        with mock.patch.object(c, "run_command", side_effect=[(1, out), (0, "OK\n")]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            got = release._affected_first(self.p, self.wt, "base", {}, only=["plugin/x.py"])
+        self.assertIsNone(got, "the killed and not-run classes never passed: the suite runs")
+
+    def test_scaled_only_a_real_fail_beside_a_not_run_class_is_not_a_pass_either(self):
+        self.plan({})
+        out = RED_AND_CUT
+        with mock.patch.object(c, "run_command", side_effect=[(1, out), (0, "OK\n")]), \
+                contextlib.redirect_stdout(io.StringIO()):
+            got = release._affected_first(self.p, self.wt, "base", {}, only=["plugin/x.py"])
+        self.assertIsNone(got)
+
+    def test_scaled_the_range_run_with_the_same_flake_still_passes_the_full_check_follows(self):
+        self.plan({"test_slow.Slow": 3.0})
+        got, err, said = self.affected((1, RED_OUT + HEALTHY_CUT), (0, "OK\n"))
+        self.assertEqual((got, err), (["plugin/tests/test_m0.py", "plugin/tests/test_m1.py", "plugin/tests/test_m2.py"], ""))
+
+    def test_scaled_the_ship_runs_the_suite_when_the_files_only_run_was_cut(self):
+        with mock.patch.object(release, "_affected_first", return_value=None) as run:
+            hit, ran = release._reuse_after_affected(self.p, self.wt, "base", {}, "the gates' pass (x)", ["f.md"])
+        self.assertEqual((hit, ran), (None, None), "no reuse: the suite runs")
+        self.assertEqual(run.call_args.kwargs, {"only": ["f.md"]})
+        with mock.patch.object(release, "_affected_first", return_value=["t.py"]):
+            self.assertEqual(release._reuse_after_affected(self.p, self.wt, "base", {}, "pass", ["f.md"]), ("pass", ["t.py"]))
+        with mock.patch.object(release, "_affected_first") as run:
+            self.assertEqual(release._reuse_after_affected(self.p, self.wt, "base", {}, "pass", []), ("pass", []))
+            self.assertEqual(release._reuse_after_affected(self.p, self.wt, "base", {}, None, ["f.md"]), (None, []))
+        run.assert_not_called()
+
+    def test_scaled_a_cut_files_only_run_through_the_real_stage_sends_the_ship_to_the_suite(self):
+        self.plan({"test_slow.Slow": 3.0, "test_slow2.Slow2": 4.0})
+        with mock.patch.object(c, "run_command", side_effect=lambda *a, **k: (124, HEALTHY_CUT)), \
+                contextlib.redirect_stdout(io.StringIO()):
+            hit, ran = release._reuse_after_affected(self.p, self.wt, "base", {}, "the gates' pass (x)", ["plugin/x.py"])
+        self.assertIsNone(hit)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,10 +5,13 @@ remote's main (origin by default) from a temporary worktree behind the active ta
 before the push. The first run's flags (--ui, --push, --remote, --no-check) are kept in release.json for a resume;
 a skipped step is never recorded as done, and a release with skipped gates can't push."""
 import codecs
+import contextlib
 import json
+import math
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -658,11 +661,137 @@ def _hung(out):
             if "still running at the run's deadline" in b]
 
 
+# T-4788: the affected stage is an early warning, not a second full run. Ship-1116a (2026-11-16): 208 affected files
+# (6429 tests, 3846 CPU s) at load 13-16 could not finish in 900 s; two healthy classes 10 s in were blamed as hung.
+AFFECTED_OLD, AFFECTED_FLOOR, AFFECTED_CEIL = 900, 300, 1500  # the limit with no record; the scaled limit's bounds (s)
+AFFECTED_SHARE = 1 / 3  # an affected set over this share of the suite is the full check's work
+AFFECTED_MARGIN, AFFECTED_SETUP, AFFECTED_FREE_MIN = 1.5, 60, 2.0  # x the estimate, plus startup s; at least 2 free CPUs
+HUNG_TIMES, HUNG_PLUS, HUNG_NO_RECORD = 3, 120, 300  # a killed class is hung past x its record + s (no record: s in)
+
+
+_READ_TIMES = ("import sys, json; sys.path.insert(0, sys.argv[1]); import run\n"
+               "try:\n    jobs = min(run.slot_count(), run.usable_cpus(run._cgroup_dir())) or run.usable_cpus(run._cgroup_dir())\n"
+               "except Exception:\n    jobs = 0\n"
+               "print(json.dumps([run.load_times(), jobs]))\n")
+
+
+def _run_times(wt, cmd, env=None, wait=30):
+    """T-4788: ({class or job id: recorded wall seconds}, the suite's module names, the -j the run will use or 0) for a
+    command that runs the tree's own tests/run.py: its timing record and default -j, read by that run.py in a child
+    (never imported here; `env`, the ship's own without GIT_*, else this process's without them; its own session, killed
+    with everything it started after `wait` s). The record keeps only finite non-negative numbers. ({}, set(), 0) for any
+    other runner; the record {} and -j 0 when they can't be read, so the caller falls back to the file count."""
+    tests = os.path.join(wt, "plugin", "tests")
+    if "run.py" not in cmd:
+        return {}, set(), 0
+    try:
+        suite = {f[:-3] for f in os.listdir(tests) if f.startswith("test_") and f.endswith(".py")}
+    except OSError:
+        return {}, set(), 0
+    if env is None:
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    got, jobs, proc = {}, 0, None
+    try:
+        proc = subprocess.Popen([sys.executable, "-I", "-c", _READ_TIMES, tests], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, cwd=wt, stdin=subprocess.DEVNULL, env=env,
+                                start_new_session=True)
+        out, _ = proc.communicate(timeout=wait)
+        if proc.returncode == 0 and out.strip():
+            read = json.loads(out.strip().splitlines()[-1])  # NaN and Infinity parse: sifted below
+            got, jobs = read[0], read[1]
+    except (OSError, ValueError, IndexError, KeyError, TypeError, subprocess.SubprocessError):
+        got, jobs = {}, 0
+    finally:  # every exit (clean, too slow, interrupted): the reader's session ends with whatever it left running
+        if proc is not None:
+            with contextlib.suppress(OSError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                proc.wait(timeout=5)  # reaped, so the child is no zombie
+    if not isinstance(got, dict):
+        got = {}
+    good = {k: float(v) for k, v in got.items() if isinstance(k, str) and isinstance(v, (int, float))
+            and not isinstance(v, bool) and math.isfinite(v) and v >= 0}
+    if m := re.search(r"(?:^|\s)-j\s*(\d+)(?!\S)", cmd):  # the command's own -j beats run.py's default
+        jobs = int(m.group(1))
+    return good, suite, jobs if isinstance(jobs, int) and not isinstance(jobs, bool) and jobs > 0 else 0
+
+
+def _affected_limit(tests, times, suite, host, jobs=0):
+    """T-4788: (the affected stage's limit in s, a line to say) or (None, the line) to skip the stage for the full check.
+    The set's recorded seconds (run.py's own record: wall seconds per class, split jobs not counted twice) over the
+    workers it can use: the CPUs the machine has free (its CPU count less its 1-minute load, at least AFFECTED_FREE_MIN),
+    never more than `jobs`, the -j the run will use (0: unknown), times AFFECTED_MARGIN: that limit, between
+    AFFECTED_FLOOR and AFFECTED_CEIL. Skipped when the set is over AFFECTED_SHARE of the suite (by recorded seconds,
+    else by file count) or would not finish under the ceiling. No suite or no usable record (none, or all zero): the
+    file count, then the old limit. A host with no CPU count is this machine's."""
+    mods = sorted({os.path.basename(t).rsplit(".", 1)[0] for t in tests})
+    if not suite or not mods:
+        return AFFECTED_OLD, ""
+    per = {}
+    for k, v in times.items():
+        mod, _, rest = k.partition(".")
+        if mod in suite and rest and "." not in rest:  # a class's own time, not its split jobs'
+            per[mod] = per.get(mod, 0.0) + v
+    mine = [m for m in mods if m in per]
+    named = f"affected set is {len(mods)} of {len(suite)} test files"
+    if len(per) * 2 < len(suite) or len(mine) * 2 < len(mods) or sum(per.values()) <= 0:  # too little of a record
+        if len(mods) > len(suite) * AFFECTED_SHARE:
+            return None, f"{named} (by file count: no usable run times): the full check covers it"
+        return AFFECTED_OLD, ""
+    mean = sum(per.values()) / len(per)
+    secs = sum(per[m] for m in mine) + (len(mods) - len(mine)) * mean
+    all_secs = sum(per.values()) + (len(suite) - len(per)) * mean
+    load, cpus = (host or (0, 0))[0], (host or (0, 0))[1] or os.cpu_count() or 1
+    free = max(1.0, min(cpus, jobs or cpus, max(AFFECTED_FREE_MIN, cpus - load)))
+    want = secs / free * AFFECTED_MARGIN + AFFECTED_SETUP
+    figures = f"{secs:.0f} of {all_secs:.0f} recorded s, {secs / all_secs:.0%}"
+    if secs > all_secs * AFFECTED_SHARE:
+        return None, f"{named} ({figures}): the full check covers it"
+    if want > AFFECTED_CEIL:
+        return None, (f"{named} ({figures}) would take about {want:.0f} s on {free:.0f} workers, over the "
+                      f"{AFFECTED_CEIL} s limit: the full check covers it")
+    limit = int(max(AFFECTED_FLOOR, want))
+    return limit, f"limit {limit} s: {secs:.0f} recorded s over {free:.0f} workers"
+
+
+def _killed(out):
+    """T-4788: {class or job: s into its own run} of the classes run.py killed at the run's deadline."""
+    got = {}
+    for b in re.split(r"^==== ", out or "", flags=re.M)[1:]:
+        m = re.search(r"still running at the run's deadline \((\d+)s in\)", b)
+        if m:
+            got[b.split("\n", 1)[0].strip()] = int(m.group(1))
+    return got
+
+
+def _cut_totals(out, times):
+    """T-4788: (the classes truly hung, the line a run cut at its limit says) from run.py's own totals. A class is hung
+    only when its time in the run is far over its recorded one (HUNG_TIMES x it plus HUNG_PLUS s; no record: over
+    HUNG_NO_RECORD s); the others were healthy and unfinished."""
+    killed = _killed(out)
+    notrun = set(_NOT_RUN.findall(out or ""))
+    hung, notes = [], []
+    for name, secs in sorted(killed.items()):
+        rec = times.get(name) or times.get(name.rpartition(".")[0])
+        if secs > (max(HUNG_TIMES * rec, rec + HUNG_PLUS) if rec else HUNG_NO_RECORD):
+            hung.append(name)
+        notes.append(f"{name} {secs} s in" + (f", recorded {rec:.0f} s" if rec else ", no record"))
+    jobs = re.search(r"\((\d+) jobs", out or "")
+    done = f"{int(jobs.group(1)) - len(notrun)} of {jobs.group(1)} classes done, " if jobs and notrun else ""
+    left = len(notrun - set(killed))
+    line = (f"the affected tests ran out of time: {done}{left} not started, {len(killed)} running when it ended "
+            f"({c.joinmore(notes, 4)}); no test failed")
+    return hung, line
+
+
 def _affected_first(p, wt, base, env, only=None):
     """T-2323: fm check's affected-test selection over the range (main..the cherry-picked tip) in the scratch tree, run
     before the full suite; red stops the ship naming the failing classes. No linked test or no affected command: goes on.
-    `only`: exactly these files instead of the range (T-3533). The tests run green ([] when none is linked), or None
-    when no selection could be made."""
+    `only`: exactly these files instead of the range (T-3533). Returns the test files that ran green; [] when none is
+    linked, and also (T-4788) when the stage was skipped as too big for an early warning or cut at its limit with no
+    test failed and none hung: the full check that follows judges those, so [] is not "these passed". None when no
+    selection could be made, and under `only` also when the stage was skipped, cut, or a failure beside a killed or
+    not-run class left some of the files unrun: the caller then runs the suite instead of reusing a pass."""
     from sampo import cli
     try:
         cmd, tests, _ = cli.affected(c.Project(p.slug, wt, p.dir, p.lane), since=base, only=only)
@@ -671,12 +800,31 @@ def _affected_first(p, wt, base, env, only=None):
         return None
     if not cmd:
         return []
-    print(f"testing the {len(tests)} affected test file(s) " + (f"of {c.joinmore(only, 5)}" if only else "first"), flush=True)
+    try:  # T-4788: the stage's limit follows the set's recorded time and the free CPUs; a ship never crashes from sizing
+        times, suite, jobs = _run_times(wt, cmd, env)
+        limit, said = _affected_limit(tests, times, suite, c.host_load(), jobs)
+    except Exception as e:
+        times, limit, said = {}, AFFECTED_OLD, ""
+        print(f"affected stage not sized ({c.fit(c.plain(str(e)), 120)}): the old {AFFECTED_OLD} s limit", flush=True)
+    if limit is None:  # too big to be an early warning: the full check (or, for `only`, the suite) covers it
+        print(said, flush=True)
+        return None if only else []
+    print(f"testing the {len(tests)} affected test file(s) " + (f"of {c.joinmore(only, 5)}" if only else "first")
+          + (f" ({said})" if said else ""), flush=True)
     run_env = dict(cli._skip_env({}), **{k: v for k, v in env.items() if k != "FOREMAN_SKIP_TESTS"})
     run_env, venv = cli._venv_env(wt, run_env, cmd)  # T-4150: the project's own interpreter, as the close runs it
     if venv:
         print(cli._venv_note(venv), flush=True)
-    code, out = c.run_command(wt, cmd, 900, niced=True, env=run_env)  # T-4197
+    code, out = c.run_command(wt, cmd, limit, niced=True, env=run_env)  # T-4197
+    truly = []  # the killed classes far over their recorded time
+    if code == 124 and not _TEST_RED.search(out) and _killed(out):
+        # T-4788: cut at its limit with classes running and no test failed: said from the run's own totals. Only a class
+        # far over its recorded time is hung; with none, the full check judges (the affected run only warns early); a
+        # files-only run (`only`) has no full check after it, so its caller runs the suite
+        truly, line = _cut_totals(out, times)
+        if not truly:
+            print(line + ("; the full check follows" if not only else "; the suite follows"), flush=True)
+            return None if only else []
     if names := _cut_only(code, out):
         # T-4718: cut at its limit with only classes not run (train 1115d: 98% of the wall waiting for slots a verify
         # held) is a wait, not a failure: said so, then the classes not run go once more after a load wait
@@ -691,11 +839,24 @@ def _affected_first(p, wt, base, env, only=None):
     if code and _rerun_red(wt, out, code, env) is None:
         print(out[-4000:], flush=True)
         bad = sorted({m.group(1) for m in re.finditer(r"^(?:FAIL|ERROR): \S+ \(([\w.]+?)\.\w+\)", out, re.M)})
-        if (hung := _hung(out)) and not bad:  # T-4718: killed while running at the deadline: not a failed test, not a wait
+        if (hung := truly or _hung(out)) and not bad:  # T-4718: killed while running at the deadline: not a failed test, not a wait
             _err(f"the affected tests did not finish in the scratch tree: {', '.join(hung)} still running at the run's "
-                 "deadline (hung or too slow, not waiting for slots); nothing was pushed")
+                 "deadline, far over its recorded time (hung or too slow, not waiting for slots); nothing was pushed")
         _err("the affected tests failed in the scratch tree" + (f": {', '.join(bad)}" if bad else "") + "; nothing was pushed")
+    if only and code and (_killed(out) or _NOT_RUN.findall(out or "")):
+        # a failed class beside killed or not-run ones that passed alone: only the failed class is known green, so a
+        # files-only run reuses no pass (the range run's full check still follows): the suite runs
+        print("some affected classes never ran (killed or not started); the suite runs", flush=True)
+        return None
     return tests
+
+
+def _reuse_after_affected(p, wt, base, env, hit, rest):
+    """T-3533, T-4788: the pass a ship may reuse after the files main changed beyond it (`rest`) had their affected tests
+    run: (hit, the test files that ran). `hit` becomes None when that run could not vouch for them (skipped, cut,
+    unselectable, or failed beside classes that never ran): the ship then runs the suite."""
+    ran = _affected_first(p, wt, base, env, only=rest) if hit and rest else []
+    return (hit if ran is not None else None), ran
 
 
 def _tower_files(root, last, base):
@@ -951,8 +1112,7 @@ def ship(p, args):
                 except Exception as e:  # review: a check that can't run falls back to the suite
                     print(f"gates pass reuse skipped: {c.fit(c.plain(str(e)), 120)}", flush=True)
                 # T-3533: main moved files tests read (the tower's daily stats): only their tests run, red stops the ship
-                ran = _affected_first(p, wt, base, env, only=rest) if hit and rest else []
-                hit = hit if ran is not None else None
+                hit, ran = _reuse_after_affected(p, wt, base, env, hit, rest)
                 if hit:
                     top = (f"; in {c.joinmore(rest, 5)} its affected tests passed "
                            f"({c.joinmore([os.path.basename(t) for t in ran], 8) or 'none linked'})") if rest else ""
