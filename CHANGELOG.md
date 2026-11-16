@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo cost --outputs` weighs each tool's output by how often later calls re-read it (by tool and Bash command word, main thread against subagents), and `sampo quiet` keeps a cut failed run's full output in a file named on its ✗ line (T-4825).
 - The guard's script budget timer firing at once no longer crashes with an unbound variable, and the StageClock, old-shared-folder and script-read-speed tests no longer assume Linux or a quiet runner (T-4820).
 - An unreadable private-term list now refuses export, repository writes and pushes with a fixed line instead of reading as no terms, and `sampo doctor` flags it (T-4804).
 - `sampo cost --sessions` counts each main-thread turn by what started it (user, tool result, agent finished or waiting, shell finished, monitor event, stop hook, compaction) with the cache-read tokens it re-read, and names the largest avoidable kind (T-4815).
