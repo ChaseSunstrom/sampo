@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Serve's integrate, the pull-request train and the train now share one landing hold (`lanes.land_holds`: private term, failed scan, guard, self-change gate), an unreadable private-term list holds a lane and refuses ship and release, a builder can no longer run gate-changing `sampo check` verbs, and the Bash guard reads a sampo verb the shell computes (joined literals, variables, expansio… (T-4785).
 - A close now runs only the linked tests no passing gate row covered, and a prose-only change keeps only the run-cache picks whose test names the file, so a train's near-complete pass no longer sends a close through 300 seconds of re-runs (T-4822).
 - Sampo can build and install the native sampo-fast guard binary after an offline locked build and a probe against the Python hook, from `sampo doctor --repair` or install.sh, and any doubt leaves the Python hook in charge (T-3608).
 - Lane checks in a project take turns: SAMPO_LANE_CHECKS run at once (default 2), the rest wait as 'check queued' and their deadline starts only when they do, and a check stopped at its deadline names its limit and how many classes ran (T-4491).
