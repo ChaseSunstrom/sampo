@@ -11,6 +11,10 @@
 
 ### Everything else
 
+- The macOS test of `sampo tidy --apply` on lane cargo folders now expects the prune by whether the host can see open files (`/proc` or `lsof`), not by `/proc` alone, and mocked-macOS tests pin that the same folders go as with `/proc` (T-4792).
+- The PreToolUse hook records where its time goes (a stage clock with a 1 s watchdog that survives the 5 s kill) and the bench times a one-line command per stage beside a real test run, finding about 32 ms of Python start with no waiting stage (T-4780).
+- A plan repair now changes only the field the refusal names and a criterion that is the request's own words is refused, so a concrete first plan is no longer replaced by the request verbatim (T-4293).
+- The merge train runs the private-term check on every lane in its hold step, sharing one function with `sampo lane merge`, so a lane carrying a private term is left out naming commit, file and line (never the term) instead of reaching the trunk (T-4783).
 - The test run no longer hangs on a class that leaves a detached child on macOS, and the guard now finishes a script read that ran out of budget instead of failing open, with CPU-scaled time bounds in the tests (T-4758).
 - `sampo lane merge` with one id is now a train of one, with the same gate as a multi-id train and the gate named in its output, so a red lane can no longer reach the trunk through a helper that passes one id (T-4756).
 - The test runner shares the ordinary CPU slots fairly between runs, so a second run gets a slot within one job instead of waiting for the first run's whole queue, and removes slot files left beyond the pool (T-4688).
