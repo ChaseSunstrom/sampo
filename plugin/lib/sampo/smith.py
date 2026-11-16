@@ -716,21 +716,47 @@ def _gaps_needed(run):
     return [k for k, lacks in (
         ("decision", b.type == "RESEARCH" and not b.section("Decision").strip()),
         ("numbers", b.type == "PERFORMANCE" and not b.section("Measurements").strip()),
-        ("regression", bool(b.proof_gap())),
-        ("adversary", _adversary_owed(run, p, b))) if lacks]
+        ("regression", bool(b.proof_gap()))) if lacks]
 
 
 ADVERSARY_DIFF_CHARS = 4000  # T-4381: the sensitive files' diff the lens question shows (a manifest's diff can be huge)
+LENS_WORDS = 4  # T-4283: a lens answer names what was tried and what held: fewer words than this names nothing
+HOLLOW = {"none", "n/a", "na", "nothing", "no", "ok", "okay", "fine", "lgtm", "looks good", "all good", "no issues",
+          "no issues found", "no problems", "no concerns", "nothing found", "nothing to report", "not applicable"}
+LENS_OTHER = {  # T-4283: the audit lenses beyond the adversary one (its question is GAP_FIELDS'), asked one a turn
+    "intent": ("the intent lens (how the change meets what was asked and what you checked it against), one line (for "
+               "example: calc.add now returns a + b as asked; the test calls add(2, 3) and gets 5)"),
+    "edge": ("the edge lens (the odd input or case you tried and what happened), one line (for example: add(-2, 3) and "
+             "add(0, 0) both come out right in test_calc.py)"),
+    "operator": ("the operator lens (what someone running or upgrading this sees and what you checked), one line (for "
+                 "example: no flag or setting changed, so a running install behaves the same after the update)"),
+    "maintainer": ("the maintainer lens (what the next person to read it must know and what you checked), one line (for "
+                   "example: add is one line and test_calc.py names the case it guards)")}
 
 
-def _adversary_owed(run, p, b):
-    """T-4381: whether sampo task finish would refuse this close for its adversary lens, read the way finish reads it
-    (cli._task_files' risky list through cli._adversary_gaps). A tier M plan's close notes give the lens already."""
-    if run.plan and run.plan.get("tier") == "M":
-        return False
+def _audits_needed(run, again=False):
+    """T-4283: the audit lenses the close gate still wants for this task, from the gate's own groups (the tier's
+    REQUIRED_AUDITS and an adversary group for security-sensitive files, the way sampo task finish reads them) matched
+    against what audit_blockers says is missing: one lens a group, its first. The audit finish takes as --audit covers a
+    tier S task's `self`; a tier M plan's close notes give its intent and adversary lenses."""
+    p = core.find_project(run.root)
+    b = p and core.find_brief(p, run.tid)
+    if not b:
+        return []
     from sampo import cli
     risky = cli._task_files(p, b)[1]
-    return bool(risky) and bool(cli._adversary_gaps(p, b, [], risky))
+    need = ("adversary",) if risky else ()
+    given = {"self"} if b.tier == "S" else set()
+    if run.plan and run.plan.get("tier") == "M" and not again:  # after a refusal naming one, the notes' lens is asked again
+        given |= {"intent", "adversary"}
+    missing = b.audit_blockers(tree=cli._merge_aware_tree(p, b), need=need)
+    out = []
+    for group in core.REQUIRED_AUDITS.get(b.tier, core.REQUIRED_AUDITS["S"]) + [{x} for x in need]:
+        lens = sorted(group)[0]
+        if not group & given and lens not in out and any(
+                r.startswith(f"audit missing: {' or '.join(sorted(group))}") for r in missing):
+            out.append(lens)
+    return out
 
 
 def _adversary_look(run):
@@ -768,8 +794,44 @@ def _gap_slot(run, profile, keys):
         return f"{', '.join(copied)} copies the example: give this task's own" if copied else None
     ex = json.dumps(examples, ensure_ascii=False)
     msgs = [{"role": "system", "content": GAP_PROMPT.format(keys=", ".join(keys), example=ex)},
-            {"role": "user", "content": _task_text(run) + (_adversary_look(run) if "adversary" in keys else "")}]
+            {"role": "user", "content": _task_text(run)}]
     return slot(run, profile, msgs, check, "set of close notes", fields)
+
+
+def _lens_question(lens):
+    """T-4283: (the lens's question with its worked example, the example): the adversary's is GAP_FIELDS', the rest LENS_OTHER's."""
+    q = LENS_OTHER.get(lens) or next((f[1] for f in GAP_FIELDS if f[0] == lens), None)
+    if q is None:
+        q = f"the {lens} lens (what you tried against the change and what held), one line (for example: tried it, it held)"
+    return q, q.split("(for example: ", 1)[1][:-1]
+
+
+def check_lens(lens, example):
+    """T-4283: the slot's check for one audit lens: an answer that names something (words, not a bare verdict) and is no
+    copy of the example. A hollow audit is refused, never recorded."""
+    def check(v):
+        if not isinstance(v, dict):
+            return "the reply holds no JSON object"
+        t = v.get(lens)
+        if not isinstance(t, str) or not t.strip():
+            return f"give {lens} as text: what you tried against this change and what held"
+        t = " ".join(t.split())
+        if t == example:
+            return f"{lens} copies the example: give this task's own"
+        if t.lower().strip(" .!") in HOLLOW or len(t.split()) < LENS_WORDS:
+            return f"{lens} names nothing tried against this change: say what you tried and what held"
+        return None
+    return check
+
+
+def _audit_slot(run, profile, lens):
+    """T-4283: one model turn for one audit lens (what it tried, what held), shown the change; the answer is the model's
+    own words or no answer: a reply that is empty or hollow ends in NoValidSlot, which the caller turns into a block."""
+    q, example = _lens_question(lens)
+    fields = ((lens, q, _line),)
+    msgs = [{"role": "system", "content": GAP_PROMPT.format(keys=lens, example=json.dumps({lens: example}, ensure_ascii=False))},
+            {"role": "user", "content": _task_text(run) + (_adversary_look(run) if lens == "adversary" else "")}]
+    return slot(run, profile, msgs, check_lens(lens, example), f"{lens} audit", fields)
 
 
 def check_truncated(profile, messages, r):
@@ -8840,12 +8902,45 @@ def _tool_detours(run):
         return []
 
 
+def _audit_turn(run, profile, lens, again=False):
+    """T-4283: the text of one audit lens, asked in a turn of its own (a resumed run's journaled answer is used, unless
+    asked again). An empty or hollow reply never closes the task: the run ends blocked, with the slot's reason."""
+    got = run.gap_notes or {}
+    if lens in got and not again:  # T-2948: a resumed run's answer, not asked twice
+        return got[lens]
+    try:
+        text = _audit_slot(run, run.planner or profile, lens)[lens]
+    except NoValidSlot as e:
+        raise Blocked(f"fm code: the {lens} audit gave no answer the gate can take: {_one_line(e, 400)}") from None
+    run.gap_notes = {**got, lens: text}  # T-4597: a finish asked again after a refusal round doesn't ask for it again
+    run.log(kind="gap_notes", notes=run.gap_notes)
+    return text
+
+
+def _finish_args(run, a, lenses, own):
+    """T-4283: finish's arguments: `a`, each audit lens as --lens (the run's own model's, said so in the audit line: it
+    looked at the diff, it is never an independent review, T-4381) and the commit."""
+    out = list(a)
+    for lens, text in lenses.items():
+        if lens in own:
+            if lens == "adversary" and text not in run.closing_review:
+                run.closing_review.append(text)
+            text = run.redact(text)
+        out.append(f"--lens={lens}: {text}")
+    if own:
+        out[3] += f"; {', '.join(sorted(own))} lens: this run's own model, shown the change, not an independent review"
+    if not run.no_commit:
+        out += ["--commit", f"{run.plan['title']} ({run.tid})"]
+    return out
+
+
 def _finish(run, profile):
     pl = run.plan
     run.leave_out_built()  # T-4387: what a close-time command built (a fix round's verify) stays out of the commit too
     a = ["task", "finish", run.tid, f"--audit=fm code ({_who(run, None if run.worker else profile)}): harness-run "
                                     "verify",
          "--run=" + " && ".join(cr["verify"] for cr in pl["criteria"])]
+    lenses, own = {}, set()  # T-4283: the audit lenses finish is given, and the ones this run's own model looked at
     if pl["tier"] == "M":
         notes = run.close_notes
         if notes is None:
@@ -8855,8 +8950,8 @@ def _finish(run, profile):
             run.close_notes = notes  # T-4597: a finish asked again after a refusal round doesn't ask for them again
             run.log(kind="close_notes", notes=notes)
         run.closing_review.append(notes["adversary"])
-        a += [f"--lens=intent: {notes['intent']}", f"--lens=adversary: {notes['adversary']}",
-              f"--docs={notes['docs']}", f"--lesson={notes['lesson']}"]
+        lenses.update(intent=notes["intent"], adversary=notes["adversary"])
+        a += [f"--docs={notes['docs']}", f"--lesson={notes['lesson']}"]
         if pl["type"] == "FIX":
             a += [f"--why-not-caught={notes['why_not_caught']}"]
     # T-2937: asked for any tier; a close key already given isn't asked again; a modelless run (--worker --verify) has
@@ -8865,8 +8960,8 @@ def _finish(run, profile):
         got = run.gap_notes  # T-2948: a resumed run's answer, not asked twice
         if got is None or any(k not in got for k in need):
             got = _gap_slot(run, run.planner or profile, need)
-            run.gap_notes = got  # T-4597: likewise
-            run.log(kind="gap_notes", notes=got)
+            run.gap_notes = {**(run.gap_notes or {}), **got}  # T-4597: likewise
+            run.log(kind="gap_notes", notes=run.gap_notes)
         for key, section in (("decision", "Decision"), ("regression", "Regression test")):
             if key in need:
                 code, out = run.fm("task", "set", run.tid, "--section", section, "--text", got[key])
@@ -8874,18 +8969,31 @@ def _finish(run, profile):
                     raise Blocked(f"fm code: fm task set {section} refused: {_one_line(out, 400)}")
         if "numbers" in need:
             a += [f"--numbers={got['numbers']}"]
-        if "adversary" in need:  # T-4381: the run's own model's look at the diff, said so: never an independent review
-            run.closing_review.append(got["adversary"])
-            a += [f"--lens=adversary: {run.redact(got['adversary'])}"]
-            a[3] += "; adversary lens: this run's own model, shown the diff, not an independent review"
-    if not run.no_commit:
-        a += ["--commit", f"{pl['title']} ({run.tid})"]
+    # T-4283: the gate's audits, read before finish (the same groups sampo gates shows), one model turn of its own for
+    # each lens it names; the run's own model's look at the diff, said so: never an independent review
+    if profile is not None:
+        for lens in _audits_needed(run):
+            lenses[lens] = _audit_turn(run, profile, lens)
+            own.add(lens)
+    audited = False
     aside = _tool_detours(run)
     rounds = 0
     while True:
-        code, out = run.fm(*a)
+        code, out = run.fm(*_finish_args(run, a, lenses, own))
         if not code:
             break
+        # T-4283: a refusal while the gate still names an audit (a change finish saw that the close did not, or a
+        # lens gone stale): each lens it names is asked once more, in a turn of its own, and finish tried once more.
+        # The refusal only says an audit is missing (audits are recorded only by a close that passes, so any other
+        # refusal leaves the gate naming them too); which lens comes from the gate's groups, not from the refusal's wording
+        if profile is not None and not audited and "audit missing" in out:
+            audited = True
+            if again := _audits_needed(run, again=True):
+                run.emit("note", f"fm task finish refused with the gate still naming {', '.join(again)}: asked once more")
+                for lens in again:
+                    lenses[lens] = _audit_turn(run, profile, lens, again=True)
+                    own.add(lens)
+                continue
         # T-4597: a refusal none of the slots above answered goes back to the worker, whole, for a bounded number of rounds
         # (it can mend a doc it wrote); one that survives them blocks with its text named, the work kept
         if rounds >= FINISH_FIX_ROUNDS or _no_clock(run) or (profile is None and not run.worker):  # nobody to mend it

@@ -11,6 +11,7 @@ import unittest
 from unittest import mock
 
 import test_code
+from helpers import read_text
 from test_code import CLOSE, M_PLAN, PLAN, CodeCase, call, journal_text, plan
 
 from sampo import louhi, models, smith, smithbench
@@ -903,6 +904,111 @@ class VerifyShape(CodeCase):
         said = [f.said(i) for i in range(len(f.seen))]
         self.assertTrue(any("not a complete shell command" in s for s in said), r.stdout + r.stderr)
         self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+
+
+PKG = '{\n  "name": "calc",\n  "version": "1.0.0"\n}\n'
+PKG_EDIT = call("edit", file="package.json", old='"1.0.0"', new='"1.0.1"')
+LENS_OK = "a crafted version could pull a hostile package; only the patch number changed and the lock still pins it"
+
+
+def lens_reply(text=LENS_OK, key="adversary"):
+    return {"text": json.dumps({key: text})}
+
+
+class CloseAudit(CodeCase):
+    """T-4283: the close reads the gates for the audits it owes and asks each as a turn of its own (the lens, what it
+    tried, what held), passes it to finish as --lens; a refusal naming one is asked once more; an empty or hollow reply
+    ends the run blocked (exam s8-043, a package.json change: 'audit missing: adversary')."""
+    repo_seed = ("seed the bug", (("calc.py", "def add(a, b):\n    return a - b\n"),
+                                  ("test_calc.py", "import calc\nassert calc.add(2, 3) == 5, calc.add(2, 3)\nprint('ok')\n"),
+                                  ("package.json", PKG)))
+
+    def test_close_audit_a_manifest_change_asks_the_adversary_lens_as_its_own_turn_and_passes_it(self):
+        f = self.serve("anthropic", plan(), FIX_EDIT, PKG_EDIT, DONE, lens_reply())
+        r = self.code("fix add", "--model", "fake", check=False)
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+        self.assertEqual(len(f.seen), 5)  # plan, two edits, done, the adversary turn: one turn, one lens
+        self.assertIn("package.json", f.said(4))
+        self.assertIn("hostile package", read_text(self.task()["path"]))
+
+    def finish(self, refusals, still_named):
+        """_finish on a stand-in run: finish refuses `refusals` times with an audit missing, then commits; the gate
+        names no lens before the first call and `still_named` after a refusal."""
+        seen = []
+
+        def fm(*args):
+            seen.append(args)
+            if len(seen) <= refusals:
+                return 1, "T-1: refused: audit missing: adversary (security-sensitive: package.json)"
+            return 0, "T-1: committed abc"
+        run = mock.MagicMock(tid="T-1", no_commit=False, worker=None, planner=None, close_notes=None, gap_notes=None,
+                             looking=False, closing_review=[], tokens=(1, 2), usd=None, root="/x", jdir="/x")
+        run.plan = {"tier": "S", "type": "FIX", "title": "t", "criteria": [{"verify": "true"}]}
+        run.redact = lambda x: x
+        run.fm = fm
+        needed = mock.Mock(side_effect=lambda r, again=False: still_named if again else [])
+        turn = mock.Mock(return_value="a crafted version could pull a hostile package; the lock still pins it")
+        with mock.patch.object(smith, "_audits_needed", needed), mock.patch.object(smith, "_audit_turn", turn), \
+                mock.patch.object(smith, "_gaps_needed", return_value=[]), mock.patch.object(smith, "_who", return_value="m"), \
+                mock.patch.object(smith, "_tool_detours", return_value=[]), mock.patch.object(smith, "_not_proven", return_value=[]), \
+                mock.patch.object(smith, "_closed_before", return_value=True), mock.patch.object(smith, "_tell"), \
+                mock.patch.object(smith, "_no_clock", return_value=True), mock.patch.object(smith.core, "find_project"):
+            try:
+                smith._finish(run, object())
+                err = None
+            except smith.Blocked as e:
+                err = e
+        return seen, turn, err
+
+    def test_close_audit_a_refusal_naming_a_lens_is_asked_once_more_and_finish_tried_again(self):
+        seen, turn, err = self.finish(1, ["adversary"])
+        self.assertIsNone(err)
+        self.assertEqual(len(seen), 2)  # refused once, tried again
+        self.assertEqual(turn.call_count, 1)
+        self.assertEqual(turn.call_args.args[2], "adversary")
+        self.assertTrue(turn.call_args.kwargs["again"])  # asked again, not served from the journal
+        self.assertFalse(any(x.startswith("--lens=") for x in seen[0]))
+        self.assertTrue(any(x.startswith("--lens=adversary: a crafted version") for x in seen[1]), seen[1])
+        self.assertIn("not an independent review", seen[1][3])
+
+    def test_close_audit_a_lens_still_refused_after_its_retry_ends_blocked_not_in_a_loop(self):
+        seen, turn, err = self.finish(9, ["adversary"])
+        self.assertIsInstance(err, smith.Blocked)
+        self.assertEqual((len(seen), turn.call_count), (2, 1))  # one more ask, one more finish, then blocked
+        self.assertIn("audit missing", str(err))
+
+    def test_close_audit_a_refusal_the_gate_no_longer_names_is_not_asked_for_a_lens(self):
+        seen, turn, err = self.finish(9, [])
+        self.assertIsInstance(err, smith.Blocked)
+        self.assertEqual((len(seen), turn.call_count), (1, 0))
+
+    def test_close_audit_an_empty_reply_ends_blocked_with_the_reason_and_never_closes(self):
+        empty = {"text": json.dumps({"adversary": ""})}
+        f = self.serve("anthropic", plan(), FIX_EDIT, PKG_EDIT, DONE, *[empty] * 4)  # the JSON asks, then the field ladder's
+        r = self.code("fix add", "--model", "fake", check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(self.task()["status"], "blocked", r.stdout + r.stderr)
+        self.assertIn("adversary", read_text(self.task()["path"]))
+        self.assertNotIn("closed", r.stdout.split("blocked")[0])
+
+    def test_close_audit_a_hollow_reply_is_refused_by_the_slot_and_asked_again(self):
+        f = self.serve("anthropic", plan(), FIX_EDIT, PKG_EDIT, DONE, lens_reply("looks good."), lens_reply())
+        r = self.code("fix add", "--model", "fake", check=False)
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+        self.assertIn("not a valid", f.said(5))
+        self.assertNotIn("looks good", read_text(self.task()["path"]))
+
+    def test_close_audit_a_tier_m_close_asks_no_lens_twice(self):
+        f = self.serve("anthropic", plan(M_PLAN), FIX_EDIT, PKG_EDIT, DONE, CLOSE)
+        r = self.code("fix add", "--model", "fake", check=False)
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+        self.assertEqual(len(f.seen), 5)  # the close notes give the adversary lens: no second turn
+
+    def test_close_audit_no_sensitive_file_no_lens_turn(self):
+        f = self.serve("anthropic", plan(), FIX_EDIT, DONE)
+        r = self.code("fix add", "--model", "fake", check=False)
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+        self.assertEqual(len(f.seen), 3)
 
 
 if __name__ == "__main__":  # T-3688: run as a script, as the brief's verify does, it ran nothing before
