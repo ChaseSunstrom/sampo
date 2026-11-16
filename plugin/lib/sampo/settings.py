@@ -639,7 +639,7 @@ def _guard_block(path, p=None):
                       allow=set(b.meta.get("allow") or []) if b else set(), task_id=b.id if b else None,
                       standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()),
                       # a builder's lane writes nothing outside its worktree (as the hook confines it)
-                      confine=(lane, c.main_worktree(lane)) if lane and b and b.meta.get("builder") else None)
+                      confine=c.builder_confine(p, b))
     block = fmguard.check("Write", {"file_path": path}, ctx)
     return fmguard.message(block, ctx) if block else None
 

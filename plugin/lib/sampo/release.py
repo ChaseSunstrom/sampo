@@ -324,6 +324,7 @@ def _push(ctx):
                 _git(wt, "merge", "--abort", ok=True)
                 _land_over_picks(wt, sha, v)  # T-2598: ship cherry-picked the branch onto main
             landed = _git(wt, "rev-parse", "HEAD").strip()
+            say_no_list("release")  # T-4785
             _refuse_private(wt, _git(wt, "rev-list", f"{main}..{landed}").split(), landed)  # T-3529: as fm ship does
             _push_main(p, b.id, landed, remote, "fm release --push")
         finally:
@@ -379,6 +380,21 @@ def _refuse_private(root, picks, tip, hits=None):
              "was pushed: redact it (sampo sync export for .sampo/; amend or rebase a commit that carries it), then ship again")
 
 
+def say_no_list(who):
+    """T-4785 (d): one stderr line when the user has set no private terms (T-4783 said it only in the train): the scan
+    of `who` looks for the secrets-file values at most. Silent when a list is set; never the path or a term. A list that
+    is there with no usable term (empty, blank lines, every term too short) is said apart, as a notice too."""
+    status = c.private_list()[1]
+    if status not in ("none", "empty"):
+        return
+    import sys
+    print(f"sampo: {who}: the private-term check "
+          + ("had no term list (none is set)" if status == "none" else "had a term list with no usable term "
+             "(it is empty, or every term in it is too short or has a space)")
+          + (", so only the secrets-file values were scanned" if private_values() else "")
+          + ": sampo private add TERM sets one", file=sys.stderr, flush=True)
+
+
 def private_values():
     """T-4783: the secrets-file values the private-term scan looks for besides the terms: a secret-named line only (a base
     URL or a port there is no secret), eight characters or more. Empty when the file is unset, open to others or unreadable."""
@@ -392,7 +408,7 @@ def _private_hits(root, picks, tip, paths=None):
     try:
         terms, values = c.private_terms(), private_values()
     except c.PrivateTermsUnreadable:  # T-4804: 'no terms' from a list that can't be read would push unscanned
-        _err(c.PRIVATE_UNREADABLE + "; nothing was pushed: repair or remove private-terms.json in the state folder, then ship")
+        _err(c.PRIVATE_UNREADABLE + "; nothing was pushed: repair or remove the list in the state folder, then ship")
     if not terms and not values:
         return [], []
     def bad(text):
@@ -415,7 +431,8 @@ def _private_hits(root, picks, tip, paths=None):
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if r.returncode not in (0, 1):
-        _err(f"git grep failed: {c.plain(r.stderr.strip())[:200]}; nothing was pushed")
+        # T-4785 review: the exit status only; git's stderr may quote a path, a pathspec or a line of a blob (a term)
+        _err(f"git grep failed (exit {r.returncode}), so the private-term scan did not run; nothing was pushed")
     blobs = dict((ln.partition("\t")[2], ln.split()[2]) for ln in _git(root, "ls-tree", "-r", "-z", tip).split("\0") if ln)
     blobs = {f: b for f, b in blobs.items() if paths is None or f in paths}
     hits = {x.split(":", 1)[1] for x in r.stdout.split("\0") if ":" in x}  # by blob id: a path may hold a term too
@@ -1086,6 +1103,7 @@ def ship(p, args):
                 _err(f"the shipped files differ from {picks[-1][:8]}'s: a commit is missing or extra, or main changed "
                      "these files since the branch left it (rebase onto main); nothing was pushed")
             head = _git(wt, "rev-parse", "HEAD").strip()
+            say_no_list("ship")  # T-4785: an unset list is said, not passed in silence (an unreadable one refuses just below)
             hits = _private_hits(root, picks, head)  # T-3529: before the suite runs
             sent = picks  # what lands on main, one cherry-pick each
             if hits[0] and not hits[1]:

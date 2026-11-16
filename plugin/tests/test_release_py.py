@@ -95,6 +95,97 @@ class Release(Base):
         self.release("1.0.1", "--push", remote)
         self.assertIn("Foreman 1.0.1", git(remote, "log", "-3", "--format=%s", "main"))
 
+    def remote(self):
+        remote = os.path.join(self.tmp, "remote.git")
+        subprocess.run(["git", "init", "-q", "--bare", "-b", "main", remote], check=True)
+        git(self.fx, "push", "-q", remote, "build:main")
+        return remote
+
+    TERM = "zorblat-private.example"  # invented: never a real term
+
+    def test_push_refuses_a_commit_that_carries_a_private_term_and_pushes_nothing(self):  # T-4785 (c): already held, now proved
+        self.fm("private", "add", self.TERM)
+        remote = self.remote()
+        self.put("remote.py", f'A = 1\nHOST = "llm.{self.TERM}"\n')
+        git(self.fx, "add", "remote.py")
+        git(self.fx, "commit", "-qm", "work")
+        self.grant()
+        p = self.release("1.0.1", "--push", remote, check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("remote.py", p.stderr)
+        self.assertNotIn("zorblat", p.stdout + p.stderr)
+        self.assertEqual(git(remote, "log", "-1", "--format=%s", "main").strip(), "base", "nothing was pushed")
+
+    def test_push_refuses_when_the_term_list_cannot_be_read_and_pushes_nothing(self):  # T-4785 (d)
+        os.makedirs(c.state_dir(), exist_ok=True)
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("{not json")
+        remote = self.remote()
+        self.grant()
+        p = self.release("1.0.1", "--push", remote, check=False)
+        self.assertNotEqual(p.returncode, 0, p.stdout)
+        self.assertIn("term list", p.stderr)
+        self.assertNotIn(c.PRIVATE_TERMS, p.stdout + p.stderr, "no path in the line")
+        self.assertEqual(git(remote, "log", "-1", "--format=%s", "main").strip(), "base", "nothing was pushed")
+
+    def test_a_failing_git_grep_is_named_by_its_exit_status_never_by_git_output(self):  # T-4785 review
+        # the scan once quoted 200 characters of git's stderr: a path, a pathspec or a line of the blob (a term, a token)
+        from unittest import mock
+        from sampo import cli, release
+        os.makedirs(c.state_dir(), exist_ok=True)
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            json.dump([self.TERM], f)
+        real = c._git
+
+        def fake(root, *a, **k):
+            if a and a[0] == "grep":
+                return subprocess.CompletedProcess(["git", *a], 128, "", f"fatal: bad pattern /secret/invented/path {self.TERM}")
+            return real(root, *a, **k)
+        with mock.patch.object(c, "_git", fake), self.assertRaises(cli.UsageError) as e:
+            release._private_hits(self.fx, [], "HEAD")
+        self.assertIn("128", str(e.exception))
+        self.assertIn("nothing was pushed", str(e.exception))
+        for leak in ("zorblat", "invented", "bad pattern", "fatal"):
+            self.assertNotIn(leak, str(e.exception))
+
+    def test_a_list_with_no_usable_term_is_said_apart_from_no_list_and_is_still_only_a_notice(self):  # T-4785 review
+        import contextlib
+        import io
+        from sampo import release
+        path = os.path.join(c.state_dir(), c.PRIVATE_TERMS)
+        os.makedirs(c.state_dir(), exist_ok=True)
+
+        def said():
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                release.say_no_list("ship")
+            return err.getvalue()
+        self.assertIn("had no term list", said())
+        for text in ("[]", '["ab"]'):
+            with open(path, "w") as f:
+                f.write(text)
+            out = said()
+            self.assertIn("no usable term", out, text)
+            self.assertNotIn("had no term list", out, text)
+            self.assertNotIn(c.PRIVATE_TERMS, out)
+        with open(path, "w") as f:
+            json.dump([self.TERM], f)
+        self.assertEqual(said(), "")
+        with open(path, "w") as f:
+            f.write("[]")
+        remote = self.remote()
+        self.grant()
+        p = self.release("1.0.1", "--push", remote)  # a notice, not a hold: the push goes on
+        self.assertIn("no usable term", p.stdout + p.stderr)
+        self.assertIn("Foreman 1.0.1", git(remote, "log", "-3", "--format=%s", "main"))
+
+    def test_push_with_no_term_list_says_so_and_still_pushes(self):  # T-4785 (d)
+        remote = self.remote()
+        self.grant()
+        p = self.release("1.0.1", "--push", remote)
+        self.assertIn("the private-term check had no term list", p.stdout + p.stderr)
+        self.assertIn("Foreman 1.0.1", git(remote, "log", "-3", "--format=%s", "main"))
+
     def test_push_is_refused_without_the_publish_grant(self):
         remote = os.path.join(self.tmp, "remote.git")
         subprocess.run(["git", "init", "-q", "--bare", "-b", "main", remote], check=True)

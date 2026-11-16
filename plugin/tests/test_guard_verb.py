@@ -5,6 +5,7 @@ before the verb, among a gated verb's words or as an --allow value is refused as
 import shutil
 import subprocess
 import unittest
+from unittest import mock
 
 from test_guard import GuardCase, g
 
@@ -29,10 +30,12 @@ class ComputedVerb(GuardCase):
             ("V=serve; fm -p app-1a2b3c $V", "remote"),
             ("V=pause; sampo $V off", "self-authorize"),
             ("V='pause off'; sampo $V", "self-authorize"),  # set once to a literal, split as bash splits it
-            ('C="a note"; sampo decide "x" --cites "$C"', None),  # a quoted value set once is read, not guessed
+            # T-4785 round 7: decide gates a later word (--answer), so it is typed here too: a value is no verb-chain word
+            ('C="a note"; sampo decide "x" --cites "$C"', "system"),
+            ('sampo decide "x" --cites "a note"', None),
             ("V=next; [ -f x ] && V=serve; sampo $V", "system"),  # set twice: unknown
             ("X=off; sampo pause $X", "self-authorize"),
-            ("V=next; sampo $V", None),
+            ("V=next; sampo $V", "system"),  # round 7: the verb is read as typed, never through a value
             ("T=T-1; sampo task show $T", None),
             ('D=~; sampo task evidence T-1 --step 1 --run "rm -rf $D"', "rm-outside"),  # a quoted text stays whole
         ], self.bash)
@@ -81,17 +84,68 @@ class ComputedVerb(GuardCase):
             ("sampo serve $X", "remote"),
         ], self.bash)
 
-    def test_a_loop_over_literal_words_is_read_once_per_word(self):
+    def test_a_loop_gives_no_word_of_the_verb_chain(self):
+        # T-4785 round 8: the verb chain has no exception: a loop's words are no value credited to it (a loop in a branch
+        # that never runs, a pipeline stage, a subshell, after `&` gave the verb a value the shell never ran). A plain
+        # top-level loop over literal words is the one reading left: it is rewritten as the commands it runs
+        # (_expand_literal_loops, T-0411), the text itself, so the verbs the guard reads are the ones the shell runs.
         self.run_table([
-            ('for c in "status" next; do sampo $c; done', None),
-            ('for c in "loop on" "lane max 6"; do echo "== $c"; sampo $c 2>&1 | tail -2; done', None),
-            ('for v in mandate outcomes; do echo "$v: $(sampo $v -h | head -1)"; done', None),
-            ('for c in next "serve"; do sampo $c; done', "remote"),
-            ('for c in "pause off"; do sampo $c; done', "self-authorize"),
+            ("for c in status next; do sampo $c; done", None),  # unrolled: sampo status; sampo next
+            ('for c in "status" next; do sampo $c; done', "system"),  # a quoted word is no plain literal: not unrolled
+            ('for c in "loop on" "lane max 6"; do echo "== $c"; sampo $c 2>&1 | tail -2; done', "system"),  # not plain
+            ('for v in mandate outcomes; do echo "$v: $(sampo $v -h | head -1)"; done', None),  # unrolled
+            ('for c in next "serve"; do sampo $c; done', "system"),  # a quoted word is no plain literal: not unrolled
+            ('for c in "pause off"; do sampo $c; done', "system"),
+            ("for c in serve; do sampo $c; done", "remote"),  # unrolled: sampo serve
+            ("for c in pause; do sampo $c off; done", "self-authorize"),
             ("for c in $(cat f); do sampo $c; done", "system"),  # words it can't read
             ("for c in \"next\"; do sampo $c; done; c=$(cat f); sampo $c", "system"),  # set another way too
             ("for c in next; do read c; sampo $c; done", "system"),
+            ("(for V in status; do :; done); sampo $V risk off", "system"),
+            ("for V in status; do sh -c 'sampo $V risk off'; done", "system"),
+            ("if false; then for V in status; do :; done; fi; sampo $V risk off", "system"),
+            ("echo x | for V in status; do :; done; sampo $V risk off", "system"),
+            ("for V in status; do :; done & sampo $V risk off", "system"),
+            ("for V in status; do :; done; sampo $V risk off", "system"),
+            ("for V in status; do {{ sampo $V risk off; }}; done", None),  # unrolled
+            ("for V in status; do sampo $V risk off | cat; done", None),  # unrolled: sampo status risk off | cat
+            # the unroll reads a loop that runs a sampo word only where it is top level in this shell: no `(`, `{`, pipe,
+            # `&` or `&&`/`||` branch around it (ANDON answer)
+            ("echo hi; for c in status next; do sampo $c; done", None),
+            ("(for c in status; do sampo $c; done)", "system"),
+            ("(for c in status; do :; done); sampo $c risk off", "system"),
+            # behind `&&` / `||` the commands are still the text (a real line: cd DIR && for v in …; do sampo $v …), and V
+            # is not kept there
+            ("true && for c in status; do sampo $c; done", None),
+            ("false || for c in status; do sampo $c; done", None),
+            ("true && for c in pause; do sampo $c off; done", "self-authorize"),
+            ("true && for c in status; do :; done; sampo $c risk off", "system"),
+            ("echo x | for c in status; do sampo $c; done", "system"),
+            ("for c in status; do sampo $c; done | cat", "system"),
+            ("for c in status; do sampo $c; done & echo x", "system"),
+            ("{{ for c in status; do sampo $c; done; }}", "system"),
         ], self.bash)
+
+    def test_a_loop_still_reads_an_argument_word_but_only_inside_its_body(self):
+        # the argument positions (an id, a stored command's text) keep the loop's words, for a use between that loop's
+        # `do` and its matching `done` with no `(`, `{`, pipe or `&` between
+        loop = g._loop_values
+        for line, word, want in (
+                ("for t in T-1 T-2; do sampo task ac $t add x; done", "$t", ("t", ["T-1", "T-2"])),
+                ("for t in T-1; do sampo task ac ${t} add x; done", "${t}", ("t", ["T-1"])),
+                ("for t in T-1; do sampo task ac $t add x; done; echo $t", "$t", (None, None)),
+                ("for t in T-1; do :; done; sampo task ac $t add x", "$t", (None, None)),
+                ("(for t in T-1; do :; done); sampo task ac $t add x", "$t", (None, None)),
+                ("for t in T-1; do (sampo task ac $t add x); done", "$t", (None, None)),
+                ("for t in T-1; do { sampo task ac $t add x; }; done", "$t", (None, None)),
+                ("for t in T-1; do echo $t | cat; done", "$t", (None, None)),
+                ("for t in T-1; do sampo task ac $t add x & done", "$t", (None, None)),
+                ("for t in T-1; do for u in a; do sampo $t; done; done", "$t", ("t", ["T-1"])),
+                ("for t in T-1; do sampo task ac $t add x", "$t", (None, None)),  # no done
+                ("for t in $T; do sampo task ac $t add x; done", "$t", (None, None))):
+            with self.subTest(line=line):
+                with mock.patch.dict(g._DCWD, {"line": line, "lits": {}, "holds": True}):
+                    self.assertEqual(loop(word, True), want)
 
     def test_xargs_fills_words_the_guard_cannot_read(self):
         self.run_table([
@@ -122,7 +176,11 @@ class ComputedVerb(GuardCase):
             ("S=$(command -v sampo); $S serve", "system"),
             ("S=sampo; $S serve", "remote"),
             ("$PY script.py", None),  # a line that names no sampo: an ordinary computed name
-            ("$X $Y", None),
+            ("$X $Y", "system"),  # round 9: read as sampo, its verb is an expansion the guard can't read
+            ("$EDITOR notes.txt", None),
+            # a quote-blind split leaves a "word" with ; and | in it: that is debris, not a command word
+            ('for p in 1 2; do for i in 1 2; do l="$l <- $p:$(ps -o args= -p $p | cut -c1-70)"; p=$pp; '
+             '[ "$pp" = 1 ] && break; done; echo "$p $l"; done | cut -c1-520', None),
         ], self.bash)
 
     def test_env_split_string_runs_its_words(self):
@@ -170,7 +228,7 @@ class ComputedVerb(GuardCase):
             ('a=S; b=E; eval "$a$b=serve"; \\declare -n r=SE; sampo "$r"', "system"),
             ('read <<< serve; "typeset" -n r=REPLY; sampo "$r"', "system"),
             ('read <<< serve; $D -n r=REPLY; sampo "$r"', "system"),  # an unresolved computed command word
-            ('V=next; sampo "$V"', None),  # a value that is a name nowhere else on the line is read
+            ('V=next; sampo "$V"', "system"),  # round 7: a verb is typed, not read through a value (was: read as next)
             ('V=x; sampo task new "eval the local models" --ac "y :: test $V"', None),  # prose is no setter
             ('echo "$(read <<< serve; \\declare -n r=REPLY; sampo "$r")"', "system"),  # nor nested in quotes
             # review 4: only code running in this shell rebinds a name (a builtin, a function, a sourced file, a trap,
@@ -182,8 +240,9 @@ class ComputedVerb(GuardCase):
             ("V=next; trap 'V=serve' DEBUG; sampo \"$V\"", "system"),
             ("V=next; mapfile -C 'V=serve; :' -c 1 x < /dev/null; sampo \"$V\"", "system"),
             ('V=next; f() {{ V=serve; }}; f; sampo "$V"', "system"),
-            ('V=next; f; sampo "$V"', None),  # f is a program here: a child can't rebind V
-            ('V=next; git status; grep -q x f && echo ok; sampo "$V"', None),  # external programs and echo
+            # (round 7: refused either way, the verb is typed; the nameref-reading cases above keep the same verdict)
+            ('V=next; f; sampo "$V"', "system"),  # f is a program here: a child can't rebind V
+            ('V=next; git status; grep -q x f && echo ok; sampo "$V"', "system"),  # external programs and echo
             ("trap 'echo hi' EXIT; echo x", None),  # these alone still pass
             ("mapfile -C 'echo' -c 1 x < /dev/null", None),
             ("source ./f.sh", None),
@@ -217,7 +276,7 @@ class ComputedVerb(GuardCase):
             ('sampo task ac T-1 add "$(cat f)"', "system"),  # its output may hold x :: CMD
             ('S=/x; sampo task set T-1 --section "Acceptance criteria" --text "$(cat $S/ac.md)"', "system"),
             ('sampo task set T-1 --section Interpretation --text "$(cat notes.md)"', None),  # no reader takes it
-            ('W=/x/plugin/bin/sampo; for f in plugin/bin/sampo $W; do $f status; done', None),  # loop words via W
+            ('W=/x/plugin/bin/sampo; for f in plugin/bin/sampo $W; do $f status; done', "system"),  # round 8: a loop's words are no program or verb the guard reads
             ('R="bash /x/retry.sh"; id=$($R sampo task new "x")', None),  # the line's literal R, read nested
             ('sed -n "$((l-3)),$((l+1))p" plugin/lib/sampo/cli.py', None),  # a sampo/ folder names no sampo
             ("sampo quiet -- git status", None),

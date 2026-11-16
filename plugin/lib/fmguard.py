@@ -75,8 +75,13 @@ USER_ONLY_FM = {
     "triggers": ("set", "sampo triggers set is the user's to run: a queue or lane route starts work no one asked for, and "
                         "a mute or budget silences a signal", "sampo triggers set NAME --route inbox"),  # T-2355
 }
-FM_GATED = {"plugins", "night", "agents"}  # T-3600: other verbs whose check in check_bash keys on a later word; a new
-# such check adds its verb here, so a word the shell fills in there is refused too (_fm_unread)
+FM_GATED = {"plugins", "night", "agents", "serve", "cpu"}  # T-3600 (serve, cpu: T-4785): other verbs whose check in
+# check_bash keys on a later word; a new such check adds its verb here, so a word the shell fills in there is refused
+# too (_fm_unread)
+FM_TRAILING = ("quiet", "at")  # T-4785 round 12: verbs whose trailing words are a command sampo runs (_fm_runs)
+FM_STORING = ("task", "intake", "check", "smoke", "notify", "record", "whyred") + FM_TRAILING  # the verbs _fm_stored and
+# _fm_runs read a command from: a new one adds its verb here. With USER_ONLY_FM and FM_GATED they make _NET_VERBS, and a
+# test scans the sources for a verb literal missing from it
 
 
 def _pause_is_agents(ctx):
@@ -376,6 +381,9 @@ def _message(block, ctx):
         return (f"Ward: blocked self-authorize: {detail}. Protected core (Sampo code, rules, evals, "
                 f"BUILD_PROMPT.md, settings) and remote sessions need the user's approval, which an agent can't grant: "
                 + _ASK.format(id=tid, cat="<" + "|".join(sorted(USER_ONLY)) + ">") + ".")
+    if cat == "confine" and str(detail).startswith("sampo check"):  # T-4785
+        return (f"Ward: blocked confine: {detail}. A builder runs the gates (sampo check, check list, check office) but "
+                f"never changes them: report the gate change you need to the main thread, which sets the project's gates.")
     if cat == "confine":
         return (f"Ward: blocked confine: {detail} is outside this builder's worktree ({ctx.confine[0]}). A builder "
                 f"writes only there (and in scratch); report what needs changing elsewhere to the main thread.")
@@ -1848,6 +1856,8 @@ def _strip_wrappers(argv, dropped=None):
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
                 i += 2 if argv[i] in ("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U") else 1
+        elif a == "function" and i + 1 < len(argv):  # round 11, 12: `function f { CMD; }`, `function f if CMD; then …` run
+            i += 2 + (argv[i + 2:i + 3] == ["()"])  # CMD, as `f() { CMD; }` does (the body's keyword is dropped next)
         elif base in ("nohup", "time", "command", "builtin", "exec", "noglob", "stdbuf", "nice", "ionice", "chronic",
                       "setsid", "busybox"):  # setsid, busybox: T-0160 (the differential test)
             i += 1
@@ -4807,7 +4817,7 @@ def _check_awk(args, ctx, depth, cwd, cmd):
                 runs += [_awk_value(s, assigns) for s in re.findall(_AWK_STR, m.group(1))]  # printf("%s", "…")
             runs.append(target)
         for run in runs:
-            found += check_bash(run, ctx, depth + 1)
+            found += _child_check(run, ctx, depth + 1)  # awk's system() text is run by a child sh
         for m in re.finditer(r"\breadfile[ \t]*\(", prog):  # gawk -l readfile: readfile("path") reads it whole
             path = _awk_value(_balanced(prog, m.end()), assigns)
             if "$AWKVAR" not in path and path:
@@ -5666,6 +5676,9 @@ def _escapes(cmd):
     return False
 
 
+_SAMPO_IN_BODY = lazy(r"(?<![\w.-])(?:sampo|fm)(?![\w-])|/sampo(?![\w-])")
+
+
 def _expand_literal_loops(cmd):
     """T-0411: a top-level `for V in w1 w2; do BODY; done` whose words are plain literals runs BODY once per word, so
     it is read as `BODY[w1]; BODY[w2]; V=w2`. Only when the body has no nested loop, case, heredoc or way to set V
@@ -5691,7 +5704,14 @@ def _expand_literal_loops(cmd):
                     rf"\$(?:\{{{var}\}}|{var}(?!\w))", "", body)) or any(_single_quoted(body, u.start()) for u in uses)):
             continue
         after = masked[m.end():].lstrip(" \t")
-        runs = "; ".join(re.sub(rf"\$(?:\{{{var}\}}|{var}(?!\w))", lambda _, w=w: w, body).strip().rstrip(";").strip()
+        # T-4785 round 8: a loop that runs a sampo word is unrolled only where it is plainly top level in this shell:
+        # nothing before it but a separator (no `(`, `&&`/`||` branch, pipe, `&`) and no pipe or `&` after it
+        # (`a && for …` stays: the commands are the text, and V is not kept behind a branch)
+        if _SAMPO_IN_BODY.search(body) and (before and before[-1] not in ";\n" and before[-2:] not in ("&&", "||")
+                                            or after[:1] == "|" and after[:2] != "||"
+                                            or after[:1] == "&" and after[:2] != "&&"):
+            continue
+        runs ="; ".join(re.sub(rf"\$(?:\{{{var}\}}|{var}(?!\w))", lambda _, w=w: w, body).strip().rstrip(";").strip()
                          for w in words)
         # V keeps the last word only when the loop surely ran in this shell: not behind && / || (maybe skipped) or in
         # a pipeline (a subshell)
@@ -5756,7 +5776,7 @@ def _moves_shell(name, args, cwds, ctx, shell=""):
     return moves, places
 
 
-def _prefix_vars(shell, cmds, home=None):
+def _prefix_vars(shell, cmds, home=None, spaces=False):
     """T-0183: NAME=literal values a branchy command sets in its straight top-level prefix (the commands before its
     first branch, pipe, subshell, group or keyword run first, in this shell), for names written bare nowhere else in
     it; {} when nothing qualifies. Only where no builtin can set names indirectly (the caller checks)."""
@@ -5797,7 +5817,7 @@ def _prefix_vars(shell, cmds, home=None):
     raw = _raw_cmds(prefix) if prefix and _straight_line(mp) else None
     env = {}
     for words in raw or []:
-        env = _track_vars(words, env, home)
+        env = _track_vars(words, env, home, spaces)
         if env is None:
             return {}
     # T-0331: a word after - / or . (a flag like -S, a path segment like /tmp/S/) can't name a variable
@@ -5957,8 +5977,10 @@ def _mktemp_literal(cmd):
     return _MKTEMP_D.sub(lit, cmd)
 
 
-def _track_vars(words, env, home=None):
-    """T-0161: the variables after one simple command (its words as written), or None once any could be unknown."""
+def _track_vars(words, env, home=None, spaces=False):
+    """T-0161: the variables after one simple command (its words as written), or None once any could be unknown.
+    spaces (T-4785 round 4, a sampo word's reader): a quoted value holding a space is kept (C="sampo task"; $C splits it
+    as bash does) where a path reader drops it."""
     words = [w for i, w in enumerate(words) if not re.match(r"\d*(?:[<>]|&>)", w)  # redirections and their targets
              and not (i and re.fullmatch(r"\d*(?:[<>]+&?|&>>?)\|?", words[i - 1]))]
     runner = False
@@ -5976,7 +5998,7 @@ def _track_vars(words, env, home=None):
             v = _unquote(home + rv[1:] if home and re.match(r"~(?:/|$)", rv) else rv)
             if k == "IFS":
                 return None  # word splitting changes: no expansion can be read
-            if _SHELL_SET.match(k) or v is None or _unresolvable(v) or re.search(r"[*?\[~\s]", v):
+            if _SHELL_SET.match(k) or v is None or _unresolvable(v) or re.search(r"[*?\[~]" if spaces else r"[*?\[~\s]", v):
                 env.pop(k, None)  # a glob, a tilde form or a space is expanded or split later: leave it unknown
             else:
                 env[k] = v
@@ -6011,6 +6033,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     """Return [(category, detail)] for every dangerous thing found in a shell command."""
     if depth > 4:
         return [("rm-outside", "command nesting too deep to analyse: split the command")]
+    entry = cmd  # round 9: the text as it came, to tell a read-to-the-end tail of a substitution from a command line
     # T-1727 review: the folders the caller may be in when it runs this text (eval, sh -c, sh <<<), so a discarding
     # git command read here is saved where it runs, not in the hook's cwd
     if not depth:
@@ -6057,7 +6080,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     holds = _literals_hold(cmds, shell, {**_DCWD.get("lits", {}), **lits})
     if not depth:  # the whole line's, for a sampo call read nested; none where they may not hold
         _DCWD["holds"] = holds
-        _DCWD["lits"] = lits if holds and not _name_computed(shell) else {}
+        _DCWD["lits"] = {}  # set below, once the home is known: only the values whose assignment runs first (_seq_literals)
     # T-1921: an && chain headed by a plain `cd /abs &&` runs nothing where it starts (a failed cd stops it all)
     head = top[1] and re.match(r"\s*cd[ \t]+(/[^\s;&|<>()'\"`$*?\[\]{}\\!#~]*)[ \t]*&&", shell)
     rest, prev = shell[head.end():] if head else "", None
@@ -6075,12 +6098,12 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             if spawned == _ARGV_UNK:  # T-4736: a command from argv the outer words don't spell out (as node's is)
                 found += [_SPAWN_UNK] if not last and _SPAWN_UNK not in found else []  # (what the text before it
             else:  # already refuses keeps its own, more exact reason)
-                last = check_bash(spawned, ctx, depth + 1)
+                last = _child_check(spawned, ctx, depth + 1)
                 found += last  # T-0345, and its review: from those folders too (`…`,
     # sh <<<, python -c): any folder a cd names
     texts, marks = _text_spawned(cmd, ctx, dry)  # T-4686: and the shell strings node, perl, ruby, php, lua, R start
     for spawned in texts:
-        found += check_bash(spawned, ctx, depth + 1)
+        found += _child_check(spawned, ctx, depth + 1)
     for mark, finding in (("big", _TOO_BIG), ("unk", _SPAWN_UNK)):
         if mark in marks and finding not in found:
             found.append(finding)
@@ -6092,6 +6115,12 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     # T-0330 review: ~ is $HOME, so once the command may set HOME a ~ in a value isn't the user's home any more
     tilde = None if re.search(r"(?<![\w${])HOME\b", shell) else ctx.home
     pre = _prefix_vars(shell, cmds, tilde)  # T-0183; also what a path-named command may expand (T-0331)
+    # T-4785 round 4: what a sampo word may read of the line's literals, those whose assignment runs before every use
+    seq = _seq_literals(shell, cmds, lits, tilde) if holds and not _name_computed(shell) else {}
+    if not depth:
+        _DCWD["lits"] = seq
+    if tails:  # round 9: the texts read to the end of a line, whose stub $ is the tail of "$(a) | $(b)", no command word
+        _DCWD.setdefault("tail", set()).update(set(_subst_bodies(shell, True, clean)) - set(_subst_bodies(shell, False, clean)))
     for body in _subst_bodies(shell, tails, clean) + [b for t in live for b in _subst_bodies(t, tails, clean)]:  # `…`
         # T-4138: a body (or the tail after a substitution opens) is read apart from the assignments before it: the
         # names this command sets once in its prefix, which the body uses, go with it (S=/x; cd $(pwd)/y; … > $S/f)
@@ -6100,7 +6129,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             body = "(" + body  # reopened, so the text reads as a group, not a stray close the walk can't follow
         found += check_bash("; ".join(carried + [body]) if carried else body, ctx, depth + 1, tails=False)
     for script in _stdin_scripts(cmd, cmds):  # T-0589: bash <<'EOF' … EOF and sh <<< '…' run that text
-        found += check_bash(script, ctx, depth + 1)
+        found += _child_check(script, ctx, depth + 1)
     cwd, chain = ctx.cwd, []
     raw = _raw_cmds(shell) if _straight_line(shell) else None  # the same commands, quotes kept (T-0161)
     outside, bare = _outside(shell, cmds, ctx, pre)  # T-0175: what it inherits and can't change
@@ -6210,8 +6239,10 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         if len(cwds) + len(lost) + len(rd) > 1024:  # T-1924: cds that may each fail double these (a line that
             # isn't straight: if, ( ), | and ||): refuse in milliseconds, not minutes
             return found + [("rm-outside", "the line may be in too many folders to analyse: split the command")]
+        # T-4785 round 6: the -c text is a child process: it sees this command's env prefix (V=x sh -c …), not the line's
+        handed, parent_holds = _handed(c.argv, argv, lits), _DCWD.get("holds") and holds
         for inner in (x for t in _shell_c(args) for x in _readings(t, {**lits, **known})) if _C_SHELLS.match(name) else ():
-            found += check_bash(inner, ctx, depth + 1)
+            found += _child_check(inner, ctx, depth + 1, handed, parent_holds)
             if _DOWNLOAD_SUBST.search(inner):
                 found.append(("pipe-shell", f"{name} -c runs a downloaded script"))
         # T-0160 (differential test against bash): commands these run as text or as their own arguments
@@ -6220,7 +6251,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         if name == "script":
             for j, a in enumerate(args[:-1]):
                 if a in ("-c", "--command") or re.fullmatch(r"-[a-zA-Z]*c", a):
-                    found += check_bash(args[j + 1], ctx, depth + 1)
+                    found += _child_check(args[j + 1], ctx, depth + 1, handed, parent_holds)
         if name == "find":
             for j, a in enumerate(args):
                 if a in ("-exec", "-execdir", "-ok", "-okdir"):
@@ -6285,7 +6316,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         # from elsewhere is refused; a file a variable makes it write is a write target
         for why, code in _env_channels(c.argv, name) + (_git_code(args) if name == "git" else []) + _exec_options(
                 name, args):
-            found += [("system", why)] if code is None else check_bash(code, ctx, depth + 1)
+            found += [("system", why)] if code is None else _child_check(code, ctx, depth + 1)
         # T-0275: the file a shell, source, python or an executable with a #! line is told to run
         kind, script = _script_target(name, argv[0] if argv else "", args)
         if script:
@@ -6399,7 +6430,9 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         fm_call = _fm_argv(argv)
         # review: a nameref (declare -n r=V) makes $r V's value, while the line literal r=V reads as the name V
         if (computed or fm_call) and fm_lits is None:
-            fm_lits = {**_DCWD.get("lits", {}), **({} if _name_computed(shell) else lits)} \
+            # round 7: in nested text (eval's body, a child's) an inherited name the text sets again in a way `seq` can't
+            # credit (V=$(…), a branch, read V) is no longer the parent's value
+            fm_lits = {**(_inherited(_DCWD.get("lits", {}), shell) if depth else _DCWD.get("lits", {})), **seq} \
                 if _DCWD.get("holds") and holds else {}
         fm_vals = _fm_values({**fm_lits, **known}) if computed or fm_call else {}
         if computed and fm_elsewhere is None:  # review: sampo named other than as a command run here (read C <<<
@@ -6415,8 +6448,9 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             fm_args = _fm_known(argv if fm_computed else args[1:] if name not in FM_PROGRAMS else args, fm_vals,
                                 xodd if via_xargs else None)
             unread, kind = _fm_unread(fm_args)
-            var, vals = _loop_values(unread, _DCWD.get("holds") and holds) if unread else (None, None)
-            for v in vals or ():  # T-3600: a loop over literal words (for c in "status" next): read once per word
+            # round 8: a loop's words are read for a text sampo runs or keeps (kind "run"), never for the verb chain
+            var, vals = _loop_values(unread, _DCWD.get("holds") and holds) if unread and kind == "run" else (None, None)
+            for v in vals or ():  # T-3600: a loop over literal words (--verify "cmd $t"): read once per word
                 found += check_bash(" ".join(([] if fm_computed else ["sampo"]) + [
                     shlex.quote(a) for a in _fm_known(fm_args, {var: v})]), ctx, depth + 1)
             if unread and not vals and kind == "verb":
@@ -6448,6 +6482,34 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                     and not (sub == "pause" and _pause_is_agents(ctx)):  # flag order is free
                 word, why, typed = USER_ONLY_FM[sub]
                 found.append(("self-authorize", f"{why} (they can type ! {typed})"))
+            # T-4785 round 3: a builder's words as typed, not through the values the line sets (a V=x after the call, in a
+            # subshell or behind a && that doesn't run leaves $V unset in the shell: it is read here as x); a builder
+            # types the literal. Round 4: and the verb `check` itself too: V="check add"; sampo $V list is `check` through
+            # the value but its typed rest is `list`, so a typed verb that isn't `check` while the value makes it one is
+            # refused whole (the same value-free reading decides whether to look and what to look at)
+            typed = _fm_known(argv if fm_computed else args[1:] if name not in FM_PROGRAMS else args, {},
+                              xodd if via_xargs else None)
+            tsub, trest = _fm_subcommand(typed)
+            if typed != fm_args:  # round 7: a command fm keeps or runs is read as typed too (its verb chain is no value's)
+                again = [val if eq else b for a, b in zip(typed, typed[1:] + [""])
+                         for flag, eq, val in [a.partition("=")] if flag.startswith("--r") and "--run".startswith(flag)]
+                for stored in dict.fromkeys(again + list(_fm_runs(tsub, trest, typed))):
+                    found += check_bash(stored, ctx, depth + 1)
+            if getattr(ctx, "confine", None) and (sub == "check" or tsub == "check") and (why := (
+                    _builder_check(trest + (["<("] if c.procsub else [])) if tsub == "check" else  # a <( ) splits it:
+                    "sampo check named by a word the shell fills in at run time (the guard can't read which gate "  # a word comes after
+                    "verb it is)")):
+                found.append(("confine", why))  # T-4785: a builder never changes the project's gates
+                confined = True  # its own reason says more than the general one below
+            else:
+                confined = False
+            # T-4785 round 7: and the verb chain is read as typed for every session (no credited value), so the shell
+            # can't run a verb the guard read as another: `V=status; sampo $V risk off` is refused here
+            if not confined and not (unread and kind == "verb") and (chained := _fm_chain_unread(typed)):
+                found.append(("system", f"{chained} in a sampo command is named by a word the shell fills in at run "
+                                        "time (a variable, a substitution, a glob), whatever value the line gave it: the "
+                                        "guard reads the verb, its sub-verb and the words its rules key on as typed, so "
+                                        "type them literally"))
             if sub == "agents" and "uninstall" in rest[:2]:  # T-0340: it takes the guard out of another agent
                 found.append(("core", "sampo agents uninstall removes Sampo's guard from another coding agent"))
             if sub == "serve" and _fm_subcommand(rest, takes_value=("--permission-mode",))[0] not in ("status", "stop"):
@@ -6489,15 +6551,46 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         if re.search(r"[$`]", name):  # T-0587: a name bash computes, read every way it may run
             m = re.fullmatch(r"\$(?:\{(\w+)\}|(\w+))", argv[0])
             val = ({**lits, **known}.get(m.group(1) or m.group(2)) if m else None)
+            if val is None and not m:  # round 9 (a): a word of several parts ($x$y, "$x"po) every one a credited literal
+                joined = _with_vars(argv[0], {**fm_lits, **known})  # the order-checked ones: a use before its assignment is no value
+                val = None if _DOLLAR_OR_TICK.search(joined) else joined
             rest_args = [shlex.quote(a) for a in args]
+            typed_args = _typed_args(args)  # round 9: its words as typed, an expansion among them kept for the verb chain
             if val is not None:  # its value on this line, split as bash splits it unquoted
                 found += check_bash(" ".join([val] + rest_args), ctx, depth + 1)
+                if any(os.path.basename(w) in FM_PROGRAMS for w in val.split()):  # sampo's own verb chain is read as typed
+                    found += check_bash(" ".join([val] + typed_args), ctx, depth + 1)
+            elif argv[0].count("`") % 2 and not argv[0].startswith("`"):
+                # the end of a `…` that opened in an earlier word (L=`touch f`, `a; true`): the split cut the span, so this
+                # word is inside it, not a command; what follows it is read as a line of its own
+                found += check_bash(" ".join(args), ctx, depth + 1) if args else []
+            elif (not debris and not _is_debris_word(argv[0], shell) and not _is_argument_stub(cmds, idx)
+                  and not (name == "$" and entry in _DCWD.get("tail", ()))):
+                # round 9 (b): a value the guard can't read may be sampo or fm (their tables are the same): the rest of the
+                # line is read as if it were, and refused when that reading is. Where that rest can't be found it is $__u
+                for rest in _computed_rests(cmds, idx, argv):
+                    for _, why in _read_as_sampo(rest, ctx, depth):
+                        hit = ("system", f"{argv[0]} is a command word the shell fills in at run time, so it may be "
+                                         f"sampo: read as sampo, {why}")
+                        found += [hit] * (hit not in found)
             found += check_bash(" ".join(rest_args), ctx, depth + 1) if args else []  # it may expand to nothing
             for t in _shell_c(args) + ([" ".join(args)] if args else []):  # T-0668 (review): or be bash -c, or eval
                 for x in _readings(t, {**lits, **known}):
                     found += check_bash(x, ctx, depth + 1)
             if val is None or re.search(r"(?<![\w$])IFS=", cmd):  # T-3795: a value set once on the line is that value
                 names += _COMPUTED_AS  # or be any dangerous command
+        if not debris and re.search(r"[$`]", "".join(c.argv)):
+            # round 11, a net under every position: an expansion anywhere in a command, followed by literal words that read as
+            # a refused sampo verb chain (risk off, pause) is refused, whichever word the tokenizer made the expansion. Only
+            # a literal chain: an unknown one is the (b) reading's. A position missed there matters only to a doubly
+            # computed line
+            for w, after in _stub_rests(cmds, idx):
+                if _is_debris_word(w, shell) or w == "$" and entry in _DCWD.get("tail", ()):
+                    continue
+                for _, why in _read_as_sampo(after, ctx, depth):
+                    hit = ("system", f"{w} is filled in at run time and literal words follow it that read as a sampo "
+                                     f"command: read as sampo, {why}")
+                    found += [hit] * (hit not in found)
         for nm in names:
             if nm == "rm" != name and not _rm_opts_only(args):  # GNU rm stops at an option it doesn't know
                 continue                                      # (-fwrapv, -Wno-unused…): nothing is deleted
@@ -7050,7 +7143,7 @@ def _read_piece(src, ctx, depth):
     # size would: a script's functions each name a folder or two, and 64 of them (37 KB) ran past it as one reading
     _DCWD["seen"] = {}
     try:
-        return check_bash(src, ctx, depth + 1)
+        return _child_check(src, ctx, depth + 1)  # T-4785: a script file runs in a child
     finally:
         _NO_GUESS.pop()
         if outer_seen is None:
@@ -7108,6 +7201,7 @@ def _check_script(text, ctx, depth, acc, path=None):
             # name a variable holds ("| $SH") carries a $, so the rule below drops it
             elif not ((f[0] in ("rm-outside", "self-authorize", "state-direct", "pipe-shell")
                        or f[0] == "core" and "/state" in f[1]
+                       or f[0] == "confine" and f[1].startswith("sampo check")  # T-4785: a builder's script changes no gate
                        or f[0] == "system" and ("is written earlier in this command" in f[1] or "too deep" in f[1]))
                       and "$" not in f[1] and not re.search(r"not known|unresolvable|from stdin", f[1])):
                 continue
@@ -7562,7 +7656,7 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
         if text is not None:
             _TEXTS.append((p, text))
             if kind == "exec":  # the #! line is a command too: env -S bash -c '…' runs its -c string, not the body
-                found += check_bash(_shebang(data[:256].split(b"\n")[0].decode("utf-8", "replace"))[1], ctx, depth + 1)
+                found += _child_check(_shebang(data[:256].split(b"\n")[0].decode("utf-8", "replace"))[1], ctx, depth + 1)
         pre = list(found)  # `pre` and `read` are bound before the timer is set: one that fires at once (macOS, T-4820)
         #                    would otherwise reach the handler below with neither
 
@@ -7572,7 +7666,7 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
             elif text is not None and (got or kind) == "py":
                 for spawned in _spawned_commands(text):  # only a command written out: computed ones ("$_")
                     if '"$_"' not in spawned:  # flag every demo script that builds a path (replay: 27 false denials)
-                        found.extend(check_bash(spawned, ctx, depth + 1))
+                        found.extend(_child_check(spawned, ctx, depth + 1))
             elif text is not None:
                 _check_script(text, ctx, depth, found, path=p)
         if not nested:
@@ -8750,6 +8844,69 @@ def _fm_words(rest):
     return out
 
 
+BUILDER_CHECK_READ = ("run", "list", "office", "affected")  # T-4785: the sampo check verbs that change no gate; every
+# other (and any the parser gains later) is refused to a builder: tests/test_guard_exec_vectors ties this to the parser
+
+
+CHECK_BOOL = frozenset({"-h", "--help", "--json", "--clear", "--fresh", "--fail-fast", "--affected", "--lock", "--hold",
+                        "--shape-green"})  # the options of sampo check that take no value
+CHECK_VALUED = frozenset({"-p", "--project", "--cell", "--sheets", "--contains", "--for", "--python", "--timeout",
+                          "--repeat", "--evidence", "--since", "--step", "--ac"})  # and the ones that take the next word
+# T-4785 review: the guard imports nothing of Sampo, so these two tables are tied to the parser by a test that walks its
+# options (test_guard_exec_vectors.BuilderCheckConfine); an option in neither is unknown, and an unknown option is refused
+
+
+def check_args(rest):
+    """T-4785 review: (positional words, the options set, the options the guard doesn't know) of `sampo check <rest>`,
+    read as argparse reads them: a valued option takes the next word as its value (`--python list rm 1` has the words
+    rm, 1: list is a version), so the verb is the first word left. An unknown option (a new one, an abbreviation
+    argparse would take, -pX) leaves the words unreadable: the caller refuses on it. The one reading of these words,
+    for the builder rule here and the wide-check rule (hooks._builder_check_deny)."""
+    words, flags, bad, i = [], set(), [], 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--":
+            return words + rest[i + 1:], flags, bad
+        if a.startswith("-") and len(a) > 1:
+            name = a.partition("=")[0] if a.startswith("--") else a
+            if name in CHECK_VALUED:
+                flags.add(name)
+                i += 1 if "=" in a and a.startswith("--") else 2
+                continue
+            if name in CHECK_BOOL:
+                flags.add(name)
+            else:
+                bad.append(a)
+            i += 1
+            continue
+        words.append(a)
+        i += 1
+    return words, flags, bad
+
+
+def _builder_check(rest):
+    """T-4785: why a builder session may not run `sampo check <rest>`, or ''. A builder reads and runs the gates; add, rm,
+    paths, ambient, onwrite, playbooks (ratchet) and an affected template change what a lane must pass, and a lane that
+    removes its own gate lands unproven. The verb is the first positional word (none: run); `affected` only when it
+    shows the template (no command, no --clear or --for). An option the guard doesn't know (CHECK_BOOL, CHECK_VALUED)
+    is refused: it could take the next word as its value, and the verb would be a different word. So is any word after
+    `check`, an option, its value or a positional, that the shell may fill in or split (an expansion, a substitution, a
+    brace list, a glob, a process substitution; _unliteral): `--python $V list` reads as the verb list, while V holding
+    `x rm 1` makes it `--python x rm 1 list`. A quoted "$V" is refused too: one word, but its content is unknown and the
+    guard reads no quotes. It is the builder's rule alone (the caller), not the user's or the main thread's."""
+    if any(_unliteral(w) or re.search(r"[*?\[]|[<>]\(", w) for w in rest):
+        return "sampo check with a word the shell fills in or splits at run time (the guard can't read which gate verb it is)"
+    words, flags, bad = check_args(rest)
+    verb = words[0] if words else "run"
+    if bad:
+        return "sampo check with an option the guard doesn't know (it can't tell which word is the gate verb)"
+    if any(_unresolvable(w) for w in words):
+        return "sampo check with a word the shell fills in at run time (the guard can't read which gate verb it is)"
+    if verb not in BUILDER_CHECK_READ or (verb == "affected" and (len(words) > 1 or {"--clear", "--for"} & flags)):
+        return f"sampo check {verb} changes the project's gates"
+    return ""
+
+
 def _fm_stored(sub, rest, fm_args):
     r"""T-0901: the commands an fm call stores, or runs from a word the hook would otherwise never read: a verify
     (`--ac "x :: CMD"`, `--verify`, `fm task ac … "x :: CMD"`, an Acceptance criteria text's `verify with \`CMD\``,
@@ -8790,7 +8947,7 @@ def _fm_stored(sub, rest, fm_args):
 def _fm_runs(sub, rest, fm_args):
     """The commands an fm call runs or keeps to run from its own words: _fm_stored's (T-0901), and the trailing command
     of quiet and at (T-0898: fm quiet -- rm -rf ~ used to pass)."""
-    words = _fm_trailing(rest, 1 if sub == "at" else 0) if sub in ("quiet", "at") else []
+    words = _fm_trailing(rest, 1 if sub == "at" else 0) if sub in FM_TRAILING else []
     return _fm_stored(sub, rest, fm_args) + (
         [words[0] if len(words) == 1 else " ".join(map(shlex.quote, words))] if words else [])
 
@@ -8849,14 +9006,35 @@ def _fm_known(args, known, xargs=None):
     return out if xargs is None else (["$(xargs)"] if xargs else []) + out + ["$(xargs)"]
 
 
+def _loop_body(text, after):
+    """T-4785 round 8: (start, end) of the loop body from `after` (just past its `do`) to the `done` that closes it,
+    counting the loops inside it, read on the quote-masked text; None when it never closes."""
+    masked, depth = _mask_quotes(text), 1
+    for m in re.finditer(r"(?<=[;\n&|({])[ \t]*(do|done)(?![\w-])", masked[after:]):  # a keyword, not an argument (echo do)
+        depth += 1 if m[1] == "do" else -1
+        if not depth:
+            return after, after + m.start(1)
+    return None
+
+
 def _loop_values(word, holds):
     """T-3600: (V, words) when `word` is $V and the whole command gives V only by one `for V in …` loop over literal
-    words, naming $V nowhere before it, on a line whose literals hold (_literals_hold); (None, None) otherwise."""
+    words, naming $V nowhere before it, on a line whose literals hold (_literals_hold); (None, None) otherwise.
+    T-4785 round 8: and only when every $V on the line sits between that loop's `do` and its matching `done`, a body
+    with no `(`, `{`, pipe or `&` (a use after the loop, in a subshell, a pipeline stage or a branch that never ran is
+    a use of a name this loop never gave). Not read for a sampo call's verb chain at all (_fm_chain_unread)."""
     m = re.fullmatch(r"\$(?:\{(\w+)\}|(\w+))", word)
     text = _DCWD.get("line", "")
     v = m and (m[1] or m[2])
     loops = list(re.finditer(rf"(?<![\w$-])for\s+{v}\s+in\s+([^;\n]*?)\s*[;\n]\s*do\b", text)) if v and holds else []
     if len(loops) != 1 or re.search(rf"\$\{{?{v}(?!\w)", text[:loops[0].start()]):
+        return None, None
+    body = _loop_body(text, loops[0].end())
+    if not body:
+        return None, None
+    inside = _mask_quotes(text)[body[0]:body[1]]
+    if re.search(r"[(){|&]", re.sub(r"\$\{\w+\}", "", inside)) or len(re.findall(
+            rf"\$\{{?{v}(?!\w)", text)) != len(re.findall(rf"\$\{{?{v}(?!\w)", text[body[0]:body[1]])):
         return None, None
     try:
         words = shlex.split(_with_vars(loops[0][1], _fm_values(_DCWD.get("lits", {}))))
@@ -8922,6 +9100,172 @@ def _fm_unread(args):
     return (verb, "verb") if verb else (run, "run") if run else (None, None)
 
 
+def _fm_chain_unread(args):
+    """T-4785 round 7: the first word in a sampo call's verb chain, read as typed, that the shell fills in: an option or
+    the verb, a gated verb's later words, an --allow value (the positions _fm_unread keys a refusal on). No value the
+    line sets is read here: a credited value had to match what the shell runs through a prefix, a branch, a child, an
+    env -i, a nested re-assignment, and each of those was a way for the two to differ. Round 8: a `for` loop's words
+    are no exception (a loop in a branch that never runs, a pipeline stage or a subshell gave the verb a value the
+    shell never ran)."""
+    _, rest = _fm_subcommand(args, twins=False)
+    sub = _fm_subcommand(args)[0]
+    gated = [w for w in rest if not re.match(r"[^$`\s]*\s", w)] if sub in USER_ONLY_FM or sub in FM_GATED else []
+    allows = [a.partition("=")[2] or b for a, b in zip(args, args[1:] + [""]) if _is_allow(a)]
+    head = args[:len(args) - len(rest)] + rest[:1] * bool(gated)  # a glob (ris?) is a file name here, so the verb or sub-verb
+
+    def filled(w):  # an expansion, a brace list, or in the verb positions a glob
+        return _unliteral(w) or w in head and not re.search(r"\s", w) and bool(re.search(r"[*?\[]", w))
+    return next((w for w in head + gated + allows if filled(w)), None)
+
+
+_DOLLAR_OR_TICK = lazy(r"[$`]")
+_UNREAD_REST = ["$__u"]  # the words after a computed command word, when they can't be found: an unreadable one, refused
+
+
+def _strip_expansions(word):
+    """(word without its ${…}, $(…) (balanced) and `…`, whether one of them never closed: it ran to the end)."""
+    out, i, n, opened = [], 0, len(word), False
+    while i < n:
+        ch = word[i]
+        if ch == "$" and word[i + 1:i + 2] in ("{", "("):
+            o = word[i + 1]
+            c, depth, i = "}" if o == "{" else ")", 1, i + 2
+            while i < n and depth:
+                depth += (word[i] == o) - (word[i] == c)
+                i += 1
+            opened = opened or bool(depth)
+        elif ch == "`":
+            j = word.find("`", i + 1)
+            opened = opened or j < 0
+            i = n if j < 0 else j + 1
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), opened
+
+
+def _is_debris_word(word, shell):
+    """A "command word" holding a space or an operator once its expansions are taken out is no word bash would run: the
+    quote-blind fallback split cut it out of a quote it misplaced (a real quoted one, "${x#*;}", keeps its operators
+    inside the expansion). Only a line that fallback split can hold one."""
+    return bool(re.search(r"[;&|\s]", _strip_expansions(word)[0])) and _shlex_fails(_lines(shell))
+
+
+def _computed_rests(cmds, idx, argv):
+    """T-4785 round 9 (b): the words the shell hands a computed command word argv[0] that no credited literal joins, each
+    reading to try as sampo's own: what the tokenizer (quote-aware) put after it, so no second scan of the text. A bare $
+    is an unquoted $( ): its body's commands follow, then the ")" command holding the words after it (and the one glued to
+    it, so also without the first); a body with a case reads each ")" up to the last. Where the words can't be found, or a
+    word's own $( or backtick never closes (the fallback split), every suffix of them: a refused one is refused."""
+    name, args = argv[0], argv[1:]
+    if name == "$" and idx + 1 < len(cmds) and cmds[idx + 1].op.startswith("("):
+        # the tokenizer gave each command the paren depth it stands at: the body is the run deeper than the stub, and the
+        # first command back at the stub's depth is what follows the ")" (its words, if the op is the ")" itself; no
+        # words, if an operator closed it: that command is a fresh one). A case in the body has ")" of its own: every
+        # later command at that depth is tried
+        d, out, case = cmds[idx].depth, [], False
+        for c in cmds[idx + 1:]:
+            if c.depth > d:
+                case = case or "case" in c.argv or ";;" in c.op
+                continue
+            ends = c.op.endswith(")")
+            out += [c.argv, c.argv[1:]] if ends else [[]]
+            if not case:
+                return out
+            if len(out) > 32:  # too many to try: the one it can't read
+                return out + [_UNREAD_REST]
+        return out + [[]]  # the line ended right after the ")": the rest is nothing
+    if name == "$":  # a bare $ word, no substitution after it
+        return [args]
+    if _strip_expansions(name)[1]:
+        return [args[i:] for i in range(min(len(args), 32) + 1)] + [_UNREAD_REST] * (len(args) > 32)
+    return [args]
+
+
+_NET_VERBS = frozenset(USER_ONLY_FM) | FM_GATED | frozenset(FM_STORING)  # the tables only
+
+
+def _stub_rests(cmds, idx):
+    """T-4785 round 11: [(word, literal words after it)] for each expansion word ($(…) or `…` or $x) among cmds[idx]'s
+    words, wherever the command stands: the words that follow it up to the next expansion, when every one is a plain
+    literal. A bare $ ends its command (the body follows as the commands after it): what follows is what the ")" holds
+    (_computed_rests). A backtick span the split cut in pieces ends at the piece that closes it."""
+    argv, out, n = cmds[idx].argv, [], len(cmds[idx].argv)
+    isx = [bool(_DOLLAR_OR_TICK.search(w)) for w in argv]
+    nx, od = [n] * (n + 1), [n] * (n + 1)  # from the right: the first expansion, the first odd-backtick word, at or after i
+    for i in range(n - 1, -1, -1):
+        nx[i] = i if isx[i] else nx[i + 1]
+        od[i] = i if argv[i].count("`") % 2 else od[i + 1]
+    for j, w in enumerate(argv):  # linear: a start index stands for each rest, and only a rest that opens on a verb is cut
+        if not isx[j]:
+            continue
+        if w == "$":
+            rests = _computed_rests(cmds, idx, argv[j:]) if j == n - 1 else [None]
+            starts = [None if r is not None else j + 1 for r in rests]
+        elif w.count("`") % 2:
+            k = od[j + 1]
+            starts = [] if k == n or w[-1:] == "`" and not w.startswith("`") else [k + 1]
+            rests = [None] * len(starts)
+        else:
+            starts, rests = [j + 1], [None]
+        for start, rest in zip(starts, rests):
+            if start is not None:
+                rest = argv[start:nx[start]] if start < n and argv[start] in _NET_VERBS else []
+            elif rest and rest[0] in _NET_VERBS:  # a rest the ")" holds, already a list of its own
+                rest = rest[:next((i for i, x in enumerate(rest) if _DOLLAR_OR_TICK.search(x)), len(rest))]
+            else:
+                rest = []
+            if rest and rest[0] in _NET_VERBS:  # a literal verb chain only: an unknown word is the (b) reading's
+                out.append((w, rest))
+    return out
+
+
+def _is_argument_stub(cmds, idx):
+    """Whether the bare $ that starts cmds[idx] is an unquoted $( ) standing among the words of a command: it follows the
+    ")" of an earlier one (echo $(a) $(b): the ")" is the op). One after a ";" or a case pattern's ")" starts a command; so
+    does one when a case lies in the run between (its pattern's ")" looks as a substitution's). Round 10: only when the
+    command that owns the earlier substitution already has a command word of its own (after assignments and wrappers):
+    x=$(a) $(b) and >$(a) $(b) have none, so the second one is it. Whatever can't be followed is a command word."""
+    c, words = cmds[idx], []
+    if c.argv[:1] != ["$"] or not c.op.endswith(")") or c.op.endswith(");") or idx == 0:
+        return False
+    j = idx
+    while True:  # the command that owns each earlier substitution, and the ones continuing it after a ")"
+        k = j
+        while k > 0 and cmds[k - 1].depth > cmds[j].depth:
+            k -= 1
+        run = cmds[k:j]
+        if not run or k == 0 or not run[0].op.endswith("(") or any("case" in r.argv or ";;" in r.op for r in run):
+            return False
+        j = k - 1
+        words = cmds[j].argv + words
+        if not cmds[j].op.endswith(")") or cmds[j].op.endswith(");"):
+            break  # the head of the command
+    return bool(_strip_wrappers(words)[0])
+
+
+def _read_as_sampo(rest, ctx, depth):
+    """The findings of the line `sampo <rest>` (its words as _typed_args keeps them), judged once a line."""
+    text = " ".join(["sampo"] + _typed_args(rest))
+    memo = _DCWD.setdefault("asfm", {})
+    if text not in memo:
+        memo[text] = check_bash(text, ctx, depth + 1, tails=False, at=ctx.cwd)
+    return memo[text]
+
+
+def _typed_args(args):
+    """T-4785 round 9: a call's words for a reading of the line as another command: a word with no shell syntax as it is, one
+    with an expansion cut at it and ended with a bare $__u (the verb-chain check keys on the expansion, which a quoted $
+    would hide), any other quoted."""
+    out = []
+    for a in args:
+        if re.fullmatch(r"[\w${}.:=@/+,%^-]*", a) and not re.search(r"\$\{[^}]*$", a):
+            out.append(a)
+        elif (m := re.search(r"[$`]", a)):
+            out.append((shlex.quote(a[:m.start()]) if m.start() else "") + "$__u")
+        else:
+            out.append(shlex.quote(a))
+    return out
 _FM_PROBE = "DONE-WHEN: x :: \0 verify with `\0`"  # a word every reader in _fm_stored takes as a command
 _BINDS = lazy(r"\bfor\s+(\w+)\s+in\b|\bread\s+(?:-\S+\s+)*(\w+)|(?<![\w$])(\w+)\+?=")  # names a text sets itself
 _DOLLAR = lazy(r"(?<!\\)\$(?:\{[^}]*\}?|\([^)]*\)?|\w+|.?)")  # a $ expansion: $X, ${…}, $( ), $1, $@
@@ -9104,6 +9448,89 @@ def _line_literals(shell):
         name, val = m.group(1), shell[m.start(k):m.end(k)]
         rest = shell[:m.start()] + shell[m.end():]
         if not re.search(rf"(?<![\w$]){name}(?!\w)|\$\{{[#!]?{name}[^}}]", re.sub(rf"\$(?:\{{{name}\}}|{name}(?!\w))", "", rest)):
+            out[name] = val
+    return out
+
+
+def _seq_literals(shell, cmds, lits, home=None):
+    """T-4785 round 4: the part of _line_literals a sampo word may read: a name's value counts only where its assignment
+    runs before every use, in the shell that uses it. _line_literals only knew the name is set once on the line, so
+    `(V="status x"); sampo $V risk off`, `sampo $V risk off; V=…`, `false && V=…; sampo $V …` and a V set in a loop or an
+    if read as the value while the shell had V unset (and ran `sampo risk off`). The rm path already reads a variable by
+    sequence: a straight line command by command (_track_vars), a branchy one by the prefix before its first branch,
+    pipe, subshell or keyword (_prefix_vars). This is that reading, values with spaces kept (C="sampo task"), for the
+    names _line_literals found, and the assignment textually before the first $name. A name it can't place is no
+    literal: the word stays an expansion and the verb rules refuse it."""
+    if not lits:
+        return {}
+
+    def first(k):  # `echo $S; S=x` runs the use first: the value comes after
+        a, r = re.search(rf"(?<![\w$]){k}=", shell), re.search(rf"\$\{{?{k}(?!\w)", shell)
+        return a is not None and (r is None or a.start() < r.start())
+    if _straight_line(shell) and "`" not in shell and "$(" not in shell:  # a substitution runs in a subshell: its
+        raw, env, got, seen = _raw_cmds(shell), {}, {}, set()  # assignments are no replay step (the prefix path cuts there)
+        if raw is None or len(raw) != len(cmds):
+            return {}
+        for words in raw:
+            text = " ".join(words)
+            for k in lits:  # the value the first command that uses $k sees (one that computes its name ends the replay
+                if k not in seen and re.search(rf"\$\{{?{k}(?!\w)", text):  # only after its own uses are read)
+                    seen.add(k)
+                    if k in env and first(k):
+                        got[k] = env[k]
+            env = _track_vars(words, env, home, True)
+            if env is None:
+                break
+        return got
+    return {k: v for k, v in _prefix_vars(shell, cmds, home, True).items() if k in lits}
+
+
+def _child_check(text, ctx, depth, handed=None, holds=True):
+    """T-4785 round 6: check_bash on text a CHILD PROCESS runs (sh -c, script -c, a here-doc script, a script file,
+    python's os.system, a git hook): a child doesn't inherit this shell's unexported variables, so `V=status; sh -c
+    'sampo $V risk off'` runs `sampo risk off`. The values this line credits to sampo words (_DCWD["lits"]) are cleared
+    for it, except `handed`: the literal assignments the child's own command carries (`V=status sh -c '…'`)."""
+    old = _DCWD.get("lits", {}), _DCWD.get("holds"), _DCWD.get("line", "")
+    handed = _inherited(handed, text) if handed else {}  # round 7: not a name the text sets again
+    _DCWD["lits"], _DCWD["holds"] = handed, holds if handed else True  # its own text's holds are its own
+    _DCWD["line"] = text  # round 8: a loop of the parent's line is no loop of the child's text (a child has its own)
+    try:
+        return check_bash(text, ctx, depth)
+    finally:
+        _DCWD["lits"], _DCWD["holds"], _DCWD["line"] = old
+
+
+_ENV_RESETTERS = frozenset("sudo doas su runuser setpriv chroot exec".split())  # a program that drops or replaces the env
+
+
+def _handed(argv, stripped, lits):
+    """The literal values a command's own env prefix (`V=x sh -c …`) gives its child: the words before the program that
+    are assignments of a name the line sets once to a literal (so lits holds that very value). T-4785 round 7: none when
+    a word dropped after the assignment resets the environment (env -i, env -u V, env -, exec -c, sudo, doas): the child
+    never sees V."""
+    dropped = argv[:len(argv) - len(stripped)]
+    for w in dropped:
+        if not _ASSIGN.match(w) and (os.path.basename(w) in _ENV_RESETTERS or w == "-" or w.startswith(
+                ("--ignore-environment", "--unset")) or (w.startswith("-") and not w.startswith("--") and re.search(
+                    r"[iu]", w))):
+            return {}
+    out = {}
+    for w in dropped:
+        m = _ASSIGN.match(w)
+        if m and m.group(1) in lits and lits[m.group(1)] == w.partition("=")[2]:
+            out[m.group(1)] = lits[m.group(1)]
+    return out
+
+
+def _inherited(lits, text):
+    """T-4785 round 7: the names of `lits` that nested text (what a child runs, or an eval's body) still reads through the
+    value its parent gave: those it uses only as a plain $name or ${name}. A name it mentions any other way (V=…, read V,
+    for V in, declare V, unset V, ${V:=x}, printf -v V) it may set again in a way the sequence reading can't credit
+    (`if true; then V=risk; fi`, `V=$(echo risk)`), so the value is dropped and the word stays an expansion."""
+    out = {}
+    for name, val in lits.items():
+        rest = re.sub(rf"\$(?:\{{{name}\}}|{name}(?!\w))", "", text)
+        if not re.search(rf"(?<![\w$]){name}(?!\w)|\$\{{[#!]?{name}[^}}]", rest):
             out[name] = val
     return out
 

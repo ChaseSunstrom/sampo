@@ -3327,11 +3327,12 @@ def _builder_check_deny(pl, fmguard):
         verb, rest = fmguard._fm_subcommand(args)
         if verb != "check" or "-h" in rest or "--help" in rest:
             continue
-        word = next((a for a in rest if not a.startswith("-")), "")
-        if word in _CHECK_SETUP:  # the verbs that set gates up or list them run none
-            continue
-        if "--lock" in rest and "--affected" not in rest:  # T-4648: the bounded behaviour lock: the scope's linked tests
-            continue
+        words, flags, bad = fmguard.check_args(rest)  # T-4785: argparse's reading: a valued option eats the next word
+        if not bad:  # an option the guard doesn't know could eat the verb: the call counts as the wide check
+            if (words[0] if words else "") in _CHECK_SETUP:  # the verbs that set gates up or list them run none
+                continue
+            if "--lock" in flags and "--affected" not in flags:  # T-4648: the bounded behaviour lock: the scope's linked tests
+                continue
         return ("deny", "Sampo: never run sampo check --affected or the full sampo check in a builder lane: the main "
                         "thread runs the affected check once at sampo lane accept, one lane at a time; run your own "
                         "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514); a CLEAN task's "
@@ -3383,8 +3384,7 @@ def _guard_ctx(pl, fmguard, lanes=()):
                       state_fallbacks=c.state_fallbacks(), scratch=scratch,
                       allow=set(act.meta.get("allow") or []) if act else set(), task_id=act.id if act else None,
                       standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()),
-                      confine=(p.lane, c.main_worktree(p.lane)) if p and getattr(p, "lane", None) and act
-                      and act.meta.get("builder") and not _visiting(pl, p.lane) else None,
+                      confine=None if getattr(p, "lane", None) and _visiting(pl, p.lane) else c.builder_confine(p, act),
                       unbriefed=p.root if p and not act and not _quiet() else None)  # T-0308: Bash writes too
     if lanes and ctx.unbriefed:
         ctx.briefed_lanes = tuple(lanes)

@@ -213,5 +213,118 @@ class Parallel(ForemanTestCase):
         self.assertNotIn("work T-0001", self.git("log", "other", "--format=%s"))
 
 
+class IntegrateHolds(ForemanTestCase):
+    """T-4785 (b): fm serve's integrate holds a lane the train would hold: an invented private term in its commits or
+    files, a file the guard refuses, a git call or scan that fails, a term list that can't be read. A clean lane still lands."""
+    TERM = "zorblat-private.example"  # invented: never a real term
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("task", "new", "one", "--type", "FEATURE", "--tier", "S", "--scope", "x.py", "--ac", "ok :: true", "--step", "a")
+
+    def git(self, *args, cwd=None):
+        return subprocess.run(["git", "-C", cwd or self.repo, *args], capture_output=True, text=True).stdout
+
+    def lane(self, name="x.py", text="A = 1\n"):
+        path = json.loads(self.fm("lane", "new", "T-0001", "--json").stdout)["path"]
+        os.makedirs(os.path.dirname(os.path.join(path, name)), exist_ok=True)
+        with open(os.path.join(path, name), "w") as f:
+            f.write(text)
+        self.git("add", name, cwd=path)
+        self.git("commit", "-qm", "work T-0001", cwd=path)
+        return path
+
+    def integrate(self, path):
+        from sampo import core as c
+        from sampo import serve
+        return serve._integrate_lane(c.find_project(self.repo), "T-0001", path)
+
+    def held(self, how, path, name="x.py"):
+        self.assertIn("kept in", how)
+        self.assertNotIn("zorblat", how, "the term is never printed")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, name)), "nothing reached the trunk")
+        self.assertTrue(os.path.isdir(path), "the lane is kept")
+
+    def test_a_clean_lane_still_lands(self):
+        how = self.integrate(self.lane())
+        self.assertIn("merged into", how)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "x.py")))
+
+    def test_a_lane_that_landed_is_reported_merged_when_removing_its_folder_raises(self):
+        # T-4785 re-check: the fast-forward had landed, then `lane rm` raised and _integrate reported the lane "kept"
+        from unittest import mock
+        from sampo import serve
+        path = self.lane()
+        real = serve._fm
+
+        def fm(cwd, *args, **k):
+            if args[:2] == ("lane", "rm"):
+                raise subprocess.TimeoutExpired("sampo lane rm", 600)
+            return real(cwd, *args, **k)
+
+        with mock.patch.object(serve, "_fm", fm):
+            from sampo import core as c
+            how = serve._integrate(c.find_project(self.repo), "T-0001", path)
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "x.py")), "it landed")
+        self.assertRegex(how, r"^merged into \S+ \(lane folder not removed: TimeoutExpired\)$")
+        self.assertNotIn("kept in", how)
+
+    def test_a_lane_carrying_a_private_term_is_held_naming_file_and_line(self):
+        self.fm("private", "add", self.TERM)
+        path = self.lane(text=f'A = 1\nHOST = "llm.{self.TERM}"\n')
+        how = self.integrate(path)
+        self.held(how, path)
+        self.assertIn("private term", how)
+        self.assertRegex(how, r"x\.py:2\b")
+
+    def test_a_lane_whose_file_the_guard_refuses_is_held(self):
+        path = self.lane(".git-credentials", "https://invented-user:invented-token@example.test\n")
+        how = self.integrate(path)
+        self.held(how, path, ".git-credentials")
+        self.assertIn("the guard refuses .git-credentials", how)
+
+    def test_a_failing_file_listing_holds_the_lane_not_lands_it_unchecked(self):
+        from unittest import mock
+        from sampo import serve
+        path = self.lane()
+        real = subprocess.run
+
+        def run(cmd, *a, **k):
+            if isinstance(cmd, list) and "--name-only" in cmd:
+                return subprocess.CompletedProcess(cmd, 128, "", "boom: output text")
+            return real(cmd, *a, **k)
+        with mock.patch.object(serve.subprocess, "run", side_effect=run):
+            how = self.integrate(path)
+        self.held(how, path)
+        self.assertNotIn("boom", how, "git's output is never quoted")
+
+    def test_an_unreadable_term_list_holds_the_lane_and_says_so(self):
+        from sampo import core as c
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("{not json")
+        path = self.lane()
+        how = self.integrate(path)
+        self.held(how, path)
+        self.assertIn("term list", how)
+        self.assertNotIn(c.PRIVATE_TERMS, how, "no path in the line")
+
+    def test_any_error_out_of_the_holds_keeps_the_lane_and_never_ends_the_serve_loop_or_lands(self):
+        # T-4785 review: _integrate caught only OSError and SubprocessError; a PolicyError or UsageError out of the shared
+        # holds (or any other error) would end fm serve's loop, so a hold that can't run is a hold, with the class named
+        from unittest import mock
+        from sampo import cli, core as c, lanes, serve
+        path = self.lane()
+        p = c.find_project(self.repo)
+        for err in (c.PolicyError("boom: output text"), cli.UsageError("boom: output text"), ValueError("boom: output text"),
+                    KeyError("boom")):
+            with mock.patch.object(lanes, "land_holds", side_effect=err):
+                how = serve._integrate(p, "T-0001", path)
+            self.held(how, path)
+            self.assertIn(type(err).__name__, how)
+            self.assertNotIn("boom", how, "an error's text is never quoted into the line")
+            self.assertEqual(self.git("status", "--porcelain", cwd=path).strip(), "", "the lane is not left half-rebased")
+
+
 if __name__ == "__main__":
     unittest.main()

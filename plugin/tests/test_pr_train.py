@@ -77,7 +77,7 @@ class PrTrain(ForemanTestCase):
         self.assertFalse(any("already fixed" in s for s in added))
 
     # a bare origin whose pull/N/head refs hold each PR; PR n passes the gate unless n is in `red`
-    def origin(self, red=(), plugin=()):
+    def origin(self, red=(), plugin=(), extra=None):  # extra: {n: (file, text)}, a file PR n also adds (T-4785)
         bare = os.path.join(self.tmp, "origin.git")
         subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
         g = lambda *a: subprocess.run(["git", "-C", self.repo, *a], check=True, capture_output=True)
@@ -89,6 +89,11 @@ class PrTrain(ForemanTestCase):
                 with open(os.path.join(self.repo, "ok.txt"), "w") as f:
                     f.write("ok")
                 g("add", "ok.txt")
+                if n in (extra or {}):
+                    name, text = extra[n]
+                    with open(os.path.join(self.repo, name), "w") as f:
+                        f.write(text)
+                    g("add", name)
                 if n in plugin:  # T-2430: this PR also changes Foreman's own plugin/
                     with open(os.path.join(self.repo, "plugin", "lib", "x.py"), "w") as f:
                         f.write("x = 1\n")
@@ -128,6 +133,77 @@ class PrTrain(ForemanTestCase):
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertEqual(self.merged(), ["1"], r.stdout + r.stderr)
         self.assertIn("self-change gate", r.stdout + r.stderr)
+
+    TERM = "zorblat-private.example"  # invented: never a real term
+
+    def test_a_pr_carrying_a_private_term_stops_the_train_naming_file_and_line(self):  # T-4785 (c)
+        self.fm("private", "add", self.TERM)
+        self.origin(extra={2: ("remote.py", f'A = 1\nHOST = "llm.{self.TERM}"\n')})
+        self.grant()
+        self.gh_state(prs=[pr(1), pr(2), pr(3)])
+        r = self.fm("pr", "train", env=self.env, check=False)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, out)
+        self.assertEqual(self.merged(), ["1"], out)
+        self.assertIn("#2 held", out)
+        self.assertIn("private term", out)
+        self.assertRegex(out, r"remote\.py:2\b")
+        self.assertNotIn("zorblat", out, "the term is never printed")
+
+    def test_a_pr_with_a_file_the_guard_refuses_stops_the_train(self):  # T-4785 (c)
+        self.origin(extra={2: (".git-credentials", "https://invented-user:invented-token@example.test\n")})
+        self.grant()
+        self.gh_state(prs=[pr(1), pr(2), pr(3)])
+        r = self.fm("pr", "train", env=self.env, check=False)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, out)
+        self.assertEqual(self.merged(), ["1"], out)
+        self.assertIn("the guard refuses .git-credentials", out)
+
+    def test_an_unreadable_term_list_stops_the_train_before_it_merges_anything(self):  # T-4785 (c, d)
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("{not json")
+        self.origin()
+        self.grant()
+        self.gh_state(prs=[pr(1), pr(2)])
+        r = self.fm("pr", "train", env=self.env, check=False)
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 1, out)
+        self.assertEqual(self.merged(), [], out)
+        self.assertIn("term list", out)
+        self.assertNotIn(c.PRIVATE_TERMS, out, "no path in the line")
+
+    def test_a_run_that_merged_nothing_because_the_first_pr_is_held_does_not_burn_the_publish_grant(self):  # T-4785 review
+        # the grant was spent before the loop, so a train held at its first PR cost the user a yes for nothing
+        self.fm("private", "add", self.TERM)
+        self.origin(extra={1: ("remote.py", f'HOST = "llm.{self.TERM}"\n')})
+        self.grant()
+        self.gh_state(prs=[pr(1), pr(2)])
+        r = self.fm("pr", "train", env=self.env, check=False)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertEqual(self.merged(), [])
+        self.assertIn("#1 held", r.stdout + r.stderr)
+        self.assertIn("publish", c.find_brief(self.p, self.tid).meta.get("allow") or [], "the yes is still there")
+        self.assertNotIn("grant spent", r.stdout + r.stderr)
+        self.assertEqual([e for e in c.ledger_events(self.p, kinds=["grant_spent"])
+                          if (e.get("data") or {}).get("by") == "fm pr train"], [], "nothing logged as spent")
+
+    def test_a_run_that_merges_spends_the_grant_once_before_its_first_merge(self):  # T-4785 review
+        self.origin()
+        self.grant()
+        self.gh_state(prs=[pr(1), pr(2)])
+        r = self.fm("pr", "train", env=self.env)
+        self.assertEqual(self.merged(), ["1", "2"], r.stdout + r.stderr)
+        self.assertNotIn("publish", c.find_brief(self.p, self.tid).meta.get("allow") or [])
+        self.assertEqual((r.stdout + r.stderr).count("publish grant spent"), 1)
+
+    def test_no_term_list_says_so_and_a_clean_pr_still_merges(self):  # T-4785 (d)
+        self.origin()
+        self.grant()
+        self.gh_state(prs=[pr(1)])
+        r = self.fm("pr", "train", env=self.env)
+        self.assertEqual(self.merged(), ["1"])
+        self.assertIn("the private-term check had no term list", r.stdout + r.stderr)
 
     def test_train_stops_at_the_first_red_retest(self):
         self.origin(red=(2,))

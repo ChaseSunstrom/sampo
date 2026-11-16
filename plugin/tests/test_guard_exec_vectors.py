@@ -1187,6 +1187,225 @@ class ScriptReadSpeed(GuardCase):  # T-1778
             self.assertIsNone(self.bash(cmd))
 
 
+class BuilderCheckConfine(GuardCase):
+    """T-4785 (a): a builder session never changes the project's gates (sampo check rm|add|paths|…): the main thread
+    sets them, and a lane that removes the gate lands unproven."""
+
+    def builder(self):
+        lane = os.path.join(self.repo, ".claude", "worktrees", "agent-gates")
+        os.makedirs(lane, exist_ok=True)
+        return g.Ctx(cwd=lane, project_root=lane, home=self.home, foreman_home=self.fhome, scratch=["/tmp"],
+                     allow=set(), task_id="T-0007", confine=(lane, self.repo))
+
+    def verdict(self, cmd, ctx=None):
+        return g.check("Bash", {"command": cmd}, ctx or self.builder())
+
+    def test_every_gate_changing_check_verb_is_refused_to_a_builder(self):
+        for cmd in ("sampo check rm 1", "sampo check add 'true'", "sampo check paths 1 'a/*'",
+                    "sampo check ambient on", "sampo check onwrite '*.py' 'true {file}'",
+                    "sampo check playbooks ratchet", "sampo check affected 'pytest {tests}'", "sampo check affected --clear",
+                    "sampo check affected --for .py --clear", "sampo -p x check rm 1", "sampo check --fresh rm 1",
+                    "python3 plugin/bin/sampo check rm 1", "sampo check r\\m 1", "sampo check $V 1"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.verdict(cmd), "confine")
+
+    def test_the_read_only_check_verbs_still_run_in_a_builder(self):
+        for cmd in ("sampo check", "sampo check run", "sampo check list", "sampo check --affected",
+                    "sampo check --evidence T-0007 --step 1", "sampo check --fail-fast --timeout 60",
+                    "sampo check office f.xlsx --sheets 2", "sampo check affected", "sampo check --repeat 3"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.verdict(cmd))
+
+    def test_a_computed_command_word_is_read_as_sampo_for_a_builder(self):
+        # T-4785 round 9: x=sam y=po joins to sampo (a); a value the line doesn't give is read as sampo (b): either way
+        # `check rm` is a builder's refusal, and the read-only verbs still run
+        for cmd in ("x=sam; y=po; $x$y check rm 1", "$K check add 'true'", "$(echo sampo) check rm 1",
+                    '"${S}" check paths 1 "a/*"', "x=sam; y=po; $x$y $k$j rm 1", "$S check $V 1"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.verdict(cmd))
+        for cmd in ("x=sam; y=po; $x$y check list", "$K check --affected", "$EDITOR notes.txt"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.verdict(cmd))
+
+    def test_a_stored_command_is_confined_as_the_builders_typed_one_is(self):
+        # T-4785 round 8: cli.guard_stored built its Ctx with no confine, so a stored `sampo check rm 1` (a --verify, an
+        # affected template) ran for a builder though the same words typed are refused
+        from sampo import cli, core
+        lane = self.builder().cwd
+        p = types.SimpleNamespace(root=lane, lane=lane)
+        builder = types.SimpleNamespace(id="T-0007", meta={"builder": True})
+        main = types.SimpleNamespace(id="T-0008", meta={})
+        with mock.patch.object(core, "read_meta", return_value={}), mock.patch.object(core, "main_worktree",
+                                                                                     return_value=self.repo), \
+                mock.patch.object(core, "foreman_home", return_value=self.fhome), \
+                mock.patch.object(core, "state_dir", return_value=os.path.join(self.fhome, "state")), \
+                mock.patch.object(core, "state_fallbacks", return_value=[]), mock.patch.object(core, "trusted",
+                                                                                              return_value=False):
+            for cmd in ("sampo check rm 1", "sampo check add 'true'", "sampo check $V 1"):
+                with self.subTest(cmd=cmd):
+                    with self.assertRaises(core.PolicyError):
+                        cli.guard_stored(p, builder, cmd)
+            cli.guard_stored(p, builder, "sampo check --affected")  # a read-only verb still runs
+            cli.guard_stored(p, main, "sampo check rm 1")  # a task that is no builder's brief: not confined
+            cli.guard_stored(None, None, "sampo check rm 1")  # outside a project
+
+    def test_the_user_and_the_main_thread_still_change_gates(self):
+        # no confine: the main checkout's own session (and the user's) is not a builder
+        for cmd in ("sampo check rm 1", "sampo check add 'true'"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd))
+
+    def test_a_new_check_verb_is_refused_until_the_guard_names_it_read_only(self):
+        # the guard imports nothing of Sampo, so tie its read-only set to the parser: every verb the parser takes that
+        # the guard doesn't name read-only is refused (the default is no)
+        import argparse
+        from sampo import cli
+        sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+        verbs = next(a for a in sub.choices["check"]._actions if a.dest == "action").choices
+        self.assertTrue(set(g.BUILDER_CHECK_READ) <= set(verbs), "the guard names a verb the parser lacks")
+        for verb in verbs:
+            with self.subTest(verb=verb):
+                got = self.verdict(f"sampo check {verb}")
+                if verb in g.BUILDER_CHECK_READ:
+                    self.assertIsNone(got)
+                else:
+                    self.assertBlocked(got, "confine")
+        self.assertBlocked(self.verdict("sampo check frobnicate"), "confine")  # a verb the parser doesn't have yet
+
+    def check_options(self):
+        """Every option the check parser takes: {option string: takes a value}, read from the parser itself."""
+        import argparse
+        from sampo import cli
+        sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+        return {s: bool(a.nargs != 0) for a in sub.choices["check"]._actions for s in a.option_strings}
+
+    def test_the_guard_knows_every_option_of_the_check_parser_and_whether_it_takes_a_value(self):
+        # T-4785 review: _FM_VALUED was a hand list, so `check --python list rm 1` read `list` as the verb while argparse
+        # read it as the version and ran rm. The guard's two tables are tied to the parser: a new option fails here
+        # until it is named (and is refused to a builder meanwhile: the test below).
+        opts = self.check_options()
+        self.assertIn("--since", opts)  # the walk found the parser's options (a rename would empty it silently)
+        for opt, valued in opts.items():
+            with self.subTest(option=opt):
+                self.assertIn(opt, g.CHECK_VALUED | g.CHECK_BOOL, "the guard doesn't know this option of sampo check")
+                self.assertEqual(opt in g.CHECK_VALUED, valued, "the guard has it as the other kind of option")
+        self.assertFalse(g.CHECK_VALUED & g.CHECK_BOOL)
+
+    def test_a_valued_option_before_the_verb_hides_no_gate_change_from_the_guard(self):
+        # every option that takes a value, put before the verb: argparse eats the next word as its value, then reads the
+        # word after as the verb, so the guard must read the same words
+        for opt, valued in self.check_options().items():
+            if not valued or opt in ("-p", "--project"):
+                continue
+            for verb, tail in (("rm", "1"), ("add", "'true'"), ("paths", "1 'a/*'"), ("affected", "'pytest {tests}'")):
+                with self.subTest(option=opt, verb=verb):
+                    self.assertBlocked(self.verdict(f"sampo check {opt} list {verb} {tail}"), "confine")
+                    self.assertBlocked(self.verdict(f"sampo check {opt} run {verb} {tail}"), "confine")
+                    self.assertBlocked(self.verdict(f"sampo check {opt}=x {verb} {tail}"), "confine")
+        self.assertBlocked(self.verdict("sampo check --python list rm 1"), "confine")
+        self.assertBlocked(self.verdict("sampo check --since run rm 1"), "confine")
+        self.assertBlocked(self.verdict("sampo check --cell run add 'true'"), "confine")
+
+    def test_an_option_the_guard_does_not_know_is_refused_to_a_builder(self):
+        # the default is no: a new option, an abbreviation argparse would take, a short option with its value attached
+        for cmd in ("sampo check --frobnicate list", "sampo check --sin run rm 1", "sampo check --pyth list rm 1",
+                    "sampo check -pfoo list", "sampo check --aff", "sampo check --clea affected"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.verdict(cmd), "confine")
+
+    def test_the_valued_options_a_builder_uses_still_run_the_read_only_verbs(self):
+        for cmd in ("sampo check --since HEAD~1 --affected", "sampo check --python 3.12 run", "sampo check --timeout 60 list",
+                    "sampo check --since=HEAD --affected --fail-fast", "sampo check -p x list", "sampo check --json list"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.verdict(cmd))
+
+    def test_the_other_ways_to_run_the_verb_are_read_too(self):
+        # the reviewer's open vectors: a wrapper, a shell string, an env prefix, a script file, a cd out of the lane
+        tmp = os.path.realpath(self._tmp.name)
+        script = os.path.join(tmp, "gate.sh")
+        with open(script, "w") as f:
+            f.write("sampo check rm 1\n")
+        with open(os.path.join(tmp, "gate2.sh"), "w") as f:
+            f.write("cd /\nFOO=1 sampo check --python list rm 1\n")
+        for cmd in ("sampo quiet -- sampo check rm 1", "sampo quiet sampo check rm", "sh -c \"sampo check rm 1\"",
+                    "bash -c 'sampo check --python list rm 1'", "FOO=1 sampo check rm 1", "env FOO=1 sampo check rm 1",
+                    "FOO=1 BAR=2 python3 plugin/bin/sampo check add true", f"bash {script}", f"sh {tmp}/gate2.sh",
+                    "cd / && sampo check rm 1", "cd /tmp; sampo check rm 1", "(cd / && sampo check rm 1)",
+                    "echo hi | sampo check rm 1", "xargs sampo check rm <<< 1", "nice sampo check rm 1",
+                    "timeout 5 sampo check rm 1", "fm check rm 1", "sampo check rm 1 &"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.verdict(cmd), "confine")
+
+    def test_a_word_the_shell_fills_in_or_splits_after_check_is_refused_to_a_builder(self):
+        # T-4785 re-check: a valued option's value was consumed unread, so `V=$(cat f); sampo check --python $V list` read
+        # as the verb `list` while the shell made it `--python x rm 1 list` and argparse removed the gate. By rule: any
+        # token after `check` (an option, its value, a positional) the shell could expand or split is refused; a quoted
+        # "$V" too (one word, but its content is unknown and the guard reads no quotes: the default is no)
+        for cmd in ("V=$(cat f); sampo check --python $V list", "sampo check --python {x,rm,1} list",
+                    'V=$(cat f); sampo check --python "$V" list', "V=$(cat f); sampo check --python=$V list",
+                    "V=$(cat f); sampo -pSLUG check --python $V list", "V=$(cat f); sampo -p SLUG check --python $V list",
+                    "V=$(cat f); sampo check -p$V list", "V=$(cat f); sampo check --timeout $V list",
+                    "sampo check {rm,list} 1", "sampo check r{m,m} 1", "sampo check --python {1..3} list",
+                    "sampo check --python $(cat f) list", "sampo check --python `cat f` list",
+                    "sampo check --python <(echo x rm 1) list", "sampo check --python * list", "sampo check --python ? list",
+                    "sampo check --python [a-z]* list", "sampo check --contains r? list",
+                    "sampo check --python ${V:-x} list", "sampo check list ${V}",
+                    "V=$(cat f); fm check --python $V list", "V=$(cat f); python3 plugin/bin/sampo check --python $V list"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.verdict(cmd), "confine")
+
+    def test_that_rule_is_the_builder_s_alone_and_a_literal_value_still_runs(self):
+        for cmd in ("V=$(cat f); sampo check --python $V list", "sampo check --python {x,rm,1} list"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd.replace("{", "{{").replace("}", "}}")))  # the main thread and the user change gates as before
+        # T-4785 round 3: a builder's words are read as typed, so a value the line sets is no exception (it was read
+        # through the value even when the assignment hadn't run, or ran in another shell): the literal is typed instead
+        self.assertBlocked(self.verdict("V=rm; sampo check $V 1"), "confine")
+        self.assertBlocked(self.verdict("V=3.12; sampo check --python $V list"), "confine")
+        self.assertIsNone(self.verdict("sampo check --python 3.12 list"))
+
+    def test_a_value_the_line_sets_too_late_or_elsewhere_is_no_literal_to_a_builder(self):
+        # each was read as `--python x list rm 1` (verb list) while the shell has V unset and runs `--python list rm 1`
+        # (argparse: the action is rm)
+        for cmd in ("sampo check --python $V list rm 1; V=x", "(V=x); sampo check --python $V list rm 1",
+                    "false && V=x; sampo check --python $V list rm 1",
+                    "if false; then V=x; fi; sampo check --python $V list rm 1",
+                    "\\sampo check --python $V list rm 1", "sh <<< 'sampo check rm 1'", "bash <<< 'sampo check rm 1'",
+                    "sh <<< 'sampo check --python $V list rm 1'", "command sampo check --python $V list rm 1",
+                    "V=x sampo check --python $V list rm 1", "xargs sampo check --python $V list rm 1 <<< a"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.verdict(cmd), "confine")
+
+    def test_a_verb_the_line_fills_in_is_no_check_a_builder_may_run_unread(self):
+        # T-4785 round 4: whether the call is `check` was read through the value the line sets, the words after it as
+        # typed: V="check add"; sampo $V list read the rest as `list` (allowed) while the shell runs `check add list`
+        for cmd in ('V="check add"; sampo $V list', 'V="check rm"; sampo $V 1', "V=check; sampo $V rm 1",
+                    'V="check add"; fm $V list', 'V="check rm"; python3 plugin/bin/sampo $V 1',
+                    'V=check; sampo -p x $V rm 1', 'V="check affected"; sampo $V --clear',
+                    "V=rm; sampo check $V 1", 'V="check rm 1"; sampo $V'):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.verdict(cmd), "confine")
+        for cmd in ("V=list; sampo check list", "V=check; sampo check list"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.verdict(cmd))
+        self.assertBlocked(self.verdict("V=status; sampo $V"), "system")  # round 7: no verb is read through a value
+
+    def test_a_builder_s_unset_or_late_value_is_no_verb_either(self):
+        # the same lines the sequenced reading refuses to every session, for the builder's check too
+        for cmd in ('(V="check add"); sampo $V list', 'sampo $V list; V="check add"', 'false && V="check add"; sampo $V list',
+                    # T-4785 round 6: a child process (sh -c) doesn't see the line's unexported V either
+                    'V="check add"; sh -c \'sampo $V list\'', 'V=check; bash -c "sampo $V rm 1"'):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.verdict(cmd), "system")
+
+    def test_the_refusal_says_why_and_what_stays_allowed(self):
+        ctx = self.builder()
+        msg = g.message(self.verdict("sampo check rm 1", ctx), ctx)
+        self.assertIn("gates", msg)
+        self.assertIn("main thread", msg)
+        self.assertNotIn("outside this builder's worktree", msg)
+
+
 class ScriptHook(HookCase):
     def test_the_hook_refuses_a_script_it_could_not_read_to_the_end(self):
         # T-4758 round 3: it was allowed with a note (T-0275); an unread script is refused, with the way out in the reason

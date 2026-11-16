@@ -204,6 +204,23 @@ class Lanes(ForemanTestCase):
         self.fm("lane", "merge", tid)
         self.assertIn("llm.example.test", self.git("show", "HEAD:remote.py"))
 
+    def test_merge_runs_the_one_shared_holds_body_and_raises_what_it_returns(self):
+        # T-4785 review: merge kept an inline copy of the holds the train, serve and the PR train share; any hold kind
+        # the shared function returns stops the merge, so a hold added there can't miss this path
+        tid = self.new("Lane work", self.lane)
+        self._write(self.lane, "lane.py")
+        self.git("add", "lane.py", cwd=self.lane)
+        self.git("commit", "-qm", "lane", cwd=self.lane)
+        before = self.git("rev-parse", "HEAD").strip()
+        p = c.find_project(self.repo)
+        for kind in ("private", "scan", "guard", "self"):
+            with mock.patch.object(slanes, "land_holds", return_value=slanes.Hold(f"a {kind} hold from the shared body", kind)) as m:
+                with self.assertRaises(c.PolicyError) as e:
+                    slanes.merge(p, c.find_brief(p, tid), self.repo)
+            self.assertEqual(m.call_count, 1, kind)
+            self.assertIn(f"a {kind} hold from the shared body", str(e.exception), kind)
+            self.assertEqual(self.git("rev-parse", "HEAD").strip(), before, "nothing merged")
+
     def test_a_merged_lanes_task_is_measured_from_the_main_commit_before_the_merge(self):
         # T-0804: main-thread commits made while the lane ran were counted as the lane task's out-of-scope edits
         tid = self.new("Lane work", self.lane)

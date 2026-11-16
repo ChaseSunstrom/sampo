@@ -43,6 +43,46 @@ class PrivateTerms(ForemanTestCase):
             self.assertNotEqual(self.fm("private", "add", bad, check=False).returncode, 0, repr(bad))
         self.assertEqual(c.private_terms(), [HOST])
 
+    def test_private_list_tells_an_absent_list_from_an_unreadable_one(self):  # T-4785 (d)
+        path = os.path.join(c.state_dir(), c.PRIVATE_TERMS)
+        if os.path.exists(path):
+            os.unlink(path)
+        self.assertEqual(c.private_list(), ([], "none"), "no file: none set")
+        # T-4785 review: a list that is there but holds no usable term is not "no list": the user meant to set terms
+        for text in ("[]", '["", "   "]', '["ab", "*.x", "a b"]'):
+            with open(path, "w") as f:
+                f.write(text)
+            self.assertEqual(c.private_list(), ([], "empty"), text)
+            self.assertEqual(c.private_terms(), [], text)
+        with open(path, "w") as f:
+            json.dump([WORD], f)
+        self.assertEqual(c.private_list(), ([WORD], "ok"))
+        for text in ("{not json", '{"a": 1}', '"text"'):
+            with open(path, "w") as f:
+                f.write(text)
+            self.assertEqual(c.private_list(), ([], "unreadable"), text)
+            with self.assertRaises(c.PrivateTermsUnreadable):  # T-4804: private_terms raises, never [] for a damaged list
+                c.private_terms()
+        os.unlink(path)
+        os.mkdir(path)  # a directory where the file should be: an OS error that is not "absent"
+        try:
+            self.assertEqual(c.private_list(), ([], "unreadable"))
+        finally:
+            os.rmdir(path)
+
+    def test_list_and_add_say_when_the_list_can_t_be_read(self):  # T-4785 (d): not "0 private terms", not a silent replace
+        path = os.path.join(c.state_dir(), c.PRIVATE_TERMS)
+        with open(path, "w") as f:
+            f.write("{not json")
+        # T-4804 (supersedes the replace): list and add refuse; a damaged list is never overwritten with one term
+        for args in (("private", "list"), ("private", "add", WORD)):
+            r = self.fm(*args, check=False)
+            self.assertNotEqual(r.returncode, 0, args)
+            self.assertIn("cannot be read", r.stderr)
+            self.assertNotIn("0 private terms", r.stdout)
+        with open(path) as f:
+            self.assertEqual(f.read(), "{not json", "the damaged list is left as it was")
+
     def test_redact_local_writes_host_for_a_matching_host_and_private_for_a_word(self):
         with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
             json.dump([HOST, WORD, "*", "ab", "*.x"], f)  # a hand-edited term that would match everything is left out

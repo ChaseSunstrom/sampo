@@ -96,6 +96,254 @@ class KnownVars(GuardCase):
             with self.subTest(cmd=cmd):  # T-3803: a quoted or loop name is still a second setting
                 self.assertIsNotNone(g.check("Bash", {"command": cmd}, ctx))
 
+    def test_a_value_counts_for_a_sampo_word_only_where_its_assignment_runs_first(self):
+        # T-4785 round 4: a name the line sets once to a literal was trusted anywhere on the line, so each of these read as
+        # `sampo status x risk off` (allowed) while the shell runs `sampo risk off` (V unset: refused). A value counts only
+        # from an unconditional top-level assignment of the same shell that a ; or newline puts before the use, as the
+        # rm path reads a variable (D=/tmp/fmx; rm -rf $D/*)
+        for cmd in ('(V="status x"); sampo $V risk off', 'sampo $V risk off; V="status x"',
+                    'false && V="status x"; sampo $V risk off', '(V="status x"); sampo $V pause off',
+                    '(V="status x"); sampo $V mandate set x', '(V=status); sampo $V standing off',
+                    'if false; then V="status x"; fi; sampo $V risk off',
+                    'for i in $(cat f); do a=1; V="status x"; done; sampo $V risk off',  # a loop that may not run
+                    'while false; do a=1; V="status x"; done; sampo $V risk off',
+                    '{{ true; V="status x"; }} | cat; sampo $V risk off', 'V="status x" & sampo $V risk off',
+                    'true || V="status x"; sampo $V risk off', 'V="status x" | cat; sampo $V risk off',
+                    'echo $(sampo $V risk off); V="status x"', 'V="status x" sampo $V risk off',
+                    'V=status; V="status x"; sampo $V risk off', 'V=status; read V; sampo $V risk off',
+                    'V=status; unset V; sampo $V risk off'):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.bash(cmd), "system")
+        for cmd in ("sampo risk off", "sampo pause off", "sampo mandate set x"):
+            with self.subTest(cmd=cmd):  # the plain lines keep their verdicts
+                self.assertBlocked(self.bash(cmd), "self-authorize")
+        # round 7 changes today's reading on purpose: an assignment that truly runs first still credits an ARGUMENT (an id,
+        # a path, a text), but the verb chain itself (verb, sub-verb, the words a rule keys on) is read as typed, so
+        # `V=status; sampo $V` is refused now (see test_a_sampo_verb_chain_is_never_read_from_a_credited_value)
+        self.run_table([
+            ("T=T-1; sampo task show $T", None), ("T=T-1\nsampo task show $T", None),
+            ("T=T-1 && sampo task show $T", None), ("T=T-1; sampo task show $T | head -1", None),
+            ("T=T-1; (sampo task show $T)", None), ("T=T-1; echo $(sampo task show $T)", None),
+            ("T=T-1; echo hi; sampo task show $T", None),
+            # the use is itself a computed command word (the replay ends there, but the value is read before it)
+            ('R="sampo task dissent T-1 resolve"; $R 6 "adopted: x"', None),
+            ("V=status; sampo $V", "system"), ('V="task list"; sampo $V', "system"), ("V=status\nsampo $V", "system"),
+            ("V=status && sampo $V", "system"), ("V=status; sampo $V | head -1", "system"),
+            ("V=status; (sampo $V)", "system"), ("V=status; echo $(sampo $V)", "system"),
+            ("V=status; echo hi; sampo $V", "system"), ("V=next; sampo $V", "system"),
+            ("V=pause; sampo $V off", "self-authorize"), ("X=off; sampo pause $X", "self-authorize"),
+            ('V="pause off"; sampo $V', "self-authorize"), ("a=1; V=pause; sampo $V off", "self-authorize"),
+        ], self.bash)
+
+    def test_a_child_process_inherits_no_unexported_value_of_the_line(self):
+        # T-4785 round 6: text a child process runs (sh -c, bash -c, script -c, python's os.system, a here-doc script) does
+        # not see V=status of this shell, so `sampo $V risk off` there is `sampo risk off`: the line's values stop at the
+        # process boundary, and only a value the child is handed (an env prefix on its own command) carries over
+        for cmd in ("V=status; sh -c 'sampo $V risk off'", "V=status; bash -c 'sampo $V risk off'",
+                    "V=status; sh -c 'sampo $V'", "V=status; script -qc 'sampo $V risk off' /dev/null",
+                    "V=status; python3 -c 'import os; os.system(\"sampo $V risk off\")'",
+                    "V=status; python3 -c 'import subprocess; subprocess.run(\"sampo $V risk off\", shell=True)'",
+                    "V=status; bash <<'EOF'\nsampo $V risk off\nEOF",
+                    "V=status; sh -c 'V2=x; sampo $V risk off'", "V=status; sh -c 'sh -c \"sampo $V risk off\"'",
+                    "V=a sh -c 'true'; sh -c 'sampo $V risk off'",  # the prefix reaches only its own command
+                    "X=1 sh -c 'sampo $V'; V=status",
+                    "V=status; export X=1; sh -c 'sampo $V risk off'",
+                    "V=status; timeout 5 sh -c 'sampo $V risk off'", "V=status; nohup sh -c 'sampo $V risk off'",
+                    "V=status; env sh -c 'sampo $V risk off'", "V=status; echo x | sh -c 'sampo $V risk off'",
+                    "V=status; sh <<< 'sampo $V risk off'", "V=status; (sh -c 'sampo $V risk off')",
+                    "V=status; awk 'BEGIN{{system(\"sampo $V risk off\")}}'",
+                    "V=status; GIT_SSH_COMMAND='sampo $V risk off' git fetch",
+                    "V=status; python3 -c 'import subprocess; subprocess.run([\"sh\",\"-c\",\"sampo $V risk off\"])'"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.bash(cmd), "system")
+        self.run_table([  # what the child is handed, or sets itself, is read as it was (an argument; a verb is typed, round 7)
+            ("T=T-1 sh -c 'sampo task show $T'", None), ("T=T-1 bash -c 'sampo task show $T'", None),
+            ("T=T-1 script -qc 'sampo task show $T' /dev/null", None), ("T=T-1; sh -c 'T=T-2; sampo task show $T'", None),
+            ("T=T-1 sh -c 'T=T-2; sampo task show $T'", None), ("V=status; sh -c 'echo hi'", None),
+            ("T=T-1 env sh -c 'sampo task show $T'", None),
+            ("V=status sh -c 'sampo $V'", "system"), ("V=status; sh -c 'V=next; sampo $V'", "system"),
+            ("V=pause sh -c 'sampo $V off'", "self-authorize"),
+            ("export V=status; sh -c 'sampo $V'", "system"),  # unread, as before
+        ], self.bash)
+
+    def test_a_sampo_verb_chain_is_never_read_from_a_credited_value(self):
+        # T-4785 round 7: seven rounds of making the credited value match what the shell runs (a prefix, a branch, a child,
+        # an env -i, a nested re-assignment) each left a way for the two to differ, so the verb chain itself (the verb, its
+        # sub-verb, every word a rule keys on) is read as typed: an expansion there is refused whatever value the guard
+        # thinks it has. A value stays good for an id, a path, a text.
+        for cmd in ("V=status; sampo $V", "V=status; sampo $V risk off", "V=status\nsampo $V", 'V="task list"; sampo $V',
+                    "V=risk; sampo $V off", "V=status; sampo ${{V}} risk off", "V=status; sampo `echo $V` risk off",
+                    "V=off; sampo pause $V", "V=pause; sampo $V off", "V=serve; sampo $V", "V=x; sampo serve $V",
+                    "V=cap; sampo cpu $V", "V=status; for c in a b; do sampo $V $c; done",
+                    # what a wrapper that clears or resets the environment hands the child is nothing
+                    "V=status env -i sh -c 'sampo $V risk off'", "V=status env -u V sh -c 'sampo $V risk off'",
+                    "V=status env --unset=V sh -c 'sampo $V risk off'", "V=status env - sh -c 'sampo $V risk off'",
+                    "V=status env --ignore-environment sh -c 'sampo $V risk off'",
+                    "V=status exec -c sh -c 'sampo $V risk off'", "V=status sudo sh -c 'sampo $V risk off'",
+                    "V=status doas sh -c 'sampo $V risk off'",
+                    # a nested text that sets the name again in a way the sequence reading can't credit
+                    "V=status sh -c 'if true; then V=risk; fi; sampo $V off'",
+                    "V=status sh -c 'V=$(echo risk); sampo $V off'", "V=status; eval 'V=$(echo risk); sampo $V off'",
+                    "V=status; eval 'if true; then V=risk; fi; sampo $V off'", "V=status; eval 'read V; sampo $V off'",
+                    "V=status sh -c 'sampo $V'", "V=status bash -c 'sampo $V'", "V=status env sh -c 'sampo $V'",
+                    "V=status script -qc 'sampo $V' /dev/null",
+                    "V=risk; sampo quiet -- sampo $V off", "V=status; sampo task ac T-1 add x --verify 'sampo $V risk off'"):
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertIsNotNone(r, "allowed")
+                self.assertIn(r.category, ("system", "self-authorize", "remote"))
+        self.run_table([  # an argument position still reads its value; a loop over literal verbs is read word by word
+            ("T=T-1; sampo task show $T", None), ("T=T-1; sampo task set $T tier=S", None),
+            ("for t in T-1 T-2; do sampo task show $t; done", None),
+            ("T=T-1; sampo task ac $T add x --verify 'pytest -q'", None), ("sampo task show T-1", None),
+            ('V=status sh -c \'echo hi; sampo status\'', None),
+        ], self.bash)
+        # round 8: and no exception for a loop either: a loop's words are no value the guard credits to the verb. A plain
+        # top-level loop over literal words is read as the commands it runs (_expand_literal_loops, T-0411): the text
+        # itself, not a value, so the verbs it names are the ones the shell runs
+        self.run_table([("for c in status next; do sampo $c; done", None)], self.bash)
+        self.assertBlocked(self.bash("for c in status pause; do sampo $c off; done"), "self-authorize")
+        for cmd in ("(for V in status; do :; done); sampo $V risk off", "for V in status; do sh -c 'sampo $V risk off'; done",
+                    "if false; then for V in status; do :; done; fi; sampo $V risk off",
+                    "echo | for V in status; do :; done; sampo $V risk off", "for V in status; do :; done & sampo $V risk off"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.bash(cmd), "system")
+
+    def test_a_computed_command_word_is_read_as_sampo_with_no_list_of_words(self):
+        # T-4785 round 9: (a) every part of the command word a credited literal: the parts are joined and the line is read as
+        # that command (x=sam y=po: $x$y is sampo); (b) its value unknown (set outside the line, $( ), an env var): the
+        # rest of the line is read as if the command were sampo or fm, and refused when that reading is. No gated word is
+        # listed here: the gate tables of sampo itself decide, so a verb added to them is covered.
+        joined = "x=sam; y=po; $x$y "
+        for cmd in (joined + "risk off", joined + "pause off", joined + "mandate off", joined + "mandate set x",
+                    joined + "task set T-1 --allow core", joined + "posture lite", joined + "rollback --yes", joined + "decide A --answer 1",
+                    joined + "prove P --yes-run", joined + "rule rm 3", joined + "vetoes rm 1",
+                    joined + "home import f", joined + "triggers set a b", joined + "approve-reads on",
+                    joined + "agents uninstall", joined + "plugins install x", joined + "serve",
+                    joined + "$k$j off", "x=sam; y=po; \"$x$y\" risk off", 'x=sam; $x"po" risk off',
+                    "$(echo sampo) risk off", "$(echo sampo) posture lite", "$(echo sampo) serve",
+                    "V=$(cat f); $V risk off", "$S risk off", "$S rollback --yes", "$S decide A --answer 1",
+                    "$S prove P --yes-run", "$S rule rm 3", "$S vetoes rm 1", "$S home import f", "$S triggers set a b",
+                    "$S approve-reads on", "$S agents uninstall", "$S plugins install x", "$S serve",
+                    '"${{S}}" "${{K}}" off', "$S $K$J off", "$S task set T-1 --allow core", "$S mandate off",
+                    "$S pause off", "$S $V risk off", "$S $V"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.bash(cmd))
+        self.run_table([
+            ('"${{PY}}" script.py', None), ("x=sam; y=po; echo $x$y", None), ("$(echo ls) -l", None), ("x=ls; $x -l", None),
+            ("$EDITOR notes.txt", None), ('"$PY" script.py', None), ("$(which python3) -c 'print(1)'", None),
+            ("x=sam; y=po; $x$y status", None), ("x=sam; y=po; $x$y task show T-1", None),
+            ("$S status", None), ("$S next", None), ("$S task show T-1", None),
+        ], self.bash)
+
+    def test_a_computed_command_word_is_read_as_sampo_in_every_position_and_form(self):
+        # T-4785 round 9 review: the reading of the rest of the line as sampo is built wherever a computed command word
+        # stands (after an assignment, a wrapper, a redirect, a case pattern, in nested text) and however it is written
+        # (a substitution, backticks, a quoted one holding an operator, a quote in the body, a join of unknown parts)
+        opens = [("", ""), ("A=1 ", ""), ("env ", ""), ("command ", ""), ("time ", ""), ("! ", ""), (">/dev/null ", ""),
+                 ("case x in a) ", ";; esac"), ("bash -c '", "'"), ("eval '", "'"), ("(", ")"), ("{{ ", "; }}"),
+                 ("if true; then ", "; fi"), ("true && ", ""), ("true | ", ""), ("x=$(true) ", ""), ("x=`true` ", ""),
+                 (">$(true) ", ""), ("2>$(true) ", ""), ("x=$(true) >$(true) ", ""),
+                 # round 11: a function header (one-line `function f {` keeps the name and the brace in the command's words),
+                 # a select, a coproc, a test, a condition, a loop head
+                 ("function f {{ ", "; }}; f"), ("function f() {{ ", "; }}; f"), ("f() {{ ", "; }}; f"),
+                 ("select x in a; do ", "; done"), ("coproc ", ""), ("[[ -n x ]] && ", ""), ("if ", "; then :; fi"),
+                 ("while ", "; do :; done"),
+                 # round 12: a function header whose body opens on a keyword, not a brace
+                 ("function f if ", "; then :; fi; f"), ("function f while ", "; do :; done; f"),
+                 ("function f until ", "; do :; done; f"), ("function f() if ", "; then :; fi; f")]
+        words = ["$(cat f)", "`cat f`", '"$(cat f; true)"', "$(true ') '; cat f)", '"${{x#*;}}"', "$x$y", "$(cat f)x",
+                 "$(echo a; echo b)", '"`cat f`"']
+        for pre, post in opens:
+            for word in words:
+                if pre.endswith("'"):  # inside single quotes a quote of its own is closed, escaped, and opened again
+                    word = word.replace("'", "'\\''")
+                for tail in (" risk off", " posture lite", " serve"):
+                    cmd = pre + word + tail + post
+                    with self.subTest(cmd=cmd):
+                        self.assertIsNotNone(self.bash(cmd))
+        for cmd in ("x='a;sampo'; \"${{x#*;}}\" risk off", "x='a;sampo'; \"${{x%%;*}}\" risk off",
+                    "bash -c \"$(true ') '; cat f) risk off\"", "eval \"$(true ') '; cat f) risk off\"",
+                    "A=`a b` `cat f` risk off", "$(cat f) $(cat g) risk off", "x=$(date); $(cat f) risk off",
+                    # the net under every position: an expansion anywhere with a refused literal chain after it
+                    "echo x $(cat f) risk off", "echo `cat f` posture lite", "x=1 echo $y serve", "echo \"a\" $(cat f) risk off",
+                    "function f {{ $(cat f) risk off; }}; f",
+                    # round 12: a verb the stored-command readers take (quiet, at, smoke, notify) behind a header and an expansion
+                    "function f if $(cat f) quiet -- rm -rf ~; then :; fi; f", "function f while $(cat f) quiet -- rm -rf ~; do :; done; f",
+                    "echo $(cat f) quiet -- rm -rf ~", "echo $(cat f) at T-1 -- rm -rf ~"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.bash(cmd))
+        # what only reads a substitution's output stays allowed, in any of those places
+        for cmd in ("echo $(date) $(date) $(date)", "eval \"$(echo ls)\"", "x=`date`; ls", "L=`touch f`; ls",
+                    "case x in a) echo $(date) $(date);; esac", "$(echo ls) && echo b", "x=$(date) echo $(date)",
+                    "echo >$(date) $(date)", "echo $(a) y=$(b) $(c)", "x=$(date) echo $(date) $(date)",
+                    "ls $(date) -la", "function f {{ ls; }}; f", "function f {{ echo $(date) $(date); }}; f"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd))
+
+    def test_every_sampo_verb_a_check_keys_on_is_one_the_expansion_net_reads(self):
+        # T-4785 round 12: the net after an expansion reads a literal chain only when it opens on a verb in _NET_VERBS (the
+        # tables). A verb check_bash or the stored-command readers key on (sub == "X", tsub == "X", sub in ("X", …)) that
+        # is in no table would be a refusal the net lacks: this fails, so a new gated verb is added to the tables
+        import inspect
+        seen = set()
+        for fn in (g.check_bash, g._fm_stored, g._fm_runs):
+            src = inspect.getsource(fn)
+            for m in re.finditer(r"\bt?sub\s*==\s*[\"']([\w-]+)[\"']", src):
+                seen.add(m[1])
+            for m in re.finditer(r"\bt?sub\s+in\s+\(([^)]*)\)", src):
+                seen.update(re.findall(r"[\"']([\w-]+)[\"']", m[1]))
+        self.assertTrue({"check", "pause", "serve", "cpu", "quiet", "record"} <= seen | set(g.FM_STORING), seen)
+        self.assertEqual(sorted(seen - g._NET_VERBS), [])
+        self.assertTrue(set(g.FM_STORING) <= g._NET_VERBS and set(g.USER_ONLY_FM) <= g._NET_VERBS)
+
+    def test_the_expansion_net_is_linear_in_the_words_of_a_command(self):
+        # T-4785 round 12 (LOW): many expansions in one command are cut once, not once per expansion
+        line = "echo " + " ".join(["$(cat f)", "x"] * 400) + " $(cat f) risk off"
+        t0 = time.monotonic()
+        self.assertIsNotNone(self.bash(line))
+        self.assertLess(time.monotonic() - t0, 20)
+
+    def test_what_a_child_is_handed_is_the_env_prefix_without_a_wrapper_that_resets_it(self):
+        # T-4785 round 7: the literals a nested text starts with feed rules other than the verb chain, so the hand-over
+        # itself must not credit a value the shell has dropped (env -i, env -u V, exec -c, sudo) or the text re-binds
+        lits = {"V": "status"}
+        for argv, stripped, want in (
+                (["V=status", "sh", "-c", "x"], ["sh", "-c", "x"], lits),
+                (["V=status", "env", "sh", "-c", "x"], ["sh", "-c", "x"], lits),
+                (["V=status", "timeout", "5", "sh", "-c", "x"], ["sh", "-c", "x"], lits),
+                (["V=status", "nohup", "sh", "-c", "x"], ["sh", "-c", "x"], lits),
+                (["V=status", "env", "-i", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "env", "-u", "V", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "env", "--unset=V", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "env", "--ignore-environment", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "env", "-", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "exec", "-c", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "exec", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "sudo", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "doas", "sh", "-c", "x"], ["sh", "-c", "x"], {}),
+                (["V=status", "sudo", "-E", "sh", "-c", "x"], ["sh", "-c", "x"], {})):
+            with self.subTest(argv=argv):
+                self.assertEqual(g._handed(argv, stripped, dict(lits)), want)
+        for text, kept in (("sampo task show $V", True), ("echo ${V} $V", True), ("if true; then V=risk; fi; echo $V", False),
+                           ("V=$(echo risk); echo $V", False), ("read V; echo $V", False), ("for V in a b; do :; done", False),
+                           ("declare V=x; echo $V", False), ("export V=x", False), ("unset V", False), ("echo ${V:=x}", False),
+                           ("V+=x; echo $V", False), ("printf -v V x; echo $V", False), ("echo $VV; W=1", True),
+                           ("(( V = 1 ))", False), ("local V", False), ("eval \"V=x\"", False), ("echo '$V'", True)):
+            with self.subTest(text=text):
+                self.assertEqual(g._inherited(dict(lits), text), lits if kept else {})
+
+    def test_a_value_set_in_a_substitution_is_no_value_of_this_shell(self):
+        # T-4785 round 6: _straight_line takes a backtick for no branch, but a substitution runs in a subshell: a value
+        # set inside one is read through the prefix path, which cuts there
+        for cmd in ("echo `:\nV=status\n>/dev/null`; sampo $V risk off", "echo `V=status`; sampo $V risk off",
+                    "echo $(V=status); sampo $V risk off", "echo $(true; V=status); sampo $V risk off",
+                    "echo $(:\nV=status\n); sampo $V risk off"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.bash(cmd), "system")
+        self.run_table([("T=T-1; echo $(date); sampo task show $T", None), ("T=T-1; echo `date`; sampo task show $T", None),
+                        ("T=T-1; sampo task show $T; echo $(date)", None)], self.bash)
+
     def test_cd_inside_an_and_segment_of_a_list(self):  # T-0339
         self.run_table([
             ("D=~/x; mkdir -p $D && cd $D && tar xf -", None),

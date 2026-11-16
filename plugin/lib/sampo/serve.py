@@ -654,12 +654,15 @@ def _integrate(p, tid, path):
     fast-forward and fm lane rm. Any doubt keeps the lane and its branch, and says why."""
     try:
         return _integrate_lane(p, tid, path)
-    except (OSError, subprocess.SubprocessError) as e:  # a slow gate or git: keep it, finish the others
+    except Exception as e:  # a slow gate or git: keep it, finish the others (T-4785: any error, never ending the loop)
         try:  # never left half-rebased
             subprocess.run(["git", "-C", path, "rebase", "--abort"], capture_output=True, timeout=60)
         except (OSError, subprocess.SubprocessError):
             pass
-        return f"kept in {path}: {type(e).__name__} while integrating ({str(e)[:120]})"
+        # only an OS or subprocess error's text is quoted (a timeout names its command); another error may carry a
+        # path or a line of git output, so it is named by class
+        return f"kept in {path}: {type(e).__name__} while integrating" + (
+            f" ({str(e)[:120]})" if isinstance(e, (OSError, subprocess.SubprocessError)) else "")
 
 
 def _main_moved(git, root, branch):
@@ -694,14 +697,22 @@ def _integrate_lane(p, tid, path):
     if why:
         return f"kept in {path}: {why} while the gates ran"
     tip = git(path, "rev-parse", "HEAD").stdout.strip() or f"foreman/{tid}"
-    from sampo import selfgate  # T-2352: fm serve's merge is gated like fm lane merge, on the same commit it lands
-    files = [f for f in git(p.root, "diff", "--name-only", "--no-renames", "-z", f"HEAD...{tip}").stdout.split("\0") if f]
-    held = selfgate.gate(p, c.find_brief(p, tid), p.root, tip, files)
+    from sampo import lanes  # T-2352: fm serve's merge is gated like fm lane merge, on the same commit it lands
+    brief = c.find_brief(p, tid)  # T-4785: and held by what the train holds (private term, guard, a failed git call or scan)
+    if brief is None:
+        return f"kept in {path}: no brief for {tid} to judge the lane by"
+    try:
+        held = lanes.land_holds(p, brief, p.root, tip)
+    except Exception as e:  # T-4785 review: a hold that can't run is a hold, never a landing and never the loop's end
+        held = f"the checks before landing could not run ({type(e).__name__})"
     if held:
-        return f"kept in {path}: the self-change gate holds it ({c.fit(held[0], 120)}); fm ask {tid} core, then merge"
+        return f"kept in {path}: {c.fit(c.plain(held), 200)}" + (f"; fm ask {tid} core, then merge" if "self-change" in held else "")
     if git(p.root, "merge", "-q", "--ff-only", tip).returncode:
         return f"kept in {path}: {branch} moved on; rebase the lane again"
-    rm = _fm(p.root, "lane", "rm", tid)
+    try:
+        rm = _fm(p.root, "lane", "rm", tid)
+    except Exception as e:  # T-4785 re-check: it landed; a failed removal is not a kept lane (the caller would say "kept")
+        return f"merged into {branch} (lane folder not removed: {type(e).__name__})"
     return f"merged into {branch}" + ("" if rm.returncode == 0 else f" (lane left: {rm.stderr.strip()[:120]})")
 
 

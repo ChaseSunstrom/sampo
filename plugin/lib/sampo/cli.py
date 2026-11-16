@@ -1414,7 +1414,8 @@ def guard_stored(p, b, cmd):
                       foreman_home=c.foreman_home(), state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(),
                       scratch=[x for x in ("/tmp", "/var/tmp", os.environ.get("TMPDIR")) if x],
                       allow=set(b.meta.get("allow") or []) if b else set(), task_id=b.id if b else None,
-                      standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()))
+                      standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()),
+                      confine=c.builder_confine(p, b))  # a builder's stored `sampo check …` is confined as its typed one is
     block = fmguard.check("Bash", {"command": cmd}, ctx)
     if block:
         raise c.PolicyError(f"sampo won't run the stored command `{c.fit(cmd, 100)}`: {fmguard.message(block, ctx)}")

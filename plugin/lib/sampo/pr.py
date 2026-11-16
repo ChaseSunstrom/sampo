@@ -116,14 +116,27 @@ def train(p, args):
         raise cli.UsageError(f"{len(ready)} PR(s) ready; merging is outward: fm ask {tid} publish "
                                f"--why \"merge approved PRs\" (the user's yes), or, where the user has given standing "
                                f"permission, fm task set {tid} --allow publish; then run the train again")
-    if ready:  # the yes covers this one run: spent before the first merge
+    merged, code = [], 0
+    spent = []
+
+    def spend():
+        """The yes covers this one run: spent once, right before its first merge (T-4785: not before the loop, where a
+        run held at its first PR, by a red re-test or a hold, cost the user a yes for nothing). Re-read under the lock: a
+        yes another run spent meanwhile is gone, and this one merges nothing."""
+        if spent:
+            return
         with c.lock(p.dir):
             nb = cli.need_brief(p, b.id)
+            if "publish" not in set(nb.meta.get("allow") or []):
+                raise cli.UsageError(f"the publish grant on {nb.id} was spent by another run: fm ask {nb.id} publish again")
             nb.meta["allow"] = [a for a in nb.meta.get("allow") or [] if a != "publish"]
             c.save_brief(p, nb)
             c.log_event(p, "grant_spent", task=b.id, data={"allow": "publish", "by": "fm pr train"})
+        spent.append(1)
         lines.append(f"{b.id}: publish grant spent by this run (ask again for the next)")
-    merged, code = [], 0
+    if ready:
+        from sampo import release
+        release.say_no_list("pr train")  # T-4785: an unset term list holds nothing: say so (an unreadable one holds each PR)
     try:
         for x in ready:
             n = x["number"]
@@ -136,15 +149,14 @@ def train(p, args):
                 lines.append(f"#{n} red re-test, train stopped: {why}")
                 code = 1
                 break
-            files = [f for f in _git(p.root, "diff", "--name-only", "--no-renames", "-z",
-                                     f"origin/{x['baseRefName']}...{head}").stdout.split("\0") if f]
-            from sampo import selfgate  # T-2430: the gate fm lane merge and fm serve run, on the head the merge is pinned to
-            held = selfgate.gate(p, b, p.root, head, files)
+            from sampo import lanes  # T-2430: the holds fm lane merge and fm serve run, on the head the merge is pinned to
+            held = lanes.land_holds(p, b, p.root, head, base=f"origin/{x['baseRefName']}")  # T-4785: and the private/guard ones
             if held:
-                lines.append(f"#{n} held by the self-change gate, train stopped: {c.fit(c.plain(held[0]), 160)} "
-                             f"(fm ask {b.id} core, then run the train again)")
+                lines.append(f"#{n} held, train stopped: {c.fit(c.plain(held), 200)}" +
+                             (f" (fm ask {b.id} core, then run the train again)" if "self-change" in held else ""))
                 code = 1
                 break
+            spend()  # after the holds: a held PR burns no yes
             _gh(p, "pr", "merge", str(n), "--merge", "--match-head-commit", head)  # a push since the re-test refuses
             merged.append(n)
             lines.append(f"#{n} re-tested green and merged")

@@ -722,6 +722,34 @@ class PrivateTerm(TrainCase):
         self.assertEqual(kind, "scan", why)
         self.assertEqual(self.scan_events()[0]["data"].get("cause"), "file listing failed")
 
+    def holds(self, tid, n=1, base="HEAD"):
+        """lanes.land_holds (T-4785) for the task tid's lane n: the reason, or ''."""
+        from sampo import core as c, lanes
+        p = c.find_project(self.repo)
+        return lanes.land_holds(p, c.find_brief(p, tid), self.repo, self.git("rev-parse", f"foreman/lane{n}"), base=base)
+
+    def test_land_holds_is_empty_for_a_clean_lane_and_names_a_term_without_printing_it(self):  # T-4785
+        self.assertEqual(self.holds(self.lane(1, "ok.txt")), "")
+        why = self.holds(self.dirty(2, "remote.py"), 2)
+        self.assertIn("remote.py:2", why)
+        self.assertNotIn("zorblat", why)
+        self.assertIn("redact it in the lane", why, "the train's own wording")
+
+    def test_land_holds_compares_against_the_base_it_is_given_not_only_the_checkouts_head(self):  # T-4785 (c): a PR's base
+        tid = self.dirty(1, "remote.py")
+        self.assertNotEqual(self.holds(tid), "")
+        self.assertEqual(self.holds(tid, base=self.git("rev-parse", "foreman/lane1")), "", "nothing ahead of itself")
+        self.git("branch", "pr-base", "main")
+        self.assertIn("remote.py:2", self.holds(tid, base="pr-base"))
+
+    def test_land_holds_holds_when_a_git_call_fails_and_when_the_guard_refuses_a_file(self):  # T-4785
+        tid = self.lane(1, "ok.txt")
+        for verb in ("rev-list", "diff"):
+            with self.failing(verb, rc=128):
+                self.assertIn("could not run", self.holds(tid), verb)
+        bad = self.lane(2, ".git-credentials", "https://invented-user:invented-token@example.test\n")
+        self.assertIn("the guard refuses .git-credentials", self.holds(bad, 2))
+
     def test_a_listing_that_fails_after_the_private_check_holds_the_one_id_merge(self):
         tid = self.lane(1, "ok.txt")
         from sampo import core as c, lanes
@@ -842,8 +870,24 @@ class PrivateTerm(TrainCase):
         self.assertEqual(self.refusal(tid), ("", ""))
         r = self.train(tid)
         out = r.stdout + r.stderr
-        self.assertIn("the private-term check had no term list", out)
+        self.assertIn("the private-term check had a term list with no usable term", out)  # rm left an empty list, not none
         self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")))
+
+    def test_an_unreadable_term_list_holds_the_lane_and_says_so(self):  # T-4785 (d): it was passed, with a notice
+        from sampo import core as c
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("{not json")
+        tid = self.lane(1, "a.txt")
+        self.assertEqual(self.refusal(tid)[0], "scan", "the check every path calls holds on it")
+        self.assertIn("term list", self.refusal(tid)[1])
+        r = self.train(tid, check=False)
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("term list", out)
+        self.assertNotIn(c.PRIVATE_TERMS, out, "no path in the line")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")))
+        self.assertEqual(self.gate_runs(), 0)
+        self.assertTrue([e for e in self.scan_events() if e["data"].get("cause") == "term list unreadable"])
 
     def test_an_unreadable_term_list_holds_every_lane_and_the_train_says_so_once(self):
         # T-4804: unreadable is not unset: a scan that read no terms from a damaged list would merge what it can't judge
@@ -866,13 +910,14 @@ class PrivateTerm(TrainCase):
         os.chmod(path, 0o600)
         r = self.train(self.lane(1, "a.txt"), env={"SAMPO_SECRETS": path})
         out = r.stdout + r.stderr
-        self.assertIn("had no term list", out)
+        self.assertIn("had a term list with no usable term", out)
         self.assertIn("only the secrets-file values were scanned", out)
         self.assertNotIn("invented-value", out)
 
     def test_a_train_with_a_term_list_prints_no_such_line(self):
         r = self.train(self.lane(1, "a.txt"))
         self.assertNotIn("had no term list", r.stdout + r.stderr)
+        self.assertNotIn("no usable term", r.stdout + r.stderr)  # T-4785 re-check: nor the empty-list wording
 
 
 class AffectedBase(TrainCase):

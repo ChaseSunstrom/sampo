@@ -534,27 +534,10 @@ MOVED = "the lane moved while merging: run it again"  # T-4756: its tip is not t
 def _held(p, b, main, tip):
     """The reason `sampo lane merge` would refuse this lane (private term, guard, self-change gate), or ''. T-4783: the
     private-term check is lanes.private_refusal, the function `merge` calls, first: a lane that carries a term never
-    reaches a probe or a gate (the train once landed one that only ship met). Its reason names commit, file and line."""
-    import fmguard
-    from sampo import lanes, selfgate
-    meta = c.read_meta(p)
-    ctx = fmguard.Ctx(cwd=main, project_root=main, home=os.path.expanduser("~"), foreman_home=c.foreman_home(),
-                      state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(), scratch=[],
-                      allow=set(b.meta.get("allow") or []), task_id=b.id, standing=set(meta.get("standing") or {}),
-                      trusted=bool(c.trusted()))
-    kind, found = lanes.private_refusal(p, b, main, tip)
-    if kind:
-        return found + ("" if kind == "scan" else
-                        "; left out: redact it in the lane and amend the commits that carry it, then land it again")
-    files = lanes.lane_files(main, tip)  # T-4783: after the private check; None is a failed listing, held like a failed scan
-    if files is None:
-        return lanes.scan_failed(p, b, tip, "file listing failed")[1]
-    for f in files:
-        blk = fmguard.check("Write", {"file_path": os.path.join(main, f), "content": ""}, ctx)
-        if blk:
-            return f"the guard refuses {f} ({blk.category})"
-    held = selfgate.gate(p, b, main, tip, files)
-    return "the self-change gate holds it: " + c.joinmore(held, 4, "; ") if held else ""
+    reaches a probe or a gate (the train once landed one that only ship met). Its reason names commit, file and line.
+    T-4785: the body is lanes.land_holds, shared with fm serve's integrate and the pull-request train."""
+    from sampo import lanes
+    return lanes.land_holds(p, b, main, tip)
 
 
 def _none(head, left):
@@ -743,17 +726,14 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     left, notes = [], []  # notes: (id, what a probe saw that still let the lane on)
     kept_maps = {}  # T-4375: lane id: the docs/map files its merge resolved keeping both sides' lines
     cands, rows = [], []  # (brief, tip) in order; (brief, tip, why so far) in order
+    from sampo import release
     try:  # T-4804: unreadable is not unset: the merge scan refuses each lane on it (held, nothing pushed); this only says so
-        none = not c.private_terms()
+        c.private_terms()
     except c.PrivateTermsUnreadable:
-        none = False  # its own line below, not the 'had no term list' one as well
         print("sampo: train: " + c.PRIVATE_UNREADABLE + ": every lane is held by the private-term scan until it is repaired "
               "(sampo doctor)", file=sys.stderr, flush=True)
-    if none:  # T-4783: an unset list holds nothing: say so, never the path
-        from sampo import release
-        print("sampo: train: the private-term check had no term list (none set)"
-              + (", so only the secrets-file values were scanned" if release.private_values() else "")
-              + ": sampo private add TERM sets one", file=sys.stderr, flush=True)
+    else:  # T-4783: an unset list holds nothing: say so, never the path (T-4785: an empty one is said apart)
+        release.say_no_list("train")
     for tid in ids:
         b = cli.need_brief(p, tid)
         br = b.meta.get("lane_branch") or f"foreman/{b.id}"

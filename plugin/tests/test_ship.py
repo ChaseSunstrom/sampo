@@ -448,6 +448,27 @@ class Ship(ForemanTestCase):
         self.assertNotIn("add a", self.main_log())
         self.assertTrue(self.granted())
 
+    def test_a_term_list_that_cannot_be_read_refuses_the_ship_before_the_tests_run(self):  # T-4785 (d): it passed, silently
+        self.grant()
+        from sampo import core as c
+        os.makedirs(c.state_dir(), exist_ok=True)
+        with open(os.path.join(c.state_dir(), c.PRIVATE_TERMS), "w") as f:
+            f.write("{not json")
+        ran = os.path.join(self.tmp, "ran")
+        r = self.ship("--test", f"touch {ran}")
+        out = r.stdout + r.stderr
+        self.assertNotEqual(r.returncode, 0, out)
+        self.assertIn("term list", out)
+        self.assertNotIn(c.PRIVATE_TERMS, out, "no path in the line")
+        self.assertFalse(os.path.exists(ran), "refused before the tests run")
+        self.assertNotIn("add a", self.main_log())
+        self.assertTrue(self.granted(), "the grant is kept for the next try")
+
+    def test_no_term_list_is_said_at_ship_and_the_ship_goes_on(self):  # T-4785 (d)
+        self.grant()
+        r = self.ship("--test", "true")
+        self.assertIn("the private-term check had no term list", r.stdout + r.stderr)
+
     def test_a_private_term_or_a_secret_value_in_the_shipped_commits_or_tree_refuses_naming_where(self):  # T-3529
         self.grant()
         self.fm("private", "add", "*.home.example-private.test")

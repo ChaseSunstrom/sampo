@@ -33,7 +33,11 @@ class Calm(TrainCase):
 
 WIDE = ("sampo check --affected", "sampo check", "fm check --fresh", "sampo check --affected --hold --evidence T-1",
         "python3 plugin/bin/sampo check --affected --json", "sampo quiet -- sampo check --affected",
-        "FOREMAN_LOAD_GATE=0 sampo check run", "sampo check --since HEAD~1 --affected")
+        "FOREMAN_LOAD_GATE=0 sampo check run", "sampo check --since HEAD~1 --affected",
+        # T-4785 review: a valued option before a setup verb's name made the hook read the name as the verb, not as
+        # the option's value, and let the wide check through; one reading of the words (fmguard.check_args) now
+        "sampo check --cell list --affected", "sampo check --python list --fresh", "sampo check --since add --hold",
+        "sampo check --frobnicate list --affected")
 NARROW = ("python3 plugin/tests/run.py test_x -k name", "sampo check add 'true'", "sampo check list", "sampo check --help",
           "sampo check paths", "sampo task evidence T-1 --step 1 --run \"python3 plugin/tests/run.py test_x\"",
           "git status")

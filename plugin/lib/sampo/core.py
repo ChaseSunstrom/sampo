@@ -2500,6 +2500,14 @@ def main_worktree(gr):
     return os.path.realpath(os.path.dirname(common)) if os.path.basename(common) == ".git" else None
 
 
+def builder_confine(p, b):
+    """T-4785 round 9: the guard's confine pair (the lane's worktree, its main checkout) for the active brief `b` when a
+    builder works it in a lane `p`, else None. The hook, a stored command's guard and a settings write all confine a
+    builder by this one rule, so a change to it reaches the three."""
+    lane = getattr(p, "lane", None)
+    return (lane, main_worktree(lane)) if lane and b and b.meta.get("builder") else None
+
+
 def find_project(cwd, create=False):
     gr = git_root(cwd)
     if gr:
@@ -2866,6 +2874,19 @@ def private_terms(state=None):
     caller that redacts, scans or exports would take [] for 'nothing private' and let the user's own terms through);
     a reader that only decorates local output calls private_terms_lenient."""
     return _private_read(state)[0]
+
+
+def private_list(state=None):
+    """T-4785 (d): (terms, status) of the user's private-term list: "ok" (terms, lowercased), "none" (no file: nothing was
+    set), "empty" (a list that holds no usable term: the user meant to set some, so it is said apart from "none") or
+    "unreadable" (T-4804's PrivateTermsUnreadable: the callers that land hold on it)."""
+    try:
+        terms = _private_read(state)[0]
+    except PrivateTermsUnreadable:
+        return [], "unreadable"
+    if terms:
+        return terms, "ok"
+    return [], "empty" if os.path.lexists(os.path.join(state or state_dir(), PRIVATE_TERMS)) else "none"
 
 
 def private_short(state=None):

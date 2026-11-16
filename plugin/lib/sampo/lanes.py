@@ -3006,14 +3006,19 @@ def twins_lines(rows):
 SCAN_FAILED = "the private-term scan could not run: run it again"  # T-4783: no advice to amend; nothing was found
 
 
-def lane_files(main, tip):
+LIST_UNREADABLE = ("the private-term list can't be read, so nothing was scanned: sampo private add TERM writes a new "
+                   "one (or fix the file in the state folder), then run it again")  # T-4785 (d): no path, no term
+
+
+def lane_files(main, tip, base="HEAD"):
     """T-4783: the paths the lane at `tip` changes against main (--no-renames, so a file moved away is listed by its old
     path too: T-0382), or None when git could not list them (a nonzero exit, a timeout, an OS error). The runner turns a
     failure into empty output, and an empty list would read as "the lane changes no file": the guard loop would run over
-    nothing and the self-change gate would judge nothing, so every caller holds the lane on None."""
+    nothing and the self-change gate would judge nothing, so every caller holds the lane on None. base: what the lane is
+    compared with (T-4785: a pull request's origin/<base>, not the checkout's HEAD)."""
     from sampo import cli
     try:
-        r = _git(main, "diff", "--name-only", "--no-renames", "-z", f"HEAD...{tip}")
+        r = _git(main, "diff", "--name-only", "--no-renames", "-z", f"{base}...{tip}")
     except (cli.UsageError, OSError):
         return None
     return None if r.returncode else [f for f in r.stdout.split("\0") if f]
@@ -3026,7 +3031,7 @@ def scan_failed(p, b, tip, cause):
     return "scan", SCAN_FAILED
 
 
-def private_refusal(p, b, main, tip):
+def private_refusal(p, b, main, tip, base="HEAD"):
     """T-4783 (T-3999): (kind, why) for the lane `b` at `tip`: ('', '') when clean; ('hit', why) when its commits
     (messages, added lines) or its changed files hold one of the user's private terms (sampo private) or a secrets-file
     value, naming commits, files and line numbers, never the term; ('scan', SCAN_FAILED) when the scan could not run
@@ -3034,12 +3039,17 @@ def private_refusal(p, b, main, tip):
     return code is checked, and the files are listed here, one path for both callers). The one check `merge` and the
     train's hold step (train._held) both call, so the two paths can't drift apart again: a train once landed such a lane
     that only ship met, after others sat on it. A failed scan holds the lane and logs private_scan_failed with the
-    exception class or the git exit status only, never git's output."""
+    exception class or the git exit status only, never git's output. T-4785: a term list that can't be read (a file that
+    is there but not a list) holds the lane the same way: ('scan', LIST_UNREADABLE), cause "term list unreadable"; an
+    absent one holds nothing (the callers say so once). base: what the lane is compared with, default the checkout's HEAD."""
     from sampo import cli, release
+    if c.private_list()[1] == "unreadable":
+        c.log_event(p, "private_scan_failed", task=b.id, data={"cause": "term list unreadable", "tip": tip[:9]})
+        return "scan", LIST_UNREADABLE
     cause, held, where, lines = "", [], [], {}
     try:
-        revs = _git(main, "rev-list", f"HEAD..{tip}")
-        files = None if revs.returncode else lane_files(main, tip)
+        revs = _git(main, "rev-list", f"{base}..{tip}")
+        files = None if revs.returncode else lane_files(main, tip, base)
         if revs.returncode:
             cause = f"git exit {revs.returncode}"
         elif files is None:
@@ -3058,13 +3068,57 @@ def private_refusal(p, b, main, tip):
                    f"{release.private_where(held, where)}{at}")
 
 
+def land_holds(p, b, main, tip, base="HEAD"):
+    """T-4785: the reason the lane `b` at `tip` must not land on `main` (private term, a scan or git call that failed, a
+    file the guard refuses, the self-change gate), or ''. The one function every path that moves a trunk calls before it
+    does: the train (train._held), fm serve's integrate and the pull-request train, so none runs fewer holds than the
+    others (serve and the PR train once landed what only the train held). Fails closed: a git call, listing or scan that
+    could not run is a hold. The private check is private_refusal, first, so a lane that carries a term never reaches
+    the guard or a probe; its reason names commit, file and line, never the term. base: what `tip` is compared with."""
+    import fmguard
+    from sampo import selfgate
+    meta = c.read_meta(p)
+    ctx = fmguard.Ctx(cwd=main, project_root=main, home=os.path.expanduser("~"), foreman_home=c.foreman_home(),
+                      state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(), scratch=[],
+                      allow=set(b.meta.get("allow") or []), task_id=b.id, standing=set(meta.get("standing") or {}),
+                      trusted=bool(c.trusted()))
+    kind, found = private_refusal(p, b, main, tip, base)
+    if kind == "scan":
+        return Hold(found, "scan", bare=found)
+    if kind:
+        return Hold(found + "; left out: redact it in the lane and amend the commits that carry it, then land it again",
+                    "private", bare=found)
+    files = lane_files(main, tip, base)  # after the private check; None is a failed listing, held like a failed scan
+    if files is None:
+        why = scan_failed(p, b, tip, "file listing failed")[1]
+        return Hold(why, "scan", bare=why)
+    for f in files:
+        blk = fmguard.check("Write", {"file_path": os.path.join(main, f), "content": ""}, ctx)
+        if blk:
+            return Hold(f"the guard refuses {f} ({blk.category})", "guard", files, (f, blk.category, blk.detail))
+    held = selfgate.gate(p, b, main, tip, files)
+    if held:
+        return Hold("the self-change gate holds it: " + c.joinmore(held, 4, "; "), "self", files, held)
+    return Hold("", "", files)
+
+
+class Hold(str):
+    """T-4785: what land_holds returns: the reason as the string (empty when nothing holds the lane, so `if hold:` reads
+    as before), and `kind` ('' | 'private' | 'scan' | 'guard' | 'self'), `files` (what the lane changes; None when the
+    listing failed) and `bare`, the facts behind the reason that `merge` words its own way (private: the sentence without
+    its advice; guard: (file, category, detail); self: the held lines)."""
+    def __new__(cls, reason="", kind="", files=None, bare=None):
+        h = super().__new__(cls, reason)
+        h.kind, h.files, h.bare = kind, files, bare
+        return h
+
+
 def merge(p, b, main, unverified=None):
     """T-0377: merge a reviewed builder branch into the main checkout (--no-ff) through fm. On Sampo's own repo the
     guard refuses `git merge` (a tree write over core); here every file the branch changes must pass the guard as a
     write by its task would (its grants, the standing yes, trust), so fm is no way around it. Refused over staged
     changes or uncommitted edits to a file the branch changes (T-0403); a merge that conflicts is aborted."""
     from sampo import cli
-    import fmguard
     if b.meta.get("lane_spike"):  # T-0732, T-2340: a spike answers a question; its code is thrown away, by every caller
         raise c.PolicyError(f"{b.id}'s lane is a spike: it is never merged. Note what it found (fm task note "
                             f"{b.id} fact \"…\"), then fm lane rm {b.id}")
@@ -3075,21 +3129,26 @@ def merge(p, b, main, unverified=None):
     # T-2352: one commit from here on: what the gates judge is what merges, even if the branch moves meanwhile
     tip = _git(main, "rev-parse", "--verify", f"{branch}^{{commit}}").stdout.strip() or branch
     meta = c.read_meta(p)
-    ctx = fmguard.Ctx(cwd=main, project_root=main, home=os.path.expanduser("~"), foreman_home=c.foreman_home(),
-                      state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(), scratch=[],
-                      allow=set(b.meta.get("allow") or []), task_id=b.id, standing=set(meta.get("standing") or {}),
-                      trusted=bool(c.trusted()))
     # T-3999: ship refused a private term only once 47 commits sat on the one that added it (T-3932's test named a
-    # real remote); here, the lane's own commits and files are judged as ship judges them, while amending is cheap
-    kind, found = private_refusal(p, b, main, tip)  # T-4783: the train's hold step asks the same function
-    if kind == "scan":
-        raise c.PolicyError(f"{b.id}: {found}; nothing was merged")
-    if kind:
-        raise c.PolicyError(f"{b.id}: {found}; nothing was merged: redact it in the lane and amend "
-                            "the commits that carry it, then merge again")
-    files = lane_files(main, tip)  # T-4783: None is a listing that failed, never "no files": the guard would judge nothing
-    if files is None:
-        raise c.PolicyError(f"{b.id}: {scan_failed(p, b, tip, 'file listing failed')[1]}; nothing was merged")
+    # real remote); here, the lane's own commits and files are judged as ship judges them, while amending is cheap.
+    # T-4785: the holds are land_holds, the one body the train, serve and the PR train run too; merge words the guard
+    # and self-change ones its own way (the grant to ask for) and records them
+    hold = land_holds(p, b, main, tip)
+    if hold.kind in ("guard", "self") and hold.bare:
+        c.log_event(p, "enforce", task=b.id, data={"kind": "merge_refused", "branch": branch,
+                                                   "reason": f"guard: {hold.bare[1]}" if hold.kind == "guard" else "self-change gate"})
+        stop_mark(p, b.id, "guard", hold.bare[1] if hold.kind == "guard" else "core")  # T-2354: a grant to ask for
+        if hold.kind == "guard":
+            f, cat, detail = hold.bare
+            raise c.PolicyError(f"{b.id}: {branch} changes {f}, which the guard refuses for this task "
+                                f"({cat}: {detail}); grant it the way an edit is granted, then merge")
+        raise c.PolicyError(f"{b.id}: the self-change gate holds {branch}:\n  " + c.joinmore(hold.bare, 12, "\n  ")
+                            + f"\nOnly the user's yes passes it (not the standing yes, not a decision): fm ask {b.id} core "
+                              f"--why \"<what the change needs and why it's safe>\", then merge again")
+    if hold:
+        raise c.PolicyError(f"{b.id}: {hold.bare or hold}; nothing was merged" + (
+            ": redact it in the lane and amend the commits that carry it, then merge again" if hold.kind == "private" else ""))
+    files = hold.files  # T-4783: a listing that failed is a hold above, never "no files"
     # T-0403: the main thread is often mid-task, so uncommitted edits the branch doesn't touch stay and the merge goes
     # ahead, as git's own does; a staged change (the merge commit would record it) or an overlapping edit refuses
     entries, staged, dirty, i = _git(main, "status", "--porcelain", "-z", "--untracked-files=no").stdout.split("\0"), [], set(), 0
@@ -3114,22 +3173,6 @@ def merge(p, b, main, unverified=None):
     merge.functions = functions_changed(_git(main, "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "diff",
                                              "-U0", "--no-renames", "--no-ext-diff", "--no-textconv",
                                              f"HEAD...{tip}").stdout)
-    for f in files:
-        blk = fmguard.check("Write", {"file_path": os.path.join(main, f), "content": ""}, ctx)
-        if blk:
-            c.log_event(p, "enforce", task=b.id, data={"kind": "merge_refused", "reason": f"guard: {blk.category}",
-                                                       "branch": branch})
-            stop_mark(p, b.id, "guard", blk.category)  # T-2354: a grant to ask for, not a rebuild
-            raise c.PolicyError(f"{b.id}: {branch} changes {f}, which the guard refuses for this task "
-                                f"({blk.category}: {blk.detail}); grant it the way an edit is granted, then merge")
-    from sampo import selfgate  # T-2352: before the criteria waiver, which never waives it
-    held = selfgate.gate(p, b, main, tip, files)
-    if held:
-        c.log_event(p, "enforce", task=b.id, data={"kind": "merge_refused", "reason": "self-change gate", "branch": branch})
-        stop_mark(p, b.id, "guard", "core")  # T-2354: a grant to ask for, not a rebuild
-        raise c.PolicyError(f"{b.id}: the self-change gate holds {branch}:\n  " + c.joinmore(held, 12, "\n  ")
-                            + f"\nOnly the user's yes passes it (not the standing yes, not a decision): fm ask {b.id} core "
-                              f"--why \"<what the change needs and why it's safe>\", then merge again")
     if unverified is not None:  # T-0948: the waiver is on the ledger before the merge it allows
         c.log_event(p, "lane_unverified", task=b.id, data={"reason": unverified.strip(), "branch": branch})
     else:
