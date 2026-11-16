@@ -94,6 +94,9 @@ OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record 
 CGROUP_ROOT = "/sys/fs/cgroup"
 LIVE_CLASSES = set()  # T-4538: the class processes running now (each leads its own session, so its pid is its group)
 PARENT_POLL_S = 1.0  # T-4538: how often a run checks that the process which started it is still alive
+ENDED = []  # T-4399: the signal (SIGTERM, SIGINT) that ended this run from outside, set by its handler; the waits read it
+ENDED_TEXT = "ended from outside"  # what a class killed by such an end, and the summary, say: 'not run', never 'failed'
+ENDPOLL_S = 0.5  # T-4399: how often a class's wait reads whether the run was ended (a few wake-ups a second, not more)
 
 
 def _env(name):
@@ -243,7 +246,7 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
                         sys.stderr.flush()
             if _env(TRACE_ENV) == "1":  # T-4685: what this refusal read
                 _trace(folder, n, small, time.monotonic() - now, narrow)
-            if time.monotonic() >= end:
+            if ENDED or time.monotonic() >= end:  # T-4399: a run ended from outside takes no slot any more
                 break
             if prio and not mark:
                 mark = _mark(folder)
@@ -932,6 +935,8 @@ def suite_slot(until):
                 _SUITE["held"] = True
                 break
             now = time.time()
+            if ENDED:  # T-4399: ended from outside: no suite starts, the wait ends now
+                break
             if now >= until:
                 sys.stderr.write(f"run.py: {_holder(fd)} still holds the slot; going ahead beside it\n")
                 break
@@ -1870,7 +1875,7 @@ class Joins:
                              f"{', '.join(pend[:3])}{', ...' if len(pend) > 3 else ''}\n")
             sys.stderr.flush()
         while pend:
-            late = time.time() >= end - 1
+            late = time.time() >= end - 1 or bool(ENDED)  # T-4399: ended from outside: nothing more is waited for
             for c in list(pend):
                 m = read_marker(self.path(c))
                 if m and self._live(m, c) and not late:
@@ -2392,6 +2397,8 @@ def run_one(cid, k, timeout=480, deadline=None, small=False, joins=None, narrow=
     """T-3252: the class runs in one of the machine's CPU slots; waiting for it counts against neither its timeout nor
     its recorded time, and the run's deadline still applies once it starts. T-4247: small (the run's selection is at
     most EXPRESS_CLASSES classes) lets it take an express slot; the seconds it waited are kept in WAITED."""
+    if ENDED:  # T-4399: ended from outside: not started, so no slot, no join marker and no 'red' for a class that never ran
+        return cid, 1, NOT_STARTED, 0, 0.0
     wait = max(0.0, deadline - time.time()) if deadline is not None else 3600.0
     t = time.monotonic()
     with cpu_slot(wait, small=small, low=is_low(), narrow=narrow) as slot:
@@ -2662,12 +2669,43 @@ def end_run(base=None):
         end_procs(lambda: holders(mine, fds=True))
 
 
+def _last_line(r):
+    """T-4399: a class result's last line: the run.py line _run_one appends (a class's output above it may quote a
+    nested run's text, so the text anywhere in err does not count)."""
+    return r[2].rstrip().rsplit("\n", 1)[-1] if r[2] else ""
+
+
+def ended_stop(r):
+    """T-4399: whether a class result is one the run's end from outside stopped: killed at the end."""
+    return bool(ENDED) and _last_line(r).startswith(f"run.py: {r[0]} still running when the run was {ENDED_TEXT} ")
+
+
+def deadline_stop(r):
+    """T-1809 (T-4399: matched on the last line, as ended_stop is): whether the run's --deadline killed this class."""
+    return _last_line(r).startswith(f"run.py: {r[0]} still running at the run's deadline ")
+
+
+def _wait_class(p, timeout):
+    """T-4399: p.wait(timeout=timeout), but read every ENDPOLL_S whether the run was ended from outside: then it raises
+    TimeoutExpired at once, as a cap's kill does (the caller says which). The class's output is a file (T-4758), so
+    nothing is read here."""
+    end = time.monotonic() + timeout
+    while True:
+        try:
+            return p.wait(timeout=max(0.01, min(end - time.monotonic(), ENDPOLL_S)))
+        except subprocess.TimeoutExpired:
+            if ENDED or time.monotonic() >= end:
+                raise
+
+
 def _run_one(cid, k, timeout, deadline, slot):
     """T-1808: a class still running after timeout s is killed and fails by name, with every thread's stack
     (faulthandler on SIGABRT); its own session, so a child holding the pipes dies with it. T-1809: the run's deadline
     (an epoch) shortens that, and a class not started by then fails as NOT_STARTED."""
     t0 = time.time()
     why = f"still running after {timeout}s: killed (T-1808)"
+    if ENDED:  # T-4399: the run was ended from outside: this class is not started
+        return cid, 1, NOT_STARTED, 0, 0.0
     if deadline is not None:
         if deadline - t0 < 1:  # review: round() of under 0.5 s left would start the class and kill it at once
             return cid, 1, NOT_STARTED, 0, 0.0
@@ -2711,8 +2749,10 @@ def _run_one(cid, k, timeout, deadline, slot):
     LIVE_CLASSES.add(p.pid)  # T-4538: watch_parent kills it if this run's starter is gone
     tail = ""
     try:
-        p.wait(timeout=timeout)
+        _wait_class(p, timeout)  # T-4758 (no pipes: a wait on the class) with T-4399's end poll
     except subprocess.TimeoutExpired:
+        if ENDED:  # T-4399: named as the end's, not as a timeout's: 'not run', never 'failed'
+            why = f"still running when the run was {ENDED_TEXT} ({signal.Signals(ENDED[0]).name}): killed (T-4399)"  # ended_stop reads this line
         p.send_signal(signal.SIGABRT)  # the stack, to stderr
         try:
             p.wait(5)
@@ -2948,6 +2988,12 @@ def main():
         return show_last(a)
     if a.held:  # T-4570: a reader too
         return show_held(a)
+    return _with_end_handlers(_suite, a)  # T-4399: the readers above return with the default signals (a kill ends them)
+
+
+def _suite(a):
+    """a suite run (the readers were answered in main): its classes, its report, its exit code."""
+    ap = a
     watch_parent()  # T-4538: a run whose starter is gone ends with its classes
     run_id = _env(RUN_ID_ENV)  # T-4268: the check's id for this gate: kept for the record, out of every class's environment
     for k in (RUN_ID_ENV, "FOREMAN_" + RUN_ID_ENV[len("SAMPO_"):]):
@@ -3080,7 +3126,7 @@ def main():
         def go(c):  # T-1994: the class is in a named module, so -k alone
             r = run_one(c, a.k or a.names, cap, end, small, joins, narrow)
             if (known and r[1] != 0 and owner(r[0]) in known and r[2] not in (NOT_STARTED, DEFERRED)
-                    and "the run's deadline" not in r[2]):
+                    and not deadline_stop(r) and not ended_stop(r)):
                 with told_lock:  # red again on the inputs its record had it red on: said now, not at the end
                     first = owner(r[0]) not in told
                     told.add(owner(r[0]))
@@ -3116,7 +3162,7 @@ def main():
             # loaded host fails timing-sensitive classes the code did not (T-4358: 16 of 17 green alone). The drawn
             # classes have their own rerun below, a cap-kill had its, and a deadline's cut is not a failure.
             if (r[1] != 0 and r[0] not in retried and owner(r[0]) not in drawn and r[2] != NOT_STARTED
-                    and "the run's deadline" not in r[2] and os.environ.get("FOREMAN_LOAD_RERUN") != "0"
+                    and not deadline_stop(r) and not ended_stop(r) and not ENDED and os.environ.get("FOREMAN_LOAD_RERUN") != "0"
                     and (lp := load_per_cpu()) > LOAD_BAR):  # FOREMAN_LOAD_RERUN=0: a red class is never run twice
                 again = go(r[0])
                 if again[1] == 0:
@@ -3125,7 +3171,7 @@ def main():
                         note_event(cache, "flake", r[0])
                     sys.stderr.write(f"run.py: {r[0]} load flake: failed once, passed alone (load {lp:.1f} per CPU)\n")
         bad = [r[0] for r in results if r[1] != 0 and owner(r[0]) in drawn  # a deadline's stop says nothing of it
-               and r[2] != NOT_STARTED and "the run's deadline" not in r[2]]
+               and r[2] != NOT_STARTED and not deadline_stop(r) and not ended_stop(r) and not ENDED]
         for i, r in enumerate(results):  # T-4274: red on code the cache has green is a flake (a loaded host fails the
             if r[0] in bad:              # timing-sensitive classes) far more often than a file the coverage missed:
                 again = go(r[0])         # it runs once more, the pool drained, before the cache is blamed
@@ -3135,9 +3181,9 @@ def main():
                     note_event(cache, "flake", r[0])
                     sys.stderr.write(f"run.py: {r[0]} failed once and passed again on code the cache has green (load "
                                      f"{load_per_cpu():.1f} per CPU): a flake, the cache stands\n")
-                elif again[2] == NOT_STARTED or "the run's deadline" in again[2]:
-                    bad.remove(r[0])  # the deadline's stop says nothing of the cache; the class's first red stands
-        if bad:  # T-3502: green in the cache at this code, red twice now: the cache is wrong, so nothing it said holds
+                elif again[2] == NOT_STARTED or deadline_stop(again) or ended_stop(again):
+                    bad.remove(r[0])  # the deadline's or the end's stop says nothing of the cache; the first red stands
+        if bad and not ENDED:  # T-3502 (T-4399: an ended run's reds say nothing of the cache): green in the cache at this code, red twice now: the cache is wrong, so nothing it said holds
             note_event(cache, "drop", bad[0])
             drop_cache(cache)
             sys.stderr.write(f"run.py: {bad[0]} failed though the cache had it green at the same code: the cache is "
@@ -3204,9 +3250,13 @@ def main():
         sys.stderr.write(f"\n==== {cid}\n{err}")
         if ci:
             print("\n".join(annotations(cid, err)), flush=True)
+    if ENDED:  # T-4399: one line says the end was an outside kill, what was killed and what was not started
+        sys.stderr.write(f"\nrun.py: {ENDED_TEXT} ({signal.Signals(ENDED[0]).name}) after {time.time() - t0:.0f} s: "
+                         "the classes still running were killed, the classes not started were not run\n")
     late = [r[0] for r in failed if r[2] == NOT_STARTED]
     if late:  # review: outside CI too, which classes the deadline left out
-        sys.stderr.write(f"\nrun.py: not started (the run's {a.deadline}s deadline): {', '.join(late)}\n")
+        why_late = ENDED_TEXT if ENDED else f"the run's {a.deadline}s deadline"
+        sys.stderr.write(f"\nrun.py: not started ({why_late}): {', '.join(late)}\n")
     if ci:
         print("\n".join(summary_notes(results, time.time() - t0, a.deadline)), flush=True)
     total = sum(r[3] for r in results)
@@ -3220,7 +3270,7 @@ def main():
         sys.stderr.write(f"\n==== {cid}\nrun.py: CPU over its margin (T-3757): {s:.1f} CPU s, {why}"
                          + (f" ({usual:.1f} s)" if usual is not None else "") + "\n")
     # T-3936: a class the deadline cut is 'not run', never 'failed': the host was slow, nothing regressed
-    stopped = [r for r in failed if r[2] == NOT_STARTED or "the run's deadline" in r[2]]
+    stopped = [r for r in failed if r[2] == NOT_STARTED or deadline_stop(r) or ended_stop(r)]
     real = [r for r in failed if r not in stopped]
     names = [r[0] for r in real] + [c for c, *_ in cpu_red if c not in {r[0] for r in real}]
     said = ", ".join(names[:5]) + (f", +{len(names) - 5} more" if len(names) > 5 else "")
@@ -3236,7 +3286,7 @@ def main():
                     "worktree": where[0], "tree": tree_id(rtree[1]) if rtree else "",
                     "tree_end": tree_id(end_tree[1]) if end_tree else "", "run_id": run_id or "",
                     "argv": sys.argv[1:], "whole": entire, "selection": "" if entire else sel.strip(),
-                    "ok": not failed and not cpu_red and bool(total or skip), "ran": total, "cached": sum(skip.values()),
+                    "ok": not failed and not cpu_red and bool(total or skip) and not ENDED, "ran": total, "cached": sum(skip.values()),
                     "n_failed": len(names), "n_not_run": len(stopped), **slot_fields(t0, time.time()),
                     "failed": ents[:FAILS_MAX],
                     "not_run": [r[0] for r in stopped][:NOT_RUN_MAX]}
@@ -3252,15 +3302,38 @@ def main():
     spent = sum(CPU.values()) + (me.ru_utime + me.ru_stime if me else 0)  # T-3757: the classes' own count, and run.py's
     sys.stderr.write(f"\nRan {total} tests in {time.time() - t0:.1f}s ({len(todo)} jobs, {a.j} at a time; "
                      f"slowest: {slow}; cpu {spent:.1f} s{slot_notes(WAITED, WAIT_SPANS, left_now(), time.time() - t0)}){cached}\n\n"
-                     f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip or joined else 'NO TESTS RAN'}\n")
+                     f"{f'FAILED ({len(names)} classes: {said})' if names else 'INCOMPLETE (ended from outside)' if ENDED else 'INCOMPLETE (stopped at its deadline)' if stopped else 'OK' if total or skip or joined else 'NO TESTS RAN'}\n")
     if stopped:
-        sys.stderr.write(f"not run (deadline): {len(stopped)}\n" + "".join(f"  not run class: {r[0]}\n" for r in stopped))
+        sys.stderr.write(f"not run ({ENDED_TEXT if ENDED else 'deadline'}): {len(stopped)}\n"
+                         + "".join(f"  not run class: {r[0]}\n" for r in stopped))
+    if ENDED:  # T-4399: the exit code says how the run ended (143 SIGTERM, 130 SIGINT, as the shell's own), never 124
+        return 128 + ENDED[0]
     # T-2944: stopped at its own deadline with nothing really failed: exit 124 and say so last, so a caller (the
     # sentinel's re-verify) reads a busy machine, not a regression
     if stopped and not names:
         sys.stderr.write("run.py: stopped at its deadline\n")
         return 124
     return 1 if failed or cpu_red or not (total or skip or joined) else 0
+
+
+def _end_from_outside(signum, frame):
+    """T-4399: SIGTERM or SIGINT from outside (a shell's timeout, a Ctrl-C) ends the run the way --deadline does: the
+    classes still running are killed, the ones not started are not run, and the report says so. The default handlers
+    come back at once, so a second signal ends the process without waiting for the report."""
+    ENDED.append(signum)
+    for s in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(s, signal.SIG_DFL)
+
+
+def _with_end_handlers(fn, a):
+    """T-4399: fn(a) (a suite run) with the end handlers installed, and the callers' own handlers back when it returns:
+    a run imported and called in-process keeps its signals."""
+    old = {s: signal.signal(s, _end_from_outside) for s in (signal.SIGTERM, signal.SIGINT)}
+    try:
+        return fn(a)
+    finally:
+        for s, h in old.items():
+            signal.signal(s, signal.SIG_DFL if h is None else h)
 
 
 if __name__ == "__main__":
