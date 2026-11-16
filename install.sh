@@ -14,6 +14,7 @@
 #   --no-local-models  don't, and don't ask (on a terminal the installer asks; with no terminal it doesn't pull)
 #   --no-mod         don't install the foreman-ui mod (band above the prompt, dashboard pane, toasts)
 #   --no-wiring      don't wire Sampo into ~/.claude (statusLine wrapper, deny rules, CLAUDE.md block, rules symlink)
+#   --no-native      don't build the native guard binary (step 7; the full doctor run passes it)
 #   anything else    passed through to setup-plugins.sh (e.g. --security, --docs, --apply-conflicts)
 # Environment:
 #   FOREMAN_REPO     git URL to clone (default below)
@@ -27,7 +28,7 @@ FOREMAN_DESKTOP_REPO="${FOREMAN_DESKTOP_REPO:-ChaseSunstrom/foreman-desktop}"
 
 EMBED_PINS="bge-m3:567m nomic-embed-text:v1.5"   # T-2880: exact tags (doctor.EMBED_PINS is the same list)
 
-BUILD=0 PLUGINS=1 BYPASS=ask LOCAL=ask WIRING=1 MOD=1 DESKTOP=0 PASS=()
+BUILD=0 PLUGINS=1 BYPASS=ask LOCAL=ask WIRING=1 MOD=1 NATIVE=1 DESKTOP=0 PASS=()
 for arg in "$@"; do
   case "$arg" in
     --build) BUILD=1 ;;
@@ -39,7 +40,8 @@ for arg in "$@"; do
     --no-local-models) LOCAL=0 ;;
     --no-mod) MOD=0 ;;
     --no-wiring) WIRING=0 ;;
-    -h|--help) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --no-native) NATIVE=0 ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) PASS+=("$arg") ;;
   esac
 done
@@ -257,6 +259,14 @@ if [ "$LOCAL" = 1 ]; then
   else
     say "Ollama isn't installed: get it from https://ollama.com/download, then rerun with --local-models (or ollama pull each of: $EMBED_PINS)"
   fi
+fi
+
+# 7. The native guard binary (T-3608): optional, and only when cargo is there. It is built offline from the committed
+# sources, run against the Python hook on a fixed probe set, and installed only when every check passes; any doubt
+# (no cargo, a failed build, a probe mismatch) leaves the Python hook deciding, about 32 ms a call. Never fails the install.
+if [ "$NATIVE" = 1 ] && { command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/cargo" ]; }; then
+  say "Building the native fast path (optional; the Python hook stays if it can't)"
+  python3 -I "$FOREMAN_HOME/plugin/lib/sampo/fastbuild.py" || say "Native fast path not installed; the Python hook stays (retry: sampo doctor --repair)"
 fi
 
 say "Sampo is installed at $FOREMAN_HOME"

@@ -398,7 +398,8 @@ def _message(block, ctx):
         how = (f"create or focus a task first (sampo task new \"…\" --type T --tier S, or sampo focus ID), "
                f"then sampo task set <ID> --allow {cat}, then retry")
     trusted, standing = getattr(ctx, "trusted", False), "core" in (getattr(ctx, "standing", None) or ())
-    if cat == "core" and (trusted or standing) and _plain_path(detail) is None:
+    # (T-3608 round 7: not the installer's finding: a build isn't a change plain file edits make, the user grants it)
+    if cat == "core" and (trusted or standing) and _plain_path(detail) is None and detail != _INSTALLER_CORE:
         # T-2859: the yes covers this change as plain file edits; only the form can't be read ('stop asking me')
         yes = "Trust (/fm-trust on)" if trusted else "The standing core yes"
         return (f"Ward: blocked core: {detail}. {yes} covers this change made as plain file edits, not in "
@@ -779,7 +780,8 @@ def _is_core(path, ctx):
 
 
 # T-3607: what the installer makes in plugin/native (gitignored, so a swap leaves no diff to review)
-_NATIVE_BUILT = ("sampo-fast", "sampo-fast.sha256", "target")
+_NATIVE_BUILT = ("sampo-fast", "sampo-fast.sha256", "sampo-fast.src", "target")
+_NATIVE_TEMP = ".sampo-fast-"  # T-3608: the installer's staging files (.sampo-fast-new-…, .sampo-fast-sum-…)
 # T-3607: what cargo and rustup read in every folder at or above the one they build in: a setting there (rustc-wrapper,
 # linker, rustflags, target-dir, a toolchain path) reaches the binary hooks/fast runs
 _CARGO_FILES = (".cargo", ".cargo/config", ".cargo/config.toml", "rust-toolchain", "rust-toolchain.toml")
@@ -800,10 +802,11 @@ def _cargo_files(homes, home, cargo_home):
 def _rust_dirs(home):
     """T-3607 review: the toolchain cargo and rustup run: cargo's bin/ (the cargo and rustc proxies), rustup's
     toolchains/ and settings.toml (the default toolchain, each folder's override), at home and where the environment
-    moves them."""
+    moves them. T-3608: and the crates the installer builds from, cargo's registry/ and git/ (a changed crate source
+    is compiled into the binary)."""
     cargo = {os.path.join(home, ".cargo"), os.environ.get("CARGO_HOME")} - {None, ""}
     rustup = {os.path.join(home, ".rustup"), os.environ.get("RUSTUP_HOME")} - {None, ""}
-    return [os.path.join(c, "bin") for c in cargo] + [os.path.join(r, x) for r in rustup
+    return [os.path.join(c, x) for c in cargo for x in ("bin", "registry", "git")] + [os.path.join(r, x) for r in rustup
                                                        for x in ("toolchains", "settings.toml")]
 
 
@@ -829,6 +832,9 @@ def _standing_covers(path, ctx):
     if any(_under(b, p) or _under(p, b) for fh in homes for b in (os.path.join(fh, "plugin", "native", x)
                                                                     for x in _NATIVE_BUILT) for p in (path, real)):
         return False  # T-3607: the binary hooks/fast runs, its sum or its build, or a tree write over one
+    if any(os.path.dirname(p) == os.path.join(fh, "plugin", "native") and os.path.basename(p).startswith(_NATIVE_TEMP)
+           for fh in homes for p in (path, real)):
+        return False  # T-3608: a file the installer stages before it renames it over the binary
     if any(".cargo" in p.split("/") or os.path.basename(p).startswith("rust-toolchain") for p in (path, real)) or \
             path in _cargo_files(tuple(homes), ctx.home, os.environ.get("CARGO_HOME")):
         return False  # T-3607 review: cargo config and toolchain files change how plugin/native builds
@@ -1287,6 +1293,15 @@ _LONG_VALUE = {"--rcfile", "--init-file", "--require", "--import", "--loader", "
 _RUNS_IT = lazy(r"(?<![.\w'\"])(?:eval|compile)\b|(?<!['\"])\b(?:exec|execSync|execFile\w*|execv\w*|execl\w*|"
                       r"Function|runpy|run(?:In\w*Context)|system|popen|Popen|subprocess|spawn\w*|instance_eval|"
                       r"class_eval)\b(?!['\"])")  # a quoted word ('system' in rows) names it, doesn't call it
+# T-3608 round 7: the same for code that names an installer file (_code_runs, _starts_installer), where a miss runs the
+# build: any word holding exec, spawn, subprocess, system or popen (create_subprocess_exec, posix_spawn) and the ways
+# to import and run a file. Not for _inline_runs_stdin or the piped-stdin gate: there json.load(sys.stdin) through
+# __import__('json'), or importlib.metadata, reads data and a wider list refuses it for no reason.
+_RUNS_IT_INSTALLER = lazy(r"(?<![.\w'\"])(?:eval|compile)\b|(?<!['\"])\b\w*(?:exec|spawn|subprocess|system|popen|Popen)\w*(?!['\"])|"
+                          r"(?<!['\"])\b(?:Function|runpy|run(?:In\w*Context)|instance_eval|class_eval|import_module|__import__|"
+                          r"importlib|run_path|run_module|spec_from_file_location|load_module)\b(?!['\"])")
+_INSTALLER_CORE = ("sampo doctor --repair|--fix, fastbuild.py and install.sh build and install the binary the "
+                   "guard's hooks run (plugin/native/sampo-fast)")
 _STDIN_WORD = lazy(r"stdin|STDIN|<>|readFileSync\(\s*0|/dev/fd/0|php://stdin")
 _CAT_SUBST = lazy(r"\$\(\s*(?:cat\b[^)]*|<\s*/dev/stdin\s*)\)|`\s*cat\b[^`]*`")
 _READ_RUNS = lazy(r"(?:^|[;&|({]|\bdo|\bthen|\belse)\s*(?:eval\b|\"?\$|\S*sh\s+-\w*c\s+\"?\$)")  # read l; $l
@@ -6036,6 +6051,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     # a tail (the text after a substitution opens) is read once as it stands: its own tails are suffixes of it already
     live = [x for t in _live_heredocs(cmd) for x in ([t, _unescape_ticks(t)] if "\\`" in t else [t])]  # T-0669: in
     cmds, top = _split(_tokens(_lines(shell))), _top(shell)
+    found += _installer_lines(cmds, cmd)  # T-3608
     # T-3600 review 4: whether this text's literals hold for sampo words (nested, through the whole line's literals:
     # id=$($R sampo task new …))
     holds = _literals_hold(cmds, shell, {**_DCWD.get("lits", {}), **lits})
@@ -7824,6 +7840,314 @@ def _cargo_assigned(path, ctx):
     if not d or not isinstance(path, str) or not os.path.isabs(path) or ".." in path.split("/"):
         return False
     return _under(path, d) and _under(os.path.realpath(path), os.path.realpath(d))
+
+
+_INSTALLER_SCRIPTS = ("fastbuild.py", "fmfastbuild.py")
+_INSTALLER_MODULES = ("sampo.fastbuild", "sampo.fmfastbuild", "fmfastbuild", "fastbuild")
+_ENV_BUILTINS = ("export", "declare", "typeset", "readonly", "unset", "set", "local")
+
+
+def _installer_doctor(rest):
+    """T-3608: sampo doctor's flags that build and install the native binary: --repair and --fix, and the shortest
+    abbreviations argparse would take for them. doctor also has --restore-state and --full, so argparse refuses --r, --re
+    and --f as ambiguous; the guard reads each of them as the installer anyway (nothing runs, and a prefix of one
+    flag the guard blocks is not worth deciding)."""
+    verb, after = _fm_subcommand(rest)
+    flags = [a.partition("=")[0] for a in after if a.startswith("--")]
+    return verb == "doctor" and any(
+        len(f) >= 3 and ("--repair".startswith(f) or "--fix".startswith(f)) for f in flags)
+
+
+def _installer_argv(argv, stdin=""):
+    """T-3608: argv (wrappers dropped) builds and installs plugin/native's sampo-fast: sampo doctor --repair|--fix, a
+    direct run of fastbuild.py (by path, python script, -m or -c) or of install.sh (not bash -n), also a shell that
+    reads install.sh from stdin (bash < install.sh): `stdin` is the file a < redirect gives it."""
+    if not argv:
+        return False
+    name, args = os.path.basename(argv[0]), argv[1:]
+    if _fm_argv(argv):
+        return _installer_doctor(args if name in FM_PROGRAMS else args[1:])
+    if name in _INSTALLER_SCRIPTS or name == "install.sh":
+        return True
+    py = re.match(r"^python[0-9.]*$", name)
+    if py:
+        for i, a in enumerate(args):
+            if a == "-m" and args[i + 1:i + 2] and args[i + 1] in _INSTALLER_MODULES:
+                return True
+            if a == "-c" and "fastbuild" in " ".join(args[i + 1:i + 2]):
+                return True
+        script = next((a for a in args if not a.startswith("-")), "")
+        return os.path.basename(script) in _INSTALLER_SCRIPTS
+    if name in ("source", ".") or _C_SHELLS.match(name):
+        opts = [a for a in args if a.startswith("-") and not a.startswith("--")]
+        script = next((a for a in args if not a.startswith("-")), "")
+        if any("n" in o[1:] for o in opts):
+            return False
+        if os.path.basename(script) == "install.sh":
+            return True
+        # a shell with no script (or -s: the words after are arguments) reads its commands from stdin
+        return bool(stdin) and os.path.basename(stdin) == "install.sh" and name not in ("source", ".") and (
+            not script or "s" in "".join(o[1:] for o in opts))
+    return False
+
+
+def _installer_scan(cmds, depth=0):
+    """T-3608: (installs, sets) over the commands and the text a `sh -c` or eval runs: whether one builds the binary
+    and whether one sets the environment it runs in (an assignment before a command, env, export…)."""
+    installs = sets = False
+    for c in cmds:
+        argv, _ = _strip_wrappers(c.argv)
+        pre = c.argv[:len(c.argv) - len(argv)]
+        installs = installs or _installer_argv(argv, c.stdin or "")
+        sets = sets or bool(_assignments(c.argv)) or any(os.path.basename(w) == "env" for w in pre) or bool(
+            argv) and os.path.basename(argv[0]) in _ENV_BUILTINS
+        text = None
+        if argv and depth < 3 and _C_SHELLS.match(os.path.basename(argv[0])):
+            i = next((j for j, a in enumerate(argv[1:], 1) if re.match(r"^-[a-zA-Z]*c[a-zA-Z]*$", a)), 0)
+            text = argv[i + 1] if i and i + 1 < len(argv) else None
+        elif argv and depth < 3 and os.path.basename(argv[0]) == "eval":
+            text = " ".join(argv[1:])
+        if text:
+            inner = _installer_scan(_split(_tokens(_lines(text))), depth + 1)
+            installs, sets = installs or inner[0], sets or inner[1]
+        if argv and depth < 3 and os.path.basename(argv[0]) == "find":  # find … -exec CMD … ; (also -execdir, -ok, -okdir)
+            ran, i = [], 1
+            while i < len(argv):
+                if argv[i] in ("-exec", "-execdir", "-ok", "-okdir"):
+                    j = next((k for k in range(i + 1, len(argv)) if argv[k] in (";", "+", "\\;")), len(argv))
+                    ran.append(Cmd(argv[i + 1:j], [], False))
+                    i = j
+                i += 1
+            if ran:
+                inner = _installer_scan(ran, depth + 1)
+                installs, sets = installs or inner[0], sets or inner[1]
+    return installs, sets
+
+
+# T-3608 round 4: the general rule behind the specific ones. A list of start forms keeps losing (bash -o pipefail <
+# install.sh, bash /dev/stdin < install.sh, exec 0<install.sh; bash …), so the line is read as a whole: it names an
+# installer file (a word or the tail of a path) and something on it runs code that may take that file as its program.
+_INSTALLER_NAMED = lazy(r"(?<![\w.-])(?:install\.sh|(?:fm)?fastbuild\.py|(?:sampo\.)?(?:fm)?fastbuild|build_fast)(?![\w.-])")
+_INTERPRETERS = lazy(r"^(?:python[0-9.]*|pypy[0-9.]*|perl|ruby|node|nodejs|deno|bun|php)$")
+_CHECKER_MODULES = {"py_compile", "compileall", "pyflakes", "flake8", "mypy", "ruff", "black", "pycodestyle", "pylint",
+                    "ast", "tokenize"}  # python -m …: they read a source file, they don't run it
+_WRAPPERS = {"ssh", "setsid", "nohup", "flock", "watch", "parallel", "script", "stdbuf", "unbuffer", "systemd-run", "su",
+             "chroot", "nsenter", "unshare", "firejail", "bwrap", "docker", "podman", "kubectl", "tmux", "screen", "at",
+             "batch", "busybox", "chronic", "doas", "runuser"}  # run the words after them: ssh h bash, setsid bash …
+_URLS = lazy(r"(?<![\w+.-])[A-Za-z][\w+.-]*://\S*")  # anchored at a word's start: linear on a long word
+_COMPUTED_WORD = lazy(r"[$`]|<\(|^/dev/fd/|^/proc/self/fd/")  # a word the guard can't read as a name
+
+
+def _names_installer(text):
+    """Whether text names one of the installer files as a word or a path tail. A URL's tail isn't a file of ours: a
+    downloaded install.sh piped to a shell is the pipe-shell rule's (T-0589), not this one's."""
+    if not _INSTALLER_NAMED.search(text):  # the common line, one linear scan
+        return False
+    return bool(_INSTALLER_NAMED.search(_URLS.sub(" ", text)))
+
+
+def _kind(name):
+    return ("sh" if re.fullmatch(r"(ba|z|da|k|fi|c|tc|a|mk|ya|po|lk)?sh|busybox", name) else
+            "py" if re.fullmatch(r"python[0-9.]*|pypy[0-9.]*", name) else "js" if name in ("node", "nodejs", "deno", "bun")
+            else "pl" if name == "perl" else "rb" if name == "ruby" else "php" if name == "php" else None)
+
+
+def _program_words(name, args):
+    """(the words of a shell's or interpreter's own command line that are its program, its inline code or None): the
+    script (the first word that is neither an option nor an option's value), the module of -m and the values its other
+    options take (--rcfile, -o, -r…). The words after the script or the code are its arguments, data it reads:
+    `python3 plugin/bin/sampo lease take install.sh` runs sampo, `perl -pi -e 's/a/b/' install.sh` edits the file."""
+    if name in ("source", "."):
+        return args[:1], None
+    kind = _kind(name)
+    if kind is None:
+        return list(args), None
+    out, i = [], 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            return out + args[i:i + 1], None
+        if a.startswith("--"):
+            if kind == "js" and a in ("--eval", "--print") or kind == "sh" and a == "--command":
+                return out, args[i] if i < len(args) else None
+            if "=" in a:
+                out.append(a.split("=", 1)[1])
+            elif a in _LONG_VALUE:
+                out += args[i:i + 1]
+                i += 1
+            continue
+        if a.startswith(("-", "+")) and len(a) > 1:
+            for j, f in enumerate(a[1:]):
+                if f in _INLINE[kind] or f in _OPT_VALUE[kind]:
+                    val = a[j + 2:] or (args[i] if i < len(args) else "")
+                    i += not a[j + 2:]
+                    if f in _INLINE[kind]:  # the code or the module: what follows is its arguments
+                        return (out + [val], None) if kind == "py" and f == "m" else (out, val)
+                    out.append(val)
+                    break
+            continue
+        return out + [a], None  # the script
+    return out, None
+
+
+# inline code that runs something: a call that starts a program or reads and runs a file, a backtick, an import of the
+# build module. Code that only holds the name (a list of file names, a path it reads) is data, not a start.
+_CODE_STARTS = lazy(r"`|%x[({\[]|\bqx\b|\b(?:import|from|require|use|load)\b[^;\n]{0,80}(?<![\w.-])(?:sampo\.)?(?:fm)?fastbuild(?![\w.-])")
+
+
+def _code_runs(code):
+    return bool(_RUNS_IT_INSTALLER.search(code) or _CODE_STARTS.search(code))
+
+
+def _starts_installer(body, interp=""):
+    """A heredoc body for an interpreter is an installer start by the rule of its -c text (round 6): it names the
+    file and is code that runs something (_code_runs), however long the string that holds the name. One narrowing: a
+    backtick or %x/qx starts a program only in a language where it does (perl, ruby, php), not in prose or in python
+    and node code, where a backtick is text or a template."""
+    if not _names_installer(body):
+        return False
+    if _RUNS_IT_INSTALLER.search(body) or any(m.group(0)[:1].isalpha() for m in _CODE_STARTS.finditer(body)):
+        return True
+    return bool(re.match(r"(?:perl|ruby|php)", interp) and _CODE_STARTS.search(body))
+
+
+def _runs_named(cmds, outer=False, depth=0, bodies=()):
+    """T-3608 round 4: whether a command (the text of a -c, an eval and a find -exec read as commands too) runs code
+    that may take an installer file as its program. A shell or interpreter hits when a word of its program (the
+    script, an option's value, inline code: _program_words) names the file, when that word is one it can't read (a
+    variable, <( )) and a word of the line names it, or when it reads its program from stdin (no script, -s, -,
+    /dev/stdin) and what feeds that stdin names the file: its < redirect, its here-string, the command before the
+    pipe, a <( ) (outer: the stdin of the -c shell around it). Plain reads and checkers (cat, grep, git diff, bash -n,
+    python -m py_compile) hit nothing, nor does a word the program only takes as data (sampo lease take install.sh).
+    An interpreter that reads its code from a heredoc (round 5; bodies: the line's heredoc bodies in order) hits when
+    the body starts the build (_starts_installer); a shell's heredoc body is read as commands
+    by check_bash itself.
+
+    The limit of the name test (_names_installer) is lexical: it reads words, so a name the text builds (ins''tall.sh,
+    install.s[h], $(echo install).sh, a glob, a computed word the line never spells out) or a path that reaches the
+    file through a symlink made on an earlier line is not seen. That is bounded, not a hole in what the build trusts:
+    the build is hermetic (a scrubbed environment, the account's own cargo, rustc and a root-owned linker, a
+    hash-checked private registry copy, a fresh target) and it builds only the clean committed tree, then installs the
+    binary after a probe against the Python hook; a start the guard misses runs that same build."""
+    named = _names_installer
+    loose = []  # one word of the line, a path or name with no space in it, names a file: not prose that mentions one
+
+    def names_in(x):
+        return any(named(w) for w in x.argv) or bool(x.stdin and named(x.stdin))
+
+    def line_names():
+        if not loose:
+            loose.append(any(named(w) for x in cmds for w in x.argv if not re.search(r"\s", w)) or any(
+                x.stdin and named(x.stdin) for x in cmds))
+        return loose[0]
+
+    assigned = {}  # NAME -> the values the line gives it (R=…/retry.sh; bash $R …: the script is the value, not unknown)
+    for x in cmds:
+        for key, val in _assignments(x.argv):
+            assigned.setdefault(key, []).append(val)
+
+    def values(a):  # the words a program word may be: its own, or those of the variable it is
+        m = re.fullmatch(r"\$(\w+)|\$\{(\w+)\}", a)
+        return assigned.get((m.group(1) or m.group(2)) if m else "") or [a]
+
+    heredoc, n = {}, 0  # the command's own heredoc bodies: the Nth `<<` of the line is the Nth body
+    for k, c in enumerate(cmds):
+        for t, _ in c.feeds:
+            if t == "<<":
+                heredoc.setdefault(k, []).append(bodies[n] if n < len(bodies) else "\n".join(bodies))
+                n += 1
+
+    exec_fed = False  # exec 0<install.sh: every shell after it reads the file
+    for k, c in enumerate(cmds):
+        argv, via_xargs = _strip_wrappers(c.argv)
+        exec_fed = exec_fed or c.argv[:1] == ["exec"] and len(c.argv) == 1 and bool(c.stdin and named(c.stdin))
+        if not argv or depth > 3:
+            continue
+        fed = outer or exec_fed or bool(c.stdin and named(c.stdin)) or any(w and named(w) for t, w in c.feeds if t == "<<<")
+        if not fed and c.procsub:
+            fed = any(names_in(x) for x in cmds[k + 1:] if x.depth > c.depth)
+        j = k - 1 if c.piped else -1
+        while not fed and j >= 0:  # every command of the pipeline before it
+            fed = names_in(cmds[j])
+            j = j - 1 if cmds[j].piped else -1
+        # { bash; } < install.sh, (bash) < install.sh, done < install.sh: the redirect sits on the closing word
+        fed = fed or any(x.stdin and named(x.stdin) for x in cmds[k + 1:] if x.argv in ([], ["}"], ["done"]))
+        i = 0
+        if os.path.basename(argv[0]) in _WRAPPERS:  # the words after it run: its first runner word on is the command
+            i = next((j for j, a in enumerate(argv) if j and _is_runner(os.path.basename(a))), len(argv))
+            for a in argv[1:]:
+                if re.search(r"\s", a) and _runs_named(_split(_tokens(_lines(a))), fed, depth + 1):
+                    return True
+        if i >= len(argv):
+            continue
+        name, args = os.path.basename(argv[i]), argv[i + 1:]
+        words = " ".join(args)
+        prog, code = _program_words(name, args)
+        prog = [v for a in prog for v in values(a)]
+        computed = c.procsub or any(_COMPUTED_WORD.search(a) for a in prog if not a.startswith("-"))  # no name to read
+        reads_stdin = _reads_stdin_code(name, args, via_xargs) or via_xargs and not prog and code is None
+        if name == "eval":
+            if named(words) or any(_COMPUTED_WORD.search(a) for a in args) and line_names():
+                return True
+        elif name == "exec":
+            if _runs_named([Cmd(args, [], False)], fed, depth + 1):
+                return True
+        elif name in ("source", ".") or _RUNS_STDIN.fullmatch(name) or _INTERPRETERS.match(name):
+            opts = [a for a in args if re.match(r"^-[A-Za-z]", a)]
+            if _RUNS_STDIN.fullmatch(name) and any(o[1:2] != "-" and "n" in o[1:] for o in opts if not o.startswith("--")):
+                continue  # bash -n reads the script, runs none of it
+            if _INTERPRETERS.match(name) and "-m" in args and args[args.index("-m") + 1:][:1] and \
+                    args[args.index("-m") + 1].split(".")[0] in _CHECKER_MODULES:
+                continue
+            ci = next((k for k, a in enumerate(args) if _C_SHELLS.match(name) and re.match(r"^-[a-zA-Z]*c[a-zA-Z]*$", a)), None)
+            if ci is not None and ci + 1 < len(args):  # sh -c 'text': the text is commands of their own, on the same stdin
+                text = args[ci + 1]
+                if re.fullmatch(r"\s*(?:\$\(.*\)|`.*`|\$\w+|\$\{\w+\})\s*", text, re.S) and (named(text) or line_names()):
+                    return True  # -c "$(cat install.sh)", -c "$f"
+                if _runs_named(_split(_tokens(_lines(text))), fed, depth + 1):
+                    return True
+                continue
+            if any(named(a) for a in prog) or code and named(code) and _code_runs(code) or computed and line_names() or \
+                    reads_stdin and fed:
+                return True
+            if reads_stdin and _INTERPRETERS.match(name) and any(_starts_installer(b, name) for b in heredoc.get(k, ())):
+                return True  # python3 - <<'EOF' … subprocess.run(['bash', 'install.sh']) … EOF
+    for c in cmds:  # find … -exec CMD … ;
+        argv, _ = _strip_wrappers(c.argv)
+        if argv and depth < 3 and os.path.basename(argv[0]) == "find":
+            ran, k = [], 1
+            while k < len(argv):
+                if argv[k] in ("-exec", "-execdir", "-ok", "-okdir"):
+                    j = next((n for n in range(k + 1, len(argv)) if argv[n] in (";", "+", "\\;")), len(argv))
+                    ran.append(Cmd(argv[k + 1:j], [], False))
+                    k = j
+                k += 1
+            if ran and _runs_named(ran, False, depth + 1):
+                return True
+    return False
+
+
+def _is_runner(name):
+    return bool(name in ("source", ".", "eval", "exec") or _RUNS_STDIN.fullmatch(name) or _INTERPRETERS.match(name))
+
+
+def _installer_lines(cmds, raw=""):
+    """T-3608: a line that builds and installs the binary hooks/fast runs (sampo doctor --repair|--fix, fastbuild.py,
+    install.sh) is the user's to grant (core): the guard's own fast path comes out of it. A line that also sets the
+    environment (VAR=… before it, env, export…) is refused outright (system): a variable the guard can't weigh by name
+    (PATH, HOME, RUSTUP_HOME, TMPDIR, CARGO_HOME…) chooses what gets built. The specific forms above give the exact
+    reason; the general rule after them (an installer file named on a line that runs code) catches the forms not listed."""
+    installs, sets = _installer_scan(cmds)
+    if not installs and raw and _names_installer(raw):
+        installs = _runs_named(cmds, bodies=["\n".join(b) for b in _heredoc_split(raw)[1]] if "<<" in raw else ())
+    if not installs:
+        return []
+    if sets:
+        return [("system", "T-3608: a build of the native guard binary (sampo doctor --repair|--fix, fastbuild.py, "
+                           "install.sh) on a line that sets the environment it runs in: run it with the account's own "
+                           "environment, on a line of its own")]
+    return [("core", _INSTALLER_CORE)]
 
 
 def _cargo_settings(args, cmds, pre):

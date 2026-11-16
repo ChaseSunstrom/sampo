@@ -33,6 +33,7 @@ assume yes. The command it installs is `sampo`; `fm` still works as an alias for
    | `--no-plugins` | skip the third-party plugin setup |
    | `--no-mod` | skip the sampo-ui mod (status band, dashboard pane, toasts) |
    | `--no-wiring` | leave `~/.claude` alone: no status line wrapper, deny rules, `CLAUDE.md` block, rules link or `sampo` link |
+   | `--no-native` | don't build the native guard binary (the Python hook stays; `sampo doctor --full` passes it) |
    | `--bypass` | make `bypassPermissions` the default permission mode without asking |
    | `--no-bypass` | don't set it and don't ask |
    | `--local-models` | pull the pinned Ollama embedding models (`bge-m3:567m`, `nomic-embed-text:v1.5`) for the moons funnel; needs Ollama installed (the installer never installs it) |

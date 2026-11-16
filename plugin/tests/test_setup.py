@@ -421,6 +421,31 @@ class InstallScript(unittest.TestCase):
         self.assertIn("--bypass", out, "and the output says how to turn it on")
         self.assertEqual(self.mode_after("--bypass")[0], "bypassPermissions")
 
+    def native_builds(self, *flags):
+        """Whether install.sh starts the native build (T-3608): a cargo on PATH and a stub for the build entry point."""
+        marker = os.path.join(self.fhome, "build-ran")
+        stub = os.path.join(self.fhome, "plugin", "lib", "sampo", "fastbuild.py")
+        os.makedirs(os.path.dirname(stub), exist_ok=True)
+        with open(stub, "w") as f:
+            f.write(f"open({marker!r}, 'w').close()\n")
+        cargo = os.path.join(self.env["HOME"], "bin", "cargo")
+        with open(cargo, "w") as f:
+            f.write("#!/usr/bin/env bash\nexit 0\n")
+        os.chmod(cargo, 0o755)
+        if os.path.exists(marker):
+            os.unlink(marker)
+        p = subprocess.run(["bash", os.path.join(self.fhome, "install.sh"), "--no-plugins", "--no-wiring", "--no-mod",
+                            "--no-bypass", "--no-local-models", *flags], capture_output=True, text=True, env=self.env,
+                           stdin=subprocess.DEVNULL, timeout=60, start_new_session=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return os.path.exists(marker)
+
+    def test_no_native_keeps_install_from_building_the_binary(self):
+        # T-3608: `sampo doctor --full` runs install.sh --no-plugins with the caller's environment; its health check
+        # must not build and install the guard's binary, so it passes --no-native, which skips step 7
+        self.assertTrue(self.native_builds(), "a plain install with cargo present builds it")
+        self.assertFalse(self.native_builds("--no-native"))
+
     def test_plain_install_skips_build_tools(self):
         self.assertEqual(self.setup_args("--security"), ["--security"])
 

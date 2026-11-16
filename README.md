@@ -181,6 +181,7 @@ gh repo clone ChaseSunstrom/sampo ~/.claude/foreman && ~/.claude/foreman/install
 - `--local-models` / `--no-local-models`: pull the pinned Ollama embedding models (bge-m3, nomic-embed-text) for the moons funnel, or don't and don't ask. Needs Ollama installed; the installer never installs it.
 - `--no-mod`: skip the sampo-ui mod.
 - `--no-wiring`: don't touch `~/.claude`.
+- `--no-native`: don't build the native guard binary (step 7; the full doctor run passes it).
 - `--build`: open Claude Code on `/sampo:build` to rebuild from `BUILD_PROMPT.md`.
 - `--desktop`: also install Sampo Desktop from its newest release (the AppImage and a menu entry on Linux x86_64, the app in `~/Applications` on macOS).
 

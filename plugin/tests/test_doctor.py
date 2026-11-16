@@ -433,6 +433,45 @@ class Checks(_TmpDir):
         for needle in ("fm help's tiers lack approve-reads", "list status twice", "teleport isn't an fm command"):
             self.assertIn(needle, r.detail)
 
+    def test_full_scripts_check_never_builds_the_native_binary(self):
+        # T-3608: doctor --full's install.sh run keeps the caller's environment, so it must not reach the build
+        home = os.path.join(self.t, "fh")
+        self.write("fh/install.sh", "#!/bin/bash\n")
+        calls = []
+
+        def run(cmd, timeout=120, **kw):
+            calls.append((cmd, kw.get("env")))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with unittest.mock.patch.object(d, "_run", run):
+            self.assertEqual(d.check_scripts(home, full=True).status, "PASS")
+        runs = [cmd for cmd, env in calls if os.path.basename(cmd[0]) == "install.sh"]
+        self.assertEqual(len(runs), 1)
+        self.assertIn("--no-native", runs[0])
+        self.assertIn("--no-plugins", runs[0])
+
+    def test_full_scripts_check_runs_install_in_a_scrubbed_environment(self):
+        # T-3608 round 6: the caller's variables (a RUSTC, a LD_PRELOAD, a BASH_ENV, a name of its own) never reach it
+        home = os.path.join(self.t, "fh")
+        self.write("fh/install.sh", "#!/bin/bash\n")
+        envs = []
+
+        def run(cmd, timeout=120, **kw):
+            if os.path.basename(cmd[0]) == "install.sh":
+                envs.append(kw.get("env"))
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        caller = {"PATH": "/usr/bin", "HOME": "/home/x", "LANG": "C.UTF-8", "FOO": "1", "RUSTC": "/tmp/r", "BASH_ENV": "/tmp/b",
+                  "LD_PRELOAD": "/tmp/l.so", "CARGO_HOME": "/tmp/c", "PYTHONPATH": "/tmp/p", "FOREMAN_HOME": "/elsewhere"}
+        with unittest.mock.patch.dict(os.environ, caller, clear=True), unittest.mock.patch.object(d, "_run", run):
+            d.check_scripts(home, full=True)
+        self.assertEqual(len(envs), 1)
+        env = envs[0]
+        self.assertEqual((env.get("HOME"), env.get("PATH"), env.get("LANG")), ("/home/x", "/usr/bin", "C.UTF-8"))
+        self.assertEqual(env.get("FOREMAN_HOME"), home)
+        for name in ("FOO", "RUSTC", "BASH_ENV", "LD_PRELOAD", "CARGO_HOME", "PYTHONPATH"):
+            self.assertNotIn(name, env)
+
     def test_self_docs_flags_drift(self):
         home = os.path.join(self.t, "fh")
         self.write("fh/MASTER.md", "CLI: `fm state|queue`\nSkills: intake. Prose that says doctor and docs doesn't count.\n")
@@ -1948,3 +1987,84 @@ class CrashHeal(unittest.TestCase):
         self.assertFalse(self.py.fsync_ok(self.root))
         d.repair([self.root])
         self.assertTrue(self.py.fsync_ok(self.root), "doctor --repair sets it")
+
+
+class FastPathCheck(_TmpDir):  # T-3608: the native sampo-fast binary on one doctor line; only --repair/--fix build it
+    def setUp(self):
+        super().setUp()
+        self.plug = os.path.join(self.t, "plug")
+        os.makedirs(os.path.join(self.plug, "native"))
+
+    def test_missing_without_cargo_is_a_pass_and_with_cargo_a_warn(self):
+        r = d.check_fast_path(self.plug, cargo="")
+        self.assertEqual((r.name, r.status), ("native fast path", "PASS"), r.detail)
+        self.assertIn("Python hook stays", r.detail)
+        r = d.check_fast_path(self.plug, cargo="/somewhere/cargo")
+        self.assertEqual(r.status, "WARN", r.detail)
+        self.assertIn("doctor --repair", r.detail)
+
+    def test_a_binary_without_its_sum_is_stale(self):
+        self.write("plug/native/sampo-fast", "not a binary\n")
+        r = d.check_fast_path(self.plug, cargo="")
+        self.assertEqual(r.status, "WARN", r.detail)
+        self.assertIn("stale", r.detail)
+
+    def test_the_check_never_builds(self):
+        with unittest.mock.patch("sampo.fastbuild.build_fast", side_effect=AssertionError("built")) as b, \
+                unittest.mock.patch("sampo.fastbuild.repair", side_effect=AssertionError("repaired")):
+            d.check_fast_path(self.plug, cargo="/somewhere/cargo")
+            self.write("plug/native/sampo-fast", "x")
+            d.check_fast_path(self.plug, cargo="/somewhere/cargo")
+        b.assert_not_called()
+
+    def test_a_check_that_cannot_read_warns_and_does_not_crash(self):
+        with unittest.mock.patch("sampo.fastbuild.status", side_effect=RuntimeError("boom")):
+            r = d.check_fast_path(self.plug, cargo="")
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("Python hook stays", r.detail)
+
+    def test_nothing_the_fast_path_check_reads_can_break_doctor(self):
+        """T-3608 review: the import and the cargo search sat outside the try; a raise there crashed `sampo doctor`."""
+        for target in ("sampo.fastbuild.find_cargo", "sampo.fastbuild.marker_in_effect"):
+            with self.subTest(target), unittest.mock.patch(target, side_effect=RuntimeError("boom")), \
+                    unittest.mock.patch("sampo.fastbuild.status", return_value=("ok", "built")):
+                r = d.check_fast_path(self.plug)
+            self.assertEqual((r.name, r.status), ("native fast path", "WARN"), r.detail)
+            self.assertIn("Python hook stays", r.detail)
+
+    def test_an_installed_binary_behind_a_state_marker_is_a_warn_that_names_it(self):
+        """T-3608 review: the binary defers every call while a state-fallback marker exists; an ok line hid that."""
+        marker = "/x/foreman/.foreman-state.json"
+        with unittest.mock.patch("sampo.fastbuild.status", return_value=("ok", "built from the current sources")), \
+                unittest.mock.patch("sampo.fastbuild.marker_in_effect", return_value=marker):
+            r = d.check_fast_path(self.plug, cargo="")
+        self.assertEqual(r.status, "WARN", r.detail)
+        self.assertIn("installed but deferring every call", r.detail)
+        self.assertIn(marker, r.detail)
+        with unittest.mock.patch("sampo.fastbuild.status", return_value=("ok", "built from the current sources")), \
+                unittest.mock.patch("sampo.fastbuild.marker_in_effect", return_value=""):
+            self.assertEqual(d.check_fast_path(self.plug, cargo="").status, "PASS")
+
+    def test_fix_repairs_through_fastbuild_and_leaves_a_failed_build_for_a_person(self):
+        self.assertIn("native fast path", d.FIXERS)
+        warn = d.Result("native fast path", "WARN", "missing")
+        with unittest.mock.patch("sampo.fastbuild.repair", return_value=(False, "native fast path not installed: x")) as rep, \
+                unittest.mock.patch.object(d, "check_fast_path", return_value=d.Result("native fast path", "WARN", "missing")):
+            fixed, left = d.fix([warn])
+        rep.assert_called_once_with()
+        self.assertEqual(fixed, [])
+        self.assertEqual(len(left), 1)
+        self.assertIn("native fast path not installed", left[0])
+        with unittest.mock.patch("sampo.fastbuild.repair", return_value=(True, "Native fast path: built.")), \
+                unittest.mock.patch.object(d, "check_fast_path", return_value=d.Result("native fast path", "PASS", "ok")):
+            fixed, left = d.fix([warn])
+        self.assertEqual((len(fixed), left), (1, []))
+
+    def test_doctor_repair_runs_the_fast_path_repair(self):
+        args = unittest.mock.Mock(wrong=None, restore_state=False, repair=True)
+        with unittest.mock.patch("sampo.fastbuild.repair", return_value=(True, "Native fast path: ok (x).")) as rep, \
+                unittest.mock.patch.object(d, "repair", return_value=[]), \
+                unittest.mock.patch.object(c, "all_projects", return_value=[]), \
+                unittest.mock.patch.object(setup, "fix_model", return_value=None):
+            d.cmd_doctor(args)
+        rep.assert_called_once()

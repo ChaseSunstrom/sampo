@@ -3574,7 +3574,11 @@ class NativeBuild(GuardCase):
             ("{home}/.cargo/config.toml", "core"),  # cargo home's own, and above plugin/native
             ("{fhome}/rust-toolchain.toml", "core"),  # rustup takes a toolchain (path = …) from here
             ("{home}/rust-toolchain", "core"),
-            ("{home}/.cargo/registry/cache/x.crate", None),
+            # T-3608: the installer builds from crates it copies out of ~/.cargo/registry (checked against Cargo.lock),
+            # so a write there, or into a git checkout cargo reads, changes what the guard binary is built from
+            ("{home}/.cargo/registry/cache/x.crate", "core"),
+            ("{home}/.cargo/registry/index/x/.cache/ab/cd/y", "core"),
+            ("{home}/.cargo/git/checkouts/x/src/lib.rs", "core"),
             ("{home}/.claude/foreman.lanes/.cargo/config.toml", None),  # above a lane, not above main's plugin/native
             ("{lane}/.cargo/config.toml", None),
         ], self.write)
@@ -3595,6 +3599,198 @@ class NativeBuild(GuardCase):
             ("echo 00 > {native}/sampo-fast.sha256", "core"),
             ("dd if=/tmp/x of={native}/sampo-fast", "core"),
             ("cp /tmp/b.rs {native}/crates/sampo-fast/build.rs", "core"),
+            # T-3608: the installer's record beside the binary, and the temp names it writes before a rename
+            ("echo x > {native}/sampo-fast.src", "core"),
+            ("cp /tmp/x {native}/.sampo-fast-new-abc", "core"),
+            ("mv /tmp/x {native}/.sampo-fast-sum-q", "core"),
+        ], self.bash)
+        self.run_table([("{native}/sampo-fast.src", "core"), ("{native}/.sampo-fast-new-abc", "core")], self.write)
+        self.assertIsNone(self.write("{lane}/.sampo-fast-new-abc"), "a lane's own folder is its own")
+
+    def test_the_installer_lines_are_the_users_to_grant(self):
+        """T-3608: sampo doctor --repair|--fix, a direct run of fastbuild.py and install.sh build and install the binary
+        hooks/fast runs: an agent session needs the user's yes (core), and refused outright when the line sets or
+        exports anything the build could read (by rule: any assignment, env, export), the way the build env is built."""
+        self.run_table([
+            ("sampo doctor --repair", "core"),
+            ("fm doctor --fix", "core"),
+            ("/opt/x/bin/sampo doctor --repair", "core"),
+            ("python3 {fhome}/plugin/bin/sampo doctor --fix", "core"),
+            ("sampo -p x doctor --repair", "core"),
+            ("sampo doctor --fix --json", "core"),
+            ("sampo doctor --repa", "core"),
+            ("timeout 600 sampo doctor --repair", "core"),
+            ("cd /tmp && sampo doctor --fix", "core"),
+            ("bash -c 'sampo doctor --repair'", "core"),
+            ("python3 -I {fhome}/plugin/lib/sampo/fastbuild.py", "core"),
+            ("python3 {fhome}/plugin/lib/fmfastbuild.py --status", "core"),
+            ("{fhome}/plugin/lib/sampo/fastbuild.py", "core"),
+            ("python3 -m sampo.fastbuild", "core"),
+            ("python3 -c 'from sampo import fastbuild; fastbuild.repair(None)'", "core"),
+            ("bash {fhome}/install.sh", "core"),
+            ("sh install.sh --no-plugins", "core"),
+            ("{fhome}/install.sh", "core"),
+            ("source install.sh", "core"),
+            ("sampo doctor --r", "core"),
+            ("sampo doctor --re", "core"),
+            ("sampo doctor --rep", "core"),
+            ("sampo doctor --fi", "core"),
+            ("bash < install.sh", "core"),
+            ("sh <install.sh", "core"),
+            ("bash 0< install.sh", "core"),
+            ("bash -s < {fhome}/install.sh", "core"),
+            ("bash -s -- --no-plugins < install.sh", "core"),
+            ("find . -exec sampo doctor --repair \\;", "core"),
+            ("find . -name x -execdir sampo doctor --fix {{}} +", "core"),
+            ("find . -ok bash install.sh \\;", "core"),
+            ("find . -exec python3 -I {fhome}/plugin/lib/sampo/fastbuild.py \\;", "core"),
+            ("find . -exec env A=1 sampo doctor --repair \\;", "system"),
+            ("A=1 bash < install.sh", "system"),
+            ("bash -n < install.sh", None),
+            ("bash < notes.txt", None),
+            ("bash -c 'echo hi' < install.sh", None),
+            ("find . -exec sampo doctor \\;", None),
+            ("find . -name install.sh", None),
+            ("PATH=/tmp/evil:$PATH sampo doctor --repair", "system"),
+            ("HOME=/tmp/h sampo doctor --fix", "system"),
+            ("export PATH=/tmp/evil; sampo doctor --repair", "system"),
+            ("env CARGO_HOME=/tmp/c python3 {fhome}/plugin/lib/sampo/fastbuild.py", "system"),
+            ("env -i sampo doctor --repair", "system"),
+            ("declare -x X=1; bash install.sh", "system"),
+            ("A=1; sampo doctor --fix", "system"),
+            ("FOREMAN_HOME=/tmp/x bash {fhome}/install.sh", "system"),
+            ("sampo doctor", None),
+            ("sampo doctor --json", None),
+            ("sampo doctor --restore-state", None),
+            ("sampo status", None),
+            ("bash -n install.sh", None),
+            ("git add install.sh", None),
+            ("cat {fhome}/plugin/lib/sampo/fastbuild.py", None),
+            ("grep -n repair {fhome}/plugin/lib/sampo/doctor.py", None),
+            ("A=1 sampo doctor", None),
+        ], self.bash)
+
+    def test_an_installer_file_on_a_line_that_runs_code_is_an_installer_start(self):
+        """T-3608 round 4: a list of start forms kept losing (the reviewer's: an option value read as the script, /dev/stdin
+        and its spellings, -c text without the outer redirect, <( ), exec 0<file, eval of the file). The line is read as a
+        whole: it names install.sh or fastbuild.py and something on it runs code that can take the file as its program."""
+        self.run_table([
+            ("bash -o pipefail < install.sh", "core"),
+            ("bash -O extglob < install.sh", "core"),
+            ("bash --rcfile install.sh -i", "core"),
+            ("bash --init-file {fhome}/install.sh -i", "core"),
+            ("bash -o pipefail install.sh", "core"),
+            ("bash /dev/stdin < install.sh", "core"),
+            ("bash - < install.sh", "core"),
+            ("bash /proc/self/fd/0 < install.sh", "core"),
+            ("bash /dev/fd/0 <install.sh", "core"),
+            ("bash -c 'bash' < install.sh", "core"),
+            ("bash -c 'source /dev/stdin' < install.sh", "core"),
+            ("sh -c 'exec bash' < install.sh", "core"),
+            ("bash <(cat install.sh)", "core"),
+            ("source <(cat {fhome}/install.sh)", "core"),
+            ('bash <<< "$(cat install.sh)"', "core"),
+            ("bash $(cat install.sh)", "core"),
+            ("while read l; do bash; done < install.sh", "core"),
+            ("bash <<'EOF'\nbash install.sh\nEOF", "core"),
+            ("bash $R sampo task new x; ls install.sh", "core"),  # the script is a word the guard can't read
+            ("R=/tmp/r.sh; R=install.sh; bash $R", "system"),  # a variable set on the line: the environment rule
+            ("python3 -c \"import subprocess; subprocess.run(['bash', 'install.sh'])\"", "core"),
+            ("python3 -c \"from sampo import fastbuild; fastbuild.repair()\"", "core"),
+            ("perl -e 'system(\"bash install.sh\")'", "core"),
+            ("exec 0<install.sh; bash", "core"),
+            ("exec 0< install.sh\nsh", "core"),
+            (". /dev/stdin < install.sh", "core"),
+            ("source /dev/stdin <install.sh", "core"),
+            ('eval "$(<install.sh)"', "core"),
+            ('eval "$(cat install.sh)"', "core"),
+            ('bash -c "$(cat install.sh)"', "core"),
+            ("cat install.sh | bash", "core"),
+            ("cat {fhome}/install.sh | sh -s -- --no-plugins", "core"),
+            ("cat install.sh | tee /dev/null | bash -o pipefail", "core"),
+            ("ssh host bash install.sh", "core"),
+            ("nohup bash install.sh", "core"),
+            ("setsid bash < install.sh", "core"),
+            ("find . -name install.sh | xargs bash", "core"),
+            ("timeout 5 bash -o pipefail < install.sh", "core"),
+            ("python3 < {fhome}/plugin/lib/sampo/fastbuild.py", "core"),
+            ("perl {fhome}/plugin/lib/sampo/fastbuild.py", "core"),
+            ("python3 -I -m sampo.fastbuild --status", "core"),
+            ("{{ bash; }} < install.sh", "core"),
+            ("(bash) < install.sh", "core"),
+            ("f=install.sh; bash $f", "system"),
+            ("A=1 bash -o pipefail < install.sh", "system"),
+            ("A=1; exec 0<install.sh; bash", "system"),
+            # a heredoc fed to an interpreter that reads its code from stdin (T-3608 round 5)
+            ("python3 - <<'EOF'\nimport subprocess; subprocess.run(['bash','install.sh'])\nEOF", "core"),
+            ("python3 <<'EOF'\nimport subprocess; subprocess.run(['bash','install.sh'])\nEOF", "core"),
+            ("python3 - <<EOF\nfrom sampo import fastbuild\nfastbuild.repair()\nEOF", "core"),
+            ("python3 <<'EOF'\nimport os, subprocess; subprocess.run([os.environ['SH'], 'install.sh'])\nEOF", "core"),
+            ("perl <<'EOF'\nsystem('bash install.sh');\nEOF", "core"),
+            ("perl <<'EOF'\nprint `bash install.sh`;\nEOF", "core"),
+            # round 6: the heredoc rule is the -c rule (the file named, code that runs something), whatever the length
+            ("python3 - <<'EOF'\nimport subprocess\nsubprocess.run(\"cd /home/user/project && bash install.sh --no-plugins\", shell=True)\nEOF", "core"),
+            ("python3 - <<'EOF'\nimport importlib\nimportlib.import_module('sampo.'+'fastbuild').main()\nEOF", "core"),
+            ("python3 - <<'EOF'\n__import__('sampo.fastbuild').fastbuild.main()\nEOF", "core"),
+            ("python3 - <<'EOF'\nimport runpy\nrunpy.run_path('plugin/lib/sampo/fastbuild.py')\nEOF", "core"),
+            # round 7: any word with exec, spawn, subprocess, system or popen in it starts a program
+            ("python3 - <<'EOF'\nimport asyncio\nasyncio.run(asyncio.create_subprocess_exec('bash', 'install.sh'))\nEOF", "core"),
+            ("python3 - <<'EOF'\nimport os\nos.posix_spawn('/bin/bash', ['bash', 'install.sh'], dict())\nEOF", "core"),
+            ("python3 - <<'EOF'\nfrom importlib.util import spec_from_file_location\nspec_from_file_location('b', 'fastbuild.py').loader.exec_module(None)\nEOF", "core"),
+            ("node <<'EOF'\nrequire('child_process').execSync('bash install.sh')\nEOF", "core"),
+            ("cat <<'X'\nplain\nX\npython3 - <<'EOF'\nimport os; os.system('sh install.sh')\nEOF", "core"),
+            ("A=1 python3 - <<'EOF'\nimport fastbuild\nEOF", "system"),
+            # plain reads and checkers: the file named, nothing run
+            ("bash -n < install.sh", None),
+            ("python3 -m py_compile {fhome}/plugin/lib/sampo/fastbuild.py", None),
+            ("python3 -I -m pyflakes {fhome}/plugin/lib/sampo/fastbuild.py", None),
+            ("ruff check {fhome}/plugin/lib/sampo/fastbuild.py", None),
+            ("cat install.sh", None),
+            ("less install.sh", None),
+            ("head -5 {fhome}/plugin/lib/sampo/fastbuild.py", None),
+            ("tail -n 20 install.sh", None),
+            ("sed -n 1,20p install.sh", None),
+            ("grep -n bash install.sh", None),
+            ("rg -n 'bash|sh' install.sh", None),
+            ("wc -l install.sh fastbuild.py", None),
+            ("diff install.sh install.sh.bak", None),
+            ("diff <(cat install.sh) <(git show HEAD:install.sh)", None),
+            ("git diff -- install.sh", None),
+            ("git log -p --follow install.sh", None),
+            ("git show HEAD:install.sh", None),
+            ("git blame install.sh", None),
+            ("git add install.sh {fhome}/plugin/lib/sampo/fastbuild.py", None),
+            ("git commit -m 'run bash install.sh after a change'", None),
+            ("python3 plugin/tests/run.py test_fast_equiv && git add {fhome}/plugin/lib/sampo/fastbuild.py", None),
+            ("cat install.sh | wc -l", None),
+            ("bash -c 'cat install.sh'", None),
+            ("bash -c 'echo hi' < install.sh", None),
+            ("echo 'see install.sh'; bash other.sh", None),
+            # the shapes the session corpus holds (T-3608 round 4): the file is data to the program, or prose
+            ("python3 plugin/bin/sampo lease take plugin/lib/fmguard.py install.sh", None),
+            ("python3 plugin/bin/sampo lease take install.sh && sed -n 1,5p install.sh", None),
+            ("perl -pi -e 's/a/b/' install.sh && sed -n 1,5p install.sh", None),
+            ("python3 - install.sh <<'EOF'\nprint(1)\nEOF", None),
+            ("python3 - <<'EOF'\nprint(open('install.sh').read())\nEOF", None),
+            ("python3 plugin/bin/sampo guard try 'bash < install.sh'", None),
+            ('for c in "bash < install.sh" "sh install.sh"; do python3 plugin/bin/sampo guard try "$c"; done', None),
+            ("bash $R sampo task new 'check install.sh later'", None),
+            ("R=/tmp/retry.sh; bash $R sampo task new x --scope install.sh", None),  # $R is a script the line names
+            ("bash other.sh install.sh", None),
+            ("python3 -c \"for f in ['install.sh', 'a.py']: print(f, len(open(f).read()))\"", None),
+            ("python3 other.py install.sh", None),
+            ("ssh host 'python3 x.py'; head -3 install.sh", None),
+            ("tail -5 install.sh | python3 -c 'import sys; print(len(sys.stdin.read()))'", None),
+            ("python3 - <<'EOF'\nimport subprocess; subprocess.run(['ls'])\nEOF", None),
+            ("cat <<'EOF'\nimport subprocess; subprocess.run(['bash','install.sh'])\nEOF", None),  # text, not code
+            # round 7: importlib and __import__ read data from a pipe (json.load, importlib.metadata): not code run from stdin
+            ("git log | python3 -c \"import sys; print(__import__('json').load(sys.stdin))\"", None),
+            ("git log | python3 -c 'import importlib.metadata, sys; print(len(sys.stdin.read()), importlib.metadata.version(\"pip\"))'", None),
+            # a document edited by a script: the file name and a backtick in prose, no call that starts anything
+            ("python3 - <<'EOF'\ns = open('b.md').read()\ns = s.replace('''- run `sampo task finish`; a diff touching install.sh needs review''', 'x')\nEOF", None),
+            # sampo doctor --full runs install.sh --no-plugins --no-native: it no longer builds (T-3608 round 5)
+            ("sampo doctor --full", None),
+            ("FOO=1 sampo doctor --full", None),
         ], self.bash)
         self.run_table([
             ("{native}/Cargo.toml", "core"),
@@ -3603,6 +3799,19 @@ class NativeBuild(GuardCase):
             ("{native}/sampo-fast.sha256", "core"),
         ], self.write)
         self.assertBlocked(self.write("{native}/Cargo.toml", tool="Edit"), "core")
+
+    def test_an_installer_refusal_says_the_user_grants_it_not_plain_file_edits(self):
+        """Round 7: a standing or trusted yes covers a change made as file edits; the build of the guard's binary isn't
+        one, so its refusal never says "plain file edits ... No question for the user" (nothing the model can do lifts it)."""
+        for kw in ({"trusted": True}, {"standing": {"core"}}):
+            ctx = g.Ctx(cwd=self.fhome, project_root=None, home=self.home, foreman_home=self.fhome, scratch=["/tmp"],
+                        task_id="T-0007", **kw)
+            b = g.check("Bash", {"command": "bash install.sh"}, ctx)
+            self.assertIsNotNone(b)
+            m = g.message(b, ctx)
+            self.assertNotIn("plain file edits", m)
+            self.assertNotIn("No question for the user", m)
+            self.assertIn("To authorize", m)
 
     def test_a_standing_yes_never_covers_what_the_installer_makes(self):
         """The binary, its sum and target/ are gitignored: a swap leaves no diff to review, so a standing core yes (given

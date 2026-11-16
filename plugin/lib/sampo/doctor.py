@@ -108,6 +108,36 @@ def check_hook_scripts(plugin=PLUGIN):
     return Result("hook scripts", "FAIL" if problems else "PASS", "; ".join(problems) or f"{len(cmds)} executables OK")
 
 
+def check_fast_path(plugin=PLUGIN, cargo=None):
+    """T-3608: whether the native sampo-fast binary is installed and current. Reads only; it never builds (doctor
+    --repair and --fix do). Without cargo, "missing" is the normal case (the Python hook decides, about 32 ms a call):
+    PASS. A missing binary with cargo at hand, or a stale one, is a WARN: the Python hook still decides either way."""
+    t0 = time.perf_counter()
+    try:  # the import and the cargo search too: a check that can't read is a finding, never a crash
+        from sampo import fastbuild
+        state, why = fastbuild.status(plugin, cargo)
+        have = cargo if cargo is not None else fastbuild.find_cargo()
+        marker = fastbuild.marker_in_effect() if state == "ok" else ""
+    except Exception as e:
+        return Result("native fast path", "WARN", f"could not tell ({type(e).__name__}); the Python hook stays")
+    ms = int((time.perf_counter() - t0) * 1000)
+    if marker:  # read only: the file is core.state_fallbacks' to remove (restore_default_state), never doctor's
+        return Result("native fast path", "WARN", f"installed but deferring every call: a state-fallback marker at {marker} "
+                      "makes sampo-fast hand each one to the Python hook (it is written while the default state folder is "
+                      "unwritable and removed when it is writable again; sampo doctor --restore-state)", ms)
+    bad = state == "stale" or (state == "missing" and bool(have))
+    return Result("native fast path", "WARN" if bad else "PASS", f"{state}: {why}", ms)
+
+
+def _fix_fast_path():
+    from sampo import fastbuild
+    return fastbuild.repair()[1]
+
+
+def _recheck_fast_path():
+    return check_fast_path().status == "PASS"
+
+
 PSI_CPU = "/proc/pressure/cpu"
 
 
@@ -1453,6 +1483,9 @@ def check_cc_features(version=None, plugin=PLUGIN):
                   else f"Claude Code {have} supports every Claude Code feature Sampo uses")
 
 
+_INSTALL_ENV = {"PATH", "HOME", "USER", "LOGNAME", "LANG", "TERM", "TMPDIR", "CLAUDE_CONFIG_DIR"}  # what a --no-plugins --no-native install.sh reads (T-3608)
+
+
 def check_scripts(home, full=False):
     bad = []
     for s in SCRIPTS:
@@ -1464,7 +1497,11 @@ def check_scripts(home, full=False):
         if r.returncode != 0:
             bad.append(f"setup-plugins.sh --dry-run exited {r.returncode}")
     if full and os.path.exists(os.path.join(home, "install.sh")):
-        r = _run([os.path.join(home, "install.sh"), "--no-plugins"], timeout=300, env=dict(os.environ, FOREMAN_HOME=home))
+        # T-3608: --no-native keeps this health check from building and installing the binary the guard's hooks run
+        # (install.sh step 7), and the script gets only the names it reads, not the caller's whole environment
+        keep = {k: v for k, v in os.environ.items() if k in _INSTALL_ENV or k.startswith("LC_")}
+        r = _run([os.path.join(home, "install.sh"), "--no-plugins", "--no-native"], timeout=300,
+                 env=dict(keep, FOREMAN_HOME=home))
         if r.returncode != 0:
             bad.append(f"install.sh --no-plugins exited {r.returncode}: {r.stderr.strip()[-200:]}")
     ok = "scripts parse; setup-plugins --dry-run clean" + ("; install.sh --no-plugins clean" if full else "")
@@ -3358,6 +3395,7 @@ def run_all(full=False, accept_supply=False):
                           if stale else "status views match the briefs", int((time.perf_counter() - t0) * 1000)))
     here = c.find_project(os.getcwd())
     results.append(check_dual_install())
+    results.append(check_fast_path())  # T-3608
     results.append(check_aliases())  # T-3095
     results.append(check_running_code(os.path.join(here.dir, "ledger.jsonl") if here else "",
                                       os.path.join(claude, "plugins", "installed_plugins.json")))
@@ -3444,6 +3482,7 @@ FIXERS = {
     "state dir": (_fix_state_dir, lambda: c.state_dir() == os.path.join(c.foreman_home(), "state")),
     "model": (_fix_model, _recheck_model),
     "fsck": (_fix_fsck, lambda: check_fsck().status == "PASS"),  # T-1667: only its stale locks
+    "native fast path": (_fix_fast_path, _recheck_fast_path),  # T-3608: build, probe, install; any doubt leaves the Python hook
 }
 
 
@@ -3526,6 +3565,8 @@ def cmd_doctor(args):
         print(f"Views regenerated in {', '.join(fixed)}." if fixed else "Views match the briefs everywhere.")
         from sampo import setup  # T-3742: models.newest keeps `model` an alias
         print("Models: " + (setup.fix_model() or "settings already keep the newest alias (or models.newest is off)."))
+        from sampo import fastbuild  # T-3608: the native fast path: built only here, never by a plain doctor run
+        print(fastbuild.repair(say=lambda s: print(s, flush=True))[1])
         return None
     results = run_all(full=args.full, accept_supply=getattr(args, "accept_supply", False))
     p = c.find_project(os.getcwd())

@@ -14,12 +14,15 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 from helpers import HOOK, PLUGIN, SampoTestCase, busy_factor
 
-from sampo import budget, core as c, hooks
+from sampo import budget, core as c, fastbuild, hooks
 
+REAL_TREE_STATE = fastbuild.tree_state  # the Installer tests mock it clean; test_tree_state_reads_git uses this
 NATIVE = os.path.join(PLUGIN, "native")
 SHIM = os.path.join(PLUGIN, "hooks", "fast")
 VOLATILE = ("ts", "ms", "load", "fast", "guard_ms")
@@ -504,6 +507,754 @@ class Recorded(Base):
             with self.subTest(payload["tool_name"]):
                 decided += self.pair(payload, cwd=cwd)
         self.assertGreater(decided, 0, "sampo-fast decided none of the recorded calls")
+
+
+# T-3608: the installer. A fake cargo stands in for the compiler: it records what it was run with and leaves the file the
+# case names (the real sampo-fast, or a stand-in that misbehaves) where cargo would.
+FAKE_CARGO = """#!/usr/bin/env python3
+import json, os, shutil, sys, time
+here = os.path.dirname(os.path.abspath(__file__))
+if sys.argv[1:] == ["--version"]:
+    print("cargo 9.9.9 (fake)")
+    sys.exit(0)
+with open(os.path.join(here, "fake.json")) as f:
+    cfg = json.load(f)
+listing = []
+for d, _, files in os.walk(os.environ.get("CARGO_HOME", "/nonexistent")):
+    listing += [os.path.relpath(os.path.join(d, n), os.environ["CARGO_HOME"]) for n in files]
+with open(os.path.join(here, "calls.jsonl"), "a") as f:
+    f.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "env": dict(os.environ),
+                        "cargo_home": sorted(listing)}) + "\\n")
+if cfg["mode"] == "fail":
+    sys.stderr.write("error: no matching package named `serde` found\\n")
+    sys.exit(101)
+if cfg["mode"] == "hang":
+    time.sleep(60)
+if cfg["mode"] == "touch":
+    with open(cfg["touch"], "a") as f:
+        f.write("// edited during the build\\n")
+out = os.path.join(sys.argv[sys.argv.index("--target-dir") + 1], "release")
+os.makedirs(out, exist_ok=True)
+if cfg["mode"] != "nothing":
+    shutil.copy(cfg["binary"], os.path.join(out, "sampo-fast"))
+"""
+FAKE_RUSTC = """#!/bin/sh
+if [ "$1" = "-vV" ]; then
+  printf 'rustc 9.9.9 (fake)\\nbinary: rustc\\nhost: x86_64-unknown-linux-gnu\\n'
+else
+  echo "rustc 9.9.9 (fake)"
+fi
+"""
+# stand-ins for a built file: $1 is --hook, $2 the hook, $3 the event
+ALLOW_ALL = "#!/bin/sh\nexit 0\n"
+DEFER_ALL = '#!/bin/sh\nexec "$2" "$3"\n'
+DIFFERS = ('#!/usr/bin/env python3\nimport subprocess, sys\nr = subprocess.run([sys.argv[2], sys.argv[3]], '
+           'stdin=sys.stdin, capture_output=True)\nsys.stdout.buffer.write(r.stdout + b"extra")\nsys.exit(r.returncode)\n')
+
+
+class Installer(Base):
+    """sampo-fast's installer: built offline, probed against the Python hook, installed only when every check holds;
+    every doubt leaves plugin/hooks/hook in charge."""
+
+    def setUp(self):
+        super().setUp()
+        self.plug = os.path.join(self.tmp, "plug")
+        os.makedirs(os.path.join(self.plug, "hooks"))
+        os.makedirs(os.path.join(self.plug, ".claude-plugin"))
+        for rel in ("hooks/hook", "hooks/fast", ".claude-plugin/plugin.json"):
+            shutil.copy2(os.path.join(PLUGIN, rel), os.path.join(self.plug, rel))  # the stamps the binary was built with
+        os.symlink(os.path.join(PLUGIN, "lib"), os.path.join(self.plug, "lib"))
+        self.native = os.path.join(self.plug, "native")
+        shutil.copytree(NATIVE, self.native, ignore=lambda d, names: [  # what a checkout has: no build output here
+            n for n in names if d == NATIVE and n in ("target", "sampo-fast", "sampo-fast.sha256", "sampo-fast.src")])
+        self.fhome = os.path.join(self.tmp, "user")  # the account's home as the build sees it: its own ~/.cargo, no config
+        self.bindir = os.path.join(self.fhome, ".cargo", "bin")
+        os.makedirs(self.bindir)
+        self.cargo = os.path.join(self.bindir, "cargo")
+        self.tools()
+        self.cfg = os.path.join(self.bindir, "fake.json")
+        self.workdir = os.path.join(self.tmp, "work")
+        self.crates = self.registry()
+        self.lines = []
+        tree = mock.patch.object(fastbuild, "tree_state", lambda plugin=None: ("a" * 40, ""))  # git is its own test below
+        tree.start()
+        self.addCleanup(tree.stop)
+
+    def tools(self):
+        """The account's ~/.cargo/bin: a fake cargo and a fake rustc (the linker is the machine's own cc, root's)."""
+        for name, text in (("cargo", FAKE_CARGO), ("rustc", FAKE_RUSTC)):
+            path = os.path.join(self.bindir, name)
+            with open(path, "w") as f:
+                f.write(text)
+            os.chmod(path, 0o755)
+
+    def reset_home(self):
+        """A new account home (the last case broke its folders): the fake cargo, its setting and the registry again."""
+        cfg = None
+        if os.path.exists(self.cfg):
+            with open(self.cfg) as f:
+                cfg = f.read()
+        shutil.rmtree(os.path.join(self.tmp, "w"), ignore_errors=True)
+        shutil.rmtree(self.fhome)
+        os.makedirs(self.bindir)
+        self.tools()
+        if cfg is not None:
+            with open(self.cfg, "w") as f:
+                f.write(cfg)
+        self.registry()
+
+    def registry(self):
+        """A crates.io cache in fhome with a made-up archive for each registry package Cargo.lock names, the lock
+        rewritten with their sums: [(name, version)]. (The real cache is the user's; the real-build test reads that.)"""
+        path = os.path.join(self.native, "Cargo.lock")
+        with open(path) as f:
+            blocks = f.read().split("[[package]]")
+        reg = os.path.join(self.fhome, ".cargo", "registry")
+        idx = "index.crates.io-1949cf8c6b5b557f"
+        out = []
+        for i, block in enumerate(blocks):
+            m = re.search(r'name = "([^"]+)"\nversion = "([^"]+)"\nsource = "registry[^"]*"\nchecksum = "([0-9a-f]+)"', block)
+            if not m:
+                continue
+            name, version = m.group(1), m.group(2)
+            data = f"archive of {name} {version}".encode()
+            blocks[i] = block.replace(m.group(3), hashlib.sha256(data).hexdigest())
+            for rel, body in ((f"cache/{idx}/{name}-{version}.crate", data),
+                              (f"index/{idx}/.cache/{fastbuild.index_path(name)}", b"entry of " + name.encode())):
+                os.makedirs(os.path.dirname(os.path.join(reg, rel)), exist_ok=True)
+                with open(os.path.join(reg, rel), "wb") as f:
+                    f.write(body)
+            out.append((name, version))
+        with open(os.path.join(reg, "index", idx, "config.json"), "w") as f:
+            f.write('{"dl": "x"}')
+        with open(path, "w") as f:
+            f.write("[[package]]".join(blocks))
+        return out
+
+    def fake(self, mode="ok", binary=None, **more):
+        with open(self.cfg, "w") as f:
+            json.dump(dict({"mode": mode, "binary": binary}, **more), f)
+
+    def stand_in(self, text):
+        path = os.path.join(self.tmp, "stand-in")
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, 0o755)
+        return path
+
+    def calls(self):
+        path = os.path.join(self.bindir, "calls.jsonl")
+        if not os.path.exists(path):
+            return []
+        with open(path) as f:
+            return [json.loads(x) for x in f]
+
+    def build(self, **kw):
+        kw.setdefault("home", self.fhome)
+        kw.setdefault("workdir", self.workdir)
+        return fastbuild.build_fast(self.plug, say=self.lines.append, **kw)
+
+    def builds(self):
+        """The build folders under the workdir (there are none between builds)."""
+        return sorted(os.listdir(self.workdir)) if os.path.isdir(self.workdir) else []
+
+    def files(self):
+        """What the installer would have written: name -> (bytes, mode), for the three files in native/."""
+        out = {}
+        for name in (fastbuild.BIN, fastbuild.SUM, fastbuild.SRC):
+            path = os.path.join(self.native, name)
+            if os.path.lexists(path):
+                with open(path, "rb") as f:
+                    out[name] = (f.read(), os.lstat(path).st_mode)
+        return out
+
+    def leftovers(self):
+        return [n for n in os.listdir(self.native) if n.startswith(".sampo-fast")]
+
+    def assertStays(self, result, before, why=""):
+        """Not installed: the line says the Python hook stays, and not a byte of native/ changed."""
+        ok, line = result
+        self.assertFalse(ok, line)
+        self.assertIn("native fast path not installed", line)
+        self.assertIn("the Python hook stays", line)
+        self.assertIn(why, line)
+        self.assertEqual(self.files(), before)
+        self.assertEqual(self.leftovers(), [], "no half-written file is left")
+
+    def test_installs_atomically_in_a_scrubbed_environment(self):
+        self.fake(binary=self.bin)
+        self.assertEqual(fastbuild.status(self.plug, self.cargo)[0], "missing")
+        ok, line = self.build()
+        self.assertTrue(ok, line)
+        self.assertIn("native fast path installed", line)
+        (build,) = self.calls()  # one cargo run: no `cargo clean` whose result nobody read
+        self.assertEqual(build["cwd"], os.path.realpath(self.native))
+        self.assertEqual(build["env"].get("CARGO_NET_OFFLINE"), "true")
+        self.assertEqual(build["env"].get("CARGO_INCREMENTAL"), "0")
+        self.assertEqual(build["argv"][:2], ["build", "--release"])
+        for flag in ("--locked", "--offline"):
+            self.assertIn(flag, build["argv"])
+        target = build["argv"][build["argv"].index("--target-dir") + 1]
+        self.assertTrue(os.path.dirname(os.path.dirname(target)) == self.workdir, target)
+        self.assertEqual(build["argv"][build["argv"].index("--manifest-path") + 1], os.path.join(self.native, "Cargo.toml"))
+        self.assertEqual(oct(os.stat(self.workdir).st_mode & 0o777), "0o700")
+        self.assertEqual(self.builds(), [".sampo-fast.lock"], "the build folder is removed after")
+        got = self.files()
+        data, mode = got[fastbuild.BIN]
+        self.assertEqual(mode & 0o777, 0o755)
+        self.assertEqual(got[fastbuild.SUM][0].decode(), f"{hashlib.sha256(data).hexdigest()}  sampo-fast\n")
+        self.assertEqual(got[fastbuild.SUM][1] & 0o022, 0)
+        self.assertEqual(self.leftovers(), [])
+        self.assertEqual(fastbuild.status(self.plug, self.cargo)[0], "ok")
+        # hooks/fast, the guard, runs it: a read it can prove silent is decided natively and logged fast
+        data = json.dumps({"tool_name": "Read", "tool_input": {"file_path": os.path.join(self.plug, "hooks", "hook")},
+                           "session_id": "s", "cwd": self.repo}).encode()
+        r = subprocess.run([os.path.join(self.plug, "hooks", "fast"), "PreToolUse"], input=data, capture_output=True,
+                           cwd=self.repo, timeout=60 * busy_factor(), env=dict(os.environ, FOREMAN_HOME=self.home))
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, b"", b""))
+        with open(os.path.join(self.home, "state", "events.jsonl")) as f:
+            rows = [json.loads(x) for x in f]
+        self.assertTrue(any(row.get("fast") is True for row in rows), rows)
+
+    def test_a_second_run_changes_nothing(self):
+        self.fake(binary=self.bin)
+        self.assertTrue(self.build()[0])
+        before = self.files()
+        ok, line = fastbuild.repair(self.plug, cargo=self.cargo, home=self.fhome)
+        self.assertTrue(ok, line)
+        self.assertIn("ok", line)
+        self.assertEqual((self.files(), len(self.calls())), (before, 1), "an ok install is not rebuilt")
+
+    def test_nothing_the_caller_exported_reaches_cargo(self):
+        """T-3608 review blocker 1: a session that sets PATH, HOME, RUSTUP_HOME, TMPDIR, CARGO_HOME or RUSTC_WRAPPER must
+        not choose the cargo, the toolchain, the registry or the scratch the build runs in. The build's environment is
+        built from the account's home, not filtered from the caller's."""
+        self.fake(binary=self.bin)
+        evil = os.path.join(self.tmp, "evil")
+        os.makedirs(evil)
+        trojan = os.path.join(evil, "cargo")
+        with open(trojan, "w") as f:
+            f.write(f"#!/bin/sh\necho ran > {os.path.join(self.tmp, 'trojan-ran')}\nexit 1\n")
+        os.chmod(trojan, 0o755)
+        poison = {"PATH": evil + os.pathsep + os.environ["PATH"], "HOME": evil, "RUSTUP_HOME": evil, "TMPDIR": evil,
+                  "CARGO_HOME": evil, "RUSTUP_TOOLCHAIN": "nightly", "RUSTFLAGS": "-C link-arg=-evil",
+                  "RUSTC_WRAPPER": trojan, "RUSTC": trojan, "CARGO_BUILD_TARGET": "x", "LD_PRELOAD": "/nope",
+                  "CARGO_NET_OFFLINE": "false", "CARGO_INCREMENTAL": "1", "SAMPO_FAST": "0", "CARGO_TARGET_DIR": evil}
+        with mock.patch.dict(os.environ, poison):
+            ok, line = self.build()
+        self.assertTrue(ok, line)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "trojan-ran")), "the caller's PATH chose a cargo")
+        (build,) = self.calls()
+        env = build["env"]
+        self.assertEqual(env["PATH"], fastbuild.build_path(self.fhome))
+        self.assertEqual(env["HOME"], self.fhome)
+        for k in ("TMPDIR", "CARGO_HOME"):
+            self.assertTrue(env[k].startswith(self.workdir + os.sep), (k, env[k]))
+        stray = sorted(k for k in env if k not in ("PATH", "HOME", "USER", "LOGNAME", "LC_ALL", "TMPDIR", "CARGO_HOME",
+                                                   "CARGO_NET_OFFLINE", "CARGO_INCREMENTAL", "CARGO_TERM_COLOR",
+                                                   "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "RUSTC"))
+        self.assertEqual(stray, [], "nothing else is set: not RUSTUP_HOME, RUSTFLAGS, RUSTC_WRAPPER, LD_PRELOAD, SAMPO_*")
+        self.assertEqual(env["RUSTC"], os.path.join(self.bindir, "rustc"), "the checked rustc, not the caller's RUSTC")
+        self.assertEqual((env["CARGO_NET_OFFLINE"], env["CARGO_INCREMENTAL"]), ("true", "0"))
+        self.assertEqual(fastbuild.find_cargo(self.fhome), self.cargo, "the search never reads the caller's PATH")
+
+    def test_the_linker_is_the_root_owned_system_cc_named_to_cargo(self):
+        """T-3608 rounds 3 and 4: rustc runs `cc` to link, and the first cc on a path is a trojan if any folder on it is
+        open. The build takes cc from the system folders only (a cc in ~/.cargo/bin is never looked at), requires it to be
+        root's, names it to cargo, puts ~/.cargo/bin last on PATH and names the checked rustc as RUSTC."""
+        self.fake(binary=self.bin)
+        trojan = os.path.join(self.bindir, "cc")  # the first cc on the old PATH: the one a link would have run
+        with open(trojan, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(trojan, 0o755)
+        ok, line = self.build()
+        self.assertTrue(ok, line)
+        (build,) = self.calls()
+        env = build["env"]
+        cc = fastbuild.find_system_cc()
+        self.assertTrue(cc and not cc.startswith(self.fhome), cc)
+        self.assertEqual(env["CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER"], cc)
+        self.assertEqual(os.stat(cc).st_uid, 0, "root's")
+        self.assertEqual(env["RUSTC"], os.path.join(self.bindir, "rustc"), "the checked rustc, not a search")
+        parts = env["PATH"].split(os.pathsep)
+        self.assertEqual((parts[-1], parts[:-1]), (self.bindir, list(fastbuild.SYSTEM_PATH)), "~/.cargo/bin is last")
+        self.assertEqual(fastbuild.linker_var("aarch64-apple-darwin"), "CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER")
+        for bad in ("", "x", "x86_64 unknown", "a-b\nCARGO_X=1", "A-B"):
+            self.assertEqual(fastbuild.linker_var(bad), "", repr(bad))
+
+    def test_a_cc_that_is_not_root_s_or_not_in_the_system_folders_stops_the_build_before_cargo_runs(self):
+        self.fake(binary=self.bin)
+        sysbin = os.path.join(self.tmp, "sysbin")
+        os.makedirs(sysbin)
+        cc = os.path.join(sysbin, "cc")
+        with open(cc, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(cc, 0o755)  # closed to others, but this user's: a program this user (or a session of theirs) can replace
+        with mock.patch.object(fastbuild, "SYSTEM_PATH", (sysbin,)):
+            self.assertStays(self.build(), {}, "is not root's")
+            self.assertEqual(self.calls(), [], "cargo never ran")
+        os.remove(cc)
+        trojan = os.path.join(self.bindir, "cc")  # in ~/.cargo/bin only: not a place a linker is taken from
+        with open(trojan, "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(trojan, 0o755)
+        with mock.patch.object(fastbuild, "SYSTEM_PATH", (sysbin,)):
+            self.assertStays(self.build(), {}, "no cc (the linker) in the system folders")
+            self.assertEqual(self.calls(), [], "cargo never ran")
+        self.assertTrue(self.build()[0], "with the machine's own system folders it builds")
+
+    def test_the_rustc_is_pinned_and_a_trojan_in_front_of_it_is_not(self):
+        """RUSTC names the checked rustc outright; a poisoned RUSTC from the caller is overwritten, not passed on."""
+        self.assertEqual(fastbuild.scrub_env(self.fhome, self.tmp, rustc="/x/rustc")["RUSTC"], "/x/rustc")
+        self.assertNotIn("RUSTC", fastbuild.scrub_env(self.fhome, self.tmp))
+        self.assertEqual(fastbuild.build_path(self.fhome).split(os.pathsep)[-1], self.bindir)
+
+    def test_no_rustc_or_no_host_triple_leaves_the_python_hook(self):
+        self.fake(binary=self.bin)
+        rustc = os.path.join(self.bindir, "rustc")
+        with open(rustc, "w") as f:
+            f.write("#!/bin/sh\necho 'rustc 9.9.9 (fake)'\n")  # prints no host line
+        os.chmod(rustc, 0o755)
+        self.assertStays(self.build(), {}, "names no host triple")
+        self.assertEqual(self.calls(), [])
+        os.remove(rustc)
+        self.assertStays(self.build(), {}, "no rustc")
+        self.assertEqual(self.calls(), [])
+
+    def test_a_config_file_written_during_the_build_is_refused(self):
+        """The check before the build is a moment; a file that appears while cargo runs would be in the binary."""
+        self.fake("touch", binary=self.bin, touch=os.path.join(self.plug, ".cargo", "config.toml"))
+        os.makedirs(os.path.join(self.plug, ".cargo"))
+        self.assertStays(self.build(), {}, "appeared during the build")
+
+    def test_no_cargo_leaves_the_python_hook(self):
+        os.remove(self.cargo)
+        self.assertStays(self.build(), {}, "no cargo")
+        self.assertEqual(self.calls(), [])
+        ok, line = fastbuild.repair(self.plug, cargo="", home=self.fhome)
+        self.assertEqual((ok, self.files()), (False, {}), line)
+        self.assertIn("no cargo", line)
+
+    def test_a_cargo_others_can_replace_is_not_run(self):
+        """T-3608 review blocker 1: cargo and rustc are trusted only when the file and every folder above it are the
+        user's or root's and closed to everyone else."""
+        self.fake(binary=self.bin)
+        real = self.cargo + ".real"
+        for name, do in (("group-writable file", lambda: os.chmod(self.cargo, 0o775)),
+                         ("world-writable folder", lambda: os.chmod(self.bindir, 0o777)),
+                         ("group-writable folder above", lambda: os.chmod(os.path.dirname(self.bindir), 0o775)),
+                         ("a link into a writable folder",
+                          lambda: (os.rename(self.cargo, real), os.chmod(self.tmp, 0o700), os.makedirs(os.path.join(self.tmp, "w")),
+                                   os.chmod(os.path.join(self.tmp, "w"), 0o777),
+                                   os.rename(real, os.path.join(self.tmp, "w", "cargo")),
+                                   os.symlink(os.path.join(self.tmp, "w", "cargo"), self.cargo)))):
+            with self.subTest(name):
+                do()
+                self.assertStays(self.build(), {}, "cargo is not trusted")
+                self.assertEqual(self.calls(), [], "cargo never ran")
+                self.reset_home()
+        self.assertTrue(self.build()[0], "closed again, it builds")
+
+    def test_tool_refusal_reads_each_link_of_the_chain(self):
+        path = os.path.join(self.tmp, "tool")
+        with open(path, "w") as f:
+            f.write("x")
+        os.chmod(path, 0o755)
+        self.assertEqual(fastbuild.tool_refusal(path), "")
+        os.chmod(path, 0o757)
+        self.assertIn("others can write", fastbuild.tool_refusal(path))
+        self.assertIn("cannot be read", fastbuild.tool_refusal(path + ".none"))
+        self.assertEqual(fastbuild.tool_refusal("/bin/sh"), "", "root's tools in root's folders are trusted")
+        self.assertIn("not a plain file", fastbuild.tool_refusal("/etc"))
+
+    def test_a_config_or_toolchain_file_stops_the_build_before_cargo_runs(self):
+        self.fake(binary=self.bin)
+        for name, folder in ((".cargo/config.toml", self.tmp), (".cargo/config", self.plug),
+                             ("rust-toolchain.toml", self.tmp), ("rust-toolchain", self.native),
+                             (".cargo/config.toml", self.native), (".cargo/config.toml", self.fhome)):
+            path = os.path.join(folder, name)
+            with self.subTest(path=os.path.relpath(path, self.tmp)):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write('[build]\nrustc-wrapper = "/bin/true"\n')
+                self.assertStays(self.build(), {}, "would steer cargo")
+                self.assertEqual(self.calls(), [], "cargo never ran")
+                os.remove(path)
+        self.assertTrue(self.build()[0], "with them gone it builds")
+
+    def test_the_home_cargo_config_is_found_without_the_env(self):
+        """The home is the account's (here the test's): a config file under it is seen whatever $HOME says."""
+        os.makedirs(os.path.join(self.fhome, ".cargo"), exist_ok=True)
+        with open(os.path.join(self.fhome, ".cargo", "config.toml"), "w") as f:
+            f.write("[net]\noffline = false\n")
+        self.fake(binary=self.bin)
+        self.assertStays(self.build(), {}, os.path.join(self.fhome, ".cargo"))
+
+    def test_a_failed_build_keeps_the_old_install(self):
+        self.fake(binary=self.bin)
+        self.assertTrue(self.build()[0])
+        before = self.files()
+        self.fake("fail")
+        self.assertStays(self.build(), before, "the offline build failed")
+        self.assertIn("serde", self.build()[1], "cargo's own words are in the line")
+        self.assertEqual(self.files(), before)
+
+    def test_a_build_that_makes_no_file_installs_nothing(self):
+        self.fake("nothing")
+        self.assertStays(self.build(), {}, "no file to install")
+
+    def test_a_hung_build_is_killed(self):
+        self.fake("hang")
+        with mock.patch.object(fastbuild, "BUILD_SECONDS", 1):
+            t0 = time.monotonic()
+            self.assertStays(self.build(), {}, "stopped")
+        self.assertLess(time.monotonic() - t0, 30)
+
+    def test_a_built_file_that_differs_from_the_python_hook_is_not_installed(self):
+        for name, text, why in (("allows everything", ALLOW_ALL, "differs from the Python hook"),
+                                ("adds output", DIFFERS, "differs from the Python hook"),
+                                ("decides nothing itself", DEFER_ALL, "deferred")):
+            with self.subTest(name):
+                self.fake(binary=self.stand_in(text))
+                self.assertStays(self.build(), {}, why)
+        self.assertEqual(fastbuild.status(self.plug, self.cargo)[0], "missing")
+
+    def test_a_built_file_that_answers_shell_calls_itself_is_refused(self):
+        """T-3608 review: the first probe held only Read calls; a file that forwards everything but allows every Bash
+        call passed it. The corpus holds the guard's own Bash fixtures, each of which the file must hand to Python."""
+        stand = self.stand_in(
+            "#!/usr/bin/env python3\nimport json, subprocess, sys\ndata = sys.stdin.buffer.read()\n"
+            "try:\n    tool = json.loads(data).get('tool_name')\nexcept Exception:\n    tool = None\n"
+            "if tool == 'Bash':\n    sys.exit(0)\n"
+            f"r = subprocess.run([{self.bin!r}] + sys.argv[1:], input=data, capture_output=True)\n"
+            "sys.stdout.buffer.write(r.stdout)\nsys.stderr.buffer.write(r.stderr)\nsys.exit(r.returncode)\n")
+        self.fake(binary=stand)
+        self.assertStays(self.build(), {}, "differs from the Python hook on the probe 'shell:")
+
+    def test_a_built_file_that_decides_what_the_table_hands_over_is_refused(self):
+        """An edit is Python's to decide (the guard reads it); a file that logs it as its own is not the one we tested."""
+        stand = self.stand_in(
+            "#!/usr/bin/env python3\nimport json, os, subprocess, sys\ndata = sys.stdin.buffer.read()\n"
+            "try:\n    tool = json.loads(data).get('tool_name')\nexcept Exception:\n    tool = None\n"
+            f"r = subprocess.run([{self.bin!r}] + sys.argv[1:], input=data, capture_output=True)\n"
+            "if tool == 'Edit':\n"
+            "    path = os.path.join(os.environ['FOREMAN_HOME'], 'state', 'events.jsonl')\n"
+            "    rows = [json.loads(x) for x in open(path)]\n"
+            "    rows[-1]['fast'] = True\n"
+            "    open(path, 'w').write(''.join(json.dumps(x) + '\\n' for x in rows))\n"
+            "sys.stdout.buffer.write(r.stdout)\nsys.stderr.buffer.write(r.stderr)\nsys.exit(r.returncode)\n")
+        self.fake(binary=stand)
+        self.assertStays(self.build(), {}, "decided 'an edit' itself")
+
+    def test_the_corpus_holds_the_guard_fixtures_and_the_read_table(self):
+        root = os.path.join(self.tmp, "corpus-root")
+        fastbuild._make_root(root)
+        rows = fastbuild.corpus(root, PLUGIN)
+        names = [n for n, _, _ in rows]
+        shell = [n for n in names if n.startswith("shell: guard_cases.jsonl")]
+        with open(os.path.join(PLUGIN, "tests", "fixtures", "guard_cases.jsonl")) as f:
+            self.assertEqual(len(shell), sum(1 for x in f if x.strip()))
+        self.assertGreater(sum(n.startswith("shell: guard_allow.jsonl") for n in names), 5)
+        self.assertGreater(sum(native for _, _, native in rows), 8)
+        for n, raw, native in rows:
+            if n.startswith("shell:"):
+                self.assertFalse(native, n)
+                self.assertEqual(json.loads(raw)["tool_name"], "Bash")
+
+    def test_a_state_marker_in_a_shared_folder_stops_the_build_before_it_starts(self):
+        """The Python hook would follow it into the user's real state, so no probe could run: nothing is compiled either
+        (it was 20 minutes of work to learn that at the end)."""
+        self.fake(binary=self.bin)
+        marker = "/tmp/foreman-state-1/.foreman-state.json"
+        with mock.patch.object(fastbuild, "_fixed_marker", lambda: marker):
+            self.assertStays(self.build(), {}, "state-fallback marker")
+            self.assertEqual(self.calls(), [], "cargo never ran")
+            ok, why = fastbuild.probe(self.bin, self.plug)
+            self.assertFalse(ok)
+            self.assertIn("state-fallback marker", why)
+
+    def test_the_installer_never_writes_a_state_marker(self):
+        """default_workdir reads the marker; core.state_dir would create one when the default state is unwritable."""
+        env = {k: v for k, v in os.environ.items() if k != "FOREMAN_STATE"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(c, "state_dir", side_effect=AssertionError("state_dir() may write the marker")), \
+                mock.patch.object(c, "_activate_fallback", side_effect=AssertionError("a marker was written")):
+            path = fastbuild.default_workdir(PLUGIN)
+        self.assertEqual(path.split(os.sep)[-3:-1], ["cache", "sampo-fast-build"])
+        self.assertTrue(path.startswith(os.path.join(self.home, "state") + os.sep), path)
+
+    def test_marker_in_effect_reads_every_place_the_binary_looks(self):
+        home = os.path.join(self.tmp, "mh")
+        env = {"XDG_STATE_HOME": os.path.join(self.tmp, "xs"), "TMPDIR": os.path.join(self.tmp, "mt")}
+        for folder in (os.path.join(env["XDG_STATE_HOME"], "foreman"), os.path.join(env["TMPDIR"], f"foreman-state-{os.getuid()}")):
+            os.makedirs(folder)
+            path = os.path.join(folder, ".foreman-state.json")
+            with open(path, "w") as f:
+                f.write("{}")
+            self.assertEqual(fastbuild.marker_in_effect(home, env), path, "any content counts: the binary lstats it")
+            os.remove(path)
+        default = os.path.join(home, ".local", "state", "foreman")
+        os.makedirs(default)
+        with open(os.path.join(default, ".foreman-state.json"), "w") as f:
+            f.write("{}")
+        self.assertEqual(fastbuild.marker_in_effect(home, {}), os.path.join(default, ".foreman-state.json"))
+
+    def test_the_probe_runs_in_a_home_of_its_own(self):
+        seen = []
+        real = subprocess.run
+        binary = self.bin  # before the patch: the first use builds it (with cargo's own env)
+        with mock.patch.object(subprocess, "run", lambda cmd, **kw: (seen.append(kw["env"]), real(cmd, **kw))[1]):
+            ok, why = fastbuild.probe(binary, self.plug)
+        self.assertTrue(ok, why)
+        self.assertGreater(len(seen), 8)
+        for env in seen:
+            self.assertEqual(sorted(k for k in env if k.startswith(("FOREMAN", "SAMPO", "XDG"))), ["FOREMAN_HOME", "XDG_STATE_HOME"])
+            for k in ("FOREMAN_HOME", "HOME", "XDG_STATE_HOME", "TMPDIR"):
+                self.assertTrue(env[k].startswith(tempfile.gettempdir()), (k, env[k]))
+            self.assertNotEqual(env["HOME"], os.path.expanduser("~"))
+
+    def test_a_bad_build_does_not_replace_a_good_install(self):
+        self.fake(binary=self.bin)
+        self.assertTrue(self.build()[0])
+        before = self.files()
+        self.fake(binary=self.stand_in(ALLOW_ALL))
+        self.assertStays(self.build(), before, "differs")
+        self.assertEqual(fastbuild.status(self.plug, self.cargo)[0], "ok")
+
+    def test_a_source_changed_during_the_build_is_refused(self):
+        self.fake("touch", binary=self.bin, touch=os.path.join(self.native, "crates", "sampo-fast", "src", "main.rs"))
+        self.assertStays(self.build(), {}, "changed during the build")
+
+    def test_a_link_in_the_sources_is_refused(self):
+        self.fake(binary=self.bin)
+        os.symlink("/etc/hostname", os.path.join(self.native, "crates", "sampo-fast", "src", "extra.rs"))
+        self.assertStays(self.build(), {}, "not a plain file")
+        os.remove(os.path.join(self.native, "crates", "sampo-fast", "src", "extra.rs"))
+        os.symlink("/etc", os.path.join(self.native, "crates", "linked"))
+        self.assertStays(self.build(), {}, "has a link")
+        self.assertEqual(self.calls(), [])
+
+    def test_a_native_folder_that_is_a_link_or_writable_is_refused(self):
+        self.fake(binary=self.bin)
+        os.chmod(self.native, 0o775)
+        self.assertStays(self.build(), {}, "writable by others")
+        os.chmod(self.native, 0o755)
+        os.rename(self.native, self.native + ".real")
+        os.symlink(self.native + ".real", self.native)
+        ok, line = self.build()
+        self.assertFalse(ok, line)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_build_running_elsewhere_is_not_joined(self):
+        self.fake(binary=self.bin)
+        os.makedirs(self.workdir, mode=0o700)
+        with open(os.path.join(self.workdir, ".sampo-fast.lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            self.assertStays(self.build(), {}, "another build")
+        self.assertEqual(self.calls(), [])
+
+    def test_a_build_folder_that_others_can_write_is_refused(self):
+        self.fake(binary=self.bin)
+        os.makedirs(self.workdir, mode=0o700)
+        os.chmod(self.workdir, 0o777)
+        self.assertStays(self.build(), {}, "writable by others")
+        self.assertEqual(self.calls(), [])
+
+    def test_every_build_starts_in_a_new_empty_folder_and_leaves_none(self):
+        """T-3608 review: a persistent target folder let a build link (and `cargo clean -p` forgot) what an earlier run
+        compiled; each build is a fresh folder, removed after, and a stopped run's leftovers are swept."""
+        self.fake(binary=self.bin)
+        os.makedirs(self.workdir, mode=0o700)
+        stale = os.path.join(self.workdir, "build-old", "target", "release")
+        os.makedirs(stale)
+        with open(os.path.join(stale, "sampo-fast"), "w") as f:
+            f.write("an earlier run's compiled file")
+        os.chmod(os.path.dirname(stale), 0o500)  # read-only, as cargo leaves extracted crates
+        with open(os.path.join(native := self.native, ".sampo-fast-new-abc"), "w") as f:
+            f.write("half")
+        self.assertTrue(self.build()[0])
+        (call,) = self.calls()
+        target = call["argv"][call["argv"].index("--target-dir") + 1]
+        self.assertNotIn("build-old", target)
+        self.assertEqual(self.builds(), [".sampo-fast.lock"])
+        self.assertEqual(self.leftovers(), [])
+        self.assertFalse(os.path.exists(os.path.join(native, ".sampo-fast-new-abc")))
+        self.fake("fail")
+        self.assertFalse(self.build()[0])
+        self.assertEqual(self.builds(), [".sampo-fast.lock"], "a failed build leaves no folder either")
+
+    def test_the_build_sees_only_the_archives_cargo_lock_names(self):
+        """T-3608 review blocker 2: CARGO_HOME is private. It holds each locked crate's archive (hashed here against
+        Cargo.lock's sum and copied from the bytes hashed), its index entry and config.json, and nothing else of the
+        user's ~/.cargo: not the extracted src tree, an unlocked archive, a git checkout, a config."""
+        reg = os.path.join(self.fhome, ".cargo", "registry")
+        idx = "index.crates.io-1949cf8c6b5b557f"
+        for rel in (f"cache/{idx}/evil-1.0.0.crate", f"src/{idx}/itoa-1.0.18/build.rs", "../git/checkouts/x/y.rs",
+                    "../credentials.toml"):
+            os.makedirs(os.path.dirname(os.path.join(reg, rel)), exist_ok=True)
+            with open(os.path.join(reg, rel), "w") as f:
+                f.write("decoy")
+        self.fake(binary=self.bin)
+        ok, line = self.build()
+        self.assertTrue(ok, line)
+        (call,) = self.calls()
+        want = sorted([f"registry/cache/{idx}/{n}-{v}.crate" for n, v in self.crates] +
+                      [f"registry/index/{idx}/.cache/{fastbuild.index_path(n)}" for n, _ in self.crates] +
+                      [f"registry/index/{idx}/config.json"])
+        self.assertEqual(call["cargo_home"], want)
+        self.assertGreaterEqual(len(self.crates), 5)
+
+    def test_an_archive_that_is_not_the_one_cargo_lock_names_stops_the_build(self):
+        self.fake(binary=self.bin)
+        idx = "index.crates.io-1949cf8c6b5b557f"
+        name, version = self.crates[0]
+        crate = os.path.join(self.fhome, ".cargo", "registry", "cache", idx, f"{name}-{version}.crate")
+        for what, do, why in (("tampered", lambda: open(crate, "wb").write(b"backdoored"), "sum differs"),
+                              ("missing", lambda: os.remove(crate), "not in ~/.cargo/registry/cache"),
+                              ("a link", lambda: (os.remove(crate), os.symlink("/etc/hostname", crate)), "plain file of yours")):
+            with self.subTest(what):
+                do()
+                ok, line = self.build()
+                self.assertFalse(ok, line)
+                self.assertIn(f"{name} {version}", line, "the crate is named")
+                self.assertIn(why, line)
+                self.assertIn("the Python hook stays", line)
+                self.assertEqual((self.calls(), self.files(), self.leftovers()), ([], {}, []))
+                self.reset_home()
+
+    def test_a_lock_that_takes_a_crate_from_anywhere_but_the_archives_is_refused(self):
+        self.fake(binary=self.bin)
+        path = os.path.join(self.native, "Cargo.lock")
+        with open(path) as f:
+            good = f.read()
+        for what, text, why in (("git", good + '\n[[package]]\nname = "x"\nversion = "1.0.0"\nsource = "git+https://example.invalid/x"\n',
+                                 "not from crates.io"),
+                                ("another registry", good.replace("crates.io-index", "other-index", 1), "not from crates.io"),
+                                ("no checksum", re.sub(r'checksum = "[0-9a-f]+"\n', "", good, count=1), "without a plain")):
+            with self.subTest(what):
+                with open(path, "w") as f:
+                    f.write(text)
+                self.assertStays(self.build(), {}, why)
+                self.assertEqual(self.calls(), [])
+
+    def test_a_tree_that_differs_from_its_commit_is_not_built(self):
+        """T-3608 review: what builds is what a commit says. A dirty or untracked file in plugin/native (or no git at
+        all) leaves the Python hook; the installed record names the commit built from."""
+        self.fake(binary=self.bin)
+        with mock.patch.object(fastbuild, "tree_state", lambda plugin=None: ("", "crates/x.rs differ from HEAD: commit or restore them first")):
+            self.assertStays(self.build(), {}, "differ from HEAD")
+        self.assertEqual(self.calls(), [])
+        self.assertTrue(self.build()[0])
+        with open(os.path.join(self.native, fastbuild.SRC)) as f:
+            rec = json.load(f)
+        self.assertEqual((rec["head"], rec["dirty"]), ("a" * 40, False))
+        self.assertIn("cargo", rec["tools"])
+        self.assertIn("9.9.9", rec["tools"]["cargo"]["version"])
+        self.assertEqual(len(rec["crates"]), len(self.crates))
+
+    def test_tree_state_reads_git_without_the_users_config(self):
+        """The real thing, in a repo of its own: clean, then a modified, a staged and an untracked file, then no repo."""
+        top = os.path.join(self.tmp, "gitrepo")
+        plug = os.path.join(top, "plugin")
+        os.makedirs(os.path.join(plug, "native", "crates"))
+        with open(os.path.join(plug, "native", "Cargo.toml"), "w") as f:
+            f.write("[workspace]\n")
+        env = {"PATH": os.environ["PATH"], "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1", "HOME": self.tmp}
+
+        def git(*args):
+            subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", *args],
+                           cwd=top, env=env, check=True, capture_output=True)
+
+        git("init", "-q")
+        git("add", "-A")
+        git("commit", "-q", "-m", "x")
+        tree_state = REAL_TREE_STATE
+        head, why = tree_state(plug)
+        self.assertEqual((len(head), why), (40, ""))
+        for what, do in (("modified", lambda: open(os.path.join(plug, "native", "Cargo.toml"), "a").write("# x\n")),
+                         ("untracked", lambda: open(os.path.join(plug, "native", "crates", "new.rs"), "w").write("x")),
+                         ("staged", lambda: git("add", "-A"))):
+            with self.subTest(what):
+                do()
+                head, why = tree_state(plug)
+                self.assertEqual(head, "")
+                self.assertIn("differ from HEAD", why)
+        outside = os.path.join(self.tmp, "nogit")
+        os.makedirs(os.path.join(outside, "native"))
+        with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(top, ".git")}):  # not the caller's, either
+            head, why = tree_state(outside)
+        self.assertEqual(head, "")
+        self.assertTrue(why)
+
+    def test_status_names_each_way_an_install_goes_stale(self):
+        self.fake(binary=self.bin)
+        self.assertTrue(self.build()[0])
+        snap = os.path.join(self.tmp, "snap")
+        shutil.copytree(self.plug, snap, symlinks=True)  # copy2 inside: every mtime kept
+        path = os.path.join(self.native, fastbuild.BIN)
+        main = os.path.join(self.native, "crates", "sampo-fast", "src", "main.rs")
+        hook = os.path.join(self.plug, "hooks", "hook")
+
+        def bump(p):
+            st = os.stat(p)
+            os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+
+        def append(p, data):
+            with open(p, "ab") as f:
+                f.write(data)
+
+        def record(text):
+            with open(os.path.join(self.native, fastbuild.SRC), "w") as f:
+                f.write(text)
+
+        for name, do in (("a native source edited", lambda: append(main, b"\n")),
+                         ("a mirrored source touched", lambda: bump(hook)),
+                         ("a binary that no longer matches its sum", lambda: append(path, b"x")),
+                         ("no sum", lambda: os.remove(path + ".sha256")),
+                         ("no record", lambda: os.remove(os.path.join(self.native, fastbuild.SRC))),
+                         ("a record for another file", lambda: record(json.dumps({"sum": "0" * 64}))),
+                         ("a record that is not JSON", lambda: record("{nope")),
+                         ("group-writable", lambda: os.chmod(path, 0o775)),
+                         ("a link", lambda: (os.rename(path, path + ".real"), os.symlink(path + ".real", path)))):
+            with self.subTest(name):
+                shutil.rmtree(self.plug)
+                shutil.copytree(snap, self.plug, symlinks=True)
+                self.assertEqual(fastbuild.status(self.plug, self.cargo)[0], "ok")
+                do()
+                state, why = fastbuild.status(self.plug, self.cargo)
+                self.assertEqual(state, "stale", why)
+                self.assertIn("sampo doctor --repair", why)
+                ok, line = fastbuild.repair(self.plug, cargo=self.cargo, say=self.lines.append, home=self.fhome,
+                                            workdir=self.workdir)  # and a repair fixes it
+                if name == "a mirrored source touched":  # only a build of the touched tree decides: this fake is the old one
+                    self.assertFalse(ok, line)
+                    self.assertIn("deferred", line)
+                    self.assertEqual(fastbuild.status(self.plug, self.cargo)[0], "stale")
+                    continue
+                self.assertTrue(ok, line)
+                self.assertEqual(fastbuild.status(self.plug, self.cargo)[0], "ok")
+
+    def test_missing_reads_why(self):
+        state, why = fastbuild.status(self.plug, self.cargo)
+        self.assertEqual((state, "doctor --repair" in why), ("missing", True))
+        state, why = fastbuild.status(self.plug, "")
+        self.assertEqual(state, "missing")
+        self.assertIn("no cargo", why)
+        self.assertIn("Python hook stays", why)
+
+    def test_a_real_offline_locked_build_of_the_committed_tree(self):
+        """No fake: the user's cargo builds the tree (offline, from the registry cache, Cargo.lock held to) and the
+        installed file is the one hooks/fast accepts. Skipped without cargo."""
+        home = fastbuild.account_home()
+        if not (fastbuild.find_cargo(home) and fast_bin()):
+            self.skipTest("no cargo")
+        shutil.copy(os.path.join(NATIVE, "Cargo.lock"), os.path.join(self.native, "Cargo.lock"))  # the real sums
+        ok, line = fastbuild.build_fast(self.plug, workdir=self.workdir, home=home, say=self.lines.append)
+        if not ok and ("not in ~/.cargo/registry" in line or "no crates.io archive cache" in line or "no index entry" in line):
+            self.skipTest(f"this machine's cargo cache lacks the crates: {line}")
+        self.assertTrue(ok, line)
+        self.assertEqual(fastbuild.status(self.plug)[0], "ok")
+        self.assertEqual(oct(os.stat(os.path.join(self.native, fastbuild.BIN)).st_mode & 0o777), "0o755")
 
 
 if __name__ == "__main__":
