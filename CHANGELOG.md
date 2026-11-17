@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A clean install now puts both `fm` and `sampo` on PATH, and the README's install, Ward, mod, Smith and layout text was re-checked against the code and corrected (T-4841).
 - foresight rows are scored against the user's next message, classes that keep missing are muted, and `sampo status` and the Board show what was caught before the user said it (T-4665).
 - Each prompt event the UserPromptSubmit hook records now carries an HMAC under selfgate's account key, and core.genuine_prompts yields only the prompt events whose MAC verifies (T-4844).
 - The installer guard also reads call shapes: a quoted call such as getattr(os,'system')('bash install.sh'), a call word after any dot or bound by an import (read clause by clause as Python reads it), and perl and ruby calls without parens are refused; the bare-word rule stays beside them, so it blocks no less; the check stays linear on long lines, and its refusal is one plain sentence (T-4827).
