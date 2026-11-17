@@ -241,7 +241,7 @@ _REV = None
 _TIMING = {}  # T-3352: the PreToolUse call's tool name and the instant the guard had decided
 SLOW_HOOK_MS = 1000  # T-4780: a call over this logs its stages (one line); the harness kills a hook at 5 s
 STAGES = {}  # T-4780: the stage clock's marks (CLOCK_BOOTTIME seconds), set by stage_start and mark
-STAGE_MARKS = ("state", "parse", "check", "rules", "asks", "snapshot")  # in the order a PreToolUse call reaches them
+STAGE_KEYS = ("t0", "event", "imports", "done")  # T-4894: the clock's own keys; every other float in STAGES is a mark
 TEMP_ROOTS = ("/tmp", "/var/tmp", "/dev/shm", "/var/folders")  # T-4780: fixed, never read from the environment
 
 
@@ -289,7 +289,7 @@ def _watch(limit_s, t0):
         if STAGES.get("done") or STAGES.get("t0") != t0:
             return
         ms = stage_ms()
-        last = next((n for n in reversed(STAGE_MARKS) if n in STAGES), "imports")
+        last = (_stage_marks(STAGES) or [(0, "imports")])[-1][1]
         hl = c.host_load()
         load = f"{hl[0] / hl[1]:.1f}" if hl and hl[1] > 0 else "?"
         log_error(str(STAGES.get("event") or "hook"), f"hook still running at {limit_s * 1000:g} ms, last mark {last} "
@@ -303,6 +303,12 @@ def mark(name):
         STAGES[name] = _now()
 
 
+def _stage_marks(s):
+    """T-4894: [(time, name)] of every mark set, in the order the call reached them: any handler can mark (the Stop
+    handler's own names), with no fixed list to keep in step."""
+    return sorted((v, k) for k, v in s.items() if k not in STAGE_KEYS and isinstance(v, float))
+
+
 def _born():
     """When this process was forked (boot-clock s; Linux only: elsewhere it raises and the caller leaves the start stage out): exec keeps it, so a wrapper shell's time is in it."""
     with open("/proc/self/stat", "rb") as f:
@@ -314,7 +320,9 @@ def stage_ms():
     """{stage: ms} for this call so far: start (fork to hooks/hook's first line: the wrapper shell, the interpreter),
     imports (the library), state (project, task, meta reads), parse (the guard's findings), check, rules (the user's
     rules), asks (recording and prompting an ask, the taint and other checks), snapshot (the Bash snapshot note), after
-    (the notes' builders, the timing row), total. Absent marks (a call the guard never ran) leave their stage out."""
+    (the notes' builders, the timing row), total. Absent marks (a call the guard never ran) leave their stage out.
+    T-4894: Stop marks its own (spawns, briefs, state, lock, gates, drive, holds, save, scout, promises, modelup); each
+    stage is the time since the mark before it, in the order reached."""
     s, now = dict(STAGES), _now()
     if "t0" not in s:
         return {}
@@ -324,10 +332,9 @@ def stage_ms():
     except (OSError, ValueError, IndexError):
         pass  # T-4820: no procfs (macOS): the stage is absent, not a 0.0 that would read as an instant start in the bench
     out["imports"] = round((s["imports"] - s["t0"]) * 1000, 1)
-    for name in STAGE_MARKS:
-        if name in s:
-            out[name] = round((s[name] - prev) * 1000, 1)
-            prev = s[name]
+    for t, name in _stage_marks(s):
+        out[name] = round((t - prev) * 1000, 1)
+        prev = t
     out["after"] = round((now - prev) * 1000, 1)
     out["total"] = round(sum(out.values()), 1)
     return out
@@ -4959,6 +4966,7 @@ def stop(pl):
         modelup.after_stop(pl)
     except Exception:
         log_error("Stop", _tb())
+    mark("modelup")
     if out and out.get("decision") == "block" and _headless():
         out["reason"] += PRINT_LAST
     return out
@@ -5011,6 +5019,7 @@ def _stop(pl):
         rune.kick(p)
     except Exception:
         log_error("Stop", _tb())
+    mark("spawns")  # T-4894: the Stop's own stages, named in the slow-hook line
     briefs = c.load_briefs(p)
     act = c.active_brief(briefs, p.lane)
     if act:
@@ -5023,8 +5032,10 @@ def _stop(pl):
                 return {"decision": "block", "reason": failed}
         except Exception:  # the task stays open and drive handles it as before
             log_error("Stop", _tb())
+    mark("briefs")
     sd = c.state_dict(p, briefs)
     seq = _title_seq(sd) + _progress_seq(sd)
+    mark("state")
     with contextlib.ExitStack() as held:
         try:
             _lock_retry(held, p.dir)
@@ -5032,6 +5043,7 @@ def _stop(pl):
         except c.LockTimeout as e:  # T-1453: busy, the turn is still judged; only its counters go unsaved
             save = False
             _lock_busy("Stop", e)  # T-3535: counted in the roll-up
+        mark("lock")
         g = _read_gate(p)
         _scan_notices(pl, g)
         d0 = g["drive"].get(sid) or {}
@@ -5047,7 +5059,9 @@ def _stop(pl):
             or _offer_gate(p, pl, g, sd.get("autonomy") == "full")
             or _question_nudge(pl, p)
             or _headless_wait(pl))
+        mark("gates")
         reason = nudge or (None if oneoff or "drive" in c.ablated() else _drive(p, sd, briefs, pl, g, save))  # T-1375
+        mark("drive")
         if not nudge and save and not oneoff and "drive" not in c.ablated():
             concern = None
             try:  # T-4202: what the user asked this turn with no task, proof or answer holds the stop once
@@ -5066,11 +5080,13 @@ def _stop(pl):
                 reason = _big_hold(p, sd, briefs, pl, g, save)
             except Exception:
                 log_error("Stop", _tb())
+        mark("holds")
         d = g["drive"].setdefault(sid, {"count": 0})
         had_work, d["had_work"] = d.get("had_work"), bool(sd["active"] or sd["queue"])
         reloading, waiting_on = d.pop("reloading", None), d.pop("waiting_on", None)
         if save:
             _write_gate(p, g)
+    mark("save")  # the gate written and the lock let go
     if not reason:
         try:  # T-2297: the leads session start showed, held to once (an unattended one-off run too: it is judged by them)
             reason = _leads_hold(p, pl, _tools_ran(sid, d.get("turn_at")))
@@ -5082,6 +5098,7 @@ def _stop(pl):
             reason = _marathon(p, sid)
         except Exception:  # a bench marathon's next pass, never worth a failed stop
             log_error("Stop", _tb())
+    mark("leads")
     if drained and not oneoff and sd.get("autonomy") == "full" and sd["drive"] and not sd["inbox"] \
             and not os.environ.get("FOREMAN_BENCH"):  # T-1229: a replay's job is its request, not new work after it
         try:  # T-0950: the queue just drained: Foreman looks for work itself (an answer to a question isn't a drain)
@@ -5096,11 +5113,13 @@ def _stop(pl):
                     "captures, and stop if it captures nothing.")
         except Exception:
             log_error("Stop", _tb())
+    mark("scout")
     if not reason and ((act and needs_user(msg)) or drained):
         seq += _notify_seq("waiting for your answer" if act else "queue empty")
     if not reason and not oneoff and sd.get("autonomy") == "full" and not pl.get("stop_hook_active") \
             and not os.environ.get("FOREMAN_BENCH"):  # T-1242: a replay never pings the user's phone
         reason = _push_nudge(sid, sd, drained)
+    mark("push")
     if not reason and not oneoff and not reloading and waiting_on is None and (sd["active"] or sd["queue"]):
         # T-0957: open work, and nothing kept it going (a reload or a background wait resumes by itself)
         try:
@@ -5115,6 +5134,7 @@ def _stop(pl):
             promised = cli.capture_promises(p, msg, sid)
         except Exception:
             log_error("Stop", _tb())
+    mark("promises")
     if promised:
         out["systemMessage"] = f"Sampo captured the reply's promise(s) for later: {', '.join(promised)}"
     if pl.get("_fm_label") and not reason:  # T-2392: a kept unproven claim, labelled where the user reads the reply

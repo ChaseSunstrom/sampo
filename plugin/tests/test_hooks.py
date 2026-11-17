@@ -4731,6 +4731,24 @@ class StageClock(ForemanTestCase):
         else:
             self.assertNotIn("start", row)
 
+    def test_a_stop_call_names_its_own_stages_in_time_order(self):
+        """T-4894: a Stop spent 1-1.7 s in one 'after' tail (the marks were the guard's only); its handler now marks its
+        stages, and the row lists every mark in the order the call reached it, whatever its name."""
+        self.fm("init")
+        sink = os.path.join(self.sink_dir(), "stages.jsonl")
+        self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Done."}, env={"SAMPO_HOOK_STAGES": sink})
+        with open(sink) as f:
+            row = json.loads(f.readline())
+        self.assertEqual(row["event"], "Stop")
+        stages = [k for k, v in row.items() if isinstance(v, float) and k not in ("start", "imports", "after", "total")]
+        for k in ("spawns", "briefs", "state", "lock", "gates", "drive", "holds", "save", "modelup"):
+            self.assertIn(k, stages, row)
+        self.assertEqual(stages[-1], "modelup", "marks in the order the call reached them")
+        self.assertLess(stages.index("spawns"), stages.index("briefs"))
+        self.assertLess(stages.index("lock"), stages.index("drive"))
+        self.assertAlmostEqual(row["total"], sum(v for k, v in row.items() if isinstance(v, float) and k != "total"),
+                               delta=0.5)
+
     def test_a_host_without_procfs_leaves_the_start_out_not_an_error(self):
         """T-4820: the same row on a host with no /proc/self/stat (macOS): no start stage (a 0.0 would read as an instant
         start), every other stage still there and the total the sum of those."""
