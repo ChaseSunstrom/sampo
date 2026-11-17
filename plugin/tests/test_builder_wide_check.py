@@ -6,6 +6,7 @@ train's, the accept check's and the main thread's place, and every lane fixture 
 same kind on the same tree while one runs is refused with the first one's pid and log path (a flock beside the project's
 state, never a process-list pattern)."""
 # map-links: plugin/lib/sampo/hooks.py, plugin/lib/sampo/cli.py, plugin/lib/sampo/core.py
+import io
 import json
 import os
 import subprocess
@@ -93,9 +94,10 @@ class BuilderHook(Calm):
 
             def __init__(self, argv, **kw):
                 seen.update(kw["env"])
+                self.stdout = io.StringIO("")  # T-4851: _run_check reads the pipe itself, line by line
 
-            def communicate(self, timeout=None):
-                return "", None
+            def wait(self, timeout=None):
+                return 0
         from unittest import mock
         with mock.patch.object(train.subprocess, "Popen", P), mock.patch.object(c, "stdout_log", return_value="/x/accept.log"):
             train._run_check(["true"], self.path)

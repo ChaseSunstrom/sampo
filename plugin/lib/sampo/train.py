@@ -2770,13 +2770,14 @@ def _check_hold(b, sha, main):
     if _clean_run(b, sha, main):
         return None
     mine = f"sampo check --affected --hold --evidence {b.id}"
+    seen = f" (its output: {m['check_log']})" if m.get("check_log") else ""  # T-4851: what it printed before it ended
     if st == "running":
         return (f"held: its check ended without a result: sampo lane accept {b.id} starts it again" if _restartable(m) else
-                f"held: its check ended without a result twice: run {mine} in the lane")
+                f"held: its check ended without a result twice: run {mine} in the lane{seen}")
     if st == "red":
         return (f"held: check red: {m.get('check_failed') or 'no failing class recorded'}; left out, no retry until the "
                 f"tip moves or a newer green run holds the repo-shape classes ({mine} in the lane)")
-    return f"held: its check was cut off twice at its deadline: run {mine} in the lane"
+    return f"held: its check was cut off twice at its deadline: run {mine} in the lane{seen}"
 
 
 def check_notes(briefs, main, ids=None):
@@ -2927,19 +2928,38 @@ def _run_check(argv, cwd):
         before = signal.signal(signal.SIGTERM, stopped)
     except ValueError:  # not the main thread: no handler, the deadline still ends it
         before = None
+    # T-4851: the check's lines are copied to this process's stdout (the log 'check started ... log ...' names) as they
+    # arrive, and kept whole for _result_of: a check cut off at its deadline leaves what it printed before the kill
+    chunks, to_log = [], [True]
+
+    def pump():
+        for line in iter(proc.stdout.readline, ""):
+            chunks.append(line)
+            if to_log[0]:
+                try:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+                except (OSError, ValueError):  # a log that cannot be written (disk full, closed) must not stall the check's pipe
+                    to_log[0] = False
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
     try:
-        out, _ = proc.communicate(timeout=CHECK_WALL_S)
-        return subprocess.CompletedProcess(argv, proc.returncode, out, ""), False
+        start = time.monotonic()
+        proc.wait(timeout=CHECK_WALL_S)
+        reader.join(max(CHECK_WALL_S - (time.monotonic() - start), 0))  # a survivor holding the pipe open past the deadline
+        if reader.is_alive():
+            raise subprocess.TimeoutExpired(argv, CHECK_WALL_S)
+        return subprocess.CompletedProcess(argv, proc.returncode, "".join(chunks), ""), False
     except subprocess.TimeoutExpired:
         c.kill_tree(proc.pid)  # T-4417: the whole tree, or a survivor keeps its test slots and this pipe open
-        try:
-            out, _ = proc.communicate(timeout=30)
-        except subprocess.TimeoutExpired:  # something outside the tree holds the pipe: its output is not waited for
-            out = ""
-        return subprocess.CompletedProcess(argv, 124, out or "", ""), True
+        reader.join(30)  # something outside the tree holding the pipe: what came before is kept, the rest not waited for
+        to_log[0] = False
+        return subprocess.CompletedProcess(argv, 124, "".join(chunks), ""), True
     finally:
         if before is not None:
             signal.signal(signal.SIGTERM, before)
+        if not reader.is_alive():
+            proc.stdout.close()
 
 
 def _take_slot(slots):
@@ -3163,7 +3183,8 @@ def _accept_check_child(a):
         dl = c.redact(str((got or {}).get("deadline") or ""))[:400]
         what = f"check cut off {tries}x on {tip[:9]}" if dl else f"check cut off {tries}x at its deadline on {tip[:9]}"
         tail = dl or f"run sampo check --affected --hold --evidence {b.id} in the lane"
-    _set_check(p, b.id, f"{what}: {tail}", check_state="cut_off", check_pid=None, check_ticks=None, check_queued=None)
+    log = b.meta.get("check_log")  # T-4851: the check's lines, as far as it got
+    _set_check(p, b.id, f"{what}: {tail}" + (f" (its output: {log})" if log else ""), check_state="cut_off", check_pid=None, check_ticks=None, check_queued=None)
     return 1
 
 
