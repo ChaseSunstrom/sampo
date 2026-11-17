@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A builder's `sampo check --affected` or full `sampo check` placed inside `sampo task evidence --run` or `--bench` is now refused by the PreToolUse hook with the same one line as a direct call (T-4546).
 - callcards' changed-since check and the left-out scan now read their files in with-blocks, so a test run no longer floods with ResourceWarnings (T-4852).
 - The website's Record, Ward blocks and Moons caption are built from stats and genesis data, the stale-stats build warns, and the Rune page teaches `sampo rune` (T-4842).
 - Calling cards gain a `model` kind (one confined local-model call whose JSON output a checker validates) and a `chain` kind (named cards run in order with typed hand-offs, refused at load on a cycle or missing card), plus the pick-function and locate-function seed cards (T-4837).
