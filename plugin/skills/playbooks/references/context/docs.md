@@ -25,8 +25,12 @@ reference page, CLI help. For keeping a whole repo's doc set owned and fresh ove
    docstrings. Where generation is impossible, a test asserts the page names every flag or field.
 7. **Plain words.** Second person, present tense, short sentences. Define a term at first use and keep one name per
    thing. Pass: `grep -niwE "simply|just|easy|obviously" PAGE.md` returns nothing.
-8. **Links are checked.** Relative links are verified in CI; link text says where it goes (never "click here").
-9. **Docs change with the code.** A change to behaviour updates its page in the same commit (Sampo records it
+8. **Scannable, never a wall of text.** Lead each section with a list, table, code block or figure; a paragraph is
+   three sentences (80 words) at most, three prose paragraphs in a row at most; any set of things becomes a list or a
+   table; a README opens with a one-line pitch and a figure (120 words at most), depth on linked pages. Pass:
+   `sampo readme check PAGE.md` names no wall of text.
+9. **Links are checked.** Relative links are verified in CI; link text says where it goes (never "click here").
+10. **Docs change with the code.** A change to behaviour updates its page in the same commit (Sampo records it
    with `sampo task finish --docs`).
 
 ## Running the examples
@@ -81,6 +85,7 @@ examples at the top level.
 - [ ] Each page's title is a task and its first three lines state the outcome.
 - [ ] Each page is one kind: tutorial, how-to, reference or explanation.
 - [ ] Every step is one action with an observable result.
+- [ ] No wall of text: `sampo readme check` passes.
 - [ ] A CI job runs the examples and fails on a broken one.
 - [ ] Reference pages are generated, or a test checks they list every flag or field.
 - [ ] Relative links are checked in CI; no "click here".

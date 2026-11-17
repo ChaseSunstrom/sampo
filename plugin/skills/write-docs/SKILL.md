@@ -9,8 +9,15 @@ A page a person reads to get something done. No brief yet → `/sampo:intake` fi
 
 1. **Read the code, not your memory.** `sampo map` for the layout and entry points; `sampo sym PATH:NAME` for a function's real behaviour. Flags come from `--help`, not from the old page.
 2. **Write the page** by `../playbooks/references/context/docs.md`: the reader and outcome first, one kind of page per page, the common path first, numbered steps that each end in what you should see, plain words.
+   **A README is scanned, never a wall of text.** Top: the name, one line on what it is, a figure, then install and
+   the first command in ten lines or fewer. Below: short sections under task headings, each led by a list, a table, a
+   code block or a figure; a paragraph is three sentences at most (80 words); a set of things (features, options,
+   commands) is a list or a table, never a sentence chain; depth goes to a linked page under docs/. `sampo readme
+   check` names each wall of text by line (a paragraph over 80 words, more than 3 prose paragraphs in a row, an
+   opening over 120 words): fix every one before the close.
 3. **Show it.** A README, docs or landing page gets real figures (app screenshots, architecture and flow diagrams, dark and light): load: Skill sampo:readme-visuals (`sampo readme plan`).
 4. **Run every example.** Copy each command and code block out and run it; paste what really printed. A block you can't run is marked as such.
 5. **Keep the repo's doc set fresh** (README, CHANGELOG, guides, MASTER): `../playbooks/references/context/living-docs.md`. A project instruction file (CLAUDE.md, rules) → `../playbooks/references/context/instruction-files.md`.
-6. **Check links and names:** grep the repo for each renamed command or path, and open each relative link.
+6. **Check links, names and shape:** grep the repo for each renamed command or path, open each relative link, and
+   run `sampo readme check` on each README you touched (figures and walls of text; exit 0 before the close).
 7. **Say it in the close:** `sampo task finish ID --docs "<the pages changed>"` records the docs impact; `sampo check --affected --evidence ID` runs the repo's doc tests.

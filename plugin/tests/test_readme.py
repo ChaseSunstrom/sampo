@@ -288,6 +288,33 @@ class Check(SampoTestCase):
         self.assertIn(("img/plain.png", "a picture with no img fallback"), found)
         self.assertEqual(len(found), 6, found)
 
+    def test_walls_of_text_are_named_by_line(self):
+        """T-4910: agents wrote READMEs as walls of text; the check names a long paragraph, a run of prose paragraphs
+        with nothing to scan between them, and a long opening before the first section, each by its line"""
+        long_para, short, half = " ".join(["word"] * 90), "One short line that says what it is.", " ".join(["intro"] * 65)
+        write(self.repo, "README.md", (
+            "# app\n\n" + half + "\n\n" + half + "\n\n## Use\n\n"  # lines 3 and 5: an opening of 130 words
+            + long_para + "\n\n" + "\n\n".join([short] * 4) + "\n\n"  # line 9, then 11-17: five prose paragraphs in a row
+            + "## Fine\n\n" + short + "\n\n- a list\n- breaks it\n\n" + short + "\n\n| a | table |\n|---|---|\n\n"
+            + short + "\n\n```sh\n" + long_para + "\n```\n\n    " + long_para + "\n\n<!-- " + long_para + " -->\n"))
+        got = self.fm("readme", "check", "--json", check=False)
+        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+        found = [(f["file"], f["problem"]) for f in json.loads(got.stdout)["findings"]]
+        self.assertEqual([f for f, _ in found], ["README.md:3", "README.md:9", "README.md:9"], found)
+        opening, para, run = (p for _, p in found)
+        self.assertIn("the opening runs 130 words before the first section (120 at most", opening)
+        self.assertIn("a paragraph of 90 words (80 at most", para)
+        self.assertIn("5 paragraphs of prose in a row (3 at most", run)
+        self.assertTrue(all(p.startswith("a wall of text: ") for _, p in found), found)
+        self.assertIn("✗ README.md:9: a wall of text", self.fm("readme", "check", check=False).stdout)
+
+    def test_a_scannable_readme_has_no_prose_findings(self):
+        write(self.repo, "README.md", "App\n===\n\nOne line on what it does.\n\n## Install\n\n```sh\npip install app\n```\n\n"
+                                      "## Use\n\nRun it once.\n\n- it reads\n- it writes\n\nThen look at the result.\n\n"
+                                      "> A note of a few words.\n")
+        got = self.fm("readme", "check", check=False)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+
     def test_a_clean_readme_passes(self):
         svg = '<svg xmlns="http://www.w3.org/2000/svg"><text>Sampo</text></svg>'
         write(self.repo, "img/a-dark.svg", svg)

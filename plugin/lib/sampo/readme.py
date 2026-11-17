@@ -976,8 +976,83 @@ def images(doc):
     return out
 
 
+PARA_WORDS, PROSE_RUN, OPENING_WORDS = 80, 3, 120  # T-4910: a README is scanned, not read through
+_SCANNABLE = re.compile(r"([-*+]|\d+[.)])\s|\||<|!\[|\[!\[|(-{3,}|\*{3,}|_{3,})$")  # a list, table, HTML, figure or rule
+
+
+def _words(text):
+    """The words a reader reads in a line of Markdown: link targets and HTML tags dropped."""
+    text = re.sub(r"<[^>]*>", " ", re.sub(r"\]\([^)]*\)", "]", text))
+    return sum(1 for w in text.split() if re.search(r"\w", w))
+
+
+def _blocks(doc):
+    """[(line, kind, words)] for a Markdown page's blocks: 'heading', 'prose' (its words counted) or 'other' (a list,
+    a table, code fenced or indented, a figure, HTML or a rule, each something a reader scans instead of reads)."""
+    out, fence, open_ = [], "", False
+    for n, line in enumerate(doc.splitlines(), 1):
+        s = line.strip()
+        if fence:
+            fence = "" if s.startswith(fence) and not s[len(fence):].strip("`~") else fence
+            continue
+        m = re.match(r"(`{3,}|~{3,})", s)
+        if m:
+            fence, open_ = m.group(1), False
+            out.append((n, "other", 0))
+            continue
+        if not s:
+            open_ = False
+            continue
+        if open_:  # the block's next line
+            if out[-1][1] == "prose" and re.fullmatch(r"=+|-+", s):  # a setext heading's underline
+                out[-1] = (out[-1][0], "heading", 0)
+            elif out[-1][1] == "prose":
+                out[-1] = (out[-1][0], "prose", out[-1][2] + _words(s))
+            continue
+        kind = ("heading" if s.startswith("#") else "other"
+                if line.startswith(("    ", "\t")) or _SCANNABLE.match(s) else "prose")
+        out.append((n, kind, _words(s.lstrip("> ")) if kind == "prose" else 0))
+        open_ = True
+    return out
+
+
+def prose_findings(doc, name="README.md"):
+    """T-4910: [{file: 'NAME:LINE', problem}] for each wall of text in a README: a paragraph over PARA_WORDS words, more
+    than PROSE_RUN prose paragraphs in a row with no list, table, code, figure or heading between them, and an opening
+    (from the title to the first section) over OPENING_WORDS words of prose. Counted, not judged: length is structure."""
+    blocks, found = _blocks(doc), []
+    title_first = bool(blocks) and blocks[0][1] == "heading"
+    headings, opening, opening_at, run = 0, 0, None, []
+
+    def flag(line, problem):
+        found.append({"file": f"{name}:{line}", "problem": f"a wall of text: {problem}"})
+
+    def end_run():
+        if len(run) > PROSE_RUN:
+            flag(run[0], f"{len(run)} paragraphs of prose in a row ({PROSE_RUN} at most: break them with a list, a "
+                         "table, a figure or a heading)")
+        run.clear()
+    for line, kind, words in blocks:
+        if kind != "prose":
+            end_run()
+            headings += kind == "heading"
+            continue
+        if headings < (2 if title_first else 1):
+            opening += words
+            opening_at = opening_at or line
+        if words > PARA_WORDS:
+            flag(line, f"a paragraph of {words} words ({PARA_WORDS} at most: split it, or make it a list)")
+        run.append(line)
+    end_run()
+    if opening > OPENING_WORDS:
+        found.insert(0, {"file": f"{name}:{opening_at}", "problem": (
+            f"a wall of text: the opening runs {opening} words before the first section ({OPENING_WORDS} at most: a "
+            "one-line pitch and a figure, then sections)")})
+    return sorted(found, key=lambda f: int(f["file"].rsplit(":", 1)[1]))
+
+
 def check(readme_path):
-    """{images, remote, findings: [{file, problem}]} for one README."""
+    """{images, remote, findings: [{file, problem}]} for one README: its images, then (T-4910) its walls of text."""
     with open(readme_path, encoding="utf-8", errors="replace") as f:
         doc = f.read()
     base, root = os.path.dirname(os.path.abspath(readme_path)), repo_root(os.path.dirname(os.path.abspath(readme_path)))
@@ -1030,6 +1105,7 @@ def check(readme_path):
                          and "-mode-only" in x["src"]] if "-mode-only" in src else []
             if other not in mates:
                 flag(src, f"no {'light' if m.group(2).lower() == 'dark' else 'dark'} pair")
+    found += prose_findings(doc, os.path.basename(readme_path))
     return {"images": len(local), "remote": remote, "findings": found}
 
 

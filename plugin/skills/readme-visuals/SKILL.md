@@ -30,6 +30,8 @@ parts, a chart of a measured number. The prose itself follows `../write-docs/SKI
    `<source media="(prefers-color-scheme: dark)">`, the light one in the `<img>`, which is also the fallback. Alt text
    says what the figure shows ("The watch page: a video grid with download progress"), never "screenshot".
 5. **Check it all.** `sampo readme check` holds every image to its file, its alt text, its dark/light pair, a size
-   budget (400 KB a PNG, 150 KB an SVG) and an SVG with no private text; exit 1 names each problem. For the page's
+   budget (400 KB a PNG, 150 KB an SVG) and an SVG with no private text, and the prose to no wall of text (a
+   paragraph over 80 words, more than 3 prose paragraphs in a row, an opening over 120 words); exit 1 names each
+   problem by file or line. For the page's
    look as a whole: `../playbooks/references/ui/visual-qa.md`.
 6. **Say it in the close:** `sampo task finish ID --docs "README: <the figures added>"`.
