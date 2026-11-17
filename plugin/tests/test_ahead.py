@@ -17,6 +17,7 @@ from helpers import ForemanTestCase
 from test_hooks import HookCase, parse
 
 from sampo import ahead
+from sampo import board
 from sampo import core as c
 from sampo import models, moonscale
 from sampo import steermeter as sm
@@ -511,11 +512,15 @@ def led_line(text, cmd):
 
 
 def book(p, rid="A-1", verdict="confirmed", probe="unpushed", kind="do", text="you never pushed it", what="sampo doctor",
-         hours=0.0, acted=False, evidence="3 landed commits unshipped"):
-    """A row as part A writes it (tick is the only writer in the product; these tests need rows with a chosen state)."""
-    row = {"id": rid, "turn": "t1", "at": stamp(hours), "text": text, "missed": "push before asking the user to look",
-           "probe": probe, "verdict": verdict, "evidence": evidence if verdict == "confirmed" else None, "error": None,
+         hours=0.0, acted=False, evidence="3 landed commits unshipped", session="s1", root="R1", since_hours=None):
+    """A row as part A writes it (tick is the only writer in the product; these tests need rows with a chosen state).
+    T-4665: a row carries its session and root, as tick books it, and (since_hours) the time of the reply it answers."""
+    row = {"id": rid, "turn": "t1", "session": session, "root": root, "at": stamp(hours), "text": text,
+           "missed": "push before asking the user to look", "probe": probe, "verdict": verdict,
+           "evidence": evidence if verdict == "confirmed" else None, "error": None,
            "action": {"kind": kind, "text": what}, "acted": acted, "model": "fake"}
+    if since_hours is not None:
+        row["since"] = stamp(since_hours)
     c.append_line(os.path.join(p.dir, ahead.ROWS), json.dumps(row))
     return row
 
@@ -603,7 +608,12 @@ class Act(Ahead):
         self.assertEqual(len(ahead.act_captures(self.p)), ahead.CAP_OPEN)
         self.assertEqual(ahead.act_captures(self.p), [], "the cap holds: the rest wait")
 
-    def test_act_the_precision_gate_returns_true_until_part_c_scores_the_rows(self):
+    def test_act_the_precision_gate_refuses_a_muted_row_and_passes_the_rest(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * ahead.PREC_N)
+        muted = book(self.p, "A-50", root="R1")
+        open_ = book(self.p, "A-51", root="R2")
+        self.assertFalse(ahead.precision_ok(self.p, muted))
+        self.assertTrue(ahead.precision_ok(self.p, open_))
         self.assertTrue(ahead.precision_ok(self.p))
 
     def test_act_a_user_message_after_the_agents_last_words_is_waiting(self):
@@ -844,6 +854,435 @@ class Safe(Ahead):
             tidy._trim_ahead(self.p, True, acts)
         self.assertEqual(acts[0][0], "trim_ahead")
         self.assertLess(os.path.getsize(os.path.join(self.p.dir, ahead.ROWS)), before)
+
+
+# ---------------------------------------------------------------- T-4665 (part C of T-4185): scoring, muting, the lines
+
+def scored(p, rid, outcome):
+    """A score event as ahead.score appends it (the fold reads these; a row line is never rewritten)."""
+    c.append_line(os.path.join(p.dir, ahead.ROWS), json.dumps({"event": "score", "row": rid, "outcome": outcome,
+                                                              "at": stamp(0.0), "said": outcome in ("hit", "said_anyway")}))
+
+
+def book_class(p, probe, root, outcomes, start=0):
+    """One scored row per outcome, in order, all of one (probe, root) class: each booked, then its score appended."""
+    for i, o in enumerate(outcomes, start):
+        rid = f"S-{probe}-{root}-{i}"
+        book(p, rid, probe=probe, root=root, hours=1.0)
+        scored(p, rid, o)
+
+
+class Score(Ahead):
+    """The user's next message is scored against the open rows by the local read (a fake model here): hit, miss,
+    said anyway, or prevented. A row is scored once, by the first message after it; a malformed reply scores nothing."""
+
+    def test_score_the_next_message_that_says_the_prediction_is_a_hit(self):
+        book(self.p)
+        self.steer("you never pushed it", hours=-0.1)
+        self.model("YES")
+        got = ahead.score(self.p)
+        self.assertEqual((got["scored"], self.rows()[0]["outcome"]), (1, "hit"))
+        self.assertEqual(len(self.prompts), 1)
+
+    def test_score_said_anyway_when_the_row_was_acted_on_before_the_user_said_it(self):
+        book(self.p)
+        ahead.act(self.p, "A-1", "continued")
+        self.steer("you never pushed it", hours=-0.1)
+        self.model("YES")
+        ahead.score(self.p)
+        self.assertEqual(self.rows()[0]["outcome"], "said_anyway")
+
+    def test_score_prevented_when_the_probe_was_true_before_and_false_after_and_it_was_not_said(self):
+        book(self.p)
+        self.hits = {"unpushed": None}  # the state fact is false now: the assistant fixed it first
+        self.steer("the tests still fail", hours=-0.1)
+        self.model("NO")
+        ahead.score(self.p)
+        self.assertEqual(self.rows()[0]["outcome"], "prevented")
+
+    def test_score_miss_when_the_user_says_something_else_and_the_probe_still_holds(self):
+        book(self.p)
+        self.hits = {"unpushed": "3 landed commits unshipped"}
+        self.steer("why is the page slow", hours=-0.1)
+        self.model("NO")
+        ahead.score(self.p)
+        self.assertEqual(self.rows()[0]["outcome"], "miss")
+
+    def test_score_only_the_first_message_after_the_row_is_scored(self):
+        book(self.p)
+        self.steer("an old message from before the row", hours=1.0)
+        self.steer("that was the reply I wanted", hours=-0.1)
+        self.steer("a later message that is not the first", hours=-0.2)
+        self.model("YES")
+        ahead.score(self.p)
+        prompt = str(self.prompts[0])
+        self.assertIn("that was the reply I wanted", prompt)
+        self.assertNotIn("an old message", prompt)
+        self.assertNotIn("a later message", prompt)
+
+    def test_score_a_malformed_match_reply_is_asked_once_more_in_the_same_run(self):
+        book(self.p)
+        self.steer("you never pushed it", hours=-0.1)
+        self.model("maybe it did", "YES")
+        self.assertEqual(ahead.score(self.p)["scored"], 1)
+        self.assertEqual((len(self.prompts), self.rows()[0]["outcome"]), (2, "hit"))
+
+    def test_score_a_reply_that_leads_with_the_answer_is_read_by_its_leading_word(self):
+        book(self.p, "A-1")
+        book(self.p, "A-2", probe="cpu")
+        self.steer("you never pushed it", hours=-0.1)
+        self.hits = {"cpu": "over the goal"}
+        self.model("YES, because it said so", "no - it asked about something else")
+        ahead.score(self.p)
+        got = {r["id"]: r["outcome"] for r in self.rows()}
+        self.assertEqual(got, {"A-1": "hit", "A-2": "miss"})
+
+    def test_score_a_reply_that_is_unreadable_twice_is_booked_unread_and_never_asked_again(self):
+        book(self.p)
+        self.steer("you never pushed it", hours=-0.1)
+        self.model("maybe it did", "perhaps")
+        got = ahead.score(self.p)
+        self.assertEqual((got["scored"], got["unread"], self.rows()[0]["outcome"]), (0, 1, "unread"))
+        self.assertEqual(len(self.prompts), 2)
+        ahead.score(self.p)
+        self.assertEqual(len(self.prompts), 2, "an unread row is asked about no more")
+        self.assertEqual(ahead.classes(self.p), [], "unread is no outcome of the class")
+
+    def test_score_an_unread_reply_never_eats_the_budget_the_later_rows_need(self):
+        book(self.p, "A-1")
+        book(self.p, "A-2", probe="cpu")
+        self.steer("you never pushed it", hours=-0.1)
+        self.hits = {"cpu": "over the goal"}
+        self.model("maybe", "maybe", "YES")
+        with mock.patch.object(ahead, "SCORE_MAX", 3):
+            ahead.score(self.p)
+        got = {r["id"]: r["outcome"] for r in self.rows()}
+        self.assertEqual(got, {"A-1": "unread", "A-2": "hit"})
+
+    def test_score_a_reply_that_came_while_the_tick_ran_is_scored_from_the_reply_not_the_booking(self):
+        book(self.p, since_hours=0.5)  # booked now, for a reply from half an hour ago
+        self.steer("the message that came while the model thought", hours=0.2)
+        self.steer("a later, unrelated message", hours=-0.1)
+        self.model("YES")
+        ahead.score(self.p)
+        self.assertIn("came while the model thought", str(self.prompts[0]))
+        self.assertNotIn("unrelated", str(self.prompts[0]))
+
+    def test_score_the_tick_stores_the_replys_own_time_or_when_it_began(self):
+        self.steer("old", missed="push it", hours=3)
+        self.model(block())
+        got = ahead.tick(self.p, reply="done", turn="t1", reply_at=stamp(0.5))
+        self.assertEqual(got["rows"][0]["since"], stamp(0.5))
+        self.model(block())
+        t0 = time.time() - 2
+        got = ahead.tick(self.p, reply="done again", turn="t2")
+        self.assertGreaterEqual(c.parse_ts(got["rows"][0]["since"]).timestamp(), t0)
+        self.assertLessEqual(got["rows"][0]["since"], got["rows"][0]["at"])
+
+    def test_score_a_transcript_stamp_with_milliseconds_is_the_replys_time(self):
+        self.steer("old", missed="push it", hours=3)
+        self.model(block())
+        t = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=0.5)
+        got = ahead.tick(self.p, reply="done", turn="t1", reply_at=t.strftime("%Y-%m-%dT%H:%M:%S.456Z"))
+        self.assertEqual(got["rows"][0]["since"], t.strftime("%Y-%m-%dT%H:%M:%SZ"), "kept as the reply's second, in now()'s form")
+        self.model(block())
+        got = ahead.tick(self.p, reply="done 2", turn="t2", reply_at="not a time")
+        self.assertLessEqual(got["rows"][0]["since"], got["rows"][0]["at"], "an unreadable stamp falls back to the tick's start")
+        self.model(block())
+        got = ahead.tick(self.p, reply="done 3", turn="t3", reply_at=stamp(-5))
+        self.assertLessEqual(got["rows"][0]["since"], got["rows"][0]["at"], "a stamp from the future is no reply time")
+
+    def test_score_the_budget_counts_model_calls_and_a_retry_waits_for_the_deadline(self):
+        book(self.p, "A-1")
+        book(self.p, "A-2", probe="cpu")
+        self.steer("you never pushed it", hours=-0.1)
+        self.model("maybe")
+        with mock.patch.object(ahead, "SCORE_MAX", 2):
+            got = ahead.score(self.p)
+        self.assertEqual((got["asked"], len(self.prompts), got["unread"]), (2, 2, 1), "two calls spent: the second row waits")
+        self.model("maybe")
+        out = {"asked": 0}
+        with self.assertRaises(TimeoutError):
+            ahead._said({"name": "m"}, {"text": "x"}, "y", out, deadline=time.monotonic() - 1)
+        self.assertEqual(out["asked"], 1, "the retry is not made once the run's time is up, and the row stays unbooked")
+
+    def test_score_a_row_with_no_session_goes_stale_after_the_window_and_is_not_asked(self):
+        book(self.p, "A-1", session=None, hours=7)
+        book(self.p, "A-2", session=None, hours=1)
+        self.model("YES")
+        got = ahead.score(self.p)
+        outs = {r["id"]: r.get("outcome") for r in self.rows()}
+        self.assertEqual(outs, {"A-1": "stale", "A-2": None})
+        self.assertEqual((got["scored"], self.prompts), (0, []))
+        self.assertEqual(ahead.classes(self.p), [], "stale is no outcome of the class")
+
+    def test_score_is_written_once_a_second_run_asks_nothing_for_a_scored_row(self):
+        book(self.p)
+        self.steer("you never pushed it", hours=-0.1)
+        self.model("YES")
+        ahead.score(self.p)
+        again = ahead.score(self.p)
+        self.assertEqual((again["scored"], len(self.prompts)), (0, 1))
+
+    def test_score_a_row_with_no_later_message_waits_and_asks_nothing(self):
+        book(self.p)
+        self.steer("an old message from before the row", hours=1.0)
+        self.model("YES")
+        self.assertEqual(ahead.score(self.p)["scored"], 0)
+        self.assertEqual(self.prompts, [])
+        self.assertNotIn("outcome", self.rows()[0])
+
+    def test_score_appends_an_event_and_never_rewrites_the_row_line(self):
+        book(self.p)
+        path = os.path.join(self.p.dir, ahead.ROWS)
+        with open(path, encoding="utf-8") as f:
+            before = f.read()
+        self.steer("you never pushed it", hours=-0.1)
+        self.model("YES")
+        ahead.score(self.p)
+        with open(path, encoding="utf-8") as f:
+            after = f.read()
+        self.assertTrue(after.startswith(before))
+        self.assertEqual(json.loads(after[len(before):].splitlines()[0])["event"], "score")
+
+    def test_score_with_no_rows_file_asks_nothing_and_writes_nothing(self):
+        self.model("YES")
+        self.assertEqual(ahead.score(self.p)["scored"], 0)
+        self.assertFalse(os.path.exists(os.path.join(self.p.dir, ahead.ROWS)))
+        self.assertEqual(self.prompts, [])
+
+    def test_score_a_missed_row_is_fed_to_the_next_prompt_as_missed_last_time(self):
+        book(self.p)
+        self.steer("why is the page slow", hours=-0.1)
+        self.model("NO")
+        self.hits = {"unpushed": "3 landed commits unshipped"}
+        ahead.score(self.p)
+        self.model(block())
+        self.tick(reply="I changed auth.py and all 12 tests pass.", turn="t2")
+        self.assertIn("missed last time", str(self.prompts[-1]).lower())
+        self.assertIn("push before asking the user to look", str(self.prompts[-1]))
+
+
+class Mute(Ahead):
+    """A (probe, root) class whose precision over its last PREC_N scored rows is under PREC_FLOOR stops interrupting and
+    only captures. Decided from the rows alone (the score events fold into them); a class with fewer than PREC_N scored
+    rows is not muted and the table says so."""
+
+    def test_mute_a_class_under_the_floor_over_a_full_window_stops_interrupting(self):
+        book_class(self.p, "unpushed", "R1", ["hit"] * 2 + ["miss"] * 8)
+        row = book(self.p, "A-9", root="R1")
+        self.assertIn(("unpushed", "R1"), ahead.muted_keys(self.p))
+        self.assertTrue(ahead.may_interrupt(row))
+        self.assertFalse(ahead.may_continue(self.p, row))
+        self.assertIsNone(ahead.top(self.p))
+        made = ahead.act_captures(self.p)
+        self.assertEqual(len(made), 1, "a muted do row only captures")
+        self.assertIsNone(ahead.top(self.p))
+
+    def test_mute_the_floor_and_the_window_flip_at_the_boundary(self):
+        self.assertEqual((ahead.PREC_N, ahead.PREC_FLOOR), (10, 0.3))
+        book_class(self.p, "cpu", "R1", ["hit"] * 3 + ["miss"] * 7)   # 3 of 10 is exactly the floor: not under it
+        book_class(self.p, "cpu", "R2", ["hit"] * 2 + ["miss"] * 8)   # 2 of 10 is under it
+        self.assertEqual(ahead.muted_keys(self.p), {("cpu", "R2")})
+        with mock.patch.object(ahead, "PREC_FLOOR", 0.5):
+            self.assertEqual(ahead.muted_keys(self.p), {("cpu", "R1"), ("cpu", "R2")})
+
+    def test_mute_a_class_with_fewer_than_N_rows_is_not_muted_and_the_table_says_too_few(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * (ahead.PREC_N - 1))
+        self.assertEqual(ahead.muted_keys(self.p), set())
+        self.assertIn("too few", self.fm("ahead").stdout)
+
+    def test_mute_only_the_last_N_scored_rows_count(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * ahead.PREC_N + ["hit"] * ahead.PREC_N)
+        self.assertEqual(ahead.muted_keys(self.p), set())
+
+    def test_mute_is_read_from_the_rows_alone_with_no_model_call(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * ahead.PREC_N)
+        self.model("YES")
+        with mock.patch.object(models, "complete", side_effect=AssertionError("no model")):
+            self.assertEqual(ahead.muted_keys(self.p), {("unpushed", "R1")})
+
+    def test_mute_is_per_probe_and_root_and_a_muted_class_never_leads_or_tells(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * ahead.PREC_N)
+        book_class(self.p, "unpushed", "R2", ["hit"] * ahead.PREC_N)
+        book_class(self.p, "cpu", "R1", ["hit"] * ahead.PREC_N)
+        self.assertEqual(ahead.muted_keys(self.p), {("unpushed", "R1")})
+        book(self.p, "A-60", root="R1", kind="tell", what="look at the push first")
+        self.assertIsNone(ahead.for_next(self.p))
+        book(self.p, "A-61", root="R2")
+        self.assertEqual(ahead.for_next(self.p)["row"], "A-61")
+
+    def test_mute_said_anyway_is_a_right_prediction_not_in_time_so_a_muted_class_can_lift(self):
+        book_class(self.p, "unpushed", "R1", ["said_anyway"] * 3 + ["miss"] * 7)
+        self.assertEqual(ahead.muted_keys(self.p), set(), "3 of 10 right, said anyway among them, is the floor")
+        book_class(self.p, "cpu", "R1", ["said_anyway"] * 2 + ["miss"] * 8)
+        self.assertEqual(ahead.muted_keys(self.p), {("cpu", "R1")})
+        d = next(x for x in ahead.classes(self.p) if x["probe"] == "unpushed")
+        self.assertEqual((d["said_anyway"], d["hit"], d["precision"]), (3, 0, 0.3), "kept distinct in the table")
+
+    def test_mute_a_muted_class_lifts_when_its_captured_rows_are_said_anyway(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * ahead.PREC_N)
+        self.assertEqual(ahead.muted_keys(self.p), {("unpushed", "R1")})
+        book_class(self.p, "unpushed", "R1", ["said_anyway"] * 4, start=50)
+        self.assertEqual(ahead.muted_keys(self.p), set())
+
+    def test_mute_a_muted_tell_is_captured_as_a_muted_do_is(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * ahead.PREC_N)
+        book(self.p, "A-70", root="R1", kind="tell", what="look at the push first")
+        self.assertEqual(ahead.tells(self.p), [], "hidden")
+        made = ahead.act_captures(self.p)
+        self.assertEqual(len(made), 1)
+        self.assertEqual(next(r for r in self.rows() if r["id"] == "A-70")["how"], "captured")
+        self.assertEqual(ahead.act_captures(self.p), [], "once")
+
+    def test_mute_a_live_tell_is_not_captured(self):
+        book(self.p, "A-70", root="R1", kind="tell", what="look at the push first")
+        self.assertEqual(ahead.act_captures(self.p), [])
+        self.assertEqual(len(ahead.tells(self.p)), 1)
+
+    def _small(self):
+        return (mock.patch.object(ahead, "ROWS_MAX", 3000), mock.patch.object(ahead, "ROWS_KEEP", 2500))
+
+    def _fill(self, n=6):
+        for i in range(n):
+            book(self.p, f"A-{i + 1}", verdict="dropped", text="x" * 300)
+
+    def test_mute_survives_the_trim_of_its_old_scored_rows(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * ahead.PREC_N)
+        self._fill()
+        a, b = self._small()
+        with a, b:
+            self.assertTrue(ahead.trim(self.p))
+        self.assertFalse(any(r["id"].startswith("S-") for r in self.rows()), "the class's rows are gone from the file")
+        self.assertEqual(ahead.muted_keys(self.p), {("unpushed", "R1")})
+        d = ahead.classes(self.p)[0]
+        self.assertEqual((d["scored"], d["miss"], d["muted"]), (ahead.PREC_N, ahead.PREC_N, True))
+        row = book(self.p, "A-90", root="R1")
+        self.assertFalse(ahead.may_continue(self.p, row))
+
+    def test_a_rare_class_reaches_the_window_across_trims(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * 6)
+        self._fill()
+        a, b = self._small()
+        with a, b:
+            ahead.trim(self.p)
+        self.assertEqual(ahead.muted_keys(self.p), set())
+        self.assertTrue(ahead.classes(self.p)[0]["too_few"])
+        book_class(self.p, "unpushed", "R1", ["miss"] * 4, start=6)
+        self.assertEqual(ahead.muted_keys(self.p), {("unpushed", "R1")})
+        self.assertEqual(ahead.classes(self.p)[0]["scored"], 10)
+
+    def test_a_trim_is_skipped_while_ahead_lock_is_held(self):
+        import fcntl
+        book_class(self.p, "unpushed", "R1", ["miss"] * 3)
+        self._fill()
+        path = os.path.join(self.p.dir, ahead.ROWS)
+        before = open(path, "rb").read()
+        fd = os.open(os.path.join(self.p.dir, "ahead.lock"), os.O_CREAT | os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        a, b = self._small()
+        with a, b:
+            self.assertFalse(ahead.trim(self.p), "a tick or a score holds the lock: this trim waits for the next tick")
+        self.assertEqual(open(path, "rb").read(), before)
+        self.assertFalse(os.path.exists(os.path.join(self.p.dir, ahead.TALLY)), "and folds nothing")
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        with a, b:
+            self.assertTrue(ahead.trim(self.p))
+
+    def test_a_deleted_rows_file_drops_the_tally_so_new_rows_are_counted(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * 3)
+        self._fill()
+        a, b = self._small()
+        with a, b:
+            ahead.trim(self.p)
+        self.assertEqual(ahead.classes(self.p)[0]["scored"], 3)
+        os.remove(os.path.join(self.p.dir, ahead.ROWS))
+        self.assertEqual(ahead.classes(self.p), [], "no rows file: no stale tally either")
+        self.hits = {"unpushed": "x"}
+        self.steer("old", missed="push it", hours=3)
+        self.model(block())
+        got = ahead.tick(self.p, reply="done", turn="t1")
+        self.assertEqual(got["rows"][0]["id"], "A-1")
+        scored(self.p, "A-1", "hit")
+        d = ahead.classes(self.p)
+        self.assertEqual(sum(x["scored"] for x in d), 1, "the new A-1 is not skipped as already folded")
+        self.assertFalse(os.path.exists(os.path.join(self.p.dir, ahead.TALLY)))
+
+    def test_a_trim_counts_each_scored_row_once_even_if_it_runs_twice_over_the_same_rows(self):
+        book_class(self.p, "unpushed", "R1", ["hit"] * 3)
+        self._fill()
+        a, b = self._small()
+        with a, b:
+            ahead.trim(self.p)
+            ahead.trim(self.p)
+        self.assertEqual(ahead.classes(self.p)[0]["scored"], 3)
+
+    def test_a_crash_between_the_tally_write_and_the_trim_does_not_count_a_row_twice(self):
+        book_class(self.p, "unpushed", "R1", ["hit"] * 3)
+        old = [r for r in self.rows() if r.get("outcome")]
+        ahead._fold(self.p, old)   # the tally is written, then the process dies before the file is cut
+        ahead._fold(self.p, old)   # the next trim meets the same rows
+        self.assertEqual(ahead.classes(self.p)[0]["scored"], 3, "rows still in the file are not counted on top of the tally")
+
+    def test_the_status_line_counts_the_rows_the_trim_folded_into_the_tallies(self):
+        book_class(self.p, "unpushed", "R1", ["prevented", "miss"])
+        self._fill()
+        a, b = self._small()
+        with a, b:
+            ahead.trim(self.p)
+        self.assertEqual(ahead.caught(self.p), {"caught": 1, "scored": 2})
+
+    def test_top_and_tells_read_no_class_tallies_until_a_candidate_exists(self):
+        book(self.p, "A-1", verdict="dropped")
+        book(self.p, "A-2", acted=True)
+        with mock.patch.object(ahead, "muted_keys", side_effect=AssertionError("read the tallies for nothing")):
+            self.assertIsNone(ahead.top(self.p))
+            self.assertEqual(ahead.tells(self.p), [])
+        book(self.p, "A-3")
+        seen = []
+        real = ahead.muted_keys
+        with mock.patch.object(ahead, "muted_keys", lambda p: seen.append(1) or real(p)):
+            self.assertEqual(ahead.top(self.p)["id"], "A-3")
+        self.assertEqual(len(seen), 1, "read once, after the candidate")
+
+
+class Board(Ahead):
+    """The status line and the Board row: each only when rows exist, numbers from the scored rows only."""
+
+    def test_board_the_status_line_is_none_with_zero_rows(self):
+        self.assertIsNone(ahead.status_line(self.p))
+        self.assertNotIn("caught before you noticed", self.fm("status").stdout)
+
+    def test_board_the_status_line_is_one_line_with_the_caught_count_once_rows_are_scored(self):
+        book(self.p, "A-1")
+        book(self.p, "A-2")
+        scored(self.p, "A-1", "prevented")
+        scored(self.p, "A-2", "miss")
+        line = ahead.status_line(self.p)
+        self.assertEqual(line, "Foresight: caught before you noticed: 1 of 2 scored (sampo ahead)")
+        self.assertNotIn("\n", line)
+        self.assertIn(line, self.fm("status").stdout)
+
+    def test_board_the_status_line_with_rows_none_scored_says_how_many_are_booked(self):
+        book(self.p, "A-1")
+        self.assertEqual(ahead.status_line(self.p), "Foresight: 1 prediction booked, none scored yet (sampo ahead)")
+
+    def test_board_the_verb_table_lists_hits_misses_prevented_and_muted_classes(self):
+        book_class(self.p, "unpushed", "R1", ["miss"] * ahead.PREC_N)
+        book_class(self.p, "cpu", "R2", ["hit", "prevented", "said_anyway"])
+        out = self.fm("ahead").stdout
+        for word in ("hit", "miss", "said anyway", "prevented", "MUTED", "too few"):
+            self.assertIn(word, out)
+        line = {x.split(":")[0].split()[0]: x for x in out.splitlines() if x.startswith("  ")}
+        self.assertIn("MUTED", line["unpushed"])
+        self.assertIn("too few", line["cpu"])  # three scored rows: too few to be muted, and it says so
+
+    def test_board_the_part_state_carries_the_caught_count_only_when_rows_exist(self):
+        self.assertNotIn("caught", board.part_state(self.p) or {})
+        book(self.p, "A-1")
+        scored(self.p, "A-1", "prevented")
+        self.assertEqual(board.part_state(self.p)["caught"], {"caught": 1, "scored": 1})
 
 
 class ActHook(HookCase):

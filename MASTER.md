@@ -108,7 +108,7 @@ One line per module, so two changes to different modules never touch the same li
 - Taste follow-ups (T-1672, `fmtaste`): `sampo looks roll` draws the look of the… [→ files-lib-1](docs/map/files-lib-1.md)
 - Upstream watch (T-1391, `fmscout`): a stale skill source whose remote HEAD… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmagents` (`sampo agents list|install|uninstall codex|gemini|opencode`: `list`… [→ files-lib-1](docs/map/files-lib-1.md)
-- `fmahead` (T-4662: `sampo ahead [--tick]`, a local model predicts the user's next steer, each prediction checked against live state… [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmahead` (T-4662: `sampo ahead [--tick]` (T-4665: each prediction is scored against the next message; a class under 30% precision is muted), a local model predicts the user's next steer, each prediction checked against live state… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmambient` (`sampo check ambient on`: the affected tests run detached after… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmanergy` (T-2563, gen-2 moonshot: anergy for permission prompts [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmobjections` (T-3276: `sampo audit ahead ID` lists the objections past reviews raised on the task's diff, before the review: the same files (cli._past_nits), then their folders, then the defect classes the added lines cue; rejected and own findings left out; 8 rows at most… [→ files-lib-1](docs/map/files-lib-1.md)

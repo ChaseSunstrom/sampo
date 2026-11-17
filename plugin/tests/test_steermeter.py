@@ -435,6 +435,25 @@ class Detached(Meter):
             self.assertEqual(sm.tick(self.p)["read"], 0)
         self.assertEqual(len(self.prompts), sm.LIMIT)
 
+    def test_detached_the_tick_scores_the_predictions_only_after_it_lets_go_of_its_lock(self):
+        # T-4665: ahead.score makes model calls (minutes in the worst case); the steer meter's lock is not held for them
+        import fcntl
+        from sampo import ahead
+        self.session([self.user("one")])
+        self.model(reply())
+        seen = []
+
+        def score(p):
+            with open(os.path.join(p.dir, "steers.lock"), "a") as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    seen.append("free")
+                except BlockingIOError:
+                    seen.append("held")
+        with mock.patch.object(ahead, "score", score):
+            sm.tick(self.p)
+        self.assertEqual(seen, ["free"])
+
     def test_detached_a_second_tick_while_one_runs_does_nothing(self):
         import fcntl
         self.session([self.user("one")])

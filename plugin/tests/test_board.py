@@ -363,6 +363,27 @@ class Model(SampoTestCase):
         self.assertEqual(cpu["foot"]["text"], "no CPU reading yet")
         self.assertFalse(cpu["data"]["known"])
 
+    def test_the_sampo_footer_keeps_its_ok_count_and_adds_the_caught_figure_only_when_predictions_are_scored(self):
+        # T-4665: foresight's "caught before you noticed" sits beside the command stat, never in its place
+        base = json.loads(read_text(os.path.join(FIX, "snap-5.json")))
+        base["board"]["commands"] = [{"at": "2026-11-07T10:00:00Z", "cmd": "sampo next", "ok": True},
+                                     {"at": "2026-11-07T10:01:00Z", "cmd": "sampo state", "ok": False}]
+        cases = []
+        for caught in (None, {"caught": 1, "scored": 0}, {"caught": 2, "scored": 5}):
+            s = json.loads(json.dumps(base))
+            s["board"]["state"] = dict(s["board"].get("state") or {})
+            s["board"]["state"].pop("caught", None)
+            if caught:
+                s["board"]["state"]["caught"] = caught
+            cases.append([s, []])
+        foots = [next(p for p in m["m"]["panels"] if p["key"] == "sampo")["foot"] for m in self.run_model(cases)]
+        for f in foots:
+            self.assertEqual(f["stat"], "1/2 ok", "the existing stat stays")
+            self.assertTrue(f["text"].startswith("$ sampo state"))
+        self.assertEqual(foots[0]["text"], "$ sampo state", "no rows: no caught figure")
+        self.assertEqual(foots[1]["text"], "$ sampo state", "rows booked, none scored: no caught figure")
+        self.assertEqual(foots[2]["text"], "$ sampo state · caught before you noticed: 2 of 5")
+
     def test_every_panel_draws_empty_typical_and_huge_data_at_every_size_without_a_fault(self):
         node = shutil.which("node")
         if not node:

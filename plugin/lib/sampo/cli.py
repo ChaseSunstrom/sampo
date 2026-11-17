@@ -133,6 +133,18 @@ def cmd_init(args):
               file=sys.stderr)
 
 
+def _foresight_line(p):
+    """T-4665: `sampo status`'s one foresight line, once a prediction is booked (sampo ahead); nothing with no rows, and a
+    read that fails never costs the status."""
+    try:
+        from sampo import ahead
+        line = ahead.status_line(p)
+        if line:
+            print(line)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def cmd_state(args):
     p = resolve(args, create=not args.line)  # T-0962: a status bar polling --line never creates a project
     if not args.line:  # T-1267: a /rewind or a revert took back a done step's files: reopen it
@@ -142,8 +154,9 @@ def cmd_state(args):
             print(c.rewind_note(hit) + "\n")
     sd = c.state_dict(p)
     if args.cmd == "status" and not (args.line or args.json) and not c.load_briefs(p):  # T-0847: nothing yet
-        return print(f"{p.slug}: no tasks yet. Start with sampo capture \"<request>\" or sampo task new \"<title>\" --type FIX "
-                     f"--tier S --focus (or just give Claude a request)." + (f" PAUSED, {c.pause_line()}." if sd.get("panic") else ""))
+        print(f"{p.slug}: no tasks yet. Start with sampo capture \"<request>\" or sampo task new \"<title>\" --type FIX "
+              f"--tier S --focus (or just give Claude a request)." + (f" PAUSED, {c.pause_line()}." if sd.get("panic") else ""))
+        return _foresight_line(p)
     if not args.line:  # T-2273: reads closed briefs and the ledger, so never on a status bar's poll
         try:
             got = c.unproven_summary(p)
@@ -189,6 +202,7 @@ def cmd_state(args):
                     print(line)
             except Exception:
                 pass
+            _foresight_line(p)
             try:  # T-4239: how long the newest land took from accept to live, and the ship that outlived it
                 from sampo import train
                 for line in (train.land_line(p), train.ship_line(p)):

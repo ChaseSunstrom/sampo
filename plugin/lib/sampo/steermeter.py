@@ -512,6 +512,7 @@ def tick(p, limit=None):
         cn.note_plans(p)  # T-4524: the plans the open concerns name, for the drive's hook path; no model
     except Exception:  # a bad plan file never holds the steer meter's read
         pass
+    score = False
     fd = os.open(os.path.join(p.dir, "steers.lock"), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
@@ -569,9 +570,16 @@ def tick(p, limit=None):
         memo.update(fresh)
         live = {os.path.basename(x)[:-6] for x in paths}
         c.write_atomic(_memo_path(p), json.dumps({k: v for k, v in memo.items() if k in live}))
+        score = True
         return out
     finally:
         os.close(fd)
+        if score:  # T-4665: the predictions these messages answer are scored once the meter's lock is let go (ahead.score:
+            try:  # its own lock and local calls, up to two minutes: a Stop hook's tick must never wait on them)
+                from sampo import ahead
+                ahead.score(p)
+            except Exception:  # noqa: BLE001 - scoring is best effort; the steer tick's own output is already written
+                pass
 
 
 def fold_rows(p, limit=None):

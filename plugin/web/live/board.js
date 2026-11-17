@@ -206,6 +206,7 @@ const SampoBoard = (() => {
       queue: (A ? spread(q, 8) : q.slice(0, 8)).map((x) => ({...(A ? A.mark(x) : {}), id: str(obj(x).id, 12), title: str(obj(x).title, 64),
         status: str(obj(x).status, 10), tier: str(obj(x).tier, 2), type: str(obj(x).type, 10)})),
       queued: q.length,
+      caught: obj(b.state).caught ? {caught: int(obj(b.state).caught.caught), scored: int(obj(b.state).caught.scored)} : null,  // T-4665
       deps: arr(b.deps).slice(0, 40).map((d) => arr(d).slice(0, 4).map((x) => str(x, 12))).filter((d) => d.length > 1)};
   }
 
@@ -265,8 +266,12 @@ const SampoBoard = (() => {
         : "no GPU reading", stat: `${d.loaded} loaded`, pct: d.gpu ? d.gpu.util : null}}),
     sampo: (d) => {
       const last = d.commands[d.commands.length - 1], ok = d.commands.filter((c) => c.ok).length;
+      // T-4665: the command count stays the stat; once predictions are scored, what they caught before the user said it
+      // trails the footer's text (fitDom sheds a trailing " · " part first when the width is short)
+      const c = d.caught && d.caught.scored ? `caught before you noticed: ${d.caught.caught} of ${d.caught.scored}` : null;
       return {label: `${fmt(d.queued)} queued`,
-        foot: {text: last ? `$ ${last.cmd}` : "no sampo commands seen yet", stat: d.commands.length ? `${ok}/${d.commands.length} ok` : ""}};
+        foot: {text: (last ? `$ ${last.cmd}` : "no sampo commands seen yet") + (c ? ` · ${c}` : ""),
+          stat: d.commands.length ? `${ok}/${d.commands.length} ok` : ""}};
     },
     state: (d) => ({label: "state/",
       foot: {text: d.known ? `${plural(d.tree.length, "entry", "entries")} · newest ${d.newest || "—"}` : "the state folder isn't read yet",

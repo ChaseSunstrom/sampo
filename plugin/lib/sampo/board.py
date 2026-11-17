@@ -185,8 +185,16 @@ def part_state(p):
             doc = {"kind": "decision", "title": _t(row["text"], 80), "text": _t(row["why"], 240), "at": _t(row["date"], 32)}
     except OSError:
         pass
-    return {"tree": [{"name": _t(n, 32), "dir": d, "at": c.iso(t), "n": k, "kb": kb} for t, n, d, k, kb in tree],
-            "newest": _t(newest, 32), "doc": doc}
+    out = {"tree": [{"name": _t(n, 32), "dir": d, "at": c.iso(t), "n": k, "kb": kb} for t, n, d, k, kb in tree],
+           "newest": _t(newest, 32), "doc": doc}
+    try:  # T-4665: the foresight numbers for the sampo panel's stat, only once predictions are booked
+        from sampo import ahead
+        got = ahead.caught(p)
+        if got is not None:
+            out["caught"] = got
+    except Exception:  # noqa: BLE001 - a foresight read never breaks the state panel
+        pass
+    return out
 
 
 def part_tests(p):
