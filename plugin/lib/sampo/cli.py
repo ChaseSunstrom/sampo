@@ -6169,8 +6169,14 @@ def _cmd_check(args):
         if args.words[:1] == ["run"]:  # the detached run an edit starts
             from sampo import ambient
             return ambient.run(p) or 0
+        if args.words[:1] == ["edits"]:  # T-3277: the last keep/neutral/harmful ruling per edited file
+            from sampo import editverdict
+            rows = editverdict.last(p)
+            # the root is an absolute path under the home folder: the rows are this project's own, so it is dropped
+            return out(args, {"edits": [{k: v for k, v in r.items() if k != "root"} for r in rows]},
+                       editverdict.render(rows))
         if args.words[:1] not in (["on"], ["off"]):
-            raise UsageError("sampo check ambient on|off")
+            raise UsageError("sampo check ambient on|off|edits")
         with c.lock(p.dir):
             meta = c.read_meta(p)
             meta["ambient"] = args.words[0] == "on"
@@ -9504,7 +9510,8 @@ def _build_parser(only=None):
                                             "library and name the unread ones, `ratchet` records each one's size "
                                             "as its new ceiling (T-1505); office: FILE (.xlsx, .xlsm, .docx), then its "
                                             "checks: no error cells or broken fields, and --cell, --sheets, --contains "
-                                            "(a verify command: exit 1 when one fails; T-1406)")
+                                            "(a verify command: exit 1 when one fails; T-1406); ambient: on, off, or "
+                                            "edits (each edited file's last keep/neutral/harmful ruling, T-3277)")
     s.add_argument("--cell", action="append", metavar="SHEET!REF=VALUE", help="office: a workbook cell's value, "
                                                                             "e.g. 'Sheet1!B7=42' (repeatable)")
     s.add_argument("--sheets", type=int, metavar="N", help="office: the workbook's sheet count")

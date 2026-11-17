@@ -8,6 +8,7 @@ import os
 import re
 
 from sampo import core as c
+from sampo import editverdict
 from sampo.core import subprocess  # T-3577: imported on first use
 
 RERUNS = 3  # edits that land during a run trigger at most this many reruns, then the next edit starts a new one
@@ -25,7 +26,13 @@ def _dir(p):
 
 def after_edit(p, path):
     """The PostToolUse hook's call after an edit: start a run, or mark the running one dirty so it runs again."""
-    if not c.read_meta(p).get("ambient") or not path.startswith(p.root.rstrip("/") + "/") or c.host_strain() \
+    if not c.read_meta(p).get("ambient") or not path.startswith(p.root.rstrip("/") + "/"):
+        return
+    try:  # T-3277: the file waits for the next run, which rules it keep/neutral/harmful; never breaks the hook
+        editverdict.queue(p, path)
+    except OSError:
+        pass
+    if c.host_strain() \
             or c.gates_live(p, here=True) \
             or c.gates_live(p, key="ship_testing"):  # T-1965, T-1984: no second suite beside full gates or fm ship's run
         # ponytail: an edit during fm ship's run waits for the next edit or the close gates, no run after the ship
@@ -71,9 +78,12 @@ def run(p):
                 os.unlink(os.path.join(d, "dirty"))
             except OSError:
                 pass
+            edited = editverdict.take(p)  # T-3277: the files edited since the last run: this run rules them
             cmd, tests, _ = cli.affected(p)
             if not cmd:  # an edit that undid the change selects nothing; a failing last run still needs its answer
                 cmd, tests = _last_failing(p)
+                if not cmd and edited:  # nothing linked to what was edited: neutral, no run
+                    _rule(p, edited, None, {}, 0, c.active_brief(c.load_briefs(p), p.lane))  # no run: neutral
             try:  # T-0901: the affected template is a stored command; one the guard refuses never runs here
                 if cmd:
                     cli.guard_stored(p, None, cmd)
@@ -97,13 +107,18 @@ def run(p):
                         _say(p, f"Ambient tests: {cut}: {c.fit(cmd, 150)}", keep_red=True)  # never over an unread red
                         c.log_event(p, "ambient_cut", data={"tests": len(tests), "exit": code, "limit": limit})
                     else:
-                        _record(p, cmd, tests, code, output)
+                        _record(p, cmd, tests, code, output, edited)
                         _write_pass(p, cmd, before, code)
+            editverdict.release(p)  # T-3277: a batch no ledger line was written for (skipped, cut, refused) waits again
             if not os.path.exists(os.path.join(d, "dirty")):
                 break
     except Exception as e:  # never a crash in a detached run: one line in the folder says why
         c.write_atomic(os.path.join(d, "error.txt"), f"{type(e).__name__}: {e}\n")
     finally:
+        try:
+            editverdict.release(p)  # T-3277: a run that raised before ruling its batch leaves the edits queued
+        except OSError:
+            pass
         try:
             os.unlink(pid)
         except OSError:
@@ -183,21 +198,43 @@ def _last_failing(p):
     return (last.get("cmd"), last.get("tests") or []) if last.get("exit") else (None, [])
 
 
-def _record(p, cmd, tests, code, output):
+def _prev(p):
+    """The exit of the run before this one (None: none yet)."""
+    try:
+        with open(os.path.join(_dir(p), "last.json")) as f:
+            return json.load(f).get("exit")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def _rule(p, files, code, linked, tests, act, prev=False):
+    """T-3277: one ledger line per edited file, then the taken batch is done; the files ruled harmful (a linked one
+    first: the note names it before the bystanders of its batch). A ledger that cannot be written never breaks the run
+    (the flip note still goes out, the batch stays queued)."""
+    try:
+        rows = editverdict.record(p, files, _prev(p) if prev is False else prev, code, linked, act.id if act else None,
+                                  tests)
+        editverdict.done(p)
+        return [r["file"] for r in sorted(rows, key=lambda r: not r["linked"]) if r["verdict"] == editverdict.HARMFUL]
+    except Exception as e:
+        c.log_event(p, "ambient_ledger_failed", data={"why": c.fit(c.plain(str(e)), 200)})
+        return []
+
+
+def _record(p, cmd, tests, code, output, edited=()):
     d = _dir(p)
     last = os.path.join(d, "last.json")
-    try:
-        with open(last) as f:
-            prev = json.load(f).get("exit")
-    except (OSError, ValueError):
-        prev = None
-    c.write_atomic(last, json.dumps({"cmd": cmd, "tests": tests, "exit": code, "ts": c.now()}))
+    prev = _prev(p)
     act = c.active_brief(c.load_briefs(p), p.lane)
+    harmful = _rule(p, list(edited), code, editverdict.linked_for(p, edited, tests), len(tests), act, prev=prev) \
+        if edited else []  # T-3277: ruled against the exit before this run, which last.json is about to replace
+    c.write_atomic(last, json.dumps({"cmd": cmd, "tests": tests, "exit": code, "ts": c.now()}))
     cur = act.current_step() if act else None
     if code and (prev is None or not prev):
         # T-1275: the failing tests' own names, then the command; never the runner's timing or class counts
         bad = list(dict.fromkeys(m.group(1) or m.group(2) for m in FAILED.finditer(c.redact(output)[:200000])))
-        head = f"Ambient tests: ✗ now fail ({', '.join(c.fit(b, 50) for b in bad[:3]) if bad else f'exit {code}'}): "
+        head = f"Ambient tests: ✗ now fail ({', '.join(c.fit(b, 50) for b in bad[:3]) if bad else f'exit {code}'})"
+        head += (f" after editing {editverdict.names(harmful)}" if harmful else "") + ": "
         text = head + c.fit(cmd, max(20, 220 - len(head)))
     elif not code and prev:
         # T-0994: a pass is no proof the step is done (recorded as evidence, it closed steps mid-work); when it is:

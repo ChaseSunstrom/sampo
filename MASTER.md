@@ -150,6 +150,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmspar` (T-3281: `sampo spar`), the nightly hook fuzz: mutated payloads through every hook… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmeco` (`sampo projects --sweep`, `sampo adopt`, `sampo inbox gh`… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmedit` (T-1089: `sampo edit` and `sampo sub`, many exact replacements in one… [→ files-lib-5](docs/map/files-lib-5.md)
+- `fmeditverdict` (T-3277: `sampo check ambient edits`, each edited file ruled keep/neutral/harmful by the ambient replay… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmevolve` (`sampo evolve`: one bench-gated generation revising or ablating one… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmexam` (T-2524: kind package, #10 beside beyond, Python only (PY_ONLY: draw… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmextras`… [→ files-lib-2](docs/map/files-lib-2.md)
