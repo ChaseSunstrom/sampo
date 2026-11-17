@@ -1282,13 +1282,16 @@ def task_base(root, b):
 def lane_base(root, b):
     """T-3696: where a lane's own changes start, for picking tests: once the lane merged the main checkout's branch,
     the merge-base of its HEAD and the main checkout's HEAD (when it descends from the task's start commit), so the
-    files main changed since aren't the lane's. Else task_base; the main checkout (no main worktree) always is."""
+    files main changed since aren't the lane's. Else task_base; the main checkout (no main worktree) always is.
+    T-4908: a lane whose task has no start left (captured, then handed a lane by hand; or a snapshot git pruned) answers
+    from where it left the main checkout's branch, not HEAD, which would count nothing as changed."""
     start, main = b.meta.get("base"), main_worktree(root)
-    tip = _git(main, "rev-parse", "HEAD", timeout=10).strip() if main and start else ""
+    tip = _git(main, "rev-parse", "HEAD", timeout=10).strip() if main else ""
     mb = _git(root, "merge-base", "HEAD", tip, timeout=10).strip() if tip else ""
-    if mb and mb != start and _git(root, "merge-base", "--is-ancestor", start, mb, timeout=10, proc=True).returncode == 0:
+    if mb and start and mb != start and _git(root, "merge-base", "--is-ancestor", start, mb, timeout=10,
+                                             proc=True).returncode == 0:
         return mb
-    return task_base(root, b)
+    return task_base(root, b) or mb or None  # T-4908: no start left (none recorded, or pruned): the merge-base
 
 
 def merged_in(root, b):

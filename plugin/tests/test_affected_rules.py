@@ -87,6 +87,20 @@ class AffectedLaneBase(ForemanTestCase):
         self.assertIn("src/mine.py", changed)
         self.assertIn("tests/test_mine.py", tests)
 
+    def test_a_lane_task_with_no_start_commit_answers_from_the_merge_base_with_main(self):
+        """T-4908: a hand-made lane's task had no base, so --affected counted from HEAD (nothing changed) and a change to
+        fmguard.py passed its lane check on 4 classes"""
+        from sampo import cli
+        p = c.find_project(self.lane, create=False)
+        b = c.active_brief(c.load_briefs(p), p.lane)
+        for k in ("base", "base_tree"):
+            b.meta.pop(k, None)
+        c.save_brief(p, b)
+        _, tests, changed = cli.affected(p)
+        self.assertIn("src/mine.py", changed)
+        self.assertIn("tests/test_mine.py", tests)
+        self.assertNotIn("src/theirs.py", changed)
+
     def test_no_main_worktree_or_the_main_checkout_keeps_the_task_base(self):
         from unittest import mock
         from sampo import cli
