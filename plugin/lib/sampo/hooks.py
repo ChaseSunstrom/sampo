@@ -23,7 +23,8 @@ CTX_BUDGET = 1500       # SessionStart additionalContext, mandate and leads incl
 PROMPT_BUDGET = 400     # UserPromptSubmit additionalContext
 NOTE_BUDGET = 200       # PreToolUse scope note
 DRIVE_MAX = 50          # consecutive drive continuations without a user prompt
-DRIVE_LINE = 160        # T-3163: the drive's push is printed in the terminal: one line naming the one next action
+SIDE_PLAN_READ = 8      # T-4853: the briefs one stop reads for the side-work line's planning names (plan_gaps each)
+DRIVE_LINE = 160       # T-3163: the drive's push is printed in the terminal: one line naming the one next action
 OFFERS_MAX = 3          # T-0401: queued tasks offered, one per Stop, while one set of background jobs runs
 WAIT_REPUSH_S = 600     # T-3163: the background-wait push, at most once per active task per this many seconds
 CONCERN_SLACK_S = 120   # T-4202: a message is stamped before its prompt hook runs; a concern opened this long before the turn counts
@@ -6252,7 +6253,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         # T-0364: once per running set, work on what doesn't need it instead of idling (357 waits vs 11 pushes)
         d.update(count=d.get("count", 0) + 1, marks=_marks(p))
         # the queue and inbox are the user's own requests, never optional: only side offers wait on pace (review)
-        more = [x["id"] for x in sd["queue"] + (sd["inbox"] if full else []) if x["id"] != work["id"] and x["id"] not in blocked][:3]
+        more = [x["id"] for x in sd["queue"] + (sd["inbox"] if full else []) if x["id"] != work["id"] and x["id"] not in blocked][:SIDE_PLAN_READ]
         if not more and full and any(k in closes for k in running):  # T-4670: a close is under way (this task's or another's):
             return None  # not "check the product end to end" yet (the close ends the wait; the pass comes after it)
         if not more and full and d.get("drained") != len(briefs) and not c._round_first(p):  # T-0415: nothing queued: find
@@ -6263,6 +6264,10 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         # the pace note rides the head, never cut by the line's limit: it is why no side task is offered (T-1969)
         lead = "Sampo drive: background work runs" + (
             f". Optional work is dropped ({pace.split(' (')[0].split(' with ')[0]}): do" if pace else "; meanwhile do")
+        # T-4853: name only what a builder's brief would still refuse (the lane brief's plan_gaps rule): a fully planned
+        # item is no planning, and named on every stop it cost the session a turn each; none left: the step's own work
+        # (while usage runs ahead of pace no side offer is made, so the queue is the only "what comes next": named as is)
+        more = more[:3] if pace else _unplanned(more, briefs, p)
         return _line(f"{lead} what doesn't need it" + (f", like planning {', '.join(more)}" if more else ""),
                      [] if more else [": the next step's test, sampo audit prep, docs", ": the next step's test"],
                      [f". Its notification wakes you ({c.joinmore(running, 3)})"] + jm)
@@ -6403,6 +6408,24 @@ def _side_work(sd, briefs, work, full, offered, p, lane_only=False, startable=Fa
             continue
         return x
     return None
+
+
+def _unplanned(ids, briefs, p, most=3):
+    """T-4853: of the queued ids (already capped at SIDE_PLAN_READ), the first `most` whose plan a builder brief would
+    still refuse (core.plan_gaps, the rule lanes' brief applies); an id with no brief or a closed one is passed over."""
+    by_id = {b.id: b for b in briefs}
+    out = []
+    try:
+        auto = c.effective_autonomy(p)
+        for i in ids[:SIDE_PLAN_READ]:
+            b = by_id.get(i)
+            if b is not None and b.status not in c.CLOSED and c.plan_gaps(b, auto):
+                out.append(i)
+                if len(out) >= most:
+                    break
+    except Exception:  # a hook never fails on a hint: name nothing rather than the planned ones
+        return []
+    return out
 
 
 def _gates_running(p):

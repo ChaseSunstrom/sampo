@@ -3678,6 +3678,43 @@ class Stop(HookCase):
         offered = next(r for r in reasons if small in r)
         self.assertNotIn("sampo lane brief", offered, "both builder slots are taken")
 
+    def _side_work_line(self, planned, unplanned_after):
+        """The drive's 'meanwhile do what doesn't need it' reason with `planned` fully planned queued tasks, then
+        `unplanned_after` plan-less ones behind them, each already briefed for a lane (nothing is offered to start)."""
+        self.fm("init")
+        self.fm("autonomy", "full")
+        ids = [self.task(f"Planned {i}", focus=False) for i in range(planned)]
+        rough = [json.loads(self.fm("task", "new", f"Rough {i}", "--type", "FIX", "--tier", "S", "--json").stdout)["id"]
+                 for i in range(unplanned_after)]
+        self.task("Current work")
+        p = self.project()
+        for b in c.load_briefs(p):
+            if b.id in ids + rough:
+                b.meta["builder"] = "worktree"
+                c.save_brief(p, b)
+        self.hook("SubagentStart", {"agent_id": "a1", "agent_type": "sampo:fm-reviewer"})
+        reason = parse(self.stop("Waiting on the review.")).get("reason", "")
+        self.assertIn("meanwhile do", reason)
+        return reason, ids, rough
+
+    def test_side_work_planning_names_no_planned_task(self):  # T-4853
+        # the line said "like planning T-4404, T-4546, T-4735" on every stop after all three were planned
+        reason, ids, _ = self._side_work_line(4, 0)
+        self.assertFalse(any(i in reason for i in ids), reason)
+        self.assertNotIn("planning", reason)
+        self.assertIn("next step's test", reason, "no planning left: the next step's own work")
+
+    def test_side_work_planning_names_the_task_with_plan_gaps(self):  # T-4853
+        reason, ids, rough = self._side_work_line(3, 1)
+        self.assertIn(f"like planning {rough[0]}", reason)
+        self.assertFalse(any(i in reason for i in ids), "the planned ones before it are passed over")
+
+    def test_side_work_planning_cap_reads_eight_briefs(self):  # T-4853
+        # 7 planned, then two plan-less: the 8th read is named, the 9th is beyond the cap of 8 briefs per stop
+        reason, ids, rough = self._side_work_line(7, 2)
+        self.assertIn(rough[0], reason)
+        self.assertNotIn(rough[1], reason)
+
     def test_long_jobs_and_an_empty_queue_never_idle(self):
         # T-0415 (JARVIS 2026-10-09, the user: "it has been sitting idle still again"): a workflow and a shell that ran
         # for hours held every Stop in the wait branch, and with nothing else queued each turn ended to wait on CI
