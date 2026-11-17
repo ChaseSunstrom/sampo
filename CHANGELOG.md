@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- close sizes its linked-test run from the recorded seconds and refuses an oversized set at once instead of timing out (T-4832).
 - Orphan check names the class's ps row and gone() branch at 0, 5 and 9 s, and a failed killpg in the orphan path prints its errno (T-4829).
 - sampo ship and sampo release --push now judge commits made straight on the trunk with the self-change gate before pushing: a moved guard file is seen, a failed listing is held, one core yes per commit passes (a refusal logged by the old code has no sha, so a yes given for it covers nothing), commits a lane landed are skipped because every landing path (lane merge, train, serve, the PR t… (T-4805).
 - sampo cost --outputs counts every part of a context, not only tool results: thinking (an upper bound, only for replies with a thinking block), the model's own text, tool input, attachments by type (only the text the model receives: hook stdout and UI-only types count nothing, unknown types fall back to their non-metadata fields), compact summaries and task notices, main and subagents, w… (T-4830).
