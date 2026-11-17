@@ -779,8 +779,28 @@ def check_global(apply, actions, plugins=False):
                 shutil.rmtree(d, ignore_errors=True)
             actions.append(("global", "child_shells"))
     out += leftover_findings(apply, actions)
+    out += scratch_findings(apply, actions)
     if plugins:
         out += _check_plugins()
+    return out
+
+
+def scratch_findings(apply, actions):
+    """T-4735: trees in Sampo's own scratch root (<temp root>/sampo-scratch-<uid>/) left by an owner that is gone (a killed
+    train, a verify cut off). Each tree holds a lock beside it while its owner lives, so only a tree whose lock is free AND
+    whose owner pid is gone is listed or removed (--apply: the folder, its git registration, its lock file). Nothing
+    outside that root is ever read, and a young tree with no lock yet is left alone."""
+    found = c.scratch_leftovers()
+    if not found:
+        return []
+    n = len(found)
+    out = [finding(None, "scratch_leftovers", "action",
+                   f"{n} scratch tree{'s' if n > 1 else ''} left by a Sampo run that is gone "
+                   f"({c.joinmore([os.path.basename(f['path']) for f in found], 3)})",
+                   "remove them (lock free, owner gone)", auto=True)]
+    if apply:
+        gone = c.scratch_sweep(found)
+        actions.append(("global", f"scratch_leftovers:{len(gone)}"))
     return out
 
 

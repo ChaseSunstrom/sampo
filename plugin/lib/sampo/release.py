@@ -375,7 +375,7 @@ def _push_hold(p, b, root, commits, by):
         elif any(selfgate._judged(f) or f in selfgate.CASES for f in got[1]):
             todo.append((s, got[0], got[1]))
     if todo:
-        with tempfile.TemporaryDirectory() as tmp:
+        with c.scratch_dir("sampo-hold-", root) as tmp:  # T-4735: the owned scratch root
             wt = os.path.join(tmp, "hold")
             _git(root, "worktree", "add", "-q", "--detach", wt, todo[0][1])
             try:
@@ -416,7 +416,7 @@ def _push(ctx):
         _err(_NEED_GRANT)
     sha = ctx["state"].get("sha") or _err(f"no release commit recorded for {v}: fm release --abandon, then release again")
     _git(root, "fetch", "-q", remote, "main")
-    with tempfile.TemporaryDirectory() as tmp:
+    with c.scratch_dir("sampo-rel-", root) as tmp:  # T-4735
         wt = os.path.join(tmp, "rel")
         _git(root, "worktree", "add", "-q", "--detach", wt, "FETCH_HEAD")
         main = _git(wt, "rev-parse", "HEAD").strip()
@@ -1192,7 +1192,7 @@ def ship(p, args):
     if gate == "waited":  # the other ship ended: plan again from the moved main (it may carry these commits by now)
         os.environ["FOREMAN_SHIP_AT"] = at
         return ship(p, args)
-    with _Claimed(p), tempfile.TemporaryDirectory() as tmp:
+    with _Claimed(p), c.scratch_dir("sampo-ship-", root) as tmp:  # T-4735
         wt = os.path.join(tmp, "ship")
         _git(root, "worktree", "add", "-q", "--detach", wt, base)
         try:

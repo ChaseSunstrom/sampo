@@ -3642,7 +3642,7 @@ def pm_verify(p, main, sha):
     r = _pm_claim(p, sha)
     if not r:
         return
-    tmp = tempfile.mkdtemp(prefix="fm-verify-")
+    tmp = c.scratch_tree("fm-verify-", main)  # T-4735: the owned scratch root, locked while this lives
     wt = os.path.join(tmp, "wt")
     tries = r.get("tries", 0) + 1
     try:
@@ -3694,6 +3694,7 @@ def pm_verify(p, main, sha):
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)
+        c.scratch_release(tmp)
     if unrelated and not (flaky or inherited) and not reach:
         note = f"verified: green on {sha[:9]}; {', '.join(unrelated)} red but read none of {c.joinmore(files, 5)} (docs-only merge, unrelated)"
         pm_set(p, sha, state="green", unrelated=unrelated)
@@ -3872,7 +3873,7 @@ def pm_run(p, main):
 def _pm_green_at(p, main, sha, reds=None):
     """T-3446: the full suite on sha in a throwaway worktree; True only on a clean pass (a probe: no merge's record, but
     an uncached pass is recorded for fm ship, T-3666). `reds` (a list) gets a red run's failing classes (T-3800)."""
-    tmp = tempfile.mkdtemp(prefix="fm-verify-")
+    tmp = c.scratch_tree("fm-verify-", main)  # T-4735: the owned scratch root, locked while this lives
     wt = os.path.join(tmp, "wt")
     try:
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
@@ -3892,11 +3893,12 @@ def _pm_green_at(p, main, sha, reds=None):
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)
+        c.scratch_release(tmp)
 
 
 def _pm_cmd_green_at(main, sha, cmd):
     """T-3800: True when `cmd` (the red classes alone) passes on sha's tree, in a throwaway worktree."""
-    tmp = tempfile.mkdtemp(prefix="fm-verify-")
+    tmp = c.scratch_tree("fm-verify-", main)  # T-4735: the owned scratch root, locked while this lives
     wt = os.path.join(tmp, "wt")
     try:
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
@@ -3909,6 +3911,7 @@ def _pm_cmd_green_at(main, sha, cmd):
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(tmp, ignore_errors=True)
+        c.scratch_release(tmp)
 
 
 def _pm_first_red(main, todo, cmd):

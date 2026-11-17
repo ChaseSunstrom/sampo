@@ -3269,6 +3269,18 @@ def check_leftover_procs(found=_UNREAD, lines=None, kept=None):
                   "sampo tidy --apply ends them" + (f"; {away}" if away else ""))
 
 
+def check_scratch_leftovers():
+    """T-4735: trees left in Sampo's own scratch root by a run that is gone (lock free, owner pid dead). WARN with the count
+    and names; sampo tidy --apply removes them. A tree whose owner lives is never one of them."""
+    found = c.scratch_leftovers()
+    if not found:
+        return Result("scratch trees", "PASS", "no scratch tree left by a Sampo run that is gone")
+    n = len(found)
+    names = ", ".join(os.path.basename(f["path"]) for f in found[:3])
+    return Result("scratch trees", "WARN", f"{n} scratch tree{'s' if n > 1 else ''} left by a run that is gone "
+                  f"({names}{', ...' if n > 3 else ''}); sampo tidy --apply removes them")
+
+
 def check_landlock():
     """T-1607: whether fm code workers can be confined (Landlock); unavailable is a note, never a failure."""
     from sampo import landlock
@@ -3407,6 +3419,7 @@ def run_all(full=False, accept_supply=False):
     results.append(check_fsck(projects))
     results.append(check_cut_off_lanes(projects, getattr(c.find_project(os.getcwd()), "slug", None)))
     results.append(check_leftover_procs())
+    results.append(check_scratch_leftovers())
     results.append(check_landlock())
     results.append(check_sandbox())
     results.append(check_headless())

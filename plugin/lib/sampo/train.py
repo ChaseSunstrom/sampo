@@ -63,7 +63,8 @@ def _rebuilding(p, what, attempt):
             return attempt()
         except _Lost as e:
             with contextlib.suppress(Exception):
-                c.log_event(p, "lane_train_wt_gone", data={"n": n, "what": what, "tree": os.path.basename(str(e))})
+                c.log_event(p, "lane_train_wt_gone", data={"n": n, "what": what, "tree": os.path.basename(str(e)),
+                                                           **c.scratch_loss(str(e))})  # T-4735: folder, time, age, root
             if n == 1:
                 print(f"sampo lane train: {WT_GONE} ({what}); rebuilding it once", file=sys.stderr)
     raise c.PolicyError(f"{WT_GONE} again ({what}): the second loss, so it stops here with nothing landed, no lane blamed "
@@ -143,7 +144,7 @@ def _base_red(p, main, base, sub):
 
 def _base_red_once(main, base, sub):
     """_base_red's run on one scratch tree; raises _Lost when something else removes the tree (the caller reruns it once)."""
-    wt = tempfile.mkdtemp(prefix="sampo-base-")
+    wt = c.scratch_tree("sampo-base-", main)  # T-4735: in Sampo's own scratch root, locked while this process lives
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode:
             return ""
@@ -171,6 +172,7 @@ def _base_red_once(main, base, sub):
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(wt, ignore_errors=True)
+        c.scratch_release(wt)
 
 
 def _why_red(r, blame="", tail=None):
@@ -508,7 +510,7 @@ def _probe(p, main, base, b, tip, notes, tests=True):
 
 def _probe_once(p, main, base, b, tip, notes, cli):
     """_probe's work on one scratch tree (base + the lane merged); raises _Lost when something else removes the tree."""
-    wt = tempfile.mkdtemp(prefix="sampo-probe-")
+    wt = c.scratch_tree("sampo-probe-", main)  # T-4735
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode or _git(
                 wt, "-c", "user.name=sampo", "-c", "user.email=sampo@localhost", "merge", "--no-ff", "--no-edit",
@@ -561,6 +563,7 @@ def _probe_once(p, main, base, b, tip, notes, cli):
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(wt, ignore_errors=True)
+        c.scratch_release(wt)
         _git(main, "worktree", "prune")
 
 
@@ -834,9 +837,11 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     t1 = time.monotonic()
     if not cands:
         raise _none("nothing to merge: ", left)
-    wt = tempfile.mkdtemp(prefix="sampo-train-")  # outside the main checkout; git worktree add takes the empty dir
+    wt = c.scratch_tree("sampo-train-", main)  # outside the main checkout; git worktree add takes the empty dir (T-4735: in the scratch root)
     r = _git(main, "worktree", "add", "-q", "--detach", wt, base)
     if r.returncode:
+        shutil.rmtree(wt, ignore_errors=True)  # T-4735: before the try below: nothing else would remove the tree and its lock
+        c.scratch_release(wt)
         raise c.PolicyError(f"git worktree add failed: {r.stderr.strip()[:300]}")
     runs, probes, results, sub = [0], [0], [], None
     olds, head, lost = [wt], [base], [0]  # T-4728: the folders the train made; the commit the tree is at; losses so far
@@ -916,11 +921,11 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         if not wt_gone():
             return
         lost[0] += 1
-        c.log_event(p, "lane_train_wt_gone", data={"n": lost[0], "at": head[0][:9]})
+        c.log_event(p, "lane_train_wt_gone", data={"n": lost[0], "at": head[0][:9], **c.scratch_loss(wt)})  # T-4735
         if lost[0] > 1:
             raise c.PolicyError(f"{WT_GONE} again, at {head[0][:9]}: the second loss in this train, so it stops here with "
                                 "nothing landed and no lane blamed; run it again")
-        new = tempfile.mkdtemp(prefix="sampo-train-")  # a fresh path: the dead registration is the finally's to prune
+        new = c.scratch_tree("sampo-train-", main)  # a fresh path: the dead registration is the finally's to prune
         olds.append(new)  # the finally removes each folder the train made, and only those
         r = _git(main, "worktree", "add", "-q", "--detach", new, head[0])
         if r.returncode:
@@ -1304,6 +1309,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         for folder in olds:  # T-4728: each one the train made (the first, and one rebuilt after a loss), nothing else
             _git(main, "worktree", "remove", "--force", folder)
             shutil.rmtree(folder, ignore_errors=True)
+            c.scratch_release(folder)
         _git(main, "worktree", "prune")
 
 
@@ -3090,7 +3096,7 @@ def _batch_check(p, main, b, tip, peers, run=None):
 
 def _batch_once(p, main, b, tip, peers, run, base):
     """_batch_check's work on one scratch tree; raises _Lost when something else removes the tree."""
-    wt = tempfile.mkdtemp(prefix="sampo-batch-")
+    wt = c.scratch_tree("sampo-batch-", main)  # T-4735
     try:
         if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode:
             return []
@@ -3121,6 +3127,7 @@ def _batch_once(p, main, b, tip, peers, run, base):
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(wt, ignore_errors=True)
+        c.scratch_release(wt)
         _git(main, "worktree", "prune")
 
 

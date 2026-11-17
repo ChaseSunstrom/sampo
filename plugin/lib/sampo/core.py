@@ -1751,6 +1751,377 @@ def _head_detached(root):
     return bool(head) and not head.startswith("ref:")
 
 
+RUNLOCK = ".runlock"
+
+
+def lock_hold(path, blocking=True):
+    """T-4735 (T-4728's hold, moved here so Sampo's scratch trees and the test runner share it): the open lock file `path`
+    with an exclusive flock on it, created when missing, its content left alone; the lock is released when the file closes
+    or its process ends, however it ends. None when the lock can't be had (not blocking and held, or a folder it can't
+    write). A pid says nothing of a run in another pid namespace that shares this temp root, a lock does."""
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        return os.fdopen(fd, "r+")
+    except OSError:
+        os.close(fd)
+        return None
+
+
+def lock_held(path):
+    """T-4735: True when a live owner holds the lock file `path`. A missing file is nobody's: it is never created here."""
+    try:
+        with open(path) as f:  # read only
+            try:
+                fcntl.flock(f, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def hold(folder):
+    """T-4728: the lock a live test run keeps on its temp folder (tests/run.py keeps its own standalone copy of this pair:
+    it must run alone, without the lib, and a test holds the two to the same file and rule)."""
+    return lock_hold(os.path.join(folder, RUNLOCK))
+
+
+def held(folder):
+    return lock_held(os.path.join(folder, RUNLOCK))
+
+
+SCRATCH_ENV = "FOREMAN_SCRATCH_ROOT"  # tests (and anyone) name the scratch root; else <temp root>/sampo-scratch-<uid>
+SCRATCH_FALLBACK_PREFIX = "sampo-scratch-%d-"  # a private root made in the temp root when the named one is not ours
+SCRATCH_YOUNG_S = 600  # a folder in the root with no lock yet is being made until it is this old
+_SCRATCH = {}  # tree path -> (its open lock file, when it was made): the trees this process owns
+_SCRATCH_ELSEWHERE = {}  # a root that could not be used (a link, another user's) -> the private one made instead
+
+
+def scratch_base():
+    """T-4735: the folder Sampo's own long-lived scratch trees (a train's, a probe's, a post-merge verify's, a ship's) are
+    made in: <temp root>/sampo-scratch-<uid> (the temp root's own file system, so a memory one keeps its speed), or
+    $FOREMAN_SCRATCH_ROOT. Named for Sampo and the user, so no cleanup of the temp root by a tree's own name (sampo-train-*)
+    or by a prefix reaches it. Only the path: nothing is made."""
+    want = os.environ.get(SCRATCH_ENV) or os.path.join(gettempdir(), f"sampo-scratch-{os.getuid()}")
+    want = os.path.abspath(want)
+    return _SCRATCH_ELSEWHERE.get(want, want)
+
+
+def _own_dir(path):
+    """Make `path` (one level) a 0700 folder of this user's, True when it is one: a link, a file or another user's folder
+    in its place (a shared temp root is writable by everyone) is never used."""
+    import stat
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        pass
+    except OSError:
+        return False
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid():
+            return False
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            os.chmod(path, 0o700)
+    except OSError:
+        return False
+    return True
+
+
+def scratch_root(repo=None, create=True):
+    """T-4735: the scratch base, or with `repo` (a project's root folder) the project's own subfolder in it (its basename
+    and a short hash of its path). `create`: made 0700 when missing; False answers the path alone."""
+    base = scratch_base()
+    if repo is None:
+        path = base
+    else:
+        real = os.path.realpath(repo)
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(real))[:40] or "root"
+        path = os.path.join(base, f"{name}-{sha1(real.encode()).hexdigest()[:6]}")
+    if not create:
+        return path
+    intended = os.path.abspath(os.environ.get(SCRATCH_ENV) or os.path.join(gettempdir(), f"sampo-scratch-{os.getuid()}"))
+    if not _own_dir_chain(base):  # not ours: a private folder in its place for this process, never the planted one
+        _scratch_event(repo, "untrusted", root=base)
+        base = tempfile.mkdtemp(prefix=SCRATCH_FALLBACK_PREFIX % os.getuid())
+        _SCRATCH_ELSEWHERE[intended] = base
+        _scratch_register(base)
+        path = base if repo is None else os.path.join(base, os.path.basename(path))
+    if repo is not None and not _own_dir(path):
+        raise OSError(f"{path} is not a folder of this user's")
+    return path
+
+
+def _own_dir_chain(path):
+    with contextlib.suppress(OSError):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+    return _own_dir(path)
+
+
+def _trusted(path):
+    """T-4735: `path` is a real folder (not a link) of this user's that nobody else can enter or change: the only kind of
+    scratch root or project folder a listing or a removal goes into. The temp root is shared by everyone."""
+    import stat
+    try:
+        st = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid() and not st.st_mode & 0o077
+
+
+def _scratch_event(repo, reason, **data):
+    """T-4735: a `scratch_fallback` event in `repo`'s project ledger (the root could not be used, or a tree's lock could not
+    be made): the tree went somewhere less safe and this says why. Never raises, never makes a project."""
+    if not repo:
+        return
+    with contextlib.suppress(Exception):
+        p = find_project(repo, create=False)
+        if p:
+            log_event(p, "scratch_fallback", data={"reason": reason, **data})
+
+
+def _scratch_registry():
+    return os.path.join(state_dir(), "scratch-roots")
+
+
+def _scratch_register(root):
+    """Record a private fallback root (made in the temp root when the named one could not be used) so a later process's
+    doctor and tidy find its trees without ever listing the shared temp root."""
+    with contextlib.suppress(OSError):
+        os.makedirs(state_dir(), exist_ok=True)
+        with open(_scratch_registry(), "a") as f:
+            f.write(root + "\n")
+
+
+def scratch_bases():
+    """T-4735: every scratch root worth reading: the named one, then the private fallback roots recorded in the registry
+    (only those still there, ours and private, named as a fallback is; a gone one is dropped from the registry)."""
+    out = [scratch_base()]
+    try:
+        with open(_scratch_registry()) as f:
+            recorded = [ln.strip() for ln in f if ln.strip()]
+    except OSError:
+        return out
+    keep = []
+    for root in dict.fromkeys(recorded):
+        if os.path.lexists(root):
+            keep.append(root)
+            if (os.path.basename(root).startswith(SCRATCH_FALLBACK_PREFIX % os.getuid()) and _trusted(root)
+                    and root not in out):
+                out.append(root)
+    if len(keep) != len(dict.fromkeys(recorded)):
+        with contextlib.suppress(OSError):
+            with open(_scratch_registry(), "w") as f:
+                f.write("".join(r + "\n" for r in keep))
+    return out
+
+
+def scratch_tree(prefix, repo=None):
+    """T-4735: a new folder `prefix`<random> in the scratch root's folder for `repo` (instead of tempfile.mkdtemp's direct
+    place under the shared temp root), with a lock this process holds beside it (<tree>.lock: the tree itself stays empty
+    for `git worktree add`) until scratch_release. A root that can't be made, or a lock that can't, falls back to the temp
+    root, unlocked and so never swept, with a `scratch_fallback` event: an unlocked tree in the root would be taken for
+    abandoned, and removed under a live owner, once it is SCRATCH_YOUNG_S old."""
+    try:
+        tree = tempfile.mkdtemp(prefix=prefix, dir=scratch_root(repo))
+    except OSError as e:
+        _scratch_event(repo, "root", error=str(e)[:200])
+        return tempfile.mkdtemp(prefix=prefix)
+    lock = lock_hold(tree + ".lock")
+    if lock is None:
+        shutil.rmtree(tree, ignore_errors=True)
+        with contextlib.suppress(OSError):
+            os.unlink(tree + ".lock")
+        _scratch_event(repo, "lock", folder=tree)
+        return tempfile.mkdtemp(prefix=prefix)
+    now = time.time()
+    with contextlib.suppress(OSError):
+        lock.truncate(0)
+        lock.write(f"{os.getpid()} {now:.0f}\n")
+        lock.flush()
+    _SCRATCH[tree] = (lock, now)
+    return tree
+
+
+def scratch_release(tree):
+    """T-4735: end this process's hold on `tree`: the lock file goes, then the lock. Call it where the tree is removed."""
+    held_ = _SCRATCH.pop(tree, None)
+    if held_ is None:
+        return
+    with contextlib.suppress(OSError):
+        os.unlink(tree + ".lock")
+    held_[0].close()
+
+
+@_contextmanager
+def scratch_dir(prefix, repo=None):
+    """T-4735: scratch_tree for the `with`: the folder is removed and its lock released when the block ends."""
+    tree = scratch_tree(prefix, repo)
+    try:
+        yield tree
+    finally:
+        shutil.rmtree(tree, ignore_errors=True)
+        scratch_release(tree)
+
+
+def scratch_held(tree):
+    return lock_held(tree + ".lock")
+
+
+def _owner(lock):
+    """(pid, made-at) written in a tree's lock file, (0, 0) when unreadable."""
+    try:
+        with open(lock) as f:
+            pid, at = f.readline().split()[:2]
+        return int(pid), float(at)
+    except (OSError, ValueError):
+        return 0, 0.0
+
+
+def _alive(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OverflowError, OSError):
+        return True
+    return True
+
+
+def scratch_leftovers():
+    """T-4735: [{path, age_s, pid}] of the trees in the scratch root that nobody owns: their lock is free and the pid that
+    wrote it is gone, or they have no lock and are older than SCRATCH_YOUNG_S. Nothing with a held lock, and nothing
+    outside the scratch root (the temp root's other contents are never read). Oldest first."""
+    out, now = [], time.time()
+    for base in scratch_bases():
+        if not _trusted(base):  # a link, another user's folder or one others can enter: nothing in it is read
+            continue
+        try:
+            projects = [os.path.join(base, d) for d in sorted(os.listdir(base))]
+        except OSError:
+            continue
+        for proj in projects:
+            if not _trusted(proj):
+                continue
+            try:
+                names = sorted(os.listdir(proj))
+            except OSError:
+                continue
+            for name in names:
+                tree = os.path.join(proj, name)
+                if name.endswith(".lock") or os.path.islink(tree) or not os.path.isdir(tree):
+                    continue
+                lock = tree + ".lock"
+                if lock_held(lock):
+                    continue
+                pid, at = _owner(lock)
+                try:
+                    made = at or os.stat(tree).st_mtime
+                except OSError:
+                    continue
+                if (pid and _alive(pid)) or (not pid and now - made < SCRATCH_YOUNG_S):
+                    continue
+                out.append({"path": tree, "age_s": max(int(now - made), 0), "pid": pid})
+    return sorted(out, key=lambda x: -x["age_s"])
+
+
+def _registered_in(tree):
+    """The git folder of the repo that registered `tree` as a worktree (its .git file names it; the verify trees keep the
+    worktree one level down, <tree>/wt), or ''."""
+    for gitfile in (os.path.join(tree, ".git"), os.path.join(tree, "wt", ".git")):
+        try:
+            with open(gitfile) as f:
+                line = f.readline().strip()
+        except OSError:
+            continue
+        gitdir = line[7:].strip() if line.startswith("gitdir:") else ""
+        if gitdir and os.path.basename(os.path.dirname(gitdir)) == "worktrees":
+            return os.path.dirname(os.path.dirname(gitdir))
+    return ""
+
+
+def scratch_sweep(found=None):
+    """T-4735: remove the trees scratch_leftovers lists (or `found`, a listing taken earlier) and the lock files of trees
+    that are gone. Each tree's lock is taken here first, not blocking: one a live owner took since the listing is left.
+    A registered worktree is unregistered after (git worktree prune in the repo that made it). Only paths directly in a
+    project folder of the scratch root are ever touched. Returns the removed trees' paths."""
+    found = scratch_leftovers() if found is None else found
+    bases, gone, repos = scratch_bases(), [], set()
+
+    def inside(tree):  # still a plain folder two levels in a trusted root, through no link, as of this moment
+        proj = os.path.dirname(tree)
+        base = os.path.dirname(proj)
+        return (base in bases and _trusted(base) and _trusted(proj) and not os.path.islink(tree)
+                and os.path.realpath(tree).startswith(os.path.realpath(base) + os.sep))
+
+    for x in found:
+        tree = x["path"]
+        if not inside(tree):
+            continue
+        mine = lock_hold(tree + ".lock", blocking=False)
+        if mine is None:
+            continue
+        try:
+            if not inside(tree):  # swapped for a link while the lock was taken: nothing goes
+                with contextlib.suppress(OSError):
+                    os.unlink(tree + ".lock")
+                continue
+            repo = _registered_in(tree)
+            shutil.rmtree(tree, ignore_errors=True)
+            if not os.path.exists(tree):
+                gone.append(tree)
+                if repo:
+                    repos.add(repo)
+                with contextlib.suppress(OSError):
+                    os.unlink(tree + ".lock")
+        finally:
+            mine.close()
+    for repo in repos:
+        with contextlib.suppress(Exception):
+            subprocess.run(["git", "--git-dir", repo, "worktree", "prune"], capture_output=True, timeout=60)
+    for i, base in enumerate(bases):  # the lock file of a tree that is gone, its owner too
+        if not _trusted(base):
+            continue
+        with contextlib.suppress(OSError):
+            for proj in os.listdir(base):
+                d = os.path.join(base, proj)
+                if not _trusted(d):
+                    continue
+                for name in os.listdir(d):
+                    lock = os.path.join(d, name)
+                    if name.endswith(".lock") and not os.path.exists(lock[:-5]) and not lock_held(lock):
+                        with contextlib.suppress(OSError):
+                            os.unlink(lock)
+                if i and not os.listdir(d):  # a private fallback root left empty goes, bottom up (rmdir: only when empty)
+                    with contextlib.suppress(OSError):
+                        os.rmdir(d)
+        if i:  # (not a young one: its maker may be about to make a project folder in it)
+            with contextlib.suppress(OSError):
+                if time.time() - os.lstat(base).st_mtime > SCRATCH_YOUNG_S:
+                    os.rmdir(base)
+    return gone
+
+
+def scratch_loss(tree):
+    """T-4735: what to log when a train finds `tree` gone: its folder, when (lost_at: the train's own event has an `at`, the
+    commit), how old it was (from the lock this process
+    holds, else the lock file beside it) and whether the scratch root's folders survived. Only the tree gone points at
+    something inside Sampo's root; the root gone, a cleanup of the whole folder."""
+    held_ = _SCRATCH.get(tree)
+    made = held_[1] if held_ else _owner(tree + ".lock")[1]
+    folder = os.path.dirname(tree)
+    root = scratch_root(create=False)
+    return {"folder": tree, "lost_at": int(time.time()), "age_s": int(time.time() - made) if made else None,
+            "root_exists": os.path.isdir(root), "project_exists": os.path.isdir(folder),
+            "lock_exists": os.path.exists(tree + ".lock")}
+
+
 CARGO_THROWAWAY_PREFIXES = ("sampo-base-", "sampo-probe-", "sampo-train-", "sampo-batch-", "fm-verify-", "fm-hunks-",
                             "fm-prove-", "fm-at-", "fm-bench-", "fm-stack-", "fm-train-")  # the mkdtemp prefixes of Sampo's own
 
@@ -1761,7 +2132,10 @@ def cargo_throwaway(root):
     or sits one level below one: directly in the temp folder under a CARGO_THROWAWAY_PREFIXES name (train, base, probe,
     batch), or in such a folder (fm-verify-*/wt) or in a TemporaryDirectory (tmp*/ship, tmp*/rel: release.py). A
     detached worktree of the user's (a scratch checkout, a bisect) is none of these: it gets a folder of its own, like a
-    lane, never the gate's. A lane is a branch checkout in a lane home, detached or not."""
+    lane, never the gate's. A lane is a branch checkout in a lane home, detached or not.
+    T-4735: Sampo's trees now sit in the scratch root's project folder (<scratch>/<project>/), which is read as the temp
+    folder is (a tree an older Sampo made directly in the temp folder still counts); the ship's and release's folders are
+    named sampo-ship-* and sampo-rel-* there."""
     if not os.path.isfile(os.path.join(root, ".git")):
         return False
     main = main_worktree(root)
@@ -1772,14 +2146,15 @@ def cargo_throwaway(root):
     if os.path.dirname(path) in (real(main) + ".lanes", real(os.path.join(main, ".claude", "worktrees"))):
         return False
     tmp = real(gettempdir())
+    scratch = real(scratch_root(create=False))
     parent = os.path.dirname(path)
     leaf = os.path.basename(path)
-    if parent == tmp:
+    if parent == tmp or os.path.dirname(parent) == scratch:
         made = leaf.startswith(CARGO_THROWAWAY_PREFIXES)
-    elif os.path.dirname(parent) == tmp:
+    elif os.path.dirname(parent) == tmp or os.path.dirname(os.path.dirname(parent)) == scratch:
         folder = os.path.basename(parent)
         made = (folder.startswith(CARGO_THROWAWAY_PREFIXES) and leaf in ("wt", "base")) \
-            or (folder.startswith("tmp") and leaf in ("ship", "rel"))
+            or (folder.startswith(("tmp", "sampo-ship-", "sampo-rel-")) and leaf in ("ship", "rel"))
     else:
         made = False
     return made and _head_detached(root)
