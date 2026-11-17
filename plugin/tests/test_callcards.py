@@ -332,6 +332,17 @@ class Apply(Base):
         self.assertEqual(tree(self.repo), before)
         self.assertFalse(os.path.exists(os.path.join(self.repo, "new")))
 
+    def test_apply_closes_the_files_it_reads(self):
+        """T-4852: the changed-since check reads each file with a with-block, so no ResourceWarning."""
+        import gc
+        import warnings
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            msg = callcards._apply(self.repo, {"a.txt": b"hello world\n"}, {})
+            gc.collect()
+        self.assertIsNone(msg)
+        self.assertEqual([str(w.message) for w in seen if issubclass(w.category, ResourceWarning)], [])
+
 
 @confined
 class Confinement(Base):

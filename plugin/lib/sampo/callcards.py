@@ -802,7 +802,10 @@ def _apply(root, before, writes):
     close that window."""
     for rel, data in before.items():
         try:
-            cur = open(os.path.join(root, rel), "rb").read() if _regular(root, rel) else None
+            cur = None
+            if _regular(root, rel):
+                with open(os.path.join(root, rel), "rb") as f:
+                    cur = f.read()
         except OSError:
             cur = None
         if cur != data:

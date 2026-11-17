@@ -16,7 +16,8 @@ LIBDIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))
 def silent_sites():
     out = []
     for f in sorted(glob.glob(os.path.join(LIBDIR, "fm*.py")) + glob.glob(os.path.join(LIBDIR, "sampo", "*.py"))):
-        lines = open(f, encoding="utf-8").read().split("\n")
+        with open(f, encoding="utf-8") as fh:
+            lines = fh.read().split("\n")
         for i, l in enumerate(lines):
             if not re.search(r"join\(.*\[:[0-9]+\]\)", l) or "# not a list:" in l:
                 continue
@@ -38,6 +39,16 @@ class LeftOut(ForemanTestCase):
         self.assertEqual(c.joinmore(["a", "b"], 2, "; "), "a; b")
         self.assertEqual(c.joinmore(iter("abc"), 1, " · ", "--all"), "a · 2 left out (--all)")
         self.assertEqual(c.joinmore([], 3), "")
+
+    def test_the_scan_closes_the_files_it_reads(self):
+        """T-4852: the scan reads about two hundred lib files; each is closed, so a run prints no ResourceWarning."""
+        import gc
+        import warnings
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always")
+            silent_sites()
+            gc.collect()
+        self.assertEqual([str(w.message) for w in seen if issubclass(w.category, ResourceWarning)], [])
 
     def test_no_silent_cut_in_fmcli(self):
         self.assertEqual(silent_sites(), [])
