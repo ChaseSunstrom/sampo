@@ -7039,6 +7039,13 @@ def next_for(p, briefs=None, checks=True, concerns=None):
         action += (f" · deferred {due[0].id} is due back (revisit {rv})"
                    + (f" and {len(due) - 1} more" if len(due) > 1 else "")
                    + f": sampo focus {due[0].id} to take it up, or sampo task defer {due[0].id} \"<why>\" --until {again}")
+    try:  # T-3303: the oldest block over 48 h that can't move, with its reason and one proposed action (the hourly
+        from sampo import blocked as sblocked  # review's record: no model is asked here)
+        stale = sblocked.stale_line(p, briefs)
+    except Exception:  # a broken record never costs the next action
+        stale = ""
+    if stale:
+        action += f" · {stale}"
     d = read_meta(p).get("ask_digest")
     if isinstance(d, dict) and d.get("asks"):  # T-0461
         n = len(d["asks"])

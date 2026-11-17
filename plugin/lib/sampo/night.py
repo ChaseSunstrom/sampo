@@ -225,7 +225,7 @@ def write_staged(p, issues=(), ci=False, max_usd=2.0):
     os.makedirs(d)
     for name, text in dict(files, **{"plan.json": json.dumps(plan, indent=1) + "\n"}).items():
         c.write_atomic(os.path.join(d, name), text)
-    lines = [f"nightly fm night at 02:30 (at most ${max_usd:.2f})", "hourly fm night --tick (no tokens)"] \
+    lines = [f"nightly fm night at 02:30 (at most ${max_usd:.2f})", "hourly fm night --tick (no paid tokens)"] \
         + [f"issue watch {r}" for r in plan["watch"]["issues"]] \
         + (["CI check with no session open"] if ci else []) + ["undo: fm night --uninstall"]
     return plan, lines
@@ -474,6 +474,12 @@ def tick(p, fetch_ci=None):
                 models.shadow_pass(p, cap=5)
             except Exception as e:
                 res["notes"].append(f"shadow pass: {c.fit(c.plain(str(e)), 120)}")
+            try:  # T-3303: blocked work never sits: free what can move, name the stale blocks (once an hour)
+                from sampo import blocked
+                if blocked.due(p):
+                    res["unblocked"] = [x["id"] for x in blocked.review(p)["freed"]]
+            except Exception as e:
+                res["notes"].append(f"blocked review: {c.fit(c.plain(str(e)), 120)}")
             try:  # T-2499: bets settle on a night with no fm task finish (outcome rows written, the bar check run)
                 from sampo import outcomes
                 res["settled"] = outcomes.maintain(p) or 0  # T-2520: on record when nonzero

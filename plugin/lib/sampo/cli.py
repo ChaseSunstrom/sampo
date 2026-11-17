@@ -1178,15 +1178,9 @@ def cmd_task(args):
     if sub == "unblock":  # T-1877: blocked work back to planned, or captured while it has no criteria
         cur = need_brief(p, args.id)
         reason = args.reason or ""
-
-        def back(b):
-            if b.status != "blocked":  # read under the lock: a close in between is kept
-                raise c.PolicyError(f"{b.id} is {b.status}, not blocked")
-            b.meta["status"] = "planned" if b.acceptance() else "captured"
-            for k in ("revisit", "recoveries", "lane_stop"):  # T-2354: a fresh start gets a fresh recovery count
-                b.meta.pop(k, None)
-            b.append_log(f"unblocked: {reason}" if reason else "unblocked")
-        b, _ = mutate(p, cur.id, back, "task_unblock", {"reason": reason})
+        from sampo import blocked as sblocked
+        b, _ = mutate(p, cur.id, lambda b: sblocked.reopen(b, f"unblocked: {reason}" if reason else "unblocked"),
+                      "task_unblock", {"reason": reason})
         return out(args, c.brief_summary(b), f"{b.id} unblocked: {b.status}.")
     if sub in ("block", "drop", "defer"):
         status = {"block": "blocked", "drop": "dropped", "defer": "deferred"}[sub]
@@ -1235,6 +1229,11 @@ def cmd_task(args):
             raise UsageError("--until takes a date, YYYY-MM-DD[THH:MM], reset, \"when PATH changes\", "
                              "\"installed NAME\" or \"exists PATH\"")
         cur = need_brief(p, args.id)
+        if status == "blocked" and reason.strip() and cur.status != "blocked":  # T-3303: capacity is never a block
+            from sampo import blocked as sblocked
+            cap = sblocked.capacity(p, reason)  # a model's reading of the reason; no answer keeps the block
+            if cap:
+                raise c.PolicyError(sblocked.REFUSE.format(id=cur.id, pr=cap["probability"]))
         last, until = (cur.section("Log").strip().splitlines() or [""])[-1], getattr(args, "until", None) or None
         said = f" {status}: {c.redact(reason)}" + (f" (revisit {until})" if until else "")  # as change() logs it
         if (cur.status == status and until == cur.meta.get("revisit") and (not reason or last.endswith(said))
@@ -9532,6 +9531,14 @@ def _build_parser(only=None):
     s.add_argument("--all", action="store_true")
     s.add_argument("--lanes-only", action="store_true", help="only worktrees and branches of closed tasks (what sampo night runs)")
     s.add_argument("--plugins", action="store_true", help="also report plugin footprint (slow: runs claude plugin details)")
+
+    s = add("blocked", lazy("sampo.blocked", "cmd_blocked"), tier=("Project and settings", 945),
+            help="blocked work never sits: review frees each blocked task whose waited-on tasks closed or that only "
+                 "waits for capacity, and names blocks over 48 h with one proposed action; the hourly tick runs it (T-3303)")
+    s.add_argument("action", nargs="?", choices=["review", "list"], default="review",
+                   help="review (default): run it now; list: the last review's record")
+    s.add_argument("--dry-run", action="store_true", help="review: say what it would free, change nothing (the model is still "
+                                                             "asked; the output counts its questions)")
 
     s = add("rollback", lazy("sampo.rollback", "cmd_rollback"), tier=("Project and settings", 950), help="restore the state as the snapshot taken at the last "
                                                              "Sampo upgrade had it (T-1085)", allow_abbrev=False)
