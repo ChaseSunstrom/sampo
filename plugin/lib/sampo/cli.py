@@ -1581,6 +1581,8 @@ def task_finish(p, args):
     """T-3030: the close runs under a `closing` marker (task, pid), so the edit hook attributes nothing made meanwhile."""
     me = str(os.getpid())
     args.steps, args.step_notes, args.t_start = {}, {}, time.monotonic()  # T-4600: per-step seconds, reported at the end
+    if getattr(args, "dry", False):  # T-4147: the list a refusal would print, and nothing else: no marker, no ledger line
+        return _task_finish(p, args)
 
     def mark(entry):  # keyed by pid: concurrent closes each add and drop only their own entry
         with c.lock(p.dir):
@@ -1623,10 +1625,9 @@ def _task_finish(p, args):
     fields = slanes.close_fields(b.section(slanes.CLOSE_FIELDS))
     if getattr(args, "changelog", None):
         fields["changelog"] = args.changelog
-    if lane and not fields.get("changelog") and _keeps_changelog(p):  # T-4054: the land refuses it later
-        raise c.PolicyError(f"{b.id} not finished, nothing ran: a lane close needs its CHANGELOG line, or the land "
-                            f"refuses it later: pass --changelog \"<what changed, for the user>\" (or a CHANGELOG: line "
-                            f"in its Close fields)")
+    dry = bool(getattr(args, "dry", False))  # T-4147: the same checks, a list out, nothing run or written
+    cl_missing = bool(lane and not fields.get("changelog") and _keeps_changelog(p))  # T-4054: the land refuses it later
+    early = []  # T-4147: each missing line is collected, not raised, and joins the one refusal's list
     for k in ("lesson", "numbers", "docs"):
         if fields.get(k) and not getattr(args, k, None):
             setattr(args, k, fields[k])
@@ -1634,6 +1635,13 @@ def _task_finish(p, args):
             and not b.section("Why not caught").strip():  # T-4515: the brief's own section wins over the builder's line
         args.why_not_caught = fields["why_not_caught"]
     if b.status == "done" and args.commit:  # T-0720: a commit refused after the close is retried on its own
+        if dry:
+            print("[]" if getattr(args, "json", False) else f"{b.id} is done: a retry of its --commit needs no list")
+            return 0
+        if cl_missing:
+            raise c.PolicyError(f"{b.id} not finished, nothing ran: a lane close needs its CHANGELOG line, or the land "
+                                f"refuses it later: pass --changelog \"<what changed, for the user>\" (or a CHANGELOG: "
+                                f"line in its Close fields)")
         _changelog_line(p, b, fields)
         with _span(args, "commit"):
             _commit_task(p, b, args.commit, stack=args.stack, check=args.stack_check, with_=args.with_)
@@ -1642,19 +1650,25 @@ def _task_finish(p, args):
             print(_steps_line(args))
             print(landed)
         return 0
+    if cl_missing:  # T-4054 (T-4147: listed with the rest, not raised first)
+        early.append(f"CHANGELOG line missing: a lane close needs --changelog \"<what changed, for the user>\" (or a "
+                     f"CHANGELOG: line in its Close fields), or the land refuses it later")
     if not args.audit:
-        raise UsageError("sampo task finish needs --audit \"<how the audits were done>\"")
+        early.append("--audit missing: a close needs --audit \"<how the audits were done>\"")
     red = _red_full_check(p)
     if red:  # T-2526: T-2334 closed and committed right after its full gate failed on the same tree
-        raise c.PolicyError(f"{b.id}: the newest full sampo check on this tree failed ({c.fit(c.plain(red[0]), 80)}"
-                            + (f": {', '.join(c.plain(t) for t in c.more(red[1], 5)[0])}"
-                               f"{', ' + c.more(red[1], 5)[1] if len(red[1]) > 5 else ''}" if red[1] else "")
-                            + "): fix it and run sampo check again before closing")
-    lenses = []
+        early.append(f"{b.id}: the newest full sampo check on this tree failed ({c.fit(c.plain(red[0]), 80)}"
+                     + (f": {', '.join(c.plain(t) for t in c.more(red[1], 5)[0])}"
+                        f"{', ' + c.more(red[1], 5)[1] if len(red[1]) > 5 else ''}" if red[1] else "")
+                     + "): fix it and run sampo check again before closing")
+    lenses, spoken = [], []  # spoken: the lenses a bad --lens named: reported by that line, not again as missing
     for spec in args.lens or []:
         lens, sep, result = spec.partition(":")
         if not sep or lens.strip() not in c.AUDIT_LENSES or not result.strip():
-            raise UsageError(f"--lens takes '<lens>: <result>' with a lens of {', '.join(c.AUDIT_LENSES)}; got {spec!r}")
+            early.append(f"--lens takes '<lens>: <result>' with a lens of {', '.join(c.AUDIT_LENSES)}; got {spec!r}")
+            if lens.strip() in c.AUDIT_LENSES:
+                spoken.append((lens.strip(), ""))
+            continue
         lenses.append((lens.strip(), result.strip()))
     runs = {}
     args.timings, t_close = [], time.monotonic()  # T-1462: (cmd, seconds) of every run, to name the slowest
@@ -1701,27 +1715,34 @@ def _task_finish(p, args):
     red = [n for kind, n, cmd in todo if cmd is None and kind == "step" and b.has_evidence(step=n)]
     missing = [named(kind, n) for kind, n, cmd in todo if cmd is None and not (kind == "step" and n in red)]
     touches, risky, _ = _task_files(p, b)  # once for both pre-checks (done() reads it again after the gates)
-    gaps = [f"{named('step', n)}: its last run failed; record a passing run (sampo task evidence {b.id} --step {n} --run CMD, or finish with --run CMD)"
+    gaps = early + [f"{named('step', n)}: its last run failed; record a passing run (sampo task evidence {b.id} --step {n} --run CMD, or finish with --run CMD)"
             for n in red] + ([f"give --run \"<cmd>\" (or record evidence): {', '.join(missing)} has no verify command or "
-                              f"evidence of its own"] if missing else []) + _finish_gaps(b, args, lenses, p) + _self_docs_gaps(p, b) \
+                              f"evidence of its own"] if missing else []) + _finish_gaps(b, args, lenses + spoken, p) + _self_docs_gaps(p, b) \
         + _file_map_gaps(p, b) + _tests_only_gaps(p, b) + [g for g in [b.proof_gap(then=[cmd for _, _, cmd in todo] + [args.run])] if g] \
         + _proved_gaps(p, b, then=[cmd for _, _, cmd in todo] + [args.run]) \
-        + _adversary_gaps(p, b, lenses, risky) + _scope_gaps(p, b, touches) \
+        + _adversary_gaps(p, b, lenses + spoken, risky) + _scope_gaps(p, b, touches) \
         + _done_only_gaps(p, b, args)  # T-1906, T-1907, T-3550, T-4585: before anything runs
     from sampo import miss  # T-2369: an open capability miss refuses every try; only a later passing run closes it
     from sampo import toolproof  # T-2372: first, so a proved tool resolves its miss in the same try
     from sampo import incident  # T-2388: its criterion's own run is the close's second green
     from sampo import grants  # T-2383: a secret the task's grant names must not be in this session's transcript
-    gaps += toolproof.safe_gaps(p, b) + miss.safe_gaps(p, b) + incident.safe_gaps(p, b, closing=True) \
+    gaps += toolproof.safe_gaps(p, b, log=not dry) + miss.safe_gaps(p, b) + incident.safe_gaps(p, b, closing=True) \
         + grants.safe_secret_gaps(p, b)
     from sampo import triggers  # T-4743: a follow-up appended to this task must be settled (done, taken, or dropped with a why)
     gaps += triggers.safe_follow_gaps(p, b)
     from sampo import concerns  # T-4189: a task reopened by a repeated report needs a run on the real surface
     gaps += concerns.safe_gaps(p, b, then=[(n, cmd) for kind, n, cmd in todo if kind == "step" and cmd])
-    if gaps:  # T-0704: every gap in one refusal (135 finishes in 14 days were refused and retried one gap at a time)
-        raise UsageError(f"{b.id} not finished, nothing ran:\n  - " + "\n  - ".join(gaps))
     if args.commit:  # T-4585: a credential in the files to commit is found now, not after the gates (checked again after)
-        _commit_task(p, b, args.commit, dry=True, with_=args.with_)
+        try:
+            _commit_task(p, b, args.commit, dry=True, with_=args.with_)
+        except (c.PolicyError, UsageError) as e:  # T-4147: listed with the other missing lines
+            gaps.append(" ".join(str(e).split()))
+    if gaps:  # T-0704, T-4147: every missing line in one refusal, before any gate or verify command starts
+        if dry:
+            return _dry_report(b, gaps, args)
+        raise UsageError(_gaps_text(b, _gap_rows(gaps)))
+    if dry:
+        return _dry_report(b, [], args)
     if args.run and args.run not in [cmd for _, _, cmd in todo]:  # T-0742: --run is the close's final check, always
         todo.append(("final", None, args.run))
     for _, _, cmd in todo:  # T-0901 review: every one is checked before any runs, so a refusal leaves no side effects
@@ -2669,6 +2690,77 @@ def _scope_gaps(p, b, touches):
             f"(sampo task log {b.id} \"scope: <why>\"; a reason logged before an edit doesn't cover it)"]
 
 
+_GAP_KINDS = (  # T-4147: the words that name a missing line's kind, first match wins
+    ("audit", ("--audit missing",)),  # the --audit text; a missing lens (below) is its own kind
+    ("lens", ("--lens takes", "audit missing")),
+    ("red_green", ("red→green",)),
+    ("docs", ("docs impact",)),
+    ("evidence", ("give --run", "last run failed")),
+    ("lesson", ("lesson missing",)),
+    ("numbers", ("numbers missing",)),
+    ("why_not_caught", ("why-not-caught missing",)),
+    ("changelog", ("CHANGELOG line missing",)),
+    ("child", ("child ",)),
+    ("decision", ("no Decision",)),
+    ("behaviour_lock", ("no behaviour lock",)),
+    ("scope", ("edited outside scope",)),
+    ("commit", ("look like a credential", "git couldn't show the staged")),
+)
+
+
+def _gap_row(text):
+    """T-4147: one missing line as a row: its kind, its text, and its fix: the instruction after the label's colon
+    (a line with no label is its own fix; 'other' rows carry the text as the fix, since no kind names one)."""
+    t = " ".join(str(text).split())
+    kind = next((k for k, words in _GAP_KINDS if any(w in t for w in words)), "other")
+    if "--lens takes" in t:
+        fix = f"--lens '<lens>: <result>', a lens of {', '.join(c.AUDIT_LENSES)}"
+    elif kind == "evidence" and t.startswith("give --run"):
+        fix = t.split(": ", 1)[0]  # the command head, '(or record evidence)' included
+    else:
+        cut = _label_end(t)
+        fix = t[cut + 2:] if cut >= 0 else t
+    return {"kind": kind, "text": t, "fix": fix}
+
+
+def _label_end(t):
+    """Where a line's label ends: its first ': ' outside any (...) or [...] (a step's text or a scope list in the label may
+    hold one itself), -1 when it has no label."""
+    depth = 0
+    for i, ch in enumerate(t):
+        depth += (ch in "([") - (ch in ")]")
+        if depth <= 0 and t.startswith(": ", i):
+            return i
+    return -1
+
+
+def _gap_rows(gaps):
+    return [_gap_row(g) for g in gaps]
+
+
+def _gaps_text(b, rows):
+    """T-4147: the one refusal: a count line, then each missing line numbered, its fix under it."""
+    n = len(rows)
+    out = [f"{b.id} not finished, nothing ran: {n} thing{'s' if n != 1 else ''} missing:"]
+    for i, r in enumerate(rows, 1):
+        out.append(f"  {i}. {r['text']}")
+        out.append(f"     fix: {r['fix']}")
+    return "\n".join(out)
+
+
+def _dry_report(b, gaps, args):
+    """T-4147: --dry: the list a finish would refuse with (or that nothing is missing), as text or --json rows. No
+    marker, no ledger line, no run. Exit 1 when a line is missing, as the refusal is."""
+    rows = _gap_rows(gaps)
+    if getattr(args, "json", False):
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+    elif rows:
+        print(_gaps_text(b, rows) + "\n(dry: nothing ran, nothing written)")
+    else:
+        print(f"{b.id}: nothing missing; a real finish would now run its checks (dry: nothing ran, nothing written)")
+    return 1 if rows else 0
+
+
 def _finish_gaps(b, args, lenses, p=None):
     """T-0704: what fm task done would refuse that this call doesn't supply, checked before anything runs: the audit
     lenses its tier needs, docs impact and the lesson (M/L)."""
@@ -2930,6 +3022,42 @@ def _stale_index_lock(root, age=600):
     return True, f"removed a stale {lock} ({int(old // 60)} min old, nothing holding it)"
 
 
+def _dry_leaks(root, files, addable):
+    """T-4147: the credential findings of what a commit of `files` would take (None when git can't show them), read in
+    a throwaway copy of the index so the real index and its lock stay as they were; "skip" when the add itself fails
+    (as the real add's failure is reported by the commit, not by this probe). Blobs it hashes are loose, unreferenced
+    objects: git gc takes them."""
+    import shutil
+    import subprocess
+    import tempfile
+    from sampo import secrets
+    with tempfile.TemporaryDirectory() as t:
+        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(t, "index"))
+        try:
+            real = subprocess.run(["git", "-C", root, "rev-parse", "--path-format=absolute", "--git-path", "index"],
+                                  capture_output=True, text=True, timeout=10).stdout.strip()
+            if real and os.path.isfile(real):
+                shutil.copy2(real, env["GIT_INDEX_FILE"])
+            if addable and subprocess.run(["git", "--literal-pathspecs", "-C", root, "add", "-A", "--", *addable],
+                                          env=env, capture_output=True, timeout=120).returncode:
+                return "skip"
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return secrets.staged_leaks(root, files, env=env)
+
+
+def _leak_error(b, leaks, dry):
+    """The refusal for a commit that would take a credential (`leaks` None: git couldn't show the lines)."""
+    from sampo import secrets
+    state = "not finished (still open, so fix it there)" if dry else "done, but not committed"
+    return (f"{b.id} is {state}: git couldn't show the staged lines to check them" if leaks is None else
+            f"{b.id} is {state}: {len(leaks)} added line(s) look like a credential (not "
+            f"printed): " + ", ".join(f"{f}:{n} ({k})" for f, n, k in leaks[:10])
+            + f". Remove it (and rotate a real one), or mark a test fixture's line "
+              f"`{secrets.ALLOW}`, then commit"
+            + ("." if dry else f" (sampo task finish {b.id} --commit \"<message>\" retries it)."))
+
+
 def _commit_task(p, b, message, dry=False, stack=False, check=None, with_=None):
     """T-0129: commit what this task changed (from its focus snapshot), only after it closed: a refused close commits
     nothing, and work from before the task stays out. A synced .sampo/ mirror goes with it. dry (T-0720): only the
@@ -3026,23 +3154,19 @@ def _commit_task(p, b, message, dry=False, stack=False, check=None, with_=None):
             print(f"{b.id}: {f} was also edited by {', '.join(ts)} since this task's focus (committed with it)")
         if len(hits) > 8:
             print(f"{b.id}: … {len(hits) - 8} more shared file(s)")
+    if dry:  # T-4147: the probe adds to a throwaway copy of the index: the real one (what the user staged) and its
+        # index.lock are never touched, so `finish --dry` changes nothing
+        leaks = _dry_leaks(p.root, files, addable)
+        if leaks != "skip" and (leaks is None or leaks):
+            raise UsageError(_leak_error(b, leaks, True))
+        return
     add = run("add", "-A", "--", *addable) if addable else subprocess.CompletedProcess([], 0, "", "")
     if add.returncode == 0:  # T-0132: nothing that looks like a credential goes into a commit Foreman makes
         from sampo import secrets
         leaks = secrets.staged_leaks(p.root, files)
-        if dry or leaks is None or leaks:
-            subprocess.run([*git, "reset", "-q", "--", *files], capture_output=True)
-        state = "not finished (still open, so fix it there)" if dry else "done, but not committed"
         if leaks is None or leaks:
-            raise UsageError(f"{b.id} is {state}: git couldn't show the staged lines to check them"
-                             if leaks is None else
-                             f"{b.id} is {state}: {len(leaks)} added line(s) look like a credential (not "
-                             f"printed): " + ", ".join(f"{f}:{n} ({k})" for f, n, k in leaks[:10])
-                             + f". Remove it (and rotate a real one), or mark a test fixture's line "
-                               f"`{secrets.ALLOW}`, then commit"
-                             + ("." if dry else f" (sampo task finish {b.id} --commit \"<message>\" retries it)."))
-    if dry:
-        return
+            subprocess.run([*git, "reset", "-q", "--", *files], capture_output=True)
+            raise UsageError(_leak_error(b, leaks, False))
     if add.returncode == 0 and not subprocess.run([*git, "diff", "--cached", "--quiet", "--", *files]).returncode:
         print(f"{b.id}: nothing to commit (its files are as committed already).")  # T-0738: not a blank failure
         return
@@ -8639,6 +8763,8 @@ def _build_parser(only=None):
     t.add_argument("result")
     t = tadd("finish")  # one-call close-out: run the checks, mark them, audits, docs, done
     t.add_argument("id")
+    t.add_argument("--dry", action="store_true", help="T-4147: list what a finish would refuse for (the same numbered "
+                   "list, --json rows with kind, text and fix) and change nothing: no run, no marker, no ledger line")
     t.add_argument("--run", help="check for steps (and criteria without their own verify command)")
     t.add_argument("--audit", help="how the audits were done (the self checklist, a review pass…); not needed to retry a done task's --commit")
     t.add_argument("--result", default="no findings", help="the self audit's result (S)")

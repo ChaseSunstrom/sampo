@@ -95,11 +95,12 @@ def scan_diff(diff):
     return found
 
 
-def staged_leaks(root, files):
-    """Findings in what a commit of files would take, or None when git can't show it (fails closed)."""
+def staged_leaks(root, files, env=None):
+    """Findings in what a commit of files would take, or None when git can't show it (fails closed). `env`: another
+    index to read (T-4147: a dry probe's throwaway copy)."""
     try:
         r = subprocess.run(["git", "--literal-pathspecs", "-C", root, *DIFF, "diff", "--cached", *DIFF_OPTS, "--", *files],
-                           capture_output=True, timeout=120)
+                           capture_output=True, timeout=120, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     return None if r.returncode else scan_diff(r.stdout.decode("utf-8", "replace"))

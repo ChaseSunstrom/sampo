@@ -1914,9 +1914,17 @@ def _ship_wait(p, secs):
 
 
 def _why(text):
-    """A refusal's own lines (its Next: hint aside) as one line."""
-    lines = (ln.strip().removeprefix("fm: ").removeprefix("sampo: ").removeprefix("refused: ").removeprefix("- ") for ln in text.splitlines())
-    return c.fit("; ".join(ln for ln in lines if ln and not ln.startswith("Next:")), 400) or "no reason given"
+    """A refusal's own lines (its Next: hint aside) as one line. T-4147: a finish refusal numbers its missing lines, each
+    with a `fix:` line under it that repeats the item's own fix; the reason keeps the items and drops the repeats and the
+    numbers, so the 400-character cut still reaches the last item (the docs line) as the bullets did."""
+    lines = []
+    for ln in text.splitlines():
+        s = ln.strip().removeprefix("fm: ").removeprefix("sampo: ").removeprefix("refused: ").removeprefix("- ")
+        if s.startswith("fix: ") or s.startswith("Next:"):  # the fix under a numbered item: the item already says it
+            continue
+        s = re.sub(r"^\d+\. ", "", s)  # a numbered item of the list
+        lines.append(re.sub(r" missing:$", " missing", s))  # the count line's colon: the list follows it
+    return c.fit("; ".join(ln for ln in lines if ln), 400) or "no reason given"
 
 
 def _park_kind(why):

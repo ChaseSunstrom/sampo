@@ -102,6 +102,17 @@ class ToolProof(ForemanTestCase):
         (e,) = self.proved()
         self.assertEqual((e["task"], e["data"]["name"], e["data"]["path"]), (self.tid, "shout", self.tool))
 
+    def test_a_dry_finish_logs_no_tool_proved_line(self):
+        # T-4147: --dry changes nothing, the ledger included: the proof is read, not recorded
+        self.build()
+        self.red_green()
+        self.use()
+        before = len(c.ledger_tail(self.p, 100000))
+        r = self.f("task", "finish", self.tid, "--dry", "--audit", "self", "--run", "true", check=False)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertEqual(self.proved(), [])
+        self.assertEqual(len(c.ledger_tail(self.p, 100000)), before, "a dry finish wrote to the ledger")
+
     def test_a_task_that_built_nothing_gets_no_check(self):
         r = self.finish()
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)

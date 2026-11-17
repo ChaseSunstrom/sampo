@@ -2,12 +2,13 @@
 failure; a red full-gate run becomes one urgent baseline task; full runs start in the background after closes."""
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
 import unittest
 
-from helpers import ForemanTestCase
+from helpers import ForemanTestCase, valid_m_plan
 
 from sampo import core as c
 
@@ -299,6 +300,151 @@ class CloseGates(ForemanTestCase):
         self.pm("c" * 40, "pending", at="2026-01-01T00:00:00Z")  # stuck: landed long ago, no runner took it
         self.pm("d" * 40, "running", pid=4194305)  # its runner is gone (past any pid_max)
         self.assertEqual(self.sentinel(), "ran")
+
+
+class FinishListsAll(ForemanTestCase):
+    """T-4147: one refusal of sampo task finish names every field the close still lacks, each with its fix, before a
+    gate or a verify command starts; --dry prints the same list and changes nothing, --json carries it as an array."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.marker = os.path.join(self.tmp, "gate-ran")
+        self.p = c.find_project(self.repo)
+
+    def m_fix(self):
+        """An M FIX with its criterion's check touching the marker: a gate that ran would leave the marker behind."""
+        interpretation, approach = valid_m_plan()
+        tid = self.fm_json("task", "new", "Fix add", "--type", "FIX", "--tier", "M", "--interpretation", interpretation,
+                           "--approach", approach, "--ac", f"works :: touch {self.marker}", "--step", "s",
+                           "--scope", "src/**")["id"]
+        self.fm("focus", tid)
+        return tid
+
+    def items(self, text):
+        return [line.strip() for line in text.splitlines() if re.match(r"\s+\d+\. ", line)]
+
+    def test_the_refusal_lists_all_the_missing_fields_with_their_fixes(self):
+        tid = self.m_fix()
+        r = self.fm("task", "finish", tid, check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        items = self.items(r.stderr)
+        for want in ("--audit", "audit missing: --lens", "give --run", "docs impact missing", "no red→green proof"):
+            self.assertTrue(any(want in item for item in items), (want, r.stderr))
+        self.assertIn(f"{len(items)} things missing", r.stderr, "the first line counts the list")
+        self.assertIn("nothing ran", r.stderr)
+        self.assertFalse(os.path.exists(self.marker), "a gate ran although the close was refused")
+        self.assertNotEqual(c.find_brief(self.p, tid).status, "done")
+
+    def test_dry_lists_all_the_same_items_and_changes_nothing(self):
+        tid = self.m_fix()
+        full = self.fm("task", "finish", tid, check=False)
+        before = len(c.ledger_tail(self.p, 100000))
+        dry = self.fm("task", "finish", tid, "--dry", check=False)
+        self.assertNotEqual(dry.returncode, 0, dry.stdout + dry.stderr)
+        self.assertEqual(self.items(dry.stdout + dry.stderr), self.items(full.stderr))
+        self.assertEqual(len(c.ledger_tail(self.p, 100000)), before, "a dry listing wrote to the ledger")
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_json_lists_all_as_kind_text_fix_rows(self):
+        tid = self.m_fix()
+        text = self.fm("task", "finish", tid, check=False).stderr
+        r = self.fm("task", "finish", tid, "--dry", "--json", check=False)
+        rows = json.loads(r.stdout)
+        self.assertEqual(len(rows), len(self.items(text)))
+        self.assertEqual({tuple(sorted(row)) for row in rows}, {("fix", "kind", "text")})
+        kinds = {row["kind"] for row in rows}
+        self.assertTrue({"audit", "lens", "docs", "red_green", "evidence", "lesson", "why_not_caught"} <= kinds, kinds)
+        self.assertTrue(all(row["fix"] and row["fix"] != row["text"] for row in rows if row["kind"] != "other"), rows)
+
+    def listed(self, tid, *extra):
+        """The one refusal's rows for a close with these flags (--dry --json: the same list, as data)."""
+        r = self.fm("task", "finish", tid, "--dry", "--json", *extra, check=False)
+        return json.loads(r.stdout)
+
+    def of_kind(self, rows, kind):
+        return [row for row in rows if row["kind"] == kind]
+
+    def test_a_missing_audit_and_a_missing_lens_are_different_kinds(self):
+        rows = self.listed(self.m_fix())
+        (audit,), lens = self.of_kind(rows, "audit"), self.of_kind(rows, "lens")
+        self.assertIn("--audit missing", audit["text"])
+        self.assertTrue(lens and all("--lens" in row["text"] for row in lens), rows)
+
+    def test_a_bad_lens_is_reported_once_not_also_as_a_missing_lens(self):
+        tid = self.m_fix()
+        rows = self.listed(tid, "--audit", "x", "--lens", "intent:")  # a known lens with no result
+        mentions = [row for row in rows if "intent" in row["text"]]
+        self.assertEqual(len(mentions), 1, mentions)
+        self.assertIn("--lens takes", mentions[0]["text"])
+
+    def test_the_red_full_check_joins_the_one_list(self):
+        tid = self.m_fix()
+        tree = c.worktree_tree(self.repo)[:12]
+        c.log_event(self.p, "check_run", data={"tree": tree, "results": [
+            {"cmd": "python3 tests/run.py", "exit": 1, "failing": ["test_x.X.test_y"]}]})
+        rows = self.listed(tid)
+        (red,) = [row for row in rows if "newest full sampo check" in row["text"]]
+        self.assertIn("test_x.X.test_y", red["text"])
+        self.assertGreater(len(rows), 1, "listed alone: the other missing fields went unsaid")
+
+    def test_a_lane_close_without_its_changelog_line_joins_the_one_list(self):
+        self.write_repo("CHANGELOG.md", "# Changelog\n\n## Unreleased\n")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "changelog"], check=True)
+        tid = self.m_fix()
+        subprocess.run(["git", "-C", self.repo, "checkout", "-q", "-b", f"foreman/{tid}"], check=True)
+        rows = self.listed(tid)
+        (log,) = self.of_kind(rows, "changelog")
+        self.assertIn("--changelog", log["fix"])
+        self.assertGreater(len(rows), 1)
+        self.assertEqual(self.of_kind(self.listed(tid, "--changelog", "Fixed add (T-9)"), "changelog"), [])
+
+    def test_a_credential_in_the_files_to_commit_joins_the_one_list(self):
+        tid = self.m_fix()
+        os.makedirs(os.path.join(self.repo, "src"), exist_ok=True)
+        self.write_repo("src/leak.py", 'KEY = "' + "AKIA" + "Q7ZT4M2XK9" + "PL3VBN" + '"\n')
+        rows = self.listed(tid, "--commit", "fix add")
+        (leak,) = self.of_kind(rows, "commit")
+        self.assertIn("credential", leak["text"])
+        self.assertNotIn("AKIA", json.dumps(rows), "the key itself is never printed")
+        self.assertGreater(len(rows), 1)
+
+    def test_dry_with_commit_leaves_what_the_user_staged_staged(self):
+        tid = self.m_fix()
+        os.makedirs(os.path.join(self.repo, "src"), exist_ok=True)
+        self.write_repo("src/a.py", "x = 1\n")
+        subprocess.run(["git", "-C", self.repo, "add", "src/a.py"], check=True)
+        r = self.fm("task", "finish", tid, "--dry", "--commit", "fix add", check=False)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        staged = subprocess.run(["git", "-C", self.repo, "diff", "--cached", "--name-only"], capture_output=True,
+                                text=True, check=True).stdout.split()
+        self.assertEqual(staged, ["src/a.py"], "the dry probe touched the real index")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, ".git", "index.lock")))
+
+    def test_dry_on_a_done_task_lists_nothing_as_text_and_as_json(self):
+        tid = self.fm_json("task", "new", "Tiny", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true", "--step",
+                           "s", "--scope", "src/**")["id"]
+        self.fm("focus", tid)
+        self.fm("task", "finish", tid, "--audit", "self", "--run", "true", env={"FOREMAN_SENTINEL": "off"})
+        self.assertEqual(c.find_brief(self.p, tid).status, "done")
+        text = self.fm("task", "finish", tid, "--dry", "--commit", "x", check=False)
+        self.assertEqual(text.returncode, 0, text.stdout + text.stderr)
+        self.assertIn("is done", text.stdout)
+        as_json = self.fm("task", "finish", tid, "--dry", "--commit", "x", "--json", check=False)
+        self.assertEqual(json.loads(as_json.stdout), [])
+
+    def test_a_label_with_a_colon_inside_its_parentheses_keeps_its_whole_fix(self):
+        from sampo import cli
+        row = cli._gap_row("step 1 (Fix: parse): its last run failed; record a passing run (sampo task evidence T-1 "
+                           "--step 1 --run CMD, or finish with --run CMD)")
+        self.assertTrue(row["fix"].startswith("its last run failed; record a passing run"), row)
+        row = cli._gap_row("edited outside scope [a: b, c]: x.py; widen it (sampo task set T-1 scope=…)")
+        self.assertTrue(row["fix"].startswith("x.py; widen it"), row)
+
+    def write_repo(self, rel, text):
+        with open(os.path.join(self.repo, rel), "w") as f:
+            f.write(text)
 
 
 if __name__ == "__main__":

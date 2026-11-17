@@ -226,8 +226,9 @@ def _one(p, b, i, d, mine, runs_):
     return found
 
 
-def gaps(p, b):
-    """One line per unproven piece of each tool this task built, for the refusals of fm task finish and done."""
+def gaps(p, b, log=True):
+    """One line per unproven piece of each tool this task built, for the refusals of fm task finish and done.
+    `log` False (T-4147, finish --dry): read only; a passing proof is not recorded as a tool_proved line."""
     evs = c.ledger_events(p, KINDS, since=str(b.meta.get("created") or ""))
     mine = [(i, e, e.get("event"), _data(e)) for i, e in enumerate(evs) if e.get("task") == b.id]
     builds = {}
@@ -245,17 +246,17 @@ def gaps(p, b):
                      f"make {path} and its test readable and finish again"]
         if found:
             out += found
-        else:
+        elif log:
             c.log_event(p, "tool_proved", task=b.id, data={"name": d.get("name"), "path": path,
                                                            "need": d.get("need") or d.get("name")})
     return out
 
 
-def safe_gaps(p, b):
+def safe_gaps(p, b, log=True):
     """gaps for the close gates; a ledger read that breaks must not stop a close: it fails open and logs where the
     hooks' errors go (fm doctor reads it). A tool that can't be checked is no such failure: `gaps` refuses it."""
     try:
-        return gaps(p, b)
+        return gaps(p, b, log)
     except Exception:
         import traceback
         try:
