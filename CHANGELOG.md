@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The website's Record, Ward blocks and Moons caption are built from stats and genesis data, the stale-stats build warns, and the Rune page teaches `sampo rune` (T-4842).
 - Calling cards gain a `model` kind (one confined local-model call whose JSON output a checker validates) and a `chain` kind (named cards run in order with typed hand-offs, refused at load on a cycle or missing card), plus the pick-function and locate-function seed cards (T-4837).
 - Lane checks now write their output to the log that "check started … log …" names as it arrives, so a cut-off check leaves its lines to read and the hold names the log (T-4851).
 - A clean install now puts both `fm` and `sampo` on PATH, and the README's install, Ward, mod, Smith and layout text was re-checked against the code and corrected (T-4841).
