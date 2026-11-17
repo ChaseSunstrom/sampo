@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Sampo's scratch worktrees now live in an owned 0700 scratch root, each holding a lock while its owner lives, so a cleanup of the shared temp root cannot reach them; tidy and doctor list leftovers and the tree-lost event names the folder, time, age and whether the root survived (T-4735).
 - A builder's `sampo check --affected` or full `sampo check` placed inside `sampo task evidence --run` or `--bench` is now refused by the PreToolUse hook with the same one line as a direct call (T-4546).
 - callcards' changed-since check and the left-out scan now read their files in with-blocks, so a test run no longer floods with ResourceWarnings (T-4852).
 - The website's Record, Ward blocks and Moons caption are built from stats and genesis data, the stale-stats build warns, and the Rune page teaches `sampo rune` (T-4842).
