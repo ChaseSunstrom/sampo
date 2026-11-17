@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Lane checks now write their output to the log that "check started … log …" names as it arrives, so a cut-off check leaves its lines to read and the hold names the log (T-4851).
 - A clean install now puts both `fm` and `sampo` on PATH, and the README's install, Ward, mod, Smith and layout text was re-checked against the code and corrected (T-4841).
 - foresight rows are scored against the user's next message, classes that keep missing are muted, and `sampo status` and the Board show what was caught before the user said it (T-4665).
 - Each prompt event the UserPromptSubmit hook records now carries an HMAC under selfgate's account key, and core.genuine_prompts yields only the prompt events whose MAC verifies (T-4844).
