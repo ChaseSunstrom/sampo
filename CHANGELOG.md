@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo doctor` warns under 10% or 40 GB free and fails under 5 GB, naming Sampo's largest reclaimable lanes and outputs; `sampo tidy` lists clean lanes already merged into the trunk, largest first, and `--apply` removes them without force; the Next line carries a disk fail; every test reads a pinned disk (T-4543).
 - An ambient run its own timeout ends, or one ended from outside, is no verdict: the note says 'timed out after N s (no verdict)', last.json keeps its verdict and an unread red note is never replaced, while a red line in the output still counts as a red; the limit is sized from the set's recorded seconds as ship's affected stage is, and a set too big to finish is skipped with one note per… (T-4823).
 - close sizes its linked-test run from the recorded seconds and refuses an oversized set at once instead of timing out (T-4832).
 - Orphan check names the class's ps row and gone() branch at 0, 5 and 9 s, and a failed killpg in the orphan path prints its errno (T-4829).
