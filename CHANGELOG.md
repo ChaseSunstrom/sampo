@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Each prompt event the UserPromptSubmit hook records now carries an HMAC under selfgate's account key, and core.genuine_prompts yields only the prompt events whose MAC verifies (T-4844).
 - The installer guard also reads call shapes: a quoted call such as getattr(os,'system')('bash install.sh'), a call word after any dot or bound by an import (read clause by clause as Python reads it), and perl and ruby calls without parens are refused; the bare-word rule stays beside them, so it blocks no less; the check stays linear on long lines, and its refusal is one plain sentence (T-4827).
 - `sampo doctor` warns under 10% or 40 GB free and fails under 5 GB, naming Sampo's largest reclaimable lanes and outputs; `sampo tidy` lists clean lanes already merged into the trunk, largest first, and `--apply` removes them without force; the Next line carries a disk fail; every test reads a pinned disk (T-4543).
 - An ambient run its own timeout ends, or one ended from outside, is no verdict: the note says 'timed out after N s (no verdict)', last.json keeps its verdict and an unread red note is never replaced, while a red line in the output still counts as a red; the limit is sized from the set's recorded seconds as ship's affected stage is, and a set too big to finish is skipped with one note per… (T-4823).
