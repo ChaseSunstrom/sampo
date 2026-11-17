@@ -2114,10 +2114,11 @@ def _subst_bodies(text, tails=True, clean=False):
             tick = i + 1
         elif ch == "$" and text[i + 1:i + 2] == "(":
             ends.append(text[i + 2:])  # $(( … )) too: bash falls back to a subshell when )) doesn't close it
-            tail = len(ends) - 1  # T-1924: which tail a clean close may drop
+            tail = [len(ends) - 1]  # T-1924: which tails a clean close may drop
             last = text.rfind(")")  # T-0669: and, when it ends inside a quote, up to the last ): an outer `)"`
             if last > i + 2 and _quote_at(text[i + 2:]) is not None:  # left it open (whole code stays whole)
                 ends.append(text[i + 2:last])
+                tail.append(len(ends) - 1)  # T-4811: a clean body drops this one too: it is the same body and the rest
             if text[i + 2:i + 3] != "(":
                 ctx.append([None, i + 2, 0, tail])
             i += 2
@@ -2134,7 +2135,8 @@ def _subst_bodies(text, tails=True, clean=False):
             else:
                 bodies.append(text[top[1]:i])
                 if clean and not re.search(r"[#`\\]|<<|\(\(|\bcase\b", bodies[-1]):  # T-1924: nothing in it can end
-                    ends[top[3]] = None  # it early, so its tail is its body, already read, then the rest, read by the
+                    for k in top[3]:  # it early, so its tail is its body, already read, then the rest, read by the
+                        ends[k] = None
                 ctx.pop()
         i += 1
     ends = [e for e in ends if e is not None]  # caller (a tail per substitution from every folder doubled the walk)
@@ -5790,12 +5792,30 @@ def _cd_targets(code):
     return list(dict.fromkeys(_CD_TO.findall(code) + _CD_TO.findall(re.sub(r"[\\'\"]", "", code))))
 
 
-def _moves_text(code):
+_PATTERN_WORD = r"[\w.*?\[\]/:=+@%,-]+"
+_CASE_ARM = lazy(rf"((?:\bin|;;&?|;&)[ \t]*\n(?:[ \t]*(?:#.*)?\n)*)[ \t]*\(?{_PATTERN_WORD}(?:[ \t]*\|[ \t]*{_PATTERN_WORD})*[ \t]*\)")
+_FRAME_WORD = lazy(r"(?<![^\s;&|(])(?:\{|\}|\[\[?)(?![^\s;&|)])")  # a lone { } [ [[ : a group, a function body, a test
+_PARAM_SIMPLE = lazy(r"\$\{[#!]?\w+(?:(?::?[-+=?]|[#%/:]{1,2})[^{}`'\"$\n]*)?\}|\$\(\([^()]*\)\)")  # ${x:-y}, $((1 + 2))
+
+
+def _frame_free(code):
+    """T-4811: shell text without what only frames a script: a case arm's pattern line (`*)`, `a|b)`, after `in` or `;;`),
+    a lone { or } (group, function body), [ or [[ (the test, read as `test`), a ${name:-word} and a $(( … )): none of them
+    names, computes or moves a command, and every long script holds dozens, each of which made the text read as one
+    that may move (a glob, a brace, a substitution) and kept every `$( … )` tail of it for a second reading."""
+    code = _CASE_ARM.sub(r"\1", code)
+    code = _FRAME_WORD.sub(lambda m: " test " if m.group().startswith("[") else " ", code)
+    return _PARAM_SIMPLE.sub("V", code)
+
+
+def _moves_text(code, frames=False):
     """T-0384: whether shell text may cd this shell: a mover word, also once quotes and backslashes are removed (c\\d
-    and c""d are cd), a command word it computes, or a brace, glob or substitution that may make one."""
+    and c""d are cd), a command word it computes, or a brace, glob or substitution that may make one. frames: the glob
+    and brace test skips what only frames a script (_frame_free); the words that move or compute still count."""
     code = _strip_comments(code)
+    free = _frame_free(code) if frames else code
     return bool(_MOVERS.search(code) or _MOVERS.search(re.sub(r"[\\'\"]", "", code)) or _COMPUTED.search(code)
-                or re.search(r"[`{*?\[]|\$\(", code))
+                or re.search(r"[`{*?\[]|\$\(", free))
 
 
 def _moves_shell(name, args, cwds, ctx, shell=""):
@@ -6070,7 +6090,25 @@ def _track_vars(words, env, home=None, spaces=False):
     if re.search(r"[$`*?\[]", word):
         return None  # T-0162: a name bash computes ($X, `…`, a glob) can turn out to be a builtin
     name = _unquote(word) or ""
-    return None if _setter(name, words[words.index(word) + 1:] if word in words else []) else env
+    rest = words[words.index(word) + 1:] if word in words else []
+    return None if _setter(name, rest) and not (name == "trap" and _trap_inert(rest)) else env
+
+
+_TRAP_SAFE = frozenset(("rm", "rmdir", "unlink", "[", "[[", "test", "exit", "true", "false", "echo", "kill", "wait",
+                        "sleep", ":"))
+
+
+def _trap_inert(args):
+    """T-4811: `trap 'BODY' SIG…` sets no name, whenever the signal fires, when BODY runs only commands that can't set
+    one (rm, a test, exit, echo …): no computed text, no assignment, no function to call. `w=$(mktemp -d); trap 'rm
+    -rf "$w"' EXIT` then keeps w a known folder for the rest of the line, where any trap made every name unknown."""
+    if not args or args[0].startswith("-") or len(args) < 2:
+        return False
+    body = _unquote(args[0])
+    if not body or re.search(r"\$\(|`|<\(|>\(|\(\(|\$\{[^}]*=|\$\[", body):
+        return False
+    cmds = _split(_tokens(_lines(body)))
+    return bool(cmds) and all(x.argv and os.path.basename(x.argv[0]) in _TRAP_SAFE for x in cmds)
 
 
 def _subst_depth(cmd):
@@ -6083,6 +6121,29 @@ def _subst_depth(cmd):
         elif a == ")" and d:
             d -= 1
     return m
+
+
+def _set_once(name, text):
+    """T-4811: `name` is written once in text (its one bare mention is the assignment: no `name+=`, `read name`, `for name`,
+    `${name:=x}` or a second `name=` follows), so a later reader sees the value that assignment gave."""
+    rest = re.sub(rf"\$(?:\{{{name}\}}|{name}(?!\w))", "", text)
+    return len(re.findall(rf"(?<![\w$]){name}(?!\w)", rest)) == 1
+
+
+def _command_words(cmds):
+    """T-4811: the commands whose first word is a command name bash computes. `echo $(date) $X` splits as `echo $`, the
+    body, then `$X` (op `)`): the words after a substitution's close, which are arguments once an earlier word named the
+    command, so only `a=$(x) $X` (and `$(x) $X`) leaves the command word to the remainder. Counted this way, an argument
+    holding a substitution no longer makes a line unclean, which kept every tail of it re-read (the long-script cost)."""
+    out, named = [], {}  # named[depth]: a command word came before the substitution this remainder continues
+    for x in cmds:
+        stub = x.argv[-1:] and x.argv[-1].endswith("$")  # the word that opens a substitution is the last of its command
+        if x.op != ")" or not named.get(x.depth):
+            out.append(x)
+        words = x.argv[:-1] if stub else x.argv
+        named[x.depth] = (named.get(x.depth, False) if x.op == ")" else False) or any(
+            not re.match(r"\w+=", w) for w in words)
+    return out
 
 
 def check_bash(cmd, ctx, depth=0, tails=True, at=False):
@@ -6167,7 +6228,10 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     while plain != prev:  # T-1924: the walk names every folder a literal cd may reach; any other mover (cd $(…), $C,
         plain, prev = re.sub(r"`[^`]*`|\$\([^()]*\)", "$S", plain), plain  # eval) keeps each tail, read from the
     clean = not _moves_text(plain) and not any(  # folders before it, as the coarse catch it was (review: c$(…), A=1 $C)
-        re.search(r"[^\w./+:@%,-]", word(x.argv)) for x in cmds)
+        re.search(r"[^\w./+:@%,-]", word(x.argv)) for x in _command_words(cmds))
+    if tails and not clean and re.search(r"\$\(|`", shell):  # T-4811: once more without what only frames a script
+        clean = not _moves_text(plain, frames=True) and not any(
+            re.search(r"[^\w./+:@%,-]", word(x.argv)) for x in _command_words(_split(_tokens(_lines(_frame_free(shell))))))
     # T-0330 review: ~ is $HOME, so once the command may set HOME a ~ in a value isn't the user's home any more
     tilde = None if re.search(r"(?<![\w${])HOME\b", shell) else ctx.home
     pre = _prefix_vars(shell, cmds, tilde)  # T-0183; also what a path-named command may expand (T-0331)
@@ -6303,7 +6367,12 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                 found.append(("pipe-shell", f"{name} -c runs a downloaded script"))
         # T-0160 (differential test against bash): commands these run as text or as their own arguments
         if name == "trap" and args and not args[0].startswith("-"):
-            found += check_bash(args[0], ctx, depth + 1)
+            # T-4811: the body runs later in this shell, so the names this line sets once (a mktemp folder, a literal)
+            # keep their value in it, as in a $( ) body (T-4138): `w=$(mktemp -d); trap 'rm -rf "$w"' EXIT` is a temp rm
+            used = {k: v for k, v in {**known, **pre}.items() if re.fullmatch(r"[A-Za-z_]\w*", k)
+                    and re.search(rf"\$\{{?{k}\b", args[0]) and re.fullmatch(r"[\w./@:+,=%~-]+", v)}
+            carried = [f"{k}={v}" for k, v in used.items() if k in pre or _set_once(k, shell)]
+            found += check_bash("; ".join(carried + [args[0]]) if carried else args[0], ctx, depth + 1)
         if name == "script":
             for j, a in enumerate(args[:-1]):
                 if a in ("-c", "--command") or re.fullmatch(r"-[a-zA-Z]*c", a):
@@ -7230,9 +7299,14 @@ def _check_script(text, ctx, depth, acc, path=None):
     # splits words on IFS (replay of 3 real scripts: reboot, plugin, system and credentials refusals were all benign)
     state = []  # what earlier pieces did that a later one depends on: cd, literal assignments, files written
     first = 1  # the script's line number of the piece's first line
+    # T-4811: `w=$(mktemp -d)` is the folder it is, as in a typed command (_mktemp_literal runs at depth 0 only, and a
+    # piece is read at depth 1): a literal in the piece and in the lines carried on, so a later piece's `rm -rf "$w"` or
+    # `trap 'rm -rf "$w"' EXIT` reads a temp folder, not an unknown name. Not where the script moves TMPDIR or PATH.
+    literal = _mktemp_literal if not _MKTEMP_MOVED.search(text) else (lambda s: s)
     for chunk in _script_chunks(text):
+        read = literal(chunk)
         # core: a script of Foreman's own (evals) writes its checkout; only its state folder counts
-        got = _read_piece("\n".join(state[-40:] + [chunk]), ctx, depth)
+        got = _read_piece("\n".join(_carried(state, read) + [read]), ctx, depth)
         # T-4774 review: the carried lines (a `curl … > f` of an earlier piece) are in front of this piece, and a
         # download anywhere in the text it reads makes a pipe into a shell "downloaded": a pipe-shell finding is the
         # piece's own, read without them (a pipeline never straddles two pieces). A finding from a nested script is
@@ -7270,7 +7344,7 @@ def _check_script(text, ctx, depth, acc, path=None):
         if deep:
             acc += [f for f in dict.fromkeys(("system", f"{line[:80]} ({why}; {_DEEP}")
                                              for _n, line, why in _literal_scan(chunk, ctx)) if f not in acc]
-        state += _state_lines(chunk)
+        state += _state_lines(read)
         first += chunk.count("\n") + 1
     return acc
 
@@ -7291,6 +7365,30 @@ def _state_lines(chunk):
                 and not line.rstrip().endswith("\\") and _STATE_LINE.match(line):
             out.append(_inert_subst(line))
     return out
+
+
+# (review: a name that read, mapfile, let, getopts, declare or (( … = )) takes from an expansion, as _NAME_COMPUTED reads
+# them, without its quote masking: that cost a 3,566-line script 3 s)
+_ANY_NAME = lazy(r"\$\{!|\beval\b|\b(?:declare|typeset|local|export|readonly)\s+-\w*[np]|\bprintf\s+-v|"
+                 r"\b(?:read|mapfile|readarray|getopts|let|declare|typeset|local|export|readonly)\b[^;&|\n<>]*\s[\"']?\$|"
+                 r"\(\(\s*(?:[^()]*,\s*)?\$\{?\w+\}?\s*(?:[-+*/%^|&]|<<|>>)?=(?!=)")
+_SPECIAL = frozenset(("IFS", "HOME", "PATH", "CDPATH", "TMPDIR", "TMP", "TEMP", "PWD", "OLDPWD", "SHELL", "BASH_ENV", "ENV",
+                      "PS4", "PROMPT_COMMAND", "LD_PRELOAD", "LD_LIBRARY_PATH", "GLOBIGNORE", "FIGNORE", "SHELLOPTS",
+                      "BASHOPTS", "POSIXLY_CORRECT", "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE"))  # (review: carry them too)
+_ASSIGN_ONLY = lazy(r"^\s*(?:(?:export|declare|local|readonly)\s+)?([A-Za-z_]\w*)=[^\s`$(]*$")
+
+
+def _carried(state, text):
+    """T-4811: the carried lines (the last 40) a piece's reading can use: every cd and write, and a plain assignment only
+    when the piece names that variable (or the name changes how bash reads: IFS, HOME, PATH …), unless the piece reaches
+    a name by computing it (`${!v}`, eval, a nameref, printf -v). 40 lines of `A_17=x` in front of every piece doubled
+    its text and its read, and a long script of 260 pieces paid it each time."""
+    last = state[-40:]
+    if _ANY_NAME.search(text):
+        return last
+    names = set(re.findall(r"[A-Za-z_]\w*", text))
+    return [line for line in last
+            if not (m := _ASSIGN_ONLY.match(line)) or m.group(1) in names or m.group(1) in _SPECIAL]
 
 
 _STATE_WORD = lazy(r"[<>=]|\b(?:cd|pushd|popd|tee|cp|mv|install|ln|eval|source|exec)\b|(?<![\w./-])\.(?=\s)")
