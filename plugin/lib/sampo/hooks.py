@@ -2125,8 +2125,11 @@ def user_prompt_submit(pl):
     try:  # T-0957: the user's words, for reflection and the court; redacted, capped, never in a sensitive project
         if not c.read_meta(p).get("sensitive"):
             logged = True
+            seal, why = c.prompt_sealer()  # T-4844: the key is read before the ledger lock; signed here and nowhere else
+            if why:  # an unusable key leaves the event unmarked: say why, once a minute, for what refuses an unmarked one
+                log_error("UserPromptSubmit", why)
             c.log_event(p, "prompt", data={"text": c.redact(c.plain_lines(text))[:2000],
-                                           "mode": pl.get("permission_mode")}, session=sid)
+                                           "mode": pl.get("permission_mode")}, session=sid, seal=seal)
     except Exception:
         log_error("UserPromptSubmit", _tb())
     if logged and not r.overrides:  # T-3126: a message that points something out is a miss, filed with its class

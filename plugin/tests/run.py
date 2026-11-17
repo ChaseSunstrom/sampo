@@ -83,6 +83,7 @@ OPERATOR_SWITCHES.update({"SHIP_AT", "SHIP_TIMEOUT_S", "LAND_SHIP_WAIT_S", "LAND
 OPERATOR_SWITCHES.add("BIG_HOLD_S")  # T-4223: an operator's turn budget for a big task; a hold test sets its own
 OPERATOR_SWITCHES.update({"WAIT_LIMIT_S", "WAIT_SETTLE_S", "WAIT_TRAIN_POLL_S"})  # T-4525, T-4692: the wait timer's limits; its tests set their own
 OPERATOR_SWITCHES.add("LANE_CHECKS")  # T-4491: how many lane checks run at once; an accept test sets its own
+OPERATOR_SWITCHES.add("NO_PROMPT_MAC")  # T-4844: leaves prompt events unmarked; the hook tests set it themselves, a signing test clears it
 OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its starter; a test that needs it sets it itself
 OPERATOR_SWITCHES.add("SLOT_RESERVE")  # T-4650: the reserved slots' off switch is the operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_TRACE")  # T-4685: the slot trace is an operator's, never a test's

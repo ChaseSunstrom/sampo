@@ -3002,7 +3002,60 @@ def cap_payload(data):
     return out
 
 
-def log_event(p, event, task=None, data=None, session=None):
+def prompt_sealer():
+    """T-4844: (seal, why) for log_event: seal(rec) is the HMAC of a prompt event's text, session, project and time under
+    selfgate's account key. The key is read here, before log_event takes the ledger lock, so only the HMAC runs under
+    it. seal is None (the event goes unmarked, the prompt never fails) when the key is unusable (why says so) or
+    FOREMAN_NO_PROMPT_MAC is set (tests; it only ever makes an event less trusted: why is ""). Only the UserPromptSubmit
+    hook builds one: a prompt written any other way carries no MAC and is not genuine."""
+    if os.environ.get("FOREMAN_NO_PROMPT_MAC"):
+        return None, ""
+    try:
+        from sampo import selfgate
+        key = selfgate._secret()
+    except Exception as e:
+        return None, f"the MAC key could not be read ({type(e).__name__}): prompt events are recorded unmarked"
+    if not key:
+        return None, "no usable MAC key (selfgate's key file is missing, a link, not 0600 or unreadable): prompt events are recorded unmarked"
+    return (lambda rec: selfgate._mac(key, _prompt_body(rec))), ""
+
+
+def _prompt_body(rec):
+    d = rec.get("data")
+    return {"text": d.get("text") if isinstance(d, dict) else None, "session": rec.get("session_id"),
+            "project": rec.get("project"), "ts": rec.get("ts")}
+
+
+def genuine_prompts(p, since=""):
+    """T-4844: the prompt events whose MAC verifies under selfgate's key, oldest first: a line appended by hand, an
+    edited text, session, project or time, an unmarked event or one signed under another key is left out, and an exact
+    copy of a genuine line counts once (the first wins). [] with no usable key."""
+    try:
+        from sampo import selfgate
+        key = selfgate._secret()
+    except Exception:
+        key = None
+    if not key:
+        return []
+    import hmac
+    out, seen = [], set()
+    for e in ledger_events(p, ["prompt"], since=since):
+        mac = (e.get("data") or {}).get("mac") if isinstance(e.get("data"), dict) else None
+        if e.get("event") != "prompt" or not isinstance(mac, str) or e.get("project") != p.slug:  # a copy from another project's ledger
+            continue
+        try:
+            ok = hmac.compare_digest(mac, selfgate._mac(key, _prompt_body(e)))
+        except (TypeError, ValueError):  # a text or time json can't carry, or a non-ASCII mac
+            ok = False
+        if ok and mac not in seen:
+            seen.add(mac)
+            out.append(e)
+    return out
+
+
+def log_event(p, event, task=None, data=None, session=None, seal=None):
+    """seal (T-4844): a function of the finished record returning a MAC for data["mac"]; it sees the ts this line lands
+    with, and a failing one leaves the event unmarked."""
     rec = {"ts": now(), "session_id": session or session_id(), "project": p.slug,
            "task": task, "event": event, "data": cap_payload(redact_obj(data or {}))}
     os.makedirs(p.dir, exist_ok=True)
@@ -3024,6 +3077,13 @@ def log_event(p, event, task=None, data=None, session=None):
         except OSError:  # no flock here (NFS) or an unreadable archive: the event lands unchained, a gap
             pass  # fm verify-ledger reports; it is never lost
         rec["ts"] = now()  # in landing order, so fm tidy's monthly roll never reorders the chain
+        if seal:  # T-4844: over the ts the line lands with
+            try:
+                mac = seal(rec)
+                if isinstance(mac, str) and mac:
+                    rec["data"] = dict(rec["data"], mac=mac)
+            except Exception:
+                pass
         rec = {"prev": prev, **rec} if prev else rec
         f.write(("\n" if cut else "").encode() + (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
     if event in SPENDING_EVENTS and (event != "close_affected" or (data or {}).get("exit")):

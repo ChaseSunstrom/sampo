@@ -9,6 +9,7 @@ import time
 import re
 import unittest
 import unittest.mock
+from unittest import mock
 
 from helpers import HOOK, RELAY, ForemanTestCase, read_json, read_text
 
@@ -163,6 +164,56 @@ class BatchNoteOnce(ForemanTestCase):
         self.hook("SessionStart", {"source": "compact", "session_id": "s2108"})
         self.assertNotIn("applies them all", third("c.py"))
         self.assertIn("applies them all", third("d.py", sid="s2"))
+
+
+class PromptMac(ForemanTestCase):  # T-4844: the prompt event carries an HMAC under selfgate's key (the test's own key file)
+    def prompt(self, text="please add a flag", sid="sess-mac"):
+        from sampo import hooks
+        os.environ.pop("FOREMAN_NO_PROMPT_MAC", None)
+        hooks.user_prompt_submit({"session_id": sid, "cwd": self.repo, "prompt": text})
+        p = c.find_project(self.repo)
+        return p, [e for e in c.ledger_events(p, ["prompt"]) if (e.get("data") or {}).get("text")][-1]
+
+    def test_prompt_mac_covers_text_session_and_time_under_selfgates_key(self):
+        from sampo import selfgate as g
+        p, e = self.prompt()
+        mac = e["data"].get("mac")
+        self.assertTrue(isinstance(mac, str) and len(mac) == 64, e)
+        want = g._mac(g._secret(), {"text": e["data"]["text"], "session": "sess-mac", "project": p.slug, "ts": e["ts"]})
+        self.assertEqual(mac, want)
+        self.assertEqual([x["data"]["text"] for x in c.genuine_prompts(p)], ["please add a flag"])
+
+    def test_prompt_mac_changes_with_each_of_text_session_and_time(self):
+        from sampo import selfgate as g
+        p, e = self.prompt()
+        body = {"text": e["data"]["text"], "session": "sess-mac", "project": p.slug, "ts": e["ts"]}
+        for k, v in (("text", "other"), ("session", "sess-x"), ("project", "elsewhere"), ("ts", "2000-01-01T00:00:00Z")):
+            self.assertNotEqual(g._mac(g._secret(), dict(body, **{k: v})), e["data"]["mac"], k)
+
+    def test_prompt_mac_an_unusable_key_records_the_event_unmarked_and_the_prompt_goes_through(self):
+        from sampo import selfgate as g
+        with mock.patch.object(g, "_secret", return_value=None):
+            p, e = self.prompt("still recorded")
+        self.assertEqual(e["data"]["text"], "still recorded")
+        self.assertNotIn("mac", e["data"])
+        self.assertEqual(c.genuine_prompts(p), [])
+        with open(os.path.join(c.state_dir(), "logs", "hooks.log"), encoding="utf-8") as f:
+            self.assertRegex(f.read(), r"UserPromptSubmit .*prompt events? .*unmarked")  # T-4844: the refusal's reason
+
+    def test_prompt_mac_a_key_that_raises_never_fails_the_prompt(self):
+        from sampo import selfgate as g
+        with mock.patch.object(g, "_secret", side_effect=RuntimeError("boom")):
+            p, e = self.prompt("survives")
+        self.assertEqual(e["data"]["text"], "survives")
+        self.assertNotIn("mac", e["data"])
+
+    def test_prompt_mac_the_switch_records_it_unmarked_so_tests_never_open_the_users_key(self):
+        from sampo import hooks, selfgate as g
+        with mock.patch.dict(os.environ, {"FOREMAN_NO_PROMPT_MAC": "1"}), \
+                mock.patch.object(g, "_secret", side_effect=AssertionError("the key was opened")):
+            hooks.user_prompt_submit({"session_id": "s", "cwd": self.repo, "prompt": "no key please"})
+        e = c.ledger_events(c.find_project(self.repo), ["prompt"])[-1]
+        self.assertNotIn("mac", e["data"])
 
 
 class HookCase(ForemanTestCase):

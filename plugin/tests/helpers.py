@@ -448,7 +448,8 @@ class SampoTestCase(unittest.TestCase):
         return json.loads(self.fm(*args, "--json", **kw).stdout)
 
     def hook(self, event, payload, env=None, timeout=10, flags=None):
-        e = dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_HOOK_SLACK=str(busy_factor()))  # T-3366
+        e = dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_HOOK_SLACK=str(busy_factor()),  # T-3366
+                 FOREMAN_NO_PROMPT_MAC="1")  # T-4844: a hook process in a test never opens the account's real MAC key
         e.pop("SAMPO_HOOK_SLACK", None)  # core.mirror_env would let it win over the value above
         e.update(env or {})
         payload = dict({"session_id": "sess-1", "cwd": self.repo, "hook_event_name": event}, **payload)
