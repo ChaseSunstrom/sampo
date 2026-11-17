@@ -1,4 +1,4 @@
-/* Rune (T-2080): draws the live tower from genesis.json (written by `fm genesis export site/genesis`).
+/* Rune (T-2080): draws the live tower from genesis.json (written by `sampo rune export site/genesis`).
    The hero is the tower itself, one carved course per generation, under a vault of moons, one per moonshot;
    below it every section's plates. Every course, moon and plate opens what it holds in the drawer.
    No libraries, nothing from another host. Text from genesis.json only ever becomes text: escaped, or textContent. */
@@ -144,6 +144,7 @@
   function say(s) {
     var t = String(s == null ? "" : s);
     if (t === "foreman") return "sampo";  // the exam's arm id
+    t = t.replace(/\bfm\sgenesis\b/g, "sampo rune");  // genesis is the old name of sampo rune (T-4842)
     return t.replace(/\bfm(?=[a-z]+\.)/g, "").replace(/\bfm(?= [a-z])/g, "sampo").replace(/\bForeman\b/g, "Sampo");
   }
   /* the moons: one per catalogue row; the tier counted, the cold reviewer's wild score, the stage */
@@ -192,7 +193,7 @@
       (D.next ? '<div class="rev"><dt>next</dt><dd>' + nextLine(D.next) + "</dd></div>" : "") +
       '<div class="rev"><dt>rev</dt><dd>' + esc(D.rev) + " · updated " + esc(ago(D.updated)) + " · " + plural(D.not_yet, "not-yet idea") + " waiting</dd></div>";
     $("gen-label").textContent = "generation " + g.n + " · live";
-    $("foot").textContent = "Exported by sampo genesis export · " + D.rev;
+    $("foot").textContent = "Exported by sampo rune export · " + D.rev;
   }
 
   /* A: the tower's levels for the picked generation */
@@ -225,8 +226,8 @@
       "<p>Biggest gaps, lenses, order · " + plural(g.missions.length, "mission") + ", " + plural(g.rules.length, "standing rule") + "</p></button>" +
       '<button type="button" class="lvl l0" data-doc="gen-0.md"><span class="k">Level 0 · foundation</span><h3>Your message</h3><p>Goals, MUSTs, NEVERs. Sent once, never edited.' + (D.seal ? " Seal: " + esc(D.seal) + "." : "") + "</p></button>" +
       "</div>" +
-      '<div class="genesis-box"><code>sampo genesis</code><p>' + (g.n < 2 ? "Gen 1's Seed was written by hand from your message. From gen 2 on, sampo genesis writes every Seed (#13)."
-        : "Gen " + g.n + "'s Seed is written by sampo genesis itself (#13).") + "</p></div>";
+      '<div class="genesis-box"><code>sampo rune</code><p>' + (g.n < 2 ? "Gen 1's Seed was written by hand from your message. From gen 2 on, sampo rune writes every Seed (#13)."
+        : "Gen " + g.n + "'s Seed is written by sampo rune itself (#13).") + "</p></div>";
   }
   function highlight(on) {
     var box = $("tiles");
@@ -583,7 +584,7 @@
       return '<button type="button" class="rule steer" data-rule="' + i + '"><b>' + inline(say(title)) + '</b><span class="rb">' + inline(say(firstSentence(rest))) + "</span></button>";
     });
     var all = Array.isArray(D.intent) ? D.intent : [], solo = all.filter(function (r) { return !String(r[1] || "").trim(); });
-    var intent = all.filter(function (r) { return solo.indexOf(r) < 0; }).map(function (r) {  // [head, rest], parsed by fm genesis export
+    var intent = all.filter(function (r) { return solo.indexOf(r) < 0; }).map(function (r) {  // [head, rest], parsed by sampo rune export
       return '<div class="rule intent"><b>' + inline(say(r[0])) + '</b><span class="rb">' + inline(say(r[1])) + "</span></div>";
     });
     $("rules").innerHTML = intent.join("") + RUN.map(function (r) { return '<div class="rule"><b>' + esc(r[0]) + '</b><span class="rb">' + esc(r[1]) + "</span></div>"; }).join("") + steer.join("");

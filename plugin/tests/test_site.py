@@ -4,6 +4,7 @@ import functools
 import http.server
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -317,6 +318,11 @@ class KalevalaExport(ForemanTestCase):
         finally:
             rune.set_tower(None)
 
+    def test_current_names_the_exported_next_command_teaches_sampo_rune(self):  # T-4842, finding 13
+        nxt = self.export()["next"]
+        self.assertRegex(nxt["command"], r"^sampo rune ")
+        self.assertNotRegex(nxt["command"], r"\bfm\b")
+
     def test_no_block_before_kalevala_opens_a_tower(self):
         self.assertNotIn("kalevala", self.export())
 
@@ -439,3 +445,137 @@ class KalevalaPage(unittest.TestCase):
                 "paused": True, "stage": True,
                 "spend": True, "gens": True, "acts": True, "share": True, "drawer": True, "none": True, "error": True}
         self.assertEqual(got, want, out.stderr[-2000:])
+
+    def test_current_names_the_page_footer_and_seed_box_teach_sampo_rune(self):  # T-4842, finding 13
+        js = read_text(os.path.join(self.gdir, "genesis.js"))
+        page = read_text(os.path.join(self.gdir, "index.html"))
+        for name, text in (("genesis.js", js), ("genesis/index.html", page)):
+            self.assertNotRegex(text, r"\b(?:fm|sampo) genesis\b", name)  # the product's command is sampo rune
+        self.assertIn('"Exported by sampo rune export', js)
+        self.assertIn("Exported by sampo rune export", page)
+
+
+STALE_RECORD = ("414 lanes", "570</span> commands", "1,662 tasks", "7,390 runs", "58.5 ms", "3 min 14 s", "1,053 runs",
+                "wildest of 58 moonshots", "to 2 November 2026", 'class="x135"', "Nine more")
+
+
+class RecordFromData(unittest.TestCase):
+    """T-4842, findings 25 and 26: the Record, the Ward's blocks and the Moons caption were figures baked into
+    site/index.html from a design-time run; they now come from stats.json and genesis.json at every build."""
+    ROWS = [{"id": "M-01", "wild": 5, "stage": "idea"}, {"id": "M-02", "wild": 4, "stage": "kill"},
+            {"id": "M-03", "wild": 4, "stage": "idea"}, {"id": "M-04", "wild": None, "stage": "idea"},
+            {"id": "M-05", "wild": 2, "stage": "idea"}]
+
+    @staticmethod
+    def day(d, tasks, ev, lanes=0):
+        return {"day": d, "FEATURE": tasks, "FIX": 0, "CLEAN": 0, "PERFORMANCE": 0, "SECURITY": 0, "RESEARCH": 0,
+                "lanes": lanes, "evidence": ev}
+
+    def stats(self):
+        return {"generated": "2026-12-09",
+                "totals": {"tasks_done": 30, "evidence": 90, "proofs": 15, "commits": 5, "gate_runs": 7,
+                           "lanes_merged": 7, "guard_blocks": 40},
+                "daily": [self.day("2026-12-07", 10, 30, 1), self.day("2026-12-08", 15, 40), self.day("2026-12-09", 5, 20)],
+                "guard": {"core": 25, "brief": 10}, "gate_seconds": {"runs": 7, "median": 61.0},
+                "bench": {"PreToolUse:Bash": {"p50": 33.3, "p95": 40.0, "budget": 150}}}
+
+    def setUp(self):
+        sys.path.insert(0, SITE)
+        try:
+            import build
+        finally:
+            sys.path.pop(0)
+        self.build = build
+        self.template = read_text(os.path.join(SITE, "index.html"))
+
+    def test_counts_from_data_the_template_holds_no_figure_the_build_can_fill(self):
+        for stale in STALE_RECORD:
+            self.assertNotIn(stale, self.template)
+        self.assertNotIn('<li class="x13', self.template)  # the Ward's kinds are rows the build writes
+        self.assertNotIn("<figure class=\"gauge\">", self.template)
+        self.assertNotIn("<g class=\"d\"", self.template)  # the ledger's ingots
+
+    def test_counts_from_data_the_record_the_ward_and_the_moons_follow_the_data(self):
+        page = self.build.fill_record(self.template, self.stats(), self.ROWS)
+        for stale in STALE_RECORD:
+            self.assertNotIn(stale, page)
+        for key in ("lanes", "blocks", "asof", "moons", "kinds", "gauges", "ledger"):
+            self.assertNotIn("{{" + key + "}}", page)
+        for want in ("7 lanes merged", '<span class="big">40</span> commands blocked', "Five more blocks",
+                     "<span>Edits to Sampo itself</span><b>25</b>", "<span>Edits with no task brief</span><b>10</b>",
+                     "<b>3.0</b>", "evidence runs per task: 90 runs over 30 tasks", "<b>50</b>", "<b>1 min 1 s</b>",
+                     "the median full check, over 7 runs", "<b>33.3 ms</b>", "red is over its 150 ms budget",
+                     "Tasks closed each day, 7 to 9 December 2026: 3 working days, 30 tasks in all, "
+                     "the most on 8 December with 15.", "Peak: 15 on 8 December",
+                     "<tr><td>8 December</td><td>15</td><td>40</td></tr>", "to 9 December 2026",
+                     "wildest of 5 moonshots along the ecliptic, wildest first, each numbered",
+                     "The twenty wildest of 5 moonshots along the ecliptic over the forge"):
+            self.assertIn(want, page)
+        self.assertEqual(page.count("1 more"), 0)
+
+    def test_counts_from_data_no_unrecorded_remainder_says_nothing_and_a_gap_in_the_data_is_named(self):
+        s = self.stats()
+        s["guard"] = {"core": 30, "brief": 10}
+        page = self.build.fill_record(self.template, s, self.ROWS)
+        self.assertNotIn("more blocks", page)
+        del s["bench"]
+        with self.assertRaises(SystemExit) as why:
+            self.build.fill_record(self.template, s, self.ROWS)
+        self.assertIn("bench", str(why.exception))
+
+    def test_counts_from_data_the_wards_budget_mark_stays_inside_the_gauge_when_p50_is_far_under_it(self):
+        s = self.stats()
+        s["bench"]["PreToolUse:Bash"] = {"p50": 58.0, "p95": 90.0, "budget": 300}
+        sys.path.insert(0, SITE)
+        try:
+            import record
+        finally:
+            sys.path.pop(0)
+        svg = record.gauges(s).split('<figure class="gauge">')[4]
+        zone = re.search(r'<path d="M([\d.]+) 35 H600 V55 H[\d.]+ Z" fill="#B12E16"', svg)
+        self.assertTrue(zone, "no red over-budget zone drawn")
+        self.assertLess(float(zone.group(1)), 600)
+        self.assertIn("red is over its 300 ms budget", svg)
+
+    def test_counts_from_data_a_missing_total_fails_the_build_naming_the_key(self):
+        for key in ("lanes_merged", "guard_blocks", "tasks_done", "evidence", "proofs"):
+            s = self.stats()
+            del s["totals"][key]
+            with self.assertRaises(SystemExit, msg=key) as why:
+                self.build.fill_record(self.template, s, self.ROWS)
+            self.assertIn("totals." + key, str(why.exception))
+
+    def test_counts_from_data_a_stale_stats_file_is_named_at_build_time(self):
+        note = self.build.stale_note("2026-11-02", today="2026-11-16")
+        self.assertIn("14 days old", note)
+        self.assertIn("site/stats.py", note)
+        self.assertEqual(self.build.stale_note("2026-11-15", today="2026-11-16"), "")
+        self.assertEqual(self.build.stale_note("", today="2026-11-16"), "")
+
+    def test_counts_from_data_the_built_page_carries_the_committed_figures(self):
+        out = tempfile.mkdtemp(prefix="test-site-record-")
+        try:
+            self.build.build(out)
+            page = read_text(os.path.join(out, "index.html"))
+        finally:
+            shutil.rmtree(out, ignore_errors=True)
+        stats = json.loads(read_text(os.path.join(SITE, "data", "stats.json")))
+        rows = json.loads(read_text(os.path.join(SITE, "genesis", "genesis.json")))["moonshots"]["rows"]
+        t = stats["totals"]
+        self.assertIn(f"{self.build.fmt(t['lanes_merged'])} lanes merged", page)
+        self.assertIn(f'<span class="big">{self.build.fmt(t["guard_blocks"])}</span> commands blocked', page)
+        self.assertIn(f"wildest of {len(rows)} moonshots", page)
+        self.assertIn(f"{self.build.fmt(t['tasks_done'])} tasks in all", page)
+
+
+class CurrentNames(unittest.TestCase):
+    """T-4842, findings 10 and 11: the diagrams say the Ward and sampo oops, never Guard or fm oops."""
+    DIAGRAMS = os.path.join(SITE, "assets", "diagrams")
+
+    def test_current_names_the_loop_and_guard_diagrams_say_the_ward_and_sampo_oops(self):
+        for name in ("loop", "loop-light", "loop-dark", "guard", "guard-light", "guard-dark"):
+            svg = read_text(os.path.join(self.DIAGRAMS, name + ".svg"))
+            self.assertIn("The Ward", svg, name)
+            self.assertNotRegex(svg, r"\bGuard\b|\bfm oops\b|\bForeman\b", name)
+            if name.startswith("guard"):
+                self.assertIn("sampo oops", svg, name)

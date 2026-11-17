@@ -30,7 +30,7 @@ def _v(rel):  # T-2060, T-2063: browsers keep a file by its URL, so the URL carr
 ICON, FAVICON, CSS, JS = _v("assets/sampo.svg"), _v("assets/favicon.ico"), _v("style.css"), _v("site.js")
 FORGE_CSS, FORGE_JS = _v("forge.css"), _v("forge.js")  # T-2851: the landing's illustrated forge, loaded after style.css and before site.js
 SECTIONS = _v("sections.css")  # T-2852: the section pages' forge, loaded after style.css
-SOURCE_ONLY = {"build.py", "stats.py", "pages.py", "bench_safety.py", "__pycache__"}
+SOURCE_ONLY = {"build.py", "stats.py", "pages.py", "record.py", "bench_safety.py", "__pycache__"}
 TOKENS = os.path.join(ROOT, "design", "sampo", "tokens.json")
 TOKENS_START = "/* tokens: python3 site/build.py --tokens writes this block from design/sampo/tokens.json; edit the json */"
 TOKENS_END = "/* end tokens */"
@@ -731,6 +731,39 @@ def export_cards(rows, dest, block=CARD_BLOCK, page=CARD_PAGE, examples=None, ki
     return len(cards), int(wrote)
 
 
+STALE_DAYS = 7  # the daily publish refreshes stats.json; a week without one is a stalled job, not a quiet week
+
+
+def stale_note(asof, today=None):
+    """T-4842: the readings are only as new as site/data/stats.json, which needs Sampo's own state to regenerate (CI has
+    none), so a build says how old they are instead of publishing old figures as current. '' when fresh or undated."""
+    import datetime
+    try:
+        age = (datetime.date.fromisoformat(str(today)[:10]) if today else datetime.date.today()) \
+            - datetime.date.fromisoformat(str(asof)[:10])
+    except ValueError:
+        return ""
+    if age.days <= STALE_DAYS:
+        return ""
+    return (f"site/data/stats.json is {age.days} days old ({str(asof)[:10]}): the landing page's readings are as of then. "
+            "Run python3 site/stats.py (or build with --refresh-stats) on a machine with Sampo's state")
+
+
+def fill_record(page, stats, rows):
+    """T-4842: the landing page's counts, from the data and never from the template: the Ward's blocks and kinds, the
+    lanes merged, the Record's gauges, ledger and date, and the Moons chart's total (stats.json and genesis.json)."""
+    if HERE not in sys.path:
+        sys.path.insert(0, HERE)
+    import record
+    for key, value in (("lanes", record.num(record.need(stats, "totals", "lanes_merged"))),
+                       ("blocks", record.num(record.need(stats, "totals", "guard_blocks"))),
+                       ("asof", record.long_date(record.need(stats, "generated"))),
+                       ("moons", str(len(rows))), ("kinds", record.kinds(stats)), ("gauges", record.gauges(stats)),
+                       ("ledger", record.ledger(stats))):
+        page = page.replace("{{" + key + "}}", value)
+    return page
+
+
 def build(out):
     sys.path.insert(0, HERE)
     import pages as P
@@ -789,7 +822,11 @@ def build(out):
         raise SystemExit("build.py: site/data/stats.json has no code.tests or cards; run site/stats.py")
     page = page.replace(PROOF_MARK, proof(totals, asof), 1)
     with open(os.path.join(HERE, "genesis", "genesis.json"), encoding="utf-8") as f:
-        page = page.replace(MOONS_MARK, moons_html(json.load(f)["moonshots"]["rows"]), 1)
+        moon_rows = json.load(f)["moonshots"]["rows"]
+    page = page.replace(MOONS_MARK, moons_html(moon_rows), 1)
+    page = fill_record(page, stats, moon_rows)  # T-4842: the readings, gauges, ledger and the chart's total
+    if note := stale_note(stats.get("generated")):
+        print("build.py: warning: " + note, file=sys.stderr)
     for old, new in (('rel="icon" href="assets/sampo.svg"', f'rel="icon" href="{ICON}"'),
                      ('rel="icon" href="assets/favicon.ico"', f'rel="icon" href="{FAVICON}"'),
                      ('rel="stylesheet" href="style.css"', f'rel="stylesheet" href="{CSS}"'),
@@ -860,6 +897,11 @@ def build(out):
 
 
 if __name__ == "__main__":
+    if "--refresh-stats" in sys.argv:  # T-4842: on a machine with Sampo's state, build from fresh readings
+        sys.argv.remove("--refresh-stats")
+        import subprocess
+        if subprocess.run([sys.executable, os.path.join(HERE, "stats.py")]).returncode:
+            sys.exit("build.py: site/stats.py failed, so the readings would be stale; fix it or build without --refresh-stats")
     target = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, "_site")
     if sys.argv[1:] == ["--tokens"]:  # T-2753: rewrite style.css's tokens block after design/sampo/tokens.json changes
         write_tokens(os.path.join(HERE, "style.css"))
@@ -874,7 +916,8 @@ if __name__ == "__main__":
         print(f"{dest}: {n} cards, {wrote} files written")
         sys.exit()
     if target.startswith("-"):  # its options are --tokens and --cards: `--check` once became a folder that got committed
-        print("usage: python3 site/build.py [OUTPUT_FOLDER] | --tokens | --cards [FOLDER] (default _site, site/cards)",
+        print("usage: python3 site/build.py [--refresh-stats] [OUTPUT_FOLDER] | --tokens | --cards [FOLDER] "
+              "(default _site, site/cards)",
               file=sys.stderr)
         sys.exit(2)
     if not safe_out(target):

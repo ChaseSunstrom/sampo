@@ -146,7 +146,7 @@ async function kalevala() {
     early: w.pressed === "true" && w.hash === "#kalevala" && wt.pressed === "true" && wt.hash === "#tower=api",
     markup: s.html.includes("onerror") || t.html.includes("onerror"),
     honest: says(s, /\bgen 0\b/) && says(s, /no exam yet/i), trend: says(s, /improving/) && says(s, /\+1\b/),
-    stuck: says(s, /\bstuck\b/i), paused: says(s, /\bpaused\b/i), stage: says(s, /sampo genesis spec/) && !says(s, /\bfm genesis\b/),
+    stuck: says(s, /\bstuck\b/i), paused: says(s, /\bpaused\b/i), stage: says(s, /sampo rune spec/) && !says(s, /\b(?:fm|sampo) genesis\b/),
     spend: says(s, /\$0\.12/), gens: says(s, /baseline/) && says(s, /root gen-0/), acts: says(s, /sampo kalevala resume memory/),
     share: says(s, /\$5\.00/), drawer: says(t, /^Kalevala tower/) && t.texts.includes("API surface") && says(t, /^gen 1 · baseline · first gen/) && !says(t, /towers come from genesis\.json/)
       && t.pressed === "true" && s.pressed !== "true",  // a tower's link lands in the city, behind its drawer

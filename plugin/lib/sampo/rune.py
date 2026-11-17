@@ -1267,6 +1267,11 @@ def _kalevala(p):
             "rounds": m.get("rounds", 0), **spend}
 
 
+def _shown(nxt):
+    """step()'s dict for a page (T-4842): the command names the verb users type, sampo rune (genesis is its old name)."""
+    return {**nxt, "command": re.sub(r"\b(?:fm|sampo) genesis\b", "sampo rune", str(nxt.get("command", "")))}
+
+
 def export(p, out):
     """The tower as data for a page (genesis.json) plus each doc as a file beside it, home paths shown as ~ and
     secrets redacted, so the run can be followed from the repo or its site."""
@@ -1336,7 +1341,7 @@ def export(p, out):
             "capabilities": [{"n": int(n), "name": name, "text": t.strip()} for n, name, t in all_caps(p, gen0)],
             "gaps": _gaps(docs.get("gap-map.md", "")), "generations": gens, "exam": exam,
             "coverage": chk["coverage"], "not_yet": chk["not_yet"]["items"], "not_yet_open": chk["not_yet"]["open"],
-            "unproven": _unproven(p), "unproven_kinds": _unproven(p, "counts"), "next": step(p), "docs": docs, "seal": sealed(p) or seal(p)[:8], "intent": intent_clauses()}
+            "unproven": _unproven(p), "unproven_kinds": _unproven(p, "counts"), "next": _shown(step(p)), "docs": docs, "seal": sealed(p) or seal(p)[:8], "intent": intent_clauses()}
     if rows := card(p):  # T-2154: optional; absent before any graded line
         data["scorecard"] = rows
     if (lr := card_long(p)) and lr["state"] != "no long run":  # T-2263: the deciding row
