@@ -29,6 +29,7 @@ from sampo.lanes import CLOSE_MARK, CriterionRed, _git, _ref_ok, _verify, clear_
     pm_after_train, pm_record, pm_rerun_cmd, pm_wait, train_lock, train_lock_closing
 
 FLAKY_ROUNDS = 8  # T-4676: a hard bound on the rounds of flaky classes one train goes on past (the cap proper is per class)
+CUT_RERUNS = 1  # T-4889: a suite gate cut at its deadline with nothing failed runs once more; cut again, the train stops
 WT_GONE = "the train's scratch worktree was removed by something else"  # T-4728: said by the first loss and the second
 SKIPPED = "probe skipped"  # the note a held green run leaves; the report counts by it (T-3596)
 PROBE_JOBS = 3 # T-3531: pre-filter probes at once
@@ -36,6 +37,7 @@ _FAILED = re.compile(r"^(?:FAIL|ERROR): (\S+) \(([\w.]+)\)", re.M)  # unittest's
 _LISTED = re.compile(r"^  failed class: (\S+)", re.M)  # run.py's every red class, one per line, never-started ones too
 _CUT = re.compile(r"^  not run class: (\S+)", re.M)  # T-3936: run.py's classes the deadline cut (the train runs them too)
 _COUNT = re.compile(r"^FAILED \((\d+) classes", re.M)  # run.py's summary count
+_ANY_RED = re.compile(r"^(?:FAIL|ERROR): |^FAILED \(|^  failed class: ", re.M)  # T-4889: a run with any of these failed something
 _FIXTURES = ("setUpModule", "tearDownModule", "setUpClass", "tearDownClass")  # unittest names the module or class
 _FRAME = re.compile(r'^\s*File ".*", line \d+.*$', re.M)  # a traceback frame: the test and the code on its stack
 _stem = lambda t: os.path.basename(t).rsplit(".", 1)[0]  # noqa: E731  a test file's module name
@@ -164,7 +166,7 @@ def _base_red_once(main, base, sub):
             code, out = go(run)
         if code in (0, 5, 124):  # a run of no tests or a timeout proves nothing: the full gates decide
             return ""
-        return _why_red({"cmd": sub[1], "affected": ts, "failing": _red(out),
+        return _why_red({"cmd": sub[1], "affected": ts, "failing": _failed(out),
                          "tail": out.rstrip().splitlines()[-15:]})
     finally:
         _git(main, "worktree", "remove", "--force", wt)
@@ -200,6 +202,66 @@ def _red(out):
     if any(n.startswith("unittest.") for n in listed) and not any(w.startswith("unittest.") for _, w in lines):
         return []  # run.py says a module failed to import but no line says which
     return sorted(n for n in names if not any(n.startswith(m + ".") for m in names))
+
+
+def _cut(out):
+    """T-4889: the classes a run's deadline cut (run.py's `not run class:` lines). They never ran, so they failed nothing:
+    a train runs them again, it never probes a base on them or blames a lane for them."""
+    return set(_CUT.findall(out or ""))
+
+
+def _failed(out):
+    """T-4889: _red's names without the ones the deadline cut: what really failed ([] when _red can't be sure)."""
+    cut = _cut(out)
+    return [n for n in _red(out) if n not in cut]
+
+
+def _nothing_failed(row):
+    """T-4889: a red row that only ran out of time: ended 124 or with cut classes, and no line says anything failed."""
+    out = row.get("out") or ""
+    return (row["exit"] == 124 or bool(_cut(out))) and not _ANY_RED.search(out)
+
+
+def _defines(path):
+    """T-4889: the names a test module defines at its top level (classes, assignments, imports, also under if/try), or
+    None when that can't be told (unreadable, a syntax error, `import *`, classes made at run time: globals(), vars(),
+    setattr(, exec(). A probe names
+    only classes its tree has: the base lacks a class a lane adds to an old module, and tests/run.py fails a whole run
+    on a name it can't match ('no test matches'), which stopped three lands on 2026-11-17."""
+    import ast
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        tree = ast.parse(text)
+    except (OSError, SyntaxError, ValueError):
+        return None
+    if any(k in text for k in ("globals()", "locals()", "vars()", "setattr(", "exec(")):  # classes made at run time
+        return None
+    got = set()
+
+    def walk(body):
+        for node in body:
+            if isinstance(node, ast.ClassDef):
+                got.add(node.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                for t in node.targets if isinstance(node, ast.Assign) else [node.target]:
+                    got.update(n.id for n in ast.walk(t) if isinstance(n, ast.Name))
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for a in node.names:
+                    if a.name == "*":
+                        raise LookupError
+                    got.add((a.asname or a.name).split(".")[0])
+            elif isinstance(node, (ast.If, ast.Try, getattr(ast, "TryStar", ast.Try), ast.With, ast.For, ast.While,
+                                   ast.Match)):
+                for part in ("body", "orelse", "finalbody"):
+                    walk(getattr(node, part, None) or [])
+                for h in [*(getattr(node, "handlers", None) or []), *(getattr(node, "cases", None) or [])]:
+                    walk(h.body)
+    try:
+        walk(tree.body)
+    except LookupError:
+        return None
+    return got
 
 
 @functools.lru_cache(maxsize=None)
@@ -475,7 +537,7 @@ def _probe_once(p, main, base, b, tip, notes, cli):
             code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True,  # T-3614: ahead of lane runs
                                       env=env)  # T-3757: a CPU rise is red here too
             _lost_check(wt)  # a run in a vanished folder ends 127: that is the loss, not a red lane
-            return code, set(_red(out))
+            return code, set(_failed(out))
 
         def again(classes):  # the red classes alone where the runner names them (pm_rerun_cmd), else cmd again
             return run(pm_rerun_cmd(wt, sorted(classes)) or cmd)
@@ -812,11 +874,28 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         """(the command line gate `cmd` runs in the scratch tree, the test modules it names or None). T-3602: with
         `names` the suite runs only those whose module is in the tree (None, []: none is), a class left out when its
         module runs whole; the suite otherwise runs the batch's affected tests found there (T-3544: a prefix or the
-        base lacks a later lane's new test file); any other gate runs as configured."""
+        base lacks a later lane's new test file); any other gate runs as configured. T-4889: a class name needs its
+        class in that tree's module too (a later lane's new class in an old module is no test of the base)."""
         ensure_wt()  # T-4728
         if names and cmd == suite:
-            have = {_stem(f) for f in _git(wt, "ls-files", "-z").stdout.split("\0") if f}
-            ns = sorted(n for n in set(names) if _mod(n) in have and ("." not in n or _mod(n) not in names))
+            have = {}
+            for f in _git(wt, "ls-files", "-z").stdout.split("\0"):
+                if f:
+                    have.setdefault(_stem(f), []).append(f)
+            tops = {}
+
+            def defined(n):  # the class of mod.Class(.test) is in a file of that module's name, or that can't be told
+                parts, m = n.split("."), _mod(n)
+                k = parts.index(m) + 1 if m in parts else len(parts)
+                if k >= len(parts):
+                    return True
+                for f in (f for f in have[m] if f.endswith(".py")):
+                    if f not in tops:
+                        tops[f] = _defines(os.path.join(wt, f))
+                    if tops[f] is None or parts[k] in tops[f]:
+                        return True
+                return not any(f.endswith(".py") for f in have[m])
+            ns = sorted(n for n in set(names) if _mod(n) in have and ("." not in n or _mod(n) not in names) and defined(n))
             return (tpl.replace("{names}", shlex.join(ns)), ns) if ns else (None, [])
         ts = [t for t in sub[2] if os.path.exists(os.path.join(wt, t))] if sub and cmd == sub[0] else []
         if ts:
@@ -880,7 +959,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         if code:
             if _machine_only(out):  # T-4652: the disk, not the code: no base is called red and no lane blamed for it
                 raise _machine_refusal(p, out)
-            row.update(failing=_red(out), tail=out.rstrip().splitlines()[-15:], out=out)
+            row.update(failing=_failed(out), cut=sorted(_cut(out)), tail=out.rstrip().splitlines()[-15:], out=out)
         else:
             passed[key] = row
         return row, True
@@ -1037,6 +1116,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         # green in a confirm that was red for another: red and green alone again, they are the same class twice, and the
         # cap (the only way a flaky class stops a train) is reached.
         flaked, said, pending, notflaky, cleared = 0, set(), [], set(), set()
+        cutoffs = 0  # T-4889: suite gates cut at their deadline with nothing failed, each run once more
         while not ok or pending:  # T-3602: blame from the red run itself; bisect only what it can't pin on one lane
             if ok:
                 passed.clear()
@@ -1077,6 +1157,24 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                 pending = [([n for n in fl if n not in notflaky], *more) for fl, *more in pending
                            if any(n not in notflaky for n in fl)]
             red, g = results[-1], results[-1]["cmd"]
+            cut = set(red.get("cut") or ()) if g == suite else set()  # T-4889: run1 keeps them out of `failing`
+            owed = bool(cut) or (g == suite and red["exit"] == 124)  # the deadline cut it: what never ran failed nothing
+            if owed:
+                need[suite] = None  # the cut classes run in a whole gate before anything lands
+                if _nothing_failed(red):  # no red, so nothing to probe on the base or blame on a lane
+                    if cutoffs >= CUT_RERUNS:
+                        c.log_event(p, "lane_train_cut_off", data={"cut": len(cut), "runs": cutoffs + 1, "cmd": g[:200]})
+                        raise c.PolicyError(f"the gate was cut off at its deadline {cutoffs + 1}x ({len(cut)} classes not "
+                                            "run, none failed): the box is too loaded for it; nothing landed and no lane "
+                                            "blamed; run the train again")
+                    cutoffs += 1
+                    notes.append(("gate", f"cut off at its deadline ({len(cut)} classes not run, none failed): ran it "
+                                          "once more, no lane blamed"))
+                    passed.clear()
+                    reset(merged[-1][1])
+                    ok = gate()
+                    last.update((r["cmd"], r) for r in results if not r["exit"])
+                    continue
             names, flaky, ftree = (red["failing"] if g == suite else []), [], ""
             if names:  # a narrowed run sees them only if they fail alone (not by order or a flake): on this tree first
                 row = probe(here(), g, names)
@@ -1129,7 +1227,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                     notes.append(("gate", f"red on the bare base too, so not any lane's: {c.joinmore(based, 6)}"
                                           + (f" (captured {made})" if made else "")))
                     c.log_event(p, "lane_train_base_red_kept", data={"base": base[:9], "classes": based, "lanes_judged_on": rest})
-            need[g] = (need.get(g) or set()) | set(names) | set(flaky) if names else None  # the suite's other tests passed here
+            need[g] = (need.get(g) or set()) | set(names) | set(flaky) if names and not owed else None  # the suite's other tests passed here (T-4889: not the cut ones)
             ids = [b.id for b, _ in merged]
             blamed = _blame(red["out"], names or red["failing"], ids, diff, reach)
             if not blamed:
@@ -1434,7 +1532,7 @@ def _ship_end(p, tid, head, rc, out, t0, t1):
     the failing tests a red run names from its own output) and the line a land or sampo status tells. (line, data)."""
     sha = (SHIPPED_AT.findall(out) or [head])[-1]
     from sampo import release
-    red = _red(out) if rc and release.SLOTS_CUT not in out else []  # T-4718: a wait for slots names no failing test
+    red = _failed(out) if rc and release.SLOTS_CUT not in out else []  # T-4718: a wait for slots names no failing test; T-4889: nor a cut
     lines = out.splitlines()
     mine = [i for i, ln in enumerate(lines) if ln.startswith(("fm: ", "sampo: "))]  # T-4739: the refusal, not the run's start
     why = _why("\n".join(lines[mine[-1]:]) if mine else out)
