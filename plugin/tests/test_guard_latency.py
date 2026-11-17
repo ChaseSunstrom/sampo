@@ -14,6 +14,7 @@ import fmguard as g
 
 BAR = 4.0  # CPU seconds per case: >= 5x the slowest measured (0.68s) here; measured worst is printed below
 BARS = {"10k ; commands": 15.0}  # linear, ~0.23ms a command: measured 2.3s, bar 6x that
+INDEX_BAR = 20.0  # T-4906: the Ward's writer index, built once per Sampo tree and kept on disk: measured 4.3s, ~5x
 
 
 def cases():
@@ -42,9 +43,16 @@ class Latency(GuardCase):
         return time.process_time() - t
 
     def test_every_case_under_bar(self):
+        # T-4906: the first command naming Sampo builds the writer index (once per tree, then read from its cache):
+        # built here and held to its own bar, so a case's time is the gate's alone, not whichever case came first
+        g._INDEX_MEMO.clear()
+        t = time.process_time()
+        g._writer_index()
+        build = time.process_time() - t
+        self.assertLess(build, INDEX_BAR, f"the writer index took {build:.2f}s CPU to build")
         times = {name: self.cpu(cmd) for name, cmd in cases().items()}
         worst = max(times, key=times.get)
-        print(f"\nguard latency worst: {worst} {times[worst]:.3f}s (bar {BAR}s); all: "
+        print(f"\nguard latency worst: {worst} {times[worst]:.3f}s (bar {BAR}s); index build {build:.3f}s; all: "
               + ", ".join(f"{k}={v:.3f}" for k, v in times.items()))
         for name, t in times.items():
             with self.subTest(case=name):

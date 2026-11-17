@@ -2055,7 +2055,8 @@ _EXEC_API = lazy(r"\bsubprocess\b|\bos\.(?:system|popen|exec\w*|spawn\w*)\b|\bPo
 
 # Any Foreman module (fm*.py in plugin/lib), so new modules are covered without editing this list. Calls into the entry
 # point modules count as mutating; fmcore/fmguard/fmdocs/fmdoctor are mostly read-only, so their mutators are by name.
-_FM_INTERNALS = lazy(r"\b(?:import|from)\s+(?:fm[a-z]+|sampo(?:\.\w+)?)\b|(?:__import__|import_module)\s*\(\s*['\"](?:fm[a-z]+|sampo(?:\.\w+)?)")
+# (T-4906 review: fm[a-z_]+, as fmlane_overlap and fmflake_forecast are twins too)
+_FM_INTERNALS = lazy(r"\b(?:import|from)\s+(?:fm[a-z_]+|sampo(?:\.\w+)?)\b|(?:__import__|import_module)\s*\(\s*['\"](?:fm[a-z_]+|sampo(?:\.\w+)?)")
 _SAMPO_ROLES = {"guard": "ward", "genesis": "rune", "exam": "louhi", "moonshot": "moons", "code": "smith",
                 "codebench": "smithbench", "codemod": "smithmod", "codeterm": "smithterm", "codetui": "smithtui"}
 
@@ -2086,7 +2087,7 @@ _FM_WRITES = lazy(_WRITES)
 _FM_ENTRY_LEAVES = frozenset({_sampo_name(m).split(".")[1] for m in _FM_ENTRY_MODULES} | {"main"})
 # the text gate's own reads: those writes, or a writer named without a call (f = c.write_meta; f(p, 1))
 _FM_MUTATORS = lazy(rf"{_WRITES}|\.\s*(?:{_FM_WRITERS})\b")
-_FROM_FM = lazy(r"\bfrom\s+(?:fm[a-z]+|sampo(?:\.\w+)?)\s+import\b(\s*\*)?")
+_FROM_FM = lazy(r"\bfrom\s+(?:fm[a-z_]+|sampo(?:\.\w+)?)\s+import\b(\s*\*)?")
 _FROM_NAMES = lazy(rf"\b(?:{_FM_WRITERS}|{'|'.join(sorted(_FM_ENTRY_LEAVES))})\b")
 
 
@@ -2099,17 +2100,555 @@ def _nfkc(text):
     return unicodedata.normalize("NFKC", text)
 
 
-def _fm_gate(text):
+def _fm_gate(text, idx=None):
     """T-4893: whether text may reach a Sampo writer, read before any parse (text it can't parse is judged by this
     alone): a writer or entry call, a writer named as an attribute, or a from-import of a Sampo module with * or with a
     writer, an entry module or main anywhere between it and the next from-import (past the statement too: a `)` in a
-    comment ends no list here; more is refused, never less). Each window is read once, so it is linear in the text."""
+    comment ends no list here; more is refused, never less). Each window is read once, so it is linear in the text.
+    T-4906: with the writer index, also any name the text calls or reads as an attribute that the index knows writes
+    (any module's writer, a writer method, a class that writes) or that reaches one by name (getattr, vars …)."""
     text = _nfkc(text)  # python reads a fullwidth letter in a name as the plain one
     if _FM_MUTATORS.search(text):
         return True
     ms = list(_FROM_FM.finditer(text))
-    return any(m.group(1) or _FROM_NAMES.search(text, m.end(), ms[i + 1].start() if i + 1 < len(ms) else len(text))
-               for i, m in enumerate(ms))
+    if any(m.group(1) or _FROM_NAMES.search(text, m.end(), ms[i + 1].start() if i + 1 < len(ms) else len(text))
+           for i, m in enumerate(ms)):
+        return True
+    if not idx:
+        return False
+    named = set(_DOTTED.findall(text)) | set(_CALLED.findall(text))
+    return bool(named & _index_writer_names(idx) or named & _BY_NAME)
+
+
+# ---------------------------------------------------------------- T-4906: Sampo's writers, read from its code
+# The hand list above (_FM_WRITERS) missed set_panic, lift_project_pauses, set_standing_autonomy and every writer added
+# since. The index reads them from the code instead: per Sampo module its top-level functions (writers apart), classes
+# (whether a method writes) and other names; a function writes when a call of its, resolved by module alias, self, a
+# class or a method's name, reaches one of the seeds below. A use the index can't show is safe is refused.
+
+_INDEX_VERSION = 2
+_INDEX_MEMO = {}  # (root, stamp) -> index: one cache read or build per process
+_OS_WRITES = frozenset(("replace", "rename", "renames", "remove", "unlink", "rmdir", "removedirs", "truncate",
+                        "ftruncate", "symlink", "link", "makedirs", "mkdir", "kill", "killpg", "chmod", "chown",
+                        "lchown", "utime", "write", "open", "mkfifo", "mknod", "system", "popen", "fork", "forkpty",
+                        "setsid", "putenv", "unsetenv", "chdir"))
+_SHUTIL_READS = frozenset(("which", "get_terminal_size", "disk_usage", "ignore_patterns"))
+# (a path's rename and replace are left out: a str's replace has the name; os.rename and os.replace are seeds)
+_PATH_WRITES = frozenset(("write_text", "write_bytes", "touch", "symlink_to", "hardlink_to", "unlink", "rmdir", "mkdir",
+                          "chmod"))
+_SPAWN_MODULES = frozenset(("subprocess", "pty", "multiprocessing", "sqlite3", "socket", "urllib", "http"))
+_BY_NAME = frozenset(("getattr", "setattr", "delattr", "vars", "globals", "locals", "eval", "exec", "compile",
+                      "__import__", "import_module", "__dict__", "__getattribute__", "attrgetter", "methodcaller"))
+_DOTTED = lazy(r"\.\s*([A-Za-z_]\w*)")
+_CALLED = lazy(r"([A-Za-z_]\w*)\s*\(")
+# a method name this common is no edge by its name alone: a pattern's search, a dict's update, a file's write. The
+# index follows a Sampo class's method of such a name only through self, cls or a resolved call (a sampo object's
+# .search() reached by name alone is the gap this leaves; by name, every regex call made every function a writer)
+_PLAIN_METHODS = frozenset(set(dir(dict)) | set(dir(list)) | set(dir(str)) | set(dir(set)) | set(dir(bytes))
+                           | set(dir(tuple)) | set(dir(int)) | set(dir(float)) | set(dir(re.Pattern))
+                           | set(dir(re.Match)) | set(dir(collections.deque)) | set(dir(collections.Counter))
+                           | {"write", "read", "close", "flush", "readline", "readlines", "seek", "tell", "open", "fileno",
+                              "strftime", "isoformat", "timestamp", "astimezone", "total_seconds", "date", "time",
+                              "exists", "is_file", "is_dir", "resolve", "glob", "iterdir", "stat", "read_text",
+                              "read_bytes", "acquire", "release", "wait", "result", "set", "is_set", "put", "get_nowait",
+                              "put_nowait", "communicate", "poll", "terminate", "decode", "encode", "hexdigest", "digest"})
+
+
+def _fm_target(name):
+    """The Sampo module an import names (sampo, sampo.X, or an fm twin read as sampo.Y), else ''."""
+    if name == "sampo" or name.startswith("sampo."):
+        return name
+    return _sampo_name(name) if re.fullmatch(r"fm[a-z_]+", name or "") else ""
+
+
+def _index_files(root):
+    """(module, path) of every Sampo module under `root` (plugin/lib/sampo): sampo.X for X.py, sampo for its
+    __init__, and the guard's own module beside it (fmguard.py, read as its sampo name)."""
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return []
+    out = [("sampo" if n == "__init__.py" else "sampo." + n[:-3], os.path.join(root, n)) for n in names if n.endswith(".py")]
+    own = os.path.join(os.path.dirname(root), "fmguard.py")
+    if os.path.isfile(own) and _sampo_name("fmguard") not in {m for m, _ in out}:
+        out.append((_sampo_name("fmguard"), own))
+    return out
+
+
+def _index_stamp(root, files):
+    """What the index of `root` is built from: its files' names, sizes and change times (and the index's version)."""
+    import hashlib
+    h = hashlib.sha1(f"{_INDEX_VERSION}\0{os.path.realpath(root)}\n".encode())
+    for m, path in files:
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        h.update(f"{m}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()[:20]
+
+
+_BARE_SEEDS = frozenset(("Popen", "system", "rmtree", "copyfile", "copy2", "copytree", "move", "flock", "lockf", "kill"))
+
+
+def _seed_call(n, ast):
+    """Whether one call writes on its own: open for writing, an os/shutil/fcntl write, a path's write, a process,
+    a database or a socket."""
+    return _seed_func(n.func, n, ast)
+
+
+def _seed_func(fn, n, ast):
+    """_seed_call's reading of the callable `fn`; `n` is the call, or None for a callable named without one
+    (f = os.replace, partial(shutil.move, …)), whose arguments, an open's mode among them, are then unknown."""
+    if isinstance(fn, ast.Name):
+        if fn.id == "open":
+            if n is None:
+                return True
+            mode = n.args[1] if len(n.args) > 1 else next((k.value for k in n.keywords if k.arg == "mode"), None)
+            return mode is not None and not (isinstance(mode, ast.Constant) and isinstance(mode.value, str)
+                                             and not set(mode.value) & set("wax+"))
+        return fn.id in _BARE_SEEDS
+    if not isinstance(fn, ast.Attribute):
+        return False
+    v = fn.value
+    root = v
+    while isinstance(root, ast.Attribute):
+        root = root.value
+    base = root.id if isinstance(root, ast.Name) else ""
+    if base == "os" and isinstance(v, ast.Name):
+        return fn.attr in _OS_WRITES or fn.attr.startswith(("exec", "spawn", "posix_spawn"))
+    if base == "shutil":
+        return fn.attr not in _SHUTIL_READS
+    if base == "fcntl":
+        return fn.attr in ("flock", "lockf")
+    if base in _SPAWN_MODULES:
+        return True
+    if fn.attr == "open" and (n is None or n.args):  # a path's open(mode)
+        if n is None:
+            return True
+        mode = n.args[0]
+        return not (isinstance(mode, ast.Constant) and isinstance(mode.value, str) and not set(mode.value) & set("wax+"))
+    return fn.attr in _PATH_WRITES and not isinstance(v, ast.Constant)  # (a str's replace is no path's)
+
+
+def _index_module(m, tree, known, ast):
+    """One module's functions (key (module, name or Class.name)) and, per function, its seeds and call edges:
+    ('f', module, name) resolved, ('m', name) a method of any Sampo class by its name."""
+    alias, members = {}, {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            base = ("sampo" + (f".{n.module}" if n.module else "")) if n.level else _fm_target(n.module or "")
+            for a in n.names if base else ():
+                full = f"{base}.{a.name}"
+                if full in known:
+                    alias[a.asname or a.name] = full
+                elif a.name != "*":
+                    members[a.asname or a.name] = (base, a.name)
+        elif isinstance(n, ast.Import):
+            for a in n.names:
+                if t := _fm_target(a.name):
+                    alias[a.asname or a.name.split(".")[0]] = t if a.asname or "." not in a.name else "sampo"
+    defs = list(_module_level(tree.body, ast))  # (a def under a module-level if or try is the module's too)
+    top = {d.name for d in defs if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    classes = {d.name for d in defs if isinstance(d, ast.ClassDef)}
+    funcs = {}  # key -> [seeded, edges]
+
+    def chain(node):
+        """the module a dotted name reaches (sampo.core.write_meta -> sampo.core), its last name, else None"""
+        parts = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        if not isinstance(node, ast.Name) or node.id not in alias:
+            return None
+        mod = alias[node.id]
+        for p in reversed(parts[1:]):
+            if f"{mod}.{p}" not in known:
+                return None
+            mod = f"{mod}.{p}"
+        return mod, parts[0]
+
+    def imported(n):
+        """the Sampo modules an import statement runs: the named one, the package above it and a from-import's
+        submodules"""
+        if isinstance(n, ast.Import):
+            heads = [_fm_target(a.name) for a in n.names]
+        else:
+            base = ("sampo" + (f".{n.module}" if n.module else "")) if n.level else _fm_target(n.module or "")
+            heads = [base] + [f"{base}.{a.name}" for a in n.names if base]
+        out = set()
+        for h in filter(None, heads):
+            while h:
+                if h in known:
+                    out.add(h)
+                h = h.rpartition(".")[0]
+        return out
+
+    # module-level names and the values they hold (T-4906 review: `_move = os.replace` and `_git =
+    # functools.partial(c._git, …)` hold writers): each valued name is a function of its own, its value read as a body
+    names, values = set(), {}
+    for s in _module_level(tree.body, ast):
+        got = {x.id for t in (s.targets if isinstance(s, ast.Assign) else [s.target]
+                              if isinstance(s, (ast.AnnAssign, ast.AugAssign)) else [])
+               for x in ast.walk(t) if isinstance(x, ast.Name)}
+        names |= got
+        if getattr(s, "value", None) is not None:
+            for nm in got:
+                values.setdefault(nm, []).append(s.value)
+    local = top | set(values)
+    # the writers it takes by name from the standard library (from shutil import move): os.replace's kind, bare
+    std_seeds = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and not n.level
+                 and (n.module or "").split(".")[0] in ("os", "shutil", "fcntl") + tuple(_SPAWN_MODULES)
+                 for a in n.names
+                 if _seed_func(ast.Attribute(value=ast.Name(id=n.module.split(".")[0], ctx=ast.Load()), attr=a.name,
+                                             ctx=ast.Load()), None, ast)}
+
+    def body(key, nodes, cls, deep=True, value=False):
+        # [seeded, edges, seeded without its nested defs, edges without them]. A function's nested defs and lambdas
+        # count as its own calls for a caller (it may call the closure it gets back: more is refused, never less);
+        # what an import runs is read shallow: a def's body, nested or not, runs only when it is called. A callable
+        # named without a call (passed on, stored, partial(…)) counts as called for a caller; in a value (`value`) it
+        # is what calling the name runs
+        rec = funcs.setdefault(key, [False, set(), False, set()])
+        walk = _nest_walk(nodes, ast) if deep else ((x, False) for x in _module_level(nodes, ast, calls=True))
+        called = set()
+
+        def reach(fn, call):
+            got = set()
+            if isinstance(fn, ast.Name):
+                if fn.id in local:
+                    got.add(("f", m, fn.id))
+                elif fn.id in classes:
+                    got.add(("f", m, f"{fn.id}.__init__"))
+                    if value:  # a module-level instance: any of its methods, by any name, may be called on it
+                        got.add(("k", m, fn.id))
+                elif fn.id in members:
+                    got |= {("f", *members[fn.id]), ("f", members[fn.id][0], f"{members[fn.id][1]}.__init__")}
+                    if value:
+                        got.add(("k", *members[fn.id]))
+            elif isinstance(fn, ast.Attribute):
+                if (hit := chain(fn)) is not None:
+                    got |= {("f", *hit), ("f", hit[0], f"{hit[1]}.__init__")}
+                    if value:
+                        got.add(("k", *hit))
+                elif isinstance(fn.value, ast.Name) and fn.value.id in ("self", "cls") and cls:
+                    got.add(("f", m, f"{cls}.{fn.attr}"))
+                if call and deep and fn.attr not in _PLAIN_METHODS:  # any object's: a Sampo class's method by that
+                    got.add(("m", fn.attr))  # name may be it (an import's own calls, re.compile and the like: never)
+            return got
+
+        for n, nested in walk:
+            if isinstance(n, (ast.Import, ast.ImportFrom)):  # an import runs the module's own import
+                got = {("f", t, "<import>") for t in imported(n)}
+                rec[1] |= got
+                if not nested:
+                    rec[3] |= got
+                continue
+            if isinstance(n, ast.Call):
+                called.add(id(n.func))
+                got, seed, runs = reach(n.func, True), _seed_call(n, ast), True
+            elif (deep and isinstance(n, (ast.Name, ast.Attribute)) and isinstance(n.ctx, ast.Load)
+                  and id(n) not in called):
+                # a plain name is a seed only as open or a writer it from-imports (a variable named move is none)
+                seed = n.id == "open" or n.id in std_seeds if isinstance(n, ast.Name) else _seed_func(n, None, ast)
+                got, runs = reach(n, False), value
+            else:
+                continue
+            rec[0] |= seed
+            rec[1] |= got
+            if not nested and runs:
+                rec[2] |= seed
+                rec[3] |= got
+
+    def walk(nodes, cls):
+        for d in nodes:
+            if isinstance(d, ast.ClassDef):
+                walk(list(_module_level(d.body, ast)), d.name)
+            elif isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                body((m, f"{cls}.{d.name}" if cls else d.name), d.body, cls)
+    walk(defs, None)
+    # what runs when the module is imported: its statements, class bodies, decorators and defaults, never a def's body
+    body((m, "<import>"), tree.body, None, deep=False)
+    for nm, vals in values.items():  # what a name holds: calling it, or a method of an instance of it, runs this
+        body((m, nm), vals, None, value=True)
+    imports = dict(alias) | {k: f"{b}.{n}" for k, (b, n) in members.items()}
+    return funcs, top, classes, names, imports
+
+
+def _nest_walk(nodes, ast):
+    """(node, nested) for every node under `nodes`: nested once inside a def's or lambda's body below them (a nested
+    def's decorators and defaults run where it is defined, so they are not)"""
+    todo = [(n, False) for n in nodes]
+    while todo:
+        n, nested = todo.pop()
+        yield n, nested
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            ran = n.args.defaults + [x for x in n.args.kw_defaults if x is not None] + getattr(n, "decorator_list", [])
+            todo += [(c, nested) for c in ran]
+            todo += [(c, True) for c in (n.body if isinstance(n.body, list) else [n.body])]
+        else:
+            todo += [(c, nested) for c in ast.iter_child_nodes(n)]
+
+
+def _module_level(nodes, ast, calls=False):
+    """The statements of a module or class body, those under its if, try, with and loops included, never a def's or
+    lambda's body (and never a class's, but as its own statements). calls=True: every node an import runs, the
+    expressions inside those statements (a decorator, a default, a class's bases and body) too."""
+    todo = list(nodes)
+    while todo:
+        n = todo.pop()
+        fn = isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if not calls and isinstance(n, ast.stmt) and not isinstance(n, (ast.If, ast.Try, ast.With, ast.For, ast.While,
+                                                                        getattr(ast, "TryStar", ast.Try))):
+            yield n
+            continue
+        if calls:
+            yield n
+        if isinstance(n, ast.Lambda):
+            continue
+        if fn:  # what runs at the def: its decorators and defaults, not its body
+            todo += n.decorator_list + [x for x in n.args.defaults + n.args.kw_defaults if x is not None]
+            continue
+        todo += [c for c in ast.iter_child_nodes(n) if calls or isinstance(c, (ast.stmt, ast.excepthandler))]
+
+
+def _build_index(root):
+    """T-4906: the writer index of the Sampo modules under `root`: {"version", "modules": {module: {"writers",
+    "safe", "classes": {name: writes?}, "names", "import_writes"}}, "methods": writer method names}. A module that
+    doesn't parse has no entry, so every name of it is unknown (refused)."""
+    import ast
+    files = _index_files(root)
+    known = {m for m, _ in files}
+    funcs, info = {}, {}
+    for m, path in files:
+        try:
+            with open(path, encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+        except (OSError, SyntaxError, ValueError):
+            continue
+        fs, top, classes, names, imports = _index_module(m, tree, known, ast)
+        funcs.update(fs)
+        info[m] = (top, classes, names, imports)
+    by_method, by_class = {}, {}
+    for (m, q) in funcs:
+        if "." in q:
+            by_method.setdefault(q.split(".", 1)[1], []).append((m, q))
+            by_class.setdefault((m, q.split(".", 1)[0]), []).append((m, q))
+
+    def closure(seeded_at, edges_at):
+        """writer -> the writer it calls (None: its own write): every caller of a writer writes, one pass over the
+        reverse edges ('f' a function, 'm' a method by its name, 'k' every method of a class)"""
+        callers = {}
+        for key, rec in funcs.items():
+            for e in rec[edges_at]:
+                for t in ([(e[1], e[2])] if e[0] == "f" else by_method.get(e[1], ()) if e[0] == "m"
+                          else by_class.get((e[1], e[2]), ())):
+                    callers.setdefault(t, []).append(key)
+        out = {k: None for k, rec in funcs.items() if rec[seeded_at]}
+        todo = list(out)
+        while todo:
+            t = todo.pop()
+            for c in callers.get(t, ()):
+                if c not in out:
+                    out[c] = t
+                    todo.append(c)
+        return out
+    writes = closure(0, 1)
+    ran = closure(2, 3)  # what a call runs itself, its nested defs left for whoever calls them: an import's measure
+    mods, wcls = {}, {(m, q.split(".", 1)[0]) for (m, q) in writes if "." in q}
+    for m, (top, classes, names, imports) in info.items():
+        held = {n for n in names - top - classes if (m, n) in writes}  # a name whose value reaches a writer
+        mods[m] = {"writers": sorted(n for n in top | held if (m, n) in writes),
+                   "safe": sorted(n for n in top if (m, n) not in writes),
+                   "classes": {c: (m, c) in wcls for c in sorted(classes)},
+                   "names": sorted(names - top - classes - held), "import_writes": (m, "<import>") in ran,
+                   # a name it imports from another Sampo module: that module, or its member as module.name
+                   "imports": {k: v for k, v in sorted(imports.items()) if k not in top and k not in classes}}
+        # what each writer calls that writes, for the refusal's words (a module-qualified name; '' its own write)
+        mods[m]["via"] = {n: ".".join(writes[(m, n)]) if writes[(m, n)] else "" for n in mods[m]["writers"]}
+    methods = sorted({q.split(".", 1)[1] for (m, q) in writes if "." in q})
+    return {"version": _INDEX_VERSION, "modules": mods, "methods": methods}
+
+
+def _writer_index(root=None, cache=None):
+    """T-4906: the writer index of the Sampo tree at `root` (default: the one beside this file), built once per tree
+    (its stamp: sizes and change times) and kept in `cache` (Sampo's state folder, which only Sampo writes: a hand-made
+    index there would be a way round the Ward), or in this process alone when no cache is given."""
+    root = root or os.path.join(os.path.dirname(os.path.abspath(__file__)), "sampo")
+    files = _index_files(root)
+    stamp = _index_stamp(root, files)
+    if (root, stamp) in _INDEX_MEMO:
+        return _INDEX_MEMO[(root, stamp)]
+    path = os.path.join(cache, f"ward-index-{stamp}.json") if cache else None
+    idx = None
+    if path:
+        try:
+            with open(path, encoding="utf-8") as f:
+                idx = json.load(f)
+            idx = idx if isinstance(idx, dict) and idx.get("version") == _INDEX_VERSION else None
+        except (OSError, ValueError):
+            idx = None
+    if idx is None:
+        idx = _build_index(root)
+        if path:
+            try:
+                os.makedirs(cache, exist_ok=True)
+                old = sorted((os.path.getmtime(os.path.join(cache, n)), n) for n in os.listdir(cache)
+                             if n.startswith("ward-index-"))
+                for _, n in old[:-16]:  # the newest trees' indexes stay (lanes keep their own)
+                    os.remove(os.path.join(cache, n))
+                tmp = f"{path}.{os.getpid()}.tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(idx, f)
+                os.replace(tmp, path)
+            except OSError:
+                pass
+    _INDEX_MEMO[(root, stamp)] = idx
+    return idx
+
+
+def _index_writer_names(idx):
+    """Every name the index knows writes: a module's writer, a writer method, a class that writes (read once)."""
+    got = idx.get("_all")
+    if got is None:
+        got = idx["_all"] = frozenset({n for i in idx["modules"].values() for n in i["writers"]}
+                                      | {c for i in idx["modules"].values() for c, w in i["classes"].items() if w}
+                                      | set(idx["methods"]))
+    return got
+
+
+def _index_methods(idx):
+    got = idx.get("_methods")
+    if got is None:
+        got = idx["_methods"] = frozenset(idx["methods"])
+    return got
+
+
+def _member_unsafe(mods, m, name, depth=0):
+    """Why `name` of Sampo module `m` may write ('' when the index shows it can't): a writer, a class that writes, or
+    a name the index doesn't know (another tree may define it, and a dunder walks the module). A name `m` imports from
+    another Sampo module is judged there."""
+    info = mods.get(m)
+    if info is None:
+        return f"{m}.{name} (a module the writer index doesn't know)"
+    if (t := info.get("imports", {}).get(name)) and depth < 8:
+        if t in mods:  # a module it imports: the caller follows it as a module (_sub_module); here, not proven safe
+            return f"{m}.{name} (a Sampo module, by another name)"
+        base, _, leaf = t.rpartition(".")
+        return _member_unsafe(mods, base, leaf, depth + 1)
+    if name in info["writers"]:
+        return f"{m}.{name} (it writes)"
+    if name in info["safe"] or name in info["names"]:
+        return ""
+    if name in info["classes"]:
+        return f"{m}.{name} (a class that writes)" if info["classes"][name] else ""
+    return f"{m}.{name} (a name the writer index doesn't know)"
+
+
+def _code_writes(tree):
+    """The first call in parsed code that writes files or starts a process on its own (as _seed_call reads it)."""
+    import ast
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and _seed_call(n, ast):
+            f = n.func
+            return f"{f.id if isinstance(f, ast.Name) else f.attr}()"
+    return ""
+
+
+def _sub_module(mods, m, name):
+    """The Sampo module `m.name` is (a submodule, or a module `m` imports under that name), else ''."""
+    if f"{m}.{name}" in mods:
+        return f"{m}.{name}"
+    t = mods.get(m, {}).get("imports", {}).get(name, "")
+    return t if t in mods else ""
+
+
+def _literal_getattr(call, obj, ast):
+    """Whether `call` is getattr(obj, "name"[, default]) or hasattr(obj, "name"): an attribute read by its literal name."""
+    return (isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in ("getattr", "hasattr")
+            and len(call.args) in (2, 3) and call.args[0] is obj and not call.keywords
+            and isinstance(call.args[1], ast.Constant) and isinstance(call.args[1].value, str))
+
+
+# T-4906: a dunder that names no object walk (the rest — __dict__, __globals__, __class__… — reach any module's names)
+_PLAIN_DUNDERS = frozenset(("__name__", "__main__", "__file__", "__doc__"))
+
+
+def _dynamic_use(tree):
+    """T-4906: the first name in parsed code that may run a name the writer index never reads (exec, eval, a computed
+    getattr, __import__, a dunder walk, a process that runs code), '' when none. What the code defines itself (def,
+    class) is its own, and getattr or hasattr with a literal name is an attribute (_fm_use_refused judges it)."""
+    import ast
+    own = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
+    parents = None
+    for n in ast.walk(tree):
+        name = n.id if isinstance(n, ast.Name) else n.attr if isinstance(n, ast.Attribute) else None
+        if not name or name in own or name in _PLAIN_DUNDERS or not (name in _DYNAMIC or name.startswith("__")):
+            continue
+        if name in ("getattr", "hasattr") and isinstance(n, ast.Name):
+            if parents is None:
+                parents = {ch: p for p in ast.walk(tree) for ch in ast.iter_child_nodes(p)}
+            call = parents.get(n)
+            if isinstance(call, ast.Call) and call.func is n and call.args and _literal_getattr(call, call.args[0], ast):
+                continue
+        return name
+    return ""
+
+
+def _fm_use_refused(tree, idx):
+    """T-4906: the first use in parsed code of a Sampo module the writer index can't show is safe, as words for the
+    refusal, else '': a module whose import writes, a writer or an unknown name reached through any import form
+    (alias, from-import, a dotted chain, an fm twin), a module passed on as a value (getattr, vars, f = c), a writer
+    method's name on any object, or a file write or process beside the import."""
+    import ast
+    mods = idx["modules"]
+    bound = {}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Import):
+            for a in n.names:
+                if t := _fm_target(a.name):
+                    if mods.get(t, {}).get("import_writes"):
+                        return f"{t} (its import writes)"
+                    bound[a.asname or a.name.split(".")[0]] = t if a.asname or "." not in a.name else "sampo"
+        elif isinstance(n, ast.ImportFrom) and not n.level and (base := _fm_target(n.module or "")):
+            if mods.get(base, {}).get("import_writes"):  # (T-4906 review: every import form, not only `import`)
+                return f"{base} (its import writes)"
+            for a in n.names:
+                if a.name == "*":
+                    return f"{base}.* (every name of it)"
+                if sub := _sub_module(mods, base, a.name):
+                    if mods.get(sub, {}).get("import_writes"):
+                        return f"{sub} (its import writes)"
+                    bound[a.asname or a.name] = sub
+                elif why := _member_unsafe(mods, base, a.name):
+                    return why
+    if not bound and not any(isinstance(n, ast.ImportFrom) and _fm_target(n.module or "") for n in ast.walk(tree)):
+        return ""
+    parents = {ch: p for p in ast.walk(tree) for ch in ast.iter_child_nodes(p)}
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and n.id in bound and isinstance(n.ctx, ast.Load):
+            m, node = bound[n.id], n
+            while True:
+                par = parents.get(node)
+                if isinstance(par, ast.Attribute) and par.value is node:
+                    attr = par.attr
+                elif _literal_getattr(par, node, ast):  # getattr(c, "fit") is c.fit; hasattr(c, "x") reads nothing
+                    if par.func.id == "hasattr":
+                        break
+                    attr = par.args[1].value
+                else:
+                    return f"Sampo's module {m} passed on as a value"
+                if sub := _sub_module(mods, m, attr):
+                    m, node = sub, par
+                    continue
+                if why := _member_unsafe(mods, m, attr):
+                    return why
+                break
+        elif isinstance(n, ast.Attribute) and n.attr in _index_methods(idx) and n.attr not in _PLAIN_METHODS:
+            return f".{n.attr} (a Sampo class's method of that name writes)"
+    if w := _code_writes(tree):
+        return f"{w} beside a Sampo import (a path it computes may be Sampo's state)"
+    return ""
 
 
 def _fm_writer_named(tree):
@@ -2614,22 +3153,33 @@ def _python_c_units(shell):
     return units, "".join(out) + shell[last:], starters
 
 
-def _drives_fm(cmd, cwd=None):
+def _drives_fm(cmd, cwd=None, cache=None):
     """T-0170: interpreter code that imports Sampo's modules and calls their writers. Quoted heredocs fed straight to
     python, and (T-1194) literal `python -c` code, are parsed: text that merely mentions `import fm…` (an edit script's
     strings) isn't an import. The text match of before decides for everything else: fm import text outside those
     (data heredocs, the shell, -c code it can't read), code that doesn't parse, and dynamic code (exec, eval, getattr,
     importlib…). It only relaxes what it can prove. T-2068: the result is the clause that fired, '' when none did, so the
-    refusal can say which one (42 refusals in a week named none)."""
-    if not (_FM_INTERNALS.search(_nfkc(cmd)) and _fm_gate(cmd)):
+    refusal can say which one (42 refusals in a week named none).
+    T-4906: parsed code is also judged by the writer index (_fm_use_refused), with or without the text gate; `cache`
+    is where the index is kept (Sampo's state folder)."""
+    if not _FM_INTERNALS.search(_nfkc(cmd)):
         return ""
+    try:
+        idx = _writer_index(cache=cache)
+    except Exception:  # an index that can't be built: the hand list alone, as before it
+        idx = None
+    # T-4906: text it can't read as python is judged by every name the index knows writes (`wide`, any module's: a name
+    # alone can't say which); parsed code by the index itself, the hand list's reading (`gate`) and its dynamic names
+    gate = _fm_gate(cmd)
+    wide = gate or bool(idx) and _fm_gate(cmd, idx)
     units, rest, starters, _ = _python_units(cmd)
     c_units, shell, c_starters = _python_c_units("\n".join(rest))
-    if _FM_INTERNALS.search(_nfkc("\n".join([shell] + starters))):
+    if wide and _FM_INTERNALS.search(_nfkc("\n".join([shell] + starters))):
         return "shell text it can't read as python names Sampo's modules (a heredoc not fed to python, a file run later)"
     # T-1204: python's own settings (PYTHONPATH loads sitecustomize, PYTHONSTARTUP…), set in the command or inherited,
     # change what any of its code runs, as _python_c_units already refuses for -c
-    if (units or c_units) and ("PYTHON" in "\n".join([shell] + starters) or any(os.environ.get(k) for k in _PY_PATH_VARS)):
+    if wide and (units or c_units) and ("PYTHON" in "\n".join([shell] + starters)
+                                        or any(os.environ.get(k) for k in _PY_PATH_VARS)):
         return "a PYTHON setting (PYTHONPATH, PYTHONSTARTUP…) changes what its python loads"
     # python - and -c import from the folder they run in: a cd anywhere but in their own `cd DIR &&` chain (an earlier
     # line, a `;`) makes that folder unknown (T-1204: heredocs too)
@@ -2642,7 +3192,12 @@ def _drives_fm(cmd, cwd=None):
         try:
             tree = ast.parse(code)
         except (SyntaxError, ValueError):
-            return "python code that doesn't parse, so its imports can't be read"
+            if wide:
+                return "python code that doesn't parse, so its imports can't be read"
+            continue
+        hit = _fm_use_refused(tree, idx) if idx else ""
+        if not (gate or hit or idx and _dynamic_use(tree)):
+            continue
         names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | \
                 {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
         modules = [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names] + \
@@ -2666,6 +3221,8 @@ def _drives_fm(cmd, cwd=None):
         # entry called in the text, or reached by a name the ast reads (an import list, an attribute)
         if (fm_from or fm_import) and (_FM_WRITES.search(_nfkc(code)) or _fm_writer_named(tree)):
             return f"it imports {_ident((fm_from[0].module if fm_from else fm_import[0].name) or 'fm')}"
+        if hit:  # T-4906: what the hand list missed, by the index (the name said)
+            return f"it uses {hit}"
     return ""
 
 
@@ -4347,8 +4904,10 @@ def _interpreter_writes(cmd, ctx):
     user's yes, rather than never-authorizable state-direct, because the text match can't tell code from test data."""
     if not _INTERP.search(_mask_fm(_drop_data_heredocs(cmd), ctx)):
         return []
+    state = ctx.state_dir or (os.path.join(ctx.foreman_home, "state") if ctx.foreman_home else None)
     if why := _drives_fm(_drop_data_heredocs(cmd, only=lambda line: _writes_unrun_source(line, cmd, ctx)
-                                             or _writes_unrun_draft(line, cmd, ctx)), ctx.cwd):
+                                             or _writes_unrun_draft(line, cmd, ctx)), ctx.cwd,
+                         cache=os.path.join(state, "ward-index") if state and os.path.isdir(state) else None):
         # T-0740: 9 repeats in a day; T-0934: `cd DIR; python3 - <<EOF` is refused only because of the `;`. T-1171: 12
         # of 31 refusals in four days wrote a test with cat <<EOF and ran the tests in the same command
         return [("core", f"interpreter code driving Sampo's modules: {why} (use the fm CLI; to edit a Sampo source file "

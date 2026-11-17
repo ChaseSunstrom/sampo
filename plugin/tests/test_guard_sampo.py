@@ -24,7 +24,8 @@ _ENV = re.compile(r"\bFOREMAN_(STATE|HOME|CONFINE)\b")
 def sampo_spelling(s):
     imports = re.search(r"\b(?:import|from)\s+fm[a-z]", s)
     s = _ENV.sub(r"SAMPO_\1", _BIN.sub("/bin/sampo", _PROG.sub("sampo", s)))
-    return _MOD.sub(r"sampo.\1", s) if imports else s
+    # T-4906: an fm module's real twin (fmguard is sampo.ward): the writer index refuses a module it doesn't know
+    return _MOD.sub(lambda m: g._sampo_name("fm" + m.group(1)), s) if imports else s
 
 
 def corpus():

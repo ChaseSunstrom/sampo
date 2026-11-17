@@ -101,6 +101,24 @@ def mirror_hashes():
     return out
 
 
+_WARM = {}
+
+
+def warm_index(home):
+    """T-4906: the Ward's writer index of this plugin tree in `home`'s state, as a running Sampo has it after its first
+    guarded call: built cold, it is a second's work inside the hook, which the two runs' slow-hook lines time apart."""
+    import fmguard
+    if "text" not in _WARM:
+        root = os.path.join(os.path.dirname(os.path.abspath(fmguard.__file__)), "sampo")
+        idx = fmguard._writer_index()
+        _WARM["name"] = f"ward-index-{fmguard._index_stamp(root, fmguard._index_files(root))}.json"
+        _WARM["text"] = json.dumps({k: v for k, v in idx.items() if not k.startswith("_")})
+    d = os.path.join(home, "state", "ward-index")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, _WARM["name"]), "w", encoding="utf-8") as f:
+        f.write(_WARM["text"])
+
+
 class Base(SampoTestCase):
     @property
     def bin(self):
@@ -155,6 +173,7 @@ class Base(SampoTestCase):
             raw = json.dumps(dict({"session_id": "sess-1", "cwd": self.repo, "hook_event_name": "PreToolUse"},
                                   **payload)).encode()
         runs = []
+        warm_index(self.home)
         home = os.path.join(self.tmp, "run")  # one path for both: what they print and store may name it
         for cmd in ([HOOK, "PreToolUse"], [self.bin, "--hook", HOOK, "PreToolUse"]):
             shutil.rmtree(home, True)

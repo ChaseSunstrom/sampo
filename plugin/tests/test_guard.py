@@ -2481,7 +2481,14 @@ class InterpreterWrites(GuardCase):
             ("python3 - <<'EOF'\nimport fmcore as c\ndef run(x):\n    return c.read_meta(x)\nprint(run(p))\nEOF", None),
             ("python3 -c \"from fmcli import main; main(['capture', 'x'])\"", "core"),
             ("python3 -c \"import fmideas; fmideas.run(['x'])\"", "core"),
-            ("python3 -c \"import fmdocs; print(fmdocs.scan('.'))\"", None),
+            ("python3 -c \"import fmdocs; print(fmdocs.dead_paths('see a/b.py', '.'))\"", None),
+            # T-4906: scan starts git (check-ignore), and the writer index counts a process start as a write
+            ("python3 -c \"import fmdocs; print(fmdocs.scan('.'))\"", "core"),
+            ("python3 -c \"import fmcore; print(getattr(fmcore, 'set_panic'))\"", "core"),
+            ("python3 -c \"import fmcore; n = 'fit'; print(getattr(fmcore, n))\"", "core"),
+            ("python3 -c \"import fmcore as c; exec('c.set_' + 'panic(False)')\"", "core"),
+            ("python3 -c \"import fmcore as c; exec('c.set_panic(False)')\"", "core"),
+            ("python3 - <<'EOF'\nimport fmcore as c\nif __name__ == '__main__':\n    print(c.fit('abc', 2))\nEOF", None),
         ], self.bash)
 
     def test_relative_paths_resolve_against_cwd(self):
