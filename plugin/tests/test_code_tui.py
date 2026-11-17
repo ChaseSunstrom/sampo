@@ -4046,6 +4046,19 @@ class FirstRun(unittest.TestCase):  # T-1333
         app.setup_checks = lambda: list(self.CHECKS)
         return app
 
+    def test_the_link_line_says_what_was_made_and_names_the_command_for_each(self):  # T-4841 review
+        app = self.app()
+        with unittest.mock.patch("sampo.setup.ensure_fm_links", return_value=["/h/.local/bin/fm", "/h/.local/bin/sampo"]):
+            said = app._link_fm()
+        self.assertIn("/h/.local/bin/fm", said)
+        self.assertIn("/h/.local/bin/sampo", said)
+        with unittest.mock.patch("sampo.setup.ensure_fm_links", return_value=["/h/.local/bin/sampo"]):
+            said = app._link_fm()
+        self.assertIn("sampo", said)
+        self.assertNotIn("finds fm", said, "only sampo was made: not a claim about fm")
+        with unittest.mock.patch("sampo.setup.ensure_fm_links", return_value=[]):
+            self.assertIn("already", app._link_fm())
+
     def test_the_welcome_before_a_first_run_shows_three_chips_and_their_fixes(self):
         app = self.app()
         text = tui().render(app.state, 110, 30, tui().DEFAULTS, app).text()

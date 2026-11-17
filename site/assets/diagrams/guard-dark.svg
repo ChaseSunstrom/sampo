@@ -63,6 +63,6 @@ text{font-family:system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Aria
 <text class="h" x="538" y="284">Refused, with how to grant it</text>
 <text class="s" x="538" y="304">wide deletes, force-push, curl | sh</text>
 <path class="rule" d="M32 340.5H848"/>
-<text class="f" x="32" y="364">Granting takes your yes in Claude Code's own permission prompt, for that one thing on that one task.</text>
-<text class="f" x="32" y="383">Nothing else can grant it: not a chat message, a skill or a scheduled prompt.</text>
+<text class="f" x="32" y="364">A destructive kind is granted for one task: sampo task set ID --allow KIND.</text>
+<text class="f" x="32" y="383">Sampo's own code, remote sessions and plugins take only your yes, in Claude Code's permission prompt.</text>
 </svg>

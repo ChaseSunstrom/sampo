@@ -1222,13 +1222,13 @@ def check_rules_symlink(plugin=PLUGIN):
     return Result("rules symlink", "PASS" if ok else "FAIL", f"{link} → {os.path.realpath(link)}")
 
 
-def _login_fm(shell=None):
-    """T-1333: the fm a fresh login shell finds (only its profile's PATH, as a new terminal has): its path, '' when it
-    finds none, None when no login shell could be asked."""
+def _login_fm(shell=None, command="fm"):
+    """T-1333: the fm (T-4841: or sampo) a fresh login shell finds (only its profile's PATH, as a new terminal has): its
+    path, '' when it finds none, None when no login shell could be asked."""
     shell = shell or os.environ.get("SHELL") or "/bin/sh"
     env = {"HOME": os.path.expanduser("~"), "PATH": "/usr/bin:/bin", "USER": os.environ.get("USER", ""), "TERM": "dumb"}
     try:
-        r = subprocess.run([shell, "-lc", "command -v fm"], env=env, capture_output=True, text=True, timeout=5,
+        r = subprocess.run([shell, "-lc", f"command -v {command}"], env=env, capture_output=True, text=True, timeout=5,
                            stdin=subprocess.DEVNULL)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -1270,6 +1270,34 @@ def check_fm_link(link=None, target=None, path=None, shell=None):
         return Result("fm link", "WARN", f"{os.path.dirname(link)} isn't on PATH, so a shell doesn't find fm: add it "
                                          "in your shell's profile")
     return Result("fm link", "PASS", f"{link} → {target}")
+
+
+def check_sampo_link(link=None, target=None, path=None, shell=None):
+    """T-4841: sampo in any shell, as check_fm_link does for fm: ~/.local/bin/sampo points at this Sampo's bin/sampo and a
+    new login shell finds that one. Only ever a WARN: fm's check fails for a PATH that lacks ~/.local/bin (the same folder),
+    so this adds what it can't see: a missing or foreign link, and another sampo that comes first. No bin/sampo: PASS."""
+    link = link or os.path.join(os.path.expanduser("~"), ".local", "bin", "sampo")
+    target = target or os.path.join(PLUGIN, "bin", "sampo")
+    path = os.environ.get("PATH", "") if path is None else path
+    if not os.path.isfile(target):
+        return Result("sampo link", "PASS", f"no {target}: nothing to link")
+    if not os.path.lexists(link):
+        return Result("sampo link", "WARN", f"{link} is missing, so a shell can't find sampo: rerun install.sh or "
+                                            "fm install-user (a Claude Code session start makes it too)")
+    if os.path.realpath(link) != os.path.realpath(target):
+        return Result("sampo link", "WARN", f"{link} → {os.path.realpath(link)}, not this Sampo's {target}: move it "
+                                            "aside and run fm install-user")
+    found = None if shell is False else _login_fm(shell, "sampo")
+    if found is not None:
+        if found and os.path.realpath(found) == os.path.realpath(target):
+            return Result("sampo link", "PASS", f"{link} → {target}; a new login shell finds it")
+        return Result("sampo link", "WARN", (f"a new login shell finds {found} first, not {link}" if found else
+                                             "a new login shell doesn't find sampo")
+                      + f": {_profile_fix(shell or os.environ.get('SHELL'))}")
+    if os.path.dirname(link) not in path.split(os.pathsep):
+        return Result("sampo link", "WARN", f"{os.path.dirname(link)} isn't on PATH, so a shell doesn't find sampo: add it "
+                                            "in your shell's profile")
+    return Result("sampo link", "PASS", f"{link} → {target}")
 
 
 def _version(root):
@@ -3343,7 +3371,7 @@ def run_all(full=False, accept_supply=False):
                check_hook_scripts(), check_state_dir(home, c.state_dir()), check_pinned_clock(), check_lock_probe(c.state_dir()), check_disk(), check_env(settings, manifest),
                check_serve(serve.states()), check_hook_events(), check_plugins(), check_mod_release(home),
                check_supply(claude, accept_supply), check_mcp_transport(claude, c.git_root(os.getcwd())), check_worktree_base(settings), check_model_alias(settings),
-               check_subagent_effort(settings), check_fm_link(),
+               check_subagent_effort(settings), check_fm_link(), check_sampo_link(),
                check_invisible_text(instruction_files()), check_rule_conflicts(rule_files(c.git_root(os.getcwd())))]
     t_bench = time.perf_counter()  # T-2279: the bench runs outside any check_*; its whole cost is charged to "hook latency"
     meas = {}

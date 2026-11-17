@@ -51,20 +51,23 @@ def paths():
             "rules_target": os.path.join(fh, "plugin", "rules", "foreman.md"),
             "fm_link": os.path.join(os.path.expanduser("~"), ".local", "bin", "fm"),  # T-0853: fm in any shell
             "fm_target": os.path.join(fh, "plugin", "bin", "fm"),
+            "sampo_link": os.path.join(os.path.expanduser("~"), ".local", "bin", "sampo"),  # T-4841: sampo beside fm
+            "sampo_target": os.path.join(fh, "plugin", "bin", "sampo"),
             "wrapper": os.path.join(fh, "plugin", "hooks", "statusline"),
             "manifest": os.path.join(c.state_dir(), "install-manifest.json"), "backups": os.path.join(fh, "backups")}
 
 
-def ensure_fm_link(link=None, target=None):
-    """T-1333: ~/.local/bin/fm → this Sampo's bin/fm when nothing is there, or when the link there is Sampo's (its
-    target a .../plugin/bin/fm with foreman in the path) and that target is gone: a plugin update removed the version it
-    named. Anything else stays: a file, another program's link, a working link to another Sampo checkout. The link
-    made, or None."""
-    link = link or paths()["fm_link"]
-    target = target or os.path.join(c.PLUGIN_ROOT, "bin", "fm")
+# T-4841: a dangling link is Sampo's when its target is a checkout shaped path: a folder named exactly foreman or sampo
+# (a whole component: a user called sampo, or sampo-other, is not one), at most one version folder under it (the plugin
+# cache's cache/foreman/0.9.1), then plugin/bin/fm or sampo.
+_OURS = re.compile(r"(^|/)(foreman|sampo)(/v?\d[^/]*)?/plugin/bin/(fm|sampo)$")
+
+
+def _link_one(link, target):
+    """The link when it was made or repaired, else None (see ensure_fm_links for what stays)."""
     try:
         if os.path.islink(link):
-            if os.path.exists(link) or not re.search(r"foreman.*/plugin/bin/fm$", os.readlink(link)):
+            if os.path.exists(link) or not _OURS.search(os.readlink(link)):
                 return None
             os.remove(link)
         elif os.path.lexists(link):
@@ -74,6 +77,24 @@ def ensure_fm_link(link=None, target=None):
     except OSError:  # a race, or a home this user can't write: the doctor says what's missing
         return None
     return link
+
+
+def ensure_fm_links(link=None, target=None):
+    """T-1333, T-4841: ~/.local/bin/fm and ~/.local/bin/sampo → this Sampo's bin/fm and bin/sampo, each when nothing is
+    there, or when the link there is Sampo's (_OURS: its target a foreman or sampo folder's plugin/bin/fm or sampo)
+    and that target is gone: a plugin update removed the version it named. Anything else stays: a file, another
+    program's link (another tool may be called sampo), a working link to another Sampo checkout. The sampo link sits
+    beside fm's and follows the same target folder; no sampo file there, no link. The links made or repaired."""
+    link = link or paths()["fm_link"]
+    target = target or os.path.join(c.PLUGIN_ROOT, "bin", "fm")
+    sampo = os.path.join(os.path.dirname(target), "sampo")
+    pairs = [(link, target)] + ([(os.path.join(os.path.dirname(link), "sampo"), sampo)] if os.path.isfile(sampo) else [])
+    return [made for made in (_link_one(*pair) for pair in pairs) if made]
+
+
+def ensure_fm_link(link=None, target=None):
+    """The first link ensure_fm_links made (fm's, else sampo's), or None: the callers that say "linked X"."""
+    return next(iter(ensure_fm_links(link, target)), None)
 
 
 def _load(path, default):
@@ -213,11 +234,26 @@ def plan_install(P):
     if link == "absent":
         new_m["rules_symlink"] = P["rules_link"]
         actions.append(f"{P['rules_link']} → {P['rules_target']} (symlink)")
-    if not os.path.lexists(P["fm_link"]):  # T-0853: someone else's fm stays where it is
-        on_path = os.path.dirname(P["fm_link"]) in os.environ.get("PATH", "").split(os.pathsep)
-        actions.append(f"{P['fm_link']} → {P['fm_target']} (fm in any shell"
+    for what, (lk, tg) in _new_links(P):
+        on_path = os.path.dirname(lk) in os.environ.get("PATH", "").split(os.pathsep)
+        actions.append(f"{lk} → {tg} ({what} in any shell"
                        + ("" if on_path else "; add ~/.local/bin to your PATH to use it outside Claude Code") + ")")
     return s, new_s, m, new_m, md, new_md, link, actions
+
+
+def _new_links(P):
+    """T-0853, T-4841: [(command, (link, target))] still to make: fm's, and sampo's when this Sampo has a bin/sampo.
+    Someone else's fm or sampo stays where it is."""
+    out = [("fm", (P["fm_link"], P["fm_target"]))]
+    if os.path.isfile(P["sampo_target"]):
+        out.append(("sampo", (P["sampo_link"], P["sampo_target"])))
+    return [(what, pair) for what, pair in out if not os.path.lexists(pair[0])]
+
+
+def _our_links(P):
+    """The links uninstall takes away: fm's and sampo's, each only when it points at this Sampo's own file."""
+    return [lk for lk, tg in ((P["fm_link"], P["fm_target"]), (P["sampo_link"], P["sampo_target"]))
+            if os.path.islink(lk) and os.path.realpath(lk) == os.path.realpath(tg)]
 
 
 def cmd_install(args):
@@ -250,9 +286,9 @@ def cmd_install(args):
     if link == "absent":
         os.makedirs(os.path.dirname(P["rules_link"]), exist_ok=True)
         os.symlink(P["rules_target"], P["rules_link"])
-    if not os.path.lexists(P["fm_link"]):
-        os.makedirs(os.path.dirname(P["fm_link"]), exist_ok=True)
-        os.symlink(P["fm_target"], P["fm_link"])
+    for _what, (lk, tg) in _new_links(P):
+        os.makedirs(os.path.dirname(lk), exist_ok=True)
+        os.symlink(tg, lk)
     new_m.setdefault("installed", c.now())
     c.write_atomic(P["manifest"], json.dumps(new_m, indent=2, sort_keys=True) + "\n")
     print("Wired Sampo into ~/.claude:\n  - " + "\n  - ".join(actions) +
@@ -421,7 +457,8 @@ def cmd_uninstall(args):
                         count=1, flags=re.S)
         actions.append("CLAUDE.md block removed")
     if args.dry_run:
-        print("Would change:\n  - " + "\n  - ".join(actions + ["rules symlink removed", "manifest removed"]))
+        print("Would change:\n  - " + "\n  - ".join(actions + ["rules symlink removed"]
+                                                    + [f"{lk} removed" for lk in _our_links(P)] + ["manifest removed"]))
         return
     _backup(P)
     if not new_s:  # T-0851: nothing left; `claude plugin install` may have made it as {} before the wiring ran
@@ -441,9 +478,9 @@ def cmd_uninstall(args):
             os.rmdir(os.path.dirname(P["rules_link"]))  # T-0851: only when empty
         except OSError:
             pass
-    if os.path.islink(P["fm_link"]) and os.path.realpath(P["fm_link"]) == os.path.realpath(P["fm_target"]):
-        os.unlink(P["fm_link"])  # T-0853: ours only
-        actions.append(f"{P['fm_link']} removed")
+    for lk in _our_links(P):  # T-0853, T-4841: ours only
+        os.unlink(lk)
+        actions.append(f"{lk} removed")
     if kept:
         c.write_atomic(P["manifest"], json.dumps(kept, indent=2) + "\n")
         actions.append("manifest kept for what couldn't be removed: fm uninstall-user retries it, "

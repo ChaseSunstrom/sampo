@@ -5,8 +5,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 from helpers import FM, ForemanTestCase, read_text, read_json
+from sampo import core as c
 
 from sampo import setup
 
@@ -59,6 +61,19 @@ class SessionLink(ForemanTestCase):  # T-1333
         self.hook("SessionStart", {"source": "startup"}, env={"HOME": self.tmp, "FOREMAN_NO_LINK": ""})
         self.assertTrue(os.path.islink(link))
         self.assertTrue(os.readlink(link).endswith(os.path.join("plugin", "bin", "fm")))
+        self.assertTrue(os.readlink(os.path.join(os.path.dirname(link), "sampo")).endswith(  # T-4841
+            os.path.join("plugin", "bin", "sampo")), "sampo is on PATH beside it")
+
+    def test_fm_link_event_names_each_link_with_its_own_target(self):  # T-4841 review
+        self.fm("init")
+        self.hook("SessionStart", {"source": "startup"}, env={"HOME": self.tmp, "FOREMAN_NO_LINK": ""})
+        with mock.patch.dict(os.environ, {"FOREMAN_HOME": self.home}):
+            p = c.find_project(self.repo)
+            made = {e["data"]["link"]: e["data"]["target"] for e in c.ledger_events(p, ("fm_link",))}
+        link = os.path.join(self.tmp, ".local", "bin")
+        self.assertEqual(sorted(made), [os.path.join(link, "fm"), os.path.join(link, "sampo")])
+        for name in ("fm", "sampo"):
+            self.assertEqual(os.path.basename(made[os.path.join(link, name)]), name, "its own target, not fm's")
 
 
 class SetupCase(unittest.TestCase):
@@ -258,6 +273,46 @@ class Install(SetupCase):
         self.assertEqual((self.load(), read_text(self.claude_md)), (s1, md1))
         self.assertEqual(read_text(self.manifest_path()), m1)
         self.assertIn("already", p.stdout)
+
+    def with_sampo(self):
+        """A plugin/bin with both commands in the fake Sampo home; the two links' paths."""
+        folder = os.path.join(self.fhome, "plugin", "bin")
+        os.makedirs(folder, exist_ok=True)
+        for name in ("fm", "sampo"):
+            with open(os.path.join(folder, name), "w") as f:
+                f.write("#!/bin/sh\n")
+        return [os.path.join(self.home, ".local", "bin", name) for name in ("fm", "sampo")], folder
+
+    def test_path_install_links_sampo_and_uninstall_takes_it_away_again(self):  # T-4841 review: every change undone
+        (fm, sampo), folder = self.with_sampo()
+        self.assertIn(sampo, self.run_fm("install-user", "--dry-run").stdout, "the plan names the sampo link")
+        self.assertFalse(os.path.lexists(sampo), "a dry run makes nothing")
+        self.run_fm("install-user")
+        self.assertEqual(os.path.realpath(sampo), os.path.realpath(os.path.join(folder, "sampo")))
+        out = self.run_fm("uninstall-user", "--dry-run").stdout
+        self.assertIn(f"{sampo} removed", out, "the uninstall plan names it")
+        self.assertTrue(os.path.islink(sampo), "a dry run removes nothing")
+        self.run_fm("uninstall-user")
+        self.assertFalse(os.path.lexists(sampo), "ours goes")
+        self.assertFalse(os.path.lexists(fm))
+
+    def test_path_uninstall_keeps_a_sampo_that_is_not_ours(self):
+        (fm, sampo), folder = self.with_sampo()
+        os.makedirs(os.path.dirname(sampo))
+        with open(sampo, "w") as f:
+            f.write("#!/bin/sh\necho mine\n")
+        self.run_fm("install-user")
+        self.run_fm("uninstall-user")
+        self.assertIn("mine", read_text(sampo), "a file called sampo stays")
+        os.remove(sampo)
+        other = os.path.join(self.home, "other", "bin", "sampo")
+        os.makedirs(os.path.dirname(other))
+        with open(other, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.symlink(other, sampo)
+        self.run_fm("install-user")
+        self.run_fm("uninstall-user")
+        self.assertEqual(os.readlink(sampo), other, "a link to another sampo stays")
 
     def test_dry_run_changes_nothing(self):
         before = read_text(self.settings)

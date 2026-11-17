@@ -157,7 +157,7 @@ Nothing found for a missing tool or skill? Build it: `sampo new tool NAME` write
 <details>
 <summary><b>More ways to install, requirements and flags</b></summary>
 
-The first session puts `sampo` on your PATH (`~/.local/bin/fm`, made when nothing is there and repaired after an update; anyone else's `sampo` stays). `sampo doctor` fails with the line to add to your shell profile when a new terminal still can't find it. `eval "$(sampo complete --shell bash)"` in your `~/.bashrc` (or `--shell zsh`) gives tab completion for commands, options and live task ids. `sampo demo --pace 1` plays the demo slowly enough to follow.
+The first session puts `sampo` on your PATH (`~/.local/bin/sampo` and `fm`, each made when nothing is there and repaired after an update; anyone else's `sampo` stays). `sampo doctor` fails with the line to add to your shell profile when a new terminal still can't find `fm` there, and warns when another `sampo` comes first. `eval "$(sampo complete --shell bash)"` in your `~/.bashrc` (or `--shell zsh`) gives tab completion for commands, options and live task ids. `sampo demo --pace 1` plays the demo slowly enough to follow.
 
 The plugin-system install changes nothing outside the plugin: the hooks and the Ward run, and the first session reads Sampo's rules from the plugin. Say "finish setting up Sampo" later to add the rest (status line, deny rules, the bypass question, `sampo` in your shell). `sampo uninstall-user` undoes it.
 
@@ -195,8 +195,8 @@ gh repo clone ChaseSunstrom/sampo ~/.claude/foreman && ~/.claude/foreman/install
    - a statusLine wrapper (your original line and claude-hud still render above the Sampo line);
    - deny rules for catastrophic commands;
    - a raised Stop-hook continuation cap for drive mode;
-   - a marked block in `~/.claude/CLAUDE.md` and the `~/.claude/rules/sampo.md` symlink;
-   - a `~/.local/bin/fm` link so `sampo` works in any shell (unless a different `sampo` is already there).
+   - a marked block in `~/.claude/CLAUDE.md` and the `~/.claude/rules/foreman.md` symlink;
+   - `~/.local/bin/fm` and `~/.local/bin/sampo` links so both work in any shell (unless a different one is already there).
 
    Every change is recorded in `state/install-manifest.json`, so it can be undone exactly.
 
@@ -272,16 +272,17 @@ Sampo is built for bypass mode (no tool-call prompts), which the installer offer
 
 </details>
 
-A blocked command says how to authorize it for the current task. Anything that needs you (Sampo's own code, a remote session, installing plugins or MCP servers, destructive categories) comes as Claude Code's own permission prompt, saying exactly what a yes grants.
+A blocked command says how to authorize it: a destructive kind is granted per task (`sampo task set ID --allow KIND`). Sampo's own code, a remote session and installing plugins or MCP servers take only your yes, as Claude Code's own permission prompt saying what it grants.
 
 <details>
 <summary><b>Snapshots, the risk budget and other protections</b></summary>
 
 - The Ward reads every Bash command and file edit before it runs, including the commands sampo stores and runs later.
+- Four blocks can never be granted: direct writes to Sampo state, self-authorizing, a builder writing outside its own worktree (`confine`), and an edit with no task (`brief`; start one with `sampo task new … --focus`, the block you meet first). A request found in an old transcript is worked only after you say it is yours. Scheduling (`crontab`, `at`, `systemd-run`, `sampo night --install`) is guarded as system work.
 - Work snapshots save uncommitted work before `git reset --hard`, `checkout -- .`, `clean -f` and the like. `sampo snapshots` lists them, each with the command that brings it back; `sampo oops` shows the newest and `sampo oops --apply` restores it.
 - `sampo sensitive on` keeps a repo's content from leaving the machine; `sampo sensitive suggest` lists what hints a repo needs it (`.env*`, `*.pem`, secret or prod in a path) and changes nothing.
 - A daily risk budget: destructive Ward blocks, failed closes and reverts spend points, and past the cap Claude's autonomy steps down a notch until tomorrow (`sampo risk`; only you move the cap).
-- Install commands are checked before they run: a package one edit from a popular name, or published in the last 30 days, gets a note (`sampo deps check "<cmd>"`). A command copied from a web page or MCP result asks before it runs.
+- Install commands are checked before they run: a package one edit from a popular name, or published in the last 14 days, gets a note (`sampo deps check "<cmd>"`). A command copied from a web page or MCP result asks before it runs.
 - `sampo posture lite` (yours to type: `! sampo posture lite`; Claude may not lower it) keeps only the Ward and the evidence gate in a repo where the rest of Sampo is in the way (no injected notes, no drive); `sampo posture full` brings it back.
 
 </details>
@@ -481,6 +482,8 @@ Use `"default"` (or `"acceptEdits"`), not `"auto"`: Claude Code ignores `auto` a
 
 **Everywhere else**, every view reads the same `sampo … --json`: the Board above, Sampo Desktop for every project and session in one window, and `sampo mcp` for any MCP client. Other agents (Codex, Gemini CLI, opencode) run the same Ward and context.
 
+**The live page.** `sampo watch --web` shows who works, jobs, models, GPU and a network view, with a "Forge look" button.
+
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="site/assets/diagrams/architecture-dark.svg">
   <img src="site/assets/diagrams/architecture-light.svg" width="880" alt="How the pieces fit: Claude Code, other agents, Smith and headless runs call Sampo's hooks and the sampo CLI, which keep state on disk; the sampo-ui pane, the status line, Sampo Desktop and MCP clients read sampo's JSON">
@@ -513,7 +516,7 @@ The mod wears the live page's Board look by default: its near-black navy, dim ru
 
 **Turns.** The working spinner names the Sampo step it's on. The line closing each turn says what the turn did (`4 tools · 2 edits +30 −4 · ✓ T-0012 step 3/5`). When Claude stops with Sampo work waiting, the prompt offers `/sampo:next` as ghost text (never while a question waits on you). The footer says when Sampo needs you and shows `full auto` and `drive off` as modes.
 
-**Context.** The band carries a context meter. At 85% Sampo checkpoints the task once, so a `/compact` resumes at the exact step. When a task closes with context at 40% or more, the mod compacts right there: it keeps your standing requests and live decisions, drops finished work, and Sampo's resume note restores the exact point. The threshold is the mod's `freshAt` setting; 0 turns it off.
+**Context.** The band carries a context meter. At 85% Sampo checkpoints the task once, so a `/compact` resumes at the exact step. When a task closes with context at 40% or more, the mod compacts right there: it keeps your standing requests and live decisions, drops finished work, and Sampo's resume note restores the exact point. The thresholds are the mod's `freshAt` setting (percent) and `freshTokens` (200,000 tokens by default), whichever is reached first; 0 turns each off.
 
 **Your project's own timings.** Sizes read as words (`FIX · small`, `· medium`, `· large`) and carry this project's history:
 - The band shows how long you've been on the task and what that type and size usually takes (`12m on it · usually ~25m`): the median from first focus to done, once three such tasks have closed.
@@ -524,7 +527,7 @@ The mod wears the live page's Board look by default: its near-black navy, dim ru
 - When Claude waits on background shells (started in the background, or moved there with ctrl+b), the band says so (`◷ waiting on 2 background shells · cargo test · 3m 12s · Claude picks up when they finish`) and the pane lists them. Each leaves when its notification arrives or it is stopped.
 - Coming back to a long unattended run, the band tells you what closed since your last message (`✔ since your last message: 3 done · …`) until you write again.
 
-**The mascot.** The pane's top-right corner has Claude Code's own Claude from the welcome screen. Its `mascot` setting picks blue, orange, purple, green or off. It dances while Claude works, blinks while idle and cheers when a task closes, with a mini Claude in its own color beside it for each running subagent.
+**The mascot.** The pane's top shows the Sampo crest (the mark ringed by runes, a hammer for each running subagent). The `mascot` setting picks `sampo` (the default), or Claude Code's own Claude from the welcome screen in blue, orange, purple or green in the top-right corner, or off. Claude dances while Claude works, blinks while idle and cheers when a task closes, with a mini Claude in its own color beside it for each running subagent.
 
 **The dashboard.** `/fm` (or `[f]`) opens one panel beside the chat that fills the dock exactly, in the Board's language.
 
@@ -565,7 +568,7 @@ The footer's controls are key caps too (`p` details, `n` next, `d` drive, `u` au
 - This session sits at the root (its task and step, a comet along its rule) with the last thing Claude said it is doing and its latest calls; then a branch per subagent with its own words streaming in, its worktree if it is a builder, and its latest calls, each spinning while it runs, then ✓ or ✗ with its time.
 - It keeps one height for the whole turn, so the chat above never shifts as calls come and go, and every node has a time bar in one column, as in the pane's Agents graph. When it runs out of room, words go first, then older calls, then the least recent agents fold into a count.
 - It stays two minutes after the last call, then shrinks to one line for the session. With the panel open the band shows only that tree.
-- The charts move at about 30 fps while Claude works and stand still when idle; the `motion` setting picks `full`, `calm` (8 fps) or `off`. Toasts mark finished steps and tasks, needed yeses (with a soft chime) and Ward refusals.
+- The charts move at about 30 fps while Claude works and stand still when idle; the `motion` setting picks `full`, `reduced` (8 fps; `calm` is the old word) or `off`. Toasts mark finished steps and tasks, needed yeses (with a soft chime) and Ward refusals.
 - The mod only renders `sampo ui --json` and runs `sampo` on your presses; rules and gates stay in sampo and the classic hooks.
 
 **The status line.** Under the prompt is one clean true-color layout:
@@ -593,7 +596,7 @@ Also: per-subagent rows, terminal titles and desktop notifications, `sampo watch
 - Paths must resolve inside the project, values can't start with `-`, each is length-capped, each call has a timeout, and everything sent is redacted. `sampo mcp register claude` prints the `claude mcp add` line; `sampo mcp register desktop` prints the `mcpServers` stanza for Claude Desktop's config (the sampo binary by absolute path, the project by `-p`), so Desktop reaches `find` and the rest.
 - `sampo mcp new NAME --wrap 'CMD' [--sub a,b]` writes a stdlib-only MCP server for any CLI, plus a test that drives it over stdio. The server runs argv, never a shell; it has a timeout and an output cap; and it refuses to wrap destructive commands (`rm`, `git push`, a shell…). Register it with `sampo mcp register claude DIR`.
 
-**Knowledge out:** `sampo recall --export-rules` writes the lessons from finished tasks to `.claude/rules/sampo-lessons/`, one rule file per task scoped by `paths:` to the files it touched, so Claude Code loads a lesson only with its files, even without Sampo. `sampo decide --export-adr DIR` writes one ADR file per recorded decision. `sampo task defer ID --until "when PATH changes"` brings a task back in `sampo next` once that file changes.
+**Knowledge out:** `sampo recall --export-rules` writes the lessons from finished tasks to `.claude/rules/foreman-lessons/`, one rule file per task scoped by `paths:` to the files it touched, so Claude Code loads a lesson only with its files, even without Sampo. `sampo decide --export-adr DIR` writes one ADR file per recorded decision. `sampo task defer ID --until "when PATH changes"` brings a task back in `sampo next` once that file changes.
 
 **Desktop app:** [Sampo Desktop](https://github.com/ChaseSunstrom/foreman-desktop) (Tauri 2 + Svelte 5; `install.sh --desktop` installs its newest release) shows every project, agent session and device in one animated window.
 - Live project dashboards with Start, Drop, Approve-plan, capture, drive and autonomy controls.
@@ -643,7 +646,7 @@ The app never talks to a server: it runs `sampo … --json` on this machine, and
 
 **The sandbox** is opt-in: `sampo run --sandbox`, or `sampo sandbox on` to keep it for later runs and `sampo night` timers (`--no-sandbox` skips it for one run).
 - Each session then runs under Claude Code's own sandbox (bubblewrap with socat on Linux, Seatbelt on macOS): Bash writes only the checkout, the cache dirs, Sampo's state and the git dir.
-- It reaches only the allowed domains (`sampo sandbox allow DOMAIN`; default: the git remote's host and the package registries for the project's languages).
+- It reaches only the allowed domains (`sampo sandbox allow DOMAIN`; default: GitHub, the git remote's host, the package registries for the project's languages and any non-local model endpoint in `models.json`).
 - `sampo run` refuses to start when the host can't run the sandbox. `sampo outbound ID` lists the hosts and queries a task's sessions reached.
 
 </details>
@@ -716,7 +719,7 @@ Real runs of each kind are on the [Smith page](https://chasesunstrom.github.io/s
 - When a run stalls or stops, `x` on its card hands the task to a live CLI in this terminal, with the task's brief as the opening prompt; when you exit it, the app re-runs the task's checks through the Ward (`sampo smith --recheck ID`) and says whether it can close.
 - Before a project's first run its welcome shows what a run needs (sampo on PATH, a runner, the folder as a project), each missing one with the key that fixes it, and `e` asks "explain this repo". The app's header names what holds the run in: Landlock (with its ABI) or Sampo's Ward only. The runners screen (`,` then `r`) shows each one's last answer as a lamp, and `p` pings the selected runner.
 - `sampo smith tui --tour` plays a 30-second guided run with a caption naming each panel as it comes alive; `--tour --snapshot FILE.svg` writes it as one animated SVG, no video tools needed ([the tour](https://chasesunstrom.github.io/sampo/assets/code-tui-tour.svg), drawn from today's code at each site build).
-- Themes: night, paper, signal for colour-blind eyes, mono, and `theme = "riso"` for risograph inks on a paper stock (`palette = "riso"` puts the inks on any theme, and on the pane). On a terminal that draws a half block one column wide, the built track stands up as a lit rail; `?` shows the keys as a poster.
+- Themes: night, paper, signal for colour-blind eyes, mono, `classic` and `classic_paper` (the look before the forge, dark and light), and `theme = "riso"` for risograph inks on a paper stock (`palette = "riso"` puts the inks on any theme, and on the pane). On a terminal that draws a half block one column wide, the built track stands up as a lit rail; `?` shows the keys as a poster.
 - `sampo smith tui --print-config > ~/.claude/foreman/tui.toml` gives you its theme, motion, layout and keys to edit. `sampo settings list` shows them beside the Claude Code pane's, `sampo settings set motion reduced` changes one in place, keeping your comments, `sampo settings diff` lists the ones you changed, `sampo settings export` prints them as one share code for `sampo settings import CODE`, and `sampo settings undo` puts the last set or import back.
 - Inside the app, `,` lists the settings by group with search, changed-only and `:set KEY VALUE`; a theme, palette or motion change is a preview until a key keeps it, and goes back after 10 s without one.
 - A Python file in `~/.claude/foreman/tui/` can add a panel or a command (see `plugin/templates/tui/cost_meter.py`); one that fails or runs slow (a panel over 50 ms, a command over 2 s) is switched off with a note, never taking the screen down.
@@ -826,7 +829,7 @@ Login, MCP servers, history, memory, themes and per-repo `.claude/` folders are 
 <summary><b>Tests, recordings and the repo layout</b></summary>
 
 ```bash
-python3 plugin/tests/run.py                                     # unit + behaviour, one class per CPU slot, shared by every run on the machine (~80 s)
+python3 plugin/tests/run.py                                     # unit + behaviour, one class per CPU slot, shared by every run on the machine (many minutes; name modules for a quick run)
 python3 plugin/tests/bench_hooks.py --runs 50                   # hook latency
 python3 plugin/tests/e2e/roundtrip.py                           # install/uninstall/reinstall in a sandbox HOME
 python3 plugin/tests/e2e/scenarios.py                           # live §12 scenarios (uses claude -p; costs tokens)
@@ -844,7 +847,10 @@ The README's figures are real: `sampo readme diagram docs/assets/diagrams/NAME.j
 ```
 BUILD_PROMPT.md       the spec Sampo was built from
 MASTER.md             system map (start here)
+INSTALL.md            the install steps, written for an agent doing it for someone
+DESIGN.md             the design language (its tokens are in design/sampo/tokens.json)
 CHANGELOG.md          release notes
+SAMPO.md, MOONSHOT.md, SEED_PROMPT.md   the standing prompts Sampo was built and renamed from, kept as written
 install.sh            one-liner bootstrap
 setup-plugins.sh      curated plugin setup (safe to re-run; --dry-run to preview)
 configure-repo.sh     one-time for forks: point everything at your GitHub repo
@@ -852,6 +858,11 @@ reset-claude.sh       optional: reset Claude Code's behavior layer before instal
 release.py            thin wrapper over `sampo release VERSION [--push]` (--push needs the task's publish grant)
 .claude-plugin/       local marketplace "sampo"
 plugin/               the Sampo plugin (sampo, hooks, skills, rules, agents, tests, evals)
+mods/foreman-ui/      the Claude Code pane mod
+plugins/              plugins Sampo ships beside its own (foreman-design)
+bench/, research/     the benchmark suites and the research behind the model layer
+design/, scripts/     design tokens; one-off scripts
+.sampo/               this repository's own task briefs, decisions and research, mirrored by `sampo sync`
 demo/                 the recordings (Claude Code with the mod; sampo demo), the table figures and the scripts that make them
 docs/assets/          the README's screens and diagrams (each diagram's spec beside it)
 site/                 the project site; site/assets/diagrams holds the hand-drawn diagrams

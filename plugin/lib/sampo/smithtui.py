@@ -3662,9 +3662,10 @@ class App:
 
     def _link_fm(self):
         from sampo import setup
-        made = setup.ensure_fm_link()
-        return (f"linked {made}: a new terminal finds fm" if made else
-                "~/.local/bin/fm is there already, or someone else's: fm doctor says which")
+        made = setup.ensure_fm_links()  # T-4841: fm's and sampo's: say what was made, not "fm" for both
+        names = " and ".join(os.path.basename(m) for m in made)
+        return (f"linked {', '.join(made)}: a new terminal finds {names}" if made else
+                "~/.local/bin/fm and sampo are there already, or someone else's: fm doctor says which")
 
     def _init_project(self):
         from sampo import core

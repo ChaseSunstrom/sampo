@@ -195,10 +195,14 @@ if [ "$WIRING" = 1 ] && [ "$CLAUDE" = 1 ]; then
   say "Wiring Sampo into ~/.claude (statusLine wrapper, deny rules, CLAUDE.md block, rules symlink)"
   python3 "$FOREMAN_HOME/plugin/bin/fm" install-user || say "Wiring failed; run: $FOREMAN_HOME/plugin/bin/fm install-user --dry-run"
 elif [ "$WIRING" = 1 ]; then
-  say "No Claude Code here: putting fm on PATH and wiring the agents found"
-  # setup.ensure_fm_link: makes the link, repairs a dangling one of Sampo's, leaves anyone else's fm alone
+  say "No Claude Code here: putting sampo on PATH and wiring the agents found"
+fi
+if [ "$WIRING" = 1 ]; then
+  # setup.ensure_fm_link: makes the sampo and fm links, repairs a dangling one of Sampo's, leaves anyone else's alone
   python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from sampo import setup; setup.ensure_fm_link()' "$FOREMAN_HOME/plugin/lib" || true
-  case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "Add ~/.local/bin to your PATH so any shell finds fm" ;; esac
+  case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "Add ~/.local/bin to your PATH so any shell finds sampo" ;; esac
+fi
+if [ "$WIRING" = 1 ] && [ "$CLAUDE" = 0 ]; then
   found=0
   for agent in codex gemini opencode; do
     command -v "$agent" >/dev/null 2>&1 || continue

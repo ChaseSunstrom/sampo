@@ -805,9 +805,8 @@ def session_start(pl):
             and not os.environ.get("FOREMAN_WORKER_OF"):  # T-1438: a worker sets up nothing
         try:  # T-1333: fm in any shell, for an install that never ran install.sh, and after an update moved the plugin
             from sampo import setup
-            made = setup.ensure_fm_link()
-            if made:
-                c.log_event(p, "fm_link", data={"link": made, "target": os.path.join(c.PLUGIN_ROOT, "bin", "fm")},
+            for made in setup.ensure_fm_links():  # T-4841: fm's and sampo's, each logged with its own target
+                c.log_event(p, "fm_link", data={"link": made, "target": os.path.join(c.PLUGIN_ROOT, "bin", os.path.basename(made))},
                             session=sid)
         except Exception:
             log_error("SessionStart", _tb())

@@ -267,6 +267,40 @@ class Checks(_TmpDir):
         self.assertEqual(r.status, "FAIL", "another fm comes first")
         self.assertIn("/usr/local/bin/fm", r.detail)
 
+    def test_sampo_link_is_checked_like_fm_and_only_warns(self):  # T-4841 review
+        bin_ = os.path.join(self.t, "bin")
+        target = os.path.join(self.t, "plugin-bin-sampo")
+        os.makedirs(bin_)
+        with open(target, "w") as f:
+            f.write("#!/bin/sh\n")
+        link = os.path.join(bin_, "sampo")
+
+        def shell(name, prints):
+            path = os.path.join(self.t, name)
+            with open(path, "w") as f:
+                f.write(f"#!/bin/sh\n[ \"$PATH\" = /usr/bin:/bin ] || exit 9\n"
+                        f"case \"$*\" in *'command -v sampo'*) ;; *) exit 8;; esac\n{'echo ' + prints if prints else 'exit 1'}\n")
+            os.chmod(path, 0o755)
+            return path
+        r = d.check_sampo_link(link, target, bin_, shell=False)
+        self.assertEqual((r.name, r.status), ("sampo link", "WARN"), "no link yet")
+        self.assertIn("install", r.detail)
+        os.symlink(target, link)
+        self.assertEqual(d.check_sampo_link(link, target, bin_, shell=False).status, "PASS")
+        self.assertEqual(d.check_sampo_link(link, target, "/usr/bin", shell=False).status, "WARN", "dir not on PATH")
+        self.assertEqual(d.check_sampo_link(link, target, shell=shell("sh", link)).status, "PASS")
+        r = d.check_sampo_link(link, target, shell=shell("dash", "/usr/local/bin/sampo"))
+        self.assertEqual(r.status, "WARN", "a different sampo wins in a login shell: a warning, fm's check does the failing")
+        self.assertIn("/usr/local/bin/sampo", r.detail)
+        self.assertEqual(d.check_sampo_link(link, target, shell=shell("bash", None)).status, "WARN", "none found")
+        os.unlink(link)
+        os.symlink("/elsewhere/sampo", link)
+        r = d.check_sampo_link(link, target, bin_, shell=False)
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("/elsewhere/sampo", r.detail)
+        os.unlink(target)
+        self.assertEqual(d.check_sampo_link(link, target, bin_, shell=False).status, "PASS", "no sampo file: nothing to link")
+
     def test_settings_json(self):
         good = self.write("good.json", '{"a": 1}')
         bad = self.write("bad.json", "{nope")
