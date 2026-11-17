@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- `sampo task finish` now lists every missing field of a refusal in one numbered list with its fix, and `--dry` previews that list without changing anything (not the index, not the ledger); the red full check and a lane close without its CHANGELOG line now join that list and exit 1 (usage error) where they exited 2 (T-4147).
+- Blocked work never sits: an hourly `sampo blocked review` frees tasks held only by closed tasks or only by capacity, `sampo task block` refuses a capacity-only reason, and a block over 48 h is named on the Next line with one proposed action (T-3303).
 - Sampo's scratch worktrees now live in an owned 0700 scratch root, each holding a lock while its owner lives, so a cleanup of the shared temp root cannot reach them; tidy and doctor list leftovers and the tree-lost event names the folder, time, age and whether the root survived (T-4735).
 - A builder's `sampo check --affected` or full `sampo check` placed inside `sampo task evidence --run` or `--bench` is now refused by the PreToolUse hook with the same one line as a direct call (T-4546).
 - callcards' changed-since check and the left-out scan now read their files in with-blocks, so a test run no longer floods with ResourceWarnings (T-4852).
