@@ -88,6 +88,47 @@ class SameAsFm(GuardCase):
             with self.subTest(cmd=cmd):
                 self.assertEqual(self.cat(cmd, self.repo), self.cat(re.sub(r"\bsampo\b", "fm", cmd.replace("SAMPO_", "FOREMAN_")), self.repo))
 
+    def test_read_only_from_import_is_judged_like_a_plain_import(self):
+        """T-4893: a from-import of a Sampo module that only reads passed nowhere (the bare package read as an entry
+        module, and any from-import was refused once a writer word appeared), while the same read as a plain import
+        passed. Now both forms get one rule, and a writer named without a call counts for both."""
+        read = "python3 -c 'from sampo import landlock; print(landlock.available())'"
+        plain = "python3 -c 'import sampo.landlock; print(sampo.landlock.available())'"
+        self.assertIsNone(self.cat(read, self.repo))
+        # "$(( 1 )) $(…)" left out: there the word sampo reads as a sampo command the shell fills in (an over-refusal of
+        # its own, captured beside T-4893)
+        for form in (f for f in FORMS if "'" not in f and "$((" not in f):
+            with self.subTest(form=form):
+                self.assertEqual(self.cat(form.replace("{p}", read), self.repo), self.cat(form.replace("{p}", plain), self.repo))
+        for cmd in ("python3 -c 'from sampo import core as c; print(c.read_meta(p))'",
+                    "python3 -c 'from sampo.landlock import available; print(available())'",
+                    "python3 -c 'from sampo import core; print(core.read_meta(p))'; grep -c 'write_meta(' x.py",
+                    "python3 -c 'from sampo import (\nlandlock,\ncore)\nprint(core.read_meta(p))'"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.cat(cmd, self.repo))
+        for cmd in ("python3 -c 'from sampo import core; core.write_meta(p, 1)'",
+                    "python3 -c 'from sampo import cli; cli.main([1])'", "python3 -c 'from sampo import landlock, hooks'",
+                    "python3 -c 'from sampo import (\nlandlock,\ncli)'", "python3 -c 'from sampo import main'",
+                    "python3 -c 'from sampo import *'", "python3 -c 'from sampo.core import *; print(1)'",
+                    "python3 -c 'from fmcore import *; print(1)'",
+                    "python3 -c 'from sampo.core import write_meta as w; w(p, 1)'",
+                    "python3 -c 'from sampo.core import (\nread_meta,\nwrite_meta)\nf = write_meta\nf(p, 1)'",
+                    "python3 -c 'from sampo import core as c; f = c.write_meta; f(p, 1)'",
+                    "python3 -c 'import sampo.core as c; f = c.write_meta; f(p, 1)'",
+                    "python3 -c 'import fmcore as c; f = [c.write_meta][0]; f(p, 1)'",
+                    "python3 -c 'import sampo.core as c; f = c.task_set; f(p, 1)'",
+                    # its review: import( with no space, a `)` in a comment, a fullwidth letter python reads as plain
+                    "python3 -c 'from sampo import(cli); cli.main([1])'",
+                    "python3 -c 'from sampo.core import(write_meta as w); w(p, 1)'",
+                    "python3 -c 'from sampo import (landlock,  # )\ncli)\ncli.main([1])'",
+                    "if true; then python3 -c 'from sampo import (landlock,  # )\ncli)\ncli.main([1])'; fi",
+                    "python3 -c 'from sampo import core; core.ｗrite_meta(p, 1)'",
+                    "python3 -c 'import sampo.core as c; c.ｗrite_meta(p, 1)'",
+                    "python3 -c 'from ｓampo import core; core.write_meta(p, 1)'",
+                    "if true; then python3 -c 'import ｓampo.core as c; c.write_meta(p, 1)'; fi"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.cat(cmd, self.repo))
+
     def test_state_write_via_sampo_home_is_refused_like_foreman_home(self):
         for name in ("FOREMAN_HOME", "SAMPO_HOME"):
             with self.subTest(name=name):

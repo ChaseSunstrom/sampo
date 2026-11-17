@@ -1310,7 +1310,8 @@ class Core(GuardCase):
             self.assertIsNotNone(b, cmd)
             return g.message(b, ctx)
         form_only = ("cp -r /tmp/a {fhome}/plugin", {"trusted": True})  # a tree write: the yes covers per-file edits
-        heredoc = ("cd {fhome}; python3 - <<'EOF'\nfrom sampo import moons\nprint(moons.MIX)\nEOF", {"standing": {"core"}})
+        # T-4893: a writer called (a from-import that only reads, print(moons.MIX), now passes)
+        heredoc = ("cd {fhome}; python3 - <<'EOF'\nfrom sampo import moons\nmoons.write_meta(p, 1)\nEOF", {"standing": {"core"}})
         for cmd, kw in (form_only, heredoc):
             m = msg(cmd, **kw)
             self.assertNotIn("ask the user", m, cmd)

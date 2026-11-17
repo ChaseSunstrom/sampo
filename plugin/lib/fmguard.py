@@ -2068,17 +2068,65 @@ def _sampo_name(fm):
 
 _FM_ENTRY_MODULES = ("fmcli", "fmhooks", "fmsetup", "fmtidy", "fmideas", "fmserve", "fmplugins")
 # each fm entry module and its sampo twin; a bare `sampo` (the package) counts too, to be safe
-_FM_ENTRY = "(?:" + "|".join(_FM_ENTRY_MODULES + tuple(re.escape(_sampo_name(m)) for m in _FM_ENTRY_MODULES) + (r"sampo(?!\.\w+\b(?!\s*\())",)) + ")"  # bare: not `sampo.mod…` (a module, judged by its own name) but `sampo.fn(`
-_FM_MUTATORS = lazy(r"\b(?:save_brief|write_meta|update_meta|write_atomic|log_event|regen_views|init_project|"
-                          r"add_rule|drop_rule|add_veto|drop_veto|"  # T-0971 review: the user's rules and vetoes
-                          r"checkpoint|mutate|cmd_\w+|task_\w+|_resolve_approvals|_activate_fallback|"
-                          r"restore_default_state)\s*\(|"
-                          rf"\bgetattr\s*\(\s*{_FM_ENTRY}\b|"
-                          rf"\b{_FM_ENTRY}\s*\.\s*\w+\s*\(|\bfrom\s+{_FM_ENTRY}\s+import\b|\bimport\s+{_FM_ENTRY}\s+as\b|"
-                          rf"(?:__import__|import_module)\s*\(\s*['\"]{_FM_ENTRY}|"
-                          # T-0170: a writer imported by name, then called under an alias (from fmcore import x as w)
-                          r"\bfrom\s+(?:fm[a-z]+|sampo(?:\.\w+)?)\s+import\s+[^\n;]*\b(?:save_brief|write_meta|update_meta|write_atomic|"
-                          r"log_event|regen_views|init_project|checkpoint|mutate|restore_default_state)\b")
+_FM_ENTRY_NAMED = "(?:" + "|".join(_FM_ENTRY_MODULES + tuple(re.escape(_sampo_name(m)) for m in _FM_ENTRY_MODULES)) + ")"
+_FM_ENTRY = "(?:" + _FM_ENTRY_NAMED + r"|sampo(?!\.\w+\b(?!\s*\())" + ")"  # bare: not `sampo.mod…` (a module, judged by its own name) but `sampo.fn(`
+_FM_WRITERS = (r"save_brief|write_meta|update_meta|write_atomic|log_event|regen_views|init_project|"
+               r"add_rule|drop_rule|add_veto|drop_veto|"  # T-0971 review: the user's rules and vetoes
+               r"checkpoint|mutate|cmd_\w+|task_\w+|_resolve_approvals|_activate_fallback|restore_default_state")
+_FM_WRITER_NAME = lazy(rf"(?:{_FM_WRITERS})")  # fullmatch against one name the ast read
+# T-4893: what in code reaches a writer, read as text: a writer called, an entry module called or imported. A from-import
+# is judged by the names the ast reads (_fm_writer_named), not by this text
+_WRITES = (rf"\b(?:{_FM_WRITERS})\s*\(|"
+           rf"\bgetattr\s*\(\s*{_FM_ENTRY}\b|"
+           rf"\b{_FM_ENTRY}\s*\.\s*\w+\s*\(|\bfrom\s+{_FM_ENTRY_NAMED}\s+import\b|\bimport\s+{_FM_ENTRY}\s+as\b|"
+           rf"(?:__import__|import_module)\s*\(\s*['\"]{_FM_ENTRY}")
+_FM_WRITES = lazy(_WRITES)
+# T-4893: a from-import of the bare package is an entry import only when it names an entry module (from sampo import
+# cli), main or *; `from sampo import landlock` is a module judged by its own name, as `import sampo.landlock` always was
+_FM_ENTRY_LEAVES = frozenset({_sampo_name(m).split(".")[1] for m in _FM_ENTRY_MODULES} | {"main"})
+# the text gate's own reads: those writes, or a writer named without a call (f = c.write_meta; f(p, 1))
+_FM_MUTATORS = lazy(rf"{_WRITES}|\.\s*(?:{_FM_WRITERS})\b")
+_FROM_FM = lazy(r"\bfrom\s+(?:fm[a-z]+|sampo(?:\.\w+)?)\s+import\b(\s*\*)?")
+_FROM_NAMES = lazy(rf"\b(?:{_FM_WRITERS}|{'|'.join(sorted(_FM_ENTRY_LEAVES))})\b")
+
+
+def _nfkc(text):
+    """T-4893: text as python reads its names (NFKC: `ｗrite_meta` is write_meta, `ｓampo` is sampo), for matching
+    only: the shell's own reading (quotes, separators) is never taken from it."""
+    if text.isascii():
+        return text
+    import unicodedata  # here, not at the top: only non-ASCII text pays for it
+    return unicodedata.normalize("NFKC", text)
+
+
+def _fm_gate(text):
+    """T-4893: whether text may reach a Sampo writer, read before any parse (text it can't parse is judged by this
+    alone): a writer or entry call, a writer named as an attribute, or a from-import of a Sampo module with * or with a
+    writer, an entry module or main anywhere between it and the next from-import (past the statement too: a `)` in a
+    comment ends no list here; more is refused, never less). Each window is read once, so it is linear in the text."""
+    text = _nfkc(text)  # python reads a fullwidth letter in a name as the plain one
+    if _FM_MUTATORS.search(text):
+        return True
+    ms = list(_FROM_FM.finditer(text))
+    return any(m.group(1) or _FROM_NAMES.search(text, m.end(), ms[i + 1].start() if i + 1 < len(ms) else len(text))
+               for i, m in enumerate(ms))
+
+
+def _fm_writer_named(tree):
+    """T-4893: the first name in parsed code that reaches a Sampo writer without a call the text shows: a writer, an
+    entry module or * in a from-import of a Sampo module (aliases and (…) lists across lines included), or a writer
+    read as an attribute (f = c.write_meta). '' when none. Read from the ast, so no list is scanned by a regex."""
+    import ast
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and (n.module or "").startswith(FM_MODULE_PREFIXES):
+            if re.fullmatch(_FM_ENTRY_NAMED, n.module):
+                return n.module
+            for a in n.names:
+                if a.name == "*" or _FM_WRITER_NAME.fullmatch(a.name) or (n.module == "sampo" and a.name in _FM_ENTRY_LEAVES):
+                    return a.name
+        elif isinstance(n, ast.Attribute) and _FM_WRITER_NAME.fullmatch(n.attr):
+            return n.attr
+    return ""
 
 
 _FM_RUN_ARG = lazy(r"""--run(?:=|\s+)(?:"(?:\\.|[^"\\])*"|'[^']*')""")
@@ -2573,11 +2621,11 @@ def _drives_fm(cmd, cwd=None):
     (data heredocs, the shell, -c code it can't read), code that doesn't parse, and dynamic code (exec, eval, getattr,
     importlib…). It only relaxes what it can prove. T-2068: the result is the clause that fired, '' when none did, so the
     refusal can say which one (42 refusals in a week named none)."""
-    if not (_FM_INTERNALS.search(cmd) and _FM_MUTATORS.search(cmd)):
+    if not (_FM_INTERNALS.search(_nfkc(cmd)) and _fm_gate(cmd)):
         return ""
     units, rest, starters, _ = _python_units(cmd)
     c_units, shell, c_starters = _python_c_units("\n".join(rest))
-    if _FM_INTERNALS.search("\n".join([shell] + starters)):
+    if _FM_INTERNALS.search(_nfkc("\n".join([shell] + starters))):
         return "shell text it can't read as python names Sampo's modules (a heredoc not fed to python, a file run later)"
     # T-1204: python's own settings (PYTHONPATH loads sitecustomize, PYTHONSTARTUP…), set in the command or inherited,
     # change what any of its code runs, as _python_c_units already refuses for -c
@@ -2589,7 +2637,7 @@ def _drives_fm(cmd, cwd=None):
     runs = [None if moved else _run_dir(s, cwd) for s in starters + c_starters]
     import ast
     for code, run in zip(units + c_units, runs):
-        if not _FM_INTERNALS.search(code):
+        if not _FM_INTERNALS.search(_nfkc(code)):
             continue
         try:
             tree = ast.parse(code)
@@ -2614,7 +2662,9 @@ def _drives_fm(cmd, cwd=None):
                    and (n.module or "").startswith(FM_MODULE_PREFIXES)]
         fm_import = [a for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
                      if a.name.startswith(FM_MODULE_PREFIXES)]
-        if fm_from or (fm_import and _FM_MUTATORS.search(code)):
+        # T-4893: one rule for both import forms (a from-import was refused even when the code only read): a writer or
+        # entry called in the text, or reached by a name the ast reads (an import list, an attribute)
+        if (fm_from or fm_import) and (_FM_WRITES.search(_nfkc(code)) or _fm_writer_named(tree)):
             return f"it imports {_ident((fm_from[0].module if fm_from else fm_import[0].name) or 'fm')}"
     return ""
 

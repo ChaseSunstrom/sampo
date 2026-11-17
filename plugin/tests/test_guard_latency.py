@@ -28,6 +28,9 @@ def cases():
         "backslash-quote runs": "echo \"" + "\\\"" * 10000 + "\"",
         "10k ; commands": ";".join(["echo a"] * 10000),
         "many cd x &&": "cd x && " * 2000 + "ls",
+        # T-4893: an import list read by a regex from each `from` to its end was quadratic (6.9 s for these)
+        "3000 open from-import lists": "python3 -c '" + "from sampo import (" * 3000 + "'",
+        "3000 from-imports on one line": "python3 -c '" + "from sampo.core import a, " * 3000 + "'",
     }
 
 
