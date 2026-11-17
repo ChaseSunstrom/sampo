@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Ward reads a long shell script in linear time (a 3566-line script 4.1 s → 1.4 s) and keeps a `mktemp -d` folder known across `trap 'rm -rf "$work"' EXIT` (T-4811).
 - The Ward judges a read-only from-import of a Sampo module like a plain import: parsed code by the names the ast reads, a writer named without a call counts, the text gate is linear, and a fullwidth letter hides no name (T-4893).
 - `sampo task finish` now lists every missing field of a refusal in one numbered list with its fix, and `--dry` previews that list without changing anything (not the index, not the ledger); the red full check and a lane close without its CHANGELOG line now join that list and exit 1 (usage error) where they exited 2 (T-4147).
 - Blocked work never sits: an hourly `sampo blocked review` frees tasks held only by closed tasks or only by capacity, `sampo task block` refuses a capacity-only reason, and a block over 48 h is named on the Next line with one proposed action (T-3303).
