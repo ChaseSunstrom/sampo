@@ -38,3 +38,10 @@
 {"id": "01a78a1513f0ccb6a2f5", "cmd": "fm serve", "cwd": ".", "should": "block", "why": "T-1605: a persistent Remote Control session is the user's call (remote)"}
 {"id": "aa7278d1fe548f2473a2", "cmd": "fm posture lite", "cwd": ".", "should": "block", "why": "T-1605: turning Foreman's hooks off is the user's call (self-authorize)"}
 {"id": "47d1787f471e9ec90622", "cmd": "echo x > ~/.claude/plugins/cache/foo/hooks/hooks.json", "cwd": ".", "should": "block", "why": "T-1605: a write into Claude Code's plugin cache that only the plugin rule catches (rm there is also rm-outside)"}
+{"id": "516563b307bd768f1fd0", "cmd": "python -c \"getattr(os,'system')('bash install.sh')\"", "cwd": ".", "should": "block", "why": "T-4827: a quoted word called through getattr is still the installer"}
+{"id": "538cbdb1590e2164175e", "cmd": "python -c 'getattr(os,\"system\")(\"bash install.sh\")'", "cwd": ".", "should": "block", "why": "T-4827: the same with double quotes"}
+{"id": "a1c40e7b2d9f3856e0a1", "cmd": "python3 -c \"import asyncio; asyncio.run(asyncio.create_subprocess_shell('bash install.sh'))\"", "cwd": ".", "should": "block", "why": "T-4827 review: subprocess inside create_subprocess_shell"}
+{"id": "a1c40e7b2d9f3856e0a2", "cmd": "python3 -c \"import os; f = os.system; f('bash install.sh')\"", "cwd": ".", "should": "block", "why": "T-4827 review: a call word used by reference"}
+{"id": "a1c40e7b2d9f3856e0a3", "cmd": "python3 -c \"import os; os.execv ('/bin/bash', ['bash', 'install.sh'])\"", "cwd": ".", "should": "block", "why": "T-4827 review: whitespace before the paren"}
+{"id": "a1c40e7b2d9f3856e0a4", "cmd": "perl -e 'system qw(bash install.sh)'", "cwd": ".", "should": "block", "why": "T-4827 review: a perl call without parens"}
+{"id": "a1c40e7b2d9f3856e0a5", "cmd": "ruby -e 'cmd = \"bash install.sh\"; system cmd'", "cwd": ".", "should": "block", "why": "T-4827 review: a ruby call without parens"}

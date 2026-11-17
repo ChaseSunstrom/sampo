@@ -4059,7 +4059,119 @@ class NativeBuild(GuardCase):
             m = g.message(b, ctx)
             self.assertNotIn("plain file edits", m)
             self.assertNotIn("No question for the user", m)
-            self.assertIn("To authorize", m)
+            self.assertIn("sampo ask T-0007 core", m)  # T-4827: the reworded sentence, no "To authorize"
+
+    def test_installer_call_shape(self):
+        """T-4827 (T-3608 round 7 LOWs): the body must name the installer anyway, so a quoted word is no excuse
+        (getattr(os,'system')(...) calls it), and what counts is a call shape: filesystem, systemd or executable as plain
+        words in a body naming install.sh start nothing."""
+        self.run_table([
+            ("""python -c "getattr(os,'system')('bash install.sh')\"""", "core"),
+            ("""python -c 'getattr(os,"system")("bash install.sh")'""", "core"),
+            ("""python3 -c "import os; os.__dict__['system']('bash install.sh')\"""", "core"),
+            ("""python3 -c "import os; vars(os)['execv']('/bin/bash', ['bash', 'install.sh'])\"""", "core"),
+            ("python3 -c \"from os import system; system('bash install.sh')\"", "core"),
+            ("python3 -c \"from os import system as s; s('bash install.sh')\"", "core"),
+            ("python3 -c \"from subprocess import run; run(['bash', 'install.sh'])\"", "core"),
+            ("python3 -c \"import os; os.popen('bash install.sh')\"", "core"),
+            ("ruby -e 'system \"bash install.sh\"'", "core"),
+            ("perl -e 'exec \"bash\", \"install.sh\"'", "core"),
+            ("python3 - <<'EOF'\nimport os\ngetattr(os, 'system')('bash install.sh')\nEOF", "core"),
+            ("python3 - <<'EOF'\nimport os\ngetattr(os, \"system\")(\"bash install.sh\")\nEOF", "core"),
+            ("python3 - <<'EOF'\nimport os\nos.system('bash install.sh')\nEOF", "core"),
+            # review round 1: the word inside create_subprocess_shell, a call word used by reference, whitespace before
+            # the paren for every variant, and perl/ruby calls without parens
+            ("python3 -c \"import asyncio; asyncio.run(asyncio.create_subprocess_shell('bash install.sh'))\"", "core"),
+            ("python3 -c \"import os; f = os.system; f('bash install.sh')\"", "core"),
+            ("python3 -c \"import os; list(map(os.system, ['bash install.sh']))\"", "core"),
+            ("python3 -c \"import os, functools; functools.partial(os.popen, 'bash install.sh')()\"", "core"),
+            ("python3 -c \"import os; os.execv ('/bin/bash', ['bash', 'install.sh'])\"", "core"),
+            ("python3 -c \"import os; os.execvp ('bash', ['bash', 'install.sh'])\"", "core"),
+            ("python3 -c \"import os; os.spawnl (os.P_WAIT, '/bin/bash', 'bash', 'install.sh')\"", "core"),
+            ("python3 -c \"import os; os.posix_spawn ('/bin/bash', ['bash', 'install.sh'], dict())\"", "core"),
+            ("python3 -c \"import asyncio; asyncio.create_subprocess_exec ('bash', 'install.sh')\"", "core"),
+            ("lua -e \"os.execute ('bash install.sh')\"", "core"),
+            ("perl -e 'system qw(bash install.sh)'", "core"),
+            ("perl -e 'system q(bash install.sh)'", "core"),
+            ("ruby -e 'cmd = \"bash install.sh\"; system cmd'", "core"),
+            # review round 2: a call word through an alias or another module, popen3/popen2/execa before a quote or a
+            # backtick, and ruby's paren-less call with any name, a dotted one, a comma or a rescue after it
+            ("python3 -c \"import os as o; f = o.system; f('bash install.sh')\"", "core"),
+            ("python3 -c \"import ctypes; libc = ctypes.CDLL(None); libc.system(b'bash install.sh')\"", "core"),
+            ("python3 -c \"import sys; g = sys.modules['os'].system; g('bash install.sh')\"", "core"),
+            ("ruby -e 'require \"open3\"; Open3.popen3 \"bash install.sh\"'", "core"),
+            ("node -e 'const {{execa}} = require(\"execa\"); execa`bash install.sh`'", "core"),
+            ("ruby -e 'CMD = \"bash install.sh\"; system CMD'", "core"),
+            ("ruby -e 'cmd = \"bash install.sh\"; system cmd, exception: true'", "core"),
+            ("ruby -e 'cmd = %w[bash install.sh]; system cmd.join(\" \")'", "core"),
+            ("ruby -e 'cmd = \"bash install.sh\"; system cmd rescue nil'", "core"),
+            # review round 3: an import list in parens over several lines, a space after the dot, Popen after a dot
+            ("python3 - <<'EOF'\nfrom os import (\n    system as s,\n)\ns('bash install.sh')\nEOF", "core"),
+            ("python3 -c \"import os; f = os. system; f('bash install.sh')\"", "core"),
+            ("python3 -c \"import subprocess as sp; P = sp.Popen; P(['bash', 'install.sh'])\"", "core"),
+            # review round 4: padding before the call word in an import list or line (a 500-character bound missed it)
+            ("python3 - <<'EOF'\nfrom os import (\n    # " + "x" * 600 + "\n    system as s)\ns('bash install.sh')\nEOF",
+             "core"),
+            ("python3 - <<'EOF'\nfrom os import getcwd as " + "g" * 600 + ", system as s\ns('bash install.sh')\nEOF",
+             "core"),
+            ("python3 - <<'EOF'\nfrom os import (getcwd,\n    system)\nf = system\nf('bash install.sh')\nEOF", "core"),
+            # review round 5: a ')' inside a comment doesn't end the list; a backslash-newline continues a plain one
+            ("python3 - <<'EOF'\nfrom os import (\n    # note )\n    system as s)\ns('bash install.sh')\nEOF", "core"),
+            ("python3 - <<'EOF'\nfrom os import getcwd, \\\n    system as s\ns('bash install.sh')\nEOF", "core"),
+            # plain words: the file named, nothing called. Still refused: letting them through makes the guard block
+            # less, which waits on the user's core yes (selfgate), so the bare-word rule (_RUNS_IT_WORDS) stands
+            ("python3 -c \"print('make install.sh executable on the filesystem')\"", "core"),
+            ("python3 -c \"print('install.sh runs on the system and is executable under systemd')\"", "core"),
+            ("python3 -c \"print('install.sh is run by the systemd unit')\"", "core"),
+            ("python3 -c \"print('install.sh executable.')\"", "core"),
+            ("python3 - <<'EOF'\nprint('install.sh is executable on the filesystem; systemd runs it')\nEOF", "core"),
+            ("python3 - <<'EOF'\nprint('install.sh: see the filesystem and the systemd unit (a note)')\nEOF", "core"),
+            ("node <<'EOF'\nconsole.log('executable install.sh on a filesystem, via systemd')\nEOF", "core"),
+        ], self.bash)
+
+    def test_installer_refusal_sentence(self):
+        """T-4827: the installer's refusal is one plain sentence: what is refused and its one way through, the per-task
+        core yes (sampo ask), which trust and the standing yes don't stand in for; and _runs_named's docstring names the
+        lexical limit it keeps (pexpect, sh, perl's pipe-open)."""
+        for kw in ({}, {"trusted": True}, {"standing": {"core"}}):
+            ctx = g.Ctx(cwd=self.fhome, project_root=None, home=self.home, foreman_home=self.fhome, scratch=["/tmp"],
+                        task_id="T-0007", **kw)
+            b = g.check("Bash", {"command": "bash install.sh"}, ctx)
+            self.assertIsNotNone(b)
+            m = g.message(b, ctx)
+            self.assertNotIn("is protected core", m)
+            self.assertNotIn("sampo doctor --repair|--fix", m)
+            self.assertEqual(m.count(". "), 0, f"one sentence: {m}")
+            self.assertTrue(m.endswith("."), m)
+            for word in ("install.sh", "fastbuild.py", "sampo doctor --repair", "sampo ask T-0007 core",
+                         "this task", "trust", "standing"):
+                self.assertIn(word, m)
+        doc = g._runs_named.__doc__
+        for word in ("pexpect", "pipe-open", "perl", "sh.bash", "Tcl", "runs on"):
+            self.assertIn(word, doc)
+
+    def test_an_import_clause_is_read_as_python_reads_it(self):
+        """T-4827 rounds 5-6, on the helper itself (a whole-command row can be blocked by another rule): a list in parens
+        ends at a ')' outside a comment, a plain one runs on after a backslash-newline, padding doesn't hide the word."""
+        tail = "s('bash install.sh')\n"
+        for body in ("from os import getcwd, \\\n    system as s\n", "from os import getcwd, \\\r\n    system as s\n",
+                     "from os import (\n    # note )\n    system as s)\n",
+                     "from os import (\n    # " + "x" * 600 + "\n    system as s)\n",
+                     "from os import getcwd as " + "g" * 600 + ", system as s\n"):
+            self.assertTrue(g._runs_it_installer(body + tail), body[:40])
+        for body in ("from os import getcwd, \\\n    path\n", "from os import (\n    # note )\n    path)\n"):
+            self.assertFalse(g._runs_it_installer(body + "print('install.sh')\n"), body[:40])
+
+    def test_installer_call_shape_is_linear_on_a_long_word(self):
+        """T-4827 round 3: a heredoc that names install.sh may carry one long unbroken line (base64, minified code); the
+        call-shape pattern must stay linear on it (an unanchored \\w*subprocess\\w* was quadratic)."""
+        for blob in ("QUJD" * 50000,  # 200 KB, one word
+                     "system" * 30000,  # round 4: a word full of call words, no paren after it
+                     "from a import (\n" * 4000,  # round 4: many import lists never closed (64 KB: 2.4 s before)
+                     "from a import x " * 4000):  # and one long line of plain imports (3.7 s before, 0.09 s now)
+            t0 = time.monotonic()
+            g._runs_it_installer(blob + " install.sh")
+            self.assertLess(time.monotonic() - t0, 0.5, blob[:16])
 
     def test_a_standing_yes_never_covers_what_the_installer_makes(self):
         """The binary, its sum and target/ are gitignored: a swap leaves no diff to review, so a standing core yes (given

@@ -414,6 +414,8 @@ def _message(block, ctx):
         return (f"Ward: blocked core: {detail}. {yes} covers this change made as plain file edits, not in "
                 f"this form: use the Edit or Write tool on each file (or a draft, then sampo edit < draft). No "
                 f"question for the user.")
+    if cat == "core" and detail == _INSTALLER_CORE:  # T-4827: the trust and standing branches above skip it (a build isn't a file edit)
+        return _INSTALLER_SAYS.format(id=tid)
     if cat in USER_ONLY:  # rules/foreman.md, README and MASTER name these categories too
         what = f"{detail} is protected core" if cat == "core" else detail
         return f"Ward: blocked {cat}: {what}. To authorize: " + _ASK.format(id=tid, cat=cat) + "."
@@ -1303,14 +1305,67 @@ _RUNS_IT = lazy(r"(?<![.\w'\"])(?:eval|compile)\b|(?<!['\"])\b(?:exec|execSync|e
                       r"Function|runpy|run(?:In\w*Context)|system|popen|Popen|subprocess|spawn\w*|instance_eval|"
                       r"class_eval)\b(?!['\"])")  # a quoted word ('system' in rows) names it, doesn't call it
 # T-3608 round 7: the same for code that names an installer file (_code_runs, _starts_installer), where a miss runs the
-# build: any word holding exec, spawn, subprocess, system or popen (create_subprocess_exec, posix_spawn) and the ways
-# to import and run a file. Not for _inline_runs_stdin or the piped-stdin gate: there json.load(sys.stdin) through
-# __import__('json'), or importlib.metadata, reads data and a wider list refuses it for no reason.
-_RUNS_IT_INSTALLER = lazy(r"(?<![.\w'\"])(?:eval|compile)\b|(?<!['\"])\b\w*(?:exec|spawn|subprocess|system|popen|Popen)\w*(?!['\"])|"
-                          r"(?<!['\"])\b(?:Function|runpy|run(?:In\w*Context)|instance_eval|class_eval|import_module|__import__|"
-                          r"importlib|run_path|run_module|spec_from_file_location|load_module)\b(?!['\"])")
+# build: a call to a word holding exec, spawn, system or popen (create_subprocess_exec(, posix_spawn(), the word
+# subprocess, and the ways to import and run a file. T-4827: no quote lookaround (the body must name the installer
+# anyway, and getattr(os,'system')('bash install.sh') quotes the word it calls) and call shapes beside the bare
+# words (_RUNS_IT_WORDS): filesystem, systemd or executable as plain words start nothing, but letting them through
+# waits on the user's core yes, so the shapes add blocks and the plain-word notes below say what they alone pass. The
+# shapes: the word and a '(' (or the bare word exec, system, spawn, popen and Popen before a space and a '(' or a
+# quote, $, @, % or { for the perl and ruby calls without parens), a quoted word and a ] or ) and a '(' (getattr
+# and a __dict__ lookup), getattr itself, and an import of one (from os import system as s). Not for
+# _inline_runs_stdin or the piped-stdin gate: there json.load(sys.stdin) through __import__('json'), or
+# importlib.metadata, reads data and a wider list refuses it for no reason.
+# Round 1 review: the word subprocess anywhere in a word (create_subprocess_shell), a call word of os, posix, pty,
+# shutil or subprocess named without a call (f = os.system; map(os.system, …)), whitespace before the '(' for every
+# variant (os.execv (…)), and perl and ruby calls without parens (system qw(…), system q(…), system cmd). A prose
+# "system (" or "the system cmd;" still counts: the file is named and a word reads as a call, which is acceptable.
+# Round 2: a call word after any dot, not only os. and its kin (import os as o; o.system, libc.system,
+# sys.modules['os'].system); popen2/popen3 and execa before a quote or a backtick (Open3.popen3 "…", execa`…`); and
+# ruby's paren-less call with any name, a dotted one, a comma or a rescue after it (system CMD, system cmd, x: 1,
+# system cmd.join(' '), system cmd rescue nil). Prose like "on the system and" still passes: no ending follows.
+# Round 3: the literal subprocess (an unanchored \w*subprocess\w* is quadratic on one long word, a heredoc's base64
+# line), a space after the dot (os. system) and Popen there, and an import list in parens over several lines.
+# Round 4: linear on a word full of call words too ("system"*30000): a lookahead finds the word, then \w+ takes it
+# once; an import of a call word is read clause by clause (_IMPORT_CLAUSE, round 5), not by this pattern.
+_RUNS_IT_INSTALLER = lazy(r"(?<![.\w'\"])(?:eval|compile)\b|subprocess|\bchild_process\b|\bgetattr\s*\(|"
+                          r"\.[ \t]*\w*(?:system|popen|Popen|exec|spawn)\w*\b|"
+                          r"\b(?=\w*(?:exec|spawn|system|popen|Popen))\w+\s*\(|"
+                          r"\b(?:exec|execa|system|spawn|popen\d?|Popen\d?)\s*['\"`$@%{\[]|"
+                          r"\b(?:exec|system|spawn|popen)\s+(?:q[qw]?\W|[A-Za-z_][\w.]*\s*(?:[;),(\n]|\brescue\b|$))|"
+                          r"['\"](?=\w*(?:exec|spawn|system|popen|Popen))\w*['\"]\s*[\])]\s*\(|"
+                          r"\b(?:Function|runpy|run(?:In\w*Context)|instance_eval|class_eval|import_module|__import__|"
+                          r"importlib|run_path|run_module|spec_from_file_location|load_module)\b")
+# Round 5: an import of a call word (from os import system as s; from os import (…, system)) is found clause by
+# clause, not by one pattern: finditer reads each clause once (a list in parens to its ')', else to the line's end),
+# so neither padding before the word (a 500-character bound let it through) nor many unclosed lists cost more than
+# one pass. Round 6: as Python reads it, a list in parens ends at a ')' outside a comment ("# note )" doesn't end it),
+# and a plain one runs on after a backslash-newline; both alternations are disjoint, so the read stays one pass.
+_IMPORT_CLAUSE = lazy(r"\bfrom\s+[\w.]+\s+import(?:\s*\([^)#]*(?:#[^\n]*\n?[^)#]*)*\)?|\s(?:[^\n;\\]|\\(?:\r\n|[\s\S]))*)")
+_CALL_WORD = lazy(r"exec|spawn|system|popen|Popen")
+
+
+# T-4827: the earlier bare-word rule, kept beside the call shapes: a word holding a call word, not quoted (filesystem,
+# systemd and executable in prose count too). Letting those plain words through makes the guard block less, which
+# only the user's core yes can pass (selfgate); until then this rule stands, so T-4827 adds blocks and removes none.
+# A lookahead form of the old \w*(…)\w* (each word read once, linear on a word full of call words), blocking at least
+# what it blocked.
+_RUNS_IT_WORDS = lazy(r"(?<!['\"])\b(?=\w*(?:exec|spawn|subprocess|system|popen|Popen))\w+(?!['\"])")
+
+
+def _runs_it_installer(code):
+    """T-4827: whether inline code or a heredoc body calls something that may start the installer it names: a call
+    shape (_RUNS_IT_INSTALLER), an import of a call word, or (until the user's core yes lets plain words through) an
+    unquoted word holding one (_RUNS_IT_WORDS)."""
+    return bool(_RUNS_IT_INSTALLER.search(code)
+                or any(_CALL_WORD.search(m.group(0)) for m in _IMPORT_CLAUSE.finditer(code))
+                or _RUNS_IT_WORDS.search(code))
+# T-4827: one plain sentence, built by message() for this finding: what is refused, and its one way through
 _INSTALLER_CORE = ("sampo doctor --repair|--fix, fastbuild.py and install.sh build and install the binary the "
                    "guard's hooks run (plugin/native/sampo-fast)")
+_INSTALLER_SAYS = ("Ward: blocked core: sampo doctor --repair, sampo doctor --fix, fastbuild.py and install.sh build and "
+                   "install the binary the guard's hooks run, so they need the user's core yes for this task, and "
+                   "only that (trust and the standing yes don't cover a build): sampo ask {id} core --why "
+                   "\"<what and why>\", then ask the user one yes/no question.")
 _STDIN_WORD = lazy(r"stdin|STDIN|<>|readFileSync\(\s*0|/dev/fd/0|php://stdin")
 _CAT_SUBST = lazy(r"\$\(\s*(?:cat\b[^)]*|<\s*/dev/stdin\s*)\)|`\s*cat\b[^`]*`")
 _READ_RUNS = lazy(r"(?:^|[;&|({]|\bdo|\bthen|\belse)\s*(?:eval\b|\"?\$|\S*sh\s+-\w*c\s+\"?\$)")  # read l; $l
@@ -8104,7 +8159,7 @@ _CODE_STARTS = lazy(r"`|%x[({\[]|\bqx\b|\b(?:import|from|require|use|load)\b[^;\
 
 
 def _code_runs(code):
-    return bool(_RUNS_IT_INSTALLER.search(code) or _CODE_STARTS.search(code))
+    return bool(_runs_it_installer(code) or _CODE_STARTS.search(code))
 
 
 def _starts_installer(body, interp=""):
@@ -8114,7 +8169,7 @@ def _starts_installer(body, interp=""):
     and node code, where a backtick is text or a template."""
     if not _names_installer(body):
         return False
-    if _RUNS_IT_INSTALLER.search(body) or any(m.group(0)[:1].isalpha() for m in _CODE_STARTS.finditer(body)):
+    if _runs_it_installer(body) or any(m.group(0)[:1].isalpha() for m in _CODE_STARTS.finditer(body)):
         return True
     return bool(re.match(r"(?:perl|ruby|php)", interp) and _CODE_STARTS.search(body))
 
@@ -8133,7 +8188,15 @@ def _runs_named(cmds, outer=False, depth=0, bodies=()):
 
     The limit of the name test (_names_installer) is lexical: it reads words, so a name the text builds (ins''tall.sh,
     install.s[h], $(echo install).sh, a glob, a computed word the line never spells out) or a path that reaches the
-    file through a symlink made on an earlier line is not seen. That is bounded, not a hole in what the build trusts:
+    file through a symlink made on an earlier line is not seen. Its other known limit (T-4827) is the call shape of
+    inline code: a program started through a library or form the call words don't name (pexpect.run(…), the sh
+    package's sh.bash(…), perl's paren-less pipe-open open P, "bash install.sh|", a call word bound to a plain name
+    by an import that doesn't spell it (from os import *; system(…) is seen, but from os import *; f = system or
+    o = __builtins__; … isn't), a
+    paren-less call whose argument runs on with more words, and Tcl's exec) isn't seen by the call shapes. While the
+    bare-word rule stands (_RUNS_IT_WORDS, until the user's core yes lets plain words through) the ones that spell a
+    call word unquoted (system, exec) are still refused by it; pexpect, sh.bash and perl's open aren't. That is bounded, not a
+    hole in what the build trusts:
     the build is hermetic (a scrubbed environment, the account's own cargo, rustc and a root-owned linker, a
     hash-checked private registry copy, a fresh target) and it builds only the clean committed tree, then installs the
     binary after a probe against the Python hook; a start the guard misses runs that same build."""
