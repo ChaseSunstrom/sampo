@@ -1,0 +1,6 @@
+Below is the Python file $path.
+
+Pick the one function, method or class in it that this request is about:
+$description
+
+Answer with its dotted name exactly as the file defines it (Class.method for a method of a class), as {"name": "..."}.

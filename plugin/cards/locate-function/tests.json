@@ -1,0 +1,18 @@
+[
+  {"name": "the model's pick is outlined with its line span",
+   "files": {"app.py": "def total(items):\n    return sum(items)\n\n\ndef label(x):\n    return str(x)\n"},
+   "inputs": {"path": "app.py", "description": "adds up the prices"},
+   "model_reply": "{\"name\": \"label\"}", "expect": "facts",
+   "facts_has": ["\"name\": \"label\", \"kind\": \"function\", \"line\": 5, \"end_line\": 6"], "facts_lacks": ["\"name\": \"total\""]},
+  {"name": "a pick of a method finds the method and what it holds",
+   "files": {"app.py": "class Bill:\n    def total(self):\n        return 1\n"},
+   "inputs": {"path": "app.py", "description": "the bill's total"},
+   "model_reply": "{\"name\": \"Bill.total\"}", "expect": "facts", "facts_has": ["\"name\": \"Bill.total\", \"kind\": \"method\", \"line\": 2"]},
+  {"name": "plausible but wrong: a pick the file doesn't hold stops the chain at step 1",
+   "files": {"app.py": "def total(items):\n    return sum(items)\n"},
+   "inputs": {"path": "app.py", "description": "adds up the prices"},
+   "model_reply": "{\"name\": \"grand_total\"}", "expect": "checker_failed", "error_has": ["step 1 (pick-function)", "grand_total"]},
+  {"name": "known-bad input: a misspelt path names the file it meant",
+   "files": {"app.py": "def f():\n    pass\n"},
+   "inputs": {"path": "ap.py", "description": "f"}, "expect": "bad_input", "error_has": ["did you mean 'app.py'"]}
+]

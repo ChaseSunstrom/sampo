@@ -1,0 +1,15 @@
+{
+  "name": "locate-function",
+  "kind": "chain",
+  "purpose": "Find where the function, method or class a request in words concerns is defined: a local model picks the name (pick-function, held to a definition the file has), then py-outline gives its signature and exact line span.",
+  "examples": ["where is the function that retries the upload", "locate the method this bug report concerns in app.py",
+               "which lines does the code for computing the total span"],
+  "inputs": {"type": "object", "required": ["path", "description"], "properties": {
+    "path": {"type": "string", "format": "path", "pattern": ".*\\.pyi?", "description": "the Python file, relative to the worktree"},
+    "description": {"type": "string", "maxLength": 500, "description": "what the function does, or what is wrong with it, in words"}
+  }},
+  "steps": [
+    {"card": "pick-function", "inputs": {"path": "$path", "description": "$description"}, "as": "pick"},
+    {"card": "py-outline", "inputs": {"path": "$path", "symbol": "$pick.name"}}
+  ]
+}

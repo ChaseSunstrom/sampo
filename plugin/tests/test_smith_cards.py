@@ -70,6 +70,22 @@ class Cards(CodeCase):
         self.assertNotIn("card", [t["function"]["name"] for t in f.seen[1]["tools"]])
         self.assertNotIn("py-none-guard", f.said(1))
 
+    def test_a_model_step_card_and_a_chain_of_it_are_called_like_any_card(self):  # T-4837
+        pick = {"text": json.dumps({"name": "add"})}  # the card's own local-model call: the fake server answers it next
+        wrong = {"text": json.dumps({"name": "plus"})}
+        f = self.serve("openai", plan(), card("pick-function", {"path": "calc.py", "description": "adds two numbers"}),
+                       pick, card("locate-function", {"path": "calc.py", "description": "adds two numbers"}), pick,
+                       card("locate-function", {"path": "calc.py", "description": "sums two values"}), wrong,
+                       call("done", summary="calc.add (calc.py line 1) subtracts"))
+        self.code("which function in calc.py adds two numbers, and which lines does it span", "--model", "fake", check=False)
+        self.assertIn("locate-function (reads)", f.said(1), "a chain card is offered by name like any card")
+        self.assertIn("card pick-function: facts", f.said(3), "a model-step card returns its checked answer")
+        self.assertIn('\\"name\\": \\"add\\"', f.said(3))
+        self.assertIn("card locate-function: facts", f.said(5), "a chain runs its steps and returns the last one's facts")
+        self.assertIn('\\"end_line\\": 2', f.said(5))
+        self.assertIn("step 1 (pick-function)", f.said(7), "a step the checker refuses is named")  # requests 2, 4, 6 are the model steps
+        self.assertEqual(self.calc(), "def add(a, b):\n    return a - b\n")
+
     def test_a_question_runs_read_cards_only(self):
         judged = {"text": json.dumps({"wants_change": False, "why": "it asks what the code does"})}  # T-4284: no --ask
         f = self.serve("openai", {"text": json.dumps({"answer": "it subtracts"})}, judged,
@@ -204,6 +220,73 @@ class HarnessOff(CodeCase):  # T-3181: the pilot is "not proven", so a default r
         self.assertNotIn("card failing-frame", f.said(1))
         self.assertNotIn('"harness"', journal_text(self))
         self.assertIn("return a - b", self.calc())
+
+
+class Dispatch(CodeCase):  # T-4837: what a card call does to the run around it
+    def run_object(self, session):
+        import types
+        from sampo import smith
+        run = smith.Run(types.SimpleNamespace(), self.repo, self.tmp)
+        run.emit = lambda *a, **k: None
+        run.cards_session = types.SimpleNamespace(call=session)
+        return run
+
+    def test_a_card_that_raises_is_one_error_line_and_the_run_goes_on(self):
+        def boom(name, inputs):
+            raise RuntimeError("the card layer broke")
+        res, finished = self.run_object(boom).act("card", {"name": "pick-function", "inputs": {}})
+        self.assertTrue(res.startswith("error: "), res)
+        self.assertIn("the card layer broke", res)
+        self.assertIn("failed inside the runner", res)
+        self.assertIn("RuntimeError", res)
+        self.assertRegex(res, r"(?i)files may have changed.*re-read", "the model is told to look before redoing an edit")
+        self.assertFalse(finished)
+
+    def test_a_deeply_nested_card_reply_that_escaped_as_recursion_error_is_the_same_error_line(self):
+        def deep(name, inputs):
+            raise RecursionError("maximum recursion depth exceeded")
+        run = self.run_object(deep)
+        res, finished = run.act("card", {"name": "pick-function", "inputs": {}})
+        self.assertIn("failed inside the runner (RecursionError", res)
+        self.assertFalse(finished)
+        again, _ = run.act("card", {"name": "pick-function", "inputs": {}})  # and the run takes the next action
+        self.assertTrue(again.startswith("error: "), again)
+
+    def test_an_applied_write_is_recorded_before_the_card_s_tokens_are_charged(self):
+        from sampo import callcards, smith
+        r = callcards._result("pick-function", "applied", changed=["a.txt"], usage={"in": 1, "out": 1})
+        run = self.run_object(lambda name, inputs: r)
+        seen = []
+        run.after = lambda tool, ti, to: seen.append(ti["file_path"])
+
+        def over(*a, **k):
+            raise smith.CodeError("the cap is reached")
+        run.usage = over
+        with self.assertRaises(smith.CodeError):
+            run.act("card", {"name": "pick-function", "inputs": {}})
+        self.assertEqual(seen, [os.path.join(self.repo, "a.txt")], "the write that landed was recorded before the cap ended the run")
+
+    def test_the_budget_cap_still_ends_the_run_through_a_card_call(self):
+        from sampo import smith
+
+        def capped(name, inputs):
+            raise smith.CodeError("the cap is reached")
+        with self.assertRaises(smith.CodeError):
+            self.run_object(capped).act("card", {"name": "pick-function", "inputs": {}})
+
+    def test_a_model_cards_tokens_are_charged_to_the_run_even_when_its_answer_failed(self):
+        from sampo import callcards
+        good = callcards._result("pick-function", "facts", facts={"name": "add"}, usage={"in": 10, "out": 5}, model="m")
+        bad = callcards._result("pick-function", "generator_failed", error="no JSON", usage={"in": 7, "out": 3})
+        run = self.run_object(lambda name, inputs: good)
+        run.act("card", {"name": "pick-function", "inputs": {}})
+        self.assertEqual(run.tokens, [10, 5])
+        run.cards_session.call = lambda name, inputs: bad
+        run.act("card", {"name": "pick-function", "inputs": {}})
+        self.assertEqual(run.tokens, [17, 8], "a failed model answer cost tokens too")
+        run.cards_session.call = lambda name, inputs: callcards._result("measure", "facts", facts=1)
+        run.act("card", {"name": "measure", "inputs": {}})
+        self.assertEqual(run.tokens, [17, 8], "a card that asked no model costs none")
 
 
 class Skips(unittest.TestCase):

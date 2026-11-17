@@ -2481,6 +2481,13 @@ class Run:
                 return self.skill(a), False
         except (ValueError, OSError) as e:
             return f"error: {e}", False
+        except (CodeError, Blocked, ConfineError):  # the budget cap and the other ends of a run go on up
+            raise
+        except Exception as e:  # T-4837: a card layer that breaks is one failed card call, never the end of the run
+            if name != "card":
+                raise
+            return (f"error: card {a.get('name')} failed inside the runner ({type(e).__name__}: {str(e)[:200]}); files may "
+                    "have changed: re-read them before you redo an edit"), False
         return (f"error: no action {name!r}; the actions are read, search, edit, write, run"
                 + (", done and card" if self.offered() else " and done")), False
 
@@ -3961,6 +3968,8 @@ class Run:
             for rel in r["changed"] + r["created"]:
                 full = os.path.join(self.root, rel)
                 self.after("Write", {"file_path": full, "content": ""}, {"filePath": full})
+        if r.get("usage"):  # T-4837: a model step's tokens are the run's; charged after the writes are recorded, as a cap's CodeError must not leave an applied write unrecorded
+            self.usage({"usage": r["usage"]}, None, "card")
         return callcards.text(r)
 
     def card_guard(self, writes):
@@ -4009,6 +4018,8 @@ class Run:
             for rel in r["changed"] + r["created"]:
                 full = os.path.join(self.root, rel)
                 self.after("Write", {"file_path": full, "content": ""}, {"filePath": full})
+        if r.get("usage"):  # T-4837: as in card(), after the writes
+            self.usage({"usage": r["usage"]}, None, "card")
         return r
 
     def harness(self, profile, failed):

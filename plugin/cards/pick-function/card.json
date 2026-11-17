@@ -1,0 +1,20 @@
+{
+  "name": "pick-function",
+  "kind": "model",
+  "read": true,
+  "purpose": "A local model names the one function, method or class of a Python file that a request in words concerns; the checker holds the answer to a definition the file really has.",
+  "examples": ["which function in app.py handles the retry", "find the method that computes the total in billing.py",
+               "name the class this description concerns", "which definition does this bug report point at"],
+  "inputs": {"type": "object", "required": ["path", "description"], "properties": {
+    "path": {"type": "string", "format": "path", "pattern": ".*\\.pyi?", "description": "the Python file, relative to the worktree"},
+    "description": {"type": "string", "maxLength": 500, "description": "what the function does, or what is wrong with it, in words"}
+  }},
+  "files": ["$path"],
+  "prompt": "prompt.txt",
+  "show_files": true,
+  "max_tokens": 128,
+  "output": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {
+    "name": {"type": "string", "pattern": "[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)*", "maxLength": 200,
+             "description": "the definition's dotted name as the file defines it (Class.method for a method)"}
+  }}
+}
