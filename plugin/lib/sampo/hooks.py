@@ -3329,11 +3329,47 @@ def _builder_check_deny(pl, fmguard):
     fixture in the tests run it in a lane too, with no agent_id (nor does a PreToolUse payload exist for them)."""
     if pl.get("tool_name") != "Bash" or not pl.get("agent_id") or pl.get("agent_type") not in c.ns_names("fm-builder"):
         return None
-    for args in fmguard.fm_calls((pl.get("tool_input") or {}).get("command") or ""):
+    if _runs_wide_check((pl.get("tool_input") or {}).get("command") or "", fmguard):
+        return ("deny", "Sampo: never run sampo check --affected or the full sampo check in a builder lane: the main "
+                        "thread runs the affected check once at sampo lane accept, one lane at a time; run your own "
+                        "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514); a CLEAN task's "
+                        "behaviour lock is the bounded form: sampo check --evidence T-<id> --step 1 --lock (T-4648).")
+    return None
+
+
+EVIDENCE_NEST_MAX = 3  # T-4546: sampo task evidence --run 'sampo task evidence --run …' is read this deep, then refused whole
+
+
+def _evidence_commands(rest):
+    """T-4546: the commands `sampo task evidence <rest>` hands to bash: its --run and --bench values (`--run CMD` and
+    `--run=CMD`; the CLI takes no abbreviated option, so these are the spellings). The positional CMD RESULT form only
+    records text and runs nothing."""
+    out = []
+    for i, a in enumerate(rest):
+        flag, eq, val = a.partition("=") if a.startswith("--") else (a, "", "")
+        if flag in ("--run", "--bench"):
+            if eq:
+                out.append(val)
+            elif i + 1 < len(rest):
+                out.append(rest[i + 1])
+    return out
+
+
+def _runs_wide_check(command, fmguard, depth=0):
+    """T-4514, T-4546: does this shell command run the wide check, directly or in the command a `sampo task evidence
+    --run/--bench` runs (read by this same loop, so fm, quiet and an env prefix mean the same inside)? More than
+    EVIDENCE_NEST_MAX evidence calls inside each other count as the wide check: nothing honest nests that."""
+    if depth > EVIDENCE_NEST_MAX:
+        return True
+    for args in fmguard.fm_calls(command):
         if args[:1] == ["quiet"]:  # sampo quiet [--] sampo check …
             rest = [a for a in args[1:] if a != "--"]
             args = rest[1:] if rest[:1] and os.path.basename(rest[0]) in fmguard.FM_PROGRAMS else []
         verb, rest = fmguard._fm_subcommand(args)
+        if verb == "task" and rest[:1] == ["evidence"]:
+            if any(_runs_wide_check(inner, fmguard, depth + 1) for inner in _evidence_commands(rest[1:])):
+                return True
+            continue
         if verb != "check" or "-h" in rest or "--help" in rest:
             continue
         words, flags, bad = fmguard.check_args(rest)  # T-4785: argparse's reading: a valued option eats the next word
@@ -3342,11 +3378,8 @@ def _builder_check_deny(pl, fmguard):
                 continue
             if "--lock" in flags and "--affected" not in flags:  # T-4648: the bounded behaviour lock: the scope's linked tests
                 continue
-        return ("deny", "Sampo: never run sampo check --affected or the full sampo check in a builder lane: the main "
-                        "thread runs the affected check once at sampo lane accept, one lane at a time; run your own "
-                        "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514); a CLEAN task's "
-                        "behaviour lock is the bounded form: sampo check --evidence T-<id> --step 1 --lock (T-4648).")
-    return None
+        return True
+    return False
 
 
 def _bus_note(pl):

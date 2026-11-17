@@ -9,6 +9,7 @@ state, never a process-list pattern)."""
 import io
 import json
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -17,7 +18,9 @@ import unittest
 from test_lane_train import TrainCase
 
 from helpers import FM
+import fmguard
 from sampo import core as c
+from sampo import hooks
 from sampo import train
 
 
@@ -39,6 +42,11 @@ WIDE = ("sampo check --affected", "sampo check", "fm check --fresh", "sampo chec
         # the option's value, and let the wide check through; one reading of the words (fmguard.check_args) now
         "sampo check --cell list --affected", "sampo check --python list --fresh", "sampo check --since add --hold",
         "sampo check --frobnicate list --affected")
+# T-4546: what a builder hands to sampo task evidence --run / --bench (the same wrappers as a direct call)
+EVIDENCE_INNER = ("sampo check --affected", "sampo check", "fm quiet -- sampo check --affected",
+                  "FOREMAN_LOAD_GATE=0 sampo check --fresh", "python3 plugin/bin/sampo check --affected --json",
+                  "python3 plugin/tests/run.py test_x && sampo check --affected",
+                  "sampo task evidence T-1 --step 1 --run 'sampo check --affected'")
 NARROW = ("python3 plugin/tests/run.py test_x -k name", "sampo check add 'true'", "sampo check list", "sampo check --help",
           "sampo check paths", "sampo task evidence T-1 --step 1 --run \"python3 plugin/tests/run.py test_x\"",
           "git status")
@@ -65,6 +73,49 @@ class BuilderHook(Calm):
             self.assertEqual(len(why.splitlines()), 1, why)
             for need in ("main thread", "sampo lane accept", "plugin/tests/run.py", "-k"):
                 self.assertIn(need, why, cmd)
+
+    def test_a_wide_check_inside_sampo_task_evidence_is_refused_like_a_direct_call(self):
+        # T-4546: --run and --bench hand a command to bash; the hook read only the outer one
+        for inner in EVIDENCE_INNER:
+            for cmd in (f"sampo task evidence T-1 --step 1 --run {shlex.quote(inner)}",
+                        f"fm task evidence T-1 --ac 1 --run={shlex.quote(inner)}",
+                        f"sampo task evidence T-1 --bench {shlex.quote(inner)} --repeat 3",
+                        f"sampo -p x task evidence T-1 --step 2 --timeout 60 --run {shlex.quote(inner)}",
+                        f"FOREMAN_X=1 sampo quiet -- sampo task evidence T-1 --step 1 --run {shlex.quote(inner)}",
+                        f"cd lane && sampo task evidence T-1 --step 1 --run {shlex.quote(inner)}"):
+                r = self.builder(cmd)
+                self.assertEqual(r.returncode, 2, (cmd, r.stdout, r.stderr))
+                why = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+                self.assertEqual(len(why.splitlines()), 1, why)
+                for need in ("main thread", "sampo lane accept", "plugin/tests/run.py", "-k"):
+                    self.assertIn(need, why, cmd)
+
+    def test_the_wide_check_in_an_evidence_run_is_not_refused_to_the_main_thread_or_a_reviewer(self):
+        cmd = f"sampo task evidence T-1 --step 1 --run {shlex.quote(EVIDENCE_INNER[0])}"
+        for ids in ({}, {"agent_id": "a42cb51b932d2222a", "agent_type": "sampo:fm-reviewer"}):
+            r = self.pre(cmd, **ids)
+            self.assertNotIn("sampo lane accept", r.stdout + r.stderr, ids)
+
+    def test_an_evidence_run_of_tests_or_a_recorded_text_is_not_refused_to_a_builder(self):
+        for cmd in ("sampo task evidence T-1 --step 1 --run 'python3 plugin/tests/run.py test_accept_check -k check'",
+                    "sampo task evidence T-1 --step 1 --run 'sampo check list'",
+                    "sampo task evidence T-1 --step 1 --run 'sampo check add true'",
+                    "sampo task evidence T-1 --step 1 --run 'sampo check --evidence T-1 --step 1 --lock'",
+                    "sampo task evidence T-1 --step 1 --run 'echo sampo check --affected'",
+                    "sampo task evidence T-1 'sampo check --affected' 'recorded, never run'",
+                    "sampo task evidence T-1 --step 1 --timeout 60 --run 'python3 plugin/tests/run.py test_x'"):
+            r = self.builder(cmd)
+            self.assertNotIn("sampo lane accept", r.stdout + r.stderr, cmd)
+
+    def test_evidence_nested_deeper_than_the_bound_is_refused_whole_not_read_forever(self):
+        # nothing honest nests it: past hooks.EVIDENCE_NEST_MAX the call is refused, by this rule or the guard's own depth limit
+        for levels, refused in ((2, False), (hooks.EVIDENCE_NEST_MAX + 2, True)):
+            inner = "python3 plugin/tests/run.py test_x"
+            for _ in range(levels):
+                inner = f"sampo task evidence T-1 --step 1 --run {shlex.quote(inner)}"
+            r = self.builder(inner)
+            self.assertEqual(r.returncode == 2, refused, (levels, r.stdout, r.stderr))
+        self.assertTrue(hooks._runs_wide_check(inner, fmguard))  # this rule's own refusal, whatever the guard says first
 
     def test_the_same_calls_from_the_main_thread_a_reviewer_or_a_headless_run_are_not_refused(self):
         for cmd in WIDE:
