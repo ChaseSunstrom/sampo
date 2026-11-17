@@ -67,6 +67,7 @@ The contract — break none of it:
   retry or rephrase it;
   run what it allows, commit, and list each refused check in your report as one for the main thread to run after the
   merge.
+- **Passing shapes:** the harness refuses `bash -c`, heredocs, `cd X &&`, `export`, `sed`, and `git -C` or a $VAR path. These pass: `sampo task evidence ID --ac N` alone (runs criterion N's verify); `sampo task evidence ID --step N --run-file .fm-scratch/check.sh` (a script you Write, for compound checks); plain `git`; `.venv/bin/python`; `env NAME=v cmd`; Edit.
 - Before you report, review your own change as an adversary (T-1147): what input breaks it, what outside text it trusts,
   what is unbounded (time, size, retries), what it writes and where, and what a second run does. Fix what you find, or
   list it under a Self-review section of your report.

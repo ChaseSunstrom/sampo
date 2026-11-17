@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -792,7 +793,7 @@ def cmd_task(args):
     if sub in ("done", "finish", "audit", "drop") and getattr(p, "lane", None) and getattr(args, "id", None):
         own = c.find_brief(p, args.id)  # T-0234 review: a builder hands back a commit; the main thread closes the task
         if own and own.meta.get("builder"):
-            import shlex  # T-4606: the refusal's last line is the one a '| tail' or a skimmer keeps: it names the command
+            # T-4606: the refusal's last line is the one a '| tail' or a skimmer keeps: it names the command
             main = c.main_worktree(c.git_root(p.root) or p.root)
             form = f"{args.id} {args.lens} <how> <result>" if sub == "audit" else args.id
             err = c.PolicyError(f"{own.id} is a builder's task: the main thread reviews, merges and closes it (sampo lane "
@@ -867,7 +868,6 @@ def cmd_task(args):
             data["svg"] = args.svg
             plain += f"\nBlueprint: {args.svg}"
         if getattr(args, "sign", None):  # T-1547: signed with the user's SSH key; ssh-keygen -Y verify checks it
-            import shlex
             data.update(_sign_receipt(p, b, plain, args.sign, args.svg))
             plain += (f"\nSigned: {data['signature']}\nVerify: ssh-keygen -Y verify -f {shlex.quote(data['signers'])} "
                       f"-I {shlex.quote(data['identity'])} -n {RECEIPT_NS} -s {shlex.quote(data['signature'])} "
@@ -904,6 +904,50 @@ def cmd_task(args):
     if sub == "evidence":
         code, shown, tried, median = 0, "", None, ""
         bench =getattr(args, "bench", None)
+        run_file = getattr(args, "run_file", None)
+        run_label, run_argv0 = None, None  # T-4139: what a --run-file script is recorded as (repo-relative, quoted) and its $0
+        if run_file is not None:  # T-4139: a script inside the lane: the bytes the guard judges are the bytes that run
+            if args.run is not None or args.cmd is not None or bench is not None:
+                raise UsageError("give the script as --run-file PATH alone: no --run, typed result or --bench")
+            real, lane = os.path.realpath(os.path.join(os.getcwd(), run_file)), os.path.realpath(p.root)
+            if os.path.commonpath([real, lane]) != lane:  # a ../ path or a link out of the lane is refused, never run
+                raise UsageError(f"--run-file {run_file} is outside the lane ({lane}): a script runs inside it")
+            if not os.path.isfile(real):
+                raise UsageError(f"--run-file {run_file}: no file there")
+            if re.search(r"[$`*?\[]", real):  # the guard can't judge a path a variable or a glob names: refused here too
+                raise UsageError(f"--run-file {run_file}: a path a variable or a glob names can't be checked")
+            with open(real, "rb") as f:  # one read: these bytes are judged and then run, never a second open a swap could answer
+                data = f.read(RUN_FILE_MAX + 1)
+            if len(data) > RUN_FILE_MAX:  # bash -c takes the text as one argument, and Linux caps one at 128 KB
+                raise UsageError(f"--run-file {run_file} is over {RUN_FILE_MAX // 1024} KB: too big to run as one command")
+            if b"\0" in data:
+                raise UsageError(f"--run-file {run_file} holds a NUL byte: not a script bash can run")
+            try:
+                text = data.decode("utf-8")
+            except UnicodeDecodeError:
+                raise UsageError(f"--run-file {run_file} is not UTF-8 text")
+            if re.search(r"\bBASH_SOURCE\b", text):  # bash -c leaves it empty, so the script would not see its own file
+                raise UsageError(f"--run-file {run_file} reads BASH_SOURCE, which bash -c leaves empty: read $0 instead "
+                                 f"(the script's own path, as bash FILE sets it)")
+            label = os.path.relpath(real, lane)
+            shown_path = "./" + label if label.startswith("-") else label  # a name that starts with - reads as bash's option
+            guard_run_file(p, need_brief(p, args.id), real, data, shown_path)  # judged on these bytes (the guard's script rules)
+            nroot, ntext, _ = c.normalize_verify(p.root, text)  # run_command would rewrite this text: it isn't the judged one
+            if nroot != p.root or ntext != text:
+                raise UsageError(f"--run-file {run_file}: sampo would rewrite its text before running it (a unittest line or "
+                                 f"a main-checkout path): keep the script's own commands as written")
+            args.run, run_label, run_argv0 = text, "bash " + shlex.quote(shown_path), shown_path  # $0: the path bash FILE gives
+        elif args.ac is not None and args.run is None and args.cmd is None and bench is None:
+            # T-4139: --ac N alone runs criterion N's own verify command: the real exit code, no typed pass
+            pre = need_brief(p, args.id)
+            rows = dict(pre.verify_cmds())
+            if args.ac not in rows:
+                raise UsageError(f"{args.id} has no criterion {args.ac}")
+            if not rows[args.ac]:
+                raise UsageError(f"criterion {args.ac} has no verify command (no verify), so there is nothing to run: "
+                                 f"give the check with --run CMD or --run-file PATH")
+            guard_stored(p, pre, rows[args.ac])  # a stored command gets the guard's checks, as fm task finish gives it
+            args.run = rows[args.ac]
         under = getattr(args, "under", None)
         if under is not None and (bench is None or not 0 < under < float("inf")):  # T-2651: nan/inf/0 are no bar
             raise UsageError("--under MS (above 0) is the bar for --bench CMD; it needs --bench")
@@ -930,13 +974,14 @@ def cmd_task(args):
             pre = need_brief(p, args.id)
             t0 = time.monotonic()
             code, output, timing = _repeat_runs(p.root, args.run, args.repeat,
-                                                c.load_scaled(args.timeout if args.timeout > 0 else None))
+                                                c.load_scaled(args.timeout if args.timeout > 0 else None), run_argv0)
             took = round((time.monotonic() - t0) / max(args.repeat, 1), 1)  # T-3418: the slow-verify note reads it
-            cmd, result, shown = args.run, c.run_result(code, output, args.run), "\n".join(output.rstrip().splitlines()[-20:])
+            shown_cmd = run_label or args.run  # T-4139: a --run-file script is recorded by its path, the text is what ran
+            cmd, result, shown = shown_cmd, c.run_result(code, output, shown_cmd), "\n".join(output.rstrip().splitlines()[-20:])
             if code and not getattr(args, "expect_fail", False):  # T-2370: fm ran it, so no hook is needed for the miss
                 try:
                     from sampo import hooks
-                    note = hooks._capability_miss(p, c.session_id(), output, pre, args.run)
+                    note = hooks._capability_miss(p, c.session_id(), output, pre, shown_cmd)
                     if note:
                         print(note, file=sys.stderr)
                 except Exception:  # a miss that can't be logged never fails the evidence run
@@ -945,11 +990,11 @@ def cmd_task(args):
                 head, _, tail = result.partition(" · ")
                 result = f"{head} · {timing} · {tail}"
             if getattr(args, "expect_fail", False):  # T-1486: the red run of red→green, recorded as such
-                if not code or c.never_ran(args.run, code, output):
+                if not code or c.never_ran(shown_cmd, code, output):
                     raise UsageError(f"--expect-fail expected a failing run, but it {'passed' if not code else 'never reached its check'}"
                                      f" ({result}); nothing recorded")
                 result, code = f"red as expected (exit {code}) · " + result.split(" · ", 1)[-1], 0
-            result, tried = _step_checks(pre, args.step, args.run, code, output, result)
+            result, tried = _step_checks(pre, args.step, shown_cmd, code, output, result)
         elif args.cmd is None or args.result is None:
             raise UsageError("sampo task evidence needs --run CMD (preferred) or CMD RESULT")
         else:
@@ -1415,23 +1460,42 @@ def _warned(warns):
     return f" Warning: {warns[0]}" + (f" (+{len(warns) - 1} more above)" if len(warns) > 1 else "") if warns else ""
 
 
+def _guard_ctx(p, b):
+    """The guard's context for a command fm runs for task b in project p: the task's grants, the standing yes and trust
+    as the hook would apply them (T-2387: outside a project, no grants or yeses)."""
+    import fmguard
+    home, meta = os.path.expanduser("~"), c.read_meta(p) if p else {}
+    root = p.root if p else os.getcwd()
+    return fmguard.Ctx(cwd=root, project_root=fmguard.project_root_for(root, home), home=home,
+                       foreman_home=c.foreman_home(), state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(),
+                       scratch=[x for x in ("/tmp", "/var/tmp", os.environ.get("TMPDIR")) if x],
+                       allow=set(b.meta.get("allow") or []) if b else set(), task_id=b.id if b else None,
+                       standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()),
+                       confine=c.builder_confine(p, b))  # a builder's stored `sampo check …` is confined as its typed one is
+
+
 def guard_stored(p, b, cmd):
     """T-0901: a command fm stored and is about to run (a verify, the affected template, a sentinel recheck) gets the
     guard's checks, with the task's grants, the standing yes and trust as the hook would apply them; PolicyError when
     it's refused. What never passed the hook (a brief stored before the guard read these, one fm sync brought in) is
     caught here."""
     import fmguard
-    home, meta = os.path.expanduser("~"), c.read_meta(p) if p else {}  # T-2387: outside a project, no grants or yeses
-    root = p.root if p else os.getcwd()
-    ctx = fmguard.Ctx(cwd=root, project_root=fmguard.project_root_for(root, home), home=home,
-                      foreman_home=c.foreman_home(), state_dir=c.state_dir(), state_fallbacks=c.state_fallbacks(),
-                      scratch=[x for x in ("/tmp", "/var/tmp", os.environ.get("TMPDIR")) if x],
-                      allow=set(b.meta.get("allow") or []) if b else set(), task_id=b.id if b else None,
-                      standing=set(meta.get("standing") or {}), trusted=bool(c.trusted()),
-                      confine=c.builder_confine(p, b))  # a builder's stored `sampo check …` is confined as its typed one is
+    ctx = _guard_ctx(p, b)
     block = fmguard.check("Bash", {"command": cmd}, ctx)
     if block:
         raise c.PolicyError(f"sampo won't run the stored command `{c.fit(cmd, 100)}`: {fmguard.message(block, ctx)}")
+
+
+def guard_run_file(p, b, real, data, label):
+    """T-4139: the bytes `--run-file` will run, judged the way the guard judges `bash PATH` (_script_verdict on these
+    bytes, not a second read of the path: the same budget, chunks, cache and script rules), with the task's grants.
+    PolicyError when refused. The caller runs these same bytes."""
+    import fmguard
+    ctx = _guard_ctx(p, b)
+    found = fmguard._script_verdict(real, p.root, "sh", ctx, 0, given=data)
+    block = fmguard.check("Bash", {"command": f"bash {shlex.quote(label)}"}, ctx, found=found)
+    if block:
+        raise c.PolicyError(f"sampo won't run --run-file {label}: {fmguard.message(block, ctx)}")
 
 
 ABLATE_BUDGET = 600  # seconds for the whole ablation (T-1067)
@@ -3810,15 +3874,17 @@ _FAILED_RUN = re.compile(r"^- \(step (\d+)\) `(.+?)` → ✗ exit")
 
 
 REPEAT_MAX = 50  # T-1518: fm task evidence --repeat's ceiling
+RUN_FILE_MAX = 120 * 1024  # T-4139: a --run-file script's largest text: bash -c takes it as one argument (Linux: 128 KB)
 
 
-def _repeat_runs(root, cmd, n, timeout):
+def _repeat_runs(root, cmd, n, timeout, argv0=None):
     """T-1518: (exit code, output, timing or "") of n runs of cmd through the one runner --run uses. The code and output
     are the first failing run's, else the last's; timeout bounds all n together, and runs it left unstarted fail it
     (124). The timing: runs, failures, then median, spread (median absolute deviation), min and max in seconds of the
-    runs that finished: a run the timeout cut off is a failure, not a time, and its message names the timeout given."""
+    runs that finished: a run the timeout cut off is a failure, not a time, and its message names the timeout given.
+    argv0: the $0 of a --run-file script's text (T-4139), on every run."""
     if n == 1:
-        return (*c.run_command(root, cmd, timeout), "")
+        return (*c.run_command(root, cmd, timeout, argv0=argv0), "")
     import statistics
     start, ran, times, first, bad = time.monotonic(), 0, [], None, 0
     for _ in range(n):
@@ -3826,7 +3892,7 @@ def _repeat_runs(root, cmd, n, timeout):
         if left is not None and left <= 0:
             break
         t = time.monotonic()
-        code, output = c.run_command(root, cmd, left)
+        code, output = c.run_command(root, cmd, left, argv0=argv0)
         ran, cut = ran + 1, f"timed out after {left:g}s"
         if code == 124 and left is not None and output.endswith(cut):
             output = output[:-len(cut)] + f"timed out after {timeout:g}s (--timeout, all {n} runs together)"
@@ -4655,6 +4721,11 @@ def task_ac(p, args):
         _refuse_unrunnable(p, [verify])
         b, _ = mutate(p, args.id, lambda b: _filled(b, b.add_ac(text, verify)), "ac_add", {"text": text})
         warns = _lint_verify(p, [verify])
+        if verify and re.search(r"bash -c|\bcd \S+ *&&|\bexport\b|\bsed\b|\bgit +-C\b|<<", verify):  # T-4139: the forms the
+            # harness refuses in an isolated worktree (plain git passes, so it isn't named)
+            print("sampo: note: this verify holds bash -c, cd … &&, export, sed, git -C or a heredoc, which an isolated "
+                  "worktree agent can't run typed: write it to a script with the Write tool and check with --run-file PATH "
+                  "(or --ac N alone runs this verify)", file=sys.stderr)
         _door_check(p, b)
         return out(args, c.brief_summary(c.find_brief(p, b.id) or b), f"{b.id}: criterion added.{_warned(warns)}")
     try:
@@ -8745,6 +8816,9 @@ def _build_parser(only=None):
     t.add_argument("cmd", nargs="?", help="what was run (with RESULT), when --run can't run it")
     t.add_argument("result", nargs="?")
     t.add_argument("--run", metavar="CMD", help="run CMD (bash, repo root) and record its real exit code and output")
+    t.add_argument("--run-file", metavar="PATH", dest="run_file",
+                   help="run the script at PATH (inside the lane, bash) and record its real exit code and output: the "
+                        "form for a compound check the harness refuses typed (T-4139); write the script with Write first")
     t.add_argument("--timeout", type=float, default=600, help="--run limit in seconds (with --repeat: all runs together)")
     t.add_argument("--bench", metavar="CMD",
                    help="time CMD --repeat N times (default 5) on the task's start tree (a throwaway worktree) and on "

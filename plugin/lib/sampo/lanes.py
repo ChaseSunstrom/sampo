@@ -647,6 +647,25 @@ def stats(p):
             for r in sorted(rows.values(), key=lambda r: order.index(r["size"]))]
 
 
+ISOLATED = "This agent is isolated"  # T-4139: how Claude Code's worktree isolation words a refused call
+
+
+REFUSAL_WINDOW = 50000  # T-4139: the newest events of each log file the count reads (a bounded parse, not the whole history)
+
+
+def refusals(p):
+    """T-4139: this project's isolation refusals (failed calls whose error opens with the harness's words), in all and in
+    the last 7 days, from the event log. A row carries no lane id, so the count is per project: the next mining shows
+    whether the passing shapes (fm-builder.md) brought it down. Reads the newest REFUSAL_WINDOW events of each log file
+    (the live one and fm tidy's rotated ones), so `all` counts those, and a refusal older than the window is not counted.
+    The words are the harness's as seen in the hook's event (ISOLATED); if Claude Code words them otherwise, this reads 0."""
+    rows = [e for path in c.global_event_files() for e in c.tail_jsonl(path, REFUSAL_WINDOW)
+            if isinstance(e, dict) and e.get("kind") == "tool_fail" and e.get("project") == p.slug
+            and str(e.get("error") or "").startswith(ISOLATED)]
+    week = c.iso(time.time() - 7 * 86400)
+    return {"all": len(rows), "last_7_days": sum(1 for e in rows if str(e.get("ts") or "") >= week)}
+
+
 def cmd_lane(args):
     from sampo import cli
     p = cli.resolve(args)
@@ -672,11 +691,15 @@ def cmd_lane(args):
         from sampo import train
         return (train.cmd if args.action == "train" else train.cmd_land)(p, args, main)
     if args.action == "stats":  # T-2368: does a long brief land worse than a short one
-        rows = stats(p)
-        return cli.out(args, {"stats": rows}, "\n".join(
-            f"{r['size']}: {r['landed']} of {r['briefs']} briefs landed ({r['pct']}%)" for r in rows)
-            + ("\n(unsized: a brief a later one overwrote, so that row leans toward lanes that were re-briefed)"
-               if any(r["size"] == "unsized" for r in rows) else "") or "No builder briefs on record yet.")
+        rows, ref = stats(p), refusals(p)
+        text = "\n".join(
+            f"{r['size']}: {r['landed']} of {r['briefs']} briefs landed ({r['pct']}%)" for r in rows) + (
+            "\n(unsized: a brief a later one overwrote, so that row leans toward lanes that were re-briefed)"
+            if any(r["size"] == "unsized" for r in rows) else "")
+        text = (text or "No builder briefs on record yet.") + (
+            f"\nIsolation refusals of this project's calls: {ref['all']} in all, {ref['last_7_days']} in the last 7 days "
+            "(T-4139: the harness refused them before sampo ran)")
+        return cli.out(args, {"stats": rows, "refusals": ref}, text)
     if args.action == "verify":  # T-3141: the detached process pm_spawn starts: the full suite on each landed merge
         if getattr(args, "reset", None):
             if not pm_reset(p, args.reset):

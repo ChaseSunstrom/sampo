@@ -49,7 +49,13 @@ class VerifyCheck(ForemanTestCase):
                 self.put("web/package.json", '{"scripts": {"test": "x", "lint": "y"}}')
                 r = self.add(verify)
                 self.assertEqual(r.returncode, 0, r.stderr)
-                self.assertNotIn("note:", r.stderr)
+                self.assertNotIn("doesn't exist yet", r.stderr)  # T-1145: the real file and module exist
+                if verify.startswith("cd "):  # T-4139: cd … && is a form an isolated worktree agent can't run typed
+                    self.assertIn("sampo: note: this verify holds bash -c, cd", r.stderr)
+                    self.assertNotIn("has no npm script", r.stderr)  # T-1133: the script it names exists
+                    self.assertEqual(r.stderr.count("note:"), 1, r.stderr)  # the worktree note and nothing else
+                else:
+                    self.assertNotIn("note:", r.stderr)
 
     def test_task_new_ac_warns_and_keeps(self):
         self.fm("init")

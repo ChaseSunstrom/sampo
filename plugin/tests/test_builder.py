@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import subprocess
 
 from helpers import PLUGIN, ForemanTestCase, read_text
@@ -446,3 +447,240 @@ class DroppedRedo(_Tasks):
     def test_rm_without_why_records_no_drop(self):
         tid, wt = self.gated("Plain", "it passes :: true")
         self.assertNotIn("dropped", json.loads(self.fm("lane", "rm", tid, "--json").stdout))
+
+
+class EvidenceForms(_Tasks):
+    """T-4139: evidence without command text the harness refuses (`bash -c`, heredocs, git in --run): `--ac N` alone runs
+    the criterion's recorded verify, and `--run-file PATH` runs a script inside the lane, never one outside it."""
+
+    def test_evidence_form_ac_without_text_runs_the_recorded_verify(self):
+        tid = self.task("Runs")  # its verify is python3 -c 'print(1)'
+        res = json.loads(self.fm("task", "evidence", tid, "--ac", "1", "--json").stdout)
+        self.assertEqual(res["exit"], 0)
+        self.assertIn("python3 -c 'print(1)'", self.fm("task", "show", tid).stdout)
+
+    def test_evidence_form_ac_without_text_reports_the_verify_exit_code(self):
+        tid = json.loads(self.fm("task", "new", "Fails", "--type", "FEATURE", "--tier", "S", "--ac",
+                                 "Fails :: python3 -c 'import sys; sys.exit(3)'", "--step", "build it",
+                                 "--json").stdout)["id"]
+        res = json.loads(self.fm("task", "evidence", tid, "--ac", "1", "--json", check=False).stdout)
+        self.assertEqual(res["exit"], 3, "the verify's real exit code, not a typed pass")
+
+    def test_evidence_form_ac_without_a_verify_says_so(self):
+        tid = self.task("Plain")
+        self.fm("task", "ac", tid, "add", "Looks right by eye")
+        r = self.fm("task", "evidence", tid, "--ac", "2", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("no verify", r.stderr + r.stdout)
+
+    def test_evidence_form_run_file_runs_a_script_inside_the_lane(self):
+        tid = self.task("Scripted")
+        os.makedirs(os.path.join(self.repo, ".fm-scratch"), exist_ok=True)
+        with open(os.path.join(self.repo, ".fm-scratch", "check.sh"), "w") as f:
+            f.write("touch ran.marker\n")
+        self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/check.sh")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "ran.marker")), "the script ran in the lane root")
+        self.assertIn("check.sh", self.fm("task", "show", tid).stdout)
+
+    def test_evidence_form_run_file_is_judged_by_the_script_it_runs(self):
+        # the guard reads the script's text as it reads a typed --run: a script holding a refused command is refused
+        tid = self.task("Judged")
+        os.makedirs(os.path.join(self.repo, ".fm-scratch"), exist_ok=True)
+        with open(os.path.join(self.repo, ".fm-scratch", "bad.sh"), "w") as f:
+            f.write("sampo task set T-1 --allow core\n")
+        typed = json.loads(self.fm("guard", "try", f"sampo task evidence {tid} --step 1 --run 'sampo task set T-1 --allow core'",
+                                   "--cwd", self.repo, "--json").stdout)
+        held = json.loads(self.fm("guard", "try", f"sampo task evidence {tid} --step 1 --run-file .fm-scratch/bad.sh",
+                                  "--cwd", self.repo, "--json").stdout)
+        self.assertEqual(typed["decision"], "deny")
+        self.assertEqual(held["decision"], "deny", "the script's own text is the run text")
+
+    def test_evidence_form_run_file_refuses_a_path_outside_the_lane(self):
+        tid = self.task("Escapes")
+        outside = os.path.join(self.tmp, "outside.sh")
+        with open(outside, "w") as f:
+            f.write("touch escaped.marker\n")
+        os.makedirs(os.path.join(self.repo, ".fm-scratch"), exist_ok=True)
+        os.symlink(outside, os.path.join(self.repo, ".fm-scratch", "link.sh"))  # a link inside the lane to outside
+        for path in (outside, "../outside.sh", ".fm-scratch/link.sh"):
+            r = self.fm("task", "evidence", tid, "--step", "1", "--run-file", path, check=False)
+            self.assertNotEqual(r.returncode, 0, path)
+            self.assertIn("outside", r.stderr + r.stdout, path)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "escaped.marker")), "no refused script ran")
+
+    def test_evidence_form_ac_runs_no_stored_verify_the_guard_refuses(self):
+        # a stored verify is a command too: --ac N gets the guard's checks before it runs
+        tid = json.loads(self.fm("task", "new", "Stored", "--type", "FEATURE", "--tier", "S", "--ac",
+                                 "Stored :: touch stored.marker && sampo task set T-1 --allow core", "--step", "build it",
+                                 "--json").stdout)["id"]
+        r = self.fm("task", "evidence", tid, "--ac", "1", "--json", check=False)
+        self.assertNotEqual(r.returncode, 0, "the guard refuses the stored verify")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "stored.marker")), "a refused verify never ran")
+
+    def test_evidence_form_run_file_refuses_a_script_over_the_run_cap(self):
+        tid = self.task("Big")
+        os.makedirs(os.path.join(self.repo, ".fm-scratch"), exist_ok=True)
+        with open(os.path.join(self.repo, ".fm-scratch", "big.sh"), "w") as f:
+            f.write("true\n" * 30000)  # 150 KB: over the 120 KB one bash -c takes as an argument
+        r = self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/big.sh", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("120 KB", r.stderr + r.stdout)
+
+    def test_evidence_form_run_file_refuses_at_the_cli_a_script_the_guard_refuses(self):
+        # T-4139: the CLI judges the bytes it runs too (not only the hook): a refused script never runs
+        tid = self.task("Refused")
+        self.script(".fm-scratch/bad.sh", "touch bad.marker\nsampo task set T-1 --allow core\n")
+        r = self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/bad.sh", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "bad.marker")), "a refused script never ran")
+
+    def test_evidence_form_run_file_repeat_runs_the_judged_bytes_once_each(self):
+        tid = self.task("Repeats")
+        self.script(".fm-scratch/check.sh", "echo ok >> runs.log\n")
+        self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/check.sh", "--repeat", "2")
+        self.assertEqual(read_text(os.path.join(self.repo, "runs.log")).split(), ["ok", "ok"])
+
+    def test_evidence_form_run_file_never_runs_text_a_run_rewrote(self):
+        # the script rewrites its own file on the first run: the second run runs the bytes the guard judged, not that
+        tid = self.task("Rewrites")
+        self.script(".fm-scratch/check.sh", "echo ok >> runs.log\n"
+                                            "printf 'echo SWAPPED >> runs.log\\n' > .fm-scratch/check.sh\n")
+        self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/check.sh", "--repeat", "2")
+        self.assertEqual(read_text(os.path.join(self.repo, "runs.log")).split(), ["ok", "ok"])
+
+    def test_evidence_form_run_file_allows_a_var_target_the_hook_allows(self):
+        # _check_script tolerates a $VAR target: the hook's verdict on the script and the CLI's must agree, and it runs
+        tid = self.task("Var")
+        self.script(".fm-scratch/var.sh", "OUT=var.marker\ntouch \"$OUT\"\n")
+        typed = json.loads(self.fm("guard", "try", "bash .fm-scratch/var.sh", "--cwd", self.repo, "--json").stdout)
+        held = json.loads(self.fm("guard", "try", f"sampo task evidence {tid} --step 1 --run-file .fm-scratch/var.sh",
+                                  "--cwd", self.repo, "--json").stdout)
+        self.assertEqual(held["decision"], typed["decision"])
+        self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/var.sh")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "var.marker")), "the script ran")
+
+    def test_evidence_form_run_file_gives_the_script_its_own_path_as_dollar_zero(self):
+        # bash -c would leave $0 as bash, so the script's cd "$(dirname "$0")/.." would land in the lane's parent:
+        # $0 is the lane-relative path, as bash FILE sets it, and the script lands in the lane root
+        tid = self.task("Zero")
+        self.script(".fm-scratch/zero.sh", 'cd "$(dirname "$0")/.." && touch zero.marker\n')
+        self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/zero.sh")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "zero.marker")), "$0 names the script's own path")
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(self.repo), "zero.marker")), "not the lane's parent")
+
+    def test_evidence_form_run_file_refuses_a_script_that_reads_bash_source(self):
+        # bash -c leaves BASH_SOURCE empty, so such a script would see another file than bash FILE gives it: $0 is the way
+        tid = self.task("Source")
+        self.script(".fm-scratch/src.sh", 'echo "$BASH_SOURCE" > src.out\n')
+        r = self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/src.sh", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("BASH_SOURCE", r.stderr + r.stdout)
+        self.assertIn("$0", r.stderr + r.stdout, "the reason says to use $0")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "src.out")), "a refused script never ran")
+
+    def test_evidence_form_run_file_records_a_name_with_a_space_quoted(self):
+        # the recorded command is what resume re-runs: its path must survive a shell split as one word
+        tid = self.task("Spaced")
+        self.script(".fm-scratch/my check.sh", "touch spaced.marker\n")
+        self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/my check.sh")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "spaced.marker")), "the script ran")
+        recorded = re.search(r"`(bash [^`]*)`", self.fm("task", "show", tid).stdout).group(1)
+        self.assertEqual(shlex.split(recorded), ["bash", ".fm-scratch/my check.sh"])
+
+    def test_evidence_form_run_file_records_a_leading_dash_name_as_a_path(self):
+        # a name that starts with - would read as an option to bash: it is recorded as ./NAME
+        tid = self.task("Dashed")
+        self.script("-dash.sh", "touch dashed.marker\n")
+        self.fm("task", "evidence", tid, "--step", "1", "--run-file=-dash.sh")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "dashed.marker")), "the script ran")
+        self.assertIn("`bash ./-dash.sh`", self.fm("task", "show", tid).stdout)
+
+    def test_evidence_form_run_file_runs_crlf_text_the_way_bash_file_runs_it(self):
+        # CRLF is not refused: the run exits as bash FILE exits on the same bytes (the \r stays in each command)
+        tid = self.task("Crlf")
+        self.script_bytes(".fm-scratch/crlf.sh", b"true\r\n")
+        expected = subprocess.run(["bash", ".fm-scratch/crlf.sh"], cwd=self.repo, capture_output=True).returncode
+        res = json.loads(self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/crlf.sh", "--json",
+                                 check=False).stdout)
+        self.assertEqual(res["exit"], expected)
+
+    def test_evidence_form_run_file_refuses_text_that_is_not_utf8(self):
+        tid = self.task("Latin")
+        self.script_bytes(".fm-scratch/latin.sh", b"touch latin.marker\n# caf\xe9\n")
+        r = self.fm("task", "evidence", tid, "--step", "1", "--run-file", ".fm-scratch/latin.sh", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("UTF-8", r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "latin.marker")), "a refused script never ran")
+
+    def script(self, rel, text):
+        os.makedirs(os.path.dirname(os.path.join(self.repo, rel)), exist_ok=True)
+        with open(os.path.join(self.repo, rel), "w") as f:
+            f.write(text)
+
+    def script_bytes(self, rel, data):
+        os.makedirs(os.path.dirname(os.path.join(self.repo, rel)), exist_ok=True)
+        with open(os.path.join(self.repo, rel), "wb") as f:
+            f.write(data)
+
+
+class PassingShapes(_Tasks):
+    """T-4139: every worktree agent is told, before its first command, the shapes the harness passes."""
+
+    def block(self):
+        text = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))
+        self.assertIn("**Passing shapes:**", text)
+        block = text[text.index("**Passing shapes:**"):].split("\n", 1)[0]  # one bullet line
+        self.assertLess(len(block.encode()), 600, "it is paid on every subagent start")
+        return block
+
+    def start_context(self, cwd):
+        out = self.hook("SubagentStartContext", {"agent_type": "general-purpose", "agent_id": "a1", "cwd": cwd})
+        return json.loads(out.stdout)["hookSpecificOutput"]["additionalContext"] if out.stdout.strip() else ""
+
+    def test_the_builder_contract_carries_the_passing_shapes(self):
+        text = read_text(os.path.join(PLUGIN, "agents", "fm-builder.md"))
+        contract = text.split("break none of it:\n", 1)[1].split("\n\nReport in", 1)[0]
+        self.assertIn(self.block(), contract)
+        for shape in ("--ac", "--run-file", "git -C", ".venv/bin/python", "env NAME=v"):
+            self.assertIn(shape, self.block())
+
+    def test_the_lane_brief_carries_the_passing_shapes(self):
+        tid = self.task("Shaped")
+        brief = read_text(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"])
+        self.assertIn(self.block(), brief)
+
+    def test_passing_shapes_go_to_a_subagent_in_a_managed_worktree_only(self):
+        # T-4139: a subagent in a linked worktree of a managed project is told the shapes; one in the main checkout (a
+        # scout, a reviewer: no evidence there) and one in a folder Sampo doesn't manage are not
+        wt = os.path.join(self.tmp, "agent-a1")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "agent-a1", wt], check=True)
+        self.assertIn(self.block(), self.start_context(wt))
+        self.assertNotIn("**Passing shapes:**", self.start_context(self.repo))
+        free = os.path.join(self.tmp, "free")
+        os.makedirs(free)
+        self.assertNotIn("**Passing shapes:**", self.start_context(free))
+
+    def test_passing_shapes_ac_add_notes_only_the_forms_the_harness_refuses(self):
+        tid = self.task("Noted")
+        r = self.fm("task", "ac", tid, "add", "Compound check :: cd . && python3 -c 'print(3)'", check=False)
+        self.assertIn("--run-file", r.stderr)
+        r = self.fm("task", "ac", tid, "add", "Sed check :: sed -n 1p README.md", check=False)
+        self.assertIn("--run-file", r.stderr)
+        plain = self.fm("task", "ac", tid, "add", "Plain check :: python3 -c 'print(2)'", check=False)
+        self.assertNotIn("--run-file", plain.stderr)
+        git = self.fm("task", "ac", tid, "add", "Git check :: git status --short", check=False)
+        self.assertNotIn("--run-file", git.stderr, "plain git passes the harness, so it gets no note")
+
+
+class IsolationRefusals(_Tasks):
+    """T-4139: `sampo lane stats` counts the harness's isolation refusals, from the failed calls the hooks log."""
+
+    def test_lane_stats_counts_the_isolation_refusals_of_this_project(self):
+        refused = "This agent is isolated in the worktree: cannot be shown not to be git"
+        for _ in range(2):
+            self.hook("PostToolUseFailure", {"session_id": "s1", "cwd": self.repo, "tool_name": "Bash", "agent_id": "a1",
+                                              "tool_input": {"command": "cat > x <<EOF"}, "error": refused})
+        self.hook("PostToolUseFailure", {"session_id": "s1", "cwd": self.repo, "tool_name": "Bash",
+                                          "tool_input": {"command": "false"}, "error": "exit 1"})
+        out = json.loads(self.fm("lane", "stats", "--json").stdout)
+        self.assertEqual(out["refusals"], {"all": 2, "last_7_days": 2}, "the other failure is not a refusal")

@@ -462,6 +462,17 @@ def _resolve(tok, base):
     return os.path.normpath(tok if os.path.isabs(tok) else os.path.join(base, tok))
 
 
+def _run_file_text(path, ctx, depth):
+    """T-4139: `sampo task evidence --run-file PATH` runs the script as `bash PATH` runs it, so the guard judges it the
+    same way (_script_verdict: the time budget, the chunks, the cache and the script rules, a $VAR target included).
+    A path a variable or a glob names is a finding (the CLI runs no path it can't read as written). A missing file
+    has no findings here: the CLI refuses to run it, and judges the bytes it does run itself."""
+    if not path or re.search(r"[$`*?\[]", path):
+        return [("system", f"--run-file {path or '(no path)'}: a path a variable or a glob names can't be checked: name "
+                           "the script's own path")]
+    return _script_verdict(os.path.realpath(_resolve(_expand(path, ctx), ctx.cwd)), ctx.cwd, "sh", ctx, depth)
+
+
 def _walk(tok, base):
     """T-4667 (after T-4666): (path, real). `path` is _resolve's (normpath collapses a '..' before the kernel would); the
     kernel follows a link before it climbs, so a/link/../x is not a/x: `real` is where the raw token really goes (each
@@ -7203,6 +7214,8 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                 flag, eq, val = a.partition("=")
                 if flag.startswith("--r") and "--run".startswith(flag):
                     found += check_bash(val if eq else b, ctx, depth + 1)
+                elif flag == "--run-file":  # T-4139: the script's own text, judged with the script rules as bash FILE is (not the typed-run rules)
+                    found += _run_file_text(val if eq else b, ctx, depth)
             for stored in _fm_runs(sub, rest, fm_args):  # T-0901, T-0898: a command fm keeps or runs
                 found += check_bash(stored, ctx, depth + 1)
             if sub == "plugins" and rest[:1] and rest[0] in ("install", "enable", "disable", "add-marketplace"):
@@ -7229,6 +7242,9 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                          for flag, eq, val in [a.partition("=")] if flag.startswith("--r") and "--run".startswith(flag)]
                 for stored in dict.fromkeys(again + list(_fm_runs(tsub, trest, typed))):
                     found += check_bash(stored, ctx, depth + 1)
+                for path in [val if eq else b for a, b in zip(typed, typed[1:] + [""])
+                             for flag, eq, val in [a.partition("=")] if flag == "--run-file"]:
+                    found += _run_file_text(path, ctx, depth)  # T-4139: the typed words name the same script
             if getattr(ctx, "confine", None) and (sub == "check" or tsub == "check") and (why := (
                     _builder_check(trest + (["<("] if c.procsub else [])) if tsub == "check" else  # a <( ) splits it:
                     "sampo check named by a word the shell fills in at run time (the guard can't read which gate "  # a word comes after
@@ -8378,7 +8394,7 @@ def _run_targets(text):
     return out
 
 
-def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
+def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False, given=None):
     """Findings for the script file a command runs, cached by the sha256 of its bytes (and of this guard file) in
     Sampo's state folder, where the guard refuses direct writes: a script run again costs a hash, not a parse (the
     hook runs before every Bash call: a 20 KB script took seconds to parse cold). One cold read has a time budget
@@ -8387,7 +8403,8 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
     and of the scripts it runs naming what it finds first; either is cached. One that no user could have written
     (_system_script: every file it touched is root's, in directories this user cannot write) is allowed
     unread past both budgets, like a binary, with the note; the exemption is checked again on a cache hit. The file's
-    own size over the limit is refused (_script_text)."""
+    own size over the limit is refused (_script_text). given: the bytes the caller already read (at most limit + 1)
+    and will run, judged in place of a second read of the path (T-4139: `--run-file` runs those exact bytes)."""
     if re.search(r"[$`*?\[]", script):
         return []
     p = os.path.realpath(os.path.join(cwd, os.path.expanduser(script)))
@@ -8396,8 +8413,8 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False):
     import time
     lex = os.path.normpath(os.path.join(cwd, os.path.expanduser(script)))  # as named: a link is followed at each check
     nested = bool(_IN_SCRIPT)
-    data = None
-    if os.path.isfile(p):  # a FIFO or a device would block the open below, and the hook with it
+    data = given
+    if data is None and os.path.isfile(p):  # a FIFO or a device would block the open below, and the hook with it
         try:
             with open(p, "rb") as f:
                 data = f.read(_SCRIPT_LIMIT + 1)
@@ -9606,7 +9623,7 @@ _SYSTEMCTL_MUTATE = {"start", "stop", "restart", "reload", "try-restart", "reloa
 
 
 _FM_VALUED = {"--timeout", "--repeat", "--evidence", "--step", "--ac", "--expect", "--status", "--json-key", "-p",
-              "--project", "--tail", "--top", "--text", "--section", "--file", "--run", "--verify", "--check", "--same",
+              "--project", "--tail", "--top", "--text", "--section", "--file", "--run", "--run-file", "--verify", "--check", "--same",
               "--stack-check", "--good", "--why", "--audit", "--lens", "--docs", "--lesson", "--commit", "--type",
               "--tier", "--title", "--source", "--until", "--model", "--max", "--proof"}
 NOTIFY_PROBE = "rm -rf ~"  # what $1 is read as: a notify command that runs its message as code is refused

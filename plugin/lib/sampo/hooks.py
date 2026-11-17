@@ -6565,9 +6565,33 @@ def subagent_start(pl):
     return None
 
 
+# T-4139: the shapes the harness passes, told to every subagent before its first command (a builder has them in its
+# contract). Same text as the fm-builder.md block (test_builder's PassingShapes keeps the two equal).
+PASSING_SHAPES = ("**Passing shapes:** the harness refuses `bash -c`, heredocs, `cd X &&`, `export`, `sed`, and `git -C` "
+                  "or a $VAR path. These pass: `sampo task evidence ID --ac N` alone (runs criterion N's verify); "
+                  "`sampo task evidence ID --step N --run-file .fm-scratch/check.sh` (a script you Write, for compound "
+                  "checks); plain `git`; `.venv/bin/python`; `env NAME=v cmd`; Edit.")
+
+
+def _worktree_agent(pl):
+    """T-4139: a subagent started in a linked worktree (its .git is a file) of a project Sampo manages: the only place the
+    harness's isolation refusals reach it. The main checkout and an unmanaged project are told nothing about them.
+    ASSUMPTION (T-4139, not confirmed): the SubagentStart payload's cwd is the isolated worktree the agent works in. No
+    recorded payload shows it (the subagent_start event logs no cwd; the fixture has none). If the payload carries the
+    parent's cwd, the block never reaches a worktree agent and this returns False."""
+    try:
+        cwd = _cwd(pl)
+        root = c.git_root(cwd) if cwd else None
+        return bool(root) and os.path.isfile(os.path.join(root, ".git")) and c.find_project(cwd) is not None
+    except Exception:
+        log_error("SubagentStart", _tb())
+        return False
+
+
 def subagent_context(pl):
     """T-3672: SubagentStart's synchronous half: the profile's short digest (profile.BRIEF_MAX bytes) so a subagent
-    starts knowing the user too; a builder's brief already carries the longer one."""
+    starts knowing the user too; a builder's brief already carries the longer one. T-4139: plus PASSING_SHAPES for a
+    subagent started in a worktree of a managed project (_worktree_agent), never a scout or a reviewer in the main one."""
     if pl.get("agent_type") in c.ns_names("fm-builder"):
         return None
     try:
@@ -6575,7 +6599,8 @@ def subagent_context(pl):
         text = profile.note(short=True)
     except Exception:
         log_error("SubagentStart", _tb())
-        return None
+        text = ""
+    text = "\n\n".join(part for part in (text, PASSING_SHAPES if _worktree_agent(pl) else "") if part)
     return {"hookSpecificOutput": {"hookEventName": "SubagentStart", "additionalContext": text}} if text else None
 
 

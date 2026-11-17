@@ -2429,9 +2429,10 @@ def cargo_drop_parent_config(parent):
 
 
 def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None, watch=None,
-                watch_every=30.0, low=False):
-    """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). stdin is
-    /dev/null unless a caller hands it one it knows won't block (T-1766). priority: its tests/run.py takes freed CPU
+                watch_every=30.0, low=False, argv0=None):
+    """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). argv0: the $0
+    the text runs under, when it is a script's own text (T-4139: its lane-relative path, as bash FILE sets it); None is
+    bash itself. stdin is /dev/null unless a caller hands it one it knows won't block (T-1766). priority: its tests/run.py takes freed CPU
     slots ahead of lane runs (T-3614), unless SAMPO_SLOT_PRIORITY is already set (=0 opts out). niced: the command
     starts at nice 10 (T-4197), after normalize_verify has read it. run_id: stamped on the record its tests/run.py
     leaves (T-4268), so the caller reads that run's record and no other. low: its tests/run.py leaves freed slots to a
@@ -2460,14 +2461,16 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         # for the whole command; a run that finds it busy (a post-merge verify beside a ship) gets a private one, gone after.
         # A killed Sampo process frees the lock while its children may still run (accepted residual)
         with cargo_gate_slot(gate) as folder:
-            return _run_bash(root, cmd, {**env, CARGO_VAR: folder}, stdin, niced, timeout, watch, watch_every)
-    return _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every)
+            return _run_bash(root, cmd, {**env, CARGO_VAR: folder}, stdin, niced, timeout, watch, watch_every, argv0)
+    return _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every, argv0)
 
 
-def _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every):
-    """run_command's process: `bash -c cmd` in `root` under `env`: (exit code, redacted output)."""
+def _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every, argv0=None):
+    """run_command's process: `bash -c cmd` in `root` under `env`: (exit code, redacted output). argv0 is the $0 the
+    text sees (T-4139: a script's own path, so `cd "$(dirname "$0")"` works as it does under bash FILE)."""
     try:  # its own process group, so a timeout kills the servers and workers it started too; no stdin to wait on
-        argv = nice_argv(["bash", "-c", cmd]) if niced else ["bash", "-c", cmd]
+        argv = ["bash", "-c", cmd] + ([argv0] if argv0 is not None else [])
+        argv = nice_argv(argv) if niced else argv
         pr = subprocess.Popen(argv, cwd=root, stdin=stdin, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True, env=env)
     except OSError as e:  # no bash on PATH, or the repo root is gone
