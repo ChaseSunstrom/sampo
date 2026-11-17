@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Worktree agents' evidence runs: --run-file judges and runs the same script bytes, --ac N notes only the verify forms the harness refuses, the passing shapes reach worktree subagents only, and lane stats counts the isolation refusals (T-4139).
 - The ambient test replay now rules each edited file keep, neutral or harmful at the edit, keeps a per-file ledger, names harmful files in the flip note, and `sampo check ambient edits` lists the last ruling per file (T-3277).
 - The Stop hook marks its own stages (spawns, briefs, gates, drive, push and more) in the slow-hook line, read in time order, so its 'after' tail is measured instead of unknown (T-4894).
 - The drive's "meanwhile … like planning" line names only queued tasks a builder brief would still refuse (plan gaps), reading at most 8 briefs per stop, so planned tasks are no longer repeated every turn (T-4853).
