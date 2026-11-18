@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- a close's Landed line no longer reports 'not committed' for an untracked build artefact (a test's __pycache__ .pyc) the commit already leaves out (T-4014).
 - sampo moons grow --keep now shows its kept-per-hour rate, the ETA to the target and the filter that drops the most candidates, so a long run says how long it will take (T-3514).
 - Auto-evidence matches the same check run another way (a cd, nice, timeout or env prefix, or a superset of the criterion's test modules), and a run that cds into a lane goes to that lane's task (T-3501).
 - sampo run --parallel N is a rolling pool up to the lane cap instead of batches of three with disjoint scopes; hub files no longer serialise it, and load defers a start rather than skipping it (T-3294).
