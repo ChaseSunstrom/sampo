@@ -10445,8 +10445,84 @@ def _fm_argv(argv):
 
 def _fm_named_elsewhere(shell, cmds):
     """T-3600 review: the line names sampo more often than it runs it (read C <<< 'sampo serve', f sampo serve, a
-    string): a command word the shell fills in there may be sampo, with a verb the guard can't read."""
+    string): a command word the shell fills in there may be sampo, with a verb the guard can't read. T-4922: not a
+    sampo word that is a grep or rg pattern (_fm_pattern_texts), text to find, not a command the line can fill in."""
+    for prog, text in _fm_pattern_texts(cmds):
+        # the text as written, in the words after the grep that starts a command: a pattern quoted in pieces
+        # ('s''ampo') stays counted, and so does a sampo word in a string the line holds
+        for m in re.finditer(rf"(?:^|[;&|({{\n!]|\b(?:then|do|else|elif|if|while|until)\b)\s*(?:\S*/)?{prog}\b((?:'[^']*'|\"[^\"]*\"|[^;&|\n)'\"])*)",
+                             shell):
+            if text in m[1]:
+                at = m.start(1) + m[1].index(text)
+                shell = shell[:at] + " " + shell[at + len(text):]
+                break
     return len(_FM_RUN_WORD.findall(shell)) > sum(1 for x in cmds if _fm_argv(_strip_wrappers(x.argv)[0]))
+
+
+_GREPS = ("grep", "egrep", "fgrep", "zgrep", "rg")
+_GREP_VALUED = ("-m", "-A", "-B", "-C", "-d", "-D", "-g", "-t", "-T", "--max-count", "--after-context", "--before-context",
+                "--context", "--glob", "--type", "--type-not", "--include", "--exclude", "--exclude-dir")
+_GREP_FILTERS = ("grep", "egrep", "fgrep", "zgrep", "rg", "head", "tail", "sort", "uniq", "wc", "cut", "tr", "cat", "nl",
+                 "tac", "rev", "column")  # what a grep's lines may be piped to: none runs or keeps them as a command
+
+
+def _fm_pattern_texts(cmds):
+    """T-4922: the pattern words of the grep and rg commands whose output only reaches the terminal or a filter. A
+    pattern naming sampo (sed … log | grep -E 'sampo|FAIL') finds text; it is no command the shell runs, nor one a
+    computed word on the line could become. Not when the output may be read back (-o prints just the match, a > file or
+    tee keeps it, a shell, read or xargs after it runs it), a pattern with an expansion in it, or a line with a
+    process substitution."""
+    if any(x.procsub for x in cmds):
+        return []
+    out = []
+    for i, c in enumerate(cmds):
+        argv = _strip_wrappers(c.argv)[0]
+        prog = os.path.basename(argv[0]) if argv else ""
+        if prog not in _GREPS or any(r != "/dev/null" for r in c.redirs):
+            continue
+        tail = []
+        for x in cmds[i + 1:]:
+            if not x.piped:
+                break
+            tail.append(_strip_wrappers(x.argv)[0][:1])
+        if any(not t or os.path.basename(t[0]) not in _GREP_FILTERS for t in tail):
+            continue
+        out += [(prog, p) for p in _grep_patterns(prog, argv[1:])]
+    return [(r, p) for r, p in out if _FM_RUN_WORD.search(p) and not re.search(r"[$`]|<\(", p)]
+
+
+def _grep_patterns(prog, args):
+    """The pattern words of a grep or rg call: the -e/--regexp values, else the first word that isn't an option or its
+    value. [] when it prints only the match (-o) or its pattern comes from a file (-f), and for rg's -r (it prints the
+    replacement text); a word it can't place is left counted (grep -m 5 sampo takes 5, not sampo)."""
+    pats, plain, i, ended = [], [], 0, False
+    while i < len(args):
+        a = args[i]
+        if ended or not a.startswith("-") or a == "-":
+            plain.append(a)
+        elif a == "--":
+            ended = True
+        elif a.startswith("--"):
+            name, eq, val = a.partition("=")
+            if "--only-matching".startswith(name) and len(name) >= 4 or name in ("--file", "--replace"):
+                return []
+            if name == "--regexp":
+                pats.append(val if eq else args[i + 1] if i + 1 < len(args) else "")
+                i += 0 if eq else 1
+            elif name in _GREP_VALUED and not eq:
+                i += 1
+        else:  # a short cluster: -o and -f (or rg's -r) end it; -e takes the next word, a valued option takes its value
+            if "o" in a[1:] or "f" in a[1:] or prog == "rg" and "r" in a[1:]:
+                return []
+            if a.endswith("e"):
+                pats.append(args[i + 1] if i + 1 < len(args) else "")
+                i += 1
+            elif "e" in a[1:]:
+                pats.append(a[a.index("e", 1) + 1:])
+            elif a in _GREP_VALUED:
+                i += 1
+        i += 1
+    return pats or plain[:1]
 
 
 _CLAUDE_CHANGES = {"plugin": {"install", "i", "enable", "disable", "uninstall", "remove", "update"},

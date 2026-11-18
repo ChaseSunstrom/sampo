@@ -302,6 +302,37 @@ class ComputedVerb(GuardCase):
             ('T="python3 plugin/tests/run.py test_x"; $T; sampo task evidence T-1 --step 1 --run "$T"', None),
         ], self.bash)
 
+    def test_a_sampo_word_that_is_a_grep_pattern_is_no_call_named_elsewhere(self):
+        # T-4922: a grep or rg pattern names text to find; its output reaching the terminal or a filter can't make a
+        # computed word on the line sampo. The same word printed alone (-o), written (> f, tee) or fed to a reader or
+        # shell stays counted: a later computed word could read it back
+        self.run_table([
+            ("sed -n '1,50p' run.log | grep -E 'sampo|FAIL'; $CMD", None),
+            ("sed -n 1,50p run.log | grep -E sampo | head -3; \"$CMD\" x", None),
+            ("grep -i sampo run.log 2>/dev/null; $CMD", None),
+            ("rg sampo run.log; $CMD", None),
+            ("rg -e sampo -e fm run.log | wc -l; $CMD", None),
+            ("grep --regexp=sampo run.log; $CMD", None),
+            ("grep -n -- sampo run.log; $CMD", None),
+            ("egrep -A 3 sampo run.log; $CMD", None),
+            # what the shell fills in still counts: the verb of a variable run as a command, a string read into one
+            ("grep -E sampo run.log; V=serve; sampo $V", "remote"),  # serve, read through V
+            ("grep sampo run.log; read -r C <<< 'sampo serve'; \"$C\"", "system"),
+            ("grep sampo run.log; f() {{ \"$@\"; }}; f sampo serve", "system"),
+            ("grep 's''ampo' run.log; read -r C <<< 'sampo serve'; \"$C\"", "system"),  # not the text on the line
+            ("grep -o sampo run.log; $CMD", "system"),
+            ("grep -oE sampo run.log; $CMD", "system"),
+            ("grep --only-matching sampo run.log; $CMD", "system"),
+            ("rg -o sampo run.log; $CMD", "system"),
+            ("grep sampo run.log > out.txt; $CMD", "system"),
+            ("grep sampo run.log | tee out.txt; $CMD", "system"),
+            ("grep sampo run.log | sh; $CMD", "system"),
+            ("grep sampo run.log | head -1 | {{ read C; $C; }}", "system"),
+            ("grep sampo run.log | while read C; do $C; done", "system"),
+            ("grep \"$(sampo serve)\" run.log; $CMD", "remote"),  # the substitution is a real call
+            ("echo 'sampo serve' | $CMD", "system"),  # echo's text is not a pattern
+        ], self.bash)
+
     def test_ordinary_literal_calls_still_pass(self):
         self.run_table([
             ("sampo next", None),

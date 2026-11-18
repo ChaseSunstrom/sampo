@@ -32,6 +32,9 @@ FORMS = [
     "echo a#b; {p}", "echo a#b && {p}",  # T-0161 review: a # inside a word is no comment
     "echo $(true)#x; {p}", "echo $((1))#x; {p}", "echo `true`#x; {p}", "echo ${HOME}#x; {p}",  # T-0163: nor after ) ` }
     "echo '<<EOF'\n{p}\nEOF", "echo \"x <<EOF\"\n{p}", "echo '<<-EOF' && {p}",  # T-0178: a quoted marker is text
+    # T-4922: a sampo word that is a grep or rg pattern is no call named elsewhere, but the payload on such a line still counts
+    "sed -n 1,50p run.log | grep -E 'sampo|FAIL'; {p}", "rg sampo run.log | head -3; {p}", "grep -o sampo run.log; {p}",
+    "grep sampo run.log | tee o.txt; {p}", "grep sampo run.log && {p}", "grep sampo run.log | head -1 | {p}",
     # T-1487: a folder named once and reused across ; and && (git init's target resolves; the payload still counts)
     "D=/tmp/fmd; mkdir -p $D && git init -q $D; {p}", "D=/tmp/fmd && git init -q $D && {p}",
     "D=~; mkdir -p $D && git init -q $D; {p}",
