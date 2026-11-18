@@ -826,6 +826,14 @@ def cmd_task(args):
         return (split.task_split if sub == "split" else split.task_capsule)(p, args)
     if sub == "show":
         b = need_brief(p, args.id)
+        if getattr(args, "full", False):  # T-4924: the brief, then its story, in one call (also with --story)
+            from sampo import cost, recall
+            s = recall.story(p, b)
+            if args.json:
+                return out(args, dict(c.brief_detail(b), meta=b.meta, blockers=b.done_blockers(), story=s), None)
+            line = cost.cost_line(p, b)
+            story = c.as_loaded(recall.render_story(s), c.ns())  # the same text --story prints (T-2879)
+            return print(b.render() + (f"\n{line}\n" if line else "") + "\n" + story)
         if args.story:  # T-0483
             from sampo import recall
             s = recall.story(p, b)
@@ -8954,6 +8962,8 @@ def _build_parser(only=None):
     t.add_argument("id")
     t.add_argument("--story", action="store_true", help="the ledger as chapters (plan, steps, evidence, reviews, "
                                                         "close) with their times")
+    t.add_argument("--full", action="store_true", help="the brief, then its story (what --story prints), one call; "
+                                                       "with --json, the brief's JSON plus a story key")
     t = tadd("card")  # T-1541
     t.description = ("A proved task's title card: an SVG with its title hand-lettered, its type, size and day, and the "
                      "command that failed before the work and passed after (written by sampo task finish too).")
