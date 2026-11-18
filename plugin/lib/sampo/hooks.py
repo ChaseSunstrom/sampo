@@ -294,12 +294,13 @@ def stage_start(t0, event):
     atexit.register(_stage_done)
     if event in ("PreToolUse", "BeforeTool"):  # the guard's events: a call the harness kills at 5 s never reaches
         import _thread  # atexit, so one thread (builtin: no import cost) looks once, at SLOW_HOOK_MS, and logs
-        _thread.start_new_thread(_watch, (SLOW_HOOK_MS / 1000, t0))  # where the call is then
+        _thread.start_new_thread(_watch, (SLOW_HOOK_MS / 1000, t0, _thread.get_ident()))  # where the call is then
 
 
-def _watch(limit_s, t0):
+def _watch(limit_s, t0, main=None):
     """T-4780: still running after limit_s: one line naming the stages done and the last mark reached. The 5 s kill
-    leaves no other trace; a call that finishes later also logs its totals (_stage_done). t0 names the call it watches."""
+    leaves no other trace; a call that finishes later also logs its totals (_stage_done). t0 names the call it watches.
+    T-4932: `main` (the calling thread's id) adds where that thread is now (_where)."""
     try:
         time.sleep(limit_s)
         if STAGES.get("done") or STAGES.get("t0") != t0:
@@ -308,10 +309,38 @@ def _watch(limit_s, t0):
         last = (_stage_marks(STAGES) or [(0, "imports")])[-1][1]
         hl = c.host_load()
         load = f"{hl[0] / hl[1]:.1f}" if hl and hl[1] > 0 else "?"
+        at = _where(main)
         log_error(str(STAGES.get("event") or "hook"), f"hook still running at {limit_s * 1000:g} ms, last mark {last} "
-                  "(ms so far): " + " ".join(f"{k} {v:g}" for k, v in ms.items() if k != "total") + f"; load per cpu {load}")
+                  "(ms so far): " + " ".join(f"{k} {v:g}" for k, v in ms.items()
+                                             if k != "total" and not (k.startswith("note.") and v < 1))
+                  + f"; load per cpu {load}"
+                  + (f"; at {at}" if at else ""))
     except Exception:
         pass
+
+
+def _where(ident, depth=2):
+    """T-4932: where thread `ident` is: its innermost frame, then the innermost `depth` frames of the plugin's own code
+    it was called from, each file:function:line ("re/_parser.py:_parse:600 < sampo/hooks.py:_card_note:3070"). A
+    plugin file is named from the plugin's lib, any other by its last two path parts (never a home path). '' for
+    this thread itself, an unknown id, or an interpreter without frame access."""
+    import _thread
+    if ident is None or ident == _thread.get_ident():
+        return ""
+    try:
+        frame = sys._current_frames().get(ident)
+    except Exception:
+        return ""
+    lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) + os.sep
+    out = []
+    while frame is not None and len(out) < depth + 1:
+        path = frame.f_code.co_filename
+        own = path.startswith(lib)
+        if not out or own:
+            name = path[len(lib):] if own else "/".join(path.split(os.sep)[-2:]).lstrip("/")
+            out.append(f"{name}:{frame.f_code.co_name}:{frame.f_lineno}")
+        frame = frame.f_back
+    return " < ".join(out)
 
 
 def mark(name):
@@ -371,8 +400,8 @@ def _stage_done():
         if ms["total"] >= SLOW_HOOK_MS:
             hl = c.host_load()
             load = f"{hl[0] / hl[1]:.1f}" if hl and hl[1] > 0 else "?"
-            log_error(str(STAGES.get("event") or "hook"), "slow hook (ms): " + " ".join(f"{k} {v:g}" for k, v in ms.items())
-                      + f"; load per cpu {load}")
+            shown = " ".join(f"{k} {v:g}" for k, v in ms.items() if not (k.startswith("note.") and v < 1))  # T-4932
+            log_error(str(STAGES.get("event") or "hook"), f"slow hook (ms): {shown}; load per cpu {load}")
     except Exception:
         pass  # a stage clock is only a record
 
@@ -3299,8 +3328,9 @@ def _pre_tool_use(raw):
                     ("design", lambda: _design_note(pl, p, act)), ("readme", lambda: _readme_note(pl, p, act)),
                     ("gates", lambda: _gates_note(pl, p)), ("closing", lambda: _closing_note(pl, p)))
         off = c.ablated()  # T-1375: a bench arm's features switched off (never the guard, which spoke above)
-        note = " ".join(_said_once(pl, list(filter(None, [made, saved, slow, warn, rule_note]
-                                                   + [_each(b) for name, b in builders if name not in off]))))
+        notes = [_each(b, "note." + name) for name, b in builders if name not in off]  # T-4932: a stage each
+        note = " ".join(_said_once(pl, list(filter(None, [made, saved, slow, warn, rule_note] + notes))))
+        mark("said")
         emit = dict({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}} if note else {},
                     **({"systemMessage": user_rule} if user_rule else {}))
         if emit:
@@ -3312,13 +3342,17 @@ def _pre_tool_use(raw):
     return 0
 
 
-def _each(build):
-    """T-1449: one note builder failing (a full disk) loses its own note, not every note of the call."""
+def _each(build, stage=None):
+    """T-1449: one note builder failing (a full disk) loses its own note, not every note of the call. T-4932: `stage`
+    marks the clock when it ends, so a slow call's line names the builder that took the time."""
     try:
         return build()
     except Exception:
         log_error("PreToolUse", _tb())
         return None
+    finally:
+        if stage:
+            mark(stage)
 
 
 def _fix_note(pl, p):

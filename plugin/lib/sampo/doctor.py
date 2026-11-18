@@ -1600,8 +1600,24 @@ def check_hook_writers(settings, home):
                   "; ".join(bad) or "only Sampo's own hooks write Sampo state; no duplicate registrations")
 
 
+# T-4932: hooks.log lines that are not errors: the stage clock's timing (a slow call, the watchdog) and the breaker's note
+_HOOK_TIMING = re.compile(r"\S+ \S+ (?:slow hook \(ms\): |hook still running at \d)")
+_HOOK_NOT_ERROR = re.compile(_HOOK_TIMING.pattern + r"|\S+ \S+ paused for \d+ min after ")
+
+
 def recent_hook_errors(days=1):
-    """Hook errors of the last `days` (24h), each its log lines: "<ts> <event> <traceback…>" and its continuation."""
+    """Hook errors of the last `days` (24h), each its log lines: "<ts> <event> <traceback…>" and its continuation.
+    T-4932: the timing lines (recent_hook_timings) and the breaker's pause note are not errors: 604 a day were counted."""
+    return [e for e in _hook_log(days) if not _HOOK_NOT_ERROR.match(e[0])]
+
+
+def recent_hook_timings(days=1):
+    """T-4932: the stage clock's lines of the last `days`: a call over SLOW_HOOK_MS ("<ts> <event> slow hook (ms):
+    <stage ms>…") and the watchdog's ("… hook still running at 1000 ms, last mark X …; at <where>")."""
+    return [e[0] for e in _hook_log(days) if _HOOK_TIMING.match(e[0])]
+
+
+def _hook_log(days):
     p = os.path.join(c.state_dir(), "logs", "hooks.log")
     log = (_read(p + ".1") or "") + (_read(p) or "")  # T-3423: the rotated half is still history
     entries = []

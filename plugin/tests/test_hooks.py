@@ -5634,6 +5634,68 @@ class StageClock(ForemanTestCase):
         else:
             self.assertNotIn("start", row)
 
+    def test_each_note_builder_is_its_own_stage(self):
+        """T-4932: 174 of 203 slow PreToolUse lines in a day spent 1-4.7 s in 'after', which ran 15 note builders
+        unmarked: each builder is now a note.<name> stage, the once-filter is 'said', and an ablated builder has none."""
+        sink = os.path.join(self.sink_dir(), "stages.jsonl")
+        call = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
+        self.hook("PreToolUse", call, env={"SAMPO_HOOK_STAGES": sink})
+        self.hook("PreToolUse", call, env={"SAMPO_HOOK_STAGES": sink, "FOREMAN_ABLATE": "cards"})
+        with open(sink) as f:
+            full, ablated = (json.loads(x) for x in f.read().splitlines())
+        names = [k for k in full if k.startswith("note.")]
+        self.assertEqual(names, ["note." + n for n in ("fix", "deps", "veto", "scope", "lessons", "steps", "self-wait",
+                                                        "ambient", "bus", "cards", "test-first", "design", "readme",
+                                                        "gates", "closing")], full)
+        stages = [k for k, v in full.items() if isinstance(v, float)]
+        self.assertLess(stages.index("snapshot"), stages.index("note.fix"))
+        self.assertLess(stages.index("note.closing"), stages.index("said"))
+        self.assertEqual(stages[-2:], ["after", "total"])
+        self.assertAlmostEqual(full["total"], sum(v for k, v in full.items() if isinstance(v, float) and k != "total"),
+                               delta=0.5)
+        self.assertNotIn("note.cards", ablated)
+        self.assertIn("note.bus", ablated)
+
+    def test_the_slow_line_names_only_the_note_stages_that_took_time(self):
+        """T-4932: fifteen 0 ms note stages would bury the one that matters: the log line keeps a note stage of 1 ms or
+        more (the bench's sink keeps them all)."""
+        from sampo import hooks
+        log = os.path.join(c.state_dir(), "logs", "hooks.log")
+        now = hooks._now()
+        try:
+            with unittest.mock.patch.object(hooks.time, "clock_gettime", return_value=now), \
+                    unittest.mock.patch("_thread.start_new_thread"):
+                hooks.stage_start(now - 0.05, "PreToolUse")
+            hooks.STAGES.update({"snapshot": now + 0.01, "note.fix": now + 0.0102, "note.cards": now + 1.4102,
+                                 "said": now + 1.411})
+            with unittest.mock.patch.object(hooks, "_born", return_value=now - 0.06), \
+                    unittest.mock.patch.object(hooks.time, "clock_gettime", return_value=now + 1.5):
+                hooks._stage_done()
+        finally:
+            hooks.STAGES.clear()
+        with open(log) as f:
+            line = f.read()
+        self.assertRegex(line, r"start 10 imports 50 snapshot 10 note\.cards 1400 said 0\.8 after 89 total 1560;")
+        self.assertNotIn("note.fix", line)
+
+    def test_the_watchdog_names_where_the_main_thread_is(self):
+        """T-4932: 225 of 274 watchdog lines in a day said only 'last mark snapshot'; the line now names the main
+        thread's innermost frame and the innermost plugin frames it was called from (file:function:line)."""
+        lib = os.path.join(os.path.dirname(os.path.dirname(HOOK)), "lib")
+        log = os.path.join(c.state_dir(), "logs", "hooks.log")
+        code = ("import sys, time\nsys.path.insert(0, sys.argv[1])\nfrom sampo import hooks\n"
+                "hooks.stage_start(hooks._now(), 'PreToolUse')\n"
+                "def stall():\n    time.sleep(1.3)\n"
+                "hooks._each(stall)\n")
+        r = subprocess.run([sys.executable, "-c", code, lib], capture_output=True, text=True, timeout=60,
+                           cwd=self.repo, env=dict(os.environ, FOREMAN_HOME=self.home))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(log) as f:
+            mine = [ln for ln in f.read().splitlines() if "still running" in ln]
+        self.assertEqual(len(mine), 1, mine)
+        self.assertRegex(mine[0], r"; at <string>:stall:6 < sampo/hooks\.py:_each:\d+$")
+        self.assertNotIn(self.home, mine[0])
+
     def test_a_stop_call_names_its_own_stages_in_time_order(self):
         """T-4894: a Stop spent 1-1.7 s in one 'after' tail (the marks were the guard's only); its handler now marks its
         stages, and the row lists every mark in the order the call reached it, whatever its name."""

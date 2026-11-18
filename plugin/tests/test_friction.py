@@ -109,9 +109,22 @@ class Friction(ForemanTestCase):
                 f.write(f"{now} {event} Traceback (most recent call last):\n  File \"/a/fmcore.py\", line 9, in x\n"
                         f"  File \"/a/plugin/lib/fmhooks.py\", line 1474, in run\nNameError: boom\n")
             f.write(f"{now} Stop paused for 10 min after 3 failures in a row\n")  # the breaker's note isn't an error
+            # T-4932: the stage clock's timing lines are not errors: 604 a day were counted as swallowed tracebacks
+            f.write(f"{now} PreToolUse slow hook (ms): start 10 imports 12 snapshot 1 note.cards 1400 after 9 total "
+                    f"1432; load per cpu 0.9\n")
+            f.write(f"{now} PreToolUse hook still running at 1000 ms, last mark snapshot (ms so far): start 10 "
+                    f"imports 12; load per cpu 0.9; at re/_parser.py:_parse:600 < sampo/hooks.py:_card_note:3070\n")
+            f.write(f"{now} Stop slow hook (ms): start 10 imports 12 gates 900 after 1 total 923; load per cpu 0.2\n")
+            f.write(f"{now} PreToolUse slow hook (ms): start 10 imports 12 note.cards 2100 after 9 total 2131; "
+                    f"load per cpu 1.1\n")
         out = self.fm("friction").stdout
         self.assertIn("3 in the last 24 h, most in PreToolUse (2)", out)
         self.assertIn("NameError: boom (fmhooks.py:1474, state/logs/hooks.log)", out)  # T-2107: the innermost frame
+        self.assertIn("3 calls over 1000 ms in the last 24 h (PreToolUse 2, Stop 1); the stage most took longest in: "
+                      "note.cards (2 of 3); where the watchdog found most: sampo/hooks.py:_card_note (1 of 1)", out)
+        from sampo import doctor
+        self.assertEqual(len(doctor.recent_hook_errors()), 3, "timing lines are not hook errors")
+        self.assertEqual(len(doctor.recent_hook_timings()), 4)
 
     def test_slow_gate_ignores_reused_passes(self):
         # T-0424: a reused pass records 0.0 s; counting it dragged the median to 0 ("12s vs usual 0s")

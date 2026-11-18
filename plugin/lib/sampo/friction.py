@@ -161,6 +161,40 @@ def _a_no(e):
     return e.get("tool") == "Bash" and _prog(e) in _ANSWERS_NO and str(e.get("error") or "").startswith("Exit code 1")
 
 
+_PLUGIN_FRAME = re.compile(r"(?:sampo/[\w/]+|fm\w+)\.py:[\w<>]+")  # hooks._where names plugin frames from its lib
+
+
+def _slow_hooks(lines):
+    """T-4932: hooks.log's timing lines as one row: how many calls went over SLOW_HOOK_MS by event, the stage most of
+    them spent longest in, and the plugin function the watchdog found the main thread in most often. '' for none."""
+    from sampo import hooks as shooks
+    slow, watched = collections.Counter(), collections.Counter()
+    events, n = collections.Counter(), 0
+    for ln in lines:
+        head, _, rest = ln.partition(" slow hook (ms): ")
+        if rest:
+            n += 1
+            events[(head.split(" ") + ["?"])[1]] += 1
+            stages = [(float(v), k) for k, v in re.findall(r"([\w.-]+) (\d+(?:\.\d+)?)", rest.split(";")[0])
+                      if k not in ("total", "start")]
+            if stages:
+                slow[max(stages)[1]] += 1
+        elif "; at " in ln:
+            spot = _PLUGIN_FRAME.search(ln.rsplit("; at ", 1)[1])
+            watched[spot.group(0) if spot else "outside the plugin"] += 1
+    if not n:
+        return ""
+    by = ", ".join(f"{c.plain(e)} {k}" for e, k in events.most_common(4))
+    out = f"{n} call{'s' if n != 1 else ''} over {shooks.SLOW_HOOK_MS} ms in the last 24 h ({by})"
+    if slow:
+        stage, k = slow.most_common(1)[0]
+        out += f"; the stage most took longest in: {c.plain(stage)} ({k} of {n})"
+    if watched:
+        spot, k = watched.most_common(1)[0]
+        out += f"; where the watchdog found most: {c.plain(spot)} ({k} of {sum(watched.values())})"
+    return out
+
+
 def digest(p, recheck=True):
     """{section: [lines]} of what went wrong or slow since the last pass, newest kinds first, each line bounded, and the
     window's counts (kept at --mark for the next digest's trend)."""
@@ -235,9 +269,13 @@ def digest(p, recheck=True):
 
     try:  # T-0437: hooks never fail a call, so the errors they swallow are friction only hooks.log saw
         from sampo import doctor
-        errs = [e for e in doctor.recent_hook_errors() if " paused for " not in e[0]]  # the breaker's note
+        errs = doctor.recent_hook_errors()  # T-4932: no timing lines, no breaker note
+        timings = doctor.recent_hook_timings()
     except Exception:
-        errs = []
+        errs, timings = [], []
+    slow = _slow_hooks(timings)
+    if slow:
+        out["slow hook calls"] = [slow]
     if errs:
         top = collections.Counter((e[0].split(" ") + ["?"])[1] for e in errs).most_common(1)[0]
         at = re.findall(r'File "([^"]+)", line (\d+)', "\n".join(errs[-1]))  # the innermost frame is the last
