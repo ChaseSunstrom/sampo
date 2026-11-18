@@ -6871,6 +6871,12 @@ _FAILING_TEST = lazy(r"(?m)^(?:(?:FAIL|ERROR): \S+ \(([A-Za-z_]\w*(?:\.\w+)+)\)|
 FLAKY_KEEP = 500
 
 
+def slot_wait(output):
+    """T-3421: seconds of wall clock a gate's run.py waited for a CPU slot: the W of the summary's '; waited W s of R s wall
+    for a slot' (run.py's waited_note, said when the wait passed 5 s; several run.py calls in one gate add up), else 0."""
+    return sum(int(s) for s in re.findall(r"; waited (\d+) s of \d+ s wall for a slot", output or ""))
+
+
 def failing_tests(output):
     return sorted({next(g for g in m.groups() if g) for m in _FAILING_TEST.finditer(output or "")})[:200]
 

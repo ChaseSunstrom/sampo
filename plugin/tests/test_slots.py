@@ -21,7 +21,8 @@ class Slots(ForemanTestCase):
         for k in (run.SLOT_ENV, "FOREMAN_SLOT", "FOREMAN_SLOTS", "SAMPO_SLOT_PRIORITY", "FOREMAN_SLOT_PRIORITY"):
             os.environ.pop(k, None)  # this test's own runner set one of them
         self.addCleanup(self.patch.stop)
-        for name, value in (("_HELD", {"n": 0, "until": 0.0}), ("_DEFER", {"first": None})):  # T-4789: one process, many tests
+        for name, value in (("_HELD", {"n": 0, "until": 0.0}), ("_DEFER", {"first": None}),  # T-4789: one process, many tests
+                            ("_SAID", [])):  # T-3421: the waiting line is once per process: each test starts unsaid
             patched = mock.patch.object(run, name, value)
             patched.start()
             self.addCleanup(patched.stop)
@@ -134,6 +135,60 @@ class Slots(ForemanTestCase):
         self.assertGreaterEqual(waited, 0.25)
         self.assertEqual([o[0] for o in order], ["first", "first done", "second"])
         self.assertEqual(order[0][1], 0)
+
+    def test_a_full_pool_says_so_once_then_when_it_got_a_slot(self):
+        import io
+        held, buf = threading.Event(), io.StringIO()
+
+        def first():
+            with run.cpu_slot():
+                held.set()
+                time.sleep(0.5)
+
+        t = threading.Thread(target=first)
+        t.start()
+        held.wait(5)
+        with mock.patch.object(run, "SAY_WAIT", 0.1), mock.patch.object(run.sys, "stderr", buf), run.cpu_slot():
+            pass
+        t.join()
+        lines = buf.getvalue().splitlines()
+        self.assertEqual(len(lines), 2, lines)  # never a line per poll: one at the start of the wait, one at its end
+        self.assertRegex(lines[0], r"^run\.py: waiting for a CPU slot, \d+ s$")
+        self.assertRegex(lines[1], r"^run\.py: got a CPU slot after \d+ s$")
+
+    def test_a_short_wait_is_silent(self):
+        import io
+        held, buf = threading.Event(), io.StringIO()
+
+        def first():
+            with run.cpu_slot():
+                held.set()
+                time.sleep(0.3)
+
+        t = threading.Thread(target=first)
+        t.start()
+        held.wait(5)
+        with mock.patch.object(run.sys, "stderr", buf), run.cpu_slot():
+            pass
+        t.join()
+        self.assertEqual(buf.getvalue(), "")
+
+    def test_the_wait_is_recorded_from_the_runs_summary_line(self):
+        # T-3421: check_run keeps the gate's wall wait as wait_s, read from run.py's own 'waited W s of R s wall' sum
+        from sampo import core
+        summary = "Ran 9 tests in 70.0s; waited 44 s of 70 s wall for a slot (63%), 90 s summed over jobs"
+        self.assertEqual(core.slot_wait(f"x\n{summary}\n"), 44)
+        self.assertEqual(core.slot_wait(f"{summary}\n{summary}\n"), 88)  # two run.py calls in one gate
+        self.assertEqual(core.slot_wait("Ran 9 tests in 1.0s\nOK"), 0)
+        self.assertEqual(core.slot_wait(None), 0)
+        self.assertEqual(run.waited_note({"a": 90.0}, [(0.0, 44.0)], 70.0), summary[summary.index(";"):])
+
+    def test_a_free_pool_prints_nothing(self):
+        import io
+        buf = io.StringIO()
+        with mock.patch.object(run.sys, "stderr", buf), run.cpu_slot():
+            pass
+        self.assertEqual(buf.getvalue(), "")
 
     def test_a_dead_holder_frees_its_slot(self):
         code = ("import sys, time; sys.path.insert(0, %r); import run\n"

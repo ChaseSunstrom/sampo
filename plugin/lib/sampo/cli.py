@@ -6564,6 +6564,7 @@ def _cmd_check(args):
                 data={"tree": tree, "env": c.env_id(), "code_tree": ctree, "changelog": _changelog_hash(p.root),  # T-3120: a later close that changes only CHANGELOG/mirrors reuses this pass
                       **({"load": round(os.getloadavg()[0] / (os.cpu_count() or 1), 2)} if hasattr(os, "getloadavg") else {}),
                       "results": [{"cmd": cmd, "exit": code, "s": round(s, 1), "note": notes.get(cmd),
+                                                                     **({"wait_s": w} if (w := c.slot_wait(out_)) else {}),
                                                                      **({"failing": c.failing_tests(out_)[:50]} if code else {}),
                                                                      **skipped.get(cmd, {})} for cmd, code, out_, s in results],
                       **({"failed": c.more(sorted({n for _, code, out_, _ in results if code for n in c.failed_classes(out_)}), 200)[0],

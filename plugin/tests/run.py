@@ -192,6 +192,7 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
     fast, ordinary = lanes(n)
     now, order, prio, mark = time.monotonic(), random.sample(ordinary, len(ordinary)), _env(PRIO_ENV) == "1", None
     end, defer, got, said = now + (min(wait, SMALL_WAIT) if small else wait), now + defer_for(wait), None, False
+    told = False  # T-3421: this class wrote the process's one 'waiting' line, so it writes the 'got' line
     low, marked = low and not prio, False
     fair = fair_on()
     if fair:
@@ -245,6 +246,7 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
                 with _SAY_LOCK:  # T-4536: one line per run.py, not one per class waiting in its pool
                     if not _SAID:
                         _SAID.append(True)
+                        told = True
                         sys.stderr.write(f"run.py: waiting for a CPU slot, {time.monotonic() - now:.0f} s\n")
                         sys.stderr.flush()
             if _env(TRACE_ENV) == "1":  # T-4685: what this refusal read
@@ -267,6 +269,9 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
     if not got:
         yield None
         return
+    if told:  # T-3421: the class that said it was waiting says the wait ended: a caller's hang guard saw silence before
+        sys.stderr.write(f"run.py: got a CPU slot after {time.monotonic() - now:.0f} s\n")
+        sys.stderr.flush()
     counted = got[0] in ordinary  # T-4789: a reserve or express slot is not the pool's: it does not make a run a holder
     if counted:
         _held_add(1)
