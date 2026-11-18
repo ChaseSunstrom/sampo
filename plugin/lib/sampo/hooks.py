@@ -6812,6 +6812,15 @@ def subagent_stop(pl):
             c.log_event(p, "hollow_return", task=act.id if act else None,
                         data={"agent_type": pl["agent_type"], "agent_id": pl.get("agent_id"), "chars": chars,
                               "transcript": pl.get("agent_transcript_path")}, session=pl.get("session_id"))
+        if re.search(r"(?:^|:)fm-(?:builder|reviewer)$", str(pl["agent_type"])):
+            try:  # T-3949: advisory tripwire read of the return (detached; hollow ones flagged with no call)
+                from sampo import tripwire
+                msg = pl.get("last_assistant_message") or ""
+                named = re.search(r"\bT-\d{4,}\b", msg)
+                tripwire.start(p, act.id if act else named.group(0) if named else None, pl["agent_type"],
+                               pl.get("agent_id"), msg, chars < HOLLOW_CHARS, session=pl.get("session_id"))
+            except Exception:  # advice never errors the subagent's own event
+                log_error("tripwire", _tb())
     return None
 
 

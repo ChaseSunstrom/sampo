@@ -278,6 +278,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmtraces` (T-2995: green exam Smith runs as training data: the journal kept beside… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmtrials` (T-1059: a self-change as a pre-registered trial, graded by the… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmtriggers` (`sampo triggers [--days N] [--json]`, T-2276): capture events… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmtripwire` (T-3949: the reply tripwire reader, `sampo tripwire ab`: a Haiku pass over builder and reviewer returns… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmverifier` (T-2977: the close-holds verifier, `sampo exam models --verifier`: a text-free logistic head on lake… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmwatch` (`sampo ui --demo`: a canned view from `ui-demo.json` with every key… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmmodelup` (T-3742: `sampo models`), models stay newest and best: settings keep an alias, a refusal fallback… [→ files-lib-4](docs/map/files-lib-4.md)

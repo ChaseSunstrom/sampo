@@ -9224,6 +9224,9 @@ def _build_parser(only=None):
     s.add_argument("--days", type=float, default=7)
     s.add_argument("--say", action="store_true", help="read it aloud too, with the first of say, spd-say, espeak-ng or "
                                                       "espeak installed (T-1549)")
+    s = add("tripwire", lazy("sampo.tripwire", "cmd_tripwire"), tier=("Reports", 977), help="ab: the reopen rate of returns "
+            "the reply reader flagged against those it did not, n for each (advisory, T-3949)")
+    s.add_argument("words", nargs="*", metavar="ab")
     s = add("away", lazy("sampo.away", "cmd_away"), tier=("Reports", 975), help="what closed, blocked, was asked or was reverted since you last spoke (T-1155)")
     s = add("outcomes", lazy("sampo.outcomes", "cmd_outcomes"), tier=("Reports", 980), help="what became of finished tasks: reverted, fixed later "
                                                                  "by a task naming them, or held; track record (T-0616)")
