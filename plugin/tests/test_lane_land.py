@@ -6,6 +6,7 @@ and ships on a publish grant already given. The drive names it when 2+ lanes wai
 import os
 import re
 import subprocess
+import sys
 import time
 import unittest
 
@@ -15,6 +16,7 @@ from sampo import core as c
 from sampo import train
 
 OLD = "2026-01-01T00:00:00"  # a lane quiet this long counts as finished (core.finished_lanes)
+CLEAN_CMD = "python3 plugin/tests/run.py " + " ".join(c.repo_shape_classes())  # a --hold run's command (train._held_classes)
 
 
 def report(tid, what="Lane work"):
@@ -33,6 +35,21 @@ class LandCase(TrainCase):
             f.write("# Changelog\n\n## Unreleased\n### Highlights\n\n- big\n\n### Everything else\n\n- older (T-9999).\n")
         self.git("add", "CHANGELOG.md")
         self.git("commit", "-qm", "changelog")
+
+    def lane(self, n, name, text=None, ac="true", when=None, tier="S", checked=True):
+        """T-4767: a lane the land trains: the land holds one with no passing affected run at its tip, so each lane
+        carries a clean one (the repo-shape classes held, run just now) unless `checked=False` (the hold's own tests)."""
+        tid = super().lane(n, name, text=text, ac=ac, when=when, tier=tier)
+        if checked:
+            self.record_clean_run(tid)
+        return tid
+
+    def record_clean_run(self, tid, ts=None):
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.add_evidence(c.AFFECTED_LABEL + CLEAN_CMD, "✓ 10 tests", step=1, ran=True,
+                       ts=ts or time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+        c.save_brief(p, b)
 
     def returned(self, tid, what="Lane work"):
         """The builder's own stop, its report ending in the close lines."""
@@ -344,23 +361,26 @@ class Land(LandCase):
         self.assertIn("later.py", touches)
         self.assertTrue(risky)
 
-    def test_a_lane_whose_affected_run_predates_its_tip_trains_after_the_fresh_ones(self):
-        # T-3963: 2026-11-08's train left out three lanes whose builders' affected runs came before their last commit
-        stale, fresh, none = (self.lane(1, "a.txt", when=OLD), self.lane(2, "b.txt", when=OLD),
+    def test_a_lane_whose_affected_run_predates_its_tip_is_held_and_the_fresh_ones_train(self):
+        # T-3963: 2026-11-08's train left out three lanes whose builders' affected runs came before their last commit;
+        # T-4767: such a lane is no longer trained last but held, with the line to rerun its check
+        stale, fresh, none = (self.lane(1, "a.txt", when=OLD, checked=False), self.lane(2, "b.txt", when=OLD),
                               self.lane(3, "d.txt", when=OLD))
-        p = c.find_project(self.repo)
-        for tid, ts in ((stale, "2025-06-01T00:00:00Z"), (fresh, "2026-06-01T00:00:00Z")):
-            b = c.find_brief(p, tid)
-            b.add_evidence(c.AFFECTED_LABEL + "python3 -m pytest -q x", "✓ ok", step=1, ts=ts, ran=True)
-            c.save_brief(p, b)
+        self.run_stale(stale)
         r = self.land("--batch", "1")
-        self.assertRegex(r.stderr, rf"(?m)^sampo lane land: {stale}: .*affected run predates the lane tip.*"
-                                   rf"sampo check --affected --evidence {stale}")
-        self.assertNotRegex(r.stderr, rf"{fresh}: its newest|{none}: its newest")
+        self.assertRegex(r.stderr, rf"(?m)^sampo lane land: {stale}: held: no passing affected check at its tip "
+                                   rf"\(its newest affected run is older than its last commit\).*"
+                                   rf"sampo lane accept {stale}")
         order = re.findall(r"train \d+: (T-\d+)", r.stderr)
-        self.assertEqual(order, [fresh, none, stale], "the stale lane trains last, and still trains")
-        self.assertIn(" 0 parked", r.stdout)
-        self.assertTrue(os.path.exists(os.path.join(self.repo, "a.txt")), "landed")
+        self.assertEqual(order, [fresh, none], "the stale lane does not train")
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "a.txt")), "held")
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "b.txt")), "landed")
+
+    def run_stale(self, tid):
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.add_evidence(c.AFFECTED_LABEL + "python3 -m pytest -q x", "✓ ok", step=1, ts="2025-06-01T00:00:00Z", ran=True)
+        c.save_brief(p, b)
 
     def test_a_lane_closed_in_place_is_landed(self):  # T-3907: finish inside the lane left a done task, branch unmerged
         a = self.lane(1, "a.txt", when=OLD)
@@ -832,6 +852,119 @@ class AuditSurvives(LandCase):
         x = c.find_brief(p, b)
         blockers = x.audit_blockers(tree=c.audit_tree_past_merges(p, x, c.worktree_id(lane2)))
         self.assertTrue(any("files changed since the audit" in y for y in blockers), blockers)
+
+
+class UncheckedLane(LandCase):
+    """T-4767: train 1115k (2026-11-15) took T-4154, T-4155 and T-4283 with no check on record at all (no lane_check, no
+    accepted event: _check_hold held 'a check that never ran' nothing), so each carried a red its builder never saw and
+    the gate ran 100 minutes for nothing. The land trains a lane only with a passing affected run at its tip that held the
+    repo-shape classes (_clean_run) or a green check at that tip; any other lane is held with the line to run its check."""
+    def run_at_tip(self, tid, cmd=None, result="✓ 10 tests", ts="2026-06-01T00:00:00Z"):
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        b.add_evidence(c.AFFECTED_LABEL + (cmd or CLEAN_CMD), result, step=1, ts=ts, ran=True)
+        c.save_brief(p, b)
+
+    def ready(self, n, name):
+        tid = self.lane(n, name, when=OLD, checked=False)
+        self.audited(tid)
+        self.returned(tid, f"Lane {n}")
+        return tid
+
+    def landed(self, name):
+        return os.path.exists(os.path.join(self.repo, name))
+
+    def test_unchecked_lane_with_no_check_on_record_is_held_with_the_line_to_run_it(self):
+        a = self.ready(1, "a.txt")
+        r = self.land(check=False)
+        self.assertFalse(self.landed("a.txt"), r.stdout + r.stderr)
+        self.assertRegex(r.stderr, rf"sampo lane land: {a}: held: no passing affected check at its tip")
+        self.assertIn(f"sampo lane accept {a} --audit LENS HOW RESULT", r.stderr)  # accept refuses without an audit
+        self.assertIn(f"sampo check --affected --hold --evidence {a}", r.stderr)
+        self.assertEqual(self.gate_runs(), 0, "a held lane costs no gate run")
+
+    def test_unchecked_lane_whose_newest_run_names_only_its_own_modules_is_held(self):
+        a = self.ready(1, "a.txt")
+        self.run_at_tip(a, cmd="python3 plugin/tests/run.py test_one test_two")  # the builder's modules, no repo-shape classes
+        r = self.land(check=False)
+        self.assertFalse(self.landed("a.txt"), r.stdout + r.stderr)
+        self.assertIn("did not hold the repo-shape classes", r.stderr)
+
+    def test_unchecked_lane_with_a_failing_or_older_run_is_held_and_says_which(self):
+        a, b = self.ready(1, "a.txt"), self.ready(2, "b.txt")
+        self.run_at_tip(a, result="✗ 1 failed")
+        self.run_at_tip(b, ts="2025-12-01T00:00:00Z")  # before the lane's last commit
+        r = self.land(check=False)
+        self.assertFalse(self.landed("a.txt") or self.landed("b.txt"), r.stdout + r.stderr)
+        self.assertRegex(r.stderr, rf"{a}: held: no passing affected check at its tip \(its newest affected run failed")
+        self.assertRegex(r.stderr, rf"{b}: held: no passing affected check at its tip \(its newest affected run is older")
+
+    def test_unchecked_lane_a_full_passing_run_at_its_tip_lands_without_a_new_check(self):
+        a = self.ready(1, "a.txt")
+        self.run_at_tip(a)
+        r = self.land()
+        self.assertTrue(self.landed("a.txt"), r.stdout + r.stderr)
+        self.assertNotIn("held:", r.stderr)
+
+    def test_unchecked_lane_whose_check_is_running_or_was_cut_off_at_its_tip_is_held(self):
+        # 2026-11-17: T-4139's check ran, was cut off twice, and the land's train had taken the lane before it began
+        from sampo import cli
+        a, b = self.ready(1, "a.txt"), self.ready(2, "b.txt")
+        p = c.find_project(self.repo)
+        for n, tid, meta in ((1, a, {"check_state": "running", "check_pid": str(os.getpid()),
+                                      "check_ticks": str(train._ticks(os.getpid()))}),
+                             (2, b, {"check_state": "cut_off", "check_cut_timeout": "1200"})):
+            tip = self.git("rev-parse", "HEAD", cwd=os.path.join(self.tmp, f"lane{n}"))
+            cli.mutate(p, tid, lambda x, m=meta, t=tip: x.meta.update(check_tip=t, **m), "x", {})
+        r = self.land(check=False)
+        self.assertFalse(self.landed("a.txt") or self.landed("b.txt"), r.stdout + r.stderr)
+        self.assertIn(f"{a}: held: check running", r.stderr)
+        self.assertIn(f"{b}: held: its check was cut off or ended without a result twice", r.stderr)  # T-4404's wording
+        self.assertIn(f"sampo check --affected --timeout 1200 --hold --evidence {b} in the lane, in the background", r.stderr)
+
+    def test_unchecked_lane_that_waits_for_a_second_train_is_read_again_when_its_turn_comes(self):
+        # the land read the hold once at its start: a lane committed to while an earlier train's gate ran was taken unchecked
+        a, b = self.ready(1, "a.txt"), self.ready(2, "b.txt")
+        self.record_clean_run(a)
+        self.record_clean_run(b, ts="2026-11-01T00:00:00Z")  # a clean run at its tip when the land starts: dated before the late commit
+        late, marker = os.path.join(self.tmp, "lane2"), os.path.join(self.tmp, "late-commit")
+        self.fm("check", "add", f"test -e {marker} || (touch {marker} && git -C {late} commit -q --allow-empty -m late)")
+        r = self.land("--batch", "1", check=False)
+        self.assertTrue(self.landed("a.txt"), r.stdout + r.stderr)
+        self.assertFalse(self.landed("b.txt"), r.stdout + r.stderr)
+        self.assertRegex(r.stderr, rf"{b}: held: no passing affected check at its tip \(its newest affected run is older")
+        self.assertEqual(re.findall(r"train \d+: (T-\d+)", r.stderr), [a], "no second train for the held lane")
+
+    def test_unchecked_lane_held_at_the_start_joins_the_next_train_when_its_check_turns_green(self):
+        # T-4767 review: a lane the hold dropped at the land's start sat in `seen`, in neither ready nor parked, so a check
+        # that finished while train 1 ran never brought it back ("it joins the land when its check is green")
+        a, b = self.ready(1, "a.txt"), self.ready(2, "b.txt")
+        self.record_clean_run(a)  # b has no run on record: held at the start
+        script, marker = os.path.join(self.tmp, "green.py"), os.path.join(self.tmp, "went-green")
+        with open(script, "w") as f:  # what a finished hand check leaves: a clean affected run at b's tip, dated now
+            f.write("import sys\nsys.path.insert(0, %r)\nimport time\nfrom sampo import core as c\n"
+                    "p = c.find_project(%r)\nb = c.find_brief(p, %r)\n"
+                    "b.add_evidence(c.AFFECTED_LABEL + %r, '✓ 10 tests', step=1, ran=True, "
+                    "ts=time.strftime('%%Y-%%m-%%dT%%H:%%M:%%SZ', time.gmtime()))\nc.save_brief(p, b)\n"
+                    % (os.path.dirname(os.path.dirname(c.__file__)), self.repo, b, CLEAN_CMD))
+        self.fm("check", "add", f"test -e {marker} || (touch {marker} && {sys.executable} {script})")
+        r = self.land("--batch", "1", check=False)
+        self.assertRegex(r.stderr, rf"{b}: held: no passing affected check at its tip \(it has no affected run")
+        self.assertTrue(self.landed("a.txt") and self.landed("b.txt"), r.stdout + r.stderr)
+        self.assertEqual(re.findall(r"train \d+: (T-\d+)", r.stderr), [a, b], "b rode the next train of the same land")
+
+    def test_unchecked_lane_a_green_check_at_an_older_tip_does_not_count(self):
+        from sampo import cli
+        a = self.ready(1, "a.txt")
+        p = c.find_project(self.repo)
+        tip = self.git("rev-parse", "HEAD", cwd=os.path.join(self.tmp, "lane1"))
+        cli.mutate(p, a, lambda x: x.meta.update(check_state="green", check_tip="0" * 40), "x", {})
+        r = self.land(check=False)
+        self.assertFalse(self.landed("a.txt"), r.stdout + r.stderr)
+        self.assertIn("held: no passing affected check at its tip", r.stderr)
+        cli.mutate(p, a, lambda x: x.meta.update(check_tip=tip), "x", {})
+        self.land()
+        self.assertTrue(self.landed("a.txt"), "the same lane lands when its green check is at its tip")
 
 
 if __name__ == "__main__":

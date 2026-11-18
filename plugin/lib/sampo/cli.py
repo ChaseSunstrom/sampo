@@ -7662,9 +7662,63 @@ def deadline_line(timeout, limit, rec, hold=False, evidence=None, code=124):
     tail = (" --hold" if hold else "") + (f" --evidence {evidence}" if evidence else "")
     if code in (130, 143):
         return f"ended from outside (exit {code}): {ran}; run it again: sampo check --affected{tail}"
-    bigger = 2 * (timeout if timeout and timeout > 0 else 600)
+    # T-4892 review: twice the deadline it really had (a sized one is larger than the --timeout asked for)
+    bigger = 2 * max(timeout if timeout and timeout > 0 else 600, round(limit or 0))
     at = "no limit" if limit is None else f"{limit:g} s"
     return f"stopped at its deadline ({at}): {ran}; rerun with a larger one: sampo check --affected --timeout {bigger:g}{tail}"
+
+
+SIZED_MARGIN = 1.5  # T-4892: the recorded seconds are one quiet run's; a loaded machine's try takes longer
+
+
+def sized_limit(limit, need):
+    """T-4892: the affected check's deadline (seconds, already load-scaled; None: none) sized for a selection that
+    `need` (run.py --estimate: recorded seconds, known classes, CPU slots) says takes longer: its seconds over its slots,
+    load-scaled, times SIZED_MARGIN; never under `limit`, never past the accept runner's wall less five minutes. A wide
+    hub selection (1,100+ classes, 750 s of wall on 8 slots) was cut at the fixed 600 s every try (T-4892)."""
+    if limit is None or not need or not need.get("known"):
+        return limit
+    from sampo import train
+    want = c.load_scaled(float(need.get("seconds") or 0) / max(1, int(need.get("slots") or 1))) * SIZED_MARGIN
+    return max(limit, min(want, train.CHECK_WALL_S - 300))
+
+
+def _estimate(root, cmd, env):
+    """T-4892: what `run.py --estimate` says the command's selections cost, summed, or None (no part a plain run.py
+    call, no record, an error, 30 s gone). The command is never run: each ` && ` part that is exactly `<python>
+    <path>/run.py NAME…` (no flag, no shell syntax: the affected command's own shape, the hold check's shape classes
+    included) becomes its own argv with --estimate first, so a part that is anything else is skipped, never started
+    (review: `cmd --estimate` under bash ran the first part's whole suite)."""
+    import shlex
+    parts, total = [], {"seconds": 0.0, "known": 0, "slots": 0}
+    for part in (cmd or "").split(" && "):
+        try:
+            words = shlex.split(part)
+        except ValueError:
+            continue
+        if (len(words) > 2 and os.path.basename(words[0]).startswith("python") and words[1].endswith("run.py")
+                and all(re.fullmatch(r"[A-Za-z_][\w.]*", w) for w in words[2:])):
+            parts.append([words[0], words[1], "--estimate", *words[2:]])
+    for argv in parts:
+        try:
+            r = subprocess.run(argv, cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                               timeout=30)
+            got = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 and r.stdout.strip() else None
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+            got = None
+        if isinstance(got, dict):
+            total["seconds"] += float(got.get("seconds") or 0)
+            total["known"] += int(got.get("known") or 0)
+            total["slots"] = max(total["slots"], int(got.get("slots") or 0))
+    return total if total["known"] else None
+
+
+def progress_of(rec):
+    """T-4892: how far a cut-off run got, from its run record: {classes, not_run}, or None when the record has no class
+    counts (an older run.py's): a missing count is no progress, never 'every class ran' (review)."""
+    if not rec or rec.get("classes") is None or rec.get("classes_not_run") is None:
+        return None
+    return {"classes": rec["classes"], "not_run": rec["classes_not_run"]}
 
 
 def _check_affected(p, args):
@@ -7709,6 +7763,8 @@ def _check_affected(p, args):
     run_id = c.new_run_id(cmd)  # T-4268: the record its run.py leaves is stamped with this id
     env, venv = _venv_env(p.root, _skip_env(skip), cmd)  # T-4150: the project's own interpreter
     limit = c.load_scaled(args.timeout if args.timeout > 0 else None)
+    if hold:  # T-4892: only the lane's own check (accept's, or its rerun) is sized: a foreground run keeps its --timeout
+        limit = sized_limit(limit, _estimate(p.root, cmd, env))
     code, output = c.run_command(p.root, cmd, limit, env=env, niced=bool(p.lane),
                                  run_id=run_id)  # T-4197: a lane's affected tests
     exit_code = code or int(bool(sd_fail))
@@ -7718,6 +7774,8 @@ def _check_affected(p, args):
     stop = deadline_line(args.timeout, limit, rec, hold=hold, evidence=args.evidence, code=code) if cut else ""  # T-4491
     held = {"run_id": run_id, "cut_off": cut, "deadline": stop,
             "failed": sorted({f["class"] for f in (rec or {}).get("failed") or [] if f.get("class")})}
+    if (prog := progress_of(rec)) is not None:  # T-4892: how far the try got: the accept runner starts one that ran classes again
+        held["progress"] = prog
     if args.evidence:  # T-1747: recorded as what it is, never as the full gates (close still needs fm check)
         result = c.run_result(exit_code, output)
         if code and (every := c.failed_classes(output)):  # T-3397: the names first, they survive the cut

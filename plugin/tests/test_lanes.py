@@ -221,6 +221,20 @@ class Lanes(ForemanTestCase):
             self.assertIn(f"a {kind} hold from the shared body", str(e.exception), kind)
             self.assertEqual(self.git("rev-parse", "HEAD").strip(), before, "nothing merged")
 
+    def test_unchecked_lane_merged_by_hand_still_merges_the_hold_lives_in_the_land(self):
+        # T-4767: the land (sampo lane land) holds a lane with no passing affected check at its tip; a hand merge by the
+        # main thread is its own decision and stays open (a follow-up captures guarding it): this pins the boundary
+        tid = self.new("Lane work", self.lane)
+        self._write(self.lane, "lane.py")
+        self.git("add", "lane.py", cwd=self.lane)
+        self.git("commit", "-qm", "lane", cwd=self.lane)
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, tid)
+        self.assertIsNotNone(train._unchecked(b, self.git("rev-parse", "HEAD", cwd=self.lane).strip(), self.repo))
+        self.fm("lane", "merge", tid)
+        self.assertIn(f"Merge {tid}", self.git("log", "-1", "--format=%s"))
+        self.assertTrue(os.path.exists(os.path.join(self.repo, "lane.py")))
+
     def test_a_merged_lanes_task_is_measured_from_the_main_commit_before_the_merge(self):
         # T-0804: main-thread commits made while the lane ran were counted as the lane task's out-of-scope edits
         tid = self.new("Lane work", self.lane)

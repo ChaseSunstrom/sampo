@@ -23,6 +23,9 @@ TWO = ["--audit", "intent", "reviewed the diff", "--audit", "adversary", "tried 
 
 
 class AuditCase(LandCase):
+    def lane(self, *a, checked=False, **k):  # T-4767: accept's own tests start from a lane with no run on record
+        return super().lane(*a, checked=checked, **k)
+
     def setUp(self):
         super().setUp()
         self.spawned = []

@@ -1023,6 +1023,27 @@ def load_times():
     return got or {}
 
 
+def estimate(names, times, slots):
+    """T-4892: {seconds, known, slots}: what the selection `names` (modules, or Module.Class) is known to cost from
+    `times` (load_times: job id -> seconds), over `slots` CPU slots. A class run whole and, another time, split into its
+    tests has both kinds of key: it counts as the larger of the two. Classes with no record add nothing (known counts
+    the ones that do), so the caller never sizes below its own floor. One pass over the times."""
+    mods = {n for n in names if "." not in n}
+    named = {n for n in names if "." in n}
+    per = {}
+    for k, v in times.items():
+        parts = k.split(".")
+        cls = ".".join(parts[:2])
+        if parts[0] not in mods and cls not in named and k not in named:
+            continue
+        w = per.setdefault(cls, [0.0, 0.0])
+        if len(parts) <= 2:
+            w[0] = max(w[0], float(v))
+        else:
+            w[1] += float(v)
+    return {"seconds": round(sum(max(a, b) for a, b in per.values()), 1), "known": len(per), "slots": slots}
+
+
 def save_times(new):
     """Merged into the file's, so a run of a few modules keeps the rest's; capped, newest kept."""
     path = times_path()
@@ -2967,6 +2988,8 @@ def parse(argv=None):
     ap.add_argument("--held", action="store_true", help="print the slot-seconds each kind of run (priority gate, post-merge "
                     "verify, other) took on a UTC day, from this repo's run records, and run nothing (T-4570)")
     ap.add_argument("--day", metavar="YYYY-MM-DD", help="with --held: the UTC day (default today)")
+    ap.add_argument("--estimate", action="store_true", help="print, as JSON, the recorded seconds of the named modules' "
+                                                            "classes and the CPU slots (T-4892); runs nothing")
     ap.add_argument("names", nargs="*", help="test module names (T-0808: fm check affected's {names}); with -k, only "
                                              "their tests that match a -k (T-1994)")
     a = ap.parse_intermixed_args(argv)  # names may sit on either side of -k
@@ -2999,6 +3022,9 @@ def main():
         return show_last(a)
     if a.held:  # T-4570: a reader too
         return show_held(a)
+    if a.estimate:  # T-4892: a reader: what the named selection is known to cost, for the check that sizes its deadline
+        print(json.dumps(estimate(a.names, load_times(), slot_count())))
+        return 0
     return _with_end_handlers(_suite, a)  # T-4399: the readers above return with the default signals (a kill ends them)
 
 

@@ -38,6 +38,9 @@ def stub(exit_code=0, failed=(), cut_off=False, text=None, **extra):
 
 
 class AcceptCase(LandCase):
+    def lane(self, *a, checked=False, **k):  # T-4767: accept's own tests start from a lane with no run on record
+        return super().lane(*a, checked=checked, **k)
+
     def setUp(self):
         super().setUp()
         self.spawned = []  # (the keyword arguments _spawn_check was asked with)
@@ -243,16 +246,16 @@ class CutOff(AcceptCase):
         self.assertEqual(self.meta_of(tid)["check_state"], "running")
         self.assertEqual(self.queued(), [])
 
-    def test_a_check_cut_off_twice_is_left_out_not_started_a_third_time(self):  # cut_off
+    def test_a_check_cut_off_twice_is_left_out_by_the_land_not_started_a_third_time(self):  # cut_off
+        # T-4404: an explicit accept starts it again (test_accept_restart); the land and the check itself never do
         tid = self.a_lane(1)
         self.accept(tid)
         self.child(tid, 1, stub(124, cut_off=True))
         self.child(tid, 1, stub(124, cut_off=True), tries=2)
         self.assertEqual(len(self.spawned), 2)
         self.assertEqual(self.meta_of(tid)["check_state"], "cut_off")
-        out = self.accept(tid)
-        self.assertEqual(len(self.spawned), 2, out)
-        self.assertIn("cut off twice", out)
+        self.assertIn("cut off or ended without a result twice", train._check_hold(self.brief(tid), self.tip(1), self.repo))
+        self.assertEqual(len(self.spawned), 2)
 
     def test_a_check_that_printed_no_result_counts_as_cut_off(self):  # cut_off
         tid = self.a_lane(1)
@@ -482,16 +485,20 @@ class Review(AcceptCase):
         self.assertIn("test_run.EnvClassified", train._check_hold(self.brief(tid), self.tip(1), self.repo))
 
     # -- 3: the dead-check message is true
-    def test_a_check_that_died_twice_names_the_real_way_out_not_accept(self):  # dead
+    def test_a_check_that_died_twice_is_started_again_by_accept_and_names_the_hand_way_too(self):  # dead
+        # T-4404: a dead second try is restartable like a cut-off one (a reboot or an OOM kill took both), as try 1
         tid = self.a_lane(1)
         self.accept(tid)
         cli.mutate(self.p, tid, lambda b: b.meta.update(check_ticks=1, check_tries="2"), "x", {})
         why = train._check_hold(self.brief(tid), self.tip(1), self.repo)
-        self.assertNotIn("accept", why)
+        self.assertIn("ended without a result twice", why)
+        self.assertIn(f"sampo lane accept {tid} starts it again", why)
         self.assertIn(f"sampo check --affected --hold --evidence {tid}", why)
         out = self.accept(tid)
-        self.assertEqual(len(self.spawned), 1, out)
-        self.assertIn(f"sampo check --affected --hold --evidence {tid}", out)
+        self.assertEqual(len(self.spawned), 2, out)
+        self.assertEqual(self.spawned[1]["tries"], 1)
+        self.assertIn("ended without a result twice", out)
+        self.assertIn("again as try 1", out)
 
     def test_a_check_that_died_once_says_accept_starts_it_again_and_does(self):  # dead
         tid = self.a_lane(1)
@@ -767,6 +774,7 @@ class Deadline(AcceptCase):
         self.child(tid, 1, stub(124, cut_off=True, deadline=line), tries=2)
         self.assertEqual(self.meta_of(tid)["check_state"], "cut_off")
         self.assertIn(line, open(self.brief(tid).path).read())
+        self.assertEqual(self.meta_of(tid)["check_cut_timeout"], "1200", "T-4767: the land's hold line sizes its rerun from it")
 
     def test_the_deadline_line_names_the_limit_the_classes_that_ran_and_the_larger_rerun(self):  # deadline
         line = cli.deadline_line(600, 540, {"classes": 1685, "n_not_run": 1370}, hold=True, evidence="T-1")
