@@ -11,6 +11,16 @@
 
 ### Everything else
 
+- The release watch works again: when a newer Claude Code than the tested one exists it files one "Adapt to Claude Code" task per version listing the changelog bullets, fetches the changelog only when the latest version moves, and files nothing on a rerun (T-3361).
+- A lease denial now tells the holder with one bus note per session pair per 10 minutes, `sampo bus receipt` shows whether it was read, and `sampo lease stats` prints blocks, those resolved without the main thread and the median minutes to resolve (T-3950).
+- A Haiku reader now checks every builder and reviewer return for claims with no evidence, unmentioned criteria and out-of-scope files, logging advisory tripwire findings (hollow returns flagged free), and `sampo tripwire ab` prints the reopen rate of flagged against unflagged returns (T-3949).
+- sampo lease drop releases exactly the caller's own leases and its lane's pre-claims; dropping another's needs --force, which is logged and mailed (T-3371).
+- Sampo's MCP server speaks the 2026-07-28 protocol beside 2025-06-18: stateless requests, server/discover, the version per request, and -32022 for an unsupported one (T-3359).
+- sampo session and run --failover/--worker can now drive the Antigravity CLI (agy) and the Cursor CLI (cursor-agent) headless, and the Gemini adapter is marked legacy for Code Assist and API-key use (T-3347).
+- sampo code with a deadline carries on by the clock: a run that is still making progress and has time left is no longer stopped after four extensions of its turn limit; a run with no deadline keeps the limit of four (T-4500).
+- The README's navigation link to "The Ward" now uses GitHub's lower-case anchor #the-ward so it jumps to the section, and a test checks that every README anchor matches a heading (T-3522).
+- Steers like "why only 26 ideas, why not more than that?" are now logged as a "closed" kind of miss, with curly apostrophes and number words handled, so the self-awareness ledger can learn from closed-set complaints (T-3327).
+- A hook given malformed or non-object JSON now refuses cleanly with a one-line message instead of crashing with a traceback, and a missing resume_after_reload no longer raises (T-3324).
 - The hook stage bench no longer turns lane checks red on a loaded machine: it judges the hook's CPU time when the machine is busy and its stage clock when quiet (T-4950).
 - A lane check cut off at its deadline goes on while each try still runs classes (run.py keeps the green ones), each try's deadline is sized from the selection's recorded seconds, and a wall budget over all tries still holds it; the hold line names the try count (T-4892).
 - `sampo lane land` now holds a lane with no passing affected check at its tip, with a line saying to run `sampo lane accept`, and reads that hold again before each train instead of once at start (T-4767).
