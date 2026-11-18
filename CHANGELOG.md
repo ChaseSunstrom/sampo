@@ -11,6 +11,12 @@
 
 ### Everything else
 
+- Ward writer index: every route inline Python takes to a Sampo module is judged (sys.modules, pkgutil, runpy, importlib.util, operator lookups, sys.path edits, a computed import name, a shadow sampo folder), and the index fails closed and is built off the hook path, so a cold tree no longer stalls a command for 4 s (T-4930).
+- The guard no longer refuses a sampo task set --text or sampo capture whose quoted prose holds a hash sign and an import line: only a hash that can start a shell comment stops its argument masking, and the refusal hint points task prose at --file (T-4921).
+- The guard no longer counts a sampo word that is a grep or rg pattern as a sampo call named elsewhere on the line, so a sed-then-grep pipe over a log with a computed command word is allowed, while -o, redirected, tee'd and shell-fed greps and variables holding a sampo verb stay blocked (T-4922).
+- A builder's sampo task evidence --run-file script is read by the wide-check refusal like --run, and an unreadable, variable, oversized or non-regular path is refused with its reason (T-4863).
+- A slow hook's log line now names where the time went: each PreToolUse note builder is its own stage, the watchdog names the function the hook is in, and `sampo friction` counts slow hook calls in their own row instead of as swallowed errors (T-4932).
+- sampo check --affected with no --timeout sizes its deadline from the selection's recorded class seconds, the rule a lane's own check uses, so a hand run of a hub's set is no longer cut off at a fixed 600 s; (T-4864).
 - `sampo task focus ID` now names `sampo focus ID` instead of a bare unknown-verb error (T-4933).
 - sampo lane brief checks the files a brief names against the builder's base: a file only an open task's unlanded branch adds refuses the brief with that task and the depends_on to add, and a path no branch has is listed in the brief as one to create (T-4928).
 - The guard's refusal of a script too long to read now names its bytes, lines and the CPU seconds the reads spent, and gets the shorter-script hint (T-4925).
