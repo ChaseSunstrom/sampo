@@ -1326,6 +1326,21 @@ class KeepGrow(_Moons):  # T-3046: the goal counts kept moons, so grow and the f
         self.assertTrue(all(s[2] for s in seen), "--local-only reaches both jobs")
         self.assertIn("12 kept of 10", self.ms.grow_line(r))
 
+    def test_pace_gives_kept_per_hour_eta_and_the_stage_that_drops_most(self):  # T-3514
+        st = {"total": 1000, "stages": {"exact": {"rejected": 10, "dropped": 5}, "kill": {"rejected": 600, "dropped": 0}}}
+        r = {"survivors": 150, "keep": 1000}
+        with mock.patch.object(self.ms, "status", return_value=st), mock.patch.object(self.ms.time, "time", return_value=7200):
+            k = self.ms.keep_pace(self.p, r, 0, 50)
+            self.assertEqual((k["per_hour"], k["eta_hours"], k["top_drop"], k["top_drop_share"]), (50, 17.0, "kill", 0.6))
+            self.assertEqual(self.ms.keep_pace_text(k), "50 kept/h, ETA 17 h; most dropped at kill (60% of candidates)")
+            k = self.ms.keep_pace(self.p, dict(r, survivors=50), 0, 50)
+            self.assertIsNone(k["eta_hours"])
+            self.assertIn("no ETA yet", self.ms.keep_pace_text(k))
+
+    def test_a_keep_run_reports_its_pace_in_the_line(self):  # T-3514
+        r, _ = self.run_keep(10)
+        self.assertIn("kept/h", self.ms.grow_line(r))
+
     def test_max_calls_is_one_budget_for_both_jobs_and_a_failure_stops_the_loop(self):
         r, seen = self.run_keep(1000, max_calls=7)
         self.assertEqual(r["stopped"], "max_calls")

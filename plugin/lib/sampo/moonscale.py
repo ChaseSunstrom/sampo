@@ -794,6 +794,22 @@ assert sum(BACKOFF) < DOWN_S, "a retry must not land inside DOWN_S; _keep also c
 _STOPS = ("budget", "failed", "local")  # a job stopping for one of these ends a keep run; "done", "target" end only a round
 
 
+def keep_pace(p, r, t0, s0):
+    """T-3514: kept per hour over this run, the hours left to `keep` (None: no kept moon yet) and the stage that drops
+    the most candidates with its share of all candidates."""
+    st, hours = status(p), (time.time() - t0) / 3600
+    rate = (r["survivors"] - s0) / hours if hours > 0 else 0
+    top = max(st["stages"].items(), key=lambda kv: kv[1]["rejected"] + kv[1]["dropped"], default=(None, {}))
+    n = top[1].get("rejected", 0) + top[1].get("dropped", 0)
+    return {"per_hour": round(rate, 1), "eta_hours": round((r["keep"] - r["survivors"]) / rate, 1) if rate > 0 else None,
+            "top_drop": top[0] if n else None, "top_drop_share": round(n / st["total"], 3) if n and st["total"] else 0}
+
+
+def keep_pace_text(k):
+    return (f"{k['per_hour']:g} kept/h, " + (f"ETA {k['eta_hours']:g} h" if k["eta_hours"] is not None else "no ETA yet")
+            + (f"; most dropped at {k['top_drop']} ({k['top_drop_share']:.0%} of candidates)" if k["top_drop"] else ""))
+
+
 def _keep(p, keep, **kw):
     """T-3046: funnel what waits, then grow ROUND rows, again and again until `keep` moons are kept at novelty (stopped
     "keep"), max_calls calls (both jobs' together) are made, the budget, the local model or FAILS failures stop a job, or
@@ -806,12 +822,16 @@ def _keep(p, keep, **kw):
     r = {"calls": 0, "added": 0, "kept": 0, "rejected": 0, "rounds": 0, "stopped": "", "error": "", "keep": keep, "waited": 0,
          "models": collections.Counter(), "reasons": {}, "target": keep, "total": len(rows(p))}
     flat, last = 0, survivors(p)
+    t0, s0 = time.time(), last
     try:
         while True:
             r["survivors"] = survivors(p)
             c.progress(min(r["survivors"], keep), keep, "moons", "kept", outer=True)  # T-3044: shows between its jobs' bars
             flat = flat + 1 if r["rounds"] and r["survivors"] <= last else 0  # rounds in a row that kept nothing new
             last = r["survivors"]
+            if r["rounds"]:
+                r["pace"] = keep_pace(p, r, t0, s0)
+                print("moons: " + keep_pace_text(r["pace"]), file=sys.stderr)
             if r["survivors"] >= keep:
                 r["stopped"] = "keep"
             elif cap is not None and r["calls"] >= cap:
@@ -857,6 +877,7 @@ def grow_line(r):
                 f"{r['keep']} ({r['total']} in the store); stopped: {r['stopped']}"
                 + (f" after waiting {r['waited']} s" if r["stopped"] == "local" and r["waited"] else "")
                 + (f" ({r['error']})" if r["error"] else "")
+                + ("; " + keep_pace_text(r["pace"]) if r.get("pace") else "")
                 + ("; " + ", ".join(f"{m} {n}" for m, n in r["models"].items()) if r["models"] else ""))
     return (f"Moons grow: {r['calls']} call(s), {r['added']} added ({r['kept']} kept, {r['rejected']} rejected), "
             f"{r['total']} of {r['target']} in the store; stopped: {r['stopped']}"
