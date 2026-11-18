@@ -10410,7 +10410,7 @@ def _build_parser(only=None):
                                             "(--max-calls counts both jobs)")
     s.add_argument("--batch", type=int, default=8, help="moonshot grow: moons asked of each call (default 8, at most 50)")
     s.add_argument("--max-calls", type=int, help="moonshot grow/funnel: stop after M model calls")
-    s.add_argument("--workers", type=int, help="moonshot grow: calls at once (default: the local profile's slots)")
+    s.add_argument("--workers", type=int, help="moonshot grow: calls at once, one endpoint (default: every local profile at its slots, and Haiku at 2; T-3310)")
     s.add_argument("--think", choices=("on", "off"), help="moonshot grow: the local model's reasoning, over its profile")
     s.add_argument("--local-only", action="store_true", help="moonshot grow/funnel: a call no local model answers stops "
                                                              "the run (never Haiku)")

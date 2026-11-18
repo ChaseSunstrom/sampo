@@ -478,11 +478,14 @@ class Judge:
                       ms.NOVEL_SYSTEM: ("novelty", done or {}, "no | nothing does this"),
                       ms.REPAIR_SYSTEM: ("repair", repair or {}, "none"),
                       ms.WILDER_SYSTEM: ("wilder", wilder or {}, "none")}
+        self.systems, self.prompts = [], []
         self.calls, self.side, self.fixed = [], side, fixed  # fixed: a kill test holding this passes the kill judge
 
     def __call__(self, p, system, prompt, cheap=True, paid=0, **kw):
-        stage, said, default = self.route[system]
+        stage, said, default = self.route[next(k for k in self.route if system.startswith(k))]  # T-3310: the kill judge's note follows its rule
         self.calls.append(stage)
+        self.systems.append(system)
+        self.prompts.append(prompt)
         if self.side:
             raise self.side
         out = []
@@ -644,12 +647,12 @@ class Funnel(_Funnel):
         f = self.ms.fate(self.p)
         self.assertEqual(self.fates(), {
             ids[0]: ("novelty", "kept"), ids[1]: ("kill", "rejected"), ids[2]: ("novelty", "rejected"),
-            ids[3]: ("tier", "rejected"), ids[4]: ("tier", "merged"), ids[5]: ("exact", "dup"),
+            ids[3]: ("tier", "pooled"), ids[4]: ("tier", "merged"), ids[5]: ("exact", "dup"),
             ids[6]: ("embed", "dup"), ids[7]: ("write", "rejected")})
         self.assertEqual((f[ids[5]]["dup_of"], f[ids[5]]["reason"]), (ids[0], "exact"))
         self.assertEqual((f[ids[6]]["dup_of"], f[ids[6]]["reason"]), (ids[0], "embed"))
         self.assertEqual(f[ids[1]]["reason"], "kill: it needs live production traffic")
-        self.assertEqual(f[ids[3]]["reason"], "tier: low or medium")
+        self.assertEqual(f[ids[3]]["reason"], "tier: low, kept in the pool")  # T-3310: unique, so pooled, not thrown away
         self.assertEqual(f[ids[4]]["merged_into"], ids[2])
         self.assertEqual(f[ids[2]]["reason"], "novelty: already done: GitHub's review reminders")
         self.assertEqual((f[ids[0]]["tier"], f[ids[0]]["wild"]), ("extreme", 5))
@@ -661,8 +664,8 @@ class Funnel(_Funnel):
         x = self.ms.export(self.p)["funnel"]
         self.assertEqual((x["generated"], x["write"], x["dups"]), (8, {"kill test": 1}, {"exact": 1, "embed": 1,
                                                                                            "shingle": 0}))
-        self.assertEqual((x["rejected"], x["merged"], x["kept"], x["pending"]),
-                         ({"kill": 1, "tier": 1, "novelty": 1}, 1, 1, 0))
+        self.assertEqual((x["rejected"], x["merged"], x["kept"], x["pending"], x["pooled"]),
+                         ({"kill": 1, "tier": 0, "novelty": 1}, 1, 1, 0, 1))
         fam = self.ms.export(self.p)
         self.assertEqual((fam["families_total"], fam["families"][0]["lead"], fam["families"][0]["tier"]),
                          (1, FLAKY["title"], "extreme"))
@@ -1569,7 +1572,7 @@ class Wilder(_Funnel):
         kids = [r for r in rows.values() if r.get("parent") == a]
         self.assertEqual(len(kids), 1)
         self.assertEqual((kids[0]["repair"], kids[0]["title"]), ("wilder", "Roll back every deploy before it ships"))
-        self.assertEqual(self.fates()[a], ("tier", "rejected"))
+        self.assertEqual(self.fates()[a], ("tier", "pooled"))  # T-3310: a unique medium moon waits in the pool, rewrite or not
         self.assertFalse([r for r in rows.values() if r.get("parent") == b], "a high-tier moon is not rewritten")
         self.assertEqual(self.ms.fate(self.p)[kids[0]["id"]]["stage"], "write")
         self.go(judge)
@@ -1586,7 +1589,7 @@ class Wilder(_Funnel):
             self.go(judge)
         kids = [r for r in self.ms.rows(self.p) if r.get("parent")]
         self.assertEqual([k["parent"] for k in kids], [a])
-        self.assertEqual(self.fates()[kids[0]["id"]], ("tier", "rejected"))
+        self.assertEqual(self.fates()[kids[0]["id"]], ("tier", "merged"))  # T-3310: still medium, and its pooled parent is the same idea
         self.assertEqual(judge.calls.count("wilder"), 1)
 
     def test_only_a_medium_rejection_is_rewritten_and_a_refusal_is_asked_once(self):
@@ -1676,7 +1679,7 @@ class Writers(_Funnel):
 
         def ask(p, system, prompt, cheap=True, paid=0, feature=None, writer=None, profile=None):
             who = profile or writer
-            stage = names[system]
+            stage = names[next(k for k in names if system.startswith(k))]  # T-3310: the kill judge's note follows its rule
             asked.append((stage, who))
             if stage == "write":
                 objs = [DEPLOY, REVIEW, SECRET, NUDGE]
@@ -1784,7 +1787,7 @@ class Writers(_Funnel):
         kws = []
 
         def judge(p, system, prompt, **kw):
-            kws.append((judged.route[system][0], kw.get("writer"), kw.get("profile")))
+            kws.append((judged.route[next(k for k in judged.route if system.startswith(k))][0], kw.get("writer"), kw.get("profile")))
             return judged(p, system, prompt, **kw)
         self.seed(DEPLOY)
         self.go(judge)
@@ -1842,3 +1845,543 @@ class Pace(_Moons):
         self.log([0.1, 0.2, 0.3, 0.4])  # four moons in the first 24 minutes
         r = self.ms.pace(self.p, now=self.NOW)
         self.assertGreater(r["per_hour"]["24h"], 4.0)
+
+
+# T-3310: more and better ideas per hour -------------------------------------------------------------------------
+
+CELL = {"problem": "slow tests", "source": "pain", "kind": "bugs", "mechanism": "biology", "scale": "file",
+        "surface": "terminal"}
+
+
+def profs(*named):
+    """Fake local profiles, (name, slots) each; patched over _locals, so no endpoint is ever called."""
+    return [dict(PROFILE, name=n, slots=s) for n, s in named]
+
+
+class ConcurrentWrites(_Funnel):
+    """The rival read's first test: two writers at once, the store lock held only around add(), still never a duplicate
+    id or a torn row, and the exact stage drops the same-titled second."""
+
+    def race(self, n_threads, per, title=lambda t, i: FLAKY["title"]):
+        import threading
+        gate, errs, out = threading.Barrier(n_threads, timeout=5), [], []
+
+        def work(t):
+            try:
+                gate.wait()
+                objs = [good(title=title(t, i)) for i in range(per)]
+                out.extend(self.ms.add(self.p, objs, dict(CELL), "haiku", t + 1))
+            except Exception as e:  # noqa: BLE001 - the test reports whatever the thread hit
+                errs.append(repr(e))
+        ts = [threading.Thread(target=work, args=(t,)) for t in range(n_threads)]
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join(10)
+        return out, errs
+
+    def test_two_threads_adding_the_same_moon_both_land_whole_and_exact_drops_the_second(self):
+        out, errs = self.race(2, 1)
+        self.assertEqual(errs, [])
+        self.assertEqual(sorted(i for i, _, _ in out), ["C-000001", "C-000002"])
+        self.assertEqual([r["id"] for r in self.ms.rows(self.p)], ["C-000001", "C-000002"])
+        self.go(stage="exact")
+        self.assertEqual(sorted(v for _, v in self.fates().values()), ["dup", "kept"])
+
+    def test_many_writers_get_unique_contiguous_ids_and_one_funnel_line_per_row(self):
+        out, errs = self.race(6, 3, title=lambda t, i: f"Moon {t} number {i}")
+        self.assertEqual(errs, [])
+        want = [f"C-{n:06d}" for n in range(1, 19)]
+        self.assertEqual([r["id"] for r in self.ms.rows(self.p)], want)
+        self.assertEqual(sorted(i for i, _, _ in out), want)
+        self.assertEqual(len(self.events()), 18)
+        self.assertEqual({r["batch"] for r in self.ms.rows(self.p)}, set(range(1, 7)))
+
+    def test_add_waits_for_a_store_another_holds_and_gives_the_row_when_it_frees(self):
+        import threading
+        done = []
+        with self.ms.store_lock(self.p):  # another run holds it for a moment
+            t = threading.Thread(target=lambda: done.append(self.ms.add(self.p, [FLAKY], dict(CELL), "haiku", 1, wait=3)))
+            t.start()
+            t.join(0.3)
+            self.assertEqual((done, self.ms.rows(self.p)), ([], []), "the writer is waiting, nothing half-written")
+        t.join(5)
+        self.assertEqual([v for _, v, _ in done[0]], ["kept"])
+        self.assertEqual(len(self.ms.rows(self.p)), 1)
+
+
+class ParallelEndpoints(_Funnel):
+    """T-3310: grow runs the local GPU model, Jarvis and Haiku at once, each at its own slot count."""
+
+    def run_grow(self, local, fake, **kw):
+        kw = {"batch": 2, "max_calls": 5, **kw}
+        with mock.patch.object(self.ms, "_locals", side_effect=lambda s: iter(local)), \
+                mock.patch.object(self.ms, "_ask", side_effect=fake):
+            return self.ms.grow(self.p, 1000, **kw)
+
+    @staticmethod
+    def model_of(kw):
+        return kw["profile"] if kw.get("writer") == "local" else "haiku"
+
+    def test_every_endpoint_runs_at_once_each_at_its_own_slot_count(self):
+        import threading
+        gate, seen, paid = threading.Barrier(5, timeout=5), [], []
+
+        def fake(p, system, prompt, cheap=True, paid=0, **kw):
+            gate.wait()  # BrokenBarrierError unless all five calls are in flight together
+            seen.append((kw.get("writer"), kw.get("profile")))
+            if kw.get("writer") == "haiku":
+                paids.append(paid)
+            return reply(2), self.model_of(kw)
+        paids = paid
+        r = self.run_grow(profs(("gpu", 2), ("jarvis", 1)), fake)
+        self.assertEqual(sorted(seen, key=str), sorted([("local", "gpu")] * 2 + [("local", "jarvis")] + [("haiku", None)] * 2,
+                                                       key=str))
+        self.assertEqual((r["calls"], r["added"], r["models"]), (5, 10, {"gpu": 2, "jarvis": 1, "haiku": 2}))
+        self.assertEqual(r["workers"], 5, "the run's slots are the endpoints' slots together")
+        self.assertEqual(sorted(paid), [0, 1], "each Haiku call is told how many paid calls were in flight before it")
+        self.assertEqual([x["id"] for x in self.ms.rows(self.p)], [f"C-{n:06d}" for n in range(1, 11)])
+
+    def test_the_store_lock_is_held_only_around_writes_not_while_a_batch_is_generated(self):
+        import threading
+        took, one = [], threading.Lock()  # the workers take turns, so only grow's own hold could make one Busy
+
+        def fake(p, system, prompt, cheap=True, paid=0, **kw):
+            with one, self.ms.store_lock(self.p):  # a worker thread: Busy under a lock grow held for the whole run
+                took.append(1)
+            return reply(2), "gpu"
+        r = self.run_grow(profs(("gpu", 1)), fake, max_calls=2, workers=1)
+        self.assertEqual((len(took), r["added"], r["stopped"]), (2, 4, "max_calls"))
+
+    def test_grow_still_refuses_a_store_another_funnel_holds_at_the_start(self):
+        import threading
+        held, done = threading.Event(), threading.Event()
+
+        def other():  # another funnel, from its own thread: the lock is re-entrant per thread only (T-3081)
+            with self.ms.store_lock(self.p):
+                held.set()
+                done.wait(30)
+        t = threading.Thread(target=other)
+        t.start()
+        try:
+            held.wait(30)
+            r = self.run_grow(profs(("gpu", 1)), lambda *a, **k: (reply(2), "gpu"), max_calls=1)
+        finally:
+            done.set()
+            t.join()
+        self.assertEqual((r["stopped"], r["calls"]), ("busy", 0))
+
+    def test_an_endpoint_that_keeps_failing_retires_after_three_and_the_rest_carry_on(self):
+        import threading
+        spent, haiku = threading.Event(), []
+
+        def fake(p, system, prompt, cheap=True, paid=0, **kw):
+            if kw.get("writer") == "haiku":
+                haiku.append(1)
+                if len(haiku) >= 3:
+                    spent.set()
+                raise ValueError("haiku is down")
+            spent.wait(5)  # the GPU holds its answer until Haiku has used its three tries
+            return reply(2), "gpu"
+        r = self.run_grow(profs(("gpu", 1)), fake, max_calls=8)
+        self.assertEqual(len(haiku), 3, "an endpoint stops at FAILS failures in a row, the others don't")
+        self.assertEqual((r["stopped"], r["models"], r["added"]), ("max_calls", {"gpu": 5}, 10))
+
+    def test_the_run_stops_failed_once_every_endpoint_has_retired(self):
+        def fake(p, system, prompt, cheap=True, paid=0, **kw):
+            raise ValueError("down")
+        r = self.run_grow(profs(("gpu", 1)), fake, max_calls=50)
+        self.assertEqual((r["stopped"], r["added"]), ("failed", 0))
+        self.assertEqual(r["calls"], 3 + 3, "three tries for the GPU endpoint, three for the Haiku one, however many slots it has")
+
+    def test_local_only_and_a_sensitive_project_get_no_haiku_endpoint(self):
+        for label in ("local-only", "sensitive"):
+            with self.subTest(label):
+                seen = []
+
+                def fake(p, system, prompt, cheap=True, paid=0, **kw):
+                    seen.append(kw.get("writer"))
+                    return reply(2), "gpu"
+                if label == "sensitive":
+                    self.fm("sensitive", "on")
+                self.run_grow(profs(("gpu", 1), ("jarvis", 1)), fake, max_calls=4, local_only=label == "local-only")
+                self.assertEqual(set(seen), {"local"})
+                self.assertEqual(len(seen), 4)
+
+    def test_an_explicit_workers_count_keeps_the_one_pool_it_always_meant(self):
+        seen = []
+
+        def fake(p, system, prompt, cheap=True, paid=0, **kw):
+            seen.append(kw)
+            return reply(2), "gpu"
+        r = self.run_grow(profs(("gpu", 1), ("jarvis", 1)), fake, max_calls=3, workers=2)
+        self.assertEqual((seen, r["workers"]), ([{}, {}, {}], 2))
+
+    def test_the_batch_time_is_booked_on_each_row(self):
+        self.run_grow(profs(("gpu", 1)), lambda *a, **k: (reply(2), "gpu"), max_calls=1)
+        for row in self.ms.rows(self.p):
+            self.assertIsInstance(row["secs"], float)
+            self.assertGreaterEqual(row["secs"], 0)
+        self.assertNotIn("secs", self.ms.add(self.p, [good(title="Other")], dict(CELL), "haiku", 9) and
+                         self.ms.rows(self.p)[-1], "a caller that timed nothing books nothing")
+
+
+class Variety(_Funnel):
+    """T-3310: each batch prompt names the kept set's over-used openers and phrases (learned, never a fixed list) and
+    carries 3 kept moons from distant cells as anchors."""
+
+    def put(self, title, **cell):
+        c = dict(CELL, **cell)
+        return self.ms.add(self.p, [good(title=title)], c, "haiku", 1)[0][0]
+
+    def keep(self, *ids):
+        self.ms._log(self.p, [self.ms._event(i, "novelty", "kept", tier="high", wild=3) for i in ids],
+                     {"stages": {"novelty": {}}}, "novelty")
+
+    def avoid(self):
+        return self.ms._avoid(self.ms.rows(self.p), self.ms.fate(self.p))
+
+    def test_the_avoid_list_comes_from_the_kept_titles(self):
+        self.keep(*[self.put(t) for t in ("Catch a flaky test without waking anyone", "Catch a leaked secret without waking anyone",
+                                          "Catch a slow build without waking anyone", "Sort every inbox by risk")])
+        text = self.avoid()
+        self.assertIn("catch (3)", text)
+        self.assertIn("waking anyone (3)", text)
+        self.assertNotIn("inbox", text, "a title used once is not over-used")
+        self.assertIn("data", text)
+
+    def test_other_titles_give_another_list_so_nothing_is_fixed(self):
+        self.keep(*[self.put(t) for t in ("Zork the plan before you start", "Zork the build after it fails",
+                                          "Zork the queue each morning")])
+        text = self.avoid()
+        self.assertIn("zork (3)", text)
+        self.assertNotIn("catch", text)
+
+    def test_nothing_repeated_nothing_to_avoid_and_only_kept_moons_count(self):
+        self.assertEqual(self.avoid(), "")
+        ids = [self.put(f"Zork number {n}") for n in range(4)]
+        self.assertEqual(self.avoid(), "", "none of them is kept yet")
+        self.keep(*ids)
+        self.assertIn("zork (4)", self.avoid())
+
+    def test_anchors_are_three_kept_moons_from_distant_distinct_cells(self):
+        near, near2 = self.put("Near one"), self.put("Near two", surface="browser")
+        far = [self.put("Far a", kind="docs", scale="team", surface="chat"),
+               self.put("Far a again", kind="docs", scale="team", surface="chat"),
+               self.put("Far b", kind="ci", scale="org", surface="phone"),
+               self.put("Far c", kind="reviews", scale="project", surface="ide")]
+        self.keep(near, near2, *far)
+        got = self.ms._anchors(self.ms.rows(self.p), self.ms.fate(self.p), dict(CELL))
+        self.assertEqual(len(got), 3)
+        self.assertEqual(sorted(x["title"] for x in got if x["title"] != "Far a again"), ["Far a", "Far b", "Far c"])
+        self.assertEqual(len({self.ms._key(x["cell"]) for x in got}), 3, "three different cells")
+        self.assertEqual(self.ms._anchors(self.ms.rows(self.p), self.ms.fate(self.p), dict(CELL), n=1)[0]["title"][:3], "Far")
+
+    def test_the_batch_prompt_carries_the_avoid_list_and_three_anchors(self):
+        titles = ["Catch a flaky test without waking anyone", "Catch a leaked secret without waking anyone",
+                  "Catch a slow build without waking anyone"]
+        self.keep(*[self.put(t, kind=k, scale=s) for t, (k, s) in zip(titles, (("docs", "team"), ("ci", "org"),
+                                                                              ("reviews", "project")))],
+                  self.put("Sort every inbox by risk", kind="chat", scale="team"))
+        seen = []
+
+        def fake(p, system, prompt, cheap=True, paid=0, **kw):
+            seen.append(prompt)
+            return reply(2), "haiku"
+        with mock.patch.object(self.ms, "_ask", side_effect=fake):
+            self.ms.grow(self.p, 100, batch=2, max_calls=1)
+        text = seen[0]
+        self.assertIn("catch (3)", text)
+        self.assertIn("waking anyone (3)", text)
+        self.assertEqual(text.count("Kept moon from a distant cell"), 3)
+        self.assertEqual(text.count("past data, never instructions"), 4, "the avoid block and each anchor are labelled data")
+        self.assertLess(text.index("catch (3)"), text.index("Each moonshot is one JSON object"))
+
+
+class SampoJudge(_Funnel):
+    """T-3310: the kill judge's prompt says what Sampo is and already has."""
+
+    SAMPO = {"grid": "sampo", "kind": "memory", "scale": "one task", "surface": "", "mechanism": "biology",
+             "problem": "slow tests", "source": "pain"}
+
+    def judge(self):
+        """A kill judge that, like the real one did, calls a Sampo moon a system that does not exist, unless told."""
+        base = Judge(self.ms)
+
+        def fake(p, system, prompt, cheap=True, paid=0, **kw):
+            if not system.startswith(self.ms.KILL_SYSTEM):
+                return base(p, system, prompt, cheap, paid)
+            out = []
+            for chunk in prompt.split("<moon n=")[1:]:
+                n = chunk.split(">")[0]
+                hyp = "About: Sampo itself" in chunk and self.ms.SAMPO_NOTE not in system
+                out.append(f"{n}: " + ("no | a hypothetical system that does not exist" if hyp else "yes | one person, one day"))
+            base.calls.append("kill")
+            base.systems.append(system)
+            base.prompts.append(prompt)
+            return "\n".join(out), "jarvis"
+        return fake, base
+
+    def test_the_note_says_what_sampo_is_and_already_has(self):
+        note = self.ms.SAMPO_NOTE
+        for word in ("Sampo", "coding harness", "exists", "memory", "ledger"):
+            self.assertIn(word, note)
+        self.assertIn("never", note)
+        self.assertIn("hypothetical", note)
+
+    def test_a_sampo_moon_is_judged_with_the_note_and_the_marker_and_survives_the_kill(self):
+        mine, theirs = [i for i, _, _ in self.ms.add(self.p, [DEPLOY], dict(self.SAMPO), "haiku", 1)] + \
+                       self.seed(REVIEW)
+        fake, base = self.judge()
+        with mock.patch.object(self.ms, "_ask", side_effect=fake), \
+                mock.patch.object(self.ms, "_embedder", return_value=None):
+            self.ms.funnel(self.p, stage="exact")
+            self.ms.funnel(self.p, stage="embed")
+            self.ms.funnel(self.p, stage="kill")
+        self.assertEqual(self.fates()[mine], ("kill", "kept"))
+        self.assertEqual(self.fates()[theirs], ("kill", "kept"))
+        self.assertIn(self.ms.SAMPO_NOTE, base.systems[0])
+        self.assertTrue(base.systems[0].startswith(self.ms.KILL_SYSTEM), "the rule comes first, the note after it")
+        mine_chunk = next(c for c in base.prompts[0].split("<moon n=")[1:] if DEPLOY["title"] in c)
+        their_chunk = next(c for c in base.prompts[0].split("<moon n=")[1:] if REVIEW["title"] in c)
+        self.assertIn("About: Sampo itself", mine_chunk)
+        self.assertNotIn("About: Sampo itself", their_chunk)
+
+    def test_only_the_kill_judge_gets_the_note(self):
+        self.seed(FLAKY)
+        judge = Judge(self.ms)
+        self.go(judge)
+        for system, calls in zip(judge.systems, judge.calls):
+            self.assertEqual(self.ms.SAMPO_NOTE in system, calls == "kill", calls)
+
+
+class YieldRouting(_Funnel):
+    """T-3310: `sampo moons yield` shows kept per hour and survival per generator model; grow routes more batches to the
+    model with the best kept per hour."""
+
+    n = 0
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(self.ms, "YIELD_MIN", 1)  # these fixtures judge a handful of rows; GrowHeld tests the default
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def fill(self, model, kept, dead, secs):
+        """`kept + dead` rows from `model` whose batch took `secs`, judged: kept at novelty or rejected at kill."""
+        YieldRouting.n += 1
+        out = self.ms.add(self.p, [good(title=f"{model} moon {YieldRouting.n} {i}") for i in range(kept + dead)], dict(CELL),
+                          model, YieldRouting.n, secs=secs)
+        ids = [i for i, _, _ in out]
+        self.ms._log(self.p, [self.ms._event(i, "novelty", "kept") for i in ids[:kept]], {"stages": {"novelty": {}}}, "novelty")
+        self.ms._log(self.p, [self.ms._event(i, "kill", "rejected", "kill: no") for i in ids[kept:]],
+                     {"stages": {"kill": {}}}, "kill")
+
+    def test_kept_per_hour_and_survival_per_model_from_the_decided_rows_only(self):
+        self.fill("gpu", 5, 5, 60)
+        self.fill("haiku", 1, 3, 40)
+        self.ms.add(self.p, [good(title="Pending a"), good(title="Pending b")], dict(CELL), "gpu", 99, secs=100)
+        y = self.ms.model_yield(self.p)["models"]
+        self.assertEqual((y["gpu"]["rows"], y["gpu"]["decided"], y["gpu"]["kept"]), (12, 10, 5))
+        self.assertEqual((y["gpu"]["survival"], y["gpu"]["kept_per_hour"]), (0.5, 300.0))
+        self.assertEqual((y["haiku"]["decided"], y["haiku"]["kept"], y["haiku"]["survival"], y["haiku"]["kept_per_hour"]),
+                         (4, 1, 0.25, 90.0))
+        self.assertEqual(self.ms.model_yield(self.p)["best"], "gpu")
+
+    def test_a_think_variant_counts_toward_its_model_and_a_row_with_no_time_has_no_rate(self):
+        self.fill("gpu+think", 2, 0, 20)
+        self.fill("gpu+nothink", 1, 1, 20)
+        self.fill("old", 1, 1, 0)
+        y = self.ms.model_yield(self.p)["models"]
+        self.assertEqual((y["gpu"]["kept"], y["gpu"]["decided"], y["gpu"]["kept_per_hour"]), (3, 4, 270.0))
+        self.assertIsNone(y["old"]["kept_per_hour"])
+        self.assertEqual(self.ms.model_yield(self.p)["best"], "gpu")
+
+    def test_the_yield_verb_prints_each_model_through_the_real_parser(self):
+        self.assertEqual(self.fm_json("moons", "yield")["models"], {})
+        self.assertIn("no decided moons", self.fm("moons", "yield").stdout.lower())
+        self.fill("gpu", 5, 5, 60)
+        self.fill("haiku", 1, 3, 40)
+        r = self.fm_json("moons", "yield")
+        self.assertEqual((r["best"], r["models"]["gpu"]["kept_per_hour"], r["models"]["haiku"]["survival"]), ("gpu", 300.0, 0.25))
+        text = self.fm("moons", "yield").stdout
+        self.assertIn("gpu: 300.0 kept/hour", text)
+        self.assertIn("50% survive", text)
+        self.assertIn("haiku: 90.0 kept/hour", text)
+
+    def test_grow_sends_more_batches_to_the_model_with_the_best_kept_per_hour(self):
+        import threading
+
+        def trio():
+            gate, got = threading.Barrier(3, timeout=5), []
+
+            def fake(p, system, prompt, cheap=True, paid=0, **kw):
+                gate.wait()  # all three dispatched before any answers: the routing alone picks who gets them
+                got.append(1)
+                return reply(2), ParallelEndpoints.model_of(kw)
+            with mock.patch.object(self.ms, "_locals", side_effect=lambda s: iter(profs(("gpu", 2), ("jarvis", 2)))), \
+                    mock.patch.object(self.ms, "_ask", side_effect=fake):
+                return self.ms.grow(self.p, 1000, batch=2, max_calls=3)["models"]
+        self.assertEqual(trio(), {"gpu": 1, "jarvis": 1, "haiku": 1}, "no yield known: an even share, in order")
+        self.fill("gpu", 5, 5, 60)      # 300 kept an hour
+        self.fill("haiku", 1, 3, 40)    # 90
+        self.fill("jarvis", 1, 9, 120)  # 30
+        self.assertEqual(trio(), {"gpu": 2, "haiku": 1}, "the best model's two slots fill first, then the next best")
+
+
+class LowPool(_Funnel):
+    """T-3310: a low or medium idea unique among the kept moons is pooled, beside the wild ones; the 10,000 count stays
+    the wild tier."""
+
+    def test_a_unique_low_or_medium_moon_is_pooled_and_never_reaches_novelty(self):
+        ids = self.seed(FLAKY, SECRET, DEPLOY)
+        judge = Judge(self.ms, tier={SECRET["title"]: "low | wild 1 | a check", DEPLOY["title"]: "medium | wild 2 | a rollback"})
+        self.go(judge)
+        f = self.ms.fate(self.p)
+        self.assertEqual(self.fates(), {ids[0]: ("novelty", "kept"), ids[1]: ("tier", "pooled"), ids[2]: ("tier", "pooled")})
+        self.assertEqual((f[ids[1]]["tier"], f[ids[1]]["wild"], f[ids[1]]["reason"]), ("low", 1, "tier: low, kept in the pool"))
+        self.assertEqual(f[ids[2]]["tier"], "medium")
+        novelty = [pr for s, pr in zip(judge.systems, judge.prompts) if s.startswith(self.ms.NOVEL_SYSTEM)]
+        self.assertEqual(len(novelty), 1)
+        self.assertNotIn(SECRET["title"], novelty[0])
+        self.assertNotIn(DEPLOY["title"], novelty[0])
+
+    def test_the_10000_count_stays_the_wild_tier_and_the_pool_is_its_own_list(self):
+        ids = self.seed(FLAKY, SECRET, DEPLOY)
+        self.go(Judge(self.ms, tier={SECRET["title"]: "low | wild 1 | a check", DEPLOY["title"]: "medium | wild 2 | a rollback"}))
+        self.assertEqual(self.ms.survivors(self.p), 1)
+        self.assertEqual([r["id"] for r in self.ms.pool(self.p)], ids[1:])
+        s = self.ms.status(self.p)
+        self.assertEqual(s["lowpool"], 2)
+        self.assertIn("2 in the low pool", self.ms.status_line(s))
+        self.assertEqual(self.ms.coverage(self.p)["pooled"], 2)
+        self.assertEqual(self.ms.export(self.p)["funnel"]["pooled"], 2)
+        self.assertEqual(self.ms.export(self.p)["families_total"], 1, "families are the wild survivors")
+
+    def test_a_low_moon_near_a_kept_one_is_still_merged_into_it(self):
+        ids = self.seed(REVIEW, NUDGE)
+        self.go(Judge(self.ms, tier={NUDGE["title"]: "low | wild 1 | a reminder"}))
+        f = self.ms.fate(self.p)
+        self.assertEqual((f[ids[1]]["verdict"], f[ids[1]]["merged_into"]), ("merged", ids[0]))
+
+    def test_two_look_alike_lows_in_one_batch_pool_the_first_and_merge_the_second(self):
+        ids = self.seed(REVIEW, NUDGE)
+        self.go(Judge(self.ms, tier={REVIEW["title"]: "low | wild 1 | a check", NUDGE["title"]: "low | wild 1 | a reminder"}))
+        f = self.ms.fate(self.p)
+        self.assertEqual((f[ids[0]]["verdict"], f[ids[1]]["verdict"], f[ids[1]]["merged_into"]), ("pooled", "merged", ids[0]))
+
+    def test_a_pooled_moon_is_not_judged_again_on_a_rerun(self):
+        self.seed(FLAKY, SECRET)
+        self.go(Judge(self.ms, tier={SECRET["title"]: "low | wild 1 | a check"}))
+        before = self.events()
+        r, judge = self.go()
+        self.assertEqual((r["calls"], judge.calls, self.events()), (0, [], before))
+
+    def test_the_pool_and_kept_are_embedded_once_per_run_not_once_per_batch(self):
+        seeds = [FLAKY, DEPLOY, REVIEW, SECRET]  # four orthogonal fake vectors: none is a dup of another
+        self.seed(*seeds)
+        for stage in ("exact", "embed", "kill"):
+            self.go(stage=stage)
+        calls = []
+        real = self.ms._reps
+
+        def count(p, rs, extra=None):
+            calls.append(len(rs))
+            return real(p, rs, extra)
+        low = {x["title"]: "low | wild 1 | a check" for x in seeds}
+        with mock.patch.object(self.ms, "JUDGE_BATCH", 1), mock.patch.object(self.ms, "_reps", side_effect=count):
+            self.go(Judge(self.ms, tier=low), stage="tier")
+        self.assertEqual(len(calls), 1, "one representation build for the four one-row batches")
+        self.assertEqual(calls[0], 4)
+
+
+class GrowHeld(_Funnel):
+    """T-3310 review: a store held past the write wait loses no generated batch that can still be written; a second grow
+    on the same store refuses; a model with few judged rows is unknown, not worst."""
+
+    def hold(self, release):
+        """Another funnel, from its own thread, holding the store until `release` is set; returns once it holds it."""
+        import threading
+        held = threading.Event()
+
+        def other():
+            with self.ms.store_lock(self.p):
+                held.set()
+                release.wait(30)
+        t = threading.Thread(target=other)
+        t.start()
+        held.wait(30)
+        return t
+
+    def grow_three(self, release, hold_for=None, **kw):
+        """grow with 3 calls at once; the store is taken by another thread when the first call starts, and freed after
+        `hold_for` seconds (None: when grow returns)."""
+        import threading
+        gate, taken, box = threading.Barrier(3, timeout=10), threading.Lock(), []
+
+        def fake(p, system, prompt, cheap=True, paid=0, **kw):
+            with taken:
+                if not box:
+                    box.append(self.hold(release))
+                    if hold_for is not None:
+                        threading.Timer(hold_for, release.set).start()
+            gate.wait()
+            return reply(2), "gpu"
+        with mock.patch.object(self.ms, "_locals", side_effect=lambda s: iter(profs(("gpu", 3)))), \
+                mock.patch.object(self.ms, "_ask", side_effect=fake), \
+                mock.patch.object(self.ms, "WRITE_WAIT", 0.2), mock.patch.object(self.ms, "DRAIN_WAIT", 0.2):
+            r = self.ms.grow(self.p, 1000, batch=2, max_calls=3, **kw)
+        release.set()
+        for t in box:
+            t.join(10)
+        return r
+
+    def test_a_store_held_past_the_write_wait_loses_no_batch_when_it_frees_within_the_deadline(self):
+        import threading
+        with mock.patch.object(self.ms, "WRITE_DEADLINE", 30.0):
+            r = self.grow_three(threading.Event(), hold_for=1.0)
+        self.assertEqual((r["stopped"], r["added"], r["calls"], r["lost"]), ("max_calls", 6, 3, 0))
+        self.assertEqual(len(self.ms.rows(self.p)), 6)
+
+    def test_a_store_that_stays_held_stops_the_run_and_counts_every_batch_not_written(self):
+        import threading
+        with mock.patch.object(self.ms, "WRITE_DEADLINE", 0.5):
+            r = self.grow_three(threading.Event())
+        self.assertEqual((r["stopped"], r["lost"], r["added"]), ("busy", 3, 0))
+        self.assertIn("3 batch(es) not written", self.ms.grow_line(r))
+        self.assertEqual(self.ms.rows(self.p), [])
+
+    def test_a_second_grow_on_the_same_store_says_one_is_running_and_calls_nothing(self):
+        import threading
+        release, calls = threading.Event(), []
+        held, started = threading.Event(), threading.Event()
+
+        def first():
+            with self.ms.grow_lock(self.p):
+                held.set()
+                release.wait(30)
+        t = threading.Thread(target=first)
+        t.start()
+        held.wait(30)
+        try:
+            r = self.ms.grow(self.p, 10, batch=2, max_calls=1)
+        finally:
+            release.set()
+            t.join()
+        self.assertEqual((r["stopped"], r["calls"]), ("busy", 0))
+        self.assertIn("grow is running", r["error"])
+        with mock.patch.object(self.ms, "_ask", side_effect=lambda *a, **k: (calls.append(1), (reply(2), "gpu"))[1]):
+            self.assertEqual(self.ms.grow(self.p, 10, batch=2, max_calls=1)["added"], 2, "the lock is released at the end")
+        self.assertEqual(calls, [1])
+
+    def test_a_model_with_few_judged_rows_is_unknown_and_gets_the_mean_not_the_floor(self):
+        y = YieldRouting
+        for model, kept, dead, secs in (("gpu", 5, 5, 60), ("new", 0, 3, 30)):
+            y.fill(self, model, kept, dead, secs)
+        r = self.ms.model_yield(self.p)
+        self.assertEqual((r["models"]["new"]["kept_per_hour"], r["models"]["new"]["rated"]), (0.0, False),
+                         "its own numbers stay visible")
+        self.assertEqual(r["best"], "gpu")
+        eps = [{"name": "gpu"}, {"name": "new"}]
+        self.ms._weigh(eps, r["models"])
+        self.assertEqual([e["weight"] for e in eps], [300.0, 300.0], "three rejected rows say nothing yet")

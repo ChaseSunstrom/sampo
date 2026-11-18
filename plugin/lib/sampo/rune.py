@@ -4431,8 +4431,11 @@ def _cmd_genesis(args):
                 from sampo import regen
                 args.path = args.module
                 return regen.cmd_regen(args)
-            if verb in ("grow", "coverage", "funnel", "families", "promote", "bench-writers"):  # T-2868/T-2869: Moonscale
+            if verb in ("grow", "coverage", "funnel", "families", "promote", "bench-writers", "yield"):  # T-2868/T-2869: Moonscale
                 from sampo import moonscale
+                if verb == "yield":  # T-3310: kept per hour and survival per generator model, read-only, no model
+                    r = moonscale.model_yield(p)
+                    return scli.out(args, r, moonscale.yield_line(r))
                 if verb == "bench-writers":  # T-3122: kept per call per stage for each writer, into scratch stores
                     r = moonscale.bench_writers(p, batch=args.batch, local_only=args.local_only, seed=args.seed,
                                                 max_calls=args.max_calls)
@@ -4478,7 +4481,7 @@ def _cmd_genesis(args):
                     scli.out(args, {"problems": bad}, "\n".join(bad) or "Moonshot catalogue: no problems.")
                     return 1 if bad else 0
                 raise scli.UsageError("fm genesis moonshot [status|rate|order|check|grow|coverage|funnel|families|"
-                                      "promote|bench-writers|regen]")
+                                      "promote|bench-writers|yield|regen]")
             s = moons.summary(p)
             return scli.out(args, s, "\n".join(moons.seed_lines(p, current(p) or 1)))  # this generation's work
         if action == "novelty":
