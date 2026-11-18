@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Kit demo heights are measured by the render check instead of hand-set numbers in ui-kit.html markers, so a different installed font moves the measured height rather than a test (T-3228).
 - The Genesis export now writes each model as its role from its profile, so the page no longer swaps the word "jarvis" and a repo named jarvis keeps its name (T-2895).
 - sampo lane accept starts a held check again, a cut-off one as try 1 and a red one when the checker's code (cli.py, train.py, tests/run.py) changed since it ran; the land still leaves such a lane out and says which accept restarts it (T-4404).
 - sampo task evidence --background returns at once and records the run when it ends; sampo task evidence wait ID exits 0 (passed), 1 (failed) or 124 (still running) (T-3536).
