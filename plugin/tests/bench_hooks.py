@@ -99,6 +99,24 @@ def within(wall_p95, cpu_p95, budget, load, cpu_p50=None, pressure=0.0):
 PRESSURE_BUSY = 10.0  # percent; an idle desktop reads 0-2
 
 
+def stage_ok(res, budget, sum_p50=None):
+    """T-4950: (ok, why) for a stage_bench result. The stage clock is the hook's own wall time, so on a busy machine
+    (within()'s rule: load per core over 1 or CPU pressure at PRESSURE_BUSY) it counts the waits for a CPU too: at load
+    40-76 on 16 cores it turned lane checks red with no code cause. There the hook process's CPU p99 is judged instead,
+    which a code regression still raises; a quiet machine judges the stage clock's total p99. `sum_p50` bounds state +
+    parse + check at p50, judged only when quiet."""
+    busy = res["load"] > 1 or res["pressure"] >= PRESSURE_BUSY
+    total, cpu = res["stages"]["total"]["p99"], res["cpu"]["p99"]
+    if not within(total, cpu, budget, res["load"], pressure=res["pressure"]):
+        return False, (f"hook CPU p99 {cpu} ms over {budget} ms (busy machine: load {res['load']}, pressure "
+                       f"{res['pressure']}%)" if busy else f"stage clock total p99 {total} ms over {budget} ms")
+    if sum_p50 is not None and not busy:
+        got = sum(res["stages"][k]["p50"] for k in ("state", "parse", "check"))
+        if got >= sum_p50:
+            return False, f"state + parse + check stage p50 {got:.1f} ms, not under {sum_p50} ms"
+    return True, ""
+
+
 def cpu_pressure(cgroup="/proc/self/cgroup", root="/sys/fs/cgroup", system="/proc/pressure/cpu"):
     """T-4029: PSI's 'some avg10' for CPU, the higher of this process's cgroup and the machine's; 0 without PSI."""
     files = [system]

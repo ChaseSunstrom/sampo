@@ -167,11 +167,46 @@ class NoBackground(unittest.TestCase):  # T-4344
             self.assertIn("_scratch_project", calls, f"{fn.name} runs the hook with an environment of its own")
 
 
+def _stage_res(load=0.2, pressure=0.0, total_p99=100.0, cpu_p99=80.0, sum_p50=10.0):
+    """A stage_bench result with only the fields stage_ok reads (T-4950)."""
+    third = sum_p50 / 3
+    return {"load": load, "pressure": pressure, "cpu": {"p50": cpu_p99 / 2, "p99": cpu_p99, "max": cpu_p99},
+            "stages": {"total": {"p50": total_p99 / 2, "p99": total_p99, "max": total_p99},
+                       "state": {"p50": third}, "parse": {"p50": third}, "check": {"p50": third}}}
+
+
+class StageJudge(unittest.TestCase):  # T-4950
+    """A busy machine (load per core over 1, or CPU pressure at PRESSURE_BUSY) inflates the hook's in-process stage
+    clock with waits for a CPU, so the stage bench judges the hook process's CPU time there, as within() does for the
+    other hook benches; a quiet machine keeps the stage clock. The p50 sum bound is judged only when quiet."""
+
+    def test_a_quiet_machine_judges_the_stage_clock(self):
+        self.assertTrue(bench_hooks.stage_ok(_stage_res(total_p99=900, cpu_p99=1500), 1000)[0])
+        ok, why = bench_hooks.stage_ok(_stage_res(total_p99=1500, cpu_p99=200), 1000)
+        self.assertFalse(ok)
+        self.assertIn("stage", why)
+
+    def test_a_busy_machine_judges_cpu_time_not_the_inflated_stage_clock(self):
+        self.assertTrue(bench_hooks.stage_ok(_stage_res(load=3.0, total_p99=1500, cpu_p99=200), 1000)[0])
+        ok, why = bench_hooks.stage_ok(_stage_res(load=3.0, total_p99=1500, cpu_p99=1500), 1000)
+        self.assertFalse(ok)
+        self.assertIn("CPU", why)
+
+    def test_cpu_pressure_alone_is_busy(self):
+        res = _stage_res(load=0.5, pressure=bench_hooks.PRESSURE_BUSY, total_p99=1500, cpu_p99=200)
+        self.assertTrue(bench_hooks.stage_ok(res, 1000)[0])
+
+    def test_the_p50_sum_bound_holds_only_on_a_quiet_machine(self):
+        self.assertFalse(bench_hooks.stage_ok(_stage_res(sum_p50=80), 1000, sum_p50=50)[0])
+        self.assertTrue(bench_hooks.stage_ok(_stage_res(load=3.0, sum_p50=80), 1000, sum_p50=50)[0])
+
+
 class StageBench(unittest.TestCase):  # T-4780
     """The PreToolUse hook timed out (5 s, onFailure block) on short one-line commands while a merge train ran. Its
     own work is measured per stage, for 200 calls one after the other, beside a real `run.py` of test modules (started
     by the bench, stopped when the calls are done; no load of our own). The bound is on the hook's own stage clock
-    (total p99 under a second); the wall figure is printed, never asserted."""
+    (total p99 under a second) on a quiet machine and on the hook's CPU p99 on a busy one (stage_ok, T-4950); the wall
+    figure is printed, never asserted."""
 
     def test_a_one_line_command_beside_a_test_run_is_under_a_second_at_p99(self):
         res = bench_hooks.stage_bench(runs=200, beside=["test_guard", "test_fast_equiv"])
@@ -179,12 +214,14 @@ class StageBench(unittest.TestCase):  # T-4780
         self.assertEqual(res["stage_rows"], res["runs"], "one stage row per counted call")
         # wall is recorded, not gated: on a loaded machine a fork's wait for a CPU says nothing about the hook's code
         print(f"T-4780 one-line hook beside test_guard + test_fast_equiv: wall p50/p99 {res['wall']['p50']}/"
-              f"{res['wall']['p99']} ms, hook's own total p99 {res['stages']['total']['p99']} ms, load {res['load']}")
-        self.assertLess(res["stages"]["total"]["p99"], 1000, res)
+              f"{res['wall']['p99']} ms, hook's own total p99 {res['stages']['total']['p99']} ms, CPU p99 "
+              f"{res['cpu']['p99']} ms, load {res['load']}, pressure {res['pressure']}%")
         for k in ("start", "imports", "state", "parse", "check", "rules", "asks", "snapshot", "after"):
             self.assertIn(k, res["stages"])
-        # the cause the numbers name: the Python start and imports, CPU-bound, not a wait in the guard
-        self.assertLess(res["stages"]["state"]["p50"] + res["stages"]["parse"]["p50"] + res["stages"]["check"]["p50"], 50)
+        # the cause the numbers name: the Python start and imports, CPU-bound, not a wait in the guard (the p50 sum,
+        # judged on a quiet machine only)
+        ok, why = bench_hooks.stage_ok(res, 1000, sum_p50=50)
+        self.assertTrue(ok, f"{why}: {res}")
 
     def test_the_bench_counts_only_calls_made_while_the_test_run_lived(self):
         res = bench_hooks.stage_bench(runs=3, beside=["test_nonexistent_module_4780"])  # run.py exits at once
