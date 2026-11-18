@@ -90,6 +90,51 @@ class BuilderHook(Calm):
                 for need in ("main thread", "sampo lane accept", "plugin/tests/run.py", "-k"):
                     self.assertIn(need, why, cmd)
 
+    def script(self, name, text):
+        path = os.path.join(self.path, ".fm-scratch", name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        return ".fm-scratch/" + name
+
+    def test_a_wide_check_in_a_run_file_script_is_refused_like_a_typed_run(self):
+        wide = self.script("wide.sh", "set -e\npython3 plugin/tests/run.py test_x\nsampo check --affected\n")
+        for cmd in (f"sampo task evidence T-1 --step 1 --run-file {wide}",
+                    f"sampo task evidence T-1 --step 1 --run-file={wide}",
+                    f"sampo quiet -- sampo task evidence T-1 --step 1 --run-file {wide}"):
+            r = self.builder(cmd)
+            self.assertEqual(r.returncode, 2, (cmd, r.stdout, r.stderr))
+            why = json.loads(r.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+            self.assertIn("sampo lane accept", why, cmd)
+
+    def test_an_affected_free_run_file_script_is_not_refused_to_a_builder(self):
+        ok = self.script("ok.sh", "python3 plugin/tests/run.py test_x -k y\nsampo check list\n")
+        r = self.builder(f"sampo task evidence T-1 --step 1 --run-file {ok}")
+        self.assertNotIn("sampo lane accept", r.stdout + r.stderr)
+
+    def test_an_unreadable_or_variable_run_file_path_is_refused_with_its_reason(self):
+        big = self.script("big.sh", "#" * (hooks.RUN_FILE_READ_MAX + 10))
+        for path, reason in ((".fm-scratch/none.sh", "no file"), ("$HOME/s.sh", "variable or a glob"),
+                             (".fm-scratch/*.sh", "variable or a glob"), (big, "too big")):
+            for cmd in (f"sampo task evidence T-1 --step 1 --run-file {path}",
+                        f"sampo task evidence T-1 --step 1 --run-file '{path}'"):
+                r = self.builder(cmd)
+                self.assertEqual(r.returncode, 2, (cmd, r.stdout, r.stderr))
+        why = []
+        self.assertTrue(hooks._runs_wide_check("sampo task evidence T-1 --run-file nope.sh", fmguard, cwd=self.path, why=why))
+        self.assertIn("no file", " ".join(why))
+        fifo = os.path.join(self.path, ".fm-scratch", "pipe")
+        os.mkfifo(fifo)  # its open() would block the hook until a writer came: read as not a regular file, at once
+        why = []
+        self.assertTrue(hooks._runs_wide_check("sampo task evidence T-1 --run-file .fm-scratch/pipe", fmguard,
+                                               cwd=self.path, why=why))
+        self.assertIn("not a regular file", " ".join(why))
+
+    def test_a_run_file_script_is_not_refused_to_the_main_thread(self):
+        wide = self.script("wide2.sh", "sampo check --affected\n")
+        r = self.pre(f"sampo task evidence T-1 --step 1 --run-file {wide}")
+        self.assertNotIn("sampo lane accept", r.stdout + r.stderr)
+
     def test_the_wide_check_in_an_evidence_run_is_not_refused_to_the_main_thread_or_a_reviewer(self):
         cmd = f"sampo task evidence T-1 --step 1 --run {shlex.quote(EVIDENCE_INNER[0])}"
         for ids in ({}, {"agent_id": "a42cb51b932d2222a", "agent_type": "sampo:fm-reviewer"}):

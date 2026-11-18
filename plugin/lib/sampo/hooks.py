@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import sys
 import time
 
@@ -3660,8 +3661,9 @@ def _builder_check_deny(pl, fmguard):
     fixture in the tests run it in a lane too, with no agent_id (nor does a PreToolUse payload exist for them)."""
     if pl.get("tool_name") != "Bash" or not pl.get("agent_id") or pl.get("agent_type") not in c.ns_names("fm-builder"):
         return None
-    if _runs_wide_check((pl.get("tool_input") or {}).get("command") or "", fmguard):
-        return ("deny", "Sampo: never run sampo check --affected or the full sampo check in a builder lane: the main "
+    why = []
+    if _runs_wide_check((pl.get("tool_input") or {}).get("command") or "", fmguard, cwd=pl.get("cwd"), why=why):
+        return ("deny", (f"Sampo: {why[0]}, so it counts as the wide check; " if why else "Sampo: ") + "never run sampo check --affected or the full sampo check in a builder lane: the main "
                         "thread runs the affected check once at sampo lane accept, one lane at a time; run your own "
                         "tests instead: python3 plugin/tests/run.py test_<module> [-k <slice>] (T-4514); a CLEAN task's "
                         "behaviour lock is the bounded form: sampo check --evidence T-<id> --step 1 --lock (T-4648).")
@@ -3671,11 +3673,41 @@ def _builder_check_deny(pl, fmguard):
 EVIDENCE_NEST_MAX = 3  # T-4546: sampo task evidence --run 'sampo task evidence --run …' is read this deep, then refused whole
 
 
-def _evidence_commands(rest):
+RUN_FILE_READ_MAX = 120 * 1024  # T-4863: the most of a --run-file script read here: the CLI's own cap (cli.RUN_FILE_MAX)
+WIDE_MARK = "sampo check --affected"  # what a script this rule can't read stands for: counted as the wide check
+
+
+def _run_file_command(path, cwd, why):
+    """T-4863: the text of the script `sampo task evidence --run-file PATH` would run, read as the CLI reads it (the path
+    against the hook's cwd, at most RUN_FILE_READ_MAX bytes, utf-8 with replacement). A path a variable or a glob names,
+    a missing file, a folder or one over the cap can't be judged: it stands for the wide check (WIDE_MARK) and its
+    reason goes to `why`. The script may change between this read and the run: acceptable for a cost rule."""
+    if not path or re.search(r"[$`*?\[]", path):
+        why.append(f"--run-file {path or '(no path)'}: a path a variable or a glob names can't be checked")
+        return WIDE_MARK
+    full = os.path.join(cwd or "", path)
+    try:
+        if not stat.S_ISREG(os.stat(full).st_mode):  # a FIFO's open() would block the hook; a device never ends
+            why.append(f"--run-file {path}: not a regular file")
+            return WIDE_MARK
+        with open(full, "rb") as f:
+            data = f.read(RUN_FILE_READ_MAX + 1)
+    except OSError as e:
+        why.append(f"--run-file {path}: no file there to read ({e.strerror or type(e).__name__})")
+        return WIDE_MARK
+    if len(data) > RUN_FILE_READ_MAX:
+        why.append(f"--run-file {path}: too big to read ({RUN_FILE_READ_MAX // 1024} KB cap)")
+        return WIDE_MARK
+    return data.decode("utf-8", "replace")
+
+
+def _evidence_commands(rest, cwd=None, why=None):
     """T-4546: the commands `sampo task evidence <rest>` hands to bash: its --run and --bench values (`--run CMD` and
     `--run=CMD`; the CLI takes no abbreviated option, so these are the spellings). The positional CMD RESULT form only
-    records text and runs nothing."""
+    records text and runs nothing. T-4863: and the text of a --run-file script (`--run-file PATH`, `--run-file=PATH`),
+    read against `cwd`; one it can't read stands for the wide check, its reason appended to `why`."""
     out = []
+    why = [] if why is None else why
     for i, a in enumerate(rest):
         flag, eq, val = a.partition("=") if a.startswith("--") else (a, "", "")
         if flag in ("--run", "--bench"):
@@ -3683,10 +3715,12 @@ def _evidence_commands(rest):
                 out.append(val)
             elif i + 1 < len(rest):
                 out.append(rest[i + 1])
+        elif flag == "--run-file":
+            out.append(_run_file_command(val if eq else (rest[i + 1] if i + 1 < len(rest) else ""), cwd, why))
     return out
 
 
-def _runs_wide_check(command, fmguard, depth=0):
+def _runs_wide_check(command, fmguard, depth=0, cwd=None, why=None):
     """T-4514, T-4546: does this shell command run the wide check, directly or in the command a `sampo task evidence
     --run/--bench` runs (read by this same loop, so fm, quiet and an env prefix mean the same inside)? More than
     EVIDENCE_NEST_MAX evidence calls inside each other count as the wide check: nothing honest nests that."""
@@ -3698,7 +3732,7 @@ def _runs_wide_check(command, fmguard, depth=0):
             args = rest[1:] if rest[:1] and os.path.basename(rest[0]) in fmguard.FM_PROGRAMS else []
         verb, rest = fmguard._fm_subcommand(args)
         if verb == "task" and rest[:1] == ["evidence"]:
-            if any(_runs_wide_check(inner, fmguard, depth + 1) for inner in _evidence_commands(rest[1:])):
+            if any(_runs_wide_check(inner, fmguard, depth + 1, cwd, why) for inner in _evidence_commands(rest[1:], cwd, why)):
                 return True
             continue
         if verb != "check" or "-h" in rest or "--help" in rest:
