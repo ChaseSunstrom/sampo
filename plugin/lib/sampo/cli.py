@@ -11259,7 +11259,8 @@ FOLDED = {"proof": "prove --rollup", "calibration": "outcomes --judgment", "inci
           # T-3612: guesses events.jsonl counts (unknown_word), each a hint: `code models list` would run a request
           "models": "code models", "where": "wiring (its first line: the version and the plugin folder)",
           "scope": "task set ID scope+=a,b", "awaiting": "next (it names the lanes awaiting a merge)",
-          "affected": "check --affected", "approve": "task set ID approved=true"}
+          "affected": "check --affected", "approve": "task set ID approved=true",
+          "focus": "focus ID (a verb of its own)"}  # T-4933: `task focus` was a friction miss; a hint, as T-2461 says
 # T-1180: what builders and small models guess, run as what they meant (one quiet note says which); first match wins
 ALIASES = [(("task", "list"), ["queue"]), (("task", "ls"), ["queue"]), (("task", "all"), ["queue"]),
            (("tasks",), ["queue"]), (("list",), ["queue"]), (("ls",), ["queue"]),

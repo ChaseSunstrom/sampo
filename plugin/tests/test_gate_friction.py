@@ -165,7 +165,8 @@ class Typos(ForemanTestCase):
         for argv, home in ((["models", "list"], "code models"),  # T-3742: bare `models` is a verb now
                            (["where"], "wiring"), (["task", "scope", "T-1"], "task set ID scope+=a,b"),
                            (["scope"], "task set ID scope+=a,b"), (["lane", "awaiting"], "next"),
-                           (["affected"], "check --affected"), (["task", "approve", "T-1"], "task set ID approved=true")):
+                           (["affected"], "check --affected"), (["task", "approve", "T-1"], "task set ID approved=true"),
+                           (["task", "focus", "T-1"], "focus ID")):  # T-4933: a friction digest's unknown-verb miss
             p = self.fm(*argv, check=False)
             self.assertEqual(p.returncode, 2, argv)
             self.assertIn(f"did you mean {home}", p.stderr, argv)
