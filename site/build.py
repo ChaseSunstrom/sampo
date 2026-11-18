@@ -718,6 +718,14 @@ def export_cards(rows, dest, block=CARD_BLOCK, page=CARD_PAGE, examples=None, ki
     for name, bodies in shards.items():
         files[name] = _lines("{", bodies, "}")
     if kit and "ui" in grids:
+        if any(d.get("h") is None for d in kit.values()):  # T-3228: unmeasured (no browser): keep what the last export measured
+            try:
+                with open(os.path.join(dest, "kit.json"), encoding="utf-8") as f:
+                    old = json.load(f).get("kit") or {}
+            except (OSError, ValueError, AttributeError):
+                old = {}
+            kit = {n: d if d.get("h") is not None or not isinstance(old.get(n), dict) or type(old[n].get("h")) is not int
+                   else {**d, "h": old[n]["h"]} for n, d in kit.items()}
         files["kit"] = dump({"frame": frame or "", "kit": kit}) + "\n"
     wrote = sum(write_if_changed(os.path.join(dest, name + ".json"), text) for name, text in files.items())
     sums = {name: hashlib.sha256(text.encode()).hexdigest()[:8] for name, text in files.items()}  # the page's ?v=

@@ -539,6 +539,16 @@ class CardsDemo(unittest.TestCase):
             build.export_cards(CARDS[:2], d)
             self.assertFalse(os.path.exists(os.path.join(d, "kit.json")), "no UI cards, no kit: the stale one goes")
 
+    def test_an_unmeasured_kit_keeps_the_heights_the_last_export_wrote(self):
+        """T-3228: a publish from a box with no browser (every "h" None) must not commit all-default heights."""
+        build = site("build")
+        frame = "<html></head><body></body></html>"
+        unmeasured = {n: {"html": d["html"], "h": None} for n, d in KIT.items()}
+        with tempfile.TemporaryDirectory() as d:
+            build.export_cards(CARDS, d, block=1, examples=EXAMPLES, kit=KIT, frame=frame)
+            build.export_cards(CARDS, d, block=1, examples=EXAMPLES, kit=unmeasured, frame=frame)
+            self.assertEqual(json.loads(read_text(os.path.join(d, "kit.json")))["kit"], KIT)
+
     def test_the_cards_export_resolves_the_store_and_the_kit(self):
         src = read_text(os.path.join(ROOT, "site", "build.py"))
         self.assertIn("smallcards.examples()", src)

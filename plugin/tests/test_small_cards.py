@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import threading
 import types
 import unittest
@@ -817,5 +818,10 @@ class ExamplesRendered(_Cards):
             with self.subTest(comp):
                 self.assertEqual(works.sanitise_html(kit[comp]["html"])[1], [], "the kit is clean as written")
                 self.assertEqual([g for g, v in got.items() if g != "h" and not v["ok"]], [], got)
-                self.assertLessEqual(got["h"], kit[comp]["h"], "its declared height holds it")
-                self.assertLessEqual(kit[comp]["h"] - got["h"], 40, "and isn't far taller")
+                self.assertEqual(kit[comp]["h"], got["h"], "kit() reports the rendered height, not a hand-set one")
+
+    def test_kit_markers_carry_no_height(self):
+        with open(self.sc.KIT, encoding="utf-8") as f:
+            marks = re.findall(r"<!-- kit: (.*?) -->", f.read())
+        self.assertEqual(len(marks), len(self.sc.COMPONENTS))
+        self.assertTrue(all(re.fullmatch(r"[a-z ]+", m) for m in marks), marks)

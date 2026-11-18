@@ -1,9 +1,9 @@
 <!-- T-3102: the UI kit. One hand-written demo per UI card component, shown on the Cards page when a card has no kept
 example of its own, and given to the local model as a finished example of the same component. Each sits under a
-`kit: COMPONENT HEIGHT` marker (HEIGHT in px, its rendered height at 390 px wide, padding included). They use only the
+`kit: COMPONENT` marker (its height is measured by a render at 390 px wide, never set by hand). They use only the
 tokens in smallcards.UI_CSS, must pass works.sanitise_html unchanged, and pass every render gate light and dark:
 test_small_cards.ExamplesRendered checks both. -->
-<!-- kit: button 140 -->
+<!-- kit: button -->
 <style>
 .b-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .b{display:inline-flex;align-items:center;gap:6px;height:36px;padding:0 14px;border-radius:var(--radius);border:1px solid var(--line);background:var(--raised);font-weight:600;font-size:14px;box-shadow:var(--shadow);cursor:pointer}
@@ -24,7 +24,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <button class="b b-sm b-danger" type="button">Delete release</button>
 <button class="b b-sm b-off" type="button" disabled>Archived</button>
 </div>
-<!-- kit: form 330 -->
+<!-- kit: form -->
 <style>
 .f{display:grid;gap:14px;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--raised);box-shadow:var(--shadow)}
 .f h3{font-size:16px}
@@ -43,7 +43,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <div><label for="f-role">Role</label><select id="f-role"><option>Developer</option><option>Maintainer</option><option>Admin</option></select></div>
 <div class="f-act"><button type="button">Cancel</button><button class="go" type="button">Send invite</button></div>
 </form>
-<!-- kit: input 220 -->
+<!-- kit: input -->
 <style>
 .i-f{margin-bottom:14px}
 .i-f label{display:block;font-weight:600;font-size:13px;margin-bottom:4px}
@@ -58,7 +58,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <div class="i-f"><label for="i-n">Project name</label>
 <div class="i-box"><input id="i-n" type="text" placeholder="e.g. payments-api"></div>
 <p class="i-hint">Lowercase letters, numbers and dashes; 3 to 40 characters.</p></div>
-<!-- kit: select 230 -->
+<!-- kit: select -->
 <style>
 .s label{display:block;font-weight:600;font-size:13px;margin-bottom:4px}
 .s select{width:100%;height:38px;padding:0 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg)}
@@ -74,7 +74,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <div class="s-opt" role="option" aria-selected="false"><span>Virginia</span><span class="s-meta">us-east-1</span></div>
 <div class="s-opt" role="option" aria-selected="false"><span>Singapore</span><span class="s-meta">ap-southeast-1</span></div>
 </div></div>
-<!-- kit: table 250 -->
+<!-- kit: table -->
 <style>
 .t{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--raised)}
 .t table{width:100%;border-collapse:collapse;font-size:13px}
@@ -95,7 +95,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <tr><td><code>b81e07d</code></td><td><span class="t-bad">Failed</span></td><td class="n">0m 38s</td></tr>
 <tr><td><code>9ce3a50</code></td><td><span class="t-ok">Live</span></td><td class="n">2m 05s</td></tr>
 </tbody></table></div>
-<!-- kit: list 250 -->
+<!-- kit: list -->
 <style>
 .l{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:10px;background:var(--raised)}
 .l li{display:flex;gap:12px;align-items:center;padding:10px 12px}
@@ -111,7 +111,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <li><span class="l-av">JB</span><div class="l-body"><div class="l-t">Jonas merged "Retry webhooks"</div><div class="l-m">payments-api #479 · 1 h ago</div></div></li>
 <li><span class="l-av">RS</span><div class="l-body"><div class="l-t">Rosa commented on the release plan</div><div class="l-m">roadmap · yesterday</div></div></li>
 </ul>
-<!-- kit: card 250 -->
+<!-- kit: card -->
 <style>
 .c{border:1px solid var(--line);border-radius:12px;background:var(--raised);box-shadow:var(--shadow);padding:16px}
 .c-h{display:flex;justify-content:space-between;align-items:flex-start;gap:8px}
@@ -131,7 +131,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <div class="c-bar" role="progressbar" aria-valuenow="72" aria-valuemin="0" aria-valuemax="100" aria-label="Progress"><i></i></div>
 <div class="c-f"><span>72% complete</span><span>8 days left</span></div>
 </article>
-<!-- kit: modal 320 -->
+<!-- kit: modal -->
 <style>
 .m-scrim{background:var(--surface);border-radius:12px;padding:20px 12px;border:1px solid var(--line)}
 .m{background:var(--raised);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow-lg);padding:18px}
@@ -149,7 +149,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <label for="m-c">Type <strong>payments-api</strong> to confirm</label><input id="m-c" type="text" value="payments-">
 <div class="m-act"><button type="button">Cancel</button><button class="del" type="button">Delete</button></div>
 </div></div>
-<!-- kit: menu 200 -->
+<!-- kit: menu -->
 <style>
 .mn{width:240px;border:1px solid var(--line);border-radius:10px;background:var(--raised);box-shadow:var(--shadow-lg);padding:4px;font-size:13px}
 .mn-i{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:6px}
@@ -169,7 +169,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <hr>
 <div class="mn-i mn-bad" role="menuitem"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.7 9h5.6l.7-9"/></svg><span>Move to trash</span><kbd style="color:var(--bad)">Del</kbd></div>
 </div>
-<!-- kit: nav 190 -->
+<!-- kit: nav -->
 <style>
 .n-bar{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--raised)}
 .n-brand{display:flex;align-items:center;gap:8px;font-weight:700}
@@ -185,7 +185,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <div class="n-tabs"><a href="#" aria-current="page">Overview</a><a href="#">Deploys</a><a href="#">Logs</a><a href="#">Settings</a></div>
 <div class="n-crumb"><a href="#">Projects</a><span aria-hidden="true">/</span><a href="#">payments-api</a><span aria-hidden="true">/</span><span>Overview</span></div>
 </nav>
-<!-- kit: tabs 160 -->
+<!-- kit: tabs -->
 <style>
 .tb-list{display:flex;gap:18px;border-bottom:1px solid var(--line)}
 .tb{padding:8px 0;font-weight:600;font-size:14px;color:var(--muted);border:0;border-bottom:2px solid transparent;background:none;margin-bottom:-1px;display:flex;gap:6px;align-items:center}
@@ -201,7 +201,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <button class="tb" role="tab" type="button" aria-selected="false">Checks <span class="tb-n">2</span></button>
 </div>
 <div class="tb-p" role="tabpanel"><h3>Retry failed webhooks with backoff</h3><p>Aiko opened this 2 days ago · 3 reviewers approved, 1 change requested.</p></div>
-<!-- kit: toast 190 -->
+<!-- kit: toast -->
 <style>
 .to{display:flex;gap:10px;align-items:flex-start;padding:12px;border:1px solid var(--line);border-radius:10px;background:var(--raised);box-shadow:var(--shadow-lg)}
 .to+.to{margin-top:10px}
@@ -213,7 +213,7 @@ test_small_cards.ExamplesRendered checks both. -->
 </style>
 <div class="to" role="status"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="stroke:var(--ok)"><circle cx="9" cy="9" r="7.5"/><path d="M5.5 9.2l2.3 2.3 4.7-4.8"/></svg><div class="to-b"><div class="to-t">Changes saved</div><div class="to-m">Billing settings were updated.</div></div><button class="to-a" type="button">Undo</button></div>
 <div class="to" role="alert"><svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke-width="1.8" stroke-linecap="round" aria-hidden="true" style="stroke:var(--bad)"><circle cx="9" cy="9" r="7.5"/><path d="M9 5v4.5M9 12.5v.2"/></svg><div class="to-b"><div class="to-t">Upload failed</div><div class="to-m">report-q3.pdf is over the 25 MB limit.</div></div><button class="to-a" type="button">Retry</button></div>
-<!-- kit: chart 270 -->
+<!-- kit: chart -->
 <style>
 .ch{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:14px}
 .ch-h{display:flex;justify-content:space-between;align-items:baseline}
@@ -232,7 +232,7 @@ test_small_cards.ExamplesRendered checks both. -->
 </svg>
 <div class="ch-x"><span>W40</span><span>W41</span><span>W42</span><span>W43</span><span>W44</span><span>W45</span><span>W46</span></div>
 </figure>
-<!-- kit: layout 376 -->
+<!-- kit: layout -->
 <style>
 .ly-h{display:flex;justify-content:space-between;align-items:center}
 .ly-h h1{font-size:18px}
@@ -259,7 +259,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <div class="ly-row"><span>Pro plan, yearly</span><span>$21,400</span></div>
 <div class="ly-row"><span>Team seats</span><span>$15,880</span></div>
 </main>
-<!-- kit: empty state 280 -->
+<!-- kit: empty state -->
 <style>
 .e{text-align:center;padding:28px 20px;border:1px dashed var(--line);border-radius:12px;background:var(--surface)}
 .e-ic{width:56px;height:56px;margin:0 auto 12px;border-radius:14px;display:grid;place-items:center;background:var(--raised);border:1px solid var(--line);box-shadow:var(--shadow);color:var(--link)}
@@ -275,7 +275,7 @@ test_small_cards.ExamplesRendered checks both. -->
 <p>Create a key to call the API from your servers. Keys never leave this workspace.</p>
 <div class="e-a"><button type="button">Read the docs</button><button class="go" type="button">Create key</button></div>
 </div>
-<!-- kit: onboarding 330 -->
+<!-- kit: onboarding -->
 <style>
 .o{border:1px solid var(--line);border-radius:12px;background:var(--raised);padding:16px;box-shadow:var(--shadow)}
 .o-top{display:flex;justify-content:space-between;font-size:12px;color:var(--muted)}
