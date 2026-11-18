@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Auto-evidence matches the same check run another way (a cd, nice, timeout or env prefix, or a superset of the criterion's test modules), and a run that cds into a lane goes to that lane's task (T-3501).
 - sampo run --parallel N is a rolling pool up to the lane cap instead of batches of three with disjoint scopes; hub files no longer serialise it, and load defers a start rather than skipping it (T-3294).
 - The docs skills now give READMEs a scannable shape (short sections, lists and tables, a quick start first), and sampo readme check names each wall of text by line (T-4910).
 - The Ward knows Sampo's writers from the code instead of a hand list: an index of every module's functions, names and classes (a writer reaches a file write or a process start), cached per tree, so a writer the list missed (set_panic, lift_project_pauses, set_standing_autonomy, a module-level alias of os.replace) is refused through every import form (T-4906).
