@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A typed /fm-risk off|on [here] or /fm-trust off now works from the phone, web and remote control: the prompt hook writes the same record as the mod and answers in one line, while scheduled prompts and tool-typed terminal text starting with them are refused (T-4747).
 - A test run that waits for a CPU slot now says when the wait ended, and check_run records the gate's wall wait as wait_s (T-3421).
 - sampo task evidence --run 'cmd | tail' (and hypo, assume, prove) now runs under bash -o pipefail, so a failing stage of a pipe records as a failure, and an early-closing | head is named as SIGPIPE (exit 141) (T-3383).
 - moons grow now runs one generator per endpoint at once, steers by anti-repetition prompts, kills with a Sampo-aware judge, routes by model yield and pools low and medium moons, and keeps unwritten batches while a funnel holds the store; a plain moons grow now spends Haiku (up to $6 a run, $15 a day) unless --local-only (T-3310).
