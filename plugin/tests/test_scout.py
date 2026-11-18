@@ -106,10 +106,26 @@ class ScoutProbes(ForemanTestCase):
 
     def test_claude_code_newer_than_installed_and_tested_is_one_finding(self):
         p = self._p()
-        ctx = {"latest": "2.1.350", "installed": "2.1.301"}
-        found = scout.probe_claude_code(p, ctx)
-        self.assertEqual([x.key for x in found], ["cc:2.1.350"])
-        self.assertEqual(scout.probe_claude_code(p, {"latest": "2.1.301", "installed": "2.1.301"}), [])
+        ctx = {"latest": "2.1.350", "installed": "2.1.350"}  # auto-update: installed == latest (T-3361)
+        log = os.path.join(self.tmp, "CHANGELOG.md")
+        with open(log, "w") as f:
+            f.write("# Changelog\n\n## 2.1.350\n\n- Added `--frobnicate-everything` to claude -p\n"
+                    "- Fixed a crash on start\n\n## 2.0.1\n\n- Added `--ancient-flag-nobody-has`\n")
+        os.environ["FOREMAN_SCOUT_CHANGELOG"] = log
+        try:
+            found = scout.probe_claude_code(p, ctx)
+        finally:
+            os.environ.pop("FOREMAN_SCOUT_CHANGELOG")
+        self.assertEqual([x.key for x in found], [f"ccadapt:{scout.CC_TESTED}->2.1"])
+        self.assertTrue(found[0].home)
+        self.assertIn("Adapt to Claude Code 2.1.350", found[0].title)
+        self.assertIn("--frobnicate-everything", found[0].why)
+        self.assertNotIn("ancient", found[0].why)
+        self.assertIn("DONE-WHEN: CC_TESTED and README name 2.1.350", found[0].why)
+        self.assertEqual(len(scout.capture(p, found)), 1)
+        self.assertEqual(scout.capture(p, found), [], "a rerun files nothing")
+        self.assertEqual(scout.probe_claude_code(p, {"latest": scout.CC_TESTED, "installed": scout.CC_TESTED}), [])
+        self.assertEqual(scout.probe_claude_code(p, {"latest": None, "installed": "2.1.350"}), [])  # offline
         self.assertEqual(scout.probe_claude_code(p, {"latest": None, "installed": "2.1.301"}), [])  # offline
         self.assertEqual(scout.probe_claude_code(p, {"latest": "garbage", "installed": "2.1.301"}), [])
 
@@ -220,20 +236,45 @@ class ScoutProbes(ForemanTestCase):
         self.assertIn("added: gamma; removed: beta; renamed: alpha → alpha2", found[0].why)
         self.assertIn("(open)", found[0].why)
 
-    def test_claude_code_changelog_lines_no_foreman_text_matches_are_findings(self):  # T-1391
+    def test_the_changelog_is_fetched_only_when_latest_moves(self):  # T-3361
+        self.fm("init")
+        page = "## 2.1.350\n\n- Added `--frob` flag\n"
+        with unittest.mock.patch("sampo.research.fetch", return_value=(page, None)) as fetch:
+            scout._changelog("2.1.350")
+            scout._changelog("2.1.350")  # latest hasn't moved: no second GET
+            self.assertEqual(fetch.call_count, 1)
+            with open(os.path.join(c.state_dir(), "cc-changelog.md")) as f:
+                self.assertEqual(f.read(), page)
+            scout._changelog(scout.CC_TESTED)  # not past the tested version: no GET
+            self.assertEqual(fetch.call_count, 1)
+        with unittest.mock.patch("sampo.research.fetch", return_value=(None, "offline")):
+            scout._changelog("2.1.352")
+        self.assertEqual(scout._cache()["cc_changelog_seen"], "2.1.350", "a failed fetch is retried")
+        # a page without latest's header (captive portal, lagging main) neither overwrites the cache nor marks it seen
+        with unittest.mock.patch("sampo.research.fetch", return_value=("<html>login</html>", None)):
+            scout._changelog("2.1.352")
+        self.assertEqual(scout._cache()["cc_changelog_seen"], "2.1.350")
+        with open(os.path.join(c.state_dir(), "cc-changelog.md")) as f:
+            self.assertEqual(f.read(), page)
+
+    def test_the_freshest_changelog_wins_over_a_stale_clone(self):  # T-3361
+        from sampo import lib
+        self.fm("init")
+        flag = "--zq" + "9xk-fresh"
+        clone =os.path.join(lib._sources_dir(), "anthropic-claude-code", "repo")
+        os.makedirs(clone, exist_ok=True)
+        with open(os.path.join(clone, "CHANGELOG.md"), "w") as f:
+            f.write("## 2.1.310\n\n- Added `--old-clone-flag`\n")
+        with open(os.path.join(c.state_dir(), "cc-changelog.md"), "w") as f:
+            f.write(f"## 2.1.350\n\n- Added `{flag}`\n")  # built here: Sampo's own text (this file) must not name it
+        self.assertEqual([t for _, t in scout._cc_bullets()], [f"Added `{flag}`"])
+
+    def test_a_second_newer_release_while_the_first_task_is_open_files_nothing_more(self):  # T-3361
         p = self._p()
-        log = os.path.join(self.tmp, "CHANGELOG.md")
-        with open(log, "w") as f:
-            f.write("# Changelog\n\n## 9.9.9\n\n- Added `--frobnicate-everything` to claude -p\n"
-                    "- Hooks: `PreToolUse` gets a timing field\n- Fixed a crash on start\n\n"
-                    "## 2.0.1\n\n- Added `--ancient-flag-nobody-has`\n")
-        os.environ["FOREMAN_SCOUT_CHANGELOG"] = log
-        try:
-            found = scout.probe_cc_changelog(p, {})
-        finally:
-            os.environ.pop("FOREMAN_SCOUT_CHANGELOG")
-        self.assertEqual([f.title for f in found], ["Claude Code 9.9.9: Added `--frobnicate-everything` to claude -p"])
-        self.assertTrue(found[0].key.startswith("ccfeat:9.9.9:"))
+        first = scout.probe_claude_code(p, {"latest": "2.1.350", "installed": "2.1.350"})
+        self.assertEqual(len(scout.capture(p, first)), 1)
+        again = scout.probe_claude_code(p, {"latest": "2.1.360", "installed": "2.1.360"})
+        self.assertEqual(scout.capture(p, again), [])
 
     def test_doctor_failures_are_findings(self):
         p = self._p()
@@ -376,7 +417,7 @@ class Mandate(ForemanTestCase):  # T-1400
         self.assertEqual(json.loads(self.fm("scout", "--json", env=env).stdout)["captured"], [], "once")
         self.assertIn("ended", self.fm("mandate").stdout)
         self.fm("mandate", "off")
-        self.assertIn("cc:9.9.9", self.fm("scout", "--dry", "--json", env=env).stdout, "cleared: scout runs again")
+        self.assertIn(f"ccadapt:{scout.CC_TESTED}->", self.fm("scout", "--dry", "--json", env=env).stdout, "cleared: scout runs again")
 
 
 class ScoutDrive(ForemanTestCase):
@@ -398,7 +439,7 @@ class ScoutDrive(ForemanTestCase):
         self.fm("task", "new", "Fix the logout", "--type", "FIX", "--tier", "S", "--ac", "a :: true", "--step", "s",
                 "--focus")
         self.hook("Stop", {"session_id": "s1", "last_assistant_message": "working"}, env=env)
-        self.fm("task", "drop", "T-0004", "done in the test", "--force")
+        self.fm("task", "drop", "T-0003", "done in the test", "--force")
         again = json.loads(self.hook("Stop", {"session_id": "s1", "last_assistant_message": "done"}, env=env).stdout or "{}")
         self.assertNotIn("scout", again.get("reason", "").lower())
 

@@ -59,14 +59,23 @@ def probe_claude_code(p, ctx):
     latest, installed = _ver(ctx.get("latest")), _ver(ctx.get("installed"))
     if not latest:
         return []
-    have = max(x for x in (installed, _ver(CC_TESTED)) if x)
-    if latest <= have:
+    # T-3361: CC_TESTED alone is the floor: auto-update makes installed == latest, so the installed version says nothing
+    new = max(x for x in (latest, installed) if x)
+    if new <= _ver(CC_TESTED):
         return []
-    v = ctx["latest"]
-    return [Finding(f"cc:{v}", f"Adopt Claude Code {v}: install it and take its new features and fixes into Sampo",
+    v = ".".join(map(str, new))
+    key = f"ccadapt:{CC_TESTED}->{new[0]}.{new[1]}"  # not cc:*, which older runs keyed per release
+    if key in (c.read_meta(p).get("scout_keys") or {}):
+        return []  # spent: skip reading the changelogs
+    rows = _cc_bullets()
+    bullets = "".join(f"\n- {ver}: {c.fit(t, 200)}" for ver, t in rows[:30])
+    if len(rows) > 30:  # T-2673: a cut list says what it left out
+        bullets += f"\n- {len(rows) - 30} more changelog lines left out"
+    return [Finding(key, f"Adapt to Claude Code {v}: tested version and its changelog since {CC_TESTED}",
                     "FEATURE", "M", f"published {v}; installed {ctx.get('installed') or 'unknown'}; Sampo tested on "
-                    f"{CC_TESTED}. Read its changelog since {CC_TESTED}, adopt what helps, re-verify the hooks and the "
-                    f"pane, then raise CC_TESTED and the README")]
+                    f"{CC_TESTED}. Read the changelog since {CC_TESTED}, adopt what helps, re-verify the hooks and the "
+                    f"pane. Changelog lines naming things Sampo never mentions:{bullets or ' (changelog not fetched)'}\n"
+                    f"DONE-WHEN: CC_TESTED and README name {v}", home=True)]
 
 
 def probe_lib_gaps(p, ctx):
@@ -334,17 +343,23 @@ def _foreman_text():
     return _OWN
 
 
-def probe_cc_changelog(p, ctx):
-    """T-1391: each bullet of Claude Code's changelog past CC_TESTED that names something in backticks Sampo's own
-    text never mentions: a finding to decide whether Sampo should use or adapt to it. The changelog is the indexed
-    anthropic-claude-code source's checkout (data, never run); FOREMAN_SCOUT_CHANGELOG names another file (tests)."""
+def _cc_bullets():
+    """T-1391/T-3361: [(version, text)] for each bullet of Claude Code's changelog past CC_TESTED that names something in
+    backticks Sampo's own text never mentions. Read from FOREMAN_SCOUT_CHANGELOG (tests), else the indexed
+    anthropic-claude-code checkout, else state/cc-changelog.md (fetched by _changelog); data, never run."""
     from sampo import lib
-    path = os.environ.get("FOREMAN_SCOUT_CHANGELOG") or os.path.join(lib._sources_dir(), "anthropic-claude-code",
-                                                                    "repo", "CHANGELOG.md")
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            text = f.read(2 << 20)
-    except OSError:
+    top = lambda t: max([_ver(m) for m in re.findall(r"(?m)^#{1,3}\s*\[?v?(\d+\.\d+\.\d+)", t)] or [()])
+    texts = []
+    named = os.environ.get("FOREMAN_SCOUT_CHANGELOG")
+    for path in ([named] if named else [os.path.join(lib._sources_dir(), "anthropic-claude-code", "repo", "CHANGELOG.md"),
+                                       os.path.join(c.state_dir(), "cc-changelog.md")]):  # a named file alone
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                texts.append(f.read(2 << 20))
+        except OSError:
+            continue
+    text = max(texts, key=top, default="")  # the freshest wins: a stale clone never shadows the fetched page
+    if not text:
         return []
     tested, ver, out, own = _ver(CC_TESTED), None, [], None
     for line in text.splitlines():
@@ -358,17 +373,27 @@ def probe_cc_changelog(p, ctx):
         names = [n for n in re.findall(r"`([^`\n]{2,60})`", b.group(1)) if n.strip()]
         own = own if own is not None else _foreman_text()
         if names and not any(n in own for n in names):
-            text_ = c.plain(b.group(1))
-            out.append(Finding(f"ccfeat:{ver}:{hashlib.sha1(text_.encode()).hexdigest()[:10]}",
-                               f"Claude Code {ver}: {c.fit(text_, 100)}", "RESEARCH", "S",
-                               f"Claude Code's changelog for {ver} names {c.joinmore([c.plain(n) for n in names], 3)}, "
-                               "which nothing in Sampo mentions. Decide whether Sampo should use or adapt to it."))
+            out.append((ver, c.plain(b.group(1))))
     return out
+
+
+def _changelog(latest):
+    """T-3361: fetch Claude Code's changelog into state/cc-changelog.md only when latest is newer than the one last
+    fetched (cc_changelog_seen); a failed fetch leaves seen alone, so the next slow run retries."""
+    v = _ver(latest)
+    if not v or v <= _ver(CC_TESTED) or v <= (_ver(_cache().get("cc_changelog_seen")) or ()):
+        return
+    from sampo import research
+    page, _why = research.fetch("https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md")
+    # only a page that has latest's own header: a captive portal or a lagging main must not displace the good cache
+    if page and re.search(r"(?m)^#{1,3}\s*\[?v?" + re.escape(latest) + r"\b", page):
+        c.write_atomic(os.path.join(c.state_dir(), "cc-changelog.md"), page)
+        _save_cache(cc_changelog_seen=latest)
 
 
 QUICK = [("claude-code", probe_claude_code), ("friction", probe_friction), ("brainstorm", probe_brainstorm),
          ("genesis", probe_genesis)]
-SLOW = [("claude-code", probe_claude_code), ("cc changelog", probe_cc_changelog), ("library gaps", probe_lib_gaps),
+SLOW = [("claude-code", probe_claude_code), ("library gaps", probe_lib_gaps),
         ("doctor", probe_doctor), ("sources", probe_sources), ("friction", probe_friction),
         ("brainstorm", probe_brainstorm), ("find", probe_find)]
 
@@ -406,6 +431,11 @@ def context(slow=False, dry=False):
         elif got:
             _save_cache(cc_latest=got, cc_latest_at=time.time())
             cache = _cache()
+    if slow and not dry and not latest:
+        try:
+            _changelog(cache.get("cc_latest"))
+        except OSError:  # a full disk or a locked state dir: the finding just says the changelog wasn't fetched
+            pass
     if slow and not installed:
         got = _installed()
         if got and dry:
