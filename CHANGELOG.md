@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo task evidence --run 'cmd | tail' (and hypo, assume, prove) now runs under bash -o pipefail, so a failing stage of a pipe records as a failure, and an early-closing | head is named as SIGPIPE (exit 141) (T-3383).
 - moons grow now runs one generator per endpoint at once, steers by anti-repetition prompts, kills with a Sampo-aware judge, routes by model yield and pools low and medium moons, and keeps unwritten batches while a funnel holds the store; a plain moons grow now spends Haiku (up to $6 a run, $15 a day) unless --local-only (T-3310).
 - Kit demo heights are measured by the render check instead of hand-set numbers in ui-kit.html markers, so a different installed font moves the measured height rather than a test (T-3228).
 - The Genesis export now writes each model as its role from its profile, so the page no longer swaps the word "jarvis" and a repo named jarvis keeps its name (T-2895).
