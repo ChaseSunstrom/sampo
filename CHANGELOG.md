@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- moons grow now runs one generator per endpoint at once, steers by anti-repetition prompts, kills with a Sampo-aware judge, routes by model yield and pools low and medium moons, and keeps unwritten batches while a funnel holds the store; a plain moons grow now spends Haiku (up to $6 a run, $15 a day) unless --local-only (T-3310).
 - Kit demo heights are measured by the render check instead of hand-set numbers in ui-kit.html markers, so a different installed font moves the measured height rather than a test (T-3228).
 - The Genesis export now writes each model as its role from its profile, so the page no longer swaps the word "jarvis" and a repo named jarvis keeps its name (T-2895).
 - sampo lane accept starts a held check again, a cut-off one as try 1 and a red one when the checker's code (cli.py, train.py, tests/run.py) changed since it ran; the land still leaves such a lane out and says which accept restarts it (T-4404).
