@@ -564,7 +564,7 @@ def task_hypo(p, args):
         raise UsageError(f"{args.id} has no H{n}")
     result, shown = None, ""
     if args.run:
-        code, output = c.run_command(p.root, args.run, args.timeout if args.timeout > 0 else None)
+        code, output = c.run_command(p.root, args.run, args.timeout if args.timeout > 0 else None, pipefail=True)
         result, shown = c.run_result(code, output), "\n".join(output.rstrip().splitlines()[-20:])
     b, _ = mutate(p, args.id, lambda b: b.mark_hypothesis(n, status, args.run, result, args.why), "hypothesis",
                   {"n": n, "status": status, "ran": c.redact(f"{args.run or ''} → {result or ''}")[:300],
@@ -666,7 +666,7 @@ def task_assume(p, args):
         raise UsageError(f"{args.id} has no assumption {n}")
     code, shown, how, proof = 0, "", args.evidence, ""  # proof: what a cold reader is shown (T-2338)
     if args.run is not None:
-        code, output = c.run_command(p.root, args.run, args.timeout if args.timeout > 0 else None)
+        code, output = c.run_command(p.root, args.run, args.timeout if args.timeout > 0 else None, pipefail=True)
         shown = "\n".join(output.rstrip().splitlines()[-20:])
         how = "`" + args.run.replace("`", "'") + f"` → {c.run_result(code, output)}"
         proof = f"Check run: {args.run}\nExit code: {code}\nOutput (last lines):\n{shown}"
@@ -3404,7 +3404,7 @@ def task_prove_hunks(p, b, args):
             if not base_commit or c._git(wt, "reset", "-q", "--soft", base_commit, fail=None, timeout=60) is None:
                 raise UsageError("couldn't point the scratch worktree's HEAD at the task's base")
         try:
-            code, output = c.run_command(wt, args.run, args.timeout)  # review: a check that fails anyway proves nothing
+            code, output = c.run_command(wt, args.run, args.timeout, pipefail=True)  # review: a check that fails anyway proves nothing
             if code:
                 raise UsageError(f"the check fails on the unchanged tree in the scratch worktree ({c.run_result(code, output)})"
                                  f": fix it first — ignored files (.venv, node_modules, builds) aren't copied there")
@@ -3423,7 +3423,8 @@ def task_prove_hunks(p, b, args):
                         skipped.append(f"{f} {at}: not applied ({why})")
                         continue
                 touch(os.path.join(wt, f))
-                code, _ = c.run_command(wt, args.run, min(args.timeout, getattr(args, "deadline", float("inf")) - time.time()))
+                code, _ = c.run_command(wt, args.run, min(args.timeout, getattr(args, "deadline", float("inf")) - time.time()),
+                                        pipefail=True)
                 if not restore(wt, f):
                     skipped.append(f"{f}: the scratch tree couldn't be restored; stopped")
                     break
@@ -3536,11 +3537,11 @@ def task_prove(p, args):
                 if new:
                     raise UsageError(f"{b.id}: --run names {new[0]}, absent at the start tree {base[:12]}: it would "
                                      f"fail there as 'not found', not as the bug")
-            red = c.run_command(wt, args.run, args.timeout)
+            red = c.run_command(wt, args.run, args.timeout, pipefail=True)
         finally:
             c._git(p.root, "worktree", "remove", "--force", wt, timeout=60)
             c._git(p.root, "worktree", "prune", timeout=30)
-    green = c.run_command(root, args.run, args.timeout)
+    green = c.run_command(root, args.run, args.timeout, pipefail=True)
     tree = c.worktree_id(root)
 
     def record(b):
@@ -4012,7 +4013,7 @@ def _repeat_runs(root, cmd, n, timeout, argv0=None):
     runs that finished: a run the timeout cut off is a failure, not a time, and its message names the timeout given.
     argv0: the $0 of a --run-file script's text (T-4139), on every run."""
     if n == 1:
-        return (*c.run_command(root, cmd, timeout, argv0=argv0), "")
+        return (*c.run_command(root, cmd, timeout, argv0=argv0, pipefail=True), "")  # T-3383
     import statistics
     start, ran, times, first, bad = time.monotonic(), 0, [], None, 0
     for _ in range(n):
@@ -4020,7 +4021,7 @@ def _repeat_runs(root, cmd, n, timeout, argv0=None):
         if left is not None and left <= 0:
             break
         t = time.monotonic()
-        code, output = c.run_command(root, cmd, left, argv0=argv0)
+        code, output = c.run_command(root, cmd, left, argv0=argv0, pipefail=True)
         ran, cut = ran + 1, f"timed out after {left:g}s"
         if code == 124 and left is not None and output.endswith(cut):
             output = output[:-len(cut)] + f"timed out after {timeout:g}s (--timeout, all {n} runs together)"

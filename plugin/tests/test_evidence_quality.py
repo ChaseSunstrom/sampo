@@ -216,3 +216,24 @@ class Bench(_Base):
         for extra in (("--run", "true"), ("--repeat", "999")):
             r = self.fm("task", "evidence", tid, "--bench", "true", *extra, check=False)
             self.assertNotEqual(r.returncode, 0)
+
+
+class Pipefail(_Base):
+    def test_a_failing_pipe_stage_fails_the_record(self):  # T-3383
+        self.fm("focus", self.tid)
+        bad = self.fm("task", "evidence", self.tid, "--step", "1", "--run", "false | cat", check=False)
+        self.assertNotEqual(bad.returncode, 0)
+        good = self.fm("task", "evidence", self.tid, "--step", "1", "--run", "true | cat", check=False)
+        self.assertEqual(good.returncode, 0, good.stderr)
+
+    def test_a_head_that_ends_early_is_named_sigpipe(self):  # T-3383
+        from sampo import core as c
+        code, out = c.run_command(None, "yes | head -1", pipefail=True)
+        self.assertEqual(code, 141)
+        self.assertIn("SIGPIPE", out)
+        self.assertNotIn("SIGPIPE", c.run_command(None, "yes | head -1")[1])
+
+    def test_a_plain_run_command_keeps_the_pipes_last_exit(self):  # T-3383: configured gates like `grep x | head`
+        from sampo import core as c
+        self.assertEqual(c.run_command(None, "false | cat")[0], 0)
+        self.assertNotEqual(c.run_command(None, "false | cat", pipefail=True)[0], 0)

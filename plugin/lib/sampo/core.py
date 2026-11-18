@@ -2629,8 +2629,11 @@ def cargo_drop_parent_config(parent):
 
 
 def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, niced=False, run_id=None, watch=None,
-                watch_every=30.0, low=False, argv0=None):
-    """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). argv0: the $0
+                watch_every=30.0, low=False, argv0=None, pipefail=False):
+    """Run a verification command (bash -c, in the repo root) for evidence: (exit code, redacted output). pipefail
+    (T-3383): bash -o pipefail, set only where a user's --run string is recorded as evidence, so `<cmd> | tail` fails
+    with the command; other callers keep a pipe's last-stage exit, as a configured gate like `grep x | head` expects.
+    argv0: the $0
     the text runs under, when it is a script's own text (T-4139: its lane-relative path, as bash FILE sets it); None is
     bash itself. stdin is /dev/null unless a caller hands it one it knows won't block (T-1766). priority: its tests/run.py takes freed CPU
     slots ahead of lane runs (T-3614), unless SAMPO_SLOT_PRIORITY is already set (=0 opts out). niced: the command
@@ -2661,15 +2664,16 @@ def run_command(root, cmd, timeout=600, env=None, stdin=None, priority=False, ni
         # for the whole command; a run that finds it busy (a post-merge verify beside a ship) gets a private one, gone after.
         # A killed Sampo process frees the lock while its children may still run (accepted residual)
         with cargo_gate_slot(gate) as folder:
-            return _run_bash(root, cmd, {**env, CARGO_VAR: folder}, stdin, niced, timeout, watch, watch_every, argv0)
-    return _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every, argv0)
+            return _run_bash(root, cmd, {**env, CARGO_VAR: folder}, stdin, niced, timeout, watch, watch_every, argv0,
+                             pipefail)
+    return _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every, argv0, pipefail)
 
 
-def _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every, argv0=None):
+def _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every, argv0=None, pipefail=False):
     """run_command's process: `bash -c cmd` in `root` under `env`: (exit code, redacted output). argv0 is the $0 the
     text sees (T-4139: a script's own path, so `cd "$(dirname "$0")"` works as it does under bash FILE)."""
     try:  # its own process group, so a timeout kills the servers and workers it started too; no stdin to wait on
-        argv = ["bash", "-c", cmd] + ([argv0] if argv0 is not None else [])
+        argv = ["bash", *(["-o", "pipefail"] if pipefail else []), "-c", cmd] + ([argv0] if argv0 is not None else [])
         argv = nice_argv(argv) if niced else argv
         pr = subprocess.Popen(argv, cwd=root, stdin=stdin, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True, errors="replace", start_new_session=True, env=env)
@@ -2677,7 +2681,10 @@ def _run_bash(root, cmd, env, stdin, niced, timeout, watch, watch_every, argv0=N
         return 127, f"could not run bash: {e}"
     try:
         out = _wait_out(pr, timeout, watch, watch_every)
-        return judged(pr.returncode, redact(out))
+        code, out = judged(pr.returncode, redact(out))
+        if pipefail and code == 141:  # T-3383: a later stage (| head) closed early; named, not a plain failure
+            out += "\nfm: exit 141 is SIGPIPE: a later stage (| head) closed the pipe early; use | tail or drop the pipe"
+        return code, out
     except subprocess.TimeoutExpired:
         kill_group(pr)
         try:
