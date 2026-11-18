@@ -3100,6 +3100,61 @@ class StdinRmAndEvalSubst(GuardCase):
         ], self.bash)
 
 
+class WrapperTable(unittest.TestCase):
+    """T-4859: one table of exec wrappers, read by _strip_wrappers (every rule) and the installer scan (_runs_named)."""
+    STRIPPED = ("sudo", "doas", "nohup", "time", "command", "builtin", "exec", "noglob", "stdbuf", "nice", "ionice",
+                "chronic", "setsid", "busybox", "unbuffer", "flock", "timeout", "env", "xargs", "npx", "bunx")
+    SCANNED = ("ssh", "setsid", "nohup", "flock", "watch", "parallel", "script", "stdbuf", "unbuffer", "systemd-run", "su",
+               "chroot", "nsenter", "unshare", "firejail", "bwrap", "docker", "podman", "kubectl", "tmux", "screen", "at",
+               "batch", "busybox", "chronic", "doas", "runuser")  # the installer scan's own set before the merge
+
+    def test_every_name_stripped_before_the_merge_is_still_stripped(self):
+        for name in self.STRIPPED:
+            with self.subTest(name=name):
+                self.assertIn(name, g._WRAPPER_SPEC)
+                self.assertIn(g._WRAPPER_SPEC[name][0], ("strip", "strip1", "own"))
+                if g._WRAPPER_SPEC[name][0] != "own":
+                    self.assertEqual(g._strip_wrappers([name, "rm", "x"])[0][:1], ["rm"] if name not in ("flock", "timeout") else ["x"])
+        self.assertEqual(g._strip_wrappers(["rustup", "run", "stable", "rm", "x"])[0], ["rm", "x"])
+        self.assertEqual(g._strip_wrappers(["rustup", "show", "rm"])[0], ["rustup", "show", "rm"])  # bare rustup is not one
+
+    def test_every_name_the_installer_scan_skipped_is_still_skipped(self):
+        for name in self.SCANNED:
+            with self.subTest(name=name):
+                self.assertTrue(g._skips_to_runner(name))
+        for name in ("rustup", "env", "xargs", "bash", "rm", "echo"):  # stripped by their own branch, or no wrapper
+            with self.subTest(name=name):
+                self.assertFalse(g._skips_to_runner(name))
+
+    def test_valued_options_still_take_their_value(self):
+        for argv, want in ((["nice", "-n", "5", "rm", "x"], ["rm", "x"]), (["sudo", "-u", "me", "rm"], ["rm"]),
+                            (["exec", "-a", "n", "rm"], ["rm"]), (["flock", "-w", "3", "f", "rm"], ["rm"]),
+                            (["timeout", "-s", "9", "5", "rm"], ["rm"]), (["setsid", "-c", "rm"], ["rm"]),
+                            (["npx", "-y", "rm"], ["rm"]), (["unbuffer", "-p", "rm"], ["rm"])):
+            with self.subTest(argv=argv):
+                self.assertEqual(g._strip_wrappers(argv)[0], want)
+
+    def test_a_wrapper_added_to_the_table_is_stripped_and_skipped_by_both(self):
+        with mock.patch.dict(g._WRAPPER_SPEC, {"zzstrip": ("strip", ("-v",)), "zzrun": ("runner", ())}):
+            self.assertEqual(g._strip_wrappers(["zzstrip", "-v", "1", "rm", "x"])[0], ["rm", "x"])
+            self.assertTrue(g._skips_to_runner("zzstrip"))
+            self.assertTrue(g._skips_to_runner("zzrun"))
+            self.assertEqual(g._strip_wrappers(["zzrun", "rm"])[0], ["zzrun", "rm"])  # a runner runs elsewhere: not stripped
+        self.assertFalse(g._skips_to_runner("zzstrip"))
+
+    def test_no_wrapper_name_literal_is_left_in_either_reader(self):
+        import ast
+        names = set(g._WRAPPER_SPEC)
+        with open(g.__file__, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+        for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ("_strip_wrappers", "_runs_named", "_skips_to_runner")):
+            for node in ast.walk(fn):
+                if isinstance(node, (ast.Tuple, ast.Set, ast.List)):
+                    held = {e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)}
+                    with self.subTest(fn=fn.name, line=node.lineno):
+                        self.assertLess(len(held & names), 2, f"a literal list of wrapper names: {sorted(held & names)}")
+
+
 if __name__ == "__main__":
     unittest.main()
 

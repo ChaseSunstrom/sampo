@@ -1902,9 +1902,42 @@ def _split(tokens):
 
 
 _KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "{", "!", "coproc"}  # words before a command
-_WRAPPER_VALUED = {"nice": ("-n", "--adjustment"), "ionice": ("-c", "-n", "-p", "--class", "--classdata", "--pid"),
-                   "stdbuf": ("-i", "-o", "-e", "--input", "--output", "--error"), "exec": ("-a",),
-                   "time": ("-f", "-o", "--format", "--output")}  # GNU time; bash's own takes -p only
+# T-4859: the one table of exec wrappers, {name: (kind, options that take a value)}; _strip_wrappers (every rule) and the
+# installer scan (_runs_named, through _skips_to_runner) both read it, so a wrapper is added in this one place.
+#   strip   _strip_wrappers drops it and its options (each one's own valued ones: T-3600, exec -c, command -p, setsid -c
+#           are flags), the command is the next word: setsid, busybox: T-0160 (the differential test); unbuffer: T-1722
+#   strip1  the same, then one positional first: flock's lock file (T-0160), timeout's duration
+#   own     stripped by its own branch in _strip_wrappers (env, xargs, rustup run), never a runner word to the scan
+#   runner  not stripped (ssh h rm runs on h, a container's paths aren't this machine's); only the installer scan skips
+#           past it to the word that runs: ssh h bash, firejail bash …
+_SUDO_VALUED = ("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U")
+_WRAPPER_SPEC = {
+    "sudo": ("strip", _SUDO_VALUED), "doas": ("strip", _SUDO_VALUED),
+    "nohup": ("strip", ()), "command": ("strip", ()), "builtin": ("strip", ()), "noglob": ("strip", ()),
+    "chronic": ("strip", ()), "setsid": ("strip", ()), "busybox": ("strip", ()), "unbuffer": ("strip", ()),
+    "npx": ("strip", ()), "bunx": ("strip", ()),
+    "time": ("strip", ("-f", "-o", "--format", "--output")),  # GNU time; bash's own takes -p only
+    "exec": ("strip", ("-a",)),
+    "stdbuf": ("strip", ("-i", "-o", "-e", "--input", "--output", "--error")),
+    "nice": ("strip", ("-n", "--adjustment")),
+    "ionice": ("strip", ("-c", "-n", "-p", "--class", "--classdata", "--pid")),
+    "flock": ("strip1", ("-w", "--timeout", "-E", "--conflict-exit-code")),
+    "timeout": ("strip1", ("-s", "-k", "--signal", "--kill-after")),
+    "env": ("own", ()), "xargs": ("own", ()), "rustup": ("own", ()),
+    "ssh": ("runner", ()), "watch": ("runner", ()), "parallel": ("runner", ()), "script": ("runner", ()),
+    "systemd-run": ("runner", ()), "su": ("runner", ()), "chroot": ("runner", ()), "nsenter": ("runner", ()),
+    "unshare": ("runner", ()), "firejail": ("runner", ()), "bwrap": ("runner", ()), "docker": ("runner", ()),
+    "podman": ("runner", ()), "kubectl": ("runner", ()), "tmux": ("runner", ()), "screen": ("runner", ()),
+    "at": ("runner", ()), "batch": ("runner", ()), "runuser": ("runner", ()),
+}
+
+
+def _skips_to_runner(name):
+    """Whether the installer scan reads the words after this command name as what runs (ssh h bash, setsid bash …):
+    every name in _WRAPPER_SPEC but the 'own' ones, which _strip_wrappers removes (or, rustup alone, doesn't) already."""
+    return _WRAPPER_SPEC.get(name, ("own",))[0] != "own"
+
+
 _CDS = ("cd", "pushd", "popd")  # T-1923: the builtins that move the shell
 
 
@@ -1919,31 +1952,14 @@ def _strip_wrappers(argv, dropped=None):
         name = a[:n - 1] if n > 0 and a[n - 1] == "+" else a[:n]
         if n > 0 and name.isascii() and name.isidentifier() or a in _KEYWORDS:  # T-0159: `do rm …` is rm; T-0270: +=
             i += 1
-        elif base in ("sudo", "doas"):
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                i += 2 if argv[i] in ("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U") else 1
         elif a == "function" and i + 1 < len(argv):  # round 11, 12: `function f { CMD; }`, `function f if CMD; then …` run
             i += 2 + (argv[i + 2:i + 3] == ["()"])  # CMD, as `f() { CMD; }` does (the body's keyword is dropped next)
-        elif base in ("nohup", "time", "command", "builtin", "exec", "noglob", "stdbuf", "nice", "ionice", "chronic",
-                      "setsid", "busybox"):  # setsid, busybox: T-0160 (the differential test)
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):  # T-3600: each one's own options that take a value (exec
-                i += 2 if argv[i] in _WRAPPER_VALUED.get(base, ()) else 1  # -c, command -p, setsid -c are flags)
-        elif base == "unbuffer":  # expect's unbuffer [-p] CMD… (T-1722): its flags take no value
+        elif _WRAPPER_SPEC.get(base, ("",))[0] in ("strip", "strip1"):  # T-4859: _WRAPPER_SPEC's names and valued options
+            kind, valued = _WRAPPER_SPEC[base]
             i += 1
             while i < len(argv) and argv[i].startswith("-"):
-                i += 1
-        elif base == "flock":  # flock [opts] FILE CMD…: the command after the lock file (T-0160)
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                i += 2 if argv[i] in ("-w", "--timeout", "-E", "--conflict-exit-code") else 1
-            i += 1
-        elif base == "timeout":
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                i += 2 if argv[i] in ("-s", "-k", "--signal", "--kill-after") else 1
-            i += 1
+                i += 2 if argv[i] in valued else 1
+            i += kind == "strip1"  # flock's lock file, timeout's duration: the command comes after
         elif base == "env":
             i += 1
             while i < len(argv) and (argv[i].startswith("-") or "=" in argv[i]):
@@ -1959,10 +1975,6 @@ def _strip_wrappers(argv, dropped=None):
                 i += 2 if argv[i] in ("-u", "-C", "--unset", "--chdir") else 1
         elif base == "xargs":
             i += 1 + _xargs_opts(argv[i + 1:])[0]
-        elif base in ("npx", "bunx"):
-            i += 1
-            while i < len(argv) and argv[i].startswith("-"):
-                i += 1
         elif base == "rustup" and argv[i + 1:i + 2] == ["run"]:  # T-3607 review: rustup run [--install] TOOLCHAIN CMD…
             i += 2
             while i < len(argv) and argv[i].startswith("-"):
@@ -9139,9 +9151,6 @@ _INSTALLER_NAMED = lazy(r"(?<![\w.-])(?:install\.sh|(?:fm)?fastbuild\.py|(?:samp
 _INTERPRETERS = lazy(r"^(?:python[0-9.]*|pypy[0-9.]*|perl|ruby|node|nodejs|deno|bun|php)$")
 _CHECKER_MODULES = {"py_compile", "compileall", "pyflakes", "flake8", "mypy", "ruff", "black", "pycodestyle", "pylint",
                     "ast", "tokenize"}  # python -m …: they read a source file, they don't run it
-_WRAPPERS = {"ssh", "setsid", "nohup", "flock", "watch", "parallel", "script", "stdbuf", "unbuffer", "systemd-run", "su",
-             "chroot", "nsenter", "unshare", "firejail", "bwrap", "docker", "podman", "kubectl", "tmux", "screen", "at",
-             "batch", "busybox", "chronic", "doas", "runuser"}  # run the words after them: ssh h bash, setsid bash …
 _URLS = lazy(r"(?<![\w+.-])[A-Za-z][\w+.-]*://\S*")  # anchored at a word's start: linear on a long word
 _COMPUTED_WORD = lazy(r"[$`]|<\(|^/dev/fd/|^/proc/self/fd/")  # a word the guard can't read as a name
 
@@ -9290,7 +9299,7 @@ def _runs_named(cmds, outer=False, depth=0, bodies=()):
         # { bash; } < install.sh, (bash) < install.sh, done < install.sh: the redirect sits on the closing word
         fed = fed or any(x.stdin and named(x.stdin) for x in cmds[k + 1:] if x.argv in ([], ["}"], ["done"]))
         i = 0
-        if os.path.basename(argv[0]) in _WRAPPERS:  # the words after it run: its first runner word on is the command
+        if _skips_to_runner(os.path.basename(argv[0])):  # T-4859: _WRAPPER_SPEC; the words after it run: its first runner word on is the command
             i = next((j for j, a in enumerate(argv) if j and _is_runner(os.path.basename(a))), len(argv))
             for a in argv[1:]:
                 if re.search(r"\s", a) and _runs_named(_split(_tokens(_lines(a))), fed, depth + 1):
