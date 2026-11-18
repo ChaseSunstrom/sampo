@@ -228,6 +228,21 @@ class KalevalaStart(ForemanTestCase):
         self.assertEqual({t["aspect"] for t in status["towers"]}, {t["aspect"] for t in res["towers"]})
         self.assertTrue(all(t["sealed"] for t in status["towers"]))
 
+    def test_status_text_sorts_by_number_counts_sealed_once_and_sentence_cases(self):
+        from sampo import kalevala
+        rows = [{"name": n, "aspect": a, "sealed": s} for n, a, s in
+                (("aspect-10-x", "10. Ten", True), ("memory", "memory", True), ("aspect-2-y", "2. Two", False))]
+        lines = kalevala.tower_lines(rows, 80)
+        self.assertEqual(lines[0], "2 sealed of 3 towers")
+        self.assertEqual([l.split()[0] for l in lines[1:]], ["aspect-2-y", "aspect-10-x", "memory"])
+        self.assertTrue(lines[1].endswith("unsealed") and "unsealed" not in lines[2])
+        self.assertIn("Memory", lines[3])
+        self.assertNotIn("(sealed", "".join(lines))
+        last = {"memory": {"stage": "spec", "status": "failed", "why": "read-only"}}  # T-3841's suffix stays on the row
+        rows2 = kalevala.tower_lines(rows, 80, last)
+        self.assertTrue(rows2[3].endswith("last step: spec failed: read-only"), rows2)
+        self.assertNotIn("last step", rows2[1] + rows2[2])
+
     def test_each_tower_gen0_is_the_root_gen0_plus_its_aspect_and_sealed(self):
         import hashlib
         from sampo import rune

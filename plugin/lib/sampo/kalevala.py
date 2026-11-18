@@ -893,6 +893,27 @@ def loop(p, runner=None, stop=None, rounds=None):
     return {"rounds": n}
 
 
+def tower_lines(towers, width, last=None):
+    """Status rows: a count header, then one row per tower in number order (aspects start "N. "), whole ids, the
+    aspect sentence-cased and cut to the width; "unsealed"/"PAUSED" only on the rows that need it. `last` maps a
+    tower to its newest step (T-3841): its row ends with that step's stage, status and why, never cut."""
+    def key(t):
+        m = re.match(r"(\d+)\.", t["aspect"])
+        return (int(m.group(1)) if m else 10 ** 9, t["name"])
+    towers = sorted(towers, key=key)
+    if not towers:
+        return []
+    pad = max(len(t["name"]) for t in towers)
+    out = [f"{sum(1 for t in towers if t['sealed'])} sealed of {len(towers)} towers"]
+    for t in towers:
+        tail = ("  unsealed" if not t["sealed"] else "") + (f"  PAUSED: {t['paused']}" if t.get("paused") else "")
+        if s := (last or {}).get(t["name"]):
+            tail += f" · last step: {s['stage']} {s['status']}" + (f": {s['why']}" if s.get("why") else "")
+        room = max(10, width - pad - 2 - len(tail))
+        out.append(f"{t['name'].ljust(pad)}  {c.fit(t['aspect'][:1].upper() + t['aspect'][1:], room)}{tail}")
+    return out
+
+
 def cmd_kalevala(args):
     from sampo import cli as scli
     p = scli.resolve(args)
@@ -907,10 +928,7 @@ def cmd_kalevala(args):
         r = {"halted": m.get("halted"), "towers": tower_rows(p), "acts": shown}
         lines = [f"halted: {m['halted']} (fm kalevala resume)"] if m.get("halted") else []
         last = {s.get("tower"): s for s in m.get("steps") or ()}  # T-3841: each tower's newest step, and why it failed
-        lines += [f"{t['name']}: {t['aspect']} (sealed: {t['sealed']})"
-                  + (f" PAUSED: {t['paused']}" if t.get("paused") else "")
-                  + (f" · last step: {s['stage']} {s['status']}" + (f": {s['why']}" if s.get("why") else "")
-                     if (s := last.get(t["name"])) else "") for t in r["towers"]]
+        lines += tower_lines(r["towers"], shutil.get_terminal_size((100, 30)).columns, last)
         lines += [f"{a['act']} {a['tower'] or ''}: {a['reason']}\n    undo: {a['undo']}" for a in shown]
         return scli.out(args, r, "\n".join(lines) or "no towers yet: sampo kalevala start")
     if action == "pause":
