@@ -4657,14 +4657,25 @@ def _redefinition_note(pl, path, ti, root=None):
 
 def _auto_evidence(pl, p, ok):
     """R6 (T-0063): a Bash command that is exactly a criterion's verify command is recorded as that criterion's
-    evidence with its real result, as if fm had run it ([ran]); no second run through fm task evidence --run."""
-    cmd = " ".join(str((pl.get("tool_input") or {}).get("command") or "").split())
+    evidence with its real result, as if fm had run it ([ran]); no second run through fm task evidence --run.
+    T-3501: or that command behind a cd to the root, nice, timeout or env, or naming a superset of its modules."""
+    raw = str((pl.get("tool_input") or {}).get("command") or "")
+    lines = "\n" in raw.strip()  # T-3501 review: a second line is a second command, whose exit the run reports
+    cmd = " ".join(raw.split())
     cmd = re.sub(r"^(?:fm|sampo) quiet (?:--(?:tail|timeout) \S+ )*(?:-- )?", "", cmd)  # the same check, run quietly
+    if (m := _CD.match(cmd)) and (d := _cd_path(_cwd(pl), m)) != os.path.realpath(p.root):
+        gr = c.git_root(d)  # T-3501: a builder subagent's hook has the main cwd while its run cds into its lane
+        q = c.find_project(gr) if gr and os.path.isfile(os.path.join(gr, ".git")) else None  # a linked worktree only
+        p = q if q and q.lane and q.dir == p.dir else p
     act = c.active_brief_fast(p, p.lane) if cmd else None
     verifies = [(n, " ".join(v.split())) for n, v in (act.verify_cmds() if act else []) if v]
     base, piped = _unpiped(cmd)
-    exact = [n for n, v in verifies if v == cmd]
-    hits = exact or ([n for n, v in verifies if v == base] if piped else [])
+    fit = lambda forms: {n: k for n, v in verifies if (k := max(_same_check(r, v) for r in forms)) and (k == 2 or not lines)}
+    found = fit(_runs(p, _cwd(pl), cmd))
+    exact = list(found)
+    if not found and piped:
+        found = fit(_runs(p, _cwd(pl), base))
+    hits = list(found)
     if not hits:
         if (ok or piped) and act:
             _runner_evidence(pl, p, act, cmd)
@@ -4684,6 +4695,9 @@ def _auto_evidence(pl, p, ok):
         err = str(pl.get("error") or "")
         m = re.match(r"Exit code (\d+)", err)
         code, output = (int(m.group(1)) if m else 1), err.split("\n", 1)[-1]
+    hits = [n for n in hits if code == 0 or found[n] == 2]  # T-3501: a failing wider run may fail in another module
+    if not hits:
+        return
     result, tree = c.run_result(code, c.redact(output), cmd), c.worktree_id(p.root)
     with c.lock(p.dir, timeout=LOCK_SLOW):  # T-3535: an async hook: waiting costs nothing, a lost write costs evidence
         b = c.find_brief(p, act.id)
@@ -4696,6 +4710,52 @@ def _auto_evidence(pl, p, ok):
         c.save_brief(p, b)
         c.log_event(p, "evidence", task=b.id, data={"ac": hits, "step": step, "cmd": cmd[:200], "auto": True},
                     session=pl.get("session_id"))
+
+
+_WRAP = c.lazy(r"(?:nice(?: (?:-n ?-?\d+|-\d+|--adjustment=-?\d+))?|timeout(?: (?:-s ?\S+|--signal=\S+|-k ?\S+|"
+               r"--kill-after=\S+|--foreground|--preserve-status|-v|--verbose))* \d+(?:\.\d+)?[smhd]?|env|"
+               r"[A-Za-z_]\w*=(?:'[^']*'|\"[^\"]*\"|[^\s'\"]*)) ")
+_BARE = c.lazy(r"[A-Za-z_]\w*")
+_CD = c.lazy(r"cd (\S+?) ?(?:&&|;) ?")
+
+
+def _cd_path(cwd, m):
+    return os.path.realpath(os.path.join(cwd, os.path.expanduser(m.group(1).strip("'\""))))
+
+
+def _runs(p, cwd, cmd):
+    """T-3501: the run as typed, then without each leading wrapper in turn: a `cd DIR &&` (or ;) when DIR is this
+    checkout's root, nice, timeout, env, NAME=value. Every form is tried, so a criterion's own prefix still counts."""
+    out = [cmd]
+    m = _CD.match(cmd)
+    if m and _cd_path(cwd, m) == os.path.realpath(p.root):
+        cmd = cmd[m.end():]
+        out.append(cmd)
+    while (m := _WRAP.match(cmd)):
+        cmd = cmd[m.end():]
+        out.append(cmd)
+    return out
+
+
+def _modules(cmd):
+    """T-3501: (argv up to its first bare module name, its other words after that, its bare module names), or None
+    with no module. A bare word that follows a flag is the flag's value (-k slow, -m unittest), not a module."""
+    words = cmd.split()
+    start = next((i for i, w in enumerate(words) if not re.match(r"[A-Za-z_]\w*=", w)), len(words)) + 1
+    mods = [i for i in range(start, len(words)) if _BARE.fullmatch(words[i]) and not words[i - 1].startswith("-")]
+    if not mods:
+        return None
+    return words[:mods[0]], [w for i, w in enumerate(words) if i >= mods[0] and i not in mods], \
+        {words[i] for i in mods}
+
+
+def _same_check(run, verify):
+    """T-3501: 2 when the run is the criterion's check, 1 when it is the same runner and flags naming a superset of
+    its modules, else 0 (a run of fewer modules, or narrowed by a flag, a Class.method or a path it lacks)."""
+    if run == verify:
+        return 2
+    a, b = _modules(run), _modules(verify)
+    return int(bool(a and b) and a[:2] == b[:2] and a[2] >= b[2])
 
 
 _INTERPRETERS = c.lazy(r"python[0-9.]*|node|bun|deno|bash|sh|ruby|perl|php")
