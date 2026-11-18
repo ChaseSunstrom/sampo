@@ -50,6 +50,68 @@ class RoundTrip(_Mcp):
         self.assertIn(tid, by[4]["result"]["content"][0]["text"])
 
 
+class Stateless(_Mcp):  # T-3359: MCP 2026-07-28 beside 2025-06-18
+    META = "io.modelcontextprotocol/protocolVersion"
+
+    def test_new_clients_need_no_handshake_and_old_ones_keep_theirs(self):
+        self.fm("init")
+        new = {self.META: "2026-07-28"}
+        out, _ = self.talk(
+            {"jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": {"_meta": new}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {"_meta": new}},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "state", "arguments": {}, "_meta": new}},
+            {"jsonrpc": "2.0", "id": 4, "method": "ping", "params": {"_meta": new}},
+            {"jsonrpc": "2.0", "id": 5, "method": "tools/list", "params": {"_meta": {self.META: "2031-01-01"}}},
+            {"jsonrpc": "2.0", "id": 6, "method": "initialize", "params": {"protocolVersion": "2025-06-18"}},
+            {"jsonrpc": "2.0", "id": 7, "method": "ping"},
+            {"jsonrpc": "2.0", "id": 8, "method": "ping", "params": {"_meta": {}}},
+            {"jsonrpc": "2.0", "id": 9, "method": "initialize", "params": {"protocolVersion": "2031-01-01"}},
+            {"jsonrpc": "2.0", "id": 10, "method": "ping", "params": {"_meta": {"progressToken": 1}}},
+            {"jsonrpc": "2.0", "id": 11, "method": "ping", "params": {"_meta": {self.META: "2025-06-18"}}},
+            {"jsonrpc": "2.0", "id": 12, "method": "initialize", "params": {"protocolVersion": "2026-07-28"}},
+            {"jsonrpc": "2.0", "id": 13, "method": "tools/list"},
+            self.call(14, "state"))
+        by = {m["id"]: m for m in out}
+        d = by[1]["result"]
+        self.assertIn("2026-07-28", d["supportedVersions"])
+        self.assertIn("2025-06-18", d["supportedVersions"])
+        self.assertEqual(d["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "foreman")
+        self.assertIn("tools", d["capabilities"])
+        for i in (1, 2, 3):  # every modern result says it is complete; the cacheable ones say for how long
+            self.assertEqual(by[i]["result"]["resultType"], "complete")
+        for i in (1, 2):
+            self.assertEqual(by[i]["result"]["ttlMs"], 0)
+        self.assertNotIn("resultType", by[6]["result"])
+        self.assertTrue(by[2]["result"]["tools"])
+        self.assertFalse(by[3]["result"]["isError"])
+        self.assertEqual(by[4]["error"]["code"], -32601)  # ping is gone for new clients
+        e = by[5]["error"]  # unknown version: the spec's error, with what we speak
+        self.assertEqual((e["code"], e["message"]), (-32022, "Unsupported protocol version"))
+        self.assertIn("2026-07-28", e["data"]["supported"])
+        self.assertEqual(e["data"]["requested"], "2031-01-01")
+        for i in (7, 8, 10, 11):  # legacy pings: bare, empty _meta, a progress token, _meta naming 2025-06-18
+            self.assertEqual(by[i]["result"], {})
+        self.assertEqual(by[9]["result"]["protocolVersion"], "2025-06-18")  # negotiated down
+        self.assertEqual(by[12]["result"]["protocolVersion"], "2025-06-18")  # the new version has no handshake
+        self.assertEqual(by[6]["result"]["protocolVersion"], "2025-06-18")
+        for i in (13, 14):  # legacy results carry no resultType
+            self.assertNotIn("resultType", by[i]["result"])
+
+    def test_odd_meta_is_legacy_or_the_version_error_never_an_internal_one(self):
+        self.fm("init")
+        msgs = [{"jsonrpc": "2.0", "id": i, "method": "tools/list", "params": {"_meta": m}}
+                for i, m in enumerate(([], "x", 5, {self.META: None}), 1)]
+        msgs += [{"jsonrpc": "2.0", "id": i, "method": "tools/list", "params": {"_meta": {self.META: v}}}
+                 for i, v in enumerate((7, [1], "", {"a": 1}), 10)]
+        out, _ = self.talk(*msgs)
+        by = {m["id"]: m for m in out}
+        for i in (1, 2, 3, 4):
+            self.assertNotIn("resultType", by[i]["result"])
+        for i in (10, 11, 12, 13):
+            self.assertEqual(by[i]["error"]["code"], -32022)
+
+
 class Edges(_Mcp):
     def test_bad_input_is_an_error_and_the_server_keeps_going(self):
         self.fm("init")

@@ -18,7 +18,10 @@ import sys
 from sampo import core as c
 from sampo import instr
 
-VERSION = "2025-06-18"
+VERSION = "2025-06-18"  # what initialize answers a client that names none
+MODERN = "2026-07-28"  # stateless: no initialize, no ping
+SUPPORTED = (MODERN, VERSION)
+META_VERSION = "io.modelcontextprotocol/protocolVersion"
 _TEXT = {"type": "object", "properties": {}, "additionalProperties": False}
 PATH_CAP, QUERY_CAP, TEXT_CAP = 1000, 500, 200_000
 SECTIONS = ["verify", "test", "do", "avoid", "review"]
@@ -287,11 +290,25 @@ def _answer(p, msg):
     method, mid, params = msg["method"], msg.get("id"), msg.get("params") or {}
     if "id" not in msg:  # notifications (initialized, cancelled): nothing to say
         return None
+    meta = params.get("_meta") if isinstance(params, dict) else None
+    ver = meta.get(META_VERSION) if isinstance(meta, dict) else None
+    if ver is not None and ver not in SUPPORTED:  # 2026-07-28: every request names its version
+        return {"jsonrpc": "2.0", "id": mid, "error": {
+            "code": -32022, "message": "Unsupported protocol version",
+            "data": {"supported": list(SUPPORTED), "requested": c.fit(str(ver), 40)}}}
+    modern = ver == MODERN
+    info = {"capabilities": {"tools": {"listChanged": False}, "resources": {}}}
+    sinfo = {"name": "foreman", "version": "1"}
     if method == "initialize":
-        result = {"protocolVersion": params.get("protocolVersion") or VERSION,
-                  "capabilities": {"tools": {"listChanged": False}, "resources": {}},
-                  "serverInfo": {"name": "foreman", "version": "1"}}
-    elif method == "ping":
+        asked = params.get("protocolVersion")
+        result = {"protocolVersion": asked if asked in SUPPORTED and asked != MODERN else VERSION, **info, "serverInfo": sinfo}
+    elif method == "server/discover":
+        result = {"supportedVersions": list(SUPPORTED), **info}
+        if modern:
+            result["_meta"] = {"io.modelcontextprotocol/serverInfo": sinfo}
+        else:
+            result["serverInfo"] = sinfo
+    elif method == "ping" and not modern:  # removed in 2026-07-28; 2025-06-18 clients may send any _meta
         result = {}
     elif method in ("resources/list", "resources/read"):  # T-3672: the profile, as a resource too
         from sampo import profile
@@ -311,6 +328,10 @@ def _answer(p, msg):
         result = {"content": [{"type": "text", "text": c.redact(text)}], "isError": err}
     else:
         return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+    if modern:  # resultType is required on all 2026-07-28 results; ttlMs 0 and the default scope: never cached
+        result["resultType"] = "complete"
+        if method in ("tools/list", "server/discover"):
+            result["ttlMs"] = 0
     return {"jsonrpc": "2.0", "id": mid, "result": result}
 
 
