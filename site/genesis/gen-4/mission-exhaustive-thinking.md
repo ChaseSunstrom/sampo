@@ -12,7 +12,7 @@ pay an L task's cost." gen-0's goal, MUSTs and NEVERs are quoted in the seed and
 Width without a price. #2 asks Sampo to cover the whole space of a request, and gen-0 says the depth scales with risk
 because width costs money. The machine already has a free source of width: the local models. In the Moons funnel, the
 local 27B's candidates survive the cheap-first filters far more often than Haiku's (`sampo moons coverage`, read
-2026-11-04: kept by model "haiku 545 of 1499, jarvis+nothink 2753 of 3316, jarvis+think 64 of 64"). Yet the verb
+2026-11-04: kept by model "haiku 545 of 1499, a large local model+nothink 2753 of 3316, a large local model+think 64 of 64"). Yet the verb
 every brainstorm goes through can only call the cloud. This generation's own procedure hit it: it asked for local idea
 volume "when a command lets you", and `sampo ideas` has no way to do that.
 
@@ -24,7 +24,7 @@ volume "when a command lets you", and `sampo ideas` has no way to do that.
 - plugin/lib/sampo/moonscale.py:364 `_generative`, :379 `_local` and :397 `_ask` already pick the first own or loopback
   generative profile that answers (a sensitive project's only on loopback) and fall back to Haiku. They are the
   routing to reuse, not to copy.
-- models.json: the `jarvis` profile is qwen3.8-27b, context 256000, `slots: 2`, `own: true`, so a ten-lens round can
+- models.json: the `a large local model` profile is qwen3.8-27b, context 256000, `slots: 2`, `own: true`, so a ten-lens round can
   run two at a time with every seen list in context.
 - Live use: the ledger holds 16 `ideas` events since 2026-11-01, and each gen-4 Mission row names a run of
   `--rounds 4 --deepen 3 --falsify --crossbreed` (about 35 children each).

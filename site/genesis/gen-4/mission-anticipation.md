@@ -32,7 +32,7 @@ and it is shown only after a held-out replay says it leads.
   triggers.py:285 and draft.py:154. The new kind is added beside next-request, so none of them changes meaning.
 - The surface is in use (the anticipation critique's rule): 60 next-request rows and 24 `shown` rows in the book; the
   session-start line printed "next-request predictions 44% vs baseline 37%" in `sampo triggers` today.
-- The local model: models.json `jarvis` (qwen3.8-27b, own, 2 slots), routed by plugin/lib/sampo/moonscale.py:379
+- The local model: models.json `a large local model` (qwen3.8-27b, own, 2 slots), routed by plugin/lib/sampo/moonscale.py:379
   `_local`, the same rule T-2910 reuses.
 
 ## Gaps this Mission targets (coverage: #3)

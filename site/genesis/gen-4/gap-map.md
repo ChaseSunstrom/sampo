@@ -44,7 +44,7 @@ Source limit: the held-out exam on the production model still hasn't run (the us
 
 ## 2. Exhaustive thinking
 - Built: `ideas.py:779-825` sends every child through `_local_round` when `--model local`. The routing is `moonscale._local` and `_ask`, reused rather than copied (critique-exhaustive-thinking.md:6). The model that answered each child is booked in `manifest.json` (ideas.py:976). `cli.py:8139` documents the flag. test_ideas passes 30 tests (critique).
-- Measured: nothing on width. The critique reads the post-merge `ideas` run (14:18Z, 235 ideas) as `"model": "sonnet"`. The moons kept-rate moved from "jarvis+nothink 2753 of 3316" to "157 of 8444", so the Mission's premise no longer holds.
+- Measured: nothing on width. The critique reads the post-merge `ideas` run (14:18Z, 235 ideas) as `"model": "sonnet"`. The moons kept-rate moved from "a large local model+nothink 2753 of 3316" to "157 of 8444", so the Mission's premise no longer holds.
 - Missing: the head-to-head (local vs sonnet, 40 blind-judged ideas per arm). It sits in T-2921, which is captured with no criteria and has produced no research note. It would show closed when the judged-good count is filed against the 80% and 50% thresholds.
 - Missing: use in practice. The brainstorm skill has no step that tries `--model local`, so the flag goes unused (critique-exhaustive-thinking.md:27). It would show closed when a new `ideas` manifest names the local profile on its children.
 - Missing: the live one-round run the Mission demanded before close. It is not in the task evidence.

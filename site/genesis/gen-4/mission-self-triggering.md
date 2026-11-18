@@ -30,7 +30,7 @@ it by hand.
   falls back to Haiku with no way to refuse the fallback. That fallback is what a night must not take silently.
 - moonscale.py:379 `_local`: own or loopback profiles only, loopback only for a sensitive project. Night already
   refuses to run anything in a sensitive project ("sensitive project: nothing runs at night").
-- `sampo moons coverage` (2026-11-04): "Kept by model: haiku 545 of 1499, jarvis+nothink 2753 of 3316, jarvis+think
+- `sampo moons coverage` (2026-11-04): "Kept by model: haiku 545 of 1499, a large local model+nothink 2753 of 3316, a large local model+think
   64 of 64". The local model's candidates survive the write-time rules far more often than Haiku's, so local-only
   costs no quality here.
 - The trigger table (`sampo triggers`): the `night` trigger has fired once. The schedule exists, and almost nothing
