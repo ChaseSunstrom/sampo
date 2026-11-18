@@ -37,6 +37,14 @@ FORMS = [
     "D=~; mkdir -p $D && git init -q $D; {p}",
     # T-3537: a build-branch merge in a lane worktree (setUp makes .claude/worktrees/w one) passes; what follows it doesn't
     "cd .claude/worktrees/w && git merge --no-edit foreman/build; {p}", "cd .claude/worktrees/w && git merge foreman/build && {p}",
+    # T-4921: a # inside quotes can't start a comment, so a sampo command's quoted text with one is masked now; what
+    # follows it, and every # that may start a comment (unquoted, ${#x}, $#, one in a $( ) inside double quotes), is not
+    "sampo task set T-1 --text 'a # b: import fmcore'; {p}", "sampo task set T-1 --text \"a # b: import fmcore\"\n{p}",
+    "sampo capture \"x # import fmcore\" && {p}", "sampo capture 'x # y' || {p}", "sampo capture \"x # y\" | {p}",
+    "sampo task show T-1 # c\n{p}", "sampo task show T-1 # it's\n{p}", "sampo task show T-1 # \"\n{p}",
+    "sampo task show ${#x}; {p}", "sampo task show $#; {p}", "sampo task show \"${#x}\" # '\n{p}",
+    "sampo task show \"$(echo # \"\n)\"; {p}", "sampo task show \"`echo # \"\n`\"; {p}",
+    "sampo capture \"a # b $(true)\" \"c # d\"; {p}",
 ]
 # whole commands (no payload slot): variables the guard resolves (T-0151) must still resolve the way bash does
 EXTRA = ['D=~; rm -rf "$D"', 'D=/; false && D=x; rm -rf "$D"', 'D=/; (D=x); rm -rf "$D"', 'D=x; D=~; rm -rf "$D"',
@@ -402,6 +410,47 @@ class LaneMerge(GuardCase):
         block = g.check("Bash", {"command": "git reset --hard merge"}, ctx)  # a ref named merge is no merge
         self.assertBlocked(block, "core")
         self.assertNotIn("sampo lane merge", g.message(block, ctx))
+
+
+class HashInQuotedText(GuardCase):
+    """T-4921: _mask_fm_read gave up on any # in a command, so prose quoted in sampo task set --text or sampo capture
+    that held one beside an import line read as python driving Sampo's modules (4 refusals, core). Only a # that may
+    start a comment (unquoted and unescaped, or in a double quote that holds a substitution) still stops the mask."""
+
+    PROSE = "note # run python -c 'import fmcore; fmcore.write_meta(p, {{}})' to see it"
+
+    def driving(self, cmd):
+        return "driving Sampo's modules" in str(self.bash(cmd.replace("{prose}", self.PROSE), cwd=self.fhome) or "")
+
+    def test_quoted_prose_with_a_hash_and_an_import_line_passes(self):
+        for cmd in ("sampo task set T-0007 --section Approach --text \"{prose}\"",
+                    "sampo task set T-0007 --text '{prose}'",
+                    "sampo capture \"{prose}\"",
+                    "sampo capture --source discovered \"a # b\" \"{prose}\"",
+                    "sampo task new \"x # y\" --ac \"{prose} :: true\"",
+                    "true; sampo capture \"{prose}\"; true"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(self.driving(cmd))
+
+    def test_a_hash_that_may_start_a_comment_still_stops_the_mask(self):
+        # the code on a line after a comment runs: python's import line stays refused wherever the # sits
+        code = "python3 -c 'import fmcore; fmcore.write_meta(p, {{}})'"
+        for cmd in ("sampo task show T-0007 # c\n" + code,
+                    "sampo task show T-0007 # it's\n" + code,
+                    "sampo task show ${{#x}}\n" + code,
+                    "sampo task show $#\n" + code,
+                    "sampo task show \"$(echo # \"\n)\"; " + code,
+                    "sampo task show \"`echo # \"\n`\"; " + code,
+                    "sampo task show a#b\n" + code,
+                    "sampo capture \"{prose}\"\n" + code):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(self.driving(cmd))
+
+    def test_the_refusal_hint_names_the_file_flag_for_task_prose(self):
+        hint = g._hint("interpreter code driving Sampo's modules: x (use the fm CLI; to edit a Sampo source file "
+                       "whose text names its modules, use the Edit or Write tool)", "core")
+        self.assertIn("--file", hint)
+        self.assertIn("sampo edit <", hint)
 
 
 if __name__ == "__main__":

@@ -327,7 +327,9 @@ def _hint(detail, cat=""):
                 "then cd <scratch>/x && git …). Sampo's own tree changes through a task: sampo edit or the Edit tool per "
                 "file (with a standing core yes: sampo ask ID core --standing), sampo task finish to commit.")
     if re.match(r"interpreter code driving (?:Sampo|Foreman)'s modules", detail):  # review of T-1897: 17 in a week, no hint
-        return " A draft that only names them goes through the Write tool, then sampo edit < draft as the next command."
+        # T-4921: prose for a task or a capture is no source file: a draft file, passed with --file, not sampo edit
+        return (" A draft that only names them goes through the Write tool, then sampo edit < draft as the next command; "
+                "prose for a task goes in a file the Write tool makes, passed as sampo task set ID --section S --file PATH.")
     if detail.endswith("(written from interpreter code)"):
         return (" If the script only writes other files, keep it to builtin open() on literal paths with no import but "
                 "re, json, textwrap or sys, so only those count, or use the Edit tool.") + research
@@ -2790,8 +2792,12 @@ def _mask_fm(cmd, ctx):
 def _mask_fm_read(cmd, ctx):
     shell, bodies = _heredocs(cmd)
     if ("$'" in shell or len(re.findall(r"(?<!<)<<(?!<)", shell)) != len(re.findall(_HEREDOC_START, shell))
-            or "#" in shell or re.search(r"\bPATH\b|\balias\b|\bhash\b|\bfunction\s+" + FM_NAME_RE + r"\b|\b" + FM_NAME_RE + r"\s*\(\s*\)", shell)):
+            or re.search(r"\bPATH\b|\balias\b|\bhash\b|\bfunction\s+" + FM_NAME_RE + r"\b|\b" + FM_NAME_RE + r"\s*\(\s*\)", shell)):
         return cmd  # the quote scan can't follow, or which program `fm` names could change: blank nothing
+    # T-4921: a # may start a comment, whose quotes and parentheses the scan would misread: so one outside every quote and
+    # escape stops it (a comment, ${#x}, $#, a#b), and so does one in a double quote when a substitution is in the text
+    # (a comment inside $( ) or backticks ends at a newline, not at the quote). Inside quotes anywhere else it is prose.
+    subst = "$(" in shell or "`" in shell
     out, seg, q, esc = [], [], None, False
 
     def flush():
@@ -2806,6 +2812,8 @@ def _mask_fm_read(cmd, ctx):
             esc = False
         elif ch == "\\" and q != "'":
             esc = True
+        elif ch == "#" and (q is None or (q == '"' and subst)):
+            return cmd
         elif q:
             q = None if ch == q else q
         elif ch in "'\"":
