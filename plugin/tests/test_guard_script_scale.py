@@ -80,8 +80,12 @@ class ScriptScale(GuardCase):
         g._check_script(text, self.ctx(), 0, acc)
         return time.process_time() - t, acc
 
-    def best(self, text, n=3):
-        return min(self.read(text)[0] for _ in range(n))
+    def median(self, *texts, rounds=5, f=None):
+        """T-4990: the median over rounds of f(CPU seconds of each text), the texts read back to back in each round, so a
+        load swing hits every read of a round alike. Two best-of-3 runs taken apart caught a quick small read and a
+        slow big one under load (3.6x where back-to-back pairs read 2.1-2.5x)."""
+        got = sorted(f(*[self.read(t)[0] for t in texts]) for _ in range(rounds))
+        return got[rounds // 2]
 
     def test_the_synthetic_script_has_the_shapes(self):
         text = script(3566)
@@ -92,22 +96,24 @@ class ScriptScale(GuardCase):
 
     def test_a_long_script_is_read_inside_the_hard_budget(self):
         """the hard budget is 10 x _BUDGET of CPU for the whole script; a fifth is left for a busy machine"""
-        text = script(3566)
-        t, acc = self.read(text)
-        t = min(t, self.read(text)[0])
-        self.assertLess(t, g._BUDGET * 10 * 0.8, f"read took {t:.2f} s; found {acc[:3]}")
-        self.assertEqual(acc, [])
+        text, took = script(3566), []
+        for _ in range(5):  # T-4990: the code can read it in time when one read does; a loaded machine (load 24) spends
+            t, acc = self.read(text)  # 1.3-2.2 s of CPU on the same read, an idle one about 1 s, so up to five tries
+            took.append(t)
+            self.assertEqual(acc, [])
+            if t < g._BUDGET * 10 * 0.8:
+                break
+        self.assertLess(min(took), g._BUDGET * 10 * 0.8, f"reads took {', '.join(f'{t:.2f}' for t in took)} s")
 
     def test_the_read_grows_about_linearly(self):
-        small, big = self.best(script(900)), self.best(script(1800))
-        self.assertLess(big, 3 * small + 0.05, f"900 lines {small * 1000:.0f} ms, 1800 lines {big * 1000:.0f} ms")
+        ratio = self.median(script(900), script(1800), f=lambda small, big: big / max(small, 1e-6))
+        self.assertLess(ratio, 3, f"1800 lines cost {ratio:.2f}x 900 lines (median of back-to-back pairs)")
 
     def test_the_prefix_costs_about_the_sum_of_its_parts(self):
         lines = script(3566).splitlines()
         a, b = "\n".join(lines[:300]) + "\n", "\n".join(lines[300:450]) + "\n"
-        both = self.best("\n".join(lines[:450]) + "\n")
-        alone = self.best(a) + self.best(b)
-        self.assertLess(both, 2 * alone + 0.05, f"together {both * 1000:.0f} ms, alone {alone * 1000:.0f} ms")
+        over = self.median("\n".join(lines[:450]) + "\n", a, b, f=lambda both, a, b: both - 2 * (a + b))
+        self.assertLess(over, 0.05, f"together {over * 1000:.0f} ms over twice the parts alone (median of rounds)")
 
     def test_a_substitution_in_an_argument_does_not_make_every_tail_read(self):
         """`echo $(date) $X`, bare or quoted, leaves no command a cd may hide in: its tails need no second reading."""
