@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-18T09:37:46Z",
- "rev": "b3a6f450d",
+ "updated": "2026-11-18T12:17:09Z",
+ "rev": "a929a82e5",
  "capabilities": [
   {
    "n": 1,
@@ -61738,19 +61738,19 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 850,
+ "unproven": 860,
  "unproven_kinds": {
-  "typed": 74,
+  "typed": 80,
   "meaning-user": 87,
   "research-uncited": 29,
-  "meaning-notes": 435,
-  "docs": 184,
+  "meaning-notes": 439,
+  "docs": 187,
   "red": 86,
-  "perf-typed": 144,
-  "infra": 5,
+  "perf-typed": 145,
+  "infra": 7,
   "ui-unshot": 2,
-  "data": 2,
-  "tui-unshot": 2,
+  "data": 4,
+  "tui-unshot": 4,
   "perf-noise": 1
  },
  "next": {
@@ -62233,7 +62233,7 @@
     "unblocks": [
      "M-05"
     ],
-    "asked": "T-2687"
+    "asked": "T-2970"
    },
    {
     "id": "M-13",
@@ -62456,7 +62456,7 @@
     "novelty": "5",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-2768"
+    "asked": "T-3779"
    },
    {
     "id": "M-27",
@@ -62736,7 +62736,7 @@
     "novelty": "4",
     "stage": "idea",
     "unblocks": [],
-    "asked": "T-2505"
+    "asked": "T-3490"
    },
    {
     "id": "M-47",
@@ -62956,27 +62956,27 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 60245,
+   "generated": 61364,
    "write": {
-    "title": 425,
-    "line": 2984,
+    "title": 432,
+    "line": 3025,
     "payoff": 38,
     "kill test": 186,
     "code": 23
    },
    "dups": {
     "exact": 15,
-    "embed": 136,
+    "embed": 137,
     "shingle": 0
    },
    "rejected": {
-    "kill": 30695,
-    "tier": 21197,
+    "kill": 31196,
+    "tier": 21623,
     "novelty": 172
    },
-   "merged": 2028,
-   "kept": 2340,
-   "pending": 6
+   "merged": 2089,
+   "kept": 2379,
+   "pending": 49
   },
   "families": [
    {
@@ -63014,7 +63014,7 @@
    },
    {
     "id": "F-013109",
-    "size": 520,
+    "size": 537,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -64267,6 +64267,57 @@
     ]
    },
    {
+    "id": "F-060285",
+    "size": 1,
+    "lead": "Block injection attacks by enforcing conservation of data type",
+    "today": "Today you can't stop SQL or command injection by checking every input string.",
+    "with_this": "With this, you can make your application immune to injection attacks by design, eliminating the need for complex sanitization layers and reducing security bugs.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "security"
+    ]
+   },
+   {
+    "id": "F-060360",
+    "size": 1,
+    "lead": "Stabilize ecosystem via predictive damping of release waves",
+    "today": "Today you can't dampen the chaotic waves of releases before they hit the ecosystem.",
+    "with_this": "With this, you can automatically adjust the timing and content of your release to act as a damper, reducing the amplitude of disruption in the ecosystem.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "releases"
+    ]
+   },
+   {
+    "id": "F-011460",
+    "size": 5,
+    "lead": "Negotiate migration compatibility with AI agents in other repos",
+    "today": "Today you can't coordinate a breaking API change across 20 different teams without email threads and manual coordination.",
+    "with_this": "With this, you can propose a migration and let AI agents in each dependent repo negotiate the exact changes needed, returning a unified patch set for review.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "bugs",
+     "design",
+     "features",
+     "migrations"
+    ]
+   },
+   {
     "id": "F-010563",
     "size": 4,
     "lead": "Settle security disagreements by letting two rival fixes fight in a tournament",
@@ -64464,39 +64515,6 @@
     "tier": "xhigh",
     "cold": null,
     "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "migrations"
-    ]
-   },
-   {
-    "id": "F-010244",
-    "size": 2,
-    "lead": "Run a whole company's software as one living negotiation",
-    "today": "Today you can't have a thousand engineering teams renegotiate shared interfaces in real time when one change ripples through everyone's code.",
-    "with_this": "With this, you can ship a change to a shared library and watch every dependent team's code adapt, merge, or object before anything breaks, so your deploys stop waiting on weeks of coordination meetings.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "design",
-     "features"
-    ]
-   },
-   {
-    "id": "F-011460",
-    "size": 2,
-    "lead": "Negotiate migration compatibility with AI agents in other repos",
-    "today": "Today you can't coordinate a breaking API change across 20 different teams without email threads and manual coordination.",
-    "with_this": "With this, you can propose a migration and let AI agents in each dependent repo negotiate the exact changes needed, returning a unified patch set for review.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
     "block": null,
     "stage": "candidate",
     "evidence": "",
@@ -66218,28 +66236,12 @@
     "kinds": [
      "data"
     ]
-   },
-   {
-    "id": "F-011022",
-    "size": 1,
-    "lead": "Let your codebase vote on schema changes",
-    "today": "Today you can't get consensus from distributed services on a new database schema.",
-    "with_this": "With this, you can ensure consistency across the ecosystem, as services automatically confirm or reject changes based on their local state.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 2,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "migrations"
-    ]
    }
   ],
-  "families_total": 1644,
+  "families_total": 1664,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2340
+   "total": 2379
   }
  },
  "steer": {
@@ -66273,7 +66275,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.4,
+    "idle_h": 245.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66296,7 +66298,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.6,
+    "idle_h": 245.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66319,7 +66321,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.4,
+    "idle_h": 245.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66342,7 +66344,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.4,
+    "idle_h": 245.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66365,7 +66367,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.3,
+    "idle_h": 244.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66388,7 +66390,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.3,
+    "idle_h": 244.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66411,7 +66413,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.0,
+    "idle_h": 244.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66434,7 +66436,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.0,
+    "idle_h": 244.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66457,7 +66459,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.1,
+    "idle_h": 244.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66480,7 +66482,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.8,
+    "idle_h": 246.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66503,7 +66505,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.4,
+    "idle_h": 246.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66526,7 +66528,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.4,
+    "idle_h": 246.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66549,7 +66551,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.5,
+    "idle_h": 246.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66572,7 +66574,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.5,
+    "idle_h": 246.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66595,7 +66597,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.3,
+    "idle_h": 245.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66618,7 +66620,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.2,
+    "idle_h": 245.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66641,7 +66643,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.3,
+    "idle_h": 245.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66664,7 +66666,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.2,
+    "idle_h": 245.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66687,7 +66689,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.0,
+    "idle_h": 245.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66710,7 +66712,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.0,
+    "idle_h": 245.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66733,7 +66735,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.0,
+    "idle_h": 245.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66756,7 +66758,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 243.0,
+    "idle_h": 245.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66779,7 +66781,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.8,
+    "idle_h": 245.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66802,7 +66804,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.8,
+    "idle_h": 245.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66825,7 +66827,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.8,
+    "idle_h": 245.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66848,7 +66850,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 242.9,
+    "idle_h": 245.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
@@ -67048,7 +67050,7 @@
    }
   ],
   "halted": null,
-  "rounds": 19,
+  "rounds": 20,
   "spent_today": 0,
   "share": 65.0
  }
