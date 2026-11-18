@@ -3611,6 +3611,8 @@ def cmd_doctor(args):
         return None
     results = run_all(full=args.full, accept_supply=getattr(args, "accept_supply", False))
     p = c.find_project(os.getcwd())
+    if p:  # T-3499: fits.doctor's age, the night's runs included
+        c.update_meta(p, doctor_at=c.now())
     if p and os.path.realpath(PLUGIN).startswith(os.path.realpath(p.root) + os.sep):
         try:  # T-2349: only in Foreman's own repo: another project's board is not where Foreman's bugs are filed
             feed_self_failures(p, results, c.session_id() or c.now()[:10])

@@ -1996,16 +1996,10 @@ def note_skill(e, all_skills, named, loaded):
     return names if e["kind"] == "slash" else set()
 
 
-def cmd_usage(args):
-    """Which skills, playbooks and fm commands this project used in the window, and which it never did: candidates to
-    trim from the always-loaded context."""
-    from sampo import cli
-    p = cli.resolve(args)
-    if getattr(args, "agents", False):
-        return _agents(p, args, cli)
-    if getattr(args, "lesions", False):
-        return _lesions(p, args, cli)
-    since = _since(args.days)
+def counts(p, since):
+    """T-3499: what sampo usage counts in p since then, one pass over the events: skill loads, playbook reads and fm
+    commands (Counters), the Next followed and ignored, skills named and not loaded, and the never-used skills and
+    playbooks. fits reads the same counts, so "unused" has one definition."""
     from sampo import playbooks
     listed = playbooks.listed()  # T-1621: a load through fm playbooks show is a read too
     skills, books, cmds = collections.Counter(), collections.Counter(), collections.Counter()
@@ -2051,15 +2045,43 @@ def cmd_usage(args):
                        if n.endswith(".md"))
     unused = {"skills": [s for s in all_skills if not skills[s]], "playbooks": [b for b in all_books if not books[b]]}
     missed = collections.Counter(s for sid, ns in named.items() for s in ns - loaded[sid])  # sessions offered X, no load
+    return {"skills": skills, "playbooks": books, "commands": cmds, "followed": followed, "ignored": ignored,
+            "missed": missed, "unused": unused, "all_books": all_books}
+
+
+def _verbs(cli):
+    import argparse
+    sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
+    return sorted(n for n in sub.choices if not n.startswith("_"))
+
+
+def cmd_usage(args):
+    """Which skills, playbooks and fm commands this project used in the window, and which it never did: candidates to
+    trim from the always-loaded context."""
+    from sampo import cli
+    from sampo import fits
+    p = cli.resolve(args)
+    if getattr(args, "agents", False):
+        return _agents(p, args, cli)
+    if getattr(args, "lesions", False):
+        return _lesions(p, args, cli)
+    since = _since(args.days)
+    if getattr(args, "prune", False):  # T-0468: fm commands nobody ran in the window, in any project; never deletes
+        return _prune(args, since)
+    n = counts(p, since)
+    skills, books, cmds, followed, ignored, missed, unused, all_books = (n[k] for k in (
+        "skills", "playbooks", "commands", "followed", "ignored", "missed", "unused", "all_books"))
     shown = sum(followed.values()) + sum(ignored.values())
     nexts = (f"\n  Next followed: {sum(followed.values())} of {shown}"
              + (f"; most often not: {', '.join(f'{k} ×{v}' for k, v in ignored.most_common(3))}" if ignored else "")
              if shown else "")
-    if getattr(args, "prune", False):  # T-0468: fm commands nobody ran in the window, in any project; never deletes
-        return _prune(args, since)
+    ran = {k.split()[0] for k in cmds}  # T-3499: the unused features no fits probe watches yet: add one or retire it
+    idle = list(dict.fromkeys([x for x in unused["skills"] if x not in ran]
+                              + [v for v in _verbs(cli) if v not in ran and not skills[v]] + unused["playbooks"]))
+    bare = [x for x in idle if x not in fits.PROBES]
     cli.out(args, {"days": args.days, "skills": dict(skills), "playbooks": dict(books), "commands": dict(cmds),
                      "unused": unused, "next_followed": dict(followed), "next_ignored": dict(ignored),
-                     "named_not_loaded": dict(missed)},
+                     "named_not_loaded": dict(missed), "no_probe": bare},
               f"Last {args.days} day(s) in {p.slug}:\n  skills: "
               + (" · ".join(f"{k} {v}" for k, v in skills.most_common()) or "none")
               + "\n  playbooks read: " + (" · ".join(f"{k} {v}" for k, v in books.most_common(8)) or "none")
@@ -2067,20 +2089,20 @@ def cmd_usage(args):
               + f"\n  never used: skills {', '.join(unused['skills']) or '-'}; {len(unused['playbooks'])} of "
                 f"{len(all_books)} playbooks"
               + ("\n  named, not loaded: " + ", ".join(f"{k} ×{v}" for k, v in missed.most_common()) if missed else "")
-              + nexts)
+              + nexts
+              + f"\n  unused with no situation probe yet: {len(bare)} of {len(idle)} ({c.joinmore(bare, 8)}): "
+                "add one to fits.PROBES or retire the feature")
 
 
 def _prune(args, since):
     """T-0468: the fm commands no session ran (any project) since `since`: candidates to fold or retire, proposed as
     one CLEAN capture to review. Nothing is removed here."""
-    import argparse
     from sampo import cli
     used = set()
     for e in c.global_events(since):  # rotated logs too, or a verb used before the last fm tidy reads as unused
         if e.get("kind") == "tool" and e.get("tool") == "Bash":
             used.update(re.findall(r"(?:^|[;&|(]\s*|\s)(?:fm|sampo)\s+([a-z][a-z-]*)", str(e.get("target") or "")))
-    sub = next(a for a in cli.build_parser()._actions if isinstance(a, argparse._SubParsersAction))
-    names = sorted(n for n in sub.choices if not n.startswith("_"))
+    names = _verbs(cli)
     unused = [n for n in names if n not in used]
     capture = (f'fm capture "CLEAN: review fm commands not run in {args.days:g} days: {", ".join(unused[:20])}" '
                f'--type CLEAN') if unused else ""

@@ -454,6 +454,16 @@ def _cached(p, briefs, now):
     return out
 
 
+def feature_fit(p, briefs, now):
+    """T-3499: "how can we make all sampo commands and features be used effectively? I shouldn't even need to ask":
+    the top 2 features sampo usage counts unused whose situation holds now (fits.PROBES), each with its numbers."""
+    from sampo import fits
+    got = fits.hits(p, briefs, now)
+    return "unused, and fits now: " + c.joinmore(got, 2, " · ") if got else None
+
+
+CHECKS += (feature_fit,)  # its own line: another lane's check joins the tuple above without a conflict
+
 # T-4118: findings act or tell, with drive on or off (night.tick runs act: the Stop hook's sweep and the hourly timer).
 # An action runs detached at most once per ACT_BACKOFF_S and ACT_PER_DAY times a day per check; a tell, an action that
 # couldn't start, or one whose finding outlives ESCALATE_S reaches the user once a day per check, sooner only when its

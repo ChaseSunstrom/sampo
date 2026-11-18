@@ -157,6 +157,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmfastbuild` (T-3608: builds and installs the native `sampo-fast` guard binary, run by `sampo doctor --repair`/`--fix` and install.sh; offline and locked, then probed against the Python hook, any doubt leaves the Python hook) [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmflake_forecast` (`sampo flakes [--red NAME …] [--top N] [--json]`, T-3286: which tests will likely flake, ranked by fail rate from flakes.json and tagged load or chance; `--red` splits a red run's failures into known flakes and new ones) [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmfind` (`sampo find [PATH] [--rank] [--capture N] [--json]`, T-2121… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmfits` (T-3499: situation probes: an unused verb or skill whose moment is now, with its numbers… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmfixes` (T-1032: known fixes, `sampo fix list|add|rm`: a failed Bash command… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmflow` (T-1639: `sampo flow FILE`, a journey of goto/click/type/expect/wait… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmforesight` (T-2554: `_requests(p, clean=True)` leaves out briefs a Genesis… [→ files-lib-2](docs/map/files-lib-2.md)

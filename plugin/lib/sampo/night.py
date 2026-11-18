@@ -28,7 +28,7 @@ LAND_POLL_S = 30  # T-4278: how often the wait looks at the land's lock
 HEAVY = ("evolve", "bench", "exam", "sentinel")  # T-4278: a replayed session, exam arms or a bisect's test suites: by a
 # job's first word; such a job never starts while a land runs
 _LEASE = None  # T-0921: the open lock file of a running night
-NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds")
+NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits")
 
 
 GENERATORS = ("moons grow", "moons funnel")  # T-3296: the bulk CPU users; they take the project lock only briefly per row
@@ -166,6 +166,8 @@ def jobs(p):
     if any(b.tier in ("S", "M") and all(state.get(d) in c.CLOSED for d in c._deps(b))
            for b in c.order_queue(briefs)[0]):  # T-1046: an unblocked small task is waiting: fm run works it
         out.append(("queue", ["run", "--fit", "--max", "2", "--wait", "0"], budget.estimate("run", 2, 0.5)))
+    from sampo import fits  # T-3499: free: the read-only verbs whose situation holds, and the plain reports
+    out += [(f"fits {v}", [v], 0.0) for v in fits.due(p, briefs, time.time())]
     top = draft._top(p)
     if top and not os.path.exists(os.path.join(p.dir, "draft.json")):  # T-1062: a small task drafted for review, never merged
         out.append((f"draft {top.id}", ["draft"], budget.estimate("run", 1, 0.3)))
@@ -690,7 +692,10 @@ def cmd_night(args):
             r = subprocess.run([sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "fm"), *j["argv"], *left], cwd=p.root,
                                env=dict(os.environ, FOREMAN_NO_BACKGROUND="1"), capture_output=True, text=True,
                                timeout=JOB_TIMEOUT, preexec_fn=priority(j["name"]))
-            code, tail = r.returncode, (r.stdout + r.stderr).strip().splitlines()[-1:]
+            out = (r.stdout + r.stderr).strip().splitlines()
+            code, tail = r.returncode, out[-1:]
+            if j["name"].startswith("fits ") and len(out) > 1:  # T-3499: a report's finding leads, its footer trails
+                tail = [f"{len(out)} lines: {c.fit(out[0], 70)} … {c.fit(out[-1], 70)}"]
         except (OSError, subprocess.TimeoutExpired) as e:
             code, tail = 124, [str(e)]
         if code == BUSY:  # T-3929: logged as busy; the next job still runs and the breaker never counts it
