@@ -2454,6 +2454,66 @@ def _merged_among(root, tids, rev="HEAD"):
     return got
 
 
+_CITED = re.compile(r"(?<![\w/.~:-])((?:[\w-][\w.-]*/)*[\w-][\w.-]*\.(?:py|pyi|md|ts|tsx|js|mjs|cjs|json|jsonl|sh|rs|"
+                    r"toml|ya?ml|txt|html|css|svg|sql))(?![\w/-])")
+_BRIEF_SECTIONS = ("Raw request", "Interpretation", "Acceptance criteria", "Non-goals", "Approach (options → choice → why)",
+                   "Race", "Steps")  # what builder_brief hands the builder
+CITED_MAX = 20  # file names looked up on the unlanded branches per brief
+
+
+def cited_missing(p, root, base, b):
+    """T-4928: the repo files the brief names (its scope's plain paths and the path-like words of the sections a builder
+    reads) that `base` lacks. Returns (held, create): held = [(name, task id, branch)] for a name an open task's
+    unlanded commit adds (T-4861 cited wardhead.py, which only T-2981's builder branch had: the builder spent a run
+    finding that out); create = names no unlanded commit adds, or one only a closed task's commit adds (with a note),
+    listed for the builder. A bare name (no folder) counts only when an unlanded commit adds it: prose names files that
+    are never repo files. The task's own commits never count (a resumed lane)."""
+    text = "\n".join([b.title, *(b.section(n) for n in _BRIEF_SECTIONS)])
+    names = [s.rstrip("/") for s in b.meta.get("scope") or [] if s.rstrip("/") and not re.search(r"[*?\[]", s)]
+    names = list(dict.fromkeys(names + _CITED.findall(text)))
+    if not names:
+        return [], []
+    files = c._git(root, "ls-tree", "-r", "--name-only", base, timeout=10).splitlines()
+    if not files:  # git failed: nothing is claimed missing
+        return [], []
+    have, tops, bases = set(files), {f.split("/", 1)[0] for f in files}, {f.rsplit("/", 1)[-1] for f in files}
+    missing = [n for n in names if not (n in have or "/" not in n and n in bases
+                                        or "/" in n and any(f.endswith("/" + n) for f in files))][:CITED_MAX]
+    if not missing:
+        return [], []
+    log = c._git(root, "log", "--branches", "--not", base, "--diff-filter=A", "--name-only", "--format=%x00%H%x00%s",
+                 "--", *[f":(glob)**/{n}" for n in missing], *[f":(glob){n}" for n in missing if "/" in n], timeout=15)
+    added = {}  # name -> [(sha, subject)], newest first
+    for rec in re.split(r"\x00(?=[0-9a-f]{40}\x00)", log)[1:]:  # "\0<sha>\0<subject>\n\n<path>\n…" per commit
+        sha, _, rest = rec.partition("\x00")
+        subject, _, paths = rest.partition("\n")
+        for path in paths.split("\n"):
+            for n in missing:
+                if path and (path == n or path.endswith("/" + n)):
+                    added.setdefault(n, []).append((sha, subject))
+    briefs = {x.id: x for x in c.load_briefs(p)} if added else {}
+    held, create = [], []
+    for n in missing:
+        owner = None
+        for sha, subject in added.get(n, []):  # the commit's subject names its task; else a lane branch's name does
+            refs = c._git(root, "for-each-ref", "--contains", sha, "--format=%(refname:short)", "refs/heads/",
+                          timeout=10).split()
+            ids = [t for t in re.findall(r"\bT-\d+\b", subject) or [m for r in refs for m in re.findall(r"\bT-\d+\b", r)]
+                   if t != b.id]
+            if ids:
+                owner = (n, ids[-1], refs[0] if refs else sha[:9])
+                break
+        if owner and owner[1] in briefs and briefs[owner[1]].status not in c.CLOSED:
+            if not any(h[0].rsplit("/", 1)[-1] == n.rsplit("/", 1)[-1] for h in held):  # scope's path and the prose's name
+                held.append(owner)
+        elif owner:
+            st = briefs[owner[1]].status if owner[1] in briefs else "unknown"
+            create.append(f"{n} (only on {owner[2]}, added by {owner[1]} ({st}), never landed)")
+        elif "/" in n and n.split("/", 1)[0] in tops and not added.get(n):
+            create.append(n)
+    return held, create
+
+
 def _merged_in_head(root, tid, rev="HEAD"):
     """T-3168: is the task's own work on HEAD (T-4222: or on `rev`)? The newest of the last 2000 subjects naming it
     decides: "Merge ID:" or "<what> (ID)" is its work, a Revert is not; a passing mention ("(ID part 1)", "for ID") is
@@ -2730,6 +2790,20 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
                   + (f"; the check found the commits of {', '.join(on)} on it" if on else "") + f". Fast-forward your "
                   f"worktree to it first (the contract below names it as <BASE>); the main thread merges your branch back "
                   f"onto `{cut['branch']}`.", ""]
+    held, create = cited_missing(p, main, base, b)  # T-4928: a file only an unlanded branch has is a dependency
+    if held:
+        deps = set(b.meta.get("depends_on") or [])
+        name, tid, where = held[0]
+        more = f" (and {', '.join(sorted({h[0] for h in held[1:]}))})" if held[1:] else ""
+        raise c.PolicyError(
+            f"{b.id} names {name}{more}, which its base {base[:9]} lacks: {tid} adds it on {where}, not landed. "
+            + (f"It waits on {tid} (depends_on): brief it once {tid} lands." if tid in deps else
+               f"Add the dependency (sampo task set {b.id} depends_on+={tid}) and brief it once {tid} lands, or "
+               f"reword the brief if it means another file."))
+    if create:
+        parts += ["## Files the base lacks", "The brief names these, and your base doesn't have them: create them if "
+                  "the task makes them; if one should already exist, stop and report it.",
+                  *[f"- {n}" for n in create], ""]
     if resume_branch:
         parts += ["## Resume", f"A builder worked this task before and stopped. Its work, including a WIP commit of its "
                   f"unfinished files, is on branch `{resume_branch}`. Right after `fm focus {b.id}`, run "
