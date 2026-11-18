@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The guard's refusal of a script too long to read now names its bytes, lines and the CPU seconds the reads spent, and gets the shorter-script hint (T-4925).
 - `sampo task show ID --full` prints the brief and its story in one call (T-4924).
 - `sampo outline PATH --grep PATTERN` lists only the definitions whose label matches, before the 400-row cap, so a definition past row 400 is found (T-4923).
 - Card requests are now mined from Sampo's own records (pick misses, failed bench rows on the cards-on arm, repeated closed FIX tasks, tool sequences repeated across sessions) as aggregates only, deduplicated by a stable key, by cards and by open requests, so a second run adds nothing (T-4920).
