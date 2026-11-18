@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo lane accept starts a held check again, a cut-off one as try 1 and a red one when the checker's code (cli.py, train.py, tests/run.py) changed since it ran; the land still leaves such a lane out and says which accept restarts it (T-4404).
 - sampo task evidence --background returns at once and records the run when it ends; sampo task evidence wait ID exits 0 (passed), 1 (failed) or 124 (still running) (T-3536).
 - Every Sampo feature earns its use: unused verbs, skills and playbooks whose situation holds now are named, and the read-only ones run themselves at night (fits.py, T-3499) (T-3499).
 - The release watch works again: when a newer Claude Code than the tested one exists it files one "Adapt to Claude Code" task per version listing the changelog bullets, fetches the changelog only when the latest version moves, and files nothing on a rerun (T-3361).
