@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The hook stage bench no longer turns lane checks red on a loaded machine: it judges the hook's CPU time when the machine is busy and its stage clock when quiet (T-4950).
 - A lane check cut off at its deadline goes on while each try still runs classes (run.py keeps the green ones), each try's deadline is sized from the selection's recorded seconds, and a wall budget over all tries still holds it; the hold line names the try count (T-4892).
 - `sampo lane land` now holds a lane with no passing affected check at its tip, with a line saying to run `sampo lane accept`, and reads that hold again before each train instead of once at start (T-4767).
 - a close's Landed line no longer reports 'not committed' for an untracked build artefact (a test's __pycache__ .pyc) the commit already leaves out (T-4014).
