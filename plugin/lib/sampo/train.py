@@ -2091,9 +2091,13 @@ def _land_trains(p, main, batch, owed):
     def tip(b):
         return _git(main, "rev-parse", "--verify", "-q",
                     f"{b.meta.get('lane_branch') or 'foreman/' + b.id}^{{commit}}").stdout.strip()
+    def merged(b):
+        return (b.meta.get("lane") and lanes._stop(b)[0] == "merged" and (t := tip(b))
+                and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode)
     # a land cut short (or a train by hand) left these merged and open: they only need their close
-    landed = [b.id for b in briefs if b.status not in c.CLOSED and b.meta.get("lane") and lanes._stop(b)[0] == "merged"
-              and (t := tip(b)) and not _git(main, "merge-base", "--is-ancestor", t, "HEAD").returncode]
+    landed = [b.id for b in briefs if b.status not in c.CLOSED and merged(b)]
+    # T-3969: closed already, its merged lane still on disk: _close's done branch removes it
+    gone = [b.id for b in briefs if b.status == "done" and os.path.isdir(b.meta.get("lane") or "") and merged(b)]
     parked, ready, trains, stopped, stale, restart = [], [], 0, "", set(), False
     closed, hand, shipped = [], [], None
     by, tested = {}, {}  # T-3994: each lane's brief, and the tip each verdict judged (a park holds only that tip)
@@ -2173,7 +2177,7 @@ def _land_trains(p, main, batch, owed):
         back = {b.id for b in now if b.id in held and not (_check_hold(b, tip(b), main) or _unchecked(b, tip(b), main))}
         back &= set(lanes.awaiting_merge(p, now, 0, fresh=True))
         sort(b for b in now if b.id in back)
-    left = list(landed)  # merged and open (a train by hand, a land cut short): closed after the trains (T-3884)
+    left = landed + gone  # merged and open (a train by hand, a land cut short): closed after each train's own (T-3884)
     waiting = set(lanes.awaiting_merge(p, briefs)) - set(landed)
     sort(x for x in briefs if x.id in waiting)
     seen = set(waiting) | set(landed)
@@ -2234,6 +2238,8 @@ def _land_trains(p, main, batch, owed):
         parked += got["left_out"]
         times.append(_train_times(p, land_id, trains, got, by, time.monotonic() - t_train))
         close(got["merged"])
+        close([t for t in left if _retry_due(p, t)][:LEFT_PER_TRAIN])  # T-3969: a prepped one closes now, not hours on
+        left = [t for t in left if t not in {x for x, _ in closed}]
         if got["merged"]:
             try:  # a note to the sessions never costs the land
                 announce_skills(main, head0, c._git(main, "rev-parse", "HEAD", timeout=10).strip())
@@ -2255,7 +2261,7 @@ def _land_trains(p, main, batch, owed):
             first_ids(p, ready)  # the restarted land trains them in this order, not re-sorted
             break
     if not restart:  # a restart's leftovers close under the new code (it finds them merged and open again)
-        close(left)
+        close([t for t in left if t not in {x for x, _ in hand}])  # one tried at a boundary was said there
     for tid, why in parked:
         kind, arg = _park_kind(why)
         lanes.stop_mark(p, tid, kind, arg, log=f"land: parked: {c.fit(why, 300)}", tip=tested.get(tid, ""))
@@ -2265,6 +2271,7 @@ def _land_trains(p, main, batch, owed):
         start_verify(p, main, owed)
     shipped = last if last and not last[1].startswith("nothing to ship") else shipped or last
     grant, said = shipped or (None, "")
+    hand = list(dict(hand).items())  # a leftover retried after its brief changed: its newest answer
     return {"landed": landed, "closed": [t for t, _ in closed], "hand": hand, "parked": parked, "trains": trains,
             "stopped": stopped, "restart": restart, "ship": said, "ship_grant": grant, "lines": closed,
             "train_times": times, "ship_asked": asked, "ship_failed": ship_failed}
@@ -2452,6 +2459,20 @@ def _brief_hash(b):
 # ponytail: a refusal caused outside the brief, the tip and Sampo's own code (a tool on PATH, the machine) is retried
 # after this long
 REFUSAL_TTL_S = 6 * 3600
+# ponytail: leftovers retried per train boundary, so 50 prepped closes don't hold up the next train; raise it if they pile
+LEFT_PER_TRAIN = 8
+
+
+def _retry_due(p, tid):
+    """T-3969: a leftover whose close may pass now: never refused, its brief or lane changed since, or the refusal is
+    older than REFUSAL_TTL_S (a closed one: only a done task, whose lane is all that's left)."""
+    from sampo import cli
+    b = cli.need_brief(p, tid)
+    if b.status in c.CLOSED and b.status != "done":
+        return False
+    path = b.meta.get("lane") or ""
+    sha = _git(path, "rev-parse", "--short", "HEAD").stdout.strip() if os.path.isdir(path) else ""
+    return _refused_before(b, sha) is None
 
 
 def _code_id():

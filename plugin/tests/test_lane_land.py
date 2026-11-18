@@ -445,8 +445,43 @@ class Land(LandCase):
         self.train(early)  # merged by a train of its own: open until a land closes it
         r = self.land("--batch", "1")
         steps = re.findall(r"(?m)^sampo lane land: (train \d+: \S+|closed \S+)$", r.stderr)
-        self.assertEqual(steps, [f"train 1: {a}", f"closed {a}", f"train 2: {b}", f"closed {b}", f"closed {early}"],  # T-3884: leftovers last
+        # T-3884: leftovers after the train's own closes; T-3969: at the first boundary, not after the last train
+        self.assertEqual(steps, [f"train 1: {a}", f"closed {a}", f"closed {early}", f"train 2: {b}", f"closed {b}"],
                          r.stderr)
+
+    def test_a_refused_leftover_is_tried_once_per_land_until_its_brief_changes(self):
+        # T-3969: 2026-11-08, 63 merged-open tasks prepped for their closes waited for the land run's end (hours)
+        early, a, b = (self.lane(n, f"{n}.txt", when=OLD) for n in (1, 2, 3))
+        self.audited(early, a, b)
+        self.fm("task", "set", early, "tier=M")
+        r = self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",
+                                       "last_assistant_message": report(early, "Early").replace(
+                                           "DOCS: none: an internal lane\n", "")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for tid in (a, b):
+            self.returned(tid, f"Lane {tid}")
+        self.train(early)
+        r = self.land("--batch", "1")
+        tried = re.findall(rf"(?m)^sampo lane land: left for a hand close {early}: .*$", r.stderr)
+        self.assertEqual(len(tried), 1, r.stderr)
+        self.assertIn("docs impact missing", tried[0])
+        self.assertLess(r.stderr.index(tried[0]), r.stderr.index("train 2:"), "tried at the first boundary")
+
+    def test_a_closed_tasks_merged_lane_is_removed_by_the_land(self):
+        # T-3969: 19 lanes of done, merged tasks stood on disk until removed by hand (2026-11-08)
+        x, y = self.lane(1, "x.txt", when=OLD), self.lane(2, "y.txt", when=OLD)
+        self.audited(x, y)
+        self.returned(y)
+        self.train(x)
+        p = c.find_project(self.repo)
+        b = c.find_brief(p, x)
+        b.meta["status"] = "done"
+        c.save_brief(p, b)
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp, "lane1")))
+        r = self.land()
+        self.assertFalse(os.path.isdir(os.path.join(self.tmp, "lane1")), r.stdout + r.stderr)
+        self.assertFalse(self.brief(x).meta.get("lane"), r.stderr)
+        self.assertEqual(self.brief(x).status, "done")
 
     def test_a_returned_or_first_lane_lands_without_the_quiet_wait(self):
         # T-3824: a lane waited 30 minutes past its last commit even after its builder returned, and --first dropped
