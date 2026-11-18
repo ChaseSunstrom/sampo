@@ -699,7 +699,7 @@ class Ship(ForemanTestCase):
                 f.write("x = 1\n")
             sh(self.repo, "add", "test_new.py")
             sh(self.repo, "commit", "-qm", "add test_new")
-            self.fm("check", "affected", affected)
+            self.fm("check", "affected", "--literal", affected)  # T-3416: a stub with no {tests} needs --literal
         red = "sh -c 'echo \"FAIL: test_x (test_mod.Cls.test_x)\"; exit 1'"
         return self.fm("ship", "--remote", "origin", "--test", red, check=False,
                        env={"FM_POSTMERGE_RERUN": alone, "FOREMAN_LOAD_GATE": "0"})

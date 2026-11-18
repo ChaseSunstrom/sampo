@@ -123,7 +123,7 @@ class CloseAffectedReuse(ForemanTestCase):
         subprocess.run(["git", "-C", self.repo, "commit", "-qm", "ui and mirror"], check=True)
         if gated:  # spelled as this repo's are: the gate `claude plugin test mods/foreman-ui`, the runner `cd … && … .`
             self.fm("check", "add", f"echo ui >> {self.count}")
-        self.fm("check", "affected", "--for", ".tsx", f"cd ui && echo . >> {self.count}")
+        self.fm("check", "affected", "--for", ".tsx", "--literal", f"cd ui && echo . >> {self.count}")
         tid = self.close()
         self.write("ui/calc.test.tsx", "test('adds two', () => {})\n")
         self.fm("task", "log", tid, "scope: ui/calc.test.tsx, the test of what it changed")

@@ -1017,6 +1017,37 @@ class EditCriterion(ForemanTestCase):
 
 
 class Checks(ForemanTestCase):
+    def test_affected_template_needs_a_placeholder_and_is_logged(self):
+        # T-3416: `sampo check affected FILES` once replaced the template with the file names; every lane's run broke
+        self.fm("init")
+        r = self.fm("check", "affected", "plugin/a.py", "plugin/tests/test_a.py", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("sampo check --affected", r.stdout + r.stderr)
+        self.fm("check", "affected", "echo {names}")
+        self.assertIn("echo {names}", self.fm("check", "affected").stdout)  # no args: shows it, changes nothing
+        r = self.fm("check", "affected", "--for", ".py", "plugin/a.py", check=False)  # --for is no exemption
+        self.assertNotEqual(r.returncode, 0)
+        self.fm("check", "affected", "--literal", "echo hi")
+        self.fm("check", "affected", "echo {tests}")
+        led = read_text(os.path.join(c.find_project(self.repo, create=False).dir, "ledger.jsonl"))
+        self.assertIn('"old": "echo hi"', led)
+        self.assertIn('"new": "echo {tests}"', led)
+
+    def test_lane_cannot_change_project_gates(self):
+        self.fm("init")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "x",
+                        "--allow-empty"], check=True)
+        wt = os.path.join(self.tmp, "wt")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "wtb", wt], check=True)
+        for args in (("affected", "echo {tests}"), ("affected", "--for", ".js", "echo {tests}"), ("affected", "--clear"),
+                     ("add", "echo hi"),
+                     ("rm", "1"), ("paths", "1", "*.py"), ("onwrite", "*.py", "echo {file}"), ("ambient", "on")):
+            r = self.fm("check", *args, cwd=wt, check=False)
+            self.assertNotEqual(r.returncode, 0, args)
+            self.assertIn("main session", r.stdout + r.stderr)
+        self.assertIn("(unset)", self.fm("check", "affected", cwd=wt).stdout)  # reading is fine
+
     def test_every_failing_class_is_printed_and_ledgered(self):  # T-3397: the summary line cut the list at ~200 chars
         self.fm("init")
         names = [f"test_mod_{i}.LongClassNameNumber{i}" for i in range(12)]
@@ -1167,7 +1198,7 @@ class Checks(ForemanTestCase):
         self.fm("init")
         self.fm("check", "affected", "echo py {names}")
         before = cli.affected(c.find_project(self.repo, create=False))
-        self.fm("check", "affected", "--for", ".tsx", "echo tsx")
+        self.fm("check", "affected", "--for", ".tsx", "--literal", "echo tsx")
         os.makedirs(os.path.join(self.repo, "web"), exist_ok=True)
         for n in ("test_a.py", "pane.test.tsx"):
             with open(os.path.join(self.repo, "web", n), "w") as f:
@@ -1183,7 +1214,7 @@ class Checks(ForemanTestCase):
         # T-3671: a bare `check affected` (a look) wiped the template; now it shows, --clear unsets, and it's logged
         self.fm("init")
         self.fm("check", "affected", "echo py {names}")
-        self.fm("check", "affected", "--for", ".tsx", "echo tsx")
+        self.fm("check", "affected", "--for", ".tsx", "--literal", "echo tsx")
         shown = self.fm("check", "affected").stdout
         self.assertIn("echo py {names}", shown)
         self.assertIn("echo tsx", self.fm("check", "affected", "--for", ".tsx").stdout)

@@ -6333,6 +6333,11 @@ def _gated_check(args):
 
 def _cmd_check(args):
     p = resolve(args)
+    a = args.action  # T-3416: project config (gates, templates, validators) is the main session's, not a lane's
+    if p.lane and (a in ("add", "rm", "paths") or (a in ("onwrite", "ambient", "affected") and args.words)
+                   or (a == "affected" and getattr(args, "clear", False))):
+        raise c.PolicyError(f"sampo check {a}: project config is the main session's to change, not a lane's "
+                            "(to run the affected tests: sampo check --affected)")
     if args.action in ("add", "rm"):
         with c.lock(p.dir):  # one read-modify-write, so concurrent adds can't drop each other
             meta = c.read_meta(p)
@@ -6398,12 +6403,17 @@ def _cmd_check(args):
         return out(args, {"onwrite": rules}, "\n".join(f"{g}: {x}" for g, x in rules.items())
                    or "No onwrite validators: sampo check onwrite GLOB 'CMD {file}'.")
     if args.action == "affected":
+        ext = (args.__dict__.get("for_ext") or "").strip()
+        clear = bool(args.__dict__.get("clear"))
+        if args.words and clear:
+            raise UsageError("check affected: give a command or --clear, not both")
+        new = " ".join(args.words)
+        if new and not getattr(args, "literal", False) and "{tests}" not in new and "{names}" not in new:
+            # T-3416: `check affected FILES` once replaced the template with the file names
+            raise UsageError("a template needs {tests} or {names}; to run the affected tests use: sampo check --affected"
+                             " (--literal accepts one without)")
         with c.lock(p.dir):
             meta = c.read_meta(p)
-            ext = (args.__dict__.get("for_ext") or "").strip()
-            clear = bool(args.__dict__.get("clear"))
-            if args.words and clear:
-                raise UsageError("check affected: give a command or --clear, not both")
             if ext:  # T-1135: one command per test-file extension, beside the default
                 ext = "." + ext.lstrip(".")
                 by = dict(meta.get("affected_by") or {})
@@ -9782,7 +9792,8 @@ def _build_parser(only=None):
                                                                           "ambient", "onwrite", "playbooks", "office"])
     s.add_argument("words", nargs="*", help="add: the command; rm: its number (sampo check list); paths: its number, then "
                                             "the globs it covers (none: always run); affected: a command with {tests} "
-                                            "(paths) or {names} (file names without extension); onwrite: GLOB and a "
+                                            "(paths) or {names} (file names without extension), required; none "
+                                            "shows it; main session only, each change logged (T-3416); onwrite: GLOB and a "
                                             "command with {file}, run on each matching write (5 s; a failure blocks; "
                                             "GLOB alone removes it; nothing lists them); playbooks: lint the playbook "
                                             "library and name the unread ones, `ratchet` records each one's size "
@@ -9798,6 +9809,8 @@ def _build_parser(only=None):
                                                                 "(.tsx), run beside the default (T-1135); no command "
                                                                 "shows it, --clear removes it (T-3671)")
     s.add_argument("--clear", action="store_true", help="affected: unset the template (with --for, that extension's)")
+    s.add_argument("--literal", action="store_true", help="affected: accept a template with no {tests} or {names} "
+                                                          "(T-3416)")
     s.add_argument("--python", metavar="VER", help="run the gates with python VER (3.12) or 'oldest' (the lowest Sampo "
                                                    "supports) as python3: once before a push to main or a release "
                                                    "(T-1805)")
