@@ -220,6 +220,35 @@ class GenesisExport(ForemanTestCase):
         data = json.loads(raw)
         self.assertEqual([e["run"] for e in data["exam"]], ["~/runs/x"])  # only objects; null and 5 dropped
 
+    def test_export_writes_each_model_as_its_role_from_its_profile_and_keeps_a_repo_of_the_same_name(self):
+        """T-2895: a model field holding a profile name becomes the profile's role (field by field, no word match), so the
+        page swaps nothing; a repo or project field named jarvis stays."""
+        import json
+        with open(os.path.join(self.home, "models.json"), "w") as f:
+            json.dump({"profiles": {
+                "jarvis-nothink": {"kind": "openai", "base_url": "http://127.0.0.1:9/v1", "model": "q", "tools": True},
+                "tiny": {"kind": "openai", "base_url": "http://127.0.0.1:9/v1", "model": "q", "tools": False},
+                "mine": {"kind": "openai", "base_url": "http://10.0.0.5/v1", "model": "q", "own": True, "tools": False},
+                "cloudy": {"kind": "openai", "base_url": "https://api.example.com/v1", "model": "gpt-4.1-mini",
+                           "key_env": "X_KEY"},
+                "weird": {"kind": "openai", "base_url": "https://api.example.com/v1", "model": "jarvis-27b",
+                          "key_env": "X_KEY"}}}, f)
+        self.fm("genesis", "init", "--file", "-", input=GEN0_CAPS)
+        self.fm("genesis", "put", "gap-map.md", "--file", "-", input="# Gaps\nran on jarvis-big; repo jarvis (1,853)\n")
+        rows = [{"agent": "a", "model": m, "repo": "jarvis (1,853)"}
+                for m in ("jarvis-nothink", "tiny", "mine", "cloudy", "sonnet", "jarvis (1,853)", "weird",
+                          "jarvis-removed")]
+        tower_file(self.fm_json("genesis")["dir"], "exam.jsonl", "".join(json.dumps(r) + "\n" for r in rows))
+        out = os.path.join(self.tmp, "site-genesis")
+        self.fm_json("genesis", "export", out)
+        data = json.loads(read_text(os.path.join(out, "genesis.json")))
+        got = data["exam"]
+        # an unresolved name or an off-list family fails closed to "a model"
+        self.assertEqual([e["model"] for e in got], ["a large local model", "a local model", "a large local model",
+                                                     "gpt", "sonnet", "a model", "a model", "a model"])
+        self.assertEqual({e["repo"] for e in got}, {"jarvis (1,853)"})
+        self.assertIn("ran on a large local model; repo jarvis (1,853)", data["docs"]["gap-map.md"])  # prose too
+
     def test_export_shows_any_home_a_private_ip_and_a_private_term_redacted(self):  # T-3551
         self.fm("init")
         self.fm("private", "add", "*.home.example.test")
@@ -316,8 +345,8 @@ class GenesisExport(ForemanTestCase):
 
     def test_the_moons_part_shows_the_funnel_and_its_families_as_text(self):
         """T-2852: genesis.json's moons_scale on the page: the funnel's counts, each family's lead and its line, both
-        tiers, stage and evidence, built with textContent only; and a plain line when no funnel has run. An endpoint's
-        name in the data ("jarvis") shows as its role, a large local model."""
+        tiers, stage and evidence, built with textContent only; and a plain line when no funnel has run. The page swaps
+        no words (T-2895: the export wrote the role), so a repo named jarvis in the data shows as itself."""
         import shutil
         import subprocess
         node = shutil.which("node")

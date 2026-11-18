@@ -86,17 +86,6 @@
   }
 
   /* data helpers */
-  /* T-2852: a model shows by its role, never by its endpoint's name: "jarvis" anywhere in the data (a key or a string,
-     at any depth) reads as "a large local model". Run once on load, in place, so every renderer and md() see it */
-  function roles(v) {
-    if (typeof v === "string") return v.replace(/[\w-]*jarvis[\w-]*(?!\s*\(\d)/gi, "a large local model");  // "jarvis (1,853)" is a repo
-    if (v && typeof v === "object") Object.keys(v).forEach(function (k) {
-      var n = roles(k), x = roles(v[k]);
-      if (n !== k) delete v[k];
-      if (n !== k || x !== v[k]) v[n] = x;
-    });
-    return v;
-  }
   function exams() {  /* the export can hold a run twice (same run, agent and time): count and list it once */
     var seen = {};
     return (D["exam"] || []).filter(function (e) { var k = [e.run, e.agent, e.at].join("|"); return seen[k] ? false : (seen[k] = true); });
@@ -1838,7 +1827,7 @@
     if (!r.ok) throw new Error(r.status);
     return r.json();
   }).then(function (data) {
-    D = roles(data);
+    D = data;
     if (!D.generations.length) D.generations = [{ n: 1, seed: false, missions: [], critiques: [], tasks: [], rules: [] }];
     selectGen(D.generations[D.generations.length - 1].n);
     exam();

@@ -51,7 +51,7 @@ async function scale() {
   const bad = "<img src=x onerror=alert(1)>", says = (x, re) => x.texts.some(t => re.test(t));
   const s = await page({moons_scale: {funnel: {generated: 10000, write: {schema: 3}, dups: {exact: 40, embed: 1200, shingle: 7},
     rejected: {kill: 5000, tier: 2600, novelty: 900}, merged: 150, kept: 103, pending: 0},
-    families: [{id: "F-007", size: 12, lead: "Lead " + bad, today: "today it can't", with_this: "with this it can, on Jarvis-big",
+    families: [{id: "F-007", size: 12, lead: "Lead " + bad, today: "today it can't", with_this: "with this it can, on a large local model; repo jarvis (1,853)",
       tier: "massive", cold: "extreme", wild: 5, block: "M-61", stage: "kill", evidence: "ev " + bad, kinds: ["kill"]}],
     families_total: 340}});
   const n = await page({moons_scale: undefined});
@@ -60,8 +60,8 @@ async function scale() {
       && says(s, /150 merged/) && says(s, /103 kept/),
     lead: says(s, /today it can't/) && says(s, /with this it can/), tiers: says(s, /massive.*extreme/), stage: says(s, /kill test/),
     evidence: s.texts.some(t => t.includes("ev " + bad)), more: says(s, /1 of 340 families/), none: says(n, /no funnel run yet/i),
-    // the endpoint's name never shows: the data's "jarvis" reads as its role
-    jarvis: !s.texts.concat(s.html).some(t => /jarvis/i.test(t)) && says(s, /on a large local model(?![\w-])/)}));
+    // T-2895: the export wrote the role; the page swaps no words, so a repo named jarvis shows as itself
+    jarvis: says(s, /on a large local model; repo jarvis \(1,853\)/)}));
 }
 // T-3047: `genesis_page.js DIR catalogue`: 10,000 kept moons paged 50 at a time, searched and filtered by grid, tier and family
 async function catalogue() {

@@ -633,6 +633,35 @@ def profiles():
     return list(conf.values()) + _env_profiles() + list(_local()) + _cloud()
 
 
+def role(name):
+    """T-2895: what a model shows as on a page, read from its profile (never from the name's words): a server the user
+    owns, or a loopback one with tools, 'a large local model'; a loopback one without, 'a local model'; a cloud
+    profile its family (the model id's first word) when that is on FAMILIES. Public, so it fails closed: a name that is
+    no profile and not on FAMILIES (a renamed or removed endpoint), or a family off the list, is 'a model'."""
+    if not isinstance(name, str) or not name:
+        return name
+    try:
+        prof = resolve(name)
+    except ModelError:
+        return name if _family(name) else "a model"
+    host = urllib.parse.urlsplit(prof.get("base_url") or "").hostname or ""
+    if prof.get("own") or (is_loopback(host) and prof.get("tools", True)):
+        return "a large local model"
+    if is_loopback(host):
+        return "a local model"
+    return _family(prof.get("model") or name) or "a model"
+
+
+FAMILIES = ("default", "haiku", "sonnet", "opus", "fable", "claude", "gpt", "gemini", "llama", "mistral", "qwen", "deepseek",
+            "gemma", "grok", "command", "phi")
+
+
+def _family(model):
+    """The model id's first word if it is a known family, else ''."""
+    w = re.split(r"[^a-z]", str(model).split("/")[-1].lower())[0]
+    return w if w in FAMILIES else ""
+
+
 def for_purpose(profs, purpose):
     """T-3744: the profiles for one job, order kept. A profile that declares purposes serves only those jobs; the
     profiles that name the job come first and alone, else today's choice: the ones declaring none (or all, when

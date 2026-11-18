@@ -1281,7 +1281,8 @@ def export(p, out):
         raise ValueError(f"no Genesis tower here ({d}): fm genesis init first, or run from the project that has one")
     def scrub(x):  # every string the page gets: any home path as ~, private hosts and terms, secrets redacted (T-3551)
         if isinstance(x, str):
-            return c.redact(c.redact_local(x, terms))
+            # T-2895: prose names no endpoint either ("jarvis-big" anywhere); "jarvis (1,853)" is a repo and stays
+            return re.sub(r"(?i)[\w-]*jarvis[\w-]*(?!\s*\(\d)", "a large local model", c.redact(c.redact_local(x, terms)))
         if isinstance(x, list):
             return [scrub(v) for v in x]
         return {scrub(k): scrub(v) for k, v in x.items()} if isinstance(x, dict) else x  # keys too
@@ -1357,6 +1358,13 @@ def export(p, out):
     if st := ssteer.latest(p, held=True):  # T-2625: the steer-expansion exam's newest run, its held-out rate on the page
         data["steer"] = {k: st.get(k) for k in ("run", "at", "model", "judge", "cases", "failed", "harmful", "holdout",
                                                 "train")}
+    from sampo import models  # T-2895: a model field shows its role, so the page swaps no words; other fields stay
+    import functools
+    role = functools.lru_cache(maxsize=None)(models.role)  # one probe per name, not one per row
+    for row in [r for r in data["exam"] if isinstance(r, dict)] + ([data["steer"]] if "steer" in data else []):
+        for k in ("model", "judge"):
+            if isinstance(row.get(k), str):
+                row[k] = role(row[k])
     if k := _kalevala(p):  # T-3266: the city view; absent before kalevala start
         data["kalevala"] = k
     data = scrub(data)
