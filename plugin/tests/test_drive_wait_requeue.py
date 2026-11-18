@@ -280,8 +280,22 @@ class JobKind(Wait):
                         "sampo ci-watch --commit X | tee /tmp/w.log", "FOO=1 sampo ci-watch --commit X",
                         "nohup sampo ci-watch --commit X", "python3 plugin/bin/sampo ci-watch --commit X",
                         "/home/u/.claude/foreman/plugin/bin/fm ci-watch", "git push && sampo ci-watch --commit X",
-                        "cd a; sampo ci-watch --commit X &", "bash -c 'cd r && sampo ci-watch --commit X'"):
+                        "cd a; sampo ci-watch --commit X &", "bash -c 'cd r && sampo ci-watch --commit X'",
+                        "# wait for CI\nsampo ci-watch --commit X", "sampo ci-watch --commit X # note",
+                        "sampo ci-watch --url http://h/p#frag"):
             self.assertEqual(self.kind(command=command), "ci", command)
+
+    def test_a_bg_start_records_the_ci_kind_where_the_command_is_known(self):
+        self.fm("init")
+        self.fm("autonomy", "full")
+        self.task("Fix the pipeline")
+        self.hook("PostToolUse", {"tool_name": "Bash", "tool_input": {"command": "sampo ci-watch --commit X",
+                  "run_in_background": True}, "tool_response": {"backgroundTaskId": "bciw"}})
+        self.hook("PostToolUse", {"tool_name": "Bash", "tool_input": {"command": "tail -f x",
+                  "run_in_background": True}, "tool_response": {"backgroundTaskId": "bplain"}})
+        self.stop({"id": "bciw", "type": "shell", "status": "running"}, {"id": "bplain", "type": "shell", "status": "running"})
+        kinds = (self.drive_state().get("wait_jobs") or {}).get("kinds") or {}
+        self.assertEqual(kinds, {"bciw": "ci"})
 
     def test_an_unparsable_or_huge_or_non_text_command_is_no_kind(self):
         for command in ("sampo ci-watch 'unclosed", "", None, 5, ["sampo", "ci-watch"], "x " * 5000 + "sampo ci-watch"):

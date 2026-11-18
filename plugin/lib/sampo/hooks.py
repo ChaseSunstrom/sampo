@@ -4761,6 +4761,8 @@ def _post_tool_use(pl, ok=True):
             closes = _text_closes(" ".join(str(ti.get(k) or "") for k in ("command", "description")))
             if closes:  # T-4644: the tasks this job closes (their ids only: the command's text may hold a secret)
                 row["closes"] = closes
+            if _runs_ci_watch(ti.get("command")):  # T-4670: the kind is decided where the command is certain (a flag only)
+                row["ci"] = True
             _event(row)
     elif ok and tool in ("Bash", "Monitor"):  # T-2790: a call the harness moved to the background after its timeout,
         # and a Monitor, run in the background too; their notices end them like any job (unparseable: nothing)
@@ -5661,6 +5663,7 @@ def _runs_ci_watch(command, depth=1):
     try:
         lex = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=True)
         lex.whitespace_split = True
+        lex.commenters = ""     # a leading `# note` line or a URL fragment must not drop the rest
         toks = list(lex)
     except ValueError:
         return False
@@ -5695,12 +5698,13 @@ def _runs_ci_watch(command, depth=1):
     return False
 
 
-def job_kind(job, closing=False):
+def job_kind(job, closing=False, ci=False):
     """T-4670: 'close' for a job that closes a task (`closing`: the drive found it in its closes), 'ci' for a job whose
-    `command` runs Sampo's CI watcher (_runs_ci_watch: its structure, never words in a description), else None."""
+    start recorded a CI watch (`ci`, from the PostToolUse hook that saw the command) or whose payload `command` runs
+    Sampo's CI watcher (_runs_ci_watch: its structure, never words in a description), else None."""
     if closing:
         return "close"
-    if isinstance(job, dict) and _runs_ci_watch(job.get("command")):
+    if ci or (isinstance(job, dict) and _runs_ci_watch(job.get("command"))):
         return "ci"
     return None
 
@@ -6306,14 +6310,15 @@ def _live_close(p, tid):
     return False
 
 
-def _running(sid, agents=None, closes=None):
+def _running(sid, agents=None, closes=None, cis=None):
     """Background agents and commands of this session still running: their completion notification wakes the
     session, so drive waits instead of pushing busywork. agents, a set, gets the ids that are subagents (a start or a
     SendMessage resume), which never turn into a service past LONG_JOB_S (T-2872). closes, a dict, gets each running
     job's task ids its start recorded as closing (T-4644: the PostToolUse hook stores the ids, never the command)."""
     state = {}
     shut = {}
-    keep = (json.dumps(sid, ensure_ascii=False),) if isinstance(sid, str) and sid else ()  # T-2033: decode its lines only
+    watch = set()
+    keep =(json.dumps(sid, ensure_ascii=False),) if isinstance(sid, str) and sid else ()  # T-2033: decode its lines only
     # T-2873: the file is every session's; 1,500 lines was under an hour of a busy one, short of BG_WAIT_S
     for e in c._tail_rows(os.path.join(c.state_dir(), "events.jsonl"), 6000, keep):
         if not isinstance(e, dict) or e.get("session_id") != sid or (c.age_days(e.get("ts")) or 0) * 86400 > BG_WAIT_S:
@@ -6325,10 +6330,14 @@ def _running(sid, agents=None, closes=None):
                 agents.add(key)
             if isinstance(e.get("closes"), list):
                 shut[key] = [str(x) for x in e["closes"]]
+            if e.get("ci") is True:
+                watch.add(key)
         elif kind in ("subagent_stop", "bg_done"):
             state[key] = False
     if closes is not None:
         closes.update({k: v for k, v in shut.items() if state.get(k)})
+    if cis is not None:     # T-4670: the running jobs whose start recorded a CI watch
+        cis.update(k for k in watch if state.get(k))
     return [k for k, on in state.items() if on]
 
 
@@ -6585,7 +6594,8 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     bg = pl.get("background_tasks")  # T-0115: the engine's own in-flight list, when this build sends it
     scanned = set()  # T-2872: the event scan's agents (a subagent start or a resume), as the engine list marks them
     closes = {}  # T-4644: job id -> the task ids its own text closes (the engine's record, else what its start recorded)
-    found = _running(sid, scanned, closes)
+    cis = set()  # T-4670: jobs whose start recorded a CI watch
+    found = _running(sid, scanned, closes, cis)
     for t in bg if isinstance(bg, list) else ():
         if _job_closes(t):
             closes[str(t.get("id"))] = _job_closes(t)
@@ -6608,7 +6618,7 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     mine = {k for k, ids in closes.items() if work["id"] in ids and k not in agents and not _headless()}  # (an agent ends)
     # T-4670: each waited job's kind (a queued close, a CI watch), for the timer: it is called stuck at its kind's time
     kinds ={k: job_kind(next((t for t in bg if isinstance(t, dict) and str(t.get("id")) == k), None) if isinstance(bg, list)
-                         else None, closing=k in closes) for k in running if k not in agents}
+                         else None, closing=k in closes, ci=k in cis) for k in running if k not in agents}
     kinds = {} if _headless() else {k: v for k, v in kinds.items() if v}  # (a headless run is as before)
     if train:
         kinds["train"] = "train"
