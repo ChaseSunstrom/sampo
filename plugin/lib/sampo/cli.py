@@ -2613,6 +2613,8 @@ def _landed(p, b):
     if not files:
         return "Landed: no file changes in git" + note
     dirty = c._git(p.root, "--literal-pathspecs", "status", "--porcelain", "--", *files, timeout=30).splitlines()
+    # T-4014: an untracked build artefact (a test's .pyc) is left out of the commit (T-1320), so out of the count too
+    dirty = [ln for ln in dirty if not (ln.startswith("?? ") and c.ARTEFACT.search(ln[3:].strip('"')))]
     if dirty:
         return f"Landed: not committed ({len(dirty)} file{'' if len(dirty) == 1 else 's'} uncommitted)" + note
     sha = c._git(p.root, "--literal-pathspecs", "log", "-1", "--format=%h", "--", *files, timeout=30).strip()

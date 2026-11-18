@@ -172,6 +172,16 @@ class BoardClose(Base):
         from sampo import cli
         self.assertEqual(cli._landed(self.p, c.find_brief(self.p, "T-0002")), f"Landed: committed {sha} · pushed")
 
+    def test_landed_leaves_out_an_untracked_pyc_as_the_commit_does(self):  # T-4014: a check's bytecode isn't work
+        self.committed("x.py", "A = 1\n")
+        self.task()
+        self.write("x.py", "A = 2\n")
+        self.write("__pycache__/x.cpython-313.pyc", "\x00bytecode")
+        last = self.finish("--commit", "Two").stdout.strip().splitlines()[-1]
+        sha = subprocess.run(["git", "-C", self.repo, "rev-parse", "--short", "HEAD"], capture_output=True,
+                             text=True).stdout.strip()
+        self.assertEqual(last, f"Landed: committed {sha} · not pushed")
+
     def test_landed_counts_only_this_tasks_files_and_shows_on_a_commit_retry(self):
         self.committed("x.py", "A = 1\n")
         self.committed("y.py", "B = 1\n")
