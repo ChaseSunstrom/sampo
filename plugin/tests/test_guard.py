@@ -1115,7 +1115,10 @@ class FrictionFalseBlocks(GuardCase):  # T-0344
                      "print(importlib.import_module('json'))", "import yaml; print(yaml)"):
             with self.subTest(code=code):
                 self.assertIsNone(g._open_targets(code))
-                self.assertBlocked(self.bash(f"curl -s https://x | python3 -I -c \"{code}\""), "pipe-shell")
+                # T-4930: a computed __import__ is refused first as core (a computed import route); with core granted
+                # the data proof still fails
+                self.assertBlocked(self.bash(f"curl -s https://x | python3 -I -c \"{code}\"", allow={"core"}),
+                                   "pipe-shell")
         planted = os.path.join(self.repo, "planted3689")
         os.makedirs(planted, exist_ok=True)
         for mod in ("json", "yaml"):
@@ -2524,7 +2527,9 @@ class InterpreterWrites(GuardCase):
              "core"),
             ("python3 -c \"import sys; sys.path.insert(0, 'lib'); import fmcli; fmcli.main(['task', 'set', 'T-1', '--allow', 'core'])\"",
              "core"),
-            ("python3 -c \"import sys; sys.path.insert(0, 'lib'); import fmguard; print(fmguard.CATEGORIES)\"", None),
+            # T-4930: 'lib' here is the test repo's, not the tree the writer index read: its fmguard runs unjudged
+            # (test_guard_writer_index: the index's own lib, put first by a literal, is still a read)
+            ("python3 -c \"import sys; sys.path.insert(0, 'lib'); import fmguard; print(fmguard.CATEGORIES)\"", "core"),
             ("python3 - <<'EOF'\nimport fmcore as c\ndef run(x):\n    return c.read_meta(x)\nprint(run(p))\nEOF", None),
             ("python3 -c \"from fmcli import main; main(['capture', 'x'])\"", "core"),
             ("python3 -c \"import fmideas; fmideas.run(['x'])\"", "core"),

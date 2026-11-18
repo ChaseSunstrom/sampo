@@ -2966,8 +2966,12 @@ def _credential_read(pl):
     return guard.message(block, ctx) if block else None
 
 
-def _guard_decision(pl, guard, lanes=()):
+def _guard_decision(pl, guard, lanes=(), inline=False):
+    # T-4930: in the hook (5 s, refused on timeout) the Ward's writer index is never built inline: a cold tree starts one
+    # detached build and its Sampo imports are refused until it is there; `sampo guard try` builds it (inline=True). On
+    # the call's own context, so nothing else the process checks (tests, replay, threads) is changed
     ctx, p, act = _guard_ctx(pl, guard, lanes)
+    ctx.index_inline = inline
     mark("state")  # T-4780: the stage clock
     found = guard.findings(pl.get("tool_name", ""), pl.get("tool_input"), ctx)
     mark("parse")
@@ -2995,7 +2999,7 @@ def cmd_guard_try(args):
         raise cli.UsageError("sampo guard try needs a command" if args.tool == "Bash" else f"--tool {args.tool} needs --path")
     pl = {"tool_name": args.tool, "tool_input": {key: target}, "cwd": os.path.abspath(args.cwd or os.getcwd()),
           "session_id": c.session_id()}
-    ctx, _p, _act, _found, block = _guard_decision(pl, g)
+    ctx, _p, _act, _found, block = _guard_decision(pl, g, inline=True)
     msg = g.message(block, ctx) if block else None
     cli.out(args, {"decision": "deny" if block else "allow", "category": block.category if block else None,
                      "rule": getattr(block, "rule", None) if block else None, "message": msg},

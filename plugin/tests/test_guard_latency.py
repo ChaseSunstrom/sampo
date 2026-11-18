@@ -15,6 +15,7 @@ import fmguard as g
 BAR = 4.0  # CPU seconds per case: >= 5x the slowest measured (0.68s) here; measured worst is printed below
 BARS = {"10k ; commands": 15.0}  # linear, ~0.23ms a command: measured 2.3s, bar 6x that
 INDEX_BAR = 20.0  # T-4906: the Ward's writer index, built once per Sampo tree and kept on disk: measured 4.3s, ~5x
+# (T-4930: the hook never pays it: a cold tree starts one detached build; this bar holds that build and guard try's)
 
 
 def cases():

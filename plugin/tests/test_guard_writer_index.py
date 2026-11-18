@@ -199,5 +199,227 @@ class Index(unittest.TestCase):
             self.assertIn("_git", mods[m]["writers"], "a partial of core's runner")
 
 
+class Reach(GuardCase):
+    """T-4930 (T-4906's review): the index follows the names an import binds, so a Sampo module reached another way ran
+    its writers unrefused: sys.modules, pkgutil.resolve_name, runpy, importlib.util, a sys.path entry put first, and
+    __import__ of a computed name (which skipped the guard's literal pre-gate entirely)."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        g._writer_index()  # warm, in this process: the index is not what these cases test
+
+    def refused(self, code, word=None):
+        r = self.bash(py(code))
+        self.assertBlocked(r, "core", code)
+        if word:
+            self.assertIn(word, r.detail, code)
+
+    def test_a_sampo_module_reached_by_another_route_is_refused(self):
+        for code, word in (('import sampo.core; import sys; sys.modules["sampo.core"].set_panic(False)', "modules"),
+                           ('import sampo.core; from sys import modules; modules["sampo.core"].set_panic(False)', "modules"),
+                           ('import sampo.core, pkgutil; pkgutil.resolve_name("sampo.core:set_panic")(False)', "pkgutil"),
+                           ('import sampo.core; import runpy; runpy.run_module("sampo.core")', "runpy"),
+                           ('import sampo.core; import importlib.util as u; print(u.find_spec("sampo.core"))', "importlib"),
+                           ('import sampo.core, operator; print(operator.attrgetter("fit"))', "operator"),
+                           ('import sys; sys.path.insert(0, "/tmp/x"); import sampo.core as c; print(c.fit("a", 1))', "path"),
+                           # review: sys by another name, a module's own sys, the table under another name
+                           ('import sys; s = sys; s.path.insert(0, "/tmp/x"); import sampo.core as c; print(c.fit("a", 1))',
+                            "sys"),
+                           ('import collections; collections._sys.path.insert(0, "/tmp/x"); import sampo.core', "sys"),
+                           ('import sampo.core; from sys import modules as M; M["sampo.core"].set_panic(1)', "modules"),
+                           ('import sampo.core, sys; getattr(sys, "modules")["sampo.core"].set_panic(1)', "getattr")):
+            with self.subTest(code=code):
+                self.refused(code, word)
+
+    def test_an_import_by_a_computed_name_or_route_is_refused(self):
+        for code in ('__import__("sam" + "po.core").core.set_panic(False)',
+                     'import importlib; importlib.import_module("".join(["sam", "po.core"])).set_panic(False)',
+                     'import importlib, sys; importlib.import_module(sys.argv[1]).set_panic(0)',
+                     # review: the machinery renamed, stored, fetched by a string, or handed **kw
+                     'from importlib import import_module as im; im("sampo.core").set_panic(False)',
+                     'import importlib; getattr(importlib, "import_module")("json")',
+                     'import importlib; f = importlib.import_module; f("sampo.core")',
+                     'import importlib; importlib.import_module(**{{"name": "sampo.core"}})'):  # (bash() formats it)
+            with self.subTest(code=code):
+                self.refused(code, "computed")
+
+    def test_a_literal_naming_sampo_handed_to_the_machinery_is_a_sampo_import(self):
+        lib = os.path.dirname(os.path.abspath(g.__file__))
+        for code in ('n = "sampo"; __import__(n)',
+                     'import importlib; importlib.import_module(".core", "sampo").set_panic(False)',
+                     f'import runpy; runpy.run_path("{lib}/fmcore.py")["write_meta"]("x", {{{{}}}})',
+                     f'import importlib.util as u; s = u.spec_from_file_location("x", "{lib}/sampo/core.py")',
+                     'import pkgutil; pkgutil.resolve_name("sampo.core:set_panic")(False)'):
+            with self.subTest(code=code):
+                self.refused(code)
+
+    def test_a_literal_import_of_another_module_still_runs(self):
+        for code in ('print(__import__("json").dumps(1))', 'import importlib; print(importlib.import_module("json"))',
+                     'for m in ("json", "csv"): __import__(m)',
+                     'import importlib; print([importlib.import_module(m) for m in ["json", "csv"]])',
+                     'print("import_module")'):
+            with self.subTest(code=code):
+                self.assertIsNone(self.bash(py(code)))
+
+    def test_a_harmless_module_beside_a_sampo_read_still_runs(self):
+        lib = os.path.dirname(os.path.abspath(g.__file__))
+        for code in ('import hashlib; from sampo.core import fit; print(fit("abc", 2), hashlib.sha1(b"").hexdigest())',
+                     'import sys; from sampo.core import fit; print(fit(sys.argv[1], 2))'):
+            with self.subTest(code=code):
+                self.assertIsNone(self.bash(f"cd {lib} && " + py(code) + " abc"))
+
+    def test_a_sampo_folder_in_the_run_folder_that_is_not_the_indexed_tree_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "sampo"))
+            for name, text in (("__init__.py", ""), ("core.py", "def fit(*a):\n    open('/tmp/x', 'w')\n")):
+                with open(os.path.join(d, "sampo", name), "w") as f:
+                    f.write(text)
+            r = self.bash(f"cd {d} && " + py('from sampo.core import fit; print(fit("a", 1))'))
+            self.assertBlocked(r, "core")
+            self.assertIn("run folder", r.detail)
+
+    def test_the_indexed_trees_own_folder_still_reads(self):
+        lib = os.path.dirname(os.path.abspath(g.__file__))  # plugin/lib: its sampo/ is the tree the index reads
+        self.assertIsNone(self.bash(f"cd {lib} && " + py('from sampo.core import fit; print(fit("abc", 2))')))
+
+    def test_the_indexed_lib_put_first_by_a_literal_still_reads(self):
+        """A read session's usual form (test_guard's table had it): sys.path.insert(0, <the lib>) then a read. Only
+        that lib, first, by a literal: another folder, an append (site-packages stays before it) or index 1 is a
+        route."""
+        lib = os.path.dirname(os.path.abspath(g.__file__))
+        plugin = os.path.dirname(lib)
+        read = 'import fmguard; print(fmguard.CATEGORIES)'
+        self.assertIsNone(self.bash(py(f'import sys; sys.path.insert(0, "{lib}"); {read}')))
+        self.assertIsNone(self.bash(f"cd {plugin} && " + py(f'import sys; sys.path.insert(0, "lib"); {read}')))
+        for code in (f'import sys; sys.path.insert(0, "{plugin}"); {read}',
+                     f'import sys; sys.path.append("{lib}"); {read}',
+                     f'import sys; sys.path.insert(1, "{lib}"); {read}',
+                     f'import sys; sys.path.insert(0, "{lib}"); sys.path.insert(0, "/tmp/x"); {read}',
+                     f'import sys; d = "{lib}"; sys.path.insert(0, d); {read}'):
+            with self.subTest(code=code):
+                self.refused(code, "sys.path")
+        self.assertBlocked(self.bash(f"cd /tmp && " + py(f'import sys; sys.path.insert(0, "lib"); {read}')), "core")
+
+
+class FailClosed(GuardCase):
+    """T-4930: an index that can't be had refuses a Sampo import (it fell back to the hand list, the hole T-4906 closed),
+    and the PreToolUse hook (5 s, a refusal on timeout) never builds it inline: a cold tree starts one detached build and
+    the command is refused until it is there."""
+
+    def setUp(self):
+        super().setUp()
+        g._INDEX_MEMO.clear()
+        self.addCleanup(g._INDEX_MEMO.clear)
+
+    def test_an_index_that_cannot_be_built_refuses_a_sampo_import(self):
+        with mock.patch.object(g, "_writer_index", side_effect=RecursionError("deep")):
+            r = self.bash(py('import sampo.core as c; print(c.fit("a", 2))'))
+        self.assertBlocked(r, "core")
+        self.assertIn("could not be built (RecursionError)", r.detail)
+
+    def test_the_hook_never_builds_the_index_inline(self):
+        with mock.patch.object(g, "INDEX_INLINE", False), \
+                mock.patch.object(g, "_build_index", side_effect=AssertionError("built inline")), \
+                mock.patch.object(g, "_index_spawn", return_value=True) as spawn:
+            t = time.process_time()
+            r = self.bash(py('import sampo.core as c; print(c.fit("a", 2))'))
+            spent = time.process_time() - t
+        self.assertBlocked(r, "core")
+        self.assertIn("being built", r.detail)
+        spawn.assert_called_once()
+        self.assertLess(spent, 1.0, "a cold tree costs the hook no build")
+
+    def test_the_hook_decides_with_inline_builds_off_on_its_own_context(self):
+        from types import SimpleNamespace
+        from sampo import hooks
+        seen, guard = [], mock.Mock()
+        guard.findings.return_value = []
+        guard.check.side_effect = lambda tool, inp, ctx, found: seen.append(ctx.index_inline)
+        pl = {"tool_name": "Bash", "tool_input": {"command": "ls"}}
+        with mock.patch.object(hooks, "_guard_ctx", side_effect=lambda *a: (SimpleNamespace(), None, None)):
+            hooks._guard_decision(pl, guard)
+            hooks._guard_decision(pl, guard, inline=True)  # sampo guard try
+        self.assertEqual(seen, [False, True])
+        self.assertIs(g.INDEX_INLINE, True, "the module default is untouched (review: a global swap races)")
+        with mock.patch.object(g, "_build_index", side_effect=AssertionError("built inline")), \
+                mock.patch.object(g, "_index_load", return_value=None), \
+                mock.patch.object(g, "_index_spawn", return_value=True):
+            ctx = self.ctx()
+            ctx.index_inline = False
+            self.assertBlocked(g.check("Bash", {"command": py('import sampo.core as c; print(c.fit("a", 2))')}, ctx),
+                               "core")
+
+    def test_unparsed_text_naming_a_sampo_import_is_judged_strictly_when_cold(self):
+        # review: with no index the text gate was the hand list alone (set_panic is not on it)
+        with mock.patch.object(g, "INDEX_INLINE", False), mock.patch.object(g, "_index_spawn", return_value=True):
+            r = self.bash("printf 'from sampo import state\\nstate.set_panic(0)' | python3")
+        self.assertBlocked(r, "core")
+        self.assertIn("Sampo", r.detail)
+
+    def test_no_state_folder_refuses_rather_than_building_in_the_hook(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(g.IndexBroken) as e:
+                g._writer_index(d, None, inline=False)
+        self.assertEqual(e.exception.cause, "NoStateFolder")
+
+    def test_a_build_that_cannot_start_or_died_is_refused_with_its_cause(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as cache:
+            stamp = g._index_stamp(d, g._index_files(d))
+            with mock.patch("subprocess.Popen", side_effect=OSError("no fork")):
+                with self.assertRaises(g.IndexBroken) as e:
+                    g._writer_index(d, cache, inline=False)
+            self.assertEqual(e.exception.cause, "OSError")
+            self.assertEqual(os.listdir(cache), [], "its marker is gone")
+            mark = os.path.join(cache, f"ward-index-{stamp}.building")
+            open(mark, "w").close()
+            os.utime(mark, (time.time() - g.INDEX_BUILD_STALE - 5,) * 2)  # a build that died
+            self.assertIsNone(g._writer_index(d, cache, inline=False))
+            with self.assertRaises(g.IndexBroken) as e:
+                g._writer_index(d, cache, inline=False)
+            self.assertEqual(e.exception.cause, "BuildDied")
+            self.assertFalse(os.path.exists(mark), "cleared, not taken over")
+            failed = os.path.join(cache, f"ward-index-{stamp}.failed")
+            os.utime(failed, (time.time() - g.INDEX_RETRY - 5,) * 2)
+            with mock.patch.object(g, "_index_spawn", return_value=True) as spawn:
+                self.assertIsNone(g._writer_index(d, cache, inline=False), "tried once more after INDEX_RETRY")
+            spawn.assert_called_once()
+
+    def test_a_build_that_cannot_write_the_index_records_why(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as cache:
+            stamp = g._index_stamp(d, g._index_files(d))
+            mark = os.path.join(cache, f"ward-index-{stamp}.building")
+            open(mark, "w").close()
+            with mock.patch.object(g, "_index_store", return_value=False):
+                g._index_build_detached(d, cache, stamp, mark)
+            with open(os.path.join(cache, f"ward-index-{stamp}.failed")) as f:
+                self.assertEqual(f.read(), "OSError")
+            self.assertFalse(os.path.exists(mark))
+
+    def test_text_that_only_names_a_sampo_import_is_not_refused_when_cold(self):
+        with mock.patch.object(g, "INDEX_INLINE", False), mock.patch.object(g, "_index_spawn", return_value=True):
+            self.assertIsNone(self.bash('grep -n "from sampo import core" plugin/lib/sampo/cli.py'))
+
+    def test_a_detached_build_writes_the_index_once_per_stamp(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as cache:
+            with open(os.path.join(d, "__init__.py"), "w") as f:
+                f.write("")
+            with open(os.path.join(d, "a.py"), "w") as f:
+                f.write("def r():\n    return 1\n")
+            self.assertIsNone(g._writer_index(d, cache, inline=False), "cold: nothing to judge by yet")
+            self.assertFalse(g._index_spawn(d, cache, g._index_stamp(d, g._index_files(d))), "one build at a time")
+            end = time.time() + 60
+            while time.time() < end and not any(n.endswith(".json") for n in os.listdir(cache)):
+                time.sleep(0.05)
+            g._INDEX_MEMO.clear()
+            idx = g._writer_index(d, cache, inline=False)
+            self.assertIsNotNone(idx, os.listdir(cache))
+            self.assertEqual(idx["modules"]["sampo.a"]["safe"], ["r"])
+            end = time.time() + 10
+            while time.time() < end and any(n.endswith(".building") for n in os.listdir(cache)):
+                time.sleep(0.05)
+            self.assertFalse([n for n in os.listdir(cache) if n.endswith(".building")], "the build marker is gone")
+
+
 if __name__ == "__main__":
     unittest.main()

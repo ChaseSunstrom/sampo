@@ -2497,41 +2497,177 @@ def _build_index(root):
     return {"version": _INDEX_VERSION, "modules": mods, "methods": methods}
 
 
-def _writer_index(root=None, cache=None):
+# T-4930: whether a missing index is built in the calling process. The PreToolUse hook (a 5 s budget, refused on
+# timeout) checks with ctx.index_inline off (sampo/hooks.py _guard_decision): a cold tree's index (4 s of CPU) is then
+# built by one detached process per stamp, and a Sampo import is refused until it is there
+INDEX_INLINE = True
+INDEX_BUILD_STALE = 120  # seconds: a .building marker older than this is a build that died (recorded as failed)
+INDEX_RETRY = 1200  # seconds a failed build of a stamp is refused with its error before one more try
+INDEX_KEEP = 32  # trees' indexes kept in the cache (the main tree and its lanes)
+_INDEX_PENDING = "the Ward has no writer index for this Sampo tree"  # (a refusal with it is never cached)
+
+
+class IndexBroken(Exception):
+    """T-4930: no index can be had for this stamp; `cause` names why (an exception's name, BuildDied, NoStateFolder)."""
+
+    def __init__(self, cause):
+        super().__init__(cause)
+        self.cause = cause
+
+
+def _index_root():
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "sampo")
+
+
+def _index_load(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            idx = json.load(f)
+        return idx if isinstance(idx, dict) and idx.get("version") == _INDEX_VERSION else None
+    except (OSError, ValueError):
+        return None
+
+
+def _index_store(cache, path, idx):
+    """Write `idx` at `path` (atomically): True when written. The newest INDEX_KEEP trees' indexes stay in `cache`; a
+    .tmp a write left behind goes after ten minutes (a live build's marker is never touched here)."""
+    import time
+    try:
+        os.makedirs(cache, exist_ok=True)
+        now, kept = time.time(), []
+        for n in os.listdir(cache):
+            try:
+                at = os.path.getmtime(os.path.join(cache, n))
+                if n.startswith("ward-index-") and n.endswith((".json", ".failed")):
+                    kept.append((at, n))
+                elif n.startswith("ward-index-") and n.endswith(".tmp") and now - at > 600:
+                    os.remove(os.path.join(cache, n))
+            except OSError:  # gone under a concurrent build's cleanup
+                pass
+        for _, n in sorted(kept)[:-INDEX_KEEP]:
+            try:
+                os.remove(os.path.join(cache, n))
+            except OSError:
+                pass
+        tmp = f"{path}.{os.getpid()}.tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(idx, f)
+            os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _index_failed(cache, stamp, cause):
+    """T-4930: record that `stamp`'s build failed (`cause`, a name), so callers refuse with it until INDEX_RETRY."""
+    try:
+        with open(os.path.join(cache, f"ward-index-{stamp}.failed"), "w", encoding="utf-8") as f:
+            f.write(cause)
+    except OSError:
+        pass
+
+
+def _writer_index(root=None, cache=None, inline=True):
     """T-4906: the writer index of the Sampo tree at `root` (default: the one beside this file), built once per tree
     (its stamp: sizes and change times) and kept in `cache` (Sampo's state folder, which only Sampo writes: a hand-made
-    index there would be a way round the Ward), or in this process alone when no cache is given."""
-    root = root or os.path.join(os.path.dirname(os.path.abspath(__file__)), "sampo")
+    index there would be a way round the Ward), or in this process alone when no cache is given. T-4930: with `inline`
+    off a missing index is never built here: one detached build of the stamp starts (_index_spawn) and None comes back
+    (the caller refuses what it would have judged by it). IndexBroken: a build of the stamp failed (refused with its
+    error for INDEX_RETRY, then tried once more), none can start, or there is no cache to build into."""
+    root = root or _index_root()
     files = _index_files(root)
     stamp = _index_stamp(root, files)
     if (root, stamp) in _INDEX_MEMO:
         return _INDEX_MEMO[(root, stamp)]
     path = os.path.join(cache, f"ward-index-{stamp}.json") if cache else None
-    idx = None
-    if path:
-        try:
-            with open(path, encoding="utf-8") as f:
-                idx = json.load(f)
-            idx = idx if isinstance(idx, dict) and idx.get("version") == _INDEX_VERSION else None
-        except (OSError, ValueError):
-            idx = None
+    idx = _index_load(path) if path else None
     if idx is None:
+        if not inline:
+            if not cache:
+                raise IndexBroken("NoStateFolder")
+            failed = os.path.join(cache, f"ward-index-{stamp}.failed")
+            import time
+            try:
+                young = time.time() - os.path.getmtime(failed) < INDEX_RETRY
+                with open(failed, encoding="utf-8") as f:
+                    cause = f.read().strip()
+            except OSError:
+                young = cause = None
+            if young:
+                raise IndexBroken(_ident(cause or "Unknown"))
+            if young is False:
+                try:
+                    os.remove(failed)
+                except OSError:
+                    pass
+            _index_spawn(root, cache, stamp)
+            return None
         idx = _build_index(root)
         if path:
-            try:
-                os.makedirs(cache, exist_ok=True)
-                old = sorted((os.path.getmtime(os.path.join(cache, n)), n) for n in os.listdir(cache)
-                             if n.startswith("ward-index-"))
-                for _, n in old[:-16]:  # the newest trees' indexes stay (lanes keep their own)
-                    os.remove(os.path.join(cache, n))
-                tmp = f"{path}.{os.getpid()}.tmp"
-                with open(tmp, "w", encoding="utf-8") as f:
-                    json.dump(idx, f)
-                os.replace(tmp, path)
-            except OSError:
-                pass
+            _index_store(cache, path, idx)
     _INDEX_MEMO[(root, stamp)] = idx
     return idx
+
+
+def _index_spawn(root, cache, stamp):
+    """T-4930: start one detached build of `root`'s index for `stamp` into `cache`: True when started, False when a
+    build of the stamp holds the O_EXCL marker. A marker older than INDEX_BUILD_STALE is a build that died: recorded as
+    failed (BuildDied) and cleared, never taken over (two callers taking over one marker would run two builds).
+    IndexBroken when none can start (a cache it can't write, no process)."""
+    import time
+    mark = os.path.join(cache, f"ward-index-{stamp}.building")
+    try:
+        os.makedirs(cache, exist_ok=True)
+        os.close(os.open(mark, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600))
+    except FileExistsError:
+        try:
+            if time.time() - os.path.getmtime(mark) >= INDEX_BUILD_STALE:
+                _index_failed(cache, stamp, "BuildDied")
+                os.remove(mark)
+        except OSError:
+            pass
+        return False
+    except OSError as e:
+        raise IndexBroken(type(e).__name__) from None
+    try:
+        import subprocess
+        lib = os.path.dirname(os.path.abspath(__file__))
+        # -I: no PYTHON* settings, user site or run folder on the path; only this guard's own folder is put first
+        subprocess.Popen([sys.executable, "-I", "-c", "import sys; sys.path.insert(0, sys.argv[1]); import fmguard; "
+                          "fmguard._index_build_detached(*sys.argv[2:])", lib, root, cache, stamp, mark],
+                         cwd="/", stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True)
+        return True
+    except (OSError, ValueError) as e:
+        try:
+            os.remove(mark)  # ours: made above
+        except OSError:
+            pass
+        raise IndexBroken(type(e).__name__) from None
+
+
+def _index_build_detached(root, cache, stamp, mark):
+    """T-4930: the detached build _index_spawn starts: the index is written before the marker goes, and a build that
+    fails, or can't write it, leaves ward-index-STAMP.failed naming why (refused with it rather than rebuilt)."""
+    try:
+        os.nice(10)
+    except OSError:
+        pass
+    try:
+        if _index_stamp(root, _index_files(root)) == stamp:  # a tree changed since the spawn: its own call builds it
+            if not _index_store(cache, os.path.join(cache, f"ward-index-{stamp}.json"), _build_index(root)):
+                _index_failed(cache, stamp, "OSError")
+    except BaseException as e:  # noqa: BLE001 (recorded for the hook, which then refuses with its name)
+        _index_failed(cache, stamp, type(e).__name__)
+    finally:
+        try:
+            os.remove(mark)
+        except OSError:
+            pass
 
 
 def _index_writer_names(idx):
@@ -2601,16 +2737,237 @@ def _literal_getattr(call, obj, ast):
 _PLAIN_DUNDERS = frozenset(("__name__", "__main__", "__file__", "__doc__"))
 
 
-def _dynamic_use(tree):
+# T-4930 (T-4906's review): names that reach a loaded or loadable module by another road than the import the index
+# follows: the module table, a dotted-name resolver, a module or file run whole, a spec or loader, an attribute fetched
+# by a string. Beside a Sampo import each is refused, with the module of anything outside _PLAIN_IMPORTS
+_REACH = frozenset(("modules", "resolve_name", "attrgetter", "methodcaller", "itemgetter", "run_module", "run_path",
+                    "spec_from_file_location", "spec_from_loader", "module_from_spec", "exec_module", "load_module",
+                    "find_spec", "find_loader", "get_loader", "get_importer", "reload", "meta_path", "path_hooks",
+                    "path_importer_cache", "SourceFileLoader", "zipimporter", "addsitedir"))
+
+
+_SYS_REACH = frozenset(("path", "modules", "meta_path", "path_hooks", "path_importer_cache"))
+
+
+def _lib_insert(node, parents, home):
+    """T-4930: `node` (sys.path) is the whole of `sys.path.insert(0, "<dir>")`, the literal <dir> read from the run
+    folder being the lib the writer index read (home: (run folder, lib)): first on the path, so no other folder's
+    sampo loads (the run folder's own is _drives_fm's check; an append would leave site-packages before it)."""
+    import ast
+    run, lib = home
+    meth = parents.get(node)
+    if node.attr != "path" or not isinstance(meth, ast.Attribute) or meth.attr != "insert":
+        return False
+    call = parents.get(meth)
+    if not (isinstance(call, ast.Call) and call.func is meth and not call.keywords and len(call.args) == 2
+            and all(isinstance(a, ast.Constant) for a in call.args)):
+        return False
+    at, d = (a.value for a in call.args)
+    return (type(at) is int and at == 0 and isinstance(d, str) and bool(d)
+            and os.path.realpath(os.path.join(run, d)) == os.path.realpath(lib))
+
+
+def _sys_path_use(tree, home=None):
+    """T-4930: 'sys.X' when parsed code may reach the import path or the module table: sys used other than as
+    sys.<attr> (passed on, assigned, getattr or vars on it), sys.path/modules/meta_path…, a module's own sys (os.sys,
+    collections._sys), or `from sys import path` (or modules…) under any name. A folder put first loads another tree's
+    sampo; the table holds Sampo's modules by a string. '' when none. `home` ((run folder, lib)): putting the lib the
+    writer index read on the path, by a literal (_lib_insert), loads no other tree and isn't a use."""
+    import ast
+    sysish = {"sys"} | {a.asname for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names
+                        if a.name == "sys" and a.asname}
+    parents = None
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom) and not n.level:
+            for a in n.names:
+                if n.module == "sys" and a.name in _SYS_REACH | {"*"}:
+                    return f"sys.{a.name}"
+                if a.name in ("sys", "_sys"):
+                    return "sys"
+        elif isinstance(n, ast.Attribute) and n.attr in ("sys", "_sys"):
+            return "sys"
+        elif isinstance(n, ast.Name) and n.id in sysish:
+            if parents is None:
+                parents = {ch: p for p in ast.walk(tree) for ch in ast.iter_child_nodes(p)}
+            par = parents.get(n)
+            if not (isinstance(par, ast.Attribute) and par.value is n):
+                return "sys"
+            if home and _lib_insert(par, parents, home):
+                continue
+            if par.attr in _SYS_REACH or par.attr.startswith("__"):
+                return f"sys.{par.attr}"
+    return ""
+
+
+# T-4930: modules beside a Sampo import that reach no module by a name (the rest — importlib, pkgutil, runpy, operator,
+# site, typing's eval of annotations, pickle, gc, inspect… — may; an import outside this set turns the strict clauses on)
+_BESIDE_SAMPO = frozenset((  # (and _PLAIN_IMPORTS)
+    "hashlib", "argparse", "statistics", "decimal", "fractions", "random", "bisect", "heapq", "uuid", "base64",
+    "binascii", "struct", "csv", "html", "unicodedata", "pprint", "shlex", "calendar", "zlib", "keyword", "array",
+    "numbers", "ipaddress", "enum"))
+
+
+def _foreign_import(tree):
+    """T-4930: the first module parsed code imports that is neither plain (_PLAIN_IMPORTS, _BESIDE_SAMPO) nor Sampo's
+    (pkgutil, runpy, importlib.util, operator, site…: any can reach a module by its name), '' when none."""
+    import ast
+    for n in ast.walk(tree):
+        names = [a.name for a in n.names] if isinstance(n, ast.Import) else \
+            [n.module or ""] if isinstance(n, ast.ImportFrom) and not n.level else []
+        for m in names:
+            if m.split(".")[0] not in _PLAIN_IMPORTS and m.split(".")[0] not in _BESIDE_SAMPO and not _fm_target(m):
+                return m
+    return ""
+
+
+# T-4930: the functions that load or find a module by a name or path in a string; one named in the text sends the code
+# to the parse, where each use must be a plain call of it with literal arguments (_import_route)
+_IMPORT_CALLS = frozenset(("__import__", "import_module", "run_module", "run_path", "resolve_name", "find_spec",
+                           "spec_from_file_location", "spec_from_loader", "find_loader", "load_module", "get_loader",
+                           "SourceFileLoader", "SourcelessFileLoader", "ExtensionFileLoader", "zipimporter",
+                           "addsitedir", "load_source", "load_compiled"))
+_IMPORT_CALL_TEXT = lazy(r"\b(?:" + "|".join(sorted(_IMPORT_CALLS)) + r")\b")
+
+
+def _name_binds(tree, ast):
+    """{name: the value node of each place parsed code binds it (None: a value no reading can follow: a parameter, an
+    import, a with or except target, unpacking, +=)}; a for or comprehension target binds to its iterable."""
+    binds = {}
+
+    def add(t, v):
+        if isinstance(t, ast.Name):
+            binds.setdefault(t.id, []).append(v)
+        elif isinstance(t, (ast.Tuple, ast.List)):
+            for e in t.elts:
+                add(e, None)
+        elif isinstance(t, ast.Starred):
+            add(t.value, None)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Assign):
+            for t in n.targets:
+                add(t, n.value)
+        elif isinstance(n, (ast.AugAssign, ast.AnnAssign)):
+            add(n.target, None)
+        elif isinstance(n, (ast.For, ast.AsyncFor, ast.comprehension)):
+            add(n.target, n.iter)
+        elif isinstance(n, ast.NamedExpr):
+            add(n.target, n.value)
+        elif isinstance(n, (ast.With, ast.AsyncWith)):
+            for it in n.items:
+                if it.optional_vars is not None:
+                    add(it.optional_vars, None)
+        elif isinstance(n, ast.arg):
+            binds.setdefault(n.arg, []).append(None)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            binds.setdefault(n.name, []).append(None)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for a in n.names:
+                binds.setdefault((a.asname or a.name).split(".")[0], []).append(None)
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            binds.setdefault(n.name, []).append(None)
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            for name in n.names:
+                binds.setdefault(name, []).append(None)
+        elif type(n).__name__ in ("MatchAs", "MatchStar") and getattr(n, "name", None):
+            binds.setdefault(n.name, []).append(None)
+    return binds
+
+
+def _literal_strings(node, binds, ast, depth=0):
+    """The strings `node` can only be (a literal; a literal list, tuple or set of them; a name bound only to such),
+    [] for a literal that is no string, None when it is computed."""
+    if isinstance(node, ast.Constant):
+        return [node.value] if isinstance(node.value, str) else []
+    if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        out = []
+        for e in node.elts:
+            if (got := _literal_strings(e, binds, ast, depth)) is None:
+                return None
+            out += got
+        return out
+    if isinstance(node, ast.Name) and depth < 8 and binds.get(node.id):
+        out = []
+        for v in binds[node.id]:
+            if v is None or (got := _literal_strings(v, binds, ast, depth + 1)) is None:
+                return None
+            out += got
+        return out
+    return None
+
+
+def _import_route(tree):
+    """T-4930: (route, names) for parsed code. `route` is the first use of the import machinery (_IMPORT_CALLS) no
+    reading can follow, '' when none: a call with an argument built at run time (`__import__(n)` with n unbound to
+    literals, "sam" + "po", sys.argv[1], **kw), the function passed on or stored (f = importlib.import_module), imported
+    under another name (from importlib import import_module as im), or named by a string (getattr(importlib,
+    "import_module")). `names` is every literal string the machinery is handed: module names, packages, paths."""
+    import ast
+    binds = parents = None
+    names = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.ImportFrom):
+            for a in n.names:
+                if a.name in _IMPORT_CALLS and a.asname and a.asname != a.name:
+                    return a.name, names
+            continue
+        if isinstance(n, ast.Constant) and isinstance(n.value, str) and n.value in _IMPORT_CALLS:
+            if parents is None:
+                parents = {ch: p for p in ast.walk(tree) for ch in ast.iter_child_nodes(p)}
+            par = parents.get(n)
+            if not (isinstance(par, ast.Call) and isinstance(par.func, ast.Name) and par.func.id == "print"):
+                return n.value, names
+            continue
+        ref = n.id if isinstance(n, ast.Name) else n.attr if isinstance(n, ast.Attribute) else None
+        if ref not in _IMPORT_CALLS:
+            continue
+        if parents is None:
+            parents = {ch: p for p in ast.walk(tree) for ch in ast.iter_child_nodes(p)}
+        call = parents.get(n)
+        if not (isinstance(call, ast.Call) and call.func is n):
+            return ref, names
+        if binds is None:
+            binds = _name_binds(tree, ast)
+        for arg in call.args + [k.value if k.arg else None for k in call.keywords]:
+            got = None if arg is None or isinstance(arg, ast.Starred) else _literal_strings(arg, binds, ast)
+            if got is None:
+                return ref, names
+            names += got
+    return "", names
+
+
+def _fm_named(text):
+    """T-4930: the Sampo module top name (sampo, fmcore…) a module name or path string names, '' when none: any of its
+    dotted, colon or slash parts (a .py, .pyc or .so suffix dropped), so sampo.core:fit and /x/lib/fmcore.py both do."""
+    for part in re.split(r"[/\\:.]", text):
+        if _fm_target(part):
+            return part
+    return ""
+
+
+def _fm_imports(tree, called=()):
+    """T-4930: the top name of every Sampo module parsed code imports: by an import statement (any form, an fm twin
+    included) or by handing the import machinery a literal that names one (`called`, from _import_route)."""
+    import ast
+    got = [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names]
+    got += [n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and not n.level]
+    return [m.split(".")[0] for m in got if _fm_target(m)] + [t for s in called if (t := _fm_named(s))]
+
+
+def _dynamic_use(tree, home=None):
     """T-4906: the first name in parsed code that may run a name the writer index never reads (exec, eval, a computed
     getattr, __import__, a dunder walk, a process that runs code), '' when none. What the code defines itself (def,
-    class) is its own, and getattr or hasattr with a literal name is an attribute (_fm_use_refused judges it)."""
+    class) is its own, and getattr or hasattr with a literal name is an attribute (_fm_use_refused judges it). T-4930:
+    so does any other road to a module (_REACH, the import path, an import outside _PLAIN_IMPORTS); `home` as in
+    _sys_path_use."""
     import ast
+    if got := _foreign_import(tree) or _sys_path_use(tree, home):
+        return got
     own = {n.name for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))}
     parents = None
     for n in ast.walk(tree):
         name = n.id if isinstance(n, ast.Name) else n.attr if isinstance(n, ast.Attribute) else None
-        if not name or name in own or name in _PLAIN_DUNDERS or not (name in _DYNAMIC or name.startswith("__")):
+        if not name or name in own or name in _PLAIN_DUNDERS or not (name in _DYNAMIC or name in _REACH
+                                                                     or name.startswith("__")):
             continue
         if name in ("getattr", "hasattr") and isinstance(n, ast.Name):
             if parents is None:
@@ -3186,7 +3543,7 @@ def _python_c_units(shell):
     return units, "".join(out) + shell[last:], starters
 
 
-def _drives_fm(cmd, cwd=None, cache=None):
+def _drives_fm(cmd, cwd=None, cache=None, inline=None):
     """T-0170: interpreter code that imports Sampo's modules and calls their writers. Quoted heredocs fed straight to
     python, and (T-1194) literal `python -c` code, are parsed: text that merely mentions `import fm…` (an edit script's
     strings) isn't an import. The text match of before decides for everything else: fm import text outside those
@@ -3194,17 +3551,35 @@ def _drives_fm(cmd, cwd=None, cache=None):
     importlib…). It only relaxes what it can prove. T-2068: the result is the clause that fired, '' when none did, so the
     refusal can say which one (42 refusals in a week named none).
     T-4906: parsed code is also judged by the writer index (_fm_use_refused), with or without the text gate; `cache`
-    is where the index is kept (Sampo's state folder)."""
-    if not _FM_INTERNALS.search(_nfkc(cmd)):
+    is where the index is kept (Sampo's state folder).
+    T-4930: the import machinery used other than as a plain call with literal arguments (_import_route: a computed
+    name, the function passed on or renamed) is refused wherever it is parsed, Sampo named or not: no reading can tell
+    what it loads. A literal handed to it that names Sampo is a Sampo import. With no index (still being built, a build
+    that failed) a parsed Sampo import is refused and unparsed text naming one is judged as a writer's (`wide`), never
+    by the hand list alone; every Sampo import checks python's run folder. `inline` (default INDEX_INLINE): whether a
+    missing index may be built here (the hook: no, _writer_index)."""
+    text = _nfkc(cmd)
+    named = bool(_FM_INTERNALS.search(text))
+    if not named and not _IMPORT_CALL_TEXT.search(text):
         return ""
-    try:
-        idx = _writer_index(cache=cache)
-    except Exception:  # an index that can't be built: the hand list alone, as before it
-        idx = None
+    inline = INDEX_INLINE if inline is None else inline
+    got = {}
+
+    def index():
+        if not got:
+            try:
+                got["idx"], got["broke"] = _writer_index(cache=cache, inline=inline), ""
+            except IndexBroken as e:
+                got["idx"], got["broke"] = None, e.cause
+            except Exception as e:  # noqa: BLE001 (refused below, by its name)
+                got["idx"], got["broke"] = None, type(e).__name__
+        return got["idx"], got["broke"]
+    idx = index()[0] if named else None
     # T-4906: text it can't read as python is judged by every name the index knows writes (`wide`, any module's: a name
-    # alone can't say which); parsed code by the index itself, the hand list's reading (`gate`) and its dynamic names
-    gate = _fm_gate(cmd)
-    wide = gate or bool(idx) and _fm_gate(cmd, idx)
+    # alone can't say which); parsed code by the index itself, the hand list's reading (`gate`) and its dynamic names.
+    # T-4930: with no index, by any name at all
+    gate = named and _fm_gate(cmd)
+    wide = gate or named and (idx is None or _fm_gate(cmd, idx))
     units, rest, starters, _ = _python_units(cmd)
     c_units, shell, c_starters = _python_c_units("\n".join(rest))
     if wide and _FM_INTERNALS.search(_nfkc("\n".join([shell] + starters))):
@@ -3220,23 +3595,57 @@ def _drives_fm(cmd, cwd=None, cache=None):
     runs = [None if moved else _run_dir(s, cwd) for s in starters + c_starters]
     import ast
     for code, run in zip(units + c_units, runs):
-        if not _FM_INTERNALS.search(_nfkc(code)):
+        if not _FM_INTERNALS.search(ntext := _nfkc(code)) and not _IMPORT_CALL_TEXT.search(ntext):
             continue
         try:
             tree = ast.parse(code)
-        except (SyntaxError, ValueError):
+        except (SyntaxError, ValueError, RecursionError, MemoryError):
             if wide:
                 return "python code that doesn't parse, so its imports can't be read"
             continue
+        # T-4930: what the import machinery loads when its argument is built at run time, or when it is passed on or
+        # renamed, no reading can tell (and __import__(n) never met the literal pre-gate)
+        route, called = _import_route(tree)
+        if route:
+            return (f"an import by a computed name or route ({_ident(route)}: what it loads is only known at run time; "
+                    "call it plainly, the module named literally)")
+        fm = _fm_imports(tree, called)
+        if not fm and not _FM_INTERNALS.search(ntext):
+            continue  # literal imports of other modules only
+        lib = os.path.dirname(_index_root())
+        if fm:
+            idx, broke = index()
+            if idx is None:  # T-4930: fails closed (the hand list alone was the hole T-4906 closed)
+                if broke:
+                    return f"{_INDEX_PENDING}: it could not be built ({_ident(broke)}), so a Sampo import can't be judged"
+                return (f"{_INDEX_PENDING} yet: it is being built (a few seconds, in the background), so a Sampo "
+                        "import can't be judged: run it again")
+            # T-4930: python imports from its run folder first: a sampo (or fm…) module there that isn't the tree the
+            # index read runs unjudged: a folder, .py, .pyc or extension module by that name
+            if run is None:
+                return ("python's run folder is unknown (a cd outside its own `cd DIR && python` chain), so its Sampo "
+                        "import may load another tree")
+            if os.path.realpath(run) != os.path.realpath(lib):
+                try:
+                    here = os.listdir(run)
+                except OSError:
+                    here = []
+                if shadow := next((t for t in fm for e in here if e == t or e.startswith(t + ".")), ""):
+                    return (f"python's run folder holds a {_ident(shadow)} that isn't the Sampo tree the Ward's writer "
+                            "index read (the installed plugin's lib): run the read from there, or use the sampo CLI")
+        # text that names Sampo's modules without importing them (an edit script's strings) is data unless its code
+        # can run text (exec, a process…), as before T-4930; with no index, any such road is refused
+        home = (run, lib) if run is not None else None
         hit = _fm_use_refused(tree, idx) if idx else ""
-        if not (gate or hit or idx and _dynamic_use(tree)):
+        if not (gate or hit or _dynamic_use(tree, home)):
             continue
         names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)} | \
                 {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
         modules = [a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names] + \
                   [n.module or "" for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
         odd = sorted(names & _DYNAMIC) + sorted(x for x in names if x.startswith("__")) + \
-            [m for m in modules if m.split(".")[0] not in _PLAIN_IMPORTS and not m.startswith(FM_MODULE_PREFIXES)]
+            [m for m in modules if m.split(".")[0] not in _PLAIN_IMPORTS and not m.startswith(FM_MODULE_PREFIXES)] + \
+            sorted(names & _REACH) + [x for x in [_sys_path_use(tree, home)] if x]  # T-4930: another road to a module
         if odd:  # its strings could still run: a process, a module it wrote, pickle, dunder walking…
             return f"dynamic code or an import outside re, json, textwrap and the like ({_ident(odd[0])})"
         # review (T-0286): python - (and -c) imports from its folder first — a json.py there runs
@@ -4940,7 +5349,8 @@ def _interpreter_writes(cmd, ctx):
     state = ctx.state_dir or (os.path.join(ctx.foreman_home, "state") if ctx.foreman_home else None)
     if why := _drives_fm(_drop_data_heredocs(cmd, only=lambda line: _writes_unrun_source(line, cmd, ctx)
                                              or _writes_unrun_draft(line, cmd, ctx)), ctx.cwd,
-                         cache=os.path.join(state, "ward-index") if state and os.path.isdir(state) else None):
+                         cache=os.path.join(state, "ward-index") if state and os.path.isdir(state) else None,
+                         inline=getattr(ctx, "index_inline", None)):
         # T-0740: 9 repeats in a day; T-0934: `cd DIR; python3 - <<EOF` is refused only because of the `;`. T-1171: 12
         # of 31 refusals in four days wrote a test with cat <<EOF and ran the tests in the same command
         return [("core", f"interpreter code driving Sampo's modules: {why} (use the fm CLI; to edit a Sampo source file "
@@ -8515,11 +8925,15 @@ _GUARD_HASH = []
 
 
 def _guard_hash():
-    """sha256 of this file's bytes: an edited guard reads every script again."""
+    """sha256 of this file's bytes and the Sampo tree's index stamp: an edited guard, or an edited tree (whose writer
+    index judges a script's Sampo imports: T-4930), reads every script again."""
     if not _GUARD_HASH:
         import hashlib
         with open(__file__, "rb") as f:
-            _GUARD_HASH.append(hashlib.sha256(f.read()).hexdigest()[:16])
+            h = hashlib.sha256(f.read())
+        root = _index_root()
+        h.update(_index_stamp(root, _index_files(root)).encode())
+        _GUARD_HASH.append(h.hexdigest()[:16])
     return _GUARD_HASH[0]
 
 
@@ -8899,7 +9313,7 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False, given=None):
         return found  # the owner's read decides what is cached
     if unread:
         _UNREAD.append((p, unread))
-    if key:
+    if key and not any(_INDEX_PENDING in d for _, d in found):  # T-4930: a cold index's refusal is never kept
         _cache_store(path, key, {"p": p, "f": found, "u": unread, "s": [list(x) for x in system], "at": time.time(),
                                  "n": [[dp, dd] for dp, dd in dict.fromkeys(_DEPS)]})
     return found
