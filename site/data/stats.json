@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-17",
+ "generated": "2026-11-18",
  "totals": {
-  "tasks_done": 1094,
-  "evidence": 6278,
-  "proofs": 607,
-  "commits": 774,
-  "gate_runs": 472,
-  "subagents": 3194,
-  "lanes_merged": 734,
-  "findings": 990,
-  "guard_blocks": 1030,
-  "captures": 1834,
-  "lessons_shown": 2094
+  "tasks_done": 1118,
+  "evidence": 6589,
+  "proofs": 616,
+  "commits": 790,
+  "gate_runs": 478,
+  "subagents": 3305,
+  "lanes_merged": 754,
+  "findings": 1108,
+  "guard_blocks": 1105,
+  "captures": 1906,
+  "lessons_shown": 2156
  },
  "daily": [
   {
@@ -192,71 +192,82 @@
   },
   {
    "day": "2026-11-17",
-   "FEATURE": 1,
-   "FIX": 2,
-   "CLEAN": 0,
-   "PERFORMANCE": 2,
-   "SECURITY": 1,
+   "FEATURE": 6,
+   "FIX": 14,
+   "CLEAN": 2,
+   "PERFORMANCE": 3,
+   "SECURITY": 3,
    "RESEARCH": 0,
-   "lanes": 4,
-   "evidence": 183
+   "lanes": 23,
+   "evidence": 400
+  },
+  {
+   "day": "2026-11-18",
+   "FEATURE": 1,
+   "FIX": 0,
+   "CLEAN": 0,
+   "PERFORMANCE": 1,
+   "SECURITY": 0,
+   "RESEARCH": 0,
+   "lanes": 1,
+   "evidence": 94
   }
  ],
  "tiers": {
-  "S": 551,
-  "M": 513,
-  "L": 29
+  "S": 558,
+  "M": 529,
+  "L": 30
  },
  "types": {
-  "FEATURE": 305,
-  "FIX": 561,
-  "CLEAN": 55,
-  "PERFORMANCE": 111,
-  "SECURITY": 38,
+  "FEATURE": 311,
+  "FIX": 573,
+  "CLEAN": 57,
+  "PERFORMANCE": 113,
+  "SECURITY": 40,
   "RESEARCH": 24
  },
  "guard": {
-  "brief": 521,
-  "core": 238,
-  "system": 102,
-  "state-direct": 50,
-  "rm-outside": 47,
+  "brief": 560,
+  "core": 247,
+  "system": 125,
+  "state-direct": 51,
+  "rm-outside": 48,
   "credentials": 25,
   "pipe-shell": 16,
   "self-authorize": 13
  },
  "findings": {
   "lenses": {
-   "self": 311,
-   "edge": 231,
-   "adversary": 192,
-   "intent": 91,
-   "maintainer": 62,
-   "design": 53
+   "self": 349,
+   "edge": 258,
+   "adversary": 226,
+   "intent": 103,
+   "maintainer": 64,
+   "operator": 55
   },
   "severity": {
-   "LOW": 557,
-   "MEDIUM": 358,
-   "HIGH": 75
+   "LOW": 624,
+   "MEDIUM": 396,
+   "HIGH": 88
   }
  },
  "subagents": {
-  "sampo:fm-builder": 1138,
+  "sampo:fm-builder": 1200,
   "fm-builder": 1112,
-  "general-purpose": 507,
+  "general-purpose": 522,
   "fm-reviewer": 208,
-  "sampo:fm-reviewer": 162,
+  "sampo:fm-reviewer": 193,
   "fm-recon": 41
  },
  "gate_seconds": {
-  "runs": 472,
-  "median": 435.8
+  "runs": 478,
+  "median": 436.7
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 295,
+  "searches": 321,
   "queued": 3,
   "refused": 0
  },
@@ -379,11 +390,11 @@
   "tests": 11721
  },
  "calibration": {
-  "scored": 27,
-  "pending": 736,
+  "scored": 28,
+  "pending": 763,
   "brier": {
-   "stated": 0.09694444444444444,
-   "base": 0.10861923076923077
+   "stated": 0.11633928571428573,
+   "base": 0.1380222222222222
   },
   "bars": {
    "research": 70,
@@ -399,11 +410,11 @@
     {
      "lo": 80,
      "hi": 94,
-     "n": 2,
+     "n": 3,
      "held": 0,
      "pct": 0,
-     "stated": 88,
-     "gap": 88
+     "stated": 85,
+     "gap": 85
     }
    ],
    "ship": [
@@ -455,8 +466,8 @@
     {
      "lo": 80,
      "hi": 94,
-     "n": 366,
-     "held": 343,
+     "n": 367,
+     "held": 344,
      "pct": 94
     },
     {
@@ -470,19 +481,19 @@
   }
  },
  "proof": {
-  "n": 846,
+  "n": 853,
   "counts": {
-   "typed": 72,
-   "meaning-user": 85,
+   "typed": 74,
+   "meaning-user": 87,
    "research-uncited": 29,
-   "meaning-notes": 431,
-   "docs": 191,
-   "red": 85,
-   "perf-typed": 142,
-   "infra": 4,
-   "tui-unshot": 2,
-   "ui-unshot": 1,
+   "meaning-notes": 435,
+   "docs": 189,
+   "red": 86,
+   "perf-typed": 144,
+   "infra": 5,
+   "ui-unshot": 2,
    "data": 2,
+   "tui-unshot": 2,
    "perf-noise": 1
   },
   "history": [
@@ -553,6 +564,10 @@
    {
     "day": "2026-11-17",
     "n": 846
+   },
+   {
+    "day": "2026-11-18",
+    "n": 853
    }
   ]
  },
@@ -560,25 +575,25 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1413,
-    "precision": 0.838,
+    "fired": 1446,
+    "precision": 0.837,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 324,
+    "fired": 335,
     "precision": 0.72,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 208,
+    "fired": 222,
     "precision": 0.784,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 134,
+    "fired": 135,
     "precision": 0.45,
     "route": "inbox"
    },
@@ -596,20 +611,20 @@
    },
    {
     "trigger": "ci",
-    "fired": 64,
+    "fired": 65,
     "precision": 0.473,
+    "route": "inbox"
+   },
+   {
+    "trigger": "spar",
+    "fired": 35,
+    "precision": null,
     "route": "inbox"
    },
    {
     "trigger": "baseline",
     "fired": 34,
     "precision": 0.667,
-    "route": "inbox"
-   },
-   {
-    "trigger": "spar",
-    "fired": 30,
-    "precision": null,
     "route": "inbox"
    },
    {
@@ -631,6 +646,12 @@
     "route": "inbox"
    },
    {
+    "trigger": "foresight-date",
+    "fired": 8,
+    "precision": 0.0,
+    "route": "inbox"
+   },
+   {
     "trigger": "foresight-cochange",
     "fired": 7,
     "precision": 0.2,
@@ -639,12 +660,6 @@
    {
     "trigger": "friction",
     "fired": 7,
-    "precision": 0.0,
-    "route": "inbox"
-   },
-   {
-    "trigger": "foresight-date",
-    "fired": 6,
     "precision": 0.0,
     "route": "inbox"
    },
@@ -699,9 +714,9 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 262,
-    "hit": 0.431,
-    "base_hit": 0.37,
+    "n": 269,
+    "hit": 0.424,
+    "base_hit": 0.364,
     "lead": [
      true,
      0.0018595829606056213,
@@ -709,10 +724,10 @@
      6
     ],
     "muted": false,
-    "shown_n": 185,
-    "shown_hit": 0.443,
-    "overlap": 0.074,
-    "base_overlap": 0.07
+    "shown_n": 192,
+    "shown_hit": 0.432,
+    "overlap": 0.072,
+    "base_overlap": 0.068
    }
   ],
   "lean": [
@@ -769,6 +784,83 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-18",
+   "text": "Land the backlog in hand trains of about 20 lanes, each after one repo-shape run on a merge of all its lanes, instead of 27 per-lane checks",
+   "later": null,
+   "confidence": 85,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-18",
+   "text": "read T-4937: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "T-0325 (Desktop tray icon) needs a root package install only the user can run (libappindicator-gtk3, xdotool; neither is on the machine); it stays blocked as a user-only item, named once in the final ",
+   "later": null,
+   "confidence": null,
+   "kind": "outward"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "JARVIS box synced from the T-4910 lane (trunk 47e01ca53 merged with T-4910's README rules) on the user's 'update sampo on the jarvis machine and have it use the README skill, immediately'; the box ses",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "T-4845: steer rows dated before 2026-11-17 (when prompts began to be signed, T-4844) stay in force as legacy rules, sealed once under selfgate's key the first time verified_steers reads the project; e",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "Correction to the last decision: T-3857 keeps normal priority (priority is only normal or urgent, and urgent is for security and baseline breaks); it stays in its place in the queue",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "T-3857 (merge-train triage, close-prep and safe-rename skills) moved up: today's session again did train triage and six hand closes by hand, the work it names; new skills T-4913 to T-4915 queue behind",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "Re-deferred the 23 due catalogue tasks (T-0788 and 22 more) to 2026-11-24: weekly usage 71% against the 75% floor with kith sharing it; finishing in-flight lands, closes and the ship beats starting L ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "Stopped the T-2981 hand rerun (10 min in) to cut six concurrent lane checks to five on the session's 8-CPU cgroup; the others keep their progress. T-2981 reruns after the queue drains.",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "Held T-3050 (L: Kalevala, many Rune towers at once): weekly usage is at 67% with the 75% floor in force and this session capped at half the account for kith; an L build with many concurrent towers wou",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-17",
+   "text": "Lifted the hold on new builder lanes: load fell from 14-19 to about 7 and no builder was working, so T-4404 (lane accept restart) starts in a builder lane while the held checks rerun by hand; at most ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-17",
    "text": "T-4581 stays open: the ship pushed through 49c11e7a6 (T-4822), and four commits that landed while it ran (T-4823, T-4543, T-4827) wait for the next ship; land the green lanes first so one ship covers ",
@@ -2094,87 +2186,10 @@
    "later": null,
    "confidence": null,
    "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "No Rust rewrite now: a Bash tool call costs ~37 ms of process floor plus ~90 ms of Python handler work that tripled in three days; the handler's growth is algorithmic, a resident server can't serve th",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3358: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3355: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3351: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "Sync is off until its export is cheap: every state write re-exported all ~3,300 briefs under the project lock (sync.export inside regen_views), so captures, audits, merges and hooks hit lock busy. The",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "T-3082 closes with the drive's Stop hook not running Kalevala rounds; night runs them. Wiring the drive (and handing gen-1 seeds to sessions) is T-3249's job",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3325: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3323: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3322: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3320: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3319: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
   }
  ],
  "louhi": {
-  "trials": 239,
+  "trials": 241,
   "runs": [
    {
     "run": "s0-001",
@@ -2472,8 +2487,8 @@
    },
    {
     "run": "s8-049",
-    "trials": 6,
-    "scenarios": 72,
+    "trials": 8,
+    "scenarios": 78,
     "keyed": 0,
     "found": 0
    },
@@ -2645,6 +2660,28 @@
     "fixable": 414,
     "fixed": 27,
     "brier": 0.25
+   },
+   {
+    "agent": "smith-s1",
+    "trials": 1,
+    "scenarios": 3,
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "fixable": 12,
+    "fixed": 4,
+    "brier": 0.003
+   },
+   {
+    "agent": "smith-s4",
+    "trials": 1,
+    "scenarios": 3,
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "fixable": 12,
+    "fixed": 2,
+    "brier": 0.003
    },
    {
     "agent": "triggers",
