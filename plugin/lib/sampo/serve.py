@@ -374,6 +374,7 @@ def _failover(p, b, agent):
 
 
 PARALLEL_MAX = 3  # T-0167: lanes at once at most (each is a full session: usage adds up)
+LOAD_RETRY_S, LOAD_TRIES = 30, 20  # T-3294: a loaded host holds a lane back: asked again every 30 s, 10 min with nothing running
 FM_BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))), "bin", "fm")
 
 
@@ -403,14 +404,38 @@ def _pairs(p):
         return {}
 
 
-def _footprint(scopes, pairs):
-    """T-0445: what a task will touch: its scopes plus each literal file's co-change companions."""
-    return list(scopes) + [f for s in scopes for f in pairs.get(_literal(s), [])]
+def _hubs(p):
+    """T-3294: the append-only hub files that never keep two tasks apart: changelog.d/ (one fragment per task) always,
+    and CHANGELOG.md only where git merges it by union (this repo's .gitattributes; a user's repo may lack the line)."""
+    try:
+        union = subprocess.run(["git", "-C", p.root, "check-attr", "merge", "CHANGELOG.md"], capture_output=True,
+                               text=True, timeout=30).stdout.strip().endswith(": union")
+    except (OSError, subprocess.SubprocessError):
+        union = False
+    return ("changelog.d",) + (("CHANGELOG.md",) if union else ())
 
 
-def _batch(p, head, skip, n):
+def _hub(glob, hubs=("changelog.d", "CHANGELOG.md")):
+    lit = _literal(glob)
+    return any(lit == h or lit.startswith(h + "/") for h in hubs)
+
+
+def _footprint(scopes, pairs, hubs=("changelog.d", "CHANGELOG.md")):
+    """T-0445: what a task will touch: its scopes plus each literal file's co-change companions (less hub files)."""
+    return [f for f in list(scopes) + [f for s in scopes for f in pairs.get(_literal(s), [])] if not _hub(f, hubs)]
+
+
+def _pool_cap(p):
+    """T-3294: lanes at once at most: fm lane max N when the user set one (up to 100), else PARALLEL_MAX as before."""
+    from sampo import lanes as slanes
+    return slanes.builders_cap(p) if c.read_meta(p).get("builders") else PARALLEL_MAX
+
+
+def _batch(p, head, skip, n, running=None):
     """T-0167: head plus queued tasks that can't collide with it or each other: S or M, planned, explicit scopes that
-    are pairwise disjoint, nothing unfinished they depend on, nothing waiting on the user. One task: run as before."""
+    are pairwise disjoint, nothing unfinished they depend on, nothing waiting on the user. One task: run as before.
+    T-3294: with `running` (the briefs already in lanes, maybe none) it is a rolling pool's pick: up to n tasks that
+    also clear every running one, the head only if it does too; a head no lane can take gives []."""
     briefs = c.lane_view(c.load_briefs(p), p.lane)
     by_id, meta = {b.id: b for b in c.load_briefs(p)}, c.read_meta(p)
     pending, autonomy = c.pending_tasks(meta), c.effective_autonomy(p, meta)
@@ -419,16 +444,23 @@ def _batch(p, head, skip, n):
         return (b.tier in ("S", "M") and b.status == "planned" and b.meta.get("scope") and b.id not in skip
                 and not c.waits_on_user(b, pending, autonomy)
                 and all(d in by_id and by_id[d].status in c.CLOSED for d in c._deps(b)))  # T-0383: inferred too
-    if n < 2 or not free(head):
-        return [head]
-    batch, pairs = [head], _pairs(p)
+    if (n < 2 and running is None) or not free(head):
+        return [head] if running is None else []
+    batch, pairs, hubs, passed = [], _pairs(p), _hubs(p), []
     group = lambda b: b.meta.get("group")  # T-0445: fm relate's groups are related work: one at a time
-    for b in c.order_queue(briefs)[0]:
-        if len(batch) < n and b.id != head.id and free(b) and not any(
-                group(b) and group(b) == group(x) for x in batch) and not any(
-                _overlap(g, h) for x in batch for g in _footprint(x.meta["scope"], pairs)
-                for h in _footprint(b.meta["scope"], pairs)):
-            batch.append(b)
+    for i, b in enumerate([head] + c.order_queue(briefs)[0]):
+        if len(batch) >= n or (i and b.id == head.id) or not free(b):
+            continue
+        # a task passed over for a running lane's files holds its place: a later one on those files waits behind it,
+        # or a stream of them would starve it
+        taken = batch + list(running or ()) + passed
+        if any(group(b) and group(b) == group(x) for x in taken) or any(
+                _overlap(g, h) for x in taken for g in _footprint(x.meta["scope"], pairs, hubs)
+                for h in _footprint(b.meta["scope"], pairs, hubs)):
+            if running is not None:
+                passed.append(b)
+            continue
+        batch.append(b)
     return batch
 
 
@@ -549,52 +581,172 @@ def cmd_sandbox(args):
               f"{'can' if _sandbox_available() else 'cannot'} run it")
 
 
-def _run_lanes(p, batch, args, models, log):
-    """A fresh session per task, each in its own lane (fm lane new), all at once; waits for every one (output to
-    files, so no pipe fills while another is read). {id: (lane path, exit code or None on timeout, output)}; a task
-    whose lane couldn't be made is {id: (None, None, why)}."""
+def _new_lane(p, tid):
+    """fm lane new TID --json, retried while the state lock is busy (a hundred lanes and their builders share it)."""
+    for i in range(4):
+        made = _fm(p.root, "lane", "new", tid, "--json")
+        if not made.returncode or "lock busy" not in made.stderr or i == 3:
+            return made
+        time.sleep(1 + i)
+
+
+def _run_pool(p, args, models, log, skip, told, fit, n, left, fails=0):
+    """T-3294: a rolling pool. Up to n tasks work at once, each a fresh session in its own lane (fm lane new); as soon
+    as one ends the next compatible queued task starts (_batch with the lanes running), and a finished task's lane is
+    merged back by one worker, one at a time, while the others go on. Output goes to files, so no pipe fills.
+    Returns (tasks finished, unfinished sessions in a row, a usage limit was hit). It stops starting at a usage limit,
+    FAILS_MAX misses, `left` finished, or a queue head no lane can take, and returns once every lane is merged or kept."""
     import signal
     import tempfile
-    runs, lanes, results = {}, {}, {}
-    try:
-        for b in batch:
-            made = _fm(p.root, "lane", "new", b.id, "--json")
-            if made.returncode:
-                results[b.id] = (None, None, made.stderr.strip()[:200])
-                continue
-            path = lanes[b.id] = json.loads(made.stdout)["path"]
-            out = tempfile.TemporaryFile("w+", errors="replace")
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+    live, merging, lanes, done_ids = {}, {}, {}, set()  # live: watcher future -> (brief, path, proc, out, t0)
+    finished, limited = 0, False
+    stall_s = getattr(args, "stall", 20) * 60
+
+    def watch(proc, path, deadline):
+        code, why = _watch(proc, path, deadline, stall_s)
+        if code is None:
+            _stop(proc, signal)  # the whole process group: tools the session started go too
+        return code, why
+
+    def start(b):
+        """True when b was dealt with (started, or skipped for good); False when the host is too loaded for a lane now."""
+        made = _new_lane(p, b.id)
+        if made.returncode and "no new lane until it eases" in made.stderr:
+            return False  # load is not the task's fault: it keeps its place and the pool asks again later
+        if made.returncode:
+            skip.add(b.id)  # never retry a lane that can't be made, or the run loops forever
+            print(f"{b.id}: no lane ({made.stderr.strip()[:200]}); skipped this run", flush=True)
+            return True
+        path = lanes[b.id] = json.loads(made.stdout)["path"]
+        out = tempfile.TemporaryFile("w+", errors="replace")
+        try:
             proc = subprocess.Popen(_session_cmd(p, b, args, _routed(p, b, models, args)), cwd=path, stdout=out,
-                                    stderr=subprocess.STDOUT,
-                                    env=dict(os.environ, FOREMAN_DRIVE_TASK=b.id), text=True, start_new_session=True)
-            runs[b.id] = (path, proc, out, time.monotonic())
-        deadline = time.monotonic() + args.timeout * 60
-        for tid, (path, proc, out, t0) in runs.items():
-            code, why = _watch(proc, path, deadline, getattr(args, "stall", 20) * 60)
-            if code is None:
-                _stop(proc, signal)  # the whole process group: tools the session started go too
-                if why == "paused":  # the handler below stops the other lanes and keeps any with work
-                    sys.exit(f"fm run: {tid}: stopped by fm pause --now; {c.PAUSED}")
-                if why == "stalled":  # T-0447
-                    c.log_event(p, "run_stalled", task=tid, data={"minutes": args.stall, "lane": path})
-            out.seek(0)
-            text = out.read()
-            with open(log, "a", encoding="utf-8") as f:
-                f.write(f"== {c.now()} {tid} (lane {path}) exit {code}\n{c.redact(text)}\n")
-            c.log_event(p, "run_session", task=tid, data={"lane": path, "minutes": round((time.monotonic() - t0) / 60, 1),
-                                                           "parallel": len(runs)})
-            results[tid] = (path, code, text)
-    except BaseException:  # claude missing, interrupted, or a write failed (session audit): no session is left
-        for _, proc, _, _ in runs.values():  # running unwatched (its own process group: Ctrl-C never reaches it),
-            _stop(proc, signal)              # and a lane nobody worked in frees its task; one with work is kept
-        for tid, path in lanes.items():
-            if tid not in results and not _lane_has_work(p, path):
+                                    stderr=subprocess.STDOUT, env=dict(os.environ, FOREMAN_DRIVE_TASK=b.id), text=True,
+                                    start_new_session=True)
+        except BaseException:  # claude missing, or the route failed: the lane just made frees its task
+            out.close()
+            if not _lane_has_work(p, path):
+                _fm(p.root, "lane", "rm", b.id)
+            raise
+        t0 = time.monotonic()
+        live[watch_pool.submit(watch, proc, path, t0 + args.timeout * 60)] = (b, path, proc, out, t0)
+        return True
+
+    def ended(b, path, proc, out, t0, code, why):
+        nonlocal fails, limited
+        tid = b.id
+        if why == "paused":  # the handler below stops the other lanes and keeps any with work
+            out.close()
+            if not _lane_has_work(p, path):
                 _fm(p.root, "lane", "rm", tid)
+            sys.exit(f"fm run: {tid}: stopped by fm pause --now; {c.PAUSED}")
+        if why == "stalled":  # T-0447
+            c.log_event(p, "run_stalled", task=tid, data={"minutes": args.stall, "lane": path})
+        out.seek(0)
+        text = out.read()
+        out.close()
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(f"== {c.now()} {tid} (lane {path}) exit {code}\n{c.redact(text)}\n")
+        c.log_event(p, "run_session", task=tid, data={"lane": path, "minutes": round((time.monotonic() - t0) / 60, 1),
+                                                       "parallel": len(live)})
+        done_ids.add(tid)
+        last = text.strip().splitlines()[-1:]
+        hit = bool(code and last and USAGE_LIMIT.search(last[0]))
+        limited = limited or hit
+        after = c.find_brief(p, tid)
+        if after.status == "done":
+            fails = 0  # (finished is counted when its lane lands)
+            beat(p, "run", 2 * 3600, f"{tid}: merging its lane")  # gates may take an hour
+            merging[merge_pool.submit(_integrate, p, tid, path)] = after
+            return
+        fails += not hit  # a usage limit is waited out, never a failure
+        skip.add(tid)  # not this run again; an empty lane frees the task for the next
+        try:  # T-3294 review: a timeout or OSError here must not end every live pool session (trunk's block() guards too)
+            freed = not _lane_has_work(p, path) and _fm(p.root, "lane", "rm", tid).returncode == 0
+        except (OSError, subprocess.SubprocessError) as e:
+            print(f"fm run: couldn't remove {tid}'s lane: {e}", file=sys.stderr)
+            freed = False
+        stuck = freed and not hit and after.status not in ("blocked", "dropped", "deferred")
+        print(f"{tid} not finished in its lane ({after.status}, exit {code}); "
+              + ("no progress: blocked" if stuck else "lane removed, back in the queue" if freed
+                 else f"lane kept with its work: {path}"), flush=True)
+        if stuck:  # T-0968: an empty lane is no progress, quarantined as a single session's is
+            try:
+                r = _fm(p.root, "task", "block", tid, f"fm run: no progress in its lane (exit {code})", timeout=120)
+                if r.returncode:
+                    print(f"fm run: couldn't block {tid}: {(r.stderr or r.stdout).strip()[-200:]}", file=sys.stderr)
+            except (OSError, subprocess.SubprocessError) as e:
+                print(f"fm run: couldn't block {tid}: {e}", file=sys.stderr)
+
+    watch_pool, merge_pool = ThreadPoolExecutor(max_workers=max(1, n)), ThreadPoolExecutor(max_workers=1)
+    from sampo import lanes as slanes
+    unlanded, idle = set(), 0  # unlanded: finished tasks whose lane was kept, not merged: what waits on them waits on
+    try:
+        while True:
+            running = [b for b, *_ in live.values()] + list(merging.values())  # a lane waiting to merge still holds its files
+            room = min(n - len(live), left - finished - len(live) - len(merging))
+            deferred = False
+            if (room > 0 and len(merging) < slanes.UNMERGED_MAX  # back-pressure: the merges are the narrow part
+                    and not limited and fails < FAILS_MAX and not c.panicked()):
+                unmerged = {b.id for b in running} | unlanded  # "done" is not landed: its dependents start on a stale base
+                every = c.load_briefs(p)
+                waiting = {b.id for b in every if unmerged & set(c._deps(b))}
+                skip.update(b.id for b in every if unlanded & set(c._deps(b)))  # kept, not merged: held for the run
+                avoid = skip | {b.id for b in running} | done_ids | waiting
+                head = _next_runnable(p, avoid, told, fit)
+                batch = _batch(p, head, avoid, room, running) if head else []
+                if len(batch) > 1 or live:
+                    print(f"running {len(live) + len(batch)} at once: "
+                          f"{', '.join(x.id for x in [b for b, *_ in live.values()] + batch)}", flush=True)
+                for b in batch:
+                    if not start(b):
+                        deferred = True  # the host is loaded: leave the slot empty, ask again after the next wakeup
+                        break
+                if batch:
+                    beat(p, "run", args.timeout * 60, " ".join(b.id for b, *_ in live.values()))
+            if not live and not merging:
+                if not deferred:
+                    break
+                idle += 1
+                if idle >= LOAD_TRIES:  # bounded: cmd_run loops after a pool returns, so this must end the run
+                    sys.exit(f"fm run: the host stayed loaded for {LOAD_TRIES * LOAD_RETRY_S // 60} min with nothing "
+                             f"running; stopping (queued tasks keep their place)")
+                time.sleep(LOAD_RETRY_S)
+                continue
+            idle = 0
+            done, _ = wait(list(live) + list(merging), timeout=LOAD_RETRY_S if deferred else None,
+                           return_when=FIRST_COMPLETED)
+            for fut in done:
+                if fut in merging:
+                    after = merging.pop(fut)
+                    try:
+                        how = fut.result()
+                    except Exception as e:  # one bad merge keeps its lane; the other sessions go on
+                        how = f"kept in {lanes.get(after.id, '?')}: {type(e).__name__} while integrating ({str(e)[:120]})"
+                    if how.startswith(("merged", "nothing to merge")):
+                        finished += 1
+                    else:
+                        unlanded.add(after.id)
+                    print(f"{after.id} done; {how}", flush=True)
+                    _notify(p, f"{after.id} done ({how}): {after.title[:80]}")
+                else:
+                    ended(*live[fut], *fut.result())
+                    del live[fut]  # only once handled, so a failure inside frees its lane too
+    except BaseException:  # claude missing, interrupted, or a write failed (session audit): no session is left
+        for _, _, proc, _, _ in live.values():  # running unwatched (its own process group: Ctrl-C never reaches it),
+            _stop(proc, signal)                 # and a lane nobody worked in frees its task; one with work is kept
+        for b, path, _, out, _ in live.values():
+            out.close()
+            if b.id not in done_ids and not _lane_has_work(p, path):
+                _fm(p.root, "lane", "rm", b.id)
         raise
     finally:
-        for _, _, out, _ in runs.values():
-            out.close()
-    return results
+        watch_pool.shutdown(wait=True, cancel_futures=True)
+        if merging:  # the gates of a merge under way can take an hour: say what this waits on
+            print(f"fm run: waiting for {', '.join(x.id for x in merging.values())} to finish merging", flush=True)
+        merge_pool.shutdown(wait=True, cancel_futures=True)  # a merge under way finishes: a half-done one is worse
+    return finished, fails, limited
 
 
 def _transcript_mark(cwd, since):
@@ -949,43 +1101,21 @@ def cmd_run(args):
                   f"${stall_usd:.2f}); no more tasks started", flush=True)
             stalled_usd = True
             break
-        b = _next_runnable(p, skip, told, fit=args.fit or bool(_ahead_of_pace(p)))
+        fit = args.fit or bool(_ahead_of_pace(p))
+        b = _next_runnable(p, skip, told, fit=fit)
         if not b:
             break
-        batch = _batch(p, b, skip, min(args.parallel, PARALLEL_MAX, args.max - finished))
+        width = min(args.parallel, _pool_cap(p), args.max - finished)
+        batch = _batch(p, b, skip, width)
         beat(p, "run", args.timeout * 60, " ".join(x.id for x in batch))
         if len(batch) > 1:  # T-0167: independent tasks at once, each in its lane, merged back one by one
-            print(f"running {len(batch)} at once: {', '.join(x.id for x in batch)}", flush=True)
-            limited = False
-            try:
-                ran = _run_lanes(p, batch, args, models, log)
+            if args.parallel > width < args.max - finished:
+                print(f"lanes at once: {width} (fm lane max N raises it, up to 100)", flush=True)
+            try:  # T-3294: a rolling pool: the next task starts when any lane ends
+                done, fails, limited = _run_pool(p, args, models, log, skip, told, fit, width, args.max - finished, fails)
             except FileNotFoundError:
                 raise cli.UsageError("claude isn't on PATH")
-            for tid, (path, code, text) in ran.items():
-                if path is None:  # review: never retry a lane that can't be made, or the run loops forever
-                    skip.add(tid)
-                    print(f"{tid}: no lane ({text}); skipped this run", flush=True)
-                    continue
-                last = text.strip().splitlines()[-1:]
-                hit = bool(code and last and USAGE_LIMIT.search(last[0]))
-                limited = limited or hit
-                after = c.find_brief(p, tid)
-                if after.status == "done":
-                    finished, fails = finished + 1, 0
-                    beat(p, "run", 2 * 3600, f"{tid}: merging its lane")  # gates may take an hour
-                    how = _integrate(p, tid, path)
-                    print(f"{tid} done; {how}", flush=True)
-                    _notify(p, f"{tid} done ({how}): {after.title[:80]}")
-                else:
-                    fails += not hit  # a usage limit is waited out, never a failure
-                    skip.add(tid)  # not this run again; an empty lane frees the task for the next
-                    freed = not _lane_has_work(p, path) and _fm(p.root, "lane", "rm", tid).returncode == 0
-                    stuck = freed and not hit and after.status not in ("blocked", "dropped", "deferred")
-                    print(f"{tid} not finished in its lane ({after.status}, exit {code}); "
-                          + ("no progress: blocked" if stuck else "lane removed, back in the queue" if freed
-                             else f"lane kept with its work: {path}"), flush=True)
-                    if stuck:  # T-0968: an empty lane is no progress, quarantined as a single session's is
-                        block(tid, f"no progress in its lane (exit {code})")
+            finished += done
             if fails >= FAILS_MAX:
                 fail(f"{fails} sessions in a row ended unfinished; stopping")
             if limited:

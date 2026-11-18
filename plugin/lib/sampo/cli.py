@@ -10933,7 +10933,8 @@ def _build_parser(only=None):
     s = add("run", lazy("sampo.serve", "cmd_run"), tier=("Running elsewhere", 1150), help="work the queue in fresh claude -p sessions, one task each")
     s.add_argument("--max", type=int, default=10, help="tasks to finish before stopping")
     s.add_argument("--parallel", type=int, default=1, help="independent S/M tasks with disjoint scopes at once, each in "
-                                                           "its own lane, merged back when gated and clean (max 3)")
+                                                           "its own lane, a rolling pool merged back when gated and clean (max 3, or "
+                                                           "sampo lane max N up to 100)")
     s.add_argument("--timeout", type=float, default=60, help="minutes per session")
     s.add_argument("--max-usd", type=float, help="stop starting tasks once this run's measured spend reaches it "
                                                  "(one at a time; T-1046)")

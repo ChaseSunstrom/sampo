@@ -140,6 +140,202 @@ class Parallel(ForemanTestCase):
         self.assertIn("T-0002 not finished in its lane", out)
         self.assertEqual(len([ln for ln in self.sessions() if ln.startswith("start")]), 2, "T-0003 ran alone, after")
 
+    def timed_stub(self, naps):
+        """The default session, but napping `naps[task]` seconds (default 1) so who ends first is fixed."""
+        body = open(os.path.join(self.bin, "claude")).read().split("\n", 1)[1]
+        cases = "".join(f"{t}) sleep {s};; " for t, s in naps.items())
+        self.stub("claude", f'case $FOREMAN_DRIVE_TASK in {cases}*) sleep 1;; esac\n' + body)
+
+    def test_a_pool_starts_the_next_task_as_soon_as_any_lane_ends(self):
+        # T-3294: not batches of N that wait for the slowest: T-0003 starts when T-0001 ends, T-0002 still running
+        for i in (1, 2, 3):
+            self.task(f"t{i}", f"work-T-000{i}.txt")
+        self.timed_stub({"T-0001": 1, "T-0002": 6})
+        out = self.fm("run", "--parallel", "2", env=self.env()).stdout
+        marks = [(ln.split()[0], ln.split()[1]) for ln in self.sessions()]
+        self.assertLess(marks.index(("start", "T-0003")), marks.index(("end", "T-0002")), marks)
+        self.assertLess(marks.index(("end", "T-0001")), marks.index(("start", "T-0003")), marks)
+        log = self.git("log", "--format=%s")
+        for i in (1, 2, 3):
+            self.assertIn(f"work T-000{i}", log, out)
+        self.assertEqual(self.git("worktree", "list").count("\n"), 1, "every lane merged and removed")
+
+    def test_the_pool_is_capped_by_lane_max_not_three(self):
+        from sampo import core as c
+        from sampo import serve
+        p = c.find_project(self.repo)
+        self.assertEqual(serve._pool_cap(p), 3, "unchanged until the user raises it")
+        self.fm("lane", "max", "4")
+        self.assertEqual(serve._pool_cap(p), 4)
+        for i in (1, 2, 3, 4):
+            self.task(f"t{i}", f"work-T-000{i}.txt")
+        self.timed_stub({f"T-000{i}": 3 for i in (1, 2, 3, 4)})
+        self.fm("run", "--parallel", "9", env=self.env())
+        self.assertEqual([ln.split()[0] for ln in self.sessions()][:4], ["start"] * 4, "four lanes at once")
+
+    def test_scopes_that_share_only_a_changelog_run_together(self):
+        # T-3294: append-only hub files merge by union; any other shared file still keeps two tasks apart
+        from sampo import core as c
+        from sampo import serve
+        with open(os.path.join(self.repo, ".gitattributes"), "w") as f:
+            f.write("CHANGELOG.md merge=union\n")  # only then does git merge it for us
+        for title, scopes in (("a", ("a.txt", "CHANGELOG.md")),("b", ("b.txt", "CHANGELOG.md")),
+                              ("c", ("c.txt", "changelog.d/")), ("d", ("a.txt", "d.txt"))):
+            self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", *[x for s in scopes for x in ("--scope", s)],
+                    "--ac", "ok :: true", "--step", "a")
+        p = c.find_project(self.repo)
+        ids = [b.id for b in serve._batch(p, c.find_brief(p, "T-0001"), set(), 4)]
+        self.assertEqual(ids, ["T-0001", "T-0002", "T-0003"], "T-0004 shares a.txt with T-0001")
+        busy = [c.find_brief(p, "T-0001")]  # a pool pick against a lane already running
+        self.assertEqual([b.id for b in serve._batch(p, c.find_brief(p, "T-0002"), set(), 3, busy)], ["T-0002", "T-0003"])
+        self.assertEqual([b.id for b in serve._batch(p, c.find_brief(p, "T-0004"), set(), 3, busy)], ["T-0002", "T-0003"],
+                         "a head that clashes with a running lane is passed over, not forced")
+        every = {"T-0001", "T-0002", "T-0003"}
+        self.assertEqual(serve._batch(p, c.find_brief(p, "T-0004"), every, 3, [c.find_brief(p, t) for t in every]), [])
+
+    def test_changelog_is_a_hub_only_where_git_merges_it_by_union(self):
+        from sampo import core as c
+        from sampo import serve
+        p = c.find_project(self.repo)
+        self.assertEqual(serve._hubs(p), ("changelog.d",), "a user's repo without merge=union: two edits would conflict")
+        with open(os.path.join(self.repo, ".gitattributes"), "w") as f:
+            f.write("CHANGELOG.md merge=union\n")
+        self.assertEqual(serve._hubs(p), ("changelog.d", "CHANGELOG.md"))
+
+    def test_lane_max_up_to_100_sets_the_pool_cap(self):
+        from sampo import core as c
+        from sampo import serve
+        p = c.find_project(self.repo)
+        self.fm("lane", "max", "100")
+        self.assertEqual(serve._pool_cap(p), 100)
+        self.assertNotEqual(self.fm("lane", "max", "101", check=False).returncode, 0)
+        self.assertEqual(serve._pool_cap(p), 100, "a refused number changes nothing")
+
+    def run_pool(self, integrate, n=2, left=3, skip=None, new_lane=None):
+        """serve._run_pool in-process on the stub claude, with `integrate` standing in for the merge. (finished, out)"""
+        import contextlib
+        import io
+        from types import SimpleNamespace
+        from unittest import mock
+        from sampo import core as c
+        from sampo import serve
+        p = c.find_project(self.repo)
+        buf = io.StringIO()
+        with contextlib.ExitStack() as st:
+            st.enter_context(mock.patch.object(serve, "_claude_cmd", lambda *a: [os.path.join(self.bin, "claude")]))
+            st.enter_context(mock.patch.object(serve, "_integrate", integrate))
+            if new_lane:
+                st.enter_context(mock.patch.object(serve, "_new_lane", new_lane))
+            st.enter_context(contextlib.redirect_stdout(buf))
+            res = serve._run_pool(p, SimpleNamespace(timeout=1), {}, os.path.join(self.tmp, "run.log"),
+                                  set() if skip is None else skip, set(), False, n, left)
+        return res[0], buf.getvalue()
+
+    def slow_merge(self, secs=2):
+        import time
+
+        def integrate(p, tid, path):
+            time.sleep(secs)
+            with open(self.log, "a") as f:
+                f.write(f"merge-end {tid}\n")
+            return "merged into main"
+        return integrate
+
+    def order(self):
+        return [tuple(ln.split()[:2]) for ln in self.sessions()]
+
+    def test_a_task_on_the_same_files_waits_for_the_pending_merge(self):
+        # review: a lane waiting to merge still holds its files; the next task would start on a stale base and conflict
+        self.task("one", "work-*")
+        self.task("two", "work-*")
+        done, out = self.run_pool(self.slow_merge())
+        marks = self.order()
+        self.assertLess(marks.index(("merge-end", "T-0001")), marks.index(("start", "T-0002")), marks)
+        self.assertEqual(done, 2, out)
+
+    def test_a_dependent_waits_for_the_merge_not_just_the_session(self):
+        # review: done is not landed; a dependent started when its dependency's session finished, before it merged
+        self.task("base", "work-T-0001.txt")
+        self.task("needs base", "work-T-0002.txt")
+        self.fm("task", "set", "T-0002", "depends_on=T-0001")
+        done, out = self.run_pool(self.slow_merge())
+        marks = self.order()
+        self.assertLess(marks.index(("merge-end", "T-0001")), marks.index(("start", "T-0002")), marks)
+        self.assertEqual(done, 2, out)
+
+    def test_no_new_lane_while_the_unmerged_ones_are_at_the_cap(self):
+        from unittest import mock
+        from sampo import lanes as slanes
+        for i in (1, 2, 3):
+            self.task(f"t{i}", f"work-T-000{i}.txt")
+        self.timed_stub({"T-0002": 6})
+        with mock.patch.object(slanes, "UNMERGED_MAX", 1):
+            self.run_pool(self.slow_merge(3), left=3)
+        marks = self.order()
+        self.assertLess(marks.index(("merge-end", "T-0001")), marks.index(("start", "T-0003")), marks)
+
+    def test_a_loaded_host_delays_a_task_it_never_skips_it(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from sampo import serve
+        self.task("one", "work-T-0001.txt")
+        refusals = []
+
+        def new_lane(p, tid):
+            if len(refusals) < 2:
+                refusals.append(tid)
+                return SimpleNamespace(returncode=1, stdout="", stderr="host is loaded: no new lane until it eases")
+            return real(p, tid)
+        real, skip = serve._new_lane, set()
+        with mock.patch.object(serve, "LOAD_RETRY_S", 0.1):
+            done, out = self.run_pool(self.slow_merge(0), n=2, left=1, skip=skip, new_lane=new_lane)
+        self.assertEqual((done, skip, len(refusals)), (1, set(), 2), out)
+
+    def test_a_host_that_stays_loaded_ends_the_run_with_the_task_still_queued(self):
+        from types import SimpleNamespace
+        from unittest import mock
+        from sampo import serve
+        self.task("one", "work-T-0001.txt")
+        skip = set()
+        busy = lambda p, tid: SimpleNamespace(returncode=1, stdout="", stderr="host is loaded: no new lane until it eases")
+        with mock.patch.object(serve, "LOAD_RETRY_S", 0.05), mock.patch.object(serve, "LOAD_TRIES", 3):
+            with self.assertRaises(SystemExit) as e:
+                self.run_pool(self.slow_merge(0), skip=skip, new_lane=busy)
+        self.assertIn("stayed loaded", str(e.exception))
+        self.assertEqual(skip, set())
+
+    def test_a_merge_that_raises_is_kept_and_the_others_go_on(self):
+        # review: one bad merge must not kill every session; a task that waits on it is held, and only landed ones count
+        for i, t in enumerate(("one", "two", "needs one"), 1):
+            self.task(t, f"work-T-000{i}.txt")
+        self.fm("task", "set", "T-0003", "depends_on=T-0001")
+        good = self.slow_merge(0)
+
+        def integrate(p, tid, path):
+            if tid == "T-0001":
+                raise RuntimeError("boom")
+            return good(p, tid, path)
+        skip = set()
+        done, out = self.run_pool(integrate, left=3, skip=skip)
+        self.assertEqual(done, 1, out)
+        self.assertIn("T-0001 done; kept in", out)
+        self.assertIn("boom", out)
+        self.assertIn("T-0003", skip)
+        self.assertNotIn(("start", "T-0003"), self.order())
+
+    def test_a_head_blocked_by_a_running_lane_doesnt_starve_behind_a_later_task(self):
+        # nit: T-0002 clashes with the running T-0001; T-0003 clashes with T-0002 only: T-0003 must not jump the queue
+        from sampo import core as c
+        from sampo import serve
+        self.fm("task", "new", "a", "--type", "FEATURE", "--tier", "S", "--scope", "a.txt", "--ac", "ok :: true", "--step", "a")
+        self.fm("task", "new", "ab", "--type", "FEATURE", "--tier", "S", "--scope", "a.txt", "--scope", "b.txt",
+                "--ac", "ok :: true", "--step", "a")
+        self.task("b", "b.txt")
+        self.task("c", "c.txt")
+        p = c.find_project(self.repo)
+        ids = [b.id for b in serve._batch(p, c.find_brief(p, "T-0002"), {"T-0001"}, 3, [c.find_brief(p, "T-0001")])]
+        self.assertEqual(ids, ["T-0004"], "T-0003 shares b.txt with the waiting T-0002; T-0004 is free of both")
+
     def test_a_failure_mid_batch_stops_every_session_and_frees_its_tasks(self):
         # session audit: sessions run in their own process group, so an error or Ctrl-C while waiting left them
         # running unwatched, and the lanes kept holding their tasks
@@ -154,18 +350,18 @@ class Parallel(ForemanTestCase):
         self.stub("quick", f"for i in $(seq 200); do [ -s {pids} ] && break; sleep 0.1; done\nsleep 1\n")
         self.stub("slow", f"echo $$ >> {pids}\nsleep 30\n")
         p = c.find_project(self.repo)
-        batch = [c.find_brief(p, "T-0001"), c.find_brief(p, "T-0002")]
+        pool = lambda log: serve._run_pool(p, SimpleNamespace(timeout=1), {}, log, set(), set(), False, 2, 2)  # T-3294
         lanes_freed = lambda: (self.assertEqual(self.git("worktree", "list").count("\n"), 1),
                                self.assertFalse([t for t in ("T-0001", "T-0002") if c.find_brief(p, t).meta.get("lane")]))
         with mock.patch.object(serve, "_claude_cmd", lambda *a, it=iter(["quick", "slow"]): [os.path.join(self.bin, next(it))]):
             with self.assertRaises(IsADirectoryError):  # the run log can't be written once the first session ends
-                serve._run_lanes(p, batch, SimpleNamespace(timeout=1), {}, self.tmp)
+                pool(self.tmp)
         pid = int(open(pids).read().split()[0])
         self.assertRaises(ProcessLookupError, os.kill, pid, 0)
         lanes_freed()
         with mock.patch.object(serve, "_claude_cmd", lambda *a, it=iter(["slow", "missing"]): [os.path.join(self.bin, next(it))]):
             with self.assertRaises(FileNotFoundError):  # claude can't be started for the second
-                serve._run_lanes(p, batch, SimpleNamespace(timeout=1), {}, os.path.join(self.tmp, "run.log"))
+                pool(os.path.join(self.tmp, "run.log"))
         lanes_freed()
 
     def test_a_lane_with_no_progress_is_blocked(self):
