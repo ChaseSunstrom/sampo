@@ -7516,6 +7516,275 @@ def _command_words(cmds):
     return out
 
 
+# T-4934: where bash evaluates arithmetic it evaluates a name's value in turn (through any chain of names), and an array
+# subscript in that value runs its $( ) or backtick: $((x)), ((x)), for ((…)), $[x], [[ x -eq 1 ]], [[ -v a[x] ]],
+# ${a[x]}, ${v:x}, ${@:x}, ${!v} (indirect), a[x]=, a[b[x]]+=, a=([x]=1). `[ x -eq 1 ]` (test) and printf %d read no
+# expression. These marks are read in the raw text, quotes and all (bash -c 'echo $((x))' evaluates an exported x);
+# the builtins that take a name are read as commands (_arith_command), so prose in a message isn't one.
+_ARITH_SYM = lazy(r"\$\(\(|\(\(|\$\[|\[\[(?:(?!\]\]).)*?\s-(?:eq|ne|lt|le|gt|ge|v)\s|"
+                  r"\$\{[#!]?(?:\w+|[@*])(?:\[|:[^}=+?\-])|\$\{!|"
+                  r"(?<![\w$])[A-Za-z_]\w*\[[^\n]{0,200}?\]\+?=|=\(\s*\[", re.S)
+_ARITH_WORDS = lazy(r"(?<![\w-])(?:let|declare|typeset|local|export|readonly|read|printf|unset|mapfile|readarray|"
+                    r"getopts|wait|test)(?![\w-])|(?<!\S)\[\[?(?=\s)")
+_SUBST_OPEN = lazy(r"\$\(|`")
+# what a value's $( or backtick can come from, as one cheap test: single-quoted (after a ' with no ' between), escaped,
+# coded for printf or echo -e ($ \x24 \044, ( \x28 \050, ` \x60 \140), a literal holding $, ( or ` to put beside
+# another, a name right before a (, a heredoc
+_DEAD_HINT = lazy(r"'[^']*(?:\$[('\"]|`)|\\[$`]|\\(?:[xuU]0*(?:24|28|60)|0{0,2}(?:44|50|140))|"
+                  r"=(?:'[^']*[$`(]|\"[^\"]*\$\"|\"[^\"$`\\]*\()|\$\{?[A-Za-z_]\w*\}?\(|<<(?!<)")
+_NAME_ARGS = frozenset("read printf unset mapfile readarray getopts wait test [ [[".split())  # take a name: a[x] is one
+_DECLARERS = frozenset("declare typeset local export readonly".split())
+_EVALUATORS = _NAME_ARGS | _DECLARERS | {"let"}
+_ARITH_RUNNERS = frozenset("eval command builtin exec time nohup env nice sudo xargs coproc then do else elif if while "
+                           "until ! { }".split())  # a word before the command that leaves the next word the command
+# (its own name: _RUNNERS above is the python reader's shell list, and a second binding rebound it for every caller)
+_SUBSCRIPT = lazy(r"(?<![\w$])[A-Za-z_]\w*\[")
+_ESCAPED = lazy(r"\\(?:x([0-9a-fA-F]{1,2})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8})|(0?[0-7]{1,3}))")
+_CODE_FED = lazy(r"\s*(?:\w+=\S*\s+)*(?:\S*/)?(?:(?:ba|z|da|k|fi|c|tc|a|mk|ya|po|lk)?sh|busybox|source|\.|eval|"
+                 rf"{_INTERP_NAMES}|awk|gawk|jq|sqlite3|psql|mysql)(?=\s|$)")
+
+
+def _blind_bodies(text, tails=False):
+    """T-4934: the body of every $( ) and backtick in text, read without quotes (a single-quoted one too): from the
+    opening to its balanced close, or to the end of the text when it has none (fail closed). $((…)) is arithmetic
+    when its inner ( closes on the last ) (`$((x > 3))` writes no file 3; what it nests is read); otherwise bash reads
+    a subshell, `$((cmd); true)`, and so does this. With tails (a value's own text, round 2): a body bash may close
+    later than the count does (a quoted or escaped ), a case pattern's ), a comment) is also read to the end."""
+    out, i = [], 0
+    while (m := _SUBST_OPEN.search(text, i)) is not None:
+        if m.group(0) == "`":
+            end = text.find("`", m.end())
+            out.append(text[m.end():] if end < 0 else text[m.end():end])
+            i = len(text) if end < 0 else end + 1
+            continue
+        i = m.end()  # a body nested in this one is read on its own too
+        depth, j = 1, i
+        while j < len(text) and depth:
+            depth += {"(": 1, ")": -1}.get(text[j], 0)
+            j += 1
+        body = text[i:j - 1] if not depth else text[i:]
+        if body.startswith("(") and not depth and _closes_at_end(body):
+            continue
+        out.append(body)
+        if tails and (depth or re.search(r"['\"\\#]|\bcase\b|<<|\(\(", body)):
+            out.append(text[i:])
+    return out
+
+
+def _closes_at_end(body):
+    """Whether body's opening ( closes on its last character: $(( x )) is arithmetic, $((a); b) a subshell."""
+    depth = 0
+    for k, ch in enumerate(body):
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if not depth:
+            return k == len(body) - 1
+    return False
+
+
+def _value_words(text):
+    """T-4934 round 2: text as bash's words after quote removal, as (word, dead): dead when a $( or backtick in it
+    came from quoted or escaped text, data now and code once arithmetic evaluates the value (x='a[$(…)]',
+    x=a[\\$\\(…\\)], 'a[$'""'(…)]'). Each $( ) and backtick opens a fresh quoting context, as in bash, and its text
+    stays in the word as written ("$(echo 'a[$(…)]')" is dead inside). ; & | ( ) and newlines come as (separator,
+    None), < and > as ('<', None)."""
+    out, cur, marks, i, n = [], [], [], 0, len(text)
+    st = [[None, 0, ""]]  # frames: [quote, paren depth, opener]; the outer frame removes quotes, a substitution keeps them
+
+    def put(ch, dead=False):
+        if dead and ch in "$`":
+            marks.append(len(cur))
+        cur.append(ch)
+
+    def flush():
+        nonlocal cur, marks
+        if cur:
+            word = "".join(cur)
+            out.append((word, any(word[k] == "`" or word[k + 1:k + 2] == "(" for k in marks)))
+        cur, marks = [], []
+    while i < n:
+        ch, top = text[i], st[-1]
+        inner, q = len(st) > 1, top[0]
+        if q == "'":
+            top[0] = None if ch == "'" else "'"
+            if ch != "'" or inner:
+                put(ch, True)
+        elif ch == "\\" and (q is None or text[i + 1:i + 2] in ("$", "`", '"', "\\", "\n")):
+            i += 1
+            if inner:
+                put("\\")
+            if i < n and text[i] != "\n":
+                put(text[i], True)
+        elif ch == "$" and text[i + 1:i + 2] == "(":
+            put("$")
+            put("(")
+            st.append([None, 0, "$("])
+            i += 1
+        elif ch == "`":
+            put("`")
+            if top[2] == "`" and q is None:
+                st.pop()
+            else:
+                st.append([None, 0, "`"])
+        elif ch == '"' and q in (None, '"'):
+            top[0] = None if q else '"'
+            if inner:
+                put(ch)
+        elif q == '"':
+            put(ch)
+        elif ch == "'":
+            top[0] = "'"
+            if inner:
+                put(ch)
+        elif inner:
+            if ch == "(":
+                top[1] += 1
+            elif ch == ")" and top[2] == "$(":
+                if top[1]:
+                    top[1] -= 1
+                else:
+                    st.pop()
+            put(ch)
+        elif ch in " \t":
+            flush()
+        elif ch in ";&|()\n<>":
+            flush()
+            out.append(("<" if ch in "<>" else ch, None))
+        else:
+            put(ch)
+        i += 1
+    flush()
+    return out
+
+
+def _arith_command(words, names):
+    """T-4934 round 2: whether a command among words evaluates a name: let; declare and its kin with -i, -a, -A or -n
+    or a subscripted name; read, printf -v, test -v, unset … given a subscripted name. The command word as bash finds
+    it: past assignments and runners (eval, env, then …), its quotes removed ("let", l\\et), a value the line gives
+    its name ($L with L=let: names, from _assigned), the first word of eval's text or of a -c script."""
+    name, args, ran = None, [], False
+    for word, dead in words + [(";", None)]:
+        if dead is None:
+            if word == "<":
+                continue
+            if name == "let" or name in _DECLARERS and any(
+                    re.match(r"[-+]\w*[iaAn]", a) or _SUBSCRIPT.search(a) for a in args) or name in _NAME_ARGS and any(
+                    _SUBSCRIPT.search(a) for a in args):
+                return True
+            name, args, ran = None, [], False
+            continue
+        if name is None and word.startswith("$"):
+            word = next((v for v in _literal_views(word, names) if v.split()[:1] and os.path.basename(
+                v.split()[0]) in _EVALUATORS), word)
+        first = word.split()[:1]
+        if name is None:
+            if word in _ARITH_RUNNERS:
+                ran = True
+            elif not (re.fullmatch(r"[A-Za-z_]\w*(?:\[.*\])?\+?=.*", word, re.S) or ran and word.startswith("-")):
+                name = os.path.basename(first[0]) if first else ""  # eval 'let y=x': its text's first word
+            continue
+        if first == ["let"] and args and re.fullmatch(r"-\w*c", args[-1]):
+            return True  # bash -c 'let x'
+        args.append(word)
+    return False
+
+
+def _assigned(words):
+    """T-4934 round 2: name → every value an assignment word on the line gives it, quotes removed (d=\\$, d="$",
+    declare d='$'). Only to read more of the line, never to pass it: a value set twice or in a branch is each one."""
+    names = {}
+    for word, dead in words:
+        if dead is not None and (m := re.match(r"([A-Za-z_]\w*)\+?=(.*)", word, re.S)):
+            names.setdefault(m.group(1), []).append(m.group(2))
+    return names
+
+
+def _literal_views(word, names):
+    """word with each $k or ${k} in it read as each value the line gives k (at most 16 readings), and once more with
+    every name just before a ( read as $: a value made at run time may be one (d=$(printf '\\x24'); "a[${d}(…)]")."""
+    views = [word]
+    for k in dict.fromkeys(re.findall(r"\$\{?([A-Za-z_]\w*)\}?", word)):
+        for v in names.get(k, [])[:4]:
+            views += [re.sub(rf"\$(?:\{{{k}\}}|{k}(?!\w))", lambda _m: v, x) for x in views[:4]]
+    return views[:16] + [re.sub(r"\$(?:\{[A-Za-z_]\w*\}|[A-Za-z_]\w*)(?=\()", "$", word)]
+
+
+def _value_heredocs(cmd):
+    """T-4934 round 2: the heredoc bodies a value may come from (read x <<'EOF', x=$(cat <<'EOF')): not one a shell or
+    an interpreter reads as its script (that text is checked as code), as bash leaves them: a quoted marker's body as
+    written, an unquoted one's \\$ and \\` unescaped (only those hold a $( ) that runs later, not now)."""
+    lines, out, seen, i = cmd.split("\n"), [], [], 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+        starts = _heredoc_starts(seen, line)
+        seen.append(line)
+        for quote, delim in starts:
+            body = []
+            while i < len(lines) and not _ends_body(lines[i], delim, line):
+                body.append(lines[i])
+                i += 1
+            i += 1
+            text = "\n".join(body)
+            if _CODE_FED.match(line):
+                continue
+            if quote and ("$(" in text or "`" in text):
+                out.append(text)
+            elif not quote and re.search(r"\\[$`]|\$\(|`", text):  # \$( and a live $( whose echo 'a[$(…)]' is one
+                out.append(re.sub(r"\\([$`\\])", r"\1", text))
+    return out
+
+
+def _arith_values(cmd, ctx, depth):
+    """T-4934: a line that evaluates arithmetic may run any $( ) or backtick its values hold, quoted or not
+    (x='a[$(sampo mandate off)]'; echo $((x)) runs it): each body is judged as a command; a finding refuses.
+    Round 2 (its review): the values are read as bash makes them (quotes removed, escapes decoded, a literal name's
+    value put in), so a body a quoted ) or a case pattern seems to close, a $(( that is a subshell, or a $( made of
+    quote pieces, \\$\\(, printf's \\x24 or p='$' is read too; a heredoc cat writes is data, and a builtin counts as
+    arithmetic only as the command. A value made at run time (read from a file, decoded by a program, inherited from an
+    earlier call) is out of a static reading's reach."""
+    if not _DEAD_HINT.search(cmd):
+        return []  # no $( or backtick a value could hold: every reading of a nested body passes here (cost)
+    if not (_ARITH_SYM.search(cmd) or _ARITH_WORDS.search(re.sub(r"['\"\\]", "", cmd))):
+        return []  # ("let", l\et and l''et are let)
+    dry = _drop_data_heredocs(cmd)
+    shell, _ = _heredocs(dry)  # a heredoc's body is a value (below) or a script read as code on its own, no context
+    words = _value_words(shell)
+    names = _assigned(words)
+    subs = lambda v: v.count("$(") + v.count("`")  # noqa: E731
+    values = []
+    for word, dead in words:
+        if dead is None:
+            continue
+        views = {word} if dead else set()
+        if "\\" in word and subs(v := _ESCAPED.sub(_escaped_char, word)) > subs(word):
+            views.add(v)  # printf 'a[\x24(…)]'
+        if "$" in word:  # p='$'; "a[${p}(…)]"
+            views |= {v for x in [word, *views] for v in _literal_views(x, names) if subs(v) > subs(word)}
+        values += [v for v in views if "$(" in v or "`" in v]
+    held = _value_heredocs(dry)
+    if not (values or held) or not (_ARITH_SYM.search(shell) or _arith_command(words, names)):
+        return []
+    bodies = [b for v in dict.fromkeys(values + held) for b in _blind_bodies(v, tails=True)]
+    bodies = [b for b in dict.fromkeys(x.strip() for x in bodies) if b]
+    if len(bodies) > 64:
+        return [("rm-outside", "too many quoted $( ) bodies beside arithmetic to read: split the command")]
+    found = []
+    for body in bodies:  # a body that came out of a quoted value is text bash parses afresh: its own words hold
+        # values this reading saw only as quoted text (x='b[$(printf -v x … '\''a[$(cmd)]'\''; echo $((x)))]', the
+        # fuzz's nesting), so its arithmetic values are read too, to check_bash's depth cap
+        found += [(cat, f"{detail} (bash evaluates a value as arithmetic here, and runs the $( ) or backtick "
+                        "it holds even in quotes)") for cat, detail in check_bash(body, ctx, depth + 1, tails=False)]
+        found += _arith_values(body, ctx, depth + 1) if depth < 4 else []  # its own note already
+    return list(dict.fromkeys(found))
+
+
+def _escaped_char(m):
+    """The character a printf, echo -e or $'…' escape stands for (\\x24 and \\044 are $)."""
+    hexa = m.group(1) or m.group(2) or m.group(3)
+    code = int(hexa, 16) if hexa else int(m.group(4), 8)
+    return chr(code) if code <= 0x10FFFF else m.group(0)
+
+
 def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     """Return [(category, detail)] for every dangerous thing found in a shell command."""
     if depth > 4:
@@ -7550,7 +7819,8 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     cmd = _ifs_spaces(cmd)  # T-0576: rm${IFS}-rf ~ is "rm -rf ~" to bash (IFS splits the expansion into words)
     cmd = _expand_literal_loops(cmd)  # T-0411: a loop over literal words, as the commands it runs
     found = (_interpreter_writes(cmd, ctx) + _interpreter_reads(cmd, ctx)  # every depth: an fm --run command is read
-             + _interp_links(cmd, ctx))
+             + _interp_links(cmd, ctx) + (_arith_values(cmd, ctx, depth) if tails else []))  # T-4934: a body
+    # (tails off) is part of the text read before it, whose words hold its inner quotes: read there, once
     # on its own (T-0128 review)
     # T-0345: what python code starts; a script only written with cat isn't run by writing it, unless the same
     # command also runs an interpreter (cat > t.py <<EOF … EOF; python3 t.py)

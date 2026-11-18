@@ -3874,6 +3874,75 @@ class InterpreterCodeIsNotBash(GuardCase):  # T-1786
         ], self.bash)
 
 
+class ArithmeticValues(GuardCase):
+    """T-4934: bash evaluates a name's value where it does arithmetic, and a subscript in that value runs its $( ) or
+    backtick even when the value was single-quoted text: `x='a[$(sampo mandate off)]'; echo $((x))` runs it."""
+
+    def test_a_quoted_substitution_a_line_evaluates_arithmetically_is_refused(self):
+        body = "sampo mandate off"
+        for form in ("x='a[$({b})]'; echo $((x))", "x='a[$({b})]'; ((x))", "x='a[$({b})]'; let x",
+                     "x='a[$({b})]'; [[ x -eq 1 ]]", "x='a[`{b}`]'; y=x; echo $((y))", "x='a[$({b})]'; echo ${{a[x]}}",
+                     "x='a[$({b})]'; echo $[x]", "x='a[$({b})]'; s=abc; echo ${{s:x}}", "x='a[$({b})]'; arr[x]=1",
+                     "declare -i n; n='a[$({b})]'", "local -ri n='a[$({b})]'", "printf -v x %s 'a[$({b})]'; echo $((x))",
+                     "read x <<< 'a[$({b})]'; echo $((x))", "x=\"a[\\$({b})]\"; echo $((x))",
+                     "x='a[$( ({b}) )]'; echo $((x))", "read x <<'EOF'\na[$({b})]\nEOF\necho $((x))",
+                     "echo $(( $({b}) ))"):
+            cmd = form.replace("{b}", body)
+            with self.subTest(cmd=cmd):
+                r = self.bash(cmd)
+                self.assertBlocked(r, "self-authorize", cmd)
+
+    def test_a_value_bash_reads_past_a_quoted_close_or_assembles_is_refused(self):
+        """Its review (each form made its call in real bash 5.3): a quoted ) or a case pattern closes nothing in the
+        body, $(( without a closing )) is a subshell, and a value made of quote pieces, escapes, printf's \\x24 or a
+        literal $ in another name still holds a $( )."""
+        body = "sampo mandate off"
+        for form in ("x='a[$(: \")\"; {b})]'; echo $((x))", "x='a[$(case y in y) {b};; esac)]'; echo $((x))",
+                     "x='a[$(({b}); true)]'; echo $((x))", "x='a[$'\"\"'({b})]'; echo $((x))",
+                     "x=a[\\$\\(sampo\\ mandate\\ off\\)]; echo $((x))", "p='$'; x=\"a[${{p}}({b})]\"; echo $((x))",
+                     "x=$(printf 'a[\\x24({b})]'); echo $((x))", "x=$(printf 'a[\\044({b})]'); echo $((x))",
+                     "read x <<EOF\na[\\$({b})]\nEOF\necho $((x))", "d=\\$; x=\"a[${{d}}({b})]\"; echo $((x))",
+                     "d=\"$\"; x=\"a[${{d}}({b})]\"; echo $((x))", "d=$(printf '\\x24'); x=\"a[${{d}}({b})]\"; echo $((x))",
+                     "o='('; x=\"a[\\$${{o}}{b})]\"; echo $((x))",
+                     "x=\"$(echo 'a[$({b})]')\"; echo $((x))",
+                     "x=$(cat <<EOF\n$(echo 'a[$({b})]')\nEOF\n); echo $((x))",
+                     "x=\"$(d='$'; echo \"a[${{d}}({b})]\")\"; echo $((x))",
+                     "x='b[$(printf -v x '\\''%s'\\'' '\\''a[$({b})]'\\''; echo $((x)))]'; printf -v 'a[x]' %s 1"):
+            cmd = form.replace("{b}", body)
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.bash(cmd), "self-authorize", cmd)
+
+    def test_every_place_bash_evaluates_a_name_or_subscript_counts(self):
+        """Its review: array literals, positional and indirect offsets, the builtins that take a subscripted name, and
+        let however the command word is spelled (quoted, escaped, a literal in a name, run by eval or a child shell)."""
+        body = "sampo mandate off"
+        for form in ("x='b[$({b})]'; a=([x]=1)", "x='b[$({b})]'; declare -a a=([x]=1)",
+                     "x='b[$({b})]'; set -- 1 2 3; echo ${{@:x}}", "v='a[$({b})]'; echo ${{!v}}",
+                     "x='b[$({b})]'; [[ -v a[x] ]]", "x='b[$({b})]'; test -v 'a[x]'",
+                     "x='b[$({b})]'; printf -v 'a[x]' %s 1", "x='b[$({b})]'; read 'a[x]' <<< 1",
+                     "x='b[$({b})]'; a[b[x]]=1", "x='b[$({b})]'; declare -n r='a[x]'; echo $r",
+                     "x='b[$({b})]'; \"let\" y=x", "x='b[$({b})]'; l\\et y=x", "x='b[$({b})]'; eval 'let y=x'",
+                     "export x='b[$({b})]'; bash -c 'echo $((x))'",
+                     "x='b[$({b})]'; for ((i=x; i<1; i++)); do :; done"):
+            cmd = form.replace("{b}", body)
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.bash(cmd), "self-authorize", cmd)
+
+    def test_arithmetic_beside_harmless_or_inert_text_still_runs(self):
+        for cmd in ("n=$(grep -c x a.py); echo $((n+1))", "echo $((a > b ? a : b))", "x=5; echo $((x * 2))",
+                    "n=1; grep -n '$(date)' a.py; echo $((n+1))", "[[ $n -eq 1 ]] && echo `date`",
+                    "x='$(sampo mandate off)'; echo \"$x\"", "[ x -eq 1 ] || echo '$(sampo mandate off)'",
+                    "echo $((1 << 2))",
+                    # its review: let in a quoted message is a word, not the command; a heredoc cat writes is data
+                    "echo 'doc: $(sampo mandate off) is refused; let us say so'",
+                    "cat > notes.md <<'EOF'\nrun $(sampo mandate off) to see; let x\n(( y ))\nEOF",
+                    "n=$((n+1)); echo 'fix: run x; sampo mandate off is refused now'",
+                    "[ x -eq 1 ] && printf '%d\\n' x; echo '$(sampo mandate off)'",
+                    "read -r line < f; echo '$(sampo mandate off)'"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd), cmd)
+
+
 class NativeBuild(GuardCase):
     """T-3607: hooks/fast runs plugin/native/sampo-fast when its sha256 beside it matches, so every write that could
     swap or poison that binary is a protected-core write: cargo and rustc output flags aimed into plugin/, build

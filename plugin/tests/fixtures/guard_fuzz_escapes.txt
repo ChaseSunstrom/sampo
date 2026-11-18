@@ -78,3 +78,6 @@
 'echo $(( 1 )) $(true; rm${IF\\\nS}-rf ~)'
 "echo $(eval 'echo $((1))#x; '\\claude' plugin ins\\\ntall x@y')"
 'echo "$(echo \'<<-EOF\' &&\ncase a in a) git p\'\'ush --force origin main;; esac)"'
+
+# T-4934: an arithmetic value's $( ) body that itself sets a quoted value and evaluates it (two levels of values)
+"x='b[$(printf -v x '\\''%s'\\'' '\\''a[$(script -qc '\\''\\'\\'''\\''git push --force origin main'\\''\\'\\'''\\'' /dev/null)]'\\''; echo $((x)))]'; printf -v 'a[x]' %s 1"
