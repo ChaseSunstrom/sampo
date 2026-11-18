@@ -1449,5 +1449,182 @@ class Seeds(Steps):
             self.assertEqual([(n, why) for n, why in res if why], [], name)
 
 
+class CallStats(Base):
+    """T-4919: every call records one outcome row per card, and pick orders the fitting cards by the pass rate."""
+
+    def rows(self):
+        try:
+            with open(callcards.calls_path()) as f:
+                return [json.loads(x) for x in f]
+        except OSError:
+            return []
+
+    def note(self, card, status, n=1, cached=False):
+        for _ in range(n):
+            callcards._record_call(card, callcards._result(card, status, cached=cached), 0.5)
+
+    def test_call_stats_each_status_falls_in_one_class(self):
+        want = {"applied": "pass", "facts": "pass", "checker_failed": "check_failed", "refused": "refused",
+                "stale": "refused", "generator_failed": "failed", "timeout": "failed", "scope": "failed",
+                "environment": "machine", "confinement": "machine", "bad_input": "failed"}
+        for status, cls in want.items():
+            self.assertEqual(callcards.outcome_class(status), cls, status)
+        self.assertIsNone(callcards.outcome_class("no_card"), "a name that is no card is no card's outcome")
+
+    def test_call_stats_a_row_holds_no_inputs_or_file_text(self):
+        r = callcards._result("shout", "applied", diff="SECRET FILE TEXT", changed=["a.txt"], facts={"k": "SECRET"})
+        callcards._record_call("shout", r, 1.23456)
+        row, = self.rows()
+        self.assertEqual(sorted(row), ["at", "cached", "card", "class", "seconds"])
+        self.assertEqual((row["card"], row["class"], row["cached"], row["seconds"]), ("shout", "pass", False, 1.235))
+        self.assertNotIn("SECRET", json.dumps(row))
+        callcards._record_call("ghost", callcards._result("ghost", "no_card"), 0.1)
+        self.assertEqual(len(self.rows()), 1, "no_card writes nothing")
+
+    @confined
+    def test_call_stats_every_real_call_records_one_row_cache_hits_too(self):
+        self.card("shout")
+        self.assertEqual(callcards.call("shout", {"path": "a.txt"}, self.repo)["status"], "applied")
+        self.write("a.txt", "hello world\n")
+        self.assertEqual(callcards.call("shout", {"path": "a.txt"}, self.repo)["cached"], True)
+        self.assertEqual(callcards.call("shout", {"path": "a.txt", "mode": "x"}, self.repo)["status"], "bad_input")
+        self.assertEqual(callcards.call("nope", {}, self.repo)["status"], "no_card")
+        got = [(x["card"], x["class"], x["cached"]) for x in self.rows()]
+        self.assertEqual(got, [("shout", "pass", False), ("shout", "pass", True), ("shout", "failed", False)])
+        for x in self.rows():
+            self.assertIsInstance(x["seconds"], float)
+
+    @confined
+    def test_call_stats_a_failed_check_and_a_card_test_case(self):
+        self.card("shout", check=FAIL, tests=[{"name": "t", "files": {"t.txt": "hi\n"}, "inputs": {"path": "t.txt"},
+                                                "expect": "checker_failed"}])
+        self.assertEqual(callcards.call("shout", {"path": "a.txt"}, self.repo)["status"], "checker_failed")
+        self.assertEqual([x["class"] for x in self.rows()], ["check_failed"])
+        callcards.run_tests(callcards.cards()[0]["shout"])
+        self.assertEqual(len(self.rows()), 1, "a card's own test case is not a call that happened")
+
+    @confined
+    def test_call_stats_a_chain_and_its_steps_are_each_a_row(self):
+        self.card("shout")
+        self.card("pipe", kind="chain", steps=[{"card": "shout", "inputs": {"path": "$path"}}], files=[],
+                  purpose="pipe: run shout")
+        r = callcards.call("pipe", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "applied", r)
+        self.assertEqual(sorted(x["card"] for x in self.rows()), ["pipe", "shout"])
+
+    def test_call_stats_a_write_that_fails_never_fails_the_call(self):
+        with mock.patch.object(c, "append_line", side_effect=OSError("disk full")):
+            self.note("shout", "applied")  # raises nothing
+
+    def test_call_stats_sums_per_card(self):
+        self.note("a-card", "applied", 3)
+        self.note("a-card", "checker_failed")
+        self.note("a-card", "refused")
+        self.note("a-card", "generator_failed")
+        self.note("a-card", "applied", 5, cached=True)
+        self.note("b-card", "facts", 2)
+        s = callcards.call_stats()
+        a = s["a-card"]
+        self.assertEqual((a["calls"], a["pass"], a["check_failed"], a["refused"], a["failed"], a["cached"]),
+                         (11, 8, 1, 1, 1, 5))
+        self.assertAlmostEqual(a["seconds"], 5.5)
+        self.assertEqual(s["b-card"]["calls"], 2)
+        self.assertNotIn("c-card", s)
+
+    def test_call_stats_the_rate_is_smoothed_and_a_cache_hit_adds_nothing_to_it(self):
+        self.note("a-card", "applied", 3)
+        self.note("a-card", "applied", 50, cached=True)
+        self.assertAlmostEqual(callcards.call_stats()["a-card"]["rate"], 4 / 5, msg="(3 + 1) / (3 + 2): fresh runs only")
+        self.assertEqual(callcards.pass_rate(None), 0.5, "no calls sits at the prior")
+        self.assertEqual(callcards.pass_rate({"calls": 4, "cached": 4, "pass": 4, "fresh": 0, "fresh_pass": 0}), 0.5)
+
+    def test_call_stats_torn_and_foreign_rows_are_skipped(self):
+        self.note("a-card", "applied")
+        with open(callcards.calls_path(), "a") as f:
+            f.write("not json\n[1]\n" + json.dumps({"card": 7, "class": "pass"}) + "\n"
+                    + json.dumps({"card": "a-card", "class": "bogus"}) + "\n" + '{"card": "a-card", "cl')
+        self.assertEqual(callcards.call_stats()["a-card"]["calls"], 1)
+
+    def test_call_stats_a_deeply_nested_line_does_not_kill_the_reader(self):
+        self.note("a-card", "applied")
+        with open(callcards.calls_path(), "a") as f:
+            f.write("[" * 100000 + "\n")
+        self.note("a-card", "applied")
+        self.assertEqual(callcards.call_stats()["a-card"]["calls"], 2)
+        self.assertTrue(callcards.rank("uppercase the text file a.txt"), "rank still answers")
+
+    def test_call_stats_a_machine_wide_failure_is_counted_but_leaves_the_rate_alone(self):
+        self.note("a-card", "confinement", 3)
+        self.note("a-card", "environment", 2)
+        s = callcards.call_stats()["a-card"]
+        self.assertEqual((s["calls"], s["machine"], s["failed"]), (5, 5, 0))
+        self.assertEqual(s["rate"], 0.5, "no sandbox here: the card is as untried as before")
+        self.note("a-card", "applied", 1)
+        self.assertAlmostEqual(callcards.call_stats()["a-card"]["rate"], 2 / 3)
+        self.note("a-card", "bad_input", 1)  # the caller's input is a failure of the call: it counts
+        self.assertAlmostEqual(callcards.call_stats()["a-card"]["rate"], 2 / 4)
+
+    def test_call_stats_the_file_is_capped_by_rotation_and_stats_read_both_halves(self):
+        with mock.patch.object(callcards, "CALLS_CAP", 400):
+            self.note("a-card", "applied", 12)
+            p = callcards.calls_path()
+            self.assertTrue(os.path.exists(p + ".1"), "the full file moved aside")
+            self.assertLessEqual(os.path.getsize(p), 400 + 200)
+            self.assertFalse(os.path.exists(p + ".2"), "one older file only")
+            n = callcards.call_stats()["a-card"]["calls"]
+        self.assertTrue(0 < n <= 12, n)
+
+    def _two(self):
+        self.card("shout")  # the stronger lexical match for the task below
+        self.card("case-flip", purpose="uppercase text file")
+        text = "uppercase the text file a.txt"
+        order = [cd["name"] for s, cd in callcards.rank(text, k=20) if s >= callcards.LEXICAL_FLOOR]
+        self.assertEqual(order[:2], ["shout", "case-flip"], "no calls: the lexical order")
+        return text
+
+    def test_call_stats_a_card_that_keeps_failing_falls_behind_one_that_works(self):
+        text = self._two()
+        self.note("shout", "checker_failed", 4)
+        self.note("case-flip", "applied", 4)
+        order = [cd["name"] for s, cd in callcards.rank(text, k=20) if s >= callcards.LEXICAL_FLOOR]
+        self.assertEqual(order[:2], ["case-flip", "shout"])
+        self.assertEqual([c_["name"] for c_ in callcards.pick(text)["cards"]][:2], ["case-flip", "shout"])
+
+    def test_call_stats_no_calls_sits_at_the_prior_and_the_lexical_score_breaks_the_tie(self):
+        text = self._two()
+        self.note("shout", "applied", 1)  # 2/3 over the prior 1/2: it leads while the other has no calls
+        self.note("case-flip", "checker_failed", 1)  # 1/3 under the prior
+        order = [cd["name"] for s, cd in callcards.rank(text, k=20) if s >= callcards.LEXICAL_FLOOR]
+        self.assertEqual(order[:2], ["shout", "case-flip"])
+        self.note("shout", "checker_failed", 1)  # 1/2 and 1/3: still shout; equal rates fall back to lexical
+        self.note("case-flip", "applied", 1)  # now 1/2 each: the tie
+        order = [cd["name"] for s, cd in callcards.rank(text, k=20) if s >= callcards.LEXICAL_FLOOR]
+        self.assertEqual(order[:2], ["shout", "case-flip"])
+
+    def test_call_stats_outcomes_never_lift_a_card_that_does_not_fit(self):
+        self.card("shout")
+        self.card("oolong-brew", purpose="oolong tea brewing times", examples=["brew oolong"])
+        self.note("oolong-brew", "applied", 100)
+        r = callcards.pick("uppercase the text file a.txt")
+        self.assertEqual(r["status"], "cards")
+        self.assertNotIn("oolong-brew", [x["name"] for x in r["cards"]])
+        ranked = callcards.rank("uppercase the text file a.txt", k=20)
+        fit = [cd["name"] for s, cd in ranked if s >= callcards.LEXICAL_FLOOR]
+        rest = [cd["name"] for s, cd in ranked if s < callcards.LEXICAL_FLOOR]
+        self.assertEqual(ranked[:len(fit)] and [cd["name"] for s, cd in ranked[:len(fit)]], fit, "fitting cards first")
+        self.assertIn("oolong-brew", rest)
+
+    def test_call_stats_rank_json_shows_each_cards_calls_and_pass_rate(self):
+        self.card("shout")
+        self.note("shout", "applied", 3)
+        self.note("shout", "checker_failed")
+        out = json.loads(self.fm("card", "rank", "uppercase", "the", "text", "file", "--json").stdout)
+        row = next(x for x in out["cards"] if x["name"] == "shout")
+        self.assertEqual(row["calls"], 4)
+        self.assertAlmostEqual(row["pass_rate"], 4 / 6, places=3)
+        other = next(x for x in out["cards"] if x["name"] != "shout")
+        self.assertEqual((other["calls"], other["pass_rate"]), (0, 0.5), "no calls: the prior")
+
+
 if __name__ == "__main__":
     unittest.main()

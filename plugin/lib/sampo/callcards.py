@@ -59,6 +59,8 @@ CACHE_KEEP, CACHE_WRITES = 256, 1 << 20  # cached results kept; the most a cache
 DIFF_CAP = 8 << 10
 TEXT_CAP = 8000  # text(): what a model reads back from one call
 LEXICAL_FLOOR = 0.15  # pick(): a card scoring under this doesn't fit
+CALLS_CAP = 256 << 10  # calls.jsonl rotates to calls.jsonl.1 past this many bytes (about 2000 rows each)
+CLASSES = ("pass", "check_failed", "refused", "failed", "machine")  # a call's outcome class
 OK = ("applied", "facts")
 RUN_FAILED = ("generator_failed", "checker_failed", "timeout", "scope")
 NAME = re.compile(r"[a-z][a-z0-9-]{1,40}")
@@ -1152,7 +1154,94 @@ def _cache_put(key, r, writes):
 
 # --- calls -----------------------------------------------------------------------------------------------------------
 
-def call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, guard=None, via=None, inject_model=None):
+def outcome_class(status):
+    """T-4919: the class a call's status counts as in calls.jsonl: pass, check_failed (the checker said no), refused (the
+    change was checked but not applied, or the files moved under it), failed (the rest: the generator, a limit, bad
+    inputs); machine (confinement or environment: this machine can't run cards, no card's fault, so the pass rate leaves
+    it out); None for no_card, which is no card's outcome."""
+    if status in OK:
+        return "pass"
+    return {"no_card": None, "checker_failed": "check_failed", "refused": "refused", "stale": "refused",
+            "confinement": "machine", "environment": "machine"}.get(status, "failed")
+
+
+def calls_path():
+    return os.path.join(c.state_dir(), "callcards", "calls.jsonl")
+
+
+def _record_call(name, r, seconds):
+    """One outcome row for one call: the card, its class, the seconds, whether a cache answered. Never the inputs or any
+    file text. A write that fails (a full disk) never fails the call; the file rotates to calls.jsonl.1 past CALLS_CAP."""
+    cls = outcome_class(r.get("status"))
+    if cls is None:
+        return
+    row = {"at": c.now(), "card": name, "class": cls, "seconds": round(seconds, 3), "cached": bool(r.get("cached"))}
+    p = calls_path()
+    try:
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        if os.path.getsize(p) > CALLS_CAP:
+            os.replace(p, p + ".1")  # the oldest half goes: two files hold at most 2 x CALLS_CAP bytes
+    except OSError:
+        pass
+    try:
+        c.append_line(p, json.dumps(row))
+    except OSError:
+        pass
+
+
+def call_stats():
+    """{card: {calls, pass, check_failed, refused, failed, cached, seconds, rate}} summed from calls.jsonl and the file
+    it rotated to; a torn or foreign row is skipped. rate: pass_rate over the fresh runs (a cache hit repeats one)."""
+    out = {}
+    for p in (calls_path() + ".1", calls_path()):
+        try:
+            with open(p, errors="replace") as f:
+                lines = f.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except (ValueError, RecursionError):  # a torn line, or one nested past the parser's depth
+                continue
+            if not isinstance(row, dict) or not isinstance(row.get("card"), str) or row.get("class") not in CLASSES:
+                continue
+            s = out.setdefault(row["card"], {"calls": 0, "pass": 0, "check_failed": 0, "refused": 0, "failed": 0,
+                                             "machine": 0, "cached": 0, "seconds": 0.0, "fresh": 0, "fresh_pass": 0})
+            s["calls"] += 1
+            s[row["class"]] += 1
+            s["seconds"] += row["seconds"] if isinstance(row.get("seconds"), (int, float)) else 0
+            if row.get("cached"):
+                s["cached"] += 1
+            elif row["class"] != "machine":  # the machine's failure says nothing of the card
+                s["fresh"] += 1
+                s["fresh_pass"] += row["class"] == "pass"
+    for s in out.values():
+        s["seconds"] = round(s["seconds"], 3)
+        s["rate"] = pass_rate(s)
+    return out
+
+
+def pass_rate(s):
+    """A card's Laplace-smoothed pass rate over its fresh runs: (passes + 1) / (runs + 2), so a card with no calls (s is
+    None) sits at the prior 1/2, and one lucky or unlucky call moves it a third, not to 0 or 1."""
+    fresh, ok = (s["fresh"], s["fresh_pass"]) if s else (0, 0)
+    return (ok + 1) / (fresh + 2)
+
+
+def call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, guard=None, via=None, inject_model=None,
+         record=True):
+    """_call, and one outcome row for it (calls.jsonl): not for a card's own test case (record=False, or inject*), which
+    is no call that happened."""
+    t0 = time.monotonic()
+    r = _call(name, inputs, root, cache=cache, inject=inject, inject_facts=inject_facts, guard=guard, via=via,
+              inject_model=inject_model)
+    if record and inject is None and inject_facts is None and inject_model is None:
+        _record_call(name, r, time.monotonic() - t0)
+    return r
+
+
+def _call(name, inputs, root, *, cache=True, inject=None, inject_facts=None, guard=None, via=None, inject_model=None):
     """Call a card: the result's status is applied or facts (ok), else bad_input, no_card, confinement, environment
     (something the card needs isn't installed here, or no local model answered), generator_failed, checker_failed,
     timeout, scope, stale or refused, with an error that says what to change. guard({rel: bytes}) runs before a checked
@@ -1540,7 +1629,9 @@ def _card_text(card):
 
 def rank(text, k=5, root=None):
     """[(score, card)] best first: an idf-weighted cosine of the task's words and each card's name, purpose and
-    examples. root: the repo the cards would run in (cards(root))."""
+    examples is the score; the cards at or over LEXICAL_FLOOR come first, ordered by their smoothed pass rate from
+    calls.jsonl (a card with no calls sits at 1/2) and by score within one rate, then the rest by score. root: the repo
+    the cards would run in (cards(root))."""
     found = cards(root)[0]
     docs = {n: _tokens(_card_text(cd)) for n, cd in found.items()}
     df = {}
@@ -1556,7 +1647,9 @@ def rank(text, k=5, root=None):
     for n, toks in docs.items():
         dn = math.sqrt(sum(idf[t] ** 2 for t in toks)) or 1.0
         out.append((sum(idf[t] ** 2 for t in q & toks) / (qn * dn), found[n]))
-    out.sort(key=lambda x: (-x[0], x[1]["name"]))
+    stats = call_stats()  # T-4919: what fits (the floor decides) is ordered by how its calls went; lexical breaks ties
+    out.sort(key=lambda x: (x[0] < LEXICAL_FLOOR, -pass_rate(stats.get(x[1]["name"])) if x[0] >= LEXICAL_FLOOR else 0,
+                            -x[0], x[1]["name"]))
     return out[:k]
 
 
@@ -1597,7 +1690,7 @@ def run_tests(card):
                 os.makedirs(os.path.dirname(p), exist_ok=True)
                 with open(p, "w", newline="") as f:  # as written: a CRLF case stays CRLF
                     f.write(text)
-            r = call(card["name"], case.get("inputs", {}), root, cache=False, inject=case.get("inject"),
+            r = call(card["name"], case.get("inputs", {}), root, cache=False, record=False, inject=case.get("inject"),
                      inject_facts=case.get("inject_facts"), inject_model=case.get("model_reply"))
             why = []
             if r["status"] != case.get("expect", "applied"):
@@ -1685,9 +1778,13 @@ def cmd_card(args):
         text = " ".join([args.name or ""] + args.rest).strip()
         if not text:
             raise cli.UsageError("sampo card rank \"<the task in words>\"")
-        r = [dict(summary(cd, s), fits=s >= LEXICAL_FLOOR) for s, cd in rank(text, root=root)]  # a look: none filed
+        stats = call_stats()
+        r = [dict(summary(cd, s), fits=s >= LEXICAL_FLOOR, calls=stats.get(cd["name"], {}).get("calls", 0),
+                  pass_rate=round(pass_rate(stats.get(cd["name"])), 3))
+             for s, cd in rank(text, root=root)]  # a look: none filed
         print(json.dumps({"cards": r, "floor": LEXICAL_FLOOR}) if js else "\n".join(
-            f"{x['score']:.3f}{'  ' if x['fits'] else '- '} {x['name']}: {x['purpose']}" for x in r) or "no cards yet")
+            f"{x['score']:.3f}{'  ' if x['fits'] else '- '} {x['name']}: {x['purpose']}"
+            + (f" [{x['calls']} call(s), pass rate {x['pass_rate']:.2f}]" if x["calls"] else "") for x in r) or "no cards yet")
         return 0
     if act == "bench":
         out = args.out or os.path.join(root, "research", "callcards", "bench.jsonl")
