@@ -26,6 +26,7 @@ REAL_TREE_STATE = fastbuild.tree_state  # the Installer tests mock it clean; tes
 NATIVE = os.path.join(PLUGIN, "native")
 SHIM = os.path.join(PLUGIN, "hooks", "fast")
 VOLATILE = ("ts", "ms", "load", "fast", "guard_ms")
+OS_ADDED = ("__CF_USER_TEXT_ENCODING",)  # T-4993: macOS puts it in every process's environment at exec (env -i shows it)
 REAL_STATE = c.state_dir()  # read before any test points FOREMAN_HOME at its own folder: recorded inputs, read only
 TRANSCRIPTS = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 _BIN = []
@@ -771,7 +772,8 @@ class Installer(Base):
             self.assertTrue(env[k].startswith(self.workdir + os.sep), (k, env[k]))
         stray = sorted(k for k in env if k not in ("PATH", "HOME", "USER", "LOGNAME", "LC_ALL", "TMPDIR", "CARGO_HOME",
                                                    "CARGO_NET_OFFLINE", "CARGO_INCREMENTAL", "CARGO_TERM_COLOR",
-                                                   "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "RUSTC"))
+                                                   "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER", "RUSTC")
+                       and k not in OS_ADDED)
         self.assertEqual(stray, [], "nothing else is set: not RUSTUP_HOME, RUSTFLAGS, RUSTC_WRAPPER, LD_PRELOAD, SAMPO_*")
         self.assertEqual(env["RUSTC"], os.path.join(self.bindir, "rustc"), "the checked rustc, not the caller's RUSTC")
         self.assertEqual((env["CARGO_NET_OFFLINE"], env["CARGO_INCREMENTAL"]), ("true", "0"))
@@ -1034,7 +1036,8 @@ class Installer(Base):
 
     def test_a_bad_build_does_not_replace_a_good_install(self):
         self.fake(binary=self.bin)
-        self.assertTrue(self.build()[0])
+        ok, line = self.build()
+        self.assertTrue(ok, f"{line} | {self.lines[-5:]}")  # T-4993: it failed once on macOS CI with no reason shown
         before = self.files()
         self.fake(binary=self.stand_in(ALLOW_ALL))
         self.assertStays(self.build(), before, "differs")

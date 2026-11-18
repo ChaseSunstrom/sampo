@@ -1061,26 +1061,74 @@ class ModelStep(Steps):
             got = callcards._ask({"name": "x", "output": WORD_OUT}, "p")
         self.assertEqual((seen, got["model"]), (["first", "second"], "second"))
 
+    def stacks(self, fn):
+        """T-4993: fn() on this thread's stack, then in a thread with a 256 MB one: Python 3.14 bounds recursion by the C
+        stack, so on a big one (a CI runner's main thread) its json reads DEEP whole where a small one raises
+        RecursionError. A card must fail the call either way. Returns both results; an exception in the thread is raised."""
+        out = [fn()]
+        got, old = {}, threading.stack_size(256 * 1024 * 1024)
+        try:
+            def run():
+                try:
+                    got["r"] = fn()
+                except BaseException as e:  # raised on this thread below, where the test sees it
+                    got["e"] = e
+            t = threading.Thread(target=run)
+            t.start()
+        finally:
+            threading.stack_size(old)
+        t.join(300)
+        self.assertFalse(t.is_alive(), "the big-stack call hung past 300 s")
+        if "e" in got:
+            raise got["e"]
+        return out + [got["r"]]
+
     def test_model_step_a_deeply_nested_reply_is_one_failed_call_not_a_crash(self):  # the parser's recursion limit
         self.model_card()
-        with self.assertRaises(RecursionError):  # the premise: this text really breaks the parser, not just fails it
-            json.loads(DEEP)
-        self.say(DEEP, DEEP_OBJECT)
-        s = callcards.Session(self.repo)
-        for i in range(2):
-            r = s.call("longest", {"path": "a.txt", "note": f"try {i}"})
+        self.say(DEEP, DEEP_OBJECT, DEEP, DEEP_OBJECT)
+        def two():  # a session of its own on each stack
+            s = callcards.Session(self.repo)
+            return [s.call("longest", {"path": "a.txt", "note": f"try {i}"}) for i in range(2)]
+        for r in self.stacks(two):
+            for one in r:
+                self.assertEqual(one["status"], "generator_failed", one)
+                self.assertIn("JSON", one["error"])
+        for r in self.stacks(lambda: callcards.call("longest", {"path": "a.txt"}, self.repo, inject_model=DEEP)):
             self.assertEqual(r["status"], "generator_failed", r)
-            self.assertIn("JSON", r["error"])
-        r = callcards.call("longest", {"path": "a.txt"}, self.repo, inject_model=DEEP)
+
+    def test_a_reply_nested_past_the_bound_fails_even_when_the_parser_reads_it(self):
+        """T-4993: the bound is the card's, not the interpreter's: 3.14 read 100,000 levels on CI and the encoder then
+        overflowed the stack inside the call; a reply one level past JSON_DEPTH is refused on any Python, one at it is read"""
+        self.model_card(output={"type": "object", "properties": {"word": {}}}, check="")
+        deep = '{"word": ' * callcards.JSON_DEPTH + '"x"' + "}" * callcards.JSON_DEPTH
+        self.say("[" + deep + "]", deep)
+        r = callcards.call("longest", {"path": "a.txt", "note": "past"}, self.repo)
         self.assertEqual(r["status"], "generator_failed", r)
+        self.assertIn(f"deeper than {callcards.JSON_DEPTH} levels", r["error"])
+        r = callcards.call("longest", {"path": "a.txt", "note": "at"}, self.repo)
+        self.assertNotEqual(r["status"], "generator_failed", r)
+
+    def test_a_generator_printing_deeply_nested_json_is_a_failed_call_not_a_crash(self):
+        """T-4993: a read card's gen.py output nested past FACTS_DEPTH is one failed call on both stacks (a small one
+        raised RecursionError out of json.loads, a big one out of the encoder); one at the bound is its facts"""
+        n = callcards.FACTS_DEPTH
+        for name, depth in (("deepgen", 30000), ("pastgen", n + 1)):  # 30,000: inside OUT_CAP, which cuts 100,000 to text
+            self.card(name, gen=f'print("[" * {depth} + "]" * {depth})\n', check="", read=True)
+            for r in self.stacks(lambda: callcards.call(name, {"path": "a.txt"}, self.repo)):
+                self.assertEqual(r["status"], "generator_failed", r)
+                self.assertIn(f"deeper than {n} levels", r["error"])
+        self.card("atgen", gen=f'print("[" * {n} + "]" * {n})\n', check="", read=True)
+        r = callcards.call("atgen", {"path": "a.txt"}, self.repo)
+        self.assertEqual(r["status"], "facts", r)
+        self.assertIsInstance(r["facts"], list)
 
     def test_model_step_a_nested_reply_to_a_chain_s_model_step_is_a_failed_call_too(self):
         self.model_card()
-        self.say(DEEP)
+        self.say(DEEP, DEEP)
         self.chain_card("pipe", [{"card": "longest", "inputs": {"path": "$path"}}])
-        r = callcards.call("pipe", {"path": "a.txt"}, self.repo)
-        self.assertNotEqual(r["status"], "facts", r)
-        self.assertIn("JSON", str(r), r)
+        for r in self.stacks(lambda: callcards.call("pipe", {"path": "a.txt"}, self.repo)):
+            self.assertNotEqual(r["status"], "facts", r)
+            self.assertIn("JSON", str(r), r)
 
     def test_model_step_the_prompt_says_the_inputs_are_data_not_instructions(self):
         self.model_card()

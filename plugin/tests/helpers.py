@@ -133,6 +133,18 @@ def cpu_scale(cap=12.0):
     return min(cap, max(1.0, sorted(runs)[1] / QUIET_LOOP_CPU))
 
 
+def cpu_contention(cap=2.0):
+    """T-4993: how much a crowded machine inflates the CPU seconds of memory-heavy work: past one runnable task per
+    physical core (half the logical ones), hyperthread siblings share a core's caches and units. The guard's read of a
+    3566-line script took 2.0-2.2 s of CPU at load 32 on 16 logical cores against about 1 s idle, while cpu_scale's
+    arithmetic loop barely moved. `cap` when the 1-minute load is over half the logical cores, else 1."""
+    try:
+        load = os.getloadavg()[0]
+    except (AttributeError, OSError):
+        return 1.0
+    return cap if load > (os.cpu_count() or 2) / 2 else 1.0
+
+
 def read_text(path, encoding="utf-8", limit=-1):
     with open(path, encoding=encoding) as f:
         return f.read(limit)

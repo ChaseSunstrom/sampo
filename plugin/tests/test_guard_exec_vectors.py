@@ -900,10 +900,13 @@ class ScriptCache(GuardCase):
 
     def test_a_long_script_with_a_removal_on_line_one_is_refused_by_the_real_clock(self):
         # the same on the real clock: budgets small enough that 30000 lines cannot be read, long enough to read line 1
+        # (T-4993: 0.05 s on a quiet box, cpu_scale() times that on a slower runner, where line 1 missed it on CI)
+        from helpers import cpu_scale
         text = "rm -rf /home/other/x\n" + "echo hi\n" * 30000
         p = self.script("line1.sh", text)
         self.bash(f"bash {self.script('warm.sh', 'rm -rf /home/other/y' + chr(10) + 'echo hi' + chr(10) * 150)}")  # lazy regexes built
-        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": "0.05", "FM_GUARD_SCRIPT_HARD": "0.05"}):
+        budget = f"{0.05 * cpu_scale():.3f}"
+        with mock.patch.dict(os.environ, {"FM_GUARD_SCRIPT_BUDGET": budget, "FM_GUARD_SCRIPT_HARD": budget}):
             self.assertIsNotNone(self.bash(f"bash {p}"))
             self.assertIn("rm-outside", [c for c, _ in g.findings("Bash", {"command": f"bash {p}"}, self.ctx())])
 

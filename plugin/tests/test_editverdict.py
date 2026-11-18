@@ -175,6 +175,23 @@ class Ledger(HookCase):
         self._plant(f"pending.{ppid}.{ev._start(ppid)}", "notes.txt")
         self.assertEqual(ev.take(self.project()), [], "the same process still holds its batch")
 
+    def test_a_host_without_proc_tells_a_reused_pid_by_ps(self):
+        """T-4993: macOS has no /proc, so every start time read "" and a reused pid held its batch for good (CI red on
+        macOS); there the start comes from ps, and the same checks hold"""
+        from unittest import mock
+        if not c.ps_start(os.getppid()):
+            self.skipTest("this host's ps can't print lstart (busybox, no procps)")
+        with mock.patch.object(ev, "_PROC", os.path.join(self.tmp, "no-proc")):
+            ppid = os.getppid()
+            self.assertTrue(ev._start(ppid).isdigit(), ev._start(ppid))
+            self.assertEqual(ev._start(ppid), ev._start(ppid), "the same process reads the same start")
+            self._plant(f"pending.{ppid}.1")
+            self.assertEqual(ev.take(self.project()), ["calc.py"], "a mismatched start time reads as dead")
+            ev.done(self.project())
+            self._plant(f"pending.{ppid}.{ev._start(ppid)}", "notes.txt")
+            self.assertEqual(ev.take(self.project()), [], "the same process still holds its batch")
+            self.assertEqual(ev._start(4194999), "", "no such process: nothing to compare")
+
     def test_take_and_release_leave_no_temp_file_and_keep_other_roots(self):  # T-3277 review 2 LOW 2, 3
         p = self.project()
         lane = os.path.join(self.tmp, "lane")

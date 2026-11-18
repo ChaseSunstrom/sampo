@@ -914,6 +914,24 @@ def _prompt(card, inputs, before):
     return "\n".join(parts), None
 
 
+JSON_DEPTH = 100  # T-4993: lists and objects a model's answer may nest: the card's bound, not the interpreter's (3.12's
+# json stops near 1,000 levels; 3.14 bounds by the C stack and read 100,000 on a CI runner, whose encoder then overflowed
+# inside the call)
+FACTS_DEPTH = 500  # T-4993: the same for a read card's generator output (an AST may run deep), under 3.12's ~1,000
+
+
+def _too_deep(value, limit=JSON_DEPTH):
+    """T-4993: whether value nests lists or objects more than `limit` deep, found without recursion."""
+    todo = [(value, 1)]
+    while todo:
+        v, d = todo.pop()
+        if isinstance(v, (list, dict)):
+            if d > limit:
+                return True
+            todo.extend((x, d + 1) for x in (v.values() if isinstance(v, dict) else v))
+    return False
+
+
 def _model_step(card, inputs, before, root, reply):
     """(failed result or None, the answer's facts, {model, usage}) for a model card: ask one local model (reply stands
     in for it in a card's own test), take the first JSON object of its text, and hold it to the card's output schema."""
@@ -939,6 +957,9 @@ def _model_step(card, inputs, before, root, reply):
         value = models.extract_json(text)
         if value is None:
             return _result(name, "generator_failed", error=f"the model's reply isn't JSON: {text[:200]!r}"), None, info
+    if _too_deep(value):
+        return _result(name, "generator_failed", error=f"the model's reply nests its JSON deeper than {JSON_DEPTH} "
+                       f"levels: {text[:80]!r}"), None, info
     errors = []
     _validate(value, card["output"], "the answer", root, errors)
     if errors:
@@ -1004,8 +1025,14 @@ def _run(card, inputs, root, before, inject, inject_facts=None, inject_model=Non
             out = gen["out"] if gen else ""
             try:
                 facts = json.loads(out)
+                deep = _too_deep(facts, FACTS_DEPTH)
             except ValueError:
-                facts = out
+                facts, deep = out, False
+            except RecursionError:  # T-4993: JSON nested past the parser's own depth (3.12 near 1,000 levels)
+                deep = True
+            if deep:
+                return _result(name, "generator_failed",
+                               error=f"the generator's output nests its JSON deeper than {FACTS_DEPTH} levels")
         with open(os.path.join(card["dir"], "check.py")) as f:
             checks = f.read().strip()
         if checks:

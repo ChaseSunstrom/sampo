@@ -99,13 +99,25 @@ def queue(p, path):
     _append(f, _line(p.root, rel))
 
 
+_PROC = "/proc"  # T-4993: where the process stat files are; a host without it (macOS) asks ps
+
+
 def _start(pid):
-    """The process's start time (clock ticks since boot, /proc/PID/stat field 22); "" when it can't be read."""
+    """The process's start time: clock ticks since boot (/proc/PID/stat field 22); where there is no /proc (macOS,
+    T-4993: every start read "" there, so a reused pid held its batch for good) its start in epoch seconds from ps
+    (this process's own through core._self_ticks, read once); "" when neither can say."""
+    if pid == os.getpid():
+        got = c._self_ticks()
+        return str(got) if got else ""
     try:
-        with open(f"/proc/{pid}/stat") as f:
+        with open(os.path.join(_PROC, str(pid), "stat")) as f:
             return f.read().rpartition(")")[2].split()[19]
     except (OSError, IndexError):
+        pass
+    if os.path.isdir(_PROC):  # a /proc without the pid: it is gone
         return ""
+    got = c.ps_start(pid)
+    return str(got) if got else ""
 
 
 def _alive(pid, start=""):

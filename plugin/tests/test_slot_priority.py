@@ -1,6 +1,8 @@
 """T-4570: a waiting builder's run goes before a queued post-merge-verify class, up to a bound; and every run's record
 says how long it ran, waited and held slots, and of which kind, so who held the slots is on disk, not rebuilt."""
 import os
+import subprocess
+import sys
 import threading
 import time
 from unittest import mock
@@ -43,6 +45,26 @@ class LowYieldsToBuilders(ForemanTestCase):
         self.assertTrue(held.wait(5), "the slot was not free")
         return free
 
+    def hold_elsewhere(self):
+        """T-4993: the one pool slot, held by another process until the returned event-like's set(): a holder in this
+        process counted the waiting builder (same pid) as already holding one, so the low class saw nobody needy and
+        raced it for the freed slot (it won on a macOS runner). Another run is what holds a slot in real use."""
+        child = subprocess.Popen(
+            [sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); import run\n"
+             "with run.cpu_slot(wait=5, poll=0.01):\n    print('held', flush=True)\n    sys.stdin.read()\n",
+             os.path.dirname(os.path.abspath(run.__file__))],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+
+        class Free:
+            def set(self):
+                if child.stdin and not child.stdin.closed:
+                    child.stdin.close()
+                child.wait(30)
+        free = Free()
+        self.addCleanup(lambda: (free.set(), child.stdout.close()))
+        self.assertEqual(child.stdout.readline().strip(), "held", "the slot was not free")
+        return free
+
     def markers(self, prefix):
         return [x for x in os.listdir(self.folder) if x.startswith(prefix)]
 
@@ -56,7 +78,7 @@ class LowYieldsToBuilders(ForemanTestCase):
 
     def test_a_waiting_builder_takes_a_freed_slot_before_a_queued_low_class(self):
         for _ in range(3):  # without the yield the two poll for it and either may win: three rounds
-            free, order, lock = self.hold(), [], threading.Lock()
+            free, order, lock = self.hold_elsewhere(), [], threading.Lock()
 
             def builder():
                 with run.cpu_slot(wait=10, poll=0.01):
