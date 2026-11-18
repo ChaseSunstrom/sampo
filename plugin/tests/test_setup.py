@@ -208,6 +208,27 @@ class Install(SetupCase):
             self.run_fm("uninstall-user")
             self.assertEqual(self.load()["outputStyle"], style)
 
+    def test_an_outdated_block_is_rewritten_and_nothing_around_it_moves(self):  # T-3506
+        old = "<!-- foreman:begin -->\n# Foreman\nForeman is installed. Operating rules: x.\n<!-- foreman:end -->"
+        for tail in ("\n# after\n", "\r\n# after", "\n", ""):  # the bytes after the end marker stay as they were
+            with self.subTest(tail=tail):
+                with open(self.claude_md, "w", newline="") as f:
+                    f.write("# before\r\n\n" + old + tail)
+                self.run_fm("install-user")
+                with open(self.claude_md, newline="") as f:
+                    self.assertEqual(f.read(), "# before\r\n\n" + setup.BLOCK.rstrip("\n") + tail)
+                self.run_fm("uninstall-user")
+
+    def test_a_current_block_is_left_byte_for_byte_and_an_unclosed_one_is_not_touched(self):  # T-3506
+        for body in ("# a\n" + setup.BLOCK + "# b\n", "# a\n<!-- foreman:begin -->\nmine, never closed\n"):
+            with self.subTest(body=body):
+                with open(self.claude_md, "w", newline="") as f:
+                    f.write(body)
+                self.run_fm("install-user")
+                with open(self.claude_md, newline="") as f:
+                    self.assertEqual(f.read(), body)
+                self.run_fm("uninstall-user")
+
     def test_uninstall_on_a_bare_home_leaves_no_shell_behind(self):
         # T-0851 (newcomer walkthrough): settings.json was left as {}, an empty rules/ dir stayed, and the report read
         # "permissions.defaultMode = None"

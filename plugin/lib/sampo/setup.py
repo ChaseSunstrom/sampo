@@ -107,7 +107,7 @@ def _load(path, default):
 
 def _read(path):
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", newline="") as f:  # T-3506: CRLF stays CRLF, a rewrite touches only our block
             return f.read()
     except FileNotFoundError:
         return None
@@ -220,7 +220,13 @@ def plan_install(P):
 
     md = _read(P["claude_md"])
     new_md = md
-    if md is None or BEGIN not in md:
+    if md is not None and BEGIN in md and END in md.split(BEGIN, 1)[1]:
+        # T-3506: our own block, in any older wording ('# Foreman' included), is rewritten to the current text; only the
+        # span from the begin marker to the end marker changes, every other byte of the file stays
+        new_md = re.sub(re.escape(BEGIN) + r".*?" + re.escape(END), lambda _: BLOCK.rstrip("\n"), md, count=1, flags=re.S)
+        if new_md != md:
+            actions.append("~/.claude/CLAUDE.md: Sampo block rewritten to the current text (nothing outside it touched)")
+    elif md is None or BEGIN not in md:
         sep = "" if not md or md.endswith("\n") else "\n"
         new_md = (md or "") + sep + BLOCK
         new_m["claude_md_block"] = True
