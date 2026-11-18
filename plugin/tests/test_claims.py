@@ -4,6 +4,7 @@ holder and its task."""
 import json
 import os
 
+from helpers import read_text
 from test_bus import Base
 
 from sampo import core as c
@@ -90,6 +91,36 @@ class Claims(Base):
         from sampo import bus
         bus.release(self.project(), one)  # the lane is removed: its task's leases go with it
         self.assertEqual(len([v for v in self.fm_json("lease", "list")["leases"] if v["file"] == "a.py"]), 1)
+
+    def test_drop_releases_only_the_callers_leases_and_force_names_a_foreign_one(self):
+        # T-3371: a lane's drop took leases of tasks it couldn't see; another lane's bare drop said "Dropped 0"
+        from sampo import bus
+        self.fm("task", "new", "One", "--type", "FIX", "--tier", "S", "--ac", "x :: true", "--step", "s", "--focus", env=A)
+        self.fm("lease", "take", "a.py", env=A)
+        bus.preclaim(self.project(), self.fm_json("status")["active"]["id"], ["pre.py"])
+        self.fm("lease", "take", "b.py", env=B)
+        out = self.fm("lease", "drop", env=A).stdout
+        self.assertIn("Dropped 1 lease(s)", out, "its own take only")
+        held = self.fm("lease", "list").stdout
+        self.assertIn("b.py", held, "another session's lease stays")
+        self.assertIn("pre.py", held, "the main checkout never drops the lane's pre-claim")
+        named = self.fm("lease", "drop", "b.py", env=A)
+        self.assertIn("Dropped 0 lease(s)", named.stdout)
+        self.assertIn("--force", named.stderr)
+        self.assertIn("Dropped 1 lease(s)", self.fm("lease", "drop", "b.py", "--force", env=A).stdout)
+        self.assertIn("lease.forced_drop", read_text(os.path.join(self.project().dir, "ledger.jsonl")))
+        self.assertIn("dropped with --force", read_text(os.path.join(bus._dir(), "mail.jsonl")), "the holder is told")
+        for bad in (["drop", "--force"], ["list", "--force"], ["take", "c.py", "--force"]):
+            self.assertNotEqual(self.fm("lease", *bad, env=A, check=False).returncode, 0)
+
+    def test_a_bare_drop_with_no_active_task_keeps_a_lease_of_a_task_it_cannot_see(self):
+        from sampo import bus
+        data = bus._leases()
+        bus._claim(data, self.project(), "sess-a", "T-9999", "z.py", "*", 600)
+        bus._write_leases(data)
+        self.fm("lease", "take", "q.py", env=A)
+        self.assertIn("Dropped 1 lease(s)", self.fm("lease", "drop", env=A).stdout)
+        self.assertIn("z.py", self.fm("lease", "list").stdout)
 
     def test_dropping_a_file_releases_its_symbol_leases(self):
         self.fm("lease", "take", "a.py::f", "a.py::g", "c.py::h", env=A)

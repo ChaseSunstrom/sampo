@@ -58,6 +58,27 @@ class Lanes(ForemanTestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("lane", p.stderr)
 
+    def test_a_lanes_bare_drop_releases_its_own_leases_and_pre_claim_only(self):
+        # T-3371: lanes share the parent's session id; a lane's drop took the parent's and other lanes' leases
+        from sampo import bus
+        A = {"CLAUDE_CODE_SESSION_ID": "sess-a"}
+        main = self.new("Main work", self.repo)
+        lane = self.new("Lane work", self.lane)
+        self.fm("lease", "take", "main.py", env=A)
+        self.fm("lease", "take", "mine.py", env=A, cwd=self.lane)
+        data, p = bus._leases(), c.find_project(self.repo)
+        bus._claim(data, p, "sess-a", None, "taskless.py", "*", 600)  # the parent's, before it had a task
+        bus._claim(data, p, "lane-T-9999", "T-9999", "other.py", "*", 600)
+        bus._claim(data, p, "lane-" + lane, lane, "pre.py", "*", 600)
+        bus._write_leases(data)
+        out = self.fm("lease", "drop", env=A, cwd=self.lane).stdout
+        self.assertIn("Dropped 2 lease(s)", out)
+        held = self.fm("lease", "list").stdout
+        for f in ("main.py", "taskless.py", "other.py"):
+            self.assertIn(f, held)
+        self.assertNotIn("mine.py", held)
+        self.assertNotIn("pre.py", held)
+
     def test_two_lanes_keep_their_focus_through_each_others_focus_check_and_pause(self):  # T-3396
         self.fm("check", "add", "true")
         self.fm("sync", "on")

@@ -609,19 +609,28 @@ def cmd_lease(args):
     from sampo import cli
     p = cli.resolve(args)
     me = _sid(cli.session()) or "user"
+    forced = []
+    if args.force and not (args.action == "drop" and args.target):
+        raise cli.UsageError("--force names a lease to drop: fm lease drop FILE[::SYMBOL]... --force")
     with c.lock(_dir()):
         data = _leases()
         before = dict(data)
         briefs = c.load_briefs(p) if args.action in ("take", "drop") else []
         act = c.active_brief(briefs, p.lane) if briefs else None
-        open_ids = {b.id for b in briefs if b.status not in c.CLOSED}
+        closed_ids = {b.id for b in briefs if b.status in c.CLOSED}
 
         def mine(v):  # T-1216, T-1416: the active task's only: builder lanes share their main session's id
-            if v["project"] != p.slug or v["session"] != me:
+            if v["project"] != p.slug:
                 return False
+            if p.lane and act is not None and v["session"] == f"lane-{act.id}":  # only from the lane itself
+                return True  # T-3371: the active task's own lane pre-claims are the caller's (a lane's bare drop said "Dropped 0")
+            if v["session"] != me:
+                return False
+            if p.lane and act is not None:
+                return v.get("task") == act.id  # a lane shares its parent's session id: the parent's task-less leases stay
             if act is not None:
                 return v.get("task") in (act.id, None)
-            return v.get("task") not in open_ids  # T-2870: no active task: never another open task's lease
+            return v.get("task") is None or v["task"] in closed_ids  # T-2870, T-3371: an id this checkout can't see is another lane's
         if args.action == "drop" and not args.target:  # T-1134: bare drop releases what this session holds here
             data = {k: v for k, v in data.items() if not mine(v)}
             _write_leases(data)
@@ -652,13 +661,23 @@ def cmd_lease(args):
                 print(f"note: {t} overlaps lane pre-claim {_who(v)}; taken (pre-claims are advisory)", file=sys.stderr)
             for rel, sym in todo:
                 if args.action == "drop":  # T-1216: a file named alone drops each of its symbol leases too
-                    data = {k: v for k, v in data.items() if not (mine(v) and v["file"] == rel
-                                                                   and (sym == "*" or v["symbol"] == sym))}
+                    hit = lambda v: v["project"] == p.slug and v["file"] == rel and (sym == "*" or v["symbol"] == sym)
+                    for v in data.values():  # T-3371: another holder's lease goes only with --force
+                        if hit(v) and not mine(v):
+                            if args.force:
+                                forced.append(v)
+                            else:
+                                print(f"kept: {rel}::{v['symbol']} is held by {_who(v)} (--force drops it)", file=sys.stderr)
+                    data = {k: v for k, v in data.items() if not (hit(v) and (args.force or mine(v)))}
                 else:
                     _claim(data, p, me, act.id if act else None, rel, sym, args.minutes * 60,
                            advisory=any(not v["session"].startswith("lane-")  # T-3283: a lane's pre-claim alone isn't a hold
                                         for v in claim_overlaps(p, rel, sym, me, act, data)))
             _write_leases(data)
+    for v in forced:  # T-3371: a forced drop of another holder's lease is logged and the holder told
+        c.log_event(p, "lease.forced_drop", task=v.get("task"), data={"file": v["file"], "symbol": v["symbol"],
+                                                                        "holder": v["session"], "by": me})
+        send(v["session"], f"your lease on {v['file']}::{v['symbol']} was dropped with --force by {me}", sender=me)
     rows = [v for v in data.values() if v["project"] == p.slug]
     if args.action == "drop":  # T-1205, T-1729: what this drop released, only that (fm lease list shows the rest)
         gone = [f"{v['file']}::{v['symbol']}" for k, v in before.items() if k not in data]
