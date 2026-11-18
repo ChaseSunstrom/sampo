@@ -4001,7 +4001,7 @@ class Run:
         if self.cards_session is None:
             other = self.aide()
             self.cards_session = callcards.Session(self.root, guard=self.card_guard, escalate=(
-                lambda r: self.card_advice(other, r)) if other else None)
+                lambda r: self.card_advice(other, r)) if other else None, raises=(CodeError,))  # T-4860: the cap's stop
         return self.cards_session
 
     def aide(self):

@@ -1233,10 +1233,12 @@ def harness_enabled():
 class Session:
     """One model's use of cards in one run, which can't loop: ATTEMPTS failed calls close a card, an identical call
     after a failure closes it without running, a deterministic card closes at its first failed run, and the first card
-    to close escalates (once a session) to escalate(result), whose answer comes back as the result's advice."""
+    to close escalates (once a session) to escalate(result), whose answer comes back as the result's advice. `raises`:
+    the exception types an adviser's failure passes up through call (T-4860: smith's budget stop), every other one
+    being no advice."""
 
-    def __init__(self, root, escalate=None, cache=True, guard=None):
-        self.root, self.escalate, self.cache, self.guard = root, escalate, cache, guard
+    def __init__(self, root, escalate=None, cache=True, guard=None, raises=()):
+        self.root, self.escalate, self.cache, self.guard, self.raises = root, escalate, cache, guard, tuple(raises)
         self.fails, self.tried, self.closed, self.escalated = {}, set(), set(), False
         self.asked = 0  # model-step calls so far (MODEL_CALLS is the most)
 
@@ -1299,6 +1301,8 @@ class Session:
             self.escalated = r["escalated"] = True
             try:
                 advice = self.escalate(r)
+            except self.raises:  # the caller's own stop (its budget cap): the run sees it here, not at a later call
+                raise
             except Exception:  # an adviser that fails changes nothing: the run carries on with plain tools
                 advice = None
             if advice:

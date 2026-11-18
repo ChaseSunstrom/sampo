@@ -274,6 +274,25 @@ class Dispatch(CodeCase):  # T-4837: what a card call does to the run around it
         with self.assertRaises(smith.CodeError):
             self.run_object(capped).act("card", {"name": "pick-function", "inputs": {}})
 
+    def test_a_spent_cap_when_a_card_closes_stops_the_run_with_the_cap_s_own_message(self):
+        # T-4860: the card's escalation asks the adviser, whose first act is the cap check: its CodeError is the run's
+        # stop, not swallowed as "no advice" to surface later from some other call
+        import types
+        from unittest import mock
+        from sampo import callcards, smith
+        run = smith.Run(types.SimpleNamespace(), self.repo, self.tmp)
+        run.emit = lambda *a, **k: None
+        run.max_usd, run.usd, run.tid, run.request = 1.0, 2.5, None, "fix add"
+        failed = lambda name, inputs, root, **kw: callcards._result(name, "checker_failed", error="still red")
+        with mock.patch.object(run, "aide", return_value={"kind": "openai"}), \
+                mock.patch.object(callcards, "call", failed), \
+                mock.patch.object(callcards, "cards", return_value=({}, [])):
+            s = run.session()
+            for i in range(callcards.ATTEMPTS - 1):
+                self.assertEqual(s.call("pick-function", {"try": i})["status"], "checker_failed")
+            with self.assertRaisesRegex(smith.CodeError, r"spent \$2\.50 of its \$1 cap .* before card was done"):
+                s.call("pick-function", {"try": "last"})
+
     def test_a_model_cards_tokens_are_charged_to_the_run_even_when_its_answer_failed(self):
         from sampo import callcards
         good = callcards._result("pick-function", "facts", facts={"name": "add"}, usage={"in": 10, "out": 5}, model="m")

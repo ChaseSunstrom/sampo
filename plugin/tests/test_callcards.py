@@ -602,6 +602,28 @@ class Calls(Base):
         self.assertEqual(s.call("shout", {"path": "a.txt", "note": "again"})["status"], "closed")
         self.assertEqual(len(asked), 1)
 
+    def test_an_adviser_raising_the_session_s_raises_type_ends_the_call_and_any_other_failure_gives_no_advice(self):
+        # T-4860: the escalate adviser's own stop (smith's budget cap) is the run's to see, not "no advice"
+        class Stop(Exception):
+            pass
+
+        def stop(r):
+            raise Stop("the cap is spent")
+
+        def broke(r):
+            raise ValueError("the adviser broke")
+        self.card("shout", check=FAIL, deterministic=True)
+        s = callcards.Session(self.repo, escalate=stop, raises=(Stop,))
+        with self.assertRaisesRegex(Stop, "the cap is spent"):
+            s.call("shout", {"path": "a.txt"})
+        self.assertIn("shout", s.closed, "the card closed before the stop went up")
+        s = callcards.Session(self.repo, escalate=broke, raises=(Stop,))
+        r = s.call("shout", {"path": "a.txt"})
+        self.assertEqual((r["status"], r.get("advice")), ("checker_failed", None), "another failure is no advice")
+        self.assertTrue(r["escalated"])
+        s = callcards.Session(self.repo, escalate=stop)  # no raises given: every adviser failure is no advice
+        self.assertIsNone(s.call("shout", {"path": "a.txt"}).get("advice"))
+
     def test_a_pass_resets_nothing_and_other_cards_are_untouched(self):
         self.card("shout", check=FAIL)
         self.card("measure", gen=FACTS, check="", read=True)
