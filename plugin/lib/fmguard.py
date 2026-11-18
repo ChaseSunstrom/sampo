@@ -295,7 +295,9 @@ def _hint(detail, cat=""):
     if detail.endswith(_DEEP):  # T-1931
         return (" Flatten the script's nested bash -c / eval layers (run the inner command itself), so the guard "
                 "reads all of it.")
-    if detail.endswith("the script was too long to parse in time)"):
+    read_budget = (detail.endswith("run its steps as separate commands")  # T-4925: the read-budget refusal, the same way out
+                   and "the script was too long to read in time (" in detail)
+    if detail.endswith("the script was too long to parse in time)") or read_budget:
         return " Run a shorter script (split it, or run the part you need directly): a shorter one is read in full."
     if detail.startswith("sed -f/--file"):  # T-1932
         return " Pass the sed commands with -e (the guard reads them), or make the change with the Edit tool."
@@ -8784,6 +8786,7 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False, given=None):
         _TEXTS.clear()
         _DEPS.clear()
     _IN_SCRIPT.append(1)
+    t0 = time.process_time()  # T-4925: the CPU the reads spend, for the refusal's text
     old, live = None, [False]
     try:
         text, why, got = _script_text(script, cwd, shebang=kind == "exec", data=data, assume_x=assume_x)
@@ -8879,7 +8882,12 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False, given=None):
                       "owns, in directories you cannot write: allowed unread, like a binary")
         elif too_long:  # the literal scan above cannot judge what it never reached: not an allow, whatever the text holds
             unread = f"refused: read past its {_script_budget():g} s, then {_script_hard():g} s budget"
-            found.append(("system", f"{p}: the script was too long to read in time ({_script_budget():g} s, then "
+            # T-4925: the file's size (a bigger one is refused before any read), and the CPU the two reads spent
+            size = len(data)
+            lines = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
+            spent = time.process_time() - t0
+            found.append(("system", f"{p}: the script was too long to read in time ({size} bytes, {lines} lines; "
+                                    f"{spent:.2f} s CPU spent against the budgets {_script_budget():g} s, then "
                                     f"{_script_hard():g} s), so it, or a script it runs, was not read to the end: split it "
                                     "into smaller scripts or run its steps as separate commands"))
     finally:
