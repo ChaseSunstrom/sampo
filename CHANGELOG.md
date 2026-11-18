@@ -11,6 +11,8 @@
 
 ### Everything else
 
+- The docs skills now give READMEs a scannable shape (short sections, lists and tables, a quick start first), and sampo readme check names each wall of text by line (T-4910).
+- The Ward knows Sampo's writers from the code instead of a hand list: an index of every module's functions, names and classes (a writer reaches a file write or a process start), cached per tree, so a writer the list missed (set_panic, lift_project_pauses, set_standing_autonomy, a module-level alias of os.replace) is refused through every import form (T-4906).
 - sampo check --affected in a lane whose task has no start commit picks its tests from where the lane left the main checkout's branch, not HEAD, which counted nothing as changed (T-4908).
 - Worktree agents' evidence runs: --run-file judges and runs the same script bytes, --ac N notes only the verify forms the harness refuses, the passing shapes reach worktree subagents only, and lane stats counts the isolation refusals (T-4139).
 - The ambient test replay now rules each edited file keep, neutral or harmful at the edit, keeps a per-file ledger, names harmful files in the flip note, and `sampo check ambient edits` lists the last ruling per file (T-3277).
