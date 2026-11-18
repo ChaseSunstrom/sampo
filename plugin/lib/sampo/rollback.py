@@ -91,10 +91,9 @@ def snapshot_upgrade(old):
 
 def _failed(old, err):
     try:
-        os.makedirs(os.path.join(c.state_dir(), "logs"), exist_ok=True)
-        with open(os.path.join(c.state_dir(), "logs", "hooks.log"), "a", encoding="utf-8") as f:
-            f.write(f"{c.now()} snapshot_failed {old}: {c.redact(str(err))}\n")
-    except OSError:
+        from sampo import hooks  # T-3431: rotation and repeat collapse; lazy, the failure path only
+        hooks.log_error("snapshot_failed", f"{old}: {err}")
+    except Exception:
         pass
 
 

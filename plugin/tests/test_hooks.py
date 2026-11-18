@@ -149,6 +149,47 @@ class LogErrorCap(ForemanTestCase):  # T-3423
         self.assertEqual(len(doctor.recent_hook_errors()), 2)
 
 
+class LogErrorCallers(ForemanTestCase):  # T-3431: the fail-open loggers share log_error's rotation and collapse
+    def _lines(self):
+        from sampo import core as c
+        try:
+            with open(os.path.join(c.state_dir(), "logs", "hooks.log")) as f:
+                return f.read().splitlines()
+        except OSError:
+            return []
+
+    def test_each_fail_open_logger_writes_one_event_line_and_collapses_a_repeat(self):
+        from unittest import mock
+        from sampo import miss, toolproof, grants, incident, rollback
+        boom = mock.Mock(side_effect=lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))  # a fresh error per call
+        cases = [("fmmiss.gaps", miss, "gaps", lambda: miss.safe_gaps("p", "b")),
+                 ("fmtoolproof.gaps", toolproof, "gaps", lambda: toolproof.safe_gaps("p", "b")),
+                 ("fmgrants.secret_gaps", grants, "secret_gaps", lambda: grants.safe_secret_gaps("p", "b")),
+                 ("fmincident.gaps", incident, "gaps", lambda: incident.safe_gaps("p", "b"))]
+        for event, mod, name, call in cases:
+            before = len(self._lines())
+            with mock.patch.object(mod, name, boom):
+                for _ in range(2):  # the same traceback inside a minute: not appended again
+                    call()
+            new = [ln for ln in self._lines()[before:] if f" {event} " in ln]
+            self.assertEqual(len(new), 1, "\n".join(self._lines()[before:]))
+            self.assertRegex(new[0], r"^\S+ " + event + " Traceback")
+        before = len(self._lines())
+        rollback._failed("abc", "oops")
+        rollback._failed("abc", "oops")
+        new = self._lines()[before:]
+        self.assertEqual(len(new), 1)
+        self.assertRegex(new[0], r"^\S+ snapshot_failed abc: oops$")
+
+
+    def test_alternating_errors_collapse(self):  # A,B,A,B inside a minute is logged once each
+        from sampo import hooks
+        for _ in range(2):
+            hooks.log_error("Ev", "A")
+            hooks.log_error("Ev", "B")
+        self.assertEqual(len([ln for ln in self._lines() if " Ev " in ln]), 2)
+
+
 class BatchNoteOnce(ForemanTestCase):
     def test_the_third_edit_note_is_said_in_full_once_a_session(self):
         # T-2108: the full fm edit paragraph came back for every file and after every compaction

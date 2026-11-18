@@ -425,7 +425,7 @@ HOOKS_LOG_DEDUP_S = 60
 
 def log_error(event, text):
     """T-3423: one os.stat rotates at HOOKS_LOG_MAX (rename is atomic; a racing appender may lose a line); an identical
-    event+text within a minute of the last identical one isn't appended (sidecar hooks.log.last: "<epoch> <digest>")."""
+    event+text within a minute of one of the last 8 distinct lines isn't appended (sidecar hooks.log.last: "<epoch> <digest>" per line)."""
     busy = sys.exc_info()[1]
     if isinstance(busy, c.LockTimeout):  # T-3535: a busy lock is contention, not a failure: one rolled-up count
         return _lock_busy(event, busy)
@@ -434,15 +434,23 @@ def log_error(event, text):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         line = f"{event} {c.redact(text).rstrip()}\n"
         now, digest = time.time(), c.sha1(line.encode()).hexdigest()
+        seen = []  # the last 8 (epoch, digest) pairs still inside the window, one per sidecar line
         try:
             with open(path + ".last") as f:
-                last = f.read().split()
-            if last[1] == digest and now - float(last[0]) < HOOKS_LOG_DEDUP_S:
-                return
-        except (OSError, IndexError, ValueError):
+                for ln in f.read().splitlines():
+                    try:
+                        t, d = ln.split()
+                        if now - float(t) < HOOKS_LOG_DEDUP_S:
+                            seen.append((t, d))
+                    except ValueError:
+                        pass
+        except OSError:
             pass
-        with open(path + ".last", "w") as f:  # ponytail: only the last line is remembered; A,B,A,B isn't collapsed
-            f.write(f"{now:.0f} {digest}")
+        if any(d == digest for _, d in seen):
+            return
+        seen = (seen + [(f"{now:.0f}", digest)])[-8:]
+        with open(path + ".last", "w") as f:
+            f.write("".join(f"{t} {d}\n" for t, d in seen))
         try:
             if os.stat(path).st_size > HOOKS_LOG_MAX:
                 os.replace(path, path + ".1")

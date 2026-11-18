@@ -238,9 +238,8 @@ def safe_secret_gaps(p, b):
     except Exception:
         import traceback
         try:
-            path = os.path.join(c.state_dir(), "logs", "hooks.log")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            c.append_line(path, f"{c.now()} fmgrants.secret_gaps {c.redact(traceback.format_exc()).rstrip()}\n")
-        except OSError:
+            from sampo import hooks  # T-3431: rotation and repeat collapse; lazy, the failure path only
+            hooks.log_error("fmgrants.secret_gaps", traceback.format_exc())
+        except Exception:
             pass
         return []
