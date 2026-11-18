@@ -9277,8 +9277,9 @@ def _build_parser(only=None):
     s.add_argument("--out", help="folder for the case (default: the project's state evals/)")
     s = add("bus", lazy("sampo.bus", "cmd_bus"), tier=("Running elsewhere", 1290), help="messages between sessions on this machine: send to one or all, read "
                                                   "yours (T-0708)")
-    s.add_argument("action", choices=["send", "read", "watch"],
-                   help="watch: the plugin monitor's stream of this session's new mail (T-0777)")
+    s.add_argument("action", choices=["send", "read", "watch", "receipt"],
+                   help="watch: the plugin monitor's stream of this session's new mail (T-0777); "
+                        "receipt: whether the notes you sent were shown (T-3950)")
     s.add_argument("words", nargs="*")
     s.add_argument("--type", default="note", choices=["note", "steer", "stop"])
     s.add_argument("--wake", action="store_true",
@@ -9287,7 +9288,8 @@ def _build_parser(only=None):
             help="after a restart nobody announced: restart the interrupted lands, trains and runs with their own arguments, "
                  "abort a half-done merge, drop old locks and leases, snapshot dead builders' lanes (T-3928)")
     s = add("lease", lazy("sampo.bus", "cmd_lease"), tier=("Running elsewhere", 1300), help="function-level edit leases between sessions (T-0708)")
-    s.add_argument("action", nargs="?", default="list", choices=["list", "take", "drop"])
+    s.add_argument("action", nargs="?", default="list", choices=["list", "take", "drop", "stats"],
+                   help="stats: lease blocks, resolved without the main thread, median minutes (T-3950)")
     s.add_argument("target", nargs="*", help="FILE[::SYMBOL]...")
     s.add_argument("--minutes", type=float, default=20)
     s.add_argument("--warn", action="store_true", help="take a claim that overlaps another session's, with a warning")

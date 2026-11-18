@@ -551,8 +551,99 @@ def release(p, task_id, preclaim=True):
         lane = lambda v: v["session"] == f"lane-{task_id}"  # its pre-claim is tagged with the task too
         keep = {k: v for k, v in data.items() if v.get("project") != p.slug
                 or (lane(v) and not preclaim) or (not lane(v) and v.get("task") != task_id)}
-        if len(keep) != len(data):
+        gone = [v for k, v in data.items() if k not in keep]
+        if gone:
             _write_leases(keep)
+    _resolved(p, [v for v in gone if v["project"] == p.slug and not v["session"].startswith("lane-")])  # T-3950
+
+
+NOTE_EVERY_S = 600  # T-3950: one lease-block note per sender and holder in this long
+BLOCK_NOTE = "Sampo lease note: session "
+
+
+def _mail():
+    try:
+        with open(os.path.join(_dir(), "mail.jsonl")) as f:
+            return [m for m in (json.loads(x) for x in f if x.strip()) if isinstance(m, dict)]
+    except (OSError, ValueError):
+        return []
+
+
+def _tell_holder(p, sender, v, what, now=None):
+    """T-3950: tell the lease holder a session was denied its file, as a bus note its next tool call shows. At most one
+    per sender and holder in NOTE_EVERY_S (a retrying edit isn't a stream of mail). The sent message, or None."""
+    sender, holder, now = _sid(sender), v["session"], time.time() if now is None else now
+    if not sender or sender == holder or holder.startswith("lane-"):
+        return None
+    for m in reversed(_mail()):
+        if now - m.get("t", 0) >= NOTE_EVERY_S:
+            break  # mail is in time order: older ones are outside the window
+        if m.get("from") == sender and m.get("to") == holder and str(m.get("text", "")).startswith(BLOCK_NOTE):
+            return None
+    return send(holder, f"{BLOCK_NOTE}{_sh(sender)} was denied {what}, which you hold. Tell it when you are done "
+                        f"(fm bus send {_sh(sender)} \"<text>\") or drop it: fm lease drop {what.partition('::')[0]}.",
+                "note", sender)
+
+
+def read_receipt(to, t):
+    """T-3950: whether session `to` has been shown mail sent at time t (its seen mark passed it)."""
+    try:
+        with open(os.path.join(_dir(), f"seen-{_sid(to)}")) as f:
+            return float(f.read().strip() or 0) >= t
+    except (OSError, ValueError):
+        return False
+
+
+def _minutes(a, b):
+    ta, tb = c.parse_ts(a), c.parse_ts(b)
+    return max(0.0, (tb - ta).total_seconds() / 60) if ta and tb else None
+
+
+def lease_stats(events, mail):
+    """T-3950: the A/B for lease blocks, from lease_block and lease_resolved events (oldest first) and the mail kept:
+    blocks (a retry of one block counts once), those resolved, those resolved with no steer from outside the two
+    sessions between (the main thread or the user: no lane waited on it), and the median minutes to resolve (n)."""
+    blocks, resolved = [], [e for e in events if e.get("event") == "lease_resolved"]
+    open_ = {}
+    for e in events:
+        d = e.get("data") or {}
+        if e.get("event") == "lease_block":
+            k = (e.get("session_id"), d.get("holder"), d.get("what"))
+            if k not in open_:
+                open_[k] = e
+                blocks.append(e)
+        elif e.get("event") == "lease_resolved":
+            for k in [k for k in open_ if k[1:] == (d.get("holder"), d.get("what"))]:
+                del open_[k]  # the next block on it is a new one
+    mins, free = [], 0
+    for b in blocks:
+        d = b.get("data") or {}
+        r = next((x for x in resolved if (x.get("data") or {}).get("holder") == d.get("holder")
+                  and (x.get("data") or {}).get("what") == d.get("what") and x["ts"] >= b["ts"]), None)
+        m = _minutes(b["ts"], r["ts"]) if r else None
+        if m is None:
+            continue
+        mins.append(m)
+        t0, t1 = c.parse_ts(b["ts"]).timestamp(), c.parse_ts(r["ts"]).timestamp()
+        pair = {b.get("session_id"), d.get("holder")}
+        if not any(t0 <= x.get("t", 0) <= t1 and x.get("from") not in pair and (x.get("to") in pair or x.get("to") == "all")
+                   for x in mail):
+            free += 1
+    mins.sort()
+    mid = (mins[(len(mins) - 1) // 2] + mins[len(mins) // 2]) / 2 if mins else None
+    return {"blocks": len(blocks), "resolved": len(mins), "without_main": free, "median_minutes": mid, "n": len(mins)}
+
+
+def _resolved(p, gone):
+    """T-3950: leases that were released: for each a recent block was recorded on, a lease_resolved event."""
+    if not gone:
+        return
+    blocked = {((e.get("data") or {}).get("holder"), (e.get("data") or {}).get("what"))
+               for e in c.ledger_events(p, kinds=["lease_block"], since=c.iso(time.time() - 86400))}
+    for v in gone:
+        what = v["file"] if v["symbol"] == "*" else f"{v['file']}::{v['symbol']}"
+        if (v["session"], what) in blocked:
+            c.log_event(p, "lease_resolved", data={"holder": v["session"], "what": what}, session=v["session"])
 
 
 def conflict(pl, p, path):
@@ -576,6 +667,13 @@ def conflict(pl, p, path):
         if hit:
             left = int((v["until"] - time.time()) // 60) + 1
             what = rel if v["symbol"] == "*" else f"{rel}::{v['symbol']}"
+            if sid:  # T-3950: the holder learns it blocks someone, once per pair per 10 min
+                try:
+                    told = _tell_holder(p, sid, v, what)
+                    c.log_event(p, "lease_block", data={"holder": v["session"], "what": what, "note_sent": bool(told)},
+                                session=sid)
+                except Exception:  # noqa: BLE001
+                    pass  # the denial stands whatever the note does: a LockTimeout (not an OSError) would let the edit through
             return (f"Sampo lease: {what} is leased by {_who(v)} for {left} more min, which is editing it now. "
                     f"Work elsewhere meanwhile, or ask it: fm bus send {_sh(v['session'])} \"<what you need>\".")
     return None
@@ -601,6 +699,12 @@ def cmd_bus(args):
             signal.signal(s, lambda *_: sys.exit(0))
         watch(args.words[0] if args.words else None)
         return 0
+    if args.action == "receipt":  # T-3950: for the notes this session sent, whether each was shown to its addressee
+        rows = [dict(to=m["to"], ts=m["ts"], text=m["text"], read=read_receipt(m["to"], m["t"]))
+                for m in _mail() if _sid(me) and m.get("from") == _sid(me) and m.get("to") != "all"][-8:]
+        return cli.out(args, {"receipts": rows}, "\n".join(
+            f"{r['ts'][11:16]} to {r['to'][:8]}: {'read' if r['read'] else 'unread'}: {c.fit(r['text'], 70)}"
+            for r in rows) or "No notes sent.")
     msgs = unread(me or (args.words[0] if args.words else ""), mark=True)
     return cli.out(args, {"messages": msgs}, render(msgs) if msgs else "No unread mail.")
 
@@ -608,6 +712,13 @@ def cmd_bus(args):
 def cmd_lease(args):
     from sampo import cli
     p = cli.resolve(args)
+    if args.action == "stats":  # T-3950: the A/B for lease blocks, from the ledger's lease events and the mail kept
+        r = lease_stats(c.ledger_events(p, kinds=["lease_block", "lease_resolved"]), _mail())
+        mid = r["median_minutes"]
+        return cli.out(args, r, f"{r['blocks']} block(s) on a lease; {r['resolved']} resolved, "
+                                f"{r['without_main']} of them without the main thread; median "
+                                + (f"{mid:.1f} min to resolve" if mid is not None else "n/a") + f" (n={r['n']}). "
+                                "Blocks whose lease expired or is still held count as unresolved: expiries aren't logged.")
     me = _sid(cli.session()) or "user"
     forced = []
     if args.force and not (args.action == "drop" and args.target):
@@ -681,6 +792,7 @@ def cmd_lease(args):
     rows = [v for v in data.values() if v["project"] == p.slug]
     if args.action == "drop":  # T-1205, T-1729: what this drop released, only that (fm lease list shows the rest)
         gone = [f"{v['file']}::{v['symbol']}" for k, v in before.items() if k not in data]
+        _resolved(p, [v for k, v in before.items() if k not in data])  # T-3950
         # T-1731 review: a lane's pre-claims are held under lane-<ID>, not this session: say they stay
         lane = sum(1 for v in rows if act and v.get("task") == act.id and v["session"] != me) if not args.target else 0
         return cli.out(args, {"leases": rows, "dropped": len(gone), "released": gone, "lane_claims": lane},

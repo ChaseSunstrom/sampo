@@ -2,6 +2,7 @@
 lease the functions they edit, and one conductor lists and steers them all."""
 import json
 import os
+import time
 
 from test_hooks import HookCase, parse
 
@@ -258,6 +259,102 @@ class Lease(Base):
         _, out = self.note("sess-a", "Edit", {"file_path": path, "old_string": "a = x + 2", "new_string": "a = x"})
         self.assertNotEqual(out.get("permissionDecision"), "deny", "the holder edits on")
         self.assertIn("mod.py", self.fm("lease", "list").stdout)
+
+    def deny_b(self, path):
+        return self.note("sess-b", "Edit", {"file_path": path, "old_string": "a = x + 2", "new_string": "a = x"})
+
+    def lease_a(self):
+        path = os.path.join(self.repo, "mod.py")
+        with open(path, "w") as f:
+            f.write(MOD.replace("x + 1", "x + 2"))
+        self.hook("PostToolUse", {"tool_name": "Edit", "session_id": "sess-a", "tool_response": {},
+                                  "tool_input": {"file_path": path, "old_string": "x + 1", "new_string": "x + 2"}})
+        return path
+
+    def test_a_denied_edit_tells_the_holder_once_and_the_sender_sees_it_read(self):  # T-3950
+        path = self.lease_a()
+        _, out = self.deny_b(path)
+        self.assertEqual(out.get("permissionDecision"), "deny")
+        mail = bus.unread("sess-a", mark=False)
+        self.assertEqual(len(mail), 1)
+        self.assertEqual(mail[0]["from"], "sess-b")
+        self.assertIn("sess-b", mail[0]["text"])
+        self.assertIn("mod.py::f", mail[0]["text"])
+        self.deny_b(path)
+        self.assertEqual(len(bus.unread("sess-a", mark=False)), 1, "a second denial inside 10 minutes sends none")
+        self.assertFalse(bus.read_receipt("sess-a", mail[0]["t"]), "not read yet")
+        self.assertIn("unread", self.fm("bus", "receipt", env={"CLAUDE_CODE_SESSION_ID": "sess-b"}).stdout)
+        ctx = self.note("sess-a")[1].get("additionalContext", "")  # the holder's next tool call shows it, once
+        self.assertIn("mod.py::f", ctx)
+        self.assertNotIn("mod.py::f", self.note("sess-a")[1].get("additionalContext", ""))
+        self.assertTrue(bus.read_receipt("sess-a", mail[0]["t"]))
+        self.assertIn("read", self.fm("bus", "receipt", env={"CLAUDE_CODE_SESSION_ID": "sess-b"}).stdout)
+        self.assertNotIn("unread", self.fm("bus", "receipt", env={"CLAUDE_CODE_SESSION_ID": "sess-b"}).stdout)
+
+    def test_a_note_that_cannot_be_sent_never_lifts_the_denial(self):  # T-3950 review
+        path = self.lease_a()
+        pl = {"tool_name": "Edit", "session_id": "sess-b",
+              "tool_input": {"file_path": path, "old_string": "a = x + 2", "new_string": "a = x"}}
+
+        def locked(*a, **k):
+            raise c.LockTimeout("mail lock busy")
+        real, bus.send = bus.send, locked
+        try:
+            why = bus.conflict(pl, self.project(), path)
+        finally:
+            bus.send = real
+        self.assertIn("leased", why or "")
+
+    def test_releasing_a_task_logs_its_blocking_lease_resolved(self):  # T-3950 review
+        path = self.lease_a()
+        self.deny_b(path)
+        task = next(iter(bus._leases().values()))["task"]
+        bus.release(self.project(), task)
+        kinds = [e["event"] for e in c.ledger_events(self.project(), kinds=["lease_block", "lease_resolved"])]
+        self.assertEqual(kinds, ["lease_block", "lease_resolved"])
+
+    def test_lease_stats_says_expired_leases_are_not_counted(self):  # T-3950 review
+        self.assertIn("expired", self.fm("lease", "stats").stdout)
+
+    def test_the_note_comes_again_after_ten_minutes_and_each_pair_has_its_own_limit(self):  # T-3950
+        self.lease_a()
+        p = self.project()
+        v = next(iter(bus._leases().values()))
+        t0 = time.time()  # the mail stamps real time, so the window is measured from it
+        self.assertTrue(bus._tell_holder(p, "sess-b", v, "mod.py::f", now=t0))
+        self.assertFalse(bus._tell_holder(p, "sess-b", v, "mod.py::f", now=t0 + 590))
+        self.assertTrue(bus._tell_holder(p, "sess-c", v, "mod.py::f", now=t0 + 590), "another pair")
+        self.assertTrue(bus._tell_holder(p, "sess-b", v, "mod.py::f", now=t0 + 620))
+        self.assertFalse(bus._tell_holder(p, "", v, "mod.py::f"), "no sender: nobody to name")
+
+    def test_a_lease_stats_counts_blocks_resolved_without_the_main_thread_and_minutes(self):  # T-3950
+        def ev(t, event, holder="sess-a", what="mod.py::f", sender="sess-b"):
+            return {"ts": c.iso(t), "event": event, "session_id": sender, "data": {"holder": holder, "what": what}}
+
+        def mail(t, frm, to, kind="note"):
+            return {"t": t, "from": frm, "to": to, "type": kind, "text": "x"}
+        events = [ev(1000, "lease_block"), ev(1000 + 300, "lease_resolved", sender="sess-a"),  # 5 min, alone
+                  ev(5000, "lease_block", what="g.py::*"), ev(5000 + 900, "lease_resolved", what="g.py::*", sender="sess-a"),
+                  ev(9000, "lease_block", what="h.py::*")]  # never resolved
+        steer = [mail(5100, "user", "sess-b", "steer")]  # the main thread stepped in on the second
+        r = bus.lease_stats(events, steer)
+        self.assertEqual((r["blocks"], r["resolved"], r["without_main"], r["n"]), (3, 2, 1, 2))
+        self.assertEqual(r["median_minutes"], 10.0)
+        r = bus.lease_stats(events, [mail(5100, "sess-a", "sess-b")])  # the holder's own reply is not the main thread
+        self.assertEqual(r["without_main"], 2)
+        self.assertEqual(bus.lease_stats([], [])["median_minutes"], None)
+
+    def test_dropping_a_blocking_lease_logs_it_resolved_and_the_verb_prints_the_numbers(self):  # T-3950
+        path = self.lease_a()
+        self.deny_b(path)
+        a = {"CLAUDE_CODE_SESSION_ID": "sess-a"}
+        self.fm("lease", "drop", env=a)
+        kinds = [e["event"] for e in c.ledger_events(self.project(), kinds=["lease_block", "lease_resolved"])]
+        self.assertEqual(kinds, ["lease_block", "lease_resolved"])
+        out = json.loads(self.fm("lease", "stats", "--json").stdout)
+        self.assertEqual((out["blocks"], out["resolved"], out["without_main"], out["n"]), (1, 1, 1, 1))
+        self.assertIn("1 block", self.fm("lease", "stats").stdout)
+        self.assertIn("median", self.fm("lease", "stats").stdout)
 
     def test_drop_confirms_what_it_dropped_and_lists_no_other_lease(self):
         # T-1729: a drop printed another session's lease line as its result, not the caller's own drop
