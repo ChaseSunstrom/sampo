@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo task focus ID` now names `sampo focus ID` instead of a bare unknown-verb error (T-4933).
 - sampo lane brief checks the files a brief names against the builder's base: a file only an open task's unlanded branch adds refuses the brief with that task and the depends_on to add, and a path no branch has is listed in the brief as one to create (T-4928).
 - The guard's refusal of a script too long to read now names its bytes, lines and the CPU seconds the reads spent, and gets the shorter-script hint (T-4925).
 - `sampo task show ID --full` prints the brief and its story in one call (T-4924).
