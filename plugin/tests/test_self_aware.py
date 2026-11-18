@@ -16,10 +16,33 @@ MISSES = [
               "don't need to point them out"),
 ]
 NOT_MISSES = ["and also have UI examples of each of the UI cards used and such?", "thanks", "Thanks!",
-              "add a dark theme to the settings page"]
+              "add a dark theme to the settings page", "keep it to no more than 5 retries",
+              "there's only 1 failing test left"]
+
+
+CLOSED = ["there's only 26 tower ideas, but how come there's not more than that?", "we might want more than this",
+          "why only 12 cards?", "there’s only 26 tower ideas, but how come there’s not more than that?",
+          "why is there only one tower?", "only a few ideas, why?", "why so few"]
 
 
 class Classify(ForemanTestCase):
+    def test_closed_set_steers_get_the_closed_class(self):
+        from sampo import selfaware
+        self.assertIn("closed", selfaware.CLASSES)
+        for text in CLOSED:
+            self.assertEqual(selfaware.classify(text), "closed", text)
+
+    def test_a_long_one_line_paste_is_classified_fast(self):
+        """T-3327 review: the closed pattern's lookahead re-scanned the line from every start, so a big one-line paste
+        (minified JSON) cost its length squared in the prompt hook; only the message's start is read now."""
+        import time
+        from sampo import selfaware
+        blob = '{"k": "' + "x " * 30000 + '"}'  # 60 KB, one line, no trigger word
+        started = time.monotonic()
+        self.assertIsNone(selfaware.classify(blob))
+        self.assertLess(time.monotonic() - started, 1.0)
+        self.assertEqual(selfaware.classify("why only 12 cards? " + "x " * 30000), "closed")  # a steer at the start still counts
+
     def test_each_of_tonights_six_gets_its_class_and_requests_and_thanks_get_none(self):
         from sampo import selfaware
         for cls, text in MISSES:

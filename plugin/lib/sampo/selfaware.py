@@ -10,7 +10,7 @@ import re
 
 from sampo import core as c
 
-CLASSES = ("stalled", "unfiled", "unmeasured", "invisible", "unreachable", "unused", "dead", "unbuilt", "other")
+CLASSES = ("stalled", "unfiled", "unmeasured", "invisible", "unreachable", "unused", "dead", "unbuilt", "closed", "other")
 # first match wins; each row is (class, pattern) seeded from the user's own pointing-out messages
 PATTERNS = [
     ("stalled", r"\bwhy (is|isn'?t|are|aren'?t|hasn'?t|haven'?t|was|wasn'?t)\b.*\b(done|finished|ready|built|complete|yet)\b"),
@@ -24,6 +24,11 @@ PATTERNS = [
     ("unreachable", r"\bwhy (can'?t|couldn'?t|won'?t|doesn'?t|don'?t) (you|we|it|sampo)\b"),
     ("dead", r"\b(is|are|was) (it|that|this|the (job|run|task|build|lane|agent)s?)\b.*\b(stuck|hung|dead|frozen|still running)\b"),
     ("dead", r"\bnothing (is )?(happening|moving|running)\b"),
+    ("closed", r"\bwe (might|may|could) want more than\b|\bhow come there'?s not more\b|\bwhy so few\b"
+               r"|\bnot more than (that|this)\b"),
+    # a bare "only N" is a statement or a limit; it counts as a miss only in a question or complaint
+    ("closed", r"(?=.*(\bwhy\b|\bhow come\b|\?|\bbut\b)).*\b(only|just) (\d+|one|two|three|four|five|six|seven|eight|nine"
+               r"|ten|eleven|twelve|a few|a handful)\b"),
     # T-3931: asks phrased as a request or a question about a capability (2026-11-08's seven)
     ("unbuilt", r"\bmake\b.{0,40}\ba feature\b|\bif it isn'?t already\b|\bif i don'?t say (anything|so)\b"
                 r"|\bwould it be (good|better|worth|useful|nice)\b.*\bto have\b"),
@@ -34,6 +39,7 @@ PATTERNS = [
              r"|\byou (missed|forgot|should have|didn'?t notice)\b|\bwhy\b.{0,40}\bmissed\b"),
 ]
 _PATTERNS = [(k, re.compile(p, re.I)) for k, p in PATTERNS]
+SCAN_CHARS = 2000  # T-3327 review: the patterns read a message's start only (a steer is short; a 50 KB one-line paste stalled the prompt hook)
 _SWEEPABLE = re.compile(r"\?\s*$|\byou\b", re.I)  # a question or one aimed at Sampo; the rest is a request or chat
 _THANKS = re.compile(r"^\W*(thanks?|thank you|thx|ty|great|nice|ok(ay)?|cool|perfect|yes|no)\W*$", re.I)
 MAX_TEXT = 300
@@ -42,11 +48,12 @@ MAX_TEXT = 300
 def classify(text, ask=None):
     """The miss class of a message, or None. Patterns first; `ask(text)` (a model's one-word answer) only when none
     matched and the message could be aimed at Sampo; an answer outside CLASSES counts as no miss."""
-    text = (text or "").strip()
+    text = (text or "").replace("’", "'").strip()
     if not text or _THANKS.match(text):
         return None
+    head = text[:SCAN_CHARS]  # a pasted blob is no complaint, and the lookahead patterns cost its length squared
     for cls, rx in _PATTERNS:
-        if rx.search(text):
+        if rx.search(head):
             return cls
     if ask and _SWEEPABLE.search(text):
         got = str(ask(text) or "").strip().lower().strip(".")
