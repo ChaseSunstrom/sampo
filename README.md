@@ -653,7 +653,7 @@ The app never talks to a server: it runs `sampo … --json` on this machine, and
 
 ### Smith: any model, Sampo's loop
 
-`sampo smith "make calc.add add"` runs Sampo's loop without Claude Code, on whatever model you have: a local server (Ollama, LM Studio, llama.cpp, vLLM), a profile in `$FOREMAN_HOME/models.json`, or a cloud whose API key is set (`sampo smith models` lists them).
+`sampo smith "make calc.add add"` runs Sampo's loop without Claude Code, on whatever model you have: a local server (Ollama, LM Studio, llama.cpp, vLLM), a profile in `$SAMPO_HOME/models.json`, or a cloud whose API key is set (`sampo smith models` lists them).
 
 Or it hands each step to a coding CLI you already have: claude, codex, gemini or aider.
 
@@ -696,11 +696,11 @@ Real runs of each kind are on the [Smith page](https://chasesunstrom.github.io/s
 - `sampo smith runners` lists every coding CLI Smith knows (claude, codex, gemini, aider, opencode, qwen, cursor-agent, goose, amp), which are installed, which can plan read-only, the one a run with no flags uses, and every runner's record. `--check` asks each for its version and names any configured model id its provider has retired, with the replacement.
 - `sampo smith runners --use codex` makes it the default; add `--here` for this project only (a name, never a command; `--use ''` clears it).
 - `sampo smith runners --ping [NAME]` asks each installed runner one tiny question through its read-only plan command and says how it answered (ok, not logged in, usage limit, flag refused, endpoint down, no answer), how fast, and its version; it spends a few tokens a runner.
-- Your own CLI goes in `$FOREMAN_HOME/code.toml`: `[runners.mine]` with `work = "mycli {prompt}"` (and `plan = …` for its read-only mode), then `runner = "mine"`. Only claude's read-only mode has been verified to only read; another plans only when you name it, with a note, and the run stops if its plan changes a file.
+- Your own CLI goes in `$SAMPO_HOME/code.toml`: `[runners.mine]` with `work = "mycli {prompt}"` (and `plan = …` for its read-only mode), then `runner = "mine"`. Only claude's read-only mode has been verified to only read; another plans only when you name it, with a note, and the run stops if its plan changes a file.
 - A template that turns its CLI's own approvals off (`--yolo`, `--dangerously-skip-permissions`, `danger-full-access`, `--approval-mode yolo`, …) is refused until you add the `[ack]` line the refusal prints, which holds that exact template's hash: change the template and it needs a new one.
 - `runner = "auto"` in code.toml: Smith plans with the usual runner, then gives the work to the runner with the best record on that kind of task (FIX, FEATURE, …): 3 or more past runs, two thirds closed, the least spent per closed run.
 - When a worker turn fails: a usage limit that resets within `limit_wait` seconds (code.toml, default 3600) is waited out and the turn done again; past it the run stops and says when to resume. With `chain = ["claude", "codex"]` in code.toml, a crash, timeout or signed-out runner hands the turn to the next one.
-- The claude sessions Smith starts run lean: none of your plugins, MCP servers or settings hooks load there, only Sampo's Ward, and the planner also has no tool that runs code (`--restricted`). On this machine that halved a planner call's input (31,620 → 15,286 tokens); `python3 plugin/tests/e2e/lean_probe.py` measures it and checks the Ward still refuses. `lean = false` in `$FOREMAN_HOME/code.toml` launches them as before.
+- The claude sessions Smith starts run lean: none of your plugins, MCP servers or settings hooks load there, only Sampo's Ward, and the planner also has no tool that runs code (`--restricted`). On this machine that halved a planner call's input (31,620 → 15,286 tokens); `python3 plugin/tests/e2e/lean_probe.py` measures it and checks the Ward still refuses. `lean = false` in `$SAMPO_HOME/code.toml` launches them as before.
 - A lean worker whose session starts with an MCP server, an `mcp__` tool or a plugin that isn't built in is stopped at its first line and the run blocks, naming them. Inside a run, a coding CLI's `sampo` only reads: every command that changes Sampo's state, grants above all, is refused there.
 - `sampo smith bench --model qwen2.5-coder:32b` (or `--worker codex`) grades a model or CLI as a Sampo worker on five seeded tasks in throwaway repos: a seed counts only when its own check passes afterwards, the dangerous one must leave its canary file alone, and the score is kept in `code-bench.jsonl` so runs can be compared. `--seeds operator,rename` picks seeds, `--seed-timeout` (600 s) and `--max-steps` (40) bound each one, and `--json` prints the run.
 
@@ -725,7 +725,7 @@ Real runs of each kind are on the [Smith page](https://chasesunstrom.github.io/s
 - A Python file in `~/.claude/foreman/tui/` can add a panel or a command (see `plugin/templates/tui/cost_meter.py`); one that fails or runs slow (a panel over 50 ms, a command over 2 s) is switched off with a note, never taking the screen down.
 - `sampo smith config` lists every Smith setting with its value and where it came from (a flag, the environment, the project, code.toml or models.json, or the default); `--explain KEY` says what one does and how to change it. A code.toml that doesn't parse is named with its line.
 - What a run costs: a claude CLI's own count, or a models.json profile's `"price": {"in": 3, "out": 15}` (USD per million tokens), goes to `sampo budget`'s ledger call by call and onto the run's close line. `--max-usd 2` stops a run once it has spent $2 (a resume keeps what it spent), and each claude turn gets `--max-budget-usd` with what is left.
-- Run events to your own tools: in `$FOREMAN_HOME/code.toml`, `[on]` with `closed = "notify-send done"`, `blocked = "…"` or `needs-you = "…"` runs that command with the event's JSON on stdin, past Sampo's Ward, 30 s at most. `sampo state --line` ends with the newest run (`code T-0007 closed`), for tmux and prompt segments.
+- Run events to your own tools: in `$SAMPO_HOME/code.toml`, `[on]` with `closed = "notify-send done"`, `blocked = "…"` or `needs-you = "…"` runs that command with the event's JSON on stdin, past Sampo's Ward, 30 s at most. `sampo state --line` ends with the newest run (`code T-0007 closed`), for tmux and prompt segments.
 
 </details>
 
@@ -744,7 +744,7 @@ Some calls can go to a model: a request's type and size, whether two items are t
 
 - Each use starts in shadow mode: the rule decides and its call is logged; the hourly tick has a local model answer the same questions. The exam replays both against your closed tasks at zero tokens.
 - A use goes live only by a `model-live` decision citing the exam run that showed it beating the rule. No Ward or evidence gate ever asks a model, and the layer downloads and installs nothing itself.
-- A server you own goes in `$FOREMAN_HOME/models.json` with `"own": true` and its key named by `key_env` (never the key itself): it is asked after loopback servers and before clouds, and the night's shadow pass may use it, but never for a sensitive project. `TYPESAFE_BASE_URL` (with `TYPESAFE_MODEL`, `TYPESAFE_API_KEY`) adds a Jev-compatible server the same way.
+- A server you own goes in `$SAMPO_HOME/models.json` with `"own": true` and its key named by `key_env` (never the key itself): it is asked after loopback servers and before clouds, and the night's shadow pass may use it, but never for a sensitive project. `TYPESAFE_BASE_URL` (with `TYPESAFE_MODEL`, `TYPESAFE_API_KEY`) adds a Jev-compatible server the same way.
 - Other agents ask the same layer through the `decide` MCP tool; their answers are booked apart from Sampo's own. `sampo doctor`'s model backends line lists what it can reach and which uses are live; the site's Model layer page shows the newest exam replay.
 
 </details>

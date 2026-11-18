@@ -1,6 +1,9 @@
-"""T-4841: a clean install puts both `fm` and `sampo` on PATH (~/.local/bin), as the README says (T-3300 finding 2)."""
+"""T-4841: a clean install puts both `fm` and `sampo` on PATH (~/.local/bin), as the README says (T-3300 finding 2).
+T-3369: install.sh reads SAMPO_REPO / SAMPO_HOME / SAMPO_DESKTOP_REPO first; the FOREMAN_* names still work."""
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -9,6 +12,74 @@ from helpers import PLUGIN
 from sampo import setup
 
 ROOT = os.path.dirname(PLUGIN)
+INSTALL = os.path.join(ROOT, "install.sh")
+GIT = ["git", "-c", "user.name=t", "-c", "user.email=t@t"]
+
+
+class InstallEnv(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.src = os.path.join(self.tmp, "src")
+        os.makedirs(self.src)
+        open(os.path.join(self.src, "setup-plugins.sh"), "w").close()  # install.sh chmods the clone's *.sh
+        for c in (["init", "-q"], ["add", "."], ["commit", "-q", "-m", "x"]):
+            subprocess.run(GIT + ["-C", self.src] + c, check=True, capture_output=True)
+
+    def run_install(self, **env):
+        # PATH is one folder: a stub `claude` (the real one never installs a plugin), this python as python3 (no uv
+        # download) and the few tools install.sh calls
+        stub = os.path.join(self.tmp, "bin")
+        os.makedirs(stub, exist_ok=True)
+        with open(os.path.join(stub, "claude"), "w") as f:
+            f.write("#!/bin/sh\nexit 0\n")
+        os.chmod(os.path.join(stub, "claude"), 0o755)
+        links = {"python3": sys.executable}
+        links.update({t: shutil.which(t) for t in ("git", "uname", "dirname", "mkdir", "chmod", "date", "sed")})
+        for name, target in links.items():
+            if not os.path.lexists(os.path.join(stub, name)):
+                os.symlink(target, os.path.join(stub, name))
+        e = {"PATH": stub, "HOME": os.path.join(self.tmp, "home")}
+        e.update(env)
+        return subprocess.run([shutil.which("bash"), INSTALL, "--no-plugins", "--no-wiring", "--no-bypass", "--no-local-models"],
+                              env=e, capture_output=True, text=True, timeout=120)
+
+    def home(self, name):
+        return os.path.join(self.tmp, name)
+
+    def check(self, r, home):
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(os.path.isdir(os.path.join(home, ".git")), r.stdout + r.stderr)
+        self.assertIn("Sampo is installed at " + home, r.stdout)
+
+    def test_sampo_names(self):
+        h = self.home("a")
+        self.check(self.run_install(SAMPO_REPO=self.src, SAMPO_HOME=h), h)
+
+    def test_foreman_names_still_work(self):
+        h = self.home("b")
+        self.check(self.run_install(FOREMAN_REPO=self.src, FOREMAN_HOME=h), h)
+
+    def test_sampo_wins_when_both_set(self):
+        h, other = self.home("c"), self.home("d")
+        self.check(self.run_install(SAMPO_REPO=self.src, SAMPO_HOME=h, FOREMAN_REPO="/nonexistent", FOREMAN_HOME=other), h)
+        self.assertFalse(os.path.exists(other))
+
+    def test_existing_clone_found_by_foreman_home_is_updated(self):
+        h = self.home("e")
+        self.check(self.run_install(FOREMAN_REPO=self.src, FOREMAN_HOME=h), h)
+        r = self.run_install(FOREMAN_HOME=h)  # no repo URL: only the update branch can succeed
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Updating " + h, r.stdout)
+
+    def test_desktop_repo_names(self):
+        # only the one assignment line is run: the rest of install.sh would install things
+        for env, want in (({"SAMPO_DESKTOP_REPO": "x/new"}, "x/new"), ({"FOREMAN_DESKTOP_REPO": "x/old"}, "x/old"),
+                          ({"SAMPO_DESKTOP_REPO": "x/new", "FOREMAN_DESKTOP_REPO": "x/old"}, "x/new")):
+            with self.subTest(env):
+                r = subprocess.run(["bash", "-c", 'eval "$(grep "^SAMPO_DESKTOP_REPO=" "$0")"; echo "$SAMPO_DESKTOP_REPO"', INSTALL],
+                                   env=dict(env, PATH="/usr/bin:/bin"), capture_output=True, text=True)
+                self.assertEqual(r.stdout.strip(), want, r.stderr)
 
 
 def _bin(d, name):

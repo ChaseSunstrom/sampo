@@ -30,7 +30,7 @@ def git(*a):
 def state_dir():
     """This repo's project: the foreman-* project folder with the biggest ledger (sandboxes and improve worktrees have
     their own, much smaller ones)."""
-    home = os.environ.get("FOREMAN_HOME") or ROOT
+    home = os.environ.get("SAMPO_HOME") or os.environ.get("FOREMAN_HOME") or ROOT
     found = [d for d in glob.glob(os.path.join(home, "state", "projects", "foreman-*"))
              if os.path.isfile(os.path.join(d, "ledger.jsonl"))]
     return max(found, key=lambda d: os.path.getsize(os.path.join(d, "ledger.jsonl")), default=None)
@@ -450,7 +450,7 @@ def main():
     a = ap.parse_args()
     state = a.state or state_dir()
     if not state:
-        sys.exit("no Sampo state for this repo (FOREMAN_HOME/state/projects/foreman-*)")
+        sys.exit("no Sampo state for this repo (SAMPO_HOME/state/projects/foreman-*)")
     old = {}
     if os.path.isfile(OUT):
         with open(OUT, encoding="utf-8") as f:

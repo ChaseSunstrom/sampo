@@ -2,7 +2,7 @@
 
 Not loaded every session (`~/.claude/rules/foreman.md` points here). Read it when you're unsure where something lives or how the parts interact. `sampo doctor` checks the file map below against disk.
 
-**Names:** Sampo (formerly Foreman) is the product; its parts are Smith (the task loop: plan, build, prove), Rune (Genesis, `sampo rune`), Moons (moonshots), Louhi (the exam, `sampo louhi`), Underworld (the not-yet ledger) and the Ward (the guard). Several Rune towers can share a project: `sampo genesis --tower NAME <verb>` works on `research/genesis/towers/NAME` (own gen-0, docs, steers.md, exam lines); moons, exam scenarios and the user's steers stay shared at the root; `sampo genesis towers` lists them; publish, export and live stay root-only (T-3053). The old names stay as aliases, and every path, command, plugin id and `FOREMAN_*` variable below keeps its old spelling.
+**Names:** Sampo (formerly Foreman) is the product; its parts are Smith (the task loop: plan, build, prove), Rune (Genesis, `sampo rune`), Moons (moonshots), Louhi (the exam, `sampo louhi`), Underworld (the not-yet ledger) and the Ward (the guard). Several Rune towers can share a project: `sampo genesis --tower NAME <verb>` works on `research/genesis/towers/NAME` (own gen-0, docs, steers.md, exam lines); moons, exam scenarios and the user's steers stay shared at the root; `sampo genesis towers` lists them; publish, export and live stay root-only (T-3053). The old names stay as aliases, and every path, command and plugin id below keeps its old spelling. Environment variables are named `SAMPO_*`; the old `FOREMAN_*` names still work.
 
 **Contents:** [What it is](#1-what-sampo-is) · [Prompting](#2-how-to-prompt-it) · [File map](#3-file-map) · [Interaction diagram](#4-interaction-diagram) · [Lifecycle](#5-lifecycle-walkthrough-a-fix-line-to-an-archived-task) · [Precedence](#6-source-of-truth-and-precedence) · [Integrations](#7-integrations) · [BUILD_PROMPT](#8-relationship-to-build_promptmd-and-the-repo) · [Operations](#9-operations) · [Limitations](#10-known-limitations) · [Deviations](#11-deviations-from-build_promptmd)
 
@@ -441,7 +441,7 @@ Each note below is one index line: the first words of its full note and a link t
 - Commands: `sampo help` (or bare `sampo`) lists every command once, in tiers… [→ ops-1](docs/map/ops-1.md)
 - State in the repo (opt-in): `sampo sync on` mirrors the project's briefs… [→ ops-1](docs/map/ops-1.md)
 - Plugins: `sampo plugins find <need>` searches the local marketplace indexes… [→ ops-1](docs/map/ops-1.md)
-- Driven by another tool (T-0077): a session started with `FOREMAN_QUIET=1` in… [→ ops-1](docs/map/ops-1.md)
+- Driven by another tool (T-0077): a session started with `SAMPO_QUIET=1` in… [→ ops-1](docs/map/ops-1.md)
 - Claude Code integration (2026-10-14 round): a one-off `claude -p` in a Sampo… [→ ops-1](docs/map/ops-1.md)
 - Compact output (T-0783, opt-in): `sampo compact-output on` adds a PostToolUse… [→ ops-1](docs/map/ops-1.md)
 - Oldest-Python gate (T-1805): `sampo check --python VER|oldest` (oldest =… [→ ops-1](docs/map/ops-1.md)

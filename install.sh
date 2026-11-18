@@ -17,14 +17,15 @@
 #   --no-native      don't build the native guard binary (step 7; the full doctor run passes it)
 #   anything else    passed through to setup-plugins.sh (e.g. --security, --docs, --apply-conflicts)
 # Environment:
-#   FOREMAN_REPO     git URL to clone (default below)
-#   FOREMAN_HOME     where to put it (default ~/.claude/foreman; BUILD_PROMPT.md assumes this path)
-#   FOREMAN_DESKTOP_REPO  GitHub owner/repo the desktop app's releases come from (default below)
+#   SAMPO_REPO     git URL to clone (default below)
+#   SAMPO_HOME     where to put it (default ~/.claude/foreman; BUILD_PROMPT.md assumes this path)
+#   SAMPO_DESKTOP_REPO  GitHub owner/repo the desktop app's releases come from (default below)
+#   (the old FOREMAN_REPO, FOREMAN_HOME and FOREMAN_DESKTOP_REPO still work; the SAMPO_ name wins when both are set)
 set -euo pipefail
 
-FOREMAN_REPO="${FOREMAN_REPO:-https://github.com/ChaseSunstrom/sampo.git}"
-FOREMAN_HOME="${FOREMAN_HOME:-$HOME/.claude/foreman}"
-FOREMAN_DESKTOP_REPO="${FOREMAN_DESKTOP_REPO:-ChaseSunstrom/foreman-desktop}"
+SAMPO_REPO="${SAMPO_REPO:-${FOREMAN_REPO:-https://github.com/ChaseSunstrom/sampo.git}}"
+SAMPO_HOME="${SAMPO_HOME:-${FOREMAN_HOME:-$HOME/.claude/foreman}}"
+SAMPO_DESKTOP_REPO="${SAMPO_DESKTOP_REPO:-${FOREMAN_DESKTOP_REPO:-ChaseSunstrom/foreman-desktop}}"
 
 EMBED_PINS="bge-m3:567m nomic-embed-text:v1.5"   # T-2880: exact tags (doctor.EMBED_PINS is the same list)
 
@@ -41,7 +42,7 @@ for arg in "$@"; do
     --no-mod) MOD=0 ;;
     --no-wiring) WIRING=0 ;;
     --no-native) NATIVE=0 ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) PASS+=("$arg") ;;
   esac
 done
@@ -85,33 +86,33 @@ if ! py_ok; then
 fi
 
 # 1. Get or update the repo
-if [ -d "$FOREMAN_HOME/.git" ]; then
-  say "Updating $FOREMAN_HOME"
-  if [ -z "$(git -C "$FOREMAN_HOME" status --porcelain --untracked-files=no)" ] &&
-     [ "$(git -C "$FOREMAN_HOME" rev-parse --abbrev-ref HEAD)" = main ]; then
-    git -C "$FOREMAN_HOME" pull --ff-only --quiet || say "Couldn't fast-forward; leaving the local copy as is"
+if [ -d "$SAMPO_HOME/.git" ]; then
+  say "Updating $SAMPO_HOME"
+  if [ -z "$(git -C "$SAMPO_HOME" status --porcelain --untracked-files=no)" ] &&
+     [ "$(git -C "$SAMPO_HOME" rev-parse --abbrev-ref HEAD)" = main ]; then
+    git -C "$SAMPO_HOME" pull --ff-only --quiet || say "Couldn't fast-forward; leaving the local copy as is"
   else
     say "Local changes or a non-main branch checked out (e.g. a Sampo build in progress); not pulling"
   fi
-elif [ -e "$FOREMAN_HOME" ]; then
-  die "$FOREMAN_HOME exists but isn't a git repo; move it aside first"
+elif [ -e "$SAMPO_HOME" ]; then
+  die "$SAMPO_HOME exists but isn't a git repo; move it aside first"
 else
   placeholder="YOUR_GITHUB""_USER"   # split so configure-repo.sh doesn't rewrite this check
-  case "$FOREMAN_REPO" in
-    *"$placeholder"*) die "set FOREMAN_REPO=<git url>, or run ./configure-repo.sh <github-user> before pushing" ;;
+  case "$SAMPO_REPO" in
+    *"$placeholder"*) die "set SAMPO_REPO=<git url>, or run ./configure-repo.sh <github-user> before pushing" ;;
   esac
-  say "Cloning $FOREMAN_REPO -> $FOREMAN_HOME"
-  mkdir -p "$(dirname "$FOREMAN_HOME")"
-  git clone --quiet "$FOREMAN_REPO" "$FOREMAN_HOME"
+  say "Cloning $SAMPO_REPO -> $SAMPO_HOME"
+  mkdir -p "$(dirname "$SAMPO_HOME")"
+  git clone --quiet "$SAMPO_REPO" "$SAMPO_HOME"
 fi
-mkdir -p "$FOREMAN_HOME/state" "$FOREMAN_HOME/local" "$FOREMAN_HOME/backups"
-chmod +x "$FOREMAN_HOME"/*.sh
+mkdir -p "$SAMPO_HOME/state" "$SAMPO_HOME/local" "$SAMPO_HOME/backups"
+chmod +x "$SAMPO_HOME"/*.sh
 
 # 2. Curated plugins
 if [ "$PLUGINS" = 1 ]; then
   say "Setting up plugins"
   [ "$BUILD" = 1 ] && PASS+=(--build-tools)   # plugin-dev: only needed while building Sampo itself
-  "$FOREMAN_HOME/setup-plugins.sh" ${PASS[@]+"${PASS[@]}"}
+  "$SAMPO_HOME/setup-plugins.sh" ${PASS[@]+"${PASS[@]}"}
 fi
 
 # 3. The Sampo plugin itself, from this repo as a local marketplace (loads in place: edits apply on /reload-plugins)
@@ -123,14 +124,14 @@ say "Installing the Sampo plugin"
 had() { grep -qE "\"($1)@foreman\"" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" 2>/dev/null; }
 OLD_MOD=0; had 'foreman-ui|sampo-ui' && OLD_MOD=1  # read before the move: the mod moves (or stays) with the plugin
 if had 'foreman|sampo|foreman-ui|sampo-ui'; then
-  if python3 "$FOREMAN_HOME/plugin/bin/sampo" migrate plugins >/dev/null 2>&1; then
+  if python3 "$SAMPO_HOME/plugin/bin/sampo" migrate plugins >/dev/null 2>&1; then
     say "  moved the plugin to sampo@sampo (sampo migrate plugins --undo puts it back; restart open sessions)"
   else
     say "  ! the plugin keeps its old id: sampo migrate plugins --dry-run says why"
   fi
 else
-  claude plugin marketplace add "$FOREMAN_HOME" >/dev/null 2>&1 || true
-  claude plugin install sampo@sampo --scope user >/dev/null 2>&1 || die "couldn't install sampo@sampo (run: claude plugin validate $FOREMAN_HOME)"
+  claude plugin marketplace add "$SAMPO_HOME" >/dev/null 2>&1 || true
+  claude plugin install sampo@sampo --scope user >/dev/null 2>&1 || die "couldn't install sampo@sampo (run: claude plugin validate $SAMPO_HOME)"
 fi
 # The UI mod (band, pane, toasts) is optional: builds without function-hook plugins keep the statusline and fm watch
 if [ "$MOD" = 1 ]; then
@@ -160,8 +161,8 @@ fi
 if [ "$BYPASS" = 1 ]; then
   settings="$HOME/.claude/settings.json"
   mkdir -p "$HOME/.claude"
-  [ -f "$settings" ] && cp "$settings" "$FOREMAN_HOME/backups/settings.json.$(date +%Y%m%d-%H%M%S)"
-  if command -v python3 >/dev/null 2>&1 && python3 - "$settings" "$FOREMAN_HOME/state/install-manifest.json" <<'PY'
+  [ -f "$settings" ] && cp "$settings" "$SAMPO_HOME/backups/settings.json.$(date +%Y%m%d-%H%M%S)"
+  if command -v python3 >/dev/null 2>&1 && python3 - "$settings" "$SAMPO_HOME/state/install-manifest.json" <<'PY'
 import json, os, sys
 path, manifest = sys.argv[1], sys.argv[2]
 data = json.load(open(path)) if os.path.exists(path) and os.path.getsize(path) else {}
@@ -193,13 +194,13 @@ fi
 # 5. Sampo user wiring (reversible: plugin/uninstall.sh or `fm uninstall-user`)
 if [ "$WIRING" = 1 ] && [ "$CLAUDE" = 1 ]; then
   say "Wiring Sampo into ~/.claude (statusLine wrapper, deny rules, CLAUDE.md block, rules symlink)"
-  python3 "$FOREMAN_HOME/plugin/bin/fm" install-user || say "Wiring failed; run: $FOREMAN_HOME/plugin/bin/fm install-user --dry-run"
+  python3 "$SAMPO_HOME/plugin/bin/fm" install-user || say "Wiring failed; run: $SAMPO_HOME/plugin/bin/fm install-user --dry-run"
 elif [ "$WIRING" = 1 ]; then
   say "No Claude Code here: putting sampo on PATH and wiring the agents found"
 fi
 if [ "$WIRING" = 1 ]; then
   # setup.ensure_fm_link: makes the sampo and fm links, repairs a dangling one of Sampo's, leaves anyone else's alone
-  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from sampo import setup; setup.ensure_fm_link()' "$FOREMAN_HOME/plugin/lib" || true
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from sampo import setup; setup.ensure_fm_link()' "$SAMPO_HOME/plugin/lib" || true
   case ":$PATH:" in *":$HOME/.local/bin:"*) ;; *) say "Add ~/.local/bin to your PATH so any shell finds sampo" ;; esac
 fi
 if [ "$WIRING" = 1 ] && [ "$CLAUDE" = 0 ]; then
@@ -207,7 +208,7 @@ if [ "$WIRING" = 1 ] && [ "$CLAUDE" = 0 ]; then
   for agent in codex gemini opencode; do
     command -v "$agent" >/dev/null 2>&1 || continue
     found=1
-    python3 "$FOREMAN_HOME/plugin/bin/fm" agents install "$agent" || say "Couldn't wire $agent; run: fm agents install $agent"
+    python3 "$SAMPO_HOME/plugin/bin/fm" agents install "$agent" || say "Couldn't wire $agent; run: fm agents install $agent"
   done
   [ "$found" = 1 ] || say "No coding agent found: fm code runs Sampo's loop on any model (fm code --help); fm agents install codex|gemini|opencode wires one later"
 fi
@@ -215,10 +216,10 @@ fi
 # 6. Foreman Desktop (--desktop): the newest release's build for this machine, no Rust or bun needed here
 if [ "$DESKTOP" = 1 ]; then
   asset() {  # the download URL of the newest release's asset whose name ends with $1
-    curl -fsSL "https://api.github.com/repos/$FOREMAN_DESKTOP_REPO/releases/latest" | python3 -c '
+    curl -fsSL "https://api.github.com/repos/$SAMPO_DESKTOP_REPO/releases/latest" | python3 -c '
 import json, sys
 print(next(a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if a["name"].endswith(sys.argv[1])))' "$1" \
-      || die "the newest Foreman Desktop release ($FOREMAN_DESKTOP_REPO) has no *$1"
+      || die "the newest Foreman Desktop release ($SAMPO_DESKTOP_REPO) has no *$1"
   }
   case "$(uname -s)/$(uname -m)" in
     Linux/x86_64)
@@ -240,7 +241,7 @@ print(next(a["browser_download_url"] for a in json.load(sys.stdin)["assets"] if 
       cp -R "$mnt/Foreman.app" "$HOME/Applications/"
       hdiutil detach -quiet "$mnt"
       say "Foreman Desktop installed: $HOME/Applications/Foreman.app" ;;
-    *) die "Foreman Desktop has builds for Linux x86_64 and macOS; build it from https://github.com/$FOREMAN_DESKTOP_REPO" ;;
+    *) die "Foreman Desktop has builds for Linux x86_64 and macOS; build it from https://github.com/$SAMPO_DESKTOP_REPO" ;;
   esac
 fi
 
@@ -270,17 +271,17 @@ fi
 # (no cargo, a failed build, a probe mismatch) leaves the Python hook deciding, about 32 ms a call. Never fails the install.
 if [ "$NATIVE" = 1 ] && { command -v cargo >/dev/null 2>&1 || [ -x "$HOME/.cargo/bin/cargo" ]; }; then
   say "Building the native fast path (optional; the Python hook stays if it can't)"
-  python3 -I "$FOREMAN_HOME/plugin/lib/sampo/fastbuild.py" || say "Native fast path not installed; the Python hook stays (retry: sampo doctor --repair)"
+  python3 -I "$SAMPO_HOME/plugin/lib/sampo/fastbuild.py" || say "Native fast path not installed; the Python hook stays (retry: sampo doctor --repair)"
 fi
 
-say "Sampo is installed at $FOREMAN_HOME"
+say "Sampo is installed at $SAMPO_HOME"
 if [ "$BUILD" = 1 ] && (: </dev/tty) 2>/dev/null; then   # a terminal we can actually open (not just a device node)
   say "Starting the build (it pauses once for plan approval unless BUILD_GATE is off)"
-  cd "$FOREMAN_HOME"
-  exec claude "Run the Sampo build: read $FOREMAN_HOME/BUILD_PROMPT.md in full and execute it. If $FOREMAN_HOME/local/PLAN.md exists, resume from it instead of starting over." </dev/tty
+  cd "$SAMPO_HOME"
+  exec claude "Run the Sampo build: read $SAMPO_HOME/BUILD_PROMPT.md in full and execute it. If $SAMPO_HOME/local/PLAN.md exists, resume from it instead of starting over." </dev/tty
 fi
 if [ "$CLAUDE" = 1 ]; then
-  printf '\nNext: start Claude Code in any repo and give it a request (e.g. FIX: ...).\n      /sampo:status shows where things stand; %s/MASTER.md explains everything.\n' "$FOREMAN_HOME"
+  printf '\nNext: start Claude Code in any repo and give it a request (e.g. FIX: ...).\n      /sampo:status shows where things stand; %s/MASTER.md explains everything.\n' "$SAMPO_HOME"
 else
-  printf '\nNext: start your agent in any repo and give it a request (e.g. FIX: ...), or run fm code "<request>".\n      fm status shows where things stand; %s/MASTER.md explains everything.\n' "$FOREMAN_HOME"
+  printf '\nNext: start your agent in any repo and give it a request (e.g. FIX: ...), or run fm code "<request>".\n      fm status shows where things stand; %s/MASTER.md explains everything.\n' "$SAMPO_HOME"
 fi

@@ -42,7 +42,7 @@ assume yes. The command it installs is `sampo`; `fm` still works as an alias for
    | `--build` | open Claude Code on the Sampo build (rebuild or resume from `BUILD_PROMPT.md`) |
    | anything else | passed through to `setup-plugins.sh` (for example `--security`, `--docs`, `--apply-conflicts`) |
 
-   Environment: `FOREMAN_REPO` (git URL to clone), `FOREMAN_HOME` (where to put it, default `~/.claude/foreman`).
+   Environment: `SAMPO_REPO` (git URL to clone), `SAMPO_HOME` (where to put it, default `~/.claude/foreman`). The old `FOREMAN_*` names still work; `SAMPO_*` wins when both are set.
 
 4. **Check it worked:** `~/.claude/foreman/plugin/bin/sampo doctor`. It lists only warnings and failures; "sampo doctor: OK"
    at the end means it's healthy. Fix or explain anything it reports.
