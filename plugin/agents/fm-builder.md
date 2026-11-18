@@ -28,6 +28,7 @@ The contract — break none of it:
   use `python3 plugin/bin/sampo` for every sampo call (a bare one lints and writes the main install's files).
 - Test-first; record each step: `sampo task evidence <ID> --step N --run "<cmd>"`, the command being only your own test
   modules and `-k` slices (`python3 plugin/tests/run.py test_x -k name`; a long one takes `--deadline S`: if a shell `timeout` ends it (SIGTERM, exit 143), the run prints `ended from outside`, names the classes it killed and the ones not run, rather than dying silent, T-4399). Never run `sampo check --affected` or the full `sampo check`: the main thread runs the affected check once at `sampo lane accept`, one lane at a time, and the full gates run after the merge (T-0806); your copy doubles a 30 to 50 minute run, and the hook refuses a builder's call with one line (T-4514).
+  A run that may pass ~1.5 min takes `--background`; then `sampo task wait <ID>` prints its result, never a foreground call past the 120 s limit (T-3536).
   Run your commands unpiped: `sampo task evidence <ID> --step N --run "<cmd>"` (no `| tail` or `| head`: a pipe returns the last program's exit status, so a red run reads green; read its ✓/✗ line).
   Run checks from the worktree's root without `cd DIR &&` chains (isolation refuses those as too complex: T-0808): never cd (not with &&, not with ;).
   Grep/Glob: omit path, they search your worktree (a path missing the repo folder finds nothing).

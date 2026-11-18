@@ -93,6 +93,7 @@ OPERATOR_SWITCHES.add("NO_LEFTOVER_SCAN")  # T-4720: the test base sets it itsel
 OPERATOR_SWITCHES.add("CARGO_CAP_BYTES")  # T-4717: the operator's cap on the shared cargo cache; a test sets its own
 OPERATOR_SWITCHES.add("CARGO_SHARED")  # T-4717: the operator's off switch for the shared cargo target; a test sets its own
 OPERATOR_SWITCHES.add("KNOWN_RED_MIN")  # T-4269: how long a red class's record is believed; a nested run's is its own
+OPERATOR_SWITCHES.add("EVIDENCE_TREE")  # T-3536: the tree an evidence run started on, for the command it runs; a test never inherits it
 CGROUP_ROOT = "/sys/fs/cgroup"
 LIVE_CLASSES = set()  # T-4538: the class processes running now (each leads its own session, so its pid is its group)
 PARENT_POLL_S = 1.0  # T-4538: how often a run checks that the process which started it is still alive

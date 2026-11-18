@@ -894,6 +894,8 @@ def cmd_task(args):
         return out(args, c.brief_summary(b), f"{b.id}: logged.")
     if sub == "hypo":
         return task_hypo(p, args)
+    if sub == "wait":
+        return task_wait(p, args)
     if sub == "assume":
         return task_assume(p, args)
     if sub == "note":  # T-0630: the task's working memory, printed at checkpoint and resume
@@ -902,6 +904,8 @@ def cmd_task(args):
                       {"kind": args.kind, "text": c.redact(text)[:200]})
         return out(args, c.brief_summary(b), f"{b.id}: {args.kind} noted.")
     if sub == "evidence":
+        # T-3536: a --background child's start tree, popped so the command it runs (a test calling sampo) never sees it
+        start_tree = os.environ.pop("FOREMAN_EVIDENCE_TREE", None)
         code, shown, tried, median = 0, "", None, ""
         bench =getattr(args, "bench", None)
         run_file = getattr(args, "run_file", None)
@@ -962,6 +966,8 @@ def cmd_task(args):
             raise UsageError(f"--repeat N (1–{REPEAT_MAX}) times a passing --run; a typed result or an --expect-fail "
                              f"red run is one run")
         took = None
+        if getattr(args, "background", False) and (args.run is None or bench is not None):
+            raise UsageError("--background starts a --run CMD detached; it needs --run (no --bench or typed result)")
         if bench is not None:  # T-2284: timed on the start tree and on this one, by Foreman
             pre = need_brief(p, args.id)
             cmd = bench
@@ -972,6 +978,8 @@ def cmd_task(args):
             if getattr(args, "expect_fail", False) and args.step is None:
                 raise UsageError("--expect-fail is for a step's red run (--step N); a criterion only takes a passing run")
             pre = need_brief(p, args.id)
+            if getattr(args, "background", False):  # T-3536: a long run never holds a tool call past its limit
+                return _evidence_bg(p, args)
             t0 = time.monotonic()
             code, output, timing = _repeat_runs(p.root, args.run, args.repeat,
                                                 c.load_scaled(args.timeout if args.timeout > 0 else None), run_argv0)
@@ -1000,6 +1008,9 @@ def cmd_task(args):
         else:
             cmd, result = args.cmd, args.result
         tree = c.worktree_id(p.root)
+        if start_tree is not None and args.run is not None:  # T-3536: it tested the files as they were at its start
+            result += " · files changed during the run" if tree != (start_tree or None) else ""
+            tree = start_tree or None
         ran = args.run is not None or bench is not None
         if not ran:
             tried = None
@@ -3875,6 +3886,113 @@ _FAILED_RUN = re.compile(r"^- \(step (\d+)\) `(.+?)` → ✗ exit")
 
 REPEAT_MAX = 50  # T-1518: fm task evidence --repeat's ceiling
 RUN_FILE_MAX = 120 * 1024  # T-4139: a --run-file script's largest text: bash -c takes it as one argument (Linux: 128 KB)
+
+
+def _bg_dir(p, tid):
+    return os.path.join(p.dir, "evidence-bg", tid)
+
+
+BG_KEEP_S = 86400  # T-3536: a background run's files nobody waited for go after a day
+
+
+def _bg_start(pid):
+    """The pid's start time (ideas' /proc field 22, else ps), which a pid reused after a reboot can't share; None if gone."""
+    from sampo import ideas
+    try:
+        return ideas._starttime(pid)
+    except (OSError, IndexError):
+        return None
+
+
+def _evidence_bg(p, args):
+    """T-3536: the same `sampo task evidence` minus --background, detached (own session, output to a log): it records
+    the evidence exactly as a foreground run does, against the tree taken here before it starts (the builder keeps
+    editing meanwhile), and a sh wrapper leaves its exit code beside it for sampo task wait (36 builder calls had ended
+    in a timed-out tail waiting on a foreground run past the 120 s tool limit)."""
+    top = os.path.join(p.dir, "evidence-bg")
+    for root, _, files in os.walk(top):  # files of runs nobody waited for
+        for f in files:
+            try:
+                if time.time() - os.path.getmtime(os.path.join(root, f)) > BG_KEEP_S:
+                    os.remove(os.path.join(root, f))
+            except OSError:
+                pass
+    d = _bg_dir(p, args.id)
+    os.makedirs(d, exist_ok=True)
+    base = os.path.join(d, str(time.time_ns()))
+    argv = [sys.executable, os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), *(a for a in _ARGV if a != "--background")]
+    env = dict(os.environ, FOREMAN_EVIDENCE_TREE=c.worktree_id(p.root) or "")
+    # the wrapper outlives the run to write its exit code; start_new_session makes both one process group to kill
+    proc = subprocess.Popen(["sh", "-c", '"$@" >"$0.log" 2>&1; echo $? >"$0.tmp"; mv "$0.tmp" "$0.exit"', base, *argv],
+                            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            start_new_session=True, env=env)
+    c.write_atomic(base + ".json", json.dumps({"pid": proc.pid, "start": _bg_start(proc.pid), "cmd": args.run,
+                                               "step": args.step, "ac": args.ac, "started": time.time()}))
+    if os.environ.get("FOREMAN_NO_BACKGROUND"):  # tests: a detached child writing into a test's folder races its cleanup
+        proc.wait()
+    where = f"step {args.step}" if args.step is not None else f"ac {args.ac}" if args.ac is not None else "its"
+    out(args, {"id": args.id, "pid": proc.pid, "log": base + ".log", "wait": f"sampo task wait {args.id}"},
+        f"{args.id}: {where} evidence runs in the background (log {base}.log); `sampo task wait {args.id}` "
+        f"prints its result when it ends.")
+    return 0
+
+
+def task_wait(p, args):
+    """T-3536: block until the task's background evidence runs end (or --timeout), print each one's result once and
+    clear it: exit 0 when all passed, 1 when any failed, 124 when some still run at the timeout (wait again). A run is
+    claimed by renaming its marker, so two waits never both report it, nor one read what the other is clearing."""
+    need_brief(p, args.id)
+    d = _bg_dir(p, args.id)
+    end = time.monotonic() + max(args.timeout, 0)
+    while True:
+        runs = sorted(os.path.join(d, f) for f in (os.listdir(d) if os.path.isdir(d) else ()) if f.endswith(".json"))
+        metas = {}
+        for r in runs:
+            try:
+                with open(r) as f:
+                    metas[r[:-5]] = json.load(f)
+            except (OSError, ValueError):  # claimed by another wait meanwhile
+                pass
+        pending = [b for b, m in metas.items() if not os.path.exists(b + ".exit")
+                   and m.get("start") is not None and _bg_start(m.get("pid", 0)) == m["start"]]
+        if not pending or time.monotonic() >= end:
+            break
+        time.sleep(0.5)
+    done, lines, failed = [], [], False
+    for b, m in metas.items():
+        where = f"step {m['step']}" if m.get("step") is not None else f"ac {m['ac']}" if m.get("ac") is not None else "run"
+        if b in pending:
+            lines.append(f"still running: {where} `{m.get('cmd')}` ({int(time.time() - m.get('started', time.time()))} s so far)")
+            continue
+        try:
+            os.rename(b + ".json", b + ".claimed")
+        except OSError:  # another wait took it
+            continue
+        try:
+            with open(b + ".exit") as f:
+                code = int(f.read().strip() or 1)
+        except (OSError, ValueError):
+            code = None  # the wrapper was killed before it wrote one
+        try:
+            with open(b + ".log", encoding="utf-8", errors="replace") as f:
+                log = f.read().rstrip().splitlines()
+        except OSError:
+            log = []
+        failed = failed or code != 0
+        lines.append(f"{where} `{m.get('cmd')}`: " + ("ended without an exit code (killed?)" if code is None else f"exit {code}"))
+        lines += ["  " + x for x in log[-1 if code == 0 else -20:]]
+        done.append({"step": m.get("step"), "ac": m.get("ac"), "cmd": m.get("cmd"), "exit": code})
+        for ext in (".claimed", ".exit", ".log"):
+            try:
+                os.remove(b + ext)
+            except OSError:
+                pass
+    if not done and not pending:
+        lines.append(f"{args.id}: no background evidence runs pending.")
+    elif pending and not failed:
+        lines.append(f"`sampo task wait {args.id}` again for the rest.")
+    out(args, {"id": args.id, "done": done, "pending": len(pending)}, "\n".join(lines))
+    return 1 if failed else 124 if pending else 0
 
 
 def _repeat_runs(root, cmd, n, timeout, argv0=None):
@@ -8766,7 +8884,8 @@ def _build_parser(only=None):
         "hypo": "debugging hypotheses: add, test, reject", "note": "working memory: a fact or an open question",
         "assume": "add or verify an assumption", "done": "mark the task done", "block": "mark it blocked, with why",
         "drop": "drop a task, with why or --done-in the one that did it", "unblock": "put a blocked task back in the queue",
-        "defer": "put a task off until later"}
+        "defer": "put a task off until later",
+        "wait": "wait for the task's background evidence runs (--background) and print their results"}
 
     def tadd(name):
         t = tsp.add_parser(name, help=task_help[name])
@@ -8891,9 +9010,16 @@ def _build_parser(only=None):
     t.add_argument("--expect-fail", action="store_true",
                    help="with --step and --run: the run must fail (a failing test before the fix); recorded as the "
                         "expected red, exits 0; a passing run is refused and nothing is recorded (T-1486)")
+    t.add_argument("--background", action="store_true",
+                   help="with --run: start it detached and return at once; it records its evidence when it ends, and "
+                        "sampo task wait ID prints the result (a run past ~2 min never holds a tool call; T-3536)")
     g = t.add_mutually_exclusive_group()
     g.add_argument("--step", type=int)
     g.add_argument("--ac", type=int)
+    t = tadd("wait")  # T-3536
+    t.add_argument("id")
+    t.add_argument("--timeout", type=float, default=100,
+                   help="seconds to wait (default 100, under a tool call's 120 s limit); runs still going then: exit 124")
     t = tadd("audit")
     t.add_argument("id")
     t.add_argument("lens", help=", ".join(c.AUDIT_LENSES))
