@@ -9,6 +9,7 @@ import fcntl
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -17,12 +18,14 @@ import types
 import unittest
 from unittest import mock
 
+from helpers import ForemanTestCase
 from test_lane_land import LandCase, OLD
 
 from sampo import cli
 from sampo import core as c
 from sampo import train
 
+HERE = os.path.dirname(os.path.abspath(__file__))
 FRESH = "2026-06-01T00:00:00Z"  # after OLD, the lane commit's date: a run at its tip
 STALE = "2025-12-01T00:00:00Z"  # before it
 CMD = "python3 plugin/tests/run.py test_docs.PluginFiles test_left_out.LeftOut test_rename_aliases.RenameAliases test_run.EnvClassified"
@@ -861,6 +864,124 @@ class ChildPath(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "sampo.train", arg], capture_output=True, text=True, timeout=60,
                            env=dict(os.environ, PYTHONPATH=lib + os.pathsep))
         self.assertEqual(r.stdout.strip(), "None", r.stderr)
+
+
+class RerunHint(unittest.TestCase):
+    """T-4864: the deadline line's rerun names a timeout larger than the limit that was hit; it doubled the asked
+    --timeout, so a 600 s default scaled to 1200 s under load said 'rerun with --timeout 1200' (T-4892 fixed the line
+    too: these pin it for a load-scaled limit as well as a sized one)."""
+
+    def test_rerun_hint_is_larger_than_the_scaled_limit_hit(self):  # rerun_hint
+        line = cli.deadline_line(600, 1200, {"classes": 1921, "n_not_run": 1817}, hold=True, evidence="T-1")
+        self.assertIn("(1200 s)", line)
+        self.assertIn("--timeout 2400", line)
+
+    def test_rerun_hint_after_a_sized_limit(self):  # rerun_hint
+        line = cli.deadline_line(600, 1437.5, None)
+        hint = float(line.split("--timeout ", 1)[1].split()[0])
+        self.assertGreater(hint, 1437.5)
+        self.assertEqual(hint, int(hint), "a whole number of seconds")
+
+    def test_rerun_hint_still_doubles_an_asked_timeout_over_its_limit(self):  # rerun_hint
+        self.assertIn("--timeout 1200", cli.deadline_line(600, 540, None))
+        self.assertIn("--timeout 1200", cli.deadline_line(0, None, None))
+
+
+SRC = "def add(a, b):\n    return a + b\n"
+
+
+class SizedDeadline(ForemanTestCase):
+    """T-4864: sampo check --affected with no --timeout sizes its deadline by T-4892's rule (cli.sized_limit over run.py
+    --estimate: the selection's recorded seconds over the CPU slots, never under the fixed 600 s), as the lane's own
+    --hold check does; an explicit --timeout wins for a foreground run; no record keeps the fixed 600 s. The layout is
+    Sampo's own (plugin/tests/run.py with the suite beside it), as test_close_affected.CloseSized's."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        tests = os.path.join(self.repo, "plugin", "tests")
+        os.makedirs(tests)
+        shutil.copy(os.path.join(HERE, "run.py"), os.path.join(tests, "run.py"))
+        self.times = os.path.join(self.tmp, "times.json")
+        self.write("calc.py", SRC)
+        self.write("plugin/tests/test_calc.py",
+                   "import os, sys, unittest\nsys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname("
+                   "os.path.abspath(__file__)))))\nimport calc\n\n\nclass Calc(unittest.TestCase):\n    def test_add(self):\n"
+                   "        self.assertEqual(calc.add(1, 2), 3)\n")
+        for i in range(4):
+            self.write(f"plugin/tests/test_other{i}.py", "import unittest\n\n\nclass Other(unittest.TestCase):\n"
+                       "    def test_it(self):\n        pass\n")
+        self.write(".gitignore", "__pycache__/\n")
+        subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
+        subprocess.run(["git", "-C", self.repo, "commit", "-qm", "suite"], check=True)
+        self.fm("check", "affected", "python3 plugin/tests/run.py {names}")
+        self.p = c.find_project(self.repo)
+        self.tid = self.fm_json("task", "new", "Change add", "--type", "FEATURE", "--tier", "S", "--ac", "works :: true",
+                                "--step", "s", "--scope", "calc.py")["id"]
+        self.fm("focus", self.tid)
+        self.write("calc.py", SRC + "# tidy\n")
+
+    def write(self, rel, text):
+        with open(os.path.join(self.repo, rel), "w") as f:
+            f.write(text)
+
+    def record(self, calc, others, cpus=1):
+        with open(self.times, "w") as f:
+            json.dump({"test_calc.Calc": calc, **{f"test_other{i}.Other": others for i in range(4)}}, f)
+        self.host = {"FM_TEST_TIMES": self.times, "FOREMAN_HOST": f"load=0,cpus={cpus}", "FOREMAN_SENTINEL": "off",
+                     "SAMPO_SLOTS": str(cpus)}
+
+    def check(self, *extra):
+        """sampo check --affected --json in this process, the run.py command stubbed green: (exit, result, text, limits)."""
+        seen, real = [], c.run_command
+
+        def run(root, cmd, timeout_s, env=None, **kw):
+            if "run.py" not in cmd:
+                return real(root, cmd, timeout_s, env=env, **kw)
+            seen.append(timeout_s)
+            return 0, "Ran 1 test\nOK\n"
+        out, err, cwd = io.StringIO(), io.StringIO(), os.getcwd()
+        os.chdir(self.repo)
+        try:
+            with mock.patch.dict(os.environ, self.host), mock.patch.object(c, "run_command", side_effect=run), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    code = cli.main(["check", "--affected", "--json", *extra])
+                except SystemExit as e:
+                    code = e.code
+        finally:
+            os.chdir(cwd)
+        got = train._result_of(subprocess.CompletedProcess([], 0, out.getvalue(), ""))
+        return code, got, out.getvalue() + err.getvalue(), seen
+
+    def test_sized_deadline_from_the_recorded_seconds(self):  # sized_deadline
+        self.record(calc=800.0, others=300.0)  # the selection is calc: 800 s on one slot x 1.5 = 1200 s
+        code, got, text, seen = self.check()
+        self.assertEqual(code, 0, text)
+        self.assertEqual(seen, [1200], text)
+
+    def test_sized_deadline_never_below_the_fixed_one(self):  # sized_deadline
+        self.record(calc=2.0, others=100.0)  # 2 s of work: the fixed 600 s is more, and a run never stops sooner
+        code, got, text, seen = self.check()
+        self.assertEqual(seen, [600], text)
+
+    def test_sized_deadline_explicit_timeout_wins(self):  # sized_deadline
+        self.record(calc=800.0, others=300.0)
+        code, got, text, seen = self.check("--timeout", "700")
+        self.assertEqual(seen, [700], text)
+
+    def test_sized_deadline_with_no_record_keeps_the_fixed_one(self):  # sized_deadline
+        with open(self.times, "w") as f:
+            json.dump({}, f)
+        self.host = {"FM_TEST_TIMES": self.times, "FOREMAN_HOST": "load=0,cpus=1", "FOREMAN_SENTINEL": "off",
+                     "SAMPO_SLOTS": "1"}
+        code, got, text, seen = self.check()
+        self.assertEqual((code, seen), (0, [600]), text)
+
+    def test_sized_deadline_is_the_hold_checks_rule_not_a_second_one(self):  # sized_deadline
+        self.record(calc=800.0, others=300.0)
+        code, got, text, seen = self.check("--hold", "--evidence", self.tid)
+        self.assertEqual(seen, [1200], "the lane's own check and a bare run size the same way: cli.sized_limit")
 
 
 if __name__ == "__main__":  # T-4491: last, so every class above is defined when it runs

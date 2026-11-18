@@ -6280,6 +6280,8 @@ def _pause_off(args, only):
 
 def cmd_check(args):
     """The project's gate commands (tests, lint, doctor…), run together; any failure exits 1, so a pipe can't mask it."""
+    if getattr(args, "timeout", 600) is None:  # T-4864: no --timeout: an affected run is sized (T-4892), the rest take 600
+        args.timeout, args.timeout_sized = 600.0, True
     if args.action == "office":  # T-1406: one deliverable's check: no project, no gate lock
         from sampo import office
         return office.cmd(args)
@@ -7902,7 +7904,7 @@ def _check_affected(p, args):
     run_id = c.new_run_id(cmd)  # T-4268: the record its run.py leaves is stamped with this id
     env, venv = _venv_env(p.root, _skip_env(skip), cmd)  # T-4150: the project's own interpreter
     limit = c.load_scaled(args.timeout if args.timeout > 0 else None)
-    if hold:  # T-4892: only the lane's own check (accept's, or its rerun) is sized: a foreground run keeps its --timeout
+    if hold or getattr(args, "timeout_sized", False):  # T-4892: the lane's own check is sized; T-4864: so is any run asked with no --timeout
         limit = sized_limit(limit, _estimate(p.root, cmd, env))
     code, output = c.run_command(p.root, cmd, limit, env=env, niced=bool(p.lane),
                                  run_id=run_id)  # T-4197: a lane's affected tests
@@ -9815,7 +9817,8 @@ def _build_parser(only=None):
     s.add_argument("--python", metavar="VER", help="run the gates with python VER (3.12) or 'oldest' (the lowest Sampo "
                                                    "supports) as python3: once before a push to main or a release "
                                                    "(T-1805)")
-    s.add_argument("--timeout", type=float, default=600, help="seconds per command")
+    s.add_argument("--timeout", type=float, default=None, help="seconds per command (default 600; --affected with none: "
+                                                               "sized from the set's recorded seconds, never under 600)")
     s.add_argument("--fresh", action="store_true", help="run even if the gates passed on this exact tree already")
     s.add_argument("--repeat", type=int, default=0, help="run each gate N times and report its pass rate (an "
                                                        "intermittent failure; nothing is recorded; T-0475)")
