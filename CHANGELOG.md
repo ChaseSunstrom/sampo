@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Card requests are now mined from Sampo's own records (pick misses, failed bench rows on the cards-on arm, repeated closed FIX tasks, tool sequences repeated across sessions) as aggregates only, deduplicated by a stable key, by cards and by open requests, so a second run adds nothing (T-4920).
 - Every calling-card call now records its outcome (pass, check_failed, refused, failed or machine) in calls.jsonl, and pick and rank order the cards that fit by their smoothed pass rate, ignoring machine-wide failures, so a card that keeps failing stops being offered first (T-4919).
 - The guard keeps one table of exec wrappers that both the wrapper stripping and the installer scan read, so a wrapper added in one place can't be missed in the other; every verdict is unchanged (T-4859).
 - A typed /fm-risk off|on [here] or /fm-trust off now works from the phone, web and remote control: the prompt hook writes the same record as the mod and answers in one line, while scheduled prompts and tool-typed terminal text starting with them are refused (T-4747).
