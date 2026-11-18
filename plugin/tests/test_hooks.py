@@ -261,6 +261,40 @@ class HookCase(ForemanTestCase):
             return [json.loads(l) for l in f]
 
 
+class SparCrashes(HookCase):  # T-3324: the two crashes T-3281's fuzzer found
+    def test_malformed_stdin_is_a_one_line_refusal_not_a_traceback(self):
+        self.fm("init")
+        e = dict(os.environ, FOREMAN_HOME=self.home)
+        for raw in ("{bad", "null", "[]", "5") * 2:  # past the breaker's limit: bad input is not the hook failing
+            p = subprocess.run([sys.executable, HOOK, "UserPromptSubmit"], input=raw, env=e, cwd=self.repo,
+                               capture_output=True, text=True)
+            self.assertEqual(p.returncode, 0, raw)
+        log = self.hooks_log()
+        self.assertNotIn("Traceback", p.stderr + log)
+        self.assertEqual(log.count("malformed"), 1)  # T-3423: identical lines within a minute log once
+        self.assertFalse(os.path.exists(os.path.join(self.home, "state", "logs", "breaker.json")))
+
+    def test_malformed_input_fails_closed_for_a_gate(self):
+        self.fm("init")
+        e = dict(os.environ, FOREMAN_HOME=self.home)
+        p = subprocess.run([sys.executable, HOOK, "TaskCompleted"], input="{bad", env=e, cwd=self.repo,
+                           capture_output=True, text=True)
+        self.assertEqual(p.returncode, 2)
+        self.assertIn("malformed", p.stderr)
+
+    def test_a_wrong_typed_prompt_is_read_as_empty(self):
+        self.fm("init")
+        p = self.hook("UserPromptSubmit", {"prompt": 5})
+        self.assertEqual(p.returncode, 0)
+        self.assertNotIn("TypeError", self.hooks_log())
+
+    def test_a_prompt_without_a_session_id_does_not_raise_on_the_resume_marker(self):
+        self.fm("init")
+        p = self.hook("UserPromptSubmit", {"prompt": "hello", "session_id": None})
+        self.assertEqual(p.returncode, 0)
+        self.assertNotIn("KeyError", self.hooks_log())
+
+
 class HookMs(HookCase):
     def test_each_hook_ms_event_names_the_tool_and_the_guards_own_ms(self):  # T-3352
         self.fm("init")

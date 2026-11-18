@@ -14,12 +14,23 @@ class Breaker(ForemanTestCase):
         return open(path).read().count("\n") if os.path.exists(path) else 0
 
     def bad(self, event):
-        e = dict(os.environ, FOREMAN_HOME=self.home)
+        """A hook whose handler fails: a planted fault (a sitecustomize), since malformed input is a refusal that never
+        trips the breaker (T-3324) and any real crash a payload finds gets fixed (T-3281's spar files it)."""
         import subprocess
         import sys
         from helpers import HOOK
-        return subprocess.run([sys.executable, HOOK, event], input="{not json", env=e, capture_output=True, text=True,
-                              timeout=10, cwd=self.repo)
+        fault = os.path.join(self.tmp, "fault")
+        os.makedirs(fault, exist_ok=True)
+        with open(os.path.join(fault, "sitecustomize.py"), "w") as f:
+            f.write("import json\n_loads = json.loads\n"
+                    "def loads(s, *a, **k):\n"
+                    "    if s == '{\"planted\": \"fault\"}':\n"
+                    "        raise RuntimeError('planted fault')\n"
+                    "    return _loads(s, *a, **k)\n"
+                    "json.loads = loads\n")
+        e = dict(os.environ, FOREMAN_HOME=self.home, PYTHONPATH=fault)
+        return subprocess.run([sys.executable, HOOK, event], input='{"planted": "fault"}', env=e, capture_output=True,
+                              text=True, timeout=10, cwd=self.repo)
 
     def test_three_failures_pause_an_event_visibly_and_a_success_resets_it(self):
         self.fm("init")

@@ -183,7 +183,18 @@ def _run(event, raw):
             return 0  # T-0087: paused after failing in a row; fm doctor and the band say so
         held = _as_loaded(raw)  # T-2879: an old session's names; written out in the finally below
         try:
-            payload = json.loads(raw) if raw.strip() else {}
+            try:
+                payload = json.loads(raw) if raw.strip() else {}
+                if not isinstance(payload, dict):
+                    raise ValueError(payload)
+            except ValueError:  # T-3324: bad input from outside is a refusal, not the hook failing (no breaker)
+                log_error(event, "malformed hook input (not a JSON object); ignored")
+                if event in UNBREAKABLE:  # a gate fails closed on input it can't read
+                    print("Sampo: the hook's input was malformed, so it is refused.", file=sys.stderr)
+                    return 2
+                return 0
+            if not isinstance(payload.get("prompt", ""), str):  # a wrong-typed prompt reads as empty
+                payload["prompt"] = ""
             handler = HANDLERS.get(event)
             if event == "UserPromptSubmit":
                 _skill_named(payload, payload.get("prompt") if isinstance(payload, dict) else None, typed=True)
@@ -2184,7 +2195,7 @@ def user_prompt_submit(pl):
             if not _mark_second(meta, sid, _claude_pid()) and not _headless():  # T-3331: a second session or a
                 meta["session"] = _holder_rec(sid)  # claude -p never takes the holder's place; T-0841: whose process
             if (meta.get("resume_after_reload") or {}).get("session") == sid:
-                meta.pop("resume_after_reload")  # T-0145: the reloaded mod's prompt (or the user's) resumed it
+                meta.pop("resume_after_reload", None)  # T-0145: the reloaded mod's prompt (or the user's) resumed it
             if "PAUSE" in r.overrides:
                 meta["paused"] = True
             elif "RESUME" in r.overrides:
