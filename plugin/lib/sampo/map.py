@@ -868,11 +868,23 @@ def cmd_outline(args):
         defs, total = outline(args.path)
     except OSError as e:
         raise cli.UsageError(f"can't read {args.path}: {e.strerror}")
+    pattern = getattr(args, "grep", None)
+    if pattern is not None:  # T-4923: the filter runs before the 400-row cap, so a definition past row 400 is still found
+        try:
+            rx = re.compile(pattern)
+        except re.error as e:
+            raise cli.UsageError(f"--grep: not a regular expression ({e})")
+        defs = [d for d in defs if rx.search(d[3])]
     rows = [f"{a:>6}-{b:<6} {'  ' * d}{name}" for a, b, d, name in defs[:400]]
-    cli.out(args, {"path": args.path, "lines": total, "defs": [dict(zip(("start", "end", "depth", "name"), x))
-                                                                 for x in defs]},
-              c.plain_lines(f"{args.path}: {total} lines, {len(defs)} definitions (Read a range with offset/limit)\n"
-                            + "\n".join(rows) + ("\n  …" if len(defs) > 400 else "")))
+    if pattern is not None and not defs:
+        text = f"{args.path}: {total} lines, no definition matches {pattern!r} (drop --grep to list them all)"
+    else:
+        text = (f"{args.path}: {total} lines, {len(defs)} definitions"
+                + (f" match {pattern!r}" if pattern is not None else "") + " (Read a range with offset/limit)\n"
+                + "\n".join(rows) + ("\n  …" if len(defs) > 400 else ""))
+    cli.out(args, {"path": args.path, "lines": total, "grep": pattern,  # T-4923: null when the list is whole
+                   "defs": [dict(zip(("start", "end", "depth", "name"), x)) for x in defs]},
+              c.plain_lines(text))
 
 
 _ADDED = c.lazy(r"(?m)^\+(?!\+\+)(.*)$")

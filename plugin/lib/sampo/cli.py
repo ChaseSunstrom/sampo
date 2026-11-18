@@ -9633,6 +9633,8 @@ def _build_parser(only=None):
     s.add_argument("--days", type=int, default=14, help="how far back the session logs are read (default 14)")
     s = add("outline", lazy("sampo.map", "cmd_outline"), tier=("Finding your way", 350), help="a file's definitions with line ranges (read a range, not all)")
     s.add_argument("path")
+    s.add_argument("--grep", metavar="PATTERN", help="keep only the definitions whose printed label (e.g. 'def NAME') "
+                                                     "matches this regex, case-sensitive, before the 400-row cap")
     from sampo import instr  # T-0701: the instruments, their help and arguments come from one registry
     for name in instr.TOOLS:
         instr.arguments(add(name, lazy("sampo.instr", "cmd_" + name), tier=("Finding your way", 530),

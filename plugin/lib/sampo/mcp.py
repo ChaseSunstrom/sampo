@@ -78,8 +78,11 @@ TOOLS = [
      lambda a, p: ["lib", "show", _val(a, "name", 200)] + (["--section", _val(a, "section", 20, SECTIONS)]
                                                            if "section" in a else [])),
     # T-0946: the read-only instruments, paths confined to the project
-    ("outline", "A file's definitions with line ranges.", _obj(["path"], path=_str("a file in the project")),
-     lambda a, p: ["outline", _inside(p, a, "path")]),
+    ("outline", "A file's definitions with line ranges.",
+     _obj(["path"], path=_str("a file in the project"),
+          grep=_str("optional regex (case-sensitive) the definitions' printed labels must match, e.g. def NAME (T-4923)",
+                    QUERY_CAP)),
+     lambda a, p: ["outline", _inside(p, a, "path")] + (["--grep", _val(a, "grep", QUERY_CAP)] if "grep" in a else [])),
     ("impact", "Likely tests and dependents of a path.", _obj(["path"], path=_str("a path in the project")),
      lambda a, p: ["impact", _inside(p, a, "path")]),
     ("why", "The commits and Sampo tasks behind FILE[:LINE], with their lessons.",
