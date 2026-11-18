@@ -389,6 +389,15 @@ class SampoFrontDoor(unittest.TestCase):  # T-2760
     def doc(self, name):
         return read_text(os.path.join(self.ROOT, name))
 
+    def test_readme_anchor_links_match_headings(self):  # T-3522
+        """Every in-page #anchor in README.md is the GitHub slug of one of its headings (lower case, spaces to hyphens)."""
+        text = self.doc("README.md")
+        slug = lambda h: re.sub(r"[^\w\- ]", "", h.lower()).replace(" ", "-")
+        slugs = {slug(h) for h in re.findall(r"^#+\s+(.+?)\s*$", text, re.M)}
+        for a in re.findall(r'(?:\]\(|href=")#([^)"]+)', text):
+            with self.subTest(anchor=a):
+                self.assertIn(a, slugs)
+
     def test_the_header_is_a_picture_of_the_dark_and_light_runestone(self):
         text = self.doc("README.md")
         head = text[:text.index("</picture>")]
