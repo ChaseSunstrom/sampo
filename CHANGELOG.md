@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- sampo task evidence --background returns at once and records the run when it ends; sampo task evidence wait ID exits 0 (passed), 1 (failed) or 124 (still running) (T-3536).
 - Every Sampo feature earns its use: unused verbs, skills and playbooks whose situation holds now are named, and the read-only ones run themselves at night (fits.py, T-3499) (T-3499).
 - The release watch works again: when a newer Claude Code than the tested one exists it files one "Adapt to Claude Code" task per version listing the changelog bullets, fetches the changelog only when the latest version moves, and files nothing on a rerun (T-3361).
 - A lease denial now tells the holder with one bus note per session pair per 10 minutes, `sampo bus receipt` shows whether it was read, and `sampo lease stats` prints blocks, those resolved without the main thread and the median minutes to resolve (T-3950).
