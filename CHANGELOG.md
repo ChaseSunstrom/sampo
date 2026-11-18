@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Every calling-card call now records its outcome (pass, check_failed, refused, failed or machine) in calls.jsonl, and pick and rank order the cards that fit by their smoothed pass rate, ignoring machine-wide failures, so a card that keeps failing stops being offered first (T-4919).
 - The guard keeps one table of exec wrappers that both the wrapper stripping and the installer scan read, so a wrapper added in one place can't be missed in the other; every verdict is unchanged (T-4859).
 - A typed /fm-risk off|on [here] or /fm-trust off now works from the phone, web and remote control: the prompt hook writes the same record as the mod and answers in one line, while scheduled prompts and tool-typed terminal text starting with them are refused (T-4747).
 - A test run that waits for a CPU slot now says when the wait ended, and check_run records the gate's wall wait as wait_s (T-3421).
