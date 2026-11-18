@@ -11,7 +11,7 @@ Not loaded every session (`~/.claude/rules/foreman.md` points here). Read it whe
 
 ## 1. What Sampo is
 
-Sampo is a local discipline layer for coding agents: a small state CLI `sampo` and one hook dispatcher, packaged as a Claude Code plugin (hooks, skills, always-on rules, read-only agents) and wired into Codex, Gemini CLI and opencode by `sampo agents install`, with `sampo smith` running the same loop on any model. It runs every request, however terse, through one loop:
+Sampo is a local discipline layer for coding agents: a small state CLI `sampo` and one hook dispatcher, packaged as a Claude Code plugin (hooks, skills, always-on rules, read-only agents) and wired into Codex, Gemini CLI (legacy: Code Assist Enterprise/API keys; individuals moved to Antigravity `agy`) and opencode by `sampo agents install`, with `sampo smith` running the same loop on any model. It runs every request, however terse, through one loop:
 
 **capture → expand → ground → plan → execute → verify → reflect → record**
 
@@ -245,7 +245,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmselfcheck` (T-3127: self-checks in `sampo next` and the drive: unshipped work, a retired mirror, the user's asks not landed… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmselfgate` (T-2352: the self-change gate `sampo lane merge` and… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmserve` (`sampo serve` / `sampo run`; `--fit` small tasks first… [→ files-lib-4](docs/map/files-lib-4.md)
-- `fmsession` (`sampo session`: detached agent sessions for claude, codex, gemini… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmsession` (`sampo session`: detached agent sessions for claude, codex, gemini (legacy), opencode, agy, cursor… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsettings` (T-1496: one schema for every setting the sampo smith app's… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsettingsserve` (T-1659: `sampo settings serve`: the settings schema as a… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsetup` [→ files-lib-4](docs/map/files-lib-4.md)

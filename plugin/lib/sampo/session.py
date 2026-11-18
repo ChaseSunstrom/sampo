@@ -1,6 +1,7 @@
 """fm session (T-0323): coding-agent sessions on this device, for any supported agent, started detached so they outlive
 the caller (the desktop app, an ssh pipe). A runner per session runs each turn through the agent's headless streaming
-mode (claude -p stream-json, codex exec --json, gemini -p stream-json, opencode run --format json), resumes by the
+mode (claude -p stream-json, codex exec --json, gemini -p stream-json (legacy: Antigravity `agy` replaced it for individual
+users on 2026-06-18), opencode run --format json, agy -p, cursor-agent -p stream-json), resumes by the
 agent's own session id, and normalises its lines into one event stream:
 
   state/agent-sessions/<id>/meta.json      agent, cwd, status (starting|running|idle|stopped|died), turns, ids
@@ -10,7 +11,7 @@ agent's own session id, and normalises its lines into one event stream:
 
 One runner at a time holds run.lock; `send` queues a message and starts a runner, which exits at once if another holds
 the lock (that one picks the message up before it lets go). The claude normaliser is checked against a real session;
-codex, gemini and opencode follow their docs (none was installed to run here), and lines they add later stay "raw"."""
+codex, gemini, opencode, agy and cursor follow their docs (none was installed to run here), and lines they add later stay "raw"."""
 import fcntl
 import json
 import os
@@ -24,7 +25,8 @@ import time
 
 from sampo import core as c
 
-AGENTS = ("claude", "codex", "gemini", "opencode")
+AGENTS = ("claude", "codex", "gemini", "opencode", "agy", "cursor")  # gemini is legacy (T-3347): Code Assist Enterprise/API keys only
+BINARY = {"cursor": "cursor-agent"}  # the executable where it differs from the agent's name
 FM_BIN = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))), "bin", "fm")
 _ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{4}$")
 _NESTED = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SSE_PORT", "FOREMAN_SESSION_ID", "FOREMAN_DRIVE_TASK")
@@ -82,6 +84,12 @@ def argv(agent, prompt, resume, model, extra):
     if agent == "opencode":
         return (["opencode", "run", "--format", "json"] + (["--session", resume] if resume else [])
                 + (["--model", model] if model else []) + list(extra) + [prompt])
+    if agent == "cursor":  # T-3347: cursor-agent; auth is CURSOR_API_KEY. No --force here: like claude's permission flags, the caller grants it in `extra`
+        return (["cursor-agent", "-p", prompt, "--output-format", "stream-json"]
+                + (["--resume", resume] if resume else []) + (["--model", model] if model else []) + list(extra))
+    if agent == "agy":  # T-3347: Antigravity CLI (docs only); the resume flag is a guess until a real install shows it
+        return (["agy", "-p", prompt, "--output-format", "stream-json"] + (["--resume", resume] if resume else [])
+                + (["--model", model] if model else []) + list(extra))
     raise ValueError(f"unknown agent {agent} (one of {', '.join(AGENTS)})")
 
 
@@ -110,7 +118,8 @@ def normalise(agent, obj, st):
     """One agent output line (a parsed JSON object; None at the end of the turn) as events. `st` is per-turn state.
     A line of a shape the normaliser doesn't expect is kept raw: it never stops the runner."""
     try:
-        return {"claude": _claude, "codex": _codex, "gemini": _gemini, "opencode": _opencode}[agent](obj, st)
+        return {"claude": _claude, "codex": _codex, "gemini": _gemini, "opencode": _opencode,
+                "cursor": _cursor, "agy": _agy}[agent](obj, st)
     except (AttributeError, TypeError, KeyError, ValueError):
         return _raw(obj) if obj is not None else []
 
@@ -220,6 +229,39 @@ def _gemini(o, st):
         return flush() + [_ev("error", text=str(o.get("message") or ""))]
     if t == "result":
         return flush() + [_ev("result", ok=o.get("status") == "success")]
+    return _raw(o)
+
+
+def _cursor(o, st):  # cursor-agent stream-json; shapes from its docs, unverified against a real binary
+    if o is None:
+        return []
+    t = o.get("type")
+    if t == "system":
+        return [_ev("init", agent_session=o.get("session_id"), model=o.get("model"))] if o.get("subtype") == "init" else []
+    if t == "user":
+        return []
+    if t == "assistant":
+        return [_ev("text", text=b.get("text") or "") for b in (o.get("message") or {}).get("content") or []
+                if isinstance(b, dict) and b.get("type") == "text"]
+    if t == "tool_call":
+        name, body = next(iter((o.get("tool_call") or {}).items()), (None, {}))  # {"readToolCall": {"args", "result"}}
+        if o.get("subtype") == "started":
+            return [_ev("tool", tool=re.sub(r"ToolCall$", "", name or ""), detail=_detail(body.get("args")), id=o.get("call_id"))]
+        res = body.get("result") or {}
+        return [_ev("tool_result", id=o.get("call_id"), ok="success" in res,
+                    text=_text(res.get("success") or res.get("error") or "")[-2000:])]
+    if t == "result":
+        return [_ev("result", ok=not o.get("is_error") and o.get("subtype", "success") == "success",
+                    text=str(o.get("result") or "")[:4000], agent_session=o.get("session_id"))]
+    return _raw(o)
+
+
+def _agy(o, st):  # agy's JSON envelope {conversation_id, status, response, usage}; per-event types are not documented: raw
+    if o is None:
+        return []
+    if "status" in o and "conversation_id" in o:
+        return [_ev("init", agent_session=o.get("conversation_id")), _ev("text", text=str(o.get("response") or "")),
+                _ev("result", ok=o.get("status") == "success", usage=o.get("usage"))]
     return _raw(o)
 
 
@@ -501,7 +543,7 @@ def remove(sid):
 def agents():
     out = []
     for a in AGENTS:
-        path = shutil.which(a)
+        path = shutil.which(BINARY.get(a, a))
         version = None
         if path:
             try:

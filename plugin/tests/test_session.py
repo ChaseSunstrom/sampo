@@ -160,7 +160,7 @@ class Session(ForemanTestCase):
 
     def test_agents_lists_what_is_installed(self):
         rows = {r["agent"]: r for r in json.loads(self.fm("session", "agents", "--json", env=self.env).stdout)["agents"]}
-        self.assertEqual(set(rows), {"claude", "codex", "gemini", "opencode"})
+        self.assertEqual(set(rows), {"claude", "codex", "gemini", "opencode", "agy", "cursor"})
         self.assertTrue(rows["claude"]["installed"])
 
 
@@ -209,6 +209,44 @@ class Normalise(ForemanTestCase):
             {"type": "result", "status": "success", "stats": {}}])
         self.assertEqual([e["kind"] for e in ev], ["init", "text", "tool", "tool_result", "result"])
         self.assertEqual((ev[1]["text"], ev[2]["detail"]), ("Hello", "ls"))
+
+    # T-3347: the cursor and agy fixtures are written from the documented event shapes, NOT recorded from real binaries.
+    def test_cursor_stream_json(self):
+        ev, _ = self.kinds("cursor", [
+            {"type": "system", "subtype": "init", "session_id": "c-1", "model": "gpt-x", "cwd": "/w"},
+            {"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}, "session_id": "c-1"},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Hello"}]}, "session_id": "c-1"},
+            {"type": "tool_call", "subtype": "started", "call_id": "k1",
+             "tool_call": {"readToolCall": {"args": {"path": "a.py"}}}},
+            {"type": "tool_call", "subtype": "completed", "call_id": "k1",
+             "tool_call": {"readToolCall": {"args": {"path": "a.py"}, "result": {"success": {"content": "x", "totalLines": 1}}}}},
+            {"type": "result", "subtype": "success", "is_error": False, "result": "Hello", "session_id": "c-1"}])
+        self.assertEqual([e["kind"] for e in ev], ["init", "text", "tool", "tool_result", "result"])
+        self.assertEqual((ev[0]["agent_session"], ev[2]["tool"], ev[2]["detail"], ev[3]["ok"], ev[4]["ok"]),
+                         ("c-1", "read", "a.py", True, True))
+        bad, _ = self.kinds("cursor", [{"type": "result", "subtype": "error", "is_error": True, "result": "no key"}])
+        self.assertEqual((bad[0]["ok"], bad[0]["text"]), (False, "no key"))
+
+    def test_run_failover_accepts_agy_and_cursor(self):
+        from sampo import cli
+        for a in ("agy", "cursor"):
+            self.assertEqual(cli.build_parser().parse_args(["run", "--failover", a]).failover, a)
+
+    def test_agy_json_envelope(self):
+        ev, _ = self.kinds("agy", [{"conversation_id": "a-1", "status": "success", "response": "done",
+                                    "usage": {"input_tokens": 3}}])
+        self.assertEqual([e["kind"] for e in ev], ["init", "text", "result"])
+        self.assertEqual((ev[0]["agent_session"], ev[1]["text"], ev[2]["ok"]), ("a-1", "done", True))
+        bad, _ = self.kinds("agy", [{"conversation_id": "a-1", "status": "error", "response": ""}])
+        self.assertFalse(bad[-1]["ok"])
+
+    def test_cursor_and_agy_argv(self):
+        self.assertEqual(s.argv("cursor", "go", "c-1", "gpt-x", []),
+                         ["cursor-agent", "-p", "go", "--output-format", "stream-json", "--resume", "c-1",
+                          "--model", "gpt-x"])
+        self.assertNotIn("--force", s.argv("cursor", "go", None, None, []))  # write mode is the caller's grant
+        self.assertIn("--force", s.argv("cursor", "go", None, None, ["--force"]))
+        self.assertEqual(s.argv("agy", "go", None, None, []), ["agy", "-p", "go", "--output-format", "stream-json"])
 
     def test_opencode_run_json(self):
         ev, _ = self.kinds("opencode", [

@@ -10735,7 +10735,7 @@ def _build_parser(only=None):
                                                           "(kept as its journal, beside the new one) and starts over "
                                                           "(T-4204)")
     s.add_argument("--worker", metavar="CLI", help="an installed CLI does each step and fix round instead of the "
-                                                   "model: claude, codex, gemini, aider, or 'CMD {prompt}'; "
+                                                   "model: claude, codex, gemini, agy, cursor, aider, or 'CMD {prompt}'; "
                                                    "the harness reverts what the guard refuses and its verify decides "
                                                    "(T-1214)")
     s.add_argument("--worker-timeout", type=int, metavar="SECONDS", help="each worker turn's limit (default 1200)")
@@ -10898,8 +10898,8 @@ def _build_parser(only=None):
                                                           "slots (T-3293)")
     s.add_argument("--why", metavar="REASON", help="rm: drop the builder's work (its branch is kept, a locked worktree "
                                                    "goes); the next sampo lane brief starts from this (T-1823)")
-    s = add("session", lazy("sampo.session", "cmd_session"), tier=("Running elsewhere", 1160), help="agent sessions on this device (claude, codex, gemini, "
-                                                                "opencode), detached: start MESSAGE, list, tail ID, "
+    s = add("session", lazy("sampo.session", "cmd_session"), tier=("Running elsewhere", 1160), help="agent sessions on this device (claude, codex, gemini (legacy), "
+                                                                "opencode, agy, cursor), detached: start MESSAGE, list, tail ID, "
                                                                 "send ID MESSAGE, stop ID, rm ID, agents")
     s.add_argument("action", nargs="?", default="list",
                    choices=["start", "list", "tail", "send", "stop", "rm", "agents", "_run"])
@@ -10944,7 +10944,7 @@ def _build_parser(only=None):
                                                           "run stops it and goes on (0: never; T-0447)")
     s.add_argument("--fit", action="store_true", help="small tasks first (S, M, then L), so more finish before a usage "
                                                       "limit; on by itself while usage runs ahead of pace (T-0732)")
-    s.add_argument("--failover", choices=["codex", "gemini", "opencode"],
+    s.add_argument("--failover", choices=["codex", "gemini", "opencode", "agy", "cursor"],
                    help="opt-in for this run: when a usage limit outlasts --wait, hand the task's packet to this agent "
                         "(it leaves for that provider; T-0731)")
     s.add_argument("--wait", type=float, default=6, help="hours to wait out usage limits in total (0: stop at one)")
