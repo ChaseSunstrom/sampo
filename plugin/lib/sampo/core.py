@@ -707,6 +707,19 @@ def trusted():
         return None
 
 
+def end_trust(p, session=None, via="cli"):
+    """T-4747: the one way trust ends, shared by `sampo trust off` and the UserPromptSubmit hook's /fm-trust off: removes
+    the record and logs trust_off. True when there was a record (a second run changes and logs nothing)."""
+    if not trusted():
+        return False
+    try:
+        os.remove(trust_path())
+    except FileNotFoundError:
+        return False  # another process ended it first
+    log_event(p, "trust_off", data={"via": via}, session=session)
+    return True
+
+
 PAUSED = ("paused (sampo pause): nothing unattended starts until sampo pause off lifts it "
           "(a session's own pause: that session may; the user's: only they do; sampo pause says whose)")  # T-4190
 
@@ -766,6 +779,193 @@ def take_pause_stamp(session):
         except OSError:
             pass
     return fresh
+
+
+TYPED_QUIET = 900        # a switch typed into a prompt waits this long after any call that named a terminal typer
+TYPED_DETACHED = 2 * 3600  # a typer left to run on its own (nohup, setsid, a trailing &) can type this long after its call
+TYPED_BG_FALLBACK = 2 * 3600  # a background job whose end event never came counts as ended this long after it began
+TYPED_KEEP = 7 * 86400   # a stamp whose call never reported back (a crash) is dropped after this: housekeeping, not a rule
+_BOOT_ID = "/proc/sys/kernel/random/boot_id"
+
+
+def typed_dir():
+    return os.path.join(state_dir(), "typed")
+
+
+def _typed_name(key):
+    return re.sub(r"[^\w.-]", "_", str(key or "none"))[:80]
+
+
+def _boot():
+    try:
+        with open(_BOOT_ID, encoding="utf-8") as f:
+            return f.read(64).strip()
+    except OSError:
+        return ""
+
+
+def stamp_typed(key, running=True, session=None, agent=None, bg=False, quiet=None):
+    """T-4747: a tool call (PreToolUse, running) that names a terminal-typing tool may type a line into a Claude Code
+    prompt, which reaches the prompt hook exactly as a person's does, and no line can be told from the person's own
+    afterwards. So the call leaves a stamp, one file per call (`key`: its tool_use_id, so parallel calls overwrite
+    nothing), and typed_refuse refuses a switch while a stamp is young or its call runs. The record keeps who made it
+    (session, agent: the end of that thread clears a call no Post came for, typed_end), whether it left a job behind (bg:
+    a run_in_background call or a Monitor; only that job's end clears it, or the 2 h fallback), its own quiet time (900 s,
+    2 h for a detached typer) and the boot it was made in (a reboot ends every call). Stamps past their quiet time, from
+    another boot, unreadable or older than TYPED_KEEP go here, so the folder stays small. A lost write reads as no stamp,
+    so the hook that stamps logs the error."""
+    d = typed_dir()
+    os.makedirs(d, exist_ok=True)
+    t, boot = time.time(), _boot()
+    for n in os.listdir(d):
+        rec = _typed_read(os.path.join(d, n))
+        if rec is None or _typed_gone(rec, t, boot):
+            try:
+                os.remove(os.path.join(d, n))
+            except OSError:
+                pass
+    rec = {"at": t, "running": bool(running), "session": session or "", "agent": agent or "", "bg": bool(bg),
+           "task": "", "quiet": quiet or TYPED_QUIET, "boot": boot}
+    write_atomic(os.path.join(d, _typed_name(key)), json.dumps(rec))
+
+
+def _typed_read(path):
+    """A stamp file as a record, or None (unreadable, not a record). A record from before round 4
+    has only `at` and `running`: the rest read as unknown (no session, the ordinary quiet time, no boot)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            rec = json.load(f)
+        at = rec["at"]
+        if not isinstance(at, (int, float)) or isinstance(at, bool):
+            return None
+        q = rec.get("quiet")
+        q = q if isinstance(q, (int, float)) and not isinstance(q, bool) and 0 < q <= TYPED_DETACHED else TYPED_QUIET
+        s = lambda k: rec.get(k) if isinstance(rec.get(k), str) else ""
+        return {"at": at, "running": rec.get("running") is True, "session": s("session"), "agent": s("agent"),
+                "bg": rec.get("bg") is True, "task": s("task"), "quiet": q, "boot": s("boot")}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        pass
+    return None
+
+
+def _typed_state(rec, t):
+    """(running, until) for one record at time t: while running, `until` is when its quiet time would end if it ended now;
+    a job left in the background that never reported its end counts as ended TYPED_BG_FALLBACK after it began. A record
+    only the hygiene age (TYPED_KEEP) removes: a running id is never expired by a clock otherwise."""
+    at, running = rec["at"], rec["running"]
+    if running and (rec["bg"] or rec["task"]) and t - at >= TYPED_BG_FALLBACK:
+        running, at = False, at + TYPED_BG_FALLBACK
+    if running:
+        return True, t + rec["quiet"]
+    return False, at + rec["quiet"]
+
+
+def _typed_gone(rec, t, boot):
+    """True when a record counts for nothing any more: another boot's, past its quiet time, or past TYPED_KEEP."""
+    return bool(rec["boot"] and boot and rec["boot"] != boot) or t - rec["at"] > TYPED_KEEP or _typed_state(rec, t)[1] <= t
+
+
+def typed_rec(key):
+    """The stamp of call `key`, or None."""
+    return _typed_read(os.path.join(typed_dir(), _typed_name(key)))
+
+
+def _typed_write(path, rec):
+    write_atomic(path, json.dumps(rec))
+
+
+def typed_done(key, task=None):
+    """The call `key` is over (PostToolUse or PostToolUseFailure): its stamp, if it left one, stops running and its time
+    is now, because a call can type in its last moment. With `task` (a job it left in the background; "" when the id
+    didn't read) it keeps running, from its original time, and remembers the job: typed_bg_done ends it. No stamp:
+    nothing."""
+    path = os.path.join(typed_dir(), _typed_name(key))
+    rec = _typed_read(path)
+    if rec is None:
+        return
+    if task is not None:
+        rec["task"] = task
+    else:
+        rec.update(at=time.time(), running=False)
+    _typed_write(path, rec)
+
+
+def typed_bg_done(task_id):
+    """A background job ended (a task notification, TaskStop, KillShell): the stamps that remember it stop running, as of
+    now. No id, no match: nothing."""
+    if not task_id or not isinstance(task_id, str):
+        return
+    d = typed_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        rec = _typed_read(os.path.join(d, n))
+        if rec and rec["running"] and rec["task"] == task_id:
+            rec.update(at=time.time(), running=False)
+            _typed_write(os.path.join(d, n), rec)
+
+
+def typed_end(session, agent=None, all_=False):
+    """A thread ended, so the calls it made that no Post reported (an interrupt, a crash of the turn) are over:
+    Stop (`session`): that session's main-thread calls that left no job behind; SubagentStop (`agent`): that agent's;
+    SessionEnd (`all_`): every one of that session's. Each becomes a finished stamp at now, so the quiet time still
+    follows. A stamp from before round 4 has no session and is never cleared this way (the 7-day hygiene age gets it)."""
+    d = typed_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    for n in names:
+        path = os.path.join(d, n)
+        rec = _typed_read(path)
+        if not rec or not rec["running"] or not rec["session"]:
+            continue
+        if all_:
+            hit = rec["session"] == session
+        elif agent:
+            hit = rec["agent"] == agent and not (rec["bg"] or rec["task"])
+        else:
+            hit = rec["session"] == session and not rec["agent"] and not (rec["bg"] or rec["task"])
+        if hit:
+            rec.update(at=time.time(), running=False)
+            _typed_write(path, rec)
+
+
+def unstamp_typed(key):
+    """The guard refused the call `key`: it never runs, so it types nothing. Gone already counts as done."""
+    try:
+        os.remove(os.path.join(typed_dir(), _typed_name(key)))
+    except FileNotFoundError:
+        pass
+
+
+def typed_refuse():
+    """T-4747: None when a /fm-risk or /fm-trust prompt may pass, else (running, until): the one rule, for every session on
+    this machine (a pane can be typed into from any of them). Refused while a stamp is younger than its own quiet time
+    (900 s; 2 h for a detached typer), or a call that named a typer is still running (`running`: True; `until` is then
+    when its own quiet time would end if it ended now; a background job with no end event counts as ended after 2 h).
+    Nothing is spent and nothing retries: a line typed again is refused again until the time passes. Corrupt, other-boot
+    and over-age stamps are removed."""
+    d = typed_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return None
+    t, boot, running, until = time.time(), _boot(), False, 0.0
+    for n in names:
+        path = os.path.join(d, n)
+        rec = _typed_read(path)
+        if rec is None or _typed_gone(rec, t, boot):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            continue
+        r, u = _typed_state(rec, t)
+        running, until = running or r, max(until, u)
+    return (running, until) if running or until else None
 
 
 def pause_info():

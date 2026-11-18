@@ -164,6 +164,10 @@ def _as_loaded(raw):
 
 def _run(event, raw):
     t0 = time.monotonic()
+    if event in ("PostToolUse", "PostToolUseFailure"):
+        _typed_done(raw, event)  # T-4747: first of all: the quiet/lite/paused returns below must not leave a call "running"
+    elif event in ("Stop", "SubagentStop", "SessionEnd"):
+        _typed_end(raw, event)  # T-4747: the thread's calls no Post reported are over
     if event != "PreToolUse" and (_quiet() or (event not in LITE_KEEPS and _lite(raw))):  # lite keeps the gates
         return 0
     if event == "PostToolUse" and _lite(raw):  # lite: only the grant an approved fm ask dialog gives
@@ -176,7 +180,7 @@ def _run(event, raw):
             log_error(event, _tb())
         return 0
     if event == "PreToolUse":
-        code = _pre_tool_use(raw)
+        code = _pre_typed(raw)
     else:
         code, state = 0, ({} if event in UNBREAKABLE else breaker().get(event) or {})
         if state.get("until", 0) > time.time():
@@ -499,6 +503,11 @@ def _event(rec):
                       json.dumps(c.redact_obj(rec), ensure_ascii=False) + "\n")
     except OSError:
         pass
+    if rec.get("kind") == "bg_done":  # T-4747: a typing call's background job ended: its stamp stops running
+        try:
+            c.typed_bg_done(rec.get("id"))
+        except Exception:
+            log_error("bg_done", _tb())
 
 
 def _cwd(pl):
@@ -1927,7 +1936,8 @@ def _sent_by_program(hc=None):
     Claude's own Bash, was a yes in the asking session — or when that Claude Code can't be found."""
     hc = hc or _hook_claude()
     return not hc or any(a in _PROGRAM_FLAGS or re.fullmatch(r"-[A-Za-oq-z]*p[A-Za-z]*", a)
-                         or a.startswith(tuple(f + "=" for f in _PROGRAM_FLAGS[1:])) for a in hc[2][1:])
+                         or a.startswith(tuple(f + "=" for f in _PROGRAM_FLAGS[1:]))
+                         or a.lstrip().startswith("/fm-") for a in hc[2][1:])  # T-4747: `claude '/fm-risk off'`: the prompt is argv's
 
 
 def _claude_id(hc=None):
@@ -2084,6 +2094,259 @@ def _secret_note(text):
     return f"Pasted secret ({kinds[0]}): don't repeat or store it; suggest rotating it"
 
 
+# T-4747: exactly one of these, nothing around it (a sentence that mentions one is the model's to read). /fm-trust on
+# stays the foreman-ui mod's, typed in the terminal: it lets Claude edit the guard.
+_FM_SWITCH = c.lazy(r"/fm-(?:(risk)[ \t]+(off|on)(?:[ \t]+(here))?|(trust)[ \t]+(off))\Z")
+_FM_SWITCH_TYPED = c.lazy(r"\s*/fm-(?:risk|trust)\b", re.I)  # a scheduled prompt that starts like one
+
+
+# T-4747: what can put a line in a Claude Code prompt without a person: a tool call typing into a terminal (the call marks
+# the session: core.stamp_typed), a claude started inside a claude, a subagent. Each is named by what it is, not by a
+# command shape: the text a call carries is whatever its author makes it.
+# A cheap superset of what fmguard.typer_commands / typer_content can match: a call whose text holds none of these costs a
+# regex scan, not a parse. (`script` in "javascript" runs the parse and finds nothing.)
+_TYPING_PRE = c.lazy(
+    r"tmux|screen|xdotool|ydotool|dotool|wtype|kitty|kitten|wezterm|zellij|byobu|dtach|abduco|reptyr|ttyecho|script|expect"
+    r"|unbuffer|uinput|TIOCSTI|pty|/dev/pts|0x5412|21522|/fm-|send-?keys?|send-text|paste-buffer|load-buffer|set-buffer"
+    r"|stuff|keydown|keyup", re.I)
+_TYPING_TOOLS = ("Bash", "Monitor")  # execute a command line: the typer must be a command word of it
+_TYPING_WRITES = ("Write", "Edit", "MultiEdit", "NotebookEdit")  # write text a later run executes: typer_content's rule
+_TYPING_MCP = c.lazy(r"computer|keyboard|terminal|tmux|(?:^|_)(?:send_?keys?|press)(?:_|$)", re.I)
+# The tool's own name (after the server's) when it puts text in a field or key by key: no single call need hold the switch's
+# text. A browser's `browser_type` and `fill` count; `set_field_type` or `get_content_type` (a type is a noun there) do not.
+_TYPING_MCP_BARE = c.lazy(
+    r"(?:(?:browser|page|element|keyboard|screen|ui|computer|desktop|terminal|text)_)?"
+    r"(?:type|keys?|fill|fill_form|press_key|press|send_input|input_text|enter_text|write_text|send_keys?|hold_keys?)"
+    r"(?:_(?:text|keys?|string|input|chars?))?", re.I)
+_DETACHED = c.lazy(r"(?<![\w-])(?:nohup|setsid|disown|systemd-run)(?![\w-])|(?<![&>])&[ \t]*\Z", re.M)
+
+
+def _strings(v, depth=3):
+    """The strings of a tool's input, nested a few levels, each cut at 200 KB."""
+    if isinstance(v, str):
+        yield v[:200_000]
+    elif depth and isinstance(v, dict):
+        for x in v.values():
+            yield from _strings(x, depth - 1)
+    elif depth and isinstance(v, list):
+        for x in v[:200]:
+            yield from _strings(x, depth - 1)
+
+
+def _typer_guard():
+    """fmguard with typer_commands, the working copy or the committed one; None when neither has it."""
+    try:
+        import fmguard as g
+        if hasattr(g, "typer_commands"):
+            return g
+    except Exception:
+        pass
+    g = _committed("fmguard")
+    return g if g is not None and hasattr(g, "typer_commands") else None
+
+
+def _new_texts(ti):
+    """The text a Write, Edit, MultiEdit or NotebookEdit call puts in a file."""
+    out = [ti.get(k) for k in ("content", "new_string", "new_source")]
+    for e in (ti.get("edits") or [])[:200]:
+        if isinstance(e, dict):
+            out.append(e.get("new_string"))
+    return [s for s in out if isinstance(s, str)]  # never cut: fmguard.typer_content answers "big" for a text too long to read
+
+
+def _typing_call(pl):
+    """T-4747: the names of the terminal typers this tool call types with ([] when none). A Bash or Monitor command counts a
+    typer only as a command word (fmguard.typer_commands: not `grep tmux`); a file a call writes counts when its new text
+    names a typer together with /fm- or a word that puts text in (typer_content), the write that a later run executes; an
+    MCP tool counts when it types or drives a computer (a bare `type` or `key` tool only when its input holds /fm-).
+    Unreadable or no fmguard: stamps (["unloaded"])."""
+    tool, ti = pl.get("tool_name"), pl.get("tool_input")
+    ti = ti if isinstance(ti, dict) else {}
+    if isinstance(tool, str) and tool.startswith("mcp__"):
+        if _TYPING_MCP.search(tool):
+            return ["mcp"]
+        return ["mcp"] if _TYPING_MCP_BARE.fullmatch(tool.rsplit("__", 1)[-1]) else []  # one key at a time: "/", "fm-risk off", Enter
+    if tool in _TYPING_TOOLS:
+        cmd = ti.get("command")
+        if not isinstance(cmd, str) or not _TYPING_PRE.search(cmd):
+            return []
+        g = _typer_guard()
+        return g.typer_commands(cmd) if g else ["unloaded"]
+    if tool in _TYPING_WRITES:
+        texts = [s for s in _new_texts(ti) if _TYPING_PRE.search(s)]
+        if not texts:
+            return []
+        g = _typer_guard()
+        if not g:
+            return ["unloaded"]
+        names = []
+        for s in texts:
+            names += [f"write:{n}" for n in g.typer_content(s)]
+        return list(dict.fromkeys(names))
+    return []
+
+
+def _typed_key(pl):
+    """The key of a call's typing stamp: its tool_use_id (so parallel calls keep one each), else the session's `.noid`."""
+    tid = pl.get("tool_use_id")
+    return tid if isinstance(tid, str) and tid else f"{pl.get('session_id')}.noid"
+
+
+_TOOL_USE_ID = c.lazy(r'"tool_use_id"\s*:\s*"([^"\\]{1,200})"')
+
+
+_BG_ID = c.lazy(r"\bID:?\s*([\w-]+)|backgroundTaskId\W+([\w-]+)")
+_BG_MOVED = c.lazy(r"moved to the background \(ID:\s*([\w-]+)|Monitor started \(task\s+([\w-]+)")
+
+
+def _typed_done(raw, event="PostToolUse"):
+    """T-4747: PostToolUse and PostToolUseFailure, before anything that can return early: the call's typing stamp (if it
+    left one) stops running and starts its quiet time. Found by a scan, not a parse: a Post that stamped nothing costs a
+    stat. A call that left a job behind (run_in_background, a Monitor, a command the harness moved to the background)
+    keeps running under the job's id until that job's bg_done."""
+    try:
+        i = raw.find('"tool_use_id"')
+        m = _TOOL_USE_ID.match(raw, i) if i >= 0 else None
+        if m:
+            key = m.group(1)
+        elif i < 0 and '"session_id"' in raw:
+            key = f"{json.loads(raw).get('session_id')}.noid"
+        else:
+            return
+        rec = c.typed_rec(key)
+        if rec is None:
+            return
+        if event == "PostToolUseFailure" or not (rec.get("bg") or "moved to the background" in raw):
+            c.typed_done(key)
+            return
+        resp = json.dumps((json.loads(raw) or {}).get("tool_response"))
+        mm = (_BG_ID if rec.get("bg") else _BG_MOVED).search(resp) or _BG_MOVED.search(resp)
+        c.typed_done(key, task=(mm.group(1) or mm.group(2)) if mm else "")
+    except Exception:
+        log_error("PostToolUse", _tb())
+
+
+def _typed_end(raw, event):
+    """T-4747: Stop, SubagentStop and SessionEnd: the calls of the thread that ended which no Post reported are over (an
+    interrupted turn leaves a stamp "running" for good otherwise). Each becomes finished now, its quiet time still
+    follows. Nothing on disk to clear: nothing parsed."""
+    try:
+        if not os.path.isdir(c.typed_dir()):
+            return
+        pl = json.loads(raw) if raw.strip() else {}
+        sid = pl.get("session_id") if isinstance(pl, dict) else None
+        if not sid:
+            return
+        if event == "SessionEnd":
+            c.typed_end(sid, all_=True)
+        elif event == "SubagentStop" and pl.get("agent_id"):
+            c.typed_end(sid, agent=pl.get("agent_id"))
+        elif event == "Stop":
+            c.typed_end(sid)
+    except Exception:
+        log_error(event, _tb())
+
+
+def _pre_typed(raw):
+    """T-4747: the guard (_pre_tool_use) behind a typing stamp. A Bash or Monitor command, a file write or an MCP tool
+    that types into a terminal (_typing_call) is stamped as running before the guard looks at it; when the guard denies
+    it (it never runs, so it types nothing) the stamp goes again. The stamp is logged as an event with the names matched
+    (never the command). A broken stamp is logged and the guard's answer stands."""
+    key = None
+    if '"Bash"' in raw or '"Monitor"' in raw or "mcp__" in raw or any(f'"{t}"' in raw for t in _TYPING_WRITES):
+        try:
+            pl = json.loads(raw)
+            names = _typing_call(pl) if isinstance(pl, dict) else []
+            if names:
+                ti = pl.get("tool_input") if isinstance(pl.get("tool_input"), dict) else {}
+                tool = pl.get("tool_name")
+                bg = tool == "Monitor" or bool(ti.get("run_in_background"))
+                detached = tool in _TYPING_TOOLS and bool(_DETACHED.search(str(ti.get("command") or "")))
+                key = _typed_key(pl)
+                c.stamp_typed(key, bool(pl.get("tool_use_id")), session=pl.get("session_id"), agent=pl.get("agent_id"),
+                              bg=bg, quiet=c.TYPED_DETACHED if detached else None)  # no id: only the quiet time
+                _event({"kind": "typed_stamp", "tool": tool, "session_id": pl.get("session_id"), "matched": names[:8],
+                        "bg": bg, "detached": detached})
+        except Exception:  # no stamp reads as no typing: log it; the guard's own answer still stands
+            log_error("PreToolUse", _tb())
+            key = None
+    if key is None:
+        return _pre_tool_use(raw)
+    import io
+    out, real = io.StringIO(), sys.stdout
+    sys.stdout = out
+    try:
+        code = _pre_tool_use(raw)
+    except BaseException:
+        sys.stdout = real
+        raise
+    sys.stdout = real
+    text = out.getvalue()
+    sys.stdout.write(text)
+    if code == 2 or '"permissionDecision": "deny"' in text:
+        try:
+            c.unstamp_typed(key)
+        except Exception:
+            log_error("PreToolUse", _tb())
+    return code
+
+
+def _nested_claude(hc):
+    """T-4747: True when the Claude Code running this hook was started inside another claude: a claude-named process stands
+    above its parent (`unbuffer claude '/fm-risk off'`, script, expect, pty.spawn: a program typing into a pty, no -p).
+    Ancestry alone decides: the CLAUDECODE=1 marker is one `env -u` from gone. A person's claude run from a shell that
+    sits under another claude is refused too (type it in a terminal of your own). No /proc: False."""
+    from sampo import bus
+    return any(bus._comm(q) == "claude" or os.path.basename((_argv(q) or [""])[0]) == "claude"
+               for q, _ in bus._chain(hc[0], 24)[2:])
+
+
+def _fm_switch(p, m, sid, pl=None):
+    """T-4747: what the foreman-ui mod's command.run does, for a prompt that reached the hook as plain text. The reply
+    line (the turn's answer, no model) says what it did and for which projects, or that it did not run. None: this is
+    not a person's prompt (claude -p from a program, or a Claude Code the hook can't identify), so it reaches the model
+    as before and moves nothing. The record's `via` is "prompt"."""
+    try:
+        hc = _hook_claude()
+        if _sent_by_program(hc):
+            return None
+        if (pl or {}).get("agent_id"):
+            return "Nothing changed: this prompt came from a subagent, not from you. Type it yourself in the main session."
+        if _nested_claude(hc):
+            return ("Nothing changed: this Claude Code runs inside another claude (a program typing, not you). "
+                    "Type it in your own session.")
+        held = c.typed_refuse()
+        if held:
+            running, until = held
+            meanwhile = f"{m.group(0)} typed in the terminal itself works meanwhile."
+            if running:
+                return ("Nothing changed: a tool call that names a terminal typer (tmux, xdotool, ...) is still running, "
+                        "so this line may not be yours. It passes 15 minutes after that call ends; " + meanwhile)
+            return ("Nothing changed: a tool call that names a terminal typer (tmux, xdotool, ...) ran in the last 15 "
+                    f"minutes, so this line may not be yours. It passes after {time.strftime('%H:%M', time.localtime(until))}; "
+                    + meanwhile)
+        if m.group(4):  # /fm-trust off
+            gone = c.end_trust(p, session=sid, via="prompt")
+            return ("Trust off: Claude needs your yes again to edit the guard and Claude Code settings. /fm-trust on, "
+                    "typed in the terminal, turns it back on." if gone else
+                    "Trust was already off; nothing changed.") + " (Done by Sampo's prompt hook, not the model.)"
+        from sampo import risk
+        turn_off, here = m.group(2) == "off", bool(m.group(3))
+        risk.set_switch(p, turn_off, here, "prompt", session=sid)
+        where = "this project" if here else "every project"
+        if turn_off:
+            line = f"Risk budget off for {where} (by you, from this prompt). /fm-risk on restores it."
+        else:
+            left = risk.off_line(p)
+            line = (f"Removed the risk-budget off switch for {where}." +
+                    (f" Still off: {left}; the other switch is /fm-risk on{'' if here else ' here'}." if left
+                     else " The risk budget is on."))
+        return line + " (Done by Sampo's prompt hook, not the model.)"
+    except Exception:  # the user asked and nothing ran: say so rather than let it look done or vanish
+        log_error("UserPromptSubmit", _tb())
+        return "Sampo: /fm-risk and /fm-trust did not run (sampo doctor shows the error). In a terminal: sampo risk off | sampo trust off."
+
+
 WHICH_HINT = 'Unsure which skill fits: sampo which "<the task>"'  # T-1699
 _NAMES_SKILL = c.lazy(r"/[\w-]+:[\w-]+|\bskills?\b|\bplaybooks?\b|\b(?:fm|sampo) which\b", re.I)  # a request naming its own
 
@@ -2119,6 +2382,11 @@ def user_prompt_submit(pl):
                     + "\n(Answered by Sampo from its state, without the model; ask in more words for more.)"}
         except Exception:
             log_error("UserPromptSubmit", _tb())
+    sw = _FM_SWITCH.match(text)
+    if sw:  # T-4747: /fm-risk and /fm-trust off, typed where the foreman-ui mod isn't loaded (a phone, the web)
+        reason = _fm_switch(p, sw, sid, pl)
+        if reason:
+            return {"decision": "block", "reason": reason}
     r = c.parse_intake(text)
     if _CORRECTION.match(text):  # R2: the user's corrections, for /sampo:reflect to turn into durable preferences
         try:
@@ -2612,6 +2880,11 @@ def _committed(name):
 
 OUTWARD = {"PushNotification", "Artifact", "ArtifactData", "ArtifactComments", "SendMessage", "RemoteTrigger"}
 SCHEDULERS = {"CronCreate", "ScheduleWakeup", "RemoteTrigger"}  # their prompt later arrives as if typed
+_SCHEDULER_NAME = c.lazy(r"schedul|cron|trigger|wake|remind|later|delay|timer", re.I)  # T-4747: any tool, MCP ones too
+
+
+def _scheduler(tool):
+    return tool in SCHEDULERS or (isinstance(tool, str) and bool(_SCHEDULER_NAME.search(tool)))
 OUTWARD_MCP = "mcp__claude_ai_Claude_Docs__"
 _READS = {"get", "list", "query", "profiles", "read", "open", "quickstart", "guide", "export"}
 
@@ -2780,6 +3053,14 @@ def _pre_tool_use(raw):
                                                      "permissionDecisionReason": (
                 "Sampo: a scheduled prompt that starts with a yes could answer a pending sampo ask in the user's place. "
                 "Word it as an instruction (for example 'continue the queue').")}}))
+            return 0
+        # T-4747: the prompt hook answers a typed /fm-risk off and /fm-trust off, so a scheduled prompt that starts with
+        # one would move the user's brake or trust in their place
+        if _scheduler(tool) and any(_FM_SWITCH_TYPED.match(_PASTED.sub("", s)) for s in _strings(ti)):
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                     "permissionDecisionReason": (
+                "Sampo: a scheduled prompt that starts with /fm-risk or /fm-trust would run the user's own switch in their "
+                "place (the prompt hook answers it as typed). Only the user types those; word it as an instruction.")}}))
             return 0
         if tool in OUTWARD or tool.startswith(OUTWARD_MCP):  # T-0784: content leaving the machine
             try:

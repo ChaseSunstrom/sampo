@@ -447,10 +447,11 @@ class SampoTestCase(unittest.TestCase):
     def fm_json(self, *args, **kw):
         return json.loads(self.fm(*args, "--json", **kw).stdout)
 
-    def hook(self, event, payload, env=None, timeout=10, flags=None):
+    def hook(self, event, payload, env=None, timeout=10, flags=None, nested=False):
         e = dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_HOOK_SLACK=str(busy_factor()),  # T-3366
                  FOREMAN_NO_PROMPT_MAC="1")  # T-4844: a hook process in a test never opens the account's real MAC key
         e.pop("SAMPO_HOOK_SLACK", None)  # core.mirror_env would let it win over the value above
+        e.pop("CLAUDECODE", None)  # T-4747: Claude Code's marker in a child's environment: a suite run under it is no nest
         e.update(env or {})
         payload = dict({"session_id": "sess-1", "cwd": self.repo, "hook_event_name": event}, **payload)
         # T-1226: the hook asks which Claude Code runs it and how it was started; by default this test's process (a
@@ -459,9 +460,53 @@ class SampoTestCase(unittest.TestCase):
             import forkcli
             return forkcli.run(HOOK, [event], cwd=payload["cwd"], env=e, input=json.dumps(payload),
                                timeout=timeout * busy_factor())  # T-1730: a hang guard, not a bench
-        return subprocess.run([self.claude_stand_in(), "-c", RELAY, sys.executable, HOOK, event, *flags],
+        argv = [self.claude_stand_in(), "-c", RELAY, sys.executable, HOOK, event, *flags]
+        if nested:  # T-4747: that claude run by a python that another claude ran: a claude inside a claude (unbuffer claude …)
+            argv = [self.claude_stand_in(), "-c", "import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:]).returncode)", *argv]
+        else:  # T-4747: the stand-in is the topmost claude the hook sees (a suite run from a Claude Code session has a real one above)
+            e["PYTHONPATH"] = os.pathsep.join([self.chain_cut()] + ([e["PYTHONPATH"]] if e.get("PYTHONPATH") else []))
+        return subprocess.run(argv,
                               input=json.dumps(payload), env=e, capture_output=True, text=True,
                               timeout=timeout * busy_factor(), cwd=payload["cwd"])
+
+    def chain_cut(self):
+        """T-4747: a folder with a sitecustomize that ends the hook's view of its process chain at the outermost stand-in
+        claude. The hook counts a claude above its own Claude Code as a nested one, and a suite run from a Claude Code
+        session (a builder's, the check's) has a real claude above every child, which no reparenting escapes (run.py's
+        workers are subreapers). The hook's own code is untouched: only this test's child process loads the cut."""
+        cut = os.path.join(self.tmp, "chain-cut")
+        if not os.path.exists(os.path.join(cut, "sitecustomize.py")):
+            os.makedirs(cut, exist_ok=True)
+            with open(os.path.join(cut, "sitecustomize.py"), "w") as f:
+                f.write(
+                    "import subprocess, sys\n"
+                    "def stand_in(pid):\n"
+                    "    try:\n"
+                    "        with open(f'/proc/{pid}/cmdline', 'rb') as f:\n"
+                    "            return b'/stand-in/claude' in f.read()\n"
+                    "    except OSError:\n"
+                    "        r = subprocess.run(['ps', '-o', 'args=', '-p', str(pid)], capture_output=True, text=True)\n"
+                    "        return '/stand-in/claude' in r.stdout\n"
+                    "class Cut:\n"
+                    "    def find_spec(self, name, path=None, target=None):\n"
+                    "        if name != 'sampo.bus':\n"
+                    "            return None\n"
+                    "        sys.meta_path.remove(self)\n"
+                    "        import importlib.util\n"
+                    "        spec = importlib.util.find_spec(name)\n"
+                    "        real = spec.loader.exec_module\n"
+                    "        def run(mod):\n"
+                    "            real(mod)\n"
+                    "            orig = mod._chain\n"
+                    "            def chain(pid, depth):\n"
+                    "                out = orig(pid, depth)\n"
+                    "                top = [i for i, (q, _) in enumerate(out) if stand_in(q)]\n"
+                    "                return out[:top[-1] + 1] if top else out\n"
+                    "            mod._chain = chain\n"
+                    "        spec.loader.exec_module = run\n"
+                    "        return spec\n"
+                    "sys.meta_path.insert(0, Cut())\n")
+        return cut
 
     def slow_start(self, delay=0.4):
         """T-1280: env for CI's slow interpreter start: every new Python process waits `delay` s (a sitecustomize)."""

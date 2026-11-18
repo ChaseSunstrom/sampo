@@ -5620,8 +5620,7 @@ def cmd_trust(args):
     p = resolve(args)
     rec = c.trusted()
     if args.state == "off" and rec:
-        os.remove(c.trust_path())
-        c.log_event(p, "trust_off", session=session())
+        c.end_trust(p, session=session())
         rec = None
     elif rec:
         with c.lock(p.dir):

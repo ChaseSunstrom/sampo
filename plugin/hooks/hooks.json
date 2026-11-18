@@ -31,7 +31,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task",
+        "matcher": "Bash|Write|Edit|MultiEdit|NotebookEdit|Agent|Task|Monitor",
         "hooks": [
           {
             "type": "command",
@@ -46,6 +46,20 @@
       },
       {
         "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/fast",
+            "args": [
+              "PreToolUse"
+            ],
+            "timeout": 5,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__.*(computer|keyboard|terminal|tmux|type|key|press|schedul|cron|trigger|wake|remind|later|delay|timer).*",
         "hooks": [
           {
             "type": "command",

@@ -5303,6 +5303,324 @@ def _interp_links(cmd, ctx):
 
 _CC_SET = lazy(r"^(?:CLAUDECODE|CLAUDE_CODE_ENTRYPOINT)\+?=")
 _CC_VARS = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")
+# T-4747: programs that put text into another terminal as keystrokes, and what they would put there
+_TYPERS = ("tmux", "screen", "xdotool", "ydotool", "dotool", "wtype", "kitty", "kitten", "wezterm", "zellij", "byobu")
+_SEND_VERBS = {"send-keys", "send", "send-key", "paste-buffer", "load-buffer", "set-buffer", "type", "key", "keydown",
+               "keyup", "stuff", "send-text", "write", "paste"}  # a typer's words that put text in; reading is none
+_REMOTE_RUNNERS = ("ssh", "mosh", "pct", "lxc", "docker", "podman", "kubectl", "nsenter", "su", "script", "watch",
+                   "unbuffer", "expect", "sh", "bash", "zsh", "dash", "setsid", "nohup", "flock", "chroot", "systemd-run")
+_SWITCH_TEXT = lazy(r"/fm-(?:risk|trust)", re.I)
+_SWITCH_FIRST = lazy(r"\s*/fm-(?:risk|trust)\b", re.I)  # a prompt that starts like the command
+
+
+def _inner_words(argv):
+    """The words a runner (ssh box …, bash -c "…", docker exec c …) hands on: its arguments, each one that holds a
+    space read as the command line it is."""
+    out = []
+    for w in argv:
+        try:
+            out += shlex.split(w) if re.search(r"\s", w) else [w]
+        except ValueError:
+            out.append(w)
+    return out
+
+
+def _after(argv, names):
+    """(the program, the words after it) for the command's own program when its base name is in `names`, else for the
+    first such word of a runner's arguments; None when it is neither."""
+    if not argv:
+        return None
+    name = os.path.basename(argv[0])
+    if name in names:
+        return name, argv[1:]
+    if name not in _REMOTE_RUNNERS:
+        return None  # git commit -m 'tmux …' is only text
+    inner = _inner_words(argv[1:])
+    for i, w in enumerate(inner):
+        if os.path.basename(w) in names:
+            return os.path.basename(w), inner[i + 1:]
+    return None
+
+
+def _types_switch(words, shell=""):
+    """T-4747: whether one simple command types /fm-risk or /fm-trust into a terminal (tmux send-keys, xdotool type, a
+    paste, a write to a pty): the UserPromptSubmit hook answers those as the user's own typed words, so a tool call that
+    types them would move the brake or trust in the user's place. The words are joined without a gap, so a command
+    split over arguments ('/' 'fm-risk') reads whole; a typer a runner starts (ssh box tmux …, bash -c "tmux …") is read
+    too, and only a word that puts text in counts (send-keys, type, paste-buffer…: reading a pane is no typing). This
+    is the plain case: the channel itself is closed by the typing stamp (hooks._pre_typed), which refuses a typed
+    /fm-risk for 15 minutes after any tool call that names a typer, whatever text it carries. A claude started with the command
+    as its prompt (not -p) is the same forgery: its prompt reaches the hook as a person's."""
+    argv, _ = _strip_wrappers(words)
+    if not argv:
+        return False
+    typer = _after(argv, _TYPERS)
+    if typer and _SWITCH_TEXT.search("".join(typer[1])) and (typer[0] == "wtype" or any(w in _SEND_VERBS for w in typer[1])):
+        return True
+    claude = _after(argv, ("claude",))
+    if claude and not any(re.fullmatch(r"--print|-[A-Za-oq-z]*p[A-Za-z]*", w) for w in claude[1]) \
+            and any(_SWITCH_FIRST.match(w) for w in claude[1]):
+        return True
+    return bool(_SWITCH_TEXT.search("".join(argv)) and re.search(r">+\s*/dev/(?:pts/\d+|tty\w*)", shell or ""))
+
+
+# T-4747 round 4: what the typing stamp (hooks._pre_typed) reads. A command is stamped when a terminal typer is a COMMAND
+# WORD of it (through bash -c, wrappers, nesting): `grep tmux notes` or `cat tmux.conf` name one as data and stamp nothing.
+_TYPER_WORDS = frozenset(_TYPERS) | {"dtach", "abduco", "reptyr", "ttyecho", "script", "expect"}
+_TMUXISH = ("tmux", "byobu")
+_TMUX_READ = frozenset({"capture-pane", "capturep", "list-panes", "lsp", "list-sessions", "ls", "list-windows", "lsw",
+                        "display-message", "display", "has-session", "has", "show-options", "show", "list-clients", "lsc",
+                        "list-buffers", "lsb", "show-buffer", "showb", "show-environment", "showenv"})
+_TYPER_SUBCOMMANDS = frozenset({"send-keys", "send-key", "send-text", "paste-buffer", "load-buffer", "set-buffer"})  # no program of
+# these names exists: as a command word one is a typer's subcommand whose typer was computed
+_TMUX_VALUED = ("-L", "-S", "-f", "-c", "-T")  # tmux's options that take a value; the rest are flags
+_SCREEN_READ = ("-ls", "-list", "-v", "-wipe")
+_TYPER_RUNNERS = frozenset(_REMOTE_RUNNERS) | {"find", "parallel", "doas", "pkexec", "run0", "runuser", "sg", "strace", "ltrace",
+                                               "taskset", "chrt", "unshare", "firejail", "bwrap", "fakeroot", "entr", "at",
+                                               "batch", "setpriv", "xargs", "cpulimit", "inotifywait", "screen", "tmux"}
+_TYPER_DATA_READERS = frozenset({"grep", "egrep", "fgrep", "rg", "ag", "cat", "less", "more", "ls", "echo", "printf", "which",
+                                 "whereis", "type", "man", "head", "tail", "pgrep", "pkill", "ps", "dpkg", "apt", "pacman",
+                                 "git", "wc", "stat"})
+_SHELL_NAME = lazy(r"(?:ba|z|da|k|fi|a|c|tc)?sh")
+_INTERPRETER = lazy(r"(?:python[\d.]*|perl|ruby|node|nodejs|php|lua|deno|bun|pwsh|powershell|osascript|awk|gawk)")
+_TYPER_NAME = lazy(r"(?<![\w.-])(tmux|screen|xdotool|ydotool|dotool|wtype|kitty|kitten|wezterm|zellij|byobu|dtach|abduco"
+                         r"|reptyr|ttyecho|unbuffer|pexpect)(?![\w-])", re.I)
+# the words that put text in: narrow on purpose (a bare type, key, send, write or paste is everyday English and code)
+_NARROW_SEND = lazy(r"send-?keys?\b|send-text|paste-buffer|load-buffer|set-buffer|(?<![\w-])stuff(?![\w-])|keydown|keyup"
+                          r"|\b(?:xdotool|ydotool|dotool)\b[^\n]{0,80}?\b(?:type|key)\b|(?<![\w.-])wtype(?![\w-])", re.I)
+_LOW_LEVEL = lazy(r"TIOCSTI|pty\.spawn|pty\.fork|openpty|forkpty|/dev/pts/\d|/dev/uinput|(?<![\w.])(?:0x5412|21522)(?!\w)"
+                        r"|pexpect", re.I)
+
+
+_TYPER_CAP = 200_000  # the longest text read word by word; a longer one stamps when it names a typer at all (one linear scan)
+
+
+def _names_typer(text):
+    """Whether a text too long to read names a typer with a word that puts text in, or a low-level way to type."""
+    return bool(_TYPER_NAME.search(text) and ("/fm-" in text or _NARROW_SEND.search(text)) or _LOW_LEVEL.search(text))
+
+
+def typer_content(text):
+    """T-4747 round 4: the typer names text carries as something it WOULD DO: a typer's name together with `/fm-` or one of
+    the words that put text in (send-keys, paste-buffer, xdotool type…), or a low-level way to type into a pty (TIOCSTI,
+    pty.spawn, /dev/uinput…). This is the rule for text a call writes for a later run (a file, a heredoc, an interpreter's
+    code); a typer named alone (`# tmux is optional`, a variable called tmux_name) is not one. [] when it types nothing."""
+    if len(text) > _TYPER_CAP:  # never cut: a typer past the cut would stamp nothing
+        return ["big"] if _names_typer(text) else []
+    out = [m.group(1).lower() for m in _TYPER_NAME.finditer(text)]
+    out = list(dict.fromkeys(out)) if "/fm-" in text or _NARROW_SEND.search(text) else []
+    if _LOW_LEVEL.search(text):
+        out.append("pty")
+    return out
+
+
+_SEG_WORDS = frozenset({";", "\\;", "&&", "||", "|", "&", "+", "-exec", "-execdir", "-ok", "-okdir"})
+
+
+_SHELL_META = lazy(r"[;&|\n`]|\$\(")
+_CMD_LINE = lazy(r"\s|\$\(|`")
+# the options with which a "data reader" runs a command of its own (git -c core.pager=…, man -P, less +!, rg --pre): such a
+# reader is not exempt, and what it is given is read as a command line
+_READER_RUNS = {
+    "git": lazy(r"-c|--config-env(?:=.*)?|--exec-path(?:=.*)?|--upload-pack(?:=.*)?|--receive-pack(?:=.*)?|--exec(?:=.*)?"
+                      r"|config|alias\..*"),  # git config writes a command into config (alias.x '!CMD'): T-4747 round 10
+    "printf": lazy(r"-v.*"),  # printf -v X 'text' puts the text in a variable a later line runs
+    "man": lazy(r"-P|--pager(?:=.*)?|-H|--html(?:=.*)?"),
+    "less": lazy(r"\+!.*|--lesskey.*"), "more": lazy(r"\+!.*"),
+    "rg": lazy(r"--pre(?:=.*)?|--hostname-bin(?:=.*)?"), "ag": lazy(r"--pager(?:=.*)?"),
+    "apt": lazy(r"-o"), "dpkg": lazy(r"--(?:pre|post)-invoke(?:=.*)?"),
+}
+_RUNS_ENV = lazy(r"(?:LESSOPEN|LESSCLOSE|PAGER|GIT_PAGER|MANPAGER|GIT_SSH_COMMAND|GIT_EXTERNAL_DIFF|EDITOR|VISUAL|BROWSER)=.*")
+
+
+def _reader_runs(seg):
+    """Whether the data reader that leads `seg` is given an option that runs a command."""
+    pat = _READER_RUNS.get(seg[0])
+    return any(_RUNS_ENV.fullmatch(w) or (pat is not None and pat.fullmatch(w)) for w in seg[1:])
+
+
+def _scan_segment(seg, depth, tmuxish=False, skip_first=False):
+    """T-4747 round 6: the typers one command's words (a runner's arguments up to its next separator) hand to a program: the
+    first command-like word (a typer, a shell, an interpreter, eval, another runner) is read by `_typer_cmd` with the words
+    after it, so interpreters, computed words, nested sh -c and runners go through the one parser. A data reader (grep, cat…
+    by bare name, with no option that runs a command) hides what follows it in its own segment: `docker exec c grep tmux`
+    names a typer as data. A word that computes ($T, `…`) is read the same and the scan goes on."""
+    names = []
+    for i, w in enumerate(seg):
+        if w in _TYPER_DATA_READERS:
+            if not _reader_runs(seg[i:]):
+                break
+            for x in seg[i + 1:]:  # `core.pager=CMD`, `--pre=CMD`, `+!CMD`, `PAGER=CMD`: the value is a command line
+                cmd = x[2:] if x.startswith("+!") else x.split("=", 1)[1] if "=" in x else ""
+                if cmd:
+                    names += typer_commands(cmd, depth + 1)
+        if skip_first and i == 0:
+            continue
+        b = os.path.basename(w)
+        if b in _TYPER_WORDS or (b in _TYPER_SUBCOMMANDS and not tmuxish) or b in _TYPER_RUNNERS or b == "eval" \
+                or _SHELL_NAME.fullmatch(b) or _INTERPRETER.fullmatch(b):
+            names += _typer_cmd(seg[i:], depth + 1)
+            break
+        if re.search(r"[$`]", w):
+            names += _typer_cmd(seg[i:], depth + 1)
+    return names
+
+
+def _runner_names(args, depth, tmuxish=False):
+    """T-4747 round 6: the typers a runner's arguments hand on. Three readings, all bounded by the depth cap: (1) the words
+    as they are, cut at ; && || | & \\; + and find's -exec/-execdir/-ok, each cut scanned (an interpreter keeps its code
+    argument whole); (2) when a word holds a separator or substitution, the arguments joined with spaces and read again as
+    one command line, as the shell ssh, watch or su -c hands them to reads them (`ssh box grep x f\\;tmux send-keys`: the
+    remote line is `grep x f;tmux send-keys`); (3) an argument that is itself a command line (a space, `$(`, a backtick)
+    through typer_commands, which reads substitutions, subshells, bash -c and heredocs. A joined or per-argument reading
+    is skipped past 50 KB of arguments (it would multiply the work for nothing): such a line stamps as "big"."""
+    names, first = [], tmuxish
+    args = [str(a).replace("$\\n", "\n") for a in args]  # the tokenizer leaves $'\n' as `$\n`: a newline, which cuts a command
+    groups, cur = [], []
+    for w in args:
+        if w in _SEG_WORDS:
+            groups.append(cur)
+            cur = []
+        else:
+            cur.append(w)
+    groups.append(cur)
+    big = sum(len(a) for a in args) > 50_000
+    for g in groups:
+        if not g:
+            continue
+        names += _scan_segment(g, depth, tmuxish, first)
+        first = False
+        if big:
+            continue
+        if any(_SHELL_META.search(w) for w in g):
+            text = " ".join(g)
+            try:
+                for c in _split(_tokens(_lines(text))):
+                    names += _scan_segment([str(x) for x in c.argv], depth, tmuxish)
+                for body in _subst_bodies(text):
+                    names += typer_commands(body, depth + 1)
+            except Exception:
+                names.append("unparsed")
+        for w in g:
+            if _CMD_LINE.search(w):
+                names += typer_commands(w, depth + 1)
+    if big:
+        names.append("big")
+    return names
+
+
+def _tmux_stamps(args):
+    """Whether a tmux (or byobu) command line is more than reading: its first non-option word must be a literal read-only
+    subcommand and no `;` may chain another on. No subcommand, a computed one or anything else stamps."""
+    i = 0
+    while i < len(args) and args[i].startswith("-"):
+        i += 2 if args[i] in _TMUX_VALUED else 1
+    if i >= len(args) or args[i] not in _TMUX_READ:
+        return True
+    return any(";" in a for a in args[i:])
+
+
+def _typer_cmd(argv, depth):
+    """The typer names one simple command (argv) types with, [] when none."""
+    if not argv:
+        return []
+    if depth > 4:
+        return ["deep"]  # runners nested past what a line can sensibly do: stamps, and bounds the work
+    dropped = []
+    argv, _ = _strip_wrappers(argv, dropped)
+    names = ["unbuffer"] if any(os.path.basename(d) == "unbuffer" for d in dropped) else []
+    if not argv or (any(os.path.basename(d) == "command" for d in dropped) and any(d in ("-v", "-V") for d in dropped)):
+        return names  # command -v tmux asks where it is
+    w0, args = argv[0], argv[1:]
+    base = os.path.basename(w0)
+    if base in _TMUXISH:
+        if _tmux_stamps(args):
+            names.append(base)
+    elif base == "screen":
+        if not args or args[0] not in _SCREEN_READ:
+            names.append("screen")
+    elif base in _TYPER_WORDS:
+        names.append(base)
+    elif base in _TYPER_SUBCOMMANDS:  # `$(echo tmux) send-keys x` splits to ["$"], ["echo","tmux"], ["send-keys","x"]
+        names.append("computed")
+    elif re.search(r"[$`]", w0):  # a computed command word: only when what it is given is a typer's sending words
+        joined = " ".join(map(str, args))
+        if "/fm-" in joined or _NARROW_SEND.search(joined):
+            names.append("computed")
+    elif _SHELL_NAME.fullmatch(base):
+        for s in _shell_c(args):
+            names += typer_commands(s, depth + 1)
+    elif base == "eval":
+        names += typer_commands(" ".join(map(str, args)), depth + 1)
+    elif _INTERPRETER.fullmatch(base):
+        names += [f"{base}:{n}" for n in typer_content(" ".join(map(str, args)))]
+    if base in _TYPER_RUNNERS and base not in _TYPER_WORDS or base in _TMUXISH + ("screen",):
+        names += _runner_names(args, depth, base in _TMUXISH + ("screen",))
+    return names
+
+
+_PIPE_FILTERS = frozenset({"sort", "uniq", "cut", "tr", "nl", "tac", "column", "fold", "rev", "expand", "unexpand"})
+
+
+def _bare_reader(argv):
+    """Whether a command is a data reader that runs nothing: a bare-name reader (or a plain filter) with no option that runs one."""
+    return bool(argv) and (argv[0] in _PIPE_FILTERS or argv[0] in _TYPER_DATA_READERS and not _reader_runs(list(argv)))
+
+
+def typer_commands(cmd, depth=0, consumed=False):
+    """T-4747 round 4: the terminal typers a Bash command (or Monitor's) would type with, by name; [] when none. A typer
+    counts when it is a COMMAND WORD (read the way the guard reads one: through bash -c, wrappers, runners, command
+    substitutions and heredocs, to a depth of 4: deeper reads ["deep"], which stamps), never as an argument of grep or cat.
+    tmux and screen are typers unless the subcommand is a literal read-only one (capture-pane, list-sessions…): a computed
+    one stamps. A word that is computed stamps only when the words it is given put text in. The text a command writes
+    for a later run (a heredoc body, a redirect's text, an interpreter's code) goes by typer_content. Anything unreadable
+    stamps ["unparsed"]."""
+    if depth > 4:
+        return ["deep"]
+    if len(cmd) > _TYPER_CAP:  # never cut (a typer after the cut would slip through): too long to read, it stamps if it names one
+        return ["big"] if _TYPER_NAME.search(cmd) or "/fm-" in cmd or _NARROW_SEND.search(cmd) or _LOW_LEVEL.search(cmd) else []  # a command word may be computed
+    try:
+        plain, bodies = _heredocs(cmd)
+        names = [f"heredoc:{n}" for n in typer_content(bodies)] if bodies else []
+        cmds = _split(_tokens(_lines(plain)))  # a newline between commands cuts like `;` (was read as a space: T-4747 round 6)
+        eaten = [False] * len(cmds)  # whether another program takes the command's output (T-4747 round 8)
+        proc = any(x.procsub for x in cmds)  # a <( ) or >( ) body: what runs inside it is read by the command that holds it
+        for i in range(len(cmds) - 1, -1, -1):
+            eaten[i] = consumed or (proc and cmds[i].depth > 0) or (
+                i + 1 < len(cmds) and cmds[i + 1].op.startswith("|") and not (_bare_reader(cmds[i + 1].argv) and not eaten[i + 1]))  # "|(" is a piped group
+        for c, ate in zip(cmds, eaten):
+            names += _typer_cmd(list(c.argv), depth)
+            stripped, _ = _strip_wrappers(list(c.argv))
+            for w in c.argv[:len(c.argv) - len(stripped)]:  # the text of a leading assignment (X='tmux send-keys …'; $X) is read: round 9
+                k = w.find("=") if isinstance(w, str) else -1
+                if k > 0 and w[:k].rstrip("+").isidentifier():
+                    names += [f"assign:{n}" for n in typer_content(w[k + 1:])]
+                    if re.search(r"\s", w[k + 1:]):
+                        names += typer_commands(w[k + 1:], depth + 1)
+            lead = 0
+            while lead < len(c.argv) and isinstance(c.argv[lead], str) and (k := c.argv[lead].find("=")) > 0 and c.argv[lead][:k].rstrip("+").isidentifier():
+                lead += 1  # NAME=value words before the command word are not it: X=1 grep tmux f is grep's
+            argv = c.argv[lead:]
+            reader = _bare_reader(argv)  # a data reader: by bare name (/tmp/grep is not one), without an option that runs a command
+            for op, w in c.feeds:  # a here-string is the text a shell or interpreter runs (bash <<< 'tmux send-keys …'): T-4747 round 7
+                if op == "<<<" and isinstance(w, str) and w and not (reader and not ate):
+                    names += [f"herestring:{n}" for n in typer_content(w)] + typer_commands(w, depth + 1)
+            if argv and (not reader or ate):  # an option that runs a command (sed s///e, rsync -e, tar --to-command, vim -c)
+                words = [a for a in argv[1:] if isinstance(a, str)]
+                if reader:  # its output is run or read as a program (echo '…' | bash, $(echo '…')): the words it prints are the command line
+                    names += [f"out:{n}" for n in typer_content(" ".join(words))]
+                for a in words:
+                    if a != "$" and re.search(r"\s", a):
+                        names += [f"arg:{n}" for n in typer_content(a)] + (typer_commands(a, depth + 1) if reader else [])
+            if (c.redirs or os.path.basename(argv[0] if argv else "") == "tee") and argv:
+                names += [f"write:{n}" for n in typer_content(" ".join(map(str, argv[1:])))]
+        for body in _subst_bodies(plain):
+            names += typer_commands(body, depth + 1, consumed=True)  # a substitution's output is used by the command around it
+        if _LOW_LEVEL.search(cmd):
+            names.append("pty")
+    except Exception:
+        return ["unparsed"]
+    return list(dict.fromkeys(names))
 
 
 def _hides_claude(words):
@@ -7296,6 +7614,10 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
         if _hides_claude(c.argv):
             found.append(("self-authorize", "it unsets or overrides CLAUDECODE or CLAUDE_CODE_ENTRYPOINT, which fm "
                                             "reads to know Claude, not the user, runs it"))
+        if _types_switch(c.argv, shell):
+            found.append(("self-authorize", "it types /fm-risk or /fm-trust into a terminal (or starts claude with one as "
+                                            "its prompt): the prompt hook answers those as the user's own words, so "
+                                            "only the user types them"))
         rm_vars = env or fixed  # T-0190: a literal set once before a branch holds for rm as for a write
         names, val = [name], None
         if re.search(r"[$`]", name):  # T-0587: a name bash computes, read every way it may run

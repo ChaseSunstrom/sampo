@@ -792,6 +792,23 @@ def _replay_text(rep):
     return "\n".join(lines)
 
 
+def set_switch(p, turn_off, here, via, session=None):
+    """T-3752/T-4747: the one writer of the budget's off record, shared by `sampo risk off|on`, and the UserPromptSubmit
+    hook's /fm-risk (the foreman-ui mod writes the same fields itself). here: this project's record, else the one for
+    every project. via names the path ("cli", "prompt", the mod's origin). Logs risk_off or risk_on; returns the path."""
+    path = os.path.join(p.dir if here else c.state_dir(), OFF)
+    if turn_off:
+        c.write_atomic(path, json.dumps({"on": True, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                         "via": via}))
+    else:
+        try:
+            os.remove(path)
+        except FileNotFoundError:  # another switch got there first: the record is gone, which is what was asked
+            pass
+    c.log_event(p, "risk_off" if turn_off else "risk_on", data={"here": bool(here), "via": via}, session=session)
+    return path
+
+
 def cmd_risk(args):
     from sampo import cli
     p = cli.resolve(args)
@@ -799,13 +816,7 @@ def cmd_risk(args):
         rep = replay(p, min(max(int(args.days or 7), 1), 30))
         return cli.out(args, rep, _replay_text(rep))
     if args.action in ("off", "on"):  # T-3752: off is the user's (the guard refuses an agent's); the mod writes it too
-        path = os.path.join(p.dir if args.here else c.state_dir(), OFF)
-        if args.action == "off":
-            c.write_atomic(path, json.dumps({"on": True, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                                             "via": "cli"}))
-        elif os.path.exists(path):
-            os.remove(path)
-        c.log_event(p, "risk_off" if args.action == "off" else "risk_on", data={"here": bool(args.here)})
+        set_switch(p, args.action == "off", bool(args.here), "cli")
         return cli.out(args, {"off": off(p)}, off_line(p) or "risk budget on")
     if args.action == "set":
         if args.day is None or not (math.isfinite(args.day) and args.day >= 0):

@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import time
+import unittest.mock
 
 from test_hooks import HookCase
 
@@ -242,6 +243,21 @@ class RiskOff(HookCase):
         with open(path, "w") as f:
             json.dump(rec, f)
         return path
+
+    def test_set_switch_on_survives_the_record_going_first(self):
+        # T-4747: two prompts (or a prompt and `sampo risk on`) removing the record at once: the loser's remove finds it gone
+        self.fm("init")
+        p = self.project()
+        path = self.off()
+        real = os.remove
+
+        def gone(target, *a, **kw):
+            real(target, *a, **kw)
+            raise FileNotFoundError(target)  # the other writer's remove landed between the exists check and this one
+        with unittest.mock.patch.object(os, "remove", gone):
+            risk.set_switch(p, False, False, "prompt")
+        self.assertFalse(os.path.exists(path))
+        self.assertIn("risk_on", [e["event"] for e in c.ledger_tail(p, 20)])
 
     def test_off_everywhere_or_here_stops_the_step_down_and_on_restores(self):
         self.fm("init")
