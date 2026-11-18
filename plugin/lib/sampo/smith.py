@@ -175,7 +175,7 @@ LIB_TOOL = {"name": "lib", "description": "Open one stack card of the library, a
 # something edited, a run that changed a file); and when the turns run out with edits in the tree, the run carries on
 # (T-4151: two test edits, then 13 runs that were greps and ls, 8 reads, step undone). T-4291: it carries on while the
 # last PROGRESS_WINDOW turns moved something (a file to a content the window had not seen, a test whose exit or failure
-# count changed) and no one action repeated three times in them: CARRY_TURNS more each time, CARRY_MAX carries at most,
+# count changed) and no one action repeated three times in them: CARRY_TURNS more each time, CARRY_MAX carries at most when the run has no deadline (T-4500: with one, the clock is the limit),
 # and only with CARRY_MIN_LEFT_S of deadline left (a run past its deadline stops, as before)
 PROGRESS_WINDOW, CARRY_TURNS, CARRY_MAX, CARRY_MIN_LEFT_S = 12, 20, 4, 90
 _CHANGE = re.compile(r"(?<![\w.])(?:fix|repair|make(?! sure)|add|implement|handle|change|rename|remove|update|speed up)"
@@ -3061,7 +3061,7 @@ class Run:
         left = self.ends - time.monotonic() if self.ends else None
         if left is not None and left < CARRY_MIN_LEFT_S:
             return False, f"{max(int(left), 0)} s of deadline left, under {CARRY_MIN_LEFT_S} s"
-        if self.carries >= CARRY_MAX:
+        if left is None and self.carries >= CARRY_MAX:  # T-4500: with a deadline the clock is the limit, not a count
             return False, f"all {CARRY_MAX} carries used"
         return True, moved[-1]
 
@@ -3083,7 +3083,7 @@ class Run:
         left = f"{max(int(self.ends - time.monotonic()), 0)} s" if self.ends else "no deadline"
         self.log(kind="carry_on", phase=name, cap=self.max_steps, why=why, carry=self.carries)
         self.emit("note", f"  out of turns with progress ({why}): carrying on, cap {old} -> {self.max_steps} for "
-                          f"{name} ({left} left, carry {self.carries} of {CARRY_MAX})")
+                          f"{name} ({left} left, carry {self.carries}" + (", by the clock)" if self.ends else f" of {CARRY_MAX})"))
         return True
 
     def lines(self):

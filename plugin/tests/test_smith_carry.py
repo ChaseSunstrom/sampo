@@ -57,6 +57,18 @@ class Progressing(Budget):
         self.assertIn("used all 86 turns", out)
         self.assertIn("carries", out, "the stop names the carries used up")
 
+    def test_progressing_by_the_clock_a_run_with_a_deadline_carries_past_the_fourth_carry(self):
+        # T-4500: the same hundred drafts with a deadline and time left: the clock is the limit, not a count of four
+        # (a local model's run was stopped at 320 turns with 46 minutes left and its work put back)
+        big = [dict(s, **{"in": 50000}) for s in (*writes(100), SRC_EDIT, VERIFY)]  # the last two close the step
+        f, r = self.go(*big, extra=("--max-steps", "6", "--deadline", "600"))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        out = r.stdout + r.stderr
+        self.assertEqual(self.stats(r)["carried"], 5, "the cap goes 6, 26, 46, 66, 86, 106: the run closes at turn 103")
+        self.assertIn("86 -> 106", out)
+        self.assertIn("carry 5,", out, "with a deadline the note counts the carries without a limit")
+        self.assertEqual(self.task()["status"], "done")
+
     def test_progressing_an_edit_between_runs_of_the_same_red_test_is_no_repeat(self):
         # review of T-4291: edit, test, edit, test: the test is red each time with the same count, but the file changed
         # between its runs, so the run is working, not repeating itself
