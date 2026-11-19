@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A card's escalation no longer swallows smith's budget stop: a run whose --max-usd is spent when a card closes stops right there with the cap's own message (T-4860).
 - MASTER.md's section 10 (Known limitations, 5.7 KB) moves to docs/map/guide-1.md beside sections 2 and 5, its heading kept with a pointer, so the system map has 16 KB of room for a train's file-map lines instead of 0.6 KB (T-5339).
 - The speed-promise table now also holds CPU ratios for sampo status, task list and queue, gated by the same two-window Live test as the other hot verbs (T-5028).
 - Ward: bash evaluates a name's value as arithmetic ($((x)), let, [[ -v a[x] ]], ${!v}, a=([x]=1) and more), and an array subscript in that value runs its $( ) even from single-quoted text; a line that does arithmetic now has every $( ) and backtick its values hold judged as a command, whether quoted, escaped, coded (\x24), pieced together from other names, or set again inside a value's o… (T-4934).
