@@ -4599,7 +4599,28 @@ def _lane_targets(main, skip, deadline):
     return out
 
 
-def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S):
+def spent_lane_targets(p, paths, briefs=None):
+    """T-4951: the lanes among `paths` (real paths of lanes that stay) whose own ./target tidy --apply takes: the lane's
+    work is finished (core.finished_lanes: committed, clean, quiet or accepted, no live builder) and its cargo folder
+    under Sampo's cache exists, so ./target is a copy no build of the lane needs (kith, 2026-11-17: 79 GB of them).
+    drop_lane_target still proves each one cargo's output and unheld. A set; empty when a read fails."""
+    if not paths:
+        return set()
+    try:
+        briefs = c.load_briefs(p) if briefs is None else briefs
+        ids = set(c.finished_lanes(p, briefs, 30))
+    except (OSError, c.PolicyError, subprocess.SubprocessError, ValueError):
+        return set()
+    named = collections.defaultdict(list)  # focusing a task in a lane names it too: a finished brief's lane can be live
+    for b in briefs:
+        if isinstance(b.meta.get("lane"), str) and b.meta["lane"]:
+            named[os.path.realpath(b.meta["lane"])].append(b)
+    done = {lane for lane, bs in named.items()
+            if any(b.id in ids for b in bs) and all(b.id in ids or b.status in c.CLOSED for b in bs)}
+    return {x for x in paths if x in done and os.path.isdir(c.cargo_lane_dir(p.slug, x))}
+
+
+def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S, spent=None):
     """T-4575: (label, bytes, details) of the cargo build output of this project's lanes that stay: the target/ folder of
     each lane worktree (under <repo>.lanes/ or <repo>/.claude/worktrees/) that holds a Cargo.toml, each lane's own
     cargo folder under Sampo's cache (T-4764), and the old shared folder. `skip` are the lanes already counted whole
@@ -4607,7 +4628,8 @@ def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S):
     names each lane's folder and the folders against their cap (["T-5030 target 1.2 GB", "lane T-5031 cargo folder
     3.1 GB", "cargo lane folders 4.3 GB of 4.0 GB"]); a sizing that ran out of `budget` says so ("could not size"),
     never nothing. Only a target/ proven cargo's output counts (_cargo_output). Reads only: doctor names it, nothing is
-    deleted."""
+    deleted. `spent` (a list): T-4951: a finished lane's target/ that tidy --apply takes (spent_lane_targets) is moved
+    out of the count into it as (path, bytes), so doctor counts it as freeable, once."""
     deadline = time.monotonic() + budget
     main = c.main_worktree(p.root) or p.root
     if not c.git_root(main):
@@ -4616,6 +4638,10 @@ def lane_build_output(p, skip=(), budget=SIZE_BUDGET_S):
     rows = _lane_targets(main, skip, deadline)
     if rows is None:
         return unsized
+    if spent is not None:
+        gone = spent_lane_targets(p, [path for path, size in rows if size])
+        spent.extend(r for r in rows if r[0] in gone)
+        rows = [r for r in rows if r[0] not in gone]
     n, total = len(rows), sum(size for _, size in rows)
     skipped = {os.path.realpath(s) for s in skip}
     folders, root = [], _lanes_root(p.slug)
@@ -5315,7 +5341,9 @@ def cargo_cache_findings(p, apply, actions, finding, skip=()):
     cargo folders whose lane is gone (APPLY), the lane cargo folders against their cap (an APPLY item when over it;
     --apply prunes whole folders oldest first, prune_cargo_cache's rules), T-4717's marked config in the lanes' parent
     folder (removed on --apply, no item), and an INFO item naming each kept lane's own target/ folder with its size
-    (never removed: its builder may be building in it; a finished lane goes whole with it)."""
+    (never removed: its builder may be building in it; a finished lane goes whole with it). T-4951: a finished lane
+    that stays (its work waits on a merge) and has its cargo folder is an APPLY item instead: --apply removes its
+    target/ (drop_lane_target's proofs: cargo's output, unheld, no build running), a DECIDE item when it can't."""
     main = c.main_worktree(p.root) or p.root
     if not c.git_root(main) or not os.path.isfile(os.path.join(main, "Cargo.toml")):
         return []
@@ -5403,8 +5431,28 @@ def cargo_cache_findings(p, apply, actions, finding, skip=()):
                 item.update(severity="warn", auto=False,
                             fix=done["why"] or "what is left was used in the last hour or is held by a process")
     rows = _lane_targets(main, skip, time.monotonic() + TIDY_SCAN_S) or []
+    spent, held, busy = spent_lane_targets(p, [r[0] for r in rows]), (), None
     for path, size in sorted(rows, key=lambda x: -x[1]):
-        if size:
+        if size and path in spent:  # T-4951: a finished lane's copy of what its own cargo folder holds
+            item = finding(p.slug, "lane_target", "action",
+                           f"lane {os.path.basename(path)} is finished and holds its own build output: target {human(size)} "
+                           "beside its cargo folder under Sampo's cache (a cargo command that built into the worktree)",
+                           "sampo tidy --apply removes it (the lane's sources, branch and cargo folder stay)",
+                           auto=True, bytes=size, lane=path)
+            out.append(item)
+            if not apply:
+                continue
+            if held == ():  # read once for the run: an unreadable view is not asked again per lane
+                held, busy = _read_held(time.monotonic() + TIDY_SCAN_S), _busy_dirs()
+            why = ("the open files could not be read" if held is None
+                   else "a process is working in the lane" if _in_use(path, busy) else "")
+            if not why and drop_lane_target(path, main, held=held, deadline=time.monotonic() + TIDY_SCAN_S):
+                actions.append(("lane_target", path))
+                item["detail"] += "; removed"
+            else:
+                item.update(severity="warn", auto=False, fix="kept: " + (why or "a process holds it, a cargo build runs in "
+                                                                          "the lane, or its removal ran out of time (part removed)"))
+        elif size:
             hint = c.cargo_ignore_hint(path)  # T-4764: git not ignoring the lane's cargo config is a cause worth naming
             out.append(finding(p.slug, "lane_target", "info",
                                f"lane {os.path.basename(path)} holds its own build output: target {human(size)} (a Rust lane "

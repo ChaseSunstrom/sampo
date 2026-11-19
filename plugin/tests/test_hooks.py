@@ -5685,7 +5685,7 @@ class StageClock(ForemanTestCase):
         with open(sink) as f:
             full, ablated = (json.loads(x) for x in f.read().splitlines())
         names = [k for k in full if k.startswith("note.")]
-        self.assertEqual(names, ["note." + n for n in ("fix", "deps", "veto", "scope", "lessons", "steps", "self-wait",
+        self.assertEqual(names, ["note." + n for n in ("fix", "deps", "veto", "scope", "lessons", "steps", "self-wait", "cargo",
                                                         "ambient", "bus", "cards", "test-first", "design", "readme",
                                                         "gates", "closing")], full)
         stages = [k for k, v in full.items() if isinstance(v, float)]

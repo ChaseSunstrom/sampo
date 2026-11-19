@@ -207,6 +207,73 @@ class TheFolderEachLaneGets(RustProject):
         self.assertNotIn("CARGO_BUILD_RUSTC_WRAPPER", c.cargo_lane_env(wt, {"PATH": os.defpath}, self.p.slug))
 
 
+class CargoNote(RustProject):
+    """T-4951 (kith, 2026-11-17: 79 GB of lanes' own ./target): a builder's cargo command that builds into its worktree
+    (a bare cargo with no lane config, or CARGO_TARGET_DIR / --target-dir inside the worktree) gets one PreToolUse note
+    naming the lane's own folder and the export line. A note, never a refusal: the folder may be the user's choice."""
+
+    def note(self, cmd, root, tool="Bash"):
+        from sampo import hooks
+        return hooks._cargo_note({"tool_name": tool, "tool_input": {"command": cmd}, "cwd": root}, c.find_project(root))
+
+    def test_a_build_into_the_worktree_names_the_lanes_folder_and_the_export(self):
+        wt = self.wt("T-1")
+        self.assertTrue(c.find_project(wt).lane, "the fixture is a lane")
+        folder = self.folder(wt)
+        for cmd in ("cargo build", "cargo test --workspace", "cargo +nightly check", "/usr/bin/cargo clippy",
+                    "CARGO_TARGET_DIR=target cargo build", "CARGO_TARGET_DIR=./target cargo test",
+                    'CARGO_TARGET_DIR="$PWD/target" cargo test', "CARGO_TARGET_DIR=${PWD}/out cargo b",
+                    f"CARGO_TARGET_DIR={wt}/target cargo check", "export CARGO_TARGET_DIR=target; cargo build",
+                    "cargo build --target-dir target", "cargo build --target-dir=./tgt", "cd crates && cargo test",
+                    "git pull && cargo nextest run", "timeout 600 cargo test 2>&1 | tail -5"):
+            note = self.note(cmd, wt)
+            self.assertIsNotNone(note, cmd)
+            self.assertIn(f"export {VAR}={folder}", note, cmd)
+            self.assertNotIn("\n", note, "one line, so the session hears it once")
+
+    def test_the_lanes_own_folder_one_outside_or_no_build_says_nothing(self):
+        wt = self.wt("T-2")
+        folder = self.folder(wt)
+        for cmd in (f"{VAR}={folder} cargo build", f"export {VAR}={folder}; cargo test", f"cargo build --target-dir {folder}",
+                    f"cargo test --target-dir={folder}", f"{VAR}=/var/tmp/elsewhere cargo build",
+                    "cargo fmt --check", "cargo --version", "cargo metadata --format-version 1", "cargo tree",
+                    'echo "cargo build"', "git commit -qm 'run cargo build'", "grep -n cargo Cargo.toml", "ls",
+                    f"cd {self.repo} && cargo build"):
+            self.assertIsNone(self.note(cmd, wt), cmd)
+        self.assertIsNone(self.note("cargo build", wt, tool="Read"))
+
+    def test_a_lane_with_its_config_in_place_says_nothing_for_a_bare_cargo_but_still_for_an_override(self):
+        wt = self.wt("T-3")
+        folder = self.folder(wt)
+        write(os.path.join(wt, ".cargo", "config.toml"), f"{c.CARGO_MARK}\n[build]\ntarget-dir = '{folder}'\n")
+        self.assertIsNone(self.note("cargo build", wt))
+        self.assertIsNotNone(self.note(f"{VAR}=target cargo build", wt), "the command overrides the config")
+
+    def test_the_main_checkout_a_project_without_rust_and_the_users_choice_say_nothing(self):
+        wt = self.wt("T-4")
+        self.assertIsNone(self.note("cargo build", self.repo), "the main checkout keeps its own target/")
+        write(os.path.join(wt, ".cargo", "config.toml"), "[build]\ntarget-dir = '/var/tmp/mine'\n")
+        self.assertIsNone(self.note("cargo build", wt), "the user's own config")
+        os.unlink(os.path.join(wt, ".cargo", "config.toml"))
+        with unittest.mock.patch.dict(os.environ, {VAR: "/var/tmp/mine"}):
+            self.assertIsNone(self.note("cargo build", wt), "the user's own variable")
+        with unittest.mock.patch.dict(os.environ, {"SAMPO_CARGO_SHARED": "0"}):
+            self.assertIsNone(self.note("cargo build", wt), "the switch is off")
+        os.rename(os.path.join(self.repo, "Cargo.toml"), os.path.join(self.repo, "Cargo.toml.off"))
+        self.assertIsNone(self.note("cargo build", wt), "no Cargo.toml in the main checkout: no Rust project")
+
+    def test_through_the_hook_it_is_a_note_never_a_refusal_and_is_said_once(self):
+        wt = self.wt("T-5")
+        folder = self.folder(wt)
+        call = {"tool_name": "Bash", "tool_input": {"command": "cargo build"}, "cwd": wt, "session_id": "sess-cargo"}
+        first = self.hook("PreToolUse", call)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        self.assertNotIn("permissionDecision", first.stdout)
+        self.assertIn(folder, first.stdout)
+        again = self.hook("PreToolUse", call)
+        self.assertNotIn(folder, again.stdout, "once a session")
+
+
 class TheGatesOwnFolder(RustProject):
     """T-4764 follow-up: a throwaway worktree (the gate's, the train's: a detached checkout outside the lane homes, made
     fresh for every run) builds into ONE folder per project, so each run is a warm build and none leaves a new 8 to 15 GB

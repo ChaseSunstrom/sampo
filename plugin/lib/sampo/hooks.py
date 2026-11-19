@@ -3335,7 +3335,7 @@ def _pre_tool_use(raw):
         builders = (("fix", lambda: _fix_note(pl, p)), ("deps", lambda: _dep_note(pl, p)),
                     ("veto", lambda: _veto_note(pl, p)), ("scope", lambda: _scope_note(pl, p, act)),
                     ("lessons", lambda: _tripwire_note(pl, p, act)), ("steps", lambda: _step_note(pl, p, act)),
-                    ("self-wait", lambda: _self_wait_note(pl)),
+                    ("self-wait", lambda: _self_wait_note(pl)), ("cargo", lambda: _cargo_note(pl, p)),
                     ("ambient", lambda: _ambient_note(p)), ("bus", lambda: _bus_note(pl)),
                     ("cards", lambda: _card_note(pl, p, act)), ("test-first", lambda: _test_first_note(pl, p, act)),
                     ("design", lambda: _design_note(pl, p, act)), ("readme", lambda: _readme_note(pl, p, act)),
@@ -4134,6 +4134,62 @@ def _self_wait_note(pl):
                     "and the launcher's own command line holds it, so the loop never ends. Wait on the job's PID "
                     "(`while kill -0 PID`) or on a file the job writes.")
     return None
+
+
+_CARGO_BUILD = c.lazy(r"(?<![\w.$/-])(?:/[\w./-]*/)?cargo\s+(?:\+[\w.-]+\s+)?(?:build|b|test|t|check|c|run|r|bench|"
+                      r"clippy|doc|d|nextest|rustc|fix|llvm-cov)(?![\w-])")  # T-2020: compiled on first use
+_CARGO_DIR = c.lazy(r"(?<![\w-])(?:CARGO_(?:BUILD_)?TARGET_DIR=|--target-dir(?:=|\s+))(\"[^\"]*\"|'[^']*'|[^\s;&|)]*)")
+_CARGO_CD = c.lazy(r"(?<![\w-])cd\s+(\"[^\"]*\"|'[^']*'|[^\s;&|)]+)")
+
+
+def _cargo_note(pl, p):
+    """T-4951 (kith, 2026-11-17: lanes held 79 GB of their own ./target): a Bash command in a Rust lane that builds
+    with cargo into the worktree (a bare cargo with no lane config in place, or CARGO_TARGET_DIR / --target-dir inside
+    the worktree) gets one line naming the lane's own folder under Sampo's cache and its export. A note, never a
+    refusal: nothing for the main checkout, a non-Rust project, the user's own choice (core.cargo_target says), the
+    lane's own folder or one outside the worktree, a mention quoted as data, or a value it can't resolve. Text matching
+    on the command; core.cargo_target (one git call) runs only for a cargo build."""
+    cmd = str((pl.get("tool_input") or {}).get("command") or "") if pl.get("tool_name") == "Bash" else ""
+    if "cargo" not in cmd or not p or not getattr(p, "lane", None):
+        return None
+    m = next((m for m in _CARGO_BUILD.finditer(cmd) if not _quoted_text(cmd, m.start())), None)
+    if not m:
+        return None
+    real = os.path.realpath
+    lane, cwd = real(p.lane), real(str(pl.get("cwd") or p.lane))
+
+    def inside(path):
+        return path == lane or path.startswith(lane + os.sep)
+
+    def place(word):  # a word's path from the command's folder, or None when the shell would expand something else
+        word = word[1:-1] if word[:1] in "\"'" and word[-1:] == word[:1] and len(word) > 1 else word
+        word = re.sub(r"\$(?:\{PWD\}|PWD(?!\w))", lambda _: cwd, word)
+        if not word or re.search(r"[$`*?]", word):
+            return None
+        return os.path.normpath(os.path.join(cwd, os.path.expanduser(word)))
+
+    for d in _CARGO_CD.finditer(cmd[:m.start()]):
+        where = place(d.group(1))
+        if where is None or not inside(real(where)):
+            return None  # the build runs in another folder (or one this can't tell)
+    try:
+        folder = c.cargo_target(lane, p.slug)[0]
+    except (OSError, subprocess.SubprocessError, c.PolicyError, ValueError):
+        return None
+    if not folder:
+        return None
+    named = [x.group(1) for x in _CARGO_DIR.finditer(cmd)]
+    if named:
+        target = place(named[-1])
+        if target is None or real(target) == real(folder) or not inside(real(target)):
+            return None
+        why = "this cargo command's target folder is inside the lane's worktree"
+    else:
+        if c.cargo_config_ours(os.path.join(lane, ".cargo", "config.toml")) or any(os.environ.get(k) for k in c.CARGO_KEPT):
+            return None  # the lane's own config (or a value Sampo handed this session) already sends it to its folder
+        why = "this cargo command builds into the lane's own ./target"
+    return (f"Sampo: {why} (8 to 15 GB a lane, left on disk when the lane is done). This lane builds into its own "
+            f"folder under Sampo's cache: export {c.CARGO_VAR}={shlex.quote(folder)} first.")
 
 
 _COMPOUND = {"while", "until", "for", "do", "done", "{", "}", "select", "if", "then", "case"}

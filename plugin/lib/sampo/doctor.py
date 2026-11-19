@@ -2165,7 +2165,10 @@ def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S, details=None):
                 freed.append((f"{slanes._KINDS[r['kind']]} {os.path.basename(r['path'])}", r["bytes"] or 0))
             # T-4575: a Rust project's lanes' cargo output (their target/ folders, the shared one); a finished lane's is
             # in its own row (tidy takes the lane whole), so only the lanes that stay are counted here
-            build = slanes.lane_build_output(p, skip=[r["path"] for r in done], budget=max(0.0, deadline - time.monotonic()))
+            spent = []  # T-4951: a finished lane's own target/ beside its cargo folder: tidy --apply takes it
+            build = slanes.lane_build_output(p, skip=[r["path"] for r in done], budget=max(0.0, deadline - time.monotonic()),
+                                             spent=spent)
+            freed.extend((f"target {os.path.basename(path)}", size) for path, size in spent)
             if build:
                 label = f"{os.path.basename(p.root.rstrip(os.sep))}: {build[0]}" if len(projects) > 1 else build[0]
                 kept.append((label, build[1]))

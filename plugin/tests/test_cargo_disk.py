@@ -1422,6 +1422,120 @@ class DoctorAndTidyNameThem(RustCase):
         self.assertEqual([f for f in report["findings"] if f["kind"] in kinds], [])
 
 
+class LaneOwnTarget(RustCase):
+    """T-4951 (kith, 2026-11-17: finished lanes held 79 GB of their own ./target while each had its cargo folder under
+    Sampo's cache): a finished lane waiting on its merge that has its cargo folder loses its ./target to tidy --apply
+    (an APPLY item with its size); a lane still building, one without its folder, one a process holds and the main
+    checkout's own target/ stay. Doctor's disk line counts it as freeable, not as kept build output."""
+
+    def setUp(self):
+        super().setUp()
+        patch = unittest.mock.patch.dict(os.environ, {"FM_STALL_CACHE_S": "0"})
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def waiting(self, name, finished=True, folder=True):
+        """A lane whose committed work waits on its merge (accepted after its last commit when `finished`), with its
+        own ./target of 20 blocks and, when `folder`, its cargo folder under Sampo's cache."""
+        lane = self.lane(name, size=100, old=False)
+        out = self.fm("task", "new", f"Work {name}", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "s",
+                      "--json").stdout
+        b = c.find_brief(self.p, json.JSONDecoder().raw_decode(out)[0]["id"])
+        b.meta["lane"] = os.path.realpath(lane)
+        if finished:
+            b.meta["accepted_at"] = str(time.time() + 60)
+        c.save_brief(self.p, b)
+        big = self.target(lane, 20)
+        if folder:
+            self.cfolder(name, 0, lane=lane)
+        return os.path.realpath(lane), big
+
+    def rows(self, apply, held=()):
+        from sampo import tidy
+        actions = []
+        with unittest.mock.patch.object(lanes, "_held_paths", return_value=list(held)):
+            found = lanes.cargo_cache_findings(self.p, apply, actions, tidy.finding)
+        return {os.path.basename(f["lane"]): f for f in found if f["kind"] == "lane_target"}, actions
+
+    def test_a_finished_lanes_target_is_an_apply_item_with_its_size_and_goes_on_apply(self):
+        lane, big = self.waiting("T-6001")
+        own = self.target(self.repo, 5)  # the main checkout's own target/: never
+        rows, _ = self.rows(False)
+        self.assertEqual(rows["T-6001"]["severity"], "action", rows)
+        self.assertTrue(rows["T-6001"]["auto"])
+        self.assertGreaterEqual(rows["T-6001"]["bytes"], BLOCK * 20)
+        self.assertIn(lanes.human(self.disk(os.path.join(lane, "target"))), rows["T-6001"]["detail"])
+        self.assertTrue(os.path.isfile(big), "a dry run removes nothing")
+        rows, actions = self.rows(True)
+        self.assertFalse(os.path.exists(os.path.join(lane, "target")))
+        self.assertIn(("lane_target", lane), actions)
+        self.assertIn("removed", rows["T-6001"]["detail"])
+        self.assertIn(lane, self.registered(), "the lane, its sources and branch stay")
+        self.assertTrue(os.path.isdir(c.cargo_lane_dir(self.slug, lane)), "its cargo folder stays")
+        self.assertTrue(os.path.isfile(own), "the main checkout's own target/")
+
+    def test_a_lane_still_building_or_without_its_cargo_folder_keeps_it(self):
+        building, a = self.waiting("T-6002", finished=False)
+        bare, b = self.waiting("T-6003", folder=False)
+        rows, actions = self.rows(True)
+        for name in ("T-6002", "T-6003"):
+            self.assertEqual(rows[name]["severity"], "info", name)
+        self.assertTrue(os.path.isfile(a), "a lane still building may be building in it")
+        self.assertTrue(os.path.isfile(b), "a lane with no folder of its own builds only here")
+        self.assertEqual([x for x in actions if x[0] == "lane_target"], [])
+
+    def test_one_a_process_holds_is_kept_and_named_with_why(self):
+        lane, big = self.waiting("T-6004")
+        rows, actions = self.rows(True, held=[os.path.join(lane, "target", "debug", "deps", "big.rlib")])
+        self.assertTrue(os.path.isfile(big))
+        self.assertEqual(rows["T-6004"]["severity"], "warn")
+        self.assertIn("process", rows["T-6004"]["fix"])
+        self.assertNotIn(("lane_target", lane), actions)
+
+    def test_a_lane_some_process_stands_in_is_kept_and_named_with_why(self):
+        # review: between builds a session in the lane holds nothing in target/, so only its working folder tells
+        lane, big = self.waiting("T-6006")
+        with unittest.mock.patch.object(lanes, "_busy_dirs", return_value=[os.path.join(lane, "crates")]):
+            rows, actions = self.rows(True)
+        self.assertTrue(os.path.isfile(big))
+        self.assertEqual(rows["T-6006"]["severity"], "warn")
+        self.assertIn("working in the lane", rows["T-6006"]["fix"])
+        self.assertNotIn(("lane_target", lane), actions)
+
+    def test_a_lane_an_open_task_still_names_is_not_finished(self):
+        # review: focusing a task in a lane names it again, so a finished brief's lane can be another task's live one
+        lane, big = self.waiting("T-6007")
+        out = self.fm("task", "new", "Second work", "--type", "FIX", "--tier", "S", "--ac", "ok :: true", "--step", "s",
+                      "--json").stdout
+        b = c.find_brief(self.p, json.JSONDecoder().raw_decode(out)[0]["id"])
+        b.meta["lane"] = lane
+        c.save_brief(self.p, b)
+        rows, actions = self.rows(True)
+        self.assertEqual(rows["T-6007"]["severity"], "info")
+        self.assertTrue(os.path.isfile(big))
+
+    def test_an_unreadable_view_of_open_files_is_read_once_and_removes_nothing(self):
+        a, x = self.waiting("T-6008")
+        b, y = self.waiting("T-6009")
+        from sampo import tidy
+        with unittest.mock.patch.object(lanes, "_held_paths", return_value=None) as read:
+            found = lanes.cargo_cache_findings(self.p, True, [], tidy.finding)
+        rows = {os.path.basename(f["lane"]): f for f in found if f["kind"] == "lane_target"}
+        self.assertEqual(read.call_count, 1, "one read for the run, not one per lane")
+        for name in ("T-6008", "T-6009"):
+            self.assertEqual(rows[name]["severity"], "warn")
+            self.assertIn("could not be read", rows[name]["fix"])
+        self.assertTrue(os.path.isfile(x) and os.path.isfile(y))
+
+    def test_doctor_counts_it_as_freeable_not_as_kept(self):
+        lane, _ = self.waiting("T-6005")
+        freed, kept = d.disk_reclaimables([(self.p, None)])
+        mine = [n for label, n in freed if "T-6005" in label]
+        self.assertEqual(len(mine), 1, freed)
+        self.assertGreaterEqual(mine[0], BLOCK * 20)
+        self.assertLess(sum(n for _, n in kept), BLOCK * 20, f"not counted twice: {kept}")
+
+
 class TheOldSharedFolder(RustCase):
     """T-4575's one folder per project is retired: tidy removes that exact folder, and nothing around it."""
 
