@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-19T06:54:33Z",
+ "updated": "2026-11-19T07:59:32Z",
  "rev": "fdf50b3b0",
  "capabilities": [
   {
@@ -62956,10 +62956,10 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 65809,
+   "generated": 66324,
    "write": {
     "title": 444,
-    "line": 3484,
+    "line": 3528,
     "payoff": 41,
     "kill test": 236,
     "code": 33
@@ -62970,14 +62970,14 @@
     "shingle": 0
    },
    "rejected": {
-    "kill": 32999,
+    "kill": 33362,
     "tier": 21623,
-    "novelty": 182
+    "novelty": 184
    },
-   "merged": 2256,
-   "kept": 2526,
-   "pending": 387,
-   "pooled": 1442
+   "merged": 2303,
+   "kept": 2569,
+   "pending": 111,
+   "pooled": 1734
   },
   "families": [
    {
@@ -63016,7 +63016,7 @@
    },
    {
     "id": "F-013109",
-    "size": 561,
+    "size": 570,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -63259,6 +63259,22 @@
     "evidence": "",
     "kinds": [
      "releases"
+    ]
+   },
+   {
+    "id": "F-065465",
+    "size": 2,
+    "lead": "Let the migration run itself",
+    "today": "Today you can't run a complex database schema change across a distributed system without manual error correction at every step.",
+    "with_this": "With this, you can execute a multi-node database migration with zero downtime and full rollback capability in one click.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "migrations"
     ]
    },
    {
@@ -64452,23 +64468,6 @@
      "design",
      "ops",
      "security"
-    ]
-   },
-   {
-    "id": "F-012666",
-    "size": 4,
-    "lead": "Split long-running tasks into parallel sub-missions automatically",
-    "today": "Today you can't run multiple complex operations simultaneously within a single coding session without manual orchestration.",
-    "with_this": "With this, you can complete large refactoring or deployment tasks in half the time by letting the system divide the work.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops",
-     "refactors"
     ]
    },
    {
@@ -66242,10 +66241,10 @@
     ]
    }
   ],
-  "families_total": 1775,
+  "families_total": 1795,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2526
+   "total": 2569
   }
  },
  "steer": {
@@ -66279,7 +66278,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.7,
+    "idle_h": 264.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66302,7 +66301,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.9,
+    "idle_h": 265.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66325,7 +66324,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.7,
+    "idle_h": 264.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66348,7 +66347,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.7,
+    "idle_h": 264.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66371,7 +66370,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.5,
+    "idle_h": 264.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66394,7 +66393,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.6,
+    "idle_h": 264.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66417,7 +66416,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.3,
+    "idle_h": 264.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66440,7 +66439,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.3,
+    "idle_h": 264.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66463,7 +66462,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.4,
+    "idle_h": 264.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66486,7 +66485,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.1,
+    "idle_h": 266.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66509,7 +66508,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.7,
+    "idle_h": 265.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66532,7 +66531,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.7,
+    "idle_h": 265.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66555,7 +66554,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.7,
+    "idle_h": 265.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66578,7 +66577,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.8,
+    "idle_h": 265.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66601,7 +66600,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.6,
+    "idle_h": 265.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66624,7 +66623,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.5,
+    "idle_h": 265.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66647,7 +66646,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.5,
+    "idle_h": 265.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66670,7 +66669,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.5,
+    "idle_h": 265.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66693,7 +66692,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.3,
+    "idle_h": 265.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66716,7 +66715,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.3,
+    "idle_h": 265.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66739,7 +66738,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.3,
+    "idle_h": 265.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66762,7 +66761,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.3,
+    "idle_h": 265.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66785,7 +66784,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.1,
+    "idle_h": 265.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66808,7 +66807,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.1,
+    "idle_h": 265.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66831,7 +66830,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.1,
+    "idle_h": 265.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66854,7 +66853,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.1,
+    "idle_h": 265.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
