@@ -125,7 +125,12 @@ class Settle(unittest.TestCase):
 
 class Table(unittest.TestCase):
     def test_the_table_names_the_hot_paths_with_a_max_ratio(self):
-        self.assertEqual(set(sp.PROMISES), {"sampo next", "sampo task show", "sampo state", "sampo which"})
+        # T-5028: the hot read verbs (status, task list, queue) are promised too
+        self.assertEqual(set(sp.PROMISES), {"sampo next", "sampo task show", "sampo state", "sampo which",
+                                            "sampo status", "sampo task list", "sampo queue"})
+        self.assertEqual(sp.PROMISES["sampo status"]["argv"], ["status"])
+        self.assertEqual(sp.PROMISES["sampo task list"]["argv"], ["task", "list"])
+        self.assertEqual(sp.PROMISES["sampo queue"]["argv"], ["queue"])
         for name, p in sp.PROMISES.items():
             self.assertIsInstance(p["max_ratio"], (int, float), name)
             self.assertGreater(p["max_ratio"], 1, name)

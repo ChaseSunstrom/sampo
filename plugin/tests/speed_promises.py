@@ -30,12 +30,17 @@ SECOND_RUNS = 9  # the second window, for the rows over their promise in the fir
 
 # argv follows `fm` in the scratch project bench_hooks builds (T-0001 is focused there). Each max_ratio is ~2x the worst
 # CPU ratio of three measured runs on the loaded shared box (load 100-250): next 8.6-9.7x, task show 8.2-8.3x,
-# state 8.9-9.6x, which 21.1-21.8x.
+# state 8.9-9.6x, which 21.1-21.8x. T-5028 added the hot read verbs, measured the same way (three runs of five):
+# status 9.6-10.0x, task list 6.5-7.2x, queue 6.8-7.4x, given the same ~2x room, not a tight 25%: the ratio moves
+# with the box's bare-python start, and a promise that flakes is turned off, not kept.
 PROMISES = {
     "sampo next": {"argv": ["next"], "max_ratio": 20},
     "sampo task show": {"argv": ["task", "show", "T-0001"], "max_ratio": 17},
     "sampo state": {"argv": ["state"], "max_ratio": 20},
     "sampo which": {"argv": ["which", "check"], "max_ratio": 44},
+    "sampo status": {"argv": ["status"], "max_ratio": 20},
+    "sampo task list": {"argv": ["task", "list"], "max_ratio": 15},
+    "sampo queue": {"argv": ["queue"], "max_ratio": 15},
 }
 # path -> the bench_hooks fixture it times; "Stop" takes bench_hooks' default budget, "MessageDisplay" its own
 HOOK_PROMISES = {"hook default": "Stop", "hook MessageDisplay": "MessageDisplay"}
