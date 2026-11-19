@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A merge train leaves out a lane that takes MASTER.md or a docs/map file over its 90000-byte cap, alone or with the lanes merged before it, at that lane's merge with the file and size named, instead of finding it with a gate run and a bisection; a file the base already has over the cap blames no lane (T-4980).
 - A cargo build in a Rust lane that would write into the lane's own ./target (a bare cargo with no lane config, or CARGO_TARGET_DIR / --target-dir inside the worktree) now gets one note naming the lane's folder under Sampo's cache and the export line, never a refusal. sampo tidy --apply removes the ./target of a finished lane that waits on its merge and has its own cargo folder; doctor co… (T-4951).
 - Lanes accepted together no longer run their repo-shape modules all at once: SAMPO_SHAPE_RUNS (default 3) run at a time, the rest wait as 'shape queued' and their wall starts with their slot (T-4947).
 - A test's sampo doctor --repair no longer builds the native fast path of the tree under test or writes the real home's Claude and Codex settings; the install tests build nothing either, so their runs stop timing out under load (T-4935).
