@@ -977,6 +977,72 @@ class TheGateFolders(RustCase):
         self.assertFalse(os.path.exists(a))
         self.assertIn("private gate folder", line)
 
+    def busy_gate(self):
+        """T-4984: a gate folder a run used two hours ago, with what a week of runs at new checkout paths leaves."""
+        gate = self.stable(2)
+        f = lambda rel, hours: self.fake(os.path.join(gate, *rel.split("/")), hours)
+        return gate, {
+            "fresh": f("debug/deps/kithd-aaaa.rlib", 2), "mid": f("debug/deps/kithd-cccc", 30),
+            "old": f("debug/deps/kithd-bbbb", 72), "fp": f("debug/.fingerprint/kithd-bbbb/bin-kithd", 72),
+            "build": f("debug/build/kithd-bbbb/out/gen.rs", 72), "musl": f("x86_64-unknown-linux-musl/debug/deps/t-dddd.rlib", 96),
+            "inc": f("debug/incremental/kithd-1xyz/s-abc/dep-graph.bin", 3), "live": f("debug/incremental/kithd-2q/s-q/f", 0.2),
+            "tag": f("CACHEDIR.TAG", 500)}
+
+    def test_the_gate_sweep_takes_dead_incremental_state_and_what_no_run_used_for_two_days(self):
+        # T-4984: on 2026-11-18 a project's gate folder held 52 GB, 35 of them incremental/ and 215 copies of one binary
+        gate, x = self.busy_gate()
+        r = lanes.sweep_gate_stale(self.p, held=[], dry=True)
+        swept = {"old": "debug/deps/kithd-bbbb", "fp": "debug/.fingerprint/kithd-bbbb", "build": "debug/build/kithd-bbbb",
+                 "musl": "x86_64-unknown-linux-musl/debug/deps/t-dddd.rlib", "inc": "debug/incremental/kithd-1xyz"}
+        self.assertEqual(sorted(n for n, _ in r["removed"]), sorted(swept.values()))
+        self.assertGreater(r["bytes"], 0)
+        self.assertTrue(all(os.path.exists(p) for p in x.values()), "dry: nothing removed")
+        r = lanes.sweep_gate_stale(self.p, held=[])
+        for k, path in x.items():
+            self.assertEqual(os.path.exists(path), k not in swept, k)
+        self.assertTrue(os.path.isdir(os.path.join(gate, "debug", "incremental")), "only what is in it goes")
+
+    def test_the_gate_sweep_counts_age_from_the_gates_last_run_not_from_now(self):
+        gate, x = self.busy_gate()
+        later = time.time() + 30 * DAY  # a month with no run: nothing is staler than it was (the 14-day rule takes it whole)
+        r = lanes.sweep_gate_stale(self.p, held=[], dry=True, now=later)
+        self.assertNotIn("debug/deps/kithd-cccc", [n for n, _ in r["removed"]])
+        self.fake(os.path.join(gate, "debug", "build", "odd-eeee", "out", "f"), -30 * 24)  # dated a month ahead
+        r = lanes.sweep_gate_stale(self.p, held=[], dry=True)
+        self.assertNotIn("debug/deps/kithd-cccc", [n for n, _ in r["removed"]], "a future date makes nothing staler")
+        self.assertIn("debug/deps/kithd-bbbb", [n for n, _ in r["removed"]])
+
+    def test_a_run_in_the_gate_or_a_process_holding_it_stops_the_sweep(self):
+        gate, x = self.busy_gate()
+        with c.cargo_gate_slot(gate, touch=False):
+            r = lanes.sweep_gate_stale(self.p, held=[])
+        self.assertEqual((r["removed"], r["why"]), ([], "a run holds it"))
+        r = lanes.sweep_gate_stale(self.p, held=[os.path.join(gate, "debug")])
+        self.assertEqual(r["removed"], [])
+        self.assertTrue(r["why"])
+        self.assertTrue(all(os.path.exists(p) for p in x.values()))
+
+    def test_on_a_disk_that_keeps_no_access_times_only_the_incremental_state_goes(self):
+        gate, x = self.busy_gate()
+        with unittest.mock.patch.object(lanes, "_noatime", return_value=True):
+            r = lanes.sweep_gate_stale(self.p, held=[])
+        self.assertEqual([n for n, _ in r["removed"]], ["debug/incremental/kithd-1xyz"])
+        self.assertTrue(os.path.exists(x["old"]), "a crate read every run would look unused there")
+
+    def test_tidy_the_auto_prune_and_doctor_name_and_run_the_gate_sweep(self):
+        from sampo import tidy
+        gate, x = self.busy_gate()
+        found = [f for f in lanes.cargo_cache_findings(self.p, False, [], tidy.finding) if f["kind"] == "cargo_gate_sweep"]
+        self.assertEqual(len(found), 1)
+        self.assertIn("5 gate build entries", found[0]["detail"])
+        self.assertIn("gate build entries", d.check_disk(self.tmp, self.low, [(self.p, {})]).detail.split("Sampo could free")[1])
+        self.assertTrue(os.path.exists(x["old"]))
+        line = lanes.auto_prune(self.p, force=True, held=[])
+        self.assertNotIn("\n", line)
+        self.assertIn("swept 5 gate build entries", line)
+        self.assertFalse(os.path.exists(x["old"]) or os.path.exists(x["inc"]))
+        self.assertTrue(os.path.exists(x["fresh"]))
+
     def test_doctor_counts_the_private_folders_with_the_stable_one(self):
         gate = self.stable(2, blocks=10)
         priv = self.private(os.getpid(), 1, blocks=10)

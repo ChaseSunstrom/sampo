@@ -345,8 +345,20 @@ class TheGatesOwnFolder(RustProject):
     def test_the_gates_env_carries_its_folder_and_leaves_no_lane_marker(self):
         wt = self.throwaway("fm-verify-eeee")
         env = c.cargo_lane_env(wt, {"PATH": os.defpath}, self.p.slug)
-        self.assertEqual(env, {VAR: c.cargo_gate_dir(self.p.slug)})
+        self.assertEqual(env, {VAR: c.cargo_gate_dir(self.p.slug), "CARGO_INCREMENTAL": "0"})
         self.assertFalse(os.path.lexists(os.path.join(env[VAR], c.CARGO_LANE_MARK)), "a marker would let the orphan sweep take it")
+
+    def test_the_gate_builds_without_incremental_state_a_lane_keeps_it(self):
+        # T-4984: each run's checkout is at a new path, so its incremental state is never reused: 35 of a 52 GB gate
+        # folder was incremental/ on 2026-11-18, and the disk ran out under a train's gate
+        wt = self.throwaway("fm-verify-iiii")
+        self.assertEqual(c.cargo_lane_env(wt, {"PATH": os.defpath}, self.p.slug).get("CARGO_INCREMENTAL"), "0")
+        mine = c.cargo_lane_env(wt, {"PATH": os.defpath, "CARGO_INCREMENTAL": "1"}, self.p.slug)
+        self.assertNotIn("CARGO_INCREMENTAL", mine, "the user's own setting stands")
+        self.assertNotIn("CARGO_INCREMENTAL", c.cargo_lane_env(self.wt("T-15"), {"PATH": os.defpath}, self.p.slug),
+                         "a lane rebuilds in place: incremental pays there")
+        code, out = c.run_command(wt, 'echo "[${CARGO_INCREMENTAL}]"', timeout=60, env={"PATH": os.environ["PATH"]})
+        self.assertEqual((code, out.strip()), (0, "[0]"), "a command the gate runs carries it")
 
     def test_nothing_that_removes_a_lane_folder_takes_the_gates(self):
         gate = c.cargo_gate_dir(self.p.slug)

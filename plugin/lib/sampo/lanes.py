@@ -5210,6 +5210,91 @@ def gate_cargo_folder(p, now=None, held=None, dry=False, deadline=None):
     return res
 
 
+GATE_SWEEP_S = 2 * 86400  # T-4984: a gate build entry no run used for this long before the gate's last use goes
+_GATE_PARTS = ("deps", "build", ".fingerprint")
+
+
+def _noatime(path):
+    """T-4984: whether the file system holding `path` keeps no access times, so a crate every run reads looks unused."""
+    try:
+        return bool(os.statvfs(path).f_flag & getattr(os, "ST_NOATIME", 0))
+    except (OSError, AttributeError):
+        return True
+
+
+def _gate_stale(gate, info, now):
+    """T-4984: [(path, bytes)] the gate sweep takes, from _cache_tree's `info` of the gate folder: each incremental folder
+    of a profile (<profile> or <triple>/<profile>) not used in the last hour (gate runs build without it:
+    core.cargo_lane_env), and each deps file, build and .fingerprint folder whose newest use is GATE_SWEEP_S older than
+    the gate's own newest use (a run at a new checkout path leaves new copies; age counts from the last run, so an idle
+    gate keeps its warm crates), the latter only on a disk that keeps access times."""
+    newest = min(info.get(gate, (0, 0.0, True))[1], now)  # a file dated ahead (a build script's) makes nothing staler
+    ages = not _noatime(gate)
+    out = []
+    for path, (size, used, is_dir) in info.items():
+        parent = os.path.dirname(path)
+        rel = os.path.relpath(os.path.dirname(parent), gate)
+        if rel == "." or rel.startswith("..") or rel.count(os.sep) > 1:
+            continue
+        part = os.path.basename(parent)
+        if part == "incremental" and is_dir:
+            if now - used >= CARGO_FRESH_S:
+                out.append((path, size))
+        elif ages and part in _GATE_PARTS and is_dir == (part != "deps") and newest - used >= GATE_SWEEP_S:
+            out.append((path, size))
+    return sorted(out)
+
+
+def sweep_gate_stale(p, now=None, held=None, dry=False, deadline=None):
+    """T-4984: the gate's stable folder sheds what no run will use (_gate_stale), entry by entry and by exact path, so it
+    stays warm instead of being removed whole: on 2026-11-18 a project's held 52 GB (35 of incremental state, 215 copies
+    of one binary) and the disk ran out under a train's gate. Only while this process holds the gate's lock (no run in
+    it, none starts), with _folder_blocker's refusals (a process or a cargo build in it, a link). {removed: [(path
+    relative to the gate, bytes)], bytes, why, out_of_time}; `dry` names what would go. Stops when `deadline` passes."""
+    now = time.time() if now is None else now
+    res = {"removed": [], "bytes": 0, "why": "", "out_of_time": False}
+    root = _lanes_root(p.slug)
+    gate = os.path.join(root, c.CARGO_GATE) if root else ""
+    if not gate or os.path.islink(gate) or not os.path.isdir(gate):
+        return res
+    try:
+        info, _ = _cache_tree(gate, time.monotonic() + TIDY_SCAN_S if deadline is None else deadline)
+    except _SizingOut:
+        res.update(why="sizing it ran out of time", out_of_time=True)
+        return res
+    stale = _gate_stale(gate, info, now)
+    if not stale or dry:
+        res.update(removed=[(os.path.relpath(x, gate), n) for x, n in stale], bytes=sum(n for _, n in stale))
+        return res
+    with c.cargo_gate_slot(gate, touch=False) as folder:
+        if folder != gate:
+            res["why"] = "a run holds it"
+            return res
+        held = _read_held(deadline) if held is None else held
+        why = _folder_blocker(root, gate, held, _is_gate_name)
+        if why:
+            res["why"] = why
+            return res
+        for path, size in stale:
+            if deadline is not None and time.monotonic() >= deadline:
+                res["out_of_time"] = True
+                break
+            if os.path.islink(path) or not os.path.lexists(path):
+                continue
+            if os.path.isdir(path):
+                ok = _rmtree_until(path, deadline)
+            else:
+                try:
+                    os.unlink(path)
+                    ok = True
+                except OSError:
+                    ok = False
+            if ok:
+                res["removed"].append((os.path.relpath(path, gate), size))
+                res["bytes"] += size
+    return res
+
+
 def sweep_gate_leftovers(p, now=None, held=None, dry=False, deadline=None, skipped=None):
     """T-4764: the private gate folders (core.GATE_PRIVATE: what a run builds in when it finds the stable folder busy)
     that no run will remove any more: the process named in the folder's name is gone, or is alive but the folder has
@@ -5283,7 +5368,11 @@ def auto_prune(p, force=False, budget=AUTO_PRUNE_BUDGET_S, held=None):
                 held = _read_held(deadline)
             gone = sweep_gate_leftovers(p, held=held, deadline=deadline)
         r = prune_cargo_cache(p, held=held, deadline=deadline)
+        swept = sweep_gate_stale(p, held=held, deadline=deadline) if time.monotonic() < deadline else {"removed": []}
         parts = []
+        if swept["removed"]:  # T-4984
+            n = len(swept["removed"])
+            parts.append(f"Cargo: swept {n} gate build entr{'y' if n == 1 else 'ies'} no run used ({human(swept['bytes'])}).")
         if gone:
             parts.append(f"Cargo: removed {len(gone)} private gate folder{'s' if len(gone) > 1 else ''} of runs that ended "
                          f"({human(sum(n for _, n in gone))}).")
@@ -5411,6 +5500,22 @@ def cargo_cache_findings(p, apply, actions, finding, skip=()):
                 item["detail"] += "; removed"
             else:
                 item.update(severity="warn", auto=False, fix=gate["why"] or "left as it is")
+    sweep = {"removed": []} if gate.get("removed") else sweep_gate_stale(p, dry=True)  # T-4984: entry by entry
+    if sweep["removed"]:
+        n = len(sweep["removed"])
+        item = finding(p.slug, "cargo_gate_sweep", "action",
+                       f"{n} gate build entr{'y' if n == 1 else 'ies'} no run used ({human(sweep['bytes'])}): incremental "
+                       "state the gate no longer keeps, crates no run read in the 2 days before its last one",
+                       "sampo tidy --apply removes them when no run holds the gate (cargo rebuilds one it needs)", auto=True,
+                       bytes=sweep["bytes"])
+        out.append(item)
+        if apply:
+            done = sweep_gate_stale(p)
+            if done["removed"]:
+                actions.append(("cargo_gate_sweep", p.slug))
+                item["detail"] += f"; removed {len(done['removed'])} ({human(done['bytes'])})"
+            if done["why"]:
+                item.update(severity="warn", auto=False, fix=done["why"])
     r = prune_cargo_cache(p, dry=True)
     if r.get("unsized"):  # never nothing: the cache may be over its cap, only this run could not tell
         out.append(finding(p.slug, "cargo_cache", "info", "could not size the lane cargo folders in time (they may be over their cap)",

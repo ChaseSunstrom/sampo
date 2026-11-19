@@ -2179,6 +2179,10 @@ def disk_reclaimables(projects, budget=RECLAIM_BUDGET_S, details=None):
                                                    budget=max(0.0, deadline - time.monotonic()))
             if bytecode:
                 freed.append(bytecode)
+            if time.monotonic() < deadline:  # T-4984: what the gate's cargo folder holds that no run will use
+                sweep = slanes.sweep_gate_stale(p, dry=True, deadline=deadline)
+                if sweep["removed"]:
+                    freed.append((f"{len(sweep['removed'])} gate build entries", sweep["bytes"]))
         except (OSError, c.PolicyError, subprocess.SubprocessError, ValueError):
             continue
     try:

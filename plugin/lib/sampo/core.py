@@ -2455,7 +2455,8 @@ def cargo_wrapper(root, environ=None):
 def cargo_lane_env(root, environ=None, slug=None):
     """T-4764: what Sampo adds to a command it runs in `root` (a lane's worktree): {CARGO_TARGET_DIR: the lane's own
     folder} for a Rust lane (the user's choice stands, a Sampo-handed value from an older run is replaced), plus
-    CARGO_BUILD_RUSTC_WRAPPER=sccache when sccache is installed. {} when nothing applies or a read fails."""
+    CARGO_BUILD_RUSTC_WRAPPER=sccache when sccache is installed, and CARGO_INCREMENTAL=0 in a throwaway checkout (the
+    gate's folder) unless the user set it. {} when nothing applies or a read fails."""
     environ = os.environ if environ is None else environ
     try:
         target = cargo_target(root, slug, environ)[0]
@@ -2467,6 +2468,8 @@ def cargo_lane_env(root, environ=None, slug=None):
             out["CARGO_BUILD_RUSTC_WRAPPER"] = wrapper
         if os.path.basename(target) != CARGO_GATE:  # the gate's folder is no lane's: a marker would let the orphan sweep take it
             cargo_mark_lane(target, root)
+        elif "CARGO_INCREMENTAL" not in environ:  # T-4984: each run's checkout is at a new path, so incremental state is
+            out["CARGO_INCREMENTAL"] = "0"         # never reused there, only kept (35 of a 52 GB gate folder, 2026-11-18)
         return out
     except (OSError, subprocess.SubprocessError, PolicyError, ValueError):
         return {}
