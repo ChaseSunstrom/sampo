@@ -503,16 +503,41 @@ def _merge_in(wt, b, tip, log, kept=None):
     msg = f"Merge {b.id}: {b.title}"
     if kept is not None:
         kept.pop(b.id, None)
+    before = _git(wt, "rev-parse", "HEAD").stdout.strip()
     r = _git(wt, *ident, "merge", "--no-ff", "-m", msg, tip)
     if not r.returncode:
-        return _git(wt, "rev-parse", "HEAD").stdout.strip()
+        return _over_cap(wt, b, before, log)
     files = [f for f in _git(wt, "diff", "--name-only", "--diff-filter=U", "-z").stdout.split("\0") if f]
     if kept is not None and _map_only(files) and _union_map(wt, files) and \
             not _git(wt, *ident, "commit", "-m", msg).returncode:
         kept[b.id] = sorted(files)
-        return _git(wt, "rev-parse", "HEAD").stdout.strip()
+        return _over_cap(wt, b, before, log)
     _git(wt, "merge", "--abort")
     log.append((b.id, "conflicts with an earlier lane in the train" + (f": {c.joinmore(files, 8)}" if files else "")))
+    return None
+
+
+def _over_cap(wt, b, before, log):
+    """T-4980: the merge's head sha, or None with the merge undone and the lane left out when it took MASTER.md or a
+    docs/map file over the cap a Read opens whole (MAP_FILE_BYTES), alone or with the lanes merged before it: a gate
+    and its bisection found that in about 40 minutes (2026-11-15, twice). A file already over it before the merge is
+    the base's, so no lane is blamed for it."""
+    over = []
+    for f in _git(wt, "diff", "--name-only", "-z", before, "HEAD").stdout.split("\0"):
+        if f != "MASTER.md" and not (f.startswith("docs/map/") and f.endswith(".md")):
+            continue
+        try:
+            size = os.path.getsize(os.path.join(wt, f))
+        except OSError:
+            continue
+        was = _git(wt, "cat-file", "-s", f"{before}:{f}").stdout.strip()
+        if size > c.MAP_FILE_BYTES and not (was.isdigit() and int(was) > c.MAP_FILE_BYTES):
+            over.append(f"{f} ({size} bytes)")
+    if not over:
+        return _git(wt, "rev-parse", "HEAD").stdout.strip()
+    _git(wt, "reset", "-q", "--hard", before)
+    log.append((b.id, f"takes {c.joinmore(over, 4)} over its {c.MAP_FILE_BYTES}-byte cap with the lanes merged before "
+                      "it: move its map line to a docs/map file with room (sampo selfcheck names them)"))
     return None
 
 

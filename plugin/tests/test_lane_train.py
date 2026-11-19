@@ -213,6 +213,35 @@ class Train(TrainCase):
         self.assertNotRegex(text, r"(?m)^(<<<<<<<|=======|>>>>>>>)")
         self.assertIn(self.MAP, r.stdout)
 
+    def cap_base(self, left):
+        """T-4980: a map file `left` bytes under its cap: two entries with a filler line between, so two lanes each
+        growing one entry merge cleanly."""
+        filler = "x" * (c.MAP_FILE_BYTES - left - len("- `a.py`: a.\n- `b.py`: b.\n") - 1)
+        self.map_base(text=f"- `a.py`: a.\n{filler}\n- `b.py`: b.\n")
+        return filler
+
+    def test_two_lanes_that_together_take_a_map_file_over_its_cap_leave_the_second_out_before_a_gate(self):
+        """T-4980: on 2026-11-15 two trains each spent about 40 minutes on a gate and its bisection to find one map
+        line that took docs/map/files-lib-4.md over its cap once merged with another lane's line."""
+        filler = self.cap_base(300)
+        a = self.lane(1, self.MAP, f"- `a.py`: a. {'A' * 200}\n{filler}\n- `b.py`: b.\n")
+        b = self.lane(2, self.MAP, f"- `a.py`: a.\n{filler}\n- `b.py`: b. {'B' * 200}\n")
+        r = self.train(a, b, check=False)
+        self.assertIn(f"left out {b}: takes {self.MAP} (", r.stdout)
+        self.assertIn(f"over its {c.MAP_FILE_BYTES}-byte cap", r.stdout)
+        self.assertTrue(self.meta(a)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertFalse((self.meta(b).get("lane_stop") or "").startswith("merged"), r.stdout)
+        self.assertNotIn("B" * 200, self.read(self.MAP))
+        self.assertEqual(self.gate_runs(), 1, "one gate run, on the lanes that fit; no bisection")
+
+    def test_a_map_file_the_base_has_over_its_cap_blames_no_lane_at_its_merge(self):
+        """T-4980: the base's own breach is the gate's to name, never a lane's leave-out."""
+        filler = self.cap_base(-100)
+        a = self.lane(1, self.MAP, f"- `a.py`: a. more\n{filler}\n- `b.py`: b.\n")
+        r = self.train(a, check=False)
+        self.assertNotIn("cap", r.stdout.split("left out")[-1] if "left out" in r.stdout else "")
+        self.assertNotIn(f"left out {a}: takes", r.stdout)
+
     def test_map_and_code_conflict_is_left_out(self):
         """T-4375: a lane that conflicts in a map file and in a code file is left out as before, its files named, the
         train's tree holds nothing of it, and nothing is captured."""
