@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- fm code --small holds a small local model to its plan (change checks must fail first, a change request is not answered read-only, the last step must change a file), and Louhi's Smith arm now records its held-out scorecard beside the Claude arm's; the first paired runs showed no pass-rate gain yet (T-2878).
 - A card's escalation no longer swallows smith's budget stop: a run whose --max-usd is spent when a card closes stops right there with the cap's own message (T-4860).
 - MASTER.md's section 10 (Known limitations, 5.7 KB) moves to docs/map/guide-1.md beside sections 2 and 5, its heading kept with a pointer, so the system map has 16 KB of room for a train's file-map lines instead of 0.6 KB (T-5339).
 - The speed-promise table now also holds CPU ratios for sampo status, task list and queue, gated by the same two-window Live test as the other hot verbs (T-5028).
