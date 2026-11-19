@@ -1,4 +1,8 @@
-"""The six stations, each a close view of the same forge, drawn in the mark's language, each with its own fire."""
+"""The six stations, each a close view of the same forge, drawn in the mark's language, each with its own fire.
+
+T-4868: GAUGES and LEDGER below are design-time sketches of the Record with a past day's numbers in them. They are
+never written into the page: page.html's {{gauges}}, {{ledger}}, {{kinds}}, {{blocks}}, {{lanes}} and {{asof}} are filled from
+site/data/stats.json by site/build.py:fill_record (T-4842), and build.py here leaves those keys alone."""
 import math, random
 from art import *
 import hero

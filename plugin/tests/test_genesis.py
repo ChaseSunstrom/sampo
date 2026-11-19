@@ -499,6 +499,105 @@ class GenesisLive(ForemanTestCase):
         self.assertEqual(pushed["generated"], datetime.date.today().isoformat())
         self.assertEqual(self.fm_json("genesis", "publish")["result"], "up to date")  # main's is today's: no push
 
+    def test_a_ship_testing_holds_the_push_until_the_stats_are_two_days_behind(self):
+        # T-4868: ships run most of the day, and "waiting: fm ship is testing" came before the stats code, so a day whose
+        # quiet window never opened was skipped without a word. One day behind still waits; two behind goes out beside it.
+        import datetime
+        from sampo import core as c
+        from sampo import prove
+        stub = ("import datetime, json, os\nroot = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))\n"
+                "with open(os.path.join(root, 'site', 'data', 'stats.json'), 'w') as f:\n"
+                "    json.dump({'generated': datetime.date.today().isoformat(), 'stub': True}, f)\n")
+        os.makedirs(os.path.join(self.repo, "site", "data"), exist_ok=True)
+        with open(os.path.join(self.repo, "site", "stats.py"), "w") as f:
+            f.write(stub)
+        with open(os.path.join(self.repo, "site", "data", "stats.json"), "w") as f:
+            f.write('{"generated": "2000-01-01"}\n')
+        self.git("add", "site")
+        self.git("commit", "-qm", "site with old stats")
+        self.git("push", "-q", "origin", "main")
+        prove.remember(self.repo)
+        self.granted()
+        self.fm("genesis", "live", "on")
+        p = c.find_project(self.repo)
+        c.update_meta(p, ship_testing={"pid": os.getpid(), "at": c.now(), "root": "/elsewhere/ship"})
+        main = self.git("rev-parse", "main", at=self.origin).strip()
+
+        def stats_day(back):
+            meta = c.read_meta(p)
+            meta["genesis_live"]["stats_day"] = (datetime.date.today() - datetime.timedelta(days=back)).isoformat()
+            c.write_meta(p, meta)
+
+        self.assertEqual(self.fm_json("genesis", "publish")["result"], "waiting: fm ship is testing")  # just switched on
+        stats_day(1)  # yesterday's: today's window may still open when the ship ends
+        self.assertEqual(self.fm_json("genesis", "publish")["result"], "waiting: fm ship is testing")
+        self.assertEqual(self.git("rev-parse", "main", at=self.origin).strip(), main, "nothing pushed")
+        stats_day(2)  # a whole day went by under ships: the refresh is starved, so it goes out beside the ship
+        r = self.fm_json("genesis", "publish")
+        self.assertTrue(r["result"].startswith("pushed"), r)
+        self.assertIn("a ship was testing", r["result"])
+        files = self.git("diff", "--name-only", "main~1", "main", at=self.origin).split()
+        self.assertIn("site/data/stats.json", files)
+        self.assertTrue(all(f.startswith("site/genesis/") or f == "site/data/stats.json" for f in files), files)
+        pushed = json.loads(self.git("show", "main:site/data/stats.json", at=self.origin))
+        self.assertEqual(pushed["generated"], datetime.date.today().isoformat())
+        self.assertTrue(c.read_meta(p).get("ship_testing"), "the ship's marker is the ship's: untouched")
+        self.assertEqual(self.fm_json("genesis", "publish")["result"], "waiting: fm ship is testing")  # today's is in
+
+    def test_a_starved_refresh_that_keeps_failing_is_tried_once_per_half_hour_beside_a_ship(self):
+        # T-4868: every kick during a long ship would repeat export, fetch, worktree, stats.py and cards beside the
+        # ship's own suite when main's stats.py differs from the tree's and the refresh can never succeed
+        import datetime
+        import subprocess
+        from sampo import core as c
+        from sampo import prove
+        os.makedirs(os.path.join(self.repo, "site", "data"), exist_ok=True)
+        with open(os.path.join(self.repo, "site", "stats.py"), "w") as f:
+            f.write("# the tree's own script\n")
+        with open(os.path.join(self.repo, "site", "data", "stats.json"), "w") as f:
+            f.write('{"generated": "2000-01-01"}\n')
+        self.git("add", "site")
+        self.git("commit", "-qm", "site with old stats")
+        self.git("push", "-q", "origin", "main")
+        prove.remember(self.repo)
+        self.granted()
+        self.fm("genesis", "live", "on")
+        other = os.path.join(self.tmp, "other")  # main's script moved on past this tree's
+        subprocess.run(["git", "clone", "-q", self.origin, other], check=True)
+        with open(os.path.join(other, "site", "stats.py"), "w") as f:
+            f.write("# main's newer script\n")
+        self.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "newer stats script", at=other)
+        self.git("push", "-q", "origin", "HEAD:main", at=other)
+        p = c.find_project(self.repo)
+        meta = c.read_meta(p)
+        meta["genesis_live"]["stats_day"] = (datetime.date.today() - datetime.timedelta(days=5)).isoformat()
+        c.write_meta(p, meta)
+        c.update_meta(p, ship_testing={"pid": os.getpid(), "at": c.now(), "root": "/elsewhere/ship"})
+        first = self.fm_json("genesis", "publish")["result"]
+        self.assertIn("stats not refreshed", first)  # it tried, beside the ship, and said why it couldn't
+        again = self.fm_json("genesis", "publish")["result"]
+        self.assertTrue(again.startswith("waiting: fm ship is testing"), again)  # no second try inside half an hour
+        self.assertIn("tried", again)
+        meta = c.read_meta(p)
+        meta["genesis_live"]["stats_try"] = time.time() - 31 * 60
+        c.write_meta(p, meta)
+        self.assertIn("stats not refreshed", self.fm_json("genesis", "publish")["result"])  # half an hour on: once more
+
+    def test_a_tree_that_cannot_run_the_stats_script_never_pushes_past_a_ship(self):
+        # T-4868: the override is for a refresh that would happen; an untrusted tree's stale day is not a reason to cut in
+        from sampo import core as c
+        os.makedirs(os.path.join(self.repo, "site"), exist_ok=True)  # a stats script, but prove.remember never ran
+        with open(os.path.join(self.repo, "site", "stats.py"), "w") as f:
+            f.write("raise SystemExit(1)\n")
+        p = c.find_project(self.repo)
+        self.granted()
+        self.fm("genesis", "live", "on")
+        meta = c.read_meta(p)
+        meta["genesis_live"]["stats_day"] = "2000-01-01"
+        c.write_meta(p, meta)
+        c.update_meta(p, ship_testing={"pid": os.getpid(), "at": c.now(), "root": "/elsewhere/ship"})
+        self.assertEqual(self.fm_json("genesis", "publish")["result"], "waiting: fm ship is testing")
+
     def test_a_private_term_or_secrets_value_in_the_tower_commit_is_refused_and_recorded_not_pushed(self):  # T-3551
         import datetime
         from sampo import prove

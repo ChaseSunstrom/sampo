@@ -568,6 +568,49 @@ class RecordFromData(unittest.TestCase):
         self.assertIn(f"{self.build.fmt(t['tasks_done'])} tasks in all", page)
 
 
+class DesignTemplateKeepsDataPlaceholders(unittest.TestCase):
+    """T-4868: the design-time generator (design/site/12-forge-illustrated/_src) baked the figures that T-4842 moved to
+    site/index.html's {{...}} placeholders: page.html carried the literals and build.py wrote stations.py's drawings of
+    them over the slots. A rebuild there and a copy into site/ re-published the two-week-old numbers."""
+    SRC = os.path.join(os.path.dirname(PLUGIN), "design", "site", "12-forge-illustrated", "_src")
+    KEYS = ("lanes", "blocks", "asof", "kinds", "gauges", "ledger")
+
+    def src(self, name):
+        return read_text(os.path.join(self.SRC, name))
+
+    def test_the_template_carries_the_data_placeholders_and_none_of_the_stale_figures(self):
+        page = self.src("page.html")
+        for key in self.KEYS:
+            self.assertIn("{{" + key + "}}", page, key)
+        for stale in STALE_RECORD:
+            self.assertNotIn(stale, page)
+        self.assertNotIn('<div class="totals">', page)  # the landing page's Record has no totals strip of baked counts
+        self.assertNotIn('<li style="--v:', page)  # the Ward's kinds are rows the build writes from stats.json
+
+    def test_the_generator_leaves_the_data_keys_alone_and_never_draws_the_record_from_stations(self):
+        build = self.src("build.py")
+        self.assertNotIn("stations.gauges", build)
+        self.assertNotIn("stations.ledger", build)
+        self.assertNotIn("stations.LEDGER", build)
+        self.assertIn("DATA_KEYS", build)  # the leftover-brace check lets the keys site/build.py:fill_record fills through
+        self.assertRegex(build, r"for k, v in rep\.items\(\):")
+        for key in ("GAUGES", "LEDGER", "LEDGER_ROWS"):
+            self.assertNotIn("'" + key + "'", build, key)  # no replacement is offered for the page's slots
+        for key in self.KEYS:
+            self.assertNotIn("'" + key + "':", build, key)
+
+    def test_the_split_page_is_checked_for_a_leaked_placeholder_besides_the_data_keys(self):
+        build = self.src("build.py")
+        tail = build[build.index("split = page.replace"):build.index("open(os.path.join(site, 'index.html')")]
+        self.assertIn("for k in DATA_KEYS", tail)  # the six keys are lifted out, and only they
+        self.assertRegex(tail, r"assert '\{\{' not in kept, 'split page still has a placeholder")
+
+    def test_stations_says_its_record_drawings_are_sketches_the_page_never_takes(self):
+        stations = self.src("stations.py")
+        self.assertIn("T-4868", stations)
+        self.assertIn("never written into the page", stations)
+
+
 class CurrentNames(unittest.TestCase):
     """T-4842, findings 10 and 11: the diagrams say the Ward and sampo oops, never Guard or fm oops."""
     DIAGRAMS = os.path.join(SITE, "assets", "diagrams")

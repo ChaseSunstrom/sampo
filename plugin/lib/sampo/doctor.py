@@ -2286,6 +2286,23 @@ def check_heartbeats(projects, now=None):
     return Result("heartbeats", "PASS", "no overdue fm run/night heartbeat")
 
 
+def check_stats_fresh(projects, today=None):
+    """T-4868: site/data/stats.json more than 2 days old (the daily refresh stalled and nothing said so) warns, with the
+    day it was last refreshed and, under live publishing, what the live loop last recorded."""
+    from sampo import rune
+    lines = []
+    for p in projects:
+        try:
+            line = rune.stats_alarm(p, today)
+        except (OSError, ValueError, c.PolicyError):
+            line = ""
+        if line:
+            lines.append(f"{p.slug}: {line}" if len(projects) > 1 else line)
+    if lines:
+        return Result("site stats", "WARN", "; ".join(lines))
+    return Result("site stats", "PASS", "site/data/stats.json is within 2 days (or no site/stats.py here)")
+
+
 def check_env(settings, manifest):
     """The env values fm install-user sets (drive continuation cap, earlier compaction), unless Sampo isn't wired."""
     if manifest is None:
@@ -3433,6 +3450,7 @@ def run_all(full=False, accept_supply=False):
                 check_frontmatter(), check_unloaded_skills()]
     projects = [p for p, _ in c.all_projects()]
     results.append(check_heartbeats(projects))
+    results.append(check_stats_fresh(projects))
     results.append(check_notify(projects))
     results.append(check_state_size(projects))
     results.append(check_fsck(projects))

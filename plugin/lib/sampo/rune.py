@@ -1501,6 +1501,18 @@ def _record(p, result, digest=None, sha=None, stats_day=None):
     return {"result": result, **({"sha": sha} if sha else {})}
 
 
+STATS_RETRY = 1800  # T-4868: seconds between starved refreshes tried beside a ship's test run
+
+
+def _stamp_try(p):
+    """T-4868: now, as the last starved refresh tried beside a ship (before the work, so a crash or a timeout counts)."""
+    with c.lock(p.dir):
+        meta = c.read_meta(p)
+        if meta.get("genesis_live"):
+            meta["genesis_live"]["stats_try"] = time.time()
+            c.write_meta(p, meta)
+
+
 STATS = "site/data/stats.json"  # T-2326: the homepage's own-record numbers, refreshed once a day by publish
 
 
@@ -1523,6 +1535,68 @@ def _stats_ok(p):
     from sampo import prove
     own = os.path.realpath(os.path.dirname(c.PLUGIN_ROOT)) == os.path.realpath(p.root)
     return own or prove.trusted(p.root)
+
+
+STATS_STARVED = 2  # T-4868: days behind at which a ship's test run no longer holds the daily stats push back
+STATS_ALARM = 2  # T-4868: doctor and the self-check name stats.json when its day is more than this many days old
+
+
+def _days_since(day, today=None):
+    import datetime
+    try:
+        return ((datetime.date.fromisoformat(str(today)[:10]) if today else datetime.date.today())
+                - datetime.date.fromisoformat(str(day)[:10])).days
+    except ValueError:
+        return None
+
+
+def _stats_starved(p, lv, today):
+    """T-4868: how many days behind the homepage's stats are, when that is STATS_STARVED or more and this tree could run
+    the refresh itself (its own or a trusted stats script); else 0. The ship wait in publish() used to come first,
+    so a stretch of ships kept the once-a-day window shut and the refresh was skipped unannounced."""
+    if not os.path.isfile(os.path.join(p.root, "site", "stats.py")) or not _stats_ok(p):
+        return 0
+    behind = _days_since(lv.get("stats_day") or str(lv.get("since") or "")[:10], today)
+    return behind if behind is not None and behind >= STATS_STARVED else 0
+
+
+def stats_age(p, today=None):
+    """T-4868: (days, day, where) for the homepage's stats, or None for a tree with no stats script. With live
+    publishing on, the day main's stats were last confirmed (the tree's own file is never written by a publish, so its
+    "generated" is as old as the last merge of a data commit); else the file's own "generated" day. days is None when
+    the day can't be read."""
+    import json
+    if not os.path.isfile(os.path.join(p.root, "site", "stats.py")):
+        return None
+    lv = c.read_meta(p).get("genesis_live")
+    if lv:
+        day = lv.get("stats_day") or str(lv.get("since") or "")[:10]
+        return _days_since(day, today), day, "published"
+    try:
+        with open(os.path.join(p.root, STATS), encoding="utf-8") as f:
+            day = str(json.load(f).get("generated") or "")
+    except (OSError, ValueError, AttributeError):
+        return None, "", "file"
+    return _days_since(day, today), day, "file"
+
+
+def stats_alarm(p, today=None):
+    """T-4868: the one line doctor and the self-check show when stats.json is more than STATS_ALARM days old, else ''."""
+    age = stats_age(p, today)
+    if age is None or (age[0] is not None and age[0] <= STATS_ALARM):
+        return ""
+    days, day, where = age
+    if where == "published" and not _stats_ok(p):  # live publishing can't run an untrusted script: no refresh will come
+        return (f"{STATS} on main is {'stale' if days is None else f'{days} days old'}: this tree's site/stats.py isn't "
+                "trusted, so live publishing never refreshes it → sampo prove --yes-run")
+    if days is None:
+        return (f"{STATS} has no readable generated day: the site's figures can't be dated"
+                + (" → sampo genesis shows why" if where == "published" else " (python3 site/stats.py rewrites it)"))
+    if where == "published":
+        last = ((c.read_meta(p).get("genesis_live") or {}).get("last") or {}).get("result")
+        return (f"{STATS} on main was last refreshed {day}, {days} days ago: the daily refresh isn't reaching main"
+                + (f" (last check: {c.fit(c.plain(str(last)), 80)})" if last else "") + " → sampo genesis shows why")
+    return f"{STATS} was generated {day}, {days} days ago: the site's figures are as of then → python3 site/stats.py, or sampo genesis live on"
 
 
 def _refresh_stats(p, wt):
@@ -1658,8 +1732,17 @@ def publish(p, settle=False):
     lv = c.read_meta(p).get("genesis_live")
     if not lv:
         raise ValueError("live publishing is off: fm genesis live on (spends one publish grant)")
+    today, late = time.strftime("%Y-%m-%d"), ""
     if c.gates_live(p, key="ship_testing"):
-        return _record(p, "waiting: fm ship is testing")  # a push now would send it back to the start
+        behind = _stats_starved(p, lv, today)
+        if not behind:
+            return _record(p, "waiting: fm ship is testing")  # a push now would send it back to the start
+        tried = lv.get("stats_try")  # a refresh that keeps failing must not repeat its work beside the ship's suite
+        if isinstance(tried, (int, float)) and 0 <= time.time() - tried < STATS_RETRY:
+            return _record(p, f"waiting: fm ship is testing (a starved stats refresh was tried {(time.time() - tried) / 60:.0f} "
+                              f"min ago; one per {STATS_RETRY // 60} min)")
+        _stamp_try(p)
+        late = f"a ship was testing, but the stats were {behind} days behind"  # T-4868: once a day at most, it's the refresh
     remote, git = lv.get("remote") or "origin", release._git
     try:
         with c.lock(os.path.join(p.dir, "genesis-publish"), timeout=120 if settle else 0), \
@@ -1668,7 +1751,6 @@ def publish(p, settle=False):
             export(p, out)
             new = _body(os.path.join(out, "genesis.json"))
             digest = hashlib.sha256(json.dumps(new, sort_keys=True).encode()).hexdigest()
-            today = time.strftime("%Y-%m-%d")
             # T-2326: a stale homepage is a reason to publish too; main decides, and the day stamp spares the fetch
             stats = lv.get("stats_day") != today and _stats_ok(p) and os.path.isfile(os.path.join(p.root, "site", "stats.py"))
             if digest == lv.get("hash") and not stats:
@@ -1691,7 +1773,7 @@ def publish(p, settle=False):
                     day = today if fresh else None
                 if stats:
                     cards, why = _refresh_cards(p, wt)
-                tail = "".join(f"; {x}" for x in (note, why) if x)
+                tail = "".join(f"; {x}" for x in (late, note, why) if x)
                 if old == new and not fresh and not cards:
                     return _record(p, "up to date" + tail, digest, stats_day=day)
                 skip = ""  # T-3504: a tower push only for a real change, and at most once an hour

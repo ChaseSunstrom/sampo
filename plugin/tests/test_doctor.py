@@ -922,6 +922,79 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class StaleSiteStats(ForemanTestCase):
+    """T-4868: the daily stats refresh stalled for two weeks and nothing said so: doctor and the self-check name
+    site/data/stats.json once its generated day is more than 2 days old."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def stats(self, generated, script=True):
+        os.makedirs(os.path.join(self.repo, "site", "data"), exist_ok=True)
+        if script:
+            with open(os.path.join(self.repo, "site", "stats.py"), "w") as f:
+                f.write("# the stats script\n")
+        with open(os.path.join(self.repo, "site", "data", "stats.json"), "w") as f:
+            json.dump({"generated": generated}, f)
+
+    def test_a_file_older_than_two_days_warns_naming_it_and_two_days_is_quiet(self):
+        from sampo import selfcheck
+        self.stats("2026-11-02")
+        r = d.check_stats_fresh([self.p], today="2026-11-17")
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("site/data/stats.json", r.detail)
+        self.assertIn("2026-11-02", r.detail)
+        self.assertIn("15 days", r.detail)
+        hit = selfcheck.stale_stats(self.p, [], time.mktime((2026, 11, 17, 12, 0, 0, 0, 0, -1)))
+        self.assertIn("site/data/stats.json", hit)
+        self.assertIn("15 days", hit)
+        self.assertEqual(d.check_stats_fresh([self.p], today="2026-11-04").status, "PASS")  # 2 days: within the window
+        self.assertEqual(d.check_stats_fresh([self.p], today="2026-11-05").status, "WARN")  # 3 days: named
+        self.assertIsNone(selfcheck.stale_stats(self.p, [], time.mktime((2026, 11, 4, 12, 0, 0, 0, 0, -1))))
+
+    def test_a_tree_with_no_stats_script_or_an_unreadable_file_says_what_it_can(self):
+        from sampo import selfcheck
+        self.assertEqual(d.check_stats_fresh([self.p], today="2026-11-17").status, "PASS")  # no site/stats.py: not its job
+        self.assertIsNone(selfcheck.stale_stats(self.p, [], time.time()))
+        self.stats("not a day")
+        self.assertEqual(d.check_stats_fresh([self.p], today="2026-11-17").status, "WARN")
+        os.remove(os.path.join(self.repo, "site", "data", "stats.json"))
+        self.assertIn("readable", d.check_stats_fresh([self.p], today="2026-11-17").detail)
+
+    def test_with_live_publishing_on_the_day_main_was_refreshed_is_what_counts(self):
+        # the tree's own file only changes when a data commit is merged back, so judging it would warn forever
+        from sampo import prove
+        self.stats("2026-11-02")
+        prove.remember(self.repo)  # a trusted tree: live publishing can run its stats script
+        c.update_meta(self.p, genesis_live={"remote": "origin", "since": "2026-11-01T00:00:00Z", "stats_day": "2026-11-16",
+                                            "last": {"at": "2026-11-17T01:00:00Z", "result": "waiting: fm ship is testing"}})
+        self.assertEqual(d.check_stats_fresh([self.p], today="2026-11-17").status, "PASS")
+        r = d.check_stats_fresh([self.p], today="2026-11-30")
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("on main was last refreshed 2026-11-16", r.detail)
+        self.assertIn("waiting: fm ship is testing", r.detail)  # the live loop's own record says why
+        self.assertNotIn("python3 site/stats.py", r.detail, "live publishing doesn't run it by hand")
+        c.update_meta(self.p, genesis_live={"remote": "origin", "since": "2026-11-20T00:00:00Z"})  # never refreshed: dated by since
+        self.assertEqual(d.check_stats_fresh([self.p], today="2026-11-21").status, "PASS")
+        self.assertEqual(d.check_stats_fresh([self.p], today="2026-11-30").status, "WARN")
+
+
+    def test_live_publishing_with_an_untrusted_stats_script_names_the_trust_step_not_a_stale_alarm(self):
+        # T-4868: publish never runs a script the user hasn't said yes to, so no refresh is coming: say what unblocks it
+        from sampo import selfcheck
+        self.stats("2026-11-02")
+        c.update_meta(self.p, genesis_live={"remote": "origin", "since": "2026-11-01T00:00:00Z", "stats_day": "2026-11-05"})
+        r = d.check_stats_fresh([self.p], today="2026-11-17")
+        self.assertEqual(r.status, "WARN")
+        self.assertIn("isn't trusted", r.detail)
+        self.assertIn("sampo prove --yes-run", r.detail)
+        self.assertNotIn("sampo genesis shows why", r.detail)
+        hit = selfcheck.stale_stats(self.p, [], time.mktime((2026, 11, 17, 12, 0, 0, 0, 0, -1)))
+        self.assertIn("sampo prove --yes-run", hit)
+
+
 class HookErrors(ForemanTestCase):
     def test_the_latest_error_is_named(self):
         # round 5 (brainstorm, reliability): "2 hook errors" alone sends the user digging through the log

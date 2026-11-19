@@ -145,6 +145,20 @@ class Ship(ForemanTestCase):
         self.assertEqual(self.main_log()[:3], ["add b", "add a", "tower update"])
         self.assertFalse(self.granted())
 
+    def test_a_main_that_moved_only_in_the_daily_stats_and_cards_is_re_picked_and_pushed(self):  # T-4868
+        # fm genesis live pushes the stats and the cards while a ship tests (a starved day), and test.yml's paths-ignore
+        # lacks both: the move is data only, so the ship re-picks over it rather than losing the whole test run
+        self.ci_ignores("site/genesis/genesis.json")
+        self.grant()
+        both = f"sh {self.mover('site/data/stats.json')} && sh {self.mover('site/cards/index.html')}"
+        r = self.ship("--test", f"sh -c {shlex.quote(both)}")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("re-picked onto it", r.stdout)
+        self.assertEqual(self.main_log()[:4], ["add b", "add a", "tower update", "tower update"])
+        self.assertEqual(sh(self.origin, "show", "main:site/data/stats.json"), "moved\n")
+        self.assertEqual(sh(self.origin, "show", "main:site/cards/index.html"), "moved\n")
+        self.assertFalse(self.granted())
+
     def test_a_move_in_a_file_ci_tests_refuses_though_no_shipped_file_moved(self):  # T-2572
         self.ci_ignores("site/genesis/genesis.json")
         self.grant()

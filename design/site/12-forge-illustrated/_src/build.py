@@ -123,9 +123,7 @@ def main():
                         + ', '.join(r['id'] for r in rows if r['stage'] == 'kill').replace(', ', ' and ', 1) + ' stand at their kill test, a crescent. None is built, so no moon is full. '
                         '<a class="more" href="tower/index.html#moonshots">All of them in Rune&#x27;s sky</a>'),
         'MOONS_CAP': f'The {NUM[len(wild)]} wildest of {len(rows)} moonshots along the ecliptic over the forge, wildest first, each drawn at its stage: ideas a thin sliver, kill tests a crescent, the wild 5s brighter. Otava stands above them, its pointers on the pole.',
-        'CHART': stations.moons_chart([(int(r['id'][2:]), r['wild'], r['stage']) for r in wild], len(rows)), 'GAUGES': stations.gauges(),
-        'LEDGER': stations.ledger() + stations.ledger(420, 'narrow', 7, False),
-        'LEDGER_ROWS': ''.join(f'<tr><td>{d}</td><td>{t}</td><td>{e}</td></tr>' for d, t, e in stations.LEDGER),
+        'CHART': stations.moons_chart([(int(r['id'][2:]), r['wild'], r['stage']) for r in wild], len(rows)),
         'JS': f'const HB={json.dumps(list(hero.HAMMER_BOX[2:]))}, RZ={json.dumps(list(hero.POSE_RAISED))};\n' + open(os.path.join(HERE, 'page.js')).read(),
     }
     import re  # N-15: the chart's accessible name must agree with the export it is drawn from
@@ -139,13 +137,22 @@ def main():
     for k, v in rep.items():
         assert '{{' + k + '}}' in page, k
         page = page.replace('{{' + k + '}}', v)
-    assert '{{' not in page.replace('{{CSS}}', '').replace('{{JS}}', ''), page[page.find('{{'):page.find('{{') + 40]
+    # T-4868: the readings (the Ward's blocks and kinds, lanes merged, the Record's gauges, ledger and date) are filled from
+    # site/data/stats.json by site/build.py:fill_record (T-4842), never here: these keys stay braces in the page this writes
+    DATA_KEYS = ('lanes', 'blocks', 'asof', 'kinds', 'gauges', 'ledger')
+    left = page.replace('{{CSS}}', '').replace('{{JS}}', '')
+    for k in DATA_KEYS:
+        assert '{{' + k + '}}' in left, 'page.html lost the data placeholder ' + k
+        left = left.replace('{{' + k + '}}', '')
+    assert '{{' not in left, left[left.find('{{'):left.find('{{') + 40]
     # one page, self-contained but for the fonts; and the same page split as the repo will carry it (site/)
     whole = page.replace('{{CSS}}', css).replace('{{JS}}', js)
     open(os.path.join(HERE, '..', 'index.html'), 'w').write(whole)
     site = os.path.join(HERE, '..', 'site'); os.makedirs(os.path.join(site, 'fonts'), exist_ok=True)
     split = page.replace('<style>\n{{CSS}}\n</style>', '<link rel="stylesheet" href="style.css">').replace('<script>\n{{JS}}\n</script>', '<script src="site.js"></script>')
-    assert '{{' not in split, 'split page still has a placeholder'
+    kept = split
+    for k in DATA_KEYS: kept = kept.replace('{{' + k + '}}', '')
+    assert '{{' not in kept, 'split page still has a placeholder: ' + kept[kept.find('{{'):kept.find('{{') + 40]  # a {{CSS}} leak
     open(os.path.join(site, 'index.html'), 'w').write(split); open(os.path.join(site, 'style.css'), 'w').write(css); open(os.path.join(site, 'site.js'), 'w').write(js)
     for fn in os.listdir(os.path.join(HERE, 'fonts')): shutil.copy(os.path.join(HERE, 'fonts', fn), os.path.join(site, 'fonts', fn))
     print('index.html', len(whole.encode()) // 1024, 'KB; site/ index.html', len(split.encode()) // 1024, 'KB, style.css', len(css.encode()) // 1024, 'KB, site.js', len(js.encode()) // 1024, 'KB')

@@ -128,7 +128,7 @@ if(!matchMedia('(prefers-reduced-motion: reduce)').matches)d.classList.add('anim
     </figure>
     <div class="lanes">
       <h3>Many hands, one Smith</h3>
-      <p>Independent tasks run side by side: builders work in their own worktrees, test-first, and hand back a commit. Every branch gets an independent review before Sampo merges it and reruns the checks. 414 lanes merged so far.</p>
+      <p>Independent tasks run side by side: builders work in their own worktrees, test-first, and hand back a commit. Every branch gets an independent review before Sampo merges it and reruns the checks. {{lanes}} lanes merged so far.</p>
     </div>
   </div>
   <div class="side">
@@ -169,18 +169,8 @@ if(!matchMedia('(prefers-reduced-motion: reduce)').matches)d.classList.add('anim
       <div><dt>Only you lower it</dt><dd>The agent can't grant itself edits to Sampo, a push, or a lighter posture; those wait for your yes.</dd></div>
       <div><dt>Checked against real use</dt><dd>Every change to the Ward replays thousands of real commands to show what it would newly block or allow.</dd></div>
     </dl>
-    <p><span class="big">570</span> commands blocked on Sampo's own repo so far. The most common kinds:</p>
-    <ul class="kinds" id="kinds">
-      <li style="--v:1;--i:0"><span>Edits to Sampo itself</span><b>212</b></li>
-      <li style="--v:.868;--i:1"><span>Edits with no task brief</span><b>184</b></li>
-      <li style="--v:.288;--i:2"><span>Writes to its state files directly</span><b>61</b></li>
-      <li style="--v:.165;--i:3"><span>System files</span><b>35</b></li>
-      <li style="--v:.132;--i:4"><span>Plugin files</span><b>28</b></li>
-      <li style="--v:.104;--i:5"><span>Deletes outside the project</span><b>22</b></li>
-      <li style="--v:.052;--i:6"><span>Downloads piped into a shell</span><b>11</b></li>
-      <li style="--v:.038;--i:7"><span>Credential reads</span><b>8</b></li>
-    </ul>
-    <p class="fine" style="margin-top:10px">Nine more blocks have no kind recorded.</p>
+    <p><span class="big">{{blocks}}</span> commands blocked on Sampo's own repo so far. The most common kinds:</p>
+    {{kinds}}
   </div>
   <div class="side">
     <noscript class="figsrc">{{FIG_WARD}}</noscript>
@@ -221,19 +211,11 @@ if(!matchMedia('(prefers-reduced-motion: reduce)').matches)d.classList.add('anim
       <p class="eyebrow">Built with itself</p>
       <h2 id="rec-h">The forge's <em>own readings</em></h2>
     </div>
-    <p class="intro">Sampo is developed under Sampo: every change to its own repo went through the stations above. These readings come from the repo's own task, evidence and commit records, to 2 November 2026.</p>
+    <p class="intro">Sampo is developed under Sampo: every change to its own repo went through the stations above. These readings come from the repo's own task, evidence and commit records, to {{asof}}.</p>
   </div>
-  <div class="gauges" id="gauges">{{GAUGES}}</div>
-  <div class="totals">
-    <div><b>1,662</b><span>tasks done</span></div>
-    <div><b>7,390</b><span>evidence runs</span></div>
-    <div><b>690</b><span>proofs</span></div>
-    <div><b>1,349</b><span>commits</span></div>
-  </div>
+  <div class="gauges" id="gauges">{{gauges}}</div>
   <figure class="ledger" id="ledger">
-{{LEDGER}}
-<figcaption><span>Tasks closed per day, as ingots; a dot marks a day with none. Hover or focus a day for its evidence runs.</span><span>Peak: 211 on 16 October</span></figcaption>
-<div class="vh"><table><caption>Tasks closed and evidence runs per working day</caption><tr><th>Day</th><th>Tasks</th><th>Evidence runs</th></tr>{{LEDGER_ROWS}}</table></div>
+{{ledger}}
   </figure>
 </section>
 </main>

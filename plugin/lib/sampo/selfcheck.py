@@ -350,6 +350,14 @@ def stale_beats(p, briefs, now):
     return Hit("stale heartbeat: " + ", ".join(n for n, _ in late) + " → see whether it died", tell=True) if late else None
 
 
+def stale_stats(p, briefs, now):
+    """T-4868: the homepage's stats (site/data/stats.json) more than 2 days old: the daily refresh stalled for two weeks
+    once and nothing said so. Told, so the session that sees it looks at sampo genesis."""
+    from sampo import rune
+    line = rune.stats_alarm(p, time.strftime("%Y-%m-%d", time.localtime(now)))
+    return Hit(line, tell=True) if line else None
+
+
 def pause_lingers(p, briefs, now):
     """T-4190: a pause that has outlasted its welcome, with who set it. A session's own pause is told (it lifts it with
     sampo pause off: it was the one that set it); the user's is only named, after an hour, and stays theirs."""
@@ -415,7 +423,7 @@ def _disk_held(p, briefs, now):
     return held
 
 
-CHECKS += (usage_burn, stale_beats, pause_lingers, disk_low)
+CHECKS += (usage_burn, stale_beats, stale_stats, pause_lingers, disk_low)
 
 
 def lines(p, briefs=None, now=None):

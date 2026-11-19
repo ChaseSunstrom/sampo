@@ -992,7 +992,15 @@ def _tower_files(root, last, base):
     to keep. Everything else reaches main only through a ship, so a move there is someone else's and still stops it."""
     from sampo import rune
     moved = _git(root, "diff", "--name-only", last, base).splitlines()
-    return {f for f in moved if f.startswith("site/genesis/") or f == rune.STATS}
+    return {f for f in moved if f.startswith("site/genesis/") or _data_file(f)}
+
+
+def _data_file(f):
+    """T-4868: the daily stats and the card export, which publish pushes to main even while a ship tests (the stats
+    would otherwise skip every day a ship ran through the quiet window): data only, so a move in them while the suite
+    runs changes nothing a re-test could learn, and the ship re-picks over it instead of refusing."""
+    from sampo import rune
+    return f == rune.STATS or f.startswith(rune.CARDS + "/")
 
 
 def _pick(root, wt, sha, tower):
@@ -1288,7 +1296,7 @@ def ship(p, args):
                     # T-2511: a move in files the shipped commits never touch (fm genesis live's tower publishes) can't
                     # change what was tested: re-pick onto the new main and push; any shared file refuses as before
                     new = _git(root, "rev-parse", "FETCH_HEAD").strip()
-                    moved = _files(base, new)
+                    moved = {f for f in _files(base, new) if not _data_file(f)}  # T-4868: the daily data move needs no re-test
                     if moved & _files(base, tip):
                         _err(f"{remote} main moved while testing; nothing was pushed: run fm ship again")
                     ignored = _ci_ignored(root, tip)  # T-3439: GitHub runs the pushed commit's workflow, not main's
