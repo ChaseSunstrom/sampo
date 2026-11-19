@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-18",
+ "generated": "2026-11-19",
  "totals": {
-  "tasks_done": 1118,
-  "evidence": 6589,
-  "proofs": 616,
-  "commits": 790,
-  "gate_runs": 478,
-  "subagents": 3305,
-  "lanes_merged": 754,
-  "findings": 1108,
-  "guard_blocks": 1105,
-  "captures": 1906,
-  "lessons_shown": 2156
+  "tasks_done": 1161,
+  "evidence": 7243,
+  "proofs": 639,
+  "commits": 815,
+  "gate_runs": 484,
+  "subagents": 4075,
+  "lanes_merged": 800,
+  "findings": 1547,
+  "guard_blocks": 1176,
+  "captures": 1949,
+  "lessons_shown": 2318
  },
  "daily": [
   {
@@ -203,71 +203,82 @@
   },
   {
    "day": "2026-11-18",
-   "FEATURE": 1,
+   "FEATURE": 20,
+   "FIX": 17,
+   "CLEAN": 2,
+   "PERFORMANCE": 5,
+   "SECURITY": 1,
+   "RESEARCH": 0,
+   "lanes": 47,
+   "evidence": 588
+  },
+  {
+   "day": "2026-11-19",
+   "FEATURE": 0,
    "FIX": 0,
    "CLEAN": 0,
-   "PERFORMANCE": 1,
+   "PERFORMANCE": 0,
    "SECURITY": 0,
    "RESEARCH": 0,
-   "lanes": 1,
-   "evidence": 94
+   "lanes": 0,
+   "evidence": 160
   }
  ],
  "tiers": {
-  "S": 558,
-  "M": 529,
+  "S": 579,
+  "M": 551,
   "L": 30
  },
  "types": {
-  "FEATURE": 311,
-  "FIX": 573,
-  "CLEAN": 57,
-  "PERFORMANCE": 113,
-  "SECURITY": 40,
+  "FEATURE": 330,
+  "FIX": 590,
+  "CLEAN": 59,
+  "PERFORMANCE": 117,
+  "SECURITY": 41,
   "RESEARCH": 24
  },
  "guard": {
-  "brief": 560,
-  "core": 247,
-  "system": 125,
-  "state-direct": 51,
+  "brief": 569,
+  "core": 274,
+  "system": 155,
+  "state-direct": 52,
   "rm-outside": 48,
-  "credentials": 25,
+  "credentials": 26,
   "pipe-shell": 16,
   "self-authorize": 13
  },
  "findings": {
   "lenses": {
-   "self": 349,
-   "edge": 258,
-   "adversary": 226,
-   "intent": 103,
-   "maintainer": 64,
-   "operator": 55
+   "other": 368,
+   "self": 366,
+   "edge": 269,
+   "adversary": 233,
+   "intent": 121,
+   "maintainer": 75
   },
   "severity": {
-   "LOW": 624,
-   "MEDIUM": 396,
-   "HIGH": 88
+   "LOW": 667,
+   "MEDIUM": 419,
+   "HIGH": 93
   }
  },
  "subagents": {
-  "sampo:fm-builder": 1200,
+  "sampo:fm-builder": 1329,
   "fm-builder": 1112,
-  "general-purpose": 522,
-  "fm-reviewer": 208,
-  "sampo:fm-reviewer": 193,
-  "fm-recon": 41
+  "general-purpose": 820,
+  "sampo:fm-reviewer": 296,
+  "workflow-subagent": 239,
+  "fm-reviewer": 208
  },
  "gate_seconds": {
-  "runs": 478,
-  "median": 436.7
+  "runs": 484,
+  "median": 437.2
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 321,
+  "searches": 343,
   "queued": 3,
   "refused": 0
  },
@@ -387,11 +398,11 @@
  "code": {
   "model_tests": 101,
   "endpoints": 9,
-  "tests": 11721
+  "tests": 12490
  },
  "calibration": {
   "scored": 28,
-  "pending": 763,
+  "pending": 866,
   "brier": {
    "stated": 0.11633928571428573,
    "base": 0.1380222222222222
@@ -459,41 +470,41 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 92,
-     "held": 87,
+     "n": 93,
+     "held": 88,
      "pct": 95
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 367,
-     "held": 344,
+     "n": 391,
+     "held": 368,
      "pct": 94
     },
     {
      "lo": 95,
      "hi": 100,
-     "n": 2,
-     "held": 2,
+     "n": 3,
+     "held": 3,
      "pct": 100
     }
    ]
   }
  },
  "proof": {
-  "n": 853,
+  "n": 867,
   "counts": {
-   "typed": 74,
+   "typed": 80,
    "meaning-user": 87,
    "research-uncited": 29,
-   "meaning-notes": 435,
-   "docs": 189,
+   "meaning-notes": 444,
+   "docs": 185,
    "red": 86,
-   "perf-typed": 144,
-   "infra": 5,
+   "perf-typed": 148,
+   "infra": 7,
    "ui-unshot": 2,
-   "data": 2,
-   "tui-unshot": 2,
+   "data": 4,
+   "tui-unshot": 4,
    "perf-noise": 1
   },
   "history": [
@@ -568,6 +579,10 @@
    {
     "day": "2026-11-18",
     "n": 853
+   },
+   {
+    "day": "2026-11-19",
+    "n": 867
    }
   ]
  },
@@ -575,31 +590,31 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1446,
-    "precision": 0.837,
+    "fired": 1462,
+    "precision": 0.84,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 335,
-    "precision": 0.72,
+    "fired": 343,
+    "precision": 0.721,
     "route": "inbox"
    },
    {
     "trigger": "self",
-    "fired": 222,
-    "precision": 0.784,
+    "fired": 225,
+    "precision": 0.799,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 135,
+    "fired": 137,
     "precision": 0.45,
     "route": "inbox"
    },
    {
     "trigger": "ci-red",
-    "fired": 76,
+    "fired": 79,
     "precision": 0.778,
     "route": "inbox"
    },
@@ -611,13 +626,13 @@
    },
    {
     "trigger": "ci",
-    "fired": 65,
+    "fired": 67,
     "precision": 0.473,
     "route": "inbox"
    },
    {
     "trigger": "spar",
-    "fired": 35,
+    "fired": 40,
     "precision": null,
     "route": "inbox"
    },
@@ -640,15 +655,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "sentinel reverify",
-    "fired": 9,
-    "precision": 1.0,
+    "trigger": "foresight-date",
+    "fired": 10,
+    "precision": 0.0,
     "route": "inbox"
    },
    {
-    "trigger": "foresight-date",
-    "fired": 8,
-    "precision": 0.0,
+    "trigger": "sentinel reverify",
+    "fired": 9,
+    "precision": 1.0,
     "route": "inbox"
    },
    {
@@ -701,7 +716,7 @@
    },
    {
     "trigger": "self-failure",
-    "fired": 1,
+    "fired": 2,
     "precision": 1.0,
     "route": "inbox"
    }
@@ -714,20 +729,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 269,
-    "hit": 0.424,
-    "base_hit": 0.364,
+    "n": 283,
+    "hit": 0.435,
+    "base_hit": 0.382,
     "lead": [
      true,
-     0.0018595829606056213,
+     0.004065029323101044,
      22,
-     6
+     7
     ],
     "muted": false,
-    "shown_n": 192,
-    "shown_hit": 0.432,
-    "overlap": 0.072,
-    "base_overlap": 0.068
+    "shown_n": 205,
+    "shown_hit": 0.444,
+    "overlap": 0.071,
+    "base_overlap": 0.067
    }
   ],
   "lean": [
@@ -784,6 +799,48 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-19",
+   "text": "Land the backlog in hand trains of about 20 lanes, each after one repo-shape run on a merge of all its lanes, instead of 27 per-lane checks",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-19",
+   "text": "read T-5057: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-18",
+   "text": "read T-4987: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-18",
+   "text": "Train 3 takes 41 lanes with T-4976 (CI red on main) first; T-4938, T-3365, T-3010, T-4968 go to train 4; hand closes run between trains",
+   "later": null,
+   "confidence": 75,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-18",
+   "text": "Land the 63 finished lanes in four hand trains: train 2 (20), train 3 (trains 3a and 3b, 37, plus 3 lanes rebased on train 2), train 4 (3 lanes rebased on train 3)",
+   "later": null,
+   "confidence": 70,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-18",
+   "text": "T-3311 approved under full autonomy with the revised plan: harness and 2 cards, a fixed-bar A/B, then 8 cards",
+   "later": null,
+   "confidence": 75,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-18",
    "text": "Land the backlog in hand trains of about 20 lanes, each after one repo-shape run on a merge of all its lanes, instead of 27 per-lane checks",
@@ -2141,48 +2198,6 @@
   {
    "date": "2026-11-06",
    "text": "Post-merge suite back on (supersedes the pause): a close runs only its criteria and affected tests, not the full suite, so the post-merge run is the only full-suite net; with it paused T-3398 broke te",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "Post-merge suite paused for the serial landing run: its auto-revert reverted T-3410 (0cad059e5, a MASTER.md bullet) on load-only failures (CheckSkip, AffectedPairs, CloseGates red alone at load ~30) a",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "Sync stays off after T-3342 lands until T-3395 (sync import relabels local audits as imported) is fixed: with sync on, closes kept losing their audits tonight",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "T-3266 ANDON: its two one-line kalevala.py edits stand while T-3265 holds the file; the merge resolves any overlap",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "T-3082 ANDON: drive stays unwired in T-3082 (night runs the Kalevala rounds); wiring the drive's Stop-hook continuation is T-3249's job",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "Sync is off until T-3342 (.sampo mirror rename) lands: main's old code exports to an untracked .foreman/ while .sampo/ is tracked, and the import side re-labels local audits as 'imported', so every cl",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "T-3181 ANDON: accept the 30-pair calling-cards pilot as 'not proven' (the exam pool holds only 30 python bug/vuln/none scenarios); widening the pool to 40+ pairs is its own task",
    "later": null,
    "confidence": null,
    "kind": "reversible"
