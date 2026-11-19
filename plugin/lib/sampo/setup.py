@@ -58,9 +58,14 @@ def paths():
 
 
 # T-4841: a dangling link is Sampo's when its target is a checkout shaped path: a folder named exactly foreman or sampo
-# (a whole component: a user called sampo, or sampo-other, is not one), at most one version folder under it (the plugin
-# cache's cache/foreman/0.9.1), then plugin/bin/fm or sampo.
-_OURS = re.compile(r"(^|/)(foreman|sampo)(/v?\d[^/]*)?/plugin/bin/(fm|sampo)$")
+# (a whole component: a user called sampo, or sampo-other, is not one), at most one version folder under it (a checkout's
+# own version folder), then plugin/bin/fm or sampo.
+_CHECKOUT = re.compile(r"(^|/)(foreman|sampo)(/v?\d[^/]*)?/plugin/bin/(fm|sampo)$")
+# T-4867: the plugin cache's shape: <cache>/<marketplace>/<plugin>/<version>/bin/fm, the plugin's files at the version
+# level (no plugin/ folder). The marketplace and the plugin were both named foreman before the rename to sampo: either
+# name, for either folder; another marketplace's foreman, or another plugin of ours (sampo-ui), is not this one.
+_CACHE = re.compile(r"(^|/)plugins/cache/(foreman|sampo)/(foreman|sampo)/[^/]+/bin/(fm|sampo)$")
+_OURS = re.compile(_CHECKOUT.pattern + "|" + _CACHE.pattern)
 
 
 def _link_one(link, target):
@@ -256,10 +261,39 @@ def _new_links(P):
     return [(what, pair) for what, pair in out if not os.path.lexists(pair[0])]
 
 
-def _our_links(P):
-    """The links uninstall takes away: fm's and sampo's, each only when it points at this Sampo's own file."""
-    return [lk for lk, tg in ((P["fm_link"], P["fm_target"]), (P["sampo_link"], P["sampo_target"]))
-            if os.path.islink(lk) and os.path.realpath(lk) == os.path.realpath(tg)]
+def wired(m):
+    """T-4867: Sampo is wired into ~/.claude when the manifest holds more than the links SessionStart recorded: those
+    links alone are no install-user (doctor and uninstall both read it so)."""
+    return m is not None and set(m) != {"fm_links"}
+
+
+def record_links(made):
+    """T-4867: the links SessionStart made, each with the target it points at, into the install manifest. Uninstall then
+    takes them away whatever their target's shape (a fork's checkout, not only the plugin cache). Nothing when none made;
+    a link gone again before this reads it (removed by hand, or a caller that only names paths) is left out, not raised."""
+    links = {lk: os.readlink(lk) for lk in made or () if os.path.islink(lk)}
+    if not links:
+        return
+    P = paths()
+    m = _load(P["manifest"], {})
+    m["fm_links"] = {**(m.get("fm_links") or {}), **links}
+    c.write_atomic(P["manifest"], json.dumps(m, indent=2, sort_keys=True) + "\n")
+
+
+def _our_links(P, m=None):
+    """The links uninstall takes away, fm's and sampo's own paths only, each while it is still ours: pointing at this
+    Sampo's own file (a checkout), at this plugin's cache (any version, dangling or not: a plugin update removes the old
+    one, T-4867), or at the target record_links saved for it and not re-pointed since."""
+    recorded = (m or {}).get("fm_links")
+    recorded = recorded if isinstance(recorded, dict) else {}
+    out = []
+    for lk, tg in ((P["fm_link"], P["fm_target"]), (P["sampo_link"], P["sampo_target"])):
+        if not os.path.islink(lk):
+            continue
+        pointed = os.readlink(lk)
+        if os.path.realpath(lk) == os.path.realpath(tg) or _CACHE.search(pointed) or recorded.get(lk) == pointed:
+            out.append(lk)
+    return out
 
 
 def cmd_install(args):
@@ -369,6 +403,24 @@ def cmd_compact_output(args):
     return 0
 
 
+def _undo_links(P, m, dry_run):
+    """T-4867: with no install-user there are no settings to undo, but the links are ours: fm's and sampo's into the
+    plugin cache, or the target SessionStart recorded. The manifest that names them goes too."""
+    links = _our_links(P, m)
+    gone = [f"{lk} removed" for lk in links] + (["manifest removed"] if m is not None else [])
+    if not gone:
+        print("No Sampo install manifest; nothing to undo.")
+        return
+    if dry_run:
+        print("Would change:\n  - " + "\n  - ".join(gone))
+        return
+    for lk in links:
+        os.unlink(lk)
+    if m is not None:
+        os.remove(P["manifest"])
+    print("Removed Sampo's links (no install-user to undo):\n  - " + "\n  - ".join(gone))
+
+
 def cmd_uninstall(args):
     from sampo import serve
     if args.dry_run:
@@ -380,9 +432,8 @@ def cmd_uninstall(args):
             print(line)
     P = paths()
     m = _load(P["manifest"], None)
-    if m is None:
-        print("No Sampo install manifest; nothing to undo.")
-        return
+    if not wired(m):  # T-4867: no install-user ran (none, or only the links SessionStart recorded)
+        return _undo_links(P, m, args.dry_run)
     # added by `fm plugins install` / `add-marketplace` after the user's yes; plugins go before their marketplaces
     removals = [("plugin", "plugins_installed", pid, ["uninstall", pid, "--scope", "user"])
                 for pid in m.get("plugins_installed") or []] + \
@@ -464,7 +515,7 @@ def cmd_uninstall(args):
         actions.append("CLAUDE.md block removed")
     if args.dry_run:
         print("Would change:\n  - " + "\n  - ".join(actions + ["rules symlink removed"]
-                                                    + [f"{lk} removed" for lk in _our_links(P)] + ["manifest removed"]))
+                                                    + [f"{lk} removed" for lk in _our_links(P, m)] + ["manifest removed"]))
         return
     _backup(P)
     if not new_s:  # T-0851: nothing left; `claude plugin install` may have made it as {} before the wiring ran
@@ -484,7 +535,7 @@ def cmd_uninstall(args):
             os.rmdir(os.path.dirname(P["rules_link"]))  # T-0851: only when empty
         except OSError:
             pass
-    for lk in _our_links(P):  # T-0853, T-4841: ours only
+    for lk in _our_links(P, m):  # T-0853, T-4841, T-4867: ours only
         os.unlink(lk)
         actions.append(f"{lk} removed")
     if kept:

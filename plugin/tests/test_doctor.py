@@ -552,6 +552,8 @@ class Checks(_TmpDir):
         self.assertEqual(d.check_env({"env": dict(both, CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="50")}, {}).status, "PASS",
                          "the user's own value counts")
         self.assertEqual(d.check_env({}, None).status, "PASS", "not wired (--no-wiring): nothing expected")
+        self.assertEqual(d.check_env({}, {"fm_links": {"/h/.local/bin/fm": "/c/fm"}}).status, "PASS",
+                         "the links SessionStart recorded are not an install-user: still not wired (T-4867)")
         r = d.check_env({"env": {"CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "60"}}, {})
         self.assertEqual(r.status, "WARN")
         self.assertIn("CLAUDE_AUTOCOMPACT_PCT_OVERRIDE", r.detail)

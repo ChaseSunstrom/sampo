@@ -92,6 +92,17 @@ def _bin(d, name):
     return folder
 
 
+def _cache(d, mkt, plugin, version):
+    """A plugin version as Claude Code's cache holds it, <cache>/<marketplace>/<plugin>/<version>/: the plugin's files sit
+    at the version level, so its commands are bin/fm and bin/sampo, with no plugin/ folder (T-4867)."""
+    folder = os.path.join(d, "plugins", "cache", mkt, plugin, version, "bin")
+    os.makedirs(folder)
+    for cmd in ("fm", "sampo"):
+        with open(os.path.join(folder, cmd), "w") as f:
+            f.write("#!/bin/sh\n")
+    return folder
+
+
 class Links(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -152,6 +163,31 @@ class Links(unittest.TestCase):
             os.symlink(ours, self.fm)
             self.assertEqual(setup._link_one(self.fm, os.path.join(self.bin, "fm")), self.fm, ours)
             self.assertEqual(os.readlink(self.fm), os.path.join(self.bin, "fm"), f"{ours} is repointed")
+            os.remove(self.fm)
+
+    def test_path_cache_links_are_repointed_after_a_version_bump(self):  # T-4867
+        for name in ("sampo", "foreman"):  # the plugin's name now, then the one it had before the rename
+            with self.subTest(name=name):
+                for lk in (self.fm, self.sampo):
+                    if os.path.lexists(lk):
+                        os.remove(lk)
+                old, new = _cache(self.d, name, name, "0.1.0"), _cache(self.d, name, name, "0.2.0")
+                os.makedirs(os.path.dirname(self.fm), exist_ok=True)
+                os.symlink(os.path.join(old, "fm"), self.fm)
+                os.symlink(os.path.join(old, "sampo"), self.sampo)
+                shutil.rmtree(os.path.dirname(old))  # the plugin update removed 0.1.0: both links dangle now
+                self.assertEqual(setup.ensure_fm_links(self.fm, os.path.join(new, "fm")), [self.fm, self.sampo])
+                self.assertEqual(os.readlink(self.fm), os.path.join(new, "fm"))
+                self.assertEqual(os.readlink(self.sampo), os.path.join(new, "sampo"))
+
+    def test_path_cache_link_of_another_marketplace_or_plugin_stays(self):  # T-4867
+        _cache(self.d, "foreman", "foreman", "0.2.0")
+        os.makedirs(os.path.dirname(self.fm))
+        for theirs in (os.path.join(self.d, "plugins", "cache", "acme", "foreman", "0.1.0", "bin", "fm"),
+                       os.path.join(self.d, "plugins", "cache", "foreman", "sampo-ui", "0.1.0", "bin", "fm")):
+            os.symlink(theirs, self.fm)  # dangling: another marketplace's foreman, and this one's sampo-ui
+            self.assertIsNone(setup._link_one(self.fm, os.path.join(self.d, "plugins", "cache", "foreman", "foreman", "0.2.0", "bin", "fm")), theirs)
+            self.assertEqual(os.readlink(self.fm), theirs)
             os.remove(self.fm)
 
     def test_path_no_sampo_beside_fm_means_only_fm(self):

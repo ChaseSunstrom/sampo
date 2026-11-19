@@ -75,6 +75,14 @@ class SessionLink(ForemanTestCase):  # T-1333
         for name in ("fm", "sampo"):
             self.assertEqual(os.path.basename(made[os.path.join(link, name)]), name, "its own target, not fm's")
 
+    def test_path_session_start_records_each_link_it_made_in_the_manifest(self):  # T-4867
+        self.hook("SessionStart", {"source": "startup"}, env={"HOME": self.tmp, "FOREMAN_NO_LINK": ""})
+        link = os.path.join(self.tmp, ".local", "bin")
+        with mock.patch.dict(os.environ, {"FOREMAN_HOME": self.home}):
+            recorded = read_json(os.path.join(c.state_dir(), "install-manifest.json")).get("fm_links")
+        self.assertEqual(recorded, {os.path.join(link, name): os.readlink(os.path.join(link, name))
+                                    for name in ("fm", "sampo")}, "exactly the links it made, each with its target")
+
 
 class SetupCase(unittest.TestCase):
     def setUp(self):
@@ -429,6 +437,74 @@ class Uninstall(SetupCase):
         p = self.run_fm("uninstall-user")
         self.assertEqual(p.returncode, 0)
         self.assertEqual(self.load(), ORIGINAL)
+
+
+class CacheLinks(SetupCase):  # T-4867: the links into the plugin cache, and the ones SessionStart recorded
+    def setUp(self):
+        super().setUp()
+        self.fm_link = os.path.join(self.home, ".local", "bin", "fm")
+        self.sampo_link = os.path.join(self.home, ".local", "bin", "sampo")
+        os.makedirs(os.path.dirname(self.fm_link))
+
+    def cache(self, mkt, plugin, version):
+        return os.path.join(self.home, ".claude", "plugins", "cache", mkt, plugin, version, "bin")
+
+    def link_both(self, folder):
+        os.symlink(os.path.join(folder, "fm"), self.fm_link)
+        os.symlink(os.path.join(folder, "sampo"), self.sampo_link)
+
+    def test_without_a_manifest_uninstall_takes_this_plugins_cache_links(self):
+        self.link_both(self.cache("sampo", "sampo", "0.1.0"))  # the version is gone: a plugin update removed it
+        p = self.run_fm("uninstall-user")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertFalse(os.path.lexists(self.fm_link))
+        self.assertFalse(os.path.lexists(self.sampo_link))
+
+    def test_the_old_foreman_names_of_the_cache_count_too(self):
+        self.link_both(self.cache("foreman", "foreman", "0.9.1"))
+        self.run_fm("uninstall-user")
+        self.assertFalse(os.path.lexists(self.fm_link))
+        self.assertFalse(os.path.lexists(self.sampo_link))
+
+    def test_dry_run_names_the_links_and_removes_nothing(self):
+        self.link_both(self.cache("sampo", "sampo", "0.1.0"))
+        p = self.run_fm("uninstall-user", "--dry-run")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"{self.fm_link} removed", p.stdout)
+        self.assertTrue(os.path.islink(self.fm_link), "a dry run removes nothing")
+
+    def test_other_marketplaces_and_plugins_cache_links_stay(self):
+        other_mkt = os.path.join(self.cache("acme", "foreman", "0.1.0"), "fm")
+        other_plugin = os.path.join(self.cache("foreman", "sampo-ui", "0.1.0"), "sampo")
+        os.symlink(other_mkt, self.fm_link)
+        os.symlink(other_plugin, self.sampo_link)
+        self.run_fm("uninstall-user")
+        self.assertEqual(os.readlink(self.fm_link), other_mkt, "another marketplace's plugin of the same name")
+        self.assertEqual(os.readlink(self.sampo_link), other_plugin, "another plugin of this marketplace")
+
+    def test_a_recorded_link_is_taken_away_with_the_links_only_manifest(self):  # the fork: not the cache shape
+        fork = os.path.join(self.home, "src", "sampo-fork", "plugin", "bin")
+        os.symlink(os.path.join(fork, "fm"), self.fm_link)
+        os.symlink(os.path.join(fork, "sampo"), self.sampo_link)
+        with mock.patch.dict(os.environ, {"HOME": self.home, "FOREMAN_HOME": self.fhome}):
+            setup.record_links([self.fm_link, self.sampo_link])
+        self.assertEqual(sorted(read_json(self.manifest_path())), ["fm_links"], "only the links: not an install-user")
+        p = self.run_fm("uninstall-user")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertFalse(os.path.lexists(self.fm_link))
+        self.assertFalse(os.path.lexists(self.sampo_link))
+        self.assertEqual(self.load(), ORIGINAL, "a links-only manifest wired no settings, so none are touched")
+        self.assertFalse(os.path.exists(self.manifest_path()))
+
+    def test_a_recorded_link_the_user_repointed_is_kept(self):
+        fork = os.path.join(self.home, "src", "sampo-fork", "plugin", "bin")
+        os.symlink(os.path.join(fork, "fm"), self.fm_link)
+        with mock.patch.dict(os.environ, {"HOME": self.home, "FOREMAN_HOME": self.fhome}):
+            setup.record_links([self.fm_link])
+        os.remove(self.fm_link)
+        os.symlink("/nonexistent/user/fm", self.fm_link)
+        self.run_fm("uninstall-user")
+        self.assertEqual(os.readlink(self.fm_link), "/nonexistent/user/fm", "not ours any more")
 
 
 class UninstallScript(SetupCase):

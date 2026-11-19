@@ -2309,7 +2309,7 @@ def check_stats_fresh(projects, today=None):
 
 def check_env(settings, manifest):
     """The env values fm install-user sets (drive continuation cap, earlier compaction), unless Sampo isn't wired."""
-    if manifest is None:
+    if not setup.wired(manifest):  # T-4867: the links SessionStart recorded alone are not an install-user
         return Result("env", "PASS", "not wired (fm install-user hasn't run)")
     env = settings.get("env") or {}
     missing = [f"{k} ({setup.WHY[k]})" for k in setup.ENV if k not in env]
