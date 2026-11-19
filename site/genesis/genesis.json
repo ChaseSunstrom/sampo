@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-19T03:28:20Z",
+ "updated": "2026-11-19T04:31:23Z",
  "rev": "fdf50b3b0",
  "capabilities": [
   {
@@ -61738,13 +61738,13 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 868,
+ "unproven": 867,
  "unproven_kinds": {
   "typed": 80,
   "meaning-user": 87,
   "research-uncited": 29,
   "meaning-notes": 444,
-  "docs": 186,
+  "docs": 185,
   "red": 86,
   "perf-typed": 148,
   "infra": 7,
@@ -62956,12 +62956,12 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 63899,
+   "generated": 64572,
    "write": {
     "title": 435,
-    "line": 3234,
+    "line": 3366,
     "payoff": 40,
-    "kill test": 228,
+    "kill test": 231,
     "code": 33
    },
    "dups": {
@@ -62970,14 +62970,14 @@
     "shingle": 0
    },
    "rejected": {
-    "kill": 32328,
+    "kill": 32525,
     "tier": 21623,
-    "novelty": 178
+    "novelty": 179
    },
-   "merged": 2197,
-   "kept": 2470,
-   "pending": 107,
-   "pooled": 870
+   "merged": 2209,
+   "kept": 2479,
+   "pending": 264,
+   "pooled": 1032
   },
   "families": [
    {
@@ -63177,6 +63177,23 @@
     "evidence": "",
     "kinds": [
      "releases"
+    ]
+   },
+   {
+    "id": "F-011107",
+    "size": 2,
+    "lead": "Let code photosynthesize energy from user logs",
+    "today": "Today you can't have code that literally grows and changes structure based on user activity data",
+    "with_this": "With this, you can have features that autonomously reshape their internal logic to handle the most common user paths",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "features",
+     "migrations"
     ]
    },
    {
@@ -63402,22 +63419,6 @@
     "evidence": "",
     "kinds": [
      "docs"
-    ]
-   },
-   {
-    "id": "F-011107",
-    "size": 1,
-    "lead": "Let code photosynthesize energy from user logs",
-    "today": "Today you can't have code that literally grows and changes structure based on user activity data",
-    "with_this": "With this, you can have features that autonomously reshape their internal logic to handle the most common user paths",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 5,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "features"
     ]
    },
    {
@@ -64314,6 +64315,54 @@
     "evidence": "",
     "kinds": [
      "migrations"
+    ]
+   },
+   {
+    "id": "F-063467",
+    "size": 1,
+    "lead": "Resurrect silent history to prove a fix works",
+    "today": "Today you can't isolate bugs that exist only in untested code paths without breaking production.",
+    "with_this": "With this, you can run a ghost simulation of your entire codebase where every possible path is executed on isolated data to verify fixes before they touch a real server.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "bugs"
+    ]
+   },
+   {
+    "id": "F-063468",
+    "size": 1,
+    "lead": "Invert production noise to hear the quiet bugs",
+    "today": "Today you can't reverse engineer your production logs to find causes that never happened during development testing.",
+    "with_this": "With this, you can synthesize rare user interactions from your noisy error logs and replay them on a clean code snapshot to expose latent failures that standard unit tests missed.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 3,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "bugs"
+    ]
+   },
+   {
+    "id": "F-063470",
+    "size": 1,
+    "lead": "Collapse time to see how a bug evolves",
+    "today": "Today you can't simulate the lifespan of a bug from its introduction to its mass production over weeks or months.",
+    "with_this": "With this, you can project your code into a supercompressed timeline where minor defects compound instantly, allowing you to stress-test stability in days instead of waiting for real-world deployment.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "bugs"
     ]
    },
    {
@@ -66191,60 +66240,12 @@
     "kinds": [
      "refactors"
     ]
-   },
-   {
-    "id": "F-010950",
-    "size": 1,
-    "lead": "Let refactors elect the next codebase",
-    "today": "Today you can't compare several refactor directions as real future codebases and choose the one that best fits your users and team.",
-    "with_this": "With this, you can run parallel refactor futures, see which one gives the best long-term cost and user experience, and ship the winner instead of guessing.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "refactors"
-    ]
-   },
-   {
-    "id": "F-010951",
-    "size": 1,
-    "lead": "Make dependency debt visible as civic taxes",
-    "today": "Today you can't see how technical debt in one project is quietly taxing every other project with slower builds and riskier changes.",
-    "with_this": "With this, you can pay down the debt that hurts the most projects and users, saving engineering time and reducing the chance of costly outages.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "refactors"
-    ]
-   },
-   {
-    "id": "F-010952",
-    "size": 1,
-    "lead": "Run refactors like a planetary supply chain",
-    "today": "Today you can't coordinate a large refactor across projects, builds, releases, and users without losing track of who needs what and when.",
-    "with_this": "With this, you can deliver a cross-project refactor with a reliable timeline, so teams stop waiting on each other and users see fewer interrupted releases.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 2,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "refactors"
-    ]
    }
   ],
-  "families_total": 1718,
+  "families_total": 1746,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2470
+   "total": 2479
   }
  },
  "steer": {
@@ -66278,7 +66279,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.3,
+    "idle_h": 261.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66301,7 +66302,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.4,
+    "idle_h": 261.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66324,7 +66325,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.3,
+    "idle_h": 261.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66347,7 +66348,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.3,
+    "idle_h": 261.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66370,7 +66371,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.1,
+    "idle_h": 261.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66393,7 +66394,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.1,
+    "idle_h": 261.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66416,7 +66417,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 259.9,
+    "idle_h": 260.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66439,7 +66440,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 259.9,
+    "idle_h": 260.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66462,7 +66463,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.0,
+    "idle_h": 261.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66485,7 +66486,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.6,
+    "idle_h": 262.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66508,7 +66509,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.3,
+    "idle_h": 262.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66531,7 +66532,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.3,
+    "idle_h": 262.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66554,7 +66555,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.3,
+    "idle_h": 262.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66577,7 +66578,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.3,
+    "idle_h": 262.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66600,7 +66601,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.1,
+    "idle_h": 262.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66623,7 +66624,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.1,
+    "idle_h": 262.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66646,7 +66647,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.1,
+    "idle_h": 262.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66669,7 +66670,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 261.1,
+    "idle_h": 262.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66692,7 +66693,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.9,
+    "idle_h": 261.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66715,7 +66716,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.9,
+    "idle_h": 261.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66738,7 +66739,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.9,
+    "idle_h": 261.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66761,7 +66762,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.9,
+    "idle_h": 261.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66784,7 +66785,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.7,
+    "idle_h": 261.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66807,7 +66808,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.6,
+    "idle_h": 261.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66830,7 +66831,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.6,
+    "idle_h": 261.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66853,7 +66854,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 260.7,
+    "idle_h": 261.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
