@@ -1,6 +1,8 @@
-"""T-3662: sampo panels: a typed JSON spec of panels drawn as static SVG pictures of mechanisms (a funnel through a gate,
-an orbit, tanks filling) in the Board look, as dark and light pairs. The drawing lives in plugin/cards/_lib/panelkit.py,
-stdlib only, so the 13 calling cards (plugin/cards/panel-KIND) run the same code confined; this module is the project
+"""T-3662: sampo panels: a typed JSON spec of panels drawn as SVG pictures of mechanisms (a funnel through a gate, an
+orbit, tanks filling; T-3736's eight move, in SMIL loops: a state machine, swimlanes, a conveyor, a network, a chord ring,
+a protocol stack, a circuit board, a constellation of modules) in the Board look, as dark and light pairs. The drawing
+lives in plugin/cards/_lib/panelkit.py, stdlib only, so the 21 calling cards (plugin/cards/panel-KIND) run the same code
+confined; this module is the project
 side: it loads the kit, applies a repo's own colours, checks the gates and writes the files.
 
   sampo panels render SPEC.json [--style board|blueprint|paper] [--out DIR]   one NN-KIND-dark/light.svg pair per panel

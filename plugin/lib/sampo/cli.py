@@ -8751,8 +8751,8 @@ def _build_parser(only=None):
     s.add_argument("--prose", action="store_true", help="check PATH: only its walls of text, by its kind's limits "
                    "(a report or note, a CHANGELOG entry, a Close fields file); no image check (T-4914)")
     s = add("panels", lazy("sampo.panels", "cmd_panels"), tier=("Every task", 169), help="picture panels (T-3662): "
-            "render SPEC.json (a typed spec of panels, 13 kinds of mechanism from a cluster graph to architecture boxes with "
-            "packets, as dark and light SVG in the board, blueprint or paper style, in the repo's own colours when it has "
+            "render SPEC.json (a typed spec of panels, 21 kinds of mechanism from a cluster graph to architecture boxes with "
+            "packets, a state machine to a circuit board, as dark and light SVG in the board, blueprint or paper style, in the repo's own colours when it has "
             "them); sheet SPEC.json (all in one SVG); sample (a spec of every kind); kinds")
     s.add_argument("action", choices=["render", "sheet", "sample", "kinds"])
     s.add_argument("target", nargs="?", metavar="SPEC.json")

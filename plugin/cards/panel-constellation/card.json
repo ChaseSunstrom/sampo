@@ -1,0 +1,118 @@
+{
+ "name": "panel-constellation",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a constellation panel as dark and light SVG in the Board look (or blueprint, paper): a codebase as a night sky: modules are stars sized by weight and coloured by heat, imports are the lines between them with traffic riding them.",
+ "examples": [
+  "draw a constellation panel",
+  "a constellation diagram of my project",
+  "a codebase as a night sky: modules are stars sized by weight and coloured by heat, imports are the lines between them with traffic riding them"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 640
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 400
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "modules": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 18
+        },
+        "heat": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 100
+        },
+        "size": {
+         "type": "number",
+         "minimum": 1,
+         "maximum": 100
+        }
+       },
+       "required": [
+        "name"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 2,
+      "maxItems": 16
+     },
+     "imports": {
+      "type": "array",
+      "items": {
+       "type": "array",
+       "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 18
+       },
+       "minItems": 2,
+       "maxItems": 2
+      },
+      "minItems": 0,
+      "maxItems": 32
+     }
+    },
+    "required": [
+     "modules"
+    ],
+    "additionalProperties": false,
+    "description": "the constellation panel's data: modules, imports"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

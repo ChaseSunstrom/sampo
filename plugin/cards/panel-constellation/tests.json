@@ -1,0 +1,262 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "constellation",
+   "data": {
+    "modules": [
+     {
+      "name": "cli",
+      "heat": 72,
+      "size": 60
+     },
+     {
+      "name": "core",
+      "heat": 85,
+      "size": 90
+     },
+     {
+      "name": "store",
+      "heat": 40,
+      "size": 55
+     },
+     {
+      "name": "tasks",
+      "heat": 66,
+      "size": 70
+     },
+     {
+      "name": "lanes",
+      "heat": 52,
+      "size": 50
+     },
+     {
+      "name": "hooks",
+      "heat": 18,
+      "size": 30
+     },
+     {
+      "name": "check",
+      "heat": 35,
+      "size": 45
+     },
+     {
+      "name": "board",
+      "heat": 24,
+      "size": 40
+     },
+     {
+      "name": "git",
+      "heat": 12,
+      "size": 35
+     },
+     {
+      "name": "util",
+      "heat": 8,
+      "size": 25
+     }
+    ],
+    "imports": [
+     [
+      "cli",
+      "core"
+     ],
+     [
+      "cli",
+      "tasks"
+     ],
+     [
+      "cli",
+      "lanes"
+     ],
+     [
+      "cli",
+      "check"
+     ],
+     [
+      "tasks",
+      "core"
+     ],
+     [
+      "tasks",
+      "store"
+     ],
+     [
+      "lanes",
+      "git"
+     ],
+     [
+      "lanes",
+      "tasks"
+     ],
+     [
+      "hooks",
+      "core"
+     ],
+     [
+      "check",
+      "core"
+     ],
+     [
+      "board",
+      "store"
+     ],
+     [
+      "board",
+      "tasks"
+     ],
+     [
+      "core",
+      "store"
+     ],
+     [
+      "core",
+      "util"
+     ],
+     [
+      "store",
+      "util"
+     ],
+     [
+      "git",
+      "util"
+     ]
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "constellation",
+   "data": {
+    "modules": [
+     {
+      "name": "cli",
+      "heat": 72,
+      "size": 60
+     },
+     {
+      "name": "core",
+      "heat": 85,
+      "size": 90
+     },
+     {
+      "name": "store",
+      "heat": 40,
+      "size": 55
+     },
+     {
+      "name": "tasks",
+      "heat": 66,
+      "size": 70
+     },
+     {
+      "name": "lanes",
+      "heat": 52,
+      "size": 50
+     },
+     {
+      "name": "hooks",
+      "heat": 18,
+      "size": 30
+     },
+     {
+      "name": "check",
+      "heat": 35,
+      "size": 45
+     },
+     {
+      "name": "board",
+      "heat": 24,
+      "size": 40
+     },
+     {
+      "name": "git",
+      "heat": 12,
+      "size": 35
+     },
+     {
+      "name": "util",
+      "heat": 8,
+      "size": 25
+     }
+    ],
+    "imports": [
+     [
+      "cli",
+      "core"
+     ],
+     [
+      "cli",
+      "tasks"
+     ],
+     [
+      "cli",
+      "lanes"
+     ],
+     [
+      "cli",
+      "check"
+     ],
+     [
+      "tasks",
+      "core"
+     ],
+     [
+      "tasks",
+      "store"
+     ],
+     [
+      "lanes",
+      "git"
+     ],
+     [
+      "lanes",
+      "tasks"
+     ],
+     [
+      "hooks",
+      "core"
+     ],
+     [
+      "check",
+      "core"
+     ],
+     [
+      "board",
+      "store"
+     ],
+     [
+      "board",
+      "tasks"
+     ],
+     [
+      "core",
+      "store"
+     ],
+     [
+      "core",
+      "util"
+     ],
+     [
+      "store",
+      "util"
+     ],
+     [
+      "git",
+      "util"
+     ]
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

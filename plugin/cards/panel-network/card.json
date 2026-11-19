@@ -1,0 +1,146 @@
+{
+ "name": "panel-network",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a network panel as dark and light SVG in the Board look (or blueprint, paper): a network topology: devices drawn as what they are (cloud, router, switch, servers, databases, clients), each link marked with its latency and packets crossing it, a lossy one dashed and dropping some.",
+ "examples": [
+  "draw a network panel",
+  "a network diagram of my project",
+  "a network topology: devices drawn as what they are (cloud, router, switch, servers, databases, clients), each link marked with its latency and packets crossing it, a lossy one dashed and dropping some"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 640
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 400
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "hosts": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 14
+        },
+        "kind": {
+         "type": "string",
+         "enum": [
+          "router",
+          "switch",
+          "server",
+          "db",
+          "client",
+          "cloud"
+         ]
+        },
+        "label": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 16
+        }
+       },
+       "required": [
+        "id",
+        "kind"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 2,
+      "maxItems": 12
+     },
+     "links": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "from": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 14
+        },
+        "to": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 14
+        },
+        "ms": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 100000.0
+        },
+        "loss": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 100
+        }
+       },
+       "required": [
+        "from",
+        "to"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 20
+     }
+    },
+    "required": [
+     "hosts",
+     "links"
+    ],
+    "additionalProperties": false,
+    "description": "the network panel's data: hosts, links"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

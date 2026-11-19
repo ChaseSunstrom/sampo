@@ -1,0 +1,124 @@
+{
+ "name": "panel-conveyor",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a conveyor panel as dark and light SVG in the Board look (or blueprint, paper): an assembly line: queued jobs ride a moving belt into machines that work them, a progress bar on each, finished crates dropping into a done bin.",
+ "examples": [
+  "draw a conveyor panel",
+  "a conveyor diagram of my project",
+  "an assembly line: queued jobs ride a moving belt into machines that work them, a progress bar on each, finished crates dropping into a done bin"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 640
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 320
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "source": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 14
+     },
+     "queue": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 12
+      },
+      "minItems": 0,
+      "maxItems": 12
+     },
+     "workers": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "label": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 12
+        },
+        "job": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 12
+        },
+        "progress": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 100
+        }
+       },
+       "required": [
+        "label"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 5
+     },
+     "done": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1000000000.0
+     }
+    },
+    "required": [
+     "queue",
+     "workers"
+    ],
+    "additionalProperties": false,
+    "description": "the conveyor panel's data: source, queue, workers, done"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

@@ -1,0 +1,148 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "sequence",
+   "data": {
+    "actors": [
+     "browser",
+     "api",
+     "auth",
+     "db",
+     "queue"
+    ],
+    "messages": [
+     {
+      "from": "browser",
+      "to": "api",
+      "label": "POST /checkout",
+      "at": 0,
+      "took": 12
+     },
+     {
+      "from": "api",
+      "to": "auth",
+      "label": "verify token",
+      "at": 14,
+      "took": 38
+     },
+     {
+      "from": "auth",
+      "to": "api",
+      "label": "200 ok",
+      "at": 54,
+      "took": 4,
+      "reply": true
+     },
+     {
+      "from": "api",
+      "to": "db",
+      "label": "INSERT order",
+      "at": 62,
+      "took": 85
+     },
+     {
+      "from": "db",
+      "to": "api",
+      "label": "order 8841",
+      "at": 150,
+      "took": 3,
+      "reply": true
+     },
+     {
+      "from": "api",
+      "to": "queue",
+      "label": "enqueue email",
+      "at": 158,
+      "took": 20
+     },
+     {
+      "from": "api",
+      "to": "browser",
+      "label": "201 Created",
+      "at": 182,
+      "took": 9,
+      "reply": true
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "sequence",
+   "data": {
+    "actors": [
+     "browser",
+     "api",
+     "auth",
+     "db",
+     "queue"
+    ],
+    "messages": [
+     {
+      "from": "browser",
+      "to": "api",
+      "label": "POST /checkout",
+      "at": 0,
+      "took": 12
+     },
+     {
+      "from": "api",
+      "to": "auth",
+      "label": "verify token",
+      "at": 14,
+      "took": 38
+     },
+     {
+      "from": "auth",
+      "to": "api",
+      "label": "200 ok",
+      "at": 54,
+      "took": 4,
+      "reply": true
+     },
+     {
+      "from": "api",
+      "to": "db",
+      "label": "INSERT order",
+      "at": 62,
+      "took": 85
+     },
+     {
+      "from": "db",
+      "to": "api",
+      "label": "order 8841",
+      "at": 150,
+      "took": 3,
+      "reply": true
+     },
+     {
+      "from": "api",
+      "to": "queue",
+      "label": "enqueue email",
+      "at": 158,
+      "took": 20
+     },
+     {
+      "from": "api",
+      "to": "browser",
+      "label": "201 Created",
+      "at": 182,
+      "took": 9,
+      "reply": true
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

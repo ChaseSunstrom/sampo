@@ -1,0 +1,119 @@
+{
+ "name": "panel-circuit",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a circuit panel as dark and light SVG in the Board look (or blueprint, paper): a circuit board: each stage a chip in its state (lit, blinking busy, warning, failed, idle), traces carrying current from the input pad through the chips to the output, dark after a failure.",
+ "examples": [
+  "draw a circuit panel",
+  "a circuit diagram of my project",
+  "a circuit board: each stage a chip in its state (lit, blinking busy, warning, failed, idle), traces carrying current from the input pad through the chips to the output, dark after a failure"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 680
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 360
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "input": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 12
+     },
+     "output": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 12
+     },
+     "stages": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "label": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 12
+        },
+        "sub": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 16
+        },
+        "state": {
+         "type": "string",
+         "enum": [
+          "ok",
+          "busy",
+          "warn",
+          "fail",
+          "idle"
+         ]
+        }
+       },
+       "required": [
+        "label",
+        "state"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 2,
+      "maxItems": 8
+     }
+    },
+    "required": [
+     "stages"
+    ],
+    "additionalProperties": false,
+    "description": "the circuit panel's data: input, output, stages"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

@@ -1,0 +1,113 @@
+{
+ "name": "panel-layers",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a layers panel as dark and light SVG in the Board look (or blueprint, paper): a protocol stack: layers as slabs, a request carried down through each one and the response back up, the packet growing a header at every layer and shedding them on the way up.",
+ "examples": [
+  "draw a layers panel",
+  "a layers diagram of my project",
+  "a protocol stack: layers as slabs, a request carried down through each one and the response back up, the packet growing a header at every layer and shedding them on the way up"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 560
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 420
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "layers": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "label": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 14
+        },
+        "sub": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 22
+        },
+        "ms": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 100000.0
+        }
+       },
+       "required": [
+        "label"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 2,
+      "maxItems": 7
+     },
+     "down": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 14
+     },
+     "up": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 14
+     }
+    },
+    "required": [
+     "layers"
+    ],
+    "additionalProperties": false,
+    "description": "the layers panel's data: layers, down, up"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

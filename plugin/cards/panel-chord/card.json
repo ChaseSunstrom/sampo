@@ -1,0 +1,116 @@
+{
+ "name": "panel-chord",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a chord panel as dark and light SVG in the Board look (or blueprint, paper): a chord diagram: groups as arcs round a ring sized by their traffic, ribbons between them as wide as each flow, particles riding the ribbons.",
+ "examples": [
+  "draw a chord panel",
+  "a chord diagram of my project",
+  "a chord diagram: groups as arcs round a ring sized by their traffic, ribbons between them as wide as each flow, particles riding the ribbons"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 560
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 460
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "groups": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 14
+      },
+      "minItems": 2,
+      "maxItems": 8
+     },
+     "flows": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "from": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 14
+        },
+        "to": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 14
+        },
+        "value": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000.0
+        }
+       },
+       "required": [
+        "from",
+        "to",
+        "value"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 28
+     }
+    },
+    "required": [
+     "groups",
+     "flows"
+    ],
+    "additionalProperties": false,
+    "description": "the chord panel's data: groups, flows"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

@@ -1,0 +1,136 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "chord",
+   "data": {
+    "groups": [
+     "api",
+     "worker",
+     "db",
+     "cache",
+     "queue",
+     "search"
+    ],
+    "flows": [
+     {
+      "from": "api",
+      "to": "db",
+      "value": 420
+     },
+     {
+      "from": "api",
+      "to": "cache",
+      "value": 860
+     },
+     {
+      "from": "api",
+      "to": "queue",
+      "value": 240
+     },
+     {
+      "from": "worker",
+      "to": "db",
+      "value": 310
+     },
+     {
+      "from": "queue",
+      "to": "worker",
+      "value": 240
+     },
+     {
+      "from": "worker",
+      "to": "search",
+      "value": 150
+     },
+     {
+      "from": "api",
+      "to": "search",
+      "value": 190
+     },
+     {
+      "from": "cache",
+      "to": "db",
+      "value": 60
+     },
+     {
+      "from": "worker",
+      "to": "cache",
+      "value": 90
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "chord",
+   "data": {
+    "groups": [
+     "api",
+     "worker",
+     "db",
+     "cache",
+     "queue",
+     "search"
+    ],
+    "flows": [
+     {
+      "from": "api",
+      "to": "db",
+      "value": 420
+     },
+     {
+      "from": "api",
+      "to": "cache",
+      "value": 860
+     },
+     {
+      "from": "api",
+      "to": "queue",
+      "value": 240
+     },
+     {
+      "from": "worker",
+      "to": "db",
+      "value": 310
+     },
+     {
+      "from": "queue",
+      "to": "worker",
+      "value": 240
+     },
+     {
+      "from": "worker",
+      "to": "search",
+      "value": 150
+     },
+     {
+      "from": "api",
+      "to": "search",
+      "value": 190
+     },
+     {
+      "from": "cache",
+      "to": "db",
+      "value": 60
+     },
+     {
+      "from": "worker",
+      "to": "cache",
+      "value": 90
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

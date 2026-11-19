@@ -1,0 +1,84 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "layers",
+   "data": {
+    "layers": [
+     {
+      "label": "HTTP",
+      "sub": "GET /orders",
+      "ms": 12
+     },
+     {
+      "label": "TLS",
+      "sub": "AES-256-GCM",
+      "ms": 3
+     },
+     {
+      "label": "TCP",
+      "sub": "port 443",
+      "ms": 1
+     },
+     {
+      "label": "IP",
+      "sub": "route + TTL",
+      "ms": 0.4
+     },
+     {
+      "label": "Ethernet",
+      "sub": "MTU 1500",
+      "ms": 0.1
+     }
+    ],
+    "down": "request",
+    "up": "response"
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "layers",
+   "data": {
+    "layers": [
+     {
+      "label": "HTTP",
+      "sub": "GET /orders",
+      "ms": 12
+     },
+     {
+      "label": "TLS",
+      "sub": "AES-256-GCM",
+      "ms": 3
+     },
+     {
+      "label": "TCP",
+      "sub": "port 443",
+      "ms": 1
+     },
+     {
+      "label": "IP",
+      "sub": "route + TTL",
+      "ms": 0.4
+     },
+     {
+      "label": "Ethernet",
+      "sub": "MTU 1500",
+      "ms": 0.1
+     }
+    ],
+    "down": "request",
+    "up": "response",
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

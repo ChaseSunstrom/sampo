@@ -1,0 +1,82 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "conveyor",
+   "data": {
+    "source": "inbox",
+    "queue": [
+     "T-101",
+     "T-102",
+     "T-103",
+     "T-104",
+     "T-105",
+     "T-106",
+     "T-107"
+    ],
+    "workers": [
+     {
+      "label": "lane 1",
+      "job": "T-098",
+      "progress": 72
+     },
+     {
+      "label": "lane 2",
+      "job": "T-099",
+      "progress": 35
+     },
+     {
+      "label": "lane 3",
+      "job": "T-100",
+      "progress": 8
+     }
+    ],
+    "done": 41
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "conveyor",
+   "data": {
+    "source": "inbox",
+    "queue": [
+     "T-101",
+     "T-102",
+     "T-103",
+     "T-104",
+     "T-105",
+     "T-106",
+     "T-107"
+    ],
+    "workers": [
+     {
+      "label": "lane 1",
+      "job": "T-098",
+      "progress": 72
+     },
+     {
+      "label": "lane 2",
+      "job": "T-099",
+      "progress": 35
+     },
+     {
+      "label": "lane 3",
+      "job": "T-100",
+      "progress": 8
+     }
+    ],
+    "done": 41,
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

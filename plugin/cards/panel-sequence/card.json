@@ -1,0 +1,130 @@
+{
+ "name": "panel-sequence",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a sequence panel as dark and light SVG in the Board look (or blueprint, paper): swimlanes: actors on lifelines, each message a timed arrow between them, replayed in order over a timeline of when each one ran.",
+ "examples": [
+  "draw a sequence panel",
+  "a sequence diagram of my project",
+  "swimlanes: actors on lifelines, each message a timed arrow between them, replayed in order over a timeline of when each one ran"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 640
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 420
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "actors": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 12
+      },
+      "minItems": 2,
+      "maxItems": 6
+     },
+     "messages": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "from": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 12
+        },
+        "to": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 12
+        },
+        "label": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 20
+        },
+        "at": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000.0
+        },
+        "took": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000.0
+        },
+        "reply": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "from",
+        "to",
+        "label",
+        "at"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 14
+     }
+    },
+    "required": [
+     "actors",
+     "messages"
+    ],
+    "additionalProperties": false,
+    "description": "the sequence panel's data: actors, messages"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

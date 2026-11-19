@@ -1,0 +1,138 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "statemachine",
+   "data": {
+    "states": [
+     "inbox",
+     "ready",
+     "doing",
+     "review",
+     "done",
+     "blocked"
+    ],
+    "current": "doing",
+    "final": [
+     "done"
+    ],
+    "transitions": [
+     {
+      "from": "inbox",
+      "to": "ready",
+      "on": "triage",
+      "count": 412
+     },
+     {
+      "from": "ready",
+      "to": "doing",
+      "on": "focus",
+      "count": 380
+     },
+     {
+      "from": "doing",
+      "to": "review",
+      "on": "submit",
+      "count": 341
+     },
+     {
+      "from": "review",
+      "to": "done",
+      "on": "accept",
+      "count": 296
+     },
+     {
+      "from": "review",
+      "to": "doing",
+      "on": "rework",
+      "count": 45
+     },
+     {
+      "from": "doing",
+      "to": "blocked",
+      "on": "block",
+      "count": 38
+     },
+     {
+      "from": "blocked",
+      "to": "doing",
+      "on": "unblock",
+      "count": 31
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "statemachine",
+   "data": {
+    "states": [
+     "inbox",
+     "ready",
+     "doing",
+     "review",
+     "done",
+     "blocked"
+    ],
+    "current": "doing",
+    "final": [
+     "done"
+    ],
+    "transitions": [
+     {
+      "from": "inbox",
+      "to": "ready",
+      "on": "triage",
+      "count": 412
+     },
+     {
+      "from": "ready",
+      "to": "doing",
+      "on": "focus",
+      "count": 380
+     },
+     {
+      "from": "doing",
+      "to": "review",
+      "on": "submit",
+      "count": 341
+     },
+     {
+      "from": "review",
+      "to": "done",
+      "on": "accept",
+      "count": 296
+     },
+     {
+      "from": "review",
+      "to": "doing",
+      "on": "rework",
+      "count": 45
+     },
+     {
+      "from": "doing",
+      "to": "blocked",
+      "on": "block",
+      "count": 38
+     },
+     {
+      "from": "blocked",
+      "to": "doing",
+      "on": "unblock",
+      "count": 31
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

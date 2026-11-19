@@ -1,10 +1,13 @@
-"""T-3662: the panel kit: 13 kinds of mechanism panel as static SVG, three styles, project colours, calling cards."""
+"""T-3662: the panel kit: 21 kinds of mechanism panel as SVG, three styles, project colours, calling cards. T-3736 added
+eight that move (SMIL that loops over a static frame that reads alone): constellation, sequence, statemachine, conveyor,
+network, chord, layers, circuit."""
 import copy
 import html
 import json
 import os
 import re
 import unittest
+import xml.etree.ElementTree as ET
 
 from helpers import SampoTestCase, headless_chrome
 from test_callcards import confined
@@ -12,9 +15,12 @@ from test_callcards import confined
 from sampo import callcards, panels, works
 from sampo import readme
 
+ROUND2 = ["constellation", "sequence", "statemachine", "conveyor", "network", "chord", "layers", "circuit"]
 KINDS = ["cluster", "funnel", "transform", "globe", "lanes", "filetree", "terminal", "tanks", "orbit", "coremap", "river",
-         "gate", "arch"]
+         "gate", "arch"] + ROUND2
 kit = panels.kit()
+SVG = "{http://www.w3.org/2000/svg}"
+SMIL = {SVG + t for t in ("animate", "animateMotion", "animateTransform")}
 
 
 def write(root, rel, text):
@@ -25,7 +31,7 @@ def write(root, rel, text):
 
 
 class Registry(unittest.TestCase):
-    def test_the_thirteen_kinds_are_registered_with_schema_and_sample(self):
+    def test_the_kinds_are_registered_with_schema_and_sample(self):
         self.assertEqual(sorted(kit.KINDS), sorted(KINDS))
         for name, k in kit.KINDS.items():
             self.assertTrue(callable(k["draw"]) and k["schema"]["type"] == "object" and k["sample"] and k["brief"], name)
@@ -61,7 +67,7 @@ class Render(unittest.TestCase):
             words = set(kit._words(kit.KINDS[name]["sample"], []))
             text = kit.panel_svg(dict(kind=name, title="T", data=kit.KINDS[name]["sample"]), kit.theme(), 1)
             drawn = {html.unescape(s) for s in re.findall(r">([^<]+)<", text) if s.strip()}
-            extra = {s for s in drawn if not any(s.strip("…") in w or s in w for w in words) and s not in ("T", "01", "ok", ">>", "$", "output", "gate", "in") and not re.fullmatch(r"[\d.%]+|[A-Z ]+|[a-z]+: .*", s)}
+            extra = {s for s in drawn if not any(s.strip("…") in w or s in w for w in words) and s not in ("T", "01", "ok", ">>", "$", "output", "gate", "in") and not re.fullmatch(r"[\d.,%]+(?:ms|k)?|[A-Z][A-Z\d ]*|[a-z]+: .*", s)}
             self.assertEqual(extra, set(), name)
 
     def test_styles_differ_and_hold_their_grounds(self):
@@ -102,6 +108,104 @@ class Render(unittest.TestCase):
         d["lanes"][0]["label"] = "x" * 16
         text = kit.panel_svg(dict(kind="lanes", title="y" * 40, w=kit.MIN_W, h=kit.MIN_H, data=d), kit.theme(), 1)
         self.assertIn("…", text)
+
+
+def tree(name, data=None, **kw):
+    p = dict(kind=name, title="t", data=data or kit.KINDS[name]["sample"], **kw)
+    return ET.fromstring(kit.panel_svg(p, kit.theme(), 1))
+
+
+def texts(root):
+    return ["".join(e.itertext()) for e in root.iter(SVG + "text")]
+
+
+class Mechanisms(unittest.TestCase):
+    """T-3736: the eight moving kinds draw the thing they name, and every motion loops over a frame that reads still."""
+
+    def test_each_moving_kind_animates_and_every_animation_loops(self):
+        for name in ROUND2:
+            for size in ((kit.MIN_W, kit.MIN_H), (kit.DEF_W, kit.DEF_H)):
+                root = tree(name, w=size[0], h=size[1])
+                anims = [e for e in root.iter() if e.tag in SMIL]
+                self.assertGreaterEqual(len(anims), 3, name)
+                for a in anims:
+                    self.assertEqual(a.get("repeatCount"), "indefinite", f"{name} {a.tag}")
+                    self.assertRegex(a.get("dur") or "", r"^[\d.]+s$", f"{name} {a.tag}")
+                    self.assertNotIn(a.get("attributeName"), ("href", "xlink:href"), name)
+
+    def test_the_sample_names_each_part(self):
+        for name in ROUND2:
+            d = kit.KINDS[name]["sample"]
+            drawn = " ".join(texts(tree(name, w=1200, h=760)))
+            want = {"constellation": [m["name"] for m in d.get("modules", [])],
+                    "sequence": d.get("actors", []) + [m["label"] for m in d.get("messages", [])],
+                    "statemachine": d.get("states", []),
+                    "conveyor": [w["label"] for w in d.get("workers", [])],
+                    "network": [h["label"] for h in d.get("hosts", [])],
+                    "chord": d.get("groups", []),
+                    "layers": [x["label"] for x in d.get("layers", [])],
+                    "circuit": [s["label"] for s in d.get("stages", [])]}[name]
+            self.assertTrue(want, name)
+            for w in want:
+                self.assertIn(w.upper() if w.upper() in drawn else w, drawn, f"{name}: {w}")
+
+    def test_a_state_machine_counts_its_transitions_and_lights_the_current_state(self):
+        d = copy.deepcopy(kit.KINDS["statemachine"]["sample"])
+        drawn = texts(tree("statemachine", d))
+        for t in d["transitions"]:
+            self.assertTrue(any(re.fullmatch(r"[\d.,]+k?", s) and kit._num(t["count"]) == s for s in drawn), t)
+        self.assertIn("NOW", drawn)
+        a = kit.panel_svg(dict(kind="statemachine", title="t", data=d), kit.theme(), 1)
+        d["current"] = next(s for s in d["states"] if s != d["current"])
+        b = kit.panel_svg(dict(kind="statemachine", title="t", data=d), kit.theme(), 1)
+        self.assertNotEqual(a, b, "moving the current state moves the light")
+        d["current"] = "nowhere"
+        self.assertTrue(any("data.current" in e for e in kit.check_data("statemachine", d)))
+
+    def test_swimlanes_draw_one_timed_arrow_per_message(self):
+        d = kit.KINDS["sequence"]["sample"]
+        root = tree("sequence")
+        arrows = [e for e in root.iter(SVG + "path") if (e.get("class") or "") == "msg"]
+        self.assertEqual(len(arrows), len(d["messages"]))
+        drawn = texts(root)
+        self.assertIn(f"{max(m['at'] + m.get('took', 0) for m in d['messages'])}ms", " ".join(drawn) + "ms")
+        bad = copy.deepcopy(d)
+        bad["messages"][0]["to"] = "ghost"
+        self.assertTrue(any("data.messages[0].to" in e for e in kit.check_data("sequence", bad)))
+
+    def test_a_network_link_shows_its_latency_and_a_lossy_one_is_dashed(self):
+        d = kit.KINDS["network"]["sample"]
+        drawn = texts(tree("network", w=1200, h=760))
+        for l in d["links"]:
+            self.assertIn(f"{l['ms']}ms", drawn, l)
+        self.assertTrue(any(l.get("loss") for l in d["links"]), "the sample shows a lossy link")
+        bad = copy.deepcopy(d)
+        bad["hosts"][0]["kind"] = "toaster"
+        self.assertTrue(any("data.hosts[0].kind" in e for e in kit.check_data("network", bad)))
+
+    def test_references_must_name_a_declared_part(self):
+        cases = {"constellation": ("imports", lambda d: d["imports"].append(["cli", "ghost"]), "data.imports"),
+                 "statemachine": ("transitions", lambda d: d["transitions"][0].update({"to": "ghost"}), "data.transitions[0].to"),
+                 "network": ("links", lambda d: d["links"][0].update({"from": "ghost"}), "data.links[0].from"),
+                 "chord": ("flows", lambda d: d["flows"][0].update({"from": "ghost"}), "data.flows[0].from")}
+        for name, (_, spoil, field) in cases.items():
+            d = copy.deepcopy(kit.KINDS[name]["sample"])
+            spoil(d)
+            errs = kit.check_data(name, d)
+            self.assertTrue(any(field in e for e in errs), f"{name}: {errs}")
+
+    def test_the_circuit_marks_each_chip_and_its_state(self):
+        d = kit.KINDS["circuit"]["sample"]
+        drawn = texts(tree("circuit"))
+        for i in range(len(d["stages"])):
+            self.assertIn(f"U{i + 1}", drawn)
+        self.assertGreaterEqual(len({s["state"] for s in d["stages"]}), 3, "the sample shows several states")
+
+    def test_the_conveyor_counts_its_queue(self):
+        d = kit.KINDS["conveyor"]["sample"]
+        drawn = texts(tree("conveyor"))
+        self.assertIn(str(len(d["queue"])), drawn)
+        self.assertIn("QUEUED", " ".join(drawn))
 
 
 class Specs(unittest.TestCase):
@@ -153,7 +257,7 @@ class Project(SampoTestCase):
         self.spec()
         out = self.fm("panels", "render", "panels.json").stdout
         names = self.files()
-        self.assertEqual(len(names), 26, names)
+        self.assertEqual(len(names), len(KINDS) * 2, names)
         for i, k in enumerate(KINDS):
             self.assertIn(f"{i + 1:02d}-{k}-dark.svg", names)
             self.assertIn(f"{i + 1:02d}-{k}-light.svg", names)
@@ -209,7 +313,7 @@ class Project(SampoTestCase):
         self.spec()
         self.fm("panels", "sheet", "panels.json", "--out", "sheet")
         text = open(os.path.join(self.repo, "sheet-dark.svg")).read()
-        self.assertEqual(len(re.findall(r"<(?:title|desc) id=", text)), 26, "one title and desc per panel")
+        self.assertEqual(len(re.findall(r"<(?:title|desc) id=", text)), len(KINDS) * 2, "one title and desc per panel")
         self.assertIn("</svg>", text)
 
     @unittest.skipUnless(headless_chrome(), "no headless Chromium here")

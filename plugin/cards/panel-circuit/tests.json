@@ -1,0 +1,94 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "circuit",
+   "data": {
+    "input": "commit",
+    "output": "release",
+    "stages": [
+     {
+      "label": "lint",
+      "sub": "ruff",
+      "state": "ok"
+     },
+     {
+      "label": "test",
+      "sub": "812 cases",
+      "state": "ok"
+     },
+     {
+      "label": "build",
+      "sub": "wheel",
+      "state": "ok"
+     },
+     {
+      "label": "scan",
+      "sub": "2 advisories",
+      "state": "warn"
+     },
+     {
+      "label": "sign",
+      "sub": "sigstore",
+      "state": "busy"
+     },
+     {
+      "label": "ship",
+      "sub": "pypi",
+      "state": "idle"
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "circuit",
+   "data": {
+    "input": "commit",
+    "output": "release",
+    "stages": [
+     {
+      "label": "lint",
+      "sub": "ruff",
+      "state": "ok"
+     },
+     {
+      "label": "test",
+      "sub": "812 cases",
+      "state": "ok"
+     },
+     {
+      "label": "build",
+      "sub": "wheel",
+      "state": "ok"
+     },
+     {
+      "label": "scan",
+      "sub": "2 advisories",
+      "state": "warn"
+     },
+     {
+      "label": "sign",
+      "sub": "sigstore",
+      "state": "busy"
+     },
+     {
+      "label": "ship",
+      "sub": "pypi",
+      "state": "idle"
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

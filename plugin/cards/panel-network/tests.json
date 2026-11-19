@@ -1,0 +1,178 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "network",
+   "data": {
+    "hosts": [
+     {
+      "id": "internet",
+      "kind": "cloud",
+      "label": "internet"
+     },
+     {
+      "id": "edge-rtr",
+      "kind": "router",
+      "label": "edge router"
+     },
+     {
+      "id": "core-sw",
+      "kind": "switch",
+      "label": "core switch"
+     },
+     {
+      "id": "web-1",
+      "kind": "server",
+      "label": "web-1"
+     },
+     {
+      "id": "web-2",
+      "kind": "server",
+      "label": "web-2"
+     },
+     {
+      "id": "pg-main",
+      "kind": "db",
+      "label": "postgres"
+     },
+     {
+      "id": "office",
+      "kind": "client",
+      "label": "office"
+     }
+    ],
+    "links": [
+     {
+      "from": "internet",
+      "to": "edge-rtr",
+      "ms": 34
+     },
+     {
+      "from": "edge-rtr",
+      "to": "core-sw",
+      "ms": 2
+     },
+     {
+      "from": "core-sw",
+      "to": "web-1",
+      "ms": 1
+     },
+     {
+      "from": "core-sw",
+      "to": "web-2",
+      "ms": 1
+     },
+     {
+      "from": "web-1",
+      "to": "pg-main",
+      "ms": 3
+     },
+     {
+      "from": "web-2",
+      "to": "pg-main",
+      "ms": 4,
+      "loss": 2
+     },
+     {
+      "from": "office",
+      "to": "edge-rtr",
+      "ms": 120,
+      "loss": 3
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "network",
+   "data": {
+    "hosts": [
+     {
+      "id": "internet",
+      "kind": "cloud",
+      "label": "internet"
+     },
+     {
+      "id": "edge-rtr",
+      "kind": "router",
+      "label": "edge router"
+     },
+     {
+      "id": "core-sw",
+      "kind": "switch",
+      "label": "core switch"
+     },
+     {
+      "id": "web-1",
+      "kind": "server",
+      "label": "web-1"
+     },
+     {
+      "id": "web-2",
+      "kind": "server",
+      "label": "web-2"
+     },
+     {
+      "id": "pg-main",
+      "kind": "db",
+      "label": "postgres"
+     },
+     {
+      "id": "office",
+      "kind": "client",
+      "label": "office"
+     }
+    ],
+    "links": [
+     {
+      "from": "internet",
+      "to": "edge-rtr",
+      "ms": 34
+     },
+     {
+      "from": "edge-rtr",
+      "to": "core-sw",
+      "ms": 2
+     },
+     {
+      "from": "core-sw",
+      "to": "web-1",
+      "ms": 1
+     },
+     {
+      "from": "core-sw",
+      "to": "web-2",
+      "ms": 1
+     },
+     {
+      "from": "web-1",
+      "to": "pg-main",
+      "ms": 3
+     },
+     {
+      "from": "web-2",
+      "to": "pg-main",
+      "ms": 4,
+      "loss": 2
+     },
+     {
+      "from": "office",
+      "to": "edge-rtr",
+      "ms": 120,
+      "loss": 3
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

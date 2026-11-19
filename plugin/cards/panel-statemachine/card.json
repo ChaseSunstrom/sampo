@@ -1,0 +1,136 @@
+{
+ "name": "panel-statemachine",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a statemachine panel as dark and light SVG in the Board look (or blueprint, paper): a state machine: states on a ring, transitions as arrows weighted and counted by how often they fire, the current state lit.",
+ "examples": [
+  "draw a statemachine panel",
+  "a statemachine diagram of my project",
+  "a state machine: states on a ring, transitions as arrows weighted and counted by how often they fire, the current state lit"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 640
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 400
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "states": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 14
+      },
+      "minItems": 2,
+      "maxItems": 8
+     },
+     "current": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 14
+     },
+     "final": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "minLength": 1,
+       "maxLength": 14
+      },
+      "minItems": 0,
+      "maxItems": 4
+     },
+     "transitions": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "from": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 14
+        },
+        "to": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 14
+        },
+        "on": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 14
+        },
+        "count": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000.0
+        }
+       },
+       "required": [
+        "from",
+        "to"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 20
+     }
+    },
+    "required": [
+     "states",
+     "current",
+     "transitions"
+    ],
+    "additionalProperties": false,
+    "description": "the statemachine panel's data: states, current, final, transitions"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}
