@@ -3704,6 +3704,9 @@ def accept(p, b, main, args):
         _, new = cli.mutate(p, b.id, lambda x, lens=lens, how=how, result=result: _add_audit_once(x, lens, how, result, tree),
                             "audit", {"lens": lens, "how": how[:200], "result": result[:300]})
         added += bool(new)
+    if tip:  # T-5359: the review saw this tip: for a lane whose launcher lives (no builder_returned) that is its return,
+        # so the awaiting test below counts it; accepted_at is still stamped only when the lane really queues (T-4239)
+        cli.mutate(p, b.id, lambda x: x.meta.__setitem__("reviewed_tip", tip), "reviewed", {"tip": tip[:12]})
     b = cli.need_brief(p, b.id)
     lines = [f"accept {b.id}: {added} audit(s) recorded ({', '.join(sorted({lens for lens, _, _ in rows}))})"
              + (f", {len(rows) - added} already on the brief" if added < len(rows) else "") + "."]

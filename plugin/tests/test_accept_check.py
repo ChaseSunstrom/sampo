@@ -317,6 +317,69 @@ class NoCheck(AcceptCase):
         self.assertNotIn("(audit self)", open(self.brief(tid).path).read(), "nothing recorded")
 
 
+class LiveLauncher(AcceptCase):
+    """T-5359: a workflow agent's lane has builder_proc = the launching session (alive for days) and no builder_returned.
+    The accept's review of its tip is its return: the same accept queues it, a commit after that un-finishes it."""
+
+    def launched(self, n=1):
+        from sampo import bus
+        tid = self.a_lane(n)
+        self.record_clean_run(tid)
+        b = self.brief(tid)
+        b.meta["builder_proc"] = f"{bus.host_id()}|{os.getpid()}|{bus._proc(os.getpid())[1]}"
+        self.assertNotIn("builder_returned", b.meta)
+        c.save_brief(self.p, b)
+        return tid
+
+    def commit_in(self, n, name):
+        lane = os.path.join(self.tmp, f"lane{n}")
+        with open(os.path.join(lane, name), "w") as f:
+            f.write("more\n")
+        self.git("add", name, cwd=lane)
+        later = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 60))  # after accepted_at, whatever its rounding
+        subprocess.run(["git", "-C", lane, "commit", "-qm", "after the accept"], check=True, capture_output=True,
+                       env=dict(os.environ, GIT_AUTHOR_DATE=later, GIT_COMMITTER_DATE=later))
+
+    def test_the_first_accept_queues_it_and_a_commit_after_it_un_finishes_it_until_the_next_accept(self):
+        tid = self.launched()
+        out = self.accept(tid, no_check=True)
+        self.assertNotIn("not queued", out)
+        self.assertEqual(self.queued(), [tid])
+        self.assertIn("accepted_at", self.meta_of(tid))
+        self.commit_in(1, "more.txt")
+        self.assertNotIn(tid, c.finished_lanes(self.p, c.load_briefs(self.p), 0, fresh=True), "a commit past the review")
+        self.record_clean_run(tid, ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 120)))  # after the commit
+        self.assertNotIn("not queued", self.accept(tid, no_check=True), "the next accept reviews the new tip")
+        self.assertIn(tid, c.finished_lanes(self.p, c.load_briefs(self.p), 0, fresh=True))
+
+    def test_an_accept_that_queues_nothing_leaves_no_accepted_at(self):  # T-4239: accepted_at means queued
+        tid = self.launched()
+        lane = os.path.join(self.tmp, "lane1")
+        with open(os.path.join(lane, "wip.txt"), "w") as f:
+            f.write("uncommitted\n")  # work in hand
+        out = self.accept(tid, no_check=True)
+        self.assertIn("not queued", out)
+        self.assertEqual(self.queued(), [])
+        self.assertNotIn("accepted_at", self.meta_of(tid))
+
+    def test_a_refused_accept_marks_no_review(self):
+        tid = self.launched()
+        args = types.SimpleNamespace(audit=[], json=False, no_check=True)
+        with self.assertRaises(cli.UsageError), contextlib.redirect_stdout(io.StringIO()):
+            train.accept(self.p, self.brief(tid), self.repo, args)
+        self.assertNotIn(tid, c.finished_lanes(self.p, c.load_briefs(self.p), 0, fresh=True))
+
+    def test_a_review_mark_for_another_tip_is_no_review(self):
+        tid = self.launched()
+        b = self.brief(tid)
+        b.meta["reviewed_tip"] = "0" * 40  # stale or damaged
+        c.save_brief(self.p, b)
+        self.assertNotIn(tid, c.finished_lanes(self.p, c.load_briefs(self.p), 0, fresh=True))
+        b.meta["reviewed_tip"] = self.tip(1)
+        c.save_brief(self.p, b)
+        self.assertIn(tid, c.finished_lanes(self.p, c.load_briefs(self.p), 0, fresh=True))
+
+
 class RepoShape(AcceptCase):
     def test_the_started_check_holds_the_four_repo_shape_classes(self):  # repo_shape
         tid = self.a_lane(1)

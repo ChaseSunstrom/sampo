@@ -7490,7 +7490,9 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
              # T-3824: builder_proc is the launching session, alive long after its builder returned (T-3145); T-5344: a
              # workflow agent's has no builder_returned at all, so only an accept (done() reads it against the last
              # commit) finishes a lane whose launcher lives
-             and (b.meta.get("builder_returned") or b.meta.get("accepted_at")
+             # T-5359: and the accept's review of its tip (reviewed_tip), recorded before the accept asks whether the lane
+             # waits on a merge, so the first accept of such a lane queues it
+             and (b.meta.get("builder_returned") or b.meta.get("accepted_at") or b.meta.get("reviewed_tip")
                   or bus.proc_state(b.meta.get("builder_proc")) != "alive")]
     held = {b.id for b in lanes if not b.meta.get("builder_returned")  # a live launcher, no return mark: waits for its accept
             and bus.proc_state(b.meta.get("builder_proc")) == "alive"}
@@ -7510,9 +7512,13 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
     except ValueError:
         ttl = 60
 
-    def returned(b, ct):  # T-3824: a builder that returned after its last commit is done; no quiet wait
+    def returned(b, ct, sha=None):  # T-3824: a builder that returned after its last commit is done; no quiet wait
         at = parse_ts(b.meta.get("builder_returned") or "")
         if at and at.timestamp() >= ct:
+            return True
+        # T-5359: a lane whose launcher lives has no builder_returned: the accept's review of this very tip is its return
+        # (the sha, not a time: a commit in the same second as the review still un-finishes it)
+        if sha and b.meta.get("reviewed_tip") == sha:
             return True
         try:  # T-4365: sampo lane accept at or after the last commit says the same of a lane with no builder
             return float(b.meta.get("accepted_at") or 0) >= ct
@@ -7521,7 +7527,7 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
 
     def done(facts):
         return [b.id for b in lanes if (facts.get(b.id) or {}).get("ct") is not None and facts[b.id].get("clean")
-                and (returned(b, facts[b.id]["ct"])
+                and (returned(b, facts[b.id]["ct"], facts[b.id].get("sha"))
                      or (b.id not in held and time.time() - facts[b.id]["ct"] >= quiet_min * 60))]
     facts = {}
     try:
