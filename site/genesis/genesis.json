@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-19T09:06:13Z",
+ "updated": "2026-11-19T12:10:20Z",
  "rev": "fdf50b3b0",
  "capabilities": [
   {
@@ -62956,28 +62956,28 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 67015,
+   "generated": 69326,
    "write": {
-    "title": 449,
-    "line": 3562,
-    "payoff": 52,
-    "kill test": 237,
+    "title": 450,
+    "line": 3767,
+    "payoff": 57,
+    "kill test": 259,
     "code": 33
    },
    "dups": {
     "exact": 16,
-    "embed": 140,
+    "embed": 141,
     "shingle": 0
    },
    "rejected": {
-    "kill": 33676,
+    "kill": 34625,
     "tier": 21623,
-    "novelty": 184
+    "novelty": 190
    },
-   "merged": 2340,
-   "kept": 2599,
-   "pending": 109,
-   "pooled": 1995
+   "merged": 2436,
+   "kept": 2675,
+   "pending": 365,
+   "pooled": 2689
   },
   "families": [
    {
@@ -63016,7 +63016,7 @@
    },
    {
     "id": "F-013109",
-    "size": 574,
+    "size": 591,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -63275,6 +63275,23 @@
     "evidence": "",
     "kinds": [
      "migrations"
+    ]
+   },
+   {
+    "id": "F-067724",
+    "size": 2,
+    "lead": "Simulate the death of your niche feature",
+    "today": "Today you can't foresee when a beloved specific feature will become irrelevant as technology trends shift.",
+    "with_this": "With this, you can accelerate the timeline of industry obsolescence to see which features survive and which ones become liabilities before they are even built.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "design",
+     "features"
     ]
    },
    {
@@ -64446,6 +64463,70 @@
     ]
    },
    {
+    "id": "F-066947",
+    "size": 1,
+    "lead": "Project a counterfactual reality of unmade technical debts",
+    "today": "Today you can't compare your current path against the 'what if' of a different architectural choice.",
+    "with_this": "With this, you can visualize the ghost-branch of your project where you chose the alternative library or pattern.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "onboarding"
+    ]
+   },
+   {
+    "id": "F-067718",
+    "size": 1,
+    "lead": "Simulate regulatory drift before you ship",
+    "today": "Today you can't preview how your code will be interpreted months after launch under new laws.",
+    "with_this": "With this, you can simulate the future regulatory environment against your entire product stack to find compliance gaps before release.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "design"
+    ]
+   },
+   {
+    "id": "F-067723",
+    "size": 1,
+    "lead": "Replay community adoption with counterfactual rules",
+    "today": "Today you can't test if a proposed open-source standard will actually catch on in your specific industry context.",
+    "with_this": "With this, you can run your product through a simulation where the world has adopted a different set of standards to see if your architecture would still have succeeded.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "design"
+    ]
+   },
+   {
+    "id": "F-068076",
+    "size": 1,
+    "lead": "Synthesize a self-healing runtime shadow for every script",
+    "today": "Today you can't automatically fix a python exit code in real-time.",
+    "with_this": "With this, you can receive a corrected script that bypasses the environment error the moment it occurs.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
     "id": "F-011460",
     "size": 5,
     "lead": "Negotiate migration compatibility with AI agents in other repos",
@@ -64503,6 +64584,22 @@
     ]
    },
    {
+    "id": "F-065032",
+    "size": 4,
+    "lead": "Verify migration safety through formal state equivalence proofs",
+    "today": "Today you can't be mathematically certain that a refactored codebase behaves identically to the original, because testing only covers the cases you thought of, not all possible states.",
+    "with_this": "With this, you can generate a formal proof that the new code is state-equivalent to the old code for all possible inputs, eliminating the need for exhaustive testing and giving you absolute confidence in the migration.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "migrations"
+    ]
+   },
+   {
     "id": "F-000458",
     "size": 3,
     "lead": "Let your dependencies write their own security patches",
@@ -64518,6 +64615,24 @@
      "data",
      "design",
      "migrations"
+    ]
+   },
+   {
+    "id": "F-003359",
+    "size": 3,
+    "lead": "Hedge against proof failures by buying insurance policies",
+    "today": "Today you can't protect your release schedule from the uncertainty of a complex verification task failing.",
+    "with_this": "With this, you can buy small, automated insurance policies that pay out if a specific proof task exceeds a time limit, protecting your project's timeline.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 1,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "bugs",
+     "features",
+     "ops"
     ]
    },
    {
@@ -65198,22 +65313,6 @@
     "evidence": "",
     "kinds": [
      "data"
-    ]
-   },
-   {
-    "id": "F-003359",
-    "size": 1,
-    "lead": "Hedge against proof failures by buying insurance policies",
-    "today": "Today you can't protect your release schedule from the uncertainty of a complex verification task failing.",
-    "with_this": "With this, you can buy small, automated insurance policies that pay out if a specific proof task exceeds a time limit, protecting your project's timeline.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
     ]
    },
    {
@@ -66143,108 +66242,12 @@
     "kinds": [
      "performance"
     ]
-   },
-   {
-    "id": "F-010698",
-    "size": 1,
-    "lead": "Buy protection against a dependency failing mid-release",
-    "today": "Today you can't hedge against an outside service going down during your launch, so a vendor outage becomes your outage.",
-    "with_this": "With this, you can pay a fee to lock in a fallback path for a third-party service across your release window.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "performance"
-    ]
-   },
-   {
-    "id": "F-010699",
-    "size": 1,
-    "lead": "Auction reviewer attention to the riskiest changes",
-    "today": "Today you can't direct reviewer time toward the Friday change most likely to hurt, so review effort is spread evenly.",
-    "with_this": "With this, you can have the riskiest change get the sharpest eyes first, without asking anyone to reprioritize.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "performance"
-    ]
-   },
-   {
-    "id": "F-010700",
-    "size": 1,
-    "lead": "Trade next week's outage odds as a future",
-    "today": "Today you can't lock in the risk of a whole week's releases, so each Friday is a fresh gamble.",
-    "with_this": "With this, you can know your team's outage odds for next week and move a release to a safer day before it hurts you.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "performance"
-    ]
-   },
-   {
-    "id": "F-010766",
-    "size": 1,
-    "lead": "Trade test execution slots against market liquidity",
-    "today": "Today you can't predict if your specific change will break a flaky test that is currently being run by a different developer's push.",
-    "with_this": "With this, you can see real-time bids from other repos on which test failures are tolerable, allowing you to skip specific suites and merge with confidence.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "refactors"
-    ]
-   },
-   {
-    "id": "F-010767",
-    "size": 1,
-    "lead": "Short the flaky tests before they fail your push",
-    "today": "Today you can't financially benefit from identifying and isolating flaky tests before they block your release pipeline.",
-    "with_this": "With this, you can earn credits for correctly predicting which test will fail, allowing you to pay for extra compute or priority merging for your PRs.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "refactors"
-    ]
-   },
-   {
-    "id": "F-010769",
-    "size": 1,
-    "lead": "Hedge against test suite slowdowns with parallel contracts",
-    "today": "Today you can't protect your delivery timeline from unexpected test suite bloat or infrastructure latency.",
-    "with_this": "With this, you can buy a guarantee that your PR will be tested within a specific time window, receiving a refund or bonus if the system slows down.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "refactors"
-    ]
    }
   ],
-  "families_total": 1825,
+  "families_total": 1888,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2599
+   "total": 2675
   }
  },
  "steer": {
@@ -66278,7 +66281,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.9,
+    "idle_h": 269.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66301,7 +66304,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.1,
+    "idle_h": 269.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66324,7 +66327,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.9,
+    "idle_h": 269.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66347,7 +66350,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.9,
+    "idle_h": 269.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66370,7 +66373,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.7,
+    "idle_h": 268.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66393,7 +66396,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.8,
+    "idle_h": 268.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66416,7 +66419,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.5,
+    "idle_h": 268.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66439,7 +66442,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.5,
+    "idle_h": 268.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66462,7 +66465,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 265.6,
+    "idle_h": 268.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66485,7 +66488,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 267.3,
+    "idle_h": 270.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66508,7 +66511,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.9,
+    "idle_h": 270.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66531,7 +66534,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.9,
+    "idle_h": 270.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66554,7 +66557,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.9,
+    "idle_h": 270.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66577,7 +66580,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 267.0,
+    "idle_h": 270.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66600,7 +66603,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.8,
+    "idle_h": 269.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66623,7 +66626,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.7,
+    "idle_h": 269.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66646,7 +66649,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.7,
+    "idle_h": 269.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66669,7 +66672,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.7,
+    "idle_h": 269.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66692,7 +66695,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.5,
+    "idle_h": 269.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66715,7 +66718,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.5,
+    "idle_h": 269.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66738,7 +66741,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.5,
+    "idle_h": 269.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66761,7 +66764,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.5,
+    "idle_h": 269.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66784,7 +66787,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.3,
+    "idle_h": 269.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66807,7 +66810,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.3,
+    "idle_h": 269.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66830,7 +66833,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.3,
+    "idle_h": 269.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66853,7 +66856,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 266.3,
+    "idle_h": 269.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
