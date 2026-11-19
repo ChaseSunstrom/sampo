@@ -17,7 +17,7 @@ TIMEOUT = [{"event": "timeout", "text": "no end after 900 s"}]
 
 def stub(events_by_id, calls):
     """Stands in for louhi._smith_arm: records the scenario, writes its event log, returns an answer with no findings."""
-    def arm(base, key, work, model, request, events, planner=None, reason=None, small=False):
+    def arm(base, key, work, model, request, events, planner=None, reason=None, small=False, search=None):
         calls.append(key["id"])
         with open(events, "w", encoding="utf-8") as f:
             f.write("".join(json.dumps(e) + "\n" for e in events_by_id.get(key["id"], [])))

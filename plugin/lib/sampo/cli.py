@@ -8644,6 +8644,16 @@ class _OutputFormat(argparse.Action):
         ns.json = True
 
 
+def _search_arg(value):
+    """T-3010: --search's value (a count 1..8 or auto) as the text smith and the exam arm read; a bad one is refused
+    before any model is resolved, naming the option."""
+    from sampo import vsearch
+    try:
+        return str(vsearch.parse(value))
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
 _PARSER = None
 
 
@@ -10017,7 +10027,7 @@ def _build_parser(only=None):
     s.add_argument("--note", action="append", default=[], help="focus for every lens brief: this round's change, "
                                                                "threat model, what to ignore (repeatable)")
 
-    s = add("autonomy", cmd_autonomy, tier=("Project and settings", 680), help="standard (asks for L plans, ? items, approvals) or full (never asks mid-run)")
+    s = add("autonomy", cmd_autonomy, tier=("Project and settings", 680), help="standard (asks for L plans, ? items, approvals) or full (full auto: never asks mid-run)")
     s.add_argument("level", nargs="?", choices=["standard", "full"])
     s.add_argument("--standing", action="store_true", help="also the machine profile's standing autonomy: every new "
                                                            "project starts at it (T-4519)")
@@ -10689,6 +10699,9 @@ def _build_parser(only=None):
     s.add_argument("--planner", help="run --agent smith: this profile asks the plan and close notes, --model acts (T-2945)")
     s.add_argument("--reason", help="run, long run --agent smith: state|off|native|budget|bias|schema, how the model reasons; the "
                    "score line gives its fix rate and tokens per fix (T-3006)")
+    s.add_argument("--search", type=_search_arg, metavar="N|auto", help="run --agent smith: fm code --search, N candidate "
+                   "edits a checkable step, each checked in a copy; the score gives the fixed rate and wall time per kind "
+                   "beside the frontier's first try (T-3010)")
     s.add_argument("--small", action="store_true", help="run, long run --agent smith: fm code --small, small-model mode (T-2878)")
     s.add_argument("--timeout", type=float, help="long run: minutes a session turn may take (default 60); --agent smith: "
                    "minutes a goal may take (default 30)")
@@ -10949,6 +10962,10 @@ def _build_parser(only=None):
                    "call; thinking only on low confidence, a failed check or a loop break; a named check before an "
                    "edit), off, native, budget, bias or schema. With none, a local profile starts every call with "
                    "thinking off (T-4297; native turns it on, and a model the exam measured better with it keeps it)")
+    s.add_argument("--search", type=_search_arg, metavar="N|auto", help="T-3010: on a fix round or the last step, draw "
+                   "up to N candidate edits (1 to 8, or auto: sized from the check's recorded seconds), check each in a "
+                   "throwaway copy with the plan's verify commands, keep the first green (else the one failing fewest) "
+                   "and journal every one; off by default")
     s.add_argument("--small", action="store_true", help="T-2878: small-model mode (also a models.json profile's "
                    "\"small\": true): a change plan's checks must fail before the work, a change request isn't planned "
                    "as research or answered, and its last step can't end with nothing changed")

@@ -1769,6 +1769,520 @@ class TrueRepeat(CodeCase):
         self.assertNotEqual(acts[0]["key"], acts[2]["key"], "another path is another key")
 
 
+# T-3010: verifier-guided search. A small model's one try is often wrong and its fourth right; the step's own check
+# is a cheap, exact judge, so `fm code --search N` draws up to N candidate edits, runs the check on each in a throwaway
+# copy, and keeps the first that is green. Off unless asked; --search auto sizes N from how long the check takes.
+WRONG1 = call("edit", file="calc.py", old="a - b", new="a * b")
+WRONG2 = call("edit", file="calc.py", old="a - b", new="a - b - 0")
+RIGHT = call("edit", file="calc.py", old="a - b", new="a + b")
+RUN = call("run", cmd="python3 test_calc.py")
+
+
+class Stub:
+    """vsearch's three callables with scripted outcomes: draw(i) is 'c<i>', check(c) answers by the script's table."""
+
+    def __init__(self, table):
+        from sampo import vsearch
+        self.v, self.table, self.drawn, self.checked, self.lines = vsearch, table, [], [], []
+
+    def draw(self, i):
+        self.drawn.append(i)
+        return f"c{i}"
+
+    def check(self, cand):
+        self.checked.append(cand)
+        out, failed, secs = self.table.get(cand, ("red", 1, 1.0))
+        return self.v.Verdict(out, failed, secs)
+
+    def run(self, n, first="c0", **kw):
+        return self.v.search(n, first, self.draw, self.check, journal=lambda **f: self.lines.append(f), **kw)
+
+
+import unittest  # noqa: E402
+
+
+class SearchPolicy(unittest.TestCase):
+    """The policy alone (plugin/lib/sampo/vsearch.py): no model, no copy, no run."""
+
+    def test_each_extra_draw_is_warmer_and_carries_its_own_nudge(self):
+        from sampo import vsearch
+        self.assertEqual([vsearch.temperature(i) for i in (1, 2, 3, 4, 8)], [0.5, 0.7, 0.9, 1.0, 1.0])
+        self.assertEqual(vsearch.temperature(0), vsearch.temperature(1), "a stray index never goes below the first")
+        notes = [vsearch.nudge(i) for i in range(1, len(vsearch.NUDGES) + 1)]
+        self.assertEqual(len(set(notes)), len(vsearch.NUDGES), "the first round of draws all differ")
+        self.assertEqual(vsearch.nudge(len(vsearch.NUDGES) + 1), notes[0], "then round and round")
+
+    def test_the_candidate_count_is_sized_from_how_long_the_check_takes(self):
+        from sampo import vsearch
+        n = vsearch.choose_n
+        self.assertEqual([n(0.2), n(9.9)], [vsearch.AUTO_MAX] * 2, "under 10 s: the most")
+        self.assertEqual(vsearch.AUTO_MAX, 6)
+        self.assertEqual([n(60.5), n(600)], [2, 2], "over 60 s: two")
+        self.assertEqual([n(10), n(30), n(60)], [vsearch.DEFAULT_N] * 3, "between: the middle")
+        for odd in (None, float("nan"), -3, "slow", True):
+            self.assertEqual(n(odd), vsearch.DEFAULT_N, f"unknown or unusable seconds ({odd!r}) draws the middle count")
+
+    def test_the_search_stops_at_the_first_green_and_draws_no_more(self):
+        s = Stub({"c2": ("green", 0, 1.0)})
+        got = s.run(6)
+        self.assertEqual((got.cand, got.green, got.tried), ("c2", True, 3))
+        self.assertEqual(s.drawn, [1, 2], "candidate 0 was drawn by the caller; none after the green")
+        events = [(f["event"], f.get("cand"), f.get("outcome")) for f in s.lines]
+        self.assertEqual(events, [("candidate", 0, "red"), ("candidate", 1, "red"), ("candidate", 2, "green"),
+                                  ("pick", 2, "green")])
+
+    def test_no_green_keeps_the_candidate_with_the_fewest_failures_the_first_on_a_tie(self):
+        s = Stub({"c0": ("red", 3, 1.0), "c1": ("red", 1, 1.0), "c2": ("red", 1, 1.0), "c3": ("unusable", 0, None)})
+        got = s.run(4)
+        self.assertEqual((got.cand, got.green, got.tried), ("c1", False, 4))
+        self.assertEqual(s.lines[-1]["outcome"], "red")
+        self.assertEqual(s.lines[-1]["failed"], 1)
+
+    def test_an_unusable_candidate_is_never_kept_and_all_unusable_keeps_none(self):
+        s = Stub({f"c{i}": ("unusable", 0, None) for i in range(3)})
+        got = s.run(3)
+        self.assertIsNone(got.cand, "nothing usable: the caller goes on with the model's own first reply")
+        self.assertFalse(got.green)
+        self.assertEqual(s.lines[-1]["event"], "pick")
+
+    def test_a_draw_that_comes_back_empty_counts_as_unusable_and_the_search_goes_on(self):
+        s = Stub({"c2": ("green", 0, 1.0)})
+        draw = s.draw
+        s.draw = lambda i: None if i == 1 else draw(i)
+        got = s.run(4)
+        self.assertEqual((got.cand, got.green), ("c2", True))
+        self.assertEqual([f["outcome"] for f in s.lines if f["event"] == "candidate"], ["red", "unusable", "green"])
+
+    def test_the_count_is_capped_and_one_checks_only_the_first(self):
+        from sampo import vsearch
+        s = Stub({})
+        s.run(500)
+        self.assertEqual(len(s.checked), vsearch.MAX_N)
+        s = Stub({})
+        got = s.run(1)
+        self.assertEqual((s.drawn, got.cand, got.tried), ([], "c0", 1), "N=1 is the model's own try, checked and journaled")
+
+    def test_auto_sizes_the_count_from_recorded_seconds_before_the_first_check(self):
+        for secs, want in ((3.0, 6), (30.0, vsearch_default()), (90.0, 2)):
+            s = Stub({})
+            s.run(0, auto=True, hint=secs)
+            self.assertEqual(len(s.checked), want, secs)
+
+    def test_auto_without_a_record_measures_the_first_check_and_sizes_from_that(self):
+        s = Stub({"c0": ("red", 1, 120.0)})
+        s.run(0, auto=True)
+        self.assertEqual(len(s.checked), 2, "the first check took two minutes: two candidates")
+        s = Stub({"c0": ("red", 1, 0.4)})
+        s.run(0, auto=True)
+        self.assertEqual(len(s.checked), 6)
+
+    def test_auto_stops_at_the_first_green_too(self):
+        s = Stub({"c1": ("green", 0, 0.5)})
+        got = s.run(0, auto=True, hint=2.0)
+        self.assertEqual((got.cand, got.tried, len(s.checked)), ("c1", 2, 2))
+
+    def test_the_option_is_a_count_or_auto(self):
+        from sampo import vsearch
+        self.assertEqual([vsearch.parse(x) for x in ("1", "4", "auto", " AUTO ")], [1, 4, "auto", "auto"])
+        for bad in ("0", "-1", "9", "many", "", "2.5", "1e1", None):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                vsearch.parse(bad)
+
+
+def vsearch_default():
+    from sampo import vsearch
+    return vsearch.DEFAULT_N
+
+
+class Search(CodeCase):
+    """fm code --search N end to end: a fake model that is right on its third draw."""
+
+    def go(self, *args, script=None, tplan=None, check=True):
+        from sampo import landlock
+        ok, why = landlock.available()
+        if not ok:  # a search runs only confined (T-3010); the tests that need one skip where Landlock is missing
+            self.skipTest(f"no Landlock here: {why}")
+        f = self.serve("openai", plan(tplan), *(script if script is not None else (WRONG1, WRONG2, RIGHT, RUN)))
+        r = self.code("make calc.add add", "--model", "fake", "--no-commit", *args, check=check)
+        return f, r
+
+    def search_events(self):
+        out = []
+        for line in journal_text(self).splitlines():
+            e = json.loads(line)
+            if e.get("kind") == "search":
+                out.append(e)
+        return out
+
+    def test_search_3_applies_the_third_draw_that_the_check_passes(self):
+        f, r = self.go("--search", "3")
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+        self.assertIn("return a + b", self.calc())
+        self.assertNotIn("a * b", self.calc())
+        self.assertEqual(f.script, [], "plan, three draws, the run that closed the step: nothing left over")
+        self.assertEqual(len(f.seen), 5)
+
+    def test_every_candidate_is_journaled_with_its_outcome_and_the_pick(self):
+        self.go("--search", "3")
+        ev = self.search_events()
+        cands = [e for e in ev if e["event"] == "candidate"]
+        self.assertEqual([(e["cand"], e["outcome"], e["failed"]) for e in cands], [(0, "red", 1), (1, "red", 1), (2, "green", 0)])
+        self.assertTrue(all(isinstance(e["seconds"], (int, float)) and e["phase"] == "step:1" for e in cands), cands)
+        pick = [e for e in ev if e["event"] == "pick"]
+        self.assertEqual([(e["cand"], e["green"], e["tried"], e["n"]) for e in pick], [(2, True, 3, 3)])
+
+    def test_the_candidates_are_drawn_warmer_and_with_a_different_nudge(self):
+        f, r = self.go("--search", "3")
+        temps = [b.get("temperature") for b in f.seen[1:4]]
+        self.assertEqual(len(set(temps[1:])), 2, f"the extra draws are at two other temperatures: {temps}")
+        self.assertNotEqual(f.said(2), f.said(1), "a draw after the first carries its own nudge")
+        self.assertNotEqual(f.said(3), f.said(2))
+
+    def test_a_wrong_candidate_never_touches_the_working_tree(self):
+        f, r = self.go("--search", "3", script=(WRONG1, WRONG2, RIGHT, RUN))
+        changed = [x for x in self.status().splitlines() if "__pycache__" not in x]  # the run's own test makes that
+        self.assertEqual([x.split() for x in changed], [["M", "calc.py"]], self.status())
+        self.assertNotIn("a - b - 0", self.calc())
+
+    def test_the_first_candidate_green_stops_the_search_there(self):
+        f, r = self.go("--search", "4", script=(RIGHT, RUN))
+        self.assertEqual(len(f.seen), 3, "plan, the edit, the run: no extra draw")
+        ev = self.search_events()
+        self.assertEqual([e["event"] for e in ev], ["candidate", "pick"])
+
+    def test_without_search_nothing_is_drawn_or_journaled(self):
+        f, r = self.go(script=(RIGHT, RUN))
+        self.assertEqual(len(f.seen), 3)
+        self.assertEqual(self.search_events(), [])
+        self.assertNotIn('"search"', journal_text(self))
+
+    def test_no_green_applies_the_first_of_the_fewest_failures_and_the_run_goes_on(self):
+        undo = call("edit", file="calc.py", old="a * b", new="a + b")  # the kept candidate is the first one, a * b
+        f, r = self.go("--search", "2", script=(WRONG1, WRONG2, undo, RUN))
+        pick = [e for e in self.search_events() if e["event"] == "pick"][0]
+        self.assertEqual((pick["cand"], pick["green"]), (0, False))
+        self.assertIn("return a + b", self.calc(), "the model's next turn fixed what the kept candidate left")
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+
+    def test_auto_reads_a_quick_check_as_room_for_six_draws(self):
+        wrong = [call("edit", file="calc.py", old="a - b", new=f"a - b - {i}") for i in range(1, 5)]
+        f, r = self.go("--search", "auto", script=(*wrong, RIGHT, RUN))
+        self.assertEqual(self.task()["status"], "done", r.stdout + r.stderr)
+        pick = [e for e in self.search_events() if e["event"] == "pick"][0]
+        self.assertEqual((pick["cand"], pick["n"], pick["auto"]), (4, 6, True), "four wrong ones, the fifth green, of up to six")
+        self.assertEqual(len(f.seen), 7)
+
+    def test_a_check_naming_the_working_tree_is_not_run_in_a_copy(self):
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": f"python3 {self.repo}/test_calc.py"}])
+        f, r = self.go("--search", "3", tplan=tp, script=(RIGHT, call("run", cmd=f"python3 {self.repo}/test_calc.py")))
+        ev = self.search_events()
+        self.assertEqual([e["event"] for e in ev], ["skip"], ev)
+        self.assertIn("working tree", ev[0]["why"])
+        self.assertEqual(len(f.seen), 3, "no draw beyond the model's own: it would have checked the fixed tree")
+
+    # -- review of the first pass (T-3010): what a verify can reach from the copy, and what a candidate's check leaves behind
+
+    def test_a_path_spelled_another_way_is_still_the_working_tree(self):
+        from unittest import mock
+        from sampo import smith
+        root = os.path.realpath(self.repo)
+        parent, base = os.path.split(root)
+        link = os.path.join(parent, "alias-of-" + base)
+        os.symlink(root, link)  # the test's folder goes with it
+        with mock.patch.dict(os.environ, {"HOME": root, "REPOX": root}):
+            for cmd in (f"python3 {root}/test_calc.py", f"python3 {parent}/./{base}/test_calc.py",
+                        f"python3 {parent}//{base}/x/../test_calc.py", "python3 ~/test_calc.py",
+                        "python3 $HOME/test_calc.py", "python3 ${HOME}/test_calc.py", "python3 $REPOX/test_calc.py",
+                        f"python3 {link}/test_calc.py", f"cd {parent}/{base} && python3 test_calc.py",
+                        f"PYTHONPATH={root} python3 test_calc.py", f"python3 --root={root} test_calc.py",
+                        "python3 $(git rev-parse --show-toplevel)/test_calc.py", "python3 `pwd -P`/test_calc.py",
+                        # T-3010 round 3: what a text check can only guess at, refused early (the kernel is the guard)
+                        "python3 ../../../home/u/proj/t.py", "env -C ../../.. python3 t.py", "python3 ..",
+                        f"python3 {parent}/{base[:-1]}?/test_calc.py", "python3 /hom[e]/u/proj/t.py",
+                        "python3 /home/u/{proj,x}/f.py", "python3 ~/pro*/t.py", "python3 ${HOME:-x}/t.py",
+                        "cd - && python3 t.py"):
+                with self.subTest(cmd=cmd):
+                    self.assertTrue(smith.search_tree_refusal(cmd, {root}), cmd)
+            for cmd in ("python3 test_calc.py", "python3 -m unittest", "python3 ./test_calc.py", "pytest -q tests/",
+                        "python3 -c 'print(1 + 1)'", f"python3 {root}-other/test_calc.py", "python3 ./sub/../test_calc.py",
+                        "[ -e leak.flag ] && python3 -m unittest -q"):
+                with self.subTest(cmd=cmd):
+                    self.assertEqual(smith.search_tree_refusal(cmd, {root}), "", cmd)
+
+    def test_a_check_that_names_the_tree_by_a_variable_or_a_substitution_is_not_run_in_a_copy(self):
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "python3 $(git rev-parse --show-toplevel)/test_calc.py"}])
+        f, r = self.go("--search", "3", tplan=tp, script=(RIGHT, call("run", cmd=tp["criteria"][0]["verify"])), check=False)
+        ev = self.search_events()
+        self.assertEqual([e["event"] for e in ev], ["skip"], ev)
+        self.assertEqual(len(f.seen), 3, "one draw: the model's own")
+
+    def test_a_check_that_uses_git_is_one_draw_for_the_copy_has_no_git_folder(self):
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "git diff --quiet HEAD -- test_calc.py && python3 test_calc.py"}])
+        f, r = self.go("--search", "3", tplan=tp, script=(RIGHT, call("run", cmd=tp["criteria"][0]["verify"])), check=False)
+        ev = self.search_events()
+        self.assertEqual([e["event"] for e in ev], ["skip"], ev)
+        self.assertIn("git", ev[0]["why"])
+        self.assertEqual(len(f.seen), 3)
+
+    def test_the_search_is_skipped_when_the_check_would_run_unconfined(self):
+        f = self.serve("openai", plan(None), RIGHT, RUN)
+        self.code("make calc.add add", "--model", "fake", "--no-commit", "--search", "3", env={"FOREMAN_CONFINE": "0"})
+        ev = self.search_events()
+        self.assertEqual([e["event"] for e in ev], ["skip"], ev)
+        self.assertIn("confine", ev[0]["why"])
+        self.assertEqual(len(f.seen), 3, "no extra draw: a check run in a copy could write anywhere then")
+
+    def test_a_symlink_into_the_real_tree_is_pointed_at_the_copy(self):
+        os.symlink(os.path.join(os.path.realpath(self.repo), "calc.py"), os.path.join(self.repo, "calc_link.py"))
+        verify = "python3 -c 'import calc_link; assert calc_link.add(2, 3) == 5'"
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": verify}])
+        f, r = self.go("--search", "3", tplan=tp, script=(WRONG1, RIGHT, call("run", cmd=verify)), check=False)
+        pick = [e for e in self.search_events() if e["event"] == "pick"]
+        self.assertEqual([(e["cand"], e["green"]) for e in pick], [(1, True)], self.search_events())
+
+    def test_relink_rewrites_absolute_links_that_land_in_the_tree_and_leaves_the_rest(self):
+        import tempfile
+        from sampo import smith
+        with tempfile.TemporaryDirectory() as tmp:
+            root, copy, other = (os.path.join(tmp, x) for x in ("root", "copy", "other"))
+            for d in (root, copy, other):
+                os.makedirs(os.path.join(d, "sub"))
+            for d in (root, copy):
+                with open(os.path.join(d, "sub", "f.txt"), "w") as h:
+                    h.write("x")
+            os.symlink(os.path.join(root, "sub", "f.txt"), os.path.join(copy, "abs"))
+            os.symlink(os.path.join(other, "sub"), os.path.join(copy, "elsewhere"))
+            os.symlink("sub/f.txt", os.path.join(copy, "rel"))
+            os.symlink(root, os.path.join(copy, "top"))
+            self.assertEqual(smith.search_relink(root, copy), "")
+            self.assertEqual(os.readlink(os.path.join(copy, "abs")), os.path.join(copy, "sub", "f.txt"))
+            self.assertEqual(os.readlink(os.path.join(copy, "top")), copy)
+            self.assertEqual(os.readlink(os.path.join(copy, "elsewhere")), os.path.join(other, "sub"))
+            self.assertEqual(os.readlink(os.path.join(copy, "rel")), "sub/f.txt")
+
+    def test_a_file_a_check_makes_in_one_candidate_cannot_turn_a_later_one_green(self):
+        # in the working tree (it has a .git folder) the check is the plain test; in a copy a failed run leaves leak.flag,
+        # which a later run in the same folder takes for a pass: only a folder shared between candidates can show that
+        verify = ("if ls -d .g?t >/dev/null 2>&1; then python3 test_calc.py; else [ -e leak.flag ] && exit 0; "
+                  "python3 test_calc.py || { touch leak.flag; exit 1; }; fi")
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": verify}])
+        f, r = self.go("--search", "3", tplan=tp, script=(WRONG1, WRONG2, RIGHT, call("run", cmd=verify)), check=False)
+        got = [(e["cand"], e["outcome"]) for e in self.search_events() if e["event"] == "candidate"]
+        self.assertEqual(got, [(0, "red"), (1, "red"), (2, "green")], "candidate 1 saw candidate 0's marker file")
+
+    def test_the_limit_of_a_check_is_what_is_left_of_the_candidate_and_of_the_runs_searches(self):
+        from sampo import smith
+        cap, whole = smith.SEARCH_CHECK_S, smith.SEARCH_BUDGET_S
+        self.assertEqual(smith.search_limit(0, 0, None), cap)
+        self.assertEqual(smith.search_limit(cap - 10, 0, None), 10, "180 s is for the candidate's checks together")
+        self.assertEqual(smith.search_limit(0, whole - 20, None), 20)
+        self.assertEqual(smith.search_limit(0, 0, 5), 5)
+        self.assertEqual(smith.search_limit(5, whole - 20, None), 15, "spent is the total at the candidate's start: its own seconds count too")
+        for used, spent, left in ((cap, 0, None), (0, whole, None), (0, 0, 0), (0, 0, -3), (20, whole - 20, None)):
+            self.assertEqual(smith.search_limit(used, spent, left), 0, (used, spent, left))
+
+    def test_a_check_leaves_the_run_the_time_its_closing_verify_needs(self):
+        from sampo import smith
+        self.assertIsNone(smith.search_room(None, 600))
+        self.assertEqual(smith.search_room(300, 600), 240, "a tenth of the run's time stays for the verify after the pick")
+        self.assertEqual(smith.search_limit(0, 0, smith.search_room(100, 600)), 40)
+        self.assertEqual(smith.search_limit(0, 0, smith.search_room(50, 600)), 0, "less than a tenth left: no check at all")
+
+    def test_the_writable_set_of_a_candidates_check_is_its_copy_and_its_own_temp_and_nothing_wider(self):
+        import tempfile
+        from sampo import core, smith
+        with tempfile.TemporaryDirectory() as tmp:
+            copy, priv, state = (os.path.join(tmp, x) for x in ("app", "tmp", "state"))
+            for d in (copy, priv, state):
+                os.makedirs(d)
+            real = os.path.realpath(copy)
+            w = smith.search_writable(copy, priv)
+            self.assertIn(real, w)
+            self.assertIn(os.path.realpath(priv), w)
+            for wide in ("/tmp", "/var/tmp", os.path.realpath(core.state_dir()), os.path.expanduser("~")):
+                self.assertNotIn(wide, w, "no folder wider than the copy and its own temp")
+            self.assertFalse(smith.search_root_exposed(os.path.join(state, "proj"), w), "a tree in the state folder is out of reach")
+            self.assertFalse(smith.search_root_exposed("/tmp/some-real-tree", w))
+            self.assertTrue(smith.search_root_exposed(os.path.join(copy, "inner"), w), "a tree that lies in the writable set is not safe")
+            self.assertTrue(smith.search_root_exposed(real, w))
+            self.assertTrue(smith.search_root_exposed("/dev/shm/proj", w) or "/dev/shm" not in w)
+
+    def test_the_kernel_denies_a_check_the_real_tree_under_the_state_folder(self):
+        import subprocess
+        import tempfile
+        from unittest import mock
+        from sampo import core, landlock, smith
+        ok, why = landlock.available()
+        if not ok:
+            self.skipTest(f"no Landlock here: {why}")
+        with tempfile.TemporaryDirectory() as tmp:
+            home = os.path.join(tmp, "fm-home")
+            real, copy, priv = (os.path.join(tmp, x) for x in ("real-tree", "copy", "priv"))
+            os.makedirs(os.path.join(home, "state", "projects", "p"))
+            os.makedirs(copy)
+            os.makedirs(priv)
+            real = os.path.join(home, "state", "projects", "p", "tree")  # a work tree under state_dir, as an exam's is
+            os.makedirs(real)
+            with mock.patch.dict(os.environ, {"FOREMAN_HOME": home}):
+                os.environ.pop("FOREMAN_STATE", None)
+                core_state = core.state_dir()
+                mark = os.path.join(real, "marker")
+                cmd = f"echo x >{mark}"
+                smith.run_bounded(cmd, copy, 20, dict(os.environ), 4000, confine=landlock.writable_for(copy))
+                had = os.path.exists(mark)
+                if had:
+                    os.remove(mark)
+                code, _ = smith.run_bounded(cmd, copy, 20, dict(os.environ), 4000, confine=smith.search_writable(copy, priv))
+                self.assertNotEqual(code, 0, "the write was denied")
+                self.assertFalse(os.path.exists(mark), "the real tree under state_dir stayed as it was")
+                self.assertTrue(core_state.startswith(home), core_state)
+                self.assertTrue(had, "control: the old writable set let it through (that was the hole)")
+
+    def test_a_process_a_check_left_running_never_writes_into_the_next_candidates_folders(self):
+        with open(os.path.join(self.repo, "detach.py"), "w") as fh:  # in a copy only: a wrong candidate detaches a late writer
+            fh.write("import os, subprocess, time\n"
+                     "if not os.path.exists('.git'):\n"
+                     "    t = os.environ['TMPDIR']\n"
+                     "    if 'return a + b' not in open('calc.py').read():\n"
+                     "        subprocess.Popen(['sh', '-c', 'sleep 3; echo x >' + os.path.join(t, 'late.flag')],\n"
+                     "                         start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+                     "    else:\n"
+                     "        time.sleep(5)\n"
+                     "        assert not os.path.exists(os.path.join(t, 'late.flag')), 'a left-over process wrote here'\n"
+                     "import test_calc\n")
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "python3 detach.py"}])
+        self.go("--search", "3", tplan=tp, script=(WRONG1, RIGHT, call("run", cmd="python3 detach.py")), check=False)
+        cands = [e for e in self.search_events() if e["event"] == "candidate"]
+        self.assertEqual([(e["cand"], e["outcome"]) for e in cands], [(0, "red"), (1, "green")], self.search_events())
+
+    def test_every_candidate_has_a_temp_folder_of_its_own(self):
+        with open(os.path.join(self.repo, "tmpown.py"), "w") as fh:  # in a copy only: the temp folder must start empty
+            fh.write("import os\nif not os.path.exists('.git'):\n"
+                     "    assert not os.listdir(os.environ['TMPDIR']), 'a temp folder holds a left-over'\n"
+                     "    open(os.path.join(os.environ['TMPDIR'], 'mine'), 'w').close()\n"
+                     "import test_calc\n")
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "python3 tmpown.py"}])
+        self.go("--search", "3", tplan=tp, script=(WRONG1, RIGHT, call("run", cmd="python3 tmpown.py")), check=False)
+        cands = [e for e in self.search_events() if e["event"] == "candidate"]
+        self.assertEqual([(e["cand"], e["outcome"]) for e in cands], [(0, "red"), (1, "green")], self.search_events())
+
+    def _search_stub(self, edits_applied=""):
+        """A Run with just what search_turn reads, and its journal lines in .lines."""
+        import types
+        from sampo import smith
+        root = os.path.realpath(self.repo)
+        run = types.SimpleNamespace(
+            plan={"steps": ["one"], "criteria": [{"text": "t", "verify": "python3 test_calc.py"}]}, read_only=False,
+            worker=False, waived={}, root=root, search_spent=0.0, search_n=1, ends=None, deadline=None, max_usd=None,
+            usd=0, cap=4000, check_secs=None, lines=[], guard=lambda *a, **k: "", env=lambda: dict(os.environ),
+            search_apply=lambda copy, edits, saved: edits_applied, emit=lambda *a, **k: None)
+        run.log = lambda **f: run.lines.append(f)
+        reply = {"tool_calls": [{"name": "edit", "args": {"file": "calc.py", "old": "a", "new": "b"}}], "text": "", "stop": "tool"}
+        return smith, run, reply
+
+    def test_a_confinement_that_cannot_be_made_skips_the_search_and_the_run_goes_on(self):
+        from unittest import mock
+        from sampo import landlock
+        ok, why = landlock.available()
+        if not ok:
+            self.skipTest(f"no Landlock here: {why}")
+        smith, run, reply = self._search_stub()
+        with mock.patch.object(landlock, "prepare", side_effect=OSError("ruleset refused")):
+            got = smith.Run.search_turn(run, "step:1", {"body": {}}, [], [], {}, 100, reply)
+        self.assertIs(got, reply, "the model's own reply comes back")
+        skips = [x for x in run.lines if x.get("event") == "skip"]
+        self.assertEqual(len(skips), 1, run.lines)
+        self.assertIn("confinement", skips[0]["why"])
+        self.assertFalse([x for x in run.lines if x.get("event") == "candidate"])
+
+    def test_a_confinement_that_fails_at_a_check_makes_that_candidate_unusable_not_the_run_fail(self):
+        from unittest import mock
+        from sampo import landlock
+        ok, why = landlock.available()
+        if not ok:
+            self.skipTest(f"no Landlock here: {why}")
+        smith, run, reply = self._search_stub()
+        with mock.patch.object(smith, "run_bounded", side_effect=smith.ConfineError("gone")):
+            got = smith.Run.search_turn(run, "step:1", {"body": {}}, [], [], {}, 100, reply)
+        self.assertIs(got, reply)
+        cands = [x for x in run.lines if x.get("event") == "candidate"]
+        self.assertEqual([x["outcome"] for x in cands], ["unusable"], run.lines)
+
+    def test_a_path_the_text_check_cannot_see_still_cannot_write_the_real_tree(self):
+        repo = os.path.realpath(self.repo)
+        with open(os.path.join(self.repo, "real.txt"), "w") as fh:
+            fh.write(repo)
+        with open(os.path.join(self.repo, "mark.py"), "w") as fh:  # in a copy (no .git) it tries the real tree
+            fh.write("import os\nif not os.path.exists('.git'):\n    try:\n"
+                     "        open(os.path.join(open('real.txt').read().strip(), 'marker'), 'w').write('x')\n"
+                     "    except OSError:\n        pass\nimport test_calc\n")
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "python3 mark.py"}])
+        self.go("--search", "3", tplan=tp, script=(WRONG1, RIGHT, call("run", cmd="python3 mark.py")), check=False)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, "marker")), "a candidate's check wrote into the real tree")
+        pick = [e for e in self.search_events() if e["event"] == "pick"]
+        self.assertEqual([(e["cand"], e["green"]) for e in pick], [(1, True)], self.search_events())
+
+    def test_a_check_runs_with_a_private_temp_folder_and_no_oldpwd(self):
+        with open(os.path.join(self.repo, "envok.py"), "w") as fh:
+            fh.write("import os\nif not os.path.exists('.git'):\n    t = os.environ.get('TMPDIR', '')\n"
+                     "    assert 'fm-search-' in t, t\n    assert 'OLDPWD' not in os.environ\n    open(os.path.join(t, 'x'), 'w').close()\n"
+                     "import test_calc\n")
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": "python3 envok.py"}])
+        self.go("--search", "3", tplan=tp, script=(WRONG1, RIGHT, call("run", cmd="python3 envok.py")), check=False)
+        pick = [e for e in self.search_events() if e["event"] == "pick"]
+        self.assertEqual([(e["cand"], e["green"]) for e in pick], [(1, True)], self.search_events())
+
+    def test_a_check_cut_short_counts_what_it_never_ran_as_failed(self):
+        from sampo import smith
+        self.assertEqual(smith.search_tally([0, 0], 2), 0)
+        self.assertEqual(smith.search_tally([0, 1], 2), 1)
+        self.assertEqual(smith.search_tally([None], 3), 3, "a timeout and two checks never run: all three failed")
+        self.assertEqual(smith.search_tally([0], 3), 2, "a candidate that ran one of three cannot beat one that ran all")
+
+    def test_the_spent_seconds_are_journaled_on_every_search_line_even_for_a_check_that_could_not_run(self):
+        verify = "sleep 1; if ls -d .g?t >/dev/null 2>&1; then python3 test_calc.py; else exit 127; fi"  # 127 in the copy only
+        tp = dict(PLAN, criteria=[{"text": "calc.add adds", "verify": verify}])
+        self.go("--search", "1", tplan=tp, script=(RIGHT, call("run", cmd=verify)), check=False)
+        ev = self.search_events()
+        self.assertTrue(ev and all(isinstance(e.get("spent"), (int, float)) for e in ev), ev)
+        pick = [e for e in ev if e["event"] == "pick"][0]
+        self.assertGreaterEqual(pick["spent"], 1.0, "a check that ended 127 still took its second")
+
+    def test_a_resume_keeps_the_seconds_the_searches_already_spent(self):
+        from sampo import smith
+        run = smith.Run.__new__(smith.Run)
+        run.search_spent = 0.0
+        smith.replay_search(run, {"kind": "search", "event": "candidate", "spent": 412.5})
+        smith.replay_search(run, {"kind": "search", "event": "candidate", "spent": 100.0})
+        smith.replay_search(run, {"kind": "search", "event": "skip", "spent": "junk"})
+        smith.replay_search(run, {"kind": "search", "event": "skip", "spent": float("nan")})
+        self.assertEqual(run.search_spent, 412.5, "the largest running total, junk and NaN ignored")
+
+    def test_the_auto_hint_is_the_whole_check_not_the_last_criterion(self):
+        from sampo import smith
+        run = smith.Run.__new__(smith.Run)
+        run.plan, run.waived, run.last_fail, run.check_secs, run.crit_secs = {
+            "criteria": [{"text": "a", "verify": "one"}, {"text": "b", "verify": "two"}]}, {}, {}, None, {}
+        run.redact = lambda s: s
+        run.note_fail("one", 0, "", 20.0)
+        self.assertIsNone(run.check_secs, "one of two criteria timed: no whole yet")
+        run.note_fail("two", 0, "", 25.0)
+        self.assertEqual(run.check_secs, 45.0)
+
+    def test_the_extra_draws_count_in_the_runs_tokens(self):
+        f, r = self.go("--search", "3", "--json")
+        evs = [json.loads(x) for x in r.stdout.splitlines() if x.startswith("{")]
+        names = [e.get("event") for e in evs]
+        tokens = [n for n in names[names.index("step"):] if n == "tokens"]
+        self.assertEqual(len(tokens), 4, f"the step's three draws and its run turn, the two extra draws too, are counted: {names}")
+
+    def test_a_bad_value_is_refused_before_anything_runs(self):
+        for bad in ("0", "many", "99"):
+            p = self.code("make calc.add add", "--search", bad, check=False)
+            self.assertNotEqual(p.returncode, 0, bad)
+            self.assertIn("--search", p.stdout + p.stderr)
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()

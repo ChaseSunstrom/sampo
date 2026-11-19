@@ -66,6 +66,7 @@ import urllib.parse
 
 from sampo import core
 from sampo import models as m
+from sampo import vsearch
 
 PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 FM = os.path.join(PLUGIN, "bin", "fm")
@@ -102,6 +103,129 @@ PROOF_BYTES = 512 << 20  # the most a tree may hold (git's own folder left out) 
 PROOF_JOURNAL = 128 << 10  # the most start-dirty bytes the journal holds for a resume to rebuild the before copy from
 BUILT_FILES = 20  # T-4387: more untracked files than this in one new directory, none written by the run's tools: a command's output
 MAX_TOKENS, KEEP_RESULTS, SMALL_CONTEXT = 8192, 6, 32768
+# T-3010: --search. One candidate's check (a plan criterion's verify in a copy) is cut at SEARCH_CHECK_S; all of a run's
+# searches together spend at most SEARCH_BUDGET_S on checks, after which no more candidates are drawn
+SEARCH_CHECK_S, SEARCH_BUDGET_S = 180, 900
+_SEARCH_SUBST = re.compile(r"\$\(|`|<\(|>\(")  # a command (or process) substitution: its text can name any path at run time
+_SEARCH_GIT = re.compile(r"(?<![\w-])git(?![\w-])")  # the copy has no .git folder: a check that runs git fails every candidate
+_SEARCH_VAR = re.compile(r"^\$\{?\w+\}?(/|$)")  # a path that starts with a variable
+_SEARCH_CDBACK = re.compile(r"(?<![\w-])cd\s+-(?=\s|$|[;&|)])")  # cd - goes to $OLDPWD, which may be the working tree
+_SEARCH_DEFAULT = re.compile(r"\$\{[^}]*:")  # ${X:-default}, ${X:=...}, ${X:+...}: a value the check cannot read from here
+_SEARCH_GLOB = re.compile(r"[*?\[\]{}]")  # an absolute path that a shell expands to any of several
+
+
+def search_tree_refusal(cmd, roots):
+    """T-3010: '' when a verify command can run in a throwaway copy and still mean the copy's files; else why not. A copy
+    runs the same text, so a command that reaches the working tree by its own path (spelled any way: ~, $HOME, a
+    variable, /x/./proj, a symlinked alias, a substitution such as $(git rev-parse --show-toplevel)) would run the
+    tree as the model left it, not the candidate. A command that uses git is refused too: the copy holds no .git.
+    This text check is a cheap early skip, NOT the security boundary: a path can be spelled more ways than any text
+    check lists (globs, braces, a climb out of the copy, a variable's default, an OLDPWD). What keeps the working
+    tree safe is the kernel: a check runs under search_writable, and search_turn skips when search_root_exposed."""
+    if _SEARCH_SUBST.search(cmd):
+        return "its verify holds a command substitution, which could name the working tree's own path"
+    if _SEARCH_GIT.search(cmd):
+        return "its verify uses git, and the copy holds no .git folder"
+    if _SEARCH_CDBACK.search(cmd):
+        return "its verify runs cd -, which goes back to a folder the check cannot name"
+    if _SEARCH_DEFAULT.search(cmd):
+        return "its verify uses a variable with a default or test (${X:-...}), which can name any path"
+    real = set()
+    for x in roots:
+        for y in (x, os.path.realpath(x)):
+            if y.rstrip(os.sep):
+                real.add(y.rstrip(os.sep))
+    named = re.compile("|".join(re.escape(x) + r"(?![\w.-])" for x in sorted(real))) if real else None
+    if named and named.search(cmd):
+        return "its verify names the working tree's own path"
+    try:
+        lex = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        words = list(lex)
+    except ValueError:
+        return "its verify could not be read to see which paths it names"
+    for word in words:
+        for piece in [word] + re.split(r"[=:,]", word):
+            if _SEARCH_VAR.match(piece) and os.path.expandvars(piece) == piece:
+                return "its verify starts a path with a variable the check cannot resolve here"
+            if not piece.startswith(("/", "~")) and (os.path.normpath(piece) == ".." or os.path.normpath(piece).startswith("../")):
+                return "its verify climbs out of the tree (a .. path), which would leave the copy"
+            if piece.startswith(("/", "~")) and _SEARCH_GLOB.search(piece):
+                return "its verify holds a path with a glob or brace, which could name the working tree"
+            path = os.path.expandvars(os.path.expanduser(piece))
+            if not path.startswith(os.sep):
+                continue
+            for cand in (path, os.path.realpath(path)):
+                n = os.path.normpath(cand)
+                if any(n == x or n.startswith(x + os.sep) for x in real):
+                    return "its verify names the working tree's own path"
+    return ""
+
+
+def search_relink(src, dst):
+    """T-3010: after copying src to dst (symlinks kept), an absolute link that resolves into src is pointed at the same
+    place in dst, so a check in the copy never reads or writes the real tree through it. '' when done, else why not."""
+    top = os.path.realpath(src).rstrip(os.sep)
+    try:
+        for here, dirs, names in os.walk(dst):
+            for x in dirs + names:
+                link = os.path.join(here, x)
+                if not os.path.islink(link):
+                    continue
+                target = os.readlink(link)
+                if not os.path.isabs(target):
+                    continue
+                real = os.path.realpath(target)
+                if real == top or real.startswith(top + os.sep):
+                    os.remove(link)
+                    os.symlink(os.path.normpath(os.path.join(dst, os.path.relpath(real, top))), link)
+    except OSError as e:
+        return f"a link into the tree could not be pointed at the copy: {_one_line(e, 120)}"
+    return ""
+
+
+def search_limit(used, spent, left):
+    """T-3010: seconds the next check may run: what is left of the candidate's SEARCH_CHECK_S (used: seconds its checks
+    have already run), of the run's SEARCH_BUDGET_S (spent: the total when this candidate began, so its own seconds
+    count too) and of the run's own time (left, None when unbounded). 0 when nothing is."""
+    return max(min(SEARCH_CHECK_S - used, SEARCH_BUDGET_S - spent - used,
+                   SEARCH_CHECK_S if left is None else left), 0)
+
+
+def search_room(left, deadline):
+    """T-3010: the run time a check may use: left less a tenth of the run's deadline, so the verify after the pick still
+    has time. None when the run is unbounded."""
+    return None if left is None else left - deadline / 10
+
+
+def search_writable(copy, priv):
+    """T-3010: where a candidate's check may write: its copy, its own temp folder and the null/tty devices, and nothing
+    wider (no /tmp, no state folder, no home): the kernel (Landlock) is what keeps the working tree safe from a check."""
+    from sampo import landlock
+    out = []
+    for x in (copy, priv, *landlock._DEVICES):
+        if os.path.exists(x):
+            out.append(os.path.realpath(x))
+    return out
+
+
+def search_root_exposed(root, writable):
+    """T-3010: True when the working tree lies at or under a folder the check may write: Landlock could not keep it out."""
+    real = os.path.realpath(root)
+    return any(real == w or real.startswith(w.rstrip(os.sep) + os.sep) for w in writable)
+
+
+def search_tally(codes, total):
+    """T-3010: failed criteria of a candidate: the exit codes that were not 0 (None a timeout) plus the criteria it never
+    ran (the check was cut short), so a count of failures only ever compares complete checks."""
+    return sum(1 for c in codes if c != 0) + max(total - len(codes), 0)
+
+
+def replay_search(run, rec):
+    """T-3010: a resume keeps the seconds the run's searches spent: every search line carries the running total."""
+    spent = rec.get("spent")
+    if isinstance(spent, (int, float)) and not isinstance(spent, bool) and 0 <= spent < float("inf"):
+        run.search_spent = max(run.search_spent, float(spent))
 # T-4490: an unpriced model keeps every result of a step whole while the sent text is under SIGHT_HIGH of the context's
 # room; past it, results are cut down to SIGHT_LOW in one batch, so the sent prefix (and the server's cache of it) holds
 # still between batches. Measured on the hard exam: with the last six only, one step read one test file 22 times.
@@ -2122,6 +2246,10 @@ class Run:
         self.usd, self.max_usd, self.slug = None, getattr(args, "max_usd", None), None  # T-1357
         self.context = ""  # T-1374: what was piped on stdin
         self.reason = getattr(args, "reason", None)  # T-3006: one of REASONS, or None: as before
+        # T-3010: --search: a count 1..vsearch.MAX_N or "auto" (checked at the options), or None: as before. check_secs is
+        # how long a plan criterion's check last took here (auto's size), search_spent the seconds searches ran checks
+        self.search_n, self.check_secs, self.search_spent = getattr(args, "search", None), None, 0.0  # not .search: that's grep
+        self.crit_secs = {}  # criterion number -> seconds its verify last took; check_secs is their sum once all are timed
         self.think_floor, self.think_noted = {}, False  # T-4290: per local model, the largest size thinking exhausted
         self.decide_floor, self.decide_noted = {}, False  # T-4588: per local model, the smallest plan-call size that spent it
         self.small = bool(getattr(args, "small", False))  # T-2878: small-model mode (a profile's "small" turns it on too)
@@ -3421,9 +3549,10 @@ class Run:
         why = self.guard("Bash", {"command": cmd})
         if why:
             return f"refused by Smith's guard: {why}"
+        began = time.monotonic()
         code, out = run_bounded(cmd, self.root, RUN_TIMEOUT, self.env(), self.cap, confine=self.confine())
         self.code, self.ran = code, out  # T-4357: how it ended and what it printed, without the failure note that grows
-        self.note_fail(cmd.strip(), code, out)  # T-4292
+        self.note_fail(cmd.strip(), code, out, time.monotonic() - began)  # T-4292
         note = ""
         if code == 0:
             self.after("Bash", {"command": cmd}, {"stdout": out, "stderr": "", "interrupted": False})
@@ -3433,12 +3562,19 @@ class Run:
         return (f"timed out after {RUN_TIMEOUT} s" if code is None else f"exit {code}") + (f"\n{out}" if out else "") \
             + (f"\n{note}" if note else "")
 
-    def note_fail(self, cmd, code, out):
+    def note_fail(self, cmd, code, out, secs=None):
         """T-4292: a criterion's verify command that ran (by the harness or by the model's `run`) leaves its last failure
-        (the command and what it printed), or clears it when it passed: `unprovable` compares its self-checks with this."""
+        (the command and what it printed), or clears it when it passed: `unprovable` compares its self-checks with this.
+        T-3010: secs, how long it ran, is what --search auto sizes its candidates from (a timed-out run is no measure)."""
         for n, cr in enumerate((self.plan or {}).get("criteria") or [], 1):
             if n in self.waived or not isinstance(cr, dict) or (cr.get("verify") or "").strip() != cmd:
                 continue
+            if secs is not None and code is not None:
+                self.crit_secs[n] = secs
+                live = [i for i, c in enumerate(self.plan["criteria"], 1)
+                        if i not in self.waived and isinstance(c, dict) and (c.get("verify") or "").strip()]
+                if all(i in self.crit_secs for i in live):  # the whole check, every criterion timed: not the last one alone
+                    self.check_secs = sum(self.crit_secs[i] for i in live)
             if code == 0:
                 self.last_fail.pop(n, None)
             else:
@@ -4283,6 +4419,8 @@ class Run:
             r = complete_retrying(self, profile, sent, tools=use, max_tokens=cap, **kw)
             self.usage(r, profile, name)
             check_truncated(profile, sent, r)
+            if self.search_n is not None and r["stop"] != "length":  # T-3010: the verifier picks among drawn edits
+                r = self.search_turn(name, profile, sent, use, kw, cap, r)
             calls = r["tool_calls"]
             if r["stop"] == "length":  # a cut-off call may be missing its end: nothing in it runs
                 self.add(name, {"role": "assistant", "content": r["text"]})
@@ -4340,6 +4478,196 @@ class Run:
         if name.startswith("step:"):  # T-4471: a plan step only; the survey's second round keeps its own bound
             self.phase_turn = self.turns
         self.log(kind="phase_done", phase=name)
+
+    # -- verifier-guided search (T-3010)
+    def search_turn(self, name, profile, sent, use, kw, cap, r):
+        """T-3010: --search. The model's reply r holds an edit or a write at the step that ends the plan (or a fix round):
+        up to N candidates (r, then draws at warmer temperatures, each with its own nudge) are each applied in a throwaway
+        copy of the tree and checked by the plan's own verify commands there; the first green one, else the one that
+        fails fewest, is returned in place of r and goes through the normal guarded path in the working tree. The
+        working tree is never written by a candidate that was not chosen. r itself comes back when nothing applies: no
+        criterion to run, a verify that names the working tree's own path (a copy would run the fixed tree), a refused
+        verify, a tree too large to copy, an unusable candidate set. Every candidate and the pick are journaled
+        (kind search); every extra draw counts in the run's tokens."""
+        edits = _edits(r)
+        steps = (self.plan or {}).get("steps") or []
+        if not edits or self.read_only or self.worker or not (name.startswith("fix:") or name == f"step:{len(steps)}"):
+            return r  # earlier steps can't be green yet: the criteria are the plan's, not the step's
+        crit = [(i, cr["verify"].strip()) for i, cr in enumerate((self.plan or {}).get("criteria") or [], 1)
+                if i not in self.waived and isinstance(cr, dict) and isinstance(cr.get("verify"), str)
+                and cr["verify"].strip()]
+        say = lambda **f: self.log(kind="search", phase=name, spent=round(self.search_spent, 1), **f)  # noqa: E731
+        why = "" if crit else "the plan has no check to run"
+        for i, cmd in crit:
+            if why:
+                break
+            if refused := search_tree_refusal(cmd, {self.root}):
+                why = f"criterion {i}: {refused}"
+            elif self.guard("Bash", {"command": cmd}):
+                why = f"Smith's guard refused criterion {i}'s verify"
+        if not why and worker_confinement(self.root)[0] is None:
+            why = "the check would run unconfined (no Landlock, or FOREMAN_CONFINE=0), and a copy is no safe place for that"
+        if not why and self.search_spent >= SEARCH_BUDGET_S:
+            why = f"the searches of this run have spent their {SEARCH_BUDGET_S} s of checks"
+        tmp = tempfile.mkdtemp(prefix="fm-search-")
+        try:
+            base = os.path.basename(self.root.rstrip(os.sep)) or "tree"
+            here, made = {}, [0]  # the candidate's own folder: its copy and its TMPDIR (priv), none shared with the next
+            if not why:
+                real_root, real_tmp = os.path.realpath(self.root), os.path.realpath(tmp)
+                if real_tmp == real_root or real_tmp.startswith(real_root.rstrip(os.sep) + os.sep):
+                    why = "the copy would lie inside the working tree (TMPDIR is in it)"
+
+            def fresh():
+                """'' when a new folder holds a new copy of the working tree and an empty temp folder of its own: a check's
+                files, and a process it left running, never reach the next candidate (its paths differ)."""
+                try:
+                    if here:
+                        shutil.rmtree(here["dir"], ignore_errors=True)
+                    made[0] += 1
+                    d = os.path.join(tmp, f"c{made[0]}")
+                    here.update(dir=d, copy=os.path.join(d, base), priv=os.path.join(d, "priv"))
+                    os.makedirs(here["priv"])
+                    return _proof_copy(self.root, here["copy"]) or search_relink(self.root, here["copy"])
+                except (OSError, shutil.Error) as e:
+                    return f"the copy failed: {_one_line(e, 160)}"
+
+            why = why or fresh()
+            if not why and search_root_exposed(self.root, search_writable(here["copy"], here["priv"])):
+                why = ("the working tree lies where the check could write (confine cannot keep it out: it is under "
+                       "the copy's own folders or /dev/shm)")
+            if not why:  # once, before any candidate: a confinement that cannot be made skips the search, never ends the run
+                from sampo import landlock
+                try:
+                    fd = landlock.prepare(search_writable(here["copy"], here["priv"]))
+                    if isinstance(fd, int):
+                        os.close(fd)
+                except OSError as e:
+                    why = f"the check's confinement could not be made: {_one_line(e, 160)}"
+            if why:
+                say(event="skip", why=why)
+                return r
+            ready = [True]  # the copy just made is candidate 0's
+            env = dict(self.env(), PYTHONDONTWRITEBYTECODE="1")  # a restored same-size file must not reuse a .pyc
+            env.pop("OLDPWD", None)  # cd - would go to the folder the run was started from: the working tree
+            body = profile.get("body") if isinstance(profile.get("body"), dict) else {}
+
+            def time_left():
+                return None if self.ends is None else self.ends - time.monotonic()
+
+            def check(cand):
+                began, ran, codes = time.monotonic(), 0.0, []
+                try:
+                    if not ready[0] and fresh():
+                        return vsearch.Verdict("unusable", 0, None)
+                    ready[0] = False
+                    copy, priv = here["copy"], here["priv"]
+                    if self.search_apply(copy, cand[1], {}):
+                        return vsearch.Verdict("unusable", 0, None)
+                    for _, cmd in crit:
+                        left = time_left()
+                        limit = search_limit(time.monotonic() - began, self.search_spent,
+                                             search_room(left, self.deadline))  # the verify after the pick keeps its tenth
+                        if limit <= 0:
+                            break  # out of time: the criteria never run count as failed (search_tally)
+                        at = time.monotonic()
+                        code, _ = run_bounded(cmd, copy, limit, dict(env, TMPDIR=priv), self.cap, reap=True,
+                                              confine=search_writable(copy, priv))  # reap: a detached child dies with it
+                        ran += time.monotonic() - at
+                        if code in (126, 127):  # not executable or not found there: the check could not run, nothing failed
+                            return vsearch.Verdict("unusable", 0, None)
+                        codes.append(code)  # a timeout (None) is a failure
+                    failed = search_tally(codes, len(crit))
+                    return vsearch.Verdict("red" if failed else "green", failed, round(ran, 3))
+                except (OSError, subprocess.SubprocessError, ValueError, ConfineError):
+                    return vsearch.Verdict("unusable", 0, None)
+                finally:
+                    self.search_spent += time.monotonic() - began  # every path: copying and a check that could not run took time
+
+            def draw(i):
+                left = time_left()
+                if self.search_spent >= SEARCH_BUDGET_S or (left is not None and left < self.deadline / 10) or (
+                        self.max_usd is not None and (self.usd or 0) >= self.max_usd):
+                    return None  # out of check time, run time or money: no more draws
+                asked = _with_note(sent, vsearch.nudge(i))
+                warm = dict(profile, body={**body, "temperature": vsearch.temperature(i)})
+                try:
+                    got = complete_retrying(self, warm, asked, tools=use, max_tokens=cap, **kw)
+                except m.ModelError:
+                    return None  # an extra draw that fails is an unusable candidate, never a failed run
+                self.usage(got, warm, name)
+                es = _edits(got) if got["stop"] != "length" else []
+                return (got, es) if es else None
+
+            auto = self.search_n == "auto"
+            got = vsearch.search(0 if auto else self.search_n, (r, edits), draw, check, journal=say, auto=auto,
+                                 hint=self.check_secs)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.emit("search", f"  search: {got.tried} candidate(s) of {got.n}, " + (
+            f"candidate {got.index} {'green' if got.green else 'kept (fewest failures)'}" if got.cand else "none usable"),
+            quiet=True, phase=name, tried=got.tried, n=got.n, green=got.green, cand=got.index)
+        return got.cand[0] if got.cand else r
+
+    def search_apply(self, copy, edits, saved):
+        """Applies a candidate's edits and writes to the copy, each file's first state kept in saved ({path: bytes, or None
+        when new}) for the restore. '' when all applied, else why not (no usable candidate): a path outside the tree or a
+        credential, the guard's refusal, text that isn't there, once, or elides code, the way the real edit would refuse."""
+        for tool, a in edits:
+            a = canon_args(tool, a)
+            file = a.get("file")
+            if not isinstance(file, str) or not file.strip():
+                return "no file"
+            try:
+                full = self.path(file)
+            except (ValueError, OSError) as e:
+                return str(e)
+            rel = os.path.relpath(full, self.root)
+            if rel.split(os.sep)[0] == ".git" or self.hidden(full):
+                return "a file the model may not touch"
+            dest = os.path.join(copy, rel)
+            if not _inside(copy, os.path.dirname(dest)) or os.path.islink(dest):
+                return f"{rel} leaves the tree"
+            crlf, why = self.existing(dest, rel)
+            if why:
+                return why
+            have = None
+            if crlf is not None:
+                with open(dest, encoding="utf-8", newline="") as fh:
+                    have = fh.read()
+            if tool == "edit":
+                old, new = a.get("old"), a.get("new")
+                if have is None or not isinstance(old, str) or not isinstance(new, str) or not old:
+                    return "an edit of a file that is not there, or with no text"
+                if crlf:
+                    old, new = self.endings(old, True), self.endings(new, True)
+                if elided(new, old):
+                    return "the new text elides code"
+                if old not in have:
+                    at = near_anchor(have, old)
+                    if not isinstance(at, tuple):
+                        return "the old text is not in the file"
+                    old = have[at[0]:at[1]]
+                if have.count(old) != 1:
+                    return "the old text is in the file more than once"
+                data = have.replace(old, new, 1)
+                ti = {"file_path": full, "old_string": old, "new_string": new}
+            else:
+                content = a.get("content")
+                if not isinstance(content, str):
+                    return "a write with no content"
+                data = self.endings(content, crlf) if crlf is not None else content
+                if elided(data, have or ""):
+                    return "the content elides code"
+                ti = {"file_path": full, "content": data}
+            if self.guard("Edit" if tool == "edit" else "Write", ti):
+                return "refused by Smith's guard"
+            if dest not in saved:
+                saved[dest] = None if have is None else have.encode("utf-8")
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with open(dest, "w", encoding="utf-8", newline="") as fh:
+                fh.write(data)
+        return ""
 
     # -- a project is never left worse without a word (T-4426)
     def problem(self, rel, data):
@@ -5068,9 +5396,10 @@ class Run:
             why = self.guard("Bash", {"command": cr["verify"]})
             if why:
                 raise Blocked(f"fm code: Smith's guard refused criterion {n}'s verify command: {_one_line(why, 200)}")
+            began = time.monotonic()
             code, out = self.fm("task", "evidence", self.tid, "--ac", str(n), f"--run={cr['verify']}",
                                 timeout=VERIFY_TIMEOUT + 60, confine=self.confine())
-            self.note_fail(cr["verify"].strip(), code, out)  # T-4292
+            self.note_fail(cr["verify"].strip(), code, out, time.monotonic() - began)  # T-4292
             self.emit("verify", f"{label} {n}: {cr['verify']} → {'pass' if code == 0 else f'exit {code}'}",
                       criterion=n, exit=code, label=label, cmd=cr["verify"],
                       **({"output": _cut(self.redact(out), 1000)} if code else {}))
@@ -5088,6 +5417,25 @@ class Blocked(Exception):
 def _one_line(s, n):
     s = " ".join(str(s).split())
     return s if len(s) <= n else s[:n - 1] + "…"
+
+
+def _edits(r):
+    """T-3010: [(tool, args)] of the edits and writes a model reply holds, its tool calls or else its text action; []
+    when it holds none (a read, a run, a note, or text with no action)."""
+    acts = [(c.get("name"), c.get("args")) for c in r.get("tool_calls") or []]
+    if not acts:
+        v = m.extract_json(r.get("text") or "")
+        if isinstance(v, dict) and isinstance(v.get("action"), str):
+            acts = [(v["action"], {k: x for k, x in v.items() if k != "action"})]
+    return [(t, a) for t, a in acts if t in ("edit", "write") and isinstance(a, dict)]
+
+
+def _with_note(sent, note):
+    """T-3010: the messages with one more sentence to the model, on the last user message when it is text, else after it."""
+    last = sent[-1] if sent else {}
+    if last.get("role") == "user" and isinstance(last.get("content"), str):
+        return sent[:-1] + [{**last, "content": f"{last['content']}\n\n{note}"}]
+    return sent + [{"role": "user", "content": note}]
 
 
 def _tail(s, lines=6, cap=600):
@@ -7155,6 +7503,11 @@ def cmd_code(args):
         run.max_steps = run.max_steps or 40
         if run.reason and run.reason not in REASONS:
             raise cli.UsageError(f"--reason is one of {', '.join(REASONS)}")
+        if run.search_n is not None:  # T-3010: a count or auto; refused here, before a call is spent
+            try:
+                run.search_n = vsearch.parse(str(run.search_n))
+            except ValueError as e:
+                raise cli.UsageError(str(e))
         run.escalate =m.resolve(run.escalate) if run.escalate else None  # a bad name fails now, not 3 rounds in
         if run.escalate:
             run.offsite_ok(p, run.escalate)
@@ -10176,6 +10529,8 @@ def _load(run, tid, ended=False):
             run.worker = r["worker"]
         elif k == "spend" and type(r.get("usd")) in (int, float):  # T-1357: the cap counts the whole run
             run.usd = round((run.usd or 0) + r["usd"], 6)
+        elif k == "search":  # T-3010: the seconds the run's searches already spent count again after a resume
+            replay_search(run, r)
     run.turn_base = run.turns  # T-4204: the journal's turns are spent; --max-steps (the journal's or the flag's) is new
 
 

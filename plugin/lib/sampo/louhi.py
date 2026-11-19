@@ -3986,6 +3986,26 @@ def _session_arm(agent, base, key, work, model, budget, timeout, request=None):
 
 
 LOCAL = ("smith",)  # T-2908: fm code on a local model profile; not in SESSIONS (long.py and rune read those as Claude sessions)
+_SEARCH_ARM = re.compile(r"(\w+)-s(\d+|auto)")
+
+
+def _split_arm(agent):
+    """T-3010: (the agent, its --search stamp) of an arm's name: a search arm's answers, work copies and lock live under
+    its own name ('smith-s4'), so it never wipes the plain arm's first-try answers; a plain name is (name, None)."""
+    m = _SEARCH_ARM.fullmatch(agent) if isinstance(agent, str) else None
+    return (m[1], m[2]) if m and m[1] in LOCAL else (agent, None)
+
+
+def _local(agent):
+    """Whether agent is a local-model arm, plain ('smith') or a search arm ('smith-s4')."""
+    return _split_arm(agent)[0] in LOCAL
+
+
+def _arm(agent, search):
+    """The arm's name for a run: 'smith' plus a --search value (a count or auto) is 'smith-s4'; anything else is agent."""
+    return f"{agent}-s{search}" if search is not None and agent in LOCAL else agent
+
+
 SMITH_T, SMITH_LOAD, SMITH_STEPS = 900, 300, 40  # T-2908: a scenario's seconds, extra for a remote endpoint's model load, turns
 SMITH_MARGIN = 60  # T-4083: seconds of the scenario's clock Smith leaves itself to stop and write its trail
 FAILURE_CLASSES = ("malformed", "wrong_tool", "loop", "false_done", "timeout", "refused",
@@ -4043,7 +4063,7 @@ def _per_fix(res, tokens):
     res["tokens_per_fix"] = round(res["tokens"] / done) if done else None
 
 
-def _smith_argv(request, model, t, planner=None, reason=None, small=False, steps=None):
+def _smith_argv(request, model, t, planner=None, reason=None, small=False, steps=None, search=None):
     """fm code's argv for one exam scenario; T-4083: --deadline is the scenario's clock less SMITH_MARGIN, so Smith
     stops itself with a trail before the exam's kill. T-4424: `steps` is a long goal's turn cap (a whole change, not a defect)."""
     from sampo import smithbench
@@ -4052,10 +4072,11 @@ def _smith_argv(request, model, t, planner=None, reason=None, small=False, steps
             *(["--planner", planner] if planner else []),  # T-2945: split planning from acting
             *(["--reason", reason] if reason else []),  # T-3006: how the model reasons on this arm
             *(["--small"] if small else []),  # T-2878: small-model mode's controls
+            *(["--search", str(search)] if search else []),  # T-3010: N candidate edits, the step's check picks
             "--stale-ok", "exam scenario: a throwaway copy in its own Smith home (T-2908)"]
 
 
-def _smith_arm(base, key, work, model, request, events, planner=None, reason=None, small=False):
+def _smith_arm(base, key, work, model, request, events, planner=None, reason=None, small=False, search=None):
     """T-2908: fm code on a local model profile in a temp copy of the scenario (own Smith home, no user state, the
     smithbench isolation); the tree it leaves is copied to work, Smith's event stream to `events`. The answer has no
     findings of its own (Smith reports a summary), so _smith_findings asks the profile once for them from Smith's
@@ -4072,7 +4093,7 @@ def _smith_arm(base, key, work, model, request, events, planner=None, reason=Non
             for a in (["init", "-q"], ["add", "-A"], ["commit", "-qm", "base"]):
                 subprocess.run(["git", "-c", "user.name=exam", "-c", "user.email=exam@localhost", *a], cwd=wt, env=env,
                                capture_output=True, timeout=60)
-        argv = _smith_argv(request or key["request"], model, t, planner, reason, small)
+        argv = _smith_argv(request or key["request"], model, t, planner, reason, small, search=search)
         proc = subprocess.Popen(argv, cwd=wt, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True, start_new_session=True)
         try:
@@ -4122,7 +4143,9 @@ def _smith_arm(base, key, work, model, request, events, planner=None, reason=Non
             "confidence": SMITH_CONF.get(evs_end.get("event"), 5),  # T-3676: the run's own end, never the hidden check
             "error": "timeout" if late else c.redact(err.strip()[-300:] or "fm code gave no events") if crashed else None,
             "model": c.plain(model)[:60], "planner": c.plain(planner)[:60] if planner else None,
-            "reason": reason, "small": bool(small)}
+            "reason": reason, "small": bool(small),
+            "search": search,  # T-3010: the arm's --search, and how many requests the model was asked (calls per fix)
+            "calls": sum(1 for e in evs if e.get("event") == "tokens")}
 
 
 FINDINGS_TEXT, FINDINGS_FILES = 4000, 300  # chars of Smith's words and repo paths sent to the findings call
@@ -4640,12 +4663,16 @@ def _answers(p, run, agent):
 
 
 def run_agent(p, run, agent, split="all", limit=None, budget=None, model=None, timeout=20, request=None, jobs=1, planner=None,
-              reason=None, small=False, ids=None):
+              reason=None, small=False, ids=None, search=None):
     """T-3029: one run of a run's agent at a time. An exclusive flock on answers/<agent>/.lock (the kernel drops it when
     the process dies) refuses a second run before any scenario starts, naming the holder."""
+    if search is not None and agent in LOCAL:  # T-3010: a search arm is its own arm (smith-s4): answers, work and lock
+        from sampo import vsearch
+        agent = _arm(agent, vsearch.parse(str(search)))  # ValueError names --search
     d = _answers(p, run, agent)
-    if not os.path.isdir(os.path.join(root(p), run)) or agent not in {*AGENTS, *SESSIONS, *LOCAL}:  # refused below as before
-        return _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small, ids)
+    if not os.path.isdir(os.path.join(root(p), run)) or not (agent in {*AGENTS, *SESSIONS} or _local(agent)):  # refused below as before
+        return _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small, ids,
+                          search)
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, LOCK), "a+", encoding="utf-8") as lock:
         try:
@@ -4659,7 +4686,8 @@ def run_agent(p, run, agent, split="all", limit=None, budget=None, model=None, t
         lock.truncate()
         lock.write(f"{os.getpid()} {c.plain(model or 'default')[:60]}")
         lock.flush()
-        return _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small, ids)
+        return _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small, ids,
+                          search)
 
 
 def default_limit(agent, limit, n):
@@ -4674,15 +4702,26 @@ def default_limit(agent, limit, n):
     return None, None
 
 
-def _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small=False, ids=None):
+def _run_agent(p, run, agent, split, limit, budget, model, timeout, request, jobs, planner, reason, small=False, ids=None,
+               search=None):
     """Answers from one agent on the run's scenarios (split, then the first `limit`), then the grade. A session arm runs
     `jobs` scenarios at a time (default 1) and defaults to 3 (ponytail: a spend guard; --limit raises it); kinds take
-    turns, so a short sample still spans them."""
+    turns, so a short sample still spans them. T-3010: `search` (a count 1..8 or auto) is the smith arm's --search."""
     _known(agent)
+    stamp = _split_arm(agent)[1]  # T-3010: 'smith-s4' names its own search
+    if search is not None or stamp:  # before any model is resolved, so a bad value costs nothing
+        from sampo import vsearch
+        if not _local(agent):
+            raise ValueError(f"--search goes with --agent {', '.join(LOCAL)}: it draws more candidate edits from a local model")
+        search = str(vsearch.parse(str(stamp if search is None else search)))  # ValueError names --search
+        if stamp and stamp != search:
+            raise ValueError(f"--search {search} is not the search arm {agent} runs: use --agent {_split_arm(agent)[0]}")
+        agent = _arm(_split_arm(agent)[0], search)  # the arm's own answers, work copies and lock
     jobs = _jobs(jobs)
-    if request and agent not in SESSIONS + LOCAL:
+    local = _local(agent)
+    if request and not (agent in SESSIONS or local):
         raise ValueError(f"--request goes with a session agent ({', '.join(SESSIONS + LOCAL)}); {agent} answers from the key")
-    if agent in LOCAL:  # T-2908: a profile to run, and it must exist before any scenario starts
+    if local:  # T-2908: a profile to run, and it must exist before any scenario starts
         if not model:
             raise ValueError(f"--agent {agent} needs --model PROFILE (sampo models list)")
         from sampo import models as smodels
@@ -4722,36 +4761,41 @@ def _run_agent(p, run, agent, split, limit, budget, model, timeout, request, job
         pass
     from sampo import rune  # the generation that answers, so a later regrade still files it under that generation
     c.write_atomic(os.path.join(_answers(p, run, agent), "gen"), str(rune.current(p)))
-    if request and agent in SESSIONS + LOCAL:  # --request: the user's words replace each scenario's own
+    if request and (agent in SESSIONS or local):  # --request: the user's words replace each scenario's own
         c.write_atomic(os.path.join(_answers(p, run, agent), "request"), request)
-    if agent in SESSIONS + LOCAL:  # T-2158: which model answered, so a Haiku smoke line never decides (steer 1)
+    if agent in SESSIONS or local:  # T-2158: which model answered, so a Haiku smoke line never decides (steer 1)
         c.write_atomic(os.path.join(_answers(p, run, agent), "model"), c.plain(model or "default")[:60])  # not a list: a name cut at 60 characters
     if planner:  # T-2945: the split run's planner, beside its model
         c.write_atomic(os.path.join(_answers(p, run, agent), "planner"), c.plain(planner)[:60])  # not a list: a name cut at 60 characters
     if reason:  # T-3006: the arm's reasoning mode, beside its model
         c.write_atomic(os.path.join(_answers(p, run, agent), "reason"), reason)
-    if agent in LOCAL:  # T-4297: the arm that ran, so a run with no --reason (off by default now, native before) is told apart
+    if local:  # T-4297: the arm that ran, so a run with no --reason (off by default now, native before) is told apart
         from sampo import smith
         c.write_atomic(os.path.join(_answers(p, run, agent), "thinking"), smith.think_ran(profile, reason))
     if small:  # T-2878: small-model mode, so a paired grade says which arm it is
         c.write_atomic(os.path.join(_answers(p, run, agent), "small"), "on")
+    if search:  # T-3010: the arm's --search, so its grade shows rows beside the frontier's first try
+        c.write_atomic(os.path.join(_answers(p, run, agent), "search"), search)
 
     def one(s):
         base, key = os.path.join(root(p), run, s["id"]), _key(p, run, s["id"])
         work = os.path.join(root(p), run, "work", agent, s["id"])
         shutil.rmtree(work, ignore_errors=True)
         _forget_runs(work)  # T-2375
+        began = time.monotonic()
         if agent in SESSIONS:
             with sbudget.reserve("exam-arm", sbudget.estimate("exam-arm", 1, min(budget or 0.5, 0.5)), "a smaller --limit"):
                 answer = _session_arm(agent, base, key, work, model, budget, timeout, request)
                 sbudget.record("exam-arm", answer["cost"], project=p.slug, detail=f"{agent} {s['id']}")
-        elif agent in LOCAL:  # no Claude spend: a local model
+        elif local:  # no Claude spend: a local model
             answer = _smith_arm(base, key, work, model, request,
-                                os.path.join(_answers(p, run, agent), f"{s['id']}.events.jsonl"), planner, reason, small)
+                                os.path.join(_answers(p, run, agent), f"{s['id']}.events.jsonl"), planner, reason, small,
+                                search)
         else:
             answer, src = AGENTS[agent](base, key)
             shutil.copytree(src, work, ignore=shutil.ignore_patterns(".git"))
             _carry_runs(src, work)
+        answer.setdefault("seconds", round(time.monotonic() - began, 1))  # T-3010: the wall time a fix cost, per answer
         c.write_atomic(os.path.join(_answers(p, run, agent), f"{s['id']}.json"), json.dumps(answer, indent=1))
 
     done, lk = [0], threading.Lock()  # T-3086's count, kept in counted() so a failed answer counts too (T-3044)
@@ -4765,7 +4809,7 @@ def _run_agent(p, run, agent, split, limit, budget, model, timeout, request, job
                 c.progress(done[0], len(picked), "scenarios", f"exam {agent}", outer=True)
     c.progress(0, len(picked), "scenarios", f"exam {agent}", outer=True)  # outer: a loop nested in an answer keeps its rate
     try:
-        if agent in SESSIONS + LOCAL:  # T-2292: up to `jobs` sessions at once, each in its own temp copy; answers are per-scenario files
+        if agent in SESSIONS or local:  # T-2292: up to `jobs` sessions at once, each in its own temp copy; answers are per-scenario files
             with concurrent.futures.ThreadPoolExecutor(jobs) as pool:
                 list(pool.map(counted, picked))
         else:
@@ -4797,7 +4841,7 @@ def _in_order(found, key):
 
 
 def _known(agent):
-    if agent not in AGENTS and agent not in SESSIONS + LOCAL:
+    if agent not in AGENTS and agent not in SESSIONS and not _local(agent):
         raise ValueError(f"unknown agent {agent!r} ({', '.join([*AGENTS, *SESSIONS, *LOCAL])})")
 
 
@@ -5013,7 +5057,7 @@ def grade(p, run, agent, against=None):
             gen = int(f.read())
     except (OSError, ValueError):  # answers from before the stamp
         gen = rune.current(p)
-    if agent in LOCAL:  # T-3006: tokens per fix, per arm
+    if _local(agent):  # T-3006: tokens per fix, per arm
         toks = []
         for s in answered:
             try:
@@ -5022,7 +5066,7 @@ def grade(p, run, agent, against=None):
             except (OSError, ValueError, AttributeError, TypeError):
                 pass
         _per_fix(res, toks)
-    for name in ("request", "model", "planner", "reason", "small", "thinking"):  # T-3974: planner and small, so the arm is told apart
+    for name in ("request", "model", "planner", "reason", "small", "thinking", "search"):  # T-3974: planner and small, so the arm is told apart
         try:
             with open(os.path.join(_answers(p, run, agent), name), encoding="utf-8") as f:
                 res[name] = f.read()
@@ -5030,12 +5074,16 @@ def grade(p, run, agent, against=None):
             pass
     if "small" in res:
         res["small"] = res["small"] == "on"
+    if _local(agent) and res.get("search"):  # T-3010: the search arm's fixed rate and wall time beside the frontier's first try
+        res["search_rows"] = _search_vs_frontier(p, run, agent, answered, res["rows"])
     res["rows"].sort(key=lambda x: x["id"])
     res["seed"], res["ids"] = meta.get("seed"), _ids_hash(answered)  # T-4359: the match keys a later grade compares by
     line = dict(res, at=c.now(), gen=gen, split=splits.pop() if len(splits) == 1 else "all",
                 kinds=sorted({s["kind"] for s in answered}),
                 author="+".join(sorted({s.get("author", "self") for s in answered})))
     line.pop("rows")  # T-4296: a row per scenario stays in the grade's own output; the tower line keeps by_kind
+    if agent in FRONTIER_ARMS:  # T-3010: and, for a frontier arm, which scenarios it answered, so a search arm reads the common ones
+        line["scen"] = _scen_map(res["rows"])
     try:  # T-4359: before the write, so a refused --against writes nothing; a malformed earlier line never loses the grade
         res["compare"] = compare_grade(p, line, against)
     except AgainstRefused:
@@ -5051,6 +5099,151 @@ def grade(p, run, agent, against=None):
         except (OSError, ValueError, TypeError, c.LockTimeout):  # a record that won't write loses the line, never the grade
             res["kept_arm"] = None
     return res
+
+
+FRONTIER_ARMS = ("foreman", "plain")  # T-3010: the Claude session arms a search arm is read against, the first with a line
+
+
+def _secs(x):
+    """A finite non-negative number, else None (a bool, text, NaN or a negative is no measurement)."""
+    return float(x) if isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x) and x >= 0 else None
+
+
+def _count(x):
+    return x if isinstance(x, int) and not isinstance(x, bool) and x >= 0 else None
+
+
+def _rate(fixed, fixable):
+    fixed, fixable = _count(fixed), _count(fixable)
+    return round(fixed / fixable, 4) if fixed is not None and fixable else None
+
+
+def search_rows(rows, secs, ref_by_kind, ref_secs, calls):
+    """T-3010: one row per scenario kind the search arm answered: how many scenarios (n), fixed of fixable and the rate,
+    the mean wall seconds a scenario took, and calls (model requests) per fix, beside the frontier arm's first try of the
+    same kind (ref_*: from its by_kind and its mean seconds) and the gap (rate minus ref_rate, in rate points). `rows` are
+    the grade's per-scenario rows; secs and calls are {id: number}; ref_by_kind {kind: {fixable, fixed}}; ref_secs
+    {kind: seconds}. A figure the input doesn't give is None, never a guess; odd input never raises."""
+    rows = [r for r in rows if isinstance(r, dict) and isinstance(r.get("kind"), str)] if isinstance(rows, list) else []
+    secs, calls = secs if isinstance(secs, dict) else {}, calls if isinstance(calls, dict) else {}
+    ref_by_kind, ref_secs = (ref_by_kind if isinstance(ref_by_kind, dict) else {}), (ref_secs if isinstance(ref_secs, dict) else {})
+    out = []
+    for kind in sorted({r["kind"] for r in rows}):
+        mine = [r for r in rows if r["kind"] == kind]
+        fixable, fixed = (sum(_count(r.get(k)) or 0 for r in mine) for k in ("fixable", "fixed"))
+        took = [_secs(secs.get(r.get("id"))) for r in mine]
+        took = [x for x in took if x is not None]
+        asked = [_count(calls.get(r.get("id"))) for r in mine]
+        ref = ref_by_kind.get(kind) if isinstance(ref_by_kind.get(kind), dict) else {}
+        ref_fixed, ref_fixable = _count(ref.get("fixed")), _count(ref.get("fixable"))
+        rate, ref_rate = _rate(fixed, fixable), _rate(ref_fixed, ref_fixable)
+        ref_took = _secs(ref_secs.get(kind))
+        out.append({"kind": kind, "n": len(mine), "fixable": fixable, "fixed": fixed, "rate": rate,
+                    "seconds": round(sum(took) / len(took), 1) if took else None,
+                    "calls_per_fix": round(sum(asked) / fixed, 1) if fixed and None not in asked else None,
+                    "ref_fixable": ref_fixable, "ref_fixed": ref_fixed, "ref_rate": ref_rate,
+                    "ref_seconds": round(ref_took, 1) if ref_took is not None else None,
+                    "gap": round(rate - ref_rate, 4) if rate is not None and ref_rate is not None else None})
+    return out
+
+
+def search_text(n, rows):
+    """T-3010: one line per kind of search_rows: the search arm's fixed count, rate and wall time beside the frontier's
+    first try, the gap in points, and (from _search_vs_frontier) n of each side."""
+    lines = []
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+
+        def part(fixed, fixable, rate, secs):
+            got = f"{fixed}/{fixable} ({rate * 100:.0f}%)" if rate is not None else "nothing fixable"
+            return got + (f" in {secs:.0f} s" if secs is not None else " n/a")  # a time nobody recorded is not a blank
+        ref = (part(r.get("ref_fixed"), r.get("ref_fixable"), r.get("ref_rate"), r.get("ref_seconds"))
+               if r.get("ref_rate") is not None else "none")
+        gap = f"{r['gap'] * 100:+.0f} points" if r.get("gap") is not None else (
+            f"no gap ({c.plain(str(r['gap_note']))[:40]})" if r.get("gap_note") else "no gap")
+        calls = f"; {r['calls_per_fix']} calls per fix" if r.get("calls_per_fix") is not None else ""
+        if _count(r.get("n_search")) is not None:  # how many scenarios each side answered, and how many the gap reads
+            calls += (f"; n {r.get('n')} of {r['n_search']} searched, frontier "
+                      f"{r['ref_n'] if _count(r.get('ref_n')) is not None else 'n/a'}")
+        lines.append(f"  {c.plain(str(r.get('kind')))[:20]}: search {c.plain(str(n))[:6]} "
+                     f"{part(r.get('fixed'), r.get('fixable'), r.get('rate'), r.get('seconds'))}; frontier first try {ref}; "
+                     f"{gap}{calls}")
+    return lines
+
+
+def _search_vs_frontier(p, run, agent, answered, rows):
+    """T-3010: search_rows for a graded search arm: the newest graded line of the same run from a frontier arm
+    (FRONTIER_ARMS, the first that has one), its by_kind and the mean wall seconds in its answers; [] when the run has
+    no frontier line (nothing to read the search against)."""
+    from sampo import rune
+
+    def answer(arm, sid, name):
+        try:
+            with open(os.path.join(_answers(p, run, arm), f"{sid}.json"), encoding="utf-8") as f:
+                return json.load(f).get(name)
+        except (OSError, ValueError, AttributeError):
+            return None
+    ref = None
+    for arm in FRONTIER_ARMS:
+        try:
+            lines = [x for x in rune.exam_lines(p, arm) if x.get("run") == run and isinstance(x.get("by_kind"), dict)]
+        except (OSError, ValueError, TypeError):
+            lines = []
+        if lines:
+            ref = (arm, lines[-1]["by_kind"], _scen_of(lines[-1]))
+            break
+    if not ref:
+        return []
+    kinds = {s["id"]: s.get("kind") for s in answered}
+    n_search = {}
+    for kind in kinds.values():
+        n_search[kind] = n_search.get(kind, 0) + 1
+    by_kind, ref_n, scen = ref[1], {}, ref[2]
+    if scen:  # the frontier's own scenarios: the gap reads the ones both arms answered, never one arm's three against all
+        common = {sid for sid in kinds if sid in scen}
+        by_kind = {}
+        for sid, (kind, fixable, fixed) in scen.items():
+            ref_n[kind] = ref_n.get(kind, 0) + 1
+            if sid in common:
+                got = by_kind.setdefault(kind, {"fixable": 0, "fixed": 0})
+                got["fixable"] += fixable
+                got["fixed"] += fixed
+        rows = [r for r in rows if isinstance(r, dict) and r.get("id") in common]
+        kinds = {sid: kind for sid, kind in kinds.items() if sid in common}
+    took = {}
+    for sid, kind in kinds.items():
+        t = _secs(answer(ref[0], sid, "seconds"))
+        if t is not None:
+            took.setdefault(kind, []).append(t)
+    out = search_rows(rows, {s: answer(agent, s, "seconds") for s in kinds}, by_kind,
+                      {k: sum(v) / len(v) for k, v in took.items()}, {s: answer(agent, s, "calls") for s in kinds})
+    for r in out:
+        r["n_search"] = n_search.get(r["kind"], r["n"])
+        r["ref_n"] = ref_n.get(r["kind"]) if scen else _count((ref[1].get(r["kind"]) or {}).get("scenarios"))
+        if not scen and r["ref_n"] is not None and r["ref_n"] != r["n"]:  # an old line, answered over other scenarios
+            r["gap"], r["gap_note"] = None, "frontier sets differ"
+    return out
+
+
+def _scen_map(rows):
+    """T-3010: {id: [kind, fixable, fixed]} of a grade's per-scenario rows: what a frontier arm's tower line keeps so a
+    search arm is read against the scenarios both answered. Odd rows are skipped; never raises."""
+    out = {}
+    for r in rows if isinstance(rows, list) else []:
+        if isinstance(r, dict) and isinstance(r.get("id"), str) and isinstance(r.get("kind"), str):
+            out[r["id"]] = [r["kind"], _count(r.get("fixable")) or 0, _count(r.get("fixed")) or 0]
+    return out
+
+
+def _scen_of(line):
+    """The scen map of a tower line as {id: (kind, fixable, fixed)}, {} when absent or damaged."""
+    out = {}
+    raw = line.get("scen") if isinstance(line, dict) else None
+    for sid, v in (raw.items() if isinstance(raw, dict) else ()):
+        if isinstance(v, list) and len(v) == 3 and isinstance(v[0], str) and _count(v[1]) is not None and _count(v[2]) is not None:
+            out[str(sid)] = (v[0], v[1], v[2])
+    return out
 
 
 THINK_ARMS = ("off", "native")  # T-4297: the two arms the exam compares to keep a model's thinking arm
@@ -5185,12 +5378,13 @@ def _num(v):
 
 
 def _set_differs(a, b):
-    """T-4359: the fields that make two graded lines not comparable: seed, agent, model, thinking arm (arm_of), split and
-    scenario set (ids). [] when they are the same set. A line with no ids (from before T-4359) differs in the set."""
+    """T-4359: the fields that make two graded lines not comparable: seed, agent, model, thinking arm (arm_of), split,
+    scenario set (ids) and search (T-3010). [] when they are the same set. A line with no ids (from before T-4359) differs in the set."""
     out = []
     for name, get in (("seed", lambda x: str(x.get("seed"))), ("agent", lambda x: x.get("agent")),
                       ("model", lambda x: x.get("model") or ""), ("thinking arm", arm_of),
-                      ("split", lambda x: x.get("split")), ("scenario set", lambda x: x.get("ids") or None)):
+                      ("split", lambda x: x.get("split")), ("scenario set", lambda x: x.get("ids") or None),
+                      ("search", lambda x: str(x.get("search") or ""))):  # T-3010: search 4, search 1 and plain are three arms
         if get(a) != get(b):
             out.append(name)
     return out
@@ -5329,7 +5523,11 @@ def graded_text(r):
                        + ("" if win else "; a tie or fewer keeps off, it answers a turn faster") + ")")
                 if kept.get("replaced"):
                     why += f"; replaced {_think_was(kept['replaced'])}"
-    return "\n".join([summary(r)] + compare_text(cmp) + ([under] if under else []) + ([why] if why else []))
+    rows = r.get("search_rows")  # T-3010: a search arm's rows, one per kind, beside the frontier's first try
+    seen = ((search_text(r["search"], rows) or [f"  search {c.plain(str(r['search']))[:6]}: no frontier line for this run (or no scenario "
+                                                f"it shares with this arm), so nothing to read it against (sampo exam run {c.plain(str(r.get('run')))[:40]} "
+                                                f"--agent foreman)"]) if r.get("search") and isinstance(rows, list) else [])
+    return "\n".join([summary(r)] + compare_text(cmp) + ([under] if under else []) + seen + ([why] if why else []))
 
 
 def _think_was(rec):
@@ -5378,6 +5576,8 @@ def summary(r):
         parts.append(f"planner {c.plain(str(r['planner']))[:40]}")
     if r.get("small"):  # T-3974: small-model mode, so a --small and a plain arm of one model read apart
         parts.append("small")
+    if r.get("search"):  # T-3010: the arm drew this many candidate edits per step
+        parts.append(f"search {c.plain(str(r['search']))[:6]}")
     if r.get("broken"):
         parts.append(f"{r['broken']} broken")
     h = r.get("holdout") or {}
@@ -5551,7 +5751,7 @@ def cmd_exam(args):
             res = run_agent(p, args.run, args.agent or "oracle", args.split, args.limit, args.budget, args.model,
                             request=args.request, jobs=1 if args.jobs is None else args.jobs,
                             planner=getattr(args, "planner", None), reason=getattr(args, "reason", None),
-                            small=getattr(args, "small", False))
+                            small=getattr(args, "small", False), search=getattr(args, "search", None))
             cli.out(args, res, graded_text(res))  # T-4296: the totals, then each kind under them
             return 1 if res.get("ungraded") else 0
         if action == "taxonomy":  # T-2908: Smith's failure classes from a run's event logs
@@ -5578,7 +5778,7 @@ def cmd_exam(args):
         if action == "grade":
             if args.model:  # T-2158: answers from before the stamp, or stamped "default", name their model here
                 who = args.agent or "oracle"
-                if who not in SESSIONS + LOCAL:
+                if who not in SESSIONS and not _local(who):
                     raise ValueError(f"--model goes with a session arm ({', '.join(SESSIONS + LOCAL)}); {who} runs no session")
                 f, new = os.path.join(_answers(p, args.run, who), "model"), c.plain(args.model)[:60]
                 try:

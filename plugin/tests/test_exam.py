@@ -2376,3 +2376,259 @@ class SmithArm(ForemanTestCase):
         self.assertEqual(cl["wrong_tool"]["rate"], 0.5)
         self.assertEqual(set(cl), set(__import__("sampo.louhi", fromlist=["x"]).FAILURE_CLASSES))
         self.assertNotEqual(self.fm("exam", "taxonomy", "nope", check=False).returncode, 0)
+
+
+class SearchArm(ForemanTestCase):
+    """T-3010: `sampo exam run --search N` is an arm of the smith agent: the stamp, the argv, the answer's wall seconds and
+    calls, and one row per scenario kind beside the frontier arm's first try on the same run, with the gap."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.g = self.fm_json("exam", "gen", "--seed", "2", "--per-kind", "3", "--lang", "python", "--kind", "bug")
+        self.p = c.find_project(self.repo)
+
+    def frontier(self, fixed=2, seconds=40.0, only=None, scen=True):
+        """The frontier arm's graded line for this run, made by hand, and a wall time in each of its answers. `only`: how
+        many scenarios it answered (a session arm defaults to 3 of the run); scen: whether the line carries the per-scenario
+        map (a line from before T-3010's review has none)."""
+        from sampo import louhi, rune
+        d = louhi._answers(self.p, self.g["run"], "foreman")
+        os.makedirs(d, exist_ok=True)
+        ids = [s["id"] for s in self.g["scenarios"]][:only or len(self.g["scenarios"])]
+        for sid in ids:
+            with open(os.path.join(d, f"{sid}.json"), "w", encoding="utf-8") as f:
+                json.dump({"seconds": seconds, "done": True}, f)
+        fixed = min(fixed, len(ids))
+        line = {"agent": "foreman", "run": self.g["run"], "at": c.now(), "gen": 0, "model": "opus",
+                "closed": {"train": [], "holdout": []},
+                "by_kind": {"bug": {"scenarios": len(ids), "fixable": len(ids), "fixed": fixed, "done": len(ids),
+                                    "false_done": 0, "whole": fixed}}}
+        if scen:
+            line["scen"] = {sid: ["bug", 1, 1 if i < fixed else 0] for i, sid in enumerate(ids)}
+        rune.exam_line(self.p, line)
+        return ids
+
+    def search_run(self, search, calls=5):
+        from sampo import louhi, models
+
+        def arm(base, key, work, model, request, events, planner=None, reason=None, small=False, search=None):
+            shutil.copytree(os.path.join(base, "repo"), work, symlinks=True)
+            return {"notes": [], "done": False, "calls": calls}
+        profile = {"name": "qwen-local", "kind": "openai", "base_url": "http://127.0.0.1:11434/v1", "model": "q"}
+        from unittest import mock
+        with mock.patch.object(models, "resolve", lambda m: profile), mock.patch.object(louhi, "_smith_arm", arm):
+            return louhi.run_agent(self.p, self.g["run"], "smith", "all", None, None, "qwen-local", 60, None, 1, None, None,
+                                   search=search)
+
+    def test_the_argv_and_the_answer_carry_the_search(self):
+        from unittest import mock
+        import tempfile
+        from sampo import louhi, models, smithbench
+        argv = louhi._smith_argv("x", "m", 100, search="4")
+        self.assertEqual(argv[argv.index("--search") + 1], "4")
+        self.assertNotIn("--search", louhi._smith_argv("x", "m", 100))
+        script = "import json,sys\nprint(json.dumps({'event':'answer','text':' '.join(sys.argv)}))\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            base, work = os.path.join(tmp, "base"), os.path.join(tmp, "work")
+            os.makedirs(os.path.join(base, "repo"))
+            fm = os.path.join(tmp, "fm.py")
+            with open(fm, "w") as h:
+                h.write(script)
+            with mock.patch.object(smithbench, "FM", fm), mock.patch.object(models, "resolve", lambda m: {"name": m}), \
+                    mock.patch.object(models, "complete", lambda *a, **k: {"text": "{}", "tool_calls": [], "usage": {}}):
+                ans = louhi._smith_arm(base, {"request": "x", "kind": "vuln"}, work, "fake", None,
+                                       os.path.join(tmp, "e.jsonl"), search="4")
+                plain = louhi._smith_arm(base, {"request": "x", "kind": "vuln"}, os.path.join(tmp, "w2"), "fake", None,
+                                         os.path.join(tmp, "e2.jsonl"))
+        self.assertIn("--search 4", ans["notes"][0])
+        self.assertEqual(ans["search"], "4")
+        self.assertNotIn("--search", plain["notes"][0])
+        self.assertIsNone(plain["search"])
+
+    def test_the_answers_calls_are_the_models_requests(self):
+        from unittest import mock
+        import tempfile
+        from sampo import louhi, models, smithbench
+        script = ("import json\nfor i in (1, 2, 3):\n"
+                  "    print(json.dumps({'event': 'tokens', 'total_in': i, 'total_out': i}))\n"
+                  "print(json.dumps({'event': 'answer', 'text': 'x'}))\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, "base")
+            os.makedirs(os.path.join(base, "repo"))
+            fm = os.path.join(tmp, "fm.py")
+            with open(fm, "w") as h:
+                h.write(script)
+            with mock.patch.object(smithbench, "FM", fm), mock.patch.object(models, "resolve", lambda m: {"name": m}), \
+                    mock.patch.object(models, "complete", lambda *a, **k: {"text": "{}", "tool_calls": [], "usage": {}}):
+                ans = louhi._smith_arm(base, {"request": "x", "kind": "vuln"}, os.path.join(tmp, "work"), "fake", None,
+                                       os.path.join(tmp, "e.jsonl"))
+        self.assertEqual(ans["calls"], 3)
+
+    def test_the_run_stamps_the_search_and_each_answer_its_wall_seconds(self):
+        res = self.search_run("4")
+        self.assertEqual(res["search"], "4")
+        d = os.path.join(os.path.dirname(os.path.dirname(self.g["scenarios"][0]["repo"])), "answers", "smith-s4")
+        self.assertEqual(read_text(os.path.join(d, "search")), "4")
+        for s in self.g["scenarios"]:
+            ans = json.loads(read_text(os.path.join(d, f"{s['id']}.json")))
+            self.assertIsInstance(ans["seconds"], (int, float))
+            self.assertGreaterEqual(ans["seconds"], 0)
+        from sampo import rune
+        self.assertEqual(rune.exam_lines(self.p, "smith-s4")[-1].get("search"), "4")
+        self.assertEqual(res["agent"], "smith-s4")
+        self.assertIn("search 4", __import__("sampo.louhi", fromlist=["x"]).summary(res))
+
+    def test_a_search_run_keeps_the_plain_smith_answers_beside_its_own(self):  # review: HIGH, one answers dir per arm
+        from sampo import louhi
+        base = os.path.dirname(os.path.dirname(self.g["scenarios"][0]["repo"]))
+        self.search_run(None)
+        plain = sorted(os.listdir(os.path.join(base, "answers", "smith")))
+        self.assertTrue(any(x.endswith(".json") for x in plain), plain)
+        res = self.search_run("4")
+        self.assertEqual(sorted(os.listdir(os.path.join(base, "answers", "smith"))), plain, "the plain first tries were wiped")
+        mine = os.listdir(os.path.join(base, "answers", "smith-s4"))
+        self.assertEqual(len([x for x in mine if x.endswith(".json") and ".events" not in x]), len(self.g["scenarios"]))
+        self.assertEqual(res["agent"], "smith-s4")
+        self.assertFalse(os.path.exists(os.path.join(base, "answers", "smith", "search")), "the plain arm took the stamp")
+        self.assertEqual(louhi.grade(self.p, self.g["run"], "smith")["agent"], "smith", "the plain arm grades by its own dir")
+        self.assertNotIn("search", louhi.grade(self.p, self.g["run"], "smith"))
+        self.assertEqual(louhi.grade(self.p, self.g["run"], "smith-s4").get("search"), "4")
+        res1 = self.search_run("1")
+        self.assertEqual(res1["agent"], "smith-s1", "each search value is its own arm")
+        self.assertTrue(os.path.isdir(os.path.join(base, "answers", "smith-s4")))
+
+    def test_the_arm_name_is_known_and_a_mismatched_search_is_refused(self):
+        from sampo import louhi
+        self.assertEqual(louhi._split_arm("smith-s4"), ("smith", "4"))
+        self.assertEqual(louhi._split_arm("smith"), ("smith", None))
+        self.assertEqual(louhi._split_arm("smith-sauto"), ("smith", "auto"))
+        self.assertTrue(louhi._local("smith-s4"))
+        self.assertFalse(louhi._local("oracle-s4"))
+        self.assertFalse(louhi._local("foreman"))
+
+    def test_search_arms_differ_by_their_search_when_two_lines_are_compared(self):  # review: MEDIUM
+        from sampo import louhi
+        base = {"seed": 1, "agent": "smith-s4", "model": "m", "split": "all", "ids": "abc", "thinking": "off"}
+        self.assertEqual(louhi._set_differs(dict(base, search="4"), dict(base, search="4")), [])
+        self.assertEqual(louhi._set_differs(dict(base, search="4"), dict(base, search="1")), ["search"])
+        self.assertEqual(louhi._set_differs(dict(base, search="4"), dict(base)), ["search"])
+        self.assertEqual(louhi._set_differs(dict(base), dict(base, search="")), [])
+
+    def test_the_gap_reads_only_the_scenarios_both_arms_answered(self):  # review: MEDIUM, 1 of 3 answered by the frontier
+        from sampo import louhi
+        ids = self.frontier(fixed=1, seconds=40.0, only=1)
+        res = self.search_run("4")
+        self.assertEqual(len(res["search_rows"]), 1)
+        row = res["search_rows"][0]
+        self.assertEqual((row["n"], row["n_search"], row["ref_n"]), (1, 3, 1), row)
+        self.assertEqual((row["fixable"], row["ref_fixable"], row["ref_fixed"]), (1, 1, 1))
+        self.assertEqual(row["ref_seconds"], 40.0)
+        text = "\n".join(louhi.search_text("4", res["search_rows"]))
+        self.assertIn("1 of 3", text)
+        self.assertIn("frontier 1", text)
+        self.assertEqual(ids, ids[:1])
+
+    def test_an_old_frontier_line_without_the_scenario_map_still_reads_with_its_own_count(self):
+        from sampo import louhi
+        self.frontier(fixed=2, seconds=40.0, scen=False)
+        row = self.search_run("4")["search_rows"][0]
+        self.assertEqual((row["ref_n"], row["ref_fixed"], row["ref_fixable"]), (3, 2, 3))
+
+    def test_an_old_frontier_line_of_another_size_shows_no_gap_not_a_gap_of_two_different_sets(self):
+        from sampo import louhi
+        self.frontier(fixed=2, seconds=40.0, scen=False, only=2)  # it answered 2 of the 3 the search arm did
+        res = self.search_run("4")
+        row = res["search_rows"][0]
+        self.assertEqual((row["n"], row["ref_n"]), (3, 2))
+        self.assertIsNone(row["gap"], "two sets of different scenarios have no gap to read")
+        self.assertIn("no gap (frontier sets differ)", louhi.search_text("4", res["search_rows"])[0])
+        self.frontier(fixed=2, seconds=40.0, scen=False)  # the same size: the old reading holds
+        self.assertIsNotNone(self.search_run("4")["search_rows"][0]["gap"])
+
+    def test_a_frontier_answer_without_seconds_reads_n_a_not_blank(self):
+        from sampo import louhi
+        rows = [{"id": "a", "kind": "bug", "fixable": 1, "fixed": 1}]
+        got = louhi.search_rows(rows, {"a": 20.0}, {"bug": {"fixable": 1, "fixed": 1}}, {}, {})
+        line = louhi.search_text("4", got)[0]
+        self.assertIn("n/a", line)
+        self.assertIn("frontier first try 1/1 (100%) n/a", line)
+
+    def test_the_tower_line_of_a_session_arm_carries_a_map_of_its_scenarios(self):
+        from sampo import louhi
+        rows = [{"id": "a", "kind": "bug", "fixable": 1, "fixed": 1}, {"id": "b", "kind": "parts", "fixable": 2, "fixed": 0},
+                "junk", {"kind": "bug"}]
+        self.assertEqual(louhi._scen_map(rows), {"a": ["bug", 1, 1], "b": ["parts", 2, 0]})
+        self.assertEqual(louhi._scen_map(None), {})
+
+    def test_a_run_without_search_has_no_stamp_and_no_rows(self):
+        res = self.search_run(None)
+        self.assertNotIn("search", res)
+        self.assertNotIn("search_rows", res)
+
+    def test_the_rows_put_the_search_beside_the_frontiers_first_try(self):
+        from sampo import louhi
+        self.frontier(fixed=2, seconds=40.0)
+        res = self.search_run("4")
+        self.assertEqual(len(res["search_rows"]), 1, res.get("search_rows"))
+        row = res["search_rows"][0]
+        self.assertEqual((row["kind"], row["n"], row["fixable"], row["fixed"]), ("bug", 3, 3, 0))
+        self.assertEqual((row["ref_fixed"], row["ref_fixable"], row["ref_seconds"]), (2, 3, 40.0))
+        self.assertEqual((row["rate"], row["ref_rate"], row["gap"]), (0.0, 0.6667, -0.6667))
+        text = louhi.graded_text(res)
+        self.assertEqual(len([x for x in text.splitlines() if x.startswith("  bug: search 4")]), 1, text)
+
+    def test_no_frontier_line_is_no_row_and_says_so(self):
+        from sampo import louhi
+        res = self.search_run("4")
+        self.assertEqual(res["search_rows"], [])
+        self.assertIn("no frontier", louhi.graded_text(res))
+
+    def test_the_search_rows_are_one_per_kind_with_both_rates_and_seconds(self):
+        from sampo import louhi
+        rows = [{"id": "a", "kind": "bug", "fixable": 1, "fixed": 1}, {"id": "b", "kind": "bug", "fixable": 1, "fixed": 0},
+                {"id": "c", "kind": "parts", "fixable": 2, "fixed": 1}, {"id": "d", "kind": "docs", "fixable": 0, "fixed": 0}]
+        secs = {"a": 10.0, "b": 30.0, "c": 8.0, "d": 1.0}
+        ref = {"bug": {"scenarios": 2, "fixable": 2, "fixed": 1}, "parts": {"scenarios": 1, "fixable": 2, "fixed": 2},
+               "vuln": {"scenarios": 1, "fixable": 1, "fixed": 1}}
+        got = {r["kind"]: r for r in louhi.search_rows(rows, secs, ref, {"bug": 5.0, "parts": 6.0}, {"a": 5, "b": 5, "c": 4})}
+        self.assertEqual(sorted(got), ["bug", "docs", "parts"], "the kinds the search arm ran, not the frontier's others")
+        bug, parts, docs = got["bug"], got["parts"], got["docs"]
+        self.assertEqual((bug["n"], bug["fixed"], bug["fixable"], bug["rate"], bug["seconds"]), (2, 1, 2, 0.5, 20.0))
+        self.assertEqual((bug["ref_fixed"], bug["ref_fixable"], bug["ref_rate"], bug["ref_seconds"], bug["gap"]),
+                         (1, 2, 0.5, 5.0, 0.0))
+        self.assertEqual(bug["calls_per_fix"], 10.0)
+        self.assertEqual((parts["rate"], parts["ref_rate"], parts["gap"], parts["calls_per_fix"]), (0.5, 1.0, -0.5, 4.0))
+        self.assertEqual((docs["rate"], docs["gap"], docs["ref_rate"], docs["ref_seconds"]), (None, None, None, None))
+
+    def test_the_search_rows_survive_odd_input(self):
+        from sampo import louhi
+        self.assertEqual(louhi.search_rows([], {}, {}, {}, {}), [])
+        self.assertEqual(louhi.search_rows(None, None, None, None, None), [])
+        rows = [{"id": "a", "kind": "bug", "fixable": 1, "fixed": 1}, "junk", {"kind": 5}, {"id": "b"}]
+        got = louhi.search_rows(rows, {"a": "slow"}, {"bug": "junk"}, {"bug": float("nan")}, {"a": True})
+        self.assertEqual([r["kind"] for r in got], ["bug"])
+        self.assertIsNone(got[0]["seconds"])
+        self.assertIsNone(got[0]["ref_rate"])
+        self.assertIsNone(got[0]["calls_per_fix"])
+
+    def test_the_text_has_a_line_per_kind(self):
+        from sampo import louhi
+        rows = [{"id": "a", "kind": "bug", "fixable": 2, "fixed": 1}, {"id": "b", "kind": "parts", "fixable": 2, "fixed": 1}]
+        got = louhi.search_rows(rows, {"a": 20.0, "b": 8.0}, {"bug": {"fixable": 2, "fixed": 1}, "parts": {"fixable": 2, "fixed": 2}},
+                                {"bug": 5.0, "parts": 6.0}, {})
+        lines = louhi.search_text("4", got)
+        self.assertEqual(len(lines), 2)
+        for word in ("bug", "search 4", "1/2", "50%", "20 s", "frontier first try", "5 s", "+0 points"):
+            self.assertIn(word, lines[0])
+        self.assertIn("-50 points", lines[1])
+
+    def test_search_is_refused_off_the_smith_agent_and_when_it_is_no_count(self):
+        run = self.g["run"]
+        for args in (("--agent", "oracle", "--search", "4"), ("--agent", "smith", "--model", "fake", "--search", "0"),
+                     ("--agent", "smith", "--model", "fake", "--search", "many"),
+                     ("--agent", "smith", "--model", "fake", "--search", "9")):
+            with self.subTest(args=args):
+                r = self.fm("exam", "run", run, *args, check=False)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn("--search", r.stdout + r.stderr)
