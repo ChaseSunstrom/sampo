@@ -352,14 +352,15 @@ def _texts(out, names):
     return {k: "".join(b for b in blocks if heads(k, b)) or out for k in names}
 
 
-def _blame(out, names, ids, diff, reach, explained=None):
+def _blame(out, names, ids, diff, reach, explained=None, who=None):
     """T-3602: who broke the gate, from its red run alone: {lane id: (why, red name)} for each red name (the whole
     output when it names none) one lane alone explains. Rules, strongest first, each narrowing the lanes the one
     before matched: (a) the failure text names a file the lane's diff changed (traceback frames aside: they name the
     test and the code on the stack, not the fault); (c) the lane changed the failing test; (b) its diff reaches the
     failing test (cli.affected's map, as the probes pick tests). A name matching no lane or several blames nobody.
     T-4986: each red name a lane was found for is added to the set `explained` (one lane may explain several; the
-    result keeps its first), so the caller bisects the rest in the same round."""
+    result keeps its first), so the caller bisects the rest in the same round. T-3809: `who` (a dict) takes {red name:
+    the lane that explains it}, so a caller that moves a lane's blame can hand its other names back."""
     blamed = {}
     for k, text in (_texts(out, names) if names else {"": out}).items():
         text, cand = _FRAME.sub("", text), list(ids)
@@ -369,6 +370,8 @@ def _blame(out, names, ids, diff, reach, explained=None):
                 blamed.setdefault(hits[0][0], (hits[0][1], k))
                 if explained is not None:
                     explained.add(k)
+                if who is not None:
+                    who[k] = hits[0][0]
                 break
             cand = [i for i, _ in hits] or cand
     return blamed
@@ -678,21 +681,166 @@ def _none(head, left):
     return e
 
 
-def _check(p, main, base, b, tip, probe_tests, judged=False):
+_NAME_TOK, _PAT_TOK = re.compile(r"test_\w+(?:\.\w+){0,2}"), re.compile(r"[\w][\w.\-]*")
+
+
+def _gate_names(cmd, suite):
+    """T-3809: ([module names], [-k patterns]) of a criterion that is the suite gate `suite` on named modules
+    (`python3 plugin/tests/run.py test_a test_b.Cls -k pat --deadline 30`), else None. Strict, as the shell would read
+    it: the suite's own words first, then only `test_x[.Class[.test]]` names, `-k PATTERN` and `--deadline SECONDS`; an
+    env prefix, `&&`, a pipe, a glob, `$(…)`, `-j`, a name-less run (the whole suite) or a quote that doesn't close is
+    any other command, which runs in the lane as before."""
+    if "\n" in cmd or "\r" in cmd:  # a line break ends a shell command: shlex reads what follows as more words
+        return None
+    try:
+        want, got = shlex.split(suite), shlex.split(cmd)
+    except ValueError:
+        return None
+    if not want or got[:len(want)] != want:
+        return None
+    names, pats, rest, i = [], [], got[len(want):], 0
+    while i < len(rest):
+        x = rest[i]
+        if x in ("-k", "--deadline"):
+            v = rest[i + 1] if i + 1 < len(rest) else ""
+            if not (_PAT_TOK.fullmatch(v) if x == "-k" else v.isdigit()):
+                return None
+            pats += [v] if x == "-k" else []
+            i += 2
+        elif _NAME_TOK.fullmatch(x):
+            names.append(x)
+            i += 1
+        else:
+            return None
+    return (names, pats) if names else None
+
+
+def _test_names(path):
+    """T-3809: the names a -k pattern (a substring of a test's id, as run.py reads it) can match in the test file `path`:
+    its module stem, every class and every `test*` function. None when it can't be read or parsed."""
+    import ast
+    try:
+        with open(path, encoding="utf-8") as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
+        return None
+    names = [_stem(path)] + [n.name for n in ast.walk(tree)
+                             if isinstance(n, ast.ClassDef)
+                             or isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test")]
+    return set(names)
+
+
+def _covered(p, b, checks):
+    """T-3809: {criterion number: (its command, the test files it runs at the lane's tip)} for the criteria the train's
+    gate runs on the merged tree: the suite gate (the affected template's runner) on named modules, each an existing
+    test file of the lane's tip (its name the file's whole stem: run.py matches names as substrings) holding the class
+    a `.Class` names and each -k pattern in at least one of the criterion's files. {} unless the lane sits clean on its
+    tip (the files read are the tip's), or when no gate runs affected tests; every other criterion runs in the lane."""
+    from sampo import cli, lanes
+    tpl = c.read_meta(p).get("affected") or ""
+    suite = cli.suite_gate(p.root, tpl, checks) if "{names}" in tpl else None
+    wt, branch = b.meta.get("lane"), b.meta.get("lane_branch") or f"foreman/{b.id}"
+    if not suite or not wt or not os.path.isdir(wt) or not lanes._lane_tree(wt, branch):
+        return {}
+    have = {}
+    for f in _git(wt, "ls-files", "-z").stdout.split("\0"):
+        if f.endswith(".py") and _stem(f).startswith("test_"):  # a test_a.json or .md fixture is no module of the gate
+            have.setdefault(_stem(f), []).append(f)
+    out = {}
+    for n, cmd in b.verify_cmds():
+        got = _gate_names(cmd, suite) if cmd else None
+        if not got:
+            continue
+        files, ok = [], True
+        for name in got[0]:
+            mod, _, cls = name.partition(".")
+            fs = have.get(mod) or []
+            defs = [_defines(os.path.join(wt, f)) for f in fs]
+            if not fs or (cls and (None in defs or not any(cls.split(".")[0] in d for d in defs))):
+                ok = False  # no such module, or a class it can't be told to hold: run it here
+                break
+            files += [f for f in fs if f not in files]
+        names = set()
+        for f in files if ok and got[1] else ():
+            found = _test_names(os.path.join(wt, f))
+            if found is None:
+                ok = False  # can't be parsed: run it here
+                break
+            names |= found
+        if ok and all(any(k in x for x in names) for k in got[1]):  # a -k pattern is a part of a test or class name
+            out[n] = (cmd, files)
+    return out
+
+
+def _covered_evidence(p, b, cover, row, tree):
+    """T-3809: the evidence of lane b's covered criteria ({n: (cmd, files)}), once its train landed: the gate's passing
+    `row` (cmd, exit, the modules a narrowed run named; none: the whole suite ran) on `tree`, named in each line, and the
+    box ticked, so the close takes it as it takes a run of its own. A criterion whose modules the row doesn't list gets
+    nothing here: the close runs it. Returns notes [(id, text)]: a criterion whose evidence or box the brief refuses (a
+    red run of that command still stands as its newest) is told, not hidden, and the close runs it."""
+    from sampo import cli
+    if row.get("exit"):
+        return []
+    ran, notes = row.get("affected"), []
+
+    def mark(x):
+        for n, (cmd, files) in sorted(cover.items()):
+            mods = sorted({_stem(f) for f in files})
+            if ran is not None and not set(mods) <= set(ran):
+                continue
+            what = "its evidence was not recorded"  # then, once the line is in: the box
+            try:
+                x.add_evidence(cmd, f"exit 0 · covered by the train's gate run: '{row['cmd']}' ran "
+                                    f"{c.joinmore(mods, 6) if ran is not None else 'the whole suite'} on tree {tree}",
+                               ac=n, tree=tree, ran=True)
+                what = "its evidence is recorded, but the box is not ticked"
+                x.check_ac(n)
+            except c.PolicyError as e:
+                notes.append((b.id, f"criterion {n}: covered, but {what}: "
+                                    f"{c.fit(str(e).splitlines()[0] if str(e) else 'refused', 120)}"))
+    cli.mutate(p, b.id, mark, "lane_criteria_covered", {"tree": tree, "criteria": sorted(cover)})
+    return notes
+
+
+def _record_covered(p, merged, cov, row, tree):
+    """T-3809: after the landing, each merged lane's covered criteria get their evidence (_covered_evidence); the notes
+    [(id, text)] of what it left for the close. A failure of the recording (a disk, a lock) is a note too: the lane
+    is already on trunk, and its close runs the criterion."""
+    notes = []
+    for b, _ in merged:
+        if cov.get(b.id):
+            try:
+                notes += _covered_evidence(p, b, cov[b.id], row, tree)
+            except Exception as e:
+                notes.append((b.id, f"covered criteria left for the close to run: {type(e).__name__}: "
+                                    f"{c.fit(str(e), 120)}"))
+    return notes
+
+
+def _check(p, main, base, b, tip, probe_tests, judged=False, info=None):
     """(why this lane can't land or '', notes): the lane's own acceptance commands re-run in its worktree, as `lane merge`
     does, then conflicts and red tests against the base (T-3474), all before any gate run. T-4756: `judged` is a lane
-    `lane merge` already ran the criteria of (or waived them, logged) at this tip: only the probe runs."""
+    `lane merge` already ran the criteria of (or waived them, logged) at this tip: only the probe runs. T-3809: the
+    criteria the gate covers (_covered) don't run here; `info` takes them ("covered": {n: [cmd, files]}), how many
+    criteria the lane has ("total") and the seconds the stage took ("s")."""
     from sampo import cli
-    seen = []
+    seen, info = [], info if info is not None else {}
+    t0 = time.monotonic()
     try:
         try:
             if not judged:
-                _verify(b)
+                skip = _covered(p, b, list(c.read_meta(p).get("checks") or []))
+                info.update(total=len([1 for _, v in b.verify_cmds() if v]), covered={n: list(v) for n, v in skip.items()})
+                seen += [(b.id, f"criterion {n} covered by the gate: `{c.fit(v[0], 100)}` runs with the train's tests")
+                         for n, v in sorted(skip.items())]
+                _verify(b, skip=set(skip))
         except CriterionRed as e:  # T-3629: red once, green on a rerun is a load flake, as _probe treats it
             _verify(b, only=e.n)  # that criterion alone: the others passed
             seen.append((b.id, f"flaky (red once, green on a rerun): {str(e).splitlines()[0][:160]}"))
     except (c.PolicyError, cli.UsageError) as e:
+        info["s"] = time.monotonic() - t0
         return str(e).splitlines()[0], seen
+    info["s"] = time.monotonic() - t0
     return _probe(p, main, base, b, tip, seen, probe_tests), seen
 
 
@@ -724,15 +872,16 @@ def _fan(argvs, cwd, jobs, timeout=7200):
 
 
 def _child_result(r):
-    """(why or '', notes) from a lane's finished check process; its stderr passes on (the criteria's reuse lines)."""
+    """(why or '', notes, info) from a lane's finished check process; its stderr passes on (the criteria's reuse
+    lines). T-3809: info is _check's ("covered", "total", "s"), {} when the process said none."""
     if r.stderr:
         sys.stderr.write(r.stderr)
     for line in reversed(r.stdout.splitlines()):
         if line.startswith(MARK):
             got = json.loads(line[len(MARK):])
-            return got["why"], [tuple(x) for x in got["seen"]]
+            return got["why"], [tuple(x) for x in got["seen"]], got.get("info") or {}
     tail = (r.stderr.strip().splitlines() or ["no output"])[-1]
-    return f"its check process ended with exit {r.returncode} and no result: {c.fit(tail, 200)}", []
+    return f"its check process ended with exit {r.returncode} and no result: {c.fit(tail, 200)}", [], {}
 
 
 def _own_path_off():
@@ -761,9 +910,10 @@ def _main(arg):
     if "accept" in a:  # T-4286: sampo lane accept's detached check of one lane
         return _accept_check_child(a["accept"])
     p = c.Project(*a["project"])
+    info = {}
     why, seen = _check(p, a["main"], a["base"], cli.need_brief(p, a["id"]), a["tip"], a["tests"],
-                    bool(a.get("judged")))
-    print(MARK + json.dumps({"why": why, "seen": seen}))
+                    bool(a.get("judged")), info)
+    print(MARK + json.dumps({"why": why, "seen": seen, "info": info}))
     return 0
 
 
@@ -942,13 +1092,14 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     # candidate order, so the left-out list and notes read as a serial run's. T-3119: each lane's check is its own
     # process (its own interpreter, no GIL shared), the lane's criteria and probe tests under it
     t0 = time.monotonic()  # T-3596: the phases' minutes, in the result and the report line
+    jobs = 1 if c.host_strain(2.0) else PROBE_JOBS
     outs = iter(_fan([_child_argv(p, main, base, b.id, tip, probe_tests, judged.get(b.id) == tip)
-                      for b, tip, why in rows if not why], main,
-                     1 if c.host_strain(2.0) else PROBE_JOBS))
+                      for b, tip, why in rows if not why], main, jobs))
+    infos = {}  # T-3809: lane id: what its check process said of the criteria stage (covered, total, s)
     for b, tip, why in rows:
         seen = []
         if not why:
-            why, seen = _child_result(next(outs))
+            why, seen, infos[b.id] = _child_result(next(outs))
             if why.startswith(WT_GONE):  # T-4728: a probe's tree lost twice: the train stops, no lane is left out for it
                 raise c.PolicyError(why)
         notes += seen
@@ -965,6 +1116,11 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     runs, probes, results, sub = [0], [0], [], None
     olds, head, lost = [wt], [base], [0]  # T-4728: the folders the train made; the commit the tree is at; losses so far
     tips ={b.id: t for b, t in cands}
+    cov = {i: {int(n): v for n, v in (x.get("covered") or {}).items()} for i, x in infos.items()}  # T-3809: JSON keys are strings
+
+    def covers(i):
+        """The test files lane i's covered criteria name (repo-relative paths at its tip)."""
+        return [f for _, fs in cov.get(i, {}).values() for f in fs]
     meta = c.read_meta(p)
     tpl, other = meta.get("affected") or "", tuple(meta.get("affected_by") or ())
     bare = lambda s: " ".join(s.split())  # noqa: E731
@@ -1196,6 +1352,32 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                                 f"no lane dropped on its account: {_why_red(row)}")
         return row, [n for n in names if any(_same(f, n) for f in row["failing"])]
 
+    def owner_probe(blamed, g, explained, who):
+        """T-3809 review: a module a lane's criterion named no longer ran on base + that lane before the gate (the gate
+        runs it): when rule (b) blames a lane for such a red name only because the map links its diff to the module, the
+        lane that carries the module (it covers it) is probed first, alone on the base, on that name. Red there: it is
+        the one to blame, and the map-linked lane stays in; the other names that lane alone explained (`who`: name ->
+        lane) leave `explained`, so this round bisects them. Green (or no owner): the weak blame stands, and the probe's
+        build leaves `left` and `kept_maps` as they were."""
+        out = dict(blamed)
+        for i, (rule, k) in blamed.items():
+            if not (rule.startswith(_WEAK) and k):
+                continue
+            for o in (x.id for x, _ in merged if x.id != i and _mod(k) in {_stem(f) for f in covers(x.id)}):
+                n, was, kept = len(left), here(), {m: list(fs) for m, fs in kept_maps.items()}
+                got = build(base, [(x, tips[x.id]) for x, _ in merged if x.id == o])
+                del left[n:]
+                kept_maps.clear()  # build's merge pops and re-adds the lane's entry: put the train's own back
+                kept_maps.update(kept)
+                row = probe(got[0][1], g, [k]) if got else None
+                reset(was)
+                if row and row["exit"] and any(_same(f, k) for f in row.get("failing") or ()):
+                    del out[i]
+                    out.setdefault(o, (f"it carries {_mod(k)}, red with it alone on the base", k))  # never over its first
+                    explained -= {m for m, l in who.items() if l == i and m != k}
+                    break
+        return out
+
     def base_red(row, names):
         """T-4289: the refusal for a base found red: the classes of `names` red on it (the whole row's when none is
         named), and every lane already left out for one of them put back (a log line on its brief and the event), as the
@@ -1243,6 +1425,9 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         if why:  # T-3625: the base's affected tests first: a red base is known in minutes
             raise c.PolicyError(f"the base {base[:9]} of {branch} is red; fix it before a train can blame a lane: red on "
                                 f"the base (no lane dropped for it): {why}")
+        if sub:  # T-3809: the modules a merged lane's covered criteria name run in this gate (after the base probe: a new
+            # lane's module is no test of the base); form() keeps those the tree has
+            sub = (*sub[:2], list(dict.fromkeys([*sub[2], *(f for b, _ in merged for f in covers(b.id))])))
         ok = not merged or gate()
         first = list(results)
         last = {r["cmd"]: r for r in results if not r["exit"]}  # each gate's newest passing row
@@ -1369,8 +1554,10 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                     c.log_event(p, "lane_train_base_red_kept", data={"base": base[:9], "classes": based, "lanes_judged_on": rest})
             need[g] = (need.get(g) or set()) | set(names) | set(flaky) if names and not owed else None  # the suite's other tests passed here (T-4889: not the cut ones)
             ids = [b.id for b, _ in merged]
-            explained = set()
-            blamed = _blame(red["out"], names or red["failing"], ids, diff, reach, explained)
+            explained, who = set(), {}
+            blamed = _blame(red["out"], names or red["failing"], ids, diff, reach, explained, who)
+            if blamed and suite and g == suite and any(cov.values()):  # T-3809: the lane carrying a covered module first
+                blamed = owner_probe(blamed, g, explained, who)
             mine = {}  # T-4986: a bisected lane's own classes: what it is left out for, and all its line names
             rest = [n for n in names if n not in explained] if blamed else list(names)
             if not blamed or rest:  # T-4986 review: what no lane's file explains is bisected in this round too
@@ -1441,8 +1628,18 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         ct = c.code_tree(main, tree)
         c.log_event(p, "check_run", data={"tree": tree[:12], "code_tree": ct, "env": c.env_id(), "train": ids_in,
                                           "results": green})
+        if suite and last.get(suite):  # T-3809: each covered criterion's evidence is this gate's pass, on the tree that landed
+            notes += _record_covered(p, merged, cov, last[suite], tree[:12])
         t3 = time.monotonic()
-        mins = {"probe": round((t1 - t0) / 60, 1), "gate": round(max(0.0, t2 - t1 - confirm_s[0]) / 60, 1),
+        # T-3809: the criteria stage on its own: the lanes' criteria seconds spread over the lanes run at once, no more
+        # than the fan took; the probes' minutes are what is left of it
+        ran_c = [x for x in infos.values() if "s" in x]
+        crit = min(t1 - t0, sum(x["s"] for x in ran_c) / max(1, min(jobs, len(ran_c))))
+        # "covered K of M" counts every lane the criteria stage checked, those later left out too: it says what the stage
+        # skipped, not what the landed lanes' evidence took
+        mins = {"probe": round(max(0.0, t1 - t0 - crit) / 60, 1), "criteria": round(crit / 60, 1),
+                "covered": sum(len(x.get("covered") or ()) for x in ran_c), "criteria_total": sum(x.get("total", 0) for x in ran_c),
+                "gate": round(max(0.0, t2 - t1 - confirm_s[0]) / 60, 1),
                 "confirm": round(confirm_s[0] / 60, 1), "land": round((t3 - t2) / 60, 1)}  # T-4676: gate + confirm = the gates
         return {"merged": ids_in, "left_out": left, "notes": notes, "kept": kept, "map_merged": maps,
                 "map_follow_up": map_task, "gate_runs": runs[0], "verify_owed": bool(part and defer_verify),
@@ -1560,7 +1757,8 @@ def _cmd_report(p, args, main, close, got, owed):
         lines.append(f"  follow-up {got['map_follow_up']}: read the merged map entries (a line both sides rewrote is "
                      "kept twice)")
     m = got["minutes"]  # T-3596: where the time went; the serial closes after the train are not in it
-    lines.append(f"Minutes: probe {m['probe']}, gate {m['gate']}, confirm {m.get('confirm', 0.0)}, land {m['land']}; "
+    lines.append(f"Minutes: probe {m['probe']}, criteria {m.get('criteria', 0.0)} min, covered {m.get('covered', 0)} of "
+                 f"{m.get('criteria_total', 0)}, gate {m['gate']}, confirm {m.get('confirm', 0.0)}, land {m['land']}; "
                  f"{got['probes_skipped']} of {got['lanes_probed']} probe(s) skipped (a held green run)")
     if got["affected"]:
         lines.append(f"The test gate ran {len(got['affected'])} affected test module(s), not the full suite "

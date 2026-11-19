@@ -2990,8 +2990,9 @@ class CriterionRed(c.PolicyError):
         self.n = n
 
 
-def _verify(b, p=None, only=None):
-    """T-3629: only=N re-runs that criterion alone (the train's single rerun of a red one).
+def _verify(b, p=None, only=None, skip=()):
+    """T-3629: only=N re-runs that criterion alone (the train's single rerun of a red one). T-3809: `skip` (criterion
+    numbers) are left to the train's gate, which runs their modules on the merged tree: not run here.
     T-0948: re-run each criterion's verify command in the lane's worktree (the runner and timeout fm task evidence
     --run uses); the first red one refuses the merge, and so does a brief with nothing to run. T-3444: a pass on the
     lane's clean tip tree is recorded on the brief (given p) and reused while that tree stays as it is."""
@@ -3000,6 +3001,7 @@ def _verify(b, p=None, only=None):
     allcmds = cmds
     if only is not None:
         cmds = [(n, v) for n, v in cmds if n == only]
+    cmds = [(n, v) for n, v in cmds if n not in skip]
     if not allcmds:
         raise cli.UsageError(f"{b.id} has no criterion with a verify command, so there is nothing to re-run: plan "
                                f"verify commands first (fm task ac {b.id} add \"…\" --verify \"<cmd>\")")

@@ -7,6 +7,7 @@ import math
 import os
 import subprocess
 import time
+import types
 import unittest
 
 from helpers import ForemanTestCase
@@ -433,7 +434,8 @@ class Train(TrainCase):
     def test_the_report_line_names_the_minutes_of_each_phase(self):
         """T-3596: the probe, gate and land minutes of a train are in its result and its report, so the slow phase shows."""
         a, ran, r, count = self._green_lane("other.txt")
-        self.assertRegex(r.stdout, r"Minutes: probe \d+\.\d, gate \d+\.\d, confirm \d+\.\d, land \d+\.\d; 1 of 1 probe\(s\) skipped")
+        self.assertRegex(r.stdout, r"Minutes: probe \d+\.\d, criteria \d+\.\d min, covered \d+ of \d+, gate \d+\.\d, confirm \d+\.\d, "
+                                    r"land \d+\.\d; 1 of 1 probe\(s\) skipped")
 
     def test_a_lane_whose_tested_source_moved_on_the_base_is_probed(self):
         """T-3531: the base changed a source the affected test covers (map-links): its green run no longer holds."""
@@ -1260,6 +1262,270 @@ class AffectedGate(AffectedBase):
         self.git("commit", "-qam", "flaky")
         sub = ("sh suite.sh", "sh suite.sh {names}", ["plugin/tests/test_doctor.py"])
         self.assertEqual(train._base_red(self.p, self.repo, self.git("rev-parse", "HEAD"), sub), "")
+
+
+class Covered(AffectedBase):
+    """T-3809: a lane criterion that is the suite gate on named test modules is not run in the lane before the gate: the
+    gate runs those modules on the merged tree, and a red one leaves out the lane that owns it as any red module does."""
+
+    def lane_runs(self):
+        """The suite's runs inside a lane's own folder (a criterion run there), not the train's or a probe's."""
+        with open(self.suite) as f:
+            return [ln for ln in f if ln.startswith("lane")]
+
+    def test_a_suite_criterion_is_covered_by_the_gate_and_its_modules_join_the_gate(self):
+        marker = os.path.join(self.tmp, "criterion-ran")
+        a = self.lane(1, "x.txt", ac="sh suite.sh test_other")  # an old module no change reaches: only the criterion names it
+        b = self.lane(2, "test_a.py", OK.format("A"), ac="sh suite.sh test_a")
+        d = self.lane(3, "d.txt", ac=f"echo x >> {marker} && test -e d.txt")  # not the suite: still run in the lane
+        r = self.train(a, b, d)
+        self.assertEqual(self.lane_runs(), [], r.stdout)
+        self.assertEqual(self.probe_runs(), [], r.stdout)
+        self.assertEqual(sorted(self.gate_args()[0].split()), ["test_a", "test_doctor", "test_other", "test_rename_aliases"])
+        self.assertEqual(open(marker).read().split(), ["x"], "the other criterion ran once, in the lane")
+        self.assertIn(f"note {a}: criterion 1 covered by the gate", r.stdout)
+        self.assertIn(f"note {b}: criterion 1 covered by the gate", r.stdout)
+        self.assertNotIn(f"note {d}: criterion 1 covered", r.stdout)
+        for tid in (a, b, d):
+            self.assertTrue(self.meta(tid)["lane_stop"].startswith("merged"), r.stdout)
+
+    def test_a_red_covered_module_still_leaves_out_its_lane(self):
+        bad = "import unittest\nclass Other(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue(False)\n"
+        a = self.lane(1, "test_other.py", bad, ac="sh suite.sh test_other")
+        b = self.lane(2, "b.txt", ac="sh suite.sh test_doctor")
+        r = self.train(a, b)
+        self.assertEqual(self.lane_runs(), [], r.stdout)
+        self.assertIn(f"left out {a}: its merge turns the gates red", r.stdout)
+        self.assertTrue(self.meta(b)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertFalse(self.meta(a).get("lane_stop", "").startswith("merged"))
+
+    def test_a_landed_lane_records_the_gate_run_as_its_criterion_evidence(self):
+        a = self.lane(1, "x.txt", ac="sh suite.sh test_other")
+        b = self.lane(2, "y.txt", ac="sh suite.sh test_other")
+        r = self.train(a, b)
+        show = self.fm("task", "show", a).stdout
+        self.assertRegex(show, r"- \[x\] ok")
+        self.assertRegex(show, r"\(ac 1\) `sh suite\.sh test_other` → exit 0 · covered by the train's gate run: "
+                               r"'sh suite\.sh' ran test_other(, \w+)* on tree [0-9a-f]{12}")
+        self.assertIn("covered by the train's gate run", self.fm("task", "show", b).stdout, r.stdout)
+
+    def test_a_lane_left_out_gets_no_gate_evidence(self):
+        bad = "import unittest\nclass Other(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue(False)\n"
+        a = self.lane(1, "test_other.py", bad, ac="sh suite.sh test_other")
+        b = self.lane(2, "b.txt")
+        self.train(a, b)
+        self.assertNotIn("covered by the train's gate run", self.fm("task", "show", a).stdout)
+
+    def test_a_pattern_the_module_lacks_or_a_missing_module_is_run_in_the_lane(self):
+        a = self.lane(1, "a.txt", ac="sh suite.sh test_other -k test_it")  # the pattern is in the module: covered
+        b = self.lane(2, "b.txt", ac="sh suite.sh test_other -k nowhere_in_it")
+        d = self.lane(3, "d.txt", ac="sh suite.sh test_nothing_here")
+        r = self.train(a, b, d, check=False)
+        self.assertIn(f"note {a}: criterion 1 covered by the gate", r.stdout)
+        self.assertNotIn(f"note {b}: criterion 1 covered", r.stdout)
+        self.assertNotIn(f"note {d}: criterion 1 covered", r.stdout)
+        self.assertEqual(sorted({ln.split()[0] for ln in self.lane_runs()}), ["lane2", "lane3"])
+
+    def test_the_minutes_line_reports_the_criteria_stage_apart(self):
+        a = self.lane(1, "x.txt", ac="sh suite.sh test_other")
+        b = self.lane(2, "y.txt", ac="sh suite.sh test_doctor")
+        d = self.lane(3, "d.txt", ac="test -e d.txt")
+        r = self.train(a, b, d)
+        self.assertRegex(r.stdout, r"Minutes: probe \d+\.\d, criteria \d+\.\d min, covered 2 of 3, gate \d+\.\d, "
+                                   r"confirm \d+\.\d, land \d+\.\d;")
+
+    def test_full_gate_runs_every_module_so_it_covers_too(self):
+        a = self.lane(1, "x.txt", ac="sh suite.sh test_other")
+        r = self.train(a, env={"FOREMAN_FULL_GATE": "1"})
+        self.assertEqual(self.lane_runs(), [], r.stdout)
+        self.assertIn(f"note {a}: criterion 1 covered by the gate", r.stdout)
+        # the whole suite ran (no module list on its row): the evidence says so
+        self.assertRegex(self.fm("task", "show", a).stdout,
+                         r"covered by the train's gate run: 'sh suite\.sh' ran the whole suite on tree [0-9a-f]{12}")
+
+    XDEP = ("# map-links: b.txt\nimport os, unittest\n\n\nclass X(unittest.TestCase):\n    def test_it(self):\n"
+            "        self.assertFalse(os.path.exists('bad' + '.txt'), 'boom')\n")  # the failure never names the file
+
+    def base_file(self, rel, text):
+        os.makedirs(os.path.dirname(os.path.join(self.repo, rel)), exist_ok=True)
+        with open(os.path.join(self.repo, rel), "w") as f:
+            f.write(text)
+        self.git("add", rel)
+        self.git("commit", "-qm", f"base: {rel}")
+
+    MAP = Train.MAP
+    ENTRY = Train.ENTRY
+
+    def map_base(self):
+        self.base_file(self.MAP, self.ENTRY)
+
+    def followups(self):
+        p = c.find_project(self.repo)
+        return [b for b in c.load_briefs(p) if b.meta.get("source") == "followup"]
+
+    def test_the_owner_of_a_red_covered_module_is_blamed_not_the_lane_the_map_links_to_it(self):
+        """T-3809 review: lane b's file only touches test_xdep through the map; lane d changed only a source (bad.txt)
+        and its criterion names the module. The gate is red in it: base + d alone is red, so d is left out, b lands."""
+        self.base_file("test_xdep.py", self.XDEP)
+        b = self.lane(1, "b.txt")
+        d = self.lane(2, "bad.txt", ac="sh suite.sh test_xdep")
+        r = self.train(b, d)
+        self.assertIn(f"left out {d}: its merge turns the gates red", r.stdout)
+        self.assertTrue(self.meta(b)["lane_stop"].startswith("merged"), r.stdout)
+        self.assertFalse(self.meta(d).get("lane_stop", "").startswith("merged"), r.stdout)
+
+    def test_a_module_the_covering_lane_leaves_green_alone_keeps_the_map_blame(self):
+        """The same red, but the covering lane (d) adds nothing the module dislikes: the map-linked lane b is still the one."""
+        self.base_file("test_xb.py", self.XDEP.replace("'bad' + '.txt'", "'b' + '.txt'"))  # red with b.txt in the tree
+        b = self.lane(1, "b.txt")
+        d = self.lane(2, "d.txt", ac="sh suite.sh test_xb")
+        r = self.train(b, d)
+        self.assertIn(f"left out {b}: its merge turns the gates red", r.stdout)
+        self.assertTrue(self.meta(d)["lane_stop"].startswith("merged"), r.stdout)
+
+    def test_a_green_owner_probe_keeps_the_map_follow_up_of_a_lane_merged_before_the_blamed_one(self):
+        """T-3809 review: the probe merges the owner (d) alone on the base, which pops its kept-both-sides entry; it is
+        put back, so the follow-up of the train still names d (it merged on a's line of the same entry)."""
+        self.map_base()
+        self.base_file("test_xb.py", self.XDEP.replace("'bad' + '.txt'", "'b' + '.txt'"))  # red with b.txt in the tree
+        a = self.lane(1, self.MAP, self.ENTRY.rstrip("\n") + " One.\n")
+        d = self.lane(2, self.MAP, self.ENTRY.rstrip("\n") + " Two.\n", ac="sh suite.sh test_xb")
+        b = self.lane(3, "b.txt")
+        r = self.train(a, d, b)
+        self.assertIn(f"left out {b}: its merge turns the gates red", r.stdout)
+        self.assertIn(f"merged {d} keeping both sides' lines in {self.MAP}", r.stdout)
+        got = self.followups()
+        self.assertEqual(len(got), 1, r.stdout)
+        self.assertIn(d, got[0].section("Raw request"))
+
+    def test_the_owner_swap_hands_the_blamed_lanes_other_names_back_to_the_bisection(self):
+        """T-3809 review: lane b is the weak (map) blame for test_xdep and for test_xz2; lane d owns test_xdep and is
+        red alone, so d takes that blame. test_xz2, which b's file turns red, is bisected in the same round (not left
+        for a second red gate): d and b are both left out in one round, and e lands on a gate run that stays green."""
+        self.base_file("test_xdep.py", self.XDEP)
+        self.base_file("test_xz2.py", self.XDEP.replace("'bad' + '.txt'", "'b' + '.txt'"))
+        b = self.lane(1, "b.txt")
+        d = self.lane(2, "bad.txt", ac="sh suite.sh test_xdep")
+        e = self.lane(3, "e.txt")
+        r = self.train(b, d, e)
+        self.assertIn(f"left out {d}: its merge turns the gates red", r.stdout)
+        self.assertIn(f"left out {b}: its merge turns the gates red", r.stdout)
+        self.assertRegex(r.stdout, r"landed on main \(\w+\) in 2 gate run\(s\)")
+
+    def test_two_weak_blames_with_one_owner_leave_only_the_owner_out(self):
+        """T-3809 review: lanes b1 and b2 are each map-linked to a module lane d carries and turns red alone: d is the
+        one left out, and neither of them."""
+        for n in (1, 2):
+            self.base_file(f"test_xm{n}.py", self.XDEP.replace("# map-links: b.txt", f"# map-links: b{n}.txt"))
+        b1, b2 = self.lane(1, "b1.txt"), self.lane(2, "b2.txt")
+        d = self.lane(3, "bad.txt", ac="sh suite.sh test_xm1 test_xm2")
+        r = self.train(b1, b2, d)
+        self.assertIn(f"left out {d}: its merge turns the gates red", r.stdout)
+        self.assertEqual(r.stdout.count("left out"), 1, r.stdout)
+        for x in (b1, b2):
+            self.assertTrue(self.meta(x)["lane_stop"].startswith("merged"), r.stdout)
+
+    def test_a_pattern_is_a_test_or_class_name_not_a_word_in_the_file(self):
+        with open(os.path.join(self.repo, "test_other.py"), "a") as f:
+            f.write("# only_in_a_comment\n")
+        self.git("commit", "-qam", "a comment")
+        a = self.lane(1, "a.txt", ac="sh suite.sh test_other -k only_in_a_comment")
+        b = self.lane(2, "b.txt", ac="sh suite.sh test_other -k Other")  # a class name
+        d = self.lane(3, "d.txt", ac="sh suite.sh test_other -k test_it")  # a test name
+        r = self.train(a, b, d, check=False)
+        self.assertNotIn(f"note {a}: criterion 1 covered", r.stdout)
+        self.assertIn(f"note {b}: criterion 1 covered by the gate", r.stdout)
+        self.assertIn(f"note {d}: criterion 1 covered by the gate", r.stdout)
+        self.assertEqual(sorted({ln.split()[0] for ln in self.lane_runs()}), ["lane1"])
+
+    def test_only_a_python_file_of_the_module_name_joins_the_gate(self):
+        a = self.lane(1, "test_other.json", "{}\n", ac="sh suite.sh test_other")
+        self.train(a)
+        self.assertEqual(self.gate_args()[0].split().count("test_other"), 1, self.gate_args())
+
+    def test_a_criterion_whose_evidence_cannot_be_recorded_says_so_and_is_left_for_the_close(self):
+        from unittest import mock
+
+        from sampo import cli, train
+
+        class Refusing:  # a brief that refuses the evidence line of criterion 1 and the box of criterion 2
+            def add_evidence(self, cmd, result, ac=None, **kw):
+                if ac == 1:
+                    raise c.PolicyError("T-1 refuses this line")
+
+            def check_ac(self, n):
+                raise c.PolicyError(f"T-1 acceptance criterion {n} has no evidence")
+        lane = types.SimpleNamespace(id="T-1")
+        with mock.patch.object(cli, "mutate", lambda p, i, fn, ev, data: fn(Refusing())):
+            notes = train._covered_evidence(None, lane, {1: ("sh suite.sh test_a", ["test_a.py"]),
+                                                         2: ("sh suite.sh test_b", ["test_b.py"])},
+                                            {"cmd": "s", "exit": 0}, "abc123")
+        self.assertEqual([n[0] for n in notes], ["T-1", "T-1"], notes)
+        self.assertIn("criterion 1: covered, but its evidence was not recorded: ", notes[0][1])
+        self.assertIn("criterion 2: covered, but its evidence is recorded, but the box is not ticked: ", notes[1][1])
+
+    def test_a_whole_suite_run_cut_to_the_red_names_leaves_the_close_the_criterion(self):
+        """FOREMAN_FULL_GATE: the first gate (the whole suite) is red in lane d's module, the lane is left out, and the
+        confirm no longer runs the whole suite: the landed lane b's criterion is proven by neither its row's module
+        list nor a whole run, or is proven by the whole run it got; either way it is never ticked without a run naming it."""
+        bad = "import unittest\nclass A(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue(False)\n"
+        b = self.lane(1, "b.txt", ac="sh suite.sh test_other")
+        d = self.lane(2, "test_a.py", bad, ac="sh suite.sh test_a")
+        r = self.train(b, d, env={"FOREMAN_FULL_GATE": "1"})
+        self.assertIn(f"left out {d}", r.stdout)
+        show = self.fm("task", "show", b).stdout
+        self.assertTrue(self.meta(b)["lane_stop"].startswith("merged"), r.stdout)
+        if "covered by the train's gate run" in show:
+            self.assertRegex(show, r"ran (the whole suite|test_other\S*) on tree")
+        self.assertNotIn("covered by the train's gate run", self.fm("task", "show", d).stdout)
+
+    def test_a_red_first_gate_then_green_keeps_the_evidence_of_a_module_it_ran(self):
+        """The first gate (a narrowed run) is red in lane d's module; d is left out; b's module ran green in that run, and
+        the final row lists it: b's criterion has the gate's evidence."""
+        bad = "import unittest\nclass A(unittest.TestCase):\n    def test_it(self):\n        self.assertTrue(False)\n"
+        b = self.lane(1, "b.txt", ac="sh suite.sh test_other")
+        d = self.lane(2, "test_a.py", bad, ac="sh suite.sh test_a")
+        r = self.train(b, d)
+        self.assertIn(f"left out {d}", r.stdout)
+        self.assertRegex(self.fm("task", "show", b).stdout,
+                         r"covered by the train's gate run: 'sh suite\.sh' ran test_other\S* on tree|ran the whole suite on tree")
+
+    def test_a_failure_recording_the_evidence_after_the_landing_is_a_note_not_a_crash(self):
+        from unittest import mock
+
+        from sampo import train
+        lane = types.SimpleNamespace(id="T-1")
+        with mock.patch.object(train, "_covered_evidence", side_effect=OSError("disk full")):
+            notes = train._record_covered(None, [(lane, "sha")], {"T-1": {1: ("cmd", ["test_a.py"])}}, {"cmd": "s", "exit": 0},
+                                          "abc123")
+        self.assertEqual(len(notes), 1, notes)
+        self.assertEqual(notes[0][0], "T-1")
+        self.assertIn("left for the close to run: OSError: disk full", notes[0][1])
+
+
+class GateNames(unittest.TestCase):
+    """T-3809: which criteria are the suite gate on named modules (train._gate_names): anything else runs in the lane."""
+    SUITE = "python3 plugin/tests/run.py"
+
+    def names(self, cmd, suite=None):
+        from sampo import train
+        return train._gate_names(cmd, suite or self.SUITE)
+
+    def test_modules_classes_patterns_and_a_deadline_are_names(self):
+        self.assertEqual(self.names("python3 plugin/tests/run.py test_a test_b.Cls -k pat --deadline 30"),
+                         (["test_a", "test_b.Cls"], ["pat"]))
+        self.assertEqual(self.names("python3 plugin/tests/run.py test_a.Cls.test_x"), (["test_a.Cls.test_x"], []))
+
+    def test_anything_else_is_not_one(self):
+        for cmd in ("python3 plugin/tests/run.py",  # the whole suite: no modules named
+                    "python3 plugin/tests/run.py test_a && echo hi", "python3 plugin/tests/run.py test_a | tail",
+                    "python3 plugin/tests/run.py test_a -j 4", "python3 plugin/tests/run.py -k pat",
+                    "python3 plugin/tests/run.py test_a -k", "python3 plugin/tests/run.py test_a --deadline soon",
+                    "python3 plugin/tests/run.py ../test_a", "python3 plugin/tests/run.py test_a $(id)",
+                    "env X=1 python3 plugin/tests/run.py test_a", "python3 other/run.py test_a", "pytest test_a",
+                    "python3 plugin/tests/run.py 'test a'", "python3 plugin/tests/run.py test_a 'it's",
+                    "python3 plugin/tests/run.py test_a\ntouch x", "python3 plugin/tests/run.py test_a\rtouch x"):
+            self.assertIsNone(self.names(cmd), repr(cmd))  # a newline is a second command to the shell
 
 
 class RedNames(unittest.TestCase):
