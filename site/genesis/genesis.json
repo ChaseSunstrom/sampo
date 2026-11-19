@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-18T17:44:29Z",
- "rev": "aa5e6b39f",
+ "updated": "2026-11-19T03:28:20Z",
+ "rev": "fdf50b3b0",
  "capabilities": [
   {
    "n": 1,
@@ -61738,15 +61738,15 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 861,
+ "unproven": 868,
  "unproven_kinds": {
   "typed": 80,
   "meaning-user": 87,
   "research-uncited": 29,
-  "meaning-notes": 439,
-  "docs": 187,
+  "meaning-notes": 444,
+  "docs": 186,
   "red": 86,
-  "perf-typed": 146,
+  "perf-typed": 148,
   "infra": 7,
   "ui-unshot": 2,
   "data": 4,
@@ -62956,30 +62956,47 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 61364,
+   "generated": 63899,
    "write": {
-    "title": 432,
-    "line": 3025,
-    "payoff": 38,
-    "kill test": 186,
-    "code": 23
+    "title": 435,
+    "line": 3234,
+    "payoff": 40,
+    "kill test": 228,
+    "code": 33
    },
    "dups": {
-    "exact": 15,
-    "embed": 137,
+    "exact": 16,
+    "embed": 140,
     "shingle": 0
    },
    "rejected": {
-    "kill": 31196,
+    "kill": 32328,
     "tier": 21623,
-    "novelty": 172
+    "novelty": 178
    },
-   "merged": 2089,
-   "kept": 2379,
-   "pending": 49,
-   "pooled": 0
+   "merged": 2197,
+   "kept": 2470,
+   "pending": 107,
+   "pooled": 870
   },
   "families": [
+   {
+    "id": "F-011753",
+    "size": 5,
+    "lead": "Migrate the entire monolith to microservices in one PR",
+    "today": "Today you can't decompose a large monolithic codebase into separate microservice repos with working Dockerfiles and API contracts in a single automated action.",
+    "with_this": "With this, you can turn a 10-year-old monolith into 10 deployable microservices with passing unit tests and a shared API gateway configuration in under an hour.",
+    "tier": "massive",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "migrations",
+     "refactors"
+    ]
+   },
    {
     "id": "F-011755",
     "size": 3,
@@ -62998,24 +63015,8 @@
     ]
    },
    {
-    "id": "F-011753",
-    "size": 1,
-    "lead": "Migrate the entire monolith to microservices in one PR",
-    "today": "Today you can't decompose a large monolithic codebase into separate microservice repos with working Dockerfiles and API contracts in a single automated action.",
-    "with_this": "With this, you can turn a 10-year-old monolith into 10 deployable microservices with passing unit tests and a shared API gateway configuration in under an hour.",
-    "tier": "massive",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "migrations"
-    ]
-   },
-   {
     "id": "F-013109",
-    "size": 537,
+    "size": 549,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -63225,6 +63226,22 @@
     "evidence": "",
     "kinds": [
      "verifying anything"
+    ]
+   },
+   {
+    "id": "F-060360",
+    "size": 2,
+    "lead": "Stabilize ecosystem via predictive damping of release waves",
+    "today": "Today you can't dampen the chaotic waves of releases before they hit the ecosystem.",
+    "with_this": "With this, you can automatically adjust the timing and content of your release to act as a damper, reducing the amplitude of disruption in the ecosystem.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "releases"
     ]
    },
    {
@@ -64284,19 +64301,19 @@
     ]
    },
    {
-    "id": "F-060360",
+    "id": "F-061339",
     "size": 1,
-    "lead": "Stabilize ecosystem via predictive damping of release waves",
-    "today": "Today you can't dampen the chaotic waves of releases before they hit the ecosystem.",
-    "with_this": "With this, you can automatically adjust the timing and content of your release to act as a damper, reducing the amplitude of disruption in the ecosystem.",
+    "lead": "Predict migration regression risks using production telemetry",
+    "today": "Today you can't know if a migration will break live user flows before it merges.",
+    "with_this": "With this, you can deploy migrations that are proven safe against your last month of real traffic patterns, cutting rollback incidents by ninety percent.",
     "tier": "extreme",
     "cold": null,
-    "wild": 5,
+    "wild": 4,
     "block": null,
     "stage": "candidate",
     "evidence": "",
     "kinds": [
-     "releases"
+     "migrations"
     ]
    },
    {
@@ -64316,6 +64333,25 @@
      "design",
      "features",
      "migrations"
+    ]
+   },
+   {
+    "id": "F-007594",
+    "size": 4,
+    "lead": "Spot bidding for CI resources based on urgency",
+    "today": "Today you can't get your critical tests to run first when the queue is full of low-priority jobs.",
+    "with_this": "With this, you can prioritize your most important work by bidding for immediate execution slots, ensuring that critical paths are never blocked by trivial changes.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 1,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "onboarding",
+     "ops",
+     "refactors",
+     "security"
     ]
    },
    {
@@ -64370,24 +64406,6 @@
      "data",
      "design",
      "migrations"
-    ]
-   },
-   {
-    "id": "F-007594",
-    "size": 3,
-    "lead": "Spot bidding for CI resources based on urgency",
-    "today": "Today you can't get your critical tests to run first when the queue is full of low-priority jobs.",
-    "with_this": "With this, you can prioritize your most important work by bidding for immediate execution slots, ensuring that critical paths are never blocked by trivial changes.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "onboarding",
-     "ops",
-     "refactors"
     ]
    },
    {
@@ -66221,28 +66239,12 @@
     "kinds": [
      "refactors"
     ]
-   },
-   {
-    "id": "F-011000",
-    "size": 1,
-    "lead": "Turn data validation into team side quests",
-    "today": "Today you can't let data consumers fund extra validation for the exact data they care about.",
-    "with_this": "With this, you can spend engineering time on higher-stakes data checks, lowering incident costs and increasing downstream confidence.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data"
-    ]
    }
   ],
-  "families_total": 1664,
+  "families_total": 1718,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2379
+   "total": 2470
   }
  },
  "steer": {
@@ -66276,7 +66278,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.5,
+    "idle_h": 260.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66299,7 +66301,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.7,
+    "idle_h": 260.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66322,7 +66324,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.5,
+    "idle_h": 260.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66345,7 +66347,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.6,
+    "idle_h": 260.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66368,7 +66370,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.4,
+    "idle_h": 260.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66391,7 +66393,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.4,
+    "idle_h": 260.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66414,7 +66416,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.1,
+    "idle_h": 259.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66437,7 +66439,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.2,
+    "idle_h": 259.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66460,7 +66462,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.2,
+    "idle_h": 260.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66483,7 +66485,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.9,
+    "idle_h": 261.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66506,7 +66508,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.5,
+    "idle_h": 261.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66529,7 +66531,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.5,
+    "idle_h": 261.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66552,7 +66554,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.6,
+    "idle_h": 261.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66575,7 +66577,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.6,
+    "idle_h": 261.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66598,7 +66600,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.4,
+    "idle_h": 261.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66621,7 +66623,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.4,
+    "idle_h": 261.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66644,7 +66646,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.4,
+    "idle_h": 261.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66667,7 +66669,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.3,
+    "idle_h": 261.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66690,7 +66692,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.2,
+    "idle_h": 260.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66713,7 +66715,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.1,
+    "idle_h": 260.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66736,7 +66738,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.1,
+    "idle_h": 260.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66759,7 +66761,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.1,
+    "idle_h": 260.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66782,7 +66784,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.9,
+    "idle_h": 260.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66805,7 +66807,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.9,
+    "idle_h": 260.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66828,7 +66830,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 250.9,
+    "idle_h": 260.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66851,7 +66853,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 251.0,
+    "idle_h": 260.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
