@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Publish now refreshes the site's daily stats even while a ship is testing (one starved try per 30 minutes), ship re-picks over a stats or cards data move instead of refusing, doctor and the self-check name stats.json once it is over 2 days old, and the design build no longer bakes numbers over the data placeholders (T-4868).
 - fm code --small holds a small local model to its plan (change checks must fail first, a change request is not answered read-only, the last step must change a file), and Louhi's Smith arm now records its held-out scorecard beside the Claude arm's; the first paired runs showed no pass-rate gain yet (T-2878).
 - A card's escalation no longer swallows smith's budget stop: a run whose --max-usd is spent when a card closes stops right there with the cap's own message (T-4860).
 - MASTER.md's section 10 (Known limitations, 5.7 KB) moves to docs/map/guide-1.md beside sections 2 and 5, its heading kept with a pointer, so the system map has 16 KB of room for a train's file-map lines instead of 0.6 KB (T-5339).
