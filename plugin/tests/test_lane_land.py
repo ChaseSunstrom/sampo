@@ -799,6 +799,22 @@ class ParkLines(LandCase):
                           "--step", "s", "--json").stdout)["id"]
         self.assertRegex(self.land("--first", t).stderr, rf"--first {t}: not a lane")
 
+    def test_first_a_workflow_lane_accepted_after_its_last_commit_is_not_still_building(self):
+        # T-5344: builder_proc is the launching session, alive for days, with no builder_returned: the accept is what
+        # finishes the lane (seven sat "still building" on 2026-11-19); a commit after the accept makes it wait again
+        a = self.lane(1, "a.txt")  # committed just now: not quiet
+        p = c.find_project(self.repo)
+        from sampo import bus
+        x = c.find_brief(p, a)
+        x.meta["builder_proc"] = f"{bus.host_id()}|{os.getpid()}|{bus._proc(os.getpid())[1]}"
+        x.meta["accepted_at"] = round(time.time() - 3600, 1)  # an hour before its commit
+        c.save_brief(p, x)
+        self.assertRegex(self.land("--first", a).stderr, rf"--first {a}: still building")
+        x = c.find_brief(p, a)
+        x.meta["accepted_at"] = round(time.time() + 5, 1)
+        c.save_brief(p, x)
+        self.assertNotRegex(self.land("--first", a).stderr, "still building")
+
 
 class ShipAndFirst(LandCase):
     """T-4252 review: a land that asks a detached ship after a train and also takes a --first id in the same run. The

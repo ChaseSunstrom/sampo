@@ -7487,8 +7487,13 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
     # T-3907: a done task still holding its lane was closed inside it; unmerged commits make it wait like any other
     lanes = [b for b in briefs if b.meta.get("lane") and b.status != "dropped" and os.path.isdir(b.meta["lane"])
              and not b.meta.get("lane_spike")  # T-2340: a spike's code is never merged
-             # T-3824: builder_proc is the launching session, alive long after its builder returned (T-3145)
-             and (b.meta.get("builder_returned") or bus.proc_state(b.meta.get("builder_proc")) != "alive")]
+             # T-3824: builder_proc is the launching session, alive long after its builder returned (T-3145); T-5344: a
+             # workflow agent's has no builder_returned at all, so only an accept (done() reads it against the last
+             # commit) finishes a lane whose launcher lives
+             and (b.meta.get("builder_returned") or b.meta.get("accepted_at")
+                  or bus.proc_state(b.meta.get("builder_proc")) != "alive")]
+    held = {b.id for b in lanes if not b.meta.get("builder_returned")  # a live launcher, no return mark: waits for its accept
+            and bus.proc_state(b.meta.get("builder_proc")) == "alive"}
     if not lanes or p.lane:  # only the main checkout merges; no lane costs no git call
         return []
     main = main_worktree(p.root) or p.root
@@ -7516,7 +7521,8 @@ def finished_lanes(p, briefs, quiet_min=30, fresh=False):
 
     def done(facts):
         return [b.id for b in lanes if (facts.get(b.id) or {}).get("ct") is not None and facts[b.id].get("clean")
-                and (time.time() - facts[b.id]["ct"] >= quiet_min * 60 or returned(b, facts[b.id]["ct"]))]
+                and (returned(b, facts[b.id]["ct"])
+                     or (b.id not in held and time.time() - facts[b.id]["ct"] >= quiet_min * 60))]
     facts = {}
     try:
         with open(cache) as f:

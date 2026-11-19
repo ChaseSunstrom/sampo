@@ -157,6 +157,28 @@ class FinishedLanesBatch(unittest.TestCase):
         young.meta["accepted_at"] = "not a time"  # a damaged stamp is no acceptance, and no crash
         self.assertNotIn("young", c.finished_lanes(self.p, self.briefs, quiet_min=30, fresh=True))
 
+    def test_accepted_a_lane_whose_builder_proc_is_alive_is_finished_by_its_accept_alone(self):
+        # T-5344: a workflow agent's lane has builder_proc = the launching session, alive for days, and no
+        # builder_returned: seven lanes sat "still building" after their accept (2026-11-19)
+        from sampo import bus
+        alive = f"{bus.host_id()}|{os.getpid()}|{bus._proc(os.getpid())[1]}"
+        self.assertEqual(bus.proc_state(alive), "alive")
+        young, done = (next(b for b in self.briefs if b.id == i) for i in ("young", "done"))
+        for b in (young, done):
+            b.meta["builder_proc"] = alive
+        ask = lambda: c.finished_lanes(self.p, self.briefs, quiet_min=30, fresh=True)  # noqa: E731
+        self.assertNotIn("done", ask(), "a live builder and no accept: it waits, quiet or not")
+        self.assertNotIn("young", ask())
+        young.meta["accepted_at"] = round(time.time() - 3600, 1)  # accepted before its last commit: it waits
+        self.assertNotIn("young", ask())
+        done.meta["accepted_at"] = round(time.time(), 1)  # accepted after its last commit, clean tree: finished
+        self.assertIn("done", ask())
+        young.meta["accepted_at"] = round(time.time() + 1, 1)
+        self.assertIn("young", ask(), "no quiet wait either")
+        dirty = next(b for b in self.briefs if b.id == "dirty")
+        dirty.meta.update(builder_proc=alive, accepted_at=round(time.time() + 1, 1))
+        self.assertNotIn("dirty", ask(), "an uncommitted tree is still work in hand")
+
     def test_fresh_awaiting_merge_hands_it_on(self):
         from sampo import lanes
         with mock.patch.object(c, "finished_lanes", return_value=[]) as asked:
