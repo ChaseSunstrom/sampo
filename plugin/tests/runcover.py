@@ -15,7 +15,11 @@ instead of "*"; a browser helpers.devtools or shot.Browser starts counts by the 
 audit event: one an http, https, about: or data: page can't load the repo's files from, else "*"). A process writes
 no line its record file already holds whole (a fork server's every call rewrote all the server had run). The hook
 starts once per process, judges a path it stats once, and drops the audit events it doesn't read at a set lookup:
-the guard ran 2.7 times slower under it (T-3712's red latency tests)."""
+the guard ran 2.7 times slower under it (T-3712's red latency tests).
+T-4288: a "sampo.stamp" audit event names files the code is about to stat only as the stamp of a cache in its own state
+(recall._own_stamp: its own source files); the stats that follow record nothing, so a class that makes a task no
+longer holds all of core.py. Accepted gap: a later stat of the same path by the same process, for any reason, is not
+recorded either."""
 import os
 import sys
 
@@ -369,7 +373,7 @@ def _blind(prog, argv, cwd, env, wrapper=False, driven=False):
 
 
 EVENTS = frozenset(("exec", "open", "sqlite3.connect", "cpython.run_file", "os.listdir", "os.scandir",
-                    "subprocess.Popen", "os.exec", "os.posix_spawn", "os.system", "sampo.page",
+                    "subprocess.Popen", "os.exec", "os.posix_spawn", "os.system", "sampo.page", "sampo.stamp",
                     "os.putenv", "os.unsetenv"))  # what _hook judges
 
 
@@ -412,6 +416,10 @@ def _hook(ev, args):
                      + (["g"] if why == "g" else []))
         elif ev == "os.system":
             _put([f"* system {' '.join(os.fsdecode(args[0]).split())[:200]}"])
+        elif ev == "sampo.stamp":  # T-4288: files about to be stat'ed as the stamp of a cache in the caller's own state
+            memo = _ST["memo"] if os.environ is _ST["env"] else _env()
+            for p in args[0]:  # judged, as _watch's memo holds a path it has judged: the stat that follows writes nothing
+                memo[p if p[:1] == "/" else (p, os.getcwd())] = None
         elif ev == "sampo.page":  # T-3691: a page a driver sends its browser; one of these can't load a file:// URL
             if not str(args[0]).lower().startswith(("about:", "data:", "http://", "https://")):
                 _put([f"* page {' '.join(str(args[0]).split())[:200]}"])

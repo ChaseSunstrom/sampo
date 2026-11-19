@@ -298,6 +298,101 @@ class AffectedSymbols(ForemanTestCase):
             got = smap.ran_tests(top, "888c3d75d^1", "888c3d75d", [hooks])
         self.assertEqual(["plugin/tests/test_firewall.py"], got)
 
+    def test_why_names_each_source_and_the_changed_parts_that_reached_the_most_classes(self):
+        """T-4288: 236 of a lane's 288 affected test modules came only from the run cache and nothing said so, nor that
+        they came through the file read whole, not through the changed function."""
+        from sampo import cli
+        self.ran({"test_drive_beta": [HUB + "::", HUB + "::beta"], "test_drive_text": [HUB],
+                  "test_drive_gamma": [HUB, HUB + "::", HUB + "::gamma"], "test_drive_alpha": [HUB + "::", HUB + "::alpha"]})
+        self.edit("return 2", "return 22")
+        why = {}
+        _, tests, _ = cli.affected(self.p, why=why)
+        drove = {f"tests/test_drive_{n}.py" for n in ("beta", "text", "gamma")}
+        self.assertEqual(drove, why["sources"]["run cache"])
+        self.assertEqual({HUB: 2, HUB + "::beta": 1}, why["parts"])
+        self.assertEqual(set(tests), set().union(*why["sources"].values()), "every test has a source")
+        before = self.fm("task", "show", "T-0001").stdout
+        out = self.fm("check", "--affected", "--why").stdout
+        self.assertIn(f"Affected: {len(tests)} test file(s) for 1 changed file(s); nothing run.", out)
+        self.assertIn("  run cache: 3 (3 only by it)", out)
+        self.assertIn("  hub symbol: 3 (3 only by it)", out)
+        self.assertLess(out.index(f"2 classes: {HUB} (the whole file)"), out.index(f"1 classes: {HUB}::beta"))
+        self.assertIn(f"  2 classes: {HUB}\n", out.split("depend on whole")[1], "of the 4 recorded classes")
+        self.assertEqual(before, self.fm("task", "show", "T-0001").stdout, "nothing run, nothing recorded")
+        data = json.loads(self.fm("check", "--affected", "--why", "--json").stdout)
+        self.assertEqual(sorted(drove), data["sources"]["run cache"])
+        self.assertEqual({"run cache": 3, "hub symbol": 3}, data["only"])
+        self.assertEqual({HUB: 2, HUB + "::beta": 1}, data["parts"])
+        self.assertEqual(4, data["classes"])
+
+    def test_why_refuses_the_flags_that_would_make_it_explain_another_set(self):
+        """--why explains the set of a plain `check --affected`: --since, --hold, --shape-green and --evidence change
+        that set, so together they are refused (naming them), never ignored."""
+        self.edit("return 2", "return 22")
+        for flags in (["--since", "HEAD"], ["--hold"], ["--shape-green"], ["--evidence", "T-0001"],
+                      ["--hold", "--since", "HEAD", "--evidence", "T-0001", "--shape-green"]):
+            got = self.fm("check", "--affected", "--why", *flags, check=False)
+            self.assertNotEqual(0, got.returncode, flags)
+            for f in flags:
+                if f.startswith("--"):
+                    self.assertIn(f, got.stderr, f"{flags}: the refusal names {f}")
+            self.assertNotIn("nothing run", got.stdout, flags)
+        self.assertEqual(0, self.fm("check", "--affected", "--why", check=False).returncode)
+
+    def test_an_existence_probe_counts_from_every_live_record(self):
+        """The newest-record rule is for a .py read whole: a probe ("?path": does it exist) in an older record still
+        selects the class, as a data file does."""
+        import run
+        own = ["tests/test_drive_alpha.py", "tests/test_drive_alpha.py::", "tests/test_drive_alpha.py::Drive.test_a"]
+        cache = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": os.path.join(self.tmp, "cache")})
+        cache.start()
+        self.addCleanup(cache.stop)
+        path = run.cache_path(os.path.realpath(os.path.join(self.repo, ".git")))
+        run.save_cache(path, {"test_drive_alpha.Drive": ["old", 1, [*own, "?" + HUB, HUB + "::delta"]]}, 0)
+        run.save_cache(path, {"test_drive_alpha.Drive": ["new", 1, [*own, HUB + "::", HUB + "::alpha"]]}, 0)
+        self.edit("return 2", "return 22")  # beta: ran by neither record
+        self.assertIn("tests/test_drive_alpha.py", self.run_affected()[0], "an older record's probe of the hub counts")
+
+    def test_a_source_file_read_whole_counts_from_the_newest_record_only(self):
+        """T-4288: run.py keeps three records a class. A class that stat'ed the hub once kept being selected by every
+        edit to it until three newer records pushed that one out; the functions it ran count from every record."""
+        import run
+        own = ["tests/test_drive_alpha.py", "tests/test_drive_alpha.py::", "tests/test_drive_alpha.py::Drive.test_a"]
+        cache = mock.patch.dict(os.environ, {"XDG_CACHE_HOME": os.path.join(self.tmp, "cache")})
+        cache.start()
+        self.addCleanup(cache.stop)
+        path = run.cache_path(os.path.realpath(os.path.join(self.repo, ".git")))
+        run.save_cache(path, {"test_drive_alpha.Drive": ["old", 1, [*own, HUB, "data/table.json", HUB + "::delta"]]}, 0)
+        run.save_cache(path, {"test_drive_alpha.Drive": ["new", 1, [*own, HUB + "::", HUB + "::alpha"]]}, 0)
+        self.assertEqual(["new", "old"], [r[0] for r in run.load_cache(path)[1]["test_drive_alpha.Drive"]])
+        self.edit("return 2", "return 22")  # beta: the class ran alpha and, once, delta
+        self.assertNotIn("tests/test_drive_alpha.py", self.run_affected()[0], "the old record's whole hub no longer counts")
+        self.edit("return 22", "return 2")
+        self.edit("return x", "return x or 0")  # delta, which only the older record ran
+        self.assertIn("tests/test_drive_alpha.py", self.run_affected()[0], "a function an older record ran still counts")
+        self.edit("return x or 0", "return x")
+        self.write("data/table.json", "{}\n")
+        self.assertIn("tests/test_drive_alpha.py", self.run_affected()[0], "a data file read whole counts from any record")
+        run.save_cache(path, {"test_drive_alpha.Drive": ["newer", 1, [*own, HUB, HUB + "::alpha"]]}, 0)
+        os.remove(os.path.join(self.repo, "data/table.json"))
+        self.edit("return 2", "return 22")
+        self.assertIn("tests/test_drive_alpha.py", self.run_affected()[0], "whole in the newest record: it reads it now")
+
+    def test_broad_lists_the_files_a_share_of_the_recorded_classes_depend_on_whole(self):
+        """T-4288: the one number that showed the fault: how many classes hold a file whole (read or only stat'ed)."""
+        from sampo import map as smap
+        with mock.patch.dict(os.environ, {"XDG_CACHE_HOME": os.path.join(self.tmp, "none")}):
+            self.assertEqual((0, []), smap.broad(self.repo), "no run cache: nothing to say")
+        self.ran({"test_drive_beta": [HUB + "::", HUB + "::beta", "src/other.py"],
+                  "test_drive_text": [HUB, "src/other.py", "?gone.txt", "src/"],
+                  "test_drive_alpha": [HUB + "::", HUB + "::alpha", "src/", "?gone.txt"]})
+        self.assertEqual((3, [("src/other.py", 2)]), smap.broad(self.repo, 0.5),
+                         "an existence probe, a folder listing and a function are not a whole file")
+        total, files = smap.broad(self.repo, 0.3)
+        self.assertEqual(3, total)
+        self.assertEqual([("src/other.py", 2), (HUB, 1)], files[:2], "most shared first")
+        self.assertIn(("tests/test_drive_text.py", 1), files, "each class's own test file, one class each")
+
     def test_json_lists_per_hub_the_symbols_and_tests_chosen(self):
         self.edit("return 2", "return 22")
         out = json.loads(self.fm("check", "--affected", "--json").stdout)

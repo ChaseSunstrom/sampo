@@ -537,25 +537,62 @@ def _ran_quals(old, new, lo, ln):
     return ra[0] | rb[0], ra[1] | rb[1]
 
 
-def ran_tests(root, base, tree, paths):
+def _run_cache(root):
+    """The test runner's cache for root's repo, (paths, classes), or None: run.py's format is {"paths": [key, ...],
+    "classes": {id: [[digest, tests, [index, ...]], ...]}}, one file per repo (its git common dir) under the user's
+    cache folder."""
+    common = c._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", fail=None)
+    if not common:
+        return None
+    import hashlib
+    cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "sampo",
+                         "run-cache", hashlib.sha1(os.fsencode(os.path.realpath(common.strip()))).hexdigest()[:16] + ".json")
+    try:
+        with open(cache) as f:
+            d = json.load(f)
+        return d["paths"], d["classes"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def broad(root, share=0.1):
+    """T-4288: (recorded classes, [(path, classes)]) for the files at least `share` of the classes with a function
+    record depend on as a whole (read, or only stat'ed: the recorder can't tell what a stat was for), most shared
+    first. An edit to one reruns all of those classes and puts their test files in every affected set, so a file here
+    that isn't a test helper names a reader worth a look: 630 of 1,667 classes held every plugin/lib/sampo file whole
+    because task new's covered note stat'ed the package for its cache. Each class by its newest record (the first of
+    the three run.py keeps): what it reads now. No cache: (0, [])."""
+    got = _run_cache(root)
+    if not got:
+        return 0, []
+    table, classes = got
+    fn = {i for i, k in enumerate(table) if "::" in k}
+    whole = {i for i, k in enumerate(table) if i not in fn and k[:1] not in ("?", "*", "\0") and not k.endswith("/")}
+    n, total = collections.Counter(), 0
+    for recs in classes.values():
+        new = next((r[2] for r in recs if not fn.isdisjoint(r[2])), None)
+        if new:
+            total += 1
+            n.update(whole.intersection(new))
+    need = max(1, share * total)
+    return total, sorted(((table[i], k) for i, k in n.items() if k >= need), key=lambda x: (-x[1], x[0]))
+
+
+def ran_tests(root, base, tree, paths, detail=None):
     """T-3603: the test files of the classes the test runner's cache (plugin/tests/run.py: per class, what its last
     green runs read and the functions they ran) says ran a changed function of paths or read a changed file whole,
     between `base` and git tree `tree`: a test that drives code only through a hook's JSON or a child process (T-3670's
     test_firewall.OutlineFirst) names none of it, so no map link or symbol search finds it. A .py change that can't be
     told by function selects every class that ran any of the file. Only adds: a class without a record, or whose test
-    file is gone, adds nothing."""
-    common = c._git(root, "rev-parse", "--path-format=absolute", "--git-common-dir", fail=None)
-    if not paths or not tree or not common:
+    file is gone, adds nothing. T-4288: detail gets {changed part: the classes it reached}. A .py read whole counts from
+    a class's newest record only, and the cache is one file per repo, shared by every worktree: a green run of lane L1
+    can push out the older record that showed a whole-file read L2's older test code still does, so L2's affected set may
+    miss that class (function keys, probes and data files count from every record). The post-merge full verify catches
+    what that gap lets through."""
+    got = _run_cache(root) if paths and tree else None
+    if not got:
         return []
-    import hashlib
-    cache = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "sampo",
-                         "run-cache", hashlib.sha1(os.fsencode(os.path.realpath(common.strip()))).hexdigest()[:16] + ".json")
-    try:  # run.py's format: {"paths": [key, ...], "classes": {id: [[digest, tests, [index, ...]], ...]}}
-        with open(cache) as f:
-            d = json.load(f)
-        table, classes = d["paths"], d["classes"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return []
+    table, classes = got
     changed, funcs, fn = set(paths), {}, set()
     for i, k in enumerate(table):
         f, sep, q = k.partition("::")
@@ -573,16 +610,24 @@ def ran_tests(root, base, tree, paths):
                 hits.add(i)
     out = set()
     star = next((i for i, k in enumerate(table) if k == "*"), -1)
+    wholepy = {i for i in hits if i not in fn and table[i].endswith(".py") and table[i][:1] != "?"}  # a probe is no read
     for cid, recs in classes.items() if hits else ():
         # a record from before function keys names each module the class imported as read whole: only a newer one counts
         # (T-3711: as a fallback it selected nearly every class for any change until a full re-record). T-4554: one
         # holding "*" is a newer one that ran its code in a child the recorder couldn't follow (the hook or the CLI
         # through a launcher: test_sampo_spelling.Spelling): no function key can name, so the files it read whole do
-        idx = [i for r in recs if star in r[2] or not fn.isdisjoint(r[2]) for i in r[2]]
-        if not idx:
+        live = [r for r in recs if star in r[2] or not fn.isdisjoint(r[2])]
+        if not live:
             continue
+        # T-4288: a .py read whole counts from the class's newest record only (run.py keeps three, newest first): the
+        # functions it ran still count from all three, and a class that stopped stat'ing or opening a source file
+        # stops being selected by every edit to it at its next green run, not three runs later
+        idx = set(live[0][2]).union(i for r in live[1:] for i in r[2] if i not in wholepy)
         if hits.isdisjoint(idx):
             continue
+        if detail is not None:
+            for i in hits.intersection(idx):
+                detail[table[i]] = detail.get(table[i], 0) + 1
         mod = cid.rsplit(".", 1)[0].rpartition(".")[2] + ".py"  # run.py's id: the TestCase's module, then its name
         own = next((table[i].partition("::")[0] for i in idx if os.path.basename(table[i].partition("::")[0]) == mod), None)
         if own and c.TESTISH.search(mod) and os.path.isfile(os.path.join(root, own)):

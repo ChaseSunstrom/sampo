@@ -509,6 +509,16 @@ class Recorder(unittest.TestCase):
                            capture_output=True, text=True, check=True, env=dict(os.environ, RUNPY_COVER=os.devnull))
         self.assertEqual(r.stdout.split(), ["True"] * 4, "rmtree keeps its fd-based, symlink-safe walk")
 
+    def test_a_file_named_as_a_cache_stamp_is_not_a_whole_file_once_stat_ed(self):
+        """T-4288: recall's kept briefs are stamped by the stats of recall.py and core.py; as whole files they put
+        every class that makes a task (630 of 1,667) in the affected set of any edit to either."""
+        code = ("import mod_a, mod_b\n%sos.stat(mod_a.__file__)\nos.stat('lib/mod_b.py')\nos.stat('data.txt')\n"
+                "os.path.exists('folder/f.txt')\n")
+        got = self.record(code % "sys.audit('sampo.stamp', (mod_a.__file__, 'lib/mod_b.py', 'folder/f.txt'))\n")
+        self.assertLessEqual({"lib/mod_a.py::", "lib/mod_b.py::", "data.txt"}, got, "what it ran, and another file's stat")
+        self.assertFalse({"lib/mod_a.py", "lib/mod_b.py", "folder/f.txt"} & got, "named as a stamp: not read whole")
+        self.assertLessEqual({"lib/mod_a.py", "lib/mod_b.py", "folder/f.txt"}, self.record(code % ""), "unnamed: whole")
+
     def test_it_starts_once_though_site_runs_its_pth_twice(self):  # T-3691: a venv seeing system packages does
         r = subprocess.run([self.py, "-c", "import os, posix, runcover; f = os.lstat; runcover.setup(runcover.PY)\n"
                             "print(os.lstat.__wrapped__ is posix.lstat, os.lstat is f)"],

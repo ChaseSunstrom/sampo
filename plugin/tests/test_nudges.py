@@ -8,6 +8,7 @@ from helpers import ForemanTestCase
 class Covered(ForemanTestCase):
     def setUp(self):
         super().setUp()
+        os.environ.pop("FOREMAN_NO_COVERED", None)  # T-4288: the note is off in the tests' default; here it is the subject
         self.fm("init")
 
     def test_a_request_an_fm_command_covers_gets_the_note(self):

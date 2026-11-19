@@ -86,13 +86,25 @@ def _brief_entry(b):
                      if x.startswith("- added late: ")]}
 
 
+def _own_stamp(*files):
+    """[[file, mtime_ns, size]] of this code's own source files: the stamp of a cache kept in the project's state and
+    filled by the code they hold. T-4288: it says so first, a "sampo.stamp" audit event (as "sampo.page"): the test
+    runner's recorder counts a stat of a tracked file as a read of the whole file, and this one made every test class
+    that makes or focuses a task (630 of 1,667) depend on all of core.py and of this file, so each ran again on any
+    edit to either. Sound only for a cache in the caller's own state: whoever reads it there also ran the code that
+    filled it, and is recorded by the functions it ran. A cache shared between runs (_kept's, beside the bytecode)
+    stays a whole-file dependency."""
+    sys.audit("sampo.stamp", files)
+    return [[x, st.st_mtime_ns, st.st_size] for x, st in ((x, os.stat(x)) for x in files)]
+
+
 def _brief_docs(p, skip=None):
     """(kind, label, words, tier of a finished brief or None, extra) for each brief, archive included; extra has the
     age in days, the files it touched and its step count. T-3692: each brief's entry is kept in cache/recall-briefs.json
     under its file's (inode, mtime_ns, size) and this file's and core's stats, so a focus reads and stems only the
     briefs that changed (it re-read and re-stemmed all of them); a retired lesson drops out here, at each call."""
     path = os.path.join(p.dir, "cache", "recall-briefs.json")
-    src = [[x, st.st_mtime_ns, st.st_size] for x, st in ((x, os.stat(x)) for x in (__file__, c.__file__))]
+    src = _own_stamp(__file__, c.__file__)
     try:
         with open(path, encoding="utf-8") as fh:
             got = json.load(fh)

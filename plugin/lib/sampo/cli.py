@@ -516,7 +516,12 @@ def _reask_note(p, tid, text):
 
 
 def _covered_note(p, tid, text):
-    """T-0256: the request may already be an fm command; say so before anything is built."""
+    """T-0256: the request may already be an fm command; say so before anything is built. T-4288: not under
+    FOREMAN_NO_COVERED=1 (the tests' default) under the test runner's own marker (SAMPO_SLOT, which run.py sets in every
+    class's environment and core.mirror_env reads as FOREMAN_SLOT; a real session with the switch set still gets the note): the note's cache check stats every
+    file of the package, which made 630 test classes depend on all of them."""
+    if os.environ.get("FOREMAN_NO_COVERED") == "1" and os.environ.get("FOREMAN_SLOT"):
+        return ""
     try:
         from sampo import recall
         hits = recall.covered(text)
@@ -7169,6 +7174,35 @@ def _skip_env(skip):
     return dict(env, FOREMAN_SKIP_TESTS=",".join(sorted(skip))) if skip else env
 
 
+BROAD_SHARE = 0.1  # T-4288: a file this share of the recorded test classes depend on whole is named by --why
+
+
+def _affected_why(p, args):
+    """T-4288: sampo check --affected --why runs nothing and says where the affected set comes from: the tests per
+    source and how many only that source picked, the changed parts that reached the most recorded classes (a whole
+    file there means classes that read or stat'ed it, not ran a function of it), and the files a tenth of the classes
+    depend on whole, where one incidental reader costs every lane its affected run."""
+    from sampo import map as smap
+    why = {}
+    _, tests, changed = affected(p, why=why)
+    sources = {k: sorted(v) for k, v in (why.get("sources") or {}).items() if v}
+    only = {k: sum(1 for t in v if not any(t in w for j, w in sources.items() if j != k)) for k, v in sources.items()}
+    parts = sorted((why.get("parts") or {}).items(), key=lambda kv: (-kv[1], kv[0]))
+    total, broad = smap.broad(p.root, BROAD_SHARE)
+    lines = [f"Affected: {len(tests)} test file(s) for {len(changed)} changed file(s); nothing run."]
+    lines += [f"  {k}: {len(v)} ({only[k]} only by it)" for k, v in sorted(sources.items(), key=lambda kv: -len(kv[1]))]
+    if parts:
+        lines.append("Changed parts by the recorded test classes they reach (run cache):")
+        lines += [f"  {n} classes: {k if '::' in k else k + ' (the whole file)'}" for k, n in parts[:12]]
+    if broad:
+        shown, more = c.more(broad, 15)
+        lines.append(f"Files at least {BROAD_SHARE:.0%} of the {total} recorded classes depend on whole (an edit reruns them all):")
+        lines += [f"  {n} classes: {k}" for k, n in shown] + ([f"  {more} (--json has all)"] if more else [])
+    out(args, {"tests": tests, "changed": sorted(changed), "sources": sources, "only": only, "parts": dict(parts),
+               "classes": total, "broad": [{"path": k, "classes": n} for k, n in broad]}, "\n".join(lines))
+    return 0
+
+
 VENV_DIRS = (".venv", "venv")  # a Python project's own environment, by the two names tools give it (mint.DEP_DIRS)
 
 
@@ -7571,7 +7605,7 @@ def _own_view(p, b, base, changed=None, landing=True, span=None):
 
 
 def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=False, shape_green=False, lock=None,
-             among=None):
+             among=None, why=None):
     """(command, tests, changed files) for the tests linked (fm map) to files changed since the task started, with the
     project's template; command None when no test is linked. fm check --affected and the ambient runner (T-0705).
     `hold` (T-4286): the run always holds the repo-shape classes, whatever files changed. `shape_green` (T-4563): the
@@ -7636,9 +7670,14 @@ def affected(p, b=None, skipped=None, since=None, detail=None, only=None, hold=F
         tree = c.worktree_tree(p.root) if wide else None
         picked = _hub_tests(p, m, base, sorted(wide), detail, tree)  # T-3306: a hub file's symbols, not the whole file
         # T-3603: the tests the run cache saw run a changed function (T-3670: one that drives a hook only by its JSON)
-        ran = set(smap.ran_tests(p.root, base, tree, sorted(wide))) if wide else set()
-        every = sorted(set(smap.tests_for(m, sorted(wide - set(picked)))) | set().union(*picked.values())
-                       | own | importers | paired | broke | budget | rules | ran)
+        parts = {} if why is not None else None  # T-4288: which changed part reached how many recorded classes
+        ran = set(smap.ran_tests(p.root, base, tree, sorted(wide), detail=parts)) if wide else set()
+        linked = set(smap.tests_for(m, sorted(wide - set(picked))))
+        if why is not None:  # T-4288: where each test came from (sampo check --affected --why)
+            why.update(parts=parts, sources={"changed test": own, "map link": linked, "hub symbol": set().union(*picked.values()),
+                                             "test importer": importers, "co-change": paired, "once broke": broke,
+                                             "import budget": budget, "rule test": rules, "run cache": ran})
+        every = sorted(linked | set().union(*picked.values()) | own | importers | paired | broke | budget | rules | ran)
     if among is not None:
         every = [x for x in every if x in among]
     fill =lambda tpl, ts: tpl.replace("{tests}", " ".join(shlex.quote(t) for t in ts)).replace(  # noqa: E731
@@ -7869,6 +7908,14 @@ def progress_of(rec):
 
 def _check_affected(p, args):
     """Only the tests linked (fm map) to files changed since the task started, with the project's template."""
+    if getattr(args, "why", False):  # T-4288: it explains a plain run's set, so a flag that changes the set is refused
+        sets = [f for f, on in (("--since", getattr(args, "since", None)), ("--hold", getattr(args, "hold", False)),
+                                ("--shape-green", getattr(args, "shape_green", False)),
+                                ("--evidence", getattr(args, "evidence", None))) if on]
+        if sets:
+            raise UsageError(f"--why explains the plain affected set and runs nothing: {', '.join(sets)} change(s) that set, "
+                             "so drop them (or drop --why)")
+        return _affected_why(p, args)
     skip = {}  # T-1101: another open task's red-first test files, left out as the full gates leave them out
     hubs = {}  # T-3306: per changed hub file, the symbols and tests chosen
     hold, since = bool(getattr(args, "hold", False)), getattr(args, "since", None)  # T-4286: sampo lane accept's own check
@@ -9844,6 +9891,8 @@ def _build_parser(only=None):
     s.add_argument("--fail-fast", action="store_true", help="stop at the first failing gate (while iterating)")
     s.add_argument("--affected", action="store_true", help="only the tests linked to files changed since the task "
                                                            "started (sampo map); the full gates still decide at the end")
+    s.add_argument("--why", action="store_true", help="with --affected: run nothing; say which source picked each "
+                                                      "test and which files most test classes depend on whole")
     s.add_argument("--evidence", metavar="ID", help="record each result as evidence on this task")
     s.add_argument("--lock", action="store_true", help="in a lane, with --evidence ID --step N: the bounded behaviour lock "
                                                        "for a CLEAN task: only the tests linked to its scope's files (at "
