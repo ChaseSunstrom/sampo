@@ -261,6 +261,43 @@ WATCH = """(() => { window.__links = [];
     if (v && window.__links[window.__links.length - 1] !== v) window.__links.push(v); })
   .observe(document, {attributes: true, subtree: true, attributeFilter: ["data-link"]}); })()"""
 
+# T-3019: every canvas text's size as the viewer reads it (the font's px times the context's scale, per CSS px).
+# The board's painted panels are left out: about 100 texts at 7-10px on hand-laid line pitches are their own task
+# (it paints each panel's still layer on a detached buffer; the forge and the network write text only on their own canvas).
+CANVAS_TEXT = """(() => { const P = window.CanvasRenderingContext2D && CanvasRenderingContext2D.prototype; if (!P) return;
+  window.__small = []; window.__cmin = 99; window.__ctexts = 0; window.__boxes = {};
+  for (const k of ["fillText", "strokeText"]) { const f = P[k]; P[k] = function (text, x, y) {
+    const s = String(text).trim(), m = /([0-9.]+)px/.exec(this.font), c = this.canvas;
+    if (s && m && this.globalAlpha > 0.05 && ++window.__ctexts && c.isConnected && !c.closest("#board")) {
+      const t = this.getTransform(), k2 = c.clientWidth / c.width, px = +m[1] * Math.hypot(t.a, t.b) * k2;
+      if (c.id === "scene" && this.textAlign === "left") {  // the forge's labels: where each one lands, in CSS px
+        const x0 = (t.a * x + t.e) * k2, yb = (t.d * y + t.f) * k2, w = this.measureText(String(text)).width * t.a * k2;
+        window.__boxes[s] = [x0, yb - px, x0 + w, yb + 3 * t.a * k2, performance.now()];
+      }
+      window.__cmin = Math.min(window.__cmin, px);
+      if (px < 10.95 && window.__small.length < 30 && !window.__small.some(x => x.endsWith(" " + s.slice(0, 24))))
+        window.__small.push(px.toFixed(1) + "px " + s.slice(0, 24));
+    }
+    return f.apply(this, arguments); }; } })()"""
+# T-3019: every visible DOM text's size (SVG text by its screen scale); .vh is the screen readers' copy
+CUT_LISTS = """(() => Array.from(document.querySelectorAll('.rail-list, .rows')).filter(l => l.checkVisibility())
+  .map(l => { const s = getComputedStyle(l); return {id: l.id, rows: l.children.length,
+    over: Math.round(l.scrollHeight - l.scrollTop - l.clientHeight), mask: s.maskImage || s.webkitMaskImage || 'none'}; }))()"""
+
+TEXT_SIZES = """(() => { const out = [], seen = new Set(); let n = 0; const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let x = w.nextNode(); x; x = w.nextNode()) { const s = x.nodeValue.trim(), e = x.parentElement; if (!s || !e) continue;
+    if (e.closest(".vh") || !e.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})) continue;
+    let px = parseFloat(getComputedStyle(e).fontSize);
+    if (e instanceof SVGElement && e.getScreenCTM) { const m = e.getScreenCTM(); if (m) px *= Math.hypot(m.a, m.b); }
+    n++;
+    const key = e.tagName.toLowerCase() + "." + (e.getAttribute("class") || "").split(" ")[0];
+    if (px < 10.95 && !seen.has(key)) { seen.add(key); out.push(key + " " + px.toFixed(1) + "px " + s.slice(0, 24)); } }
+  const c = document.getElementById("scene"), r = c ? c.getBoundingClientRect() : null;
+  const covers = r ? [document.getElementById("focus"), document.querySelector(".kinds")].filter(Boolean).map(e => e.getBoundingClientRect())
+    .filter(b => b.width && b.height && b.bottom > r.top && b.top < r.bottom).map(b => [b.left - r.left, b.top - r.top, b.right - r.left, b.bottom - r.top]) : [];
+  return {dom: out, texts: n, canvas: window.__small || [], cmin: window.__cmin || 99, ctexts: window.__ctexts || 0,
+          boxes: window.__boxes || {}, stage: r ? [r.width, r.height] : null, covers}; })()"""
+
 PROBE = """(() => { const $ = id => document.getElementById(id), n = (id, sel) => $(id) ? $(id).querySelectorAll(sel).length : -1;
   const c = $("scene"), r = c ? c.getBoundingClientRect() : {width: 0, height: 0};
   return {links: window.__links, motion: document.documentElement.getAttribute("data-motion"),
@@ -271,6 +308,11 @@ PROBE = """(() => { const $ = id => document.getElementById(id), n = (id, sel) =
     bench: n("bench", "tbody tr"), ticker: n("ticker", "li"),
     benches: c ? c.dataset.benches || "" : "", nodes: +(c && c.dataset.nodes || 0), sparks: +(c && c.dataset.sparks || 0), flown: +(c && c.dataset.flown || 0),
     lit: +(c && c.dataset.lit || 0), scene: [Math.round(r.width), Math.round(r.height)], canvas: c ? [c.width, c.height] : [0, 0],
+    forge: c ? {frames: +(c.dataset.frames || 0), idle: +(c.dataset.fidle || 0), med: +(c.dataset.fmed || 0), p95: +(c.dataset.fp95 || 0),
+                work: +(c.dataset.fwork || 0), calm: +(c.dataset.calm || 0)} : null,
+    jeffbox: c && c.dataset.jeff ? c.dataset.jeff.split(",").map((v, i) => +v + (i & 1 ? r.top : r.left)) : null,
+    focusbox: (() => { const q = $("focus"); if (!q || getComputedStyle(q).display === "none") return null;
+      const b = q.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom]; })(),
     hash: location.hash, sessions: n("sessions-list", "li"), projects: n("projects-list", "li"),
     picks: n("rail", "button[data-project]"), rail: $("rail") ? $("rail").textContent : "",
     railhtml: $("rail") ? $("rail").innerHTML : "", project: $("project") ? $("project").textContent : "",
@@ -321,9 +363,10 @@ class Page(unittest.TestCase):
         self.last = snaps()[-1]
 
     def watch(self, size, reduced, done, within=45, step=None, hash="", theme="forge", scheme=None, all_snaps=None,
-              motion=False):
+              motion=False, init=None, extra=None):
         """Load the page at size, poll PROBE until done(got) or `within` s; (got, errors). step(b, got), if given, runs
-        on every poll (it clicks, reloads); got["reqs"] lists the requests the server saw.
+        on every poll (it clicks, reloads); got["reqs"] lists the requests the server saw. init: a script run before
+        the page's own; extra: an expression read on every poll into got["extra"].
         A green run returns in about 8 s; the long ceiling is for a loaded machine (the gates run 16 at a time)."""
         from sampo import shot
         srv, errs = serve(), []
@@ -338,6 +381,8 @@ class Page(unittest.TestCase):
             b.call("Runtime.enable", b.sid)
             b.call("Log.enable", b.sid)
             b.call("Page.addScriptToEvaluateOnNewDocument", b.sid, source=WATCH)
+            if init:
+                b.call("Page.addScriptToEvaluateOnNewDocument", b.sid, source=init)
             if theme:  # T-3055: the page is modern by default; the older tests look at the forge (the viewer's remembered choice)
                 b.call("Page.addScriptToEvaluateOnNewDocument", b.sid, source=f"try {{ if (!sessionStorage.getItem('t')) {{ "
                        f"sessionStorage.setItem('t', '1'); localStorage.setItem('sampo-live-theme', '{theme}'); }} }} catch (e) {{}}")
@@ -349,6 +394,8 @@ class Page(unittest.TestCase):
             deadline = time.monotonic() + within
             while True:
                 got = b.call("Runtime.evaluate", b.sid, expression=PROBE, returnByValue=True)["result"].get("value") or {}
+                if extra:
+                    got["extra"] = b.call("Runtime.evaluate", b.sid, expression=extra, returnByValue=True)["result"].get("value")
                 got["reqs"] = list(srv.log)
                 got["posts"], got["token"] = list(srv.posts), srv.token
                 if step and not done(got):
@@ -632,6 +679,106 @@ class Page(unittest.TestCase):
         got, errs = self.watch((1440, 900), False, idle, step=step, hash="#view=net", within=60, motion=True)
         self.assertEqual(errs, [])
         self.assertTrue(idle(got), seen[-6:])
+
+    def test_the_forge_idles_near_30_fps_and_reports_its_frame_times(self):  # T-3019: an open tab drew 60 fps all day
+        def calm(g):  # three seconds with nothing in flight, and 30 idle frame times to read
+            f = g.get("forge") or {}
+            return f.get("calm", 0) >= 3 and f.get("idle", 0) >= 30
+        got, errs = self.watch((1440, 900), False, calm, within=90, motion=True)
+        self.assertEqual(errs, [])
+        f = got["forge"]
+        self.assertTrue(calm(got), f)
+        sys.stderr.write(f"\nT-3019 forge idle at 1440x900: frame interval median {f['med']} ms, p95 {f['p95']} ms; "
+                         f"work per frame median {f['work']} ms; {f['idle']} idle of {f['frames']} frames drawn\n")
+        self.assertGreaterEqual(f["med"], 28, f"idle draws about 30 fps or less, not 60: {f}")
+        self.assertGreater(f["frames"], 30, "the embers and the smoke still move")
+
+    def text_floor(self, size, theme, ready, hash=""):  # T-3019: no text under 11px, in the page or on a canvas
+        def done(g):
+            x = g.get("extra") or {}
+            return x.get("ctexts", 0) > 0 and x.get("texts", 0) > 20 and ready(g)
+        got, errs = self.watch(size, True, done, hash=hash, theme=theme, init=CANVAS_TEXT, extra=TEXT_SIZES, within=60)
+        where = f"{theme}{hash} at {size[0]}x{size[1]}"
+        self.assertEqual(errs, [], where)
+        self.maxDiff = None  # every offender, not the first few
+        x = got.get("extra") or {}
+        self.assertTrue(done(got), f"{where}: never painted ({x.get('texts')} texts, {x.get('ctexts')} on canvas)")
+        self.assertEqual(x["dom"], [], f"{where}: page text under 11px")
+        self.assertEqual(x["canvas"], [], f"{where}: canvas text under 11px")
+
+    def labels_clear(self, size):  # T-3019 review of the shots: at 11px labels ran off the stage and under the legend
+        def done(g):
+            x = g.get("extra") or {}
+            return len(x.get("boxes") or {}) > 8 and g.get("nodes", 0) > 0 and self.back(g)  # the last snapshot, with the subs
+        # in motion: the still frame leaves the second lines (a bench's steps, a furnace's batch) out
+        got, errs = self.watch(size, False, done, theme="forge", init=CANVAS_TEXT, extra=TEXT_SIZES, within=60, motion=True)
+        where = f"at {size[0]}x{size[1]}"
+        self.assertEqual(errs, [], where)
+        x = got.get("extra") or {}
+        self.assertTrue(done(got), f"{where}: {len(x.get('boxes') or {})} labels drawn")
+        w, h = x["stage"]
+        last = max(b[4] for b in x["boxes"].values())
+        drawn = {k: b[:4] for k, b in x["boxes"].items() if b[4] > last - 100}  # the last still paint's labels
+        self.assertTrue(x["covers"], f"{where}: the plaque and the legend lie over the stage")
+        self.assertGreater(len(drawn), 8, where)
+        for text, (x0, y0, x1, y1) in drawn.items():
+            self.assertTrue(x0 >= 0 and y0 >= 0 and x1 <= w and y1 <= h, f"{where}: {text!r} at {[x0, y0, x1, y1]} leaves the {w}x{h} stage")
+            for c in x["covers"]:
+                self.assertFalse(x0 < c[2] and x1 > c[0] and y0 < c[3] and y1 > c[1], f"{where}: {text!r} at {[x0, y0, x1, y1]} lies under {c}")
+
+    def test_the_forge_labels_stay_on_the_stage_and_off_the_plaque_on_a_laptop(self):
+        self.labels_clear((1366, 768))
+
+    def test_the_forge_labels_stay_on_the_stage_and_off_the_plaque_at_a_desktop(self):
+        self.labels_clear((1440, 900))
+
+    def test_no_text_under_11px_on_the_forge_at_a_desktop(self):
+        self.text_floor((1440, 900), "forge", lambda g: g.get("nodes", 0) > 0 and g.get("ticker", 0) > 0)
+
+    def test_no_text_under_11px_on_the_forge_on_a_phone(self):
+        self.text_floor((390, 844), "forge", lambda g: g.get("nodes", 0) > 0 and g.get("ticker", 0) > 0)
+
+    def test_no_text_under_11px_on_the_board_at_a_desktop(self):
+        self.text_floor((1440, 900), "modern", lambda g: bool(g.get("board")) and g["board"]["painted"])
+
+    def test_no_text_under_11px_on_the_board_on_a_phone(self):
+        self.text_floor((390, 844), "modern", lambda g: bool(g.get("board")) and g["board"]["painted"])
+
+    def test_no_text_under_11px_in_the_network_view(self):
+        self.text_floor((1440, 900), "modern", lambda g: bool(g.get("net")) and g["net"]["painted"], hash="#view=net")
+
+    def plaque_clear(self, size):  # T-3019: below 1400px the rail sits above the stage, and a shorter stage put the plaque on Jeff
+        got, errs = self.watch(size, True, lambda g: g.get("nodes", 0) > 0 and bool(g.get("jeffbox")), theme="forge", within=60)
+        where = f"at {size[0]}x{size[1]}"
+        self.assertEqual(errs, [], where)
+        j, f = got["jeffbox"], got["focusbox"]
+        self.assertTrue(j, f"{where}: the scene names no box for Jeff's towers")
+        self.assertTrue(f, f"{where}: the plaque sits on the stage at this width")
+        self.assertFalse(j[0] < f[2] and j[2] > f[0] and j[1] < f[3] and j[3] > f[1], f"{where}: the plaque {f} covers Jeff's towers {j}")
+
+    def test_the_plaque_leaves_jeffs_towers_clear_on_a_laptop(self):
+        self.plaque_clear((1366, 768))
+
+    def test_the_plaque_leaves_jeffs_towers_clear_on_a_short_screen(self):
+        self.plaque_clear((1280, 720))
+
+    def test_the_plaque_leaves_jeffs_towers_clear_on_a_small_laptop(self):
+        self.plaque_clear((1024, 768))
+
+    def test_the_plaque_leaves_jeffs_towers_clear_on_a_tablet(self):
+        self.plaque_clear((820, 1180))
+
+    def test_a_list_its_panel_cuts_fades_out_at_the_cut(self):  # T-3019 review of the shots: at 11px a session row was cut mid-line
+        def done(g):
+            return g.get("nodes", 0) > 0 and any(x["id"] == "sessions-list" and x["rows"] for x in g.get("extra") or [])
+        got, errs = self.watch((1440, 900), True, done, theme="forge", extra=CUT_LISTS, within=60)
+        self.assertEqual(errs, [])
+        lists = got.get("extra") or []
+        self.assertTrue(done(got), lists)
+        self.assertTrue([x for x in lists if x["over"] > 2], f"the fixture runs a panel's list past its height: {lists}")
+        for x in lists:
+            self.assertEqual(x["over"] > 2, x["mask"] != "none",
+                             f"{x['id']}: a list its panel cuts fades out at the cut; one that fits, or is scrolled to its end, doesn't: {x}")
 
     def test_a_phone_pressing_network_scrolls_the_net_into_view(self):  # T-3034 review
         ctx = {}
@@ -998,11 +1145,11 @@ class Page(unittest.TestCase):
     def test_theme_shots(self):  # T-3055: the pictures for a human; skipped unless asked for
         out = os.environ.get("THEME_SHOTS")
         if not out:
-            self.skipTest("THEME_SHOTS=dir saves t3055-{modern,forge}-{1440,390}-{dark,light}.png")
+            self.skipTest("THEME_SHOTS=dir saves t3055-{modern,forge}-{1440,1366,390}-{dark,light}.png")
         from sampo import shot
         for theme in ("modern", "forge"):
             for scheme in ("dark", "light"):
-                for w, h in ((1440, 900), (390, 844)):
+                for w, h in ((1440, 900), (1366, 768), (390, 844)):  # T-3019: 1366, the rail above a shorter stage
                     srv = serve()
                     b = shot.shared(self.browser, (w, h), reduced=False)
                     try:

@@ -131,6 +131,14 @@ function publish() {
   for (const k of Object.keys(cnt)) if (shown[k] !== cnt[k]) { shown[k] = cnt[k]; cv.dataset[k] = String(cnt[k]); }
 }
 
+// An element laid over the scene, as [left, top, right, bottom] in the scene's CSS px; null when it is off the scene.
+// By layout offsets, not client rects (T-3019): the plaque and the legend arrive with a slide, and a rect read
+// mid-slide is off by up to 18px (the towers once stepped out by a plaque still 18px short of its place).
+function onStage(e) {
+  if (!e || !e.offsetParent || e.offsetParent !== cv.offsetParent || !e.offsetWidth || !e.offsetHeight) return null;
+  const l = e.offsetLeft - cv.offsetLeft, t = e.offsetTop - cv.offsetTop, b = [l, t, l + e.offsetWidth, t + e.offsetHeight];
+  return b[3] > 0 && b[1] < H && b[2] > 0 && b[0] < W ? b : null;
+}
 function geometry() {
   const wide = W / H > 1.25, x = f => f * W, y = f => f * H;
   U = clamp(Math.min(W / 1600, H / 500), 0.55, 1.3);
@@ -146,10 +154,12 @@ function geometry() {
     g.hill = {x: x(0.815), top: y(0.42), w: x(0.065)};
     g.jeff = {x: x(0.135), base: y(0.655)};
     // a short stage puts the towers under the focus card: step them out to its right
-    const fc = $("focus"), s = cv.getBoundingClientRect(), f = fc ? fc.getBoundingClientRect() : null;
     // (only while they fit before the gantry's post; on a narrower stage they stay behind the card)
-    const jx = f ? f.right - s.left + 56 * U : 0;
-    if (f && f.width && f.top - s.top < H && g.jeff.base - 130 * U < f.bottom - s.top + 6 && jx < g.beam.x0 - 66 * U) g.jeff.x = Math.max(g.jeff.x, jx);
+    const f = onStage($("focus")), jx = f ? f[2] + 56 * U : 0;
+    const under = f && g.jeff.base - 130 * U < f[3] + 6 && f[0] < g.jeff.x + 50 * U && f[2] > g.jeff.x - 50 * U;
+    if (under && jx < g.beam.x0 - 66 * U) g.jeff.x = Math.max(g.jeff.x, jx);
+    // T-3019: no room before the post (below 1400px the rail takes the stage's height): the towers stand shorter, under the card's edge
+    else if (under) g.jeff.k = clamp((g.jeff.base - (f[3] + 8) - 9 * U) / (118 * U), 0.5, 1);
     g.lanes = {x0: x(0.05), x1: x(0.29), y: y(0.9)};
     g.jobs = {x0: x(0.69), x1: x(0.95), y: y(0.83)};
     g.road = [[x(0.585), H + 6], [x(0.63), y(0.8)], [x(0.79), y(0.78)], [x(0.8), y(0.565)]];
@@ -168,6 +178,8 @@ function geometry() {
     g.road = [[x(0.6), H + 6], [x(0.64), y(0.76)], [x(0.84), y(0.74)], [x(0.85), y(0.535)]];
     g.ridges = [[0.45, 0.07, "#22264A"], [0.53, 0.045, "#121330"], [0.62, 0.03, "#0A0A1A"]];
   }
+  // T-3019: what the page lays over the scene (the plaque, the spark legend): labels keep off it rather than hide under it
+  g.covers = [onStage($("focus")), onStage(document.querySelector(".kinds"))].filter(Boolean);
   g.strike = {x: g.anvil.x - 16 * U, y: g.anvil.y - 3 * U};
   g.smith = {x: g.anvil.x + 30 * U, y: g.anvil.y - 60 * U};
   g.flue = {x: g.hearth.x, y: g.beam.y - 34 * U};
@@ -290,7 +302,10 @@ function backdrop() {
     G.lamps.push({x: bx - side * 7 * U * s, y: top + 4 * U * s, s, seed: i * 1.7});
   });
   // Jeff's towers
-  G.towers = [[-36, 82, 22], [0, 118, 30], [34, 68, 22]].map(([dx, ht, w]) => ({x: G.jeff.x + dx * U, top: G.jeff.base - ht * U, w: w * U}));
+  G.towers = [[-36, 82, 22], [0, 118, 30], [34, 68, 22]].map(([dx, ht, w]) => ({x: G.jeff.x + dx * U, top: G.jeff.base - ht * U * (G.jeff.k || 1), w: w * U}));
+  // T-3019: the towers' box (battlements to the name under them), so a test can see what covers them
+  if (cv) cv.dataset.jeff = [Math.min(...G.towers.map(T => T.x - T.w * 0.56)), Math.min(...G.towers.map(T => T.top)) - 9 * U,
+    Math.max(...G.towers.map(T => T.x + T.w * 0.56)), G.jeff.base + 25 * U + Math.max(0, 11 - 11 * U)].map(v => v.toFixed(1)).join(",");
   for (const T of G.towers) {
     b.fillStyle = "#121433";
     b.beginPath(); b.moveTo(T.x - T.w / 2, G.jeff.base + 8 * U); b.lineTo(T.x - T.w * 0.44, T.top); b.lineTo(T.x + T.w * 0.44, T.top);
@@ -303,7 +318,7 @@ function backdrop() {
     b.strokeStyle = "rgba(224,144,96,.34)";
     b.beginPath(); b.moveTo(T.x - T.w * 0.44, T.top); b.lineTo(T.x - T.w / 2, G.jeff.base); b.stroke();
     b.fillStyle = "rgba(4,4,12,.7)";
-    for (let k = 0; k < 4; k++) b.fillRect(T.x - 2 * U, T.top + 12 * U + k * 17 * U, 4 * U, 7 * U);
+    for (let k = 0; k < 4 && T.top + 19 * U + k * 17 * U < G.jeff.base; k++) b.fillRect(T.x - 2 * U, T.top + 12 * U + k * 17 * U, 4 * U, 7 * U);
   }
   // Jarvis's lighthouse on the hill
   const P = G.peak || {x: G.hill.x, y: G.hill.top};
@@ -575,22 +590,26 @@ function pool(x, y, rx, ry, c, a) {
 }
 function label(x, y, text, size, color, pri, a, face) {
   if (!text || a < 0.15) return;
-  const s = Math.max(9, size);   // a floored size grows upward from its baseline: drop it by the growth so it clears what it labels
+  const s = Math.max(11, size);  // T-3019: no label under 11px; a floored size grows upward from its baseline: drop it by the growth so it clears what it labels
   labels.push({x, y: y + s - size, text, size: s, color, pri, a, face});
 }
 function drawLabels() {
   labels.sort((p, q) => q.pri - p.pri);
-  const placed = [];
+  const placed = (G.covers || []).map(b => b.slice());
   cx.textBaseline = "alphabetic"; cx.textAlign = "left";
   cx.shadowColor = "rgba(2,3,10,.92)"; cx.shadowBlur = 5;
   for (const L of labels) {
     cx.font = L.face === "display" ? "500 " + (L.size * 1.25).toFixed(1) + "px \"Bodoni Moda\", Didot, Georgia, serif"
       : "500 " + L.size.toFixed(1) + "px \"Martian Mono\", ui-monospace, Menlo, monospace";
     const w = cx.measureText(L.text).width, hgt = L.face === "display" ? L.size * 1.2 : L.size;
-    const x0 = clamp(L.x - w / 2, 4, W - 4 - w), box = [x0 - 4, L.y - hgt, x0 + w + 4, L.y + 3];
-    if (placed.some(p => box[0] < p[2] && box[2] > p[0] && box[1] < p[3] && box[3] > p[1])) continue;
-    placed.push(box);
-    cx.globalAlpha = L.a; cx.fillStyle = L.color; cx.fillText(L.text, x0, L.y);
+    const x0 = clamp(L.x - w / 2, 4, W - 4 - w);
+    // T-3019: at 11px more labels meet: a name (priority 4 and up) tries a line above, then below, before it gives way;
+    // none is drawn cut by the stage's edge
+    const dy = (L.pri >= 4 ? [0, -(hgt + 4), hgt + 4] : [0]).find(d => L.y + d - hgt >= 2 && L.y + d + 3 <= H - 2
+      && !placed.some(p => x0 - 4 < p[2] && x0 + w + 4 > p[0] && L.y + d - hgt < p[3] && L.y + d + 3 > p[1]));
+    if (dy === undefined) continue;
+    placed.push([x0 - 4, L.y + dy - hgt, x0 + w + 4, L.y + dy + 3]);
+    cx.globalAlpha = L.a; cx.fillStyle = L.color; cx.fillText(L.text, x0, L.y + dy);
   }
   cx.shadowBlur = 0; cx.shadowColor = "transparent"; cx.globalAlpha = 1;
   labels.length = 0;
@@ -1139,11 +1158,31 @@ function draw(t, dt, still) {
   }
 }
 
+// T-3019: with nothing in flight the forge draws about 30 fps (its embers, smoke and hammer need no more; an open tab
+// drew 60 all day); a spark, an arrival or a pulse brings back every frame. The ledger still steps on every tick.
+const IDLE_DT = 1 / 30 - 0.004;  // a little under 1/30 s, so a 60 Hz screen's every other tick draws (not every third)
+const ft = {iv: [], work: [], frames: 0, busyAt: 0, tick: 0};
+function stirring() {  // something the eye follows: the intro, a spark in flight, due or landing, a model arriving, leaving or pulsing
+  if (intro || sparks.length || pending.length || flares.length) return true;
+  for (const n of nodes.values())
+    if (Math.abs(n.ta - n.a) > 0.01 || Math.abs(n.tx - n.x) > 0.3 || Math.abs(n.ty - n.y) > 0.3 || n.pulse > 0.03) return true;
+  return false;
+}
+function frameStats(t, iv, work) {  // the last 60 idle frames' intervals and drawn frames' work (ms): median and 95th percentile
+  if (iv && t !== ft.busyAt) { ft.iv.push(iv); if (ft.iv.length > 60) ft.iv.shift(); }
+  ft.work.push(work); if (ft.work.length > 60) ft.work.shift();
+  if (++ft.frames % 15 || !ft.iv.length) return;
+  const q = (a, p) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(p * s.length))]; };
+  Object.assign(cv.dataset, {frames: String(ft.frames), fidle: String(ft.iv.length), fmed: q(ft.iv, 0.5).toFixed(1), fp95: q(ft.iv, 0.95).toFixed(1),
+                             fwork: q(ft.work, 0.5).toFixed(2), calm: (t - ft.busyAt).toFixed(1)});
+}
 function frame() {
   raf = requestAnimationFrame(frame);
-  const t = now(), dt = lastT ? Math.min(0.05, t - lastT) : 0.016;
-  lastT = t;
+  const t = now(), tdt = ft.tick ? Math.min(0.05, t - ft.tick) : 0.016;
+  ft.tick = t;
   if (view === "net") {  // the forge canvas is hidden: only the network draws (the ledger still scrolls)
+    const dt = lastT ? Math.min(0.05, t - lastT) : 0.016;
+    lastT = t;
     pending.length = 0;
     if (NW) {  // draw while something moves; running jobs breathe at 10 fps; otherwise the last picture stands
       const mv = netStep(t, dt);
@@ -1153,16 +1192,21 @@ function frame() {
     netPublish();
     return;
   }
+  tickerStep(tdt);
   if (!G) return;
+  if (stirring()) ft.busyAt = t;
+  else if (lastT && t - lastT < IDLE_DT) return;
+  const dt = lastT ? Math.min(0.05, t - lastT) : 0.016, iv = lastT ? (t - lastT) * 1000 : 0, w0 = performance.now();
+  lastT = t;
   const ig = intro ? clamp((t - introAt - 0.3) / 1.2, 0, 1) : 1;
   step(t, dt, ig);
   draw(t, dt, false);
-  tickerStep(dt);
   publish();
+  frameStats(t, iv, performance.now() - w0);
 }
 function start() {
   if (raf || still() || document.hidden || !cx || view === "board") return;  // the Board runs its own loop
-  lastT = 0;
+  lastT = 0; ft.tick = 0;
   raf = requestAnimationFrame(frame);
 }
 function stop() { if (raf) cancelAnimationFrame(raf); raf = 0; }
@@ -1221,6 +1265,22 @@ function sync(list, items, key, build, first) {
   }
   for (const el of old.values()) el.remove();
   for (const el of list.querySelectorAll(".is-new")) if (t - (el._k || 0) > 3) el.classList.remove("is-new");
+  moreHint(list);
+}
+
+// T-3019: a list its panel cuts fades out at the cut (live.css, data-more), so a part-shown row reads as "more below",
+// not as clipped text; scrolled to its end, or fitting, it doesn't. Only a list that scrolls down: the narrow rail
+// scrolls sideways under its own mask.
+const hinted = new WeakSet();
+function moreHint(list) {
+  if (list.tagName !== "UL") return;
+  if (!hinted.has(list)) {
+    hinted.add(list);
+    list.addEventListener("scroll", () => moreHint(list), {passive: true});
+    if (window.ResizeObserver) new ResizeObserver(() => moreHint(list)).observe(list);
+  }
+  const y = getComputedStyle(list).overflowY;
+  list.toggleAttribute("data-more", (y === "auto" || y === "scroll") && list.scrollHeight - list.scrollTop - list.clientHeight > 2);
 }
 
 function evItem(el, e) {
@@ -2188,7 +2248,10 @@ document.addEventListener("visibilitychange", () => {
 
 if (cx) {
   mk("anvil", "anvil", {}, 0);
-  if (window.ResizeObserver) { const ro = new ResizeObserver(resize); ro.observe(cv); if ($("focus")) ro.observe($("focus")); }
+  if (window.ResizeObserver) {  // T-3019: the legend too, so the labels' cover boxes follow it once its font lands
+    const ro = new ResizeObserver(resize); ro.observe(cv);
+    for (const e of [$("focus"), document.querySelector(".kinds")]) if (e) ro.observe(e);
+  }
   else window.addEventListener("resize", resize);
   resize();
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { if (still()) paintStill(); });
