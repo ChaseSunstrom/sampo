@@ -2895,7 +2895,9 @@ def _lane_tip(main, b):
 def _spawn_check(p, b, main, *, tip, since, tries):
     """T-4286: the detached, niced process that runs the lane's check (see _accept_check_child) in its own session,
     its output in the state's check/ID.log; never waited on. (pid, log), or None when FOREMAN_NO_BACKGROUND is set
-    (the tests') or sampo is paused. The one function the tests replace: none starts a real check."""
+    (the tests') or sampo is paused. The one function the tests replace: none starts a real check.
+    T-4862: try 1 starts the log afresh; a retry (tries > 1) appends, so the cut-off try's lines stay. Each try writes a
+    header (try N, the tip, the UTC time) before its process starts, so the file reads as one block per try."""
     if os.environ.get("FOREMAN_NO_BACKGROUND") or c.panicked():
         return None
     d = os.path.join(p.dir, "check")
@@ -2905,7 +2907,9 @@ def _spawn_check(p, b, main, *, tip, since, tries):
                                  "tries": tries, "since": since, "argv": _check_argv(b, since)}})
     lib = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     env = _scrub_env({**os.environ, "PYTHONPATH": lib + os.pathsep + os.environ.get("PYTHONPATH", "")})
-    with open(log, "w", encoding="utf-8") as out:  # one start's output: a retry replaces it
+    with open(log, "a" if tries > 1 else "w", encoding="utf-8") as out:  # T-4862: a retry keeps the try before it
+        out.write(f"sampo: try {tries} on {tip[:9]} at {c.now()}\n")
+        out.flush()  # the header precedes the child's own lines, which it writes to this file as it runs
         proc = subprocess.Popen(c.nice_argv([sys.executable, "-m", "sampo.train", arg]), cwd=b.meta.get("lane") or main,
                                 stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, start_new_session=True,
                                 env=env)
