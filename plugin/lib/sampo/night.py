@@ -9,6 +9,7 @@ hourly units into state and queues one plugin request; --install (the user's yes
 import fcntl
 import glob
 import json
+import math
 import os
 import re
 import shlex
@@ -23,6 +24,7 @@ from sampo import serve
 
 STALE_H = 12  # a statusline snapshot older than this says nothing about tonight's usage
 JOB_TIMEOUT = 3 * 3600  # seconds one night job may take
+KALEVALA_MAX_S = 4 * 3600  # T-3265: the wall-clock cap on one night's Kalevala rounds (env KALEVALA_MAX_S overrides)
 NIGHT_LAND_WAIT_S = 30 * 60  # T-4278: longest a heavy job waits for a running land before it is skipped
 LAND_POLL_S = 30  # T-4278: how often the wait looks at the land's lock
 HEAVY = ("evolve", "bench", "exam", "sentinel")  # T-4278: a replayed session, exam arms or a bisect's test suites: by a
@@ -96,8 +98,9 @@ def next_lesion(p):
     return next((f for f in files if f not in done), None)
 
 
-def jobs(p):
-    """[(name, fm argv, USD estimate)] of what tonight could do, cheapest and most useful first."""
+def jobs(p, warn=None):
+    """[(name, fm argv, USD estimate)] of what tonight could do, cheapest and most useful first. warn: a list that
+    gets one line for each job left out for a reason the user should see (T-3265)."""
     from sampo import bench
     from sampo import outside
     meta, out = c.read_meta(p), [("scout", ["scout", "--slow"], 0.0)]  # T-0950: free to look: work nobody asked for
@@ -172,7 +175,13 @@ def jobs(p):
     if top and not os.path.exists(os.path.join(p.dir, "draft.json")):  # T-1062: a small task drafted for review, never merged
         out.append((f"draft {top.id}", ["draft"], budget.estimate("run", 1, 0.3)))
     from sampo import kalevala
-    if kalevala.load(p)["towers"]:  # T-3082: Kalevala's rounds run last, until the night's limit or a halt stops them
+    try:
+        towers = kalevala.load(p)["towers"]
+    except (ValueError, TypeError, KeyError, OSError) as e:  # T-3265: a damaged manifest skips Kalevala; the rest still run
+        towers = None
+        if warn is not None:
+            warn.append(f"kalevala skipped: {type(e).__name__}: {e}")
+    if towers:  # T-3082: Kalevala's rounds run last, until the night's limit or a halt stops them
         out.append(("kalevala rounds", ["kalevala", "step"], 0.0))  # est 0: the night's own stop checks the limit each round
     return out
 
@@ -560,21 +569,47 @@ def tick(p, fetch_ci=None):
     return res
 
 
+def _last_err(p):
+    """T-3265: the newest failed Kalevala job's output tail (its 'why' in the manifest), for a crash's row;
+    '' when the manifest has none or can't be read."""
+    from sampo import kalevala
+    try:
+        bad = [s for s in kalevala.load(p).get("steps", []) if s.get("why")]
+    except (OSError, ValueError, TypeError, AttributeError):
+        return ""
+    return f"; last failed job: {bad[-1]['why'][-120:]}" if bad else ""
+
+
 def _kalevala_rounds(p, start, limit):
     """T-3082: Kalevala's rounds (watch, then step) in this process until the night's spend limit, usage, panic or a
     halt stops them. The stop is checked before each round, so the limit holds to the round."""
     from sampo import kalevala
+    try:
+        cap = float(os.environ.get("KALEVALA_MAX_S") or KALEVALA_MAX_S)
+    except ValueError:
+        cap = KALEVALA_MAX_S
+    if not (math.isfinite(cap) and cap >= 0):  # nan or inf never stops the rounds; a negative cap is a typo
+        cap = KALEVALA_MAX_S
+    t0 = time.monotonic()
 
     def stop():
+        if time.monotonic() - t0 >= cap:  # T-3265: the wall-clock cap, so a night can't run Kalevala forever
+            return f"wall-clock cap {cap:.0f} s reached"
         if budget.spent()[0] - start >= limit:
             return f"spend reached the limit ${limit:.2f}"
         if budget.usage_high(p):
             return f"usage climbed ({budget.usage_high(p)})"
-        return c.PAUSED if c.panicked() else None
+        if c.panicked():
+            return c.PAUSED
+        serve.beat(p, "night", JOB_TIMEOUT, "kalevala rounds")  # T-3265: each round beats; a wedged one shows overdue
+        return None
     try:
-        res = kalevala.loop(p, stop=stop)
-    except budget.BudgetError as e:  # a day or run cap: the rounds stop, the night records why
-        return {"name": "kalevala rounds", "exit": 1, "tail": c.fit(c.plain(str(e)), 160)}
+        res = kalevala.loop(p, stop=stop, deadline=t0 + cap)  # the wall-clock cap also cuts a job in flight
+    except budget.BudgetError as e:  # the day's or the per-command cap: a stop, the night's own limit at work
+        return {"name": "kalevala rounds", "exit": 0, "tail": c.fit(c.plain(f"stopped: {e}"), 160)}
+    except Exception as e:  # T-3265: a damaged tower or any crash is this job's failed row, and the night goes on
+        return {"name": "kalevala rounds", "exit": 1,
+                "tail": c.fit(c.redact(c.plain(f"{type(e).__name__}: {e}" + _last_err(p))), 160)}
     why = res.get("halted") or res.get("idle") or ""
     return {"name": "kalevala rounds", "exit": 1 if "failed in a row" in why else 0,
             "tail": c.fit(c.plain(f"{res['rounds']} round(s)" + (f"; stopped: {why}" if why else "")), 160)}
@@ -649,17 +684,19 @@ def cmd_night(args):
         return cli.out(args, {"jobs": [], "skipped": [], "ran": [], "limit": limit,
                                 "note": "sensitive project: nothing runs at night"},
                          "night: sensitive project: nothing runs at night")
-    plan, skipped, total = [], [], 0.0
-    for name, argv, est in jobs(p):
+    plan, skipped, total, warn = [], [], 0.0, []
+    for name, argv, est in jobs(p, warn):
         if args.only and not any(name == n or name.startswith(n + " ") for n in args.only):
             continue
         (plan if total + est <= limit else skipped).append({"name": name, "argv": argv, "usd": est})
         total += est if total + est <= limit else 0
     head = f"night: {len(plan)} job(s), about ${total:.2f} of ${limit:.2f}" + (f" ({note})" if note else "")
+    notes = [f"  warning: {w}" for w in warn]  # T-3265: a job left out for a reason the user should see says why
     rows = [f"  {j['name']}: fm {' '.join(j['argv'])} (≈ ${j['usd']:.2f})" for j in plan] + \
            [f"  skipped {j['name']} (≈ ${j['usd']:.2f}: over the limit)" for j in skipped]
     if args.dry_run:
-        return cli.out(args, {"jobs": plan, "skipped": skipped, "limit": limit, "note": note}, "\n".join([head] + rows))
+        return cli.out(args, {"jobs": plan, "skipped": skipped, "limit": limit, "note": note, "warnings": warn},
+                       "\n".join([head] + notes + rows))
     ran, stopped, t0 = [], "", c.now()
     from sampo.moonscale import BUSY_EXIT as BUSY  # T-3929: a moons store another run holds is busy, not a failure
     for j in plan:  # one at a time; before each, the real spend so far and the usage now (review)
@@ -708,6 +745,6 @@ def cmd_night(args):
     with c.lock(p.dir):
         c.log_event(p, "night", data={"ran": ran, "skipped": [s["name"] for s in skipped], "limit": limit,
                                       "stopped": stopped, "closed": closed}, session=cli.session())
-    cli.out(args, {"ran": ran, "skipped": skipped, "limit": limit, "stopped": stopped, "note": note},
-              "\n".join([head] + [f"  {'·' if x.get('busy') else '✓' if x['exit'] == 0 else '✗'} {x['name']}: {x['tail']}" for x in ran]
+    cli.out(args, {"ran": ran, "skipped": skipped, "limit": limit, "stopped": stopped, "note": note, "warnings": warn},
+              "\n".join([head] + notes + [f"  {'·' if x.get('busy') else '✓' if x['exit'] == 0 else '✗'} {x['name']}: {x['tail']}" for x in ran]
                         + [f"  skipped {s['name']}" for s in skipped] + ([f"  stopped: {stopped}"] if stopped else [])))

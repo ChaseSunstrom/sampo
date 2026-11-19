@@ -5,11 +5,14 @@ import collections
 import concurrent.futures
 import contextlib
 import fcntl
+import functools
 import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -116,6 +119,9 @@ FEATURE = "kalevala"  # Kalevala's own budget line: each tower step is charged h
 EST_JOB = 0.25  # USD per tower step until the feature has its own recent runs (budget.estimate)
 MAX_STEPS = 200  # the manifest's step log keeps the newest this many
 JOB_TIMEOUT = 3 * 3600  # one genesis step, as night.py's jobs
+SAME_STAGE_RUNS = 3  # T-3265: a tower whose stage stays put after this many ran rounds in a row is paused, not spun
+SEEN_MAX = 32  # T-3265 round 3: the states a tower's revisit check keeps, the newest this many
+IDLE_S = 30  # T-3265 round 3: a round that spends nothing waits this long before the next one (night's deadline caps it)
 JOB_VERBS = {"spec": False, "seed": True, "select": True}  # the stages run as jobs; True: the CLI takes a generation
 
 
@@ -317,11 +323,26 @@ def _stage(p, name):
         rune.set_tower(None)
 
 
-def _run(argv, cwd, env):
-    """(exit code, a failure's last output lines): T-3841, 26 towers failed with only 'rc 1' kept and nobody saw why."""
-    r = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, text=True, timeout=JOB_TIMEOUT)
-    tail = [ln for x in (r.stdout, r.stderr) for ln in (x or "").strip().splitlines()[-2:]]  # a reason on either stream
-    return r.returncode, "" if r.returncode == 0 else " | ".join(tail)
+def _run(argv, cwd, env, timeout=JOB_TIMEOUT):
+    """(exit code, a failure's last output lines): T-3841, 26 towers failed with only 'rc 1' kept and nobody saw why.
+    timeout: the night's deadline cuts a job short of JOB_TIMEOUT. The job leads its own session, so a cut kills its
+    children too: a claude -p under genesis would otherwise keep spending after the deadline (T-3265)."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            start_new_session=True)
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # the group: the job and every child it started (unreaped, so pid is ours)
+        except ProcessLookupError:  # the group has ended already
+            pass
+        try:
+            proc.communicate(timeout=10)  # reap it and drain the pipes; a child that escaped the group can't hold this
+        except subprocess.TimeoutExpired:  # ponytail: bounded wait, a child that escaped the group is left running
+            pass
+        raise
+    tail = [ln for x in (out, err) for ln in (x or "").strip().splitlines()[-2:]]  # a reason on either stream
+    return proc.returncode, "" if proc.returncode == 0 else " | ".join(tail)
 
 
 def _held(p, name):
@@ -348,17 +369,46 @@ def _job(p, name, st, argv, env, runner):
     except Exception as e:  # a timeout or a missing interpreter fails this tower's step; the others go on
         rc, why = -1, f"{type(e).__name__}: {e}"
     row = {"tower": name, "stage": st["stage"], "status": "ran" if rc == 0 else "failed", "rc": rc, "at": at}
-    return dict(row, why=c.fit(c.plain(why), 300)) if rc and why else row
+    return dict(row, why=c.fit(c.redact(c.plain(why)), 300)) if rc and why else row  # redacted: it lands in the manifest
 
 
-def step(p, k=None, runner=None, dry_run=False):
+def _key(st):
+    """A tower's state for the revisit check: its stage, generation and the command that runs it."""
+    return f"{st['stage']}|{st['gen']}|{st['command']}"
+
+
+def _progress(p, name, before):
+    """T-3265: a ran round that ends in a state the tower already held is no progress: its job exited 0 and left the
+    tower where it was, or back where it was, so the next round would spend the same money on the same no-op. Round 3:
+    the test is on every state seen, not the last one, so A→B→A pauses as A→A does. Only the job stages (spec, seed,
+    select) run as jobs, so a tower moving through its missions or builds never counts. SAME_STAGE_RUNS in a row pause
+    it; the pause clears the count and the seen states, so the tower starts fresh after fm kalevala resume."""
+    with c.lock(p.dir):  # the stage is read under the lock, as every stage read in a round is
+        after = _stage(p, name)
+        m = load(p)
+        t = m["towers"][name]
+        seen = t.get("seen", []) + [_key(before)]
+        same = t.get("same", 0) + 1 if _key(after) in seen else 0
+        if same >= SAME_STAGE_RUNS:
+            t["same"], t["seen"] = 0, []
+        else:
+            t["same"], t["seen"] = same, (seen + [_key(after)])[-SEEN_MAX:]
+        _save(p, m)
+    if same >= SAME_STAGE_RUNS:
+        pause(p, f"no progress: {same} ran rounds in a row ended in a stage the tower already held "
+                 f"({after['stage']} gen {after['gen']}); fm kalevala resume --tower {name} after a fix", name)
+
+
+def step(p, k=None, runner=None, dry_run=False, deadline=None):
     """Each opened tower's next genesis step as a job: at most K at once, one step per tower at a time, inside
-    Kalevala's share of the day's budget. Towers past the share wait, thinnest first. The round goes in the manifest."""
+    Kalevala's share of the day's budget. Towers past the share wait, thinnest first. The round goes in the manifest.
+    deadline (time.monotonic seconds, night's wall-clock cap): a job is cut at it, never past JOB_TIMEOUT."""
     halt = load(p).get("halted")  # the user's pause: no round starts until fm kalevala resume
     if halt:
         return {"halted": halt, "dry_run": dry_run, "k": 0, "est": 0.0, "share": round(share(), 4),
                 "spent": spent_today(), "results": [], "queued": [], "rounds": load(p).get("rounds", 0)}
-    runner = runner or _run
+    limit = JOB_TIMEOUT if deadline is None else min(JOB_TIMEOUT, max(deadline - time.monotonic(), 1.0))
+    runner = runner or functools.partial(_run, timeout=limit)
     budget.check(FEATURE, EST_JOB)  # the day and per-command caps still hold for Kalevala
     env = dict(os.environ, FOREMAN_NO_BACKGROUND="1", FOREMAN_TOWER_READONLY_EXAM="1", FOREMAN_SPEND_AS=FEATURE)
     allrows = watch(p)["towers"]
@@ -405,9 +455,8 @@ def step(p, k=None, runner=None, dry_run=False):
                     continue
                 budget.record(FEATURE, usd=est, runs=1, project=p.slug, detail=f"{n} {stages[n]['stage']}")
                 charged.append(n)
-        for n in slotted:
-            _act(p, "slot", n, "its exam hasn't moved in two generations: this round's slot goes to a tower that improves",
-                 undo="none: it runs the round it has a slot again")
+        _hold(p, "slotted", "slot", {n: ("its exam hasn't moved in two generations: this round's slot goes to a tower that "
+                                         "improves", "none: it runs the round it has a slot again") for n in slotted})
         done = [{"tower": n, "stage": stages[n]["stage"], "status": "busy", "rc": None, "at": at} for n in busy]
         try:
             if charged:
@@ -418,6 +467,9 @@ def step(p, k=None, runner=None, dry_run=False):
         finally:  # each job's own spend is charged under FEATURE by its child; the estimate given back leaves the real cost
             for n in charged:
                 budget.record(FEATURE, usd=-est, runs=0, project=p.slug, detail=f"settle {n}")
+    for x in done:  # T-3265: a ran job that left its tower's stage where it was counts toward a pause
+        if x["status"] == "ran":
+            _progress(p, x["tower"], stages[x["tower"]])
     done += skipped + [dict(f, stage=None, rc=None, at=at) for f in fenced]
     with c.lock(p.dir):
         m = load(p)
@@ -740,7 +792,7 @@ def pause(p, reason, name=None):
             m = load(p)
             m["halted"] = reason
             _save(p, m)
-    return _act(p, "pause", name, reason, undo="fm kalevala resume" + (f" {name}" if name else ""))
+    return _act(p, "pause", name, reason, undo="fm kalevala resume" + (f" --tower {name}" if name else " --all"))
 
 
 def resume(p, name=None):
@@ -754,7 +806,7 @@ def resume(p, name=None):
         if not name:
             m.pop("halted", None)
         _save(p, m)
-    return _act(p, "resume", name, "resumed", undo="fm kalevala pause" + (f" {name}" if name else ""))
+    return _act(p, "resume", name, "resumed", undo="fm kalevala pause" + (f" --tower {name}" if name else ""))
 
 
 def steer(p, name, text):
@@ -799,8 +851,10 @@ def _restart(p, r):
     else:
         shutil.copy2(newest, os.path.join(snap, base))
     _tower_set(p, name, restarted=mark)
+    q, aside = shlex.quote, f"{newest}.aside-{time.strftime('%Y%m%d-%H%M%S')}"
+    # T-3265: the undo moves the current folder aside, dated, and copies the snapshot back; nothing is deleted
     _act(p, "restart", name, f"no new generation in {r['idle_h']:g}h: restarted, its next step runs first",
-         undo=f"mv {newest} {newest}.replaced && cp -r {os.path.join(snap, base)} {newest}", snapshot=snap)
+         undo=f"mv {q(newest)} {q(aside)} && cp -r {q(os.path.join(snap, base))} {q(newest)}", snapshot=snap)
 
 
 def _touches(row):
@@ -814,11 +868,27 @@ def _touches(row):
     return out
 
 
+def _hold(p, key, act, now):
+    """T-3265: a wait or a slot is logged when it starts, not on every round it lasts. The hold's reason stays in the
+    tower's manifest under key until the hold ends, so its next start logs again. now: {tower: (reason, undo)}."""
+    for n in set(load(p)["towers"]) | set(now):
+        _hold1(p, key, act, n, now.get(n))
+
+
+def _hold1(p, key, act, n, hold):
+    """One tower's hold: hold is (reason, undo) to start or keep it, None to end it; an act is logged when it starts."""
+    reason, undo = hold or (None, None)
+    if load(p)["towers"][n].get(key) != reason:
+        _tower_set(p, n, **{key: reason})
+        if reason:
+            _act(p, act, n, reason, undo=undo)
+
+
 def _decide(p, rows):
     """Väinämöinen's acts before a round's jobs (T-3082): a drifted tower is paused; a stalled one is snapshotted and
     restarted; a falling one gets a steer; of two towers on the same files the later one waits while it improves and
     merges (pauses, pointing at the other) when it doesn't. Returns {tower: status} for those that sit out this round."""
-    out, seen = {}, []  # seen: (tower, files) of the towers that may run, ranked first
+    out, seen, waits = {}, [], {}  # seen: (tower, files) of the towers that may run, ranked first; waits: the holds
     byname = {r["name"]: r for r in rows}
     for n in order(rows):
         r = byname[n]
@@ -828,6 +898,7 @@ def _decide(p, rows):
             except Busy:  # another step has held it past DECIDE_WAIT: this tower sits out the round
                 out[n] = "busy"
                 continue
+            es.callback(lambda: _hold1(p, "waiting", "wait", n, waits.get(n)))  # T-3265: under the lock, so a wait logs once
             if load(p)["towers"][n].get("paused"):
                 out[n] = "paused"
                 continue
@@ -845,35 +916,37 @@ def _decide(p, rows):
                 e, shared = clash
                 names = ", ".join(sorted(shared))
                 if r["state"] == "improving":
-                    _act(p, "wait", n, f"shares {names} with {e}, which ranks first: it waits this round",
-                         undo="none: it runs the next round")
+                    waits[n] = (f"shares {names} with {e}, which ranks first: it waits this round", "none: it runs the next round")
                     out[n] = "waiting"
                 else:
                     _tower_set(p, n, paused=f"merged into {e}: both write {names}")
                     _act(p, "merge", n, f"merged into {e}: both write {names}; paused, not deleted",
-                         undo=f"fm kalevala resume {n}")
+                         undo=f"fm kalevala resume --tower {n}")
                     out[n] = "merged"
                 continue
             seen.append((n, files))
     return out
 
 
-DRIFT_STOP = "drift stop: every tower is off gen-0's rules and paused for it; fm kalevala resume after a steer or a fix"
+DRIFT_STOP = "drift stop: every tower is off gen-0's rules and paused for it; fm kalevala resume --all after a steer or a fix"
 
 
-def loop(p, runner=None, stop=None, rounds=None):
+def loop(p, runner=None, stop=None, rounds=None, deadline=None):
     """Kalevala's rounds, one after another (T-3082 step 3): each round is a watch and then a step, and nothing ends the
     loop on its own. Halts: the user's pause (fm kalevala pause, read by step); Väinämöinen's drift stop (every tower
     paused and at least one for drift); stop(), the caller's limit (night's spend, usage or panic) checked before each
     round; idle (a round runs no job: nothing changes until a tower does); the breaker (serve.FAILS_MAX rounds whose
-    jobs all failed). A budget cap raises budget.BudgetError out of step. rounds bounds a test only."""
+    jobs all failed). A budget cap raises budget.BudgetError out of step. deadline (time.monotonic seconds) cuts each
+    round's jobs at night's wall-clock cap (T-3265). A round that ran a job but spent nothing waits IDLE_S before the next
+    one (T-3265 round 3), never past deadline. rounds bounds a test only."""
     from sampo import serve
     n, fails = 0, 0
+    spent = spent_today()
     while rounds is None or n < rounds:
         why = stop() if stop else None
         if why:
             return {"halted": why, "rounds": n}
-        r = step(p, runner=runner)
+        r = step(p, runner=runner, deadline=deadline)
         n += 1
         if r.get("halted"):
             return {"halted": r["halted"], "rounds": n}
@@ -890,6 +963,9 @@ def loop(p, runner=None, stop=None, rounds=None):
         if not ran and not failed:
             why = "; ".join(f"{x['tower']}: {x['error']}" for x in r["results"] if x.get("error"))
             return {"idle": "no tower can run a job this round" + (f" ({why})" if why else ""), "rounds": n}
+        if r["spent"] <= spent:  # T-3265 round 3: a no-spend round is not hammered (the wait never passes night's deadline)
+            time.sleep(IDLE_S if deadline is None else max(min(IDLE_S, deadline - time.monotonic()), 0))
+        spent = r["spent"]
     return {"rounds": n}
 
 
@@ -936,9 +1012,13 @@ def cmd_kalevala(args):
         if name is not None and name not in load(p)["towers"]:
             raise scli.UsageError(f"kalevala pause: no tower {name!r}")
         r = pause(p, "paused by the user", name)
-        return scli.out(args, r, f"paused {name or 'the loop'}: no round starts until fm kalevala resume")
+        return scli.out(args, r, f"paused {name or 'the loop'}: no round starts until fm kalevala resume "
+                                 + (f"--tower {name}" if name else "--all"))
     if action == "resume":
         name = args.tower
+        if (name is None) == (not args.all):  # T-3265: a bare resume would clear every pause without saying so
+            raise scli.UsageError("kalevala resume needs one scope: --tower NAME for one tower, or --all for every tower "
+                                  "and the loop")
         if name is not None and name not in load(p)["towers"]:
             raise scli.UsageError(f"kalevala resume: no tower {name!r}")
         r = resume(p, name)
@@ -947,8 +1027,12 @@ def cmd_kalevala(args):
         r = step(p, k=args.k, dry_run=args.dry_run)
         head = (f"dry run: " if r["dry_run"] else "") + (f"{len(r['results'])} tower(s), at most {r['k']} at once; "
                 f"Kalevala's share ${r['share']:.2f} today, ${r['spent']:.2f} spent")
-        return scli.out(args, r, head + "".join(f"\n  {x['tower']}: {x['status']} ({x['stage']})" for x in r["results"])
-                        + (f"\n  queued past the share, thinnest first: {', '.join(r['queued'])}" if r["queued"] else ""))
+        text = head + "".join(f"\n  {x['tower']}: {x['status']} ({x['stage']})" for x in r["results"]) \
+            + (f"\n  queued past the share, thinnest first: {', '.join(r['queued'])}" if r["queued"] else "")
+        if r.get("halted"):  # T-3265: a halt prints its reason and exits 6 (3 is a lock timeout), so a script can tell it from a round
+            scli.out(args, r, f"halted: {r['halted']} (fm kalevala resume --all)\n" + text)
+            return 6
+        return scli.out(args, r, text)
     if action == "watch":
         stall_h = STALL_HOURS if args.stall_hours is None else args.stall_hours
         if not stall_h > 0:  # also refuses nan, which would never stall a tower

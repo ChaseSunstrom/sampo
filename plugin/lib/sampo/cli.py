@@ -1,7 +1,7 @@
 """fm — the only writer of Sampo state.
 
 Exit codes: 0 ok · 1 usage error / not found · 2 refused by policy · 3 lock timeout · 4 state corrupt · 5 fm capture
-refused a near-duplicate (T-1662).
+refused a near-duplicate (T-1662) · 6 kalevala step halted (T-3265: a pause, drift stop or breaker; the reason is printed).
 """
 import argparse
 import collections
@@ -10462,7 +10462,8 @@ def _build_parser(only=None):
             "next generation (its tower set and setup) and select N judges it by the towers' exam results (T-3081)")
     s.add_argument("action", nargs="?", choices=("start", "status", "watch", "step", "gen", "select", "pause", "resume"))
     s.add_argument("n", nargs="?", type=int, default=None, help="select: the generation to judge")
-    s.add_argument("--tower", default=None, help="pause, resume: one tower (default: the whole loop)")
+    s.add_argument("--tower", default=None, help="pause, resume: one tower (pause with neither flag: the whole loop)")
+    s.add_argument("--all", action="store_true", help="resume: every tower and the loop's halt (needed with no --tower)")
     s.add_argument("--stall-hours", type=float, default=None, help="watch: hours with no new generation before a tower "
                                                                     "is stalled (default 24)")
     s.add_argument("--dry-run", action="store_true", help="step: name the jobs and the share; run none")

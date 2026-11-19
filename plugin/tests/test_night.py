@@ -209,6 +209,55 @@ class KalevalaNight(ForemanTestCase):  # T-3082 step 3: the night runs Kalevala'
     def project(self):
         return c.find_project(self.repo, create=False)
 
+    def test_a_damaged_manifest_says_why_kalevala_is_skipped(self):  # T-3265: a warning row, not a silent skip
+        from sampo import kalevala, night
+        p = self.project()
+        path = kalevala._manifest(p)
+        for body in ("[]", "{}", "{"):  # a list, a manifest without towers, and bad JSON: each a ValueError or a TypeError or KeyError
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(body)
+            warn = []
+            self.assertNotIn("kalevala rounds", [n for n, _, _ in night.jobs(p, warn)])
+            self.assertEqual(len(warn), 1, (body, warn))
+            self.assertTrue(warn[0].startswith("kalevala skipped: "), warn)
+        os.remove(path)
+        os.makedirs(path)  # a folder where the manifest file should be: an OSError
+        warn = []
+        self.assertNotIn("kalevala rounds", [n for n, _, _ in night.jobs(p, warn)])
+        self.assertTrue(warn and warn[0].startswith("kalevala skipped: "), warn)
+
+    def test_a_budget_stop_is_a_stop_and_a_crash_names_its_type_and_last_failure(self):  # T-3265
+        from sampo import budget, kalevala, night
+        p = self.project()
+
+        def failing(argv, cwd, env, timeout=None):
+            return 1, "traceback: exam read-only detail"
+        kalevala.step(p, runner=failing)  # a failed row in the manifest, for the crash's tail to name
+        with mock.patch("sampo.kalevala.loop", side_effect=budget.BudgetError("day cap $5.00 reached")):
+            res = night._kalevala_rounds(p, budget.spent()[0], 1.0)
+        self.assertEqual(res["exit"], 0, res)  # a budget stop is the stop, not a failed job
+        self.assertIn("stopped: day cap $5.00 reached", res["tail"])
+        with mock.patch("sampo.kalevala.loop", side_effect=RuntimeError("boom")):
+            res = night._kalevala_rounds(p, budget.spent()[0], 1.0)
+        self.assertEqual(res["exit"], 1, res)
+        self.assertIn("RuntimeError: boom", res["tail"])
+        self.assertIn("exam read-only detail", res["tail"])
+
+    def test_a_non_finite_or_negative_cap_falls_back_to_the_default(self):  # T-3265: inf would never stop the rounds
+        import time
+        from sampo import night
+        p = self.project()
+        for raw in ("inf", "nan", "-5"):
+            seen = {}
+
+            def loop(root, stop=None, deadline=None, **kw):
+                seen["left"] = deadline - time.monotonic()
+                return {"idle": "x", "rounds": 0}
+            with mock.patch.dict(os.environ, {"KALEVALA_MAX_S": raw}), mock.patch("sampo.kalevala.loop", side_effect=loop):
+                night._kalevala_rounds(p, 0.0, 5.0)
+            self.assertLessEqual(seen["left"], night.KALEVALA_MAX_S, raw)
+            self.assertGreater(seen["left"], night.KALEVALA_MAX_S - 60, raw)
+
     def test_open_towers_put_the_kalevala_rounds_job_last(self):
         names = [j["name"] for j in json.loads(self.fm("night", "--dry-run", "--json").stdout)["jobs"]]
         self.assertEqual(names[-1], "kalevala rounds")
@@ -219,7 +268,7 @@ class KalevalaNight(ForemanTestCase):  # T-3082 step 3: the night runs Kalevala'
         budget.set_caps(day=5.0)
         start = budget.spent()[0]
 
-        def job(argv, root, env):  # a stub child that spends 0.1 per tower
+        def job(argv, root, env, timeout=None):  # a stub child that spends 0.1 per tower
             budget.record("kalevala", usd=0.1, runs=1, project=p.slug, detail="stub")
             return 0
         with mock.patch("sampo.kalevala._run", side_effect=job):
@@ -241,6 +290,46 @@ class KalevalaNight(ForemanTestCase):  # T-3082 step 3: the night runs Kalevala'
         res = json.loads(self.fm("night", "--only", "kalevala rounds", "--json").stdout)
         self.assertEqual([x["name"] for x in res["ran"]], ["kalevala rounds"])
         self.assertIn("paused by the user", res["ran"][0]["tail"])
+
+    def test_the_rounds_stop_at_the_wall_clock_cap(self):  # T-3265: KALEVALA_MAX_S, default 4 h
+        from sampo import night
+        p = self.project()
+        self.assertEqual(night.KALEVALA_MAX_S, 4 * 3600)
+        with mock.patch.dict(os.environ, {"KALEVALA_MAX_S": "0"}), mock.patch("sampo.kalevala._run") as run:
+            res = night._kalevala_rounds(p, 0.0, 5.0)
+        run.assert_not_called()
+        self.assertIn("wall-clock", res["tail"])
+
+    def test_each_round_beats_the_nights_heartbeat(self):  # T-3265: a wedged round shows as an overdue heartbeat
+        from sampo import budget, night
+        p = self.project()
+        budget.set_caps(day=5.0)
+        start = budget.spent()[0]
+
+        def job(argv, root, env, timeout=None):
+            budget.record("kalevala", usd=0.1, runs=1, project=p.slug, detail="stub")
+            return 0
+        with mock.patch("sampo.kalevala._run", side_effect=job), mock.patch("sampo.serve.beat") as beat:
+            night._kalevala_rounds(p, start, 0.25)
+        self.assertTrue(beat.call_args_list)
+        self.assertTrue(all(call.args[3] == "kalevala rounds" for call in beat.call_args_list))
+
+    def test_a_crash_in_a_round_is_a_failed_row_with_its_reason(self):  # T-3265: no exception leaves the night
+        from sampo import budget, night
+        p = self.project()
+        with mock.patch("sampo.kalevala.loop", side_effect=RuntimeError("boom in a round")):
+            res = night._kalevala_rounds(p, budget.spent()[0], 1.0)
+        self.assertNotEqual(res["exit"], 0)
+        self.assertIn("boom in a round", res["tail"])
+
+    def test_a_damaged_manifest_skips_kalevala_and_the_other_night_jobs_run(self):  # T-3265
+        from sampo import kalevala
+        with open(kalevala._manifest(self.project()), "w", encoding="utf-8") as f:
+            f.write("{not json")
+        out = json.loads(self.fm("night", "--dry-run", "--json").stdout)
+        names = [j["name"] for j in out["jobs"]]
+        self.assertIn("landscape", names)
+        self.assertNotIn("kalevala rounds", names)
 
 
 SECOND = r'''#!/usr/bin/env python3

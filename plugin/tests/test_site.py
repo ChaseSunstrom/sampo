@@ -350,7 +350,7 @@ class KalevalaExport(ForemanTestCase):
         self.assertEqual([(g["n"], g["set"]) for g in k["gens"]], [(1, sorted(towers))])
         self.assertEqual(k["gens"][0]["based_on"], "root gen-0")
         act = k["acts"][-1]
-        self.assertEqual((act["act"], act["tower"], act["undo"]), ("pause", "memory", "fm kalevala resume memory"))
+        self.assertEqual((act["act"], act["tower"], act["undo"]), ("pause", "memory", "fm kalevala resume --tower memory"))
         self.assertTrue(act["at"])
         self.assertIsNone(k["halted"])
         self.assertIn("share", k)

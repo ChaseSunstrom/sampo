@@ -311,6 +311,10 @@ class KalevalaStep(ForemanTestCase):
         self.fm("kalevala", "start")  # the fixed three: efficiency, memory, problem-solving
         from sampo import budget
         budget.RUN["usd"] = 0.0  # the in-process runs' spend never leaks into the next test's per-command cap
+        from sampo import kalevala
+        idle = mock.patch.object(kalevala, "IDLE_S", 0)  # T-3265 round 3: a round that spends nothing doesn't sleep here
+        idle.start()
+        self.addCleanup(idle.stop)
 
     def write(self, name, text):
         path = os.path.join(self.tmp, name)
@@ -632,6 +636,99 @@ class KalevalaStep(ForemanTestCase):
         finally:
             os.environ.pop("FOREMAN_TOWER_READONLY_EXAM", None)
         self.assertEqual(listing(), before)
+
+    def test_a_tower_whose_stage_stays_put_after_three_ran_rounds_is_paused(self):  # T-3265: no spinning on a no-op
+        from sampo import budget, kalevala
+        p = self.project()
+        run, calls = self.fake()  # every job exits 0 and none moves its tower's stage
+        for _ in range(3):
+            kalevala.step(p, runner=run)
+        paused = {n: t.get("paused") for n, t in kalevala.load(p)["towers"].items()}
+        self.assertTrue(paused and all(v and "no progress" in v for v in paused.values()), paused)
+        before, ledger = len(calls), budget.ledger()
+        res = kalevala.step(p, runner=run)
+        self.assertEqual(len(calls), before)
+        self.assertEqual(budget.ledger(), ledger)  # a paused tower runs no job, so it writes no budget row either
+        self.assertEqual({r["status"] for r in res["results"]}, {"paused"})
+
+    def test_a_tower_that_bounces_between_two_stages_is_paused(self):  # T-3265 round 3: A→B→A is no progress either
+        from sampo import kalevala
+        p = self.project()
+        a = {"stage": "seed", "gen": 1, "command": "fm genesis seed 1"}
+        b = {"stage": "select", "gen": 1, "command": "fm genesis select 1"}
+        before, after = [a, b, a, b], [b, a, b, a]  # each ran round starts where the last one ended
+        with mock.patch.object(kalevala, "_stage", side_effect=after):
+            for i in range(3):
+                kalevala._progress(p, "memory", before[i])
+            self.assertFalse(kalevala.load(p)["towers"]["memory"].get("paused"))  # the first three revisits: not yet
+            kalevala._progress(p, "memory", before[3])
+        self.assertIn("no progress", kalevala.load(p)["towers"]["memory"]["paused"])
+
+    def test_a_round_that_spends_nothing_waits_before_the_next_round(self):  # T-3265 round 3: no spin to the deadline
+        from sampo import kalevala
+        p = self.project()
+        run, calls = self.fake()  # the fake jobs run and charge nothing, so every round spends nothing
+        with mock.patch.object(kalevala, "IDLE_S", 7), mock.patch.object(kalevala.time, "sleep") as sleep:
+            kalevala.loop(p, runner=run, rounds=2)
+            self.assertTrue(calls)
+            sleep.assert_any_call(7)
+            kalevala.loop(p, runner=run, rounds=1, deadline=time.monotonic() + 2)
+            self.assertLessEqual(sleep.call_args[0][0], 2)  # night's deadline bounds the wait
+
+    def test_a_round_job_is_cut_at_the_night_deadline_and_a_bare_round_keeps_the_three_hour_cap(self):  # T-3265
+        import time
+        from sampo import kalevala
+        seen = []
+
+        def run(argv, cwd, env, timeout=None):
+            seen.append(timeout)
+            return 0
+        p = self.project()
+        with mock.patch("sampo.kalevala._run", side_effect=run):
+            kalevala.step(p, deadline=time.monotonic() + 120)
+            self.assertTrue(seen)
+            self.assertTrue(all(0 < t <= 120 for t in seen), seen)
+            seen.clear()
+            kalevala.step(p)
+        self.assertEqual(set(seen), {kalevala.JOB_TIMEOUT})
+
+    def test_a_failed_jobs_stderr_is_redacted_and_stripped_before_it_is_kept(self):  # T-3265: no secret in the manifest
+        from sampo import kalevala
+        secret = "sk-ant-api03-" + "a" * 30
+
+        def run(argv, cwd, env):
+            return 1, f"\x1b[31mfailed with key {secret}\x1b[0m"
+        res = kalevala.step(self.project(), runner=run)
+        failed = [r for r in res["results"] if r["status"] == "failed"]
+        self.assertTrue(failed)
+        self.assertNotIn(secret, failed[0]["why"])
+        self.assertIn("[REDACTED]", failed[0]["why"])
+        self.assertNotIn("\x1b", failed[0]["why"])
+
+    def test_a_timed_out_job_takes_its_children_with_it(self):  # T-3265 round 3: no grandchild spends past the cut
+        import subprocess
+        import sys
+        from sampo import kalevala
+        pidfile = os.path.join(self.tmp, "grandchild.pid")
+        code = ("import subprocess, sys, time\n"
+                "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                f"open({pidfile!r}, 'w').write(str(g.pid))\n"
+                "time.sleep(60)\n")
+        with self.assertRaises(subprocess.TimeoutExpired):
+            kalevala._run([sys.executable, "-c", code], self.tmp, dict(os.environ), timeout=2)
+        with open(pidfile) as f:
+            pid = int(f.read())
+
+        def alive(n):  # a zombie has ended already: only a running process counts
+            try:
+                with open(f"/proc/{n}/stat") as f:
+                    return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+            except OSError:
+                return False
+        end = time.monotonic() + 10
+        while alive(pid) and time.monotonic() < end:
+            time.sleep(0.05)
+        self.assertFalse(alive(pid), "the grandchild outlived its job's timeout")
 
     def test_moons_writes_refuse_while_another_funnel_holds_the_store(self):
         from sampo import moonscale
@@ -958,6 +1055,10 @@ class KalevalaWatch(ForemanTestCase):
     def setUp(self):
         super().setUp()
         self.fm("init")
+        from sampo import kalevala
+        idle = mock.patch.object(kalevala, "IDLE_S", 0)  # T-3265 round 3: the loop's spend-nothing wait is off in tests
+        idle.start()
+        self.addCleanup(idle.stop)
         # a Capabilities section makes each tower's next stage runnable (the acts run jobs); KalevalaStep's root charter
         self.fm("genesis", "init", "--file", self.write(
             "gen0.md", "root charter\n\n## 2. Capabilities\n1. **Bugs.** finds and fixes broken code. Exam: bug.\n"))
@@ -1157,6 +1258,24 @@ class KalevalaWatch(ForemanTestCase):
         self.assertIn(act[0]["snapshot"], act[0]["undo"])
         # ponytail: memory's stage is 'fatal' in this fixture, so it isn't run; the run-first order is the ranking above
 
+    def test_a_restart_undo_quotes_its_paths_and_moves_the_folder_aside_never_deletes_it(self):  # T-3265
+        import shlex
+        from sampo import budget, kalevala
+        p = self.project()
+        budget.set_caps(day=5.0)
+        newest = os.path.join(self.tmp, "a b", "gen-1")  # a space in the path: the undo must still be one word
+        os.makedirs(newest)
+        with open(os.path.join(newest, "seed.md"), "w") as f:
+            f.write("seed\n")
+        kalevala._restart(p, {"name": "memory", "newest": newest, "idle_h": 30.0})
+        act = [a for a in kalevala.acts(p) if a["act"] == "restart"][-1]
+        words = shlex.split(act["undo"])
+        self.assertNotIn("rm", words)  # the current folder is moved aside, dated, never deleted
+        self.assertEqual(words[:2], ["mv", newest])
+        self.assertTrue(words[2].startswith(newest + ".aside-"), words)
+        self.assertEqual(words[3:], ["&&", "cp", "-r", os.path.join(act["snapshot"], "gen-1"), newest])
+        self.assertTrue(os.path.isfile(os.path.join(newest, "seed.md")))  # and the undo is not run here
+
     def test_two_concurrent_steps_snapshot_a_stalled_tower_and_log_its_restart_once(self):
         import shutil
         import time
@@ -1241,6 +1360,8 @@ class KalevalaWatch(ForemanTestCase):
         res = kalevala.step(p, runner=run)
         self.assertEqual({x["tower"]: x["status"] for x in res["results"]}["memory"], "waiting")
         self.assertEqual([a["tower"] for a in kalevala.acts(p) if a["act"] == "wait"], ["memory"])
+        kalevala.step(p, runner=run)  # T-3265: the same wait, round after round, is one act
+        self.assertEqual([a["tower"] for a in kalevala.acts(p) if a["act"] == "wait"], ["memory"])
 
     def test_a_tower_flat_two_generations_gives_its_slot_to_one_that_improves(self):
         from sampo import budget, kalevala
@@ -1256,6 +1377,9 @@ class KalevalaWatch(ForemanTestCase):
         slot = [a for a in kalevala.acts(p) if a["act"] == "slot"]
         self.assertEqual([a["tower"] for a in slot], ["memory"])
         self.assertIn("improve", slot[0]["reason"])
+        res = kalevala.step(p, runner=run)  # T-3265: still stuck next round: no second slot act
+        self.assertEqual(res["queued"][-1], "memory")
+        self.assertEqual([a["tower"] for a in kalevala.acts(p) if a["act"] == "slot"], ["memory"])
 
     def test_pause_halts_every_round_until_resume_and_shows_in_status(self):
         from sampo import budget, kalevala
@@ -1271,6 +1395,26 @@ class KalevalaWatch(ForemanTestCase):
         res = kalevala.step(p, runner=run)
         self.assertNotIn("halted", res)
         self.assertTrue(calls, res["results"])
+
+    def test_a_halted_step_prints_its_reason_and_exits_6(self):  # T-3265: 3 is the lock timeout, so a halt has its own code
+        from sampo import kalevala
+        self.fm("kalevala", "pause")
+        p = self.fm("kalevala", "step", check=False)
+        self.assertEqual(p.returncode, 6, p.stderr)
+        self.assertIn("paused by the user", p.stdout + p.stderr)
+        self.assertIn("0 tower(s)", p.stdout)  # nothing ran: the reason is the answer, not an empty round
+        self.assertEqual(kalevala.load(self.project()).get("rounds", 0), 0)
+
+    def test_a_bare_resume_names_its_scope_and_all_resumes_every_tower(self):  # T-3265
+        from sampo import kalevala
+        self.fm("kalevala", "pause")
+        p = self.fm("kalevala", "resume", check=False)
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("--tower", p.stderr)
+        self.assertIn("--all", p.stderr)
+        self.assertEqual(kalevala.load(self.project()).get("halted"), "paused by the user")  # still halted
+        self.fm("kalevala", "resume", "--all")
+        self.assertIsNone(kalevala.load(self.project()).get("halted"))
 
     def test_the_loop_has_no_end_of_its_own_only_the_caller_user_or_a_halt_stops_it(self):  # T-3082 step 3
         from sampo import budget, kalevala
