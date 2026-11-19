@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- `sampo card author` and `sampo card grow` write new calling cards unattended: a local model drafts each card's files (Sonnet only after two local misses), the confined runner's tests are the only gate, call outcomes rank cards, and grow mines and proposes its own requests; one run here took the store from 19 to 55 cards (T-4838).
 - A test that makes a task no longer depends on all of plugin/lib/sampo (the Already covered? note is off under the test environment), and `sampo check --affected --why` runs nothing and says which source picked each test and which files most recorded classes depend on whole (T-4288).
 - The panel kit draws 21 kinds: eight new moving ones (a state machine with counted transitions, swimlanes with timed arrows, a conveyor, a network with lossy links, a chord ring, a protocol stack, a circuit board, a constellation of modules), each a panel-KIND calling card in dark and light, in SMIL loops (T-3736).
 - Sampo Code opens on the live page's Board: a framed header with stats, a NOW strip and an amber callout, then nine braille and half-block panels in 3/2/1 columns in the Board's palette, drawn at most 10 times a second and only while something runs, its feed read every 5 minutes when idle; night, paper and classic stay selectable, and a layout key in tui.toml draws the text panels (T-3699).
