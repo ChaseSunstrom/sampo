@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- MASTER.md's section 10 (Known limitations, 5.7 KB) moves to docs/map/guide-1.md beside sections 2 and 5, its heading kept with a pointer, so the system map has 16 KB of room for a train's file-map lines instead of 0.6 KB (T-5339).
 - The speed-promise table now also holds CPU ratios for sampo status, task list and queue, gated by the same two-window Live test as the other hot verbs (T-5028).
 - Ward: bash evaluates a name's value as arithmetic ($((x)), let, [[ -v a[x] ]], ${!v}, a=([x]=1) and more), and an array subscript in that value runs its $( ) even from single-quoted text; a line that does arithmetic now has every $( ) and backtick its values hold judged as a command, whether quoted, escaped, coded (\x24), pieced together from other names, or set again inside a value's o… (T-4934).
 - A train's gate runs the modules a lane's run.py criteria name, so a lane no longer runs them before the train, and the close takes that gate pass as the criterion's evidence; the lane carrying a red covered module is probed before a map-link blame, and -k patterns match test names (T-3809).
