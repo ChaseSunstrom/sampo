@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Ward: bash evaluates a name's value as arithmetic ($((x)), let, [[ -v a[x] ]], ${!v}, a=([x]=1) and more), and an array subscript in that value runs its $( ) even from single-quoted text; a line that does arithmetic now has every $( ) and backtick its values hold judged as a command, whether quoted, escaped, coded (\x24), pieced together from other names, or set again inside a value's o… (T-4934).
 - A train's gate runs the modules a lane's run.py criteria name, so a lane no longer runs them before the train, and the close takes that gate pass as the criterion's evidence; the lane carrying a red covered module is probed before a map-link blame, and -k patterns match test names (T-3809).
 - A merge train's bisection now finds every lane that turns a red gate red in the same round: the classes still green where it blamed the first lane are bisected again over the lanes after it, so two culprits cost one confirm, not two rounds, and each left-out lane names only its own classes (T-4986).
 - A Rust project's gate builds no longer fill the disk: they run without incremental state (each run's checkout is new, so it was never reused), and the gate's cargo folder sheds what no run used in the 2 days before its last one. `sampo tidy`, the automatic prune and `sampo doctor` name and remove it (T-4984).
