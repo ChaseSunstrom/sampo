@@ -350,14 +350,15 @@ def _thin(names, counts, rng):
     return sorted(names, key=lambda x: counts.get(x, 0))  # stable: equals keep the seed's order
 
 
-SAMPO_AREAS = ("problem solving", "memory", "efficiency")  # T-3045: the user's three, beside coverage.md's headings
 SAMPO_SCALES = ("one task", "one session", "one project", "every project", "every Sampo user")
 
 
 def sampo_areas(p):
-    """T-3045: the Sampo grid's areas: coverage.md's '## ' headings (numbering stripped) then SAMPO_AREAS, no repeats."""
+    """T-3045: the Sampo grid's areas: coverage.md's '## ' headings (numbering stripped) then the user's three, no
+    repeats. The three are kalevala.FIXED (T-3326: one definition), read here because kalevala imports this module."""
+    from sampo import kalevala
     heads = [rune._norm_name(h) for h, _ in rune._sections(rune._doc(rune.home(p), "coverage.md") or "")]
-    return list(dict.fromkeys(a for a in heads + list(SAMPO_AREAS) if a))
+    return list(dict.fromkeys(a for a in heads + list(kalevala.FIXED) if a))
 
 
 def _pick(cnt, probs, n, seed, areas=()):

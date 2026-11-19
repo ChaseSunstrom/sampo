@@ -918,6 +918,109 @@ class KalevalaGen(ForemanTestCase):
         self.assertEqual(r["verdict"], "baseline")
 
 
+class KalevalaBirths(ForemanTestCase):
+    """Headroom part 2 (T-3326): Kalevala opens towers for the root Frame's grown areas and capabilities by itself, at most
+    BIRTHS_MAX a generation, each a 'birth' act whose undo pauses it; a hand-added Frame entry (no frame_grow event that
+    matches it) never opens one."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.fm("genesis", "init", "--file", self.write("gen0.md", "root charter\n"))
+        self.fm("kalevala", "start")  # efficiency, memory, problem-solving
+        self.n = 0
+
+    def write(self, name, text):
+        path = os.path.join(self.tmp, name)
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def project(self):
+        return c.find_project(self.repo, create=False)
+
+    def frame_entry(self, kind, name, logged=True):
+        """One root Frame entry as fm genesis grow writes it (frame.md section, frame_grow event with its hash);
+        logged=False is a hand edit."""
+        from sampo import rune
+        p = self.project()
+        self.n += 1
+        head, body = f"F-{self.n} {kind}: {name}", f"- gen: 2\n- evidence: misses no category fits\n- measure: unmeasurable: test\n"
+        path = os.path.join(rune.root(p), "frame.md")
+        text = read_text(path) if os.path.exists(path) else rune.FRAME_HEAD
+        with open(path, "w") as f:
+            f.write(text.rstrip("\n") + f"\n\n## {head}\n{body}")
+        if logged:
+            rune._log(p, "frame_grow", data={"id": f"F-{self.n}", "kind": kind, "name": name,
+                                             "hash": rune._entry_hash(head, body)})
+
+    def select(self, n):
+        from sampo import kalevala
+        p = self.project()
+        with c.lock(p.dir):
+            m = kalevala.load(p)
+            m["gens"][str(n)].update(verdict="baseline", base=f"kalevala gen {n}")  # as select leaves a judged gen
+            kalevala._save(p, m)
+
+    def test_grown_areas_and_capabilities_are_aspects_and_a_hand_edit_is_not(self):
+        from sampo import kalevala
+        self.frame_entry("area", "Release notes")
+        self.frame_entry("capability", "Reading diffs")
+        self.frame_entry("surface", "The pager")  # neither an area nor a capability
+        self.frame_entry("area", "Hand added", logged=False)
+        names = [n for _, n in kalevala.aspects(self.project())]
+        self.assertIn("release-notes", names)
+        self.assertIn("reading-diffs", names)
+        self.assertNotIn("the-pager", names)
+        self.assertNotIn("hand-added", names)
+        self.assertEqual(names[:3], ["problem-solving", "memory", "efficiency"], "the fixed three keep their place")
+
+    def test_a_gen_opens_two_new_towers_with_a_birth_act_each_and_the_third_waits_a_generation(self):
+        from sampo import kalevala
+        p = self.project()
+        for name in ("Release notes", "Reading diffs", "Test triage"):
+            self.frame_entry("area", name)
+        r = kalevala.gen(p)
+        self.assertEqual(kalevala.BIRTHS_MAX, 2)
+        self.assertEqual(r["born"], ["release-notes", "reading-diffs"])
+        self.assertIn("release-notes", r["set"], "a tower born this gen runs in it")
+        self.assertNotIn("test-triage", kalevala.load(p)["towers"])
+        births = [a for a in kalevala.acts(p) if a["act"] == "birth"]
+        self.assertEqual([a["tower"] for a in births], ["release-notes", "reading-diffs"])
+        for a in births:
+            self.assertEqual(a["undo"], f"sampo kalevala pause {a['tower']}")
+            self.assertIn("Frame", a["reason"])
+        self.select(1)
+        r = kalevala.gen(p)
+        self.assertEqual(r["born"], ["test-triage"])
+        self.assertIn("test-triage", kalevala.load(p)["towers"])
+
+    def test_no_birth_while_the_parent_gen_waits_for_its_select(self):
+        from sampo import kalevala
+        p = self.project()
+        kalevala.gen(p)
+        self.frame_entry("area", "Release notes")
+        with self.assertRaisesRegex(ValueError, "select 1 first"):
+            kalevala.gen(p)
+        self.assertNotIn("release-notes", kalevala.load(p)["towers"], "a refused gen opens nothing")
+
+    def test_start_still_opens_every_aspect_at_once(self):
+        from sampo import kalevala
+        p = self.project()
+        for name in ("Release notes", "Reading diffs", "Test triage"):
+            self.frame_entry("area", name)
+        r = kalevala.start(p)
+        self.assertEqual(sorted(r["opened"]), ["reading-diffs", "release-notes", "test-triage"])
+
+    def test_the_sampo_grid_reads_the_fixed_three_from_kalevala(self):
+        from sampo import kalevala, moonscale
+        p = self.project()
+        self.assertFalse(hasattr(moonscale, "SAMPO_AREAS"), "one definition: kalevala.FIXED")
+        self.assertEqual(moonscale.sampo_areas(p)[-3:], list(kalevala.FIXED))
+        with mock.patch.object(kalevala, "FIXED", ("problem solving", "memory", "efficiency", "taste")):
+            self.assertEqual(moonscale.sampo_areas(p)[-1], "taste", "read from kalevala, not a copy")
+
+
 class KalevalaCapabilities(ForemanTestCase):
     """Kalevala part 2, step 4 (T-3081): a closed task that changes how Sampo behaves is a capability. The next
     Kalevala gen writes the registry into every set tower's capabilities.md, so the tower's next seed carries it; select

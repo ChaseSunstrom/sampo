@@ -56,13 +56,23 @@ def tower_name(aspect):
     return s
 
 
+def grown(p):
+    """T-3326: the root Frame's grown areas and capabilities (rune.grow, T-2188), in frame order: only an entry whose
+    frame_grow event matches its hash, so a hand edit of frame.md never opens a tower."""
+    rune.set_tower(None)  # the root's Frame, whatever tower a caller had set
+    entries = rune.frame(p)
+    logged = rune._grown(p) if entries else {}
+    return [e["name"] for e in entries if e["kind"] in ("area", "capability") and logged.get(e["id"]) == e["hash"]]
+
+
 def aspects(p):
-    """[(aspect, name)]: each coverage.md area with open coverage (an empty cell or an idea), then the fixed three.
-    The first aspect to a name keeps it; a later one with the same name is left out."""
+    """[(aspect, name)]: each coverage.md area with open coverage (an empty cell or an idea), then the fixed three, then
+    the root Frame's grown areas and capabilities (T-3326). The first aspect to a name keeps it; a later one with the
+    same name is left out."""
     cov = rune.coverage(p, rune._doc(rune.root(p), "coverage.md"))
     names = [r["area"] for r in cov["rows"] if r["empty"] or r["ideas"]]
     out, taken = [], set()
-    for aspect in names + list(FIXED):
+    for aspect in names + list(FIXED) + grown(p):
         name = tower_name(aspect)
         if name not in taken:
             taken.add(name)
@@ -94,6 +104,16 @@ def start(p):
     bad = rune.sealed(p)
     if bad:  # the root's gen-0 comes first; every tower's gen-0 extends it
         raise ValueError(f"the root gen-0 isn't sealed ({bad}): fm genesis init --file GEN0 first")
+    opened, skipped = _open(p)
+    return {"towers": tower_rows(p), "opened": opened, "skipped": skipped}
+
+
+BIRTHS_MAX = 2  # T-3326: towers a generation opens by itself for new Frame areas; the rest wait for the next one
+
+
+def _open(p, limit=None):
+    """Open a tower for each aspect with none, at most `limit` (None: all): (opened names, skipped names). The root's
+    gen-0 must be sealed (the caller checks). rune.init takes its own lock, so this runs outside the manifest's."""
     with open(os.path.join(rune.root(p), "gen-0.md"), "rb") as f:
         root = f.read()
     opened, skipped = [], []
@@ -101,6 +121,8 @@ def start(p):
         if name in load(p)["towers"]:
             skipped.append(name)
             continue
+        if limit is not None and len(opened) >= limit:
+            break
         gen0 = root + f"\n## Aspect\n{aspect}: this tower's focus; its generations work this aspect's gaps first.\n".encode()
         rune.set_tower(name)  # rune.init takes its own lock, so it runs outside ours
         try:
@@ -112,7 +134,25 @@ def start(p):
             m["towers"][name] = {"aspect": aspect}
             _save(p, m)
         opened.append(name)
-    return {"towers": tower_rows(p), "opened": opened, "skipped": skipped}
+    return opened, skipped
+
+
+def _births(p):
+    """T-3326: before a generation is set, open towers for aspects that have none (the root Frame's grown areas and
+    capabilities), at most BIRTHS_MAX, each a 'birth' act whose undo pauses it. None while the root gen-0 isn't sealed or
+    the parent gen waits for its select (gen refuses then, and a refused gen opens nothing)."""
+    if rune.sealed(p):
+        return []
+    done = load(p).get("gens", {})
+    n = max((int(k) for k in done), default=0) + 1
+    if n > 1 and "verdict" not in done[str(n - 1)]:
+        return []
+    born, _ = _open(p, BIRTHS_MAX)
+    aspect = {name: t["aspect"] for name, t in load(p)["towers"].items()}
+    for name in born:
+        _act(p, "birth", name, f"a new Frame category with no tower: {aspect.get(name, name)}",
+             undo=f"sampo kalevala pause {name}", gen=n)
+    return born
 
 
 FEATURE = "kalevala"  # Kalevala's own budget line: each tower step is charged here, its share of the day cap
@@ -564,7 +604,9 @@ def _gen_result(n, g):
 
 def gen(p):
     """Kalevala's next generation: the tower set (every opened tower with a sealed gen-0) and each tower's setup, in
-    gen-N/setup.md. The parent gen must be selected first, so each one builds on a judged one."""
+    gen-N/setup.md. The parent gen must be selected first, so each one builds on a judged one. T-3326: first, up to
+    BIRTHS_MAX towers open for new Frame categories (_births, outside the lock: rune.init takes its own), and run in it."""
+    born = _births(p)
     with c.lock(p.dir):
         m = load(p)
         done = m.get("gens", {})
@@ -591,7 +633,7 @@ def gen(p):
         m["gens"] = done
         _save(p, m)
     return {"gen": n, "set": done[str(n)]["set"], "based_on": based,
-            "new_capabilities": done[str(n)]["new_capabilities"]}
+            "new_capabilities": done[str(n)]["new_capabilities"], "born": born}
 
 
 def select(p, n):
