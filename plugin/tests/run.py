@@ -69,7 +69,8 @@ OPERATOR_SWITCHES = {"LOAD_GATE", "LOAD_WAIT", "FULL_GATE", "SENTINEL", "SENTINE
                      "SLOT", "SLOTS", "SLOT_PRIORITY", "NO_SUITE_SLOT", "GATE_HELD", "GATE_WAIT", "SLOW_GATE", "INHIBITED",
                      "DRIVE_TASK", "QUIET", "NO_NET", "NO_LINK", "CONFINE", "SMOKE_RUNNER", "UI_CACHE_S", "NO_TEST_CACHE",
                      "FAST",  # T-3571: SAMPO_FAST=0 sends every call past sampo-fast; test_fast_equiv needs it on
-                     "CPU_BASE", "CPU_GATE", "CPU_FLOOR_S"}  # T-3757: the train's CPU baseline is never a test's
+                     "CPU_BASE", "CPU_GATE", "CPU_FLOOR_S",  # T-3757: the train's CPU baseline is never a test's
+                     "SHAPE_RUNS"}  # T-4947: how many lanes' repo-shape stages run at once
 
 
 SLOT_ENV = "SAMPO_SLOT"  # T-3252: set in a class's children, so a run.py inside a slot never waits on its parent's pool

@@ -2852,6 +2852,20 @@ def lane_checks():
         return min(LANE_CHECKS_MAX, max(1, int(os.environ.get(LANE_CHECKS_ENV) or 2)))
     except ValueError:
         return 2
+
+
+SHAPE_RUNS_ENV = "SAMPO_SHAPE_RUNS"
+
+
+def shape_runs():
+    """T-4947: how many lanes' repo-shape stages run at once in a project (SAMPO_SHAPE_RUNS, default 3, at least 1, at
+    most LANE_CHECKS_MAX). T-4563 ran them before the turn with no cap: 15 lanes accepted together ran 15 at once
+    (2026-11-17: load 76 on 16 cores, every other run slowed ~5x, and a stage near SHAPE_WALL_S is cut, which also
+    keeps its lane out of a batch check). A further one waits as 'shape queued'; the stage's wall starts with its slot."""
+    try:
+        return min(LANE_CHECKS_MAX, max(1, int(os.environ.get(SHAPE_RUNS_ENV) or 3)))
+    except ValueError:
+        return 3
 _SCRUBBED = ("FM_STALL", c.RUN_ID_ENV, "FOREMAN_TEST_RUN_ID")  # env prefixes a lane's check never inherits: a test's override, a nested run's id (the legacy name too)
 _CHECK_KEYS = ("check_state", "check_tip", "check_pid", "check_ticks", "check_log", "check_tries", "check_failed",
                "check_queued", "check_solo", "check_shape",  # T-4563: the tip the repo-shape modules ran green at
@@ -3016,6 +3030,9 @@ def _check_hold(b, sha, main):
     if not st or m.get("check_tip") != sha or st == "green":
         return None
     if st == "running" and _check_alive(m):
+        if m.get("check_queued") == "shape":  # T-4947: its process waits for one of the shape_runs() slots
+            return (f"held: shape queued: its repo-shape modules wait behind {shape_runs()} lanes' running at most (pid "
+                    f"{m.get('check_pid')}); they start when one ends, then its check")
         if m.get("check_queued"):  # T-4491: its process waits for one of the project's lane_checks() slots
             return (f"held: check queued behind {lane_checks()} running at most (pid {m.get('check_pid')}); it starts "
                     "when one ends and joins the land when green")
@@ -3072,7 +3089,8 @@ def check_notes(briefs, main, ids=None):
         why = _check_hold(b, _lane_tip(main, b), main)
         if why:
             st = b.meta["check_state"]
-            out[b.id] = ("check queued" if st == "running" and _check_alive(b.meta) and b.meta.get("check_queued") else
+            queued = st == "running" and _check_alive(b.meta) and b.meta.get("check_queued")
+            out[b.id] = ("shape queued" if queued == "shape" else "check queued" if queued else
                          "checking" if st == "running" and _check_alive(b.meta) else
                          f"check red: {b.meta.get('check_failed') or '?'}"
                          + (" (checker changed: accept again)" if st == "red" and _rerunnable(b.meta, main) else "")
@@ -3274,17 +3292,18 @@ def _take_slot(slots):
 
 
 @contextlib.contextmanager
-def _check_turn(p, waits=None, started=None):
+def _check_turn(p, waits=None, started=None, name="turn", n=None):
     """T-4416, T-4491: at most lane_checks() lane checks at a time in a project. Five started together (2026-11-11: 1,275
     test modules for 16 slots) were each still running after 15 to 25 minutes and a 59-module one was cut off at its
     run's deadline; in turn the work is the same and the first result comes after one run. One flock per slot
     (check/turn-N.lock), held by the check's own process around its run and released by the kernel however that process
     ends. A free slot is taken at once. With none free, `waits()` once (the task is told: check queued), then the process
     polls for one every TURN_POLL_S, with no session open; `started()` once it has one, if it waited. No signal handler
-    is set here, so the SIGTERM of sampo lane rm (stop_check) ends a waiting one. The land's gate and ship do not take it."""
+    is set here, so the SIGTERM of sampo lane rm (stop_check) ends a waiting one. The land's gate and ship do not take it.
+    T-4947: `name` and `n` make another pool of the same kind (check/shape-N.lock, shape_runs() of them)."""
     d = os.path.join(p.dir, "check")
     os.makedirs(d, exist_ok=True)
-    slots = [open(os.path.join(d, f"turn-{i}.lock"), "a") for i in range(lane_checks())]
+    slots = [open(os.path.join(d, f"{name}-{i}.lock"), "a") for i in range(n or lane_checks())]
     try:
         waited = False
         while not _take_slot(slots):
@@ -3324,8 +3343,8 @@ def _batch_peers(p, main, me, tip):
     out = []
     for x in c.load_briefs(p):
         m = x.meta
-        if (x.id == me or m.get("check_state") != "running" or not m.get("check_queued") or not _check_alive(m)
-                or int(m.get("check_tries") or 1) != 1):
+        if (x.id == me or m.get("check_state") != "running" or m.get("check_queued") in (None, "", "shape")
+                or not _check_alive(m) or int(m.get("check_tries") or 1) != 1):  # T-4947: a shape wait is no turn wait
             continue
         t = _lane_tip(main, x)
         if t and m.get("check_tip") == t and m.get("check_solo") != t and _shape_clear(x, t, main):
@@ -3443,7 +3462,11 @@ def _accept_check_child(a):
     b = cli.need_brief(p, a["id"])
     main, tip, tries = a["main"], a["tip"], int(a.get("tries") or 1)
     if tries == 1 and _shape_wanted(b, main, tip):  # T-4563: the modules first, before the turn: lanes run theirs together
-        verdict = _shape_stage(p, b, main, tip)
+        with _check_turn(p, lambda: _set_check(p, b.id, f"shape queued: {shape_runs()} lanes' repo-shape modules run at once "
+                                                        "in this project (T-4947); they start when one ends", check_queued="shape"),
+                         lambda: _set_check(p, b.id, check_queued=None), name="shape", n=shape_runs()):
+            # T-4947: at most shape_runs() at once; a tip that moved during the wait runs nothing
+            verdict = _shape_stage(p, b, main, tip) if _lane_tip(main, cli.need_brief(p, b.id)) == tip else "moved"
         if verdict == "red":
             return 1  # refused at its tip: recorded on the lane, and no long check runs
         if verdict == "moved":

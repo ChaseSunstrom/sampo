@@ -6,7 +6,10 @@ check runs without the classes (--shape-green), a fresh run without them holds t
 without the modules goes on as before, and a retry runs no module again. The runs here are stubbed (c.run_command,
 c.run_record, train._shape_run, train._run_check); none starts a real test run."""
 # map-links: plugin/lib/sampo/train.py
+import fcntl
 import os
+import threading
+import time
 import unittest
 from unittest import mock
 
@@ -73,15 +76,20 @@ class ShapeRun(unittest.TestCase):
         self.assertEqual(self.run_shape(1, "", {"ok": False, "not_run": ["x"], "failed": []})[0], ("cut", ""))
 
 
+def stub_shape(case):
+    """_shape_run stubbed green (case.shape_run) in a lane that has the modules (a Sampo tree)."""
+    shape = mock.patch.object(train, "_shape_run", return_value=("green", ""))
+    case.shape_run = shape.start()
+    case.addCleanup(shape.stop)
+    tree = mock.patch.object(train, "_shape_tree", return_value=True)
+    tree.start()
+    case.addCleanup(tree.stop)
+
+
 class AcceptShape(AcceptCase):
     def setUp(self):
         super().setUp()
-        self.shape = mock.patch.object(train, "_shape_run", return_value=("green", ""))
-        self.shape_run = self.shape.start()
-        self.addCleanup(self.shape.stop)
-        tree = mock.patch.object(train, "_shape_tree", return_value=True)  # the lane has the modules (a Sampo tree)
-        tree.start()
-        self.addCleanup(tree.stop)
+        stub_shape(self)
 
     def test_accept_returns_at_once_and_runs_no_module_itself(self):  # T-4563
         tid = self.lane(1, "f1.txt", when=OLD)
@@ -165,6 +173,65 @@ class AcceptShape(AcceptCase):
         args = cli.build_parser().parse_args(["check", "--affected", "--hold", "--shape-green", "--evidence", "T-1"])
         self.assertTrue(args.shape_green)
         self.assertTrue(args.hold)
+
+
+class ShapeQueued(AcceptCase):
+    """T-4947: at most SAMPO_SHAPE_RUNS lanes' repo-shape stages run at once (default 3). T-4563 ran them before the
+    turn with no cap: 15 lanes accepted together ran 15 at once (2026-11-17, load 76 on 16 cores). A further one waits
+    as 'shape queued' and starts when one ends."""
+
+    def setUp(self):
+        super().setUp()
+        stub_shape(self)
+        env = mock.patch.dict(os.environ, {"SAMPO_SHAPE_RUNS": "1"})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_three_lanes_with_one_slot_run_their_shape_stages_one_at_a_time_and_say_shape_queued(self):
+        tids = [self.a_lane(n, name=f"f{n}.txt") for n in (1, 2, 3)]
+        for tid in tids:
+            self.accept(tid)
+        d = os.path.join(self.p.dir, "check")
+        os.makedirs(d, exist_ok=True)
+        held = open(os.path.join(d, "shape-0.lock"), "a")  # the one slot is another lane's shape stage
+        fcntl.flock(held, fcntl.LOCK_EX)
+        self.addCleanup(held.close)
+        running, peak, lock = [0], [0], threading.Lock()
+
+        def shape(path):
+            with lock:
+                running[0] += 1
+                peak[0] = max(peak[0], running[0])
+            time.sleep(0.2)
+            with lock:
+                running[0] -= 1
+            return "green", ""
+        self.shape_run.side_effect = shape
+        threads = [threading.Thread(target=self.child, args=(tid, n, stub(0)), daemon=True)
+                   for n, tid in zip((1, 2, 3), tids)]
+        for t in threads:
+            t.start()
+        notes = lambda: train.check_notes(c.load_briefs(self.p), self.repo)
+        end = time.time() + 30
+        while time.time() < end and not all(notes().get(t) == "shape queued" for t in tids):
+            time.sleep(0.05)
+        self.assertEqual([notes().get(t) for t in tids], ["shape queued"] * 3, "sampo lane list says shape queued")
+        self.assertIn("shape queued", train._check_hold(c.find_brief(self.p, tids[0]), self.tip(1), self.repo))
+        held.close()
+        for t in threads:
+            t.join(60)
+        self.assertEqual(self.shape_run.call_count, 3)
+        self.assertEqual(peak[0], 1, "two shape stages ran at once with one slot")
+        self.assertEqual([self.meta_of(t)["check_state"] for t in tids], ["green"] * 3)
+
+    def test_the_slot_count_defaults_to_three_and_reads_the_env(self):
+        self.assertEqual(train.shape_runs(), 1)
+        with mock.patch.dict(os.environ, {"SAMPO_SHAPE_RUNS": ""}):
+            self.assertEqual(train.shape_runs(), 3)
+        with mock.patch.dict(os.environ, {"SAMPO_SHAPE_RUNS": "x"}):
+            self.assertEqual(train.shape_runs(), 3)
+        with mock.patch.dict(os.environ, {"SAMPO_SHAPE_RUNS": "0"}):
+            self.assertEqual(train.shape_runs(), 1)
 
 
 if __name__ == "__main__":
