@@ -40,8 +40,8 @@ MAX_GAP = 1.2  # seconds a still screen is held at most (the model thinking), so
 
 
 def only_foreman(path=os.path.expanduser("~/.claude/settings.json")):
-    """T-2055: --settings JSON that turns off every plugin the user enabled outside the sampo marketplace (foreman
-    before T-3707; another plugin's hook warning or status line must not reach a recording); login, permissions and
+    """T-2055: --settings JSON that turns off every plugin the user enabled outside the sampo marketplace (the
+    marketplace was named for the old product before T-3707; another plugin's hook warning or status line must not reach a recording); login, permissions and
     env stay. None when the settings file is missing or unreadable."""
     try:
         with open(path) as f:
