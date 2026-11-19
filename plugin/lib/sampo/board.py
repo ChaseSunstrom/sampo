@@ -1,6 +1,7 @@
-"""T-3659: the Board's facts, the live page's nine panels. collect(p) is the snapshot's "board" field: one part per
+"""T-3659: the Board's facts, the live page's fourteen panels. collect(p) is the snapshot's "board" field: one part per
 mechanism (lanes and their leased files, the merge train, the machine's CPU by kind, the task in focus, the card and
-moon library, the sampo commands run here, the depends_on graph, the state folder, the test modules). Each part is
+moon library, the sampo commands run here, the depends_on graph, the state folder, the test modules; since T-3731 the
+live sessions, the week's asks, the last push and its CI, the usage tanks and the guard's gate). Each part is
 cheap (a slow one is cached), soft (one that raises reads None, the rest stand) and plain: every string it returns
 passes redact, the home-folder and private-term redaction, and a width cap, so the page shows no secret and no
 machine layout. board.js maps the field (with the rest of the snapshot) to the panels."""
@@ -24,7 +25,8 @@ DAY_S = 86400
 PARKED = {"conflict", "refused"}  # lane_stop kinds that park a lane until someone acts
 GROWS = {"cards_grow": "cards", "moons_grow": "moons"}
 MODELS = re.compile(r"ollama|llama-server|llama_server|\bvllm\b|\bjeff\b", re.I)  # local model servers and their runners
-SLOW = {"train": 30, "library": 30, "state": 10, "deps": 5, "tests": 10, "commands": 3}  # seconds a part is kept
+SLOW = {"train": 30, "library": 30, "state": 10, "deps": 5, "tests": 10, "commands": 3,
+        "sessions": 2, "asks": 10, "ship": 10, "usage": 10, "guard": 5}  # seconds a part is kept
 
 
 def _terms():
@@ -306,8 +308,322 @@ def part_cpu(p):
     return cpu_part(p)
 
 
+# ---------------------------------------------------------------- T-3731: the machine's sessions, the user's asks, the
+# last push and its CI, the usage tanks and the guard's gate
+
+SESSIONS_MAX, ASKS_MAX, ASK_DAYS, JOBS_MAX, GUARD_RECENT, GUARD_RULES = 24, 60, 7, 24, 12, 8
+ASK_STAGES = ("asked", "planned", "building", "verifying", "merging", "blocked", "landed")
+CI_RUNNING_S, CI_DONE_S, GH_TIMEOUT = 30, 300, 20  # a running CI is read again after 30 s, a finished one after 5 min
+GUARD_LINES = 6000  # the events read back for the gate's last hour (a lower bound past it)
+WEEK_MAX = 400
+
+
+def _hidden():
+    """The sensitive projects' slugs (their sessions are a count, never a name)."""
+    return live._cached(("board-hidden",), live.SLOW_S,
+                        lambda: {q.slug for q, meta in c.all_projects() if meta.get("sensitive")})
+
+
+def _pct(x):
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return None
+    return int(round(min(100.0, max(0.0, v)))) if v == v else None
+
+
+def part_sessions(p):
+    """The live Claude sessions on this machine, newest first (at most SESSIONS_MAX): each one's project, task, model,
+    context used (0 to 100) and seconds since it last reported; one in a sensitive project only counts in `private`."""
+    from sampo import bus
+    hidden, now = _hidden(), time.time()
+    seen, private = [], 0
+    for s in bus.live():
+        if s.get("project") in hidden:
+            private += 1
+        else:
+            seen.append(s)
+    shown = seen[:SESSIONS_MAX]
+    try:
+        tasks = {r["session"]: r.get("task") for r in bus.rows(shown)}
+    except Exception:  # noqa: BLE001 - the task names are a detail; the orbit stands without them
+        tasks = {}
+    rows = []
+    for s in shown:
+        model = s.get("model")
+        if isinstance(model, dict):
+            model = model.get("display_name") or model.get("id")
+        t = _epoch(s.get("ts"))
+        rows.append({"id": _t(str(s.get("session_id") or "")[:8], 8), "project": _t(s.get("project"), 40),
+                     "task": _t(tasks.get(s.get("session_id")), 12) or None, "model": _t(model, 24) or None,
+                     "context_pct": _pct(s.get("context_pct")), "age_s": int(max(0, now - t)) if t else 0,
+                     "mine": s.get("project") == p.slug})
+    return {"rows": rows, "more": len(seen) - len(shown), "private": private}
+
+
+def _ask_stage(b, now):
+    if b.status == "done":
+        t = _epoch(b.meta.get("updated"))
+        return "landed" if t and now - t < DAY_S else None
+    if b.status == "captured":
+        return "asked"
+    if b.status in ("blocked", "deferred"):
+        return "blocked"
+    if b.status == "active":
+        return "merging" if b.meta.get("builder_returned") else "building"
+    return b.status if b.status in ASK_STAGES else None
+
+
+def part_asks(p):
+    """The user's own asks of the last ASK_DAYS days that haven't landed (and the ones landed in the last day), oldest
+    first, each at its stage. Sampo's captures, a tower's Mission briefs and agent notices are not the user's."""
+    from sampo import foresight
+    now, rows = time.time(), []
+    try:
+        tower = foresight._tower_ids(p)
+    except Exception:  # noqa: BLE001
+        tower = set()
+    for b in live._briefs(p):
+        if b.meta.get("source") != "user" or b.id in tower:
+            continue
+        at = _epoch(b.meta.get("created"))
+        if at is None or now - at > ASK_DAYS * DAY_S:
+            continue
+        stage = _ask_stage(b, now)
+        if stage is None or c._NOTE_RAW.search(b.section("Raw request") or ""):
+            continue
+        rows.append((at, {"id": _t(b.id, 12), "title": _t(b.title, 90), "stage": stage,
+                          "age_h": int(round(max(0, now - at) / 3600))}))
+    rows.sort(key=lambda r: r[0])  # the newest ASKS_MAX kept, oldest first: the drawer's "+N older" are the dropped ones
+    return {"rows": [r for _, r in rows[-ASKS_MAX:]], "days": ASK_DAYS, "more": max(0, len(rows) - ASKS_MAX)}
+
+
+def _git(root, *argv):
+    import subprocess
+    r = subprocess.run(["git", *argv], cwd=root, capture_output=True, text=True, timeout=5, stdin=subprocess.DEVNULL)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _gh(root, *argv):
+    """gh's stdout for argv in root; raises when gh fails or runs past GH_TIMEOUT."""
+    import subprocess
+    r = subprocess.run(["gh", *argv], cwd=root, capture_output=True, text=True, timeout=GH_TIMEOUT,
+                       stdin=subprocess.DEVNULL)
+    if r.returncode:
+        raise RuntimeError(f"gh exit {r.returncode}")
+    return r.stdout
+
+
+CI_ERRORS = ("nogh", "ghfail", "offline")  # gh missing; signed out, rate-limited or garbled; past GH_TIMEOUT
+_RUN_JOBS, _RUN_JOBS_MAX = {}, 64  # (root, run id) -> (status, updatedAt, its jobs): run view only when a run moved
+_RUN_JOBS_LOCK = threading.Lock()
+
+
+def _run_jobs(p, r, wf):
+    """One run's jobs, each with its start and end epochs: read through `gh run view` only when the run's status or
+    updatedAt changed since the last read (a run listed without updatedAt is always read)."""
+    key, mark = (p.root, int(r["databaseId"])), (r.get("status"), r.get("updatedAt"))
+    with _RUN_JOBS_LOCK:
+        hit = _RUN_JOBS.get(key)
+    if hit and mark[1] and hit[0] == mark:
+        return hit[1]
+    got = json.loads(_gh(p.root, "run", "view", str(key[1]), "--json", "jobs") or "{}")
+    jobs = []
+    for j in (got.get("jobs") or []) if isinstance(got, dict) else []:
+        if not isinstance(j, dict):
+            continue
+        steps = [s for s in j.get("steps") or [] if isinstance(s, dict)]
+        jobs.append({"workflow": wf, "name": _t(j.get("name"), 60), "status": _t(j.get("status"), 20),
+                     "conclusion": _t(j.get("conclusion"), 20) or None,
+                     "steps": [sum(s.get("status") == "completed" for s in steps), len(steps)],
+                     "start": _epoch(j.get("startedAt")), "end": _epoch(j.get("completedAt"))})
+    with _RUN_JOBS_LOCK:
+        _RUN_JOBS.pop(key, None)
+        _RUN_JOBS[key] = (mark, jobs)
+        while len(_RUN_JOBS) > _RUN_JOBS_MAX:
+            _RUN_JOBS.pop(next(iter(_RUN_JOBS)))
+    return jobs
+
+
+def _ci_now(p, sha):
+    """The CI runs of one commit (at most 3) and their jobs: each job's steps [done, total] and its seconds so far.
+    A gh that's missing, fails or runs past GH_TIMEOUT gives no runs and an `error` (one of CI_ERRORS) the panel names."""
+    import subprocess
+    try:
+        runs = [r for r in json.loads(_gh(p.root, "run", "list", "--commit", sha, "--limit", "10", "--json",
+                                          "databaseId,status,conclusion,workflowName,updatedAt") or "[]")
+                if isinstance(r, dict)][:3]
+        out, jobs, now = [], [], time.time()
+        for r in runs:
+            wf = _t(r.get("workflowName"), 40)
+            out.append({"workflow": wf, "status": _t(r.get("status"), 20),
+                        "conclusion": _t(r.get("conclusion"), 20) or None})
+            if isinstance(r.get("databaseId"), int):
+                jobs += _run_jobs(p, r, wf)
+    except FileNotFoundError:
+        return {"runs": [], "jobs": [], "error": "nogh"}
+    except subprocess.TimeoutExpired:
+        return {"runs": [], "jobs": [], "error": "offline"}
+    except (RuntimeError, ValueError, AttributeError, OSError):
+        return {"runs": [], "jobs": [], "error": "ghfail"}
+
+    def secs(j):
+        start, end = j["start"], j["end"]
+        return int(max(0, (end if end and j["status"] == "completed" else now) - start)) if start else 0
+    return {"runs": out, "jobs": [{k: v for k, v in dict(j, secs=secs(j)).items() if k not in ("start", "end")}
+                                  for j in jobs[:JOBS_MAX]]}
+
+
+def _ci_state(got):
+    if got.get("error") in CI_ERRORS:
+        return got["error"]
+    runs, jobs = got.get("runs") or [], got.get("jobs") or []
+    if not runs:
+        return "waiting"
+    if any(r.get("status") != "completed" for r in runs):
+        return "running"
+    bad = ("failure", "timed_out", "startup_failure", "cancelled")
+    return "red" if any(r.get("conclusion") in bad for r in runs) or any(j.get("conclusion") in bad for j in jobs) \
+        else "green"
+
+
+def part_ship(p):
+    """The last push (the commit ship pushed, else origin's default branch): its subject, age and the commits on top
+    of it; and its CI, read through gh in the background (kept CI_RUNNING_S while it runs, CI_DONE_S once done).
+    None with nothing pushed."""
+    from sampo import foresight, release
+    sha, ref = _git(p.root, "rev-parse", "-q", "--verify", release.SHIPPED_TIP + "^{commit}"), "shipped"
+    if not sha:
+        if not _git(p.root, "remote"):
+            return None
+        sha, ref = _git(p.root, "rev-parse", "-q", "--verify",
+                        f"refs/remotes/origin/{foresight.default_branch(p.root)}^{{commit}}"), "origin"
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        return None
+    subject, _, ct = _git(p.root, "log", "-1", "--format=%s%x00%ct", sha).partition("\0")
+    try:
+        unshipped = int(_git(p.root, "rev-list", "--count", f"{sha}..HEAD") or 0)
+    except ValueError:
+        unshipped = 0
+    age = int(max(0, time.time() - int(ct))) if ct.isdigit() else None
+    out = {"sha": sha[:7], "subject": _t(subject, 120), "age_s": age, "ref": ref, "unshipped": unshipped}
+    empty = {"state": "reading", "runs": [], "jobs": [], "failed": []}
+    if not foresight.github_repo(p.root):
+        ci = dict(empty, state="local")
+    elif os.environ.get("FOREMAN_NO_NET") or p.slug in _hidden():
+        ci = dict(empty, state="offline")
+    else:
+        key = ("ci-jobs", p.dir, sha)
+        with live._LOCK:
+            hit = live._CACHE.get(key)
+        done = bool(hit and hit[1] and _ci_state(hit[1]) in ("green", "red", *CI_ERRORS))  # a failing gh: retried in 5 min
+        got = live._stale(key, CI_DONE_S if done else CI_RUNNING_S, lambda: _ci_now(p, sha), None)
+        ci = empty if got is None else {"state": _ci_state(got), "runs": got.get("runs") or [], "jobs": got.get("jobs") or [],
+                                        "failed": [j["name"] for j in got.get("jobs") or []
+                                                   if j.get("conclusion") in ("failure", "timed_out")]}
+    return dict(out, ci=ci)
+
+
+def part_usage(p):
+    """The 5-hour and weekly usage windows (percent used, span, seconds to reset, projected percent, seconds until full;
+    or why the figure is unknown), today's spend by hour against the daily cap and this week's samples as
+    [hours ago, percent], oldest first."""
+    from sampo import budget
+    now = time.time()
+    fc, windows = budget.forecast(now) or {}, {}
+    for key, span in budget.WINDOWS.items():
+        w = fc.get(key)
+        if isinstance(w, dict) and isinstance(w.get("used"), (int, float)):
+            full = w.get("full_at")
+            windows[key] = {"used": w["used"], "span": span,
+                            "resets_in": int(w["resets_at"] - now) if isinstance(w.get("resets_at"), (int, float)) else None,
+                            "projected": w.get("projected"),
+                            "full_in": int(full - now) if isinstance(full, (int, float)) else None}
+        else:
+            windows[key] = {"used": None, "span": span, "why": _t(budget.unknown_why(key, now), 80) or None}
+    hourly = live.spend_today()
+    rows = budget.samples()
+    last = max((r["resets"] for r in rows), default=None)
+    week = [[round((now - r["ts"]) / 3600, 2), r["used"]] for r in rows if r["resets"] == last][-WEEK_MAX:]
+    return {"windows": windows, "spend": {"today": round(sum(hourly), 2), "cap": budget.caps().get("day"), "hourly": hourly},
+            "week": week}
+
+
+_OPAQUE = re.compile(r"(?<![\w/.~-])(?=[\w+=-]*\d)(?=[\w+=-]*[A-Za-z])[\w+=-]{20,}(?![\w/.~-])")
+
+
+_URL = re.compile(r"https?://[^\s'\"<>]+")
+_URL_TOKEN = re.compile(r"(?=[\w+-]*\d)(?=[\w+-]*[A-Za-z])[\w+-]{20,}")
+
+
+def _mask_url(m):
+    return _URL_TOKEN.sub("[REDACTED]", m.group(0))
+
+
+def _guard_cmd(s):
+    """A refused command as the page may show it: redacted (known token shapes, home paths, private terms) and any
+    other opaque run of 20+ letters and digits outside a path masked, and inside a URL (path segment or query value,
+    where a chat-webhook secret lives) too, since a refused command is often one carrying a secret the guard caught."""
+    return c.fit(_URL.sub(_mask_url, _OPAQUE.sub("[REDACTED]", _t(s, 400))), 120)
+
+
+def _tally():
+    return {"allowed": 0, "refused": 0, "rules": {}, "tools": {}, "minutes": [[0, 0] for _ in range(60)]}
+
+
+def _by_n(d, k, n):
+    return [{k: name, "n": v} for name, v in sorted(d.items(), key=lambda kv: (-kv[1], kv[0]))][:n]
+
+
+def _guard(slugs, by=False):
+    """The gate's last hour for these projects; by: each project's own counts too (the All view's chips filter them)."""
+    slugs, now = set(slugs), time.time()
+    total, each, recent = _tally(), {}, []
+    for e in c.tail_jsonl(os.path.join(c.state_dir(), "events.jsonl"), GUARD_LINES):
+        if not isinstance(e, dict) or e.get("project") not in slugs:
+            continue
+        kind = e.get("kind")
+        if kind not in ("tool", "tool_fail", "guard_block"):
+            continue
+        t = _epoch(e.get("ts"))
+        if t is None or not 0 <= now - t < 3600:
+            continue
+        blocked, tool = kind == "guard_block", _t(e.get("tool"), 24)
+        rule = _t(e.get("rule") or e.get("category") or "guard", 40) if blocked else None
+        for k in [total] + ([each.setdefault(e["project"], _tally())] if by else []):
+            k["minutes"][59 - int((now - t) // 60)][blocked] += 1
+            if tool:
+                k["tools"][tool] = k["tools"].get(tool, 0) + 1
+            k["refused" if blocked else "allowed"] += 1
+            if blocked:
+                k["rules"][rule] = k["rules"].get(rule, 0) + 1
+        if blocked:
+            recent.append({"ago_s": int(now - t), "rule": rule, "tool": tool,
+                           "cmd": _guard_cmd(e.get("cmd") or e.get("target")), "project": _t(e.get("project"), 40)})
+    recent.sort(key=lambda r: r["ago_s"])
+    shape = lambda k: dict(k, rules=_by_n(k["rules"], "rule", GUARD_RULES), tools=_by_n(k["tools"], "tool", 8))  # noqa: E731
+    out = dict(shape(total), recent=recent[:GUARD_RECENT])
+    if by:
+        out["by"] = {_t(s, 40): shape(k) for s, k in each.items()}
+    return out
+
+
+def part_guard(p):
+    """The last hour at the guard's gate for this project: the tool calls let through and the ones refused, by rule,
+    the newest refusals, each minute's two counts and the tools called most."""
+    return _guard([p.slug])
+
+
+def guard_all(slugs):
+    """The gate's last hour across these projects (the All view), each refusal tagged with its project, and `by` each
+    project's own counts, rules, minutes and tools, so a hidden chip takes its project out of every figure."""
+    return live._cached(("board-guard", tuple(sorted(slugs))), SLOW["guard"], lambda: _guard(slugs, by=True))
+
+
 PARTS = {"cpu": part_cpu, "lanes": part_lanes, "train": part_train, "loop": part_loop, "library": part_library,
-         "commands": part_commands, "deps": part_deps, "state": part_state, "tests": part_tests}  # cpu first: its scan is _procs
+         "commands": part_commands, "deps": part_deps, "state": part_state, "tests": part_tests,
+         "sessions": part_sessions, "asks": part_asks, "ship": part_ship, "usage": part_usage,
+         "guard": part_guard}  # cpu first: its scan is _procs
 
 
 def collect(p):

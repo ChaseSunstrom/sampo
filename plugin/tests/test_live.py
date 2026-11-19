@@ -629,6 +629,35 @@ class Serve(ForemanTestCase):
             live.snapshot_all(self.p)
         self.assertEqual(n["train"], 2)
 
+    def test_all_carries_every_open_projects_asks_ships_and_gate_tagged_and_none_of_a_sensitive_one(self):  # T-3731
+        op, sp = self._two_more()
+        at = c.now()
+        with open(os.path.join(c.state_dir(), "events.jsonl"), "a") as f:
+            for slug in (self.p.slug, op.slug, sp.slug):
+                f.write(json.dumps({"ts": at, "kind": "guard_block", "rule": "rm-rf", "tool": "Bash", "project": slug,
+                                    "cmd": f"rm -rf {slug}"}) + "\n")
+        from sampo import board as bd
+        asks = lambda p: {"rows": [{"id": f"T-{h}", "title": f"ask in {p.slug}", "stage": "asked", "age_h": h}
+                                   for h in reversed(range(bd.ASKS_MAX))], "days": 7, "more": 0}
+        ship = lambda p: {"sha": "abc1234", "subject": f"ship {p.slug}", "age_s": 5, "ref": "shipped", "unshipped": 0,
+                          "ci": {"state": "local", "runs": [], "jobs": [], "failed": []}}
+        with mock.patch("sampo.board.part_asks", asks), mock.patch("sampo.board.part_ship", ship), \
+                mock.patch.dict(bd.PARTS, {"asks": asks, "ship": ship}):
+            s = live.snapshot_all(self.p)
+        b = s["board"]
+        self.assertEqual({r["project"] for r in b["asks"]["rows"]}, {self.p.slug, op.slug})
+        self.assertEqual(b["asks"]["days"], 7)
+        ages = [r["age_h"] for r in b["asks"]["rows"]]  # review: the newest kept across projects, drawn oldest first
+        self.assertEqual((len(ages), b["asks"]["more"]), (bd.ASKS_MAX, bd.ASKS_MAX))
+        self.assertEqual(ages, sorted(ages, reverse=True))
+        self.assertLess(max(ages), bd.ASKS_MAX // 2 + 1)
+        self.assertEqual(set(b["guard"]["by"]), {self.p.slug, op.slug}, "each project's own gate counts for the chips")
+        self.assertEqual({x["project"] for x in b["ships"]}, {self.p.slug, op.slug})
+        self.assertEqual(b["guard"]["refused"], 2)
+        self.assertEqual({r["project"] for r in b["guard"]["recent"]}, {self.p.slug, op.slug})
+        self.assertTrue({"sessions", "usage"} <= set(b), "the machine-wide pictures stay")
+        self.assertNotIn(sp.slug, json.dumps([b["asks"], b["ships"], b["guard"]]))
+
     def test_no_slug_with_a_sensitive_newest_session_falls_back_to_the_servers_own(self):  # T-3024 review
         self.login()
         other = os.path.join(self.tmp, "hush2")

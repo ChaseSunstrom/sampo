@@ -541,11 +541,12 @@ def snapshot(p):
 
 
 def _slice(p):
-    """T-3730: what the All view draws of one project (queue, lanes, train, loop), kept ALL_S seconds."""
+    """T-3730: what the All view draws of one project (queue, lanes, train, loop; T-3731: its asks and last push), kept
+    ALL_S seconds."""
     def build():
         from sampo import board as bd
         out = {"queue": queue(p)}
-        for name in ("lanes", "train", "loop"):
+        for name in ("lanes", "train", "loop", "asks", "ship"):
             try:
                 out[name] = getattr(bd, "part_" + name)(p)
             except Exception:
@@ -564,16 +565,19 @@ def snapshot_all(default):
     only, with no items."""
     base = snapshot(default)
     s = dict(base)
-    queue_, lanes_, rows, trains, loops = [], [], [], [], []
+    queue_, lanes_, rows, trains, loops, asks, ships, slugs = [], [], [], [], [], [], [], []
+    more = 0
     for p, meta in c.all_projects():
         name = os.path.basename(p.root.rstrip("/")) or p.slug
         if meta.get("sensitive"):
             rows.append({"slug": p.slug, "name": name, "sensitive": True})
             continue
         rows.append({"slug": p.slug, "name": name, "sensitive": False})
+        slugs.append(p.slug)
         if p.slug == default.slug:
             b = base.get("board") or {}
-            sl = {"queue": base.get("queue"), "lanes": b.get("lanes"), "train": b.get("train"), "loop": b.get("loop")}
+            sl = {"queue": base.get("queue"), "lanes": b.get("lanes"), "train": b.get("train"), "loop": b.get("loop"),
+                  "asks": b.get("asks"), "ship": b.get("ship")}
         else:
             sl = _slice(p)
         queue_ += _tag(sl["queue"], p.slug)
@@ -582,12 +586,25 @@ def snapshot_all(default):
             trains.append({**sl["train"], "project": p.slug})
         if sl["loop"]:
             loops.append({**sl["loop"], "project": p.slug})
+        a = sl.get("asks") if isinstance(sl.get("asks"), dict) else {}
+        asks += _tag(a.get("rows"), p.slug)
+        more += a.get("more") or 0
+        if isinstance(sl.get("ship"), dict):
+            ships.append({**sl["ship"], "project": p.slug})
     s["project"] = {"slug": "all", "name": "All projects"}
     s["all"] = True
     s["projects"] = rows
     s["queue"] = queue_
     s["lanes"] = [{**r, "project": default.slug} for r in base.get("lanes") or []]
-    s["board"] = {**(base.get("board") or {}), "lanes": lanes_, "trains": trains, "loops": loops}
+    s["board"] = {**(base.get("board") or {}), "lanes": lanes_, "trains": trains, "loops": loops, "ships": ships}
+    from sampo import board as bd
+    asks.sort(key=lambda r: r.get("age_h") or 0)  # T-3731: every project's asks on one river: the newest kept,
+    kept = asks[:bd.ASKS_MAX][::-1]  # drawn oldest first
+    s["board"]["asks"] = {"rows": kept, "days": bd.ASK_DAYS, "more": more + len(asks) - len(kept)}
+    try:
+        s["board"]["guard"] = bd.guard_all(slugs)
+    except Exception:  # noqa: BLE001 - the gate's picture is optional
+        s["board"]["guard"] = None
     return s
 
 

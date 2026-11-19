@@ -1,6 +1,6 @@
 # The Board
 
-The live page's default view (`sampo watch --web`, T-3659): nine panels, each a small live instrument for one Sampo
+The live page's default view (`sampo watch --web`, T-3659; fourteen since T-3731): fourteen panels, each a small live instrument for one Sampo
 mechanism, on one dark grid. `#view=net` keeps the older network view; the forge stays a setting.
 
 | # | Panel | What it draws | Where the facts come from |
@@ -14,6 +14,11 @@ mechanism, on one dark grid. `#view=net` keeps the older network view; the forge
 | 07 | SAMPO | a terminal typing the real sampo commands run here, the queue as a table with status pills, the depends_on graph | `board.commands` (the hook's tool events), `queue`, `board.deps` |
 | 08 | STATE | the state folder's newest entries as a tree, the newest lit, the latest decision as a card | `board.state` |
 | 09 | TESTS | a cell per test module: cached, running, failing, idle | `board.tests`: test files, the run cache, the latest `check_run`, live processes |
+| 10 | ASKS | the week's asks as a river, a channel per stage (asked → landed, blocked apart), open ones trailing to now; two columns wide on a desktop | `board.asks`: the last 7 days' tasks (≤ 60), each with its stage and age |
+| 11 | SESSIONS | every live session orbiting the machine, a ring gauge of its context each, its task and model as a label | `board.sessions` (≤ 24; a sensitive project's are a count, never a name) |
+| 12 | SHIP & CI | the last push's commit feeding a lane per CI job, its steps as a bar; All mode: one row per project's push | `board.ship` (git; `gh` read again after 30 s while running, 5 min once done); All: `ships` |
+| 13 | USAGE | the 5-hour and weekly tanks with their projection, spend per hour today, the week's curve | `board.usage`: `budget` windows and samples, `live.spend_today` |
+| 14 | GUARD | the last hour at the Ward gate: allowed and refused per minute, refusals by rule, the newest ones | `board.guard`: the events log's last 6000 lines (`tool`, `tool_fail`, `guard_block`) |
 
 ## The kit
 
@@ -24,7 +29,8 @@ skills to reuse):
   (test_board keeps them equal); the canvases read them from there, so chrome and drawing never disagree. The Claude
   Code mod's default palette is generated from its dark scheme (`mods/foreman-ui/tools/board_palette.py`, T-3701), and
   its pane draws the same panel language in the terminal: chips, UPPERCASE names, labels, brackets, footers. Its board
-  page ports all nine of this page's panels, and a SESSIONS orbit of every live session, to a pixel canvas of half
+  page ports the first nine of this page's fourteen panels (LANES to TESTS; ASKS, SHIP & CI, USAGE and GUARD are the
+  web page's alone so far), and its own SESSIONS orbit of every live session, to a pixel canvas of half
   blocks and braille (`mods/foreman-ui/hooks/canvas.ts`), in a grid of 3, 2 or 1 columns by the dock's width with no
   empty slot; the slow parts (library, state, tests, commands) come from the same `board.part_*` functions through
   `cache/board.json`, and its CPU panel draws `board.cpu_part`'s kinds from there too (a refresh reads /proc twice a
@@ -32,7 +38,7 @@ skills to reuse):
 - `board.css`: the grid (1 column under 700 px, 2 under 1200 px, 3 above), the panel chrome: a numbered accent chip,
   the UPPERCASE name and a dim "what", the accent label on the right, the canvas, a footer caption with an optional
   progress bar and a stat. 1 px rules, cyan L-brackets where they cross; no rounded cards, no shadows.
-- `board.js`: `SampoBoard.boardModel(snapshot, history)` maps any snapshot (empty, partial or huge) to nine bounded
+- `board.js`: `SampoBoard.boardModel(snapshot, history)` maps any snapshot (empty, partial or huge) to fourteen bounded
   panels; it is plain data and runs under node (test_board). `SampoBoard.mount(el)` builds the panels and returns
   `{update(model), still(on), show(on)}`. A panel's drawer is `{base(g, d, w, h, T, mem), live(g, d, w, h, t, T, mem)}`:
   `base` paints the still layer into a cached offscreen canvas (redrawn only when the data, size or palette change),
@@ -43,5 +49,5 @@ skills to reuse):
 One `requestAnimationFrame` loop for all panels. It stops when the tab is hidden, when the Board isn't the view shown,
 in Still mode and under reduced motion (each then gets one frame drawn at a fixed instant); an IntersectionObserver
 skips panels off screen; canvases are capped at 2× device pixels; particles are capped per panel. On the server, the
-`board` field is one part per panel: each soft-fails to `null`, the slow ones are cached (3–30 s), and every string
+`board` field is one part per panel: each soft-fails to `null`, the slow ones are cached (2–30 s; the gate's All-mode hour 5 s, a push's CI 30 s while running), and every string
 passes `redact`, the home-folder and private-term redaction and a width cap before it leaves the machine.

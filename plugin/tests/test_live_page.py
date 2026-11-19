@@ -328,7 +328,7 @@ PROBE = """(() => { const $ = id => document.getElementById(id), n = (id, sel) =
     fonts: ["h2", ".word", ".cv", "body"].map(q => (document.querySelector(q) ? getComputedStyle(document.querySelector(q)).fontFamily : "")).join("|"),
     board: (() => { const q = $("board"); if (!q) return null; const r = q.getBoundingClientRect(), d = q.dataset;
       const ps = Array.from(q.querySelectorAll(".bd-p")).map(p => { const cv = p.querySelector("canvas"), b = p.getBoundingClientRect(), t = s => { const e = p.querySelector(s); return e ? e.textContent.trim() : ""; };
-        return {k: p.dataset.k, chip: t(".bd-chip"), title: t(".bd-t"), label: t(".bd-l"), foot: t(".bd-f"), x: Math.round(b.left), w: Math.round(b.width), h: Math.round(b.height),
+        return {k: p.dataset.k, chip: t(".bd-chip"), title: t(".bd-t"), label: t(".bd-l"), foot: t(".bd-f"), x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height),
                 painted: !!cv && cv.dataset.painted === "1", canvas: cv ? [cv.width, cv.height] : [0, 0], font: getComputedStyle(p.querySelector(".bd-t") || p).fontFamily}; });
       return {shown: r.width > 0, panels: ps, cols: new Set(ps.filter(p => p.w).map(p => p.x)).size, frames: +(d.frames || 0), running: d.running || "",
               painted: ps.length > 0 && ps.every(p => p.painted)}; })(),
@@ -1032,7 +1032,7 @@ class Page(unittest.TestCase):
         self.assertTrue([r for r in got["reqs"] if r.startswith("/api/stream?project=other-1b2c3d")], got["reqs"])
 
     # T-3659: one test per size, so the runner shoots the three in parallel (six loads in one test took 228 s under load)
-    def test_the_board_is_the_modern_default_nine_painted_panels_in_three_columns_on_a_desktop(self):
+    def test_the_board_is_the_modern_default_fourteen_painted_panels_in_three_columns_on_a_desktop(self):
         self.board_at((1600, 1000), 3, motion=True)
 
     def test_the_board_takes_two_columns_on_a_tablet(self):
@@ -1051,13 +1051,24 @@ class Page(unittest.TestCase):
             self.assertEqual((got["theme"], got["view"]), ("modern", "board"), where)
             self.assertTrue(got["shown"]["board"] and got["shown"]["views"] and got["shown"]["view-board"], where)
             self.assertFalse(got["shown"]["net"] or got["shown"]["view-forge"] or got["shown"]["rail"], f"the board alone {where}")
-            self.assertEqual([p["k"] for p in bd["panels"]], ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests"])
+            self.assertEqual([p["k"] for p in bd["panels"]], ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests",
+                                                              "asks", "sessions", "ship", "usage", "guard"])  # T-3731: fourteen
+            w = {p["k"]: p["w"] for p in bd["panels"]}
+            if cols == 3:  # the asks river takes two cells, so the five new panels fill two whole rows
+                self.assertGreater(w["asks"], 1.8 * w["sessions"], where)
             for i, p in enumerate(bd["panels"]):
                 self.assertEqual(p["chip"], f"{i + 1:02}", where)
                 self.assertTrue(p["title"] and p["label"] and p["foot"], f"{p} {where}")
                 self.assertGreater(p["canvas"][0] * p["canvas"][1], 0, f"{p['k']} {where}")
                 self.assertRegex(p["font"].lower(), r"martian|mono", where)
             self.assertEqual(bd["cols"], cols, where)
+            rows = {}  # T-3731: every row is full: its panels run from the board's left edge to its right, no empty cell
+            for p in bd["panels"]:
+                rows.setdefault(p["y"], []).append(p)
+            left, right = min(p["x"] for p in bd["panels"]), max(p["x"] + p["w"] for p in bd["panels"])
+            for y, row in rows.items():
+                self.assertEqual((min(p["x"] for p in row), max(p["x"] + p["w"] for p in row)), (left, right),
+                                 f"row at {y} leaves a cell empty {[p['k'] for p in row]} {where}")
             self.assertEqual(bd["running"], "1" if motion else "0", where)
             self.assertLessEqual(got["wide"], size[0], f"no sideways scroll {where}")
             self.assertIsNone(self.FORGE_WORDS.search(got["text"].replace("Forge look", "")), where)

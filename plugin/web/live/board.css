@@ -1,4 +1,4 @@
-/* Sampo · the Board (T-3659): nine mechanism panels on one dark grid. The tokens mirror board-tokens.json (a test keeps
+/* Sampo · the Board (T-3659): fourteen mechanism panels on one dark grid. The tokens mirror board-tokens.json (a test keeps
    them equal); board.js reads them from these custom properties, so the canvases and the chrome share one palette. */
 
 .board {
@@ -46,7 +46,9 @@
   letter-spacing:.02em;font-variant-numeric:tabular-nums}
 @media (min-width:700px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:1200px){.board{grid-template-columns:repeat(3,minmax(0,1fr))}}
-/* two columns and nine panels: the last one takes the full row rather than leaving an empty cell */
+/* T-3731: three columns and fourteen panels: the asks river takes two cells, so every row is full */
+@media (min-width:1200px){section.bd-p[data-wide]{grid-column:span 2}}
+/* two columns and an odd count of panels: the last one takes the full row rather than leaving an empty cell */
 @media (min-width:700px) and (max-width:1199px){section.bd-p:last-of-type:nth-of-type(odd){grid-column:1/-1}}
 
 /* T-3730 All mode: a bar of project chips above the panels, each in its project's colour (set from board.js tokens) */
@@ -70,6 +72,7 @@
 .bd-p[data-accent="pink"]{--bd-a:var(--bd-pink)}
 .bd-p[data-accent="violet"]{--bd-a:var(--bd-violet)}
 .bd-p[data-accent="orange"]{--bd-a:var(--bd-orange)}
+.bd-p[data-accent="red"]{--bd-a:var(--bd-red)}
 /* L-brackets where the rules cross */
 .bd-p::before,.bd-p::after{content:"";position:absolute;z-index:1;width:9px;height:9px;pointer-events:none}
 .bd-p::before{left:-1px;top:-1px;border-left:1px solid var(--bd-bracket);border-top:1px solid var(--bd-bracket)}

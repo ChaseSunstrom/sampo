@@ -463,7 +463,7 @@ main{display:grid;grid-template-rows:minmax(320px,1fr) auto auto var(--deck-h);g
 [data-theme="modern"] .rail-list:focus-visible,[data-theme="modern"] .pick:focus-visible,
 [data-theme="modern"] .act:focus-visible,[data-theme="modern"] .note-in:focus-visible{outline-color:var(--brass)}
 [data-theme="modern"] #view-forge,[data-theme="modern"] #scene{display:none!important}
-/* T-3659: the Board is the modern default view: its nine panels alone; Network keeps the rest of the page, one click away */
+/* T-3659: the Board is the modern default view: its fourteen panels alone; Network keeps the rest of the page, one click away */
 #board,#view-board{display:none}
 [data-theme="modern"] #view-board{display:inline-block;border-radius:3px 0 0 3px;border-right-width:0}
 [data-view="board"] main{display:block}

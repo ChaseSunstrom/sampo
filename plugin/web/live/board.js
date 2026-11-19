@@ -1,5 +1,5 @@
-/* Sampo · the Board (T-3659): the live page's modern default. Nine panels, each a small instrument for one Sampo
-   mechanism, drawn on canvas from the snapshot the server streams (snapshot.board, built by sampo.board).
+/* Sampo · the Board (T-3659): the live page's modern default. Fourteen panels (T-3731 added the last five), each a small
+   instrument for one Sampo mechanism, drawn on canvas from the snapshot the server streams (snapshot.board, built by sampo.board).
    boardModel(snapshot, history) is the one mapping from snapshots to panels: plain, bounded data (test_board runs it
    under node). mount(el) builds the panels and runs one requestAnimationFrame loop over the visible ones: each panel
    keeps its still parts in a cached layer and draws only its moving parts per frame. No libraries; the palette is
@@ -20,9 +20,14 @@ const SampoBoard = (() => {
     {key: "sampo", name: "Sampo", what: "commands and the queue", accent: "cyan"},
     {key: "state", name: "State", what: "the files Sampo keeps", accent: "yellow"},
     {key: "tests", name: "Tests", what: "every module, cached or run", accent: "green"},
+    {key: "asks", name: "Asks", what: "your asks this week, by stage", accent: "pink", wide: true},  // T-3731
+    {key: "sessions", name: "Sessions", what: "live sessions and their context", accent: "violet"},
+    {key: "ship", name: "Ship & CI", what: "the last push through CI", accent: "green"},
+    {key: "usage", name: "Usage", what: "the 5-hour and weekly tanks", accent: "orange"},
+    {key: "guard", name: "Guard", what: "commands through the Ward gate", accent: "red"},
   ];
 
-  // ---------- the model: any snapshot, empty or huge, to nine bounded panels ----------
+  // ---------- the model: any snapshot, empty or huge, to fourteen bounded panels ----------
   const arr = (x) => (Array.isArray(x) ? x : []);
   const obj = (x) => (x && typeof x === "object" && !Array.isArray(x) ? x : {});
   const num = (x, d = 0) => (typeof x === "number" && isFinite(x) ? x : d);
@@ -229,6 +234,104 @@ const SampoBoard = (() => {
         s: TEST_STATES.includes(obj(m).state) ? m.state : "idle"}))};
   }
 
+  // ---------- T-3731: five pictures of the machine and the user's asks ----------
+  const clamp = (x, lo, hi) => Math.min(hi, Math.max(lo, num(x, lo)));
+  function dur(s) {  // seconds as a short span: "40 s", "21 min", "2 h 9 min", "3 d 5 h"
+    s = Math.max(0, Math.round(num(s)));
+    if (s < 60) return `${s} s`;
+    if (s < 3600) return `${Math.floor(s / 60)} min`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h${s % 3600 >= 60 ? ` ${Math.floor((s % 3600) / 60)} min` : ""}`;
+    const d = Math.floor(s / 86400);
+    return d > 999 ? "999+ d" : `${d} d${s % 86400 >= 3600 ? ` ${Math.floor((s % 86400) / 3600)} h` : ""}`;
+  }
+
+  function mSessions(b, A) {
+    const p = obj(b.sessions);
+    let rows = arr(p.rows).map(obj);
+    if (A) rows = rows.filter(A.vis);
+    const shown = (A ? spread(rows, 24) : rows.slice(0, 24)).map((r) => ({...(A ? A.mark(r) : {}), id: str(r.id, 8),
+      ctx: r.context_pct == null || !isFinite(r.context_pct) ? null : Math.round(clamp(r.context_pct, 0, 100)),
+      task: str(r.task, 12), model: str(r.model, 16), mine: r.mine !== false, age: Math.min(864000, int(r.age_s))}));
+    return {known: !!b.sessions, bodies: shown, more: Math.min(1e6, int(p.more) + Math.max(0, rows.length - shown.length)),
+      private: Math.min(1e6, int(p.private))};
+  }
+
+  const ASK_STAGES = ["asked", "planned", "building", "verifying", "merging", "blocked", "landed"];
+  function mAsks(b, A) {
+    const p = obj(b.asks), days = Math.max(1, Math.min(31, int(p.days) || 7));
+    let rows = arr(p.rows).map(obj).filter((r) => ASK_STAGES.includes(r.stage));
+    if (A) rows = rows.filter(A.vis);
+    const n = rows.length;  // the server sends the newest, oldest first: keep the newest (each project's, turn about)
+    rows = (A ? spread(rows.slice().reverse(), 60) : rows.slice(-60)).map((r) => ({...(A ? A.mark(r) : {}), id: str(r.id, 12), title: str(r.title, 90),
+      stage: r.stage, age: Math.round(clamp(r.age_h, 0, days * 24) * 10) / 10}));
+    rows.sort((x, y) => y.age - x.age || (x.id < y.id ? -1 : 1));
+    return {known: !!b.asks, rows, days, more: Math.min(1e6, int(p.more) + n - rows.length)};
+  }
+
+  const CI_STATES = ["waiting", "running", "red", "green", "local", "offline", "nogh", "ghfail", "reading"];
+  const CI_WORD = {nogh: "no gh", ghfail: "gh failing"};  // the label and footer's word for a state
+  function mShip(b, A) {
+    const all = A ? arr(b.ships).map(obj).filter(A.vis) : b.ship ? [obj(b.ship)] : [], src = all.slice(0, 6);
+    const ships = src.map((x) => {
+      const ci = obj(x.ci), J = arr(ci.jobs).map(obj);
+      return {...(A ? A.mark(x) : {}), sha: str(x.sha, 12), subject: str(x.subject, 120), age: Math.min(1e8, int(x.age_s)),
+        ref: str(x.ref, 16), unshipped: Math.min(1e6, int(x.unshipped)), state: CI_STATES.includes(ci.state) ? ci.state : "reading",
+        jobs: J.slice(0, 16).map((j) => {
+          const st = arr(j.steps), total = Math.min(99, int(st[1]));
+          return {name: str(j.name, 40), wf: str(j.workflow, 24), status: str(j.status, 12), conclusion: str(j.conclusion, 12),
+            done: Math.min(total, int(st[0])), total, secs: Math.min(1e6, int(j.secs))};
+        }), more: Math.max(0, J.length - 16)};
+    });
+    return {known: ships.length > 0, ships, more: Math.min(1e6, all.length - src.length)};
+  }
+
+  const TANKS = [["five_hour", "5 h"], ["seven_day", "week"]];
+  function mUsage(b) {
+    const u = obj(b.usage), W = obj(u.windows), sp = obj(u.spend);
+    const tanks = TANKS.map(([key, label]) => {
+      const x = obj(W[key]), known = typeof x.used === "number" && isFinite(x.used);
+      return {key, label, used: known ? Math.round(clamp(x.used, 0, 100) * 10) / 10 : null, span: int(x.span),
+        left: Math.min(1e7, int(x.resets_in)), projected: x.projected == null || !isFinite(x.projected) ? null : Math.round(clamp(x.projected, 0, 200)),
+        fullIn: x.full_in == null || !isFinite(x.full_in) || x.full_in < 0 ? null : Math.min(1e7, int(x.full_in)), why: str(x.why, 80)};
+    });
+    const wk = arr(u.week).map(arr).filter((r) => isFinite(r[0]) && isFinite(r[1])), step = Math.max(1, Math.ceil(wk.length / 84));
+    const week = wk.filter((_, i) => (wk.length - 1 - i) % step === 0).slice(-84)
+      .map((r) => [Math.round(clamp(r[0], 0, 168) * 100) / 100, Math.round(clamp(r[1], 0, 100))]);
+    const spend = {today: Math.min(1e6, r2(sp.today)), cap: Math.min(1e6, r2(sp.cap)), hourly: arr(sp.hourly).slice(-24).map((v) => Math.min(1e6, r2(v)))};
+    return {known: !!b.usage && (tanks.some((t) => t.used != null) || spend.today > 0), tanks, spend, week};
+  }
+
+  function guardSum(p, A) {  // All mode: the gate's figures summed over the projects the chips show
+    const by = obj(p.by), keys = Object.keys(by).filter((k) => A.vis({project: k})).slice(0, 100);
+    const out = {allowed: 0, refused: 0, minutes: Array.from({length: 60}, () => [0, 0])}, rules = {}, tools = {};
+    const add = (m, list, k) => { for (const x of arr(list).map(obj)) m[str(x[k], 40)] = (m[str(x[k], 40)] || 0) + Math.min(1e7, int(x.n)); };
+    for (const k of keys) {
+      const q = obj(by[k]), mm = arr(q.minutes).slice(-60);
+      out.allowed += int(q.allowed);
+      out.refused += int(q.refused);
+      mm.forEach((m, i) => { const r = out.minutes[60 - mm.length + i]; r[0] += int(arr(m)[0]); r[1] += int(arr(m)[1]); });
+      add(rules, q.rules, "rule");
+      add(tools, q.tools, "tool");
+    }
+    const ranked = (m, k) => Object.entries(m).sort((x, y) => y[1] - x[1] || (x[0] < y[0] ? -1 : 1)).map(([name, n]) => ({[k]: name, n}));
+    return {...p, ...out, rules: ranked(rules, "rule"), tools: ranked(tools, "tool")};
+  }
+  function mGuard(b, A) {
+    const p = A && b.guard && typeof obj(b.guard).by === "object" ? guardSum(obj(b.guard), A) : obj(b.guard);
+    let recent = arr(p.recent).map(obj);
+    if (A) recent = recent.filter(A.vis);
+    recent = recent.slice(0, 12).map((r) => ({...(A ? A.mark(r) : {}), ago: Math.min(1e6, int(r.ago_s)), rule: str(r.rule || "rule", 24),
+      tool: str(r.tool, 12), cmd: str(r.cmd, 80)}));
+    const rules = arr(p.rules).map(obj).slice(0, 6).map((r) => {
+      const rule = str(r.rule || "rule", 24), last = recent.find((x) => x.rule === rule);
+      return {rule, n: Math.min(1e7, int(r.n)), last: last ? last.cmd : "", pc: last && last.pc, tag: last && last.tag};
+    });
+    const minutes = arr(p.minutes).slice(-60).map((m) => [Math.min(1e6, int(arr(m)[0])), Math.min(1e6, int(arr(m)[1]))]);
+    const allowed = Math.min(1e9, int(p.allowed)), refused = Math.min(1e9, int(p.refused));
+    return {known: !!b.guard && allowed + refused > 0, allowed, refused, rules, recent, minutes,
+      tools: arr(p.tools).slice(0, 5).map((t) => ({tool: str(obj(t).tool, 12), n: Math.min(1e7, int(obj(t).n))}))};
+  }
+
   // each panel's right-hand label and footer
   const pct = (a, b) => (b ? Math.min(100, Math.round((a / b) * 1000) / 10) : 0);
   const FOOT = {
@@ -279,12 +382,48 @@ const SampoBoard = (() => {
     tests: (d) => ({label: plural(d.cells.length + d.more, "module"),
       foot: {text: d.known ? `${d.count.cached} cached · ${d.count.running} running · ${d.count.fail} failing${d.source ? " · " + d.source : ""}`
         : "no test run seen yet", stat: d.total ? `${d.done}/${d.total} checks passed` : "", pct: d.total ? pct(d.done, d.total) : null}}),
+    asks: (d) => {
+      const n = {};
+      for (const r of d.rows) n[r.stage] = (n[r.stage] || 0) + 1;
+      return {label: `${plural(d.rows.length + d.more, "ask")} · ${d.days} d`,
+        foot: {text: d.rows.length ? ASK_STAGES.filter((k) => n[k]).map((k) => `${k} ${n[k]}`).join(" · ") : `no asks in ${d.days} days`,
+          stat: d.rows.length ? `${n.landed || 0} landed` : ""}};
+    },
+    sessions: (d) => {
+      const B = d.bodies, c = B.filter((x) => x.ctx != null).map((x) => x.ctx), top = c.length ? Math.max(...c) : null;
+      return {label: plural(B.length + d.more, "session"),
+        foot: {text: B.length ? `${B.filter((x) => x.task).length} on a task · ${B.filter((x) => x.age < 120).length} heard from in 2 min` +
+          (d.private ? ` · ${d.private} private` : "") : "no live session",
+          stat: top == null ? "" : `fullest ${top}%`, pct: top}};
+    },
+    ship: (d) => {
+      const s = d.ships[0];
+      if (!s) return {label: "not pushed", foot: {text: "nothing pushed yet", stat: ""}};
+      const many = d.ships.length > 1, J = many ? d.ships.flatMap((x) => x.jobs) : s.jobs, ok = J.filter((j) => j.conclusion === "success").length;
+      const n = {};  // All mode: the pushes counted by CI state, not the first project's commit
+      for (const x of d.ships) n[x.state] = (n[x.state] || 0) + 1;
+      return {label: many ? plural(d.ships.length + d.more, "push", "pushes") : `CI ${CI_WORD[s.state] || s.state}`,
+        foot: {text: many ? CI_STATES.filter((k) => n[k]).map((k) => `${n[k]} ${CI_WORD[k] || k}`).join(" · ") + (d.more ? ` · +${fmt(d.more)} more` : "")
+          : `${s.sha} · ${dur(s.age)} ago · ${s.subject}`,
+          stat: J.length ? `${ok}/${J.length} jobs green` : "",
+          pct: J.length ? pct(J.filter((j) => j.status === "completed").length, J.length) : null}};
+    },
+    usage: (d) => {
+      const [f, wk] = d.tanks, say = (t) => `${t.label} ${t.used == null ? "unknown" : Math.round(t.used) + "%"}`;
+      return {label: d.spend.cap ? `$${d.spend.today.toFixed(2)} of $${fmt(d.spend.cap)}` : `$${d.spend.today.toFixed(2)} today`,
+        foot: {text: d.known ? `${say(f)} · ${say(wk)}${f.used != null && f.left ? ` · resets in ${dur(f.left)}` : ""}` : "no usage reading yet",
+          stat: f.projected != null ? `heading for ${f.projected}%` : "", pct: f.used}};
+    },
+    guard: (d) => ({label: `${fmt(d.refused)} refused`,
+      foot: {text: d.allowed + d.refused ? `${fmt(d.allowed)} allowed · ${fmt(d.refused)} refused in the last hour` : "no command in the last hour",
+        stat: d.rules[0] ? `most: ${d.rules[0].rule}` : ""}}),
   };
 
   function boardModel(snap, hist, hidden) {  // hidden: project slugs the chips turned off (All mode)
     const s = obj(snap), b = obj(s.board), h = arr(hist), prev = obj(h[h.length - 1]), A = allCtx(s, hidden);
     const data = {lanes: mLanes(s, b, A), cpu: mCpu(b), loop: mLoop(s, b, A), library: mLibrary(s, b, prev), models: mModels(s),
-      sampo: mSampo(s, b, A), state: mState(b), tests: mTests(b)};
+      sampo: mSampo(s, b, A), state: mState(b), tests: mTests(b),
+      asks: mAsks(b, A), sessions: mSessions(b, A), ship: mShip(b, A), usage: mUsage(b), guard: mGuard(b, A)};
     data.train = mTrain(b, data.lanes, A);
     return {at: str(s.at, 32), panels: PANELS.map((P, i) => {
       const f = FOOT[P.key](data[P.key]);
@@ -1341,6 +1480,948 @@ const SampoBoard = (() => {
     },
   };
 
+  // ---------- T-3731: sessions, asks, ship & CI, usage, guard ----------
+  const GAUGE = (T, v) => (v == null ? T.dim : v < 60 ? T.green : v < 85 ? T.yellow : T.red);
+  const MODEL_COL = (T, m) => (/opus/i.test(m) ? T.violet : /sonnet/i.test(m) ? T.cyan : /haiku/i.test(m) ? T.pink : T.muted);
+  function disc(g, x, y, r, col) {
+    g.fillStyle = col;
+    g.beginPath();
+    g.arc(x, y, Math.max(0, r), 0, TAU);
+    g.fill();
+  }
+  function ring(g, x, y, r, a0, a1, col, lw) {
+    g.strokeStyle = col;
+    g.lineWidth = Math.max(0, lw);
+    g.beginPath();
+    g.arc(x, y, Math.max(0, r), a0, a1);
+    g.stroke();
+  }
+
+  DRAW.sessions = {  // 11: the live sessions on orbits around the machine, each a ring gauge of its context window
+    base(g, d, w, h, T, mem) {
+      mem.b = [];
+      mem.c = null;
+      mem.orbits = [];
+      mem.labs = [];
+      mem.quiet = true;
+      const B = d.bodies, pad = 14;
+      if (!B.length) {
+        waiting(g, w, h, T, "waiting for a Claude session to report");
+        if (d.private) txt(g, `${plural(d.private, "private session")} not drawn`, w / 2, h / 2 + 16, T.muted, 9, "center");
+        return;
+      }
+      const legend = h >= 150 && w >= 260 ? 16 : 0, top = pad, bottom = h - legend - 6;
+      const rings = B.length <= 8 ? 1 : B.length <= 16 ? 2 : 3, labs = h >= 200 && w >= 300, lab = labs ? 26 : 0;
+      let br = clamp(Math.min(w, h) / (rings === 1 ? 10 : 14), 5, 20);
+      const cx = w / 2, cy = (top + bottom - lab) / 2;
+      const RY = Math.max(6, (bottom - lab - top) / 2 - br), RX = Math.max(8, w / 2 - pad - Math.max(br, labs ? 40 : 0));
+      // a chip wide enough for "15 live" is tall enough for its two lines (the name and the count)
+      const mw = Math.round(clamp(Math.min(RX, RY) * 0.75, 30, 76)), mh = Math.round(mw >= 50 ? Math.max(36, mw * 0.6) : mw * 0.6);
+      const f0 = rings === 1 ? 1 : clamp(Math.max((mh / 2 + br + 10) / RY, (mw / 2 + br + 10) / RX), 0.35, 0.85);
+      const F = Array.from({length: rings}, (_, k) => (rings === 1 ? 1 : f0 + ((1 - f0) * k) / (rings - 1)));
+      const sumF = F.reduce((a, f) => a + f, 0), cnt = F.map((f) => Math.floor((B.length * f) / sumF));
+      cnt[rings - 1] += B.length - cnt.reduce((a, c) => a + c, 0);
+      const sp = F.map((f, k) => (Math.PI * f * (RX + RY)) / Math.max(1, cnt[k]));
+      // where each body sits; then the radius shrinks to what the closest two (on any orbit) leave room for
+      const at = [];
+      F.forEach((f, k) => {
+        for (let j = 0; j < cnt[k]; j++) {
+          const a = -Math.PI / 2 + (j / Math.max(1, cnt[k])) * TAU + k * 0.5;
+          at.push({x: cx + RX * f * Math.cos(a), y: cy + RY * f * Math.sin(a), k, j});
+        }
+      });
+      let dmin = Infinity;
+      for (let p = 0; p < at.length; p++) for (let q = p + 1; q < at.length; q++) dmin = Math.min(dmin, Math.hypot(at[p].x - at[q].x, at[p].y - at[q].y));
+      br = Math.max(4, Math.min(br, Math.min(...sp) * 0.36, dmin * 0.42 - 1));
+      const lw = Math.max(1.5, br * 0.22), inside = br >= 16;
+      // the orbits
+      g.lineWidth = 1;
+      F.forEach((f, k) => {
+        g.strokeStyle = T.line;
+        g.setLineDash(k % 2 ? [2, 4] : []);
+        g.beginPath();
+        g.ellipse(cx, cy, Math.max(1, RX * f), Math.max(1, RY * f), 0, 0, TAU);
+        g.stroke();
+        mem.orbits.push({rx: RX * f, ry: RY * f, k});
+      });
+      g.setLineDash([]);
+      // place each body; the tethers first, so the bodies sit on top
+      at.forEach(({x: bx, y: by, k}, i) => {
+        const x = B[i], dx = bx - cx, dy = by - cy, dl = Math.hypot(dx, dy) || 1;
+        const s = Math.min((mw / 2 + 4) / (Math.abs(dx) || 1e-6), (mh / 2 + 4) / (Math.abs(dy) || 1e-6));
+        mem.b.push({x: bx, y: by, k, sx: cx + dx * s, sy: cy + dy * s, ex: bx - (dx / dl) * (br + 2), ey: by - (dy / dl) * (br + 2),
+          bc: (x.pc && T[x.pc]) || MODEL_COL(T, x.model), gc: GAUGE(T, x.ctx), ctx: x.ctx, age: x.age, mine: x.mine, br, lw,
+          rr: br - lw / 2, labs: labs && sp[k] >= 70, sp: sp[k], s: x});
+      });
+      for (const b of mem.b) {
+        g.strokeStyle = rgba(b.bc, b.mine ? 0.26 : 0.16);
+        g.lineWidth = 1;
+        g.setLineDash(b.mine ? [] : [2, 3]);
+        g.beginPath();
+        g.moveTo(b.sx, b.sy);
+        g.lineTo(b.ex, b.ey);
+        g.stroke();
+      }
+      g.setLineDash([]);
+      // the machine: a die with its pins
+      const mx = Math.round(cx - mw / 2), my = Math.round(cy - mh / 2), np = Math.max(2, Math.floor(mw / 8)), nq = Math.max(2, Math.floor(mh / 8));
+      g.fillStyle = T.muted;
+      for (let p = 0; p < np; p++) {
+        const px = Math.round(mx + 5 + (p * (mw - 10)) / (np - 1));
+        g.fillRect(px - 1, my - 4, 2, 4);
+        g.fillRect(px - 1, my + mh, 2, 4);
+      }
+      for (let p = 0; p < nq; p++) {
+        const py = Math.round(my + 5 + (p * (mh - 10)) / (nq - 1));
+        g.fillRect(mx - 4, py - 1, 4, 2);
+        g.fillRect(mx + mw, py - 1, 4, 2);
+      }
+      g.fillStyle = T.bg;
+      g.fillRect(mx, my, mw, mh);
+      box(g, mx, my, mw, mh, T.muted, 0.07);
+      // a top strip holds the pin-1 mark and the activity lights; the name and the count sit below it
+      ring(g, mx + 5.5, my + 5.5, 1.5, 0, TAU, rgba(T.muted, 0.6), 1);
+      g.font = `500 9px ${FONT}`;
+      // under the strip: the name, and the count when two lines fit whole above the bottom edge
+      const big = mh >= 36, body = my + 9 + (mh - 9) / 2, live = Math.min(body + 11, my + mh - 4);
+      txt(g, fit(g, "machine", mw - 6) || "machine", cx, big ? live - 11 : body + 3, T.ink, 9, "center", 500);
+      if (big) {  // the count, its word dropped when the chip is too narrow for both
+        const n = fmt(B.length + d.more);
+        g.font = `400 9px ${FONT}`;
+        txt(g, g.measureText(`${n} live`).width <= mw - 6 ? `${n} live` : fit(g, n, mw - 6), cx, live, T.muted, 9, "center");
+      }
+      mem.c = {cx, cy, led: {x: Math.round(mx + mw - 24), y: my + 4}, fresh: B.filter((x) => x.age < 120).length};
+      // each label under its body, kept only where it clears the machine, every other body and the labels kept before it
+      const hit = (a, r) => a.x < r.x + r.w && r.x < a.x + a.w && a.y < r.y + r.h && r.y < a.y + a.h;
+      const keep = [], walls = [{x: mx - 6, y: my - 6, w: mw + 12, h: mh + 12}];
+      for (const b of mem.b) walls.push({x: b.x - br - 3, y: b.y - br - 3, w: 2 * br + 6, h: 2 * br + 6, b});
+      for (const b of mem.b) {
+        if (!b.labs) continue;
+        const x = b.s, lw2 = Math.min(84, b.sp - 10), say = x.ctx == null ? "?" : `${x.ctx}%`;
+        g.font = `400 9px ${FONT}`;
+        const l1 = fit(g, (inside ? "" : say + " ") + (x.task || x.id), lw2), w1 = g.measureText(l1).width;
+        const l2 = fit(g, x.tag || x.model, lw2), bw2 = Math.max(g.measureText(l2).width, w1) + 6;
+        const r = {x: b.x - bw2 / 2, y: b.y + br + 3, w: bw2, h: 23};
+        if (r.x < 2 || r.x + r.w > w - 2 || r.y + r.h > h - legend - 2) continue;
+        if (walls.some((o) => o.b !== b && hit(r, o)) || keep.some((o) => hit(r, o))) continue;
+        keep.push(r);
+        b.lab = {l1, l2, r};
+      }
+      mem.labs = keep;
+      // the bodies: a ring gauge each, its fill the context used; the core in the model's (or project's) colour
+      for (const b of mem.b) {
+        disc(g, b.x, b.y, br + 2, T.bg);
+        disc(g, b.x, b.y, br - lw - 1, rgba(b.bc, 0.13));
+        ring(g, b.x, b.y, b.rr, 0, TAU, T.grid, lw);
+        if (b.ctx != null && b.ctx > 0) ring(g, b.x, b.y, b.rr, -Math.PI / 2, -Math.PI / 2 + (TAU * b.ctx) / 100, b.gc, lw);
+        ring(g, b.x, b.y, br - lw - 1.5, 0, TAU, rgba(b.bc, 0.8), 1);
+        g.fillStyle = T.line;
+        for (let q = 0; q < 4; q++) {  // quarter ticks outside the ring
+          const a = -Math.PI / 2 + (q * Math.PI) / 2;
+          g.fillRect(Math.round(b.x + (br + 2.5) * Math.cos(a)) - 0.5, Math.round(b.y + (br + 2.5) * Math.sin(a)) - 0.5, 1, 1);
+        }
+        const say = b.ctx == null ? "?" : `${b.ctx}%`;
+        if (inside) txt(g, say, b.x, b.y + 3, b.ctx == null ? T.dim : T.ink, 9, "center", 500);
+        if (b.lab) {
+          const {l1, l2, r} = b.lab;
+          g.fillStyle = T.bg;  // a backing, so a tether passing under the label doesn't strike it through
+          g.fillRect(Math.round(r.x), Math.round(r.y), Math.round(r.w), r.h);
+          txt(g, l1, b.x, b.y + br + 12, b.s.task ? T.ink : T.muted, 9, "center");
+          txt(g, l2, b.x, b.y + br + 23, b.bc, 9, "center");
+        }
+      }
+      // the legend, and what isn't drawn
+      const extra = [d.more ? `+${fmt(d.more)} more` : "", d.private ? `+${fmt(d.private)} private` : ""].filter(Boolean).join(" · ");
+      if (extra) txt(g, extra, w - pad, h - 7, T.muted, 9, "right");
+      if (legend) {
+        let lx = pad;
+        g.font = `400 9px ${FONT}`;
+        txt(g, "context", lx, h - 7, T.muted, 9);
+        g.font = `400 9px ${FONT}`;
+        lx += g.measureText("context").width + 10;
+        for (const [c, s] of [[T.green, "<60%"], [T.yellow, "<85%"], [T.red, "fuller"]]) {
+          ring(g, lx + 3, h - 10, 3, 0, TAU, c, 1.5);
+          txt(g, s, lx + 10, h - 7, T.muted, 9);
+          g.font = `400 9px ${FONT}`;
+          lx += 18 + g.measureText(s).width;
+        }
+        g.font = `400 9px ${FONT}`;
+        const room = w - pad - (extra ? g.measureText(extra).width + 14 : 0);
+        if (!B.some((x) => x.tag)) {
+          for (const m of [...new Set(B.map((x) => x.model).filter(Boolean))].slice(0, 4)) {
+            g.font = `400 9px ${FONT}`;
+            const mwid = g.measureText(m).width + 18;
+            if (lx + 10 + mwid > room) break;
+            disc(g, lx + 13, h - 10, 2.5, MODEL_COL(T, m));
+            txt(g, m, lx + 19, h - 7, T.muted, 9);
+            lx += mwid + 6;
+          }
+        }
+      }
+      mem.quiet = false;
+    },
+    live(g, d, w, h, t, T, mem) {
+      const c = mem.c;
+      if (!c) return;
+      const under = (x, y) => mem.labs.some((r) => x > r.x - 2 && x < r.x + r.w + 2 && y > r.y - 2 && y < r.y + r.h + 2);  // a label hides it
+      // a tracer runs each orbit, hidden where a body or a label sits
+      mem.orbits.forEach((o) => {
+        const dir = o.k % 2 ? -1 : 1;
+        for (let j = 0; j < 5; j++) {
+          const a = dir * (t * 0.2) / (1 + o.k * 0.35) - dir * j * 0.03 + o.k * 1.3;
+          const x = c.cx + o.rx * Math.cos(a), y = c.cy + o.ry * Math.sin(a);
+          if (under(x, y) || mem.b.some((b) => b.k === o.k && Math.abs(b.x - x) < b.br + 3 && Math.abs(b.y - y) < b.br + 3)) continue;
+          g.fillStyle = rgba(T.violet, 0.6 - j * 0.11);
+          g.fillRect(x - 1, y - 1, 2, 2);
+        }
+      });
+      mem.b.forEach((b, i) => {
+        // requests out along the tether, faster for a session heard from lately; replies back for the freshest
+        const v = b.age < 120 ? 0.5 : b.age < 900 ? 0.2 : 0.06, u = (t * v + i * 0.29) % 1;
+        const px = b.sx + (b.ex - b.sx) * u, py = b.sy + (b.ey - b.sy) * u;
+        g.fillStyle = b.bc;
+        if (!under(px, py)) g.fillRect(px - 1.5, py - 1.5, 3, 3);
+        if (b.age < 120) {
+          const u2 = (t * v * 0.8 + i * 0.29 + 0.5) % 1, qx = b.ex + (b.sx - b.ex) * u2, qy = b.ey + (b.sy - b.ey) * u2;
+          g.fillStyle = rgba(b.gc, 0.85);
+          if (!under(qx, qy)) g.fillRect(qx - 1, qy - 1, 2, 2);
+        }
+        if (b.ctx == null) return;
+        // the gauge's tip glows; a nearly full one sends out a warning ring
+        const a = -Math.PI / 2 + (TAU * b.ctx) / 100, p = 0.5 + 0.5 * Math.sin(t * 3 + i);
+        disc(g, b.x + b.rr * Math.cos(a), b.y + b.rr * Math.sin(a), b.lw * 0.5 + p * 0.8, rgba(b.gc, 0.55 + 0.45 * p));
+        if (b.ctx >= 85) {
+          const k = (t * 0.7 + i * 0.2) % 1, L = b.lab && b.lab.r;
+          g.save();
+          if (L) {  // the ring stops at its label's plate
+            g.beginPath();
+            g.rect(0, 0, w, h);
+            g.rect(L.x, L.y, L.w, L.h);
+            g.clip("evenodd");
+          }
+          ring(g, b.x, b.y, b.br + 3 + k * 7, 0, TAU, rgba(T.red, 0.4 * (1 - k)), 1);
+          g.restore();
+        }
+      });
+      for (let i = 0; i < 4; i++) {  // the machine's activity lights, one per session heard from in two minutes
+        const on = i < c.fresh && Math.sin(t * (2.3 + i * 0.9) + i * 1.9) > -0.2;
+        g.fillStyle = on ? T.green : rgba(T.green, 0.18);
+        g.fillRect(c.led.x + i * 5, c.led.y, 3, 2);
+      }
+    },
+  };
+
+  const ASK_COL = (T) => ({asked: T.cyan, planned: T.violet, building: T.yellow, verifying: T.orange, merging: T.pink, blocked: T.red,
+    landed: T.green});
+  DRAW.asks = {  // 10: the week's asks as a river, a channel per stage, each ask where its day falls; an open one trails to now
+    base(g, d, w, h, T, mem) {
+      mem.m = [];
+      mem.lanes = [];
+      mem.quiet = true;
+      if (!d.rows.length) return waiting(g, w, h, T, "waiting for your next ask");
+      const col = ASK_COL(T), pad = 14, span = d.days * 24;
+      g.font = `500 9px ${FONT}`;
+      const gut = w >= 200 ? Math.ceil(Math.max(...ASK_STAGES.map((k) => g.measureText(k).width))) + 30 : 0;
+      const head = h >= 120 ? 18 : 0, axis = h >= 110 ? 16 : 2;
+      const x0 = pad + gut, x1 = w - pad, y0 = pad + head, y1 = h - axis - 8, lh = (y1 - y0) / ASK_STAGES.length;
+      const X = (age) => x1 - (age / span) * (x1 - x0), n = {};
+      for (const r of d.rows) n[r.stage] = (n[r.stage] || 0) + 1;
+      // the channels, the blocked one hatched, the stage names in the gutter
+      ASK_STAGES.forEach((k, i) => {
+        const y = Math.round(y0 + i * lh), c = col[k], hh = Math.max(1, Math.round(lh) - 1);
+        g.fillStyle = rgba(c, 0.04);
+        g.fillRect(x0, y + 1, x1 - x0, hh);
+        if (k === "blocked") hatch(g, x0, y + 1, x1 - x0, hh, rgba(T.red, 0.1));
+        hline(g, x0, x1, y, T.grid);
+        if (gut) {
+          const ly = y0 + i * lh + lh / 2;
+          g.fillStyle = c;
+          g.fillRect(pad, Math.round(ly) - 3, 2, Math.min(6, Math.max(1, Math.round(lh) - 2)));
+          if (lh >= 10) {  // a channel too thin for a 9 px name keeps its colour tick alone
+            txt(g, k, pad + 7, ly + 3, n[k] ? T.ink : T.muted, 9);
+            txt(g, n[k] ? String(n[k]) : "·", x0 - 8, ly + 3, n[k] ? c : T.muted, 9, "right", 500);
+          }
+        }
+        mem.lanes.push({y: y0 + i * lh + lh / 2, h: lh, c});
+      });
+      hline(g, x0, x1, Math.round(y1), T.grid);
+      // the days, as many labels as fit
+      for (let k = 1; k <= d.days; k++) {
+        g.fillStyle = rgba(T.line, 0.9);
+        g.fillRect(Math.round(X(k * 24)), y0, 1, y1 - y0);
+      }
+      if (axis > 2) {
+        const every = Math.max(1, Math.ceil(48 / Math.max(1, (x1 - x0) / d.days)));
+        for (let k = every; k <= d.days; k += every) txt(g, `−${k} d`, X(k * 24), h - 9, T.muted, 9, k === d.days ? "left" : "center");
+        txt(g, "now", x1, h - 9, T.pink, 9, "right", 500);
+      }
+      // the asks: an open one trails a wake to now; close ones in a channel step aside rather than hide each other
+      const mr = clamp(lh * 0.2, 2, 4.5), last = {};
+      let newest = null;
+      for (const r of d.rows) if (!newest || r.age < newest.age) newest = r;
+      d.rows.forEach((r) => {
+        const L = mem.lanes[ASK_STAGES.indexOf(r.stage)], c = (r.pc && T[r.pc]) || L.c, x = X(r.age), prev = last[r.stage];
+        const off = Math.min(lh * 0.26, mr + 2), dy = prev && x - prev.x < mr * 2 + 2 ? (prev.dy === 0 ? -off : prev.dy < 0 ? off : 0) : 0;
+        const m = {x, y: L.y + dy, dy, r: mr, c, lane: r.stage, active: r.stage !== "landed", newest: r === newest, id: r.id};
+        last[r.stage] = m;
+        mem.m.push(m);
+      });
+      for (const m of mem.m) {
+        if (!m.active) continue;
+        g.strokeStyle = rgba(m.c, 0.3);
+        g.lineWidth = 1;
+        g.beginPath();
+        g.moveTo(m.x + m.r, Math.round(m.y) + 0.5);
+        g.lineTo(x1, Math.round(m.y) + 0.5);
+        g.stroke();
+      }
+      const labEnd = {};
+      mem.m.forEach((m, i) => {
+        disc(g, m.x, m.y, m.r + 1.5, T.bg);
+        disc(g, m.x, m.y, m.r, m.active ? rgba(m.c, 0.28) : m.c);
+        ring(g, m.x, m.y, m.r, 0, TAU, m.c, 1);
+        if (lh < 20) return;
+        g.font = `400 9px ${FONT}`;
+        const next = mem.m.slice(i + 1).find((o) => o.lane === m.lane), lx = m.x + m.r + 4, tw = g.measureText(m.id).width;
+        if (lx > (labEnd[m.lane] || 0) && lx + tw < Math.min(next ? next.x - next.r - 3 : x1 - 2, x1 - 2)) {
+          txt(g, m.id, lx, m.y - 3, T.muted, 9);
+          labEnd[m.lane] = lx + tw + 3;
+        }
+      });
+      // the newest ask, by name
+      if (head) {
+        const r = newest, c = (r.pc && T[r.pc]) || col[r.stage];
+        let hx = pad;
+        txt(g, "newest", hx, pad + 6, T.muted, 9);
+        g.font = `400 9px ${FONT}`;
+        hx += g.measureText("newest").width + 10;
+        if (r.tag) { txt(g, r.tag, hx, pad + 6, c, 9, "left", 500); g.font = `500 9px ${FONT}`; hx += g.measureText(r.tag).width + 8; }
+        txt(g, r.id, hx, pad + 6, c, 9.5, "left", 500);
+        g.font = `500 9.5px ${FONT}`;
+        hx += g.measureText(r.id).width + 8;
+        const more = d.more ? `+${fmt(d.more)} older` : "";
+        g.font = `400 9px ${FONT}`;
+        const mwid = more ? g.measureText(more).width + 12 : 0;
+        if (more) txt(g, more, w - pad, pad + 6, T.muted, 9, "right");
+        g.font = `400 9.5px ${FONT}`;
+        txt(g, fitWords(g, r.title, w - pad - mwid - hx, 1), hx, pad + 6, T.ink, 9.5);
+      }
+      Object.assign(mem, {x0, x1, y0, y1});
+      mem.quiet = false;
+    },
+    live(g, d, w, h, t, T, mem) {
+      if (!mem.lanes.length) return;
+      const span = mem.x1 - mem.x0;
+      if (span > 8) {  // the current: faint dashes drift toward now down every channel
+        mem.lanes.forEach((L, i) => {
+          g.fillStyle = rgba(L.c, 0.28);
+          for (let j = 0; j < 4; j++) {
+            const x = mem.x0 + ((t * (12 + i * 1.7) + (j * span) / 4 + i * 37) % span);
+            g.fillRect(Math.round(x), Math.round(L.y + (j % 2 ? 0.3 : -0.3) * L.h), Math.max(1, Math.min(9, mem.x1 - x)), 1);
+          }
+        });
+      }
+      mem.m.forEach((m, i) => {
+        if (m.active) ring(g, m.x, m.y, m.r + 2 + Math.sin(t * 2.6 + i), 0, TAU, rgba(m.c, 0.18 + 0.14 * Math.sin(t * 2.6 + i)), 1);
+        if (m.newest) {
+          const k = (t * 0.6) % 1;
+          ring(g, m.x, m.y, m.r + 2 + k * 12, 0, TAU, rgba(m.c, 0.6 * (1 - k)), 1);
+        }
+      });
+      g.save();  // now: a marching line at the river's mouth
+      g.strokeStyle = rgba(T.pink, 0.75);
+      g.lineWidth = 1;
+      g.setLineDash([3, 3]);
+      g.lineDashOffset = -t * 6;
+      g.beginPath();
+      g.moveTo(Math.round(mem.x1) - 0.5, mem.y0);
+      g.lineTo(Math.round(mem.x1) - 0.5, mem.y1);
+      g.stroke();
+      g.restore();
+    },
+  };
+
+  const JOB_COL = (T, j) => (j.conclusion === "success" ? T.green : /failure|timed_out|startup_failure/.test(j.conclusion) ? T.red
+    : j.status === "in_progress" ? T.yellow : j.status === "completed" ? T.dim : T.muted);
+  const CI_COL = (T) => ({waiting: T.muted, running: T.yellow, red: T.red, green: T.green, local: T.dim, offline: T.dim,
+    nogh: T.orange, ghfail: T.orange, reading: T.dim});
+  const CI_SAY = {waiting: "waiting for CI to pick the push up", local: "no GitHub remote here: CI isn't read",
+    offline: "GitHub isn't reachable: CI unknown", nogh: "gh isn't installed: CI unknown",
+    ghfail: "gh can't read CI: signed out or rate-limited", reading: "reading CI…"};
+  function shipOne(g, s, w, h, T, mem) {
+    const pad = 14, narrow = w < 420, cc = CI_COL(T)[s.state] || T.dim;
+    const cw = narrow ? w - 2 * pad : Math.round(clamp(w * 0.32, 120, 210)), ch = narrow ? 28 : Math.round(Math.min(h - 2 * pad, 122));
+    const cx0 = pad, cy0 = narrow ? pad : Math.round((h - ch) / 2);
+    // the commit, as a card
+    box(g, cx0, cy0, cw, ch, T.line, 0);
+    g.fillStyle = rgba(T.ink, 0.025);
+    g.fillRect(cx0 + 1, cy0 + 1, cw - 2, ch - 2);
+    g.fillStyle = cc;
+    g.fillRect(cx0, cy0, 2, ch);
+    if (narrow) {
+      const pw = pill(g, s.sha, cx0 + 8, cy0 + ch / 2, T.green, T.bg, 9, "left"), ago = `${dur(s.age)} ago`;
+      g.font = `400 9px ${FONT}`;
+      const aw = g.measureText(ago).width;
+      txt(g, ago, cx0 + cw - 8, cy0 + ch / 2 + 3, T.dim, 9, "right");
+      g.font = `400 9.5px ${FONT}`;
+      txt(g, fitWords(g, s.subject, cw - pw - aw - 30, 1), cx0 + pw + 14, cy0 + ch / 2 + 3, T.ink, 9.5);
+    } else {
+      const pw = pill(g, s.sha, cx0 + 10, cy0 + 15, T.green, T.bg, 9, "left");
+      g.font = `400 9px ${FONT}`;
+      if (g.measureText(s.ref).width <= cw - pw - 26) txt(g, s.ref, cx0 + cw - 8, cy0 + 18, T.dim, 9, "right");  // whole or not at all
+      g.font = `400 9.5px ${FONT}`;
+      const lines = wrap(g, s.subject, cw - 20, Math.max(1, Math.min(3, Math.floor((ch - 66) / 13) + 1)));
+      lines.forEach((l, i) => txt(g, l, cx0 + 10, cy0 + 39 + i * 13, T.ink, 9.5));
+      txt(g, `pushed ${dur(s.age)} ago`, cx0 + 10, cy0 + ch - (s.unshipped ? 23 : 10), T.dim, 9);
+      if (s.unshipped) txt(g, `${plural(s.unshipped, "commit")} not pushed`, cx0 + 10, cy0 + ch - 10, T.yellow, 9);
+    }
+    // the jobs, grouped by workflow, a lane each fed from the commit
+    const jx0 = narrow ? pad : cx0 + cw + Math.max(36, Math.round(w * 0.07)), jx1 = w - pad;
+    const pillY = narrow ? cy0 + ch + 16 : pad + 6, jy0 = pillY + 14, jy1 = h - pad + 4;
+    pill(g, `CI ${CI_WORD[s.state] || s.state}`, jx1, pillY, cc, T.bg, 9, "right");
+    if (s.jobs.length) txt(g, plural(s.jobs.length + s.more, "job"), jx0, pillY + 3, T.dim, 9);
+    const port = {x: cx0 + cw, y: cy0 + ch / 2};
+    if (!narrow) {
+      disc(g, port.x, port.y, 3, T.bg);
+      ring(g, port.x, port.y, 3, 0, TAU, cc, 1);
+    }
+    if (!s.jobs.length) {
+      const say = s.state === "running" || s.state === "red" || s.state === "green" ? "no jobs listed for this push" : CI_SAY[s.state];
+      g.font = `400 9.5px ${FONT}`;
+      const L = wrap(g, say, jx1 - jx0 - 8, 2), my = (jy0 + jy1) / 2;
+      L.forEach((l, i) => txt(g, l, (jx0 + jx1) / 2, my + 3 + (i - (L.length - 1) / 2) * 13, T.dim, 9.5, "center"));
+      if (!narrow) {
+        g.strokeStyle = rgba(cc, 0.4);
+        g.setLineDash([2, 3]);
+        g.beginPath();
+        g.moveTo(port.x + 3, port.y);
+        g.lineTo(jx0 - 6, port.y);
+        g.stroke();
+        g.setLineDash([]);
+      }
+      mem.wait = s.state === "waiting" || s.state === "reading" ? {x: jx0 - 6, y: port.y} : null;
+      return;
+    }
+    const groups = [];
+    for (const j of s.jobs) {
+      let G = groups.find((x) => x.wf === j.wf);
+      if (!G) groups.push((G = {wf: j.wf, jobs: []}));
+      G.jobs.push(j);
+    }
+    const rows = s.jobs.length + (s.more ? 1 : 0), span = Math.max(1, jy1 - jy0);
+    let rh = span / (rows + groups.length * 0.8);
+    const heads = rh >= 13;
+    if (!heads) rh = span / rows;
+    rh = Math.min(rh, 24);
+    const nw = Math.round(clamp((jx1 - jx0) * 0.3, 36, 120)), bx0 = jx0 + nw + 4, dw = jx1 - bx0 > 90 ? 46 : 0, bw = Math.max(4, jx1 - dw - bx0);
+    let y = jy0;
+    groups.forEach((G) => {
+      if (heads) {
+        const head = G.wf || "jobs";
+        g.font = `500 9px ${FONT}`;
+        txt(g, head, jx0, y + rh * 0.8 - 3, T.dim, 9, "left", 500);
+        g.font = `500 9px ${FONT}`;
+        hline(g, jx0 + 6 + g.measureText(head).width, jx1, Math.round(y + rh * 0.8 - 6), T.grid);
+        y += rh * 0.8;
+      }
+      for (const j of G.jobs) {
+        const cy = y + rh / 2, c = JOB_COL(T, j), bh = Math.round(clamp(rh * 0.32, 2, 6)), by = Math.round(cy - bh / 2), run = j.status === "in_progress";
+        g.font = `400 9px ${FONT}`;
+        if (rh >= 11) txt(g, fit(g, j.name, nw - 6), jx0, cy + 3, j.status === "completed" ? T.muted : T.ink, 9);
+        g.fillStyle = T.grid;
+        g.fillRect(bx0, by, bw, bh);
+        const fw = j.total ? (bw * j.done) / j.total : j.status === "completed" ? bw : 0;
+        g.fillStyle = rgba(c, j.status === "completed" ? 0.85 : 0.6);
+        g.fillRect(bx0, by, Math.round(fw), bh);
+        if (j.total > 1 && bw / j.total >= 4) {
+          g.fillStyle = T.bg;
+          for (let k = 1; k < j.total; k++) g.fillRect(Math.round(bx0 + (bw * k) / j.total), by, 1, bh);
+        }
+        if (dw && rh >= 11) txt(g, j.status === "queued" ? "queued" : dur(j.secs), jx1, cy + 3, run ? T.yellow : T.dim, 9, "right");
+        if (!narrow) {
+          const P = link(port.x + 3, port.y, jx0 - 6, cy);
+          g.strokeStyle = rgba(c, run ? 0.4 : 0.22);
+          g.lineWidth = 1;
+          g.beginPath();
+          curve(g, P);
+          g.stroke();
+          if (run || j.status === "queued") mem.pipes.push({P, c});
+        }
+        if (run) mem.run.push({x: bx0, y: by, w: fw, h: bh, step: j.total ? bw / j.total : bw * 0.1, full: bw});
+        if (j.status === "queued") mem.q.push({x: bx0, y: by, w: bw, h: bh});
+        y += rh;
+      }
+    });
+    if (s.more && rh >= 11) txt(g, `+${fmt(s.more)} more jobs`, jx0, y + rh / 2 + 3, T.dim, 9);
+  }
+  function shipMany(g, ships, more, w, h, T, mem) {  // All mode: a row per project's last push, its jobs as a strip of cells
+    const pad = 14, foot = more ? 16 : 0, room = h - 2 * pad - foot, rh = Math.min(60, room / ships.length);
+    const top = pad + Math.max(0, (room - rh * ships.length) / 2);
+    if (more) txt(g, `+${fmt(more)} more ${more === 1 ? "push" : "pushes"} not drawn`, pad + 8, Math.min(h - pad + 2, top + rh * ships.length + 13), T.dim, 9);
+    ships.forEach((s, i) => {
+      const y = top + i * rh, c = (s.pc && T[s.pc]) || T.green, cc = CI_COL(T)[s.state] || T.dim, two = rh >= 30, three = rh >= 52;
+      const l1 = three ? y + rh * 0.26 : two ? y + rh * 0.36 : y + rh / 2;
+      if (i) hline(g, pad, w - pad, Math.round(y), T.grid);
+      g.fillStyle = c;
+      g.fillRect(pad, Math.round(y + 4), 2, Math.max(1, Math.round(rh - 8)));
+      if (rh < 11) return;  // too thin for a line of text: the project's bar alone
+      let x = pad + 8;
+      if (s.tag) {
+        txt(g, s.tag, x, l1 + 3, c, 9, "left", 500);
+        g.font = `500 9px ${FONT}`;
+        x += g.measureText(s.tag).width + 8;
+      }
+      x += pill(g, s.sha, x, l1, T.green, T.bg, 9, "left") + 8;
+      const ago = `${dur(s.age)} ago`;
+      g.font = `400 9px ${FONT}`;
+      const aw = g.measureText(ago).width;
+      txt(g, ago, w - pad, l1 + 3, T.dim, 9, "right");
+      g.font = `400 9.5px ${FONT}`;
+      txt(g, fitWords(g, s.subject, w - pad - aw - 10 - x, 1), x, l1 + 3, T.ink, 9.5);
+      if (!two) return;
+      const l2 = three ? y + rh * 0.52 : y + rh * 0.72, st = `CI ${CI_WORD[s.state] || s.state}`;
+      if (three) {  // the jobs that matter by name: what failed, else what runs, else how many passed
+        const pick = (f) => s.jobs.filter(f).map((j) => j.name);
+        const bad = pick((j) => /failure|timed_out|startup_failure/.test(j.conclusion)), run = pick((j) => j.status === "in_progress");
+        const [say, sc] = bad.length ? [`failed: ${bad.join(", ")}`, T.red] : run.length ? [`running: ${run.join(", ")}`, T.yellow]
+          : s.jobs.length ? [`${s.jobs.filter((j) => j.conclusion === "success").length}/${s.jobs.length} jobs green`, T.muted] : ["", T.dim];
+        const not = s.unshipped ? `${plural(s.unshipped, "commit")} not pushed` : "";
+        g.font = `400 9px ${FONT}`;
+        const nw = not ? g.measureText(not).width + 12 : 0;
+        if (not) txt(g, not, w - pad, y + rh * 0.78 + 3, T.yellow, 9, "right");
+        g.font = `400 9px ${FONT}`;
+        txt(g, fitWords(g, say, w - 2 * pad - 8 - nw, 1), pad + 8, y + rh * 0.78 + 3, sc, 9);
+      }
+      g.font = `500 9px ${FONT}`;
+      const sw = g.measureText(st).width;
+      txt(g, st, w - pad, l2 + 3, cc, 9, "right", 500);
+      const room = w - 2 * pad - 8 - sw - 14, cw = s.jobs.length ? Math.min(14, room / s.jobs.length) : 0;
+      g.font = `400 9px ${FONT}`;
+      if (!s.jobs.length) txt(g, fitWords(g, CI_SAY[s.state] || "no jobs listed", room, 1), pad + 8, l2 + 3, T.dim, 9);
+      s.jobs.forEach((j, k) => {
+        const jx = pad + 8 + k * cw, jc = JOB_COL(T, j);
+        g.fillStyle = rgba(jc, j.status === "completed" ? 0.85 : 0.45);
+        g.fillRect(Math.round(jx), Math.round(l2 - 3), Math.max(1, Math.round(cw) - 2), 6);
+        if (j.status === "in_progress") mem.run.push({x: Math.round(jx), y: Math.round(l2 - 3), w: Math.max(1, Math.round(cw) - 2), h: 6, cell: true});
+      });
+    });
+  }
+  DRAW.ship = {  // 12: the last push, its commit feeding a lane per CI job, each lane a bar of its steps
+    base(g, d, w, h, T, mem) {
+      mem.pipes = [];
+      mem.run = [];
+      mem.q = [];
+      mem.wait = null;
+      mem.quiet = true;
+      if (!d.ships.length) return waiting(g, w, h, T, "waiting for the first push");
+      if (d.ships.length > 1 || d.more) shipMany(g, d.ships, int(d.more), w, h, T, mem);
+      else shipOne(g, d.ships[0], w, h, T, mem);
+      mem.quiet = !mem.run.length && !mem.q.length && !mem.wait;
+    },
+    live(g, d, w, h, t, T, mem) {
+      mem.pipes.forEach((p, i) => {  // packets flow down the pipes to the jobs still going
+        g.fillStyle = p.c;
+        for (let j = 0; j < 2; j++) {
+          const [px, py] = along(p.P, (t * 0.35 + i * 0.23 + j * 0.5) % 1);
+          g.fillRect(px - 1.5, py - 1.5, 3, 3);
+        }
+      });
+      mem.run.forEach((r, i) => {
+        if (r.cell) {
+          g.fillStyle = rgba(T.yellow, 0.35 + 0.35 * Math.sin(t * 3 + i));
+          g.fillRect(r.x, r.y, r.w, r.h);
+          return;
+        }
+        // the step underway fills and fades; a glint runs along what's done
+        const sw = Math.max(1, Math.min(r.step, r.full - r.w));
+        g.fillStyle = rgba(T.yellow, 0.2 + 0.25 * (0.5 + 0.5 * Math.sin(t * 3.2 + i)));
+        g.fillRect(Math.round(r.x + r.w), r.y, Math.round(sw * ((t * 0.25 + i * 0.3) % 1)), r.h);
+        if (r.w > 8) {
+          const gx = r.x + ((t * 40 + i * 23) % r.w);
+          g.fillStyle = rgba(T.ink, 0.45);
+          g.fillRect(Math.round(gx), r.y, 2, r.h);
+        }
+      });
+      mem.q.forEach((r, i) => {
+        g.strokeStyle = rgba(T.muted, 0.25 + 0.25 * Math.sin(t * 2 + i));
+        g.lineWidth = 1;
+        g.strokeRect(r.x + 0.5, r.y - 0.5, r.w - 1, r.h + 1);
+      });
+      if (mem.wait) disc(g, mem.wait.x, mem.wait.y, 2 + Math.sin(t * 2.5), rgba(T.muted, 0.6));
+    },
+  };
+
+  DRAW.usage = {  // 13: the 5-hour and weekly tanks, each filled to what's used with its projection marked; the day's spend
+    base(g, d, w, h, T, mem) {
+      mem.t = [];
+      mem.last = null;
+      mem.quiet = true;
+      if (!d.known) return waiting(g, w, h, T, "waiting for a usage reading from the statusline");
+      const pad = 14, narrow = w < 330, cap = h >= 150;
+      const colW = narrow ? (w - 2 * pad) / 2 : Math.round(clamp(w * 0.17, 84, 120)), tw = Math.round(clamp(colW * 0.5, 22, 56));
+      const ty0 = pad + 30, ty1 = h - pad - (cap ? 25 : 0) - (narrow ? 14 : 0), th = Math.max(4, ty1 - ty0);
+      d.tanks.forEach((k, i) => {
+        const cx = pad + colW * i + colW / 2, x = Math.round(cx - tw / 2), r = Math.min(7, tw / 4), lc = GAUGE(T, k.used);
+        txt(g, k.label, cx, pad + 7, T.muted, 9, "center", 500);
+        txt(g, k.used == null ? "?" : `${Math.round(k.used)}%`, cx, pad + 23, k.used == null ? T.dim : T.ink, 13, "center", 500);
+        const glass = () => {
+          g.beginPath();
+          if (g.roundRect) g.roundRect(x + 0.5, ty0 + 0.5, tw - 1, th - 1, Math.max(0, Math.min(r, (th - 1) / 2)));
+          else g.rect(x + 0.5, ty0 + 0.5, tw - 1, th - 1);
+        };
+        glass();
+        g.fillStyle = rgba(T.ink, 0.025);
+        g.fill();
+        g.save();
+        glass();
+        g.clip();
+        if (k.used == null) hatch(g, x, ty0, tw, th, rgba(T.dim, 0.3));
+        else {
+          const ly = ty0 + th * (1 - k.used / 100), gr = g.createLinearGradient(0, ly, 0, ty0 + th);
+          gr.addColorStop(0, rgba(lc, 0.55));
+          gr.addColorStop(1, rgba(lc, 0.16));
+          g.fillStyle = gr;
+          g.fillRect(x, Math.round(ly + 1), tw, Math.max(0, ty0 + th - ly));
+          const bx = [], rng = seed(k.key);
+          for (let j = 0; j < 5; j++) bx.push(rng());
+          mem.t.push({x, w: tw, top: ly, y0: ty0, bottom: ty0 + th, c: lc, bx});
+        }
+        g.fillStyle = rgba(T.ink, 0.07);  // a glint down the glass
+        g.fillRect(x + 3, ty0 + 4, 2, Math.max(0, th - 8));
+        g.restore();
+        glass();
+        g.strokeStyle = rgba(T.muted, 0.7);
+        g.lineWidth = 1;
+        g.stroke();
+        g.fillStyle = rgba(T.muted, 0.5);
+        for (let q = 1; q < 4; q++) g.fillRect(x + tw - 6, Math.round(ty0 + (th * q) / 4), 4, 1);
+        if (k.projected != null && k.used != null) {
+          const pv = Math.min(100, k.projected), py = Math.round(ty0 + th * (1 - pv / 100)) + 0.5, pc = GAUGE(T, k.projected);
+          g.strokeStyle = pc;
+          g.setLineDash([3, 2]);
+          g.beginPath();
+          g.moveTo(x - 4, py);
+          g.lineTo(x + tw + 4, py);
+          g.stroke();
+          g.setLineDash([]);
+          if (k.projected > 100) {  // past the brim: an arrow over the top
+            g.fillStyle = pc;
+            g.beginPath();
+            g.moveTo(cx - 4, ty0 - 2);
+            g.lineTo(cx + 4, ty0 - 2);
+            g.lineTo(cx, ty0 - 6);
+            g.closePath();
+            g.fill();
+          }
+        }
+        if (cap) {
+          g.font = `400 9px ${FONT}`;
+          if (k.used == null) {
+            wrap(g, k.why || "no reading", colW - 4, 2).forEach((l, j) => txt(g, l, cx, ty1 + 12 + j * 11, T.muted, 9, "center"));
+          } else {
+            const pr = [k.projected != null ? `${k.projected}% by reset` : "no projection", k.projected != null ? `→ ${k.projected}%` : "no proj."]
+              .find((s) => g.measureText(s).width <= colW - 4) || `${k.projected}%`;
+            txt(g, fit(g, pr, colW - 4), cx, ty1 + 12, k.projected != null ? GAUGE(T, k.projected) : T.muted, 9, "center");
+            if (k.left) {  // the longest wording that fits whole: a cut "2 h 9 m…" reads as a different time
+              g.font = `400 9px ${FONT}`;
+              const say = [`resets ${dur(k.left)}`, `in ${dur(k.left)}`, dur(k.left)].find((s) => g.measureText(s).width <= colW - 4);
+              txt(g, say || fit(g, dur(k.left), colW - 4), cx, ty1 + 23, T.muted, 9, "center");
+            }
+          }
+        }
+      });
+      const sp = d.spend, money = `$${sp.today.toFixed(2)}`;
+      if (narrow) {
+        txt(g, `${money}${sp.cap ? ` of $${fmt(sp.cap)}` : ""} today`, pad, h - 8, sp.cap && sp.today > sp.cap ? T.red : T.orange, 9.5, "left", 500);
+        mem.quiet = !mem.t.length;
+        return;
+      }
+      // the day's spend against its cap, then by hour, then the week's 5-hour use
+      const sx0 = pad + colW * 2 + 20, sx1 = w - pad, sw = Math.max(10, sx1 - sx0);
+      txt(g, money, sx0, pad + 13, T.ink, 15, "left", 500);
+      g.font = `500 15px ${FONT}`;
+      const mw = g.measureText(money).width + 8;
+      g.font = `400 9.5px ${FONT}`;
+      txt(g, fit(g, sp.cap ? `of $${fmt(sp.cap)} today` : "today, no cap set", sw - mw), sx0 + mw, pad + 12, T.muted, 9.5);
+      if (sp.cap) {
+        const f = Math.min(1, sp.today / sp.cap), over = sp.today > sp.cap;
+        g.fillStyle = T.grid;
+        g.fillRect(sx0, pad + 21, sw, 4);
+        g.fillStyle = over ? T.red : T.orange;
+        g.fillRect(sx0, pad + 21, Math.round(sw * f), 4);
+        g.fillStyle = T.muted;
+        g.fillRect(sx1 - 1, pad + 18, 1, 10);
+      }
+      const rest = h - pad - (pad + 40), weekOn = rest >= 120 && d.week.length > 1;
+      const hy0 = pad + 46, hy1 = weekOn ? hy0 + Math.round(rest * 0.42) : h - pad - 12, H = d.spend.hourly;
+      if (hy1 - hy0 >= 16) {
+        const peak = Math.max(0.01, ...H), bw = sw / 24, off = 24 - H.length;
+        txt(g, "spend / hour", sx0, hy0 - 4, T.muted, 9);
+        g.font = `400 9px ${FONT}`;
+        const pk = `peak $${peak.toFixed(2)}`;
+        if (g.measureText("spend / hour" + pk).width + 12 <= sw) txt(g, pk, sx1, hy0 - 4, T.muted, 9, "right");
+        hline(g, sx0, sx1, hy1, T.line);
+        H.forEach((v, i) => {
+          const bh = Math.round(((hy1 - hy0 - 4) * v) / peak), bx = Math.round(sx0 + (off + i) * bw);
+          if (bh <= 0) return;
+          g.fillStyle = rgba(T.orange, i === H.length - 1 ? 0.9 : 0.55);
+          g.fillRect(bx, hy1 - bh, Math.max(1, Math.round(bw) - 2), bh);
+          if (i === H.length - 1) mem.last = {x: bx, y: hy1 - bh, w: Math.max(1, Math.round(bw) - 2)};
+        });
+        if (!weekOn) {
+          txt(g, "−24 h", sx0, h - pad + 4, T.muted, 9);
+          txt(g, "now", sx1, h - pad + 4, T.muted, 9, "right");
+        }
+      }
+      if (weekOn) {
+        const wy0 = hy1 + 22, wy1 = h - pad - 8, wh = Math.max(4, wy1 - wy0), wk = d.tanks[1], lc = GAUGE(T, wk.used);
+        const X = (ago) => sx1 - (ago / 168) * sw, Y = (v) => wy1 - (v / 100) * wh;
+        txt(g, "week used · 7 d", sx0, wy0 - 5, T.muted, 9);
+        txt(g, "100%", sx1, wy0 - 5, T.muted, 9, "right");
+        g.strokeStyle = rgba(T.red, 0.45);
+        g.setLineDash([2, 3]);
+        g.beginPath();
+        g.moveTo(sx0, Math.round(wy0) + 0.5);
+        g.lineTo(sx1, Math.round(wy0) + 0.5);
+        g.stroke();
+        g.setLineDash([]);
+        hline(g, sx0, sx1, wy1, T.line);
+        const P = d.week.slice().sort((a, b) => b[0] - a[0]);
+        g.beginPath();
+        g.moveTo(X(P[0][0]), wy1);
+        for (const [a, v] of P) g.lineTo(X(a), Y(v));
+        g.lineTo(X(P[P.length - 1][0]), wy1);
+        g.closePath();
+        g.fillStyle = rgba(lc, 0.12);
+        g.fill();
+        g.beginPath();
+        P.forEach(([a, v], i) => (i ? g.lineTo(X(a), Y(v)) : g.moveTo(X(a), Y(v))));
+        g.strokeStyle = lc;
+        g.lineWidth = 1.25;
+        g.stroke();
+        g.lineWidth = 1;
+        txt(g, "−7 d", sx0, h - pad + 4, T.muted, 9);
+        txt(g, "now", sx1, h - pad + 4, T.muted, 9, "right");
+      }
+      mem.quiet = !mem.t.length && !mem.last;
+    },
+    live(g, d, w, h, t, T, mem) {
+      mem.t.forEach((k, i) => {
+        if (k.bottom - k.top < 2) return;
+        g.save();
+        g.beginPath();
+        g.rect(k.x + 1, k.y0 + 1, k.w - 2, k.bottom - k.y0 - 2);
+        g.clip();
+        // the surface: a slow wave across the top of the liquid
+        g.beginPath();
+        g.moveTo(k.x, k.top + 3);
+        for (let x = 0; x <= k.w; x += 2) g.lineTo(k.x + x, k.top + 1.2 * Math.sin(x * 0.32 + t * 2.2 + i * 1.7));
+        g.lineTo(k.x + k.w, k.top + 3);
+        g.closePath();
+        g.fillStyle = rgba(k.c, 0.5);
+        g.fill();
+        g.beginPath();
+        for (let x = 0; x <= k.w; x += 2) {
+          const y = k.top + 1.2 * Math.sin(x * 0.32 + t * 2.2 + i * 1.7);
+          if (x) g.lineTo(k.x + x, y);
+          else g.moveTo(k.x, y);
+        }
+        g.strokeStyle = rgba(k.c, 0.95);
+        g.lineWidth = 1;
+        g.stroke();
+        if (k.bottom - k.top > 12) {  // bubbles rise to it
+          g.strokeStyle = rgba(T.ink, 0.35);
+          k.bx.forEach((f, j) => {
+            const y = k.bottom - 3 - ((t * 0.18 * (1 + j * 0.3) + j * 0.27) % 1) * (k.bottom - k.top - 6);
+            g.beginPath();
+            g.arc(k.x + 4 + f * (k.w - 8) + Math.sin(t * 2 + j) * 1, y, 1.1, 0, TAU);
+            g.stroke();
+          });
+        }
+        g.restore();
+      });
+      if (mem.last) {
+        g.fillStyle = rgba(T.orange, 0.5 + 0.5 * Math.sin(t * 2.4));
+        g.fillRect(mem.last.x, mem.last.y - 2, mem.last.w, 2);
+      }
+    },
+  };
+
+  DRAW.guard = {  // 14: commands from each tool into the Ward gate; out the far side, allowed in one stream, refused by rule
+    base(g, d, w, h, T, mem) {
+      mem.in = [];
+      mem.ok = null;
+      mem.no = [];
+      mem.gate = null;
+      mem.quiet = true;
+      if (!d.known) return waiting(g, w, h, T, "waiting for a command at the gate");
+      const pad = 14, narrow = w < 330, hist = h >= 170 && d.minutes.length ? 30 : 0, total = d.allowed + d.refused;
+      const top = pad, bot = h - pad - (hist ? hist + 14 : 0), sw = narrow ? 44 : Math.round(clamp(w * 0.2, 76, 130));
+      const gx = pad + sw + Math.max(26, Math.round(w * 0.07)), gh = Math.max(20, Math.min(bot - top - 8, 96)), gy = (top + bot) / 2 + 4;
+      // the source: the hour's commands by tool
+      txt(g, "commands", pad, top + 7, T.muted, 9);
+      txt(g, fmt(total), pad, top + 24, T.ink, 14, "left", 500);
+      const tools = narrow ? [] : d.tools.slice(0, Math.max(0, Math.floor((bot - top - 38) / 15))), maxT = Math.max(1, ...tools.map((x) => x.n));
+      tools.forEach((x, i) => {
+        const y = top + 44 + i * 15;
+        g.fillStyle = rgba(T.muted, 0.1);
+        g.fillRect(pad, y - 9, Math.max(1, Math.round((sw * x.n) / maxT)), 12);
+        g.font = `400 9px ${FONT}`;
+        const nstr = fmt(x.n);
+        txt(g, fit(g, x.tool, sw - 12 - g.measureText(nstr).width), pad + 4, y, T.muted, 9);
+        txt(g, nstr, pad + sw - 4, y, T.ink, 9, "right");
+        const P = link(pad + sw, y - 3, gx, gy - gh * 0.3 + (tools.length > 1 ? (i * gh * 0.6) / (tools.length - 1) : gh * 0.3));
+        g.strokeStyle = rgba(T.muted, 0.22);
+        g.lineWidth = 1 + (3 * x.n) / maxT;
+        g.beginPath();
+        curve(g, P);
+        g.stroke();
+        mem.in.push({P, n: x.n});
+      });
+      if (!tools.length) {
+        const P = link(pad + sw, gy, gx, gy);
+        g.strokeStyle = rgba(T.muted, 0.22);
+        g.lineWidth = 3;
+        g.beginPath();
+        curve(g, P);
+        g.stroke();
+        mem.in.push({P, n: 1});
+      }
+      g.lineWidth = 1;
+      // the gate: two posts and a portcullis between
+      const gw = 12, g0 = Math.round(gy - gh / 2);
+      g.fillStyle = rgba(T.red, 0.06);
+      g.fillRect(gx, g0, gw, gh);
+      g.fillStyle = T.muted;
+      g.fillRect(gx, g0 - 3, 2, gh + 6);
+      g.fillRect(gx + gw - 2, g0 - 3, 2, gh + 6);
+      g.fillStyle = rgba(T.muted, 0.45);
+      for (let y = g0 + 4; y < g0 + gh - 2; y += 6) g.fillRect(gx + 2, y, gw - 4, 1);
+      g.fillStyle = rgba(T.muted, 0.35);  // the portcullis's uprights, spiked at the foot
+      for (const x of [gx + 4, gx + gw - 5]) {
+        g.fillRect(x, g0, 1, gh - 2);
+        g.fillRect(x - 1, g0 + gh - 3, 3, 1);
+      }
+      g.fillStyle = T.muted;  // the lintel
+      g.fillRect(gx - 3, g0 - 4, gw + 6, 2);
+      txt(g, "Ward", gx + gw / 2, g0 - 9, T.red, 9, "center", 500);
+      mem.gate = {x: gx, y: g0, w: gw, h: gh};
+      // out: the allowed stream to its bin, the refused ones to a bin per rule
+      const ox = gx + gw, rx0 = ox + Math.max(28, Math.round(w * 0.08)), rx1 = w - pad, rw = Math.max(20, rx1 - rx0);
+      const ah = 34, aw = Math.max(1.5, Math.min(5, (5 * d.allowed) / Math.max(1, total)));
+      box(g, rx0, top, rw, ah, T.green, 0.05);
+      txt(g, "allowed", rx0 + 8, top + 13, T.green, 9, "left", 500);
+      txt(g, fmt(d.allowed), rx0 + 8, top + 28, T.ink, 12, "left", 500);
+      if (total) txt(g, `${pct(d.allowed, total)}%`, rx1 - 8, top + 28, T.muted, 9, "right");
+      mem.ok = link(ox, gy - 4, rx0, top + ah / 2);
+      g.strokeStyle = rgba(T.green, 0.3);
+      g.lineWidth = aw;
+      g.beginPath();
+      curve(g, mem.ok);
+      g.stroke();
+      g.lineWidth = 1;
+      const ry = top + ah + 18;
+      txt(g, "refused", rx0, ry, T.red, 9, "left", 500);
+      txt(g, fmt(d.refused), rx1, ry, T.ink, 9, "right", 500);
+      const R = d.rules.length ? d.rules : d.refused ? [{rule: "no rule named", n: d.refused, last: ""}] : [];
+      g.font = `400 9px ${FONT}`;
+      if (!R.length) txt(g, fit(g, "nothing refused this hour", rw), rx0, ry + 16, T.muted, 9);
+      const bh = Math.min(30, (bot - ry - 6) / Math.max(1, R.length)), maxN = Math.max(1, ...R.map((x) => x.n));
+      if (bh >= 13) {
+        R.forEach((x, i) => {
+          const by = ry + 6 + i * bh, two = bh >= 26, mid = by + (bh - 3) / 2;
+          g.fillStyle = rgba(T.red, 0.05);
+          g.fillRect(rx0, by, rw, bh - 3);
+          g.strokeStyle = rgba(T.red, 0.5);
+          g.lineWidth = 1;
+          g.strokeRect(Math.round(rx0) + 0.5, Math.round(by) + 0.5, Math.round(rw) - 1, Math.round(bh - 3) - 1);
+          g.font = `500 9px ${FONT}`;
+          const nstr = fmt(x.n), nwid = g.measureText(nstr).width;
+          txt(g, nstr, rx1 - 7, (two ? by + 11 : mid + 3), T.red, 9, "right", 500);
+          g.font = `500 9px ${FONT}`;
+          const rl = fit(g, x.rule, rw - nwid - 24), rlw = g.measureText(rl).width;
+          txt(g, rl, rx0 + 7, two ? by + 11 : mid + 3, T.ink, 9, "left", 500);
+          if (!two && x.tag && x.pc && T[x.pc]) {  // one line: the project goes after the rule, when it fits whole
+            g.font = `500 9px ${FONT}`;
+            if (rx0 + 7 + rlw + 10 + g.measureText(x.tag).width < rx1 - nwid - 14) txt(g, x.tag, rx0 + 7 + rlw + 10, mid + 3, T[x.pc], 9, "left", 500);
+          }
+          if (two && x.last) {  // the last command it refused; in All mode led by its project, in the project's colour
+            g.font = `500 9px ${FONT}`;
+            const tag = x.tag && x.pc && T[x.pc] ? x.tag : "", tw = tag ? g.measureText(tag).width + 6 : 0;
+            if (tag) txt(g, tag, rx0 + 7, by + 22, T[x.pc], 9, "left", 500);
+            g.font = `400 9px ${FONT}`;
+            txt(g, fit(g, x.last, rw - 14 - tw), rx0 + 7 + tw, by + 22, T.muted, 9);
+          }
+          if (x.pc && T[x.pc]) {
+            g.fillStyle = T[x.pc];
+            g.fillRect(rx0 + 1, by + 1, 2, bh - 5);
+          }
+          const P = link(ox, gy + 4, rx0, mid);
+          g.strokeStyle = rgba(T.red, 0.3);
+          g.lineWidth = 1 + (2.5 * x.n) / maxN;
+          g.beginPath();
+          curve(g, P);
+          g.stroke();
+          mem.no.push({P, n: x.n});
+        });
+        g.lineWidth = 1;
+      }
+      // the hour, a minute a bar: allowed under, refused on top
+      if (hist) {
+        const hy1 = h - pad - 8, hy0 = hy1 - hist + 8, M = d.minutes, bw = (w - 2 * pad) / 60, off = 60 - M.length;
+        const peak = Math.max(1, ...M.map((m) => m[0] + m[1]));
+        hline(g, pad, w - pad, hy1, T.line);
+        M.forEach(([a, r], i) => {
+          const x = Math.round(pad + (off + i) * bw), bwi = Math.max(1, Math.round(bw) - 1), ah2 = Math.round(((hy1 - hy0) * a) / peak);
+          g.fillStyle = rgba(T.green, 0.45);
+          if (ah2 > 0) g.fillRect(x, hy1 - ah2, bwi, ah2);
+          if (r > 0) {
+            const rh = Math.max(2, Math.round(((hy1 - hy0) * r) / peak));
+            g.fillStyle = T.red;
+            g.fillRect(x, hy1 - ah2 - rh, bwi, rh);
+          }
+        });
+        txt(g, "−60 min", pad, h - pad + 5, T.muted, 9);
+        txt(g, "now", w - pad, h - pad + 5, T.muted, 9, "right");
+      }
+      mem.share = total ? d.refused / total : 0;
+      mem.quiet = false;
+    },
+    live(g, d, w, h, t, T, mem) {
+      const G = mem.gate;
+      if (!G || !mem.in.length) return;
+      const sumIn = mem.in.reduce((a, x) => a + x.n, 0), sumNo = mem.no.reduce((a, x) => a + x.n, 0);
+      const pick = (L, sum, u) => {
+        let acc = 0;
+        for (const x of L) if ((acc += x.n) >= u * sum) return x;
+        return L[L.length - 1];
+      };
+      let flash = 0;
+      for (let i = 0; i < 14; i++) {  // a command each: in on its tool's pipe, through the gate, out by its verdict
+        const ph = t * 0.2 + i / 14, cyc = Math.floor(ph), u = ph - cyc, rnd = seed(`${i}:${cyc}`);
+        const r1 = rnd(), r2 = rnd(), r3 = rnd(), no = mem.no.length && mem.share > 0 && r1 < Math.max(mem.share, 0.05);
+        let p, c;
+        if (u < 0.5) {
+          p = along(pick(mem.in, sumIn, r2).P, u * 2);
+          c = T.muted;
+        } else {
+          p = along(no ? pick(mem.no, sumNo, r3).P : mem.ok, (u - 0.5) * 2);
+          c = no ? T.red : T.green;
+          if (no && u < 0.6) flash = Math.max(flash, 1 - (u - 0.5) * 10);
+        }
+        g.fillStyle = c;
+        g.fillRect(p[0] - 1.5, p[1] - 1.5, 3, 3);
+      }
+      if (flash > 0) {
+        g.fillStyle = rgba(T.red, 0.35 * flash);
+        g.fillRect(G.x, G.y, G.w, G.h);
+      }
+      const sy = G.y + ((t * 0.45) % 1) * G.h;  // a glint passes down the portcullis
+      g.fillStyle = rgba(T.ink, 0.35);
+      g.fillRect(G.x + 2, Math.round(sy), G.w - 4, 1);
+    },
+  };
+
   const PLACEHOLDER = {base: (g, d, w, h, T) => waiting(g, w, h, T, "drawing soon")};
 
   function mount(el) {
@@ -1363,6 +2444,7 @@ const SampoBoard = (() => {
       const sec = mk("section", "bd-p", el);
       sec.dataset.k = P.key;
       sec.dataset.accent = P.accent;
+      if (P.wide) sec.dataset.wide = "1";
       sec.setAttribute("aria-labelledby", "bd-t-" + P.key);
       const head = mk("header", "bd-h", sec);
       mk("span", "bd-chip", head, String(i + 1).padStart(2, "0")).setAttribute("aria-hidden", "true");
@@ -1449,7 +2531,9 @@ const SampoBoard = (() => {
       if (now - lastPaint < 30) { raf = win.requestAnimationFrame(frame); return; }  // T-3715: at most ~30 fps, half the canvas work of a 60 Hz loop
       lastPaint = now;
       const t = now / 1000;
-      for (const p of panels) if (p.vis) paint(p, t);
+      // T-3731: a panel below the fold (fourteen panels pass a desktop's height) still gets its first frame, once, so it is
+      // drawn before it scrolls in and the board reads painted; after that only the visible ones move
+      for (const p of panels) if (p.vis || p.cv.dataset.painted !== "1") paint(p, t);
       el.dataset.frames = String(++frames);
       raf = win.requestAnimationFrame(frame);
     }
