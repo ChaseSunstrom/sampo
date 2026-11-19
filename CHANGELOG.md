@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Sampo Code opens on the live page's Board: a framed header with stats, a NOW strip and an amber callout, then nine braille and half-block panels in 3/2/1 columns in the Board's palette, drawn at most 10 times a second and only while something runs, its feed read every 5 minutes when idle; night, paper and classic stay selectable, and a layout key in tui.toml draws the text panels (T-3699).
 - Benchmark sessions run unattended on a time budget: an early stop is nudged up to 3 times (`--nudges N`, 0 for an un-nudged baseline) only while enough time is left, and each run records questions, stalls and interventions, shown in compare and the gate (T-3365).
 - The live page's Moons tile draws a sparkline of kept moons beside its count, like the other five counter tiles (T-3130).
 - The live page's forge scene draws about 30 frames a second while nothing is in flight (its embers, smoke and hammer need no more) and every frame again for a spark, an arrival or a pulse; it reports its idle frame times on the canvas. No page text in either look is under 11px, nor any label on the forge or the network canvas. Below 1400px the focus plaque is tighter and Jeff's towers st… (T-3019).
