@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The panel kit draws 21 kinds: eight new moving ones (a state machine with counted transitions, swimlanes with timed arrows, a conveyor, a network with lossy links, a chord ring, a protocol stack, a circuit board, a constellation of modules), each a panel-KIND calling card in dark and light, in SMIL loops (T-3736).
 - Sampo Code opens on the live page's Board: a framed header with stats, a NOW strip and an amber callout, then nine braille and half-block panels in 3/2/1 columns in the Board's palette, drawn at most 10 times a second and only while something runs, its feed read every 5 minutes when idle; night, paper and classic stay selectable, and a layout key in tui.toml draws the text panels (T-3699).
 - Benchmark sessions run unattended on a time budget: an early stop is nudged up to 3 times (`--nudges N`, 0 for an un-nudged baseline) only while enough time is left, and each run records questions, stalls and interventions, shown in compare and the gate (T-3365).
 - The live page's Moons tile draws a sparkline of kept moons beside its count, like the other five counter tiles (T-3130).
