@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Lanes accepted together no longer run their repo-shape modules all at once: SAMPO_SHAPE_RUNS (default 3) run at a time, the rest wait as 'shape queued' and their wall starts with their slot (T-4947).
 - A test's sampo doctor --repair no longer builds the native fast path of the tree under test or writes the real home's Claude and Codex settings; the install tests build nothing either, so their runs stop timing out under load (T-4935).
 - One write-plainly playbook (lead with the answer, a list before a paragraph, 80-word paragraphs) now guides the write-docs, research, reflect and release skills. `sampo readme check --prose PATH` checks any report, research note, CHANGELOG or close by its own limits, and `sampo check` warns on walls in the last day's research notes (T-4914).
 - A lane check's retry appends to check/ID.log under a try header instead of wiping it, so the try that was cut off can still be read (T-4862).
