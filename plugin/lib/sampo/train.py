@@ -1855,6 +1855,10 @@ def _sampo(argv, env=None):
 
 
 SHIPPED_AT = re.compile(r"\bmain at ([0-9a-f]{40})\b")  # release.ship's closing line: the commit it pushed
+# T-5058: release._ship_gate's line when a running ship already carries every commit: that ship pushes them and spends
+# the grant itself, so a land's last ship that printed it never spends it (twice on 2026-11-19 a land's last ship did,
+# and the hand ship it named was refused at its push after its tests)
+COVERED = re.compile(r"^nothing to ship here: .* already carries every commit", re.M)
 
 
 def _grant_of(p):
@@ -1947,6 +1951,8 @@ def _ship(p, keep, main=None):
     if keep:  # review: only this ship's own push (its own "main at" line) spent it; else someone else's spend stands
         if SHIPPED_AT.search(out):
             _give_back(p, grant.id)
+    elif COVERED.search(out):  # T-5058: the running ship it named carries these commits and spends the grant itself
+        pass
     elif "publish" in ((c.find_brief(p, grant.id) or grant).meta.get("allow") or []):  # nothing was left to push
         release._spend(p, grant.id, "sampo lane land")
     return grant.id, line
@@ -2122,7 +2128,7 @@ def _settle(p, grant, rc, out, m):
         return
     b = c.find_brief(p, grant)
     if bool(m.get("final")) and not m.get("again"):
-        if b is not None and "publish" in (b.meta.get("allow") or []):
+        if b is not None and "publish" in (b.meta.get("allow") or []) and not COVERED.search(out or ""):  # T-5058
             with contextlib.suppress(Exception):
                 release._spend(p, grant, "sampo lane land")
     elif SHIPPED_AT.search(out) and (m.get("again") or _land_alive(m)):  # a request is waiting, or its land can still ask

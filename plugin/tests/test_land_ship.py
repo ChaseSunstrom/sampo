@@ -427,6 +427,30 @@ class Grant(ShipCase):
         self.assertTrue(self.held(tid), "nothing was shipped: the grant is untouched")
         os.remove(train._ship_marker(self.p))
 
+    COVERED = ("nothing to ship here: the running ship (pid 7, T-1, testing abcdef123) already carries every commit "
+               "this one would ship (05eeeae6); no tests run. If it is refused, run fm ship again")
+
+    def test_grant_a_final_ship_a_running_ship_covers_leaves_the_grant_for_that_ship(self):
+        """T-5058: twice on 2026-11-19 a land's last ship, covered by a hand ship then testing, spent the grant; the hand
+        ship's push then refused ('the publish grant was already spent; nothing was pushed') after its tests"""
+        tid = self.lanes_ready(1)[0]
+        train._settle(self.p, tid, 0, self.COVERED, {"final": True})
+        self.assertTrue(self.held(tid), "the running ship pushes these commits and spends the grant itself")
+        train._settle(self.p, tid, 0, "nothing to ship: origin main already has HEAD's changes", {"final": True})
+        self.assertFalse(self.held(tid), "nothing left to push: the land's last ship still spends it")
+
+    def test_grant_an_in_line_last_ship_a_running_ship_covers_leaves_the_grant(self):
+        from unittest import mock
+        tid = self.lanes_ready(1)[0]
+        with mock.patch.object(train, "_sampo", return_value=(0, self.COVERED + "\n", "")):
+            got = train._ship(self.p, False, self.repo)
+        self.assertEqual(got[0], tid)
+        self.assertTrue(self.held(tid), "covered by the running ship: not this ship's to spend")
+        with mock.patch.object(train, "_sampo", return_value=(0, "nothing to ship: origin main already has HEAD's "
+                                                                 "changes\n", "")):
+            train._ship(self.p, False, self.repo)
+        self.assertFalse(self.held(tid))
+
     def test_grant_an_in_line_ship_goes_on_once_the_running_ship_is_done(self):
         from unittest import mock
         self.lanes_ready(1)
