@@ -91,6 +91,19 @@ class Files(unittest.TestCase):
         for panel in PANELS + ("link", "motion", "net", "view-forge", "view-net", "board", "view-board"):
             self.assertRegex(page, rf'\bid="{panel}"', panel)
 
+    def test_every_counter_tile_holds_a_sparkline_moons_too(self):  # T-3130: the Moons tile had none
+        page = text("index.html")
+        tiles = re.findall(r'<div class="ctr[^"]*">.*?</div>', page.split('id="counters"')[1].split("</section>")[0])
+        self.assertEqual(len(tiles), 6, page.count('class="ctr'))
+        for tile in tiles:
+            self.assertRegex(tile, r'<span class="spark" id="sp-[a-z]+" data-chart="spark"></span>', tile[:80])
+        moons = [t for t in tiles if "ctr-moons" in t][0]
+        self.assertIn('id="sp-moons"', moons)
+        self.assertLess(moons.index('id="c-moons"'), moons.index('id="sp-moons"'), "the line sits beside its number")
+        js = text("live.js")
+        self.assertRegex(js, r'sp\("moons",', "sample() keeps a kept-moons series")
+        self.assertRegex(js, r'moons: "Moons kept"', "renderCharts draws it through Charts.spark with a label")
+
     def test_scrolling_lists_take_the_keyboard(self):  # T-2999 review: keyboard users could not scroll long lists
         html = text("index.html")
         for i in ("jobs-list", "queue-list", "closes-list", "sessions-list", "projects-list"):
@@ -342,7 +355,7 @@ PROBE = """(() => { const $ = id => document.getElementById(id), n = (id, sel) =
     ktok: Object.fromEntries(["amber", "violet", "green", "orange", "blue", "red", "pale", "other", "dflt"].map(k => [k, getComputedStyle(document.documentElement).getPropertyValue("--k-" + k).trim()])),
     plate: getComputedStyle(document.documentElement).getPropertyValue("--plate").trim(),
     night: getComputedStyle(document.documentElement).getPropertyValue("--night").trim(),
-    charts: Object.fromEntries(["ch-calls", "ch-spend", "ch-funnel", "ch-gpu", "sp-calls"].map(id => { const e = $(id), s = e && e.querySelector("svg"), t = s && s.querySelector(".ch-t");
+    charts: Object.fromEntries(["ch-calls", "ch-spend", "ch-funnel", "ch-gpu", "sp-calls", "sp-moons"].map(id => { const e = $(id), s = e && e.querySelector("svg"), t = s && s.querySelector(".ch-t");
       return [id, { shown: !!e && e.getBoundingClientRect().width > 0, svg: !!s, label: s ? (s.getAttribute("aria-label") || "") : "", role: s ? s.getAttribute("role") : "",
         texts: s ? s.querySelectorAll("text").length : 0, fill: t ? getComputedStyle(t).fill : "", area: s ? s.querySelectorAll(".ch-area").length : 0,
         dots: s ? s.querySelectorAll(".ch-dot").length : 0, segs: s ? s.querySelectorAll(".ch-seg").length : 0}]; })),
@@ -941,6 +954,9 @@ class Page(unittest.TestCase):
                 self.assertEqual(got["charts"]["ch-spend"]["area"], 1, where)
                 self.assertRegex(got["charts"]["ch-funnel"]["label"], r"\d", "the funnel's words carry its counts")
                 self.assertGreaterEqual(got["charts"]["ch-gpu"]["segs"], 1, "GPU memory is a stacked bar")
+                moons = got["charts"]["sp-moons"]  # T-3130: the Moons tile's line of kept moons (the novelty stage's kept)
+                self.assertRegex(moons["label"], r"^Moons kept: (now 99, low 9\d, high 99 over \d+ readings|99, one reading so far)$", where)
+                self.assertEqual(moons["dots"], 1, f"the latest kept count is marked {where}")
                 self.assertFalse(got["tankshown"], "no tank in the modern look")
                 self.assertGreaterEqual(got["legs"], 3, "legends")
                 m = re.findall(r"\d+", got["charts"]["ch-spend"]["fill"])

@@ -1505,6 +1505,8 @@ function sample(s) {  // at most one reading a second, and a different project s
   for (const [n, a] of hist.calls) if (!seen.has(n)) push(a, [at, 0]);
   const sp = (k, v) => { if (v != null) push(hist.spark[k] || (hist.spark[k] = []), v); };
   sp("general", num(obj(st.cards).general)); sp("ui", num(obj(st.cards).ui));
+  const mo = obj(st.moons), last = Object.values(obj(mo.stages)).slice(-1).map(obj)[0];  // T-3130: kept moons, from the
+  sp("moons", num(obj(mo.pace).kept) != null ? num(obj(mo.pace).kept) : last ? num(last.kept) : null);  // pace, else the last stage
   sp("closed", num(st.closed_today) != null ? num(st.closed_today) : arr(s.closed_today).length);
   sp("calls", models.reduce((a, m) => a + (num(m.calls_5m) || 0), 0));
   sp("work", arr(s.lanes).filter(l => obj(l).waiting !== true).length + arr(s.jobs).length);
@@ -1522,7 +1524,7 @@ function renderCharts(s) {
   setText($("ch-spend-sub"), hrs.length ? usd(run) + " so far today" : "dollars so far today");
   const stages = Object.entries(obj(obj(obj(s.stats).moons).stages)).slice(0, 8).map(([k, v]) => ({name: k, kept: num(obj(v).kept) || 0, rej: num(obj(v).rejected) || 0, wait: num(obj(v).waiting) || 0}));
   Charts.funnel($("ch-funnel"), {label: "Moons funnel", stages, fmt: fmt, empty: "No funnel yet"});
-  const names = {general: "Cards", ui: "UI cards", closed: "Closed today", calls: "Calls in five minutes", work: "At work"};
+  const names = {general: "Cards", ui: "UI cards", moons: "Moons kept", closed: "Closed today", calls: "Calls in five minutes", work: "At work"};
   for (const k in names) Charts.spark($("sp-" + k), hist.spark[k], {label: names[k], c: "var(--k-blue)"});
 }
 let chartW = 0;

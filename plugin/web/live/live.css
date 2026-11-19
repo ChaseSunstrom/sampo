@@ -268,6 +268,8 @@ main{display:grid;grid-template-rows:minmax(320px,1fr) auto auto var(--deck-h);g
 [data-theme="modern"] .gpu-stack{display:block;min-width:0}
 [data-theme="modern"] .spark{display:block;height:28px;margin:2px 0 0}
 [data-theme="modern"] .tank,[data-theme="modern"] .stages{display:none}
+[data-theme="modern"] .ctr-moons .spark{align-self:center;justify-self:start;width:min(100%,140px);margin:0}  /* T-3130: kept moons beside the count, the pace line under both */
+[data-theme="modern"] .ctr-moons .cs{grid-column:1/-1}
 [data-theme="modern"] .tankrow{display:flex;flex-direction:column;gap:8px}
 .ch{display:block;width:100%;height:auto;max-width:100%;overflow:visible}
 .ch-spark{height:28px}
