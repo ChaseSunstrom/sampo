@@ -153,13 +153,20 @@ def _base_red_once(main, base, sub):
         if not ts:
             return ""
         run = sub[1].replace("{tests}", shlex.join(ts)).replace("{names}", shlex.join(map(_stem, ts)))
+        firsts = {}  # T-5047: class -> [(test, first exception line)] from the last run's record, when it left one
+
         def go(cmd):  # yields to the machine's load and to other work, as _probe's runs do
             c.wait_for_load("sampo lane train")
+            rid = c.new_run_id(cmd)  # T-5047: stamped, so the record read below is this run's and no other's
+            raw = cmd
             if shutil.which("nice"):
                 cmd = "nice -n 10 bash -c " + shlex.quote(cmd)
             _lost_check(wt)
-            got = c.run_command(wt, cmd, c.load_scaled(1800))
+            got = c.run_command(wt, cmd, c.load_scaled(1800), run_id=rid)
             _lost_check(wt)  # a run in a vanished folder ends 127: that is the loss, not a red base
+            firsts.clear()
+            if rid and got[0] not in (0, 5, 124):
+                firsts.update(_first_failures(wt, raw, rid))
             return got
 
         code, out = go(run)
@@ -167,7 +174,7 @@ def _base_red_once(main, base, sub):
             code, out = go(run)
         if code in (0, 5, 124):  # a run of no tests or a timeout proves nothing: the full gates decide
             return ""
-        return _why_red({"cmd": sub[1], "affected": ts, "failing": _failed(out),
+        return _why_red({"cmd": sub[1], "affected": ts, "failing": _failed(out), "firsts": firsts,
                          "tail": out.rstrip().splitlines()[-15:]})
     finally:
         _git(main, "worktree", "remove", "--force", wt)
@@ -175,11 +182,35 @@ def _base_red_once(main, base, sub):
         c.scratch_release(wt)
 
 
+def _first_failures(root, cmd, run_id):
+    """T-5047: {class: [(test, its first exception line)]} from the record the run stamped `run_id` left (run.py --last,
+    T-4268; redacted and bounded), {} when `cmd` is not tests/run.py, it left no record or the record is unreadable."""
+    rec = c.run_record(root, cmd, run_id)
+    got = {}
+    for f in (rec.get("failed") if rec else None) or []:
+        if isinstance(f, dict) and f.get("class") and f.get("first"):
+            line = " ".join(c.redact(str(f["first"])).split())  # one line, the redactor's
+            got.setdefault(str(f["class"]), []).append((str(f.get("test") or ""), line[:160]))
+    return got
+
+
+def _with_first(names, firsts, n=6, per=2):
+    """T-5047: `names` joined as c.joinmore does, each followed by `(test: first exception line)` of its failures in
+    `firsts` (_first_failures') when the record has them, at most `per` tests a name; a name it lacks reads as before."""
+    out = []
+    for k in names:
+        hits = [x for cls, xs in sorted((firsts or {}).items()) if _same(cls, k) for x in xs]
+        shown = [f"{t}: {f}" if t else f for t, f in hits[:per]] + ([f"+{len(hits) - per} more"] if len(hits) > per else [])
+        out.append(k + (f" ({'; '.join(shown)})" if shown else ""))
+    return c.joinmore(out, n)
+
+
 def _why_red(r, blame="", tail=None):
-    """T-3544: a red gate run as a reason: the gate (on how many affected modules), the classes it names failing, what
-    blamed the lane (T-3602) and the last 15 lines (`tail`: the blamed class's), so nobody reruns a suite to learn them."""
+    """T-3544: a red gate run as a reason: the gate (on how many affected modules), the classes it names failing (T-5047:
+    each with its failing tests and first exception lines, when the row carries `firsts`), what blamed the lane (T-3602)
+    and the last 15 lines (`tail`: the blamed class's), so nobody reruns a suite to learn them."""
     s = r["cmd"] + (f" on {len(r['affected'])} affected test module(s)" if r.get("affected") else "")
-    s += f", failing {c.joinmore(r['failing'], 8)}" if r.get("failing") else ""
+    s += f", failing {_with_first(r['failing'], r.get('firsts'), 8)}" if r.get("failing") else ""
     s += f"; blamed: {blame}" if blame else ""
     return s + "".join("\n    " + ln for ln in (r.get("tail") if tail is None else tail) or ())
 
@@ -534,21 +565,26 @@ def _probe_once(p, main, base, b, tip, notes, cli):
             notes.append((b.id, f"{SKIPPED}: its own green run of these {len(tests)} test(s) on tree {held[:9]} "
                                 "still holds (nothing they cover differs from base+lane)"))
             return ""
-        def run(cmd):  # (exit, the classes it names red)
+        firsts = {}  # T-5047: class -> [(test, first exception line)] from the first run's record, when it left one
+
+        def run(cmd, stamp=False):  # (exit, the classes it names red)
             cwd, cmd, _ = c.normalize_verify(wt, cmd)  # T-3411's cwd fix first: the nice wrapper would hide it
             env, _ = cli._venv_env(wt, cpu_env(p), cmd)  # T-4150: the project's own interpreter, as the lane ran it
+            rid, raw = (c.new_run_id(cmd) if stamp else None), cmd  # T-5047: the first run's record names its failures
             if shutil.which("nice"):  # the probe yields to whatever else the machine runs
                 cmd = "nice -n 10 bash -c " + shlex.quote(cmd)
             _lost_check(wt)
             code, out = c.run_command(cwd, cmd, c.load_scaled(900), priority=True,  # T-3614: ahead of lane runs
-                                      env=env)  # T-3757: a CPU rise is red here too
+                                      env=env, run_id=rid)  # T-3757: a CPU rise is red here too
             _lost_check(wt)  # a run in a vanished folder ends 127: that is the loss, not a red lane
+            if rid and code not in (0, 5, 124):
+                firsts.update(_first_failures(wt, raw, rid))
             return code, set(_failed(out))
 
         def again(classes):  # the red classes alone where the runner names them (pm_rerun_cmd), else cmd again
             return run(pm_rerun_cmd(wt, sorted(classes)) or cmd)
 
-        code, bad = run(cmd)
+        code, bad = run(cmd, stamp=True)
         if code in (0, 5, 124):
             return ""
         if not bad:
@@ -556,14 +592,14 @@ def _probe_once(p, main, base, b, tip, notes, cli):
         code, red = again(bad)
         still = ((bad & red) or bad) if code else set()  # a flake is green on the rerun; a red naming none stays red
         if bad - still:
-            notes.append((b.id, f"flaky (red once, green on a rerun): {c.joinmore(sorted(bad - still), 6)}"))
+            notes.append((b.id, f"flaky (red once, green on a rerun): {_with_first(sorted(bad - still), firsts)}"))
         _git(wt, "reset", "-q", "--hard", base)
         based = (still & again(still)[1]) if still else set()  # red without the lane too: the base's, not the lane's
         if based:
             notes.append((b.id, f"its affected tests are red on the base itself: {c.joinmore(sorted(based), 6)}; "
                                 "left to the gates"))
         blame = still - based
-        return "its affected tests fail with the lane merged onto the base: " + c.joinmore(sorted(blame), 6) if blame else ""
+        return "its affected tests fail with the lane merged onto the base: " + _with_first(sorted(blame), firsts) if blame else ""
     finally:
         _git(main, "worktree", "remove", "--force", wt)
         shutil.rmtree(wt, ignore_errors=True)
