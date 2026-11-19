@@ -53,10 +53,14 @@ class MapRoom(ForemanTestCase):
         master = read(os.path.join(ROOT, "MASTER.md"))
         shard = read(os.path.join(ROOT, "docs", "map", "guide-1.md"))
         self.assertIn("](docs/map/guide-1.md)", master, "MASTER.md links the shard")
-        for heading in ("## 2. How to prompt it", "## 5. Lifecycle walkthrough"):
+        for heading in ("## 2. How to prompt it", "## 5. Lifecycle walkthrough", "## 10. Known limitations"):
             self.assertIn(heading, master, "the heading stays in MASTER.md, so its anchor still resolves")
         self.assertIn("### 2. How to prompt it", shard)
         self.assertIn("### 5. Lifecycle walkthrough", shard)
+        # T-5339: section 10 moved too, so the lanes' file-map lines fit (train 5 dropped a lane a round over 0.6 KB)
+        self.assertIn("### 10. Known limitations", shard)
+        self.assertIn("A task's own changes are measured from a snapshot", shard)
+        self.assertNotIn("A task's own changes are measured from a snapshot", master)
         self.assertIn("You type `FIX: login times out on slow wifi`", shard)
         self.assertNotIn("You type `FIX: login times out on slow wifi`", master, "the bodies moved out of the index")
 
