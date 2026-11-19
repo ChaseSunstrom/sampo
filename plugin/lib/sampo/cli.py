@@ -10033,6 +10033,13 @@ def _build_parser(only=None):
                    "say whether K still crashes")
     s.add_argument("--budget", type=float, default=120.0, help="seconds before the run stops (default 120)")
     s.add_argument("--capture", action="store_true", help="file each crash as a FIX with its reproducer, once per signature")
+    s = add("headroom", lazy("sampo.headroom", "cmd_headroom"), tier=("Project and settings", 876), help="the project's "
+            "bounded lists the work outgrew: orphans (steers, asks, failures that fit no member), a cap raised, a cap hit; "
+            "--ask puts the top five to a local model, --capture files what it names as tasks, once each (T-3328)")
+    s.add_argument("--ask", action="store_true", help="ask a local model what a complete version of each lacks (cached "
+                   "per set; never a paid model)")
+    s.add_argument("--capture", action="store_true", help="--ask, then file the proposals as tasks (finder headroom; the "
+                   "open cap and the finder's precision hold)")
     s = add("drill", lazy("sampo.drill", "cmd_drill"), tier=("Project and settings", 873), help="a scripted day in a temp "
             "home with faults planted mid-day (torn ledger and journal, stale lock, broken lane, corrupt state file, "
             "unreadable file); passes only when sampo fsck or sampo verify-ledger finds each or the day heals it, and "

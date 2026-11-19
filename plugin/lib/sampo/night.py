@@ -30,10 +30,10 @@ LAND_POLL_S = 30  # T-4278: how often the wait looks at the land's lock
 HEAVY = ("evolve", "bench", "exam", "sentinel")  # T-4278: a replayed session, exam arms or a bisect's test suites: by a
 # job's first word; such a job never starts while a land runs
 _LEASE = None  # T-0921: the open lock file of a running night
-NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits")
+NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits", "headroom")
 
 
-GENERATORS = ("moons grow", "moons funnel")  # T-3296: the bulk CPU users; they take the project lock only briefly per row
+GENERATORS = ("moons grow", "moons funnel", "headroom")  # T-3296: the bulk CPU users; they take the project lock only briefly per row; T-3328: headroom's git log and local-model calls, at idle too
 
 
 def priority(name):
@@ -131,6 +131,7 @@ def jobs(p, warn=None):
         out.append(("frontier gap", ["exam", "gap", gap_run, "--ref"], budget.estimate("exam-arm", 3, 0.5)))
     if not meta.get("sensitive") and moonscale._local(False):  # T-2912: free: the local model's next-request guess
         out.append(("next request", ["outcomes", "--predictions", "--ask-local"], 0.0))
+        out.append(("headroom", ["headroom", "--capture"], 0.0))  # T-3328: free: sets the work outgrew, asked locally
     smoke = meta.get("smoke") or {}
     if any(k != "off" for k in smoke) and "off" not in smoke:  # T-0743: a target is set; the crawl runs locally
         out.append(("smoke", ["smoke"], 0.0))
