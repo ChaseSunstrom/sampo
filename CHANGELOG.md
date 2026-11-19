@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A Rust project's gate builds no longer fill the disk: they run without incremental state (each run's checkout is new, so it was never reused), and the gate's cargo folder sheds what no run used in the 2 days before its last one. `sampo tidy`, the automatic prune and `sampo doctor` name and remove it (T-4984).
 - A merge train leaves out a lane that takes MASTER.md or a docs/map file over its 90000-byte cap, alone or with the lanes merged before it, at that lane's merge with the file and size named, instead of finding it with a gate run and a bisection; a file the base already has over the cap blames no lane (T-4980).
 - A cargo build in a Rust lane that would write into the lane's own ./target (a bare cargo with no lane config, or CARGO_TARGET_DIR / --target-dir inside the worktree) now gets one note naming the lane's folder under Sampo's cache and the export line, never a refusal. sampo tidy --apply removes the ./target of a finished lane that waits on its merge and has its own cargo folder; doctor co… (T-4951).
 - Lanes accepted together no longer run their repo-shape modules all at once: SAMPO_SHAPE_RUNS (default 3) run at a time, the rest wait as 'shape queued' and their wall starts with their slot (T-4947).
