@@ -758,8 +758,60 @@ def _closing(p):
     return True
 
 
+TRAIN_RUNNING = "running.json"  # T-5077: what a train writes under its lock, for the guard (fmguard's trunk-hold rule)
+
+
 @contextlib.contextmanager
-def _train_run_lock(p):
+def _train_running(p, main, ids):
+    """T-5077: while the train holds its lock, a record of it beside the lock: its process (host|ns|pid|start, so a reused
+    pid is told), the checkout it holds, its lanes and when its gate began. The guard reads it to refuse a trunk-moving git
+    command in that checkout (2026-11-18: a commit onto foreman/build voided train 4's 3 h 13 min gate). Best effort: a
+    write that fails leaves the train running unguarded, as before; the file goes with the train, and a record a killed
+    train leaves behind names a dead process, which holds nothing."""
+    from sampo import bus
+    path = os.path.join(p.dir, "train", TRAIN_RUNNING)
+    me = os.getpid()
+    info = bus._proc(me)
+    if info:
+        with contextlib.suppress(OSError):
+            c.write_atomic(path, json.dumps({"proc": f"{bus.host_id()}|{me}|{info[1]}", "pid": me, "root": main,
+                                             "lanes": list(ids), "at": time.time()}))
+    try:
+        yield
+    finally:
+        with contextlib.suppress(OSError):  # only our own record: a later train's is its own
+            with open(path) as f:
+                mine = json.load(f).get("pid") == me
+            if mine:
+                os.remove(path)
+
+
+def train_hold(p, chain=None):
+    """T-5077: {pid, root, lanes, at, held} of the train of this project that runs now (its record names a process that is
+    alive and began when it said), else None. The train's own process tree (`chain`: pid and ancestors, default this
+    process's) holds nothing against itself. Never touches the train's lock: a probe that took it would delay a train."""
+    from sampo import bus
+    try:
+        with open(os.path.join(p.dir, "train", TRAIN_RUNNING)) as f:
+            rec = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict) or bus.proc_state(rec.get("proc")) != "alive":
+        return None
+    if chain is None:
+        chain = [pid for pid, _ in bus._chain(os.getpid(), 12)]
+    if rec.get("pid") in chain:
+        return None
+    at = rec.get("at")
+    if not isinstance(at, (int, float)) or not -1e12 < at < 1e12:  # a damaged time (inf, nan, text) reads as now
+        at = time.time()
+    lanes = rec.get("lanes")
+    return {"pid": rec.get("pid"), "root": rec.get("root"), "lanes": lanes if isinstance(lanes, list) else [], "at": at,
+            "held": max(0.0, time.time() - at)}
+
+
+@contextlib.contextmanager
+def _train_run_lock(p, main=None, ids=()):
     """The train's lock for one run: a second train is refused after 1 s, but a hand close's commit is waited for."""
     with contextlib.ExitStack() as st:
         try:
@@ -768,6 +820,8 @@ def _train_run_lock(p):
             if not _closing(p):
                 raise
             st.enter_context(train_lock(p, timeout=CLOSE_WAIT_S))  # LockTimeout again if the close outlasts the wait
+        if main:
+            st.enter_context(_train_running(p, main, ids))
         yield
 
 
@@ -799,7 +853,7 @@ def train(p, main, ids=None, defer_verify=False, judged=None):
         raise c.PolicyError(why)
     took = deferred = False
     try:
-        with _train_run_lock(p):
+        with _train_run_lock(p, main, ids):
             took = True
             for line in git_lock_lines(clear_git_locks(main)):  # T-4616: a stale lock would stop a merge or a builder's commit
                 print(f"sampo: train: {line}", file=sys.stderr, flush=True)

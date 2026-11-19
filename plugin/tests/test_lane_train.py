@@ -6,6 +6,7 @@ import json
 import math
 import os
 import subprocess
+import time
 import unittest
 
 from helpers import ForemanTestCase
@@ -1272,6 +1273,100 @@ class SlotPriority(TrainCase):
         self.fm("check", "--fresh", env={"FOREMAN_SLOT_PRIORITY": "0"})  # an opt-out stays low
         self.train(tid, env=unset)
         self.assertEqual(open(seen).read().split(), ["low", "1", "0", "1"])
+
+
+class TrainHold(TrainCase):
+    """T-5077: a train leaves a record of itself while it runs (its process with its start time, the checkout it holds, its
+    lanes), which the guard reads to refuse a trunk-moving git command there. Nothing here runs a real train but one whose
+    gate looks at the record; the rest writes the record the way a train would, naming a process of the test's own."""
+    def setUp(self):
+        super().setUp()
+        self.p = c.find_project(self.repo)
+        self.record = os.path.join(self.p.dir, "train", "running.json")
+
+    def child(self):
+        """A live process of the test's own, and the record a train of that pid would write."""
+        from sampo import bus
+        proc = subprocess.Popen(["sleep", "60"])
+        self.addCleanup(proc.wait)
+        self.addCleanup(proc.kill)
+        return proc, f"{bus.host_id()}|{proc.pid}|{bus._proc(proc.pid)[1]}"
+
+    def write(self, proc, text, root=None, at=None):
+        os.makedirs(os.path.dirname(self.record), exist_ok=True)
+        with open(self.record, "w") as f:
+            json.dump({"proc": text, "pid": proc.pid, "root": root or self.repo, "lanes": ["T-0001", "T-0002"],
+                       "at": at or time.time() - 600}, f)
+
+    def test_a_running_train_writes_its_record_and_takes_it_away(self):
+        tid = self.lane(1, "a.txt")
+        seen = os.path.join(self.tmp, "seen.json")
+        self.fm("check", "add", f"cp {self.record} {seen}")  # the gate runs while the train holds its lock
+        self.assertFalse(os.path.exists(self.record))
+        self.train(tid)
+        got = json.load(open(seen))
+        self.assertEqual(got["root"], self.repo)
+        self.assertEqual(got["lanes"], [tid])
+        self.assertIn(f"|{got['pid']}|", got["proc"], "host|ns|pid|start: a reused pid is told by its start")
+        self.assertNotEqual(got["pid"], os.getpid(), "the train is the sampo process, not the test")
+        self.assertFalse(os.path.exists(self.record), "the train over: nothing holds trunk")
+
+    def test_train_hold_reads_a_live_train_only(self):
+        from sampo import train as strain
+        self.assertIsNone(strain.train_hold(self.p), "no record")
+        proc, text = self.child()
+        self.write(proc, text)
+        got = strain.train_hold(self.p)
+        self.assertEqual((got["pid"], got["root"], got["lanes"]), (proc.pid, self.repo, ["T-0001", "T-0002"]))
+        self.assertAlmostEqual(got["held"], 600, delta=60)
+        self.write(proc, text.rsplit("|", 1)[0] + "|1")  # a reused pid: another start time
+        self.assertIsNone(strain.train_hold(self.p))
+        self.write(proc, text.replace(text.split("|")[0], "another-host"))  # another machine: nothing known of it
+        self.assertIsNone(strain.train_hold(self.p))
+        self.write(proc, text)
+        proc.kill()
+        proc.wait()
+        self.assertIsNone(strain.train_hold(self.p), "a killed train's leftover record is no train")
+        with open(self.record, "w") as f:
+            f.write("{not json")
+        self.assertIsNone(strain.train_hold(self.p))
+        with open(self.record, "w") as f:
+            f.write("[]")
+        self.assertIsNone(strain.train_hold(self.p))
+
+    def test_the_trains_own_process_tree_is_not_held(self):
+        from sampo import train as strain
+        proc, text = self.child()
+        self.write(proc, text)
+        self.assertIsNotNone(strain.train_hold(self.p))
+        self.assertIsNone(strain.train_hold(self.p, chain=[os.getpid(), proc.pid]), "a child of the train")
+
+    def test_a_trains_end_leaves_a_later_trains_record(self):
+        from sampo import train as strain
+        proc, text = self.child()
+        with strain._train_running(self.p, self.repo, ["T-1"]):
+            self.write(proc, text)  # another train's record, written over ours
+        self.assertTrue(os.path.exists(self.record), "only the record of the ending train goes")
+
+    def test_the_hook_hands_the_guard_the_reader_and_a_commit_on_trunk_is_refused(self):
+        import fmguard
+        from sampo import hooks
+        ctx = hooks._guard_ctx({"cwd": self.repo}, fmguard)[0]
+        self.assertIsNone(ctx.train_hold())
+        self.assertIsNone(fmguard.check("Bash", {"command": "git commit -m x"}, ctx))
+        proc, text = self.child()
+        self.write(proc, text)
+        blk = fmguard.check("Bash", {"command": "git commit -m x"}, ctx)
+        self.assertEqual(blk.category, "confirm", blk)
+        self.assertIn("merge train", fmguard.message(blk, ctx))
+        lane = os.path.join(self.tmp, "lane-x")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "foreman/x", lane], check=True)
+        ctx = hooks._guard_ctx({"cwd": lane}, fmguard)[0]
+        self.assertIsNotNone(ctx.train_hold(), "a lane sees the same train")
+        self.assertIsNone(fmguard.check("Bash", {"command": "git commit -m x"}, ctx), "and commits freely in its own tree")
+        self.write(proc, text, root=os.path.join(self.tmp, "elsewhere"))
+        ctx = hooks._guard_ctx({"cwd": self.repo}, fmguard)[0]
+        self.assertIsNone(fmguard.check("Bash", {"command": "git commit -m x"}, ctx), "a train that holds another checkout")
 
 
 if __name__ == "__main__":

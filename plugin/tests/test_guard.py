@@ -730,6 +730,110 @@ class GitDestructive(GuardCase):
         self.assertIsNone(r)
 
 
+class TrainHold(GuardCase):
+    """T-5077: while a merge train's gate runs, a git command that moves trunk in the main checkout is refused (2026-11-18:
+    'Review fixes (T-4670)' landed on foreman/build and threw away train 4's 3 h 13 min gate over 38 lanes). Lane
+    worktrees, read-only git and a dead train are untouched; no grant lifts it (the train must end, not be allowed past)."""
+    HOLD = {"pid": 4242, "root": None, "lanes": ["T-0001", "T-0002", "T-0003"], "held": 7380.0}
+
+    def setUp(self):
+        self.hold = dict(self.HOLD, root=self.repo)
+
+    def run_in(self, cmd, cwd=None, hold="live", allow=()):
+        ctx = self.ctx(cwd=cwd, allow=allow)
+        ctx.train_hold = None if hold is None else (lambda: self.hold if hold == "live" else None)
+        return g.check("Bash", {"command": self.sub(cmd)}, ctx)
+
+    def test_each_trunk_moving_command_in_the_main_checkout_is_refused_while_the_train_runs(self):
+        for cmd in ("git commit -m x", "git commit --amend --no-edit", "git commit -am 'Review fixes (T-4670)'",
+                    "git merge foreman/T-0001", "git cherry-pick abc123", "git rebase main", "git reset --soft HEAD~1",
+                    "git reset --keep HEAD~1", "git reset HEAD~1", "git pull", "git am x.patch", "git revert HEAD",
+                    "git -C {repo} commit -m x", "cd {repo} && git commit -m x",
+                    # HEAD off trunk voids the gate as surely as a commit (train.moved): review of 2026-11-19
+                    "git checkout -b y", "git checkout foreman/T-0001", "git switch other", "git switch -c z",
+                    "git branch -f foreman/T-0001 HEAD~1", "git branch -M renamed", "git update-ref refs/heads/x HEAD~1",
+                    # an option's value is never read as an option
+                    "git commit -m --abort", "git commit -am --dry-run", "git commit -m --help"):
+            with self.subTest(cmd=cmd):
+                r = self.run_in(cmd, cwd=os.path.dirname(self.repo) if cmd.startswith(("git -C", "cd")) else None)
+                self.assertBlocked(r, "confirm")
+                self.assertIn("merge train", r.detail)
+
+    def test_the_refusal_names_the_train_and_how_long_its_gate_has_run(self):
+        r = self.run_in("git commit -m x")
+        ctx = self.ctx()
+        ctx.train_hold = lambda: self.hold
+        msg = g.message(r, ctx)  # the span is read when the message is made, not when a cached verdict was
+        self.assertIn("3 lanes", msg)
+        self.assertIn("2 h 3 min", msg)
+        self.assertIn("pid 4242", msg)
+        self.hold = dict(self.hold, lanes=["T-0001"], held=20.0)
+        self.assertIn("1 lane;", g.message(r, ctx))
+        self.assertIn("under a minute", g.message(r, ctx))
+        msg = g.message(r, self.ctx())  # no reader: still a refusal with the way out
+        self.assertIn("wait", msg.lower())
+        self.assertIn("lane worktree", msg)
+        self.assertNotIn("sampo task set", msg, "no grant is offered: the train must end")
+
+    def test_no_grant_lifts_it(self):
+        self.assertBlocked(self.run_in("git commit -m x", allow=["confirm", "git-destructive", "core"]), "confirm")
+        self.assertBlocked(self.run_in("git reset --hard HEAD~1", allow=["git-destructive", "confirm"]), "confirm")
+        self.assertTrue(g.unliftable("confirm", self.run_in("git commit -m x").detail))
+
+    def test_a_lane_worktree_a_dead_train_and_no_train_pass(self):
+        lane = os.path.join(os.path.dirname(self.repo), "lane-5077")
+        subprocess.run(["git", "-C", self.repo, "worktree", "add", "-q", "-b", "foreman/T-5077x", lane], check=True)
+        self.addCleanup(subprocess.run, ["git", "-C", self.repo, "worktree", "remove", "--force", lane],
+                        capture_output=True)
+        self.assertIsNone(self.run_in("git commit -m x", cwd=lane), "a lane's own commit moves no trunk")
+        self.assertIsNone(self.run_in("git -C {repo}-nowhere commit -m x"), "a folder that is no repo")
+        self.assertIsNone(self.run_in("git commit -m x", hold="dead"), "a dead or reused-pid train holds nothing")
+        self.assertIsNone(self.run_in("git commit -m x", hold=None), "no hook-supplied reader: nothing to hold")
+        other = dict(self.hold, root=self.feature_repo)
+        self.hold = other
+        self.assertIsNone(self.run_in("git commit -m x"), "another project's train holds this repo not")
+
+    def test_read_only_and_non_moving_git_passes(self):
+        for cmd in ("git status", "git log --oneline -3", "git diff HEAD", "git add -A", "git stash", "git fetch",
+                    "git commit --dry-run", "git merge --abort", "git rebase --abort", "git cherry-pick --quit",
+                    "git merge-base HEAD main", "git reset", "git reset -- f.txt", "git branch x", "git branch -d x",
+                    "git checkout -- f.txt", "git checkout HEAD -- f.txt", "git checkout HEAD~1 f.txt", "git checkout -p",
+                    "git push origin x", "git worktree list", "git rev-parse HEAD", "git commit --help"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.run_in(cmd))
+        with open(os.path.join(self.repo, "here.txt"), "w") as f:
+            f.write("x\n")
+        self.assertIsNone(self.run_in("git checkout here.txt"), "one word naming a file here is a file form")
+
+    def test_a_second_dash_c_is_read_from_the_first(self):
+        """git reads each later -C from the one before it: `git -C PARENT -C NAME commit` commits in PARENT/NAME."""
+        parent, name = os.path.dirname(self.repo), os.path.basename(self.repo)
+        self.assertBlocked(self.run_in(f"git -C {parent} -C {name} commit -m x", cwd=os.path.dirname(parent)),
+                           "confirm")
+
+    def test_a_file_form_is_named_in_a_reset_refusal_and_a_damaged_record_still_refuses(self):
+        r = self.run_in("git reset HEAD~1")
+        self.assertIn("git reset -- FILE", g.message(r, self.ctx()))
+        self.assertNotIn("git reset -- FILE", g.message(self.run_in("git commit -m x"), self.ctx()))
+        ctx = self.ctx()
+        for bad in ({"pid": 1, "lanes": 5, "held": 1.0}, {"pid": 1, "lanes": [], "held": float("inf")},
+                    {"pid": 1, "lanes": [], "held": float("nan")}):
+            with self.subTest(bad=bad):
+                ctx.train_hold = lambda bad=bad: bad
+                msg = g.message(r, ctx)  # a record it can't word: the refusal stands, without the detail
+                self.assertIn("no grant lifts this", msg)
+
+    def test_a_script_is_read_as_for_every_git_rule_only_its_certain_findings_count(self):
+        """The guard keeps a script's findings to the ones no script of the user's does innocently (_check_script): a
+        script that commits is no more refused here than one that force-pushes, so the cached verdict holds no train."""
+        script = os.path.join(os.path.dirname(self.repo), "commit-it.sh")
+        with open(script, "w") as f:
+            f.write("#!/bin/sh\ngit commit -m x\n")
+        os.chmod(script, 0o755)
+        self.assertIsNone(self.run_in(script))
+        self.assertBlocked(self.run_in(f"sh -c 'git commit -m x'"), "confirm")  # typed text, read nested
+
+
 class Credentials(GuardCase):
     def test_file_tools(self):
         self.run_table([

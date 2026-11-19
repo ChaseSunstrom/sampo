@@ -159,6 +159,9 @@ class Ctx:
         # T-4340: lane folders (worktree tops) whose one task is active there, set by the hook: the session itself has
         # no task, but a file strictly inside such a lane is that task's (the lane's root only for a merge in it)
         self.briefed_lanes = ()
+        # T-5077: a reader the hook sets (a callable, as cargo_target is): the merge train of this project that runs now
+        # ({pid, root, lanes, held}) or None. Read only where a git command that moves trunk is checked.
+        self.train_hold = None
 
     @property
     def state_dirs(self):
@@ -361,9 +364,34 @@ def _unread(detail):
         ("the script was too long to parse in time)", _DEEP)) or "KB the guard reads: run its" in detail
 
 
+TRAIN_HOLD = " while a merge train holds trunk"  # T-5077: the mark of that refusal's detail (category "confirm")
+
+
 def unliftable(cat, detail):
-    """T-1932: no grant lifts a refusal for text the guard never read (to its end): it would run unchecked."""
-    return unanalysed(detail) or cat == "system" and isinstance(detail, str) and _unread(detail)
+    """T-1932: no grant lifts a refusal for text the guard never read (to its end): it would run unchecked. T-5077: nor one
+    for a commit on trunk while a train's gate runs: the commit voids the gate, whoever allows it; the train must end."""
+    return unanalysed(detail) or cat == "system" and isinstance(detail, str) and _unread(detail) \
+        or cat == "confirm" and isinstance(detail, str) and detail.endswith(TRAIN_HOLD)
+
+
+def _span(s):
+    """T-5077: seconds as "2 h 3 min" / "12 min" / "under a minute"."""
+    m = int(max(0, s) // 60)
+    return f"{m // 60} h {m % 60} min" if m >= 60 else f"{m} min" if m else "under a minute"
+
+
+def _train_says(ctx):
+    """T-5077: which train, how many lanes and how long it has run, from the reader the hook set ('' without one, or on
+    a record it can't word: the refusal stands without the detail)."""
+    try:
+        h = ctx.train_hold() if callable(getattr(ctx, "train_hold", None)) else None
+        if not isinstance(h, dict):
+            return ""
+        n = len(h.get("lanes") or [])
+        return (f" The train (pid {h.get('pid')}) is landing {n} lane{'s' if n != 1 else ''}; it has run "
+                f"{_span(h.get('held') or 0)}.")
+    except Exception:
+        return ""
 
 
 def message(block, ctx):
@@ -403,6 +431,12 @@ def _message(block, ctx):
         return (f"Ward: blocked state-direct: {detail} is Sampo state. Change it through fm "
                 f"(sampo task …, sampo capture, sampo checkpoint{f'; sampo audit prep {diff[1]} rewrites it' if diff else ''}); "
                 f"direct writes are never authorized.")
+    if cat == "confirm" and isinstance(detail, str) and detail.endswith(TRAIN_HOLD):  # T-5077
+        files = (" A file form moves no branch and passes: git reset -- FILE, git checkout -- FILE."
+                 if detail.startswith(("git reset ", "git checkout ")) else "")
+        return (f"Ward: blocked {cat}: {detail}.{_train_says(ctx)} A commit, merge, rebase, reset or branch switch on "
+                f"trunk now would void that gate, so no grant lifts this: wait for the train to end (sampo lane list "
+                f"shows it), or make the change in a lane worktree (sampo lane new ID), where git is free.{files}")
     if unliftable(cat, detail):  # T-1298, T-1929, T-1932: the way through is text the guard reads (the hint)
         return f"Ward: blocked {cat}: {detail}; no grant lifts this."
     if ctx.task_id:
@@ -10517,13 +10551,99 @@ def _defaults(cwd):
     return d
 
 
+_TRUNK_MOVERS = ("commit", "merge", "cherry-pick", "rebase", "reset", "pull", "am", "revert",  # T-5077
+                 "checkout", "switch", "branch", "update-ref")  # the train's gate is void once HEAD leaves trunk, too
+_UNDO_ONLY = ("--abort", "--quit")  # a half-done merge, pick or rebase undone moves nothing a train reads
+# options whose next word is their value (a message, a file, a strategy): `git commit -m --abort` commits
+_GIT_OPT_VALUED = frozenset(("-m", "-F", "-C", "-c", "--message", "--file", "--reuse-message", "--reedit-message",
+                             "--author", "--date", "--template", "--trailer", "--fixup", "--squash", "-b", "-B",
+                             "--orphan"))
+
+
+def _git_flags(rest):
+    """T-5077: the option words of a git subcommand's arguments, without the values of the options that take one (a
+    short cluster ending in one, `-am MSG`, takes it too)."""
+    flags, skip = [], False
+    for a in rest:
+        if skip:
+            skip = False
+            continue
+        if a == "--":
+            break
+        if a.startswith("-"):
+            flags.append(a)
+            skip = a in _GIT_OPT_VALUED or (not a.startswith("--") and len(a) > 2 and a[-1] in "mFCc")
+    return flags
+
+
+def _moves_trunk(sub, rest, where):
+    """T-5077: whether `git SUB REST` moves the branch checked out where it runs, or moves HEAD off it (the train's gate
+    is void either way, train.moved): commit (but --dry-run), merge, cherry-pick, rebase, revert, am and pull (but their
+    --abort / --quit), reset (but the path forms, `git reset` and `git reset -- f`), checkout (but its path forms,
+    `git checkout -- f`, `git checkout REV f`), switch, branch -f / -m / -M (a forced move or a rename) and update-ref.
+    --help runs nothing; an option's value (`-m --abort`) is never read as an option."""
+    flags = _git_flags(rest)
+    if "--help" in flags or flags == ["-h"] or any(o in _UNDO_ONLY for o in flags):
+        return False
+    if sub == "commit":
+        return "--dry-run" not in flags
+    if sub == "branch":
+        return any(o in ("-f", "--force", "-m", "-M", "--move") for o in flags)
+    if sub == "checkout":
+        if any(o in ("-b", "-B", "--orphan", "--detach") for o in flags):
+            return True
+        if "--" in rest or any(o in ("-p", "--patch") for o in flags):
+            return False  # `git checkout [REV] -- f`: files, not a branch
+        words = [a for a in rest if not a.startswith("-")]
+        # one word: a branch or revision unless it names a file here; more: `git checkout REV f…`, files again
+        return len(words) == 1 and not os.path.exists(os.path.join(where, words[0]))
+    if sub != "reset":
+        return True
+    if any(o in ("--hard", "--soft", "--keep", "--merge") for o in flags):
+        return True
+    before = rest[:rest.index("--")] if "--" in rest else rest
+    # a word that names a file here is a path (`git reset f.txt` unstages it); any other is a revision (HEAD~1, abc123)
+    return any(not a.startswith("-") and a not in ("HEAD", "@") and not os.path.exists(os.path.join(where, a))
+               for a in before)
+
+
+def _main_checkout(where):
+    """T-5077: the top folder of the main checkout (its .git is a folder) that `where` is in, else None: a linked
+    worktree's .git is a file, so a lane's own git is never the main checkout's. Read from the files, no git process."""
+    probe = os.path.realpath(where)
+    if not os.path.isdir(probe):
+        return None
+    while True:
+        dot = os.path.join(probe, ".git")
+        if os.path.isdir(dot):
+            return probe
+        if os.path.exists(dot) or os.path.dirname(probe) == probe:
+            return None
+        probe = os.path.dirname(probe)
+
+
+def _train_holds(where, ctx):
+    """T-5077: whether a merge train of this project is running now and `where` is in the checkout it holds. The reader is
+    the hook's (a train's record, a live pid that began when it said): a dead train's leftovers hold nothing."""
+    read = getattr(ctx, "train_hold", None)
+    top = _main_checkout(where) if callable(read) else None
+    if not top:
+        return False
+    try:
+        h = read()
+    except Exception:
+        return False  # unreadable: the guard asks no more than it did
+    root = h.get("root") if isinstance(h, dict) else None
+    return isinstance(root, str) and os.path.realpath(root) == top
+
+
 def _check_git(name, args, cwd, ctx):
     if name != "git":
         return []
     i, gcwd = 0, cwd
     while i < len(args) and args[i].startswith("-"):
-        if args[i] == "-C" and i + 1 < len(args):
-            gcwd = _resolve(_expand(args[i + 1], ctx), cwd)
+        if args[i] == "-C" and i + 1 < len(args):  # a later -C is read from the one before it, as git does
+            gcwd = _resolve(_expand(args[i + 1], ctx), gcwd)
             i += 2
         elif args[i] in _GIT_VALUED and i + 1 < len(args):
             i += 2
@@ -10533,6 +10653,8 @@ def _check_git(name, args, cwd, ctx):
         return []
     sub, rest = args[i], args[i + 1:]
     out = []
+    if sub in _TRUNK_MOVERS and _train_holds(gcwd, ctx) and _moves_trunk(sub, rest, gcwd):  # T-5077: no train, no git run
+        out.append(("confirm", f"git {sub} in the main checkout{TRAIN_HOLD}"))
     if sub == "push":
         force = any(o in ("-f", "--force", "--force-with-lease", "--force-if-includes") or o.startswith("--force-with-lease=")
                     for o in rest)

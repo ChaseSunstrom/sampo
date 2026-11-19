@@ -3805,7 +3805,18 @@ def _guard_ctx(pl, fmguard, lanes=()):
         ctx.briefed_lanes = tuple(lanes)
     if p:  # T-4742: read only when a cargo, rustc or rustup call names a folder under state (fmguard._cargo_assigned)
         ctx.cargo_target = lambda: c.cargo_assigned_dir(p)
+        ctx.train_hold = lambda: _train_hold(p)  # T-5077: read only when a git command that moves trunk is checked
     return ctx, p, act
+
+
+def _train_hold(p):
+    """T-5077: the train of this project that runs now ({pid, root, lanes, at, held}), or None: it never raises (a guard
+    that cannot read the train's record asks nothing more than it did)."""
+    try:
+        from sampo import train
+        return train.train_hold(p)
+    except Exception:
+        return None
 
 
 def _visiting(pl, lane):
