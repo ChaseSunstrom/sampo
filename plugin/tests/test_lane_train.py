@@ -471,6 +471,8 @@ SCAN = ("import os, unittest\n\n\ndef hits(word):\n"
         "        self.assertEqual(hits('bar') if ban else [], [])\n")
 PAIR = ("import os, unittest\n\n\nclass Aliases(unittest.TestCase):\n    def test_it(self):\n"
         "        self.assertLess(len([f for f in os.listdir('.') if f.startswith('x')]), 2)\n")
+TWO_PAIRS = PAIR + ("\n\nclass Pairs(unittest.TestCase):\n    def test_it(self):\n"
+                    "        self.assertLess(len([f for f in os.listdir('.') if f.startswith('y')]), 2)\n")
 SEEN = "import os, unittest\n\n\nclass Doctor(unittest.TestCase):\n    def test_it(self):\n        os.environ['SEEN'] = '1'\n"
 ORDER = ("import os, unittest\n\n\nclass Aliases(unittest.TestCase):\n    def test_it(self):\n"
          "        n = len([f for f in os.listdir('.') if f.startswith('x')])\n"
@@ -1056,6 +1058,41 @@ class AffectedGate(AffectedBase):
         self.assertIn("4 probe(s)", r.stdout.splitlines()[0])  # alone, two bisection probes, the bare base
         self.assertEqual(self.gate_runs(), 2)
         for name, landed in (("x1", True), ("c.txt", True), ("d.txt", True), ("x2", False)):
+            self.assertEqual(os.path.exists(os.path.join(self.repo, name)), landed, name)
+
+    def test_two_ambiguous_culprits_go_from_one_red_run(self):
+        """T-4986: two classes red, each by its own lane, and the failure names neither lane's file: the bisection blames
+        the first, then bisects the class still green at its prefix over the lanes after it, in the same round. Both are
+        left out with one confirm after (train 3b took one 40-100 minute round per culprit), each for its own class."""
+        self.base("plugin/tests/test_rename_aliases.py", TWO_PAIRS)
+        l1, l2, l3, l4, l5, l6 = (self.lane(1, "x1"), self.lane(2, "y1"), self.lane(3, "x2"), self.lane(4, "c.txt"),
+                                  self.lane(5, "y2"), self.lane(6, "d.txt"))
+        r = self.train(l1, l2, l3, l4, l5, l6)
+        out = {t: next((ln for ln in r.stdout.splitlines() if ln.startswith(f"  left out {t}:")), "") for t in (l3, l5)}
+        self.assertIn("blamed: bisection", out[l3], r.stdout)
+        self.assertIn("of only test_rename_aliases.Aliases", out[l3], r.stdout)
+        self.assertIn("blamed: bisection", out[l5], r.stdout)
+        self.assertIn("of only test_rename_aliases.Pairs", out[l5], r.stdout)
+        self.assertNotIn("Pairs", out[l3], "each lane is left out for its own class only")
+        self.assertNotIn("Aliases", out[l5], "each lane is left out for its own class only")
+        self.assertEqual(self.gate_runs(), 2, "the full run and one confirm: no second round for the second culprit")
+        for name, landed in (("x1", True), ("y1", True), ("c.txt", True), ("d.txt", True), ("x2", False), ("y2", False)):
+            self.assertEqual(os.path.exists(os.path.join(self.repo, name)), landed, name)
+
+    def test_a_named_culprit_and_an_ambiguous_one_go_from_one_red_run(self):
+        """T-4986 review: the failure names b.txt for one class and no file for the other: the named lane is left out by
+        its name, and the class nobody's file explains is bisected in the same round, not left red for the next."""
+        self.base("plugin/tests/test_rename_scan.py", SCAN)
+        self.base("plugin/tests/test_rename_aliases.py", PAIR)
+        z, l1, b, l3, d = (self.lane(1, "ban-foo"), self.lane(2, "x1"), self.lane(3, "b.txt", "foo\n"), self.lane(4, "x2"),
+                           self.lane(5, "d.txt", "fine\n"))
+        r = self.train(z, l1, b, l3, d)
+        out = {t: next((ln for ln in r.stdout.splitlines() if ln.startswith(f"  left out {t}:")), "") for t in (b, l3)}
+        self.assertIn("the failure output names b.txt", out[b], r.stdout)
+        self.assertIn("blamed: bisection", out[l3], r.stdout)
+        self.assertIn("of only test_rename_aliases.Aliases", out[l3], r.stdout)
+        self.assertEqual(self.gate_runs(), 2, "the full run and one confirm")
+        for name, landed in (("ban-foo", True), ("x1", True), ("d.txt", True), ("b.txt", False), ("x2", False)):
             self.assertEqual(os.path.exists(os.path.join(self.repo, name)), landed, name)
 
     def test_two_independent_culprits_go_from_one_red_run(self):

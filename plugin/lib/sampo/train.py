@@ -321,12 +321,14 @@ def _texts(out, names):
     return {k: "".join(b for b in blocks if heads(k, b)) or out for k in names}
 
 
-def _blame(out, names, ids, diff, reach):
+def _blame(out, names, ids, diff, reach, explained=None):
     """T-3602: who broke the gate, from its red run alone: {lane id: (why, red name)} for each red name (the whole
     output when it names none) one lane alone explains. Rules, strongest first, each narrowing the lanes the one
     before matched: (a) the failure text names a file the lane's diff changed (traceback frames aside: they name the
     test and the code on the stack, not the fault); (c) the lane changed the failing test; (b) its diff reaches the
-    failing test (cli.affected's map, as the probes pick tests). A name matching no lane or several blames nobody."""
+    failing test (cli.affected's map, as the probes pick tests). A name matching no lane or several blames nobody.
+    T-4986: each red name a lane was found for is added to the set `explained` (one lane may explain several; the
+    result keeps its first), so the caller bisects the rest in the same round."""
     blamed = {}
     for k, text in (_texts(out, names) if names else {"": out}).items():
         text, cand = _FRAME.sub("", text), list(ids)
@@ -334,6 +336,8 @@ def _blame(out, names, ids, diff, reach):
             hits = [(i, w) for i in cand if (w := _rule(n, k, text, diff(i), reach(i) if n == 2 else ()))]
             if len(hits) == 1:
                 blamed.setdefault(hits[0][0], (hits[0][1], k))
+                if explained is not None:
+                    explained.add(k)
                 break
             cand = [i for i, _ in hits] or cand
     return blamed
@@ -1027,15 +1031,31 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     def bisect(cmd, names, check=True):
         """T-3602: the lane (index + 1) that turns gate `cmd` red, by prefix: lo passes (0 = the base), hi fails. Each
         probe runs only that gate, the suite only on `names` (proven to fail alone on the whole set) or, with none, as
-        the train runs it: seconds or the suite's part, where a whole gate run took minutes."""
-        lo, hi = 0, len(merged)
-        while hi - lo > 1:
-            mid = (lo + hi) // 2
-            row = probe(merged[mid - 1][1], cmd, names)
-            lo, hi = (lo, mid) if row and row["exit"] else (mid, hi)
-        if hi == 1 and check:  # the first lane is blamed on the strength of a base nobody probed: probe it before blaming
-            base_check(cmd, names)
-        return hi
+        the train runs it: seconds or the suite's part, where a whole gate run took minutes. T-4986: every such lane
+        of one red run, [(index + 1, the classes of `names` it turns red, its probes)]: the classes still green at a
+        blamed lane's prefix are bisected again over the lanes after it, in this round (train 3b found one culprit per
+        40-100 minute round). With no names, or a probe that names no failing class, one lane for all of them. A class
+        red only with an earlier culprit and a later lane both in leaves the later one out too: one train's wait for
+        that lane, where finding it a round later cost every lane that round."""
+        found, todo, start = [], list(names), 0
+        while True:
+            lo, hi, red, n0 = start, len(merged), None, probes[0]
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                row = probe(merged[mid - 1][1], cmd, todo)
+                if row and row["exit"]:
+                    hi, red = mid, row
+                else:
+                    lo = mid
+            if hi == 1 and check:  # the first lane is blamed on the strength of a base nobody probed: probe it before blaming
+                base_check(cmd, todo)
+            failing = (red or {}).get("failing") or ()
+            mine = [n for n in todo if any(_same(f, n) for f in failing)] if failing else list(todo)
+            found.append((hi, mine or list(todo), probes[0] - n0))
+            todo = [n for n in todo if n not in mine] if mine else []
+            if not todo:  # the rest were green at lane hi's prefix and red on the whole tree: a lane after it
+                return found
+            start = hi
 
     def base_check(cmd, names, fresh=False):
         """T-4289: the base probed in gate `cmd`, on `names` alone (all of it with none) in this very environment, before
@@ -1234,20 +1254,28 @@ def _run(p, main, ids, defer_verify=False, judged=None):
                     c.log_event(p, "lane_train_base_red_kept", data={"base": base[:9], "classes": based, "lanes_judged_on": rest})
             need[g] = (need.get(g) or set()) | set(names) | set(flaky) if names and not owed else None  # the suite's other tests passed here (T-4889: not the cut ones)
             ids = [b.id for b, _ in merged]
-            blamed = _blame(red["out"], names or red["failing"], ids, diff, reach)
-            if not blamed:
-                n, at = probes[0], bisect(g, names, not cls)
-                only = "only " + c.joinmore(names, 4) if names else "the whole red gate"
-                blamed = {ids[at - 1]: (f"bisection, {probes[0] - n} probe(s) of {only}", "")}
+            explained = set()
+            blamed = _blame(red["out"], names or red["failing"], ids, diff, reach, explained)
+            mine = {}  # T-4986: a bisected lane's own classes: what it is left out for, and all its line names
+            rest = [n for n in names if n not in explained] if blamed else list(names)
+            if not blamed or rest:  # T-4986 review: what no lane's file explains is bisected in this round too
+                for at, own, spent in bisect(g, rest, not cls):
+                    only = "only " + c.joinmore(own, 4) if own else "the whole red gate"
+                    blamed.setdefault(ids[at - 1], (f"bisection, {spent} probe(s) of {only}", ""))
+                    mine.setdefault(ids[at - 1], own)
             texts = _texts(red["out"], red.get("failing") or [])
             for i in (i for i in ids if i in blamed):
                 rule, k = blamed[i]
-                why = "its merge turns the gates red: " + _why_red(shown, rule, texts[k].rstrip().splitlines()[-15:]
+                own = dict(shown, failing=[f for f in shown.get("failing") or () if any(_same(f, n) for n in mine[i])]) \
+                    if mine.get(i) and not k else shown
+                why = "its merge turns the gates red: " + _why_red(own, rule, texts[k].rstrip().splitlines()[-15:]
                                                                    if k else None)
                 left.append((i, why))
-                dropped[i] = _left_for(k, names)  # T-4289: what it was left out for (put back if the base is red on it)
+                # T-4289: what it was left out for (put back if the base is red on it); T-4986: named and bisected, both
+                dropped[i] = _left_for(k, mine.get(i) or names) | (set(mine[i]) if k and mine.get(i) else set())
                 cli.mutate(p, i, lambda x, w=why: x.append_log("left out of a merge train: " + w), "lane_train_red",
-                           {"cmd": red["cmd"], "failing": red.get("failing") or [], "blamed": rule})
+                           {"cmd": red["cmd"], "failing": (own if own is not shown else red).get("failing") or [],
+                            "blamed": rule})
                 gone = {_stem(t) for t in reach(i)} if suite else set()  # before the rebuild: its links need its files
                 if gone and need.get(suite, ()) is not None:  # a lane may have needed it: what its diff reaches reruns
                     need[suite] = (need.get(suite) or set()) | gone
