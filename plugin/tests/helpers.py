@@ -435,13 +435,16 @@ class SampoTestCase(unittest.TestCase):
 
     def fm(self, *args, cwd=None, check=True, env=None, input=None, timeout=30):
         # fm run never takes a real inhibitor lock; T-1379: fm doctor skips its hook bench (no test reads its timings)
-        e = dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_INHIBITED="1", FOREMAN_DOCTOR_BENCH="0")
+        # T-4935: nor builds the native fast path of the tree under test (minutes under load, the live hooks' binary)
+        e = dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_INHIBITED="1", FOREMAN_DOCTOR_BENCH="0", FOREMAN_DOCTOR_BUILD="0")
         for k in ("FOREMAN_SHIP_AT", "SAMPO_SHIP_AT"):  # a ship's own test run: its pin names a commit a scratch repo lacks
             e.pop(k, None)
         e.pop("CLAUDE_CODE_SESSION_ID", None)  # tests may run inside a live Claude Code session
         e.pop("CLAUDE_CODE_BRIDGE_SESSION_ID", None)  # T-2443: its commits would carry this session's link
         if args[:1] == ("which",):  # T-2371: fm which reads ~/.claude.json and bin folders: never this machine's
             e.update(HOME=os.path.join(self.tmp, "nohome"), CLAUDE_CONFIG_DIR=os.path.join(self.tmp, "nocc"))
+        if args[:1] == ("doctor",) and {"--repair", "--fix"} & set(args):  # T-4935: its model fix writes ~/.claude, ~/.codex
+            e.update(HOME=os.path.join(self.tmp, "nohome"))
         e.update(env or {})
         import forkcli  # T-3252: a fork of a warm Sampo, not a fresh interpreter; the same result
         p = forkcli.run(FM, args, cwd=cwd or self.repo, env=e, input=input, timeout=timeout * busy_factor())

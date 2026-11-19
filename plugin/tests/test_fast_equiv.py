@@ -586,7 +586,8 @@ class Installer(Base):
         os.symlink(os.path.join(PLUGIN, "lib"), os.path.join(self.plug, "lib"))
         self.native = os.path.join(self.plug, "native")
         shutil.copytree(NATIVE, self.native, ignore=lambda d, names: [  # what a checkout has: no build output here
-            n for n in names if d == NATIVE and n in ("target", "sampo-fast", "sampo-fast.sha256", "sampo-fast.src")])
+            n for n in names if d == NATIVE and (n in ("target", "sampo-fast", "sampo-fast.sha256", "sampo-fast.src")
+                                                 or n.startswith(".sampo-fast"))])  # T-4935: nor a live build's temp file
         self.fhome = os.path.join(self.tmp, "user")  # the account's home as the build sees it: its own ~/.cargo, no config
         self.bindir = os.path.join(self.fhome, ".cargo", "bin")
         os.makedirs(self.bindir)

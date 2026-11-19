@@ -876,7 +876,11 @@ def _build_in(work, plugin, native, home, tools, crates, want, before, head, say
 
 
 def repair(plugin=None, say=None, cargo=None, home=None, workdir=None):
-    """(ok, line) for doctor --repair and --fix: nothing built when it is ok; a rebuild when missing or stale."""
+    """(ok, line) for doctor --repair and --fix: nothing built when it is ok; a rebuild when missing or stale.
+    T-4935: FOREMAN_DOCTOR_BUILD=0 (the tests' fm calls) builds nothing: a test's repair is of its own temp project, never
+    of the tree under test, whose build took minutes under load and replaced the live hooks' binary in the main checkout."""
+    if os.environ.get("FOREMAN_DOCTOR_BUILD") == "0":
+        return False, "Native fast path: not built (FOREMAN_DOCTOR_BUILD=0: a test's doctor builds nothing)."
     home = home or account_home()
     cargo = find_cargo(home) if cargo is None else cargo  # "" is a caller's "there is none"
     state, why = status(plugin, cargo)

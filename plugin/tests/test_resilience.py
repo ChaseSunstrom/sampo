@@ -97,6 +97,51 @@ class ViewsRepair(ForemanTestCase):
         self.assertNotIn("views don't match", self.fm("doctor", check=False).stdout)
 
 
+class RepairStaysInTheTest(ForemanTestCase):
+    """T-4935: a test's fm doctor --repair ran fastbuild on the tree under test with the account's cargo (a fresh worktree
+    has no binary and a merge leaves it stale: a cargo build, ViewsRepair's 101 s timeouts under load, and in the main
+    checkout the live hooks' binary replaced), and its model fix on the real ~/.claude/settings.json and ~/.codex."""
+
+    def test_a_tests_doctor_gets_the_switch_and_a_repair_a_home_of_its_own(self):
+        import forkcli
+        seen = []
+
+        def run(script, args, **kw):
+            seen.append(kw["env"])
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with mock.patch.object(forkcli, "run", side_effect=run):
+            for args in (("doctor", "--repair"), ("doctor", "--fix"), ("doctor",)):
+                self.fm(*args)
+            self.fm("doctor", "--repair", env={"HOME": self.tmp})
+        repair, fix, plain, given = seen
+        self.assertEqual({e.get("FOREMAN_DOCTOR_BUILD") for e in seen}, {"0"})
+        for e in (repair, fix):
+            self.assertTrue(e["HOME"].startswith(self.tmp + os.sep), e["HOME"])
+        self.assertEqual(plain["HOME"], os.environ["HOME"])  # a plain doctor reads; only a repair writes the model
+        self.assertEqual(given["HOME"], self.tmp)  # a test's own HOME wins
+
+    def test_the_switch_stops_a_build_with_a_cargo_at_hand(self):
+        from sampo import fastbuild
+        plug = os.path.join(self.tmp, "plug")
+        os.makedirs(os.path.join(plug, "native"))
+        with mock.patch.dict(os.environ, {"FOREMAN_DOCTOR_BUILD": "0"}), \
+                mock.patch.object(fastbuild, "build_fast", side_effect=AssertionError("built")):
+            ok, line = fastbuild.repair(plug, cargo="/somewhere/cargo")
+        self.assertFalse(ok)
+        self.assertIn("not built (FOREMAN_DOCTOR_BUILD=0", line)
+
+    def test_a_tests_repair_writes_the_tests_settings_only(self):
+        settings = os.path.join(self.tmp, "nohome", ".claude", "settings.json")
+        os.makedirs(os.path.dirname(settings))
+        with open(settings, "w") as f:
+            json.dump({"model": "claude-opus-4-8"}, f)
+        self.fm("init")
+        out = self.fm("doctor", "--repair", check=False).stdout
+        self.assertIn("Native fast path: not built", out)
+        with open(settings) as f:
+            self.assertEqual(json.load(f).get("model"), "best", out)  # the model fix read the test's HOME
+
+
 class Mutation(ForemanTestCase):
     def test_the_real_guard_has_flip_and_drop_sites(self):
         # T-0496's script became fm bench guard --mutate --flip (T-1121); judging is tested on fixtures (test_replay)

@@ -469,7 +469,9 @@ class InstallScript(unittest.TestCase):
             with open(path, "w") as f:
                 f.write("#!/usr/bin/env bash\n" + body)
             os.chmod(path, 0o755)
-        self.env = dict(os.environ, HOME=tmp, FOREMAN_HOME=self.fhome,
+        # T-4935: a test that links the real plugin into fhome ran install.sh's step 7, a cargo build of the tree
+        # under test (60 s timeouts under load); the build's own test stubs fastbuild.py, which reads no switch
+        self.env = dict(os.environ, HOME=tmp, FOREMAN_HOME=self.fhome, FOREMAN_DOCTOR_BUILD="0",
                         PATH=os.path.join(tmp, "bin") + os.pathsep + os.environ["PATH"])
 
     def tearDown(self):
