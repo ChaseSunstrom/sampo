@@ -534,6 +534,64 @@ class Lanes(ForemanTestCase):
         self.fm("lane", "rm", tid)
         self.assertFalse(os.path.exists(path))
 
+    def fast_lane(self, title, ignored=(), untracked=()):
+        """T-5078: a merged lane holding sampo-fast's build outputs, ignored through info/exclude as the repo's
+        .gitignore does, and any `untracked` files left unignored (an older base's .gitignore). plugin/native is
+        tracked (merged to main first), so git lists those files one by one, not as a folder."""
+        tid = self.new(title, self.repo, focus=False)
+        path = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        common = subprocess.run(["git", "-C", path, "rev-parse", "--git-common-dir"], capture_output=True,
+                                text=True).stdout.strip()
+        os.makedirs(os.path.join(path, "plugin", "native"))
+        with open(os.path.join(path, "plugin", "native", "Cargo.toml"), "w") as f:
+            f.write("[package]\n")
+        self.git("add", "plugin", cwd=path)
+        self.git("commit", "-qm", "native crate", cwd=path)
+        self.git("merge", "-q", "--no-ff", "-m", "merge", f"foreman/{tid}")
+        with open(os.path.join(path, common, "info", "exclude"), "a") as f:
+            f.write("".join(f"{x}\n" for x in ignored))
+        for rel in (*ignored, *untracked):
+            with open(os.path.join(path, rel), "w") as f:
+                f.write("bytes\n")
+        return tid, path
+
+    def test_rm_discards_a_merged_lane_holding_only_the_built_fast_binary(self):
+        # T-5078: the built sampo-fast, its sum and source record, and fastbuild's temp copy are caches, not user files
+        names = ["plugin/native/sampo-fast", "plugin/native/sampo-fast.sha256", "plugin/native/sampo-fast.src",
+                 "plugin/native/.sampo-fast-new-abc"]
+        tid, path = self.fast_lane("Fast binary", ignored=names)
+        self.assertEqual(slanes._left_work(path), [], "the fast build's outputs are no one's work")
+        self.fm("lane", "rm", tid)
+        self.assertFalse(os.path.exists(path))
+
+    def test_rm_discards_a_merged_lane_holding_untracked_fast_outputs(self):
+        # T-5078: an older base's .gitignore leaves the binary and its stamps untracked: still a cache, not work
+        names = ["plugin/native/sampo-fast", "plugin/native/sampo-fast.sha256", "plugin/native/sampo-fast.src"]
+        tid, path = self.fast_lane("Untracked fast binary", untracked=names)
+        self.assertEqual(slanes._left_work(path), [])
+        self.fm("lane", "rm", tid)
+        self.assertFalse(os.path.exists(path))
+
+    def test_rm_keeps_a_lane_holding_another_ignored_file_beside_the_fast_binary(self):
+        # T-5078: only the fast build's own names are cache: a neighbour that merely looks like one is kept
+        tid, path = self.fast_lane("Fast and a neighbour", ignored=["plugin/native/sampo-fast",
+                                                                     "plugin/native/sampo-fast.bak"])
+        self.assertEqual(slanes._left_work(path), ["!! plugin/native/sampo-fast.bak"])
+        p = self.fm("lane", "rm", tid, check=False)
+        self.assertNotEqual(p.returncode, 0, "a user's ignored file still blocks the removal")
+        self.assertIn("plugin/native/sampo-fast.bak", p.stderr)
+        self.assertTrue(os.path.isdir(path))
+
+    def test_the_fast_build_names_the_lane_cache_keeps_match_fastbuild(self):
+        # T-5078: the cache names are fastbuild's own constants, so a rename there can't leave the lane keeping them
+        from sampo import fastbuild as fb
+        names = [f"plugin/native/{fb.BIN}", f"plugin/native/{fb.SUM}", f"plugin/native/{fb.SRC}",
+                 f"plugin/native/{fb.NEW}abc", "plugin/native/.sampo-fast-tmpXYZ"]
+        for rel in names:
+            self.assertIsNotNone(slanes._FAST_BUILD.match(rel), rel)
+        self.assertIsNone(slanes._FAST_BUILD.match("plugin/native/sampo-fast.bak"))
+        self.assertIsNone(slanes._FAST_BUILD.match("other/plugin/native/sampo-fast"))
+
     def wreck(self, keep_one=False, empty_gitdir=False):
         """T-2257: a lane whose creation was cut off: 0-byte branch ref, every file empty, a stale admin lock."""
         tid = self.new("Cut off", self.repo, focus=False)

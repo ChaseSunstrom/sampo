@@ -1325,7 +1325,7 @@ def _ignored(path):
 def _is_cache(path, rel):
     """T-1685: a cache removing the lane may delete: a known cache path, or an ignored folder git lists whole that
     holds nothing else (a Sampo lane's state/ with only the guard's script cache in it)."""
-    if _CACHE.search(rel) or _LANE_CACHE.search(rel) or _own_cargo_config(path, rel):
+    if _cache_name(path, rel):
         return True
     full = os.path.join(path, rel)
     if not rel.endswith("/") or os.path.islink(full.rstrip("/")) or not os.path.isdir(full):
@@ -1333,9 +1333,35 @@ def _is_cache(path, rel):
     for root, _, files in os.walk(full):
         for f in files:
             r = os.path.relpath(os.path.join(root, f), path)
-            if not (_CACHE.search(r) or _LANE_CACHE.search(r) or _own_cargo_config(path, r)):
+            if not _cache_name(path, r):
                 return False
     return True
+
+
+def _cache_name(path, rel):
+    """A path the lane's removal may delete without asking: a known cache name, the guard's cache, the fast build's
+    outputs (T-5078), or the lane's own cargo config."""
+    return bool(_CACHE.search(rel) or _LANE_CACHE.search(rel) or _FAST_BUILD.search(rel)
+                or _own_cargo_config(path, rel))
+
+
+def _cache_line(path, ln):
+    """T-5078: whether one `git status --porcelain --ignored=matching` line is a cache a removal may drop. An ignored
+    one is judged by _is_cache; an untracked one only when it is the fast build's own output (an older base's
+    .gitignore doesn't name it, so git lists it as untracked; it is never work to commit)."""
+    if ln.startswith("!! "):
+        return _is_cache(path, ln[3:])
+    return ln.startswith("?? ") and _FAST_BUILD.search(ln[3:]) is not None
+
+
+def _drop_untracked_fast(path, status):
+    """T-5078: unlink the lane's untracked fast-build outputs (_cache_line's `??` lines) before git removes the lane:
+    git refuses a worktree holding any untracked file. Only regular files named by _FAST_BUILD, never a link."""
+    for ln in status.splitlines():
+        if ln.startswith("?? ") and _cache_line(path, ln):
+            full = os.path.join(path, ln[3:])
+            if os.path.isfile(full) and not os.path.islink(full):
+                os.unlink(full)
 
 
 def _own_cargo_config(path, rel):
@@ -2917,6 +2943,9 @@ _CACHE = re.compile(r"(^|/)(__pycache__|\.pytest_cache|\.mypy_cache|\.ruff_cache
                     r"(^|/)\.coverage(\.[\w.-]+)?$")
 # T-1685: the guard's script verdicts, rebuilt on use; T-2289: a builder's scratch folder, throwaway by contract (T-2259)
 _LANE_CACHE = re.compile(r"(^|/)state/guard-scripts\.json$|^\.fm-scratch/")
+# T-5078: the native fast path's outputs in plugin/native (fastbuild.BIN, SUM, SRC and the .sampo-fast-* temp copies
+# its writes leave; test_lanes checks these against fastbuild's own names): rebuilt by doctor --repair, never work
+_FAST_BUILD = re.compile(r"^plugin/native/(sampo-fast(\.sha256|\.src)?|\.sampo-fast-[^/]+)$")
 _BUILD = re.compile(r"(^|/)(target|build|dist|zig-out|\.zig-cache|zig-cache|cmake-build-[\w-]+)/?$")
 _SECRETISH = re.compile(r"(?i)\.(pem|key|p12|pfx|jks|keystore)$|^\.env($|\.)|\.env$|^id_(rsa|ed25519|ecdsa)|"
                         r"^credentials?(\.\w+)?$")  # narrow: target/ holds env_logger-*.d and libsecret-*.rlib
@@ -4132,7 +4161,7 @@ def remove(p, b, main, drop=None, keep=False, ended=None):
         wreck = _wreck_aside(p, b, main, path, branches)
     if os.path.isdir(path):
         st = _git(path, "status", "--porcelain", "--ignored=matching")  # ignored files (.env, builds) go with it too
-        left = [ln for ln in st.stdout.splitlines() if not (ln.startswith("!! ") and _is_cache(path, ln[3:]))]
+        left = [ln for ln in st.stdout.splitlines() if not _cache_line(path, ln)]
         left += [f"!! {x}" for ln in st.stdout.splitlines() if ln.startswith("!! ") and _BUILD.search(ln[3:])
                  for x in _secretish(path, ln[3:])]  # T-0839: build output is rebuilt; a key kept in it isn't
         if st.returncode or left:  # T-0377/T-0408: caches are rebuilt on the next run, never anyone's work
@@ -4142,6 +4171,7 @@ def remove(p, b, main, drop=None, keep=False, ended=None):
                                                        len(left) else
                                                        "uncommitted work: commit it (fm task finish --commit) or remove it")
                                 + " there first; fm lane rm never discards anything")
+        _drop_untracked_fast(path, st.stdout)  # T-5078: git refuses to remove untracked files, these are caches
         r = _git(main, "worktree", "remove", path)
         if r.returncode and "claude agent" in r.stderr and "locked" in r.stderr:
             # T-0725: Claude Code keeps a finished builder's worktree locked; once its work is in main it can go
@@ -4445,7 +4475,7 @@ def _left_work(path, timeout=30):
     st = _git(path, "--no-optional-locks", "status", "--porcelain", "--ignored=matching", timeout=timeout)
     if st.returncode:
         return ["status failed"]
-    left = [ln for ln in st.stdout.splitlines() if not (ln.startswith("!! ") and _is_cache(path, ln[3:]))]
+    left = [ln for ln in st.stdout.splitlines() if not _cache_line(path, ln)]
     left += [f"!! {x}" for ln in st.stdout.splitlines() if ln.startswith("!! ") and _BUILD.search(ln[3:])
              for x in _secretish(path, ln[3:])]
     return left
