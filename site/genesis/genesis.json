@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-19T16:45:44Z",
- "rev": "9000647af",
+ "updated": "2026-11-19T18:32:13Z",
+ "rev": "38b5ee371",
  "capabilities": [
   {
    "n": 1,
@@ -3789,8 +3789,8 @@
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
-       "done": 5,
-       "current": "close: lean check, audits, docs, the gap number in the changelog"
+       "done": 6,
+       "current": ""
       },
       {
        "id": "T-2229",
@@ -3872,8 +3872,8 @@
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
-       "done": 5,
-       "current": "close: lean check, audits, docs, the gap number in the changelog"
+       "done": 6,
+       "current": ""
       }
      ]
     },
@@ -3998,8 +3998,8 @@
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
-       "done": 5,
-       "current": "close: lean check, audits, docs, the gap number in the changelog"
+       "done": 6,
+       "current": ""
       }
      ]
     },
@@ -4137,8 +4137,8 @@
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
-       "done": 5,
-       "current": "close: lean check, audits, docs, the gap number in the changelog"
+       "done": 6,
+       "current": ""
       }
      ]
     },
@@ -4194,8 +4194,8 @@
        "type": "FEATURE",
        "tier": "L",
        "steps": 6,
-       "done": 5,
-       "current": "close: lean check, audits, docs, the gap number in the changelog"
+       "done": 6,
+       "current": ""
       },
       {
        "id": "T-2917",
@@ -61738,15 +61738,15 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 863,
+ "unproven": 855,
  "unproven_kinds": {
   "typed": 82,
   "meaning-user": 86,
   "research-uncited": 28,
-  "meaning-notes": 446,
-  "docs": 168,
-  "red": 86,
-  "perf-typed": 150,
+  "meaning-notes": 443,
+  "docs": 167,
+  "red": 85,
+  "perf-typed": 147,
   "ui-unshot": 3,
   "infra": 7,
   "data": 4,
@@ -62956,33 +62956,33 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 72160,
+   "generated": 72719,
    "write": {
     "title": 455,
-    "line": 3988,
+    "line": 4023,
     "payoff": 62,
     "kill test": 301,
     "code": 35
    },
    "dups": {
     "exact": 16,
-    "embed": 141,
+    "embed": 142,
     "shingle": 0
    },
    "rejected": {
-    "kill": 35952,
+    "kill": 36283,
     "tier": 21623,
-    "novelty": 192
+    "novelty": 195
    },
-   "merged": 2548,
-   "kept": 2793,
-   "pending": 358,
-   "pooled": 3696
+   "merged": 2590,
+   "kept": 2826,
+   "pending": 158,
+   "pooled": 4010
   },
   "families": [
    {
     "id": "F-011753",
-    "size": 7,
+    "size": 8,
     "lead": "Migrate the entire monolith to microservices in one PR",
     "today": "Today you can't decompose a large monolithic codebase into separate microservice repos with working Dockerfiles and API contracts in a single automated action.",
     "with_this": "With this, you can turn a 10-year-old monolith into 10 deployable microservices with passing unit tests and a shared API gateway configuration in under an hour.",
@@ -63016,7 +63016,7 @@
    },
    {
     "id": "F-013109",
-    "size": 605,
+    "size": 606,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -64688,6 +64688,86 @@
     ]
    },
    {
+    "id": "F-071777",
+    "size": 1,
+    "lead": "Teleport the execution context into a deterministic sandbox",
+    "today": "Today you can't perfectly reproduce a timeout or race condition that only triggers under specific system loads",
+    "with_this": "With this, you can eliminate flaky performance regressions by freezing the entire OS state for every unit test",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
+    "id": "F-071788",
+    "size": 1,
+    "lead": "Synthesize a phantom environment for erratic failures",
+    "today": "Today you can't reproduce a 'flaky' test because the environment state is slightly different every time.",
+    "with_this": "With this, you can create a perfect genetic clone of the exact hardware and network state where a failure occurred.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "features"
+    ]
+   },
+   {
+    "id": "F-071795",
+    "size": 1,
+    "lead": "Teleport project state to a zero-cost idle mode",
+    "today": "Today you can't instantly scale down complex dependencies without manual config",
+    "with_this": "With this, you can drop the entire project into a 'dormant' state with zero overhead",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "ops"
+    ]
+   },
+   {
+    "id": "F-071930",
+    "size": 1,
+    "lead": "Synthesize deep execution history for causal analysis",
+    "today": "Today you can't trace the root cause of a failure across dozens of chained, asynchronous operations.",
+    "with_this": "With this, Sampo can build a fully navigable memory graph of every variable change and interaction across the entire workflow execution.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "efficiency"
+    ]
+   },
+   {
+    "id": "F-072082",
+    "size": 1,
+    "lead": "Manifest a deterministic performance multiverse",
+    "today": "Today you can't account for environmental noise in your performance benchmarks.",
+    "with_this": "With this, you can achieve 100% repeatable performance metrics regardless of the underlying hardware load.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
     "id": "F-011460",
     "size": 5,
     "lead": "Negotiate migration compatibility with AI agents in other repos",
@@ -65028,6 +65108,23 @@
     "kinds": [
      "multi-user",
      "problem solving"
+    ]
+   },
+   {
+    "id": "F-071888",
+    "size": 2,
+    "lead": "Auction off the optimal fix path to your team",
+    "today": "Today you can't see which of ten possible refactorings is actually cheapest to integrate before committing to one",
+    "with_this": "With this, you can watch a live market where AI agents bid on solving a bug, with the lowest-cost solution automatically applied to your branch",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 1,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "features",
+     "refactors"
     ]
    },
    {
@@ -66149,108 +66246,12 @@
     "kinds": [
      "data"
     ]
-   },
-   {
-    "id": "F-010065",
-    "size": 1,
-    "lead": "Let teammates bet on which copied block breaks first",
-    "today": "Today you can't hear your team's gut sense of which pasted copy will go stale next, or put anything on it.",
-    "with_this": "With this, you can send fixes to the copies most likely to break before a customer finds the bug.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data"
-    ]
-   },
-   {
-    "id": "F-010066",
-    "size": 1,
-    "lead": "Quote a live bid and ask for every copy",
-    "today": "Today you can't see, at a glance, what it would cost to bring a copied block back in line with its source.",
-    "with_this": "With this, you can see the repair cost of each duplicate as a number and decide in seconds whether to fix it or leave it.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data"
-    ]
-   },
-   {
-    "id": "F-010067",
-    "size": 1,
-    "lead": "Post collateral on every pasted copy you make",
-    "today": "Today you can't make the person who pasted a block answer for it when the copy drifts from its source.",
-    "with_this": "With this, you can catch bad duplicates before they ship, because the person who made them covers the cost of the fix.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data"
-    ]
-   },
-   {
-    "id": "F-010068",
-    "size": 1,
-    "lead": "Pay a bot to sync the better copy",
-    "today": "Today you can't get paid for spotting that a fix reached one copy of a block but not the others.",
-    "with_this": "With this, you can get a fix to every copy of a block in your projects within a day, and the person who spots the gap gets paid.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data"
-    ]
-   },
-   {
-    "id": "F-010069",
-    "size": 1,
-    "lead": "Buy a fixed-price option on a copy's future fix",
-    "today": "Today you can't pay now to lock in the cost of fixing a duplicate if it breaks later.",
-    "with_this": "With this, you can put off a fix safely: a small premium now covers the cost if the copy breaks.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data"
-    ]
-   },
-   {
-    "id": "F-010083",
-    "size": 1,
-    "lead": "Require a bond on refactors that touch other teams",
-    "today": "Today you can't tell how much a refactor's author is willing to stake on being right, so risky cleanups look identical to safe ones.",
-    "with_this": "With this, you can see which cleanups are backed by a stake, so the org fast-tracks safe ones and makes bold ones pay for their own mistakes.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "refactors"
-    ]
    }
   ],
-  "families_total": 1978,
+  "families_total": 2003,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2793
+   "total": 2826
   }
  },
  "steer": {
@@ -66284,7 +66285,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.6,
+    "idle_h": 275.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66307,7 +66308,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.7,
+    "idle_h": 275.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66330,7 +66331,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.6,
+    "idle_h": 275.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66353,7 +66354,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.6,
+    "idle_h": 275.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66376,7 +66377,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.4,
+    "idle_h": 275.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66399,7 +66400,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.4,
+    "idle_h": 275.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66422,7 +66423,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.2,
+    "idle_h": 274.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66445,7 +66446,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.2,
+    "idle_h": 275.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66468,7 +66469,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.3,
+    "idle_h": 275.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66491,7 +66492,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.9,
+    "idle_h": 276.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66514,7 +66515,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.5,
+    "idle_h": 276.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66537,7 +66538,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.6,
+    "idle_h": 276.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66560,7 +66561,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.6,
+    "idle_h": 276.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66583,7 +66584,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.6,
+    "idle_h": 276.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66606,7 +66607,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.4,
+    "idle_h": 276.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66629,7 +66630,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.4,
+    "idle_h": 276.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66652,7 +66653,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.4,
+    "idle_h": 276.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66675,7 +66676,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.4,
+    "idle_h": 276.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66698,7 +66699,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.2,
+    "idle_h": 276.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66721,7 +66722,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.2,
+    "idle_h": 275.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66744,7 +66745,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.2,
+    "idle_h": 275.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66767,7 +66768,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.1,
+    "idle_h": 275.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66790,7 +66791,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.0,
+    "idle_h": 275.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66813,7 +66814,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.9,
+    "idle_h": 275.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66836,7 +66837,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 273.9,
+    "idle_h": 275.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66859,7 +66860,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 274.0,
+    "idle_h": 275.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
