@@ -400,6 +400,36 @@ class FailClosed(GuardCase):
         with mock.patch.object(g, "INDEX_INLINE", False), mock.patch.object(g, "_index_spawn", return_value=True):
             self.assertIsNone(self.bash('grep -n "from sampo import core" plugin/lib/sampo/cli.py'))
 
+    def test_one_build_at_a_time_holds_while_the_marker_is_held_and_ends_with_the_build(self):
+        """T-5064: the refusal is the O_EXCL marker's, not a timing of the real build. Held by hand it is refused
+        without a process; a build that already ran to its end (a test process left waiting for a CPU slot while the
+        detached child finished) has cleared it, so the next call is a new build: True, by design."""
+        import subprocess
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as cache:
+            with open(os.path.join(d, "a.py"), "w") as f:
+                f.write("def r():\n    return 1\n")
+            stamp = g._index_stamp(d, g._index_files(d))
+            mark = os.path.join(cache, f"ward-index-{stamp}.building")
+            open(mark, "w").close()
+            with mock.patch("subprocess.Popen") as popen:
+                self.assertFalse(g._index_spawn(d, cache, stamp), "one build at a time")
+            popen.assert_not_called()
+            self.assertTrue(os.path.exists(mark), "a young marker is left to its build")
+            os.remove(mark)
+            real = subprocess.Popen
+
+            def finished_first(*a, **k):  # the parent is descheduled until the child is done
+                p = real(*a, **k)
+                p.wait(60)
+                return p
+            with mock.patch("subprocess.Popen", side_effect=finished_first):
+                self.assertTrue(g._index_spawn(d, cache, stamp))
+            self.assertFalse(os.path.exists(mark), "the finished build cleared its marker")
+            self.assertTrue(g._index_spawn(d, cache, stamp), "the marker was the only thing holding a second one off")
+            end = time.time() + 60
+            while time.time() < end and os.path.exists(mark):
+                time.sleep(0.05)
+
     def test_a_detached_build_writes_the_index_once_per_stamp(self):
         with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as cache:
             with open(os.path.join(d, "__init__.py"), "w") as f:
@@ -407,7 +437,8 @@ class FailClosed(GuardCase):
             with open(os.path.join(d, "a.py"), "w") as f:
                 f.write("def r():\n    return 1\n")
             self.assertIsNone(g._writer_index(d, cache, inline=False), "cold: nothing to judge by yet")
-            self.assertFalse(g._index_spawn(d, cache, g._index_stamp(d, g._index_files(d))), "one build at a time")
+            # (no "second spawn is refused" check here: it holds only while the build runs, and a test process that a
+            # crowded CI box leaves waiting for a CPU slot sees the build already done: T-5064. See the next test.)
             end = time.time() + 60
             while time.time() < end and not any(n.endswith(".json") for n in os.listdir(cache)):
                 time.sleep(0.05)

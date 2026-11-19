@@ -455,6 +455,25 @@ class ScriptCache(GuardCase):
         self.assertEqual([x[1].split(":")[0] for x in g.take_unread()], ["refused"])
         self.assertEqual(signal.getsignal(signal.SIGPROF), signal.SIG_DFL, "the old handler is back on every path")
 
+    def test_a_timer_that_fires_as_a_nested_read_begins_leaves_no_read_marked_open(self):
+        # T-5064: the budget's SIGPROF raised _OverBudget (a BaseException) at the call that marks a nested read open:
+        # the mark was made, the try that unmarks it not yet entered. Every later script read as nested (no clock, no
+        # cache, a refusal never reached) for the rest of the process: 58 CI failures on Python 3.12, which checks for
+        # signals at that call. Simulate it on any host: the second mark raises as the signal would, after the append.
+        class Late(list):
+            def append(self, x):
+                super().append(x)
+                if len(self) == 2:
+                    raise g._OverBudget()
+        inner = self.script("late-inner.sh", "echo hi\n")
+        p = self.script("late-outer.sh", f"echo hi\nbash {inner}\n")
+        marks = Late()
+        g.take_unread()
+        with mock.patch.object(g, "_IN_SCRIPT", marks):
+            r = self.bash(f"bash {p}")
+        self.assertEqual(marks, [], "a read was left marked open: every later script would read as nested")
+        self.assertBlocked(r, "system")  # cut off both times: refused, never allowed unread
+
     def test_a_padded_script_is_refused_whatever_it_holds_and_whichever_file_it_runs(self):
         # T-4758 round 3 (confirmed holes): the cut-off read never reached what follows the padding. None of these has
         # a word a denylist would key on, or its word is in a file the top script runs.

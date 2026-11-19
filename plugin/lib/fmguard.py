@@ -9469,10 +9469,13 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False, given=None):
     if not nested:
         _TEXTS.clear()
         _DEPS.clear()
-    _IN_SCRIPT.append(1)
     t0 = time.process_time()  # T-4925: the CPU the reads spend, for the refusal's text
     old, live = None, [False]
+    marks = len(_IN_SCRIPT)
     try:
+        _IN_SCRIPT.append(1)  # T-5064: inside the try, and undone by length: the outer clock's signal (Python 3.12 checks for
+        #                       one at this very call) can raise right after the append, and a mark left would make every
+        #                       later script read as nested: no clock, no cache, no refusal
         text, why, got = _script_text(script, cwd, shebang=kind == "exec", data=data, assume_x=assume_x)
         if text is not None:
             _TEXTS.append((p, text))
@@ -9575,7 +9578,7 @@ def _script_verdict(script, cwd, kind, ctx, depth, assume_x=False, given=None):
                                     f"{_script_hard():g} s), so it, or a script it runs, was not read to the end: split it "
                                     "into smaller scripts or run its steps as separate commands"))
     finally:
-        _IN_SCRIPT.pop()
+        del _IN_SCRIPT[marks:]
         if old is not None:
             signal.setitimer(signal.ITIMER_PROF, 0)
             signal.signal(signal.SIGPROF, old)

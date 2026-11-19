@@ -5,6 +5,7 @@ sweep judged a run's folder dead by its pid alone (a live run seen from another 
 left bare /tmp names no run owned. Now a live run holds a lock on its folder that outlives any pid reading, and every name
 helpers makes sits in that folder."""
 import os
+import select
 import subprocess
 import sys
 import tempfile
@@ -41,12 +42,22 @@ def dead_pid():
 def start(code, *args, **env):
     p = subprocess.Popen([sys.executable, "-c", code, *args], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                          env=dict(os.environ, **env))
+    # T-5064: a child that never says its first line fails here by name in 60 s, not at the runner's 900 s "no output"
+    if not select.select([p.stdout], [], [], 60)[0]:
+        p.kill()
+        p.wait(30)
+        raise AssertionError(f"the child said nothing in 60 s (TMPDIR={env.get('TMPDIR')!r}): {code.splitlines()[0]}")
     return p, p.stdout.readline().strip()
 
 
 def stop(p):
     p.stdin.close()
-    p.wait(30)
+    try:
+        p.wait(30)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.wait(30)
+        raise AssertionError("the child did not end 30 s after its stdin closed")
 
 
 class SharedTempRoot(unittest.TestCase):
@@ -93,7 +104,10 @@ class SharedTempRoot(unittest.TestCase):
         seen = []
 
         class Fake:
-            pid = os.getpid()
+            # T-5064: never this process's own pid: run.py kills a finished class's group (killpg(pid)), and a test run by
+            # run.py is its own session leader, so its pid IS its group: the class killed itself (exit -9) wherever no
+            # sandbox gave it another pid (macOS). A pid nothing lives under, and the kill seen, not sent.
+            pid = dead_pid()
             returncode = 0
 
             def wait(self, timeout=None):  # T-4758: run.py waits on the class itself; its stderr is a file in the folder
@@ -105,9 +119,10 @@ class SharedTempRoot(unittest.TestCase):
             kw["stderr"].write(b"Ran 1 test in 0.0s\n")
             return Fake()
 
-        with mock.patch.object(run.subprocess, "Popen", side_effect=popen):
+        with mock.patch.object(run.subprocess, "Popen", side_effect=popen), mock.patch.object(run.os, "killpg") as kill:
             run._run_one("test_x.C", [], 60, None, None)
         self.assertEqual(seen, [True])
+        self.assertNotIn(os.getpid(), [c.args[0] for c in kill.call_args_list], "the test would kill its own group")
         self.assertFalse(os.path.exists(Fake.tmp), "the class's folder goes at its end")
 
     def test_a_spawn_that_fails_leaks_neither_the_lock_nor_the_folder(self):

@@ -538,6 +538,37 @@ def corpus(root, plugin=None):
     return rows
 
 
+def _excerpt(a, b, width=80):
+    """Both sides of a differing text from a little before where they part (T-5064 review: a deny's JSON shares its first
+    80 bytes on both sides, so a head-of-text excerpt showed two equal strings)."""
+    at = len(os.path.commonprefix([a, b]))
+    start = max(0, at - 20)
+    return f"at {at}: {a[start:start + width]!r} vs {b[start:start + width]!r}"
+
+
+def _what_differs(py, built):
+    """What a probe pair differs in, each part named: (exit, stdout, stderr, state) of the Python hook and of the built
+    file. State is {file: rows or None}: the files on one side only, and for a shared file the first row that differs."""
+    parts = []
+    if py[0] != built[0]:
+        parts.append(f"exit {py[0]!r} vs {built[0]!r}")
+    for k, a, b in (("stdout", py[1], built[1]), ("stderr", py[2], built[2])):
+        if a != b:
+            parts.append(f"{k} {_excerpt(a, b)}")
+    pt, nt = py[3], built[3]
+    if pt != nt:
+        only = sorted(set(pt) ^ set(nt))
+        if only:
+            parts.append("state files on one side only: " + ", ".join(
+                f"{n} ({'python' if n in pt else 'built'})" for n in only[:4]) + (f" and {len(only) - 4} more" if len(only) > 4 else ""))
+        for n in sorted(x for x in set(pt) & set(nt) if pt[x] != nt[x])[:2]:
+            ra, rb = pt[n] or [], nt[n] or []
+            i = next((i for i, (x, y) in enumerate(zip(ra, rb)) if x != y), min(len(ra), len(rb)))
+            parts.append(f"state {n} row {i}: {repr(ra[i] if i < len(ra) else None)[:120]} vs "
+                         f"{repr(rb[i] if i < len(rb) else None)[:120]}")
+    return "; ".join(parts) or "an unnamed part"
+
+
 def _tree(home):
     """{relative path: events rows without the volatile values, else None} of what a run wrote under home, and whether a
     row is marked fast."""
@@ -589,19 +620,23 @@ def probe(binary, plugin=None):
         for name, raw, native in rows:
             if time.monotonic() - t0 > PROBE_TOTAL:
                 return False, f"the probe ran past {PROBE_TOTAL} s"
-            runs = []
-            for cmd in ([hook, "PreToolUse"], [binary, "--hook", hook, "PreToolUse"]):
-                home = os.path.join(work, "home")  # one path for both: what they print and store may name it
-                shutil.rmtree(home, ignore_errors=True)
-                os.makedirs(os.path.join(home, "state", "sessions"))
-                r = subprocess.run(cmd, input=raw, env=_probe_env(home, work), cwd=root, capture_output=True,
-                                   timeout=PROBE_SECONDS)
-                runs.append((r.returncode, r.stdout, r.stderr, *_tree(home)))
+            for _ in (1, 2):  # T-5064: a first run can differ from a second (macOS's git shim fills a cache on its first call)
+                runs = []
+                for cmd in ([hook, "PreToolUse"], [binary, "--hook", hook, "PreToolUse"]):
+                    home = os.path.join(work, "home")  # one path for both: what they print and store may name it
+                    shutil.rmtree(home, ignore_errors=True)
+                    os.makedirs(os.path.join(home, "state", "sessions"))
+                    r = subprocess.run(cmd, input=raw, env=_probe_env(home, work), cwd=root, capture_output=True,
+                                       timeout=PROBE_SECONDS)
+                    runs.append((r.returncode, r.stdout, r.stderr, *_tree(home)))
+                if runs[0][:4] == runs[1][:4]:
+                    break
             (pc, po, pe, pt, pf), (nc, no, ne, nt, nf) = runs
             if pf:
                 return False, f"the Python hook marked a probe line fast ({name})"
             if (pc, po, pe) != (nc, no, ne) or pt != nt:
-                return False, f"the built file differs from the Python hook on the probe '{name}'"
+                return False, (f"the built file differs from the Python hook on the probe '{name}': "
+                               + _what_differs(((pc, po, pe, pt)), (nc, no, ne, nt)))
             if native and not nf:
                 return False, (f"the built file deferred '{name}', which it decides itself (its sources may differ "
                                "from the tree's: it decided none of what it should)" if not native_n else

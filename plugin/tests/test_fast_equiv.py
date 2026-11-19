@@ -940,6 +940,57 @@ class Installer(Base):
                 self.assertStays(self.build(), {}, why)
         self.assertEqual(fastbuild.status(self.plug, self.cargo)[0], "missing")
 
+    def test_the_refusal_says_what_differed(self):
+        """T-5064: macOS CI refused a build on 'shell: built-in 4' and the log named no side of it."""
+        self.fake(binary=self.stand_in(DIFFERS))
+        ok, line = self.build()
+        self.assertFalse(ok)
+        self.assertRegex(line, r"differs from the Python hook on the probe '[^']+': stdout at \d+: b'.*' vs b'.*extra'")
+
+    def test_a_refusal_on_state_alone_names_the_file(self):
+        """T-5064 review: exit, stdout and stderr equal and only the state different named nothing; the refusal now names
+        a file on one side only, and the first differing row of a shared one."""
+        self.fake(binary=self.stand_in(
+            "#!/usr/bin/env python3\nimport os, subprocess, sys\n"
+            f"r = subprocess.run([{self.bin!r}] + sys.argv[1:], stdin=sys.stdin, capture_output=True)\n"
+            "open(os.path.join(os.environ['FOREMAN_HOME'], 'stray.txt'), 'w').close()\n"
+            "sys.stdout.buffer.write(r.stdout)\nsys.stderr.buffer.write(r.stderr)\nsys.exit(r.returncode)\n"))
+        ok, line = self.build()
+        self.assertFalse(ok)
+        self.assertRegex(line, r"state files on one side only: stray\.txt \(built\)")
+
+    def test_the_excerpt_starts_where_the_two_sides_part(self):
+        from sampo import fastbuild
+        head = b'{"hookSpecificOutput": {"permissionDecision": "deny", "reason": "' + b"x" * 90
+        text = fastbuild._what_differs((2, head + b"one", b"", {}), (2, head + b"two", b"", {}))
+        self.assertIn("b'one'", text.replace("x", ""))
+        self.assertIn("vs", text)
+        self.assertEqual(fastbuild._what_differs((0, b"", b"", {"a": [1, 2]}), (0, b"", b"", {"a": [1, 3]})),
+                         "state a row 1: 2 vs 3")
+
+    def test_a_refusal_on_a_different_exit_code_names_both_codes(self):
+        """T-5064 review: the exit codes are ints; the first cut sliced them like text and the refusal itself raised."""
+        self.fake(binary=self.stand_in(
+            "#!/usr/bin/env python3\nimport subprocess, sys\n"
+            f"r = subprocess.run([{self.bin!r}] + sys.argv[1:], stdin=sys.stdin, capture_output=True)\n"
+            "sys.stdout.buffer.write(r.stdout)\nsys.stderr.buffer.write(r.stderr)\nsys.exit(r.returncode + 3)\n"))
+        ok, line = self.build()
+        self.assertFalse(ok)
+        self.assertRegex(line, r"differs from the Python hook on the probe '[^']+': exit \d+ vs \d+")
+
+    def test_a_first_call_that_differs_once_does_not_refuse_the_build(self):
+        """T-5064: a first run can differ from a second (macOS's git shim fills a cache on its first call); the pair is
+        run once more, and only a difference that stays refuses the build."""
+        flag = os.path.join(self.tmp, "first-call-seen")
+        self.fake(binary=self.stand_in(
+            "#!/usr/bin/env python3\nimport os, subprocess, sys\n"
+            f"r = subprocess.run([{self.bin!r}] + sys.argv[1:], stdin=sys.stdin, capture_output=True)\n"
+            f"first = not os.path.exists({flag!r})\nopen({flag!r}, 'a').close()\n"
+            "sys.stdout.buffer.write(r.stdout + (b'extra' if first else b''))\nsys.stderr.buffer.write(r.stderr)\n"
+            "sys.exit(r.returncode)\n"))
+        ok, line = self.build()
+        self.assertTrue(ok, line[:300])
+
     def test_a_built_file_that_answers_shell_calls_itself_is_refused(self):
         """T-3608 review: the first probe held only Read calls; a file that forwards everything but allows every Bash
         call passed it. The corpus holds the guard's own Bash fixtures, each of which the file must hand to Python."""
@@ -1037,7 +1088,9 @@ class Installer(Base):
     def test_a_bad_build_does_not_replace_a_good_install(self):
         self.fake(binary=self.bin)
         ok, line = self.build()
-        self.assertTrue(ok, f"{line} | {self.lines[-5:]}")  # T-4993: it failed once on macOS CI with no reason shown
+        if not ok:  # T-4993/T-5064: said first and short, so a log that cuts a long assertion message still shows why
+            print(f"BUILD NOT INSTALLED: {line[:600]}", file=sys.stderr, flush=True)
+        self.assertTrue(ok, f"{line[:300]} | {self.lines[-3:]}")
         before = self.files()
         self.fake(binary=self.stand_in(ALLOW_ALL))
         self.assertStays(self.build(), before, "differs")
