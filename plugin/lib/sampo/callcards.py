@@ -88,12 +88,21 @@ def _near(word, options, cutoff=0.0):
 
 # --- cards ---------------------------------------------------------------------------------------------------------
 
+def authored_dir():
+    """T-4838: the cards cardauthor admitted (their own tests passed in this runner), in Sampo's state."""
+    return os.path.join(c.state_dir(), "callcards", "cards")
+
+
+_STAGED = []  # T-4838: a draft's folder while cardauthor runs its tests, so call() finds it; never a store
+
+
 def card_dirs(root=None):
-    """Sampo's own cards, then each folder in SAMPO_CALLCARDS (os.pathsep-separated; core.mirror_env renames it
-    FOREMAN_CALLCARDS at startup) that is absolute and outside root: a repo's own files never become a card."""
+    """Sampo's own cards, the authored ones (T-4838), then each folder in SAMPO_CALLCARDS (os.pathsep-separated;
+    core.mirror_env renames it FOREMAN_CALLCARDS at startup) that is absolute and outside root: a repo's own files never
+    become a card. A draft cardauthor is testing comes last, so it never shadows a card."""
     extra = os.environ.get("SAMPO_CALLCARDS") or os.environ.get("FOREMAN_CALLCARDS") or ""
     inside = os.path.realpath(root) if root else None
-    out = [os.path.join(c.PLUGIN_ROOT, "cards")]
+    out = [os.path.join(c.PLUGIN_ROOT, "cards"), authored_dir()]
     for d in extra.split(os.pathsep):
         if not os.path.isabs(d):
             continue
@@ -101,7 +110,7 @@ def card_dirs(root=None):
         if inside and os.path.commonpath([real, inside]) in (real, inside):
             continue  # inside the repo, or the repo inside it
         out.append(d)
-    return out
+    return out + _STAGED
 
 
 def _digest(d, h=None):
@@ -1654,11 +1663,9 @@ def _card_text(card):
     return " ".join([card["name"].replace("-", " "), card.get("purpose", ""), *card.get("examples", [])])
 
 
-def rank(text, k=5, root=None):
-    """[(score, card)] best first: an idf-weighted cosine of the task's words and each card's name, purpose and
-    examples is the score; the cards at or over LEXICAL_FLOOR come first, ordered by their smoothed pass rate from
-    calls.jsonl (a card with no calls sits at 1/2) and by score within one rate, then the rest by score. root: the repo
-    the cards would run in (cards(root))."""
+def scorer(root=None):
+    """A function text -> [(lexical score, card)] for every card, unordered: the cards and their idf read once, so a
+    caller scoring many texts (cardauthor.pending) pays for them once."""
     found = cards(root)[0]
     docs = {n: _tokens(_card_text(cd)) for n, cd in found.items()}
     df = {}
@@ -1666,14 +1673,23 @@ def rank(text, k=5, root=None):
         for t in toks:
             df[t] = df.get(t, 0) + 1
     idf = {t: math.log(1 + len(docs) / n) for t, n in df.items()}
-    # ponytail: words no card knows don't count against it (a long request names its own files and symbols), so one rare
-    # shared word can lift a card; the embedding ranker replaces this where a local embedder answers
-    q = _tokens(text) & set(idf)
-    qn = math.sqrt(sum(idf[t] ** 2 for t in q)) or 1.0
-    out = []
-    for n, toks in docs.items():
-        dn = math.sqrt(sum(idf[t] ** 2 for t in toks)) or 1.0
-        out.append((sum(idf[t] ** 2 for t in q & toks) / (qn * dn), found[n]))
+    norms = {n: math.sqrt(sum(idf[t] ** 2 for t in toks)) or 1.0 for n, toks in docs.items()}
+
+    def score(text):
+        # ponytail: words no card knows don't count against it (a long request names its own files and symbols), so
+        # one rare shared word can lift a card; the embedding ranker replaces this where a local embedder answers
+        q = _tokens(text) & set(idf)
+        qn = math.sqrt(sum(idf[t] ** 2 for t in q)) or 1.0
+        return [(sum(idf[t] ** 2 for t in q & toks) / (qn * norms[n]), found[n]) for n, toks in docs.items()]
+    return score
+
+
+def rank(text, k=5, root=None):
+    """[(score, card)] best first: an idf-weighted cosine of the task's words and each card's name, purpose and
+    examples is the score; the cards at or over LEXICAL_FLOOR come first, ordered by their smoothed pass rate from
+    calls.jsonl (a card with no calls sits at 1/2) and by score within one rate, then the rest by score. root: the repo
+    the cards would run in (cards(root))."""
+    out = scorer(root)(text)
     stats = call_stats()  # T-4919: what fits (the floor decides) is ordered by how its calls went; lexical breaks ties
     out.sort(key=lambda x: (x[0] < LEXICAL_FLOOR, -pass_rate(stats.get(x[1]["name"])) if x[0] >= LEXICAL_FLOOR else 0,
                             -x[0], x[1]["name"]))
@@ -1704,8 +1720,8 @@ def run_tests(card):
     try:
         with open(os.path.join(card["dir"], "tests.json")) as f:
             cases = json.load(f)
-    except (OSError, ValueError) as e:
-        return [("tests.json", [f"unreadable: {e}"])]
+    except (OSError, ValueError, RecursionError) as e:  # nested too deep for json: a RecursionError
+        return [("tests.json", [f"unreadable: {c.fit(str(e), 200)}"])]
     out = []
     for i, case in enumerate(cases if isinstance(cases, list) else []):
         root = os.path.realpath(tempfile.mkdtemp(prefix="sampo-cardtest-"))
@@ -1723,8 +1739,13 @@ def run_tests(card):
             if r["status"] != case.get("expect", "applied"):
                 why.append(f"status {r['status']} ({(r['error'] or '')[:300]}), expected {case.get('expect', 'applied')}")
             for rel, text in (case.get("after") or {}).items():
+                if _rel_ok(rel):  # T-4838 review: the mismatch quotes the text, so only the case's own folder is read
+                    raise ValueError(f"after {rel!r} {_rel_ok(rel)}")
+                p = os.path.join(root, rel)
                 try:
-                    with open(os.path.join(root, rel), newline="") as f:
+                    if not os.path.realpath(p).startswith(root + os.sep):  # a link gen.py made out of the folder
+                        raise OSError("outside the case folder")
+                    with open(p, newline="") as f:
                         got = f.read()
                 except OSError:
                     got = None
@@ -1830,6 +1851,27 @@ def cmd_card(args):
               f"{b['passed']}/{b['n']}, {b['tokens']} tokens, {b['seconds']} s (means per scenario), {b['card_calls']} card "
               f"call(s); {s['wins']} won, "
               f"{s['losses']} lost, sign test p={s['p']}: {s['verdict']}")
+        return 0
+    if act in ("author", "grow"):  # T-4838
+        from sampo import budget, cardauthor
+        p = cli.resolve(args)
+        first = next((x for x in (args.model or "").split(",") if x), None)  # the local model a writer asks first
+        try:
+            if act == "author":
+                text = " ".join([args.name or ""] + args.rest).strip()
+                if not text:
+                    raise cli.UsageError("sampo card author \"<what the card should do>\"")
+                r = cardauthor.author(p, {"text": text}, writer=args.writer, root=root, model=first)
+                print(json.dumps(r) if js else f"{r['verdict']}: {r['card'] or ''}{' — ' + r['reason'] if r['reason'] else ''}"
+                      f" ({r['tries']} tries: {', '.join(r['writers'])})")
+                return 0 if r["verdict"] == "admitted" else 1
+            r = cardauthor.grow(p, batch=args.batch, max_calls=args.max_calls, writer=args.writer, root=root,
+                                retry=args.retry, mine=not args.no_mine, ideas=args.ideas, workers=args.workers,
+                                model=first,
+                                log=None if js else lambda line: print(line, file=sys.stderr, flush=True))
+        except (ValueError, budget.BudgetError) as e:
+            raise cli.UsageError(str(e))
+        print(json.dumps(r) if js else cardauthor.grow_line(r))
         return 0
     names = [args.name] if args.name else (list(found) if act == "test" else [])
     if not names:

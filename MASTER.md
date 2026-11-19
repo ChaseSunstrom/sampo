@@ -255,6 +255,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmshot` (T-1636: `sampo shot URL|FILE...`, a viewport shot, frames in real… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsmallcards`… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmcallcards` (T-3160: `sampo card`, calling cards: verified generators run confined… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmcardauthor` (T-4838: `sampo card author "<request>"|grow [--batch N] [--max-calls N] [--writer W] [--ideas N]`: writers, local models first, draft calling cards for requests (mined, or proposed by a local writer when the queue runs short); a card joins the store only when its own tests pass confined. [→ files-lib-5](docs/map/files-lib-5.md))
 - `fmcardmine` (T-4920, T-4838 part B: `sampo.cardmine.mine(p)` turns pick misses, failed bench rows, repeated closed FIX… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmbenchswe` (sampo/bench_swe, T-3746: `sampo bench swe`, SWE-bench Verified through Smith in each instance's docker image… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmdockershim` (T-3746: the docker-exec tool shim, `sampo-bench-*` containers only… [→ files-lib-4](docs/map/files-lib-4.md)

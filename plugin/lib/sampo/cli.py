@@ -9359,19 +9359,31 @@ def _build_parser(only=None):
             help="calling cards: verified generators called by name with typed inputs, run confined, applied only "
                  "when their checker passes (list, show, call NAME key=value..., test [NAME], rank \"<task>\", "
                  "bench [RUN]: fm code on one local model with cards off and on over an exam run's scenarios, "
-                 "paired, with a sign test; no RUN sums --out)")
-    s.add_argument("action", nargs="?", choices=["list", "show", "call", "test", "rank", "bench"])
+                 "paired, with a sign test; no RUN sums --out; author \"<request>\": a writer, local models first, "
+                 "drafts a card, admitted only when its own tests pass confined; grow: author the pending card "
+                 "requests in a batch under --max-calls)")
+    s.add_argument("action", nargs="?", choices=["list", "show", "call", "test", "rank", "bench", "author", "grow"])
     s.add_argument("name", nargs="?")
     s.add_argument("rest", nargs="*", help="call: key=value inputs; rank: the task's words")
     s.add_argument("--inputs", metavar="JSON", help="call: the inputs as one JSON object")
     s.add_argument("--root", help="call: the worktree the card works in (default: this checkout)")
     s.add_argument("--no-cache", action="store_true", help="call: run even when a verified result is cached")
     s.add_argument("--model", default="jarvis-nothink,gpu-gemma12-32k,gpu-mimo9",
-                   help="bench: model profiles, the first that answers runs both arms")
+                   help="bench: model profiles, the first that answers runs both arms; author, grow: the first is the "
+                        "local model a writer asks first")
     s.add_argument("--limit", type=int, default=10, help="bench: scenarios")
     s.add_argument("--kind", default="bug", help="bench: the scenario kinds, comma-separated")
     s.add_argument("--lang", default="python", help="bench: the scenarios' language")
     s.add_argument("--out", help="bench: the rows (jsonl; default research/callcards/bench.jsonl)")
+    s.add_argument("--writer", choices=["local", "haiku", "sonnet"],
+                   help="author, grow: only this writer (default: local models twice, then Sonnet once)")
+    s.add_argument("--batch", type=int, default=10, help="grow: the requests one run takes")
+    s.add_argument("--max-calls", type=int, help="grow: the writer calls one run may make")
+    s.add_argument("--retry", action="store_true", help="grow: ask again for requests an earlier run rejected")
+    s.add_argument("--no-mine", action="store_true", help="grow: don't mine new requests from Sampo's records first")
+    s.add_argument("--ideas", type=int, help="grow: top a short queue up with at most N proposals from a local "
+                   "writer (default: up to the batch; 0: none)")
+    s.add_argument("--workers", type=int, help="grow: drafts written at once (default: the local model's slots)")
     s = add("bisect", cmd_bisect, tier=("Finding your way", 600), help="the first commit where a check started failing, and its files (T-0612)")
     s.add_argument("--run", required=True, metavar="CMD")
     s.add_argument("--good", metavar="REF", help="a commit where it passed (default: the active task's start)")

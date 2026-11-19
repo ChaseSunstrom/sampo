@@ -1,5 +1,34 @@
 # Calling cards, the thin slice: the pilot (T-3160) and the harness-driven pilot (T-3181)
 
+## Part 1c: the same bench on the grown store (T-4838)
+
+Verdict: **not proven.** The grown card store did not move the pass rate: cards off 11 of 30, cards on 10 of 30
+(2 wins, 3 losses). Every repo's sign test is p ≥ 0.5.
+
+| Repo | Pairs | Off pass | On pass | Off tokens | On tokens | Card calls | Won / lost |
+|---|---|---|---|---|---|---|---|
+| s70-010 | 11 | 5 | 4 | 287,007 | 101,236 | 13 | 0 / 1 |
+| s21-013 | 3 | 2 | 0 | 243,805 | 181,763 | 1 | 0 / 2 |
+| s0-001 | 3 | 2 | 2 | 26,122 | 35,635 | 2 | 0 / 0 |
+| s31-006 | 2 | 0 | 0 | 153,096 | 237,728 | 2 | 0 / 0 |
+| s4-018 | 4 | 0 | 0 | 530,513 | 826,899 | 7 | 0 / 0 |
+| s5-019 | 4 | 2 | 4 | 1,634,839 | 2,249,951 | 20 | 2 / 0 |
+| s7-004 | 3 | 0 | 0 | 178,574 | 470,248 | 3 | 0 / 0 |
+
+Tokens are means per scenario.
+
+What it shows:
+
+- **Tokens.** Cards cut tokens by about two thirds on s70-010 (332 s → 103 s) but raised them on five of seven repos.
+- **Wins.** s5-019 is the only repo where cards helped (4 of 4 against 2 of 4). It also made the most card calls (20).
+- **Timeouts.** s4-018 timed out in both arms (about 1,215 s each), so its 4 pairs say nothing.
+- **Next.** The store's size is not the limit. A card win needs a card that matches the failure, so the next step is
+  ranking by outcome (criterion 2) and measuring again, not more cards.
+
+How: `sampo card bench RUN --model jarvis-nothink --kind none,bug,vuln --limit 11 --out
+research/callcards/t4838-bench.jsonl` for the same seven runs as T-3181, in the same order. The 60 rows are in
+`t4838-bench.jsonl`.
+
 ## Part 1b: the harness drives the cards (T-3181)
 
 The T-3160 pilot below found the model rarely calls a card (1 run of 10). T-3181 moves the decision to fm code:
