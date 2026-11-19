@@ -1016,10 +1016,11 @@ def _blocks(doc):
     return out
 
 
-def prose_findings(doc, name="README.md"):
+def prose_findings(doc, name="README.md", opening_rule=True):
     """T-4910: [{file: 'NAME:LINE', problem}] for each wall of text in a README: a paragraph over PARA_WORDS words, more
     than PROSE_RUN prose paragraphs in a row with no list, table, code, figure or heading between them, and an opening
-    (from the title to the first section) over OPENING_WORDS words of prose. Counted, not judged: length is structure."""
+    (from the title to the first section) over OPENING_WORDS words of prose. Counted, not judged: length is structure.
+    T-4914: opening_rule=False for a page that is not a README (a report, a PR body), which has no pitch to keep short."""
     blocks, found = _blocks(doc), []
     title_first = bool(blocks) and blocks[0][1] == "heading"
     headings, opening, opening_at, run = 0, 0, None, []
@@ -1044,11 +1045,109 @@ def prose_findings(doc, name="README.md"):
             flag(line, f"a paragraph of {words} words ({PARA_WORDS} at most: split it, or make it a list)")
         run.append(line)
     end_run()
-    if opening > OPENING_WORDS:
+    if opening_rule and opening > OPENING_WORDS:
         found.insert(0, {"file": f"{name}:{opening_at}", "problem": (
             f"a wall of text: the opening runs {opening} words before the first section ({OPENING_WORDS} at most: a "
             "one-line pitch and a figure, then sections)")})
     return sorted(found, key=lambda f: int(f["file"].rsplit(":", 1)[1]))
+
+
+ENTRY_WORDS = 80  # T-4914: a CHANGELOG entry says what changed for a user; the how lives in the docs (p50 46, p90 91)
+FIELD_WORDS = {"TITLE": 15, "LESSON": 50}  # a Close field's own limit; any other field: ENTRY_WORDS
+CLOSE_KEYS = ("CHANGELOG", "TITLE", "LESSON", "NUMBERS", "DOCS", "INSIGHT", "DIFFERENTLY")
+_FIELD = re.compile(r"([A-Z][A-Z_]*):[ \t]?(.*)")  # one line's 'KEY: value' (no $: it matches a whole doc's first line too)
+
+
+def changelog_findings(doc, name="CHANGELOG.md"):
+    """T-4914: each CHANGELOG entry (a top-level bullet and its continuation lines) over ENTRY_WORDS words, by the line
+    it starts on; the file's prose paragraphs by prose_findings' rules (no opening rule)."""
+    found, entry = [], None
+
+    def close():
+        if entry and entry[1] > ENTRY_WORDS:
+            found.append({"file": f"{name}:{entry[0]}", "problem": (
+                f"a wall of text: an entry of {entry[1]} words ({ENTRY_WORDS} at most: what changed for the user in a "
+                "sentence or two; the how belongs in the docs)")})
+    for n, line in enumerate(doc.splitlines(), 1):
+        if re.match(r"[-*+]\s", line):
+            close()
+            entry = [n, _words(line[2:])]
+        elif entry and line.strip() and line[:1] in (" ", "\t"):
+            entry[1] += _words(line)
+        else:
+            close()
+            entry = None
+    close()
+    return sorted(found + prose_findings(doc, name, opening_rule=False), key=lambda f: int(f["file"].rsplit(":", 1)[1]))
+
+
+def close_findings(text, name="Close fields"):
+    """T-4914: each task Close field ('KEY: value' lines, a line without a key continuing the one before) over its own
+    limit (FIELD_WORDS, else ENTRY_WORDS), by line: a TITLE is a name, a LESSON one rule."""
+    found, field = [], None
+
+    def close():
+        if field:
+            limit = FIELD_WORDS.get(field[1], ENTRY_WORDS)
+            if field[2] > limit:
+                found.append({"file": f"{name}:{field[0]}", "problem": (
+                    f"a wall of text: a {field[1]} of {field[2]} words ({limit} at most: say it shorter; the detail "
+                    "belongs in the docs or the task)")})
+    for n, line in enumerate((text or "").splitlines(), 1):
+        m = _FIELD.match(line)
+        if m and m.group(1) in CLOSE_KEYS:
+            close()
+            field = [n, m.group(1), _words(m.group(2))]
+        elif field and line.strip():
+            field[2] += _words(line)
+    close()
+    return found
+
+
+def prose_kind(path, doc):
+    """T-4914: 'changelog' for a CHANGELOG, 'close' for a Close fields file (every line a known field or its
+    continuation), else 'prose' (a report, a note, a PR body)."""
+    if os.path.basename(path).upper().startswith("CHANGELOG"):
+        return "changelog"
+    keys = [m.group(1) for m in map(_FIELD.match, doc.splitlines()) if m]
+    if keys and _FIELD.match(doc.lstrip()) and all(k in CLOSE_KEYS for k in keys):
+        return "close"
+    return "prose"
+
+
+def check_prose(path, kind=None):
+    """T-4914: {kind, findings} for any Markdown or text an agent wrote, by its kind's limits; no image check."""
+    with open(path, encoding="utf-8", errors="replace") as f:
+        doc = f.read(MAX_READ)
+    kind = kind or prose_kind(path, doc)
+    name = os.path.basename(path)
+    found = (changelog_findings(doc, name) if kind == "changelog" else close_findings(doc, name) if kind == "close"
+             else prose_findings(doc, name, opening_rule=False))
+    return {"kind": kind, "findings": found}
+
+
+RESEARCH_HOURS, RESEARCH_SHOWN = 24, 5  # T-4914: notes written today, and how many walls a gate run names
+
+
+def research_walls(p, hours=RESEARCH_HOURS):
+    """T-4914: one line per wall of text in a research/*.md note (the project's state notes and the repo's own folder)
+    changed in the last `hours`, for sampo check to warn with; never raises, so a gate's verdict never depends on it."""
+    out, cutoff = [], time.time() - hours * 3600
+    for folder in (os.path.join(p.dir, "research"), os.path.join(p.root, "research")):
+        try:
+            names = [e for e in os.scandir(folder) if e.name.endswith(".md") and e.is_file()
+                     and e.stat().st_mtime >= cutoff]
+        except OSError:
+            continue
+        for e in sorted(names, key=lambda e: e.name):
+            try:
+                found = check_prose(e.path, "prose")["findings"]
+            except OSError:
+                continue
+            out += [f"a wall of text in research/{e.name}:{f['file'].rsplit(':', 1)[1]}: "
+                    f"{f['problem'][len('a wall of text: '):]}" for f in found]
+    return out[:RESEARCH_SHOWN] + ([f"(+{len(out) - RESEARCH_SHOWN} more walls in research notes: sampo readme check "
+                                    "--prose PATH)"] if len(out) > RESEARCH_SHOWN else [])
 
 
 def check(readme_path):
@@ -1172,6 +1271,17 @@ def cmd_readme(args):
                          + ["", "Paste into the README:", "", res["snippet"]])
         cli.out(args, res, text)
         if res["failed"]:
+            raise SystemExit(1)
+        return None
+    if getattr(args, "prose", False):  # T-4914: anything an agent wrote, by its kind's limits; no image check
+        if not args.target or not os.path.isfile(args.target):
+            raise cli.UsageError((f"no such file: {args.target}; " if args.target else "")
+                                 + "sampo readme check --prose PATH (a report, a note, a CHANGELOG, a Close fields file)")
+        res = check_prose(os.path.abspath(args.target))
+        head = f"sampo readme check --prose {_shown(os.path.abspath(args.target))} ({res['kind']})"
+        cli.out(args, res, "\n".join([head + (": no walls of text." if not res["findings"] else ":")]
+                                     + [f"  ✗ {f['file']}: {f['problem']}" for f in res["findings"]]))
+        if res["findings"]:
             raise SystemExit(1)
         return None
     path = os.path.abspath(args.target) if args.target else next(

@@ -328,6 +328,70 @@ class Check(SampoTestCase):
         self.assertIn("2 images", got.stdout)
 
 
+class ProseCheck(SampoTestCase):
+    """T-4914: the wall-of-text check runs on what agents write besides READMEs, each kind by its own limits."""
+    LONG = " ".join(["word"] * 90)
+
+    def test_prose_mode_names_a_long_paragraph_by_line_and_skips_the_images(self):
+        write(self.repo, "notes/report.md", "# Report\n\nThe answer first, in a line.\n\n" + self.LONG + "\n\n"
+                                            "![](gone.png)\n")
+        got = self.fm("readme", "check", "--prose", "notes/report.md", "--json", check=False)
+        self.assertEqual(got.returncode, 1, got.stdout + got.stderr)
+        res = json.loads(got.stdout)
+        self.assertEqual([(f["file"], f["problem"].split(" (")[0]) for f in res["findings"]],
+                         [("report.md:5", "a wall of text: a paragraph of 90 words")], "no image finding, no opening rule")
+        self.assertEqual(res["kind"], "prose")
+        self.assertIn("✗ report.md:5: a wall of text", self.fm("readme", "check", "--prose", "notes/report.md",
+                                                             check=False).stdout)
+
+    def test_a_short_list_first_file_passes(self):
+        write(self.repo, "notes/ok.md", "# Result\n\nIt works.\n\n- one\n- two\n\nThen a short line.\n")
+        got = self.fm("readme", "check", "--prose", "notes/ok.md", check=False)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertIn("no walls of text", got.stdout)
+        gone = self.fm("readme", "check", "--prose", "notes/gone.md", check=False)  # names the missing file
+        self.assertNotEqual(gone.returncode, 0)
+        self.assertIn("no such file: notes/gone.md", gone.stdout + gone.stderr)
+
+    def test_a_changelog_entry_is_judged_by_its_own_limit(self):
+        normal = "- `sampo x` now does y, so z no longer happens (T-1)."
+        long_ = "- " + " ".join(["change"] * 100) + " (T-2)."
+        write(self.repo, "CHANGELOG.md", f"# Changelog\n\n## Unreleased\n\n{normal}\n{long_}\n  continued here.\n")
+        res = json.loads(self.fm("readme", "check", "--prose", "CHANGELOG.md", "--json", check=False).stdout)
+        self.assertEqual(res["kind"], "changelog")
+        self.assertEqual([f["file"] for f in res["findings"]], ["CHANGELOG.md:6"])
+        self.assertIn("an entry of 103 words (", res["findings"][0]["problem"])
+        write(self.repo, "CHANGELOG.md", f"# Changelog\n\n## Unreleased\n\n{normal}\n")
+        self.assertEqual(self.fm("readme", "check", "--prose", "CHANGELOG.md", check=False).returncode, 0)
+
+    def test_close_fields_are_judged_field_by_field(self):
+        fields = ("CHANGELOG: `sampo x` now does y (T-1).\nTITLE: " + " ".join(["title"] * 20) + "\n"
+                  "LESSON: " + " ".join(["lesson"] * 100) + "\nDOCS: none: no doc names it\n")
+        found = readme.close_findings(fields, "T-1 close")
+        self.assertEqual([(f["file"], f["problem"].split(" (")[0]) for f in found],
+                         [("T-1 close:2", "a wall of text: a TITLE of 20 words"),
+                          ("T-1 close:3", "a wall of text: a LESSON of 100 words")])
+        write(self.repo, "close.txt", fields)
+        res = json.loads(self.fm("readme", "check", "--prose", "close.txt", "--json", check=False).stdout)
+        self.assertEqual(res["kind"], "close")
+        self.assertEqual(len(res["findings"]), 2)
+        self.assertEqual(readme.close_findings("CHANGELOG: a normal line (T-1).\nTITLE: Short title (T-1)\n"), [])
+
+
+class ProseGate(SampoTestCase):
+    def test_sampo_check_warns_about_a_wall_in_a_research_note_and_still_passes(self):
+        """T-4914: research notes are what agents write most; a wall there is named, never a red gate."""
+        self.fm("init")
+        self.fm("check", "add", "true")
+        p = c.find_project(self.repo)
+        write(p.dir, "research/2026-11-18-scan.md", "# Scan\n\nShort answer.\n\n" + ProseCheck.LONG + "\n")
+        write(self.repo, "research/plan.md", "# Plan\n\n- a list\n- only\n")
+        got = self.fm("check", check=False)
+        self.assertEqual(got.returncode, 0, got.stdout + got.stderr)
+        self.assertIn("! a wall of text in research/2026-11-18-scan.md:5: a paragraph of 90 words", got.stdout)
+        self.assertNotIn("plan.md", got.stdout)
+
+
 class Routing(SampoTestCase):
     def test_readme_words_route_to_the_skill(self):
         self.assertTrue(os.path.isfile(os.path.join(PLUGIN, "skills", "readme-visuals", "SKILL.md")))

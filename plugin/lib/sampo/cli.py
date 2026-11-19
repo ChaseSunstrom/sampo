@@ -6615,6 +6615,11 @@ def _cmd_check(args):
                 else output.rstrip().splitlines()[-10:])
         lines += ["    " + l for l in tail] if code else []
     lines += [f"! {x}" for x in flaky + ([left_out] if left_out else []) + base_lines]
+    try:  # T-4914: a wall of text in today's research notes is named, never a red gate
+        from sampo import readme
+        lines += [f"! {x}" for x in readme.research_walls(p)]
+    except Exception:  # noqa: BLE001 — a warning that can't be read leaves the verdict as it is
+        pass
     if wrote:
         shown = ", ".join(wrote_paths[:8]) + (f" (+{len(wrote_paths) - 8} more)" if len(wrote_paths) > 8 else "")
         lines.append(f"! changed during the gates: {shown or 'files'}: a gate that writes files (a check should only "
@@ -8743,6 +8748,8 @@ def _build_parser(only=None):
     s.add_argument("--out", metavar="DIR", help="shots: docs/assets/screens/; diagram: docs/assets/diagrams/")
     s.add_argument("--brief", nargs="?", const="", metavar="ID", help="plan: write the figures into the task's brief "
                    "(default: the active one)")
+    s.add_argument("--prose", action="store_true", help="check PATH: only its walls of text, by its kind's limits "
+                   "(a report or note, a CHANGELOG entry, a Close fields file); no image check (T-4914)")
     s = add("panels", lazy("sampo.panels", "cmd_panels"), tier=("Every task", 169), help="picture panels (T-3662): "
             "render SPEC.json (a typed spec of panels, 13 kinds of mechanism from a cluster graph to architecture boxes with "
             "packets, as dark and light SVG in the board, blueprint or paper style, in the repo's own colours when it has "
