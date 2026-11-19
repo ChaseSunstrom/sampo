@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A cargo build in a Rust lane that would write into the lane's own ./target (a bare cargo with no lane config, or CARGO_TARGET_DIR / --target-dir inside the worktree) now gets one note naming the lane's folder under Sampo's cache and the export line, never a refusal. sampo tidy --apply removes the ./target of a finished lane that waits on its merge and has its own cargo folder; doctor co… (T-4951).
 - Lanes accepted together no longer run their repo-shape modules all at once: SAMPO_SHAPE_RUNS (default 3) run at a time, the rest wait as 'shape queued' and their wall starts with their slot (T-4947).
 - A test's sampo doctor --repair no longer builds the native fast path of the tree under test or writes the real home's Claude and Codex settings; the install tests build nothing either, so their runs stop timing out under load (T-4935).
 - One write-plainly playbook (lead with the answer, a list before a paragraph, 80-word paragraphs) now guides the write-docs, research, reflect and release skills. `sampo readme check --prose PATH` checks any report, research note, CHANGELOG or close by its own limits, and `sampo check` warns on walls in the last day's research notes (T-4914).
