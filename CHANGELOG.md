@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The live page's Moons tile draws a sparkline of kept moons beside its count, like the other five counter tiles (T-3130).
 - The live page's forge scene draws about 30 frames a second while nothing is in flight (its embers, smoke and hammer need no more) and every frame again for a spark, an arrival or a pulse; it reports its idle frame times on the canvas. No page text in either look is under 11px, nor any label on the forge or the network canvas. Below 1400px the focus plaque is tighter and Jeff's towers st… (T-3019).
 - Ward writer index: every route inline Python takes to a Sampo module is judged (sys.modules, pkgutil, runpy, importlib.util, operator lookups, sys.path edits, a computed import name, a shadow sampo folder), and the index fails closed and is built off the hook path, so a cold tree no longer stalls a command for 4 s (T-4930).
 - The guard no longer refuses a sampo task set --text or sampo capture whose quoted prose holds a hash sign and an import line: only a hash that can start a shell comment stops its argument masking, and the refusal hint points task prose at --file (T-4921).
