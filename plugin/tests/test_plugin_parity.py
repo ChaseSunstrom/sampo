@@ -15,7 +15,8 @@ PLUGIN_ROUTES = {"new": "/sampo:intake", "stop": "Esc", "resume": "/sampo:resume
                  "history": "fm digest", "projects": "fm projects", "model": "/model", "settings": "/sampo:settings",
                  "looks": "/sampo:looks", "backlog": "/sampo:backlog", "hush": "fm settings set motion off",
                  "queue": "/sampo:next",
-                 "tickets": "/sampo:capture", "undo": "fm task revert", "pr": "fm pr", "thoughts": "ctrl+o"}
+                 "tickets": "/sampo:capture", "undo": "fm task revert", "pr": "fm pr", "thoughts": "ctrl+o",
+                 "board": "fm watch --web"}  # T-3699: the live page's Board, the pictures the app draws
 APP_ONLY = {"photo": "the app's own frame; Claude Code draws none to shoot", "breakout": "a game in the app while checks run",
             **dict.fromkeys(("focus", "up", "down", "expand", "follow", "search", "help", "quit"),
                             "moving around the app's own panels")}

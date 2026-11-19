@@ -53,7 +53,9 @@ _LAYOUT_HELP = {"top": ("panels", "panels across the top"), "columns": ("columns
                 "heights": ("list", '"auto" or a share of the height, per panel per column'),
                 "narrow": ("panels", "panels on a narrow terminal"),
                 "narrow_heights": ("list", '"auto" or a share of the height per narrow panel'),
-                "narrow_below": ("int", "columns below which the narrow layout is used")}
+                "narrow_below": ("int", "columns below which the narrow layout is used"),
+                "grid": ("panels", "the Board's pictures, numbered in this order ([], or any key above without "
+                                    "this one, for the panels above)")}
 
 
 _CONTROL = re.compile("[\x00-\x09\x0b-\x1f\x7f-\x9f‎‏‪-‮⁦-⁩]")  # bidi too (T-1657)

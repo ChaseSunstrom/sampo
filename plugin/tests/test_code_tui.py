@@ -78,7 +78,17 @@ def tui():
     return smithtui
 
 
-class Core(unittest.TestCase):
+class Classic:
+    """T-3699: these tests read the text panels; the Board (the default, test Board) is one key (v) away."""
+    def setUp(self):
+        T = tui()
+        pin = unittest.mock.patch.dict(T.DEFAULTS, layout=dict(T.DEFAULTS["layout"], grid=[]))
+        pin.start()
+        self.addCleanup(pin.stop)
+        super().setUp()
+
+
+class Core(Classic, unittest.TestCase):
     def state(self, events=RUN):
         st = tui().State()
         for e in events:
@@ -238,7 +248,7 @@ class Keys(unittest.TestCase):
             self.assertIn(cli, text)
 
 
-class WideLayout(unittest.TestCase):
+class WideLayout(Classic, unittest.TestCase):
     """T-1347: 160 columns or more add a third column with the Plan and Check output panels."""
 
     def test_a_wide_terminal_adds_plan_and_check_output(self):
@@ -385,7 +395,7 @@ class Forge(unittest.TestCase):
                         self.assertNotRegex(lit, r"\bForeman\b", f"{name}:{n}")
 
 
-class Navigation(unittest.TestCase):
+class Navigation(Classic, unittest.TestCase):
     """T-1313: / filters the Activity log; the bottom bar's hints follow the focused panel."""
 
     def app(self):
@@ -675,7 +685,7 @@ def screen(data, rows=34, cols=120):
     return "\n".join("".join(row) for row in grid)
 
 
-class Terminal(unittest.TestCase):
+class Terminal(Classic, unittest.TestCase):
     """T-1300: Foreman's own ANSI renderer (no curses): 24-bit colour where the terminal has it, the nearest of 256
     or 8 elsewhere, none on NO_COLOR, and only the cells that changed are written again."""
 
@@ -876,7 +886,7 @@ def lum(spec):
     return r + g + b
 
 
-class Motion(unittest.TestCase):
+class Motion(Classic, unittest.TestCase):
     """T-1300: motion is a pure function of state and time. Each test renders at two times and compares."""
 
     def app(self, events, motion="full"):
@@ -1445,7 +1455,7 @@ def git_repo():
     return root, git
 
 
-class Review(unittest.TestCase):
+class Review(Classic, unittest.TestCase):
     """T-1283's review: each finding as a test."""
 
     def test_the_diff_view_runs_git_without_a_planted_fsmonitor(self):
@@ -1789,7 +1799,7 @@ class Export(unittest.TestCase):
         self.assertIn("[REDACTED]", out.getvalue())
 
 
-class Golden(unittest.TestCase):
+class Golden(Classic, unittest.TestCase):
     """T-1306: the demo run at fixed instants, compared with plugin/tests/fixtures/golden. A deliberate change to the
     screen rewrites them: FM_GOLDEN=regen python3 plugin/tests/run.py test_code_tui."""
 
@@ -2840,7 +2850,7 @@ class Command(CodeCase):
 
     def test_print_config_and_a_bad_file(self):
         out = self.code("tui", "--print-config").stdout
-        self.assertIn('theme = "night"', out)
+        self.assertIn('theme = "board"', out)  # T-3699: the Board's look is the default
         with open(os.path.join(self.home, "tui.toml"), "w", encoding="utf-8") as f:
             f.write('theme = "neon"\n')
         r = self.code("tui", "--snapshot", os.path.join(self.home, "x.svg"), "--events", os.devnull, check=False)
@@ -3115,7 +3125,7 @@ class SettingsScreen(unittest.TestCase):
     def test_enter_on_a_row_starts_a_set_line_for_it_and_esc_closes(self):
         app = self.app()
         app.key("\n")
-        self.assertIn(":set theme night", self.text(app))
+        self.assertIn(":set theme board", self.text(app))  # T-3699: the default look
         app.key("\x1b")
         app.key("\x1b")
         self.assertEqual(app.mode, "main")
@@ -3132,7 +3142,7 @@ class SettingsScreen(unittest.TestCase):
         for w in (60, 80, 140):
             lines = self.text(app, w, 30).splitlines()
             head = next(line for line in lines if "VALUE" in line and "DEFAULT" in line)
-            for key, value, default in (("motion", "off", "full"), ("colors.ok", "#4DA3FF", tui().PALETTES["night"]["ok"])):
+            for key, value, default in (("motion", "off", "full"), ("colors.ok", "#4DA3FF", tui().PALETTES["board"]["ok"])):
                 line = next(line for line in lines if f" {key} " in line)
                 self.assertEqual(line.index(value, line.index(key) + len(key)), head.index("VALUE")
                                  + (3 if key.startswith("colors") else 0), (w, key, "the value under VALUE (a swatch "
@@ -3740,7 +3750,7 @@ class MotionVisuals(unittest.TestCase):
     def test_the_riso_theme_loads_in_the_app_and_every_word_on_it_reads(self):
         T = tui()
         for text, preset in (('theme = "riso"\n', "riso"), ('theme = "riso"\npalette = "cb"\n', "riso"),
-                             ('palette = "riso"\n', "night"), ('theme = "paper"\npalette = "riso"\n', "paper")):
+                             ('palette = "riso"\n', "board"), ('theme = "paper"\npalette = "riso"\n', "paper")):
             with self.subTest(text=text):
                 with open(self.toml, "w", encoding="utf-8") as f:
                     f.write(text)
@@ -3748,7 +3758,8 @@ class MotionVisuals(unittest.TestCase):
                 self.assertEqual((errors, cfg["preset"]), ([], preset))
                 th = cfg["theme"]
                 for name, spec in th.items():  # the app's own floor for a [colors] style, on the screen and a panel
-                    if name not in ("screen", "panel", "border", "track", "shade", "glow", "todo"):  # todo: ○ and ─, a graphic
+                    if name not in ("screen", "panel", "border", "track", "shade", "glow", "todo", "line"):  # todo: ○ and ─,
+                        # a graphic; line: the Board's hairline (T-3699)
                         self.assertIsNone(T._faint(spec, th), name)
                         self.assertIsNone(T._faint(dict(spec, bg=spec.get("bg") or th["panel"]["bg"]), th), name)
                 T.render(T.State(), 100, 30, cfg)
@@ -3807,7 +3818,7 @@ class MotionVisuals(unittest.TestCase):
 
     def test_the_track_is_drawn_in_half_blocks_once_the_probe_says_they_fit(self):
         T = tui()
-        cfg = dict(T.DEFAULTS, motion="off")
+        cfg = dict(T.DEFAULTS, motion="off", layout=dict(T.DEFAULTS["layout"], grid=[]))  # the text panels' track
         app = self.app(RUNNING, cfg=cfg)
         row = lambda: T.render(app.state, 110, 32, cfg, app, t=100.0)
         flat = row().text().splitlines()[2]
@@ -4169,3 +4180,476 @@ class Extras(ForemanTestCase):
                                                                           "fix.jsonl"))
         with open(out, "rb") as f:
             self.assertEqual(f.read(8), b"\x89PNG\r\n\x1a\n")
+
+
+BRAILLE = {chr(0x2800 + b) for b in range(1, 256)}
+
+
+INKED = BRAILLE | set("▀▄█▐▌")  # a picture's cells: braille dots, half blocks
+BOARD_NAMES = {"LANES": "lanes", "MERGE TRAIN": "train", "CPU": "cpu", "THE LOOP": "loop", "LIBRARY": "library",
+               "MODELS": "models", "SAMPO": "sampo", "STATE": "state", "TESTS": "tests"}
+
+
+class Board(unittest.TestCase):
+    """T-3699: Sampo Code looks like the Board (plugin/web/live): the web Board's nine panels, each one picture of a
+    Sampo mechanism (braille clusters and curves, half-block cells, eighth bars) in the Board's chrome, on a grid of
+    3, 2 or 1 columns, the most relevant first, scrolled when they don't all fit."""
+
+    SNAP = {  # a small live snapshot (sampo.live), as the Board's server streams it
+        "at": "2026-11-07T12:00:00",
+        "board": {
+            "lanes": [{"task": "T-0101", "title": "the importer reads csv", "state": "building",
+                       "steps": {"done": 2, "total": 5},
+                       "files": [{"path": "/home/someone/proj/lib/importer.py", "hot": True}, {"path": "lib/csvio.py"},
+                                 {"path": "tests/test_importer.py"}]},
+                      {"task": "T-0102", "title": "faster search", "state": "waiting", "steps": {"done": 4, "total": 4},
+                       "files": [{"path": "lib/search.py"}]}],
+            "train": {"landed": [{"task": "T-0099", "title": "docs", "at": "2026-11-07T11:40:00"}], "landed_24h": 7,
+                      "trains_24h": 3, "left_out": 1, "running": True, "minutes_per_lane": 4},
+            "cpu": {"cores": 16, "goal_pct": 10, "minutes": [[i, 0.4, 0.8, 0.3, 0.1, 0.2] for i in range(30)],
+                    "now": {"busy": 1.6, "tests": 0.4, "claude": 0.8, "models": 0.2, "hooks": 0.1, "other": 0.1}},
+            "loop": {"id": "T-0101", "words": "make the importer read csv files", "title": "the importer reads csv",
+                     "criteria": [{"text": "csv rows import", "ok": True}, {"text": "bad rows are said", "ok": False}],
+                     "steps": [{"text": "a failing test", "done": True}, {"text": "the reader", "current": True},
+                               {"text": "docs"}], "choice": 75, "stage": "executing"},
+            "library": {"calling": 40, "hourly": [3] * 24, "recent": [{"grid": "cards", "at": "11:00", "kept": 12}]},
+            "commands": [{"at": "2026-11-07T11:58:00", "cmd": "sampo check --affected", "ok": True},
+                         {"at": "2026-11-07T11:59:00", "cmd": "sampo task show T-0101", "ok": False}],
+            "deps": [["T-0101", "T-0102"]],
+            "state": {"tree": [{"name": "tasks", "dir": True, "n": 120}, {"name": "queue.json", "kb": 4}],
+                      "newest": "queue.json", "doc": {"kind": "brief", "title": "T-0101 the importer",
+                                                      "text": "Read csv files.", "at": "11:58"}},
+            "tests": {"modules": [{"name": "test_importer", "state": "fail"}, {"name": "test_csvio", "state": "pass"}]
+                      + [{"name": f"test_m{i}", "state": "cached"} for i in range(40)],
+                      "done": 41, "total": 42, "running": 0, "source": "last check 11:59"}},
+        "stats": {"cards": {"general": 1200, "ui": 300}, "moons": {"candidates": 5000}},
+        "models": [{"name": "opus", "family": "claude", "calls_5m": 20, "loaded": True},
+                   {"name": "qwen3:8b", "calls_5m": 10, "loaded": True}],
+        "flows": [{"from": "sampo code --print", "to": "opus", "kind": "claude"},
+                  {"from": "hook guard", "to": "qwen3:8b", "kind": "models"}],
+        "gpu": {"name": "a GPU", "used_mb": 6144, "total_mb": 12288, "util_pct": 40},
+        "queue": [{"id": "T-0101", "title": "the importer reads csv", "status": "active", "tier": "S", "type": "FEATURE"},
+                  {"id": "T-0102", "title": "faster search", "status": "ready", "tier": "M", "type": "PERF"}]}
+
+    def tokens(self, theme="dark"):
+        with open(os.path.join(PLUGIN, "web", "live", "board-tokens.json")) as f:
+            return json.load(f)[theme]
+
+    def app(self, name="code-tui.jsonl", snap=None):
+        """The demo run's app (name None: one with no run), reading snap as the project's live snapshot."""
+        T = tui()
+        app = T.App(T.DEFAULTS, spawn=lambda *a, **k: None)
+        app.first_run = lambda: []  # a project with past runs: before its first, the welcome stands in for the Board
+        if name:
+            with open(os.path.join(os.path.dirname(PLUGIN), "demo", name)) as f:
+                for line in f:
+                    if line.strip():
+                        app.feed(json.loads(line))
+        if snap is not None:
+            from sampo import smithboard as B
+            app.board_feed = B.Feed.fixed(snap)
+        return app
+
+    def body(self, app, name, w=66, h=16):
+        T = tui()
+        T.render(app.state, 220, 60, app.cfg, app, t=1000.0)  # sets the frame (current()) the panel draws in
+        return "\n".join("".join(text for text, _ in line) for line in T._draw(name, app.state, w, h, app))
+
+    def chips(self, text):
+        import re
+        return [(int(n), BOARD_NAMES[name]) for n, name in re.findall(r"\b0(\d)  ([A-Z]+(?: [A-Z]+)*)\b", text)
+                if name in BOARD_NAMES]
+
+    def shown(self, app, w, h, t=1000.0):
+        return [n for n, _ in self.chips(tui().render(app.state, w, h, app.cfg, app, t=t).text())]
+
+    def test_the_palette_comes_from_the_tokens(self):
+        T, dark, light = tui(), self.tokens(), self.tokens("light")
+        self.assertEqual(T.DEFAULTS["preset"], "board")
+        theme = T.DEFAULTS["theme"]
+        self.assertEqual(theme["screen"]["bg"], dark["bg"])
+        self.assertEqual(theme["panel"]["bg"], dark["panel"])
+        for name in ("yellow", "green", "pink", "cyan", "violet", "orange", "line", "bracket"):
+            self.assertEqual(theme[name]["fg"], dark[name], name)
+        self.assertEqual(theme["chip_pink"], {"fg": dark["on"], "bg": dark["pink"], "bold": True})
+        paper = T.PRESETS["board_paper"]()
+        self.assertEqual((paper["screen"]["bg"], paper["cyan"]["fg"]), (light["bg"], light["cyan"]))
+        for name, make in T.PRESETS.items():
+            self.assertIn("chip_violet", make(), f"{name}: every theme draws the Board's chips")
+
+    def test_the_nine_panels_each_a_picture_of_its_mechanism(self):
+        from sampo import smithboard as B
+        T = tui()
+        self.assertEqual(B.KEYS, ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests"])
+        self.assertEqual(T.DEFAULTS["layout"]["grid"], B.KEYS, "the Board's nine, in its order")
+        app = self.app(None, self.SNAP)
+        words = {"lanes": ("T-0101", "importer.py", "T-0102"), "train": ("GATE", "foreman/build", "T-0099"),
+                 "cpu": ("tests", "claude", "now"), "loop": ("YOU ASKED", ">>>", "T-0101", "csv rows import"),
+                 "library": ("cards", "moons"), "models": ("opus", "qwen3:8b", "sampo code"),
+                 "sampo": ("$ sampo check", "T-0102"), "state": ("tasks", "queue.json", "brief"),
+                 "tests": ("importer",)}
+        for key, want in words.items():
+            text = self.body(app, key)
+            for word in want:
+                self.assertIn(word, text, f"{key}:\n{text}")
+            self.assertGreater(sum(c in INKED for c in text), 8, f"{key} is drawn, in braille or half blocks:\n{text}")
+            self.assertNotIn("/home/someone", text, f"{key}: a home path is cut to ~")
+        run = self.app(snap=self.SNAP)  # Sampo Code's own run is the loop it shows, and a lane of its files
+        loop = self.body(run, "loop")
+        for word in ("YOU ASKED", ">>>", "T-0042", "4e1b9c2"):
+            self.assertIn(word, loop, loop)
+        self.assertIn("deploy.py", self.body(run, "lanes"))
+        bare = self.app()  # no snapshot read yet (a test, an SVG snapshot): each panel still draws, from the run
+        for key in B.KEYS:
+            text = self.body(bare, key)
+            self.assertGreater(sum(c in INKED for c in text), 8, f"{key} with no snapshot:\n{text}")
+        self.assertIn("pytest", self.body(bare, "sampo"))
+        fresh = self.app(None)
+        for w, h in ((220, 60), (80, 24), (40, 10)):
+            self.assertTrue(self.shown(fresh, w, h), f"{w}x{h}: an empty run draws too")
+            for key in B.KEYS:
+                self.body(fresh, key, max(1, w // 3), max(1, h - 4))  # any size: nothing raises
+
+    def test_three_columns_wide_two_middling_one_narrow(self):
+        from sampo import smithboard as B
+        T, app = tui(), self.app(snap=self.SNAP)
+        for (w, h), cols, n in (((220, 60), 3, 9), ((120, 40), 2, 4), ((80, 24), 1, 1)):
+            cv = T.render(app.state, w, h, app.cfg, app, t=1000.0)
+            self.assertEqual((len(cv.cells), {len(r) for r in cv.cells}), (h, {w}))
+            lines = cv.text().split("\n")
+            rows = {y: self.chips(ln) for y, ln in enumerate(lines) if self.chips(ln)}
+            self.assertEqual(sum(map(len, rows.values())), n, f"{w}x{h}:\n" + cv.text())
+            self.assertEqual(len(rows[min(rows)]), cols, f"{w}x{h}:\n" + cv.text())
+            ys = sorted(rows)
+            self.assertLessEqual(len({b - a for a, b in zip(ys, ys[1:])}), 1, "one picture height: the rows line up")
+            self.assertTrue(all(b - a >= 17 for a, b in zip(ys, ys[1:])), f"{w}x{h}: tall pictures:\n" + cv.text())
+            for y in ys[1:]:
+                self.assertEqual(lines[y - 2].strip(), "", f"{w}x{h}: a blank row between rows:\n" + cv.text())
+            self.assertEqual(app.order[:n], [k for _, k in sorted(c for r in rows.values() for c in r)])
+            self.assertEqual(sorted(app.order), sorted(B.KEYS))
+        app.key("v")  # the log, the checks and the files as text: behind one key
+        cv = T.render(app.state, 120, 40, app.cfg, app, t=1000.0)
+        self.assertIn("Activity", cv.text())
+        self.assertEqual(self.chips(cv.text()), [])
+        app.key("v")
+        self.assertEqual(len(self.shown(app, 120, 40)), 4)
+
+    def test_scrolling_shows_the_panels_that_dont_fit(self):
+        app = self.app(snap=self.SNAP)
+        self.assertEqual(self.shown(app, 80, 24), [1])
+        self.assertIn("↓", tui().render(app.state, 80, 24, app.cfg, app, t=1000.0).text(), "more below, said")
+        app.move(1)
+        self.assertEqual(self.shown(app, 80, 24), [2])
+        app.move(10)  # past the end: the last row, and the scroll kept there
+        self.assertEqual(self.shown(app, 80, 24), [9])
+        self.assertEqual(app.scroll, 8)
+        app.move(-1)
+        self.assertEqual(self.shown(app, 80, 24), [8])
+        self.assertEqual(self.shown(app, 120, 40), [7, 8, 9], "a bigger screen: the last rows that fit")
+        self.assertEqual(self.shown(app, 220, 60), list(range(1, 10)))
+        self.assertEqual(app.scroll, 0)
+
+    def test_the_most_relevant_panels_come_first(self):
+        from sampo import smithboard as B
+        T = tui()
+        quiet = self.app(None)
+        T.render(quiet.state, 220, 60, quiet.cfg, quiet, t=1000.0)
+        self.assertEqual(quiet.order, B.KEYS, "nothing going on: the Board's own order")
+        failing = self.app(None, self.SNAP)
+        T.render(failing.state, 220, 60, failing.cfg, failing, t=1000.0)
+        self.assertEqual(failing.order[:3], ["tests", "lanes", "train"], "a failing module, then what builds")
+        run = self.app(snap=self.SNAP)
+        T.render(run.state, 220, 60, run.cfg, run, t=1000.0)
+        self.assertEqual(run.order[0], "loop", "Sampo Code's own run first")
+
+    def test_still_pictures_are_painted_once_and_only_on_screen(self):
+        from sampo import smithboard as B
+        T, app, calls = tui(), self.app(snap=self.SNAP), []
+        spy = {k: (lambda f, k: lambda *a, **kw: calls.append(k) or f(*a, **kw))(f, k) for k, f in B.PAINT.items()}
+        with unittest.mock.patch.dict(B.PAINT, spy):
+            for t in (1000.0, 1000.5, 1001.0):
+                T.render(app.state, 220, 60, app.cfg, app, t=t)
+            self.assertEqual(sorted(calls), sorted(B.KEYS), "each picture is painted once, then kept")
+            app.feed({"event": "say", "text": "and one more thing"})
+            T.render(app.state, 220, 60, app.cfg, app, t=1002.0)
+            self.assertEqual(len(calls), 9, "an event no picture shows paints nothing")
+            app.feed({"event": "verify", "text": "verify 1", "criterion": 1, "label": "verify", "cmd": "make test",
+                      "exit": 1})
+            T.render(app.state, 220, 60, app.cfg, app, t=1003.0)
+            self.assertEqual(calls[9:], ["loop"], "a criterion failing paints the loop again, only it")
+            del calls[:]
+            narrow = self.app(snap=self.SNAP)
+            T.render(narrow.state, 80, 24, narrow.cfg, narrow, t=1000.0)
+            self.assertEqual(calls, [narrow.order[0]], "only the panels on the screen are painted")
+            live, cells = self.app(None, self.SNAP), []
+            live.state.status = "running"
+            for t in (1000.0, 1000.3):
+                cells.append([row[:] for row in T.render(live.state, 220, 60, live.cfg, live, t=t).cells])
+            self.assertEqual(len(calls), 1 + 9, "what moves is drawn over the kept pictures")
+            self.assertNotEqual(cells[0], cells[1], "a running board moves")
+
+    def test_the_project_is_read_off_the_drawing_path(self):
+        from sampo import smithboard as B
+        app = self.app()
+        self.assertFalse(B.fresh(app), "no feed (a test, a snapshot): nothing to read")
+        app.board_feed = B.Feed.fixed(self.SNAP)
+        self.assertTrue(B.fresh(app))
+        self.assertFalse(B.fresh(app), "a snapshot is news once")
+        feed = B.Feed(tempfile.mkdtemp())
+        feed._read()  # no project there: nothing read, nothing raised
+        self.assertEqual((feed.snap, feed.rev, feed.busy), (None, 0, False))
+        with unittest.mock.patch.object(B.threading, "Thread") as thread:
+            feed.want(100.0)
+            feed.want(101.0)  # one read at a time
+            feed.busy = False
+            feed.want(105.0)  # and one each REFRESH seconds
+            feed.want(100.0 + B.Feed.REFRESH)
+        self.assertEqual(thread.call_count, 2)
+
+    def test_every_colour_depth_and_no_colour(self):
+        import re
+        from sampo.smithterm import Term
+        T, app = tui(), self.app()
+        colours = lambda out: [sgr for sgr in re.findall(r"\x1b\[([\d;]*)m", out)
+                               if re.search(r"(^|;)[34]8;", sgr)]  # the colour escapes, not a move to row 38
+        cv = T.render(app.state, 120, 40, app.cfg, app, t=1000.0)
+        self.assertTrue(any("38;2;" in c for c in colours(Term(24).frame(cv, app.cfg))))
+        self.assertFalse(any("8;2;" in c for c in colours(Term(256).frame(cv, app.cfg))))
+        self.assertEqual(colours(Term(8).frame(cv, app.cfg)), [], "8 colours: 30-37 and 40-47 only")
+        mono = dict(app.cfg, theme=T._mono(), preset="mono")
+        cv = T.render(app.state, 120, 40, mono, app, t=1000.0)
+        out = Term(0).frame(cv, mono)
+        self.assertEqual(colours(out), [])
+        self.assertTrue(self.chips(cv.text()), "mono: the chips are still drawn")
+        for y, row in enumerate(cv.cells):
+            for x, (ch, style) in enumerate(row):
+                if ch in "▀▄":
+                    self.assertIsNone(T.resolve(style, mono, cv.bg[y][x]).get("bg"), "mono: no colour pair in a cell")
+        out = []
+
+        class IO:
+            first = True
+
+            def resized(self):
+                r, IO.first = IO.first, False
+                return r
+
+            def size(self):
+                return 120, 40
+
+            def write(self, s):
+                out.append(s)
+
+            def keys(self, timeout):
+                return ["q"]
+        with unittest.mock.patch.dict(os.environ, {"NO_COLOR": "1"}):
+            T._loop(IO(), self.app())
+        self.assertEqual(colours("".join(out)), [])
+
+    def test_plain_prints_the_run_as_lines(self):
+        import io
+        T = tui()
+        app = T.App(T.DEFAULTS, spawn=lambda *a, **k: None)
+        with open(os.path.join(os.path.dirname(PLUGIN), "demo", "code-tui.jsonl")) as f:
+            for line in f:
+                if line.strip():
+                    app.events.put(json.loads(line))
+        app.events.put({"event": "exit", "code": 0})
+        out = io.StringIO()
+        self.assertEqual(T.run_plain(app, out), 0)
+        self.assertIn("deploy.py", out.getvalue())
+        self.assertNotIn("\x1b[", out.getvalue())
+
+    def test_the_snapshot_svg_shows_the_graphics(self):
+        T, app = tui(), self.app()
+        svg = T.to_svg(T.render(app.state, 220, 60, app.cfg), app.cfg)
+        self.assertGreater(svg.count("<circle"), 3 + 20, "braille dots are drawn as dots (3 circles are the window's)")
+        self.assertIn('height="9.6"', svg, "a half block is half a cell")
+        self.assertNotIn(chr(0x2801), "".join(c for c in svg if c in BRAILLE), "no braille glyph left in the text")
+
+    def test_at_most_ten_frames_a_second(self):
+        app = self.app()
+        app.state.status = "running"
+        for t in (0.0, 1000.0, 1000.5):
+            self.assertLessEqual(app.fps(t), 10)
+
+    def test_a_still_screen_draws_nothing(self):
+        T, app, out = tui(), self.app(), []
+        keys = [[], [], ["t"], [], [], ["q"]]  # q on a closed run quits at once: no frame after it
+
+        class IO:
+            first = True
+
+            def resized(self):
+                r, IO.first = IO.first, False
+                return r
+
+            def size(self):
+                return 120, 40
+
+            def write(self, s):
+                out.append(s)
+
+            def keys(self, timeout):
+                return keys.pop(0)
+        with unittest.mock.patch.object(T, "render", wraps=T.render) as render:
+            T._loop(IO(), app)
+        self.assertEqual(render.call_count, 2, "the first frame, then the key's; none while nothing changed")
+
+    def test_the_top_is_the_boards_framed_header(self):
+        T, app = tui(), self.app(snap=self.SNAP)
+        app.root = "/home/someone/proj/widgets"
+        for w, h in ((220, 60), (120, 40), (80, 24)):
+            cv = T.render(app.state, w, h, app.cfg, app, t=1000.0)
+            lines, say = cv.text().split("\n"), f"{w}x{h}:\n" + cv.text()
+            self.assertEqual((lines[0][:2], lines[3][:2], lines[4].strip()), ("┌─", "└─", ""), say)
+            self.assertIn("SAMPO CODE", lines[0])
+            self.assertIn("PROJECT widgets", lines[0], say)
+            self.assertNotIn("someone", cv.text(), "the project's name, never its home path")
+            self.assertIn("TASK T-0042", lines[1], say)
+            self.assertIn("NOW", lines[2])
+            self.assertIn("T-0042", lines[2])
+            self.assertNotIn("NEEDS YOU", cv.text(), "nothing needs the user: no callout")
+            self.assertIn("cap", {style for _, style in cv.cells[h - 1]}, "a key hint is a key cap")
+            grid = [x for x, ch in enumerate(lines[5]) if ch == "┌"]
+            self.assertEqual(len(grid), 3 if w >= 180 else 2 if w >= 110 else 1, say)
+            for x in grid[1:]:
+                self.assertRegex(lines[1][x + 1:x + 3], r"^ [A-Z]", "the stats sit on the grid's columns:\n" + say)
+        app.state.status, app.state.error = "error", "the gate failed"
+        cv = T.render(app.state, 120, 40, app.cfg, app, t=1000.0)
+        self.assertIn("NEEDS YOU", cv.text().split("\n")[2], "something needs the user: the amber callout")
+        self.assertIn("chip_yellow", {style for _, style in cv.cells[2]})
+        small = T.render(app.state, 60, 16, app.cfg, app, t=1000.0)  # too short for the frame: the one-line top
+        self.assertNotEqual(small.text().split("\n")[0][:2], "┌─")
+
+    def test_a_short_last_row_widens_its_panels(self):
+        T, app = tui(), self.app(snap=self.SNAP)
+        T.render(app.state, 120, 40, app.cfg, app, t=1000.0)
+        app.move(10)
+        cv = T.render(app.state, 120, 40, app.cfg, app, t=1000.0)
+        lines = cv.text().split("\n")
+        y = next(y for y, ln in enumerate(lines) if [n for n, _ in self.chips(ln)] == [9])
+        self.assertEqual(lines[y - 1], "┌" + "─" * 118 + "┐", "no empty grid slot: the ninth spans the row\n" + cv.text())
+
+    def test_the_costly_stats_are_read_seldom(self):
+        from sampo import core, live, smithboard as B
+        calls = []
+
+        def collector(name):
+            def read(p):
+                calls.append(name)
+                if name == "jobs":
+                    raise OSError("no jobs file")
+                return {"n": len(calls)}
+            return read
+        feed = B.Feed(tempfile.mkdtemp())
+        with unittest.mock.patch.object(core, "find_project", return_value=object()), \
+                unittest.mock.patch.dict(live.COLLECTORS, {k: collector(k) for k in live.COLLECTORS}, clear=True):
+            feed._read()
+            feed._read()
+            self.assertEqual((calls.count("stats"), calls.count("board")), (1, 2), "stats once per SLOW, the rest each read")
+            self.assertEqual(feed.snap["jobs"], [], "a collector that raises leaves its field empty")
+            feed.slow_at -= B.Feed.SLOW
+            feed._read()
+        self.assertEqual((calls.count("stats"), feed.rev, feed.busy), (2, 3, False))
+
+    def test_a_few_models_sit_together_not_at_the_panels_ends(self):
+        T, B = tui(), __import__("sampo.smithboard").smithboard
+        d = {"agents": ["builder", "scout"], "models": [{"name": "qwen", "group": "ollama"}, {"name": "opus", "group": "claude"}],
+             "links": [{"a": 0, "m": 0, "n": 3}, {"a": 1, "m": 1, "n": 1}], "gpu": None, "cpm": 4, "loaded": 2}
+        for h in (8, 20, 40):
+            pc = T.Canvas(60, h)
+            B.p_models(pc, d, T.current().cfg)
+            lines = pc.text().split("\n")
+            at = [i for i, ln in enumerate(lines) if "builder" in ln or "scout" in ln]
+            self.assertEqual(len(at), 2, pc.text())
+            self.assertLessEqual(at[1] - at[0], 4, f"{h} rows: two rows a short step apart:\n{pc.text()}")
+            self.assertLessEqual(abs((at[0] + at[1]) / 2 - (h - 1) / 2), 1, f"{h} rows: the pair centred")
+
+    def test_a_narrow_header_keeps_its_stats_or_marks_the_missing(self):
+        T, app = tui(), self.app()
+        line = T.render(app.state, 80, 24, app.cfg, app, t=1000.0).text().split("\n")[1]
+        for word in ("CLOSED", "TASK T-0042", "STEP 3/3", "CHECKS 2/2", "FILES 3 +56 −3", "TOKENS 20.4k"):
+            self.assertIn(word, line, "80 columns hold all six, the diff stat too")
+        for w in (72, 64, 56, 48, 40):
+            line = T.render(app.state, w, 24, app.cfg, app, t=1000.0).text().split("\n")[1]
+            self.assertEqual(T.width(line), w)
+            self.assertTrue("TOKENS 20.4k" in line or line.rstrip(" │").endswith("…"), f"{w}: a stat gone says so:\n{line}")
+            self.assertNotIn("  " * 4, line.strip(" │"), f"{w}: no wide hole between the stats:\n{line}")
+
+    def test_the_live_comet_runs_the_footers_gap_never_the_frame(self):
+        T, live = tui(), self.app(None, self.SNAP)
+        live.state.status = "running"
+        for border in ("rounded", "ascii"):
+            live.cfg = dict(live.cfg, border=border)
+            texts = [T.render(live.state, 220, 60, live.cfg, live, t=t).text().split("\n") for t in (1000.0, 1000.6)]
+            for lines in texts:
+                rules = [ln for ln in lines[4:] if ln[:1] in "└+"]
+                self.assertTrue(rules, border)
+                for ln in rules:
+                    self.assertEqual(set(ln.strip()) - set("└┘─+-| "), set(), f"{border}: the frame stays whole:\n{ln}")
+            moved = [i for i in range(4, len(texts[0]) - 1) if texts[0][i] != texts[1][i]]  # the key bar's spinner aside
+            self.assertTrue(moved, f"{border}: something in the panels moves")
+            self.assertEqual({texts[0][i][:1] for i in moved} - {"│", "|"}, set(), "inside a frame, on a footer")
+
+    def test_any_text_panel_layout_key_draws_the_panels_not_the_board(self):
+        """A tui.toml's widths, heights or narrow keys lay out the text panels: they draw those, never sit unused."""
+        T, d = tui(), tempfile.mkdtemp()
+        for body in ("widths = [50, 50]", "heights = [[1], [1, 1, 1, 1]]", 'narrow = ["log"]',
+                     'narrow_heights = [1, 1]', "narrow_below = 90", 'columns = [["log"]]'):
+            path = os.path.join(d, "tui.toml")
+            with open(path, "w") as f:
+                f.write(f"[layout]\n{body}\n")
+            cfg, errors = T.load_config(path, env={})
+            self.assertEqual((errors, cfg["layout"]["grid"]), ([], []), body)
+            with open(path, "w") as f:
+                f.write(f'[layout]\n{body}\ngrid = ["cpu"]\n')
+            self.assertEqual(T.load_config(path, env={})[0]["layout"]["grid"], ["cpu"], "a grid of its own stays")
+
+    def test_an_idle_board_reads_seldom_and_writes_nothing(self):
+        """The real Feed under the real loop for 30 minutes of a closed run: the project read every IDLE seconds, not
+        every REFRESH, and a read that finds nothing new neither redraws nor writes; a live run reads each REFRESH."""
+        from sampo import core, live, smithboard as B
+        T, app, calls, clock, out = tui(), self.app(), [], [5000.0], []
+        app.board_feed, app.clock = B.Feed(tempfile.mkdtemp()), lambda: clock[0]
+        stub = {k: (lambda p, k=k: calls.append(k) or self.SNAP.get(k, live.EMPTY.get(k, []))) for k in live.COLLECTORS}
+
+        class Thread:  # the read in line, so the clock decides when
+            def __init__(self, target, daemon=None):
+                self.start = target
+
+        class IO:
+            first = True
+
+            def resized(self):
+                r, IO.first = IO.first, False
+                return r
+
+            def size(self):
+                return 120, 40
+
+            def write(self, s):
+                if s not in ("", "\x1b[22;0t", "\x1b[23;0t"):  # the title's save and restore aside
+                    out.append(s)
+
+            def keys(self, timeout):
+                clock[0] += timeout
+                return ["q"] if clock[0] - 5000.0 >= 30 * 60 else []
+        with unittest.mock.patch.object(core, "find_project", return_value=object()), \
+                unittest.mock.patch.dict(live.COLLECTORS, stub, clear=True), \
+                unittest.mock.patch.object(B.time, "monotonic", lambda: clock[0]), \
+                unittest.mock.patch.object(B.threading, "Thread", Thread):
+            T._loop(IO(), app)
+            reads = calls.count("board")
+            self.assertLessEqual(reads, 1 + 30 * 60 // B.Feed.IDLE, "idle: a read each IDLE seconds")
+            self.assertGreaterEqual(B.Feed.IDLE, 5 * B.Feed.REFRESH)
+            first = next(i for i, s in enumerate(out) if "LANES" in s)  # the clear, then the first frame
+            self.assertEqual(out[first + 1:], [], "the first frame, then nothing: the same snapshot again is no news")
+            app.board_feed.at = -1e9
+            self.assertFalse(B.fresh(app), "a read that finds what was there redraws nothing")
+            self.assertEqual(calls.count("board"), reads + 1)
+            app.state.status = "running"
+            for _ in range(10):
+                clock[0] += B.Feed.REFRESH
+                B.fresh(app)
+            self.assertEqual(calls.count("board"), reads + 11, "a live run: a read each REFRESH seconds")

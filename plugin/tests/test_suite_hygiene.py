@@ -114,10 +114,13 @@ class SuiteHygiene(unittest.TestCase):
         self.assertEqual(found, [])
 
 
-# T-1264: files whose functions are called by a name built at run time: the prefix, and the file and code that build it
-DISPATCHED = {"sampo/smithtui.py": ("_on_", "sampo/smithtui.py", 'f"_on_{kind}"'),
-              "sampo/instr.py": ("cmd_", "sampo/cli.py", 'lazy("sampo.instr", "cmd_" + name)'),
-              "sampo/outcomes.py": ("_", "sampo/outcomes.py", 'globals()["_" + flag]')}
+# T-1264: files whose functions are called by a name built at run time: per file, each prefix with the file and code that
+# build it (T-3699: the Board builds two, m_<panel> and p_<panel>)
+DISPATCHED = {"sampo/smithtui.py": [("_on_", "sampo/smithtui.py", 'f"_on_{kind}"')],
+              "sampo/instr.py": [("cmd_", "sampo/cli.py", 'lazy("sampo.instr", "cmd_" + name)')],
+              "sampo/outcomes.py": [("_", "sampo/outcomes.py", 'globals()["_" + flag]')],
+              "sampo/smithboard.py": [("m_", "sampo/smithboard.py", 'globals()[f"m_{k}"]'),
+                                      ("p_", "sampo/smithboard.py", 'globals()[f"p_{k}"]')]}
 
 
 def dead(lib, words):
@@ -128,16 +131,17 @@ def dead(lib, words):
         name = os.path.relpath(path, lib)
         with open(path, encoding="utf-8") as f:
             src = f.read()
-        prefix, where, how = DISPATCHED.get(name, (None, None, None))
-        if where:
+        prefixes = []
+        for prefix, where, how in DISPATCHED.get(name, []):
             with open(os.path.join(lib, where), encoding="utf-8") as f:
-                prefix = prefix if how in f.read() else None  # the exemption ends with the dispatch
+                if how in f.read():  # the exemption ends with the dispatch
+                    prefixes.append(prefix)
         defs = [n for n in ast.walk(ast.parse(src)) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
         count = collections.Counter(n.name for n in defs)
         for n in defs:
             if n.name.startswith("__") or words[n.name] > count[n.name]:
                 continue
-            if prefix and n.name.startswith(prefix) and words[n.name[len(prefix):]]:
+            if any(n.name.startswith(p) and words[n.name[len(p):]] for p in prefixes):
                 continue
             found.append(f"{name}:{n.lineno} {n.name}")
     return found

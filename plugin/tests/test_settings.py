@@ -279,7 +279,7 @@ class History(ForemanTestCase):
                           ("app", "colors.bogus"): (3, True), ("plugin", "old"): (1, True),
                           ("app", "colors.ok"): ("#4DA3FF", False)},
                          "motion = full and freshAt = 40 are the defaults; the theme's colours aren't keys of the file")
-        self.assertEqual(got["app", "theme"]["default"], "night")
+        self.assertEqual(got["app", "theme"]["default"], "board")  # T-3699: the Board's palette
         self.assertTrue(got["app", "colors.ok"].get("skipped"), "too faint on paper: the app skips it")
         code = settings.share_code()
         shared = json.loads(base64.urlsafe_b64decode(code + "=" * (-len(code) % 4)))

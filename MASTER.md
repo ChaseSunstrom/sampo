@@ -126,6 +126,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmcli` [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmcode` (T-1212: `sampo smith`, Sampo's loop run by the harness on any… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmcodebench` (T-1215: `sampo smith bench`, a model or worker CLI graded as a… [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmcodeboard` (T-3699, `sampo/smithboard`: the live page's Board in `sampo smith tui`… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbenchtb` (T-3747: `sampo bench tbench`, Terminal-Bench tasks run through Smith's actions in docker, graded by the task's tests; `dockershim` is the docker-exec tool shim) [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmcodemod`… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmcodeterm` (T-1300: the terminal under `sampo smith tui` without curses: ANSI… [→ files-lib-1](docs/map/files-lib-1.md)

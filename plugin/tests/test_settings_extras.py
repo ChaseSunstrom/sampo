@@ -192,7 +192,7 @@ class Words(_Home):
     def test_proposed_checked_shown_then_applied_as_one_undo(self):
         env = self.stub('Here: {"theme": "paper", "border": "heavy", "nope": 1, "palette": "wiggle"}')
         out = self.settings("words", "a light calm look", env=env).stdout
-        self.assertIn("theme: night → paper", out)
+        self.assertIn("theme: board → paper", out)  # T-3699: board is the default
         self.assertIn("border: rounded → heavy", out)
         self.assertIn("nope", out)
         self.assertIn("palette", out)

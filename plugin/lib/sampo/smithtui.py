@@ -11,6 +11,7 @@ import contextlib
 import difflib
 import functools
 import html
+import itertools
 import json
 import math
 import os
@@ -73,13 +74,44 @@ PALETTES["riso"] = dict(PALETTES["classic_paper"], bg="#F2EDE1", bar="#E3DAC6", 
                         shade="#D8CEBA", **RISO["paper"])
 INKS = {"cb": CB, "riso": RISO}  # a palette's colours for a dark theme (night) and a light one (paper)
 _BG, _INK = PALETTES["night"]["bg"], PALETTES["night"]["ink"]
+BOARD_INKS = ("yellow", "green", "pink", "cyan", "violet", "orange")  # T-3699: one per panel, as on the Board
+
+
+def _board(theme):
+    """T-3699: the Board's palette (plugin/web/live/board-tokens.json, the one source the live page reads too) as
+    this app's palette roles; night's colours when the file can't be read."""
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "web", "live",
+                        "board-tokens.json")
+    try:
+        with open(path) as f:
+            k = json.load(f)[theme]
+        p = {"bg": k["bg"], "panel": k["panel"], "head": k["panel"], "bar": k["grid"], "shade": k["grid"],
+             "ink": k["ink"], "barink": k["ink"], "dim": k["dim"], "todo": k["dim"], "said": k["muted"],
+             "accent": k["cyan"], "ok": k["green"], "ok2": k["green"], "steel": k["green"], "bad": k["red"],
+             "warn": k["yellow"], "hot": k["yellow"], "edge": k["line"], "track": k["line"], "accent2": k["violet"],
+             "bad2": k["orange"], "glow": "#FFFFFF"}
+        p.update({n: k[n] for n in BOARD_INKS + ("line", "bracket", "on", "muted", "grid")})
+    except (OSError, ValueError, KeyError, TypeError):
+        p = dict(PALETTES["night" if theme == "dark" else "paper"])
+    return dict(p, paint=True) if theme == "light" else p
+
+
+PALETTES["board"], PALETTES["board_paper"] = _board("dark"), _board("light")
 
 
 def _theme(p):
     """Every style from a palette; a light palette paints the screen (a dark terminal would show through)."""
-    chip = lambda c: {"fg": p["bg"], "bg": c, "bold": True}
-    return {"screen": dict({"fg": p["ink"], "bg": p["bg"]}, **({"paint": True} if p.get("paint") else {})),
-            "text": {}, "strong": {"fg": p["ink"], "bold": True}, "dim": {"fg": p["dim"]},
+    chip = lambda c: {"fg": p.get("on", p["bg"]), "bg": c, "bold": True}
+    # T-3699: the Board's inks, its hairline and its corner brackets; a palette without them uses its own roles
+    ink = {"yellow": p.get("yellow", p["warn"]), "green": p.get("green", p["ok"]), "pink": p.get("pink", p["bad"]),
+           "cyan": p.get("cyan", p["accent"]), "violet": p.get("violet", p["accent2"]),
+           "orange": p.get("orange", p["bad2"])}
+    board = dict({n: {"fg": v} for n, v in ink.items()}, **{f"chip_{n}": chip(v) for n, v in ink.items()},
+                 line={"fg": p.get("line", p["edge"])}, bracket={"fg": p.get("bracket", p["accent"])},
+                 muted={"fg": p.get("muted", p["said"])})
+    return dict({  # the long-standing roles first (the settings screen lists them in this order), the Board's after
+            "screen": dict({"fg": p["ink"], "bg": p["bg"]}, **({"paint": True} if p.get("paint") else {})), "text": {},
+            "strong": {"fg": p["ink"], "bold": True}, "dim": {"fg": p["dim"]},
             "said": {"fg": p["said"], "italic": True}, "accent": {"fg": p["accent"], "bold": True},
             "ok": {"fg": p["ok"]}, "bad": {"fg": p["bad"], "bold": True}, "warn": {"fg": p["warn"]},
             "border": {"fg": p["edge"]}, "title": {"fg": p["accent"], "bold": True}, "track": {"fg": p["track"]},
@@ -87,6 +119,7 @@ def _theme(p):
             "brand": chip(p["accent"]), "header": {"fg": p["ink"], "bg": p["head"]},
             "header_dim": {"fg": p["dim"], "bg": p["head"]}, "bar": {"fg": p["barink"], "bg": p["bar"]},
             "bar_dim": {"fg": p["dim"], "bg": p["bar"]}, "key": {"fg": p["warn"], "bg": p["bar"], "bold": True},
+            "cap": {"fg": p["ink"], "bg": p.get("line", p["edge"]), "bold": True},  # T-3699: a key as a key cap
             "input": {"fg": p["ink"], "bg": p["bar"], "bold": True}, "chip_ok": chip(p["ok"]),
             "chip_bad": chip(p["bad"]), "chip_warn": chip(p["warn"]), "chip_accent": chip(p["accent"]),
             "chip_todo": {"fg": p["dim"], "bg": p["bar"]}, "accent2": {"fg": p["accent2"]}, "ok2": {"fg": p["ok2"]},
@@ -94,7 +127,7 @@ def _theme(p):
             # T-2876: the heat language: what runs glows hot, what is finished cools to steel (a palette without them,
             # classic, signal, riso or an ink overlay, keeps its accent and ok, so nothing it showed changes)
             "hot": {"fg": p.get("hot", p["accent"]), "bold": True}, "steel": {"fg": p.get("steel", p["ok"])},
-            "chip_steel": chip(p.get("steel", p["ok"])), "todo": {"fg": p.get("todo", p["track"])}}
+            "chip_steel": chip(p.get("steel", p["ok"])), "todo": {"fg": p.get("todo", p["track"])}}, **board)
 
 
 def _mono():
@@ -107,12 +140,14 @@ def _mono():
 PRESETS = {"night": lambda: _theme(PALETTES["night"]), "paper": lambda: _theme(PALETTES["paper"]),
            "signal": lambda: _theme(PALETTES["signal"]), "riso": lambda: _theme(PALETTES["riso"]), "mono": _mono,
            "classic": lambda: _theme(PALETTES["classic"]),  # T-2876: the look before the forge, dark and light
-           "classic_paper": lambda: _theme(PALETTES["classic_paper"])}
-THEME = PRESETS["night"]()
+           "classic_paper": lambda: _theme(PALETTES["classic_paper"]),
+           # T-3699: the Board (the live page's look, its tokens), the default; its light sheet
+           "board": lambda: _theme(PALETTES["board"]), "board_paper": lambda: _theme(PALETTES["board_paper"])}
+THEME = PRESETS["board"]()
 BORDERS = {"rounded": "╭╮╰╯─│", "square": "┌┐└┘─│", "heavy": "┏┓┗┛━┃", "double": "╔╗╚╝═║", "ascii": "++++-|"}
 LIVE_THEMES = ("modern", "forge")
 DEFAULTS = {
-    "preset": "night",
+    "preset": "board",
     "motion": "full",
     "live_theme": "modern",
     "palette": "default",
@@ -120,12 +155,15 @@ DEFAULTS = {
     "border": "rounded",
     "layout": {"top": ["track"], "columns": [["log"], ["checks", "files", "time", "tokens"]], "widths": [58, 42],
                "heights": [[1], ["auto", "auto", "auto", 1]], "narrow": ["checks", "log"],
-               "narrow_heights": ["auto", 1], "narrow_below": 80},
+               "narrow_heights": ["auto", 1], "narrow_below": 80,
+               # T-3699: the web Board's nine pictures (smithboard), the most relevant first, else in this order: 3
+               # columns on a wide terminal, 2 middling, 1 narrow; [] draws the top and columns above (v does too)
+               "grid": ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests"]},
     "keys": {"q": "quit", "n": "new", "s": "stop", "r": "resume", "?": "help", "d": "diff", "h": "history",
              "m": "model", "t": "thoughts", "\t": "focus", "KEY_UP": "up", "KEY_DOWN": "down", "k": "up", "j": "down",
              "\n": "expand", "KEY_ENTER": "expand", "KEY_PPAGE": "page_up", "KEY_NPAGE": "page_down", "G": "follow",
              "p": "projects", ",": "settings", "z": "hush", "L": "looks", "/": "search", "g": "queue", "T": "tickets",
-             "u": "undo", "P": "pr", "F": "photo", "B": "breakout", "I": "backlog"},
+             "u": "undo", "P": "pr", "F": "photo", "B": "breakout", "I": "backlog", "v": "board"},
     "ext": {},  # T-1657: each extension's settings ({name: {key: value}}), its declared defaults (API.setting)
 }
 HINTS = [("n", "new"), ("p", "projects"), ("d", "diff"), ("h", "history"), ("t", "thoughts"), ("?", "keys"),
@@ -142,6 +180,8 @@ TEMPO = {"running": 10, "thinking": 5, "waiting": 2}  # T-1512: the spinner's fr
 MOTIONS = ("full", "reduced", "off")
 LOG_HIDES = ("plan", "task", "before")  # the track and Checks show these; --plain prints them
 SINGLE_BELOW = 60  # columns: a terminal narrower than this shows the activity log alone
+_REV = itertools.count()  # T-3699: State.rev, each state's and change's own number
+STILL_REDRAW = 10  # T-3699: seconds between draws of a screen where nothing changed (a clock in it ticks on)
 
 
 # ---------------------------------------------------------------- state: what the events say happened
@@ -158,6 +198,7 @@ class State:
         self.plan, self.criteria, self.steps, self.step = {}, [], [], 0
         self.actions, self.log, self.verify, self.files, self.stat = [], [], [], {}, {}
         self.tokens, self.calls, self.status, self.closed = [0, 0], [], "idle", ""
+        self.rev = next(_REV)  # T-3699: a new number at each change, so a picture drawn from it is kept until then
         self.first_ts = self.last_ts = None
         self.heard = None  # T-1336: seconds a quiet CLI turn has printed nothing, from its last working or stalled event
         self.marks = {}  # when each step (1, 2, …) and the final checks ("checks") began
@@ -190,6 +231,8 @@ class State:
                 self.last_ts = e["ts"]
             if kind not in ("stalled", "working", "tokens"):  # T-1762: anything it does after a stall ends it
                 self.stall = None
+            if vars(self) != before:  # T-3699: an event that changed nothing keeps the state's number (and its pictures)
+                self.rev = next(_REV)
         for h in (HANDLERS.get(kind, []) + HANDLERS.get("*", [])) if isinstance(kind, str) else []:
             t0, why = time.monotonic(), None
             try:
@@ -211,6 +254,7 @@ class State:
             self.log.pop()
         self.log.append(dict(fields, kind=kind))
         self.heard = None  # anything else said: the CLI was heard, or the turn is over
+        self.rev = next(_REV)
 
     def _on_start(self, e):
         if int(e.get("schema") or 1) > SCHEMA:
@@ -412,6 +456,7 @@ class Canvas:
         self.w, self.h = max(w, 1), max(h, 1)
         self.cells = [[(" ", "text")] * self.w for _ in range(self.h)]
         self.bg = [[None] * self.w for _ in range(self.h)]  # the colour under a cell with no background of its own
+        self.top = 1  # T-3699: the first row a view's box may cover (5 under the Board's framed header)
 
     def tint(self, y, x, h, w, colour):
         for r in range(max(0, y), min(self.h, y + h)):
@@ -627,6 +672,136 @@ def columns(values, w, height=3):
                  (max(1, round(v * height * 8 / top)) if v else 0 for v in vals)]
         out.append(" ".join(c * cw for c in cells))
     return out
+
+
+# ---------------------------------------------------------------- graphics: finer than a cell (T-3699)
+# Three resolutions, one per job: braille dots (2×4 a cell) for curves, links and areas; half blocks (1×2 a cell,
+# the top pixel's colour over the bottom's) for cells, heat and digits; eighth blocks for crisp bar ends. Each draws
+# into a Canvas with the styles it was given, so a mono theme or a small palette falls back as the rest does.
+
+BRAILLE = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))  # a braille cell's dot bits, [row][column]
+LEFTS = "▏▎▍▌▋▊▉█"  # a bar's left eighths: its end on the cell's eighth
+
+
+class Dots:
+    """A braille canvas w×h cells (2w×4h dots). A cell takes the style of its last dot: one colour a cell, as a
+    terminal has."""
+
+    def __init__(self, w, h):
+        self.w, self.h, self.bits, self.ink = max(0, w), max(0, h), {}, {}
+
+    def dot(self, x, y, style):
+        x, y = int(round(x)), int(round(y))
+        if 0 <= x < self.w * 2 and 0 <= y < self.h * 4:
+            cell = (y // 4, x // 2)
+            self.bits[cell] = self.bits.get(cell, 0) | BRAILLE[y % 4][x % 2]
+            self.ink[cell] = style
+
+    def line(self, x0, y0, x1, y1, style, dash=0):
+        """A straight line; dash > 0 draws dash dots on, dash off."""
+        n = max(1, int(math.ceil(max(abs(x1 - x0), abs(y1 - y0)))))
+        for i in range(n + 1):
+            if not dash or i // dash % 2 == 0:
+                self.dot(x0 + (x1 - x0) * i / n, y0 + (y1 - y0) * i / n, style)
+
+    def curve(self, p0, p1, p2, p3, style, upto=1.0):
+        """A cubic Bézier p0 → p3 through the pulls p1, p2, drawn as far as `upto` (0..1) of the way: a link
+        growing; the point at `upto`, where a moving packet sits."""
+        # twice the pull polygon's length: t runs up to 1.5× faster mid-curve, and a gap there reads as a dash
+        n = 1 + int(2 * sum(math.dist(a, b) for a, b in ((p0, p1), (p1, p2), (p2, p3))))
+        for i in range(int(n * max(0.0, min(1.0, upto))) + 1):
+            self.dot(*bezier(p0, p1, p2, p3, i / n), style)
+        return bezier(p0, p1, p2, p3, max(0.0, min(1.0, upto)))
+
+    def ring(self, cx, cy, r, style):
+        n = max(8, int(2 * math.pi * r * 1.5))
+        for i in range(n):
+            self.dot(cx + r * math.cos(2 * math.pi * i / n), cy + r * math.sin(2 * math.pi * i / n), style)
+
+    def draw(self, cv, y, x):
+        """Onto cv at (y, x): only the cells with a dot; what is drawn after (a label) goes over them."""
+        for (r, c), b in sorted(self.bits.items()):
+            cv.put(y + r, x + c, chr(0x2800 + b), self.ink[(r, c)], right=x + c + 1)
+
+
+def bezier(p0, p1, p2, p3, k):
+    u = 1 - k
+    return tuple(u * u * u * a + 3 * u * u * k * b + 3 * u * k * k * c + k * k * k * d
+                 for a, b, c, d in zip(p0, p1, p2, p3))
+
+
+class Pix:
+    """A half-block canvas w×h cells (w×2h pixels): a pixel is a theme style's colour (or "#rrggbb"); a cell shows its
+    top pixel over its bottom one (▀ in the top's colour on the bottom's). With no colours (mono) a cell keeps its top
+    pixel's style, never a colour pair."""
+
+    def __init__(self, w, h):
+        self.w, self.h, self.px = max(0, w), max(0, h), {}
+
+    def set(self, x, y, ink):
+        if 0 <= x < self.w and 0 <= y < self.h * 2:
+            self.px[(x, y)] = ink
+
+    def rect(self, x, y, w, h, ink):
+        for yy in range(y, y + h):
+            for xx in range(x, x + w):
+                self.set(xx, yy, ink)
+
+    def text(self, x, y, s, ink):
+        """s in the 3×5 pixel font (digits, a point, k and M: a big number); the x after it."""
+        for ch in s:
+            rows = FONT.get(ch)
+            if rows is None:
+                x += 2
+                continue
+            for r, row in enumerate(rows):
+                for c, on in enumerate(row):
+                    if on == "#":
+                        self.set(x + c, y + r, ink)
+            x += len(rows[0]) + 1
+        return x
+
+    def draw(self, cv, y, x, cfg):
+        mono = col(cfg, "accent") is None
+        style = lambda ink: ink if not ink.startswith("#") else "text" if mono else rgb(fg=ink)
+        colour = lambda ink: ink if ink.startswith("#") else col(cfg, ink)
+        for (c, yy), _ in sorted(self.px.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+            if yy % 2 and (c, yy - 1) in self.px:
+                continue  # the cell was drawn with its top pixel
+            r = yy // 2
+            top, bot = self.px.get((c, 2 * r)), self.px.get((c, 2 * r + 1))
+            if top == bot:
+                ch, ink = "█", style(top)
+            elif bot is None or top is not None and mono:
+                ch, ink = "▀", style(top)
+            elif top is None:
+                ch, ink = "▄", style(bot)
+            else:
+                ch, ink = "▀", rgb(fg=colour(top), bg=colour(bot))
+            cv.put(y + r, x + c, ch, ink, right=x + c + 1)
+
+
+FONT = {k: tuple(v.split()) for k, v in {
+    "0": "### #.# #.# #.# ###", "1": ".#. ##. .#. .#. ###", "2": "### ..# ### #.. ###", "3": "### ..# ### ..# ###",
+    "4": "#.# #.# ### ..# ..#", "5": "### #.. ### ..# ###", "6": "### #.. ### #.# ###", "7": "### ..# ..# ..# ..#",
+    "8": "### #.# ### #.# ###", "9": "### #.# ### ..# ###", ".": ". . . . #", "k": "#.. #.# ##. #.# #.#",
+    "M": "#...# ##.## #.#.# #...# #...#", "%": "#.. ..# .#. #.. ..#", "/": "..# ..# .#. #.. #..",
+    "-": "... ... ### ... ..."}.items()}  # T-3699: a figure not read yet
+
+
+def vbar(cv, x, bottom, eighths, style, w=1):
+    """A column `eighths`/8 cells tall standing on row `bottom`, its top on the eighth."""
+    full, part = divmod(max(0, int(eighths)), 8)
+    for k in range(full):
+        cv.put(bottom - k, x, "█" * w, style)
+    if part:
+        cv.put(bottom - full, x, BLOCKS[part - 1] * w, style)
+
+
+def hbar(n, eighths):
+    """A bar `eighths`/8 cells long, its end on the eighth, as text at most n cells."""
+    full, part = divmod(max(0, min(int(eighths), n * 8)), 8)
+    return "█" * full + (LEFTS[part - 1] if part else "")
 
 
 # ---------------------------------------------------------------- colour and motion (T-1300)
@@ -1286,8 +1461,13 @@ def _status(cv, st, app):
         segs += [("   ", "bar"), (f" rule {app.rule} ", "chip_accent")]
     if app is not None and app.message:
         segs += [("   ", "bar"), (app.message, "key")]
-    hints = [seg for k, word in HINTS for seg in ((f" {k} ", "key"), (f"{word} ", "bar_dim"))]
-    hint_w = sum(width(t) for t, _ in hints) + 1
+    keep = list(HINTS)
+    while True:  # T-3699: the keys as key caps, whole; a narrow screen drops the middle ones, ? and q stay
+        hints = [seg for k, word in keep for seg in ((f" {k} ", "cap"), (f" {word} ", "bar_dim"))]
+        hint_w = sum(width(t) for t, _ in hints) + 1
+        if cv.w - hint_w > 36 or len(keep) <= 2:
+            break
+        keep.pop(-3)
     room = cv.w - hint_w if cv.w - hint_w > 36 else cv.w
     cv.line(y, 0, segs, room)
     if room < cv.w:
@@ -1351,7 +1531,16 @@ def render(st, w, h, cfg, app=None, t=None):
         app.rule = None
     narrow, single = w < int(lay.get("narrow_below", 80)), w < SINGLE_BELOW
     order = []
-    for name in [n for n in lay.get("top") or [] if n in PANELS and not single]:  # full-width rows, as tall as they need
+    # T-3699: the Board: a few tall pictures on one hairline grid (smithboard), the text panels one key (v) away
+    # off for the tour (it narrates the text panels) and before a project's first run (the welcome's checks and keys)
+    board = bool(lay.get("grid")) and (app is None or app.board and app.mode != "layout" and not app.tour and
+                                       not (not st.request and app.first_run())) and w >= 40 and body_h >= 8
+    framed = board and h >= 20  # the Board's framed header, rows 0-3, over a blank row
+    if framed:
+        y0, body_h, cv.top = 5, body_h - 4, 5
+    if board:
+        order = smithboard.draw(cv, st, app, cfg, lay["grid"], y0, body_h, w)
+    for name in [n for n in lay.get("top") or [] if n in PANELS and not single and not board]:  # full-width rows
         lines = _draw(name, st, w - 4, None, app)
         ph = min(len(lines) + 2, max(3, body_h // 3))
         _panel(cv, st, app, cfg, name, y0, 0, ph, w, lines)
@@ -1360,8 +1549,9 @@ def render(st, w, h, cfg, app=None, t=None):
     extra = [n for n in WIDE_COLUMN if all(n not in col for col in columns_) and n not in (lay.get("top") or [])]
     if not narrow and not single and w >= WIDE_ABOVE and extra and len(columns_) > 1:  # T-1347: room for a third
         columns_ = [*columns_, extra]
+    columns_ = [] if board else columns_
     widths = [100] if len(columns_) == 1 else list(lay.get("widths") or [])
-    widths = (widths + [100 // len(columns_)] * len(columns_))[:len(columns_)]
+    widths = (widths + [100 // max(1, len(columns_))] * len(columns_))[:len(columns_)]
     heights = [lay.get("narrow_heights") or []] if narrow else list(lay.get("heights") or [])
     x = 0
     for ci, names_ in enumerate(columns_):
@@ -1383,7 +1573,7 @@ def render(st, w, h, cfg, app=None, t=None):
         x += cw
     if app is not None:
         app.order = order
-    _header(cv, st, app)
+    smithboard.header(cv, st, app, cfg) if framed else _header(cv, st, app)
     _status(cv, st, app)
     if app is not None:  # T-1762: a failure's or a stall's card, above the status bar (and the request box)
         _card(cv, st, app, cfg, h - 1 - (2 if prompt else 1 if search else 0))
@@ -1437,7 +1627,8 @@ COMMAND_LABELS = [("new", "type a request"), ("stop", "stop the run"), ("resume"
                   ("pr", "the closed run's pull request text; Enter posts it"),
                   ("photo", "photo booth: this frame as SVG and PNG"),
                   ("breakout", "Breakout, while the checks run"),
-                  ("thoughts", "the model's own words"), ("focus", "next panel"), ("up", "up"), ("down", "down"),
+                  ("thoughts", "the model's own words"), ("board", "the pictures, or the run as text"),
+                  ("focus", "next panel"), ("up", "up"), ("down", "down"),
                   ("expand", "open a line"), ("follow", "follow the latest"), ("search", "search the Activity"),
                   ("help", "keys"), ("quit", "quit")]
 
@@ -1445,8 +1636,9 @@ COMMAND_LABELS = [("new", "type a request"), ("stop", "stop the run"), ("resume"
 def _overlay(cv, cfg, title, note, w=None, h=None):
     """A view's box over the screen; the screen behind it fades so the view stands out."""
     cv.cells = [[(c, "shade") for c, _ in row] for row in cv.cells]
-    w, h = min(w or cv.w - 8, cv.w - 2), min(h or cv.h - 4, cv.h - 2)
-    y, x = max(1, (cv.h - h) // 2), max(0, (cv.w - w) // 2)
+    top = cv.top
+    w, h = min(w or cv.w - 8, cv.w - 2), min(h or cv.h - top - 3, cv.h - top - 1)
+    y, x = max(top, (cv.h - h) // 2), max(0, (cv.w - w) // 2)
     for r in range(y, y + h):
         cv.put(r, x, " " * w)
     return box(cv, y, x, h, w, title, cfg, focused=True, note=note)
@@ -2108,6 +2300,7 @@ def to_svg(cv, cfg, title="sampo smith tui"):
                             f'fill="{_hex(s_bg)}"/>')  # +0.6: neighbouring runs overlap, no seam between them
             text = "".join(c for c, _ in row[x:end])
             k = 0
+            ink = _hex(s_fg) if s_fg is not None else fg
             while k < len(text):  # block glyphs as exact rects (one per run), as a terminal fills its cells
                 c, j = text[k], k
                 while j < len(text) and text[j] == c:
@@ -2115,9 +2308,21 @@ def to_svg(cv, cfg, title="sampo smith tui"):
                 if c in BLOCKS:
                     part = (BLOCKS.index(c) + 1) / 8
                     out.append(f'<rect x="{px + k * cw:.1f}" y="{py + ch * (1 - part):.1f}" width="{(j - k) * cw + 0.6:.1f}" '
-                               f'height="{ch * part + 0.6:.1f}" fill="{_hex(s_fg) if s_fg is not None else fg}"/>')
+                               f'height="{ch * part + 0.6:.1f}" fill="{ink}"/>')
+                elif c in "▀▄":  # T-3699: a half block: its pixel, the cell's background under the other half
+                    out.append(f'<rect x="{px + k * cw:.1f}" y="{py + (ch / 2 if c == "▄" else 0):.1f}" '
+                               f'width="{(j - k) * cw + 0.6:.1f}" height="{ch / 2 + 0.6:.1f}" fill="{ink}"/>')
+                elif c in LEFTS:
+                    out.append(f'<rect x="{px + k * cw:.1f}" y="{py:.1f}" height="{ch + 0.6:.1f}" '
+                               f'width="{(j - k - 1) * cw + cw * (LEFTS.index(c) + 1) / 8 + 0.3:.1f}" fill="{ink}"/>')
+                elif "⠀" < c <= "⣿":  # braille: its dots, as a terminal draws them
+                    bits = ord(c) - 0x2800
+                    dots = [(dx, dy) for dy, row in enumerate(BRAILLE) for dx, bit in enumerate(row) if bits & bit]
+                    out.extend(f'<circle cx="{px + n * cw + (dx + 0.5) * cw / 2:.1f}" '
+                               f'cy="{py + (dy + 0.5) * ch / 4:.1f}" r="1.25" fill="{ink}"/>'
+                               for n in range(k, j) for dx, dy in dots)
                 k = j
-            text = "".join(" " if c in BLOCKS else c for c in text)
+            text = "".join(" " if c in BLOCKS or c in "▀▄" or c in LEFTS or "⠀" <= c <= "⣿" else c for c in text)
             if text.strip():
                 attrs = (' font-weight="bold"' if spec.get("bold") else "") + (
                     ' font-style="italic"' if spec.get("italic") else "")
@@ -2265,13 +2470,18 @@ class App:
                          "settings": self.show_settings, "hush": self.hush, "looks": self.show_looks,
                          "backlog": self.show_backlog,
                          "queue": self.work_queue, "tickets": self.show_tickets, "undo": self.undo,
-                         "pr": self.draft_pr, "photo": self.take_photo, "breakout": self.open_breakout}
+                         "pr": self.draft_pr, "photo": self.take_photo, "breakout": self.open_breakout,
+                         "board": self.toggle_board}
+        # T-3699: the Board's pictures (layout.grid); False: the log, checks and files as text. A [[rule]] swaps
+        # text panels, so a settings file with rules opens on those (v still shows the pictures)
+        self.board = not self.cfg.get("rules")
         self.size = None  # T-1546: the screen's size as last drawn, for the photo booth
         self.commands.update({name: self._ext_command(name, fn) for name, fn in EXT_COMMANDS.items()})
 
     def fps(self, t):
-        """How often to draw: 30 while something eases or flashes, 12 while live work spins and pulses, 1 when the
-        screen is still (4 with motion off and a run going, for its clock)."""
+        """How often to draw: 10 while something eases, flashes, spins or pulses (T-3699: the CPU budget), 30 for a
+        game or the project view growing, 1 when the screen is still (4 with motion off and a run going, its clock).
+        The loop draws a still screen only when something changed."""
         mode = self.cfg.get("motion", "full")
         if self.mode == "breakout":  # T-1556: a game moves every frame, whatever the motion setting
             return 30
@@ -2282,8 +2492,8 @@ class App:
         if mode == "off":
             return 4 if live else 1
         if self.motion.busy(t):
-            return 30
-        return 12 if live and mode == "full" else 1
+            return 10
+        return 10 if live and mode == "full" else 1
 
     def _ext_command(self, name, fn):
         def run():  # T-1315: one that raises or runs over COMMAND_BUDGET is said in Activity and switched off
@@ -2524,8 +2734,8 @@ class App:
         return f"Enter starts a run in {os.path.basename(self.root.rstrip(os.sep)) or self.root} with {runner}"
 
     def open_search(self):
-        """T-1313: / types a filter for the Activity log."""
-        self.mode, self.search_draft = "search", self.search
+        """T-1313: / types a filter for the Activity log (T-3699: shown as text, off the Board)."""
+        self.mode, self.search_draft, self.board = "search", self.search, False
 
     def _search_key(self, k):
         if k in ("\n", "\r", "KEY_ENTER"):
@@ -2612,6 +2822,11 @@ class App:
     def toggle_thoughts(self):
         self.thoughts = not self.thoughts
         self.message = "showing the model's own words" if self.thoughts else ""
+
+    def toggle_board(self):
+        """T-3699: v: the Board's pictures, or the run as text (the log, its checks and files)."""
+        self.board, self.scroll = not self.board, 0
+        self.message = "" if self.board else "the run as text: v for the pictures"
 
     def next_focus(self):
         self.focus, self.scroll = self.focus + 1, 0
@@ -4165,7 +4380,7 @@ def _style_error(name, spec, theme):
 def _layout_error(k, v, table, cfg):
     names = lambda xs: isinstance(xs, list) and all(isinstance(n, str) for n in xs)
     size = lambda x: x == "auto" or isinstance(x, int) and not isinstance(x, bool) and x > 0
-    if k in ("top", "narrow", "columns"):
+    if k in ("top", "narrow", "columns", "grid"):
         cols = v if k == "columns" else [v]
         if not (isinstance(cols, list) and cols and all(names(c) and (c or k != "columns") for c in cols)):
             return "a list of columns, each a list of panel names" if k == "columns" else "a list of panel names"
@@ -4457,7 +4672,8 @@ def _apply(cfg, user, bad):
             was = {k: dict(cfg["theme"].get(k) or {}) for k in ("accent", "ok", "hot", "steel")}
             for name, spec in val.items():
                 msg = _style_error(name, spec, cfg["theme"])
-                if not msg and name not in ("screen", "panel", "border", "track", "shade"):  # text has to be read
+                if not msg and name not in ("screen", "panel", "border", "track", "shade", "line"):  # text is read
+                    # (T-3699: line is the Board's hairline, a rule like border)
                     msg = _faint(spec if isinstance(spec, dict) else {"fg": spec}, cfg["theme"])
                 if msg:
                     bad(f"colors.{name}: {msg}")
@@ -4479,6 +4695,8 @@ def _apply(cfg, user, bad):
                     bad(f"layout.{k}: {msg}")
                 else:
                     cfg["layout"][k] = v
+            if "grid" not in val and set(val):  # T-3699: a file's own panel layout is its screen, never unused
+                cfg["layout"]["grid"] = []
         elif key == "keys":
             for name, cmd in val.items():
                 keys = parse_key(name)
@@ -4591,23 +4809,30 @@ def _loop(io, app):
     app.glyphs = io.widths(PROBE) if hasattr(io, "widths") else {}
     if term.depth == 0:  # NO_COLOR: the mono theme, whose chips are reversed and panels untinted
         app.cfg, app.no_colour = dict(app.cfg, theme=_mono(), preset="mono"), True  # kept when settings reload
-    shown = None
+    shown, dirty, drawn = None, True, -1e9
     io.write("\x1b[22;0t")  # T-1310: keep the terminal's own title, to put back after
     try:
         while not app.done:
-            app.poll()
+            dirty = app.poll() or smithboard.fresh(app) or dirty  # T-3699: a new snapshot redraws the Board
             if io.resized():
                 w, h = io.size()
-                term.prev = None
+                term.prev, dirty = None, True
                 io.write("\x1b[2J")
             t, app.size = app.clock(), (w, h)
-            frame = term.frame(render(app.state, w, h, app.cfg, app, t=t), app.cfg)
-            title = title_text(app.state)
-            if title != shown:  # T-1310: the run's state in the title, so another window shows it
-                frame, shown = frame + f"\x1b]0;{title}\x07", title
-            io.write(frame + ("\a" if app.bell_due() else ""))
-            for k in io.keys(1 / app.fps(t)):
+            fps = app.fps(t)
+            # T-3699: a still main screen is drawn again only when something changed (an event, a key, a resize),
+            # or every STILL_REDRAW seconds for its clocks; anything moving, or another view, at its fps
+            if dirty or fps > 1 or app.mode != "main" or t - drawn >= STILL_REDRAW:
+                frame = term.frame(render(app.state, w, h, app.cfg, app, t=t), app.cfg)
+                title = title_text(app.state)
+                if title != shown:  # T-1310: the run's state in the title, so another window shows it
+                    frame, shown = frame + f"\x1b]0;{title}\x07", title
+                io.write(frame + ("\a" if app.bell_due() else ""))
+                drawn, dirty = t, False
+            keys = io.keys(1 / fps)
+            for k in keys:
                 app.key(k)
+            dirty = dirty or bool(keys)
             if app.handoff and hasattr(io, "outside"):  # T-1341: the terminal to a live CLI, then back
                 io.outside(app.run_handoff)
     finally:
@@ -4625,6 +4850,7 @@ def run_screen(app, wrapper=None):
             old[name] = signal.signal(getattr(signal, name), hangup)
         except (ValueError, AttributeError):  # not the main thread, or no such signal here
             pass
+    app.board_feed = smithboard.Feed(app.root)  # T-3699: the project's live snapshot, read off the drawing thread
     try:
         (wrapper or session)(lambda io: _loop(io, app))
         sys.stdout.write(final_frame(app))  # T-1305: the screen as it was, in the scrollback, once the terminal is back
@@ -5014,3 +5240,6 @@ def main(args, words, home=False):
     for line in app.stop_report():  # T-1756
         print(line, file=sys.stderr)
     return 0
+
+
+from sampo import smithboard  # noqa: E402 (T-3699: the Board's pictures; importing it registers their panels)
