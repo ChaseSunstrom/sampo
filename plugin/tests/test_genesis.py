@@ -1623,6 +1623,11 @@ class GenesisDraft(ForemanTestCase):
         self.assertIn("model dedupe: rule 1/2, model not run (no night answers booked)", tail)  # T-2582
         self.assertNotIn("model 0/0", tail)
 
+    def test_train_skips_unhashable_ids(self):
+        from sampo import rune  # T-3419: a list or dict id is skipped, a number stringifies, nothing raises
+        rows = [{"closed": {"train": ["a", 7, ["x"], {"k": 1}]}}, {"closed": {"train": ["a", "7", "b"]}}]
+        self.assertEqual(rune._train(rows), {"a", "7"})
+
     def test_scorecard_grades_each_capability_on_its_newest_held_out_results(self):
         from sampo import rune  # T-2097: the §8 scorecard, read from graded exam.jsonl lines
         self.fm("genesis", "init", "--file", "-", input="go\n\n## 2. The capability spec\n\n"

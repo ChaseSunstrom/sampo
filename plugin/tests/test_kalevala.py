@@ -1231,11 +1231,22 @@ class KalevalaWatch(ForemanTestCase):
         self.assertEqual(len(lines), 3, lines)
         self.assertTrue(any(x.startswith("memory: improving") and "2 open Mission" in x for x in lines), lines)
 
+    def unreadable(self, tower):
+        """A tower whose newest generation folder this user can't list. T-3419: a list as a train id no longer crashes
+        the exam reader (it is skipped), so it can no longer stand for a tower file that can't be read."""
+        def lock(h):
+            d = os.path.join(h, "gen-1")
+            os.makedirs(d)
+            os.chmod(d, 0)
+            self.addCleanup(lambda: os.path.isdir(d) and os.chmod(d, 0o755))  # tearDown may have removed it already
+            if os.access(d, os.R_OK):  # root reads anything
+                self.skipTest("this user reads a mode-0 folder")
+        self.in_tower(tower, lock)
+
     def test_one_corrupt_tower_file_blanks_only_its_own_row(self):  # T-3376
         from sampo import kalevala
         self.grade("memory", "r1", ["a"])
-        self.in_tower("efficiency", lambda h: open(os.path.join(h, "exam.jsonl"), "w").write(
-            json.dumps({"agent": "foreman", "run": "r1", "split": "train", "closed": {"train": [["x"]]}}) + "\n"))
+        self.unreadable("efficiency")
         r = kalevala.watch(self.project())
         rows = {t["name"]: t for t in r["towers"]}
         self.assertEqual(sorted(rows), ["efficiency", "memory", "problem-solving"])
@@ -1249,8 +1260,7 @@ class KalevalaWatch(ForemanTestCase):
 
     def test_a_round_lists_an_unreadable_tower_as_skipped_and_plans_the_rest(self):  # T-3376
         from sampo import kalevala
-        self.in_tower("efficiency", lambda h: open(os.path.join(h, "exam.jsonl"), "w").write(
-            json.dumps({"agent": "foreman", "run": "r1", "split": "train", "closed": {"train": [["x"]]}}) + "\n"))
+        self.unreadable("efficiency")
         res = kalevala.step(self.project(), dry_run=True)
         by = {r["tower"]: r for r in res["results"]}
         self.assertEqual(by["efficiency"]["status"], "unreadable")

@@ -2572,7 +2572,19 @@ def _exam(p, agent):
 
 def _train(lines):
     """The train ids every line closed: a scenario counts only if it held on each graded line of the run."""
-    sets = [set(t) if isinstance(t := x["closed"].get("train"), list) else set() for x in lines]
+    bad = 0
+    sets = []
+    for x in lines:
+        ids = set()
+        for i in (t if isinstance(t := x["closed"].get("train"), list) else []):
+            if isinstance(i, (str, int, float)) and not isinstance(i, bool):  # T-3419: scalars stringify, lists/dicts skip
+                ids.add(str(i))
+            else:
+                bad += 1
+        sets.append(ids)
+    if bad:
+        from sampo import hooks
+        hooks.log_error("rune._train", f"skipped {bad} train id(s) that are not a string or number")
     return set.intersection(*sets) if sets else set()
 
 
