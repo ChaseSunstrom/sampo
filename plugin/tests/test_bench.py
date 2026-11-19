@@ -46,6 +46,29 @@ if os.environ.get("STUB_GUT"):  # does the new work, breaks the old, and guts th
         f.write("def half(x):\n    return x\n\n\ndef third(x):\n    return x / 3\n")
     with open("tests/test_half.py", "w") as f:
         f.write("print('ok')\n")
+if os.environ.get("STUB_EARLY"):  # T-3365: stop early (no claim of done) this many turns, then finish
+    n = os.path.join(os.path.dirname(os.environ["STUB_LOG"]), "early")
+    k = int(open(n).read()) if os.path.exists(n) else 0
+    open(n, "w").write(str(k + 1))
+    sid = next((args[i + 1] for i, a in enumerate(args) if a in ("--resume", "--session-id")), "s-0")
+    if k < int(os.environ["STUB_EARLY"]):
+        if k == 0 and os.environ.get("STUB_ASKTOOL"):  # the session's transcript: one AskUserQuestion call
+            d = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p")
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, sid + ".jsonl"), "a") as f:
+                f.write(json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "id": "toolu_1", "name": "AskUserQuestion", "input": {}}]}}) + "\n")
+        if os.environ.get("STUB_SOLVE"):
+            with open("calc.py", "w") as f:
+                f.write("def double(x):\n    return 2 * x\n")
+        text = ["I made a start. Should I use tabs or spaces?", "Still working through it."][k % 2]
+        print(json.dumps({"type": "result", "is_error": False, "total_cost_usd": 0.1 * (k + 1), "num_turns": 3,
+                          "session_id": sid, "result": text}))  # claude's cost is the session's total so far
+        sys.exit(0)
+    print(json.dumps({"type": "result", "is_error": False, "total_cost_usd": 0.42 + 0.1 * k, "num_turns": 7,
+                      "session_id": sid,
+                      "result": "All done: the work is complete."}))
+    sys.exit(0)
 model = args[args.index("--model") + 1] if "--model" in args else ""
 if os.environ.get("STUB_SOLVE") or model and model in os.environ.get("STUB_SOLVE_MODELS", "").split(","):
     with open("calc.py", "w") as f:
@@ -54,6 +77,11 @@ cost = {"haiku": 0.05, "sonnet": 0.3, "opus": 1.2}.get(model, 0.42)
 print(json.dumps({"type": "result", "is_error": False, "total_cost_usd": cost, "num_turns": 7, "duration_ms": 1234,
                   "result": "done"}))
 '''
+
+
+def glob_transcripts(config_dir):
+    import glob
+    return glob.glob(os.path.join(config_dir, "projects", "*", "*.jsonl"))
 
 
 def git(cwd, *args):
@@ -184,6 +212,206 @@ class Bench(ForemanTestCase):
         self.assertEqual((case["runs"], case["pass_rate"]), (2, 0.5))
         self.assertEqual(case["cost_usd"], 0.42)
         self.assertEqual(len(case["attempts"]), 2)
+
+    def run_early(self, early, label, **env):
+        cc = os.path.join(self.tmp, "cc")
+        self.fm("bench", "build", env=self.env)
+        res = json.loads(self.fm("bench", "run", "--label", label, "--json", check=False, timeout=120,
+                                 env=dict(self.env, STUB_EARLY=str(early), STUB_SOLVE="1", CLAUDE_CONFIG_DIR=cc,
+                                          **env)).stdout)
+        return res["cases"][0], cc
+
+    def prompts(self):
+        return [x["args"][x["args"].index("-p") + 1] for x in self.calls()]
+
+    def test_unattended_a_session_that_stops_early_twice_gets_two_nudges_and_the_run_records_them(self):
+        # T-3365: the user is away; a stop without a claim of done is answered with a fixed "use your defaults"
+        case, cc = self.run_early(2, "early", STUB_ASKTOOL="1")
+        calls = self.calls()
+        self.assertEqual(len(calls), 3, "the first turn and two nudges")
+        self.assertEqual(self.prompts()[1:], [bench.NUDGE, bench.NUDGE])
+        self.assertIn("away", bench.NUDGE)
+        self.assertIn("defaults", bench.NUDGE)
+        self.assertNotIn("--resume", calls[0]["args"])
+        sids = [x["args"][x["args"].index("--resume") + 1] for x in calls[1:]]
+        self.assertEqual(sids, [calls[0]["args"][calls[0]["args"].index("--session-id") + 1]] * 2,
+                         "the same session each time")
+        self.assertNotIn("--no-session-persistence", calls[0]["args"], "a nudge resumes the kept session")
+        self.assertEqual(case["unattended"], {"interventions": 2, "stalls": 2, "questions": 2, "ask_tool": 1,
+                                              "ask_reply": 1})
+        self.assertTrue(case["pass"], case)
+        self.assertEqual((case["cost_usd"], case["turns"]), (0.62, 13), "the session's total cost, every turn's turns")
+        self.assertEqual(glob_transcripts(cc), [], "the kept session's transcript is removed after")
+
+    def test_unattended_a_session_that_claims_done_is_not_nudged(self):
+        case, _ = self.run_early(0, "doneearly")
+        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual(case["unattended"], {"interventions": 0, "stalls": 0, "questions": 0, "ask_tool": 0,
+                                              "ask_reply": 0})
+
+    def test_unattended_at_most_three_nudges(self):
+        case, _ = self.run_early(9, "stuck")
+        self.assertEqual(len(self.calls()), 4, "the first turn and three nudges, then it is left")
+        self.assertEqual((case["unattended"]["interventions"], case["unattended"]["stalls"]), (3, 4))
+        self.assertIsNone(case["error"], "the end of the nudges is a finding, not a crash")
+
+    def test_unattended_claims_of_done(self):
+        for text, want in (("All done.", True), ("The work is complete.", True), ("Finished: tests pass.", True),
+                           ("I made a start.", False), ("Not done yet; the tests still fail.", False),
+                           ("It isn't finished.", False), ("incomplete", False), ("", False), (None, False),
+                           ("Done\n\n```\nfoo?\n```", True),
+                           ("The analysis is complete. Shall I implement it?", False),
+                           ("All done. Anything else?", False), ("**not** done", False), ("It isn\u2019t done.", False),
+                           ("I couldn't get it done.", False), ("Not yet fully done.", False),
+                           ("The tests did not fail and it is done.", True), ("I can't stop; it's all done.", True)):
+            self.assertEqual(bench.claims_done(text), want, text)
+
+    def test_unattended_a_question_is_a_reply_that_ends_asking(self):
+        for text, want in (("Should I use tabs?", True), ("Plan below.\n\nShall I go ahead?\n", True),
+                           ("Shall I go ahead? (yes/no)", False), ("Done.", False), (None, False),
+                           ("Fixed.\n```\nx = a ? b : c?\n```", False), ("Which one?**", True)):
+            self.assertEqual(bench.ends_in_question(text), want, text)
+
+    def test_unattended_the_time_budget_ends_the_nudges(self):
+        # the run's timeout is for every turn together: no time left, no nudge
+        ticks = [0.0]  # the clock starts at 0, and every later look says an hour went
+        turn = ({"total_cost_usd": 0.1, "result": "Still going.", "session_id": "s"}, None)
+        with mock.patch.object(bench, "_turn", return_value=turn) as t, \
+                mock.patch.object(bench.time, "monotonic", side_effect=lambda: ticks.pop() if ticks else 61 * 60.0):
+            res, error = bench._session(self.repo, {}, ["plugin"], "go", None, None, 60, nudges=3)
+        self.assertEqual(t.call_count, 1)
+        self.assertEqual((res["unattended"]["interventions"], res["unattended"]["stalls"]), (0, 1))
+        self.assertIsNone(error)
+
+    @staticmethod
+    def clock(*seconds):
+        """A monotonic clock that reads these, then the last again."""
+        vals = list(seconds)
+        return lambda: vals.pop(0) if len(vals) > 1 else vals[0]
+
+    def test_unattended_a_nudge_needs_a_tenth_of_the_timeout_left_and_at_least_a_minute(self):
+        turn = ({"total_cost_usd": 0.1, "result": "Still going.", "session_id": "s"}, None)
+        for timeout, elapsed, nudged in ((30, 28 * 60.0, False), (30, 26 * 60.0, True), (5, 4.5 * 60, False),
+                                         (5, 3.5 * 60, True), (600, 541 * 60.0, False), (600, 530 * 60.0, True)):
+            with mock.patch.object(bench, "_turn", return_value=turn) as t, \
+                    mock.patch.object(bench.time, "monotonic", self.clock(0.0, elapsed, elapsed)):
+                res, _ = bench._session(self.repo, {}, ["plugin"], "go", None, None, timeout, nudges=1)
+            self.assertEqual((t.call_count, res["unattended"]["interventions"]), (2, 1) if nudged else (1, 0),
+                             (timeout, elapsed))
+            self.assertEqual(res["unattended"]["stalls"], 2 if nudged else 1)
+
+    def test_unattended_a_timed_out_last_turn_keeps_the_session_and_the_last_result(self):
+        # run_case counts compactions and removes the transcript by the result's session id
+        stall = ({"total_cost_usd": 0.3, "result": "Still going.", "session_id": "s-1", "num_turns": 4}, None)
+        out = ({}, "timed out after 5 min")
+        with mock.patch.object(bench, "_turn", side_effect=[stall, out]) as t:
+            res, error = bench._session(self.repo, {}, ["plugin"], "go", None, 1.0, 30, nudges=3)
+        self.assertEqual((res["session_id"], res["result"], error), ("s-1", "Still going.", "timed out after 5 min"))
+        self.assertEqual((res["total_cost_usd"], res["num_turns"], res["unattended"]["interventions"]), (0.3, 4, 1))
+        first = ({}, "timed out after 30 min")  # not even the first turn answered: the id chosen for it stays
+        with mock.patch.object(bench, "_turn", return_value=first) as t:
+            res, _ = bench._session(self.repo, {}, ["plugin"], "go", None, 1.0, 30, nudges=3)
+        self.assertEqual(res["session_id"], t.call_args.kwargs["sid"])
+
+    def test_unattended_claude_s_cost_is_the_session_s_total_so_far_and_each_turn_gets_the_whole_budget(self):
+        # measured on a real resumed haiku session: the second turn's total_cost_usd was the first's plus its own
+        turns = [({"total_cost_usd": 0.1, "result": "Going.", "session_id": "s", "num_turns": 2}, None),
+                 ({"total_cost_usd": 0.25, "result": "Done.", "session_id": "s", "num_turns": 3}, None)]
+        with mock.patch.object(bench, "_turn", side_effect=turns) as t:
+            res, error = bench._session(self.repo, {}, ["plugin"], "go", None, 1.0, 30, nudges=3)
+        self.assertEqual((res["total_cost_usd"], res["num_turns"], error), (0.25, 5, None))
+        self.assertEqual([x.args[5] for x in t.call_args_list], [1.0, 1.0], "the whole budget each turn")
+        over = [({"total_cost_usd": 0.6, "result": "Going.", "session_id": "s"}, None),
+                ({"total_cost_usd": 1.2, "result": "Going.", "session_id": "s"}, None)]
+        with mock.patch.object(bench, "_turn", side_effect=over) as t:
+            res, error = bench._session(self.repo, {}, ["plugin"], "go", None, 1.0, 30, nudges=3)
+        self.assertEqual(t.call_count, 2, "no nudge once the budget is spent")
+        self.assertIn("$1 budget cap", error, "the whole budget is named")
+
+    def test_unattended_the_session_name_is_checked_before_it_is_a_glob(self):
+        cc = os.path.join(self.tmp, "cc")
+        os.makedirs(os.path.join(cc, "projects", "p"))
+        path = os.path.join(cc, "projects", "p", "keep.jsonl")
+        with open(path, "w") as f:
+            f.write('{"subtype": "compact_boundary"}\n')
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cc}):
+            for bad in ("*", "../p/keep", "ke?p", "k" * 81, "", None, "a/b"):
+                self.assertEqual(bench._compactions(bad), 0, bad)
+                self.assertTrue(os.path.exists(path), bad)
+            self.assertEqual(bench._compactions("keep"), 1)
+        self.assertFalse(os.path.exists(path))
+
+    def test_unattended_both_arms_are_told_to_say_done_and_the_run_records_the_nudges_setting(self):
+        self.fm("bench", "build", env=self.env)
+        case = bench._load_cases(c.find_project(self.repo))[0]
+        seen = []
+
+        def fake(wt, env, plugins, prompt, model, budget, timeout, **kw):
+            seen.append((prompt, kw.get("nudges")))
+            return {"total_cost_usd": 0.1, "num_turns": 1, "result": "done"}, None
+        p = c.find_project(self.repo)
+        with mock.patch.object(bench, "_session", fake):
+            for bare in (False, True):
+                bench.run_case(p, case, c.PLUGIN_ROOT, bare=bare)
+        self.assertEqual(len(seen), 2)
+        for prompt, nudges in seen:
+            self.assertIn("say 'done' when", prompt)
+            self.assertEqual(nudges, bench.MAX_NUDGES)
+        with mock.patch.object(bench, "_session", fake):
+            bench.run_case(p, case, c.PLUGIN_ROOT, bare=True, nudges=0)
+        self.assertEqual(seen[-1][1], 0)
+
+    def test_unattended_nudges_zero_is_an_un_nudged_baseline_and_the_default_is_recorded(self):
+        self.fm("bench", "build", env=self.env)
+        res = json.loads(self.fm("bench", "run", "--nudges", "0", "--label", "plain", "--json",
+                                 env=dict(self.env, STUB_EARLY="2"), check=False).stdout)
+        self.assertEqual(res["nudges"], 0)
+        self.assertEqual(len(self.calls()), 1, "one turn, nobody nudged")
+        self.assertNotIn("unattended", res["cases"][0])
+        res = json.loads(self.fm("bench", "run", "--label", "dflt", "--json", env=self.env, check=False).stdout)
+        self.assertEqual(res["nudges"], bench.MAX_NUDGES)
+
+    def test_unattended_counts_show_in_run_show_compare_and_gate(self):
+        self.fm("bench", "build", env=self.env)
+        un = {"interventions": 2, "stalls": 2, "questions": 3, "ask_tool": 1, "ask_reply": 2}
+        for label, extra in (("ua", {"unattended": un}), ("ub", {})):
+            folder = os.path.join(c.find_project(self.repo).dir, "bench", "results")
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, label + ".json"), "w") as f:
+                json.dump({"label": label, "cases": [dict(id="X-1", pass_rate=1.0, cost_usd=0.5, turns=3, runs=1,
+                                                          seconds=9, error=None, **{"pass": True}, **extra)]}, f)
+        want = "2 nudge(s) \u00b7 2 stall(s) \u00b7 3 question(s)"
+        self.assertIn(want, self.fm("bench", "show", "ua").stdout)
+        out = self.fm("bench", "compare", "ua", "ub").stdout
+        self.assertIn(want, out)
+        self.assertEqual(bench.unattended_text([{}]), "", "an old result has none to show")
+        ok, lines = bench.gate(*(json.load(open(os.path.join(c.find_project(self.repo).dir, "bench", "results", x + ".json")))
+                                 for x in ("ua", "ub")))
+        self.assertTrue(any(want in x for x in lines), lines)
+
+    def test_unattended_the_repeats_sum_their_counts(self):
+        one = {"id": "X-1", "pass": True, "cost_usd": 0.1, "turns": 1, "seconds": 1, "error": None, "tests": None,
+               "unattended": {"interventions": 1, "stalls": 2, "questions": 3, "ask_tool": 1, "ask_reply": 2}}
+        with mock.patch.object(bench, "run_case", return_value=one):
+            res = bench.run_case_n(None, {"id": "X-1"}, "plugin", runs=3)
+        self.assertEqual(res["unattended"], {"interventions": 3, "stalls": 6, "questions": 9, "ask_tool": 3,
+                                             "ask_reply": 6})
+        self.assertEqual(len(res["attempts"]), 3)
+        self.assertEqual(res["attempts"][0]["unattended"]["stalls"], 2, "each attempt keeps its own")
+
+    def test_unattended_an_errored_turn_is_not_nudged(self):
+        turn = ({}, "timed out after 1 min")
+        with mock.patch.object(bench, "_turn", return_value=turn) as t:
+            res, error = bench._session(self.repo, {}, ["plugin"], "go", None, None, 1, nudges=3)
+        self.assertEqual((t.call_count, error), (1, "timed out after 1 min"))
+        self.assertEqual(res["unattended"]["interventions"], 0)
+
+    def test_unattended_without_nudges_a_session_is_one_plain_turn(self):
+        turn = ({"result": "Still going."}, None)
+        with mock.patch.object(bench, "_turn", return_value=turn) as t:
+            res, _ = bench._session(self.repo, {}, ["plugin"], "go", None, None, 1)
+        self.assertEqual(t.call_count, 1)
+        self.assertNotIn("unattended", res, "the other callers' results are untouched")
 
     def write_result(self, label, cases, runs=1):
         folder = os.path.join(c.find_project(self.repo).dir, "bench", "results")

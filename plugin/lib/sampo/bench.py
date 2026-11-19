@@ -25,6 +25,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 
 from sampo import budget as sbudget
 from sampo import core as c
@@ -168,7 +169,9 @@ def _compactions(sid):
     home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
     keep = os.environ.get("FOREMAN_BENCH_SESSIONS")
     n = 0
-    for path in glob.glob(os.path.join(home, "projects", "*", f"{sid}.jsonl")) if sid else []:
+    if not sid or not re.fullmatch(r"[\w.-]{1,80}", str(sid)):  # T-3365: a name out of claude's output: no glob characters
+        return n
+    for path in glob.glob(os.path.join(glob.escape(home), "projects", "*", f"{sid}.jsonl")):
         with open(path, encoding="utf-8", errors="replace") as f:
             n += sum('"compact_boundary"' in line for line in f)
         if keep and os.path.isdir(keep):
@@ -390,7 +393,109 @@ def replay_cpus():
     return mine[-max(2, len(mine) // 4):] if len(mine) >= 8 else None
 
 
-def _session(wt, env, plugins, prompt, model, budget, timeout, resume=None, keep=False, settings=None, sid=None):
+MAX_NUDGES = 3  # T-3365: how often a benchmark session that stopped early is told to carry on
+NUDGE = ("I'm away and can't answer questions: use your defaults, decide anything still open yourself, and carry on "
+         "until the work is finished. When it is, say it is done.")
+_DONE = re.compile(r"(?i)\b(?:done|complete[d]?|finished|all set)\b")
+_NEGATED = re.compile(r"(?i)(?:\bnot|n't|\bnever)\s+(?:\w+\s+){0,3}$")  # "not done", "couldn't get it done"
+_FENCED = re.compile(r"```[\s\S]*?(?:```|\Z)")
+
+
+def _prose(text):
+    """A reply's text without its code blocks (a `?` or a `done` inside code isn't the agent speaking)."""
+    return _FENCED.sub("", str(text or "")[-6000:]).strip()
+
+
+def claims_done(text):
+    """T-3365: whether a reply's end says the work is done: not negated ("not done yet", "**not** done", "isn’t done",
+    "couldn't get it done") and not ending in a question ("The analysis is complete. Shall I implement it?")."""
+    if ends_in_question(text):
+        return False
+    tail = _prose(text).replace("\u2019", "'").replace("*", "")[-600:]
+    return any(not _NEGATED.search(tail[max(0, m.start() - 48):m.start()]) for m in _DONE.finditer(tail))
+
+
+def ends_in_question(text):
+    """T-3365: whether a reply's last line ends asking the user something (markup after the mark is ignored)."""
+    lines = [x for x in _prose(text).splitlines() if x.strip()]
+    return bool(lines) and lines[-1].rstrip().rstrip("*_\"'`").endswith("?")
+
+
+def unattended_text(cases):
+    """T-3365: "2 nudge(s) · 2 stall(s) · 3 question(s)" over these cases' unattended counts; "" when none has them (a
+    result from before, or a run with --nudges 0)."""
+    ons = [x["unattended"] for x in cases if isinstance(x, dict) and isinstance(x.get("unattended"), dict)]
+    n = lambda k: sum(o.get(k) or 0 for o in ons if isinstance(o.get(k) or 0, (int, float)))
+    return f"{n('interventions'):g} nudge(s) \u00b7 {n('stalls'):g} stall(s) \u00b7 {n('questions'):g} question(s)" if ons else ""
+
+
+def _transcript_asks(sid):
+    """The ids of the AskUserQuestion calls in a kept session's transcript."""
+    home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    ids = set()
+    if not sid or not re.fullmatch(r"[\w.-]{1,80}", str(sid)):  # a name out of claude's output: no glob characters
+        return ids
+    for path in glob.glob(os.path.join(glob.escape(home), "projects", "*", f"{sid}.jsonl")):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if '"AskUserQuestion"' not in line:
+                    continue
+                with contextlib.suppress(ValueError):
+                    body = (json.loads(line).get("message") or {}).get("content")
+                    for part in body if isinstance(body, list) else []:
+                        if isinstance(part, dict) and part.get("type") == "tool_use" and part.get("name") == "AskUserQuestion":
+                            ids.add(str(part.get("id") or len(ids)))
+    return ids
+
+
+def _session(wt, env, plugins, prompt, model, budget, timeout, resume=None, keep=False, settings=None, sid=None,
+             nudges=0):
+    """T-3365: _turn, and with `nudges` > 0 an unattended run: a turn that stops without claiming the work done is
+    answered with NUDGE (the session resumed), at most `nudges` times and within the one `timeout` (minutes) and
+    `budget` for every turn together. claude's result then carries the totals (cost, turns) and `unattended`: the
+    nudges sent (interventions), the early stops (stalls), and the questions put to the user: AskUserQuestion calls
+    (ask_tool) and replies ending in one (ask_reply). Without nudges it is one plain turn, its result untouched."""
+    if not nudges:
+        return _turn(wt, env, plugins, prompt, model, budget, timeout, resume, keep, settings, sid)
+    c.refuse_if_paused()
+    t0, sid = time.monotonic(), resume or sid or str(uuid.uuid4())
+    spent, turns, sent, stalls, replies, denied, msg, first, last = None, None, 0, 0, 0, set(), prompt, True, {}
+    left, floor = timeout, max(60.0, 0.1 * timeout * 60)  # a nudge needs this many seconds of the timeout left
+    while True:
+        # claude's total_cost_usd is the whole session's so far (measured on a resumed haiku session: the second turn's
+        # equals the first's plus its own), so each turn gets the whole budget and the last total is the spend
+        res, error = _turn(wt, env, plugins, msg, model, budget, left, resume=sid if resume or not first else None,
+                           keep=True, settings=settings, sid=None if resume or not first else sid)
+        first, left = False, timeout - (time.monotonic() - t0) / 60
+        if res:  # a turn killed by the timeout has no result: the last good one and the session's id stay
+            last, sid = res, res.get("session_id") or sid
+        spent = res.get("total_cost_usd") if res.get("total_cost_usd") is not None else spent
+        turns = None if turns is None and res.get("num_turns") is None else (turns or 0) + (res.get("num_turns") or 0)
+        denied |= {str(x.get("tool_use_id") or f"{len(denied)}:{x.get('tool_name')}") for x in res.get("permission_denials") or []
+                   if isinstance(x, dict) and x.get("tool_name") == "AskUserQuestion"}
+        text = res.get("result")
+        replies += ends_in_question(text)
+        if error or claims_done(text):
+            break
+        stalls += 1
+        if sent >= nudges or left * 60 < floor or budget is not None and (spent or 0) >= budget:
+            break  # at the cap, or too little time left for a nudge to do anything: it ends as a stall
+        sent += 1
+        msg = NUDGE
+    res = dict(last, session_id=sid)
+    asked = _transcript_asks(sid) | denied
+    if not keep and not resume:  # nobody resumes it later: the transcript goes (or moves where FOREMAN_BENCH_SESSIONS says)
+        _compactions(sid)
+    if not error and budget is not None and (spent or 0) >= budget:
+        error = f"hit the ${budget:g} budget cap before finishing (inconclusive: raise --budget)"
+    res = dict(res, **({} if spent is None else {"total_cost_usd": round(spent, 6)}),
+               **({} if turns is None else {"num_turns": turns}),
+               unattended={"interventions": sent, "stalls": stalls, "questions": len(asked) + replies,
+                           "ask_tool": len(asked), "ask_reply": replies})
+    return res, error or (res.get("result") if res.get("is_error") else None)
+
+
+def _turn(wt, env, plugins, prompt, model, budget, timeout, resume=None, keep=False, settings=None, sid=None):
     """(claude's JSON result, error) for one headless turn with the plugin dirs given; `keep` keeps the session so a
     later turn can --resume it (T-0243); `settings`: a --settings JSON (T-0963's bare arm); `sid`: the session's id,
     chosen by the caller so a turn killed by the timeout (no result) can still be resumed (T-2262). T-4276: the session
@@ -470,7 +575,9 @@ def _bare_guard(plugin):
 
 
 def run_case(p, case, plugin, model=None, budget=3.0, timeout=30, extra=(), bare=False, compact_at=None, marathon=None,
-             ablate=None):
+             ablate=None, nudges=MAX_NUDGES):
+    """T-3365: unattended: a session that stops early without claiming done is nudged up to `nudges` times; the result
+    carries `unattended` (interventions, stalls, questions)."""
     t0 = time.monotonic()
     with _worktree(p.root, case["base"]) as (tmp, wt):
         state = os.path.join(tmp, "state")
@@ -489,14 +596,16 @@ def run_case(p, case, plugin, model=None, budget=3.0, timeout=30, extra=(), bare
                 with open(os.path.join(wt, "CLAUDE.md"), "a", encoding="utf-8") as f:
                     f.write("\n" + rules)
             prompt = (f"Task: {case['prompt']}\n\n(Unattended benchmark run: the user is away; finish the work, "
-                      f"deciding with your defaults.)")
+                      f"deciding with your defaults, and say 'done' when you are finished.)")
             res, error = _session(wt, env, [], prompt, model, budget, timeout, settings=_bare_guard(plugin),
-                                  keep=bool(compact_at))
+                                  keep=bool(compact_at), nudges=nudges)
         else:
             _seed(plugin, wt, env)
             prompt = (f"Task: {case['prompt']}\n\n(Unattended benchmark run: the user is away and granted full "
-                      f"autonomy; finish the work with Sampo, deciding with your defaults.)")
-            res, error = _session(wt, env, [plugin, *extra], prompt, model, budget, timeout, keep=bool(compact_at))
+                      f"autonomy; finish the work with Sampo, deciding with your defaults, and say 'done' when you "
+                      f"are finished.)")
+            res, error = _session(wt, env, [plugin, *extra], prompt, model, budget, timeout, keep=bool(compact_at),
+                                  nudges=nudges)
         compactions = _compactions(res.get("session_id")) if compact_at else None
         capped = bool(marathon and not bare and error and error.startswith("hit the $"))  # review: Foreman's arm
         error = None if capped else error  # a marathon runs until its cap: the asked work is graded either way
@@ -516,6 +625,7 @@ def run_case(p, case, plugin, model=None, budget=3.0, timeout=30, extra=(), bare
             "cost_usd": res.get("total_cost_usd"), "turns": res.get("num_turns"),
             "seconds": round(time.monotonic() - t0), "error": error, "tests": count_tests(t for _, _, t in graded),
             **({"compactions": compactions} if compact_at else {}), **({"capped": capped} if marathon else {}),
+            **({"unattended": res["unattended"]} if "unattended" in res else {}), "nudges": nudges,
             **({"failed": sorted(set(failed))[:60]} if failed else {}),
             **({"requests": per_request(case, failed)} if case.get("requests") else {}),
             **({"score": score, "judge": reasons} if case.get("judge") else {}),
@@ -523,10 +633,12 @@ def run_case(p, case, plugin, model=None, budget=3.0, timeout=30, extra=(), bare
 
 
 def run_case_n(p, case, plugin, model=None, budget=3.0, timeout=30, runs=1, extra=(), bare=False, compact_at=None,
-               marathon=None, ablate=None):
-    """T-0221: a case run `runs` times: pass rate, mean cost, turns and time; the first attempt's details kept."""
-    tries = [run_case(p, case, plugin, model, budget, timeout, extra, bare, compact_at, marathon, ablate)
+               marathon=None, ablate=None, nudges=MAX_NUDGES):
+    """T-0221: a case run `runs` times: pass rate, mean cost, turns and time; the first attempt's details kept (T-3365:
+    but the unattended counts are the attempts' sum)."""
+    tries = [run_case(p, case, plugin, model, budget, timeout, extra, bare, compact_at, marathon, ablate, nudges)
              for _ in range(max(1, runs))]
+    counts = [t["unattended"] for t in tries if isinstance(t.get("unattended"), dict)]
     rate = sum(t["pass"] for t in tries) / len(tries)
 
     def mean(k):
@@ -535,7 +647,9 @@ def run_case_n(p, case, plugin, model=None, budget=3.0, timeout=30, runs=1, extr
     return dict(tries[0], runs=len(tries), pass_rate=rate, cost_usd=mean("cost_usd"), turns=mean("turns"),
                 seconds=mean("seconds"), **{"pass": rate >= 0.5},
                 **({"false_done": sum(t["false_done"] for t in tries) / len(tries)} if "false_done" in tries[0] else {}),
-                attempts=[{k: t.get(k) for k in ("pass", "cost_usd", "turns", "seconds", "error", "tests", "compactions")
+                **({"unattended": {k: sum(o.get(k) or 0 for o in counts) for k in counts[0]}} if counts else {}),
+                attempts=[{k: t.get(k) for k in ("pass", "cost_usd", "turns", "seconds", "error", "tests", "compactions",
+                                                  "unattended")
                            if k in t} for t in tries])
 
 
@@ -628,6 +742,9 @@ def gate(a, b, tolerance=0.15):
         if few < 5:
             lines.append(f"  few runs ({few}): a real loss of about 2 passes is caught about half the time; "
                          "--runs 10 for a firmer gate")
+    if unattended_text(A.values()) or unattended_text(B.values()):  # T-3365: how much each side had to be nudged
+        lines.append(f"  unattended: {a['label']} {unattended_text(A.values()) or 'not counted'} → "
+                     f"{b['label']} {unattended_text(B.values()) or 'not counted'}")
     lines.append("✓ no worse: may be proposed" if ok else "✗ not proposed")
     return ok, lines
 
@@ -761,7 +878,7 @@ EQUAL_TRIES = 5  # T-1376: the most fresh attempts a plain session gets to spend
 
 
 def run_arm(p, cases, plugin, label, model=None, budget=3.0, timeout=30, runs=1, quiet=False, head=None, extra=(),
-            bare=False, jobs=1, compact_at=None, marathon=None, ablate=None, spend=None):
+            bare=False, jobs=1, compact_at=None, marathon=None, ablate=None, spend=None, nudges=MAX_NUDGES):
     """Every case on one plugin (and `extra` plugin dirs beside it), results written after each case (a crash or
     Ctrl-C keeps what was paid for). Refuses a plugin without the guard here, so no caller can skip it (replays run in
     bypass mode). `bare` (T-0963): no plugin loaded, only the plugin's guard as a settings hook."""
@@ -772,7 +889,7 @@ def run_arm(p, cases, plugin, label, model=None, budget=3.0, timeout=30, runs=1,
                          f"replays run in bypass mode, so they never run without it")
     results = []
     res = {"label": label, "plugin": plugin, "model": model, "at": c.now(), "head": head, "claude": claude_version(),
-           "cases": results, "budget": budget, "runs": runs,  # T-1261: what fm bench repro reruns a row with
+           "cases": results, "budget": budget, "runs": runs, "nudges": nudges,  # T-1261: what fm bench repro reruns a row with
            **({"extra": list(extra)} if extra else {}), **({"bare": bare} if bare else {}),
            **({"compact_at": compact_at} if compact_at else {}), **({"marathon": marathon} if marathon else {}),
            **({"ablate": ablate} if ablate else {}), **({"equal_spend": True} if spend is not None else {})}
@@ -784,7 +901,8 @@ def run_arm(p, cases, plugin, label, model=None, budget=3.0, timeout=30, runs=1,
             if spend is not None:  # T-1376: fresh attempts until one passes or they've spent what Foreman did
                 tries, total = [], 0.0
                 while len(tries) < EQUAL_TRIES:
-                    tries.append(run_case(p, case, plugin, model, budget, timeout, extra, bare, compact_at, marathon))
+                    tries.append(run_case(p, case, plugin, model, budget, timeout, extra, bare, compact_at, marathon,
+                                          nudges=nudges))
                     total += tries[-1].get("cost_usd") or 0
                     if tries[-1]["pass"] or total >= (spend.get(case["id"]) or 0):
                         break
@@ -792,7 +910,8 @@ def run_arm(p, cases, plugin, label, model=None, budget=3.0, timeout=30, runs=1,
                 return dict(best, cost_usd=round(total, 4), tries=len(tries), spend_to=spend.get(case["id"]),
                             attempts=[{k: t.get(k) for k in ("pass", "cost_usd", "turns", "seconds", "error")}
                                       for t in tries])
-            return run_case_n(p, case, plugin, model, budget, timeout, runs, extra, bare, compact_at, marathon, ablate)
+            return run_case_n(p, case, plugin, model, budget, timeout, runs, extra, bare, compact_at, marathon, ablate,
+                              nudges)
         except (OSError, subprocess.SubprocessError, ValueError) as e:  # one case, not the run's paid results
             return {"id": case["id"], "pass": False, "verify": [], "cost_usd": None, "turns": None, "seconds": 0,
                     "error": f"{type(e).__name__}: {c.fit(str(e), 160)}"}
@@ -973,6 +1092,17 @@ def _contender(spec):
     return (path, pid.split("@")[0]) if path and os.path.isdir(path) else (None, None)
 
 
+def _nudges(args):
+    """T-3365: --nudges, 0 or more (0: an un-nudged baseline); MAX_NUDGES when the command has no such flag."""
+    from sampo import cli
+    n = getattr(args, "nudges", None)
+    if n is None:
+        return MAX_NUDGES
+    if n < 0:
+        raise cli.UsageError("--nudges must be 0 or more (0 sends none)")
+    return n
+
+
 def _contest(p, args):
     """fm bench duel (T-0240), versions (T-0241), court (T-0242) and soak (T-0243)."""
     from sampo import cli
@@ -999,7 +1129,7 @@ def _contest(p, args):
     arm = dict(model=args.model, budget=args.budget, timeout=args.timeout, quiet=args.json)
     if args.bench_cmd in ("duel", "versions"):
         arm.update(runs=max(1, args.runs), jobs=max(1, args.jobs), compact_at=args.compact_at,
-                   marathon=getattr(args, "marathon", None))
+                   marathon=getattr(args, "marathon", None), nudges=_nudges(args))
     try:
         if args.bench_cmd == "soak":
             if not has_guard(plugin):
@@ -1165,7 +1295,8 @@ def repro(p, args):
     if not (math.isfinite(budget) and budget > 0) or args.timeout < 1:
         raise cli.UsageError("--budget must be a positive number and --timeout at least 1")
     arm = dict(model=fm_.get("model"), budget=budget, timeout=args.timeout, runs=max(1, int(fm_.get("runs") or 1)),
-               quiet=args.json, compact_at=fm_.get("compact_at"), marathon=fm_.get("marathon"))
+               quiet=args.json, compact_at=fm_.get("compact_at"), marathon=fm_.get("marathon"),
+               nudges=int(fm_.get("nudges") or 0))  # a run from before T-3365 was not nudged: repeat it so
     stamp = time.strftime("%Y%m%d-%H%M%S")
     now = [run_arm(p, [case], c.PLUGIN_ROOT, f"repro-{side}-{stamp}", bare=side == "bare", **arm)["cases"][0]
            for side in ("foreman", "bare")]
@@ -1252,7 +1383,7 @@ def cmd_bench(args):
         try:
             with _frozen(plugin) as snap:
                 res = run_arm(p, cases, snap, label, args.model, args.budget, args.timeout, args.runs, quiet=args.json,
-                              compact_at=args.compact_at)
+                              compact_at=args.compact_at, nudges=_nudges(args))
         except ValueError as e:
             raise cli.UsageError(str(e))
         results = res["cases"]
@@ -1261,6 +1392,7 @@ def cmd_bench(args):
                                           "cases": len(results)}, session=cli.session())
         cli.out(args, res, f"bench {label}: {_summary(res)}\n" + "\n".join(
             f"  {'✓' if x['pass'] else '✗'} {x['id']} · {x['turns']} turns · ${x['cost_usd'] or 0:.2f} · {x['seconds']} s"
+            + (f" · {unattended_text([x])}" if x.get("unattended") else "")
             + (f" · {x['error']}" if x["error"] else "") for x in results))
         return 0 if all(x["pass"] for x in results) else 1
     if args.bench_cmd == "models":
@@ -1339,6 +1471,7 @@ def cmd_bench(args):
             led = d.get("ledger") or {}
             lines.append(f"{'✓' if x['pass'] else '✗'} {x['id']} · {x['turns']} turns · ${x['cost_usd'] or 0:.2f}"
                          + (f" · score {x['score']}/5" if x.get("score") is not None else "")
+                         + (f" · {unattended_text([x])}" if x.get("unattended") else "")
                          + (f" · {x['error']}" if x.get("error") else ""))
             lines += [f"  judge: {r}" for r in x.get("judge") or []]
             lines += [f"  had to repeat: {r}" for r in x.get("complaints") or []]
@@ -1359,7 +1492,8 @@ def cmd_bench(args):
             raise cli.UsageError(f"no bench results named {label!r} (fm bench list)")
     shared = sorted({x["id"] for x in runs[0]["cases"]} & {x["id"] for x in runs[1]["cases"]})
     by = [{x["id"]: x for x in r["cases"] if x["id"] in shared} for r in runs]
-    lines = [f"{r['label']}: " + _summary({"cases": list(b.values())}) for r, b in zip(runs, by)]
+    lines = [f"{r['label']}: " + _summary({"cases": list(b.values())})
+             + (f" · {unattended_text(b.values())}" if unattended_text(b.values()) else "") for r, b in zip(runs, by)]
     lines += [f"  {i}: {' → '.join('✓' if b[i]['pass'] else '✗' for b in by)}" for i in shared
               if by[0][i]["pass"] != by[1][i]["pass"]]
     cli.out(args, {"shared": shared, "runs": [r["label"] for r in runs]}, "\n".join(lines))

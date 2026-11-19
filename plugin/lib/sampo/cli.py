@@ -10201,6 +10201,9 @@ def _build_parser(only=None):
             b.add_argument("--runs", type=int, default=1, help="attempts per case: a pass rate instead of one sample")
             b.add_argument("--compact-at", type=int, metavar="TOKENS", help="compact once the context nears TOKENS, "
                                                                             "and count the compactions (T-1242)")
+            b.add_argument("--nudges", type=int, default=3, metavar="N", help="a session that stops without saying "
+                           "done is told 'I'm away, use your defaults' at most N times (default 3; 0: no nudges, an "
+                           "un-nudged baseline) (T-3365)")
         if name == "show":
             b.add_argument("label")
         if name == "gate":
@@ -10258,6 +10261,9 @@ def _build_parser(only=None):
             b.add_argument("--compact-at", type=int, metavar="TOKENS", help="both arms compact once their context "
                            "nears TOKENS (CLAUDE_CODE_AUTO_COMPACT_WINDOW), as a long session would; results count "
                            "the compactions (T-1242)")
+            b.add_argument("--nudges", type=int, default=3, metavar="N", help="a session that stops without saying "
+                           "done is told 'I'm away, use your defaults' at most N times, in both arms (default 3; 0: "
+                           "no nudges, an un-nudged baseline) (T-3365)")
         if name == "duel":
             b.add_argument("--marathon", type=int, metavar="N", help="after the asked work, Sampo's arm finds and "
                            "does work nobody asked for, N passes, until its --budget cap (T-1242)")
