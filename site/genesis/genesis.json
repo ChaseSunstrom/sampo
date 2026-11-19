@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-19T12:10:20Z",
- "rev": "fdf50b3b0",
+ "updated": "2026-11-19T13:32:55Z",
+ "rev": "6b2d2f5c3",
  "capabilities": [
   {
    "n": 1,
@@ -61738,17 +61738,17 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 867,
+ "unproven": 865,
  "unproven_kinds": {
   "typed": 80,
   "meaning-user": 87,
   "research-uncited": 29,
-  "meaning-notes": 444,
-  "docs": 185,
+  "meaning-notes": 445,
+  "docs": 172,
   "red": 86,
-  "perf-typed": 148,
+  "perf-typed": 150,
+  "ui-unshot": 3,
   "infra": 7,
-  "ui-unshot": 2,
   "data": 4,
   "tui-unshot": 4,
   "perf-noise": 1
@@ -62956,10 +62956,10 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 69326,
+   "generated": 70132,
    "write": {
     "title": 450,
-    "line": 3767,
+    "line": 3828,
     "payoff": 57,
     "kill test": 259,
     "code": 33
@@ -62970,14 +62970,14 @@
     "shingle": 0
    },
    "rejected": {
-    "kill": 34625,
+    "kill": 34984,
     "tier": 21623,
-    "novelty": 190
+    "novelty": 191
    },
-   "merged": 2436,
-   "kept": 2675,
-   "pending": 365,
-   "pooled": 2689
+   "merged": 2485,
+   "kept": 2713,
+   "pending": 358,
+   "pooled": 2994
   },
   "families": [
    {
@@ -63016,7 +63016,7 @@
    },
    {
     "id": "F-013109",
-    "size": 591,
+    "size": 598,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -63275,6 +63275,23 @@
     "evidence": "",
     "kinds": [
      "migrations"
+    ]
+   },
+   {
+    "id": "F-066947",
+    "size": 2,
+    "lead": "Project a counterfactual reality of unmade technical debts",
+    "today": "Today you can't compare your current path against the 'what if' of a different architectural choice.",
+    "with_this": "With this, you can visualize the ghost-branch of your project where you chose the alternative library or pattern.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "onboarding",
+     "releases"
     ]
    },
    {
@@ -64463,22 +64480,6 @@
     ]
    },
    {
-    "id": "F-066947",
-    "size": 1,
-    "lead": "Project a counterfactual reality of unmade technical debts",
-    "today": "Today you can't compare your current path against the 'what if' of a different architectural choice.",
-    "with_this": "With this, you can visualize the ghost-branch of your project where you chose the alternative library or pattern.",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 5,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "onboarding"
-    ]
-   },
-   {
     "id": "F-067718",
     "size": 1,
     "lead": "Simulate regulatory drift before you ship",
@@ -64516,6 +64517,38 @@
     "lead": "Synthesize a self-healing runtime shadow for every script",
     "today": "Today you can't automatically fix a python exit code in real-time.",
     "with_this": "With this, you can receive a corrected script that bypasses the environment error the moment it occurs.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
+    "id": "F-068997",
+    "size": 1,
+    "lead": "Synchronize a galactic clock for shared state consistency",
+    "today": "Today you can't guarantee that a PR's local state matches the global ecosystem's state at the moment of execution.",
+    "with_this": "With this, you can ensure that every script execution across your entire company uses a perfectly synchronized temporal state.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
+    "id": "F-068999",
+    "size": 1,
+    "lead": "Collapse the wavefunction of possible failure states",
+    "today": "Today you can't know which specific environmental factor caused a non-deterministic crash.",
+    "with_this": "With this, you can see a single probability map of all possible reasons a PR might fail in production.",
     "tier": "extreme",
     "cold": null,
     "wild": 5,
@@ -64580,6 +64613,24 @@
      "bugs",
      "design",
      "ops",
+     "security"
+    ]
+   },
+   {
+    "id": "F-011454",
+    "size": 4,
+    "lead": "Self-healing data pipelines via autonomous debugging",
+    "today": "Today you can't fix a broken data feed that silently stops updating without a human checking logs every hour.",
+    "with_this": "With this, you can wake up to a fixed pipeline and a written report of what was wrong and how it was repaired, with no manual intervention required.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "data",
+     "design",
      "security"
     ]
    },
@@ -64649,23 +64700,6 @@
     "evidence": "",
     "kinds": [
      "design",
-     "security"
-    ]
-   },
-   {
-    "id": "F-011454",
-    "size": 3,
-    "lead": "Self-healing data pipelines via autonomous debugging",
-    "today": "Today you can't fix a broken data feed that silently stops updating without a human checking logs every hour.",
-    "with_this": "With this, you can wake up to a fixed pipeline and a written report of what was wrong and how it was repaired, with no manual intervention required.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data",
      "security"
     ]
    },
@@ -66210,44 +66244,12 @@
     "kinds": [
      "features"
     ]
-   },
-   {
-    "id": "F-010695",
-    "size": 1,
-    "lead": "Let deploy risk trade as a priced contract",
-    "today": "Today you can't see what the odds of a Friday deploy breaking production are, or put anything behind your own read.",
-    "with_this": "With this, you can see one price for each change's chance of causing an outage and decide to ship, wait, or split it before the weekend.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "performance"
-    ]
-   },
-   {
-    "id": "F-010696",
-    "size": 1,
-    "lead": "Queue merges by what each author will pay",
-    "today": "Today you can't tell which change matters most to ship now, so the queue runs first come, first served.",
-    "with_this": "With this, you can bid for an earlier merge slot and get an urgent fix out before a Friday freeze.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "performance"
-    ]
    }
   ],
-  "families_total": 1888,
+  "families_total": 1914,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2675
+   "total": 2713
   }
  },
  "steer": {
@@ -66281,7 +66283,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.0,
+    "idle_h": 270.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66304,7 +66306,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.1,
+    "idle_h": 270.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66327,7 +66329,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.0,
+    "idle_h": 270.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66350,7 +66352,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.0,
+    "idle_h": 270.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66373,7 +66375,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 268.8,
+    "idle_h": 270.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66396,7 +66398,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 268.8,
+    "idle_h": 270.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66419,7 +66421,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 268.6,
+    "idle_h": 269.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66442,7 +66444,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 268.6,
+    "idle_h": 270.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66465,7 +66467,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 268.7,
+    "idle_h": 270.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66488,7 +66490,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.3,
+    "idle_h": 271.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66511,7 +66513,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.0,
+    "idle_h": 271.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66534,7 +66536,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.0,
+    "idle_h": 271.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66557,7 +66559,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.0,
+    "idle_h": 271.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66580,7 +66582,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.0,
+    "idle_h": 271.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66603,7 +66605,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.8,
+    "idle_h": 271.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66626,7 +66628,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.8,
+    "idle_h": 271.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66649,7 +66651,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.8,
+    "idle_h": 271.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66672,7 +66674,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.8,
+    "idle_h": 271.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66695,7 +66697,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.6,
+    "idle_h": 271.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66718,7 +66720,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.6,
+    "idle_h": 270.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66741,7 +66743,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.6,
+    "idle_h": 270.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66764,7 +66766,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.5,
+    "idle_h": 270.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66787,7 +66789,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.4,
+    "idle_h": 270.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66810,7 +66812,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.3,
+    "idle_h": 270.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66833,7 +66835,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.3,
+    "idle_h": 270.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66856,7 +66858,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.4,
+    "idle_h": 270.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
