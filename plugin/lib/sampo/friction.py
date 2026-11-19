@@ -157,8 +157,23 @@ def _tool(e):
     return f"Bash {_prog(e)}".strip() if e.get("tool") == "Bash" else e.get("tool")
 
 
+# T-4999: a Sampo verb whose exit is the answer asked for: `task wait` 124 (still running) and 1 (ended unfinished),
+# `task evidence --run` the run's own exit (cargo's 101 is a red test). Some 190 of a day's failed tool calls.
+_SAMPO_ANSWERS = ((re.compile(r"(?:sampo|fm)\s+task\s+wait(?:\s|$)"), {"124", "1"}),
+                  (re.compile(r"(?:sampo|fm)\s+task\s+evidence\s.*--run(?:\s|=)"), {"101"}))
+
+
 def _a_no(e):
-    return e.get("tool") == "Bash" and _prog(e) in _ANSWERS_NO and str(e.get("error") or "").startswith("Exit code 1")
+    if e.get("tool") != "Bash":
+        return False
+    code = re.match(r"Exit code (\d+)\b", str(e.get("error") or ""))
+    code = code.group(1) if code else ""
+    if _prog(e) in _ANSWERS_NO:
+        return code == "1"
+    if _prog(e) in ("sampo", "fm"):
+        cmd = re.sub(r"^(?:\s*cd\s+\S+\s*&&\s*)+", "", str(e.get("target") or ""))
+        return any(rx.match(cmd.strip()) and code in codes for rx, codes in _SAMPO_ANSWERS)
+    return False
 
 
 _PLUGIN_FRAME = re.compile(r"(?:sampo/[\w/]+|fm\w+)\.py:[\w<>]+")  # hooks._where names plugin frames from its lib
@@ -374,7 +389,7 @@ def digest(p, recheck=True):
             f"\"{d['text']}\" ({d.get('why') or 'no reason given'})" for d in dead[:5])]
     kinds_ev = collections.Counter(e.get("kind") for e in events)
     counts = {"tool calls": kinds_ev["tool"], "guard blocks": kinds_ev["guard_block"],
-              "failed tool calls": kinds_ev["tool_fail"],
+              "failed tool calls": len(failed),  # T-4999: an answer (grep's no match, a wait still running) isn't one
               "drive stops": kinds_ev["drive_reload"] + kinds["stop_gate"], "steers": len(said)}
     last = meta.get("rsi_counts") or {}
     if last.get("tool calls") and counts["tool calls"]:  # T-0187: did the last pass's fixes make it better
@@ -445,8 +460,9 @@ def minutes(days=7):
     ev = list(c.global_events(since))  # rotated logs too
     ms = lambda kind: sum(e["ms"] for e in ev if e.get("kind") == kind and isinstance(e.get("ms"), (int, float)))
     n = lambda kind: sum(e.get("kind") == kind for e in ev)
+    retried = sum(e.get("kind") == "tool_fail" and not _a_no(e) for e in ev)  # T-4999: an answer costs no retry
     return {"guard blocks": round(n("guard_block") * RETRY_S / 60, 1),
-            "failed tool calls": round((ms("tool_fail") / 1000 + n("tool_fail") * RETRY_S) / 60, 1),
+            "failed tool calls": round((ms("tool_fail") / 1000 + retried * RETRY_S) / 60, 1),
             "hook time": round(ms("hook_ms") / 60000, 1)}
 
 

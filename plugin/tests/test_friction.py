@@ -81,6 +81,27 @@ class Friction(ForemanTestCase):
         self.assertIn("1× Bash python3: Exit code 1", out)
         self.assertNotIn("grep -q foo", out)  # exit 1 is grep's 'no match', not a failure
 
+    def test_a_wait_still_running_or_a_red_evidence_run_is_an_answer_not_friction(self):
+        """T-4999: `task wait` exits 124 (still running) or 1 (it ended unfinished) and `task evidence --run` passes on
+        its command's exit (cargo's 101 is a red test): answers the caller asked for, 190 of a day's failed tool calls"""
+        answers = [("sampo task wait T-1 --timeout 60", "Exit code 124"), ("cd /x && fm task wait T-2", "Exit code 1"),
+                   ("sampo task evidence T-1 --step 1 --run 'cargo test'", "Exit code 101"),
+                   ("grep -q foo bar.txt", "Exit code 1")]
+        failures = [("sampo task wait T-1", "Exit code 2"), ("sampo task evidence T-1 --step 1 --run 'cargo test'",
+                                                             "Exit code 1"),
+                    ("sampo task waits T-1", "Exit code 124"), ("grep -q foo bar.txt", "Exit code 124"),
+                    ("fm task evidence T-1 --step 1 --typed done", "Exit code 101")]
+        for cmd, err in answers + failures:
+            self.hook("PostToolUseFailure", {"tool_name": "Bash", "tool_input": {"command": cmd}, "error": err})
+        out = self.fm("friction").stdout
+        self.assertIn("1× Bash sampo: Exit code 2", out)
+        self.assertIn("1× Bash sampo: Exit code 1", out)  # an evidence run's exit 1 is still a failure
+        self.assertIn("1× Bash sampo: Exit code 124", out)  # `task waits` is no wait
+        self.assertIn("1× Bash grep: Exit code 124", out)  # grep's 124 is no 'no match' (exit 1 is)
+        self.assertIn("1× Bash fm: Exit code 101", out)  # 101 is an answer only from --run
+        self.assertNotIn("Bash sampo: Exit code 101", out)
+        self.assertNotIn("Bash fm: Exit code 1 ", out)
+
     def test_digest_labels_downstream_project_friction(self):
         # T-0435: _ledgers read every project's ledger but dropped which one a line came from: JARVIS's steers and
         # corrections reached Foreman's pass unlabelled, and how much friction each project had wasn't visible
