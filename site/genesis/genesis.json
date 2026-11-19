@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-19T13:32:55Z",
- "rev": "6b2d2f5c3",
+ "updated": "2026-11-19T14:37:28Z",
+ "rev": "045b17dea",
  "capabilities": [
   {
    "n": 1,
@@ -61738,15 +61738,15 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 865,
+ "unproven": 866,
  "unproven_kinds": {
-  "typed": 80,
-  "meaning-user": 87,
-  "research-uncited": 29,
-  "meaning-notes": 445,
-  "docs": 172,
+  "typed": 82,
+  "meaning-user": 86,
+  "research-uncited": 28,
+  "meaning-notes": 446,
+  "docs": 169,
   "red": 86,
-  "perf-typed": 150,
+  "perf-typed": 152,
   "ui-unshot": 3,
   "infra": 7,
   "data": 4,
@@ -62956,13 +62956,13 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 70132,
+   "generated": 70832,
    "write": {
     "title": 450,
-    "line": 3828,
-    "payoff": 57,
-    "kill test": 259,
-    "code": 33
+    "line": 3878,
+    "payoff": 58,
+    "kill test": 281,
+    "code": 34
    },
    "dups": {
     "exact": 16,
@@ -62970,14 +62970,14 @@
     "shingle": 0
    },
    "rejected": {
-    "kill": 34984,
+    "kill": 35331,
     "tier": 21623,
-    "novelty": 191
+    "novelty": 192
    },
-   "merged": 2485,
-   "kept": 2713,
-   "pending": 358,
-   "pooled": 2994
+   "merged": 2507,
+   "kept": 2748,
+   "pending": 290,
+   "pooled": 3283
   },
   "families": [
    {
@@ -63016,7 +63016,7 @@
    },
    {
     "id": "F-013109",
-    "size": 598,
+    "size": 602,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -64557,6 +64557,38 @@
     "evidence": "",
     "kinds": [
      "performance"
+    ]
+   },
+   {
+    "id": "F-069779",
+    "size": 1,
+    "lead": "Generate a parallel branch where the refactor succeeds flawlessly",
+    "today": "Today you can't prove a risky refactor works without breaking production or spending weeks on manual testing.",
+    "with_this": "With this, you can inspect a fully executable ghost version of your codebase where the change is complete, stable, and tested, giving you a concrete target to match.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "onboarding"
+    ]
+   },
+   {
+    "id": "F-069786",
+    "size": 1,
+    "lead": "Ghost-write hardware-level console bridges for mobile runtime",
+    "today": "Today you can't execute raw Windows console commands via ctypes on mobile platforms",
+    "with_this": "With this, you can bridge native Windows terminal logic to mobile environments without rewriting the core logic",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "features"
     ]
    },
    {
@@ -66212,44 +66244,12 @@
     "kinds": [
      "performance"
     ]
-   },
-   {
-    "id": "F-010601",
-    "size": 1,
-    "lead": "Insure every refactor against production breakage",
-    "today": "Today you can't know the odds that a refactor will break something in production before you merge it.",
-    "with_this": "With this, you can buy coverage on a refactor and pay a premium based on its real breakage risk, so risky changes get more review and safe ones ship faster.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "refactors"
-    ]
-   },
-   {
-    "id": "F-010658",
-    "size": 1,
-    "lead": "Let a market of agents bid to fix your open issues",
-    "today": "Today you can't get fast, honest estimates on which of your open problems is worth fixing first, so they pile up.",
-    "with_this": "With this, you can clear your issue list in the order that matters, because agents compete to show you the cheapest real fix for each one.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "features"
-    ]
    }
   ],
-  "families_total": 1914,
+  "families_total": 1944,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2713
+   "total": 2748
   }
  },
  "steer": {
@@ -66283,7 +66283,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.3,
+    "idle_h": 271.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66306,7 +66306,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.5,
+    "idle_h": 271.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66329,7 +66329,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.3,
+    "idle_h": 271.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66352,7 +66352,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.4,
+    "idle_h": 271.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66375,7 +66375,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.2,
+    "idle_h": 271.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66398,7 +66398,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.2,
+    "idle_h": 271.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66421,7 +66421,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 269.9,
+    "idle_h": 271.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66444,7 +66444,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.0,
+    "idle_h": 271.0,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66467,7 +66467,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.0,
+    "idle_h": 271.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66490,7 +66490,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.7,
+    "idle_h": 272.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66513,7 +66513,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.3,
+    "idle_h": 272.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66536,7 +66536,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.3,
+    "idle_h": 272.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66559,7 +66559,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.4,
+    "idle_h": 272.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66582,7 +66582,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.4,
+    "idle_h": 272.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66605,7 +66605,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.2,
+    "idle_h": 272.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66628,7 +66628,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.2,
+    "idle_h": 272.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66651,7 +66651,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.2,
+    "idle_h": 272.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66674,7 +66674,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.1,
+    "idle_h": 272.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66697,7 +66697,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 271.0,
+    "idle_h": 272.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66720,7 +66720,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.9,
+    "idle_h": 272.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66743,7 +66743,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.9,
+    "idle_h": 272.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66766,7 +66766,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.9,
+    "idle_h": 272.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66789,7 +66789,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.7,
+    "idle_h": 271.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66812,7 +66812,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.7,
+    "idle_h": 271.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66835,7 +66835,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.7,
+    "idle_h": 271.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66858,7 +66858,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 270.8,
+    "idle_h": 271.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
