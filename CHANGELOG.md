@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- Benchmark sessions run unattended on a time budget: an early stop is nudged up to 3 times (`--nudges N`, 0 for an un-nudged baseline) only while enough time is left, and each run records questions, stalls and interventions, shown in compare and the gate (T-3365).
 - The live page's Moons tile draws a sparkline of kept moons beside its count, like the other five counter tiles (T-3130).
 - The live page's forge scene draws about 30 frames a second while nothing is in flight (its embers, smoke and hammer need no more) and every frame again for a spark, an arrival or a pulse; it reports its idle frame times on the canvas. No page text in either look is under 11px, nor any label on the forge or the network canvas. Below 1400px the focus plaque is tighter and Jeff's towers st… (T-3019).
 - Ward writer index: every route inline Python takes to a Sampo module is judged (sys.modules, pkgutil, runpy, importlib.util, operator lookups, sys.path edits, a computed import name, a shadow sampo folder), and the index fails closed and is built off the hook path, so a cold tree no longer stalls a command for 4 s (T-4930).
