@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-19T05:49:06Z",
+ "updated": "2026-11-19T06:54:33Z",
  "rev": "fdf50b3b0",
  "capabilities": [
   {
@@ -62956,12 +62956,12 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 65342,
+   "generated": 65809,
    "write": {
     "title": 444,
-    "line": 3446,
+    "line": 3484,
     "payoff": 41,
-    "kill test": 235,
+    "kill test": 236,
     "code": 33
    },
    "dups": {
@@ -62970,14 +62970,14 @@
     "shingle": 0
    },
    "rejected": {
-    "kill": 32858,
+    "kill": 32999,
     "tier": 21623,
-    "novelty": 179
+    "novelty": 182
    },
-   "merged": 2225,
-   "kept": 2505,
-   "pending": 316,
-   "pooled": 1281
+   "merged": 2256,
+   "kept": 2526,
+   "pending": 387,
+   "pooled": 1442
   },
   "families": [
    {
@@ -63016,7 +63016,7 @@
    },
    {
     "id": "F-013109",
-    "size": 558,
+    "size": 561,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -63081,6 +63081,23 @@
     ]
    },
    {
+    "id": "F-000412",
+    "size": 3,
+    "lead": "Breed a generation of refactor variants and keep the best lineage",
+    "today": "Today you can't compare two competing refactors of the same code because they never run against the same workload.",
+    "with_this": "With this, you can pick the best redesign from a field of real alternatives: several refactor lineages run side by side, and the one that keeps your code healthiest becomes the new trunk.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "data",
+     "refactors"
+    ]
+   },
+   {
     "id": "F-039053",
     "size": 3,
     "lead": "Heal onboarding burnout by adjusting task complexity",
@@ -63128,23 +63145,6 @@
      "observability",
      "performance",
      "problem solving"
-    ]
-   },
-   {
-    "id": "F-000412",
-    "size": 2,
-    "lead": "Breed a generation of refactor variants and keep the best lineage",
-    "today": "Today you can't compare two competing refactors of the same code because they never run against the same workload.",
-    "with_this": "With this, you can pick the best redesign from a field of real alternatives: several refactor lineages run side by side, and the one that keeps your code healthiest becomes the new trunk.",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "data",
-     "refactors"
     ]
    },
    {
@@ -66242,10 +66242,10 @@
     ]
    }
   ],
-  "families_total": 1759,
+  "families_total": 1775,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2505
+   "total": 2526
   }
  },
  "steer": {
@@ -66279,7 +66279,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.6,
+    "idle_h": 263.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -66302,7 +66302,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.8,
+    "idle_h": 263.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -66325,7 +66325,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.6,
+    "idle_h": 263.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -66348,7 +66348,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.6,
+    "idle_h": 263.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -66371,7 +66371,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.4,
+    "idle_h": 263.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -66394,7 +66394,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.5,
+    "idle_h": 263.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -66417,7 +66417,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.2,
+    "idle_h": 263.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -66440,7 +66440,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.2,
+    "idle_h": 263.3,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -66463,7 +66463,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 262.3,
+    "idle_h": 263.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -66486,7 +66486,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 264.0,
+    "idle_h": 265.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -66509,7 +66509,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.6,
+    "idle_h": 264.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -66532,7 +66532,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.6,
+    "idle_h": 264.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -66555,7 +66555,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.7,
+    "idle_h": 264.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -66578,7 +66578,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.7,
+    "idle_h": 264.8,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -66601,7 +66601,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.5,
+    "idle_h": 264.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -66624,7 +66624,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.4,
+    "idle_h": 264.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -66647,7 +66647,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.5,
+    "idle_h": 264.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -66670,7 +66670,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.4,
+    "idle_h": 264.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -66693,7 +66693,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.2,
+    "idle_h": 264.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -66716,7 +66716,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.2,
+    "idle_h": 264.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -66739,7 +66739,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.2,
+    "idle_h": 264.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -66762,7 +66762,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.2,
+    "idle_h": 264.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -66785,7 +66785,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.0,
+    "idle_h": 264.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -66808,7 +66808,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.0,
+    "idle_h": 264.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -66831,7 +66831,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.0,
+    "idle_h": 264.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -66854,7 +66854,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 263.1,
+    "idle_h": 264.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
