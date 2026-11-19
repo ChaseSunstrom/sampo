@@ -45,7 +45,7 @@ const MIRRORS: [(&str, &str); 31] = [
     ("hooks._cwd", "5dfb7c01da10"), ("budget.check_subagent", "4575be89ca9a"),
     ("budget.subagent_pause", "8ea366b833a0"), ("budget.rate_limits", "37cdc34daf37"),
     ("budget._recent_snaps", "fa6247e38a3c"), ("core.mirror_env", "e3ea72852a4e"), ("core.state_dir", "097be350d697"),
-    ("core.foreman_home", "c516b6005ee9"), ("core.state_fallbacks", "5ad5949d011c"), ("core.gettempdir", "c30d095e6f0f"),
+    ("core.foreman_home", "ba2f19682ef6"), ("core.state_fallbacks", "ec57b57bbbae"), ("core.gettempdir", "c30d095e6f0f"),
     ("core._marker_default", "cb40c01d2be1"), ("core._private", "7cfbfb951235"), ("core._writable", "3b299266b366"),
     ("core.now", "bde6d34a80ab"), ("core.clock", "6c9ac7951406"), ("core.host_load", "b2109cf9e763"),
     ("core.append_line", "f4d2c835d3b8"), ("core.find_project", "10122dfacd1b"), ("core._project", "5f97218e3254"),
@@ -402,20 +402,33 @@ fn state_dir() -> Option<PathBuf> {
     let home = home()?;
     let fhome = match fenv("HOME").filter(|v| !v.is_empty()) {
         Some(h) => abspath(&h)?,
-        None => Path::new(&home).join(".claude/foreman"),
+        None => {
+            // T-5060: core.foreman_home: ~/.claude/sampo when it is a folder (a link to one counts) and the old name is
+            // no real folder (gone, or a link: symlink_metadata never follows it), else ~/.claude/foreman
+            let new = Path::new(&home).join(".claude/sampo");
+            let old = Path::new(&home).join(".claude/foreman");
+            let old_real = old.symlink_metadata().map(|m| m.file_type().is_dir()).unwrap_or(false);
+            if new.is_dir() && !old_real { new } else { old }
+        }
     };
     let default = fhome.join("state");
     let xdg = std::env::var("XDG_STATE_HOME").ok().filter(|v| !v.is_empty());
-    let mut alts = vec![Path::new(&xdg.unwrap_or_else(|| format!("{home}/.local/state"))).join("foreman")];
+    let xdg = xdg.unwrap_or_else(|| format!("{home}/.local/state"));
+    // core.state_fallbacks: sampo's names, then the foreman ones, a marker in any of them is Python's to follow
+    let mut alts = vec![Path::new(&xdg).join("sampo"), Path::new(&xdg).join("foreman")];
     let uid = unsafe { getuid() };
+    let mut temps = vec![];
     for t in ["TMPDIR", "TEMP", "TMP"].iter().filter_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty())) {
         if !t.starts_with('/') {
             return None; // core.gettempdir() (tempfile's candidates and test) would resolve it against the cwd
         }
-        alts.push(Path::new(&t).join(format!("foreman-state-{uid}")));
+        temps.push(t);
     }
-    for t in ["/tmp", "/var/tmp", "/usr/tmp"] {
-        alts.push(Path::new(t).join(format!("foreman-state-{uid}")));
+    temps.extend(["/tmp", "/var/tmp", "/usr/tmp"].map(String::from));
+    for name in ["sampo", "foreman"] {
+        for t in &temps {
+            alts.push(Path::new(t).join(format!("{name}-state-{uid}")));
+        }
     }
     for alt in alts {
         match fs::symlink_metadata(alt.join(".foreman-state.json")) {

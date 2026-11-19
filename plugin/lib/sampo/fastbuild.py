@@ -260,13 +260,16 @@ def _own_plain(path, file=True):
 
 
 def _marker_dirs(home, environ=None):
-    """Every folder sampo-fast looks in for a state-fallback marker (its state_dir): $XDG_STATE_HOME/foreman, else
-    ~/.local/state/foreman, a foreman-state-<uid> in each of $TMPDIR, $TEMP, $TMP, and in /tmp, /var/tmp, /usr/tmp."""
+    """Every folder sampo-fast looks in for a state-fallback marker (its state_dir): $XDG_STATE_HOME/sampo and /foreman,
+    else the same under ~/.local/state, a sampo-state-<uid> and a foreman-state-<uid> in each of $TMPDIR, $TEMP, $TMP,
+    and in /tmp, /var/tmp, /usr/tmp (T-5060: the sampo names are core.state_fallbacks' first, the foreman ones are kept)."""
     env = os.environ if environ is None else environ
     uid = os.getuid()
-    out = [os.path.join(env.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state"), "foreman")]
-    out += [os.path.join(env[k], f"foreman-state-{uid}") for k in ("TMPDIR", "TEMP", "TMP") if env.get(k, "").startswith("/")]
-    out += [os.path.join(t, f"foreman-state-{uid}") for t in ("/tmp", "/var/tmp", "/usr/tmp")]
+    xdg = env.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
+    out = [os.path.join(xdg, "sampo"), os.path.join(xdg, "foreman")]
+    temps = [env[k] for k in ("TMPDIR", "TEMP", "TMP") if env.get(k, "").startswith("/")] + ["/tmp", "/var/tmp", "/usr/tmp"]
+    for name in ("sampo", "foreman"):
+        out += [os.path.join(t, f"{name}-state-{uid}") for t in temps]
     return out
 
 
@@ -286,13 +289,15 @@ def marker_in_effect(home=None, environ=None):
     return ""
 
 
-def _fixed_marker():
+def _fixed_marker(shared=("/tmp", "/var/tmp", "/usr/tmp")):
     """The state-fallback marker in a folder every process shares (/tmp and its kin), as a path; "" when none. The
-    Python hook follows it into the user's real state: no probe runs then, and no build is worth starting."""
-    for t in ("/tmp", "/var/tmp", "/usr/tmp"):
-        path = os.path.join(t, f"foreman-state-{os.getuid()}", ".foreman-state.json")
-        if os.path.lexists(path):
-            return path
+    Python hook follows it into the user's real state: no probe runs then, and no build is worth starting. T-5060:
+    sampo-state-<uid> as well as the old foreman-state-<uid> (core.state_fallbacks names both)."""
+    for name in ("sampo", "foreman"):
+        for t in shared:
+            path = os.path.join(t, f"{name}-state-{os.getuid()}", ".foreman-state.json")
+            if os.path.lexists(path):
+                return path
     return ""
 
 

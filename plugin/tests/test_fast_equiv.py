@@ -267,6 +267,16 @@ class Reads(Base):
             json.dump({"default": "/elsewhere"}, f)
         self.assertFalse(self.pair({"tool_name": "Read", "tool_input": {"file_path": HOOK}}))
 
+    def test_a_marker_in_a_sampo_named_fallback_defers_too(self):
+        """T-5060: core.state_fallbacks names sampo's folders first; the binary looks in them as well as the foreman ones."""
+        alt = os.path.join(self.tmp, "xdg", "sampo")
+        os.makedirs(alt, mode=0o700)
+        read = {"tool_name": "Read", "tool_input": {"file_path": HOOK}}
+        self.assertTrue(self.pair(read), "a bare fallback dir")
+        with open(os.path.join(alt, ".foreman-state.json"), "w") as f:
+            json.dump({"default": "/elsewhere"}, f)
+        self.assertFalse(self.pair(read))
+
 
 class Agents(Base):
     def test_budget_cases(self):
@@ -1045,6 +1055,21 @@ class Installer(Base):
             ok, why = fastbuild.probe(self.bin, self.plug)
             self.assertFalse(ok)
             self.assertIn("state-fallback marker", why)
+
+    def test_a_marker_in_either_name_of_a_shared_folder_is_found(self):
+        """T-5060: sampo-state-<uid> and the old foreman-state-<uid> in each shared folder; no marker, none found."""
+        shared = [os.path.join(self.tmp, d) for d in ("t1", "t2", "t3")]
+        for d in shared:
+            os.makedirs(d)
+        self.assertEqual(fastbuild._fixed_marker(shared), "")
+        for name, where in (("sampo", shared[1]), ("foreman", shared[2])):
+            folder = os.path.join(where, f"{name}-state-{os.getuid()}")
+            os.makedirs(folder)
+            with open(os.path.join(folder, ".foreman-state.json"), "w") as f:
+                f.write("{}")
+            with self.subTest(name=name):
+                self.assertEqual(fastbuild._fixed_marker(shared), os.path.join(folder, ".foreman-state.json"))
+            os.remove(os.path.join(folder, ".foreman-state.json"))
 
     def test_the_installer_never_writes_a_state_marker(self):
         """default_workdir reads the marker; core.state_dir would create one when the default state is unwritable."""

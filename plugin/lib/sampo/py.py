@@ -14,8 +14,11 @@ def ok(v):
 
 
 def saved_path():
-    home = os.environ.get("SAMPO_HOME") or os.environ.get("FOREMAN_HOME") or os.path.join(  # before core's mirror
-        os.path.expanduser("~"), ".claude", "foreman")
+    home = os.environ.get("SAMPO_HOME") or os.environ.get("FOREMAN_HOME")  # before core's mirror
+    if not home:  # T-5060: core.foreman_home's rule (test_home_slug pins them equal)
+        base = os.path.join(os.path.expanduser("~"), ".claude")
+        new, old = os.path.join(base, "sampo"), os.path.join(base, "foreman")
+        home = new if os.path.isdir(new) and (os.path.islink(old) or not os.path.isdir(old)) else old
     return os.path.join(home, "state", "python")
 
 

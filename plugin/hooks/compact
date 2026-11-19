@@ -63,6 +63,16 @@ def shadow(pl, out, err, folder):
     return 0
 
 
+def home_dir():
+    """T-5060: core.foreman_home's rule, mirrored (this hook imports nothing of Sampo's); test_home_slug pins them equal."""
+    h = os.environ.get("FOREMAN_HOME")
+    if h:
+        return os.path.abspath(os.path.expanduser(h))
+    base = os.path.join(os.path.expanduser("~"), ".claude")
+    new, old = os.path.join(base, "sampo"), os.path.join(base, "foreman")
+    return new if os.path.isdir(new) and (os.path.islink(old) or not os.path.isdir(old)) else old
+
+
 def main():
     try:
         pl = json.loads(sys.stdin.read() or "{}")
@@ -74,7 +84,7 @@ def main():
     out, err = str(r.get("stdout") or ""), str(r.get("stderr") or "")
     if len(out) + len(err) <= LIMIT:
         return 0
-    home = os.environ.get("FOREMAN_HOME") or os.path.join(os.path.expanduser("~"), ".claude", "foreman")
+    home = home_dir()
     # T-0821: FOREMAN_STATE as fmcore.state_dir reads it. ponytail: state_dir's fallback for an unwritable default
     # isn't mirrored (that case passes through below); import its logic if sandboxed sessions need compacting
     state = os.path.abspath(os.path.expanduser(os.environ["FOREMAN_STATE"])) if os.environ.get("FOREMAN_STATE") \

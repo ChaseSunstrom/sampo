@@ -31,9 +31,9 @@ class PathsAndProjects(ForemanTestCase):
         os.chmod(self.home, 0o500)
         try:
             os.environ["XDG_STATE_HOME"] = os.path.join(self.tmp, "xdg")
-            self.assertEqual(c.state_dir(), os.path.join(self.tmp, "xdg", "foreman"))
+            self.assertEqual(c.state_dir(), os.path.join(self.tmp, "xdg", "sampo"))  # T-5060: a new fallback takes sampo's name
             p = c.init_project(self.repo)
-            self.assertTrue(p.dir.startswith(os.path.join(self.tmp, "xdg", "foreman")))
+            self.assertTrue(p.dir.startswith(os.path.join(self.tmp, "xdg", "sampo")))
         finally:
             os.chmod(self.home, 0o700)
 
@@ -48,14 +48,15 @@ class PathsAndProjects(ForemanTestCase):
         try:
             with mock.patch.dict(os.environ, {"FOREMAN_STATE_FALLBACK": "0"}):
                 self.assertEqual(c.state_dir(), default)
-            self.assertFalse(os.path.exists(os.path.join(self.tmp, "xdg", "foreman")), "nothing copied")
+            for name in ("sampo", "foreman"):
+                self.assertFalse(os.path.exists(os.path.join(self.tmp, "xdg", name)), "nothing copied")
         finally:
             os.chmod(default, 0o700)
 
     def test_fallback_is_sticky_and_shared_and_migrates_existing_state(self):
         # A sandboxed fm (default read-only) and the hooks (default writable) must end up in the same place.
         os.environ["XDG_STATE_HOME"] = os.path.join(self.tmp, "xdg")
-        alt = os.path.join(self.tmp, "xdg", "foreman")
+        alt = os.path.join(self.tmp, "xdg", "sampo")
         p = c.init_project(self.repo)
         c.log_event(p, "note", data={"x": 1})
         default = os.path.join(self.home, "state")

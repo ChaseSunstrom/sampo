@@ -164,11 +164,24 @@ class Ctx:
         self.train_hold = None
 
     @property
+    def homes(self):
+        """T-5060: every folder that is Sampo's home: the one this process resolved and both of ~/.claude's names for it
+        (foreman, sampo), each as named and really. A stray ~/.claude/sampo can make the process resolve it while the
+        real home is ~/.claude/foreman: state and code under either stay protected."""
+        named = self._home_names
+        return list(dict.fromkeys([*named, *(os.path.realpath(h) for h in named)]))
+
+    @property
+    def _home_names(self):
+        under = [os.path.join(self.home, ".claude", n) for n in ("foreman", "sampo")] if self.home else []
+        return [h for h in dict.fromkeys([self.foreman_home, *under]) if h]
+
+    @property
     def state_dirs(self):
-        """T-1318: every place state lives, judged the same way: Sampo's own state folder and an explicit one too
-        (~/.claude linked into a dotfiles repo, FOREMAN_STATE under macOS's linked /tmp), each as named and with its
-        folder resolved (the leaf never followed), then the fallbacks."""
-        named = [d for d in (os.path.join(self.foreman_home, "state") if self.foreman_home else None, self.state_dir) if d]
+        """T-1318: every place state lives, judged the same way: Sampo's own state folder (under each name of the home)
+        and an explicit one too (~/.claude linked into a dotfiles repo, FOREMAN_STATE under macOS's linked /tmp), each
+        as named and with its folder resolved (the leaf never followed), then the fallbacks."""
+        named = [d for d in (*(os.path.join(h, "state") for h in self._home_names), self.state_dir) if d]
         return list(dict.fromkeys([*named, *(os.path.join(os.path.realpath(os.path.dirname(d)), os.path.basename(d))
                                              for d in named), *self.state_fallbacks]))
 
@@ -822,7 +835,7 @@ _AGENT_WIRING = lazy(r"/\.codex/(?:hooks\.json|config\.toml)$|/\.gemini/settings
 def _homes(ctx):
     """T-2967: the home as named and where it really is (after sampo migrate the old name is a symlink to the new):
     core is judged under both."""
-    return list(dict.fromkeys([ctx.foreman_home, os.path.realpath(ctx.foreman_home)]))
+    return ctx.homes  # T-5060: and ~/.claude's other name for it (a stray sampo folder beside the real foreman one)
 
 
 def _is_core(path, ctx):
@@ -3487,8 +3500,7 @@ def _writes_unrun_source(line, cmd, ctx):
     path = _resolve(_expand(m.group(1), ctx), ctx.cwd)
     stem = re.escape(os.path.splitext(os.path.basename(path))[0])
     real = os.path.realpath(path)  # a symlink in plugin/lib to a scratch script isn't Foreman's code
-    home = os.path.realpath(ctx.foreman_home)
-    rel = os.path.relpath(real, home) if _strictly_under(real, home) else ""
+    rel = next((os.path.relpath(real, h) for h in ctx.homes if _strictly_under(real, h)), "")  # T-5060: either name
     return bool(_SOURCE_DIRS.match(rel)) and len(re.findall(rf"\b{stem}\b", _drop_data_heredocs(cmd))) == 1
 
 

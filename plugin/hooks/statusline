@@ -82,9 +82,19 @@ def load_manifest(state):
         return None
 
 
+def home_dir():
+    """T-5060: core.foreman_home's rule, mirrored (the line never imports core); test_home_slug pins them equal."""
+    h = os.environ.get("FOREMAN_HOME")
+    if h:
+        return os.path.abspath(os.path.expanduser(h))
+    base = os.path.join(os.path.expanduser("~"), ".claude")
+    new, old = os.path.join(base, "sampo"), os.path.join(base, "foreman")
+    return new if os.path.isdir(new) and (os.path.islink(old) or not os.path.isdir(old)) else old
+
+
 def quick_manifest():
     """The install manifest without importing fmcore (None when state isn't in the usual place)."""
-    home = os.environ.get("FOREMAN_HOME") or os.path.expanduser("~/.claude/foreman")
+    home = home_dir()
     return load_manifest(os.environ.get("FOREMAN_STATE") or os.path.join(home, "state"))
 
 

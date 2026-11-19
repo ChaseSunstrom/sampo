@@ -1590,6 +1590,37 @@ class StateFallback(GuardCase):
                 self.assertBlocked(g.check("Bash", {"command": f"cp /etc/hostname {path}"}, ctx), "state-direct")
 
 
+class BothHomeNames(GuardCase):
+    """T-5060: ~/.claude/foreman and ~/.claude/sampo are each the home to the guard, whichever one the process resolved:
+    a stray ~/.claude/sampo must not leave the real home's state and code unprotected."""
+    def test_state_and_core_under_either_name_are_guarded_from_either(self):
+        base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, base)
+        user = os.path.join(base, "user")
+        names = {n: os.path.join(user, ".claude", n) for n in ("foreman", "sampo")}
+        for path in names.values():
+            os.makedirs(os.path.join(path, "state"))
+            os.makedirs(os.path.join(path, "plugin", "lib"))
+        work = os.path.join(base, "work")
+        os.makedirs(work)
+        for resolved in names:
+            ctx = g.Ctx(cwd=work, project_root=None, home=user, foreman_home=names[resolved])
+            for named, path in names.items():
+                with self.subTest(resolved=resolved, named=named):
+                    self.assertIn("state-direct", g.classify_write(os.path.join(path, "state", "tasks.json"), ctx))
+                    self.assertIn("core", g.classify_write(os.path.join(path, "plugin", "lib", "x.py"), ctx))
+            self.assertNotIn("state-direct", g.classify_write(os.path.join(work, "notes.txt"), ctx))
+
+    def test_a_link_between_the_names_is_guarded_at_its_real_path_too(self):
+        base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, base)
+        user, real = os.path.join(base, "user"), os.path.join(base, "user", ".claude", "sampo")
+        os.makedirs(os.path.join(real, "state"))
+        os.symlink(real, os.path.join(user, ".claude", "foreman"))
+        ctx = g.Ctx(cwd=base, project_root=None, home=user, foreman_home=os.path.join(user, ".claude", "foreman"))
+        self.assertIn("state-direct", g.classify_write(os.path.join(real, "state", "tasks.json"), ctx))
+
+
 class MergeHint(GuardCase):
     def test_git_merge_refusal_names_lane_merge(self):
         # T-0394 (self-improvement pass): builders and the main thread typed `git merge --no-ff worktree-agent-…` on

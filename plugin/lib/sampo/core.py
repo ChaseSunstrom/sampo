@@ -271,7 +271,11 @@ def foreman_home():
     h = os.environ.get("FOREMAN_HOME")
     if h:
         return os.path.abspath(os.path.expanduser(h))
-    return os.path.join(os.path.expanduser("~"), ".claude", "foreman")
+    base = os.path.join(os.path.expanduser("~"), ".claude")
+    new, old = os.path.join(base, "sampo"), os.path.join(base, "foreman")
+    # T-5060: sampo's folder only once the old name is no real folder (gone, or the link the move leaves): a stray
+    # mkdir of ~/.claude/sampo must not hide the real home's state and code
+    return new if os.path.isdir(new) and (os.path.islink(old) or not os.path.isdir(old)) else old
 
 
 def _writable(path):
@@ -419,7 +423,9 @@ APPROVAL_TTL = 24 * 3600  # seconds a pending request, or an open permission dia
 
 def state_fallbacks():
     xdg = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    return [os.path.join(xdg, "foreman"), os.path.join(gettempdir(), f"foreman-state-{os.getuid()}")]
+    tmp, uid = gettempdir(), os.getuid()  # T-5060: sampo's names first (a fallback made now), the foreman ones kept (a marker already there)
+    return [os.path.join(xdg, "sampo"), os.path.join(xdg, "foreman"), os.path.join(tmp, f"sampo-state-{uid}"),
+            os.path.join(tmp, f"foreman-state-{uid}")]
 
 
 def _private(path):
@@ -525,7 +531,9 @@ def restore_default_state():
     if not _writable(default):
         raise OSError(f"{default} still isn't writable; state stays in {alt}")
     shutil.copytree(alt, default, ignore=shutil.ignore_patterns(".lock", _STATE_MARKER), dirs_exist_ok=True)
-    os.remove(os.path.join(alt, _STATE_MARKER))
+    for other in state_fallbacks():  # T-5060: a marker in each name's fallback that names this default goes, or the
+        if _marker_default(other) == default:  # next call would follow the one left behind back out of the restore
+            os.remove(os.path.join(other, _STATE_MARKER))
     return default
 
 
@@ -533,9 +541,56 @@ def projects_dir():
     return os.path.join(state_dir(), "projects")
 
 
-def slug_for(root):
+SLUG_ALIASES = "slug-aliases.json"  # T-5060: under the home: {root: slug}, a root that moved and the slug it keeps
+_SLUG_SHAPE = lazy(r"[a-z0-9]+(?:-[a-z0-9]+)*")  # what slug_for makes: a record can name no other (never a path)
+
+
+def natural_slug(root):
     name = re.sub(r"[^a-z0-9]+", "-", os.path.basename(root.rstrip("/")).lower()).strip("-") or "root"
     return f"{name}-{sha1(root.encode()).hexdigest()[:6]}"
+
+
+def _slug_aliases():
+    """{root: slug} from the alias record; {} when it is missing, unreadable or not an object. Entries that aren't a
+    slug's shape are dropped: the value becomes a folder name under state/projects."""
+    try:
+        with open(os.path.join(foreman_home(), SLUG_ALIASES), encoding="utf-8") as f:
+            data = json.loads(f.read(1 << 20))
+    except (OSError, ValueError):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(k, str) and isinstance(v, str) and len(v) <= 120
+            and _SLUG_SHAPE.fullmatch(v)} if isinstance(data, dict) else {}
+
+
+def slug_for(root):
+    """T-5060: the project's folder name: its root's name and a hash of the root, unless the root moved here and an alias
+    record (pin_slug) keeps the slug it had, so its tasks, state, units and lanes stay. Every other root hashes as ever."""
+    alias = _slug_aliases().get(root.rstrip("/") or "/")
+    return alias or natural_slug(root)
+
+
+def pin_slug(old_root, new_root):
+    """T-5060: record that the project at old_root now lives at new_root, so slug_for(new_root) is the slug it had.
+    Returns that slug. ValueError when old_root holds no project, or new_root already has one of its own (a pin would
+    hide it). A new_root that hashes to the slug on its own (a move back) needs no record. Chains are pinned when
+    written: old_root's slug is read through its own record."""
+    old_root, new_root = old_root.rstrip("/") or "/", new_root.rstrip("/") or "/"
+    slug = slug_for(old_root)
+    if not os.path.exists(os.path.join(projects_dir(), slug, "meta.json")):
+        raise ValueError(f"no project at {old_root} (slug {slug})")
+    own = natural_slug(new_root)
+    if own != slug and os.path.exists(os.path.join(projects_dir(), own, "meta.json")):
+        raise ValueError(f"{new_root} already has a project of its own ({own}); a pin would hide it")
+    home = foreman_home()
+    os.makedirs(home, exist_ok=True)
+    with lock(home):
+        aliases = _slug_aliases()
+        if own == slug:
+            aliases.pop(new_root, None)
+        else:
+            aliases[new_root] = slug
+        write_atomic(os.path.join(home, SLUG_ALIASES), json.dumps(aliases, indent=1, sort_keys=True) + "\n")
+    return slug
 
 
 def worktree_id(root):
