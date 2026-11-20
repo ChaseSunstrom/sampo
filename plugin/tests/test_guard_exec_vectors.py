@@ -929,6 +929,37 @@ class ScriptCache(GuardCase):
             self.assertIsNotNone(self.bash(f"bash {p}"))
             self.assertIn("rm-outside", [c for c, _ in g.findings("Bash", {"command": f"bash {p}"}, self.ctx())])
 
+    def test_a_script_without_mktemp_is_never_searched_whole_for_a_moved_tmpdir(self):
+        """T-4976: T-4811 searched the whole text for a moved TMPDIR before line 1 was read (11 ms on 30000 lines), so a
+        hosted runner's 0.05 s budget ran out first and the line above found only 'system'. The search is for the
+        mktemp literal, so it waits for a piece that holds mktemp, and runs once."""
+        seen = []
+        real = g._MKTEMP_MOVED
+
+        class Spy:
+            def search(self, s, *a):
+                seen.append(s)
+                return real.search(s, *a)
+
+        text = "rm -rf /home/other/x\n" + "echo hi\n" * 3000
+        with mock.patch.object(g, "_MKTEMP_MOVED", Spy()):
+            g._check_script(text, self.ctx(), 0, [])
+            self.assertNotIn(text, seen, "no mktemp: the whole text is never searched")
+            seen.clear()
+            late = text + 'w=$(mktemp -d)\nrm -rf "$w"\n' + "echo hi\n" * 3000
+            g._check_script(late, self.ctx(), 0, [])
+            self.assertEqual(seen.count(late), 1, "once a piece holds mktemp: the whole text, once")
+
+    def test_a_moved_tmpdir_anywhere_still_keeps_a_later_mktemp_unknown(self):
+        """T-4976: the lazy search keeps T-4811's rule: TMPDIR moved in any piece, before or after, leaves $w unknown."""
+        for text in ('export TMPDIR=/home/other\n' + "echo hi\n" * 400 + 'w=$(mktemp -d)\nrm -rf "$w"\n',
+                     'w=$(mktemp -d)\nrm -rf "$w"\n' + "echo hi\n" * 400 + 'export TMPDIR=/home/other\n'):
+            with self.subTest(first=text[:20]):
+                lazy_read = g._check_script(text, self.ctx(), 0, [])
+                with mock.patch.object(g, "_mktemp_literal", lambda s: s):
+                    unknown = g._check_script(text, self.ctx(), 0, [])
+                self.assertEqual(lazy_read, unknown, "a moved TMPDIR: mktemp is not read as a temp folder")
+
     def test_an_unfinished_removal_is_seen_through_keywords_assignments_quotes_and_cd_paths(self):
         for text in ("if cd /; then rm -rf etc; fi", "cd /; \\rm -rf etc", "cd /; X=1 rm -rf etc", 'cd /; "rm" -rf etc',
                      "cd ./a/../..\nrm -rf etc", "cd /\nX=1 Y=2 sudo rm -rf etc", "while cd /; do rm -rf etc; done",

@@ -8997,9 +8997,13 @@ def _check_script(text, ctx, depth, acc, path=None):
     # T-4811: `w=$(mktemp -d)` is the folder it is, as in a typed command (_mktemp_literal runs at depth 0 only, and a
     # piece is read at depth 1): a literal in the piece and in the lines carried on, so a later piece's `rm -rf "$w"` or
     # `trap 'rm -rf "$w"' EXIT` reads a temp folder, not an unknown name. Not where the script moves TMPDIR or PATH.
-    literal = _mktemp_literal if not _MKTEMP_MOVED.search(text) else (lambda s: s)
+    # T-4976: the whole-text search for a moved TMPDIR waits for a piece that holds mktemp (the literal needs one) and runs
+    # once: up front it cost 11 ms on 30000 lines before line 1 was read, and a hosted runner's small budget ran out first
+    moved = []
     for chunk in _script_chunks(text):
-        read = literal(chunk)
+        if "mktemp" in chunk and not moved:
+            moved.append(bool(_MKTEMP_MOVED.search(text)))
+        read = _mktemp_literal(chunk) if "mktemp" in chunk and not moved[0] else chunk  # no mktemp: nothing to make literal
         # core: a script of Foreman's own (evals) writes its checkout; only its state folder counts
         got = _read_piece("\n".join(_carried(state, read) + [read]), ctx, depth)
         # T-4774 review: the carried lines (a `curl … > f` of an earlier piece) are in front of this piece, and a
