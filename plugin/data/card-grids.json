@@ -1,0 +1,193 @@
+{
+  "_about": "T-3103: the card grids of sampo playbooks small, one entry per domain. A grid is name, ordered fields (each a list of values, one of them named stage), a target (cards wanted), and optional about, prompt (general | ui | plain), admit (general | ui), commands (first words a card may name beyond the base set) and candidates (values not in the grid yet, each with the words that propose it). A new domain is an entry here; smallcards.load_grids refuses a malformed one naming this file and the field.",
+  "grids": [
+    {
+      "name": "general",
+      "about": "kind of work x stack x stage x surface (T-2909)",
+      "prompt": "general",
+      "target": 5760,
+      "fields": [
+        {"name": "kind", "values": ["bugs", "features", "refactors", "migrations", "ops", "security", "performance", "data", "docs", "design", "releases", "onboarding"]},
+        {"name": "stack", "values": ["python", "js-ts", "rust", "c", "ruby", "shell", "sql", "css-html"]},
+        {"name": "stage", "values": ["capture", "plan", "execute", "verify", "review", "release"]},
+        {"name": "surface", "values": ["code", "UI", "design", "docs", "ops"]}
+      ]
+    },
+    {
+      "name": "ui",
+      "about": "component x platform x concern x stage (T-2994)",
+      "prompt": "ui",
+      "admit": "ui",
+      "target": 7680,
+      "fields": [
+        {"name": "component", "values": ["button", "form", "input", "select", "table", "list", "card", "modal", "menu", "nav", "tabs", "toast", "chart", "layout", "empty state", "onboarding"]},
+        {"name": "platform", "values": ["react", "vue", "svelte", "html-css", "tailwind", "swiftui", "flutter", "terminal-tui"]},
+        {"name": "concern", "values": ["accessibility", "responsive", "theming and dark mode", "motion", "loading", "empty and error states", "forms and validation", "performance", "i18n", "typography and design tokens"]},
+        {"name": "stage", "values": ["plan", "build", "verify"]}
+      ],
+      "candidates": [
+        {"field": "component", "value": "date picker", "words": ["date picker", "datepicker", "calendar widget"]},
+        {"field": "component", "value": "tooltip", "words": ["tooltip", "popover"]},
+        {"field": "component", "value": "accordion", "words": ["accordion", "disclosure"]},
+        {"field": "component", "value": "pagination", "words": ["pagination", "infinite scroll"]},
+        {"field": "platform", "value": "angular", "words": ["angular"]},
+        {"field": "platform", "value": "solid", "words": ["solidjs", "solid-js"]},
+        {"field": "platform", "value": "jetpack compose", "words": ["jetpack compose", "android compose"]},
+        {"field": "concern", "value": "keyboard navigation", "words": ["keyboard navigation", "focus order", "focus trap"]}
+      ]
+    },
+    {
+      "name": "languages",
+      "about": "a programming language beyond the general grid's eight stacks, the task a small model is given in it, and the stage",
+      "target": 1120,
+      "commands": ["go", "java", "javac", "mvn", "gradle", "dotnet", "php", "composer", "swift", "kotlinc", "sbt", "mix", "elixir", "ghc", "cabal", "lua", "luarocks", "dart", "perl", "julia", "g++"],
+      "fields": [
+        {"name": "language", "values": ["go", "java", "kotlin", "csharp", "php", "swift", "scala", "elixir", "haskell", "lua", "dart", "cpp", "perl", "julia"]},
+        {"name": "task", "values": ["testing", "error handling", "concurrency", "packaging and dependencies", "performance", "debugging", "file and network io", "text and strings", "build and tooling", "refactoring"]},
+        {"name": "stage", "values": ["plan", "execute", "verify", "review"]}
+      ],
+      "candidates": [
+        {"field": "language", "value": "zig", "words": ["zig", "ziglang"]},
+        {"field": "language", "value": "clojure", "words": ["clojure"]},
+        {"field": "language", "value": "ocaml", "words": ["ocaml"]},
+        {"field": "language", "value": "erlang", "words": ["erlang", "otp"]},
+        {"field": "language", "value": "fortran", "words": ["fortran"]},
+        {"field": "language", "value": "groovy", "words": ["groovy"]},
+        {"field": "language", "value": "objective-c", "words": ["objective-c", "objc"]},
+        {"field": "language", "value": "nim", "words": ["nim lang", "nimlang"]},
+        {"field": "language", "value": "webassembly", "words": ["webassembly", "wasm"]}
+      ]
+    },
+    {
+      "name": "ops-infra",
+      "about": "operations and infrastructure: an area, the environment it runs in, the concern and the stage",
+      "target": 1920,
+      "commands": ["docker", "kubectl", "helm", "terraform", "systemctl", "journalctl", "ss", "df", "du", "ps", "dig", "openssl", "nginx"],
+      "fields": [
+        {"name": "area", "values": ["containers", "kubernetes", "ci pipelines", "terraform and cloud", "networking and dns", "logs and metrics", "linux services", "backups and restore", "databases in production", "secrets and config", "incident response", "cost and capacity"]},
+        {"name": "environment", "values": ["local", "ci", "staging", "production"]},
+        {"name": "concern", "values": ["reliability", "security", "speed", "cost", "rollback"]},
+        {"name": "stage", "values": ["plan", "execute", "verify", "review"]}
+      ],
+      "candidates": [
+        {"field": "area", "value": "service mesh", "words": ["service mesh", "istio", "envoy"]},
+        {"field": "area", "value": "load balancing", "words": ["load balancer", "load balancing", "haproxy"]},
+        {"field": "area", "value": "cdn and caching", "words": ["cdn", "cloudflare", "cache invalidation"]},
+        {"field": "area", "value": "serverless", "words": ["serverless", "lambda function"]},
+        {"field": "area", "value": "disaster recovery", "words": ["disaster recovery", "failover"]},
+        {"field": "environment", "value": "edge", "words": ["edge node", "edge device"]}
+      ]
+    },
+    {
+      "name": "data-ml",
+      "about": "data and machine learning: an area, the tool it is done in, and the stage",
+      "target": 768,
+      "commands": ["duckdb", "jupyter", "dvc", "mlflow"],
+      "fields": [
+        {"name": "area", "values": ["data cleaning", "sql analysis", "pipelines", "feature engineering", "model training", "model evaluation", "prompts and llm apps", "embeddings and search", "experiment tracking", "data quality checks", "notebooks to scripts", "model serving"]},
+        {"name": "tool", "values": ["pandas", "numpy", "scikit-learn", "pytorch", "duckdb", "sql", "polars", "huggingface"]},
+        {"name": "stage", "values": ["plan", "execute", "verify", "review"]}
+      ],
+      "candidates": [
+        {"field": "area", "value": "vector databases", "words": ["vector database", "pgvector", "faiss"]},
+        {"field": "area", "value": "fine-tuning", "words": ["fine-tune", "fine tuning", "finetune", "lora"]},
+        {"field": "area", "value": "feature stores", "words": ["feature store"]},
+        {"field": "area", "value": "data labelling", "words": ["labelling", "labeling", "annotation"]},
+        {"field": "tool", "value": "spark", "words": ["pyspark", "apache spark"]},
+        {"field": "tool", "value": "tensorflow", "words": ["tensorflow", "keras"]}
+      ]
+    },
+    {
+      "name": "security",
+      "about": "security work: a topic, the stack it is in, who attacks, and the stage",
+      "target": 2304,
+      "commands": ["bandit", "semgrep", "pip-audit", "gitleaks", "trivy", "openssl"],
+      "fields": [
+        {"name": "topic", "values": ["injection", "authentication", "authorization", "secrets handling", "dependency vulnerabilities", "cryptography use", "input validation", "logging and audit", "web headers and cookies", "supply chain", "threat modeling", "sandboxing and permissions"]},
+        {"name": "stack", "values": ["python", "js-ts", "shell", "sql", "containers", "ci"]},
+        {"name": "attacker", "values": ["external user", "insider", "compromised dependency", "automated bot"]},
+        {"name": "stage", "values": ["plan", "execute", "verify", "review"]}
+      ],
+      "candidates": [
+        {"field": "topic", "value": "rate limiting", "words": ["rate limit", "rate limiting", "throttle"]},
+        {"field": "topic", "value": "oauth and sessions", "words": ["oauth", "session fixation", "jwt"]},
+        {"field": "topic", "value": "container hardening", "words": ["container hardening", "rootless", "seccomp"]},
+        {"field": "topic", "value": "prompt injection", "words": ["prompt injection", "jailbreak"]},
+        {"field": "attacker", "value": "malicious model output", "words": ["malicious output", "untrusted model"]}
+      ]
+    },
+    {
+      "name": "writing-research",
+      "about": "writing and research: the form, who reads it, the quality to hit, and the stage",
+      "target": 2400,
+      "fields": [
+        {"name": "form", "values": ["readme", "design doc", "changelog entry", "commit message", "bug report", "literature summary", "postmortem", "spec", "user guide", "status update", "proposal", "email"]},
+        {"name": "audience", "values": ["newcomer", "maintainer", "reviewer", "executive", "user"]},
+        {"name": "quality", "values": ["clarity", "brevity", "evidence", "structure", "tone"]},
+        {"name": "stage", "values": ["plan", "execute", "verify", "review"]}
+      ],
+      "candidates": [
+        {"field": "form", "value": "release notes", "words": ["release notes"]},
+        {"field": "form", "value": "api reference", "words": ["api docs", "api reference", "docstring"]},
+        {"field": "form", "value": "tutorial", "words": ["tutorial", "walkthrough"]},
+        {"field": "form", "value": "research brief", "words": ["research brief", "survey of", "prior art"]},
+        {"field": "audience", "value": "customer", "words": ["customer-facing", "customer facing"]}
+      ]
+    },
+    {
+      "name": "design",
+      "about": "design work: the artifact, the concern, the medium, and the stage; every card checks a number or a runner",
+      "admit": "ui",
+      "target": 1920,
+      "fields": [
+        {"name": "artifact", "values": ["landing page", "dashboard", "form", "icon set", "design tokens", "type scale", "color palette", "layout grid", "motion", "wireframe", "empty state", "data visualisation"]},
+        {"name": "concern", "values": ["hierarchy", "contrast", "spacing", "consistency", "density"]},
+        {"name": "medium", "values": ["web", "mobile", "terminal", "print"]},
+        {"name": "stage", "values": ["plan", "execute", "verify", "review"]}
+      ],
+      "candidates": [
+        {"field": "artifact", "value": "illustration", "words": ["illustration", "svg art"]},
+        {"field": "artifact", "value": "logo", "words": ["logo", "brand mark"]},
+        {"field": "artifact", "value": "email template", "words": ["email template", "newsletter"]},
+        {"field": "medium", "value": "slides", "words": ["slide deck", "slides", "keynote"]},
+        {"field": "concern", "value": "brand voice", "words": ["brand voice", "microcopy"]}
+      ]
+    },
+    {
+      "name": "product-planning",
+      "about": "product and planning: the activity, the horizon, the team's size, and the stage",
+      "target": 1152,
+      "fields": [
+        {"name": "activity", "values": ["roadmap", "prioritization", "user stories", "acceptance criteria", "estimation", "scoping", "release plan", "success metrics", "user research", "launch checklist", "retrospective", "risk register"]},
+        {"name": "horizon", "values": ["day", "week", "quarter", "year"]},
+        {"name": "team", "values": ["solo", "small team", "large org"]},
+        {"name": "stage", "values": ["plan", "execute", "verify", "review"]}
+      ],
+      "candidates": [
+        {"field": "activity", "value": "okrs", "words": ["okr", "okrs", "key results"]},
+        {"field": "activity", "value": "pricing", "words": ["pricing", "price tier"]},
+        {"field": "activity", "value": "competitor analysis", "words": ["competitor", "competitive analysis", "market scan"]},
+        {"field": "activity", "value": "onboarding funnel", "words": ["funnel", "activation rate", "conversion"]},
+        {"field": "horizon", "value": "sprint", "words": ["sprint planning", "sprint goal"]}
+      ]
+    },
+    {
+      "name": "sampo",
+      "about": "Sampo's own work: an area (problem solving, memory, efficiency), the scale it works at, the surface and the stage",
+      "target": 840,
+      "fields": [
+        {"name": "area", "values": ["problem solving", "memory", "efficiency"]},
+        {"name": "scale", "values": ["one task", "one session", "one project", "every project", "every Sampo user"]},
+        {"name": "surface", "values": ["terminal", "editor", "pull request", "CI", "chat", "phone", "dashboard"]},
+        {"name": "stage", "values": ["plan", "execute", "verify", "review"]}
+      ],
+      "candidates": [
+        {"field": "area", "value": "delegation", "words": ["delegate", "delegation", "subagent", "sub-agent"]},
+        {"field": "area", "value": "cost", "words": ["token cost", "token spend"]},
+        {"field": "area", "value": "verification", "words": ["verification"]},
+        {"field": "area", "value": "review", "words": ["code review"]},
+        {"field": "surface", "value": "voice", "words": ["voice", "speech"]}
+      ]
+    }
+  ]
+}

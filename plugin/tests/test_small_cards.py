@@ -1,6 +1,7 @@
 """T-2909: small-model cards part 1 — the write-time admit, the grid read thin-first by grow on a fake local profile
 with two workers, and coverage by cells. Every model call is mocked."""
 # map-links: plugin/lib/sampo/smallcards.py plugin/lib/sampo/moonscale.py plugin/lib/sampo/playbooks.py
+import collections
 import contextlib
 import io
 import json
@@ -130,6 +131,11 @@ class Admit(_Cards):
             self.assertFalse(self.sc.admit(bad)[0])
 
 
+def grid_entry(name, fields, prompt="plain", **kw):
+    """A grid entry as the data file holds it: fields is [(name, [values])]."""
+    return dict({"name": name, "target": 10, "prompt": prompt, "fields": [{"name": n, "values": v} for n, v in fields]}, **kw)
+
+
 def cell(kind="bugs", stack="python", stage="verify", surface="code"):
     return {"kind": kind, "stack": stack, "stage": stage, "surface": surface}
 
@@ -170,8 +176,11 @@ class Grow(_Cards):
             gate.wait()  # raises unless the second call is in flight
             seen.append(prompt)
             return reply(3), "gpu-qwen9"
-        small = {"KINDS": ("bugs", "docs"), "STACKS": ("python", "rust"), "STAGES": ("verify",), "SURFACES": ("code",)}
-        with mock.patch.multiple(self.sc, **small):
+        small = os.path.join(self.tmp, "small-grids.json")  # T-3103: the grid is data now; a two-by-two general grid
+        with open(small, "w", encoding="utf-8") as f:
+            json.dump({"grids": [grid_entry("general", prompt="general", fields=[
+                ("kind", ["bugs", "docs"]), ("stack", ["python", "rust"]), ("stage", ["verify"]), ("surface", ["code"])])]}, f)
+        with mock.patch.object(self.sc, "GRIDS_FILE", small):
             self.sc.add(self.p, [good(title="Seed card here")], cell("bugs", "python", "verify", "code"), "m", 1)
             with mock.patch.object(ms, "_ask", side_effect=fake):
                 r = self.sc.grow(self.p, target=7, batch=3, workers=2)
@@ -274,7 +283,7 @@ class Grow(_Cards):
         cov = self.sc.coverage()
         self.assertEqual((cov["total"], cov["filled"]), (3, 2))
         self.assertEqual(cov["cells"]["bugs/python/verify/code"], 2)
-        self.assertEqual(cov["grid"], len(self.sc.KINDS) * len(self.sc.STACKS) * len(self.sc.STAGES) * len(self.sc.SURFACES))
+        self.assertEqual(cov["grid"], 12 * 8 * 6 * 5)
         self.assertIn("2 of", self.sc.coverage_line(cov))
 
     def test_the_prompt_quotes_the_source_as_data_and_lists_real_commands(self):
@@ -302,7 +311,7 @@ def ui_cell(**kw):
 class UiGrid(_Cards):
     def test_the_grid_has_3840_cells(self):
         sc = self.sc
-        self.assertEqual((len(sc.COMPONENTS), len(sc.PLATFORMS), len(sc.CONCERNS)), (16, 8, 10))
+        self.assertEqual((len(sc.values("ui", "component")), len(sc.values("ui", "platform")), len(sc.values("ui", "concern"))), (16, 8, 10))
         self.assertEqual(len(sc._ui_cells()), 3840)
 
     def test_a_measured_check_is_kept_and_a_vague_one_refused(self):
@@ -408,6 +417,252 @@ class UiGrid(_Cards):
             ms._ask(self.p, "s", "p", writer="local")
         with self.assertRaises(ValueError):
             ms._ask(self.p, "s", "p", writer="gpt")
+
+
+# T-3103: grids are data (plugin/data/card-grids.json): the two old grids keep their cells, eight more join them, a bad
+# entry is refused by file and field, grow --grid all reads thinnest first across grids, and `grids propose` cites sources
+OLD_STACKS = ("python", "js-ts", "rust", "c", "ruby", "shell", "sql", "css-html")
+NEW_GRIDS = ("languages", "ops-infra", "data-ml", "security", "writing-research", "design", "product-planning", "sampo")
+
+
+def brief(ident, title, raw="", source="user", **meta):
+    return types.SimpleNamespace(id=ident, title=title, status="open", meta=dict(source=source, **meta),
+                                 section=lambda name, raw=raw: raw if name == "Raw request" else "")
+
+
+class GridData(_Cards):
+    def data_file(self, *grids, raw=None):
+        path = os.path.join(self.tmp, "grids.json")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(raw if raw is not None else json.dumps({"grids": list(grids)}))
+        return path
+
+    def test_the_file_holds_the_two_old_grids_and_eight_new_domains(self):
+        names = list(self.sc.grids())
+        self.assertGreaterEqual(len(names), 10)
+        self.assertEqual(names[:2], ["general", "ui"])
+        for name in NEW_GRIDS:
+            self.assertIn(name, names)
+            spec = self.sc.grids()[name]
+            self.assertGreater(spec["target"], 0)
+            self.assertIn("stage", [f for f, _ in spec["fields"]])
+            self.assertTrue(spec["candidates"], f"{name} lists values it could grow")
+
+    def test_the_general_and_ui_grids_give_the_cells_they_always_gave(self):
+        sc = self.sc
+        self.assertEqual(sc.values("general", "kind"), tuple(sc.ms.KINDS), "the data file's kinds are moonscale's")
+        self.assertEqual(sc.values("general", "stack"), OLD_STACKS)
+        self.assertEqual(sc.values("general", "stage"), ("capture", "plan", "execute", "verify", "review", "release"))
+        self.assertEqual(sc.values("general", "surface"), ("code", "UI", "design", "docs", "ops"))
+        cells = sc._cells()
+        self.assertEqual(len(cells), 2880)
+        self.assertEqual((cells[0], cells[1], cells[-1]), (("bugs", "python", "capture", "code"), ("bugs", "python", "capture", "UI"),
+                                                           ("onboarding", "css-html", "release", "ops")))
+        self.assertEqual(len(set(cells)), 2880)
+        ui = sc._ui_cells()
+        self.assertEqual((len(ui), ui[0], ui[-1]), (3840, ("button", "react", "accessibility", "plan"),
+                                                    ("onboarding", "terminal-tui", "typography and design tokens", "verify")))
+        self.assertEqual(sc._key(cell()), ("bugs", "python", "verify", "code"))
+        self.assertEqual(sc._key(ui_cell()), ("button", "react", "accessibility", "verify"))
+        self.assertNotIn("grid", sc._pick(collections.Counter(), 1, 0)[0], "a general cell carries no grid")
+        self.assertEqual(sc._pick(collections.Counter(), 1, 0, "ui")[0]["grid"], "ui")
+
+    def test_a_stored_general_card_has_no_grid_and_a_new_grids_card_names_it(self):
+        self.sc.add(self.p, [good(title="A general card here")], cell(), "m", 1)
+        lang = {"language": "go", "task": "testing", "stage": "verify", "grid": "languages"}
+        self.assertEqual(self.sc.add(self.p, [good(title="A go testing card")], lang, "m", 2)[0][1], "kept")
+        rows = self.sc.rows()
+        self.assertNotIn("grid", rows[0]["cell"])
+        self.assertEqual(rows[1]["cell"], lang)
+        self.assertEqual((self.sc.coverage()["total"], self.sc.coverage("languages")["total"]), (1, 1))
+
+    def test_a_malformed_entry_is_refused_naming_the_file_and_the_field(self):
+        ok = grid_entry("a-grid", [("area", ["x", "y"]), ("stage", ["plan"])])
+        big = [(n, [str(i) for i in range(60)]) for n in "abc"] + [("stage", ["plan"])]
+        bad = [
+            ("grids", json.dumps({"grids": "no"})),
+            ("name", json.dumps({"grids": [{k: v for k, v in ok.items() if k != "name"}]})),
+            ("name", json.dumps({"grids": [dict(ok, name="all")]})),
+            ("name", json.dumps({"grids": [ok, ok]})),
+            ("target", json.dumps({"grids": [dict(ok, target=0)]})),
+            ("target", json.dumps({"grids": [dict(ok, target="many")]})),
+            ("fields", json.dumps({"grids": [dict(ok, fields=[])]})),
+            ("values", json.dumps({"grids": [grid_entry("g", [("area", []), ("stage", ["plan"])])]})),
+            ("values", json.dumps({"grids": [grid_entry("g", [("area", ["x", "x"]), ("stage", ["plan"])])]})),
+            ("values", json.dumps({"grids": [grid_entry("g", [("area", ["x", 3]), ("stage", ["plan"])])]})),
+            ("stage", json.dumps({"grids": [grid_entry("g", [("area", ["x"])])]})),
+            ("prompt", json.dumps({"grids": [dict(ok, prompt="weird")]})),
+            ("prompt", json.dumps({"grids": [dict(ok, prompt="ui")]})),  # a ui prompt needs component, platform, concern
+            ("admit", json.dumps({"grids": [dict(ok, admit="lax")]})),
+            ("commands", json.dumps({"grids": [dict(ok, commands=["two words"])]})),
+            ("candidates", json.dumps({"grids": [dict(ok, candidates=[{"field": "nope", "value": "z", "words": ["z"]}])]})),
+            ("candidates", json.dumps({"grids": [dict(ok, candidates=[{"field": "area", "value": "x", "words": ["x"]}])]})),  # already a value
+            ("cells", json.dumps({"grids": [grid_entry("g", big)]})),
+            ("grids", "{not json"),
+        ]
+        for field, text in bad:
+            with self.subTest(field=field, text=text[:60]):
+                path = self.data_file(raw=text)
+                with self.assertRaises(ValueError) as e:
+                    self.sc.load_grids(path)
+                self.assertIn(path, str(e.exception))
+                self.assertIn(field, str(e.exception))
+        self.assertEqual(list(self.sc.load_grids(self.data_file(ok))), ["a-grid"])
+
+    def test_a_list_valued_candidate_field_is_refused_naming_file_and_field(self):
+        ok = grid_entry("g", [("area", ["x"]), ("stage", ["plan"])])
+        path = self.data_file(raw=json.dumps({"grids": [dict(ok, candidates=[{"field": ["area"], "value": "z", "words": ["z"]}])]}))
+        with self.assertRaises(ValueError) as e:
+            self.sc.load_grids(path)
+        self.assertIn(path, str(e.exception))
+        self.assertIn("candidates", str(e.exception))
+
+    def test_coverage_for_the_general_grid_by_name_equals_the_default(self):
+        self.assertEqual(self.sc.coverage("general"), self.sc.coverage())
+
+    def test_grids_add_and_propose_refuse_outside_a_project_before_writing(self):
+        from sampo import cli
+        for rest in (["propose"], ["add", "languages", "language", "zig"]):
+            args = types.SimpleNamespace(name="grids", rest=rest, project=None, source="a source", json=False)
+            with self.subTest(rest=rest), mock.patch.object(self.sc.c, "find_project", return_value=None):
+                with self.assertRaises(cli.UsageError):
+                    self.sc.cmd(args)
+        self.assertFalse(os.path.exists(os.path.join(self.sc.home(), self.sc.ADDITIONS)))
+
+    def test_a_bad_file_stops_coverage_with_its_reason_not_a_wrong_count(self):
+        with mock.patch.object(self.sc, "GRIDS_FILE", self.data_file(raw='{"grids": [{"name": "x"}]}')):
+            with self.assertRaises(ValueError) as e:
+                self.sc.coverage()
+        self.assertIn("grids.json", str(e.exception))
+
+    def test_coverage_shows_each_grid_and_one_grid_by_name(self):
+        self.sc.add(self.p, [good(title="A go testing card")], {"language": "go", "task": "testing", "stage": "verify", "grid": "languages"}, "m", 1)
+        cov = self.sc.coverage()
+        self.assertEqual([g["name"] for g in cov["grids"]], list(self.sc.grids())[1:])
+        by = {g["name"]: g for g in cov["grids"]}
+        self.assertEqual((by["languages"]["total"], by["languages"]["filled"], by["languages"]["grid"]), (1, 1, 14 * 10 * 4))
+        self.assertEqual(by["sampo"]["grid"], 3 * 5 * 7 * 4)
+        text = self.sc.coverage_text(cov)
+        for name in NEW_GRIDS:
+            self.assertIn(f"{name} cards: ", text)
+        self.assertIn("languages cards: 1 in 1 of 560 cells", text)
+        one = self.sc.coverage("languages")
+        self.assertEqual((one["name"], one["total"], one["grid"], one["target"]), ("languages", 1, 560, self.sc.grids()["languages"]["target"]))
+        self.assertEqual(one["by"]["language"], {"go": 1})
+        with self.assertRaises(ValueError):
+            self.sc.coverage("nope")
+
+    def test_grow_all_asks_the_thinnest_cells_first_across_every_grid(self):
+        path = self.data_file(
+            grid_entry("general", [("kind", ["bugs"]), ("stack", ["python"]), ("stage", ["verify"]), ("surface", ["code"])], prompt="general"),
+            grid_entry("languages", [("language", ["go"]), ("task", ["testing", "error handling"]), ("stage", ["plan"])],
+                       about="a language beyond the general grid"),
+            grid_entry("ops-infra", [("area", ["containers"]), ("stage", ["plan"])]))
+        seen = []
+
+        def fake(p, system, prompt, cheap=True, paid=0, feature=None):
+            seen.append(prompt)
+            return "\n".join(json.dumps(good(title=f"Card number {i} of call {len(seen)}")) for i in range(2)), "gpu-qwen9"
+        with mock.patch.object(self.sc, "GRIDS_FILE", path):
+            self.sc.add(self.p, [good(title="Seed card here")], cell(), "m", 1)
+            with mock.patch.object(self.sc.ms, "_ask", side_effect=fake):
+                r = self.sc.grow(self.p, target=100, batch=2, workers=1, max_calls=4, grid="all")
+            rows = self.sc.rows()
+        self.assertEqual((r["calls"], r["kept"], r["stopped"]), (4, 8, "max_calls"))
+        self.assertFalse(any("kind=bugs" in x for x in seen[:3]), "the three empty cells come before the one with a card")
+        self.assertIn("kind=bugs stack=python", seen[3])
+        self.assertEqual(sorted(("language=go" in x, "area=containers" in x) for x in seen[:3]), [(False, True), (True, False), (True, False)])
+        self.assertIn("a language beyond the general grid", "\n".join(seen))
+        self.assertEqual(dict(collections.Counter(x["cell"].get("grid", "") for x in rows)), {"": 3, "languages": 4, "ops-infra": 2})
+
+    def test_grow_by_name_fills_that_grid_only_and_an_unknown_name_is_refused(self):
+        seen = []
+
+        def fake(p, system, prompt, cheap=True, paid=0, feature=None):
+            seen.append(prompt)
+            return reply(2), "m"
+        with mock.patch.object(self.sc.ms, "_ask", side_effect=fake):
+            r = self.sc.grow(self.p, target=2, batch=2, workers=1, grid="sampo")
+            with self.assertRaises(ValueError) as e:
+                self.sc.grow(self.p, target=2, batch=2, workers=1, grid="nope")
+        self.assertIn("--grid takes", str(e.exception))
+        self.assertIn("sampo", str(e.exception))
+        self.assertEqual((r["kept"], self.sc.coverage("sampo")["total"], self.sc.coverage()["total"]), (2, 2, 0))
+        self.assertIn("area=", seen[0])
+        self.assertIn("scale=", seen[0])
+
+    def test_each_grid_admits_by_its_own_rules_and_commands(self):
+        steps = [dict(s) for s in good()["steps"]]
+        steps[1]["cmd"] = "go test ./..."
+        gocard = good(title="Run the go tests of a package", steps=steps)
+        self.assertEqual(self.sc.admit(gocard, "languages"), (True, ""), "the languages grid names go")
+        ok, why = self.sc.admit(gocard)
+        self.assertTrue(not ok and why.startswith("command:"), "the general grid does not")
+        ok, why = self.sc.admit(good(), "design")
+        self.assertTrue(not ok and why.startswith("measure:"), "a design card checks a number or a runner")
+        self.assertEqual(self.sc.admit(ui_card(), "design"), (True, ""))
+        self.assertEqual(self.sc.admit(good(), "sampo"), (True, ""))
+        self.assertEqual(self.sc.admit(good(), "no-such-grid"), (True, ""), "a stored card of a grid since removed reads as plain")
+
+    def test_propose_lists_new_values_from_misses_requests_and_friction_each_with_its_source(self):
+        briefs = [brief("T-1", "Port the parser to Zig", "the user wants the zig build too"),
+                  brief("T-2", "Speed up the importer", "make it faster"),
+                  brief("T-3", "Improve fm code: friction", "the wasm build keeps failing", source="self", friction_at="2026-11-01"),
+                  brief("T-4", "Plan the quarter", "write the OKRs for the quarter")]
+        with mock.patch.object(self.sc.c, "load_briefs", return_value=briefs), \
+                mock.patch.object(self.sc, "_library_names", return_value=["zig", "python"]):
+            got = self.sc.propose(self.p)
+        by = {(x["grid"], x["value"]): x for x in got}
+        self.assertEqual(got[0]["value"], "zig", "two sources outrank one")
+        zig = by[("languages", "zig")]
+        self.assertEqual((zig["field"], zig["count"]), ("language", 2))
+        self.assertTrue(any(s.startswith("coverage miss: library card zig") for s in zig["sources"]))
+        self.assertTrue(any(s.startswith("request T-1") for s in zig["sources"]))
+        self.assertTrue(by[("languages", "webassembly")]["source"].startswith("friction T-3"))
+        self.assertTrue(by[("product-planning", "okrs")]["source"].startswith("request T-4"))
+        self.assertNotIn(("languages", "python"), by, "python is a stack of the general grid, not a missing one")
+        self.assertTrue(all(x["source"] and x["sources"] for x in got))
+        self.assertNotIn("clojure", [x["value"] for x in got], "no source names it: not offered")
+
+    def test_adding_a_value_records_its_source_and_grows_the_grid(self):
+        sc = self.sc
+        briefs = [brief("T-3", "Improve fm code: friction", "the wasm build keeps failing", source="self", friction_at="2026-11-01")]
+        with mock.patch.object(sc.c, "load_briefs", return_value=briefs), mock.patch.object(sc, "_library_names", return_value=[]):
+            with self.assertRaises(ValueError) as e:
+                sc.add_value(self.p, "languages", "language", "ocaml")
+            self.assertIn("source", str(e.exception))
+            row = sc.add_value(self.p, "languages", "language", "webassembly")  # its proposal's source is the record
+            self.assertTrue(row["source"].startswith("friction T-3"), row)
+            row = sc.add_value(self.p, "languages", "language", "zig", source="the user asked for a zig port")
+            self.assertEqual(row["source"], "the user asked for a zig port")
+            self.assertNotIn("webassembly", [x["value"] for x in sc.propose(self.p)], "an added value is no longer proposed")
+        self.assertEqual(sc.values("languages", "language")[-2:], ("webassembly", "zig"))
+        self.assertEqual(len(sc._cells("languages")), 16 * 10 * 4)
+        self.assertEqual(sc.coverage("languages")["grid"], 640)
+        with open(os.path.join(sc.home(), sc.ADDITIONS), encoding="utf-8") as f:
+            saved = [json.loads(x) for x in f]
+        self.assertEqual([(x["grid"], x["field"], x["value"]) for x in saved], [("languages", "language", "webassembly"), ("languages", "language", "zig")])
+        self.assertTrue(all(x["source"] and x["at"] for x in saved))
+        for args in (("languages", "language", "zig"), ("languages", "nope", "x"), ("nope", "language", "x"), ("languages", "language", "")):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                sc.add_value(self.p, *args, source="a source")
+        self.assertEqual(len(sc._cells("languages")), 640, "a refused value changes nothing")
+
+    def test_the_cli_lists_grids_coverage_proposals_and_takes_grow_grid_by_name(self):
+        out = self.fm("playbooks", "small", "grids").stdout
+        for name in ("general", "ui") + NEW_GRIDS:
+            self.assertIn(name, out)
+        self.assertIn("languages cards: 0 in 0 of 560 cells", self.fm("playbooks", "small", "coverage").stdout)
+        self.assertEqual(self.fm("playbooks", "small", "grids", "propose").returncode, 0)
+        r = self.fm("playbooks", "small", "grow", "--grid", "languages", "--max-calls", "0", "--workers", "1")
+        self.assertIn("stopped: max_calls", r.stdout)
+        r = self.fm("playbooks", "small", "grow", "--grid", "nope", "--max-calls", "0", "--workers", "1", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        r = self.fm("playbooks", "small", "grids", "add", "languages", "language", "obscurelang", check=False)
+        self.assertNotEqual(r.returncode, 0, "a value no record proposes and no source backs is refused")
+        r = self.fm("playbooks", "small", "grids", "add", "languages", "language", "zig", "--source", "asked for a zig port")
+        self.assertIn("zig", r.stdout)
+        self.assertIn("languages cards: 0 in 0 of 600 cells", self.fm("playbooks", "small", "coverage").stdout)
 
 
 # T-2949: a variant is drafted by the local writer only and scored on briefs its prompt never names; the original's
@@ -812,7 +1067,7 @@ class ExamplesRendered(_Cards):
 
     def test_every_component_has_a_kit_demo_that_passes_in_both_themes(self):
         kit = self.sc.kit()
-        self.assertEqual(set(kit), set(self.sc.COMPONENTS))
+        self.assertEqual(set(kit), set(self.sc.values("ui", "component")))
         from sampo import works
         for comp, got in zip(kit, self.check(*(k["html"] for k in kit.values()))):
             with self.subTest(comp):
@@ -823,5 +1078,5 @@ class ExamplesRendered(_Cards):
     def test_kit_markers_carry_no_height(self):
         with open(self.sc.KIT, encoding="utf-8") as f:
             marks = re.findall(r"<!-- kit: (.*?) -->", f.read())
-        self.assertEqual(len(marks), len(self.sc.COMPONENTS))
+        self.assertEqual(len(marks), len(self.sc.values("ui", "component")))
         self.assertTrue(all(re.fullmatch(r"[a-z ]+", m) for m in marks), marks)

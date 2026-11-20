@@ -9248,7 +9248,7 @@ def _build_parser(only=None):
             "as the skill loads it, {{fact}}s (test, language, entry…) filled in from sampo map and this project's "
             ".claude/playbooks/<stage>/<name>.md appended (T-1621)")
     s.add_argument("action", choices=["show", "eval", "route", "blame", "preview", "coverage", "draft", "mine",
-                                      "counter", "score", "kata", "lesson", "small"], help="small grow|coverage|show ID: "
+                                      "counter", "score", "kata", "lesson", "small"], help="small grow|coverage|show ID|grids [propose|add]: "
                    "cards written for 4B-27B models (research/cards), grown on local models, thin grid cells first "
                    "(--target N --workers K --batch B --max-calls M --think on|off) (T-2909); eval NAME: "
                    "held-out briefs with and without the playbook loaded, the lift recorded (T-1618); route STAGE: the "
@@ -9274,7 +9274,9 @@ def _build_parser(only=None):
     s.add_argument("--max-calls", type=int, help="small grow: stop after M model calls")
     s.add_argument("--workers", type=int, help="small grow: calls at once (default: the local profile's slots)")
     s.add_argument("--think", choices=("on", "off"), help="small grow: the local model's reasoning, over its profile")
-    s.add_argument("--grid", choices=("ui",), help="small grow|coverage: the UI grid (component x platform x concern x stage, T-2994)")
+    s.add_argument("--grid", help="small grow|coverage|examples: a grid by name (ui: component x platform x concern x stage, T-2994; "
+                   "`small grids` lists them, from plugin/data/card-grids.json, T-3103); grow also takes all")
+    s.add_argument("--source", help="small grids add GRID FIELD VALUE: why the value belongs (default: the proposal's own source)")
     s.add_argument("--writer", choices=("haiku", "sonnet", "local"), help="small grow: who writes the cards (default: the local model, then Haiku)")
     s.add_argument("--briefs", help="eval: the brief set (default plugin/evals/playbooks/<stage>/<name>.json)")
     s.add_argument("--real", action="store_true", help="eval: ask a model (claude -p, budgeted) instead of reading "
