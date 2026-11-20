@@ -1,17 +1,17 @@
 {
- "generated": "2026-11-19",
+ "generated": "2026-11-20",
  "totals": {
-  "tasks_done": 1161,
-  "evidence": 7243,
-  "proofs": 639,
-  "commits": 815,
-  "gate_runs": 484,
-  "subagents": 4075,
-  "lanes_merged": 800,
-  "findings": 1547,
-  "guard_blocks": 1176,
-  "captures": 1949,
-  "lessons_shown": 2318
+  "tasks_done": 1184,
+  "evidence": 7436,
+  "proofs": 654,
+  "commits": 837,
+  "gate_runs": 490,
+  "subagents": 4268,
+  "lanes_merged": 836,
+  "findings": 1915,
+  "guard_blocks": 1202,
+  "captures": 2019,
+  "lessons_shown": 2356
  },
  "daily": [
   {
@@ -214,6 +214,17 @@
   },
   {
    "day": "2026-11-19",
+   "FEATURE": 7,
+   "FIX": 10,
+   "CLEAN": 0,
+   "PERFORMANCE": 5,
+   "SECURITY": 1,
+   "RESEARCH": 0,
+   "lanes": 36,
+   "evidence": 319
+  },
+  {
+   "day": "2026-11-20",
    "FEATURE": 0,
    "FIX": 0,
    "CLEAN": 0,
@@ -221,64 +232,64 @@
    "SECURITY": 0,
    "RESEARCH": 0,
    "lanes": 0,
-   "evidence": 160
+   "evidence": 34
   }
  ],
  "tiers": {
-  "S": 579,
-  "M": 551,
-  "L": 30
+  "S": 589,
+  "M": 561,
+  "L": 33
  },
  "types": {
-  "FEATURE": 330,
-  "FIX": 590,
+  "FEATURE": 337,
+  "FIX": 600,
   "CLEAN": 59,
-  "PERFORMANCE": 117,
-  "SECURITY": 41,
+  "PERFORMANCE": 122,
+  "SECURITY": 42,
   "RESEARCH": 24
  },
  "guard": {
-  "brief": 569,
-  "core": 274,
-  "system": 155,
-  "state-direct": 52,
+  "brief": 574,
+  "core": 281,
+  "system": 165,
+  "state-direct": 55,
   "rm-outside": 48,
-  "credentials": 26,
+  "credentials": 27,
   "pipe-shell": 16,
   "self-authorize": 13
  },
  "findings": {
   "lenses": {
-   "other": 368,
-   "self": 366,
-   "edge": 269,
-   "adversary": 233,
-   "intent": 121,
-   "maintainer": 75
+   "other": 642,
+   "self": 402,
+   "edge": 285,
+   "adversary": 243,
+   "intent": 130,
+   "maintainer": 95
   },
   "severity": {
-   "LOW": 667,
-   "MEDIUM": 419,
-   "HIGH": 93
+   "LOW": 741,
+   "MEDIUM": 438,
+   "HIGH": 94
   }
  },
  "subagents": {
-  "sampo:fm-builder": 1329,
+  "sampo:fm-builder": 1383,
   "fm-builder": 1112,
-  "general-purpose": 820,
-  "sampo:fm-reviewer": 296,
-  "workflow-subagent": 239,
+  "general-purpose": 869,
+  "sampo:fm-reviewer": 377,
+  "workflow-subagent": 244,
   "fm-reviewer": 208
  },
  "gate_seconds": {
-  "runs": 484,
-  "median": 437.2
+  "runs": 490,
+  "median": 440.0
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 343,
+  "searches": 354,
   "queued": 3,
   "refused": 0
  },
@@ -398,11 +409,11 @@
  "code": {
   "model_tests": 101,
   "endpoints": 9,
-  "tests": 12490
+  "tests": 12867
  },
  "calibration": {
   "scored": 28,
-  "pending": 866,
+  "pending": 879,
   "brier": {
    "stated": 0.11633928571428573,
    "base": 0.1380222222222222
@@ -470,15 +481,15 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 93,
-     "held": 88,
+     "n": 94,
+     "held": 89,
      "pct": 95
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 391,
-     "held": 368,
+     "n": 410,
+     "held": 385,
      "pct": 94
     },
     {
@@ -492,17 +503,17 @@
   }
  },
  "proof": {
-  "n": 867,
+  "n": 851,
   "counts": {
-   "typed": 80,
-   "meaning-user": 87,
-   "research-uncited": 29,
-   "meaning-notes": 444,
-   "docs": 185,
-   "red": 86,
-   "perf-typed": 148,
+   "typed": 83,
+   "meaning-user": 86,
+   "research-uncited": 28,
+   "meaning-notes": 440,
+   "docs": 167,
+   "red": 82,
+   "perf-typed": 147,
+   "ui-unshot": 4,
    "infra": 7,
-   "ui-unshot": 2,
    "data": 4,
    "tui-unshot": 4,
    "perf-noise": 1
@@ -583,6 +594,10 @@
    {
     "day": "2026-11-19",
     "n": 867
+   },
+   {
+    "day": "2026-11-20",
+    "n": 851
    }
   ]
  },
@@ -590,31 +605,31 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1462,
-    "precision": 0.84,
+    "fired": 1433,
+    "precision": 0.846,
     "route": "inbox"
    },
    {
     "trigger": "followup",
-    "fired": 343,
-    "precision": 0.721,
+    "fired": 295,
+    "precision": 0.622,
     "route": "inbox"
    },
    {
     "trigger": "self",
     "fired": 225,
-    "precision": 0.799,
+    "precision": 0.79,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 137,
+    "fired": 139,
     "precision": 0.45,
     "route": "inbox"
    },
    {
     "trigger": "ci-red",
-    "fired": 79,
+    "fired": 80,
     "precision": 0.778,
     "route": "inbox"
    },
@@ -632,14 +647,14 @@
    },
    {
     "trigger": "spar",
-    "fired": 40,
+    "fired": 50,
     "precision": null,
     "route": "inbox"
    },
    {
     "trigger": "baseline",
-    "fired": 34,
-    "precision": 0.667,
+    "fired": 35,
+    "precision": 0.647,
     "route": "inbox"
    },
    {
@@ -649,15 +664,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "scout",
-    "fired": 11,
-    "precision": 0.5,
+    "trigger": "foresight-date",
+    "fired": 12,
+    "precision": 0.0,
     "route": "inbox"
    },
    {
-    "trigger": "foresight-date",
+    "trigger": "scout",
     "fired": 10,
-    "precision": 0.0,
+    "precision": 0.4,
     "route": "inbox"
    },
    {
@@ -729,20 +744,20 @@
   "predictions": [
    {
     "kind": "next-request",
-    "n": 283,
-    "hit": 0.435,
-    "base_hit": 0.382,
+    "n": 296,
+    "hit": 0.426,
+    "base_hit": 0.375,
     "lead": [
      true,
-     0.004065029323101044,
-     22,
-     7
+     0.005336920265108347,
+     23,
+     8
     ],
     "muted": false,
-    "shown_n": 205,
-    "shown_hit": 0.444,
-    "overlap": 0.071,
-    "base_overlap": 0.067
+    "shown_n": 215,
+    "shown_hit": 0.437,
+    "overlap": 0.067,
+    "base_overlap": 0.064
    }
   ],
   "lean": [
@@ -799,6 +814,48 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-20",
+   "text": "read T-5414: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-19",
+   "text": "Hold T-5084 and other new builds: 117 finished lanes wait to land and the user asked to ease off so kith can finish; this session finishes merged-but-open tasks first",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-19",
+   "text": "read T-5382: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
+  {
+   "date": "2026-11-19",
+   "text": "T-5381 (train relocates a lane's new map entries when the combination overflows a shard, slice of the user's T-3137) is briefed past the unmerged cap as urgent: ~35 of the waiting lanes would otherwis",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-19",
+   "text": "T-5380 (shape-stage batching, a slice of the user's T-3137) is briefed past the unmerged cap as urgent: ~74 lanes wait ~6 h on per-lane shape runs under the 8-core cap, and this cuts that work about N",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
+  {
+   "date": "2026-11-19",
+   "text": "T-5365: a train's confirm after a lane is left out reruns only the red names (and flaky ones) and the other gates whole, no longer every test the left-out lane's diff reaches; the post-merge verify's ",
+   "later": null,
+   "confidence": null,
+   "kind": "reversible"
+  },
   {
    "date": "2026-11-19",
    "text": "Land the backlog in hand trains of about 20 lanes, each after one repo-shape run on a merge of all its lanes, instead of 27 per-lane checks",
@@ -2159,59 +2216,17 @@
    "later": null,
    "confidence": null,
    "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3477: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3470: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3465: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3458: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3438: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "Post-merge suite back on (supersedes the pause): a close runs only its criteria and affected tests, not the full suite, so the post-merge run is the only full-suite net; with it paused T-3398 broke te",
-   "later": null,
-   "confidence": null,
-   "kind": "reversible"
   }
  ],
  "louhi": {
-  "trials": 241,
+  "trials": 295,
   "runs": [
    {
     "run": "s0-001",
-    "trials": 32,
-    "scenarios": 701,
-    "keyed": 708,
-    "found": 303
+    "trials": 33,
+    "scenarios": 711,
+    "keyed": 716,
+    "found": 304
    },
    {
     "run": "genesis-s0",
@@ -2292,251 +2307,279 @@
    },
    {
     "run": "s32-015",
-    "trials": 7,
-    "scenarios": 21,
-    "keyed": 21,
-    "found": 18
+    "trials": 9,
+    "scenarios": 27,
+    "keyed": 27,
+    "found": 21
    },
    {
     "run": "s4-018",
-    "trials": 4,
-    "scenarios": 14,
-    "keyed": 14,
+    "trials": 5,
+    "scenarios": 17,
+    "keyed": 17,
     "found": 0
    },
    {
     "run": "s5-019",
-    "trials": 20,
-    "scenarios": 61,
-    "keyed": 61,
+    "trials": 21,
+    "scenarios": 64,
+    "keyed": 64,
     "found": 0
    },
    {
     "run": "s28-020",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 18
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 27
    },
    {
     "run": "s29-024",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 28
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 42
    },
    {
     "run": "s28-021",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 14
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 21
    },
    {
     "run": "s28-022",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
     "found": 0
    },
    {
     "run": "s29-025",
-    "trials": 1,
-    "scenarios": 44,
-    "keyed": 48,
-    "found": 5
+    "trials": 2,
+    "scenarios": 88,
+    "keyed": 96,
+    "found": 10
    },
    {
     "run": "s28-027",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 40
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 60
    },
    {
     "run": "s28-028",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 28
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 42
    },
    {
     "run": "s28-031",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
     "found": 0
    },
    {
     "run": "s29-033",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 6
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 9
    },
    {
     "run": "s29-034",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 20
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 30
    },
    {
     "run": "s28-032",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
     "found": 0
    },
    {
     "run": "s29-035",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 14
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 21
    },
    {
     "run": "s29-036",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 22
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 33
    },
    {
     "run": "s30-037",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 30
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 45
    },
    {
     "run": "s30-038",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 32
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 48
    },
    {
     "run": "s28-029",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 14
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 21
    },
    {
     "run": "s28-030",
-    "trials": 2,
-    "scenarios": 88,
-    "keyed": 96,
-    "found": 12
+    "trials": 3,
+    "scenarios": 132,
+    "keyed": 144,
+    "found": 18
    },
    {
     "run": "s31-039",
-    "trials": 9,
-    "scenarios": 187,
-    "keyed": 204,
-    "found": 89
+    "trials": 11,
+    "scenarios": 220,
+    "keyed": 240,
+    "found": 110
    },
    {
     "run": "s52-040",
-    "trials": 13,
-    "scenarios": 272,
-    "keyed": 246,
-    "found": 194
+    "trials": 14,
+    "scenarios": 291,
+    "keyed": 264,
+    "found": 206
    },
    {
     "run": "s8-008",
-    "trials": 6,
-    "scenarios": 73,
+    "trials": 7,
+    "scenarios": 91,
     "keyed": 0,
     "found": 0
    },
    {
     "run": "s8-042",
-    "trials": 4,
-    "scenarios": 96,
+    "trials": 5,
+    "scenarios": 120,
     "keyed": 0,
     "found": 0
    },
    {
     "run": "s8-043",
-    "trials": 2,
-    "scenarios": 48,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-041",
-    "trials": 2,
-    "scenarios": 48,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-045",
-    "trials": 4,
-    "scenarios": 96,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-046",
-    "trials": 2,
-    "scenarios": 24,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-048",
-    "trials": 2,
-    "scenarios": 24,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-047",
-    "trials": 2,
-    "scenarios": 24,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-049",
-    "trials": 8,
-    "scenarios": 78,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-051",
-    "trials": 2,
-    "scenarios": 24,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-050",
-    "trials": 2,
-    "scenarios": 24,
-    "keyed": 0,
-    "found": 0
-   },
-   {
-    "run": "s8-053",
-    "trials": 6,
+    "trials": 3,
     "scenarios": 72,
     "keyed": 0,
     "found": 0
    },
    {
+    "run": "s8-041",
+    "trials": 3,
+    "scenarios": 72,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-045",
+    "trials": 5,
+    "scenarios": 120,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-046",
+    "trials": 3,
+    "scenarios": 36,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-048",
+    "trials": 3,
+    "scenarios": 36,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-047",
+    "trials": 3,
+    "scenarios": 36,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-049",
+    "trials": 13,
+    "scenarios": 113,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-051",
+    "trials": 3,
+    "scenarios": 36,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-050",
+    "trials": 3,
+    "scenarios": 36,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-053",
+    "trials": 9,
+    "scenarios": 108,
+    "keyed": 0,
+    "found": 0
+   },
+   {
     "run": "s8-052",
+    "trials": 3,
+    "scenarios": 36,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-054",
+    "trials": 4,
+    "scenarios": 48,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-056",
     "trials": 2,
     "scenarios": 24,
     "keyed": 0,
     "found": 0
    },
    {
-    "run": "s8-054",
+    "run": "s21-059",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-057",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-060",
     "trials": 2,
     "scenarios": 24,
     "keyed": 0,
@@ -2546,36 +2589,36 @@
   "agents": [
    {
     "agent": "smith",
-    "trials": 124,
-    "scenarios": 2485,
-    "keyed": 2012,
-    "found": 367,
-    "false_alarms": 630,
-    "fixable": 3958,
-    "fixed": 760,
-    "brier": 0.191
+    "trials": 169,
+    "scenarios": 3597,
+    "keyed": 2869,
+    "found": 523,
+    "false_alarms": 936,
+    "fixable": 5989,
+    "fixed": 1106,
+    "brier": 0.188
    },
    {
     "agent": "foreman",
-    "trials": 37,
-    "scenarios": 238,
-    "keyed": 122,
-    "found": 91,
-    "false_alarms": 28,
-    "fixable": 314,
-    "fixed": 277,
-    "brier": 0.264
+    "trials": 41,
+    "scenarios": 276,
+    "keyed": 137,
+    "found": 104,
+    "false_alarms": 30,
+    "fixable": 425,
+    "fixed": 376,
+    "brier": 0.268
    },
    {
     "agent": "plain",
-    "trials": 28,
-    "scenarios": 379,
-    "keyed": 287,
-    "found": 211,
-    "false_alarms": 59,
-    "fixable": 611,
-    "fixed": 457,
-    "brier": 0.496
+    "trials": 31,
+    "scenarios": 422,
+    "keyed": 305,
+    "found": 223,
+    "false_alarms": 63,
+    "fixable": 737,
+    "fixed": 548,
+    "brier": 0.516
    },
    {
     "agent": "oracle",
@@ -2644,6 +2687,28 @@
     "brier": null
    },
    {
+    "agent": "smith-s1",
+    "trials": 2,
+    "scenarios": 6,
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "fixable": 24,
+    "fixed": 8,
+    "brier": 0.003
+   },
+   {
+    "agent": "smith-s4",
+    "trials": 2,
+    "scenarios": 6,
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "fixable": 24,
+    "fixed": 4,
+    "brier": 0.003
+   },
+   {
     "agent": "draft-oracle",
     "trials": 1,
     "scenarios": 3,
@@ -2675,28 +2740,6 @@
     "fixable": 414,
     "fixed": 27,
     "brier": 0.25
-   },
-   {
-    "agent": "smith-s1",
-    "trials": 1,
-    "scenarios": 3,
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "fixable": 12,
-    "fixed": 4,
-    "brier": 0.003
-   },
-   {
-    "agent": "smith-s4",
-    "trials": 1,
-    "scenarios": 3,
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "fixable": 12,
-    "fixed": 2,
-    "brier": 0.003
    },
    {
     "agent": "triggers",
@@ -2731,9 +2774,9 @@
    },
    {
     "gen": 4,
-    "trials": 8,
-    "keyed": 18,
-    "found": 16
+    "trials": 12,
+    "keyed": 33,
+    "found": 29
    }
   ]
  },

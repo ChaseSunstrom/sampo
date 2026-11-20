@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-19T21:39:08Z",
- "rev": "8fded3d67",
+ "updated": "2026-11-20T21:44:52Z",
+ "rev": "a5f7e2086",
  "capabilities": [
   {
    "n": 1,
@@ -4466,285 +4466,6 @@
   }
  ],
  "exam": [
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 8,
-   "found": 0,
-   "false_alarms": 0,
-   "exam_defects": 0,
-   "fixable": 8,
-   "fixed": 0,
-   "tf_keyed": 4,
-   "tf_first": 0,
-   "readings_keyed": 2,
-   "readings_hit": 0,
-   "missing_keyed": 1,
-   "missing_hit": 1,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 10,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 10,
-   "conf_missing": 10,
-   "brier_sum": 2.5,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      2
-     ],
-     "rust": [
-      0,
-      3
-     ],
-     "ruby": [
-      0,
-      1
-     ],
-     "python": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      0,
-      1
-     ],
-     "slow": [
-      0,
-      2
-     ],
-     "docs": [
-      0,
-      1
-     ],
-     "flaky": [
-      0,
-      1
-     ],
-     "dep": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 8,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 8,
-    "fixed": 0,
-    "tf_keyed": 4,
-    "tf_first": 0,
-    "readings_keyed": 2,
-    "readings_hit": 0,
-    "missing_keyed": 1,
-    "missing_hit": 1,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 10,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 10,
-    "conf_missing": 10,
-    "brier_sum": 2.5,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       2
-      ],
-      "rust": [
-       0,
-       3
-      ],
-      "ruby": [
-       0,
-       1
-      ],
-      "python": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       0,
-       1
-      ],
-      "slow": [
-       0,
-       2
-      ],
-      "docs": [
-       0,
-       1
-      ],
-      "flaky": [
-       0,
-       1
-      ],
-      "dep": [
-       0,
-       1
-      ]
-     }
-    },
-    "brier": 0.25,
-    "closed_share": 0.1
-   },
-   "cost": 0,
-   "closed": {
-    "train": [
-     "missing-tool-rust-15f302"
-    ],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "brier": 0.25,
-   "closed_share": 0.1,
-   "model": "a large local model",
-   "at": "2026-11-04T08:10:47Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "ambiguous",
-    "bug",
-    "dep",
-    "docs",
-    "flaky",
-    "missing-tool",
-    "slow",
-    "untested",
-    "vague",
-    "vuln"
-   ],
-   "author": "self"
-  },
   {
    "run": "s0-001",
    "agent": "smith",
@@ -62625,6 +62346,229 @@
     "goal"
    ],
    "author": "self"
+  },
+  {
+   "run": "s8-060",
+   "agent": "smith",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 8,
+   "tf_keyed": 24,
+   "tf_first": 2,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 2,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 7,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 0.03,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 0,
+    "tf_keyed": 4,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 1,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 0.005,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 40,
+    "fixed": 8,
+    "tf_keyed": 20,
+    "tf_first": 2,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 2,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 6,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 0.025,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "cost": 0,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 8,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 2,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 3,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 0,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "ts": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 1,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    }
+   },
+   "brier": 0.0025,
+   "closed_share": 0.0,
+   "tokens": 1497927,
+   "fix_rate": 0.0,
+   "tokens_per_fix": null,
+   "model": "a large local model",
+   "thinking": "native",
+   "seed": 8,
+   "ids": "533064b859c1",
+   "at": "2026-11-20T21:44:41Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self"
   }
  ],
  "coverage": {
@@ -65241,14 +65185,14 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 856,
+ "unproven": 851,
  "unproven_kinds": {
   "typed": 83,
   "meaning-user": 86,
   "research-uncited": 28,
-  "meaning-notes": 442,
-  "docs": 168,
-  "red": 85,
+  "meaning-notes": 440,
+  "docs": 167,
+  "red": 82,
   "perf-typed": 147,
   "ui-unshot": 4,
   "infra": 7,
@@ -66459,28 +66403,28 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 73244,
+   "generated": 76450,
    "write": {
-    "title": 455,
-    "line": 4069,
-    "payoff": 66,
-    "kill test": 301,
-    "code": 35
+    "title": 461,
+    "line": 4186,
+    "payoff": 71,
+    "kill test": 328,
+    "code": 43
    },
    "dups": {
     "exact": 16,
-    "embed": 143,
+    "embed": 146,
     "shingle": 0
    },
    "rejected": {
-    "kill": 36471,
+    "kill": 38068,
     "tier": 21623,
-    "novelty": 195
+    "novelty": 207
    },
-   "merged": 2616,
-   "kept": 2842,
-   "pending": 272,
-   "pooled": 4140
+   "merged": 2868,
+   "kept": 2947,
+   "pending": 145,
+   "pooled": 5341
   },
   "families": [
    {
@@ -66502,7 +66446,7 @@
    },
    {
     "id": "F-011755",
-    "size": 3,
+    "size": 4,
     "lead": "Translate the old legacy codebase into modern idioms",
     "today": "Today you can't automatically convert a codebase written in an older language version or framework to the current best practices without breaking functionality.",
     "with_this": "With this, you can upgrade your entire project from Python 2 to Python 3, or from AngularJS to React, with all tests passing and no manual code rewriting required.",
@@ -66514,12 +66458,13 @@
     "evidence": "",
     "kinds": [
      "migrations",
+     "ops",
      "refactors"
     ]
    },
    {
     "id": "F-013109",
-    "size": 608,
+    "size": 627,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -66568,7 +66513,7 @@
    },
    {
     "id": "F-012927",
-    "size": 5,
+    "size": 6,
     "lead": "Predict the runtime memory leak caused by a specific line change",
     "today": "Today you can't know if a change to a single function will cause a heap leak after 48 hours of production traffic.",
     "with_this": "With this, you can see the projected memory growth curve for the next week based on the current code state, directly in the PR comments.",
@@ -68287,6 +68232,38 @@
     ]
    },
    {
+    "id": "F-072992",
+    "size": 1,
+    "lead": "Forge a twin lineage of project history",
+    "today": "Today you can't prove a refactor didn't introduce a regression that wasn't caught by tests",
+    "with_this": "With this, you can verify the absolute integrity of a repository migration by comparing it against a phantom timeline of the original code",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "refactors"
+    ]
+   },
+   {
+    "id": "F-074545",
+    "size": 1,
+    "lead": "Branch the file's history into parallel functional futures",
+    "today": "Today you can't see how a file would behave if different logic branches were true simultaneously",
+    "with_this": "With this, you can view a unified file that simultaneously satisfies multiple contradictory business requirements through superposition",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "data"
+    ]
+   },
+   {
     "id": "F-011460",
     "size": 5,
     "lead": "Negotiate migration compatibility with AI agents in other repos",
@@ -68610,6 +68587,22 @@
     "evidence": "",
     "kinds": [
      "onboarding"
+    ]
+   },
+   {
+    "id": "F-060343",
+    "size": 2,
+    "lead": "Auto-negotiate versioning strategies with downstream maintainers via chat",
+    "today": "Today you can't coordinate version bumps across an ecosystem of interdependent projects without manual email and calls",
+    "with_this": "With this, you can align the entire ecosystem on a versioning strategy because the system negotiates the optimal path for all stakeholders",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 3,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "releases"
     ]
    },
    {
@@ -69701,60 +69694,12 @@
     "kinds": [
      "migrations"
     ]
-   },
-   {
-    "id": "F-010045",
-    "size": 1,
-    "lead": "Stop one blocked step from silently stalling the whole org",
-    "today": "Today you can't see that one blocked step is holding up a dozen downstream deliverables until someone notices a week later.",
-    "with_this": "With this, you can pull the emergency stop on any blocked step and watch the dependent work pause, reroute, or restart on its own, so your team's days stop leaking into waiting.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "features"
-    ]
-   },
-   {
-    "id": "F-010056",
-    "size": 1,
-    "lead": "Let thousands of rival designs compete before anyone writes code",
-    "today": "Today you can't see how many different designs a change could take, so you commit to the first one that comes to mind and find the flaws after merging.",
-    "with_this": "With this, you can pick a design that survived thousands of attempts to break it, so fewer changes get rewritten after they ship and your team spends its time building.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "design"
-    ]
-   },
-   {
-    "id": "F-010063",
-    "size": 1,
-    "lead": "Turn design questions into a paid market for the best answer",
-    "today": "Today you can't quickly buy a well-argued design from many experts, so you settle for whichever answer is easiest to get.",
-    "with_this": "With this, you can post a design question with a small reward and receive several competing, tested answers, so the decision that shapes your project gets better than whatever you could have written alone.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "design"
-    ]
    }
   ],
-  "families_total": 2021,
+  "families_total": 2100,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2842
+   "total": 2947
   }
  },
  "steer": {
@@ -69788,7 +69733,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.4,
+    "idle_h": 302.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -69811,7 +69756,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.6,
+    "idle_h": 302.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -69834,7 +69779,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.4,
+    "idle_h": 302.5,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -69857,7 +69802,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.5,
+    "idle_h": 302.6,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -69880,7 +69825,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.3,
+    "idle_h": 302.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -69903,7 +69848,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.3,
+    "idle_h": 302.4,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -69926,7 +69871,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.0,
+    "idle_h": 302.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -69949,7 +69894,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.1,
+    "idle_h": 302.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -69972,7 +69917,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.1,
+    "idle_h": 302.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -69995,7 +69940,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.8,
+    "idle_h": 303.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -70018,7 +69963,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.4,
+    "idle_h": 303.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -70041,7 +69986,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.4,
+    "idle_h": 303.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -70064,7 +70009,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.5,
+    "idle_h": 303.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -70087,7 +70032,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.5,
+    "idle_h": 303.6,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -70110,7 +70055,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.3,
+    "idle_h": 303.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -70133,7 +70078,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.3,
+    "idle_h": 303.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -70156,7 +70101,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.3,
+    "idle_h": 303.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -70179,7 +70124,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.2,
+    "idle_h": 303.3,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -70202,7 +70147,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.1,
+    "idle_h": 303.2,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -70225,7 +70170,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.0,
+    "idle_h": 303.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -70248,7 +70193,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.0,
+    "idle_h": 303.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -70271,7 +70216,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 279.0,
+    "idle_h": 303.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -70294,7 +70239,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.8,
+    "idle_h": 302.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -70317,7 +70262,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.8,
+    "idle_h": 302.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -70340,7 +70285,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.8,
+    "idle_h": 302.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -70363,7 +70308,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 278.9,
+    "idle_h": 303.0,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
