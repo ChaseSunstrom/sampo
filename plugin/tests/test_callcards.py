@@ -757,6 +757,84 @@ class Bench(unittest.TestCase):
         self.assertEqual(callcards.bench_summary(worse)["verdict"], "not proven", "a significant loss proves nothing")
         self.assertEqual(callcards.bench_summary([])["pairs"], 0)
 
+    def test_remeasure_closes_a_class_only_on_a_paired_effect_at_p_under_005_and_n_30(self):
+        def rows(n, cls_of, model="m"):
+            return [{"scenario": f"s{i}", "model": model, "failure_class": cls_of(i), "passed": cls_of(i) is None}
+                    for i in range(n)]
+        # a real effect: 30 scenarios hit "loop" before, 24 of them fixed after, none newly broken
+        before = rows(30, lambda i: "loop")
+        after = rows(30, lambda i: None if i < 24 else "loop")
+        r = callcards.remeasure(before, after)
+        self.assertEqual((r["loop"]["n"], r["loop"]["wins"], r["loop"]["losses"]), (30, 24, 0))
+        self.assertLess(r["loop"]["p"], 0.05)
+        self.assertEqual(r["loop"]["verdict"], "closed")
+        # the same effect on 8 scenarios: p is under 0.05 (8 wins: 0.0078) but n is under 30
+        small = callcards.remeasure(rows(8, lambda i: "loop"), rows(8, lambda i: None))
+        self.assertEqual((small["loop"]["n"], small["loop"]["verdict"]), (8, "inconclusive"))
+        self.assertLess(small["loop"]["p"], 0.05)
+        # 30 scenarios, no effect (half swap each way): open
+        flat = callcards.remeasure(rows(30, lambda i: "loop" if i % 2 else None),
+                                   rows(30, lambda i: None if i % 2 else "loop"))
+        self.assertEqual((flat["loop"]["wins"], flat["loop"]["losses"], flat["loop"]["verdict"]), (15, 15, "open"))
+        # a significant loss is not closed
+        worse = callcards.remeasure(rows(30, lambda i: "loop" if i < 3 else None), rows(30, lambda i: "loop"))
+        self.assertEqual(worse["loop"]["verdict"], "open")
+        # the bar is a parameter, and the verdict never rests on unpaired or other-model scenarios
+        self.assertEqual(callcards.remeasure(rows(8, lambda i: "loop"), rows(8, lambda i: None),
+                                             scenarios_n_min=8)["loop"]["verdict"], "closed")
+        other = callcards.remeasure(before, rows(30, lambda i: None, model="x"))
+        self.assertEqual((other["loop"]["n"], other["loop"]["verdict"]), (0, "inconclusive"))
+        self.assertEqual(callcards.remeasure([], []), {})
+
+    def test_remeasure_keeps_each_class_apart_and_the_newest_row_of_a_scenario(self):
+        before = [{"scenario": "a", "model": "m", "failure_class": "loop"},
+                  {"scenario": "b", "model": "m", "failure_class": "timeout"},
+                  {"scenario": "c", "model": "m", "failure_class": None, "passed": True}]
+        after = [{"scenario": "a", "model": "m", "failure_class": "loop"},
+                 {"scenario": "a", "model": "m", "failure_class": None, "passed": True},  # newest: fixed
+                 {"scenario": "b", "model": "m", "failure_class": "loop"},  # timeout gone, loop arrived
+                 {"scenario": "c", "model": "m", "failure_class": None, "passed": True}]
+        r = callcards.remeasure(before, after, scenarios_n_min=1)
+        self.assertEqual((r["loop"]["wins"], r["loop"]["losses"]), (1, 1))
+        self.assertEqual((r["timeout"]["wins"], r["timeout"]["losses"]), (1, 0))
+        self.assertEqual(r["loop"]["n"], 3)
+
+    def test_remeasure_reads_one_arm_and_orders_by_at_not_file_order(self):
+        def row(arm, cls, at, passed=None):
+            return {"scenario": "a", "model": "m", "arm": arm, "failure_class": cls, "at": at,
+                    "passed": cls is None if passed is None else passed}
+        before = [row("on", "loop", "2026-01-01"), row("off", None, "2026-01-02")]
+        after = [row("on", None, "2026-01-03"), row("off", "loop", "2026-01-04")]
+        r = callcards.remeasure(before, after, scenarios_n_min=1)  # default arm: on
+        self.assertEqual((r["loop"]["wins"], r["loop"]["losses"]), (1, 0))
+        off = callcards.remeasure(before, after, scenarios_n_min=1, arm="off")
+        self.assertEqual((off["loop"]["wins"], off["loop"]["losses"]), (0, 1))
+        late_first = [row("on", None, "2026-01-09"), row("on", "loop", "2026-01-02")]  # newest by at is the clean one
+        r = callcards.remeasure([row("on", "loop", "2026-01-01")], late_first, scenarios_n_min=1)
+        self.assertEqual((r["loop"]["wins"], r["loop"]["losses"]), (1, 0))
+
+    def test_remeasure_gates_on_scenarios_that_hit_the_class(self):
+        def rows(n, hit, passed=True):
+            return [{"scenario": f"s{i}", "model": "m", "failure_class": "loop" if i < hit else None,
+                     "passed": (i >= hit)} for i in range(n)]
+        # 30 paired scenarios but the class hit only 6: 6 informative pairs, not enough
+        before = rows(30, 6)
+        after = rows(30, 0)
+        r = callcards.remeasure(before, after)
+        self.assertEqual((r["loop"]["n"], r["loop"]["n_hit"], r["loop"]["wins"]), (30, 6, 6))
+        self.assertEqual(r["loop"]["verdict"], "inconclusive")
+        r = callcards.remeasure(rows(30, 30), rows(30, 0))
+        self.assertEqual((r["loop"]["n_hit"], r["loop"]["verdict"]), (30, "closed"))
+
+    def test_remeasure_leaves_a_failed_row_with_no_class_out_of_the_pair(self):
+        before = [{"scenario": f"s{i}", "model": "m", "failure_class": "loop", "passed": False} for i in range(4)]
+        after = [{"scenario": "s0", "model": "m", "failure_class": None, "passed": False},  # failed, no class
+                 {"scenario": "s1", "model": "m", "passed": None},  # an old row without the fields
+                 {"scenario": "s2", "model": "m", "failure_class": None, "passed": True},  # a clean pass
+                 {"scenario": "s3", "model": "m", "failure_class": "loop", "passed": False}]
+        r = callcards.remeasure(before, after, scenarios_n_min=1)
+        self.assertEqual((r["loop"]["wins"], r["loop"]["losses"], r["loop"]["n"]), (1, 0, 2))
+
     def test_a_runs_events_give_what_it_was_offered_its_card_calls_and_its_trail(self):
         events = [{"event": "note", "text": "calling cards offered: shout", "cards": ["shout"]},
                   {"event": "plan", "plan": {"title": "Fix the parser"}},

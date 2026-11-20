@@ -1506,6 +1506,40 @@ def bench_summary(rows):
             "verdict": "proven" if p < 0.05 and wins > losses else "not proven"}
 
 
+def remeasure(before_rows, after_rows, scenarios_n_min=30, arm="on"):
+    """The re-measure gate: bench rows (with failure_class) of one arm (default "on"; rows without an arm count) from
+    before a fix and after it, paired on one scenario and model (the newest row by `at`, file order on a tie, counts),
+    give per failure class seen in either set: n (the paired scenarios with a known outcome on both sides), n_hit
+    (those where either side hit the class), wins (hit the class before, not after), losses (only after), the sign
+    test's p and a verdict. A row with a class is that class; with none it is a clean pass only when passed is True,
+    else unclassified, and an unclassified side leaves the scenario out of the pair. "closed" needs p < 0.05, more
+    wins than losses and n_hit >= scenarios_n_min (the sign test sees only scenarios that hit the class, so the floor
+    counts those, not every paired scenario); fewer is "inconclusive" (8 clean wins prove nothing yet); the rest is
+    "open". The status table stays hand-curated: this only says what the rows show."""
+    unclassified = object()
+
+    def newest(rows):
+        by = {}
+        keep = [r for r in rows if r.get("arm") in (None, arm)]
+        for r in sorted(keep, key=lambda r: str(r.get("at") or "")):  # stable: file order breaks a tie
+            cls = r.get("failure_class") or None
+            by[(r.get("scenario"), r.get("model"))] = cls if cls else None if r.get("passed") is True else unclassified
+        return by
+    b, a = newest(before_rows), newest(after_rows)
+    paired = [k for k in b if k in a]
+    out = {}
+    for cls in sorted({v for v in list(b.values()) + list(a.values()) if isinstance(v, str)}):
+        use = [k for k in paired if b[k] is not unclassified and a[k] is not unclassified]
+        wins = sum(1 for k in use if b[k] == cls and a[k] != cls)
+        losses = sum(1 for k in use if a[k] == cls and b[k] != cls)
+        n_hit = sum(1 for k in use if b[k] == cls or a[k] == cls)
+        p = sign_test(wins, losses)
+        out[cls] = {"n": len(use), "n_hit": n_hit, "wins": wins, "losses": losses, "p": round(p, 4),
+                    "verdict": "inconclusive" if n_hit < scenarios_n_min
+                    else "closed" if p < 0.05 and wins > losses else "open"}
+    return out
+
+
 def _answering(names):
     """The first model profile of names that answers one short call (Jarvis may be down): (name, [why each before it
     failed])."""
