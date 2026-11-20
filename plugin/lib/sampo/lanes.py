@@ -2866,6 +2866,8 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         parts += ["## Filing your note", "Write your note to a file outside the repo, then file it in Sampo's state "
                   f"before you report: `sampo research add {b.id}-note --file <that file>`. A note under .fm-scratch "
                   "or anywhere git ignores is lost when an unchanged worktree is cleaned up.", ""]
+    from sampo import recipe  # T-3292: how the nearest closed task of this type was made (none when nothing is close)
+    parts += recipe.section(p, b, briefs)
     warns = hot_files(p, b)
     if warns:
         parts += ["## Warning", *warns, ""]

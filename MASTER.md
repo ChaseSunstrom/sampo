@@ -229,6 +229,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmpanels` (T-3662: `sampo panels render|sheet|sample|kinds SPEC.json`, a typed JSON spec of panels drawn as SVG mechanisms in the board, blueprint or paper style, dark and light; 21 kinds, each also a `panel-KIND` calling card; T-3736's eight move in SMIL loops) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmreadme` (T-3703: `sampo readme plan|shots|diagram|check`, a README's figures for any proj… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmrecall` (T-2546's MASTER-clause matcher and `sampo recall --backtest-built`… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmrecipe` (T-3292, `sampo/recipe.py`): `sampo lane brief` cites the nearest closed task of the same type as a `## Precedent recipe` (files touched, each step with the command that passed it, its lesson) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmrelate` (`sampo relate`: inferred dependencies and groups between open… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmrelease` (T-1188: `sampo release VERSION`, the release ritual as named… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmrelproof` (`sampo prove --release [PATH] [--yes-run] [--json]`, T-2389… [→ files-lib-3](docs/map/files-lib-3.md)

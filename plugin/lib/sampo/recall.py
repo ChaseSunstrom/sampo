@@ -795,9 +795,9 @@ def seen_before(p, sig, task):
     return None
 
 
-def _live_lesson(p, b):
-    """The first lesson of b that is not "none…" and not retired, or ""."""
-    gone = retired_lessons(p)
+def _live_lesson(p, b, gone=None):
+    """The first lesson of b that is not "none…" and not retired, or "". gone: the retired ids when the caller has them."""
+    gone = retired_lessons(p) if gone is None else gone
     texts = [x.lstrip("- ").strip() for x in b.section("Lessons").splitlines() if x.strip()]
     return next((t for i, t in enumerate(texts, 1) if not t.lower().startswith("none") and f"{b.id}.{i}" not in gone), "")
 
