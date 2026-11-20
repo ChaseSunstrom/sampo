@@ -216,6 +216,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmoutcomes` (`sampo outcomes`: each finished task's fate — reverted, fixed… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmoutside` (`sampo landscape`, `sampo deps`: the outside view… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmpage` + `page.html`… [→ files-lib-3](docs/map/files-lib-3.md)
+- `fmplace` (T-5011: `place_capture` says where a capture belongs: new, join, merge or duplicate, with its task, reason, backend and probability; the word-overlap rule answers under the bar, a local model over it replaces it) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmplaybooks` (`sampo check playbooks [ratchet]`, T-1505: the playbook… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmplugins` (`sampo plugins`: marketplace search, conflict check) [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmpluginmove` (T-3707: `sampo migrate plugins [--dry-run] [--undo]`, ids ending @foreman → sampo@sampo… [→ files-lib-3](docs/map/files-lib-3.md)

@@ -85,18 +85,12 @@ def due(p, every_h=1.0):
     return h is None or h >= every_h or h < 0
 
 
-def _backends(n=2):
-    """The user's own backends and loopback servers, cheapest first (registry's order), at most n."""
-    from sampo import models
-    return [b for b in models.registry() if b.get("local") or b.get("own")][:n]
-
-
 def _ask(p, kind, prompt, choices, timeout=TIMEOUT, n=2):
     """models.decide's best {choice, probability, cleared}, or None when no backend gave a usable answer (none set up,
     none reachable, or any error: a review or a block never fails on a model)."""
     from sampo import models
     try:
-        backends = _backends(n)
+        backends = models.own_backends(n)
         if not backends:
             return None
         got = models.decide(kind, prompt, choices, bar=BAR, p=p, backends=backends, timeout=timeout)

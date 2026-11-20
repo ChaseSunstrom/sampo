@@ -1508,6 +1508,12 @@ def registry():
     return sorted(out, key=lambda b: (not b["local"], not b["own"]))  # T-2494: loopback, the user's own, then clouds
 
 
+def own_backends(n=2):
+    """The user's own backends and loopback servers, cheapest first (registry's order), at most n: a text that must not
+    reach a paid cloud model is only ever asked of these."""
+    return [b for b in registry() if b.get("local") or b.get("own")][:n]
+
+
 def _answer(d, choices):
     """A reply's {choice, probability} when it is one of the choices with a probability in [0, 1], else None."""
     if not isinstance(d, dict) or d.get("choice") not in choices:
