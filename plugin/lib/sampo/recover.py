@@ -119,7 +119,8 @@ def around(args, argv):
 
 
 def entries(p):
-    """Every journal entry of this project, oldest first."""
+    """Every restartable journal entry of this project, oldest first. A hand-registered job (kind "manual",
+    sampo jobs add, T-5031) is a record, not a command: it is not in KINDS, so nothing here restarts or removes it."""
     rows = []
     try:
         names = sorted(os.listdir(_dir(p)))

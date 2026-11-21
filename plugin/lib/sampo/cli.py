@@ -9528,6 +9528,14 @@ def _build_parser(only=None):
     s = add("recover", lazy("sampo.recover", "cmd_recover"), tier=("Running elsewhere", 1295),
             help="after a restart nobody announced: restart the interrupted lands, trains and runs with their own arguments, "
                  "abort a half-done merge, drop old locks and leases, snapshot dead builders' lanes (T-3928)")
+    s = add("jobs", lazy("sampo.jobsreg", "cmd_jobs"), tier=("Running elsewhere", 1297),
+            help="background jobs: add NAME --why WHY registers one you started by hand, end ID [RESULT] closes it, "
+                 "ls (the default) lists them beside the running long jobs; sampo recover never restarts a hand-registered one (T-5031)")
+    s.add_argument("action", nargs="?", default="ls", choices=["ls", "add", "end"])
+    s.add_argument("words", nargs="*", help="add: the job's name; end: its id, then the result")
+    s.add_argument("--why", help="add: what the job is for (required)")
+    s.add_argument("--pid", type=int, help="add: the job's process id (without it the job runs until ended)")
+    s.add_argument("--log", help="add: the file the job writes its output to")
     s = add("lease", lazy("sampo.bus", "cmd_lease"), tier=("Running elsewhere", 1300), help="function-level edit leases between sessions (T-0708)")
     s.add_argument("action", nargs="?", default="list", choices=["list", "take", "drop", "stats"],
                    help="stats: lease blocks, resolved without the main thread, median minutes (T-3950)")

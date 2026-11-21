@@ -196,6 +196,8 @@ One line per module, so two changes to different modules never touch the same li
 - `fmjeffexport` (T-2970: Sampo's own decider on Jeff, `sampo exam models --jeff DIR` and `--train-jeff`: Examples… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlake` (T-2974: the training lake, `sampo exam models --export DIR [--with-agent]`: outcome-labelled… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmrecover` (T-3928, `sampo/recover.py`): a restart nobody announced. `cli.main` wraps `lane land`, `lane train`… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmrecover` (T-3928: `sampo recover` after a restart nobody announced; long jobs journal themselves in state/<project>/running/, the first SessionStart of a new boot says what the reboot interrupted and `sampo next` leads with it… [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmjobsreg` (T-5031, `sampo.jobsreg`: `sampo jobs add NAME --why WHY` registers a job started by hand in the running journal, `end ID [RESULT]` closes it, `sampo jobs` lists them; `sampo recover` never restarts one… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmlandlock` (T-1607: a sampo smith worker's writes confined with Landlock… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmmacros` (T-3922, `sampo.macros`): `sampo do NAME` runs a routine from `plugin/macros/*.json` (1 to 3 verb steps… [→ files-lib-3](docs/map/files-lib-3.md)
 - `fmlane_overlap` (T-3285, `sampo/lane_overlap.py`): `scan()` gives `sampo lane list` one `OVERLAP A and B:` line per… [→ files-lib-2](docs/map/files-lib-2.md)
