@@ -706,18 +706,25 @@ def select(p, n):
         helped = {}
         if prev and prev.get("new_capabilities"):
             helped = {t: {"new": list(prev["new_capabilities"]), "rose": scores[t] > prev["scores"][t]} for t in common}
+        from sampo import kalevala_landed  # T-5025: what the gen's GIANT task landed, from the scores already in hand
+        try:
+            res = kalevala_landed.landed(p, g, scores, prev)
+        except Exception as e:  # noqa: BLE001 — a brief that will not read never stops the verdict; the section says why
+            res = {"giant": None, "note": f"could not read the GIANT task ({c.plain(type(e).__name__)})", "rows": []}
         g.update(scores=scores, verdict=verdict, base=base, reason=why, judged=c.now(), helped=helped)
         os.makedirs(os.path.join(home(p), f"gen-{n}"), exist_ok=True)
         c.write_atomic(os.path.join(home(p), f"gen-{n}", "select.md"),
                        f"# Select\n\nGen: {n}\nVerdict: {verdict}\nSeed base: {base}\nReason: {why}\n"
-                       f"Scores: {json.dumps(scores, sort_keys=True)}\nHelped: {json.dumps(helped, sort_keys=True)}\n")
+                       f"Scores: {json.dumps(scores, sort_keys=True)}\nHelped: {json.dumps(helped, sort_keys=True)}\n"
+                       + kalevala_landed.render(n, res))
         lin = os.path.join(home(p), "lineage.md")
         old = "# Lineage\n"
         if os.path.exists(lin):
             with open(lin, encoding="utf-8") as f:
                 old = f.read()
         if f"## gen-{n}\n" not in old:  # a judged gen's section is written once, even if a later save failed
-            c.write_atomic(lin, old.rstrip("\n") + f"\n\n## gen-{n}\n- {verdict}: {why}\n- seed base: {base}\n")
+            c.write_atomic(lin, old.rstrip("\n") + f"\n\n## gen-{n}\n- {verdict}: {why}\n- seed base: {base}\n"
+                           + kalevala_landed.lineage_lines(n, res))
         m["gens"] = done
         _save(p, m)
     return _gen_result(n, g)
