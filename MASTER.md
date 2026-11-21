@@ -121,6 +121,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmbudget` (`sampo budget`: one spend ledger for child runs and subagents, caps… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmbus` (`sampo bus`, `sampo lease`, `sampo conductor`: messages between… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmclaims` (T-3321, Fleet part 1: `Claims(root).take/renew/release/list` keep claims as the refs… [→ files-lib-1](docs/map/files-lib-1.md)
+- `fmfleet` (T-3330, Fleet part 2: focus takes a task's claim; the edit hook refuses once another machine holds it… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmchange` (`sampo spec "<wish>" --module M`: a one-line wish as a red unittest… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmci` (T-1052: `sampo ci-watch`, the branch's latest GitHub Actions run polled… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmclaude` (`sampo claude`: every Claude Code session on the device from its… [→ files-lib-1](docs/map/files-lib-1.md)
