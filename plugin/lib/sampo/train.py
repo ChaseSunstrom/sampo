@@ -1781,7 +1781,7 @@ def _cmd_report(p, args, main, close, got, owed):
         start_verify(p, main, owed)  # T-4718: in line, so the ship has ended: the verify's suite runs take the slots after
     if sh:
         got["ship"] = sh[1]
-        lines.append(f"Ship ({sh[0]}'s grant): {c.fit(c.plain(sh[1]), 300)}")
+        lines.append(f"Ship ({sh[0]}'s grant): {c.fit(c.plain(sh[1]), REFUSAL_LINE)}")
     return cli.out(args, got, "\n".join(lines))
 
 
@@ -1855,6 +1855,8 @@ def _sampo(argv, env=None):
     return r.returncode, r.stdout, r.stderr
 
 
+REFUSAL_ROOM = 600  # T-5046: the width of a ship's refusal (release._full_refusal fits its clauses to it)
+REFUSAL_LINE = REFUSAL_ROOM + 100  # and of the line that carries it wherever it is kept or shown: room for "refused: " and a "; failing …" tail
 SHIPPED_AT = re.compile(r"\bmain at ([0-9a-f]{40})\b")  # release.ship's closing line: the commit it pushed
 # T-5058: release._ship_gate's line when a running ship already carries every commit: that ship pushes them and spends
 # the grant itself, so a land's last ship that printed it never spends it (twice on 2026-11-19 a land's last ship did,
@@ -1887,7 +1889,7 @@ def _ship_end(p, tid, head, rc, out, t0, t1):
     red = _failed(out) if rc and release.SLOTS_CUT not in out else []  # T-4718: a wait for slots names no failing test; T-4889: nor a cut
     lines = out.splitlines()
     mine = [i for i, ln in enumerate(lines) if ln.startswith(("fm: ", "sampo: "))]  # T-4739: the refusal, not the run's start
-    why = _why("\n".join(lines[mine[-1]:]) if mine else out)
+    why = _why("\n".join(lines[mine[-1]:]) if mine else out, REFUSAL_ROOM)  # T-5046: a full refusal names its failing tests, then the path
     line = ((out.strip().splitlines() or ["shipped"])[-1] if not rc else
             "refused: " + why + (f"; failing {c.joinmore(red, 8)}" if red and not any(k in why for k in red) else ""))
     data = {"head": head, "sha": sha, "seconds": round(t1 - t0, 1), "exit": rc, "start": round(t0, 1),
@@ -1895,7 +1897,7 @@ def _ship_end(p, tid, head, rc, out, t0, t1):
     try:
         c.log_event(p, "ship_done", task=tid, data=data)
         c.write_atomic(os.path.join(p.dir, "ship-last.json"), json.dumps({**data, "grant": tid, "seen": False,
-                                                                           "line": c.fit(c.plain(line), 400)}))
+                                                                           "line": c.fit(c.plain(line), REFUSAL_LINE)}))
     except Exception:  # noqa: BLE001 — a record that can't be written never undoes a ship
         pass
     return line, data
@@ -1941,12 +1943,12 @@ def _ship(p, keep, main=None):
                               env=c.scrubbed_env(dict(os.environ, FOREMAN_SHIP_AT=head)) if head else None)
     except Exception as e:  # noqa: BLE001 — a failed ship is said, never stops the land
         rc, out, err = 1, "", f"{type(e).__name__}: {e}"
-    line = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out)
+    line = (out.strip().splitlines() or ["shipped"])[-1] if not rc else "refused: " + _why(err or out, REFUSAL_ROOM)
     _, data = _ship_end(p, grant.id, head, rc, out + err, t0, time.time())
     if rc and data["red"] and not any(k in line for k in data["red"]):  # T-4739: the summary carries the classes
         line += f"; failing {c.joinmore(data['red'], 8)}"
     shown = (out + err).splitlines()[-5000:]
-    _ship_log(p, "".join(ln + "\n" for ln in shown) + f"{_hms()} {c.fit(c.plain(line), 300)}\n")
+    _ship_log(p, "".join(ln + "\n" for ln in shown) + f"{_hms()} {c.fit(c.plain(line), REFUSAL_LINE)}\n")
     if rc:
         return grant.id, line
     if keep:  # review: only this ship's own push (its own "main at" line) spent it; else someone else's spend stands
@@ -2158,7 +2160,7 @@ def _ship_child(a):
             except Exception as e:  # noqa: BLE001 — never an exception out of the loop
                 rc, out = 1, f"{type(e).__name__}: {e}"
             line, _ = _ship_end(p, grant, head, rc, out, t0, time.time())
-            print(f"{_hms()} {c.fit(c.plain(line), 300)}", flush=True)
+            print(f"{_hms()} {c.fit(c.plain(line), REFUSAL_LINE)}", flush=True)
             def said(e):  # a failure here is a timed line in the log, never the loss of a queued ship
                 print(f"{_hms()} grant not settled after the ship: {type(e).__name__}: {c.fit(c.plain(str(e)), 200)}",
                       flush=True)
@@ -2298,7 +2300,7 @@ def _ship_wait(p, secs):
     return True
 
 
-def _why(text):
+def _why(text, limit=400):
     """A refusal's own lines (its Next: hint aside) as one line. T-4147: a finish refusal numbers its missing lines, each
     with a `fix:` line under it that repeats the item's own fix; the reason keeps the items and drops the repeats and the
     numbers, so the 400-character cut still reaches the last item (the docs line) as the bullets did."""
@@ -2309,7 +2311,7 @@ def _why(text):
             continue
         s = re.sub(r"^\d+\. ", "", s)  # a numbered item of the list
         lines.append(re.sub(r" missing:$", " missing", s))  # the count line's colon: the list follows it
-    return c.fit("; ".join(ln for ln in lines if ln), 400) or "no reason given"
+    return c.fit("; ".join(ln for ln in lines if ln), limit) or "no reason given"
 
 
 def _park_kind(why):
@@ -3062,7 +3064,7 @@ def cmd_land(p, args, main):
     lines += [f"  hand close {t}: {w} (then sampo focus {t}; sampo task finish {t})" for t, w in got["hand"]]
     lines += [f"  parked {t}: {w}" for t, w in got["parked"]]
     lines += [f"Stopped: {got['stopped']}"] if got["stopped"] else []
-    lines += ([wait] if wait else [f"Ship ({got['ship_grant']}'s grant): {c.fit(c.plain(got['ship']), 300)}"]
+    lines += ([wait] if wait else [f"Ship ({got['ship_grant']}'s grant): {c.fit(c.plain(got['ship']), REFUSAL_LINE)}"]
               if got["ship_grant"] else [])
     lines += ["Restarting on new code: a train merged changes to Sampo's modules; the lanes still waiting land under them."
               if go else "The land restarts on new code: a train merged changes to Sampo's modules (run sampo lane land "

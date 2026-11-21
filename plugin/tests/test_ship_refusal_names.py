@@ -122,6 +122,89 @@ class Refused(ForemanTestCase):
         self.assertIn("exit 3", refusal)
         self.assertIn(os.path.join(self.p.dir, "ship-test.log"), refusal)
 
+    def test_names_the_failing_test_and_its_exception_from_the_first_runs_output(self):
+        """T-5046: no second run to learn which test failed and how: the refusal carries class.test and the exception."""
+        r = self.red_ship("test_bad.Bad", env={"FM_POSTMERGE_RERUN": "false"})
+        refusal = next(ln for ln in (r.stdout + r.stderr).splitlines() if "failed in the scratch tree" in ln)
+        self.assertIn("test_bad.Bad.test_it", refusal)
+        self.assertIn("AssertionError: False is not true", refusal)
+
+    def test_at_most_three_failing_tests_are_named_then_a_count(self):
+        r = self.red_ship(*[f"test_m{i}.M{i}" for i in range(8)], env={"FM_POSTMERGE_RERUN": "false"})
+        refusal = next(ln for ln in (r.stdout + r.stderr).splitlines() if "failed in the scratch tree" in ln)
+        self.assertEqual(len(re.findall(r"\.test_it\b", refusal)), 3, refusal)
+        self.assertIn("5 more", refusal)
+
+    def test_the_ships_run_of_run_py_is_stamped_with_an_id_for_its_record(self):
+        os.makedirs(os.path.join(self.tmp, "tests"))
+        script = os.path.join(self.tmp, "tests", "run.py")  # a command that names tests/run.py is stamped with a run id
+        with open(script, "w") as f:
+            f.write("echo \"stamped=$SAMPO_TEST_RUN_ID\"\nexit 1\n")
+        self.fm("ship", "--remote", "origin", "--test", f"sh {script}", check=False, env={"FM_POSTMERGE_RERUN": "false"})
+        with open(os.path.join(self.p.dir, "ship-test.log")) as f:
+            self.assertRegex(f.read(), r"stamped=[0-9a-f]{16}\b")
+
+
+class FullRefusalRecord(ForemanTestCase):
+    """T-5046: _full_refusal reads the failing tests from the first run's record, else from the run's FAIL:/ERROR: blocks."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def refusal(self, tail, rec, **kw):
+        with mock.patch.object(c, "run_record", return_value=rec) as rr:
+            line = release._full_refusal(self.p, tail, 1, [], [], "python3 plugin/tests/run.py", wt="/wt", run_id="abc", **kw)
+        return line, rr
+
+    def test_the_record_read_by_run_id_gives_class_test_and_the_exception(self):
+        rec = {"ok": False, "failed": [{"class": "test_a.A", "test": "test_one", "first": "KeyError: 'x'"},
+                                       {"class": "test_b.B", "test": "", "first": "import failed: no module q"}]}
+        line, rr = self.refusal("", rec)  # the run's own output lost every name (a pipe, a cut): the record has them
+        rr.assert_called_once_with("/wt", "python3 plugin/tests/run.py", "abc")
+        self.assertIn("test_a.A.test_one: KeyError: 'x'", line)
+        self.assertIn("test_b.B: import failed: no module q", line, "a class that failed whole is named without a test")
+        self.assertIn("test_a.A", line)
+
+    def test_a_record_that_is_missing_falls_back_to_the_output_blocks(self):
+        tail = ("ERROR: test_it (test_x.X.test_it)\n----------------------------------------------------------------------\n"
+                "Traceback (most recent call last):\n  File \"a.py\", line 3, in test_it\n    f()\nValueError: boom\n\n"
+                "======================================================================\n"
+                "FAIL: test_two (test_x.X.test_two)\n----------------------------------------------------------------------\n"
+                "Traceback (most recent call last):\n  File \"a.py\", line 9, in test_two\nAssertionError: 1 != 2\n\n"
+                "----------------------------------------------------------------------\nRan 2 tests in 0.1s\n\nFAILED (failures=1, errors=1)\n")
+        line, _ = self.refusal(tail, None)
+        self.assertIn("test_x.X.test_it: ValueError: boom", line)
+        self.assertIn("test_x.X.test_two: AssertionError: 1 != 2", line)
+        self.assertNotIn("Traceback", line)
+
+    def test_a_green_or_unreadable_record_changes_nothing_and_no_run_id_reads_nothing(self):
+        line, _ = self.refusal(red_out("test_c.C"), {"ok": True, "failed": []})
+        self.assertIn("test_c.C.test_it: AssertionError", line)
+        with mock.patch.object(c, "run_record", side_effect=OSError("gone")):
+            line = release._full_refusal(self.p, red_out("test_c.C"), 1, [], [], "x", wt="/wt", run_id="abc")
+        self.assertIn("test_c.C.test_it", line, "a record that can't be read never hides the refusal")
+        with mock.patch.object(c, "run_record") as rr:
+            release._full_refusal(self.p, "", 1, [], [], "x", wt="/wt", run_id=None)
+        rr.assert_not_called()
+
+    def test_an_exception_line_is_cut_so_the_refusal_stays_one_short_line(self):
+        rec = {"ok": False, "failed": [{"class": "test_a.A", "test": "t", "first": "ValueError: " + "x" * 500}]}
+        line, _ = self.refusal("", rec)
+        self.assertLess(len(line), 400, line)
+
+    def test_a_subtest_failing_three_times_is_one_test_on_the_block_path_and_the_record_path(self):
+        blocks = "".join(f"FAIL: test_it (m.C.test_it) (i={i})\n----------\nAssertionError: bad {i}\n\n" for i in (1, 2, 3))
+        tail = blocks + "Ran 1 test in 1.0s\n\nFAILED (1 class)\n  failed class: m.C\n"
+        got = release._red_tests(None, tail, "cmd", None)
+        self.assertEqual([(k, t) for k, t, _ in got], [("m.C", "test_it")])
+        rec = {"ok": False, "failed": [{"class": "m.C", "test": "test_it", "first": f"AssertionError: bad {i}"} for i in (1, 2, 3)]}
+        with mock.patch.object(release.c, "run_record", return_value=rec):
+            got = release._red_tests("/wt", "", "cmd", "r1")
+        self.assertEqual([(k, t) for k, t, _ in got], [("m.C", "test_it")])
+        self.assertEqual(release._tests_clause(got, 400).count("m.C.test_it"), 1)
+
 
 class LandShipLog(ForemanTestCase):
     """The land's in-line ship (a train by hand, a land where nothing may run in the background) writes ship.log too."""
@@ -153,6 +236,49 @@ class LandShipLog(ForemanTestCase):
         self.assertRegex(lines[0], rf"^\d\d:\d\d:\d\d ship of {head[:9]} on {self.tid}'s publish grant")
         self.assertIn("  failed class: test_bad.Bad", lines)
         self.assertRegex(lines[-1], r"^\d\d:\d\d:\d\d refused: .*test_bad\.Bad")
+
+    def test_the_ship_last_line_carries_the_failing_tests_and_their_exception(self):
+        """T-5046: the refusal's `first failures` clause comes before the output path, inside train.REFUSAL_ROOM characters."""
+        out = red_out("test_bad.Bad", "test_worse.Worse", "test_c.C", "test_d.D", "test_e.E")
+        refusal = release._full_refusal(self.p, out, 1, ["the rerun alone also failed"], [], "python3 plugin/tests/run.py")
+        line, _ = train._ship_end(self.p, self.tid, "a" * 40, 1, "fm: " + refusal + "\n", 0.0, 1.0)
+        self.assertIn("test_bad.Bad.test_it: AssertionError: False is not true", line)
+        self.assertRegex(line, r"\(\+\d more\)", "the count of the tests left out is kept")
+
+    def test_long_exceptions_still_leave_the_path_and_the_count_in_the_ship_last_line(self):
+        """T-5046: three 100-character exceptions are cut to the room left, so the path and `nothing was pushed` survive."""
+        refusal = self.long_refusal()
+        line, _ = train._ship_end(self.p, self.tid, "a" * 40, 1, "fm: " + refusal + "\n", 0.0, 1.0)
+        self.assertIn("full output: /x/state/outputs/ship-0123456789ab.txt", line)
+        self.assertIn("nothing was pushed", line)
+        self.assertRegex(line, r"\(\+\d more\)")
+
+    def long_refusal(self):
+        long = "AssertionError: " + "x" * 90
+        keys = ("a.A", "b.B", "c.C", "d.D", "e.E")
+        out = ("".join(f"FAIL: test_it ({k}.test_it)\n{long}\n\n" for k in keys)
+               + "Ran 5 tests in 1.0s\n\nFAILED (5 classes)\n" + "".join(f"  failed class: {k}\n" for k in keys))
+        with mock.patch.object(release, "_keep_output", return_value="/x/state/outputs/ship-0123456789ab.txt"):
+            return release._full_refusal(self.p, out, 1, ["the rerun alone also failed"], [], "python3 plugin/tests/run.py")
+
+    def test_a_refusal_of_the_full_width_keeps_its_path_and_clause_in_every_place_it_is_stored_or_shown(self):
+        """T-5046: the refusal is as wide as train.REFUSAL_ROOM; the ship record, the in-line land's log line and its
+        summary keep all of it, so `sampo status` and the next land still say where the output is."""
+        refusal = self.long_refusal()
+        self.assertGreater(len(refusal), 400, "a refusal wider than the old cut is the case")
+        self.assertLessEqual(len(refusal), train.REFUSAL_ROOM)
+        line, _ = train._ship_end(self.p, self.tid, "a" * 40, 1, "fm: " + refusal + "\n", 0.0, 1.0)
+        with open(os.path.join(self.p.dir, "ship-last.json")) as f:
+            kept = json.load(f)["line"]
+        for text in (kept, line):
+            self.assertIn("full output: /x/state/outputs/ship-0123456789ab.txt", text)
+            self.assertIn("nothing was pushed", text)
+        grant, said = self.ship(1, "", "fm: " + refusal + "\n")
+        with open(self.log) as f:
+            last = f.read().splitlines()[-1]
+        for text in (last, said):
+            self.assertIn("full output: /x/state/outputs/ship-0123456789ab.txt", text)
+            self.assertIn("nothing was pushed", text)
 
     def test_a_second_ship_is_the_last_block_and_the_first_is_kept(self):
         self.ship(1, red_out("test_one.One"), "fm: the test failed in the scratch tree: failing test_one.One\n")

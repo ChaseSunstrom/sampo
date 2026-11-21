@@ -677,10 +677,12 @@ def _gated_pass(p, root, wt, base, said, target="HEAD", full=None):
     return (f"the gates' pass ({hit})" if hit else None), rest
 
 
-def _run_test(p, wt, base, env, test, log):
+def _run_test(p, wt, base, env, test, log, run_id=None):
     """The ship's own run in the scratch tree, streamed: the affected tests first, then `test`. (exit code, the last
-    1 MB of its output)."""
+    1 MB of its output). T-5046: `run_id` is stamped on the record its tests/run.py leaves (this run's alone, not the
+    affected stage's), so a refusal reads the failing tests there."""
     _affected_first(p, wt, base, env)  # T-2323: a red linked test stops the ship in minutes, not after the suite
+    env = {**env, c.RUN_ID_ENV: run_id} if run_id else env
     with open(log, "wb") as out, open(log, "rb") as rd:
         try:
             proc = subprocess.Popen(c.nice_argv(test), cwd=wt, stdin=subprocess.DEVNULL, env=env, stdout=out,
@@ -756,15 +758,85 @@ def _baseline_note(p, got):
     return ""
 
 
-def _full_refusal(p, tail, failed, said, got, cmd):
+SHOW_TESTS, EXC_WIDTH = 3, 100  # T-5046: the failing tests a refusal names with their exception, and an exception's width
+
+
+def _red_tests(wt, tail, cmd, run_id):
+    """T-5046: [(class, test, its exception line)] a red full run failed, so a refusal names them without a second run: the
+    record the run's own tests/run.py left under `run_id` (it survives a cut or piped output), else the FAIL:/ERROR:
+    blocks of the output's tail (unittest's `FAIL: t (mod.Class.t)` and the traceback's last exception line). A class
+    the record says failed whole has no test. Sorted, so the first ones match the classes a refusal lists first."""
+    rec = None
+    if run_id:
+        try:
+            rec = c.run_record(wt, cmd, run_id)
+        except Exception:  # noqa: BLE001 — a record that can't be read leaves the output's own blocks
+            rec = None
+    entries = rec.get("failed") if isinstance(rec, dict) and not rec.get("ok") else None
+    found = [(str(f["class"]), str(f.get("test") or ""), str(f.get("first") or ""))
+             for f in entries or [] if isinstance(f, dict) and f.get("class")]
+    first = {}
+    for k, t, e in found or _block_failures(tail):
+        first.setdefault((k, t), e)  # a subTest fails once per value under one test: the test counts once, with its first exception
+    return sorted((k, t, e) for (k, t), e in first.items())
+
+
+_FAIL_HEAD = re.compile(r"(?m)^(?:FAIL|ERROR): \S+ \(([A-Za-z_]\w*(?:\.\w+)+)\)[^\n]*$")  # a subTest adds ` (i=1)`
+_EXC_LINE = re.compile(r"(?:[\w.]+\.)?\w*(?:Error|Exception|Failure|Interrupt|Exit)\b")
+
+
+def _block_failures(tail):
+    """T-5046: [(mod.Class, test, exception line)] from unittest's FAIL:/ERROR: blocks in `tail`: a block runs to the next
+    header, a ===== rule or the summary; its exception is the last unindented line that reads as one, else its last line."""
+    heads = list(_FAIL_HEAD.finditer(tail or ""))
+    out = []
+    for i, m in enumerate(heads):
+        end = heads[i + 1].start() if i + 1 < len(heads) else len(tail)
+        lines = []
+        for ln in tail[m.end():end].splitlines():
+            if ln.startswith("====") or ln.startswith("Ran "):
+                break
+            if ln.strip() and not set(ln.strip()) <= set("-"):  # unittest's ---- rule under the header is no content
+                lines.append(ln.rstrip())
+        exc = next((x for x in reversed(lines) if not x[:1].isspace() and _EXC_LINE.match(x)), lines[-1] if lines else "")
+        cls, _, test = m.group(1).rpartition(".")
+        out.append((cls, test, exc.strip()))
+    return out[:200]
+
+
+def _tests_clause(tests, room=None):
+    """T-5046: `first failures: a.A.t: ValueError: x; …` for the first SHOW_TESTS tests, then a count; '' for none. `room`
+    is the characters the clause may take: each exception is cut to fit it (not below 30), else fewer tests are named
+    (one at least), the count always says how many are left out."""
+    if not tests:
+        return ""
+    text = ""
+    for n in range(min(SHOW_TESTS, len(tests)), 0, -1):
+        more = len(tests) - n
+        tail = f" (+{more} more)" if more > 0 else ""
+        for width in range(EXC_WIDTH, 29, -10):
+            shown = [(f"{k}.{t}" if t else k) + (f": {c.fit(c.plain(c.redact(e)), width)}" if e else "") for k, t, e in tests[:n]]
+            text = "first failures: " + "; ".join(shown) + tail
+            if room is None or len(text) <= room:
+                return text
+    return text
+
+
+def _full_refusal(p, tail, failed, said, got, cmd, wt=None, run_id=None):
     """T-4739: the one line a refused full run says: the failed classes (five, then a count), what the rerun alone did, the
-    baseline task and the file holding the run's output. Never the whole output."""
-    names = _red_names(tail)
+    baseline task and the file holding the run's output. Never the whole output. T-5046: and the first three failing tests
+    with their exception, from the first run's record (`run_id`, read in `wt`) or its output, so no rerun is needed."""
+    tests = _red_tests(wt, tail, cmd, run_id)
+    names = _red_names(tail) or sorted({k for k, _, _ in tests})  # a cut or piped output names none: the record does
     what = (f"failing {c.joinmore(names, 5)}" if names else f"no failing class named (exit {failed})")
     path = _keep_output(p, tail, cmd)
-    parts = [what + (f" ({'; '.join(said)})" if said else ""), _baseline_note(p, got),
-             f"full output: {path}" if path else ""]
-    return "the test failed in the scratch tree: " + "; ".join(x for x in parts if x) + "; nothing was pushed"
+    fixed = [what + (f" ({'; '.join(said)})" if said else ""), _baseline_note(p, got), f"full output: {path}" if path else ""]
+    from sampo import train
+    head, end = "the test failed in the scratch tree: ", "; nothing was pushed"
+    room = train.REFUSAL_ROOM - len(head) - len(end) - len("; ".join(x for x in fixed if x)) - 2  # the width train keeps of a refusal
+    clause = _tests_clause(tests, room)
+    parts = [fixed[0], clause, *fixed[1:]]
+    return head + "; ".join(x for x in parts if x) + end
 
 
 SLOTS_CUT = "ran out of time waiting for test slots"  # T-4718: a ship's affected run cut by its limit, no test failed
@@ -1243,6 +1315,7 @@ def ship(p, args):
             env[c.SLOT_PRIORITY] = env.get(c.SLOT_PRIORITY) or "1"  # T-3614: its runs take freed CPU slots first
             log = os.path.join(tmp, "test.log")  # T-2255: a file, not a pipe: a background process holding it can't hang the ship
             failed, tail, hit, rest = 0, "", None, []
+            run_id = c.new_run_id(shlex.join(test))  # T-5046: the id its tests/run.py record carries, for the refusal
             try:  # a full fm check here waits for this run; the ship's own fm check (in wt) doesn't
                 try:
                     hit, rest = _gated_pass(p, root, wt, base, said, target, full)  # T-3468
@@ -1256,7 +1329,7 @@ def ship(p, args):
                     print(f"reusing {hit}: the pushed tree differs from it only in files its CI "
                           f"skips or the sync mirror{top}, so the suite isn't run again", flush=True)
                 else:
-                    failed, tail = _run_test(p, wt, base, env, test, log)
+                    failed, tail = _run_test(p, wt, base, env, test, log, run_id)
             finally:
                 if (c.read_meta(p).get("ship_testing") or {}).get("pid") == os.getpid():
                     c.update_meta(p, ship_testing=None)
@@ -1275,7 +1348,7 @@ def ship(p, args):
             if failed:
                 for ln in got:  # T-4739: the capture's lines are in the log too, not only in the refusal
                     print(ln)
-                _err(_full_refusal(p, tail, failed, rerun, got, shlex.join(test)))
+                _err(_full_refusal(p, tail, failed, rerun, got, shlex.join(test), wt, run_id))
             for ln in got:
                 print(ln)
             rules = os.path.join(wt, "plugin", "rules", "foreman.md")
