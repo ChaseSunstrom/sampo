@@ -159,8 +159,10 @@ def curve(a, b, k=.5):
 
 
 def packet(pts, t, T, i, s=7):
+    """A packet at t on the curve pts; data-p and data-t let an animated page (sampo panels --html, T-3734) run it on."""
     x, y = bez(*pts, t)
-    return rect(x - s / 2, y - s / 2, s, s, T.a(i), rx=1.5)
+    on = " ".join(N(v) for q in pts for v in q)
+    return rect(x - s / 2, y - s / 2, s, s, T.a(i), rx=1.5).replace("<rect ", f'<rect data-p="{on}" data-t="{t:g}" ', 1)
 
 
 def pill(x, y, s, T, i, W=None, size=SZ, fill=None):
@@ -283,11 +285,12 @@ def _cluster(d, W, H, T):
             out.append(line(*cen[a], *cen[b], T.line, 1.2, op=.9))
     for i, c in enumerate(cl):
         r, (cx, cy) = rng(f"{i}{c['label']}"), cen[i]
-        out.append(circ(cx, cy, sp * 1.05, T.a(i), op=.07))
+        out += [f'<g data-drift="{i}">', circ(cx, cy, sp * 1.05, T.a(i), op=.07)]  # a group an animated page drifts
         for _ in range(int(c.get("n", 20))):
             ang, rad = next(r) * 2 * math.pi, sp * math.sqrt(next(r))
             x, y = min(max(cx + rad * math.cos(ang), 6), W - 6), min(max(cy + rad * math.sin(ang), 6), H - 6)
             out.append(circ(x, y, 1.8 + next(r) * 1.4, T.a(i), op=.9))
+        out.append("</g>")
     for i, c in enumerate(cl):
         out += pill(cen[i][0], max(cen[i][1] - sp * .95, 12), fit(c["label"], 120), T, i, W)
     return out
@@ -374,17 +377,19 @@ def _globe(d, W, H, T):
         s, y = math.cos(math.radians(lat)), math.sin(math.radians(lat))
         out.append(f'<ellipse cx="{N(cx)}" cy="{N(cy - R * y * .85)}" rx="{N(R * s)}" ry="{N(R * s * .22)}" fill="none" '
                    f'stroke="{T.a(0)}" opacity=".35"/>')
-    for k in range(1, 6):
-        out.append(f'<ellipse cx="{N(cx)}" cy="{N(cy)}" rx="{N(R * abs(math.cos(k * math.pi / 6)))}" ry="{N(R)}" fill="none" '
-                   f'stroke="{T.a(0)}" opacity=".35"/>')
+    for k in range(1, 6):  # data-mer, data-globe: what an animated page turns (T-3734)
+        out.append(f'<ellipse data-mer="{k}" cx="{N(cx)}" cy="{N(cy)}" rx="{N(R * abs(math.cos(k * math.pi / 6)))}" ry="{N(R)}" '
+                   f'fill="none" stroke="{T.a(0)}" opacity=".35"/>')
     n = int(d.get("dots", 160))
     r = rng("globe")
+    out.append(f'<g data-globe="{N(cx)} {N(cy)} {N(R)} {n}" data-c="{" ".join(T.a(k) for k in range(1, 5))}">')
     for i in range(n):
         y = 1 - 2 * (i + .5) / n
         s, th = math.sqrt(1 - y * y), i * 2.39996
         x, z = s * math.cos(th), s * math.sin(th)
         if z > 0:
             out.append(circ(cx + R * x, cy - R * y, 1.3 + 1.2 * next(r), T.a(1 + i % 4), op=round(.45 + .5 * z, 2)))
+    out.append("</g>")
     hi, bw = max(max(bars), 1), (W - 8) / len(bars)
     for i, v in enumerate(bars):
         bh = max(2, (hh - 4) * v / hi)
@@ -1645,7 +1650,8 @@ def chrome(T, x, y, W, H, chip, title, stat="", acc=0, sub="", out=3):
             rect(x + PAD, y + 9, cwid, 16, fill, rx=2), txt(x + PAD + 5, y + 21, chip, on, SZ, weight=700),
             f'<text x="{N(x + PAD + cwid + 10)}" y="{N(y + 21)}" font-size="{SZ}" font-weight="700" letter-spacing=".9" '
             f'fill="{T.ink}">{esc(t)}{subtxt}</text>',
-            *([txt(x + W - PAD, y + 21, stat, T.txt(acc), SZ, "end", 700)] if stat else []),
+            *([txt(x + W - PAD, y + 21, stat, T.txt(acc), SZ, "end", 700).replace("<text ", '<text data-stat="" ', 1)]
+              if stat else []),  # data-stat: where an animated page's feed writes the live number (T-3734)
             line(x, y + HEAD - 4, x + W, y + HEAD - 4, T.line), path(brk, T.a(acc), 1.5)]
 
 

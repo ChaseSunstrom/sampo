@@ -121,6 +121,9 @@ def cmd_panels(args):
             res = sheet(root, os.path.abspath(args.target), args.out or "panels-sheet", args.style)
             cli.out(args, res, f"sampo panels sheet: drawn in {res['source']}:\n" + "\n".join(f"  {p}" for p in res["files"]))
             return None
+        from sampo import panelhtml
+        if panelhtml.dispatch(args, root):  # T-3734: --html (an animated page) and --term (drawn in the terminal)
+            return None
         res = render(root, os.path.abspath(args.target), args.out, args.style)
     except ValueError as e:
         raise cli.UsageError(f"sampo panels {args.action}: {e}") from None

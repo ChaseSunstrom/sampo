@@ -8849,6 +8849,13 @@ def _build_parser(only=None):
     s.add_argument("--root", metavar="DIR", help="the repo (default: the git checkout around the working folder)")
     s.add_argument("--style", choices=["board", "blueprint", "paper"], help="the look (default: the spec's, else board)")
     s.add_argument("--out", metavar="DIR|STEM", help="render: docs/assets/panels/; sheet: the file stem")
+    s.add_argument("--html", action="store_true", help="render: one self-contained animated page (packets run, clusters "
+                   "drift, the globe turns; 30 fps at most, still under reduced motion), --out FILE.html or DIR (T-3734)")
+    s.add_argument("--term", action="store_true", help="render: draw the panels in this terminal (half blocks, braille, "
+                   "real text) and write nothing")
+    s.add_argument("--width", type=int, metavar="N", help="--term: the columns (default: the terminal's; 20 to 400)")
+    s.add_argument("--feed", metavar="URL", help="--html: a JSON feed the page polls for live numbers: "
+                   '{"panels": [{"stat": "..."}, ...]} in spec order')
     s = add("new",lazy("sampo.new", "cmd_new"), tier=("Finding your way", 385), help="strict-by-default templates: a web "
             "page, a 3D scene, a sampo code panel (list; NAME [DIR] copies one; check PATH holds a copy to its rules)")
     s.add_argument("words", nargs="*", metavar="list|NAME [DIR]|check PATH", help="web, scene or panel; a panel lands "
