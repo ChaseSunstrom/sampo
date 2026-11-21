@@ -511,11 +511,17 @@ def _near_host(p, text, type_, scope):
     return hit[1] if hit else None
 
 
+def _in_lane(b):
+    """T-5363: the task has a lane (a builder holds it, or it merged and waits on its close): no builder reads a follow-up
+    appended now, and the close gate would refuse the close until someone settled the line by hand."""
+    return bool(b.meta.get("lane")) or str(b.meta.get("lane_stop") or "").startswith("merged")
+
+
 def _place(p, text, type_, source, scope=(), under=None, note=None):
     """('folded', id): the item nearly repeats an open task, of its type first (recall's near-match), and goes on its log.
     ('appended', id): it names a file inside an open task's scope and goes on that task's follow-ups: the task in hand,
     else the narrowest scope, then the same type, the one being worked, the oldest. Neither goes onto a deferred or
-    blocked task. (None, None): it needs a task of its own. The whole text is kept: a line holds it up to _TEXT_WIDTH,
+    blocked task, and an append skips a task that has a lane (_in_lane). (None, None): it needs a task of its own. The whole text is kept: a line holds it up to _TEXT_WIDTH,
     a file in the project folder the rest, linked from the line."""
     key, whole, short, long_ = _finding(text)
     hit = _near_host(p, text, type_, scope)
@@ -530,7 +536,7 @@ def _place(p, text, type_, source, scope=(), under=None, note=None):
         return None, None
     cands = []
     for b in c.load_briefs(p):
-        if b.status in c.OPEN and b.status not in _ASLEEP:
+        if b.status in c.OPEN and b.status not in _ASLEEP and not _in_lane(b):
             ranks = [r for r in (_scope_rank(x, b.meta.get("scope")) for x in paths) if r is not None]
             if ranks:
                 cands.append((b, min(ranks)))

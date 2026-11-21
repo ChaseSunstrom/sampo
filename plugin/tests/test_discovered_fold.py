@@ -66,6 +66,35 @@ class Fold(ForemanTestCase):
         self.assertIn("never grows", self.fm("task", "show", tid).stdout)  # readable afterwards
         self.assertEqual(triggers.fold_counts(self.p)["appended"], 1)
 
+    def lane_host(self, **meta):
+        tid = self.new("Rework the retry loop", scope="plugin/net/retry.py")
+        b = c.find_brief(self.p, tid)
+        b.meta.update(meta)
+        c.save_brief(self.p, b, touch=False)
+        return tid
+
+    def test_a_host_whose_lane_has_merged_gets_no_follow_up_the_item_files_as_its_own_task(self):  # T-5363, lane
+        tid = self.lane_host(lane=os.path.join(self.tmp, "wt-merged"), lane_stop=f"merged {c.now()}")
+        out = self.fm("capture", "FIX: the backoff in plugin/net/retry.py never grows", "--source", "discovered").stdout
+        self.assertNotIn(f"appended to {tid}", out)
+        self.assertEqual(c.find_brief(self.p, tid).section("Follow-ups captured").strip(), "")
+        self.assertEqual(triggers.fold(self.p, "plugin/net/retry.py loses the first request", "FIX", "discovered"), (None, None))
+
+    def test_a_host_a_builder_holds_in_a_lane_gets_no_follow_up_the_item_files_as_its_own_task(self):  # T-5363, lane
+        tid = self.lane_host(lane=os.path.join(self.tmp, "wt-live"), status="active")
+        self.assertEqual(triggers.fold(self.p, "plugin/net/retry.py never grows its backoff", "FIX", "discovered"), (None, None))
+        self.assertEqual(triggers.fold(self.p, "plugin/net/retry.py never grows its backoff", "FIX", "discovered",
+                                       under=tid), (None, None), "not even the task named as the one in hand")
+        self.assertEqual(c.find_brief(self.p, tid).section("Follow-ups captured").strip(), "")
+        other = self.new("Sweep the net package", scope="plugin/net/*")  # a lane-less host in scope still takes it
+        self.assertEqual(triggers.fold(self.p, "plugin/net/retry.py never grows its backoff", "FIX", "discovered"),
+                         ("appended", other))
+
+    def test_a_host_with_no_lane_still_gets_the_follow_up(self):  # T-5363
+        tid = self.lane_host()
+        self.assertEqual(triggers.fold(self.p, "plugin/net/retry.py never grows its backoff", "FIX", "discovered"),
+                         ("appended", tid))
+
     def test_a_near_repeat_of_an_open_task_is_folded_and_the_open_tasks_log_says_so(self):
         tid = self.new("fm lease take prints every lease in the project")
         before = len(self.tasks())
