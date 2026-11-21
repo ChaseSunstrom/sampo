@@ -2,7 +2,7 @@
 
 Full entries for [MASTER.md](../../MASTER.md) section 3 (File map); MASTER.md keeps one index line for each, linking here. A new entry goes here in full and gets one index line there.
 
-### plugin/lib modules, fmscene to fmwhich
+### plugin/lib modules, fmscene to focus (the rest moved to files-lib-8)
 
 <details>
 <summary>every module, one line each</summary>
