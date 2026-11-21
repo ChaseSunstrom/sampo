@@ -11869,7 +11869,7 @@ _PUBLISH = {
 _LIT_ASSIGN = lazy(r"(?<![\w$])([A-Za-z_]\w*)=(?:'([^']*)'|\"([^\"$`\\]*)\"|([^\s;&|()<>'\"$`\\]*))(?=[\s;&|)]|$)")
 
 
-_PLAIN_ARG = re.compile(r"[^$`{}<>()\[\]]*")  # T-4983: no expansion, brace, redirection, group or subscript
+_PLAIN_ARG = lazy(r"[^$`{}<>()\[\]]*")  # T-4983: no expansion, brace, redirection, group or subscript
 
 
 def _inert_args(cmds, shell):

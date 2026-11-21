@@ -310,6 +310,8 @@ class KnownVars(GuardCase):
         "check --for": "a file extension picking which tests a template is for",
         "code --ping": "the name of an installed runner to ask one question",
         "code --probe": "a model profile's name to score",
+        "code --search": "a count of candidate edits (1 to 8, or auto); the verify commands it checks them with are the "
+                         "plan's own, read by the guard where they are stored",
         "exam --only": "an fnmatch glob over file paths",
         "prove --check": "an SQL invariant query run against the data store, never a shell line (--run is read)",
         "readme --url": "where the already running app answers, fetched, never run",

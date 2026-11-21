@@ -106,7 +106,7 @@ else
   git clone --quiet "$SAMPO_REPO" "$SAMPO_HOME"
 fi
 mkdir -p "$SAMPO_HOME/local" "$SAMPO_HOME/backups"
-mkdir -p -m 700 "$SAMPO_HOME/state"   # T-2282: private when new (an existing folder keeps its mode): prove's trust reads it
+(umask 077 && mkdir -p "$SAMPO_HOME/state")   # T-2282: private when new (an existing folder keeps its mode): prove's trust reads it
 chmod +x "$SAMPO_HOME"/*.sh
 
 # 2. Curated plugins
