@@ -3194,6 +3194,18 @@ def _pre_tool_use(raw):
               f"Details: {os.path.join(c.state_dir(), 'logs', 'hooks.log')}. "
               f"If this persists: claude plugin disable {(c.installed_ids() or c.plugin_ids())[0]}", file=sys.stderr)
         return 2
+    if not block and act and p and tool in FILE_TOOLS:  # T-3330: from the local cache; never the network
+        try:
+            from sampo import fleet
+            lost = fleet.refusal(p, act.id)
+        except Exception:
+            log_error("PreToolUse", _tb())
+            lost = None
+        if lost:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                     "permissionDecisionReason": "Sampo: " + lost}}))
+            print("Sampo: " + lost, file=sys.stderr)  # Claude Code shows the model stderr on exit 2
+            return 2
     made, lane_hint, lane_tasks = None, "", None
     if block and block.category == "brief" and p:
         try:

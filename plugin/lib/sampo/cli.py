@@ -113,6 +113,9 @@ def mutate(p, tid, fn, event, data=None):
             c.log_event(p, "stage", task=b.id, data={"from": before, "to": after}, session=session())
         c.export_mirror(p)
     c.regen_views(p, mirror=False)  # every brief re-read: never while hooks queue on the project lock
+    if b.status in c.CLOSED or b.status in ("blocked", "deferred"):
+        from sampo import fleet  # T-3330: a task no longer worked frees its fleet claim (a no-op unless fleet took one)
+        fleet.release(p, b.id)
     return b, result
 
 
@@ -5059,9 +5062,23 @@ def cmd_focus(args):
             _focus_edit(p, peek, once, blast)
         except Exception:  # the locked pass reads what is missing and reports what fails
             pass
+    claimed = False
+    if peek and peek.status not in c.CLOSED:  # T-3330: the fleet claim after the peek's gates and before the lock: it is
+        from sampo import fleet  # several git calls on the network, and every hook and verb queues on the project lock
+        refused, note = fleet.take(p, peek.id)
+        if refused:
+            raise c.PolicyError(refused)
+        claimed = True
+        if note:
+            print(note, file=sys.stderr)
     with c.lock(p.dir):
         target = need_brief(p, args.id)  # read again under the lock: an edit made meanwhile is kept
-        _focus_refusal(p, target)
+        try:
+            _focus_refusal(p, target)
+        except Exception:
+            if claimed:  # the locked gates refused after all: no claim is kept for a task that did not start
+                fleet.release(p, peek.id)
+            raise
         stage_before = c.stage(target)  # T-1137: focus saves outside mutate, so it logs its own stage move
         was_active = target.status in ("active", "verifying")  # T-4626
         resumed, first_focus, hits, related, snapped, shifted = _focus_edit(p, target, once, blast)

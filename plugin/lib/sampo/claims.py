@@ -134,8 +134,9 @@ class Claims:
     def _mine_now(self, by):
         return bool(by) and by.get("machine") == self.me["id"] and by.get("session") == self.session
 
-    def take(self, key, now=None):
-        """{result: taken|held|lost|offline|error, by?, sha?}. Taking your own live claim renews it."""
+    def take(self, key, now=None, same_machine=False):
+        """{result: taken|held|lost|offline|error, by?, sha?}. Taking your own live claim renews it; same_machine also
+        takes one an earlier session of this machine left (a resumed or restarted session is still us)."""
         now = time.time() if now is None else now
         ref = self.ref(key)
         refs = self._remote_refs()
@@ -148,7 +149,8 @@ class Claims:
                 return {"result": "drift", "differs": d}
         if old:
             by = self._body(ref, old)
-            if not self._mine_now(by) and not expired(by, now):
+            ours = self._mine_now(by) or (same_machine and bool(by) and by.get("machine") == self.me["id"])
+            if not ours and not expired(by, now):
                 return {"result": "held", "by": by or {}}
         new = self._commit(key, now)
         if not new:
