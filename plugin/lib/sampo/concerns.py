@@ -578,6 +578,8 @@ def _ledger_lock(p):
 def _write(p, event):
     with _ledger_lock(p):
         c.append_line(os.path.join(p.dir, CONCERNS), json.dumps(event, ensure_ascii=False))
+    if event.get("event") in ("show", "answer", "split"):  # T-4217: a concern left, or was cut: STATE.md's saved links
+        c.drop_concern_links(p)  # are no longer believed until a verb folds the ledger again (a view regen follows)
 
 
 def _file_sig(path):
@@ -1274,6 +1276,18 @@ def _hours(opened):
     return None if t is None else max(0, int((c.clock().timestamp() - t) // 3600))
 
 
+def _refresh_state(p):
+    """T-4217: after a concern left or was cut, the saved links are folded again and STATE.md regenerated from them.
+    A failure here costs STATE.md its order, never the verb (the event is already written)."""
+    try:
+        briefs = c.load_briefs(p)
+        raw = queue_links(p, briefs)
+        c.save_concern_links(p, raw)
+        c.regen_views(p, concerns=c.inherit_concerns(briefs, raw))
+    except Exception:
+        pass
+
+
 def cmd_concerns(args):
     from sampo import cli
     p = cli.resolve(args)
@@ -1283,12 +1297,15 @@ def cmd_concerns(args):
             if not args.id or args.proof is None:
                 raise cli.UsageError('sampo concerns show ID --proof "<what the user can now see>" (' + PROOF_HELP + ")")
             got = show(p, args.id, args.proof)
+            _refresh_state(p)  # T-4217: STATE.md drops it now
             return cli.out(args, got, f"{got['id']} shown: {got['checked']}")
         if action == "answer":
             got = answer(p, args.id, args.text)
+            _refresh_state(p)
             return cli.out(args, got, f"{got['id']} answered")
         if action == "split":
             got = split(p, args.id)
+            _refresh_state(p)
             return cli.out(args, got, f"{got['id']} split into " + ", ".join(got["into"]))
         if action == "fold":
             from sampo import steermeter

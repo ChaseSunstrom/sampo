@@ -5341,14 +5341,23 @@ def _queue_preview(p, args, order, briefs):
     return out(args, {"autonomy": autonomy, "items": items, "minutes_known": sum(known)}, "\n".join(lines))
 
 
-def _concern_links(p, briefs):
+def _concern_links(p, briefs, regen=False):
     """T-4201: {task id: its open concern} for the verbs that show the queue (never a hook: the ledger is folded
-    here). A ledger that can't be read costs the ordering by concern, never the verb."""
+    here). A ledger that can't be read costs the ordering by concern, never the verb.
+    T-4217: what it read is saved for the hook paths that regenerate STATE.md (they never fold the ledger); with
+    regen, a change from the saved links regenerates the views now, so STATE.md shows what the user waits on."""
     try:
         from sampo import concerns
-        return c.inherit_concerns(briefs, concerns.queue_links(p, briefs))
+        raw = concerns.queue_links(p, briefs)
     except Exception:
         return {}
+    links = c.inherit_concerns(briefs, raw)
+    try:
+        if c.save_concern_links(p, raw) and regen:
+            c.regen_views(p, concerns=links)
+    except Exception:  # a views file that can't be written costs STATE.md its order, never the verb
+        pass
+    return links
 
 
 def cmd_queue(args):
@@ -5362,7 +5371,7 @@ def cmd_queue(args):
     if args.replan:
         with c.lock(p.dir):
             c.log_event(p, "replan", data={"order": [b.id for b in order]}, session=session())
-            c.regen_views(p, briefs)
+            c.regen_views(p, briefs, concerns=links)  # T-4217: STATE.md carries the concern order the verb printed
     data = {"order": [{**c.brief_summary(b), **({"concern": {k: links[b.id][k] for k in ("id", "said", "via")
                                                              if k in links[b.id]}}
                                                 if b.id in links else {})} for b in order],
@@ -8372,12 +8381,9 @@ def _sync_in(args):
 def cmd_next(args):
     p = resolve(args)
     briefs = c.load_briefs(p)  # T-2016: shared by every check below; each load is ~18 ms at 1,200 briefs
-    links = _concern_links(p, briefs)  # T-4201: what the user is waiting on (fm next only: never a hook's path)
-    b, st, action = c.next_for(p, briefs, concerns=links)
+    links = _concern_links(p, briefs, regen=True)  # T-4201: what the user is waiting on (fm next only: never a hook's path)
+    b, st, action = c.next_for(p, briefs, concerns=links)  # T-4217: the lead, ahead of a merge or the friction pass, is said there
     link = links.get(b.id) if b else None
-    if link and st != "idle":  # the top concern and its task are the required action, said first
-        from sampo import concerns
-        action = f"the user is waiting on {concerns.lead(link)} — {action}"
     usual = None
     if b and b.status != "active":  # T-0451: what this kind of task usually takes here (fm next only: not the hooks)
         from sampo import watch

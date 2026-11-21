@@ -7654,6 +7654,10 @@ def next_for(p, briefs=None, checks=True, concerns=None):
         from sampo import recover
         action = recover.next_lead(p) + action
     idle_now = b is None or b.status not in ("active", "verifying")
+    link = None
+    if b is not None and st != "idle" and concerns:  # T-4217: the user's open concern leads: a merge or a recovery follows it
+        link = inherit_concerns(lane_view(briefs, p.lane), concerns).get(b.id)  # the view _next_for picked from
+        idle_now = idle_now and not link
     try:  # T-2354: lanes that stopped before their merge, each with the one recovery for its cause
         from sampo import lanes as slanes
         done = slanes.awaiting_merge(p, briefs)  # T-2038: first when nothing else is under way
@@ -7757,6 +7761,9 @@ def next_for(p, briefs=None, checks=True, concerns=None):
             seen = []
         if seen:
             action += " · self-check: " + " · ".join(seen)
+    if link:  # T-4217: the top concern and its task are the required action, said first (moved here from fm next)
+        from sampo import concerns as cn
+        action = f"the user is waiting on {cn.lead(link)} — {action}"
     return b, st, action
 
 
@@ -7811,21 +7818,6 @@ def _next_for(p, briefs=None, concerns=None):
         from sampo import risk
         risky = risk.slowed(p)
         waits = f" · {risky}" if risky else ""  # T-1080: fm next says why the autonomy slowed
-    if not active_brief(briefs, p.lane):
-        from sampo import friction  # T-0125: at a task boundary, every N closed tasks, Foreman reviews its own friction
-        rnd = _round_first(p)  # T-2460: the user's steer bars friction work until the round is done
-        if rnd and friction.due(p):
-            waits += f" · the self-improvement pass waits for Genesis round {rnd} (sampo drive --round-first)"
-        elif friction.due(p):
-            try:  # T-0449: optional work waits while usage runs ahead of pace
-                from sampo import budget as sbudget
-                pace = sbudget.degrade(p)
-            except Exception:  # an unreadable snapshot never costs the next action
-                pace = None
-            if not pace:
-                return None, "reflect", friction.ACTION
-            waits += (f" · optional work is dropped ({pace}): the self-improvement pass waits ("
-                      f"required gates still run)")
     # T-0289: waits for the user, never picked; T-1478: nor, in the main checkout, a task a builder lane holds
     # T-1708: nor a task whose dependency is still open (a lane holds it, or it waits on the user)
     open_ids = {x.id for x in briefs if x.status not in CLOSED}
@@ -7841,6 +7833,24 @@ def _next_for(p, briefs=None, concerns=None):
         if ask and (b is None or b.id not in concerns
                     or concern_rank(concerns[ask.id]) < concern_rank(concerns[b.id])):
             b = ask  # not behind the queue: the first linked of the queue and the inbox, the most said first
+    if not active_brief(briefs, p.lane):
+        from sampo import friction  # T-0125: at a task boundary, every N closed tasks, Foreman reviews its own friction
+        rnd = _round_first(p)  # T-2460: the user's steer bars friction work until the round is done
+        if rnd and friction.due(p):
+            waits += f" · the self-improvement pass waits for Genesis round {rnd} (sampo drive --round-first)"
+        elif friction.due(p):
+            try:  # T-0449: optional work waits while usage runs ahead of pace
+                from sampo import budget as sbudget
+                pace = sbudget.degrade(p)
+            except Exception:  # an unreadable snapshot never costs the next action
+                pace = None
+            if b is not None and b.id in concerns:  # T-4217: what the user is waiting on comes before the pass
+                waits += " · the self-improvement pass waits: the user is waiting on an open concern (sampo concerns)"
+            elif not pace:
+                return None, "reflect", friction.ACTION
+            else:
+                waits += (f" · optional work is dropped ({pace}): the self-improvement pass waits ("
+                          f"required gates still run)")
     if not b:
         from sampo import tidy  # T-0657: what a blocked task waited on may have changed since
         state = {x.id: x.status for x in briefs}
@@ -8021,11 +8031,84 @@ def _blocked_entry(b, known, open_ids):
                 freed=bool(named) and not waits and all(d in known for d in named))
 
 
-def state_dict(p, briefs=None):
+CONCERN_LINKS = "concern_links.json"
+CONCERN_LINKS_TTL_H = 24   # a link file older than this is not believed: the ledger may have moved on without a verb
+CONCERN_LINKS_REFRESH_H = 1
+
+
+def save_concern_links(p, links):
+    """T-4217: the open concerns' task links as the last verb that folded the ledger (next, queue) saw them, for
+    state_dict: STATE.md is regenerated on hook paths, which never fold the ledger (T-4201), so they read this small
+    file instead. links: concerns.queue_links' {task: {id, said, opened, text}}, never inherit_concerns' (no "via").
+    Returns True when what a reader sees changed (the caller then regenerates the views). No links: no file.
+    A file that can't be written costs the order in STATE.md, never the verb."""
+    path = os.path.join(p.dir, CONCERN_LINKS)
+    links = {t: {k: v[k] for k in ("id", "said", "opened", "text") if k in v} for t, v in (links or {}).items()}
+    try:
+        with open(path, encoding="utf-8") as f:
+            old = json.load(f)
+    except (OSError, ValueError):
+        old = None
+    same = isinstance(old, dict) and old.get("links") == links
+    if not links:
+        try:
+            os.remove(path)
+        except OSError:
+            return False
+        return old is not None
+    if same and (age_days(old.get("at")) or 0) * 24 < CONCERN_LINKS_REFRESH_H:
+        return False
+    try:
+        write_atomic(path, json.dumps({"at": now(), "links": links}, ensure_ascii=False))
+    except OSError:
+        return False
+    return not same
+
+
+def drop_concern_links(p):
+    """T-4217: the ledger changed (a concern shown, answered or split): the saved links are no longer believed until
+    the next verb that folds the ledger writes them again."""
+    try:
+        os.remove(os.path.join(p.dir, CONCERN_LINKS))
+    except OSError:
+        pass
+
+
+def read_concern_links(p):
+    """T-4217: {task: link} from the saved file; {} when it is missing, older than CONCERN_LINKS_TTL_H or not what
+    save_concern_links wrote (a bad entry is dropped, never raised: this runs on every hook's state read)."""
+    try:
+        with open(os.path.join(p.dir, CONCERN_LINKS), encoding="utf-8") as f:
+            got = json.load(f)
+        age = age_days(got["at"])
+        if age is None or age * 24 > CONCERN_LINKS_TTL_H or not isinstance(got["links"], dict):
+            return {}
+    except (OSError, ValueError, KeyError, TypeError):
+        return {}
+    return {t: v for t, v in got["links"].items() if isinstance(t, str) and isinstance(v, dict)
+            and isinstance(v.get("id"), str) and isinstance(v.get("said"), int) and not isinstance(v.get("said"), bool)
+            and isinstance(v.get("opened"), str) and isinstance(v.get("text"), str)}
+
+
+def _waiting(briefs, links):
+    """T-4217: the open concern the user waits on most, as {id, said, text, task, via}: the strongest link among the
+    open tasks (inherit_concerns has added the dependencies), or None."""
+    open_ids = {b.id for b in briefs if b.status not in CLOSED}
+    best = min((t for t in links if t in open_ids), key=lambda t: (concern_rank(links[t]), id_num(t)), default=None)
+    if best is None:
+        return None
+    k = links[best]
+    return {"id": k["id"], "said": k["said"], "text": k["text"], "task": best, "via": k.get("via")}
+
+
+def state_dict(p, briefs=None, concerns=None):
+    """concerns (T-4217): {task: link} as concerns.queue_links gives it; None reads the file the last verb that folded the
+    ledger saved (this runs on hook paths too, which never fold it)."""
     everything = load_briefs(p) if briefs is None else briefs
     briefs = lane_view(everything, p.lane)  # T-0134: another lane's work shows only under "lanes"
     meta = read_meta(p)
-    queue, cycles, dangling = order_queue(briefs)
+    links = inherit_concerns(briefs, read_concern_links(p) if concerns is None else concerns)
+    queue, cycles, dangling = order_queue(briefs, concerns=links)
     if dangling:  # T-3430: walk the archive only when something looks dangling
         gone = archived_ids(p)
         dangling = [d for d in dangling if d[1] not in gone]
@@ -8053,7 +8136,8 @@ def state_dict(p, briefs=None):
         "queue": [brief_summary(b) for b in queue if b is not act],
         "lanes": [dict(brief_summary(b), lane=b.meta.get("lane") or "main") for b in everything
                   if held_elsewhere(b, p.lane) and b.status not in ("done", "dropped")],
-        "inbox": [brief_summary(b) for b in rank_inbox(briefs)],
+        "inbox": [brief_summary(b) for b in rank_inbox(briefs, links)],
+        "waiting": _waiting(briefs, links),  # T-4217: the top open concern, first on every surface that reads this
         "blocked": [_blocked_entry(b, known, open_ids) for b in briefs if b.status == "blocked"],
         "deferred": [b.id for b in briefs if b.status == "deferred"],
         "cycles": cycles, "dangling": [list(d) for d in dangling],
@@ -8124,6 +8208,11 @@ def pause_note(sd):
 def render_state(sd, ts=None):
     a = sd["active"]
     out = [f"# STATE — {sd['project']}", f"_Generated {ts or now()} by sampo from the briefs; do not edit._", ""]
+    w = sd.get("waiting")
+    if w:  # T-4217: what the user is waiting on, before the focus and the queue
+        via = f" (for {w['via']}, which waits on it)" if w.get("via") else ""
+        out += [f"**The user is waiting: {w['id']} said {w['said']}x: {fit(plain(' '.join(str(w['text']).split())), 80)}"
+                f" → {w['task']}{via}**", ""]
     if (sd.get("risk_step_down") or {}).get("line"):  # T-4742
         out += [f"**{sd['risk_step_down']['line']}**", ""]
     if sd.get("panic"):
@@ -8230,9 +8319,11 @@ def main_view(p):
     return Project(p.slug, main_worktree(p.root) or p.root, p.dir) if p.lane else p
 
 
-def regen_views(p, briefs=None, mirror=True):
+def regen_views(p, briefs=None, mirror=True, concerns=None):
     """STATE/INBOX and the status files; with mirror (and fm sync on), the repo's .sampo/ mirror too. T-0673 review:
-    a capture into another project (fm projects --sweep) passes mirror=False, so nothing lands in that repo's tree."""
+    a capture into another project (fm projects --sweep) passes mirror=False, so nothing lands in that repo's tree.
+    T-4217: concerns, {task: link} as concerns.queue_links gives it, puts the user's open concerns first in STATE.md;
+    None reads the links a verb saved (state_dict)."""
     p = main_view(p)
     held = _HELD.get((_thread.get_ident(), os.path.abspath(p.dir)))
     if held is not None and briefs is None:  # T-3613: this thread holds the project lock: every brief re-read waits for
@@ -8255,7 +8346,7 @@ def regen_views(p, briefs=None, mirror=True):
             write_atomic(path, text)
     try:  # T-3556: views have their own lock, so callers may regenerate after the project lock; reading the state
         with lock(os.path.join(p.dir, "views"), timeout=30):  # under it means the last regen to write saw every save
-            sd, ts = state_dict(p, briefs), now()
+            sd, ts = state_dict(p, briefs, concerns), now()
             put("STATE.md", render_state(sd, ts))
             put("INBOX.md", render_inbox(sd, ts))
             put("state.line", state_line(sd) + "\n")
@@ -8263,7 +8354,7 @@ def regen_views(p, briefs=None, mirror=True):
             put("progress.line", progress_line(sd) + "\n")
             put("status.json", json.dumps(status_dict(sd)) + "\n")
     except LockTimeout:  # a regen wedged for 30 s: the next one writes them; the command's own change is saved
-        sd = state_dict(p, briefs)
+        sd = state_dict(p, briefs, concerns)
     if mirror:
         export_mirror(p)
     return sd
