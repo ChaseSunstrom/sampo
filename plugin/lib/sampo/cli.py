@@ -10264,6 +10264,17 @@ def _build_parser(only=None):
                    help="home (the default): the folders; plugins: Claude Code's plugin and marketplace ids")
     s.add_argument("--undo", action="store_true", help="put the old layout back and check it against the manifest's hashes")
     s.add_argument("--dry-run", action="store_true", help="show the steps; change nothing")
+    s = add("update", lazy("sampo.update", "cmd_update"), tier=("Project and settings", 876), help="update this Sampo "
+            "install: fetch origin, fast-forward, run the plugin and home migrations only when they have work, re-check "
+            "sampo-fast against its sum, and say what changed and what a running session must do. Refuses, in one "
+            "line, a dirty tree, a branch other than main (a dev checkout updates by its own merges), a diverged "
+            "history or an origin it can't reach (T-3881)")
+    s.add_argument("--check", action="store_true", help="fetch and report the commits and migrations an update would "
+                   "apply; change nothing")
+    s.add_argument("--dry-run", action="store_true", help="the same as --check")
+    s.add_argument("--undo", action="store_true", help="put the commit the last update started from back, and undo the "
+                   "migrations it ran")
+    s.add_argument("--repo", metavar="DIR", help="the checkout to update (default: the one this sampo runs from)")
     s = add("spar", lazy("sampo.spar", "cmd_spar"), tier=("Project and settings", 875), help="the nightly hook fuzz: "
             "mutated payloads (malformed, huge, unicode, missing fields) through the hooks in a temp home until the "
             "budget runs out; each distinct traceback is one crash; --capture files each as a FIX (T-3281)")

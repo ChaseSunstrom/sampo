@@ -804,7 +804,7 @@ curl -fsSL https://raw.githubusercontent.com/ChaseSunstrom/sampo/main/plugin/tem
 
 </details>
 
-- **Update:** `git pull` in `~/.claude/foreman` (then `/reload-plugins`), or rerun `install.sh`.
+- **Update:** `sampo update` (then `/reload-plugins`); `--check` previews and `--undo` puts the old commit back ([INSTALL.md](INSTALL.md)).
 - **Health check:** ask "is sampo ok?" (`sampo doctor`). It also names any line in your CLAUDE.md, rules or Claude Code's memory that contradicts Sampo's, such as "never run the tests", with a fix. **Hygiene:** "clean up" (`sampo tidy`).
 - **Remove:** `~/.claude/foreman/plugin/uninstall.sh`. It uninstalls the plugin and marketplace and undoes the wiring. It keeps `state/` unless you pass `--purge-state`, and `--dry-run` previews.
 

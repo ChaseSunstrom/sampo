@@ -51,6 +51,10 @@ assume yes. The command it installs is `sampo`; `fm` still works as an alias for
    in plain words, for example "fix the login timeout". `sampo demo` shows what Sampo does in about a minute, without using
    the model. `sampo --help` lists the everyday commands.
 
+To update it later: `sampo update` (`--check` shows the commits and migrations first, `--undo` puts the old commit back). It
+refuses, in one line each, a checkout with uncommitted changes, one not on `main`, a diverged history or no network, and
+runs the plugin and home migrations only when they have work.
+
 To remove it later: `~/.claude/foreman/plugin/uninstall.sh` (`--dry-run` previews; `state/` is kept unless
 `--purge-state`).
 

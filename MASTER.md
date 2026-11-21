@@ -305,6 +305,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmtrials` (T-1059: a self-change as a pre-registered trial, graded by the… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmtriggers` (`sampo triggers [--days N] [--json]`, T-2276): capture events… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmtripwire` (T-3949: the reply tripwire reader, `sampo tripwire ab`: a Haiku pass over builder and reviewer returns… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmupdate` (T-3881: `sampo update [--check] [--dry-run] [--undo]`, fetch origin and fast-forward, migrations only when their dry runs find work… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmverifier` (T-2977: the close-holds verifier, `sampo exam models --verifier`: a text-free logistic head on lake… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmvsearch` (T-3010: a shim for `sampo.vsearch`, the policy of `sampo code --search N|auto` and… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmwatch` (`sampo ui --demo`: a canned view from `ui-demo.json` with every key… [→ files-lib-4](docs/map/files-lib-4.md)
