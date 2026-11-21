@@ -277,6 +277,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmcardauthor` (T-4838: `sampo card author "<request>"|grow [--batch N] [--max-calls N] [--writer W] [--ideas N]`: writers, local models first, draft calling cards for requests (mined, or proposed by a local writer when the queue runs short); a card joins the store only when its own tests pass confined. [→ files-lib-5](docs/map/files-lib-5.md))
 - `fmcardmine` (T-4920, T-4838 part B: `sampo.cardmine.mine(p)` turns pick misses, failed bench rows, repeated closed FIX… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmartfill` (T-4994, T-3311 slice: `sampo.artfill.fill_slots(brief)` fills an art card's slots from a one-line brief… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmsvgcards` (T-4996: SVG technique cards, technique x works type, admitted only when the example passes the works gates… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmbenchswe` (sampo/bench_swe, T-3746: `sampo bench swe`, SWE-bench Verified through Smith in each instance's docker image… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmcardauthor` (T-4838, T-3157 part 4: `sampo card author "<request>" [--writer local|haiku|sonnet] [--model P]`… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmcardmine` (T-4920, T-4838 part B: `sampo.cardmine.mine(p, write=True, bench=None)` turns Sampo's own records into… [→ files-lib-4](docs/map/files-lib-4.md)
