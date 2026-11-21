@@ -377,16 +377,26 @@ class SampoTestCase(unittest.TestCase):
     repo_seed = None  # T-3678: (message, ((path, text), ...)), committed on init in each test's repo (git_repo)
 
     def setUp(self):
+        again = hasattr(self, "_env")  # a test that runs setUp a second time (tearDown, setUp) keeps the first capture
+        if again:
+            self._remove_tmp()
         self._tmp = tempfile.TemporaryDirectory()
         self.tmp = os.path.realpath(self._tmp.name)
         self.home = os.path.join(self.tmp, "fhome")
         os.makedirs(self.home)
-        self._env = {k: os.environ.get(k) for k in ("FOREMAN_HOME", "FOREMAN_SESSION_ID", "FOREMAN_PROJECT",
+        env = {k: os.environ.get(k) for k in ("FOREMAN_HOME", "FOREMAN_SESSION_ID", "FOREMAN_PROJECT",
                                                      "FOREMAN_STATE", "XDG_STATE_HOME", "FOREMAN_NO_BACKGROUND",
                                                      "FOREMAN_ONEOFF", "CLAUDE_CODE_ENTRYPOINT", "FOREMAN_DRIVE_TASK",
                                                      "FOREMAN_GUARD_CASES", "FOREMAN_NO_LINK", "FOREMAN_NO_RIVAL",
                                                      "FOREMAN_UI_CACHE_S", "FOREMAN_DISK_FREE",
                                                      "FOREMAN_NO_LEFTOVER_SCAN", "FOREMAN_NO_COVERED")}
+        if not again:
+            self._env = env
+        # T-4198: registered first, so it runs last: unittest runs tearDown, then the addCleanup functions last added
+        # first, and a test's own cleanup (c.set_panic(False), any state write) must still see this test's home
+        if not again:
+            self.addCleanup(self._restore_env)
+            self.addCleanup(self._remove_tmp)  # runs before the restore and after the test's own cleanups (T-4198)
         # T-4543: no test reads the machine's free disk: on 2026-11-12 a 97%-full disk turned trunk red. 500 of 1000 GB
         # free is roomy; a test of low space pins its own reading (test_disk_pressure)
         os.environ["FOREMAN_DISK_FREE"] = "500e9/1000e9"
@@ -421,12 +431,14 @@ class SampoTestCase(unittest.TestCase):
             pass
         self.repo = git_repo(self.tmp, seed=self.repo_seed)
 
-    def tearDown(self):
+    def _restore_env(self):
         for k, v in self._env.items():
             if v is None:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+
+    def _remove_tmp(self):
         until = time.monotonic() + 5 * busy_factor()
         while True:  # T-1901: a detached child a test started on purpose may still be writing into state/
             try:
@@ -577,7 +589,7 @@ class BuiltOnce:
             shutil.rmtree(work, ignore_errors=True)
             shutil.copytree(os.path.join(root, "pristine"), work, symlinks=True)
         self.home, self.repo = os.path.join(work, "fhome"), os.path.join(work, "app")
-        os.environ["FOREMAN_HOME"] = self.home  # tearDown puts the saved value back
+        os.environ["FOREMAN_HOME"] = self.home  # the cleanup SampoTestCase.setUp registered puts the saved value back (T-4198)
         if built is None:
             git_repo(work)
             fixture = self.build()

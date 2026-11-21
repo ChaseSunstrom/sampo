@@ -410,7 +410,7 @@ class Cleanup(ForemanTestCase):
         t = threading.Thread(target=write)
         t.start()
         try:
-            ForemanTestCase.tearDown(self)
+            self._remove_tmp()
         finally:
             t.join()
             self._tmp = tempfile.TemporaryDirectory()  # the real tearDown cleans this one
