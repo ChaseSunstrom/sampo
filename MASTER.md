@@ -307,6 +307,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmworkflowlint` (T-2564): a local actionlint for `.github/workflows/*.yml`, no install: `python3 -I plugin/lib/sampo/workflowlint.py` prints `file:line: finding` for YAML, missing keys, run/uses, `${{ }}`, needs, matrix and bash -n faults… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmworkflowlint` (T-2564, `sampo/workflowlint.py`): a local actionlint with no install and no network… [→ files-lib-5](docs/map/files-lib-5.md)
 - `fmworks` (T-3106: `sampo works check FILE...`: each SVG sanitised, rendered headless in light… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmworksgrow` (T-3110: `sampo works grow --grid works --target N`: a type x subject x style x technique grid, thinnest cells fi… [→ files-lib-4](docs/map/files-lib-4.md)
 
 ### mods/, site/ and demo/
 

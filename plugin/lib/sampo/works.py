@@ -582,6 +582,7 @@ def _judge(work, m, kept):
         gate("unique", None, "a figure: told apart by its text", bar)
         return
     h = thumb(*_layout(work)[:2], light["centre"])
+    work["thumb"] = h.hex()
     dup = duplicates([(work["path"], h)], kept)
     if dup:
         twin, d = dup[work["path"]]
@@ -667,8 +668,10 @@ def _hung(e):
             "bar": "bar a render within the browser's time"}
 
 
-def _render_all(path, works, out):
-    kept, taken = [], set()
+def _render_all(path, works, out, prior=()):
+    """Render and judge each work; `prior` is [(name, thumb)] of works kept earlier (a store's), which `unique` compares
+    each against too."""
+    kept, taken = list(prior), set()
 
     def do(b, w, n):
         before = len(w["gates"])
@@ -887,7 +890,16 @@ def _read(path):
 
 
 def cmd_works(args):
-    from sampo import cli, shot
+    from sampo import cli, shot, worksgrow
+    if getattr(args, "action", "check") == "grow":
+        if args.files:
+            raise cli.UsageError("works grow takes no FILE: it writes its own (see --grid, --target)")
+        code = worksgrow.cmd_grow(args, cli.resolve(args))
+        if code:
+            sys.exit(code)
+        return
+    if not args.files:
+        raise cli.UsageError("works check needs FILE...")
     out = None
     if args.out:
         out = os.path.abspath(args.out)

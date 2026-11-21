@@ -8801,11 +8801,25 @@ def _build_parser(only=None):
     s = add("works", lazy("sampo.works", "cmd_works"), tier=("Every task", 167), help="check SVG works: each is "
             "sanitised, rendered headless in light and dark and held to its type's measured gates (xml, safe, size, "
             "shapes, palette, grid, set, loop, blank, clip, contrast, motion, unique); exit 1 when one fails (T-3106)")
-    s.add_argument("action", choices=["check"])
-    s.add_argument("files", nargs="+", metavar="FILE")
+    s.add_argument("action", choices=["check", "grow"], help="check FILE...: the gates; grow: write works into the "
+                   "thinnest cells of a types grid (best of N, critique and revise, pairwise rank; T-3110)")
+    s.add_argument("files", nargs="*", metavar="FILE")
     s.add_argument("--type", choices=["icon", "spot", "card", "scene", "figure"],
                    help="the gates' type (default: a square viewBox of 64 or less is an icon, else a card)")
     s.add_argument("--out", metavar="DIR", help="save each work's renders here as NAME-light.png and NAME-dark.png")
+    s.add_argument("--grid", default="works", help="grow: the grid to fill (only works: type x subject x style x "
+                   "technique)")
+    s.add_argument("--target", type=int, default=10, help="grow: stop when the store holds this many works (default 10)")
+    s.add_argument("--batch", type=int, default=3, help="grow: drafts a cell, best of N (1 to 8, default 3)")
+    s.add_argument("--rounds", type=int, default=1, help="grow: critique-and-revise rounds a draft (0 to 5, default 1)")
+    s.add_argument("--max-calls", type=int, help="grow: stop before a cell that could pass this many model calls")
+    s.add_argument("--seed", type=int, default=0, help="grow: shuffle equally thin cells (0: the grid's order)")
+    s.add_argument("--writer", choices=["haiku", "sonnet", "opus"], default="opus", help="grow: the model that draws "
+                   "(the drafts and the revisions; the critic and the judge have their own flags)")
+    s.add_argument("--critic", choices=["haiku", "sonnet", "opus"], default="sonnet", help="grow: the model that "
+                   "critiques each render (default sonnet)")
+    s.add_argument("--judge", choices=["haiku", "sonnet", "opus"], default="sonnet", help="grow: the model that ranks "
+                   "the survivors pairwise (default sonnet)")
     s = add("readme", lazy("sampo.readme", "cmd_readme"), tier=("Every task", 168), help="a README's figures (T-3703): "
             "plan (the figures the repo calls for: its pages, API routes, commands, services); shots (start the app, "
             "screenshot each route at desktop and phone, dark and light, a page showing private text refused; PNGs "

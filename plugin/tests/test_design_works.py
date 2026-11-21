@@ -276,6 +276,24 @@ class Contained(unittest.TestCase):
     """One bad work costs only itself: a hang, a crash or a full disk never loses the batch; the browser gets no
     secrets and no network."""
 
+    def test_works_kept_before_seed_the_uniqueness_check_of_a_render(self):
+        from sampo import shot
+        seen = []
+
+        class Fake:
+            def __init__(self, *a, **k):
+                pass
+
+            def close(self):
+                pass
+
+        todo = [{"path": "n", "svg": "<svg/>", "type": "icon", "animated": False, "gates": []}]
+        with mock.patch.object(shot, "Browser", Fake), mock.patch.object(works, "_render", lambda b, w, n: {}), \
+                mock.patch.object(works, "_judge", lambda w, m, kept: seen.append(list(kept))), \
+                mock.patch.object(works, "_save", lambda *a: None):
+            works._render_all("chrome", todo, "renders", prior=[("W-000001", b"\x00" * 4)])
+        self.assertEqual(seen, [[("W-000001", b"\x00" * 4)]])
+
     def test_a_hung_work_fails_render_alone_and_three_in_a_row_stop_the_batch(self):
         from sampo import shot
         started, saved = [], []
