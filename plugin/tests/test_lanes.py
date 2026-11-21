@@ -1128,6 +1128,25 @@ class Lanes(ForemanTestCase):
             self.assertIn("urgent", err.getvalue())
             self.assertIn("unmerged", err.getvalue())
 
+    def test_lanes_parked_on_a_conflict_hold_neither_cap_so_rebuilds_can_start(self):
+        # T-5471: 2026-11-21, 35 lanes parked on conflicts filled the unmerged cap, and their rebuilds were refused by it
+        # ("land them first"): a parked lane waits on a recovery, which no land performs, so it holds no brief
+        from sampo import lanes as slanes
+        p = c.find_project(self.repo)
+        with mock.patch.object(slanes, "UNMERGED_MAX", 2):
+            parked = [self.finished_builder() for _ in range(2)]
+            tid = first(self.fm("task", "new", "Next", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                                "--step", "s", "--json").stdout)["id"]
+            self.fm("task", "set", tid, "approved=true")
+            with self.assertRaises(c.PolicyError) as e:
+                slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))
+            self.assertIn("wait unmerged", str(e.exception), "unparked finished lanes still hold the cap")
+            for pid, path in parked:
+                tip = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+                slanes.stop_mark(p, pid, "conflict", "CHANGELOG.md", tip=tip)
+            self.assertTrue(all(slanes.parked(c.find_brief(p, pid)) for pid, _ in parked))
+            slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))
+
     def test_a_land_backlog_over_two_trains_holds_a_new_builder_unless_given_a_reason(self):
         # T-4938: 49 finished lanes sat 5-12 days while new builders kept starting: finishing beats starting
         from sampo import lanes as slanes

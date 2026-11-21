@@ -2834,6 +2834,10 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
     briefs = c.load_briefs(p)
     working, waiting, dormant = _slots(p, briefs, exclude=b.id)  # T-3135, T-3145: a lane whose builder returned waits on a merge
     out = working + waiting
+    by = {x.id: x for x in briefs}
+    # T-5471: a lane parked on a conflict (or refused) waits on a recovery no land performs: it holds neither cap below,
+    # or 35 parked lanes refuse their own rebuilds (2026-11-21)
+    waiting = [i for i in waiting if not (i in by and parked(by[i]))]
     cap = builders_cap(p)
     if len(working) >= cap:  # T-3293: every refusal from here on holds for the whole batch (_batch)
         raise _batch_refusal(c.PolicyError(
