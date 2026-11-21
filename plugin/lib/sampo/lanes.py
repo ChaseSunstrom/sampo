@@ -2826,6 +2826,9 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
             f"return (fm lane max N raises the cap, up to {BUILDERS_MAX})"))
     hold = land_backlog_cap()
     why = (getattr(args, "why", None) or "").strip()
+    # T-5411: kith marked 37 tasks blocked on these refusals; a blocked task needs a hand unblock after the land, a planned one
+    # is briefed again by sampo lane brief --ready once the land drains
+    stay = f"leave {b.id} planned, not blocked: sampo lane brief --ready briefs it once the land drains"
     if len(waiting) > hold and b.priority != "urgent":  # T-4938: finishing beats starting; urgent work drains the pile
         if why:
             print(f"sampo: {b.id} briefed past the land backlog ({len(waiting)} finished lanes wait to land, the bar is "
@@ -2833,13 +2836,13 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         else:
             raise _batch_refusal(c.PolicyError(
                 f"{len(waiting)} finished lanes wait to land, more than two trains ({hold}): land them first (sampo lane "
-                f"land), or give a reason to start this one anyway (sampo lane brief {b.id} --why REASON)"))
+                f"land --bg), or give a reason to start this one anyway (sampo lane brief {b.id} --why REASON); {stay}"))
     if len(waiting) >= UNMERGED_MAX and b.priority == "urgent":  # T-3964: urgent work trains first and drains the pile
         print(f"sampo: {b.id} is urgent: briefed past the unmerged cap ({len(waiting)} finished lanes wait, the cap is "
               f"{UNMERGED_MAX})", file=sys.stderr)
     elif len(waiting) >= UNMERGED_MAX:
-        raise _batch_refusal(c.PolicyError(f"{len(waiting)} finished lanes wait unmerged ({', '.join(waiting[:8])}…): merge some "
-                                   f"first (fm lane merge ID)"))
+        raise _batch_refusal(c.PolicyError(f"{len(waiting)} finished lanes wait unmerged ({', '.join(waiting[:8])}…): land them "
+                                           f"first: {c.merge_hint(waiting)}; {stay}"))
     # T-2797: five lanes and a design agent drove load to 3.5 per core: gates timed out. T-3243: but the first lane is
     # never starved by moderate load (Sampo's own sweeps and fills held 1.7-3.7 per CPU for three hours, nothing built)
     # T-4158: Sampo's own nice-19 gate runs (a land train, a close) held it at 2-3 per CPU for 40 min: only work at nice 0 counts
@@ -2985,8 +2988,12 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
     return cli.out(args, {"id": b.id, "path": path, "agent": agent, "model": chosen, "route": route, "out": out + [b.id], "warnings": warns},
                      "".join(f"{w}\n" for w in warns) +
                      f"{b.id}: builder brief {path}\n  model {chosen}: {route}\n  launch: {agent}\n  then: review its branch (one fm-reviewer on "
-                     f"git diff HEAD...<branch>), fm lane merge {b.id}, fm lane rm {b.id} (takes it back), "
-                     f"fm focus {b.id} here, re-run its criteria, fm task finish {b.id} "
+                     # T-5411: kith merged, focused, re-ran and finished 298 lanes one at a time from this line, 1.2-1.9 h
+                     # median from audit to merge; the land trains every finished lane at once and closes each itself
+                     f"git diff HEAD...<branch>) and record the audit (fm task audit {b.id}), then land it with the other "
+                     f"finished lanes: sampo lane land --bg (trains of {c.TRAIN_BATCH}, one gate run each, each landed task "
+                     f"closed from its builder's report lines); only when it is the one finished lane: fm lane merge {b.id}, "
+                     f"fm focus {b.id} here, re-run its criteria, fm task finish {b.id}; fm lane rm {b.id} takes it back "
                      f"(skills/intake/references/delegate.md)\n  not launching it? fm lane rm {b.id} frees the slot")
 
 

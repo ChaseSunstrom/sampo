@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- After a builder returns, Sampo now says to record the audit and land every finished lane with `sampo lane land --bg` (trains of 8, each task closed from its report), not to merge, focus and finish each lane by hand; a builder held by the land backlog is told to stay planned, not blocked. Kith had merged 298 lanes one at a time, each waiting 1.2-1.9 h between its review and its merge (T-5411).
 - The live tower no longer crashes when a tower's exam.jsonl holds a train id that is a list or object; such rows are skipped with one note and number ids are read as text (T-3419).
 - install.sh and the docs now read SAMPO_HOME, SAMPO_REPO and SAMPO_DESKTOP_REPO first, with the old FOREMAN_* names still working as aliases (T-3369).
 - A busy local model server no longer reads as a weak model. A model call answered HTTP 429 (a server's concurrency limit) now waits it out for up to 5 minutes (1 s, 2 s, 4 s … 20 s) instead of giving up after two short retries. An exam's Smith runs take one of the server's session slots box-wide before their clock starts (a profile's `sessions`, else one per server slot), so 12 runs on a 2-slot server queue two at a time instead of colliding. A run that still ends on the endpoint (429 or 5xx, a timeout, a refused connection) is graded as errored ("the model endpoint failed: HTTP 429"), never as the model's unanswered work (T-5386).

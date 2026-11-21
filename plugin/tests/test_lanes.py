@@ -1159,6 +1159,44 @@ class Lanes(ForemanTestCase):
             with self.assertRaises(c.PolicyError):
                 brief(["T-9001", "T-9002", "T-9003"])
 
+    def test_backlog_advice_names_the_land_and_keeps_the_task_planned(self):
+        # T-5411: kith blocked 37 tasks on these refusals ("WIP cap: briefed after the train lands") and merged its 298
+        # lanes one at a time, as the unmerged-cap refusal said (fm lane merge ID): both now name the land and say stay planned
+        from sampo import lanes as slanes
+        from sampo import train
+        p = c.find_project(self.repo)
+        tid = self.second_task()
+
+        def refusal(waiting, **patch):
+            with mock.patch.object(slanes, "_slots", return_value=([], list(waiting), [])), \
+                    mock.patch.multiple(slanes, **patch) if patch else contextlib.nullcontext():
+                with self.assertRaises(c.PolicyError) as e:
+                    slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False))
+            return str(e.exception)
+        backlog = refusal([f"T-{9000 + i}" for i in range(2 * train.BATCH_MAX + 1)])
+        capped = refusal(["T-9001", "T-9002"], UNMERGED_MAX=2, land_backlog_cap=lambda: 99)
+        for msg in (backlog, capped):
+            self.assertIn("sampo lane land", msg)
+            self.assertIn(f"leave {tid} planned", msg)
+            self.assertIn("not blocked", msg)
+        self.assertNotIn("fm lane merge ID", capped, "two or more finished lanes land as one train, not one merge each")
+        self.assertEqual(c.find_brief(p, tid).status, "planned")
+
+    def test_land_advice_after_a_brief_and_in_the_playbook_is_the_land_not_a_merge_each(self):
+        # T-5411: the brief's then: line said merge, focus, re-run and finish this one lane: kith did that 298 times,
+        # ~12 min apart, waiting 1.2-1.9 h median per lane between its audit and its merge
+        tid = self.second_task()
+        out = self.fm("lane", "brief", tid).stdout
+        then = out[out.index("then:"):]
+        self.assertIn("sampo lane land --bg", then)
+        self.assertIn("record the audit", then)
+        self.assertLess(then.index("sampo lane land --bg"), then.index(f"lane merge {tid}"), "the land first; a merge only alone")
+        from helpers import PLUGIN
+        book = open(os.path.join(PLUGIN, "skills", "intake", "references", "delegate.md"), encoding="utf-8").read()
+        step = book[book.index("3. When it returns"):book.index("4. A builder that failed")]
+        self.assertIn("sampo lane land --bg", step)
+        self.assertLess(step.index("sampo lane land --bg"), step.index("sampo lane merge ID"))
+
     def test_a_finished_lane_never_accepted_for_a_day_is_named_by_next_with_what_to_do(self):
         # T-4938: 49 lanes 5-12 days old held commits nobody accepted: no check, no train, no line in sampo next
         from sampo import lanes as slanes
