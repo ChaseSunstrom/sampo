@@ -57,12 +57,19 @@ export const isBoard = () => board
 const CELL_MEMO = new Map<string, string>()
 /** T-3701: the board's grid: `n` panels in rows of `cols`, every row exactly `width` wide with `gap` between panels;
  * a last row of fewer panels widens them (one alone spans it, two split it), so no slot is ever empty. A row's widths,
- * left to right. */
-export function gridRows(n: number, cols: number, width: number, gap: number): number[][] {
-  const out: number[][] = []
-  for (let i = 0; i < n; i += Math.max(1, cols)) {
-    const k = Math.min(Math.max(1, cols), n - i), room = width - (k - 1) * gap, w = Math.floor(room / k), rem = room - w * k
-    out.push(Array.from({ length: k }, (_, j) => w + (j < rem ? 1 : 0)))
+ * left to right. T-3739: `spans` (the Board layout's, 1-3 a panel) packs a row by column spans, never past `cols`, and
+ * shares its width by span; a row it leaves short widens as before. */
+export function gridRows(n: number, cols: number, width: number, gap: number, spans?: number[]): number[][] {
+  const out: number[][] = [], m = Math.max(1, cols)
+  const span = (i: number) => Math.min(m, Math.max(1, Math.round(spans?.[i] ?? 1) || 1))
+  for (let i = 0; i < n; ) {
+    const row: number[] = []
+    let used = 0
+    while (i < n && (!row.length || used + span(i) <= m)) { row.push(span(i)); used += span(i); i++ }
+    const room = width - (row.length - 1) * gap, ws = row.map(s => Math.floor((room * s) / used))
+    let rem = room - ws.reduce((t, w) => t + w, 0)
+    for (let j = 0; rem > 0; j = (j + 1) % ws.length, rem--) ws[j]!++
+    out.push(ws)
   }
   return out
 }

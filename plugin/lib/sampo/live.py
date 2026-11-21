@@ -516,9 +516,14 @@ def stats(p, wait=True):
 
 
 def board(p):
-    """T-3659: the Board's own facts (sampo.board imports this module, so it loads here)."""
+    """T-3659: the Board's own facts (sampo.board imports this module, so it loads here), with the layout in force
+    (T-3739)."""
     from sampo import board as b
-    return b.collect(p)
+    try:  # a bad layout file must not blank the panel facts
+        view = b.layout_view(p)
+    except Exception as e:
+        view = {"errors": [f"layout: {type(e).__name__}"]}
+    return {**b.collect(p), "layout": view}
 
 
 COLLECTORS = {"project": project, "focus": focus, "queue": queue, "closed_today": closed_today, "lanes": lanes, "jobs": jobs,
@@ -601,6 +606,10 @@ def snapshot_all(default):
     asks.sort(key=lambda r: r.get("age_h") or 0)  # T-3731: every project's asks on one river: the newest kept,
     kept = asks[:bd.ASKS_MAX][::-1]  # drawn oldest first
     s["board"]["asks"] = {"rows": kept, "days": bd.ASK_DAYS, "more": more + len(asks) - len(kept)}
+    try:  # T-3739: All is no one project, so it reads the global layout
+        s["board"]["layout"] = bd.layout_view(None)
+    except Exception:
+        s["board"].pop("layout", None)
     try:
         s["board"]["guard"] = bd.guard_all(slugs)
     except Exception:  # noqa: BLE001 - the gate's picture is optional
@@ -710,7 +719,7 @@ def act_token(server):
 ACTIONS = {  # T-3026: action -> (needs a project, the sampo argv); nothing else runs, and no shell
     "drive_on": (True, ["drive", "on"]), "drive_off": (True, ["drive", "off"]), "checkpoint": (True, ["checkpoint"]),
     "resume": (True, ["resume"]), "pause_now": (False, ["pause", "on", "--now"]), "pause_off": (False, ["pause", "off"]),
-    "note": (False, None)}
+    "note": (False, None), "board_layout": (False, None), "board_layout_reset": (False, None)}
 
 
 def _run(argv, p):
@@ -730,6 +739,37 @@ def _run(argv, p):
             pass
         child.wait()
         return 124
+
+
+def _board_layout(default, body, data):
+    """T-3739: the Board's edit mode saves (board_layout: {scope, project?, layout}, the page's whole layout) or resets
+    (board_layout_reset: {scope, project?}) a scope's layout in this process, no child: 400 naming the bad field, else
+    a live_act row of action, scope and project (never the layout) and the snapshots rebuilt so the next one shows it."""
+    from sampo import board as b
+    scope, p = body.get("scope"), None
+    if scope not in ("global", "project"):
+        return 400, {"ok": False, "error": "scope: global or project"}
+    if scope == "project":
+        slug = body.get("project")
+        p = resolve(default, slug) if isinstance(slug, str) and slug and slug != "all" else None
+        if p is None:
+            return 400, {"ok": False, "error": "unknown project"}
+    try:
+        if data["action"] == "board_layout":
+            b.layout_set(scope, p, body.get("layout"), replace=True)
+        else:
+            b.layout_reset(scope, p)
+        code = 0
+    except ValueError as e:
+        return 400, {"ok": False, "error": str(e)[:300]}
+    except Exception as e:  # a busy lock or a full disk: said, not a dropped connection
+        return 500, {"ok": False, "error": f"layout not saved: {type(e).__name__}"}
+    with _LOCK:
+        for k in [k for k in _CACHE if k[0] == "snap"]:
+            _CACHE.pop(k, None)
+    data.update(scope=scope, project=p.slug if p else None, exit=code)
+    c.log_event(p or default, "live_act", data=data)
+    return 200, {"ok": True, "exit": code, "action": data["action"]}
 
 
 def act(default, body):
@@ -766,6 +806,8 @@ def act(default, body):
         except Exception:
             code = 1
         data.update(len=len(text), session=str(hit[0]["session_id"])[:8])
+    elif name in ("board_layout", "board_layout_reset"):
+        return _board_layout(default, body, data)
     else:
         code = _run(argv + (["-p", p.slug] if needs else []), p)
         data.update(project=p.slug if needs else None)

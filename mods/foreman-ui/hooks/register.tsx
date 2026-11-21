@@ -1753,8 +1753,22 @@ export const register: Register = (on, options) => {
       const churn = await read($, files)
       // three columns on a very wide dock, two from 84 (a panel 41 wide: a docked pane is often ~90), else one
       const ncol = W >= 200 ? 3 : W >= 84 ? 2 : 1, gapX = 2
-      const ORDER = ['lanes', 'merge', 'cpu', 'loop', 'library', 'models', 'sampo', 'state', 'sessions', 'tests'] as const
-      const layout = gridRows(ORDER.length, ncol, W, gapX), nrow = layout.length // a short last row widens: no empty slot
+      const BUILT = ['lanes', 'merge', 'cpu', 'loop', 'library', 'models', 'sampo', 'state', 'sessions', 'tests'] as const
+      type PK = (typeof BUILT)[number]
+      // T-3739: the Board layout's order, less its hidden panels (the web Board's "train" is this MERGE; SESSIONS, the
+      // pane's own, keeps its place after STATE), and its spans; none, or a layout the pane can't read: the built-in
+      const bl = v.board_layout, pk = (k: string) => (k === 'train' ? 'merge' : k)
+      const ORDER: readonly PK[] = (() => {
+        if (!bl || !Array.isArray(bl.order) || !bl.order.length) return BUILT
+        const known = (k: string): k is PK => (BUILT as readonly string[]).includes(k) && k !== 'sessions'
+        const want = [...new Set(bl.order.map(pk).filter(known))]
+        const full: PK[] = [...want, ...BUILT.filter(k => k !== 'sessions' && !want.includes(k))]
+        full.splice(full.indexOf('state') + 1 || full.length, 0, 'sessions')
+        const hid = new Set((Array.isArray(bl.hidden) ? bl.hidden : []).map(pk))
+        return full.filter(k => !hid.has(k))
+      })()
+      const spanOf = (k: PK) => (k === 'sessions' ? 1 : Number(bl?.span?.[k === 'merge' ? 'train' : k]) || 1)
+      const layout = gridRows(ORDER.length, ncol, W, gapX, ORDER.map(spanOf)), nrow = layout.length // a short last row widens: no empty slot
       // a picture's rows: as many as let every row of panels fit the dock (with the head and the controls), 12 to 24:
       // under 12 a picture says too little, so a short dock scrolls
       // T-4008: a dock too short for every row shows whole rows at the top: as many as fit with 12-row pictures, the
@@ -1767,13 +1781,15 @@ export const register: Register = (on, options) => {
       const hot = new Set<string>([...(ln.merging.length || train?.running ? ['merge'] : []), ...(ln.building.length ? ['lanes'] : []),
         ...(a ? ['loop'] : []), ...(flows.some(f => f.hot) ? ['models'] : [])])
       const order = used + 2 <= H ? [...ORDER] : [...ORDER.filter(k => hot.has(k)), ...ORDER.filter(k => !hot.has(k))]
+      // the rows as drawn: a hot panel moved up takes its span with it
+      const drawRows = order.every((k, i) => k === ORDER[i]) ? layout : gridRows(order.length, ncol, W, gapX, order.map(spanOf))
       const off = e.props.scroll?.offset ?? 0
       let pw = 0 // the width of the panel being drawn: its row's share
       // T-4008: a note's first line is what its panel lacks; the foot doesn't say it again
       const note = (...lines: string[]) => Object.assign(() => notePicture(pw, PH, lines.filter(Boolean)), { says: lines[0] })
       const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`
       type Panel = { name: string; what: string; label: string; caption: string; stat: string; pic: () => Picture; twin: string[] }
-      const panel = (k: (typeof ORDER)[number]): Panel => {
+      const panel = (k: PK): Panel => {
         if (k === 'lanes') {
           const L = [...ln.building.map(l => ({ l, state: 'building' })), ...ln.merging.map(l => ({ l, state: 'waiting' }))]
           const held = L.reduce((t, x) => t + (x.l.files?.length ?? 0), 0)
@@ -1884,16 +1900,17 @@ export const register: Register = (on, options) => {
       }
       const grid: RenderElement[] = []
       let at = 0
-      for (let r = 0; r < nrow; r++) {
+      for (let r = 0; r < drawRows.length; r++) {
         const y = headRows + gapHead + r * (PH + 3) // the row's first line in the tree: under the top bar and its gap
         const shown = y + PH + 2 > off && y < off + H
-        const widths = layout[r]!
+        const widths = drawRows[r]!
         grid.push(
           <Box key={`panel-row-${r}`} flexDirection="row" gap={gapX} flexShrink={0} marginTop={r ? 1 : 0}>
             {widths.map(w => {
               const k = order[at++]!
               pw = w
-              const n = ORDER.indexOf(k) + 1, P = panel(k), color = panelAccent(n), key = `panel-${k}`
+              // T-3739: numbered by place as the web Board's chips; the colour stays the panel's own
+              const n = ORDER.indexOf(k) + 1, P = panel(k), color = panelAccent(BUILT.indexOf(k) + 1), key = `panel-${k}`
               let body: RenderElement
               if (!shown) body = <Box key={`${key}-pic`} height={PH} flexShrink={0} /> // off screen: nothing drawn
               else if (term) {

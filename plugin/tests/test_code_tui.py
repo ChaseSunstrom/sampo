@@ -3658,6 +3658,24 @@ class Editors(unittest.TestCase):
         self.assertIn("guard", app.set_note[0])
         self.assertFalse(os.path.exists(self.toml))
 
+    def test_the_layout_editor_shows_the_boards_order_without_its_hidden_panels(self):  # T-3739
+        from sampo import board
+        self.assertEqual(tui().board_panels(), ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests",
+                         "asks", "sessions", "ship", "usage", "guard"])
+        app = self.app()
+        app.key("l")
+        self.assertIn("Board: lanes · train · cpu", self.text(app))
+        board.layout_set("global", None, {"order": ["tests", "state"], "panels": {"cpu": {"hidden": True}}})
+        self.assertEqual(tui().board_panels()[:3], ["tests", "state", "lanes"])
+        self.assertNotIn("cpu", tui().board_panels())
+        t = self.text(app)
+        self.assertIn("Board: tests · state · lanes · train · loop", t)
+        self.assertIn("hidden: cpu", t)
+        with open(board.layout_path("global", None), "w", encoding="utf-8") as f:
+            f.write("{not json")  # a hand-broken file: the built-in order, and the screen still draws
+        self.assertEqual(len(tui().board_panels()), 14)
+        self.assertIn("Board: lanes", self.text(app))
+
     def test_the_layout_editor_says_a_narrow_screen_hides_a_move_and_leaving_clears_its_note(self):
         app = self.app()
         app.key("l")

@@ -404,6 +404,12 @@ def _cpu_series(p):
     return cpu.series(cpu.goal(p))
 
 
+def _board_layout(p):
+    """T-3739: the Board's layout as the pane reads it: order, hidden, span, height, from (board imports this module)."""
+    from sampo import board
+    return board.layout_short(p)
+
+
 def _guarded(fn):
     """A pane section that fails is left out, never the whole view (the mod renders what it gets)."""
     try:
@@ -907,6 +913,9 @@ def view(p):
         "train": _guarded(lambda: _train(p, briefs)),  # T-3701: the pane's MERGE picture
         "flows": _guarded(_flows) or [],  # T-3701: the pane's MODELS picture
         "board": _guarded(lambda: _board_extras(p)) or {},  # T-3701: LIBRARY, SAMPO, STATE, TESTS, from cache/board.json
+        # T-3739: the Board's layout (project over global over built-in): the pane draws its panels in this order, skips
+        # the hidden ones and widens a spanning one; a broken file reads as built-in (board.layout_view)
+        "board_layout": _guarded(lambda: _board_layout(p)),
         "blocked_total": len(sd["blocked"]),  # T-1026: the pane's work bar
         "approvals": [{"task": a.get("task"), "allow": list(a.get("allow") or []), "why": c.plain(a.get("why") or "")}
                       for a in meta.get("pending_approvals") or [] if isinstance(a, dict) and a.get("task")],
@@ -1061,11 +1070,12 @@ def _watch(p):
 
 def _watch_now(p, act=None):
     """T-3580: what the user acts on, which the mod reruns fm ui for at once: meta.json (drive, autonomy, a pending
-    approval, the pause flag), asks.json, the trust record, the PANIC flag and the active task's brief (its focus moving
-    off, a step done)."""
+    approval, the pause flag), asks.json, the trust record, the PANIC flag, the Board's two layout files (T-3739: a
+    saved layout redraws the pane's panels) and the active task's brief (its focus moving off, a step done)."""
     return [os.path.join(p.dir, "meta.json"), os.path.join(p.dir, "asks.json"), c.trust_path(),
             os.path.join(c.state_dir(), "risk_off.json"), os.path.join(p.dir, "risk_off.json"),
-            os.path.join(c.state_dir(), "PANIC")] + ([act.path] if act and act.path else [])
+            os.path.join(c.state_dir(), "PANIC"), os.path.join(c.state_dir(), "board-layout.json"),
+            os.path.join(p.dir, "board-layout.json")] + ([act.path] if act and act.path else [])
 
 
 def _ui_key(p, watch):

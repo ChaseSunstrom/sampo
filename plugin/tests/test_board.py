@@ -73,7 +73,7 @@ class Collect(SampoTestCase):
 
     def test_the_snapshot_carries_the_board(self):
         s = live.snapshot(self.p)
-        self.assertEqual(set(s["board"]), PARTS)
+        self.assertEqual(set(s["board"]), PARTS | {"layout"})  # T-3739: the parts and the layout
         json.dumps(s)
 
     def test_lanes_have_four_states_and_their_leased_files_capped_with_hot_ones_marked(self):
@@ -889,3 +889,167 @@ class Model(SampoTestCase):
         ts = read_text(os.path.join(ROOT, "mods", "foreman-ui", "hooks", "board-palette.ts"))
         for k, v in json.loads(read_text(os.path.join(WEB, "board-tokens.json")))["dark"].items():
             self.assertIn(f"  {k}: 0x{v[1:].lower()},", ts)
+
+
+class Layout(SampoTestCase):
+    """T-3739: a Board layout (panel order, span, height, hidden, style, motion) is a file per scope, read project over
+    global over the built-in one; `sampo board layout` and the page's edit mode write it, and a bad one names its field."""
+
+    def setUp(self):
+        super().setUp()
+        self.p = c.find_project(self.repo, create=True)
+        live._CACHE.clear()
+
+    def test_the_built_in_layout_is_the_nine_panels_in_the_pages_order(self):
+        got = board.layout_view(self.p)
+        self.assertEqual(got["order"], KEYS)
+        self.assertEqual(got["panels"]["lanes"], {"span": 1, "height": 1, "hidden": False})
+        self.assertEqual((got["style"], got["motion"], got["from"]), ("card", "full", "builtin"))
+        self.assertEqual(got["errors"], [])
+
+    def test_a_layout_is_read_project_over_global_over_built_in_field_by_field(self):
+        board.layout_set("global", None, {"style": "flat", "panels": {"lanes": {"span": 2}, "cpu": {"hidden": True}}})
+        board.layout_set("project", self.p, {"order": ["tests", "lanes"], "panels": {"lanes": {"span": 3, "height": 2}}})
+        got = board.layout_view(self.p)
+        self.assertEqual(got["order"], ["tests", "lanes"] + [k for k in KEYS if k not in ("tests", "lanes")],
+                         "a partial order puts the rest after it, in the page's order")
+        self.assertEqual(got["panels"]["lanes"], {"span": 3, "height": 2, "hidden": False}, "the project's span wins")
+        self.assertTrue(got["panels"]["cpu"]["hidden"], "the global hidden stands where the project says nothing")
+        self.assertEqual((got["style"], got["from"]), ("flat", "project"))
+        other = board.layout_view(None)
+        self.assertEqual((other["panels"]["lanes"]["span"], other["order"], other["from"]), (2, KEYS, "global"))
+        board.layout_set("project", self.p, {"panels": {"lanes": {"hidden": True}}})
+        self.assertEqual(board.layout_view(self.p)["panels"]["lanes"], {"span": 3, "height": 2, "hidden": True},
+                         "set merges into the scope's file")
+        board.layout_reset("project", self.p)
+        self.assertEqual(board.layout_view(self.p)["panels"]["lanes"]["span"], 2)
+        board.layout_reset("global", None)
+        self.assertEqual(board.layout_view(self.p)["from"], "builtin")
+        board.layout_reset("global", None)  # a second reset is a no-op
+
+    def test_replace_writes_the_whole_layout_the_page_sent(self):
+        board.layout_set("project", self.p, {"panels": {"lanes": {"span": 3}}, "style": "flat"})
+        board.layout_set("project", self.p, {"order": list(reversed(KEYS))}, replace=True)
+        got = board.layout_view(self.p)
+        self.assertEqual((got["order"], got["panels"]["lanes"]["span"], got["style"]), (list(reversed(KEYS)), 1, "card"))
+
+    def test_a_bad_layout_is_refused_naming_the_field_and_nothing_is_written(self):
+        bad = [({"panels": {"lanes": {"span": 4}}}, "panels.lanes.span"),
+               ({"panels": {"lanes": {"span": True}}}, "panels.lanes.span"),
+               ({"panels": {"lanes": {"height": 0}}}, "panels.lanes.height"),
+               ({"panels": {"lanes": {"hidden": "yes"}}}, "panels.lanes.hidden"),
+               ({"panels": {"lanes": {"width": 2}}}, "panels.lanes.width"),
+               ({"panels": {"nope": {}}}, "panels.nope"),
+               ({"panels": []}, "panels"),
+               ({"order": ["lanes", "lanes"]}, "order"),
+               ({"order": ["lanes", "x"]}, r"order\[1\]"),
+               ({"order": "lanes"}, "order"),
+               ({"style": "neon"}, "style"),
+               ({"motion": 1}, "motion"),
+               ({"version": 2}, "version"),
+               ({"colour": "red"}, "colour"),
+               ("lanes", "layout"),
+               ({"order": KEYS, "panels": {k: {"span": 1} for k in KEYS}, "pad": "x" * 5000}, "layout")]
+        for body, field in bad:
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, rf"^{field}(?![\w.\[])"):
+                board.layout_set("project", self.p, body)
+        self.assertFalse(os.path.exists(board.layout_path("project", self.p)), "a refused layout writes nothing")
+
+    def test_a_hand_broken_file_is_skipped_and_named(self):
+        path = board.layout_path("project", self.p)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write('{"panels": {"lanes": {"span": 7}}}')
+        board.layout_set("global", None, {"style": "flat"})
+        got = board.layout_view(self.p)
+        self.assertEqual((got["style"], got["panels"]["lanes"]["span"], got["from"]), ("flat", 1, "global"))
+        self.assertEqual(len(got["errors"]), 1)
+        self.assertIn("project", got["errors"][0])
+        self.assertIn("panels.lanes.span", got["errors"][0])
+        with open(path, "w") as f:
+            f.write("not json")
+        self.assertIn("project", board.layout_view(self.p)["errors"][0])
+
+    def test_a_deeply_nested_layout_file_is_skipped_not_a_crash(self):
+        path = board.layout_path("project", self.p)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("[" * 3000)
+        from unittest import mock  # this Python may parse 3000 deep: make json hit its limit as an older one does
+        with mock.patch.object(board.json, "loads", side_effect=RecursionError):
+            got = board.layout_view(self.p)
+            self.assertIn("nested too deep", got["errors"][0])
+            self.assertIn("layout", live.board(self.p))
+        with mock.patch.object(board, "layout_view", side_effect=RecursionError):
+            self.assertIn("errors", live.board(self.p)["layout"])
+
+    def test_the_snapshot_carries_the_layout(self):
+        board.layout_set("project", self.p, {"panels": {"tests": {"hidden": True}}})
+        s = live.snapshot(self.p)
+        self.assertEqual(set(s["board"]), PARTS | {"layout"})
+        self.assertTrue(s["board"]["layout"]["panels"]["tests"]["hidden"])
+        self.assertEqual(live.snapshot_all(self.p)["board"]["layout"]["from"], "builtin",
+                         "the All view reads the global layout")
+
+    def test_the_verb_shows_sets_and_resets_each_scope(self):
+        self.fm("board", "layout", "set", "lanes.span=2", "cpu.hidden=true", "order=tests,lanes", "motion=still")
+        self.fm("board", "layout", "set", "--project", "lanes.height=3", "style=flat")
+        got = self.fm_json("board", "layout", "show")
+        self.assertEqual(got["order"][:2], ["tests", "lanes"])
+        self.assertEqual(got["panels"]["lanes"], {"span": 2, "height": 3, "hidden": False})
+        self.assertEqual((got["motion"], got["style"], got["from"]), ("still", "flat", "project"))
+        self.assertEqual(self.fm_json("board", "layout", "show", "--global")["style"], "card", "--global: that scope alone")
+        text = self.fm("board", "layout", "show").stdout
+        self.assertIn("tests", text)
+        self.assertIn("hidden: cpu", text)
+        bad = self.fm("board", "layout", "set", "lanes.span=9", check=False)
+        self.assertNotEqual(bad.returncode, 0)
+        self.assertIn("panels.lanes.span", bad.stderr)
+        bad = self.fm("board", "layout", "set", "nope", check=False)
+        self.assertNotEqual(bad.returncode, 0)
+        self.fm("board", "layout", "set", "--layout", '{"panels": {"state": {"span": 3}}}')
+        self.assertEqual(self.fm_json("board", "layout", "show")["panels"]["state"]["span"], 3)
+        self.fm("board", "layout", "reset", "--project")
+        self.assertEqual(self.fm_json("board", "layout", "show")["from"], "global")
+        self.fm("board", "layout", "reset")
+        self.assertEqual(self.fm_json("board", "layout", "show")["from"], "builtin")
+
+    def test_a_bad_layout_json_beside_pairs_is_a_usage_error_not_a_traceback(self):
+        for bad in ('{"panels": 5}', '{"panels": {"lanes": 5}}', '[1]'):
+            got = self.fm("board", "layout", "set", "--layout", bad, "lanes.span=2", check=False)
+            self.assertNotEqual(got.returncode, 0, bad)
+            self.assertNotIn("Traceback", got.stderr, bad)
+            self.assertIn("layout", got.stderr + got.stdout, bad)
+
+    def test_the_wide_asks_rule_yields_to_a_span_of_three(self):
+        css = read_text(os.path.join(WEB, "board.css"))
+        self.assertRegex(css, r'section\.bd-p\[data-wide\]:not\(\[data-span="3"\]\)\{grid-column:span 2\}')
+        self.assertNotRegex(css, r'section\.bd-p\[data-wide\]\{grid-column')
+
+    def test_no_text_says_nine_panels(self):
+        for rel in (("lib", "sampo", "board.py"), ("web", "live", "board.js")):
+            self.assertNotRegex(read_text(os.path.join(ROOT, "plugin", *rel)).lower(), r"\ball nine|nine-panel")
+
+    def test_the_pages_layout_reader_mends_anything_into_nine_panels(self):
+        node = shutil.which("node") or self.skipTest("no node to run the page's code")
+        js = ("const B = require(process.argv[1]); const out = [B.layoutOf(null), B.layoutOf({order: ['tests', 'x', "
+              "'tests', 'cpu'], panels: {cpu: {span: 9, height: -1, hidden: 'y'}, tests: {span: 2, hidden: true}}, "
+              "style: 'flat', motion: 'still'}), B.layoutOf('junk'), "
+              "B.layoutMove(B.layoutOf(null), 'cpu', 0).order, B.layoutMove(B.layoutOf(null), 'tests', 99).order, "
+              "[B.snapSpan(100, 400, 16, 3), B.snapSpan(700, 400, 16, 3), B.snapSpan(5000, 400, 16, 3), "
+              "B.snapSpan(900, 400, 16, 2), B.snapSpan(-50, 400, 16, 3)], "
+              "[B.snapHeight(100, 280), B.snapHeight(500, 280), B.snapHeight(9000, 280)]]; "
+              "console.log(JSON.stringify(out))")
+        out = subprocess.run([node, "-e", js, os.path.join(WEB, "board.js")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.returncode, 0, out.stderr[-2000:])
+        empty, mixed, junk, first, last, spans, heights = json.loads(out.stdout)
+        self.assertEqual((empty["order"], empty["style"], empty["motion"]), (KEYS, "card", "full"))
+        self.assertEqual(junk, empty)
+        self.assertEqual(mixed["order"], ["tests", "cpu"] + [k for k in KEYS if k not in ("tests", "cpu")])
+        self.assertEqual(mixed["panels"]["cpu"], {"span": 3, "height": 1, "hidden": False}, "clamped; not-a-bool is shown")
+        self.assertEqual(mixed["panels"]["tests"], {"span": 2, "height": 1, "hidden": True})
+        self.assertEqual((mixed["style"], mixed["motion"]), ("flat", "still"))
+        self.assertEqual(first[0], "cpu")
+        self.assertEqual(last[-1], "tests")
+        self.assertEqual(spans, [1, 2, 3, 2, 1], "a drag snaps to whole columns, at most the grid's")
+        self.assertEqual(heights, [1, 2, 3])

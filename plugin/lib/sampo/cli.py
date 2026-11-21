@@ -5690,6 +5690,99 @@ def cmd_standing(args):
                or "No standing yes: Sampo's core asks per task.")
 
 
+_LAYOUT_HELP = ("order=PANEL,PANEL… · PANEL.span=1-3 · PANEL.height=1-3 · PANEL.hidden=true|false · style=card|flat · "
+                "motion=full|calm|still")
+
+
+def _layout_pairs(pairs):
+    """T-3739: `sampo board layout set`'s KEY=VALUE words as one scope's partial layout; board.layout_check judges the
+    values, so a bad one is named by its field."""
+    from . import board
+    changes = {}
+    for tok in pairs:
+        k, eq, v = tok.partition("=")
+        k, v = k.strip(), v.strip()
+        if not eq or not k:
+            raise UsageError(f"{tok[:40]}: KEY=VALUE ({_LAYOUT_HELP})")
+        if k == "order":
+            changes["order"] = [x.strip() for x in v.split(",") if x.strip()]
+        elif "." in k:
+            panel, _, field = k.partition(".")
+            if field in board.SIZES:
+                val = int(v) if re.fullmatch(r"-?\d{1,3}", v) else v
+            elif field == "hidden":
+                val = {"true": True, "yes": True, "1": True, "false": False, "no": False, "0": False}.get(v.lower(), v)
+            else:
+                val = v
+            changes.setdefault("panels", {}).setdefault(panel, {})[field] = val
+        else:
+            changes[k] = v
+    return changes
+
+
+def _layout_text(view, title):
+    sized = [f"{k} {pv['span']}×{pv['height']}" if (pv["span"], pv["height"]) != (1, 1) else k
+             for k in view["order"] if not (pv := view["panels"][k])["hidden"]]
+    hidden = [k for k in view["order"] if view["panels"][k]["hidden"]]
+    lines = [f"{title}: " + " · ".join(sized),
+             f"hidden: {', '.join(hidden) if hidden else 'none'}",
+             f"style {view['style']}, motion {view['motion']}"]
+    return "\n".join(lines + list(view.get("errors") or []))
+
+
+def cmd_board_layout(args):
+    """T-3739: the Board's layout. show: the one in force here (project over global over built-in; --global: the
+    global one alone); set: change a scope (global unless --project) by KEY=VALUE words or --layout JSON; reset: remove
+    the scope's file so the one below shows."""
+    from . import board
+    scope = "project" if args.here else "global"
+    if scope == "project" or getattr(args, "project", None):
+        p = resolve(args, create=False)  # --project or -p SLUG: that project, or the error naming why not
+    else:
+        try:  # outside any project, the global layout is the one in force
+            p = resolve(args, create=False)
+        except UsageError:
+            p = None
+    if args.action != "set" and (args.pairs or args.layout):
+        raise UsageError(f"{args.action} takes no changes: sampo board layout set {_LAYOUT_HELP}")
+    try:
+        if args.action == "show":
+            view = board.layout_view(None if args.whole_global else p)
+            return out(args, view, _layout_text(view, f"Board ({view['from']})"))
+        if args.action == "reset":
+            had = board.layout_reset(scope, p)
+            if p is not None:
+                c.log_event(p, "board_layout", data={"scope": scope, "reset": True}, session=session())
+            view = board.layout_view(p)
+            return out(args, {"reset": scope, "had": had, "layout": view},
+                       (f"Removed the {scope} layout" if had else f"No {scope} layout to remove") +
+                       f"; in force: {view['from']}.")
+        if args.layout:
+            try:
+                changes = json.loads(args.layout)
+            except RecursionError:
+                raise UsageError("layout: nested too deep") from None
+            except ValueError as e:
+                raise UsageError(f"layout: not JSON ({e})") from None
+            if not isinstance(changes, dict):
+                raise UsageError("layout: an object with order, panels, style or motion")
+            if args.pairs:
+                board.layout_check(changes)
+                changes = board._layout_union(changes, _layout_pairs(args.pairs))
+        elif args.pairs:
+            changes = _layout_pairs(args.pairs)
+        else:
+            raise UsageError("set what? " + _LAYOUT_HELP)
+        wrote = board.layout_set(scope, p, changes)
+    except ValueError as e:
+        raise UsageError(f"bad layout: {str(e)[:300]}") from None
+    if p is not None:
+        c.log_event(p, "board_layout", data={"scope": scope, "fields": sorted(wrote)}, session=session())
+    view = board.layout_view(p)
+    return out(args, {"scope": scope, "wrote": wrote, "layout": view},
+               _layout_text(view, f"Saved the {scope} layout. Board ({view['from']})"))
+
+
 def _decision_row(line):
     """T-0341: one decisions.md row as fields (the desktop app's Decisions tab): date, kind (costly|outward|None),
     text, why, and whether a later decision reversed it."""
@@ -8923,6 +9016,19 @@ def _build_parser(only=None):
 
     s = add("standing", cmd_standing, tier=("Project and settings", 750), help="the project's standing yeses (sampo ask … core --standing); off revokes them")
     s.add_argument("state", nargs="?", choices=["off"])
+
+    s = add("board", cmd_board_layout, tier=("Project and settings", 760), help="the Board's layout (sampo board layout "
+            "show|set|reset [--project]): panel order, size, hidden, style and motion, globally and per project (T-3739)")
+    bsp = s.add_subparsers(dest="board_cmd", required=True)
+    b = bsp.add_parser("layout", help="show the layout in force; set KEY=VALUE… or --layout JSON; reset a scope")
+    b.add_argument("action", choices=("show", "set", "reset"))
+    b.add_argument("pairs", nargs="*", metavar="KEY=VALUE", help=_LAYOUT_HELP)
+    b.add_argument("--project", dest="here", action="store_true",
+                   help="set/reset this project's layout (default: the global one, under every project's)")
+    b.add_argument("--global", dest="whole_global", action="store_true", help="show: the global layout alone")
+    b.add_argument("--layout", metavar="JSON", help="set: changes as JSON {order, panels, style, motion}")
+    b.add_argument("-p", dest="project", default=argparse.SUPPRESS, help="project slug")
+    b.add_argument("--json", action="store_true", default=argparse.SUPPRESS, help="machine-readable output")
 
     add("todo", cmd_todo, tier=("Finding your way", 306), help="what only the user can do now (asks, user blocks, costly or outward decisions), each with what to type")
     s = add("decide", cmd_decide, tier=("Every task", 190), help="record a decision in decisions.md")

@@ -1572,7 +1572,10 @@ function take(s) {
   renderTicker(arr(s.events).map(obj).slice(0, 60), first);
   sceneTake(s, first);
   netIngest(s);
-  if (board) { board.update(window.SampoBoard.boardModel(s, boardPrev ? [boardPrev] : [], [...boardOff])); boardPrev = s; renderChips(s); }
+  if (board) {
+    board.layout(obj(s.board).layout, !!s.all);  // T-3739: the layout in force for this project (All: every project's)
+    board.update(window.SampoBoard.boardModel(s, boardPrev ? [boardPrev] : [], [...boardOff])); boardPrev = s; renderChips(s);
+  }
 }
 
 // ---------- the machine: sessions, projects, and the pick (kept in #project=SLUG) ----------
@@ -1835,7 +1838,14 @@ let view = "forge";
   }
 }
 const boardEl = $("board"), vBoard = $("view-board");
-const board = modern && boardEl && window.SampoBoard ? window.SampoBoard.mount(boardEl) : null;  // the forge look has no Board
+// T-3739: the Board's edit mode saves its layout through /api/act, for this project or (and always in All) every project
+// (the project is the one the Board shows, the snapshot's, not the pick: a pick of All shows a project until All comes)
+const layoutAct = (action, scope, extra, done) => act(Object.assign({action, scope},
+  scope === "project" ? {project: str(obj(snap && snap.project).slug) || picked()} : {}, extra), null, done);
+const board = modern && boardEl && window.SampoBoard ? window.SampoBoard.mount(boardEl, {  // the forge look has no Board
+  save: (layout, scope, done) => layoutAct("board_layout", scope, {layout}, done),
+  reset: (scope, done) => layoutAct("board_layout_reset", scope, {}, done),
+}) : null;
 let boardPrev = null;  // the snapshot before: the library's kept-per-hour reads the change
 // T-3730: the chip bar on top of the Board. In All mode one chip per project filters it; in one project a single chip opens All.
 const boardOff = new Set();  // slugs the chips hid

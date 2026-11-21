@@ -170,6 +170,10 @@ class Stand(BaseHTTPRequestHandler):
             time.sleep(0.6)  # in flight long enough for a second press to be seen refused
         if body.get("text") == "forbid":
             return self.send(403, json.dumps({"ok": False, "error": "bad nonce"}).encode(), TYPES[".json"])
+        if body.get("action") == "board_layout":  # T-3739: the next snapshots carry the saved layout, as sampo live's do
+            srv.layout = dict(body.get("layout") or {}, **{"from": body.get("scope")})
+        elif body.get("action") == "board_layout_reset":
+            srv.layout = None
         self.send(200, json.dumps({"ok": True, "exit": 0, "action": body.get("action")}).encode(), TYPES[".json"])
 
     def do_GET(self):
@@ -228,7 +232,7 @@ class Stand(BaseHTTPRequestHandler):
                 pass
             return
         if path == "/api/state":
-            return self.send(200, json.dumps(srv.snaps[0]).encode(), TYPES[".json"])
+            return self.send(200, json.dumps(laid(srv, srv.snaps[0])).encode(), TYPES[".json"])
         if path == "/api/stream":
             with srv.lock:
                 srv.streams += 1
@@ -245,12 +249,19 @@ class Stand(BaseHTTPRequestHandler):
                 for s in rest:
                     if srv.stop.wait(0.7):
                         return
-                    self.wfile.write(b"event: state\ndata: " + json.dumps(s).encode() + b"\n\n")
+                    self.wfile.write(b"event: state\ndata: " + json.dumps(laid(srv, s)).encode() + b"\n\n")
                     self.wfile.flush()
             except OSError:
                 pass
             return  # HTTP/1.0: returning closes the stream
         self.send(404, b"", "text/plain")
+
+
+def laid(srv, s):
+    """T-3739: a snapshot with the layout the page last saved (none saved: the snapshot as it is, built-in)."""
+    if not srv.layout:
+        return s
+    return {**s, "board": {**(s.get("board") or {}), "layout": srv.layout}}
 
 
 def serve():
@@ -260,7 +271,7 @@ def serve():
     srv.log, srv.posts, srv.token = [], [], secrets.token_hex(16)
     with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "live", "machine.json"), encoding="utf-8") as f:
         srv.machine = json.load(f)
-    srv.all_snaps = []
+    srv.all_snaps, srv.layout = [], None
     srv.other = json.loads(json.dumps(srv.snaps[-1]))  # another project: its own slug and task at the anvil
     srv.other["project"] = {"slug": "other-1b2c3d", "drive": False, "autonomy": "standard"}
     srv.other["focus"] = {"id": "T-9001", "title": "The other project's task", "step": "1/2", "stage": "building"}
@@ -342,9 +353,11 @@ PROBE = """(() => { const $ = id => document.getElementById(id), n = (id, sel) =
     board: (() => { const q = $("board"); if (!q) return null; const r = q.getBoundingClientRect(), d = q.dataset;
       const ps = Array.from(q.querySelectorAll(".bd-p")).map(p => { const cv = p.querySelector("canvas"), b = p.getBoundingClientRect(), t = s => { const e = p.querySelector(s); return e ? e.textContent.trim() : ""; };
         return {k: p.dataset.k, chip: t(".bd-chip"), title: t(".bd-t"), label: t(".bd-l"), foot: t(".bd-f"), x: Math.round(b.left), y: Math.round(b.top), w: Math.round(b.width), h: Math.round(b.height),
-                painted: !!cv && cv.dataset.painted === "1", canvas: cv ? [cv.width, cv.height] : [0, 0], font: getComputedStyle(p.querySelector(".bd-t") || p).fontFamily}; });
-      return {shown: r.width > 0, panels: ps, cols: new Set(ps.filter(p => p.w).map(p => p.x)).size, frames: +(d.frames || 0), running: d.running || "",
-              painted: ps.length > 0 && ps.every(p => p.painted)}; })(),
+                painted: !!cv && cv.dataset.painted === "1", canvas: cv ? [cv.width, cv.height] : [0, 0], font: getComputedStyle(p.querySelector(".bd-t") || p).fontFamily,
+                span: p.dataset.span || "1", hh: p.dataset.h || "1", hid: p.hidden, ch: cv ? Math.round(cv.getBoundingClientRect().height) : 0}; });
+      const vis = ps.filter(p => !p.hid);
+      return {shown: r.width > 0, panels: ps, cols: new Set(vis.filter(p => p.w).map(p => p.x)).size, frames: +(d.frames || 0), running: d.running || "",
+              order: vis.map(p => p.k), edit: d.edit || "", painted: vis.length > 0 && vis.every(p => p.painted)}; })(),
     shown: Object.fromEntries(["scene", "views", "theme-btn", "focus", "net", "board", "view-board", "view-forge", "view-net", "rail"].map(id => [id, !!$(id) && getComputedStyle($(id)).display !== "none"])),
     bg: getComputedStyle(document.body).backgroundColor, ink: getComputedStyle(document.body).color,
     stheme: (() => { try { return localStorage.getItem("sampo-live-theme"); } catch (e) { return "x"; } })(),
@@ -1157,6 +1170,89 @@ class Page(unittest.TestCase):
         self.assertEqual(ctx["s"], 6, ctx)
         self.assertLessEqual(ctx["still2"] - ctx["still"], 3, f"Still draws a frame per change, not 60 a second {ctx}")
         self.assertEqual(ctx["hid2"], ctx["hid"], f"a hidden tab draws nothing {ctx}")
+
+    def test_the_board_edit_mode_reorders_resizes_hides_and_restores_and_a_reload_keeps_it(self):  # T-3739
+        slug, ctx = snaps()[0]["project"]["slug"], {"s": 0, "n": 0}
+        builtin = ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests",
+                   "asks", "sessions", "ship", "usage", "guard"]
+
+        def step(b, got):
+            ev = lambda js: b.call("Runtime.evaluate", b.sid, expression=js, returnByValue=True)["result"].get("value")
+            click = lambda sel: ev(f"(document.querySelector({json.dumps(sel)}) || {{click(){{}}}}).click()")
+            rect = lambda sel: ev(f"(() => {{ const e = document.querySelector({json.dumps(sel)}); if (!e) return null; "
+                                  "const r = e.getBoundingClientRect(); return [r.left, r.top, r.width, r.height]; })()")
+            mouse = lambda t, x, y, n=1: b.call("Input.dispatchMouseEvent", b.sid, type=t, x=x, y=y, button="left",
+                                                 buttons=n, clickCount=1 if t != "mouseMoved" else 0)
+
+            def drag(x0, y0, x1, y1):
+                mouse("mouseMoved", x0, y0, 0)
+                mouse("mousePressed", x0, y0)
+                for i in range(1, 9):
+                    mouse("mouseMoved", x0 + (x1 - x0) * i / 8, y0 + (y1 - y0) * i / 8)
+                mouse("mouseReleased", x1, y1, 0)
+            bd, s = got.get("board") or {}, ctx["s"]
+            mine = [p["body"] for p in got["posts"] if (p["body"] or {}).get("action") == "board_layout"]
+            p = {q["k"]: q for q in bd.get("panels", [])}
+            if s == 0 and bd.get("painted") and self.back(got):
+                ctx["grips0"] = ev("Array.from(document.querySelectorAll('#board .bd-grip')).filter(e => e.getClientRects().length).length")
+                ev("window.scrollTo(0, 0)")
+                click("#board .bd-edit"); ctx["s"] = 1
+            elif s == 1 and bd.get("edit") == "1":
+                ctx["grips1"] = ev("Array.from(document.querySelectorAll('#board .bd-grip')).filter(e => e.getClientRects().length).length")
+                h, t = rect('#board .bd-p[data-k="tests"] .bd-drag'), rect('#board .bd-p[data-k="lanes"]')
+                ctx["fits"] = t[1] + t[3] < 1800 and h[1] + h[3] < 1800
+                drag(h[0] + h[2] / 2, h[1] + h[3] / 2, t[0] + t[2] * 0.2, t[1] + t[3] / 2); ctx["s"] = 2
+            elif s == 2 and (bd.get("order") or [""])[0] == "tests":
+                g, r = rect('#board .bd-p[data-k="lanes"] .bd-grip'), rect('#board .bd-p[data-k="lanes"]')
+                x, y = g[0] + g[2] / 2, g[1] + g[3] / 2
+                drag(x, y, x + r[2] + 20, y + r[3]); ctx["s"] = 3
+            elif s == 3 and p["lanes"]["span"] == "2" and p["lanes"]["hh"] == "2":
+                ctx["grown"] = (p["lanes"]["w"], p["lanes"]["ch"], p["train"]["w"], p["train"]["ch"])
+                click('#board .bd-p[data-k="cpu"] .bd-hide'); click('#board .bd-p[data-k="models"] .bd-hide'); ctx["s"] = 4
+            elif s == 4 and p["cpu"]["hid"] and p["models"]["hid"]:
+                ctx["restores"] = ev("Array.from(document.querySelectorAll('#board button[data-restore]')).map(e => e.dataset.restore)")
+                ctx["gone"] = ev("getComputedStyle(document.querySelector('#board .bd-p[data-k=\"cpu\"]')).display")
+                click('#board button[data-restore="models"]'); ctx["s"] = 5
+            elif s == 5 and not p["models"]["hid"] and mine and (mine[-1].get("layout") or {}).get("panels", {}).get("models", {}).get("hidden") is False \
+                    and (mine[-1]["layout"]["panels"].get("cpu") or {}).get("hidden"):
+                ctx["saved"], ctx["n"] = mine[-1], len(got["posts"])
+                b.call("Page.reload", b.sid); ctx["s"] = 6
+            elif s == 6 and bd.get("painted") and (bd.get("order") or [""])[0] == "tests" and not bd.get("edit"):
+                ctx["after"] = {k: (p[k]["span"], p[k]["hh"], p[k]["hid"]) for k in ("lanes", "cpu", "models")}
+                ctx["order"] = bd["order"]
+                click("#board .bd-edit"); click("#board .bd-reset"); ctx["s"] = 7
+            elif s == 7 and [q for q in got["posts"][ctx["n"]:] if (q["body"] or {}).get("action") == "board_layout_reset"] \
+                    and bd.get("order") == builtin:
+                ctx["reset"] = {k: (p[k]["span"], p[k]["hh"], p[k]["hid"]) for k in ("lanes", "cpu")}
+                ctx["s"] = 8
+
+        got, errs = self.watch((1600, 1800), False, lambda g: ctx["s"] == 8, step=step, theme=None, within=70)
+        self.assertEqual(errs, [])
+        self.assertEqual(ctx["s"], 8, ctx)
+        self.assertEqual((ctx["grips0"], ctx["grips1"]), (0, 14), "the corner grips show in edit mode alone")
+        self.assertTrue(ctx["fits"], "the drag stays in the window")
+        lw, lh, tw, th = ctx["grown"]
+        self.assertGreater(lw, tw * 1.8, "span 2 snaps to two columns and the gap")
+        self.assertGreater(lh, th * 1.8, "height 2 is twice the canvas")
+        self.assertEqual(ctx["restores"], ["cpu", "models"])
+        self.assertEqual(ctx["gone"], "none")
+        lay = ctx["saved"]["layout"]
+        self.assertEqual((ctx["saved"]["scope"], ctx["saved"]["project"]), ("project", slug))
+        self.assertEqual(lay["order"][:2], ["tests", "lanes"])
+        self.assertEqual(sorted(lay["order"]), sorted(builtin))
+        self.assertEqual(lay["panels"]["lanes"], {"span": 2, "height": 2, "hidden": False})
+        self.assertEqual((lay["panels"]["cpu"]["hidden"], lay["panels"]["models"]["hidden"]), (True, False))
+        self.assertEqual(ctx["order"][:2], ["tests", "lanes"])
+        self.assertNotIn("cpu", ctx["order"])
+        self.assertEqual(ctx["after"], {"lanes": ("2", "2", False), "cpu": ("1", "1", True), "models": ("1", "1", False)},
+                         "a reload keeps the order, the size and the hidden panels")
+        self.assertEqual(ctx["reset"], {"lanes": ("1", "1", False), "cpu": ("1", "1", False)})
+        ours = [q for q in got["posts"] if (q["body"] or {}).get("action", "").startswith("board_layout")]
+        self.assertEqual(len(ours), len(got["posts"]), got["posts"])
+        self.assertLessEqual(len(ours), 8, "the saves are debounced, not one per pointer move")
+        for q in ours:
+            self.assertEqual((q["path"], q["type"], q["nonce"]), ("/api/act", "application/json", got["token"]))
+        self.assertEqual(ours[-1]["body"], {"action": "board_layout_reset", "scope": "project", "project": slug})
 
     def test_the_theme_file_and_the_two_looks_are_in_the_page(self):
         page, css, js = text("index.html"), text("live.css"), text("live.js")

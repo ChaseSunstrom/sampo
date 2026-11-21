@@ -46,8 +46,55 @@
   letter-spacing:.02em;font-variant-numeric:tabular-nums}
 @media (min-width:700px){.board{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (min-width:1200px){.board{grid-template-columns:repeat(3,minmax(0,1fr))}}
+/* T-3739: the layout. board.js sets data-span and data-h from it, hides panels, and gives the last shown panel the rest
+   of its row (an inline grid-column, data-fill) rather than leave an empty cell */
+@media (min-width:700px){.bd-p[data-span="2"],.bd-p[data-span="3"]{grid-column:span 2}}
+@media (min-width:1200px){.bd-p[data-span="3"]{grid-column:span 3}}
+.bd-p[hidden]{display:none}
+.bd-p{--bd-hx:1}
+.bd-p[data-h="2"]{--bd-hx:2}
+.bd-p[data-h="3"]{--bd-hx:3}
+/* the layout bar: Edit, the hidden panels to restore, and in edit mode where it saves, the style, the motion and Reset */
+.bd-tools{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:5px 12px;background:var(--bd-bg);
+  font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--bd-dim)}
+.bd-tools button{padding:3px 9px 2px;border:1px solid var(--bd-line);border-radius:2px;background:transparent;color:var(--bd-muted);
+  font:inherit;letter-spacing:inherit;text-transform:inherit;cursor:pointer}
+.bd-tools button:hover{border-color:var(--bd-bracket);color:var(--bd-ink)}
+.bd-tools button:disabled{opacity:.5;cursor:default}
+.bd-edit{margin-right:auto}
+.bd-edit[aria-pressed="true"]{border-color:var(--bd-bracket);background:color-mix(in srgb,var(--bd-bracket) 16%,transparent);color:var(--bd-ink)}
+.bd-restores{display:contents}
+.bd-restores button{border-style:dashed}
+.bd-eds{flex-wrap:wrap;gap:6px}
+.bd-say{min-width:0;color:var(--bd-dim)}
+.bd-say.bad{color:var(--bd-red)}
+.bd-x{display:none}
+.board[data-edit="1"] .bd-x{display:flex}
+.board[data-edit="1"] .bd-drag,.board[data-edit="1"] .bd-grip{display:block}
+.bd-drag,.bd-pt button,.bd-grip{flex:none;border:1px solid var(--bd-line);border-radius:2px;background:var(--bd-panel);
+  color:var(--bd-muted);font:inherit;line-height:1;cursor:pointer;touch-action:none}
+.bd-drag{padding:2px 4px;cursor:grab}
+.bd-pt{flex:none;gap:4px}
+.bd-pt button{padding:2px 5px}
+.bd-pt button:disabled{opacity:.35;cursor:default}
+.bd-grip{position:absolute;z-index:2;right:2px;bottom:2px;width:16px;height:16px;padding:0;cursor:nwse-resize;
+  background:linear-gradient(135deg,transparent 50%,var(--bd-bracket) 50%,var(--bd-bracket) 58%,transparent 58%,
+  transparent 70%,var(--bd-bracket) 70%,var(--bd-bracket) 78%,transparent 78%),var(--bd-panel)}
+.bd-drag:hover,.bd-pt button:not(:disabled):hover,.bd-grip:hover{border-color:var(--bd-bracket);color:var(--bd-ink)}
+.bd-tools button:focus-visible,.bd-drag:focus-visible,.bd-pt button:focus-visible,.bd-grip:focus-visible{outline:2px solid var(--bd-bracket);
+  outline-offset:1px}
+.board[data-edit="1"] .bd-p{outline:1px dashed color-mix(in srgb,var(--bd-bracket) 45%,transparent);outline-offset:-4px}
+.bd-p.bd-moving{opacity:.55}
+.bd-p.bd-moving .bd-drag{cursor:grabbing}
+.bd-p.bd-sizing{outline:1px solid var(--bd-bracket)!important}
+.bd-p[data-drop]::before{width:3px;height:auto;bottom:-1px;border:0;background:var(--bd-bracket)}
+.bd-p[data-drop="after"]::before{left:auto;right:-1px}
+/* style flat: no corner brackets, and the panels on one ground */
+.board[data-style="flat"] .bd-p::before,.board[data-style="flat"] .bd-p::after{display:none}
+.board[data-style="flat"] .bd-p[data-drop]::before{display:block}
+.board[data-style="flat"] .bd-chip{background:transparent;color:var(--bd-a);padding-left:0}
 /* T-3731: three columns and fourteen panels: the asks river takes two cells, so every row is full */
-@media (min-width:1200px){section.bd-p[data-wide]{grid-column:span 2}}
+@media (min-width:1200px){section.bd-p[data-wide]:not([data-span="3"]){grid-column:span 2}}
 /* two columns and an odd count of panels: the last one takes the full row rather than leaving an empty cell */
 @media (min-width:700px) and (max-width:1199px){section.bd-p:last-of-type:nth-of-type(odd){grid-column:1/-1}}
 
@@ -87,7 +134,8 @@
 .bd-l{flex:none;max-width:42%;overflow:hidden;text-overflow:ellipsis;font-size:11px;font-weight:500;letter-spacing:.1em;
   text-transform:uppercase;white-space:nowrap;color:var(--bd-a)}
 
-.bd-c{position:relative;min-height:0;height:clamp(236px,28vh,330px)}
+/* a taller panel spans whole rows: its canvas grows by the canvas and the header and footer of each row it takes */
+.bd-c{position:relative;min-height:0;--bd-ch:clamp(236px,28vh,330px);height:calc(var(--bd-hx,1) * var(--bd-ch) + (var(--bd-hx,1) - 1) * 64px)}
 .bd-c canvas{position:absolute;inset:0;display:block;width:100%;height:100%}
 
 .bd-f{display:flex;align-items:center;gap:10px;min-width:0;padding:6px 12px 8px;border-top:1px solid var(--bd-line);font-size:11px;
@@ -97,5 +145,5 @@
 .bd-bar i{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--bd-a);transition:width .6s cubic-bezier(.45,0,.2,1)}
 .bd-s{flex:none;font-weight:500;letter-spacing:.06em;white-space:nowrap;color:var(--bd-a)}
 
-@media (max-width:699px){.bd-c{height:250px}.bd-h{padding:8px 10px 7px}.bd-f{padding:6px 10px 8px}}
+@media (max-width:699px){.bd-c{--bd-ch:250px}.bd-h{padding:8px 10px 7px}.bd-f{padding:6px 10px 8px}}
 @media (prefers-reduced-motion:reduce){.bd-bar i{transition:none}}

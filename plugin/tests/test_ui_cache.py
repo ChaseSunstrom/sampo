@@ -111,7 +111,9 @@ class UiCadence(ForemanTestCase):
         self.assertEqual(v["watch_now"], [os.path.join(self.p.dir, "meta.json"), os.path.join(self.p.dir, "asks.json"),
                                           c.trust_path(), os.path.join(c.state_dir(), "risk_off.json"),
                                           os.path.join(self.p.dir, "risk_off.json"),
-                                          os.path.join(c.state_dir(), "PANIC"), brief])
+                                          os.path.join(c.state_dir(), "PANIC"),
+                                          os.path.join(c.state_dir(), "board-layout.json"),  # T-3739
+                                          os.path.join(self.p.dir, "board-layout.json"), brief])
         self.assertNotIn(self.p.dir, v["watch"], "every derived file written there moved it: a rerun per tool call")
         self.assertIn(os.path.join(self.p.dir, "ledger.jsonl"), v["watch"])
 

@@ -2424,9 +2424,40 @@ const SampoBoard = (() => {
 
   const PLACEHOLDER = {base: (g, d, w, h, T) => waiting(g, w, h, T, "drawing soon")};
 
-  function mount(el) {
+  // ---------- T-3739: the layout. Order, span 1-3, height 1-3, hidden, style and motion, as sampo.board keeps them ----------
+  // layoutOf mends anything (a snapshot's layout, junk, null) into the whole fourteen-panel layout: what the server
+  // refuses, the page never shows half-applied; what it leaves out is the built-in.
+  const LAYOUT_KEYS = PANELS.map((P) => P.key), STYLES = ["card", "flat"], MOTIONS = ["full", "calm", "still"];
+  const size3 = (v) => (typeof v === "number" && isFinite(v) ? Math.max(1, Math.min(3, Math.round(v))) : 1);
+  function layoutOf(x) {
+    const o = obj(x), ps = obj(o.panels), seen = new Set(), panels = {};
+    const order = arr(o.order).filter((k) => LAYOUT_KEYS.includes(k) && !seen.has(k) && seen.add(k));
+    for (const k of LAYOUT_KEYS) if (!seen.has(k)) order.push(k);
+    for (const k of LAYOUT_KEYS) {
+      const q = obj(ps[k]);
+      panels[k] = {span: size3(q.span), height: size3(q.height), hidden: q.hidden === true};
+    }
+    return {version: 1, order, panels, style: STYLES.includes(o.style) ? o.style : "card",
+      motion: MOTIONS.includes(o.motion) ? o.motion : "full"};
+  }
+  function layoutMove(L, key, index) {  // a new layout with key at index (clamped) in the order
+    const M = layoutOf(L);
+    if (!LAYOUT_KEYS.includes(key)) return M;
+    const order = M.order.filter((k) => k !== key), i = Math.round(Number(index));
+    order.splice(isFinite(i) ? Math.max(0, Math.min(order.length, i)) : order.length, 0, key);
+    M.order = order;
+    return M;
+  }
+  // a drag snaps to whole columns (a column and the gap after it), at most the grid's; to whole heights, 1 to 3
+  function snapSpan(w, colW, gap, cols) {
+    const g = num(gap), unit = num(colW) + g, n = Math.max(1, Math.floor(num(cols, 1)));
+    return unit > 0 ? Math.max(1, Math.min(n, Math.round((num(w) + g) / unit))) : 1;
+  }
+  const snapHeight = (px, base) => (num(base) > 0 ? Math.max(1, Math.min(3, Math.round(num(px) / base))) : 1);
+
+  function mount(el, opts) {
     if (!el || typeof document === "undefined") return null;
-    const doc = document, win = window;
+    const doc = document, win = window, O = obj(opts);  // O.save(layout, scope, done(ok)), O.reset(scope, done(ok)): T-3739
     const mk = (tag, cls, parent, text) => {
       const n = doc.createElement(tag);
       if (cls) n.className = cls;
@@ -2439,19 +2470,46 @@ const SampoBoard = (() => {
       const cs = win.getComputedStyle(el);
       for (const k of Object.keys(TOKENS)) T[k] = cs.getPropertyValue("--bd-" + k).trim() || TOKENS[k];
     };
+    const btn = (cls, parent, text, label) => {
+      const b = mk("button", cls, parent, text);
+      b.type = "button";
+      if (label) { b.setAttribute("aria-label", label); b.title = label; }
+      return b;
+    };
     el.replaceChildren();
+    // T-3739: the layout bar. Edit turns on the edit mode (drag ⠿ to reorder, the corner to resize, × to hide); the
+    // hidden panels sit here as + buttons in either mode, so one is never lost
+    const tools = mk("div", "bd-tools", el);
+    tools.setAttribute("role", "toolbar");
+    tools.setAttribute("aria-label", "Board layout");
+    const editB = btn("bd-edit", tools, "Edit layout");
+    editB.setAttribute("aria-pressed", "false");
+    const restoreBox = mk("span", "bd-restores", tools);
+    const eds = mk("span", "bd-eds bd-x", tools);
+    const scopeB = btn("bd-scope", eds, ""), styleB = btn("bd-style", eds, ""), motionB = btn("bd-motion", eds, "");
+    const resetB = btn("bd-reset", eds, "Reset", "Reset this layout to the one it falls back to");
+    const sayEl = mk("span", "bd-say", tools, "");
+    sayEl.setAttribute("role", "status");
     const panels = PANELS.map((P, i) => {
       const sec = mk("section", "bd-p", el);
       sec.dataset.k = P.key;
       sec.dataset.accent = P.accent;
+      sec.dataset.span = "1";
+      sec.dataset.h = "1";
       if (P.wide) sec.dataset.wide = "1";
       sec.setAttribute("aria-labelledby", "bd-t-" + P.key);
       const head = mk("header", "bd-h", sec);
-      mk("span", "bd-chip", head, String(i + 1).padStart(2, "0")).setAttribute("aria-hidden", "true");
+      const drag = btn("bd-drag bd-x", head, "⠿", `Move ${P.name}: drag onto another panel`);
+      const chip = mk("span", "bd-chip", head, String(i + 1).padStart(2, "0"));
+      chip.setAttribute("aria-hidden", "true");
       const h2 = mk("h2", "bd-t", head, P.name);
       h2.id = "bd-t-" + P.key;
       const wh = mk("span", "bd-w", h2, " · " + P.what);
       const label = mk("span", "bd-l", head, "");
+      const tw = mk("span", "bd-pt bd-x", head);
+      const ups = [btn("bd-up", tw, "‹", `Move ${P.name} earlier`), btn("bd-down", tw, "›", `Move ${P.name} later`)];
+      const hideB = btn("bd-hide", tw, "×", `Hide ${P.name}`);
+      const grip = btn("bd-grip bd-x", sec, "", `Resize ${P.name}: drag, or the arrow keys`);
       const box_ = mk("div", "bd-c", sec);
       const cv = mk("canvas", "", box_);
       cv.setAttribute("role", "img");
@@ -2464,11 +2522,16 @@ const SampoBoard = (() => {
       const fill = mk("i", "", bar);
       const stat = mk("span", "bd-s", foot, "");
       return {key: P.key, name: P.name, sec, box: box_, cv, ctx: cv.getContext("2d"), label, cap, bar, fill, stat, h2, wh, full: "",
-        w: 0, h: 0, sx: 1, sy: 1, vis: true, d: null, dk: "", base: null, off: null, mem: {}};
+        w: 0, h: 0, sx: 1, sy: 1, vis: true, d: null, dk: "", base: null, off: null, mem: {}, chip, drag, ups, hideB, grip};
     });
     const byBox = new Map(panels.map((p) => [p.box, p]));
     const bySec = new Map(panels.map((p) => [p.sec, p]));
-    let lastPaint = 0, raf = 0, still = false, shown = true, frames = 0, hidden = !!doc.hidden;
+    const byKey = new Map(panels.map((p) => [p.key, p]));
+    let lastPaint = 0, raf = 0, still = false, shown = true, frames = 0, hidden = !!doc.hidden, held = false;
+    // the layout in force; pend: the one this page changed to and has not yet seen come back in a snapshot (it wins
+    // until then, or until `until`); gest: a drag or a resize in progress
+    let L = layoutOf(null), from = "builtin", editing = false, all = false, pick = "project", pend = "", until = 0, saveT = 0;
+    let gest = null;
 
     const size = (p) => {
       const r = p.box.getBoundingClientRect(), dpr = Math.min(2, win.devicePixelRatio || 1);
@@ -2528,7 +2591,8 @@ const SampoBoard = (() => {
     function frame(now) {
       raf = 0;
       if (!want()) return kick();
-      if (now - lastPaint < 30) { raf = win.requestAnimationFrame(frame); return; }  // T-3715: at most ~30 fps, half the canvas work of a 60 Hz loop
+      // T-3715: at most ~30 fps, half the canvas work of a 60 Hz loop; T-3739: motion calm, ~15
+      if (now - lastPaint < (L.motion === "calm" ? 66 : 30)) { raf = win.requestAnimationFrame(frame); return; }
       lastPaint = now;
       const t = now / 1000;
       // T-3731: a panel below the fold (fourteen panels pass a desktop's height) still gets its first frame, once, so it is
@@ -2608,15 +2672,252 @@ const SampoBoard = (() => {
       });
       if (changed) kick();  // same data: a running loop already paints it, a stopped one needs nothing
     }
+
+    // ---------- T-3739: the layout on the page, and its edit mode ----------
+    const wide = win.matchMedia ? [win.matchMedia("(min-width:700px)"), win.matchMedia("(min-width:1200px)")] : [];
+    const cols = () => 1 + wide.filter((q) => q.matches).length;  // board.css's breakpoints: 1, 2 or 3 columns
+    const scope = () => (all ? "global" : pick);
+    const tell = (text, bad) => { sayEl.textContent = text; sayEl.classList.toggle("bad", !!bad); };
+    const named = (k) => byKey.get(k).name;
+    let restoreKey = "";
+
+    function fillRow() {  // the last panel takes the rest of its row rather than leave empty cells
+      const n = cols();
+      let at = 0, last = null, lastAt = 0, end = 0;
+      for (const k of L.order) {
+        const p = byKey.get(k);
+        p.sec.style.gridColumn = "";
+        delete p.sec.dataset.fill;
+        if (L.panels[k].hidden) continue;
+        const s = Math.min(n, Math.max(L.panels[k].span, p.sec.dataset.wide && n >= 3 ? 2 : 1));  // T-3731: a wide panel takes two cells
+        if (at + s > n) at = 0;
+        last = p; lastAt = at; end = at + s; at = end % n;
+      }
+      if (last && n > 1 && end < n) {
+        last.sec.style.gridColumn = lastAt === 0 ? "1 / -1" : "span " + (n - lastAt);
+        last.sec.dataset.fill = "1";
+      }
+    }
+    for (const q of wide) if (q.addEventListener) q.addEventListener("change", fillRow);
+
+    function renderTools() {
+      if (editing) el.dataset.edit = "1"; else delete el.dataset.edit;
+      el.dataset.style = L.style;
+      el.dataset.motion = L.motion;
+      editB.setAttribute("aria-pressed", String(editing));
+      editB.textContent = editing ? "Done" : "Edit layout";
+      editB.title = "This layout comes from " + (from === "project" ? "this project" : from === "global" ? "every project's" : "the built-in");
+      scopeB.textContent = scope() === "global" ? "for every project" : "for this project";
+      scopeB.disabled = all;
+      scopeB.title = all ? "All mode saves the layout every project falls back to" : "Save for this project, or for every project";
+      styleB.textContent = "style · " + L.style;
+      motionB.textContent = "motion · " + L.motion;
+      const gone = L.order.filter((k) => L.panels[k].hidden);
+      if (gone.join() !== restoreKey) {  // rebuilt only when the list changes, so a focused button stays
+        restoreKey = gone.join();
+        restoreBox.replaceChildren(...gone.map((k) => {
+          const b = btn("", null, "+ " + named(k), `Show ${named(k)} again`);
+          b.dataset.restore = k;
+          return b;
+        }));
+      }
+    }
+
+    function apply(next) {
+      const was = L;
+      L = next;
+      const cur = Array.from(el.children).filter((n) => bySec.has(n)).map((n) => bySec.get(n).key);
+      if (cur.join() !== L.order.join()) {
+        const f = doc.activeElement;
+        for (const k of L.order) el.appendChild(byKey.get(k).sec);
+        if (f && f !== doc.activeElement && f.isConnected && f.focus) f.focus({preventScroll: true});
+      }
+      let n = 0;
+      for (const k of L.order) {
+        const p = byKey.get(k), q = L.panels[k];
+        if (p.sec.hidden !== q.hidden) p.sec.hidden = q.hidden;
+        if (p.sec.dataset.span !== String(q.span)) p.sec.dataset.span = String(q.span);
+        if (p.sec.dataset.h !== String(q.height)) p.sec.dataset.h = String(q.height);
+        const say = String(++n).padStart(2, "0");
+        if (!q.hidden && p.chip.textContent !== say) p.chip.textContent = say;
+        if (q.hidden) { n--; p.vis = false; }
+        p.ups[0].disabled = n <= 1 && !q.hidden;
+        p.grip.setAttribute("aria-valuetext", `span ${q.span}, height ${q.height}`);
+      }
+      const lastShown = L.order.filter((k) => !L.panels[k].hidden).pop();
+      if (lastShown) byKey.get(lastShown).ups[1].disabled = true;
+      for (const k of L.order) if (k !== lastShown) byKey.get(k).ups[1].disabled = false;
+      still = held || L.motion === "still";
+      fillRow();
+      renderTools();
+      if (was.motion !== L.motion || was.style !== L.style) invalidate(); else kick();
+    }
+
+    function save() {
+      saveT = 0;
+      if (typeof O.save !== "function") return;
+      const mine = pend, where = scope();
+      tell("saving…");
+      O.save(layoutOf(L), where, (ok) => {
+        if (pend === mine) until = Date.now() + (ok ? 4000 : 1500);  // not echoed by then: the server's layout wins
+        tell(ok ? "saved " + (where === "global" ? "for every project" : "for this project") : "not saved", !ok);
+      });
+    }
+    function change(next, soon) {  // the page shows it now; the save waits for the last of a burst of changes
+      apply(next);
+      pend = JSON.stringify(L);
+      until = Infinity;
+      if (saveT) clearTimeout(saveT);
+      saveT = soon === false ? 0 : setTimeout(save, soon ? 0 : 450);
+    }
+    function withPanel(k, f) {
+      const M = layoutOf(L);
+      f(M.panels[k]);
+      return M;
+    }
+    function setEditing(on) {
+      editing = !!on;
+      if (!editing && saveT) { clearTimeout(saveT); save(); }
+      renderTools();
+    }
+    function neighbour(k, d) {  // the next shown panel before (-1) or after (+1) k
+      const shown_ = L.order.filter((x) => !L.panels[x].hidden || x === k), i = shown_.indexOf(k) + d;
+      return i >= 0 && i < shown_.length ? shown_[i] : null;
+    }
+
+    editB.addEventListener("click", () => setEditing(!editing));
+    scopeB.addEventListener("click", () => {  // where the next change saves; nothing is written until then
+      pick = pick === "project" ? "global" : "project";
+      renderTools();
+      tell("changes save " + scopeB.textContent);
+    });
+    styleB.addEventListener("click", () => change(Object.assign(layoutOf(L), {style: L.style === "card" ? "flat" : "card"})));
+    motionB.addEventListener("click", () => change(Object.assign(layoutOf(L), {motion: MOTIONS[(MOTIONS.indexOf(L.motion) + 1) % 3]})));
+    resetB.addEventListener("click", () => {
+      if (saveT) clearTimeout(saveT);
+      saveT = 0;
+      const where = scope();
+      apply(layoutOf(null));
+      pend = JSON.stringify(L);
+      until = Infinity;
+      if (typeof O.reset !== "function") return;
+      tell("resetting…");
+      O.reset(where, (ok) => {  // the scope falls back to the next one: its layout comes in the next snapshot
+        until = Date.now() + (ok ? 1500 : 0);
+        tell(ok ? "reset" : "not reset", !ok);
+      });
+    });
+    restoreBox.addEventListener("click", (e) => {
+      const b = e.target.closest ? e.target.closest("button[data-restore]") : null;
+      if (!b || !byKey.has(b.dataset.restore)) return;
+      const k = b.dataset.restore;
+      change(withPanel(k, (q) => { q.hidden = false; }));
+      (restoreBox.querySelector("button") || (editing ? byKey.get(k).hideB : editB)).focus();
+    });
+    for (const p of panels) {
+      const k = p.key;
+      p.hideB.addEventListener("click", () => {
+        change(withPanel(k, (q) => { q.hidden = true; }));
+        editB.focus();
+      });
+      p.ups.forEach((b, i) => b.addEventListener("click", () => {
+        const o = neighbour(k, i ? 1 : -1);
+        if (!o) return;
+        const rest = L.order.filter((x) => x !== k);
+        change(layoutMove(L, k, rest.indexOf(o) + i));
+      }));
+      p.grip.addEventListener("keydown", (e) => {
+        const d = {ArrowRight: [1, 0], ArrowLeft: [-1, 0], ArrowDown: [0, 1], ArrowUp: [0, -1]}[e.key];
+        if (!d || !editing) return;
+        e.preventDefault();
+        const q = L.panels[k];
+        change(withPanel(k, (m) => { m.span = size3(q.span + d[0]); m.height = size3(q.height + d[1]); }));
+      });
+      p.drag.addEventListener("pointerdown", (e) => grab(e, p, "move"));
+      p.grip.addEventListener("pointerdown", (e) => grab(e, p, "size"));
+    }
+
+    function grab(e, p, kind) {
+      if (!editing || gest || e.button !== 0) return;
+      e.preventDefault();
+      const handle = kind === "move" ? p.drag : p.grip, r = p.sec.getBoundingClientRect(), q = L.panels[p.key];
+      try { handle.setPointerCapture(e.pointerId); } catch (err) { /* a synthetic pointer: the moves still come here */ }
+      const n = cols(), gap = parseFloat(win.getComputedStyle(el).columnGap) || 0;
+      gest = {kind, p, handle, id: e.pointerId, x: e.clientX, y: e.clientY, w: r.width, h: r.height, q: Object.assign({}, q),
+        n, gap, colW: (el.clientWidth - (n - 1) * gap) / n, unit: r.height / q.height, mark: null, before: L};
+      p.sec.classList.add(kind === "move" ? "bd-moving" : "bd-sizing");
+      handle.addEventListener("pointermove", drag_);
+      handle.addEventListener("pointerup", drop);
+      handle.addEventListener("pointercancel", drop);
+      handle.addEventListener("lostpointercapture", drop);
+    }
+    function target(G, x, y) {  // the shown panel under the pointer, and which half of it
+      const hit = doc.elementFromPoint(x, y), t = hit && hit.closest ? hit.closest(".bd-p") : null;
+      if (!t || t.parentNode !== el || !bySec.has(t) || t === G.p.sec) return null;
+      const r = t.getBoundingClientRect();
+      return {p: bySec.get(t), after: x > r.left + r.width / 2};
+    }
+    function mark(t) {
+      if (gest.mark && (!t || gest.mark !== t.p.sec)) delete gest.mark.dataset.drop;
+      gest.mark = t ? t.p.sec : null;
+      if (t) t.p.sec.dataset.drop = t.after ? "after" : "before";
+    }
+    function sized(e) {
+      const G = gest, dx = e.clientX - G.x, dy = e.clientY - G.y;
+      const sp = G.n > 1 ? snapSpan(G.w + dx, G.colW, G.gap, G.n) : G.q.span;
+      return {span: sp === Math.min(G.q.span, G.n) ? G.q.span : sp, height: snapHeight(G.h + dy, G.unit)};  // a span wider than the grid stays
+    }
+    function drag_(e) {
+      if (!gest || e.pointerId !== gest.id) return;
+      if (gest.kind === "move") return mark(target(gest, e.clientX, e.clientY));
+      const s = sized(e), q = L.panels[gest.p.key];
+      if (s.span !== q.span || s.height !== q.height) apply(withPanel(gest.p.key, (m) => Object.assign(m, s)));  // live, saved on release
+    }
+    function drop(e) {
+      const G = gest;
+      if (!G || e.pointerId !== G.id) return;
+      gest = null;
+      for (const t of ["pointermove", "pointerup", "pointercancel", "lostpointercapture"]) G.handle.removeEventListener(t, t === "pointermove" ? drag_ : drop);
+      G.p.sec.classList.remove("bd-moving", "bd-sizing");
+      if (G.mark) delete G.mark.dataset.drop;
+      if (e.type !== "pointerup") return G.kind === "size" ? apply(G.before) : undefined;  // cancelled: as it was
+      if (G.kind === "move") {
+        const t = target(G, e.clientX, e.clientY);
+        if (!t) return;
+        const rest = L.order.filter((x) => x !== G.p.key);
+        change(layoutMove(L, G.p.key, rest.indexOf(t.p.key) + (t.after ? 1 : 0)));
+      } else {
+        const now = L.panels[G.p.key];
+        if (now.span !== G.q.span || now.height !== G.q.height) change(layoutOf(L));
+      }
+    }
+    el.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || !editing || gest) return;
+      setEditing(false);
+      editB.focus();
+    });
+
+    // a snapshot's layout (sampo.board's layout_view: the layout and the scope it came from); isAll: the page shows All
+    function layout(x, isAll) {
+      all = !!isAll;
+      const v = obj(x), next = layoutOf(v), key = JSON.stringify(next);
+      from = typeof v.from === "string" ? v.from : "builtin";
+      if (pend && (key === pend || Date.now() > until)) pend = "";
+      if (pend || gest || key === JSON.stringify(L)) return renderTools();
+      apply(next);
+    }
+
+    apply(L);
     kick();
     return {
       update,
-      still(on) { still = !!on; kick(); },
+      layout,
+      still(on) { held = !!on; still = held || L.motion === "still"; kick(); },
       show(on) { shown = !!on; kick(); },
     };
   }
 
-  return {PANELS, KINDS, STAGES, TOKENS, DRAW, boardModel, projectList, mount, idle};
+  return {PANELS, KINDS, STAGES, TOKENS, DRAW, boardModel, projectList, mount, idle, layoutOf, layoutMove, snapSpan, snapHeight};
 })();
 if (typeof module !== "undefined" && module.exports) module.exports = SampoBoard;
 else window.SampoBoard = SampoBoard;  // a top-level const is no window property: live.js finds it here

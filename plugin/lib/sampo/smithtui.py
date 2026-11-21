@@ -2148,17 +2148,42 @@ def _settings_note(app):
                       + ([f"/{app.set_query}"] if app.set_query else []))
 
 
+BOARD_PANELS = ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests",
+                "asks", "sessions", "ship", "usage", "guard"]  # board.PANEL_KEYS
+
+
+def _board_layout(root=None):
+    """T-3739: the Board's layout (sampo board layout: project over global over built-in) as (shown order, hidden): the
+    web Board's panels, which Sampo Code lists in its layout editor. A layout it can't read is the built-in order."""
+    try:
+        from sampo import board, core
+        got = board.layout_short(core.find_project(root) if root else None)
+        hidden = [str(k) for k in got["hidden"]]
+        return [str(k) for k in got["order"] if k not in hidden], hidden
+    except Exception:
+        return list(BOARD_PANELS), []
+
+
+def board_panels(root=None):
+    """T-3739: the Board's panels as its layout shows them, in order, without the hidden ones."""
+    return _board_layout(root)[0]
+
+
 def _layout_view(cv, st, app, cfg):
     """T-1511: the columns side by side as the screen has them, the picked panel highlighted; the screen behind (in
-    shade) already draws each move."""
+    shade) already draws each move. T-3739: under them, the Board's panel order and hidden ones (sampo board layout)."""
     cols = cfg["layout"]["columns"]
     at, below = app._lay_pos(), max(int(cfg["layout"].get("narrow_below", 80)), SINGLE_BELOW)
     narrow = cv.w < below  # the screen shows layout.narrow (or the log alone): a move here shows only when wider
-    iy, ix, ih, iw = _overlay(cv, cfg, "Layout", "Esc back", max(48, 20 * len(cols) + 4),
-                              max(map(len, cols)) + 7 + 3 * narrow)
+    shown, hidden = _board_layout(app.root)
+    bline = "Board: " + " · ".join(shown)
+    iy, ix, ih, iw = _overlay(cv, cfg, "Layout", "Esc back", max(48, 20 * len(cols) + 4, min(len(bline) + 4, cv.w - 8)),
+                              max(map(len, cols)) + 10 + 3 * narrow)
     say = f"below {below} columns the screen draws layout.narrow; a move shows once it is wider"
     for n, line in enumerate(wrap(say, max(1, iw))[:2] if narrow else []):
-        cv.line(iy + ih - 4 + n, ix, [(line, "warn")], ix + iw)
+        cv.line(iy + ih - 7 + n, ix, [(line, "warn")], ix + iw)
+    for n, line in enumerate(wrap(bline, max(1, iw))[:2] + [("hidden: " + ", ".join(hidden)) if hidden else ""]):
+        cv.line(iy + ih - 4 + n, ix, [(line, "dim")], ix + iw)
     cw = max(1, iw // len(cols))
     for n, names in enumerate(cols):
         x = ix + n * cw

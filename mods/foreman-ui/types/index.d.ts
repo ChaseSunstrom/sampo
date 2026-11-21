@@ -101,6 +101,9 @@ export type FmView = {
   train?: FmTrain | null // T-3701
   flows?: FmFlow[] | null // T-3701
   board?: FmBoard | null // T-3701
+  // T-3739: the Board's layout (project over global over built-in): the panels' order by the web Board's keys, the
+  // hidden ones, each one's column span (1-3) and height (1-3), and the scope it came from
+  board_layout?: { order: string[]; hidden: string[]; span: Record<string, number>; height: Record<string, number>; from: string; errors?: string[] } | null
   approvals?: FmApproval[]
   closed?: { id: string; status: string; title?: string; grade?: string | null; lenses?: string[] }[] // T-0473
   signals?: { level: 'red' | 'amber'; text: string }[] // T-0472: shown as one glyph only when any

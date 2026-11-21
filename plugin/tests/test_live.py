@@ -822,6 +822,45 @@ class Act(ForemanTestCase):  # T-3026: POST /api/act, with the same-uid peer the
             self.assertEqual(self.act({"action": "note", "session": "abcdef01", "text": "x"})[0], 400)
         send.assert_not_called()
 
+    def test_a_board_layout_is_saved_to_its_scope_logged_and_in_the_next_snapshot(self):  # T-3739
+        from sampo import board
+        lay = {"order": ["tests", "lanes"], "panels": {"lanes": {"span": 2, "height": 3}, "cpu": {"hidden": True}},
+               "style": "flat", "motion": "calm"}
+        with mock.patch.object(live, "_run") as run:
+            st, out = self.act({"action": "board_layout", "scope": "project", "project": self.p.slug, "layout": lay})
+            self.assertEqual((st, json.loads(out)["ok"]), (200, True), out)
+            got = json.loads(self.call("GET", "/api/state")[1])["board"]["layout"]
+            self.assertEqual((got["order"][:2], got["panels"]["lanes"]["span"], got["panels"]["cpu"]["hidden"]),
+                             (["tests", "lanes"], 2, True), "the next snapshot has it, not a cached one")
+            self.assertEqual(self.act({"action": "board_layout", "scope": "global", "layout": {"style": "flat"}})[0], 200)
+            self.assertEqual(board.layout_view(None)["style"], "flat")
+            self.assertEqual(self.act({"action": "board_layout_reset", "scope": "project", "project": self.p.slug})[0], 200)
+        run.assert_not_called()
+        self.assertEqual(board.layout_view(self.p)["from"], "global")
+        rows = [r["data"] for r in self.rows()]
+        self.assertEqual(rows[0], {"action": "board_layout", "scope": "project", "project": self.p.slug, "exit": 0})
+        self.assertEqual([r["action"] for r in rows], ["board_layout", "board_layout", "board_layout_reset"])
+        self.assertNotIn("tests", json.dumps(rows), "the ledger keeps the scope, never the layout")
+
+    def test_a_bad_board_layout_is_a_400_naming_the_field_and_writes_nothing(self):  # T-3739
+        from sampo import board
+        slug = self.p.slug
+        bad = [({"action": "board_layout", "scope": "project", "project": slug, "layout": {"panels": {"lanes": {"span": 4}}}},
+                "panels.lanes.span"),
+               ({"action": "board_layout", "scope": "project", "project": slug, "layout": "x"}, "layout"),
+               ({"action": "board_layout", "scope": "project", "project": slug}, "layout"),
+               ({"action": "board_layout", "scope": "room", "layout": {}}, "scope"),
+               ({"action": "board_layout", "scope": "project", "layout": {}}, "unknown project"),
+               ({"action": "board_layout", "scope": "project", "project": "all", "layout": {}}, "unknown project"),
+               ({"action": "board_layout_reset", "scope": "project", "project": "nope"}, "unknown project")]
+        for body, field in bad:
+            st, out = self.act(body)
+            self.assertEqual(st, 400, body)
+            self.assertIn(field, json.loads(out)["error"], body)
+        self.assertEqual(self.rows(), [])
+        self.assertFalse(os.path.exists(board.layout_path("project", self.p)))
+        self.assertFalse(os.path.exists(board.layout_path("global", None)))
+
     def test_unknown_things_are_a_400_and_run_nothing(self):
         os.makedirs(os.path.join(self.tmp, "hush"))
         sp = c.init_project(os.path.join(self.tmp, "hush"), sensitive=True)
@@ -860,7 +899,9 @@ class Act(ForemanTestCase):  # T-3026: POST /api/act, with the same-uid peer the
         slug = self.p.slug
         acts = [{"action": "drive_on", "project": slug}, {"action": "drive_off", "project": slug},
                 {"action": "checkpoint", "project": slug}, {"action": "pause_now", "confirmed": True},
-                {"action": "pause_off"}, {"action": "note", "session": "abcdef01", "text": "hi"}]
+                {"action": "pause_off"}, {"action": "note", "session": "abcdef01", "text": "hi"},
+                {"action": "board_layout", "scope": "project", "project": slug, "layout": {"style": "flat"}},  # T-3739
+                {"action": "board_layout_reset", "scope": "global"}]
         port, stale = self.port, self.nonce
         self.server.session = "rotated-secret"  # the secret the page's token came from is gone: that token is stale
         fresh = self.page_nonce()
@@ -884,6 +925,8 @@ class Act(ForemanTestCase):  # T-3026: POST /api/act, with the same-uid peer the
             run.assert_not_called()
             send.assert_not_called()
             self.assertEqual(self.rows(), [])
+            from sampo import board
+            self.assertFalse(os.path.exists(board.layout_path("project", self.p)), "a refused layout writes nothing")
             for body in acts:
                 self.assertEqual(self.act(body, **{"X-Sampo-Nonce": fresh})[0], 200, body["action"])
         self.assertEqual(run.call_count, 5)

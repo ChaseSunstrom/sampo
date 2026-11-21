@@ -336,6 +336,22 @@ test('the board page: ten Board panels with their chrome, 3, 2 or 1 columns by w
   await one.unmount()
 })
 
+test('T-3739: a span packs a row by columns and shares its width by span; none keeps the old grid', () => {
+  expect(gridRows(4, 3, 100, 2, [2, 1, 1, 1])).toEqual([[66, 32], [49, 49]]) // 2+1 fills a row; 1+1 split the last
+  expect(gridRows(3, 3, 100, 2, [3, 5, 1])).toEqual([[100], [100], [100]]) // 3 is a row; 5 is held to the columns
+  expect(gridRows(10, 3, 100, 2, Array(10).fill(1))).toEqual(gridRows(10, 3, 100, 2))
+})
+
+test('T-3739: the board page follows the Board layout: its order, less its hidden panels, a span widening its panel', { timeoutMs: 30000 }, async ($, on) => {
+  world(on, { ...BUSY, board_layout: { order: ['tests', 'state', 'lanes', 'train', 'cpu', 'loop', 'library', 'models', 'sampo'],
+    hidden: ['cpu', 'models'], span: { tests: 3, state: 1 }, height: {}, from: 'project' } })
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const wide = await $.ui.mount(PANE(214, 80))
+  expect(await pics(wide)).toEqual(['tests', 'state', 'sessions', 'lanes', 'merge', 'loop', 'library', 'sampo'].map(k => `panel-${k}-pic`))
+  expect(await width(wide, 'tests')).toBe(212) // a span of 3: the whole row
+  await wide.unmount()
+})
+
 test('the top bar: SAMPO, the project and the counts; the task as the NOW strip; a callout with key caps when you are needed', async ($, on) => {
   world(on, BUSY)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })

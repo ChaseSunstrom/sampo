@@ -44,6 +44,23 @@ skills to reuse):
   `base` paints the still layer into a cached offscreen canvas (redrawn only when the data, size or palette change),
   `live` paints what moves each frame on top.
 
+## Layout
+
+The panels' order, each one's column span (1-3) and height (1-3 rows), which are hidden, the style (`card` or `flat`)
+and the motion (`full`, `calm`, `still`) make a layout (T-3739). It lives in Sampo's state as `board-layout.json`: a
+global one, and one per project over it; a field neither sets is the built-in's, and a file that won't parse is skipped
+and named (`sampo board layout show`).
+
+- `sampo board layout show|set|reset [--project]`: `set order=tests,state cpu.hidden=true lanes.span=2 style=flat`, or
+  `--layout JSON`; a write takes the state lock and lands atomically.
+- The page's **Edit layout** button: drag a panel by its handle to move it, drag its corner to resize (snapped to the
+  grid's columns and rows), ‹ › and × in its header, `+ NAME` to restore a hidden one, Reset; the arrow keys on the
+  corner grip resize it too. Each change saves through `/api/act` (its nonce and Origin checks), to this project or,
+  in All mode, to the global layout.
+- The Claude Code pane's board page draws its panels in the layout's order, skips the hidden ones and widens a
+  spanning one (`fm ui`'s `board_layout`; SESSIONS stays after STATE); Sampo Code's layout editor (`l`) lists the
+  Board's order and hidden panels.
+
 ## Cost
 
 One `requestAnimationFrame` loop for all panels. It stops when the tab is hidden, when the Board isn't the view shown,

@@ -636,3 +636,181 @@ def collect(p):
         except Exception:  # one part down leaves the rest of the board
             out[name] = None
     return out
+
+
+# T-3739: the Board's layout, which panels show, where, how big, in which style and how much they move. One file per
+# scope (the global one in the state folder, a project's in its own), each partial; layout_view reads them field by
+# field, project over global over the built-in one. `sampo board layout` and the page's edit mode (/api/act's
+# board_layout) write them through layout_set; the pane and Sampo Code read layout_view's order and hidden panels.
+PANEL_KEYS = ("lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests",
+              "asks", "sessions", "ship", "usage", "guard")  # the page's order (T-3731 added the last five)
+STYLES, MOTIONS = ("card", "flat"), ("full", "calm", "still")
+SIZES = {"span": "columns", "height": "rows"}  # each 1 to 3
+LAYOUT_FILE, LAYOUT_MAX = "board-layout.json", 4096  # bytes of a scope's file: fourteen panels need about 1000
+
+
+def layout_builtin():
+    return {"order": list(PANEL_KEYS), "panels": {k: {"span": 1, "height": 1, "hidden": False} for k in PANEL_KEYS},
+            "style": "card", "motion": "full"}
+
+
+def _name(k):
+    return re.sub(r"[^\w.-]", "?", str(k))[:40] or "?"  # a field named in an error: plain, short
+
+
+def layout_check(obj):
+    """obj, one scope's layout (any field may be left out), as stored: {version, order?, panels?, style?, motion?}.
+    ValueError whose text starts with the first bad field (panels.lanes.span, order[1], style)."""
+    if not isinstance(obj, dict):
+        raise ValueError("layout: an object with order, panels, style or motion")
+    try:
+        size = len(json.dumps(obj))
+    except (TypeError, ValueError):
+        raise ValueError("layout: plain JSON only") from None
+    if size > LAYOUT_MAX:
+        raise ValueError(f"layout: {size} bytes, over {LAYOUT_MAX}")
+    out = {"version": 1}
+    for k, v in obj.items():
+        if k == "version":
+            if v != 1 or isinstance(v, bool):
+                raise ValueError("version: 1 is the only one")
+        elif k == "order":
+            if not isinstance(v, list):
+                raise ValueError("order: a list of panels (" + ", ".join(PANEL_KEYS) + ")")
+            for i, x in enumerate(v):
+                if x not in PANEL_KEYS:
+                    raise ValueError(f"order[{i}]: {_name(x)} is not a panel (" + ", ".join(PANEL_KEYS) + ")")
+                if x in v[:i]:
+                    raise ValueError(f"order: {x} twice")
+            out["order"] = list(v)
+        elif k == "panels":
+            if not isinstance(v, dict):
+                raise ValueError("panels: an object of panel: {span, height, hidden}")
+            out["panels"] = {}
+            for key, fields in v.items():
+                if key not in PANEL_KEYS:
+                    raise ValueError(f"panels.{_name(key)}: not a panel (" + ", ".join(PANEL_KEYS) + ")")
+                if not isinstance(fields, dict):
+                    raise ValueError(f"panels.{key}: an object of span, height and hidden")
+                for f, x in fields.items():
+                    if f in SIZES:
+                        if not isinstance(x, int) or isinstance(x, bool) or not 1 <= x <= 3:
+                            raise ValueError(f"panels.{key}.{f}: 1 to 3 {SIZES[f]}")
+                    elif f == "hidden":
+                        if not isinstance(x, bool):
+                            raise ValueError(f"panels.{key}.hidden: true or false")
+                    else:
+                        raise ValueError(f"panels.{key}.{_name(f)}: not a panel field (span, height, hidden)")
+                out["panels"][key] = dict(fields)
+        elif k == "style":
+            if v not in STYLES:
+                raise ValueError("style: " + " or ".join(STYLES))
+            out["style"] = v
+        elif k == "motion":
+            if v not in MOTIONS:
+                raise ValueError("motion: full, calm or still")
+            out["motion"] = v
+        else:
+            raise ValueError(f"{_name(k)}: not a layout field (order, panels, style, motion)")
+    return out
+
+
+def layout_path(scope, p=None):
+    if scope == "global":
+        return os.path.join(c.state_dir(), LAYOUT_FILE)
+    if scope == "project" and p is not None:
+        return os.path.join(p.dir, LAYOUT_FILE)
+    raise ValueError("scope: global, or project with a project")
+
+
+def _layout_read(path):
+    """(the scope's checked layout or None when there is no file, the error that skipped it or None)."""
+    try:
+        with open(path, "rb") as f:
+            raw = f.read(LAYOUT_MAX * 4 + 1)
+    except FileNotFoundError:
+        return None, None
+    except OSError as e:
+        return None, f"unreadable ({e.strerror or e})"
+    if len(raw) > LAYOUT_MAX * 4:
+        return None, "layout: too big"
+    try:
+        return layout_check(json.loads(raw.decode("utf-8"))), None
+    except UnicodeDecodeError:
+        return None, "layout: not UTF-8"
+    except RecursionError:  # a few thousand '[' fit the byte cap
+        return None, "layout: nested too deep"
+    except ValueError as e:  # json's own error is a ValueError too: "Expecting value: line 1 ..."
+        return None, _t(str(e), 200)
+
+
+def _layout_union(old, new):
+    """new's fields over old's: order and style whole, each panel's fields one by one."""
+    out = dict(old, **{k: v for k, v in new.items() if k != "panels"})
+    panels = {k: dict(v) for k, v in (old.get("panels") or {}).items()}
+    for k, v in (new.get("panels") or {}).items():
+        panels[k] = dict(panels.get(k) or {}, **v)
+    if panels:
+        out["panels"] = panels
+    return out
+
+
+def layout_view(p=None):
+    """The layout in force for p (None: the global one, as the All view and a pane outside a project read it):
+    {order: every panel (PANEL_KEYS), panels: {key: {span, height, hidden}}, style, motion, from: the top scope that had a
+    file, errors: each scope's file that was skipped, and why}."""
+    eff, src, errors = {}, "builtin", []
+    for scope, q in (("global", None), ("project", p)):
+        if scope == "project" and p is None:
+            continue
+        part, err = _layout_read(layout_path(scope, q))
+        if err:
+            errors.append(f"{scope} layout skipped: {err}")
+        if part is not None:
+            eff, src = _layout_union(eff, part), scope
+    out = layout_builtin()
+    order = eff.get("order") or []
+    out["order"] = list(order) + [k for k in PANEL_KEYS if k not in order]
+    for k, v in (eff.get("panels") or {}).items():
+        out["panels"][k].update(v)
+    out["style"], out["motion"] = eff.get("style", out["style"]), eff.get("motion", out["motion"])
+    out["from"], out["errors"] = src, errors
+    return out
+
+
+def layout_short(p=None):
+    """What a pane reads (sampo ui's board_layout, Sampo Code): the whole order, the hidden panels in that order, each
+    panel's span and height, the scope it came from, and the files skipped."""
+    v = layout_view(p)
+    ps = v["panels"]
+    return {"order": v["order"], "hidden": [k for k in v["order"] if ps[k]["hidden"]],
+            "span": {k: ps[k]["span"] for k in v["order"]}, "height": {k: ps[k]["height"] for k in v["order"]},
+            "from": v["from"], "errors": v["errors"]}
+
+
+def _layout_lock():
+    return c.lock(os.path.join(c.state_dir(), "board-layout.lock"))
+
+
+def layout_set(scope, p, changes, replace=False):
+    """Check changes, then merge them into the scope's file (replace: the file becomes them, as the page sends its
+    whole layout). ValueError naming the field, and nothing written, when they are bad. Returns what was written."""
+    path = layout_path(scope, p)
+    new = layout_check(changes)
+    with _layout_lock():
+        if not replace:
+            old, _ = _layout_read(path)  # a broken file is replaced by the changes
+            new = layout_check(_layout_union(old or {}, new))
+        c.write_atomic(path, json.dumps(new, indent=1, sort_keys=True) + "\n")
+    return new
+
+
+def layout_reset(scope, p=None):
+    """Remove the scope's file, so the scope below shows; True when there was one."""
+    path = layout_path(scope, p)
+    with _layout_lock():
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            return False
+    return True

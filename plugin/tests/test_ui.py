@@ -436,6 +436,19 @@ class UiView(ForemanTestCase):
         self.assertEqual([(x["cmd"], x["ok"]) for x in v["board"]["commands"]],
                          [("sampo task show T-0001", True), ("sampo nope", False)])
 
+    def test_the_pane_reads_the_board_layouts_order_hidden_panels_and_spans(self):  # T-3739
+        v = self.fm_json("ui")["board_layout"]
+        self.assertEqual(v["order"], ["lanes", "train", "cpu", "loop", "library", "models", "sampo", "state", "tests",
+                         "asks", "sessions", "ship", "usage", "guard"])
+        self.assertEqual((v["hidden"], v["from"]), ([], "builtin"))
+        self.fm("board", "layout", "set", "order=tests,state", "cpu.hidden=true", "lanes.span=2")
+        self.fm("board", "layout", "set", "--project", "models.hidden=true")
+        v = self.fm_json("ui")["board_layout"]
+        self.assertEqual(v["order"][:3], ["tests", "state", "lanes"])
+        self.assertEqual(v["hidden"], ["cpu", "models"])
+        self.assertEqual((v["span"]["lanes"], v["span"]["tests"], v["from"]), (2, 1, "project"))
+        self.assertNotIn("layout", self.fm_json("ui")["board"], "the board cache stays the cache")
+
     def test_the_board_cache_keeps_the_cpu_by_kind_a_minute_a_bar(self):
         # T-3701: the pane's CPU panel as the web Board's: the cores each kind uses now, and a bar a minute of the last
         # 30, from the readings of this refresh and the earlier ones the cache kept
