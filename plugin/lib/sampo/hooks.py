@@ -6554,6 +6554,25 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
         return None  # an `fm ask` is open: the user's reply decides it
     scope = os.environ.get("FOREMAN_DRIVE_TASK")  # fm run: one task per fresh session; the next gets its own
     d = g["drive"].setdefault(sid, {"count": 0})
+    bg = pl.get("background_tasks")  # T-0115: the engine's own in-flight list, when this build sends it
+    scans = []  # T-3540: the event scan (a 6000-row tail) runs once, and only when this Stop needs it
+
+    def scan():
+        if not scans:
+            scanned = set()  # T-2872: the event scan's agents (a subagent start or a resume), as the engine list marks them
+            closes = {}  # T-4644: job id -> the task ids its own text closes (the engine's record, else its start's)
+            cis = set()  # T-4670: jobs whose start recorded a CI watch
+            found = _running(sid, scanned, closes, cis)
+            for t in bg if isinstance(bg, list) else ():
+                if _job_closes(t):
+                    closes[str(t.get("id"))] = _job_closes(t)
+            live = scanned & set(found)  # the scan's agents still running (scanned holds every agent it saw start)
+            running = sorted({str(t.get("id")) for t in bg if isinstance(t, dict)} | live) if isinstance(bg, list) else \
+                sorted(found)  # T-2873: the engine's list can omit running subagents; the scan's live ones join it
+            scans.append((running, scanned, closes, cis))
+        return scans[0]
+
+    now, since = time.time(), d.setdefault("since", {})
     # T-1083, T-1127: a task whose cap was hit (cap_hit on its brief) isn't pushed or offered until its cost_cap changes
     capped = {b.id for b in briefs if b.meta.get("cost_cap") and str(b.meta.get("cap_hit")) == str(b.meta["cost_cap"])}
     waiting += [x for x in capped if x not in waiting]
@@ -6571,6 +6590,11 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
     # T-4692: a train of this project runs (its own lock, read here, never a process name) and no task is in hand: the
     # train holds the checkout, so nothing is told to focus (a focus made during a train left two lanes for hand closes)
     train = bool(not sd["active"] and not _headless() and _train_live(p))
+    if not work and (bg or since):  # T-3540: the running set is dated at this Stop with no work to push too (a session
+        # waiting on its builders is when one lingers); selfcheck.long_background reads since only while since_at is
+        # fresh. A Stop with nothing listed and nothing dated skips the scan: it has nothing to date
+        d["since"] = since = {k: since.get(k, now) for k in scan()[0]}
+        d["since_at"] = now
     recovery, key = "", []
     if not work and full and not scope:  # T-2354: a lane that stopped before its merge has one recovery: do it
         try:
@@ -6660,26 +6684,16 @@ def _drive_push(p, sd, briefs, pl, g, saved=True):
                          [f" (they raise it: sampo task set {wb.id} cost_cap=…)"])
     if c.waits_on_user(wb, waiting, sd.get("autonomy") or "standard"):  # T-1061: "slow" gates M too
         return None  # waiting on the user's approval (AUTONOMY standard)
-    bg = pl.get("background_tasks")  # T-0115: the engine's own in-flight list, when this build sends it
-    scanned = set()  # T-2872: the event scan's agents (a subagent start or a resume), as the engine list marks them
-    closes = {}  # T-4644: job id -> the task ids its own text closes (the engine's record, else what its start recorded)
-    cis = set()  # T-4670: jobs whose start recorded a CI watch
-    found = _running(sid, scanned, closes, cis)
-    for t in bg if isinstance(bg, list) else ():
-        if _job_closes(t):
-            closes[str(t.get("id"))] = _job_closes(t)
-    live = scanned & set(found)  # the scan's agents still running (scanned holds every agent it saw start)
-    running = sorted({str(t.get("id")) for t in bg if isinstance(t, dict)} | live) if isinstance(bg, list) else \
-        sorted(found)  # T-2873: the engine's list can omit running subagents; the scan's live ones join it
+    running, scanned, closes, cis = scan()
     if sd["active"] and not _headless() and not any(work["id"] in ids for k, ids in closes.items() if k in running) \
             and _live_close(p, work["id"]):  # T-4670: a detached close no job list holds waits as a job does
         running = sorted(set(running) | {f"close-{work['id']}"})
         closes[f"close-{work['id']}"] = [work["id"]]
     if train:  # T-4692: the train is a waited job (kind "train": its own typical time, a wake when it ends)
         running = sorted(set(running) | {"train"})
+    d["since"] = since = {k: since.get(k, now) for k in running}  # (the close and train jobs above are dated too)
+    d["since_at"] = now  # T-3540: when `since` was last true (selfcheck.long_background)
     # T-0415: a job running for LONG_JOB_S is a service (a workflow, a watch, a server), not something to wait for
-    now, since = time.time(), d.setdefault("since", {})
-    d["since"] = since = {k: since.get(k, now) for k in running}
     agents = ({str(t.get("id")) for t in bg if isinstance(t, dict) and t.get("type") == "agent"} if isinstance(bg, list)
               else set()) | scanned  # T-0575: a subagent (a builder can take 30 min) is work that ends, never a service
     # T-4644: the job that holds this task's own close (a script waiting behind CI, then `sampo task finish ID`) is a wait,

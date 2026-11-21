@@ -1155,6 +1155,18 @@ def cmd_task(args):
             print(f"sampo: warning: self-fix trial not registered: {e}", file=sys.stderr)
         if b.meta.get("batch"):
             _settle_batch(p, b, done=True)
+        # T-3540: a close takes its own lane with it once the lane's branch is merged; sampo lane land's close (its
+        # audit text) leaves it to the train, which removes it after the close with the lock's timings (T-4600)
+        from sampo import train as _train
+        if b.meta.get("lane") and not str(getattr(args, "audit", "") or "").startswith(_train.LAND_AUDIT.split(":")[0] + ":"):
+            from sampo import lanes as slanes
+            try:
+                note = slanes.close_lane(p, b)
+            except Exception as e:  # the task is done already; a lane that won't go must not make that look failed
+                note = None
+                print(f"sampo: warning: lane not removed: {e}", file=sys.stderr)
+            if note:
+                print(note, file=sys.stderr if getattr(args, "json", False) else sys.stdout)
         chose = " ".join(b.section("Decision").split()) if b.type == "RESEARCH" else ""
         if chose and not chose.lower().startswith("none"):  # T-0896: the project keeps what the research decided
             _write_decision(p, c.fit(chose, 400), f"research {b.id}: {c.fit(b.title, 120)}", task=b.id)

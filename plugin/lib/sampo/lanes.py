@@ -712,11 +712,8 @@ def cmd_lane(args):
         briefs = c.load_briefs(p)
         rows, lines = [], []
         locks = clear_git_locks(main)  # T-4616: a stale git lock would stop a builder's commit; cleared, and said
-        for block in _git(main, "worktree", "list", "--porcelain").stdout.strip().split("\n\n")[1:]:
-            fields = dict(line.partition(" ")[::2] for line in block.splitlines())
-            path = os.path.realpath(fields.get("worktree", ""))
-            tasks = [b for b in briefs if b.meta.get("lane") == path]
-            rows.append({"path": path, "branch": fields.get("branch", "").replace("refs/heads/", ""),
+        for path, branch, tasks in listing(main, briefs):
+            rows.append({"path": path, "branch": branch,
                          "tasks": [{"id": b.id, "status": b.status, "title": b.title} for b in tasks]})
             gone = not os.path.isdir(path)  # deleted by hand: git lists it until pruned
             rows[-1]["missing"] = gone
@@ -4192,6 +4189,36 @@ def _save_drop(p, tid, drop):
     with c.lock(p.dir):
         os.makedirs(os.path.dirname(_drop_path(p, tid)), exist_ok=True)
         c.write_atomic(_drop_path(p, tid), json.dumps(drop))
+
+
+def listing(main, briefs):
+    """(path, branch, the tasks it holds) for each lane: git's worktrees after the main one (fm lane list, and
+    T-3540's self-check)."""
+    for block in _git(main, "worktree", "list", "--porcelain").stdout.strip().split("\n\n")[1:]:
+        fields = dict(line.partition(" ")[::2] for line in block.splitlines())
+        path = os.path.realpath(fields.get("worktree", ""))
+        yield (path, fields.get("branch", "").replace("refs/heads/", ""),
+               [b for b in briefs if b.meta.get("lane") == path])
+
+
+def close_lane(p, b):
+    """T-3540: a close takes its task's lane with it once the lane's branch is in main (13 closed tasks' lanes stayed
+    on disk): never from inside a lane (the close runs in that folder), never unmerged commits, and remove() refuses
+    uncommitted or ignored files. The line to print, or None when there's nothing to do."""
+    from sampo import cli
+    path, main = b.meta.get("lane"), c.main_worktree(p.root) or p.root
+    if p.lane or not path or not os.path.isdir(path):
+        return None
+    tip = _git(path, "rev-parse", "HEAD").stdout.strip()
+    if not tip or _git(main, "merge-base", "--is-ancestor", tip, "HEAD").returncode:
+        return None
+    ended = {}
+    try:
+        remove(p, b, main, ended=ended)
+    except (c.PolicyError, cli.UsageError) as e:
+        return f"{b.id}: lane {path} kept: {e}"
+    text = lane_procs_text(ended)  # what ending the lane ended there (processes with no terminal), said, not silent
+    return f"{b.id}: lane {path} removed (its branch is merged)" + (f"; {text}" if text else "")
 
 
 def remove(p, b, main, drop=None, keep=False, ended=None):

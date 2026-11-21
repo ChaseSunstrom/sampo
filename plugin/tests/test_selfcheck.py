@@ -1,7 +1,9 @@
 """T-3127: self-checks name what the user would otherwise point out, with its numbers, in every state (sampo next and
 the drive), and go quiet once it's resolved. 2026-11-06's questions are the fixtures: landed work unshipped for hours,
 a retired .foreman/ tracked beside .sampo/, the user's asks not landed."""
+import contextlib
 import datetime
+import io
 import json
 import os
 import subprocess
@@ -225,6 +227,132 @@ class SelfCheck(ForemanTestCase):
         self.assertIn("self-check: 2 of the user's asks", self.fm("next").stdout)
         note = self.hook("UserPromptSubmit", {"prompt": "hi", "session_id": "sess-1"}).stdout
         self.assertNotIn("self-check:", note, "the prompt note's 400 characters stay for the task and its next step")
+
+    def laned(self, title, name=None):
+        tid = first(self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step",
+                            "s", "--json").stdout)["id"]
+        path = json.loads(self.fm("lane", "new", tid, "--json").stdout)["path"]
+        if name:
+            self.fm("focus", tid, cwd=path)
+            with open(os.path.join(path, name), "w") as f:
+                f.write(name)
+            self.git("-C", path, "add", name)
+            self.git("-C", path, "commit", "-qm", name)
+        return tid, path
+
+    def test_lanes_that_outlived_their_task_are_counted_and_named(self):
+        # T-3540: 13 closed tasks' lanes and 11 with no task (old /tmp scratch worktrees) sat among 126, never named
+        done, _ = self.laned("Closed in its lane")
+        self.fm("task", "drop", done, "done elsewhere")
+        self.laned("Still open")
+        old, young = os.path.join(self.tmp, "scratch-old"), os.path.join(self.tmp, "scratch-young")
+        for path in (old, young):
+            self.git("worktree", "add", "-q", "--detach", path)
+        os.utime(os.path.join(old, ".git"), (time.time() - 7200, time.time() - 7200))
+        briefs = c.load_briefs(self.p)
+        self.assertEqual(selfcheck.leftover_lanes(self.p, briefs, time.time()),
+                         f"2 lanes outlived their task (closed: {done}; no task: 1) → sampo lane rm ID --why … or sampo "
+                         "tidy; git worktree remove PATH for one with no task (sampo lane list names it)")
+        self.fm("lane", "rm", done)
+        self.git("worktree", "remove", old)
+        self.assertIsNone(selfcheck.leftover_lanes(self.p, c.load_briefs(self.p), time.time()),
+                          "a young worktree with no task may be a builder's not yet focused: quiet")
+
+    def test_a_close_removes_its_own_merged_lane_and_keeps_an_unmerged_one(self):
+        # T-3540: a task closed from the main checkout after its lane's merge left the lane on disk
+        merged, mpath = self.laned("Merged work", "m.txt")
+        unmerged, upath = self.laned("Unmerged work", "u.txt")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", f"foreman/{merged}")
+        out = self.fm("task", "finish", merged, "--run", "true", "--audit", "self check").stdout
+        self.assertIn(f"{merged}: lane {mpath} removed", out)
+        self.assertFalse(os.path.isdir(mpath))
+        self.assertNotIn("lane", c.find_brief(self.p, merged).meta)
+        self.fm("task", "finish", unmerged, "--run", "true", "--audit", "self check")
+        self.assertTrue(os.path.isdir(upath), "an unmerged branch's lane stays")
+        self.assertIn(f"closed: {unmerged}", selfcheck.leftover_lanes(self.p, c.load_briefs(self.p), time.time()))
+
+    def test_agents_alive_hours_after_reporting_are_named_with_ages(self):
+        # T-3540: four builders stayed listed as running 8-18 h after they reported: watchers they started never ended
+        from sampo import hooks
+        t = time.time()
+        for aid, kind in (("a1old", "sampo:fm-builder"), ("a2old", "general-purpose"), ("a9gone", "general-purpose")):
+            c.log_event(self.p, "subagent", data={"agent_id": aid, "agent_type": kind})
+        at = t + 9 * 3600  # the session's last Stop, nine hours on: all four still listed
+        since = {k: t - 600 for k in ("a1old", "a2old", "a3working", "bshell")}
+        gate = {"drive": {"sess-1": {"since": since, "since_at": at},
+                          "sess-0": {"since": {"a9gone": t - 600}, "since_at": t}}}  # a session that ended
+        with open(os.path.join(self.p.dir, "gate.json"), "w") as f:
+            json.dump(gate, f)
+        self.assertEqual(selfcheck.long_background(self.p, [], at + 60),
+                         "2 background jobs alive 9 h after their agent reported: a1old (fm-builder, 9 h), a2old "
+                         "(general-purpose, 9 h) → stop them (TaskStop ID) and end the watchers they started")
+        gate["drive"]["sess-1"]["since_at"] = t + 60
+        with open(os.path.join(self.p.dir, "gate.json"), "w") as f:
+            json.dump(gate, f)
+        self.assertIsNone(selfcheck.long_background(self.p, [], t + 120), "reported a minute ago: not left over yet")
+        self.assertGreater(hooks.LONG_JOB_S, 120)
+
+    def test_the_stop_hook_dates_the_running_set_it_saw(self):
+        # T-3540: since (each job first seen running) is read only while its session's last Stop is fresh, and is kept
+        # with no task to work too (a session waiting on its builders is when they linger)
+        self.hook("Stop", {"stop_hook_active": False, "last_assistant_message": "Waiting on the build.",
+                           "background_tasks": [{"id": "a5", "type": "agent", "status": "running"}]})
+        with open(os.path.join(self.p.dir, "gate.json")) as f:
+            d = json.load(f)["drive"]["sess-1"]
+        self.assertIn("a5", d["since"])
+        self.assertLess(abs(d["since_at"] - time.time()), 120)
+
+    def push(self, bg, since, scan):
+        from sampo import hooks
+        sd = {"drive": True, "paused": False, "active": None, "queue": [], "inbox": [], "autonomy": "full",
+              "pending": []}
+        g = {"drive": {"sess-1": {"count": 0, "since": since}}}
+        with unittest.mock.patch.object(hooks, "_running", side_effect=scan) as run:
+            hooks._drive_push(self.p, sd, [], {"session_id": "sess-1", "background_tasks": bg}, g)
+        return run.call_count, g["drive"]["sess-1"]
+
+    def test_a_stop_with_no_work_and_nothing_listed_skips_the_event_scan(self):
+        # T-3540 review: the 6000-row events tail ran on every Stop, work or none, on the hook's p95 bench
+        calls, d = self.push([], {}, lambda *a: [])
+        self.assertEqual(calls, 0, "no work, no engine list, nothing dated: the scan has nothing to say")
+        calls, d = self.push([{"id": "a5", "type": "agent", "status": "running"}], {}, lambda *a: [])
+        self.assertEqual(calls, 1)
+        self.assertIn("a5", d["since"], "a listed job is still dated with no work")
+        calls, d = self.push([], {"a5": time.time() - 60}, lambda *a: [])
+        self.assertEqual(calls, 1)
+        self.assertEqual(d["since"], {}, "a dated job that is gone is dropped")
+
+    def test_a_close_that_cannot_remove_its_lane_warns_and_stays_closed(self):
+        # T-3540 review: remove() raising an OSError after the state change must not fail the close
+        from sampo import cli, lanes
+        tid, path = self.laned("Merged work", "m.txt")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", f"foreman/{tid}")
+        out, err, cwd = io.StringIO(), io.StringIO(), os.getcwd()
+        os.chdir(self.repo)
+        try:
+            with unittest.mock.patch.dict(os.environ, {"FOREMAN_HOME": self.home, "FOREMAN_INHIBITED": "1"}), \
+                    unittest.mock.patch.object(lanes, "remove", side_effect=OSError("disk gone")), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                try:
+                    code = cli.main(["task", "finish", tid, "--run", "true", "--audit", "self check"])
+                except SystemExit as e:
+                    code = e.code
+        finally:
+            os.chdir(cwd)
+        self.assertIn(code, (0, None), err.getvalue())
+        self.assertIn("warning: lane not removed: disk gone", err.getvalue())
+        self.assertEqual(c.find_brief(self.p, tid).status, "done")
+
+    def test_a_close_names_what_ending_the_lane_ended(self):
+        # T-3540 review: remove() ends the processes left in the folder; the close says so
+        from sampo import lanes
+        tid, path = self.laned("Merged work", "m.txt")
+        self.git("merge", "-q", "--no-ff", "-m", "merge", f"foreman/{tid}")
+        left = {"ended": ["sleep"], "count": 1, "kept": []}
+        with unittest.mock.patch.object(lanes, "end_lane_procs", return_value=left):
+            note = lanes.close_lane(self.p, c.find_brief(self.p, tid))
+        self.assertIn("removed", note)
+        self.assertIn("ended 1 leftover process: sleep", note)
 
 
 class SelfCheckBehaviour(ForemanTestCase):

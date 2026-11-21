@@ -469,6 +469,77 @@ def _cached(p, briefs, now):
     return out
 
 
+LANE_YOUNG_S = 3600  # T-3540: a worktree this young with no task may be a builder's that hasn't run sampo focus yet
+
+
+def leftover_lanes(p, briefs, now):
+    """T-3540: lanes whose task closed and lanes with no task, still on disk. On 2026-11-06 13 closed tasks' lanes and
+    11 taskless ones (old /tmp scratch worktrees, ../foreman.draft folders) sat among 126, and nothing said so until
+    the user asked."""
+    from sampo import lanes as slanes
+    closed, loose = [], 0
+    for path, _branch, tasks in slanes.listing(c.main_worktree(p.root) or p.root, briefs):
+        if tasks:
+            if all(b.status in c.CLOSED for b in tasks):
+                closed.append(tasks[0].id)
+            continue
+        try:  # .git (a file in a linked worktree) is written once, when the worktree is made
+            young = now - os.stat(os.path.join(path, ".git")).st_mtime < LANE_YOUNG_S
+        except OSError:
+            young = False  # a folder deleted by hand: its registration is left over too
+        loose += not young
+    if not closed and not loose:
+        return None
+    parts = ([f"closed: {c.joinmore(sorted(closed), 5)}"] if closed else []) + ([f"no task: {loose}"] if loose else [])
+    n = len(closed) + loose
+    return (f"{n} lane{'s' if n > 1 else ''} outlived their task ({'; '.join(parts)}) → sampo lane rm ID --why … or "
+            f"sampo tidy" + ("; git worktree remove PATH for one with no task (sampo lane list names it)" if loose else ""))
+
+
+def long_background(p, briefs, now):
+    """T-3540: background jobs the Stop hook saw running past LONG_JOB_S that are still listed LONG_JOB_S after their
+    agent reported (its SubagentStop in the ledger): four builders stayed listed 8-18 h after reporting, held by
+    watchers they had started, and nothing said so. The drive state's since (each job first seen running) counts only
+    as of a session's last Stop (since_at) within LONG_JOB_S, so a session that ended says nothing."""
+    from sampo import hooks
+    try:
+        with open(os.path.join(p.dir, "gate.json"), encoding="utf-8") as f:
+            drive = json.load(f).get("drive") or {}
+    except (OSError, ValueError, AttributeError):
+        return None
+    seen = {}  # job id: (first seen running, as of)
+    for d in drive.values():
+        at = float(d.get("since_at") or 0) if isinstance(d, dict) else 0
+        if 0 <= now - at < hooks.LONG_JOB_S:
+            seen.update({k: (float(t), at) for k, t in (d.get("since") or {}).items()})
+    if not seen:
+        return None
+    # a report can come before the first Stop that listed it: BG_WAIT_S further back; a service listed for days: 2 days
+    first = max(min(t for t, _ in seen.values()) - hooks.BG_WAIT_S, now - 2 * 86400)  # (~2.5 MB of ledger a day)
+    since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(first))
+    reported = {}  # ponytail: a resumed agent (SendMessage) working past its old report reads as alive after it
+    for e in c.ledger_events(p, ("subagent",), since=since):
+        d, ts = e.get("data") or {}, c.parse_ts(e.get("ts"))
+        if d.get("agent_id") in seen and ts:
+            reported[d["agent_id"]] = (ts.timestamp(), str(d.get("agent_type") or "agent").rpartition(":")[2])
+    rows = []
+    for k, (r, kind) in reported.items():
+        t0, at = seen[k]
+        if min(at - r, at - t0) >= hooks.LONG_JOB_S:  # listed this long, and this long after its report
+            rows.append((at - r, k, kind))
+    rows.sort(key=lambda r: -r[0])  # the longest first; a tie keeps the reports' order
+    if not rows:
+        return None
+    lo, hi = _age(rows[-1][0]), _age(rows[0][0])
+    span = lo if lo == hi else f"{lo.removesuffix(' h')}-{hi}" if lo.endswith(" h") else f"{lo}-{hi}"
+    return (f"{len(rows)} background job{'s' if len(rows) > 1 else ''} alive {span} after their agent reported: "
+            + c.joinmore([f"{k} ({kind}, {_age(a)})" for a, k, kind in rows], 4)
+            + " → stop them (TaskStop ID) and end the watchers they started")
+
+
+CHECKS += (leftover_lanes, long_background)  # its own line: other lanes' checks join the tuple without a conflict
+
+
 def feature_fit(p, briefs, now):
     """T-3499: "how can we make all sampo commands and features be used effectively? I shouldn't even need to ask":
     the top 2 features sampo usage counts unused whose situation holds now (fits.PROBES), each with its numbers."""
