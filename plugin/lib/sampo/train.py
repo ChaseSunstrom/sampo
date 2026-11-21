@@ -345,6 +345,24 @@ def machine_stop(p):
     return f"refused before any merge or test: the machine, not the code, fails every gate: {detail}"
 
 
+def paused_stop(p):
+    """T-5044: the refusal a train or a land gives before it merges or tests anything while Sampo is paused (the
+    machine-wide pause or this project's own: ahead.paused). A pause refuses the gate runs, and the train reads a refused
+    gate as a red base, so it stops here, saying the pause did it. Nothing is merged, parked or dropped for it, and the
+    pause is the user's hold: it is named, never bypassed. '' when not paused."""
+    from sampo import ahead
+    if not ahead.paused(p):
+        return ""
+    c.log_event(p, "lane_train_paused", data={})
+    if c.panicked():
+        return ("refused before any merge or test: Sampo is paused, and a pause stops the gates, so no base or lane can "
+                "be judged; nothing was merged, parked or dropped: resume first (sampo pause off; sampo pause says whose "
+                "it is), then run it again")
+    return ("refused before any merge or test: this project is paused, the user's hold on it (the gates themselves "
+            "would run); nothing was merged, parked or dropped: resume first (sampo pause off; sampo pause says whose "
+            "it is), then run it again")
+
+
 def _texts(out, names):
     """T-3602: {red name: its failure text}. unittest's and run.py's ==== rules split the output; a block belongs to
     the names in its first two lines (`==== mod.Class`, `FAIL: test (mod.Class.test)`); a name heading none gets it all."""
@@ -1097,8 +1115,8 @@ def train(p, main, ids=None, defer_verify=False, judged=None):
     ids = list(dict.fromkeys(ids or []))
     if not ids:
         raise cli.UsageError("name the lanes to land: sampo lane train T-0001,T-0002 (it never lands a lane nobody picked)")
-    why = machine_stop(p)  # T-4652: a full disk fails every gate: known in a second, before any merge or test
-    if why:
+    why = paused_stop(p) or machine_stop(p)  # T-5044: a pause refuses every gate; T-4652: a full disk fails every one
+    if why:  # known in a second, before any merge or test
         raise c.PolicyError(why)
     took = deferred = False
     try:
@@ -2469,8 +2487,8 @@ def land(p, main, batch=None):
     closed from its brief's Close fields through sampo task finish's own checks; the rest are parked (lane_stop and a
     Log line), which awaiting_merge leaves out until the lane has a new commit. Nothing is forced, reset or granted;
     a task already holding the publish grant ships after. One land at a time; an active main task holds it only by uncommitted changes to a lane's file or the changelog."""
-    why = machine_stop(p)  # T-4652: the disk refuses the land at once, before a lane is parked or a batch trains
-    if why:
+    why = paused_stop(p) or machine_stop(p)  # T-5044: a pause, T-4652: the disk, refuse the land at once, before a lane
+    if why:  # is parked or a batch trains
         raise c.PolicyError(why)
     if why := held_by_active(p, main):  # T-4692: an unrelated focus holds nothing; uncommitted lane files do
         _note_refusal(p, why)
@@ -2866,7 +2884,7 @@ def land_merged(p, main, drop_empty=False):
         on, left, empty = _merged_lanes(p, main)
         if on:  # T-4658: the machine before any gate or close, as land() and train() check it. Nothing is checked when no
             # merged lane waits for its close: the empty lanes' removal below frees disk, it takes none.
-            why = machine_stop(p)
+            why = paused_stop(p) or machine_stop(p)  # T-5044: a pause refuses its gate too
             if why:
                 raise c.PolicyError(why)
         dropped, kept = _drop_empty(p, main, empty) if drop_empty else ([], [(t, x, w) for t, x, w in empty])
