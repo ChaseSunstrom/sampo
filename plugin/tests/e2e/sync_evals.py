@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""Embed rules/foreman.md into every eval case's prompt.md as `append_system_prompt`.
+"""Embed rules/sampo.md into every eval case's prompt.md as `append_system_prompt`.
 
 Eval runs use a temporary HOME, so the ~/.claude/rules/foreman.md symlink that `fm install-user` creates isn't
 there; carrying the rules in each case makes the referee judge Foreman as installed. test_docs checks they match.
 """
 import os
 import re
+import sys
 
 PLUGIN = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(PLUGIN, "lib"))
+from sampo import core as c  # noqa: E402  (T-5048: the one name of the rules file)
 FIX = "the rules changed: run python3 plugin/tests/e2e/sync_evals.py"  # T-4051: test_docs' red names its fix
 
 
 def stale(plugin=PLUGIN):
-    """Eval cases whose embedded rules (append_system_prompt) are missing or differ from rules/foreman.md."""
-    with open(os.path.join(plugin, "rules", "foreman.md")) as f:
+    """Eval cases whose embedded rules (append_system_prompt) are missing or differ from rules/sampo.md."""
+    with open(c.rules_path(plugin)) as f:  # T-5048
         rules = f.read().strip()
     root, out = os.path.join(plugin, "evals"), []
     for case in sorted(os.listdir(root)):
@@ -28,7 +31,7 @@ def stale(plugin=PLUGIN):
 
 
 def main():
-    with open(os.path.join(PLUGIN, "rules", "foreman.md")) as f:
+    with open(c.rules_path(PLUGIN)) as f:
         rules = f.read().strip()
     block = "append_system_prompt: |\n" + "\n".join(("  " + l) if l else "" for l in rules.split("\n")) + "\n"
     root = os.path.join(PLUGIN, "evals")

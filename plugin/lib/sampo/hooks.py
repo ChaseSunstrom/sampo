@@ -1220,9 +1220,9 @@ def session_context(p, sd, other_note=None, sid=None, budget=None, dedupe=False)
         tail.append("Dependency cycles: " + "; ".join("↔".join(x) for x in sd["cycles"])[:150] + ".")
     if sd["sensitive"]:
         tail.append("Sensitive repo: new sessions here start in manual permission mode.")
-    if not os.path.lexists(os.path.join(os.path.expanduser("~"), ".claude", "rules", "foreman.md")):  # T-0874: a
-        # bare /plugin install runs the hooks but never wires the rules; reading them costs no write to ~/.claude
-        rules = os.path.join(c.PLUGIN_ROOT, "rules", "foreman.md")
+    if not any(os.path.lexists(os.path.join(os.path.expanduser("~"), ".claude", "rules", n)) for n in c.RULES_NAMES):
+        # T-0874: a bare /plugin install runs the hooks but never wires the rules; reading them costs no write to ~/.claude
+        rules = c.rules_path()
         tail.append(f"Sampo's rules aren't wired into ~/.claude: read {rules} once now. To load them every session "
                     "(plus the status line and deny rules), the user can say \"finish setting up Sampo\" "
                     "(sampo install-user; undo: sampo uninstall-user).")

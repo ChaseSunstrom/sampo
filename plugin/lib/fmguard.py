@@ -135,6 +135,10 @@ _CORE_DIRS = ("lib", "bin", "hooks", "evals", "integrations", "native")  # plugi
 # T-1328: Foreman's own config that becomes a command (code.toml), runs Python (tui.toml, tui/) or picks where code is
 # sent (models.json): an agent that writes one runs what it likes on the next fm code
 _CORE_CONFIG = ("code.toml", "tui.toml", "models.json")
+# T-5048: the rules file and the symlink that keeps its old name; both are core (a write through either lands in the
+# file, and a link swapped for a file would change what the user's ~/.claude/rules link reads). This module is stdlib
+# only, so it holds the pair itself; test_rules_name holds it equal to core.RULES_NAMES.
+RULES_PATHS = ("plugin/rules/sampo.md", "plugin/rules/foreman.md")
 _CORE_CONFIG_DIRS = ("tui", "tui.projects")  # T-1611: extension panels, and each project's settings (they bind keys)
 DEFAULT_BRANCHES = {"main", "master", "trunk"}
 
@@ -847,7 +851,7 @@ def _homes(ctx):
 def _is_core(path, ctx):
     """Protected core: all Sampo code (it enforces the guard), the rules, the eval suite, the spec and settings."""
     files = {os.path.join(fh, f) for fh in _homes(ctx)
-             for f in ("plugin/rules/foreman.md", "BUILD_PROMPT.md") + _CORE_CONFIG}
+             for f in RULES_PATHS + ("BUILD_PROMPT.md",) + _CORE_CONFIG}
     dirs = [os.path.join(fh, "plugin", d) for fh in _homes(ctx) for d in _CORE_DIRS] + \
         [os.path.join(fh, d) for fh in _homes(ctx) for d in _CORE_CONFIG_DIRS]
     codex = os.environ.get("CODEX_HOME")
@@ -917,7 +921,7 @@ def _standing_covers(path, ctx):
     if any(".cargo" in p.split("/") or os.path.basename(p).startswith("rust-toolchain") for p in (path, real)) or \
             path in _cargo_files(tuple(homes), ctx.home, os.environ.get("CARGO_HOME")):
         return False  # T-3607 review: cargo config and toolchain files change how plugin/native builds
-    return real in {os.path.join(fh, f) for fh in homes for f in ("plugin/rules/foreman.md", "BUILD_PROMPT.md")} or any(
+    return real in {os.path.join(fh, f) for fh in homes for f in RULES_PATHS + ("BUILD_PROMPT.md",)} or any(
         _strictly_under(real, os.path.join(fh, "plugin", d)) for fh in homes for d in _CORE_DIRS)
 
 
@@ -958,7 +962,7 @@ def _protected_roots(ctx):
                                                              ".gemini/settings.json", ".config/opencode")]
     for fh in _homes(ctx):
         roots += [(os.path.join(fh, f), "core") for f in _CORE_CONFIG + _CORE_CONFIG_DIRS]
-        roots += [(os.path.join(fh, "plugin", "rules", "foreman.md"), "core"), (os.path.join(fh, "BUILD_PROMPT.md"), "core")]
+        roots += [(os.path.join(fh, f), "core") for f in RULES_PATHS + ("BUILD_PROMPT.md",)]
     roots += [(os.path.join(ctx.home, ".claude.json"), "core"), (os.path.join(cl, "plugins"), "plugin")]
     # user-wide Claude Code settings (a project's own are handled in classify_tree)
     roots += [(os.path.join(ctx.home, ".claude", f), "core") for f in ("settings.json", "settings.local.json")]

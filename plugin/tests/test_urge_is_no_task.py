@@ -120,7 +120,7 @@ class Text(unittest.TestCase):
         from sampo import steer
         self.assertIn("KIND: urge", steer.EXPAND)
         self.assertIn("urge", steer.EXPAND.split("KIND: urge", 1)[1][:200])
-        rules = read_text(os.path.join(ROOT, "plugin", "rules", "foreman.md"))
+        rules = read_text(os.path.join(ROOT, "plugin", "rules", "sampo.md"))
         line = next(x for x in rules.splitlines() if "New request" in x)
         self.assertIn("urge", line)
         self.assertIn("no capture", line)

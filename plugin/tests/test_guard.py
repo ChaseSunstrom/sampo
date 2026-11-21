@@ -1507,6 +1507,7 @@ class Core(GuardCase):
             ("{fhome}/plugin/hooks/hook", "core"),
             ("{fhome}/plugin/evals/intake/prompt.md", "core"),
             ("{fhome}/plugin/rules/foreman.md", "core"),
+            ("{fhome}/plugin/rules/sampo.md", "core"),  # T-5048: the file, and its old name as a link to it
             ("{fhome}/BUILD_PROMPT.md", "core"),
             # T-1328: Foreman's own config that becomes a command, runs Python or picks where code is sent
             ("{fhome}/code.toml", "core"), ("{fhome}/tui.toml", "core"), ("{fhome}/tui/panel.py", "core"),
@@ -1679,15 +1680,19 @@ class Core(GuardCase):
         self.assertEqual(g._expand(f"~{me.pw_name}/x", self.ctx()), os.path.join(me.pw_dir, "x"))  # ~user
 
     def test_symlinked_rules_resolve_to_core(self):
-        target = os.path.join(self.fhome, "plugin", "rules", "foreman.md")
+        target = os.path.join(self.fhome, "plugin", "rules", "sampo.md")  # T-5048: the file; foreman.md is a link to it
         os.makedirs(os.path.dirname(target), exist_ok=True)
         open(target, "w").close()
+        os.symlink("sampo.md", os.path.join(os.path.dirname(target), "foreman.md"))
         link_dir = os.path.join(self.home, ".claude", "rules")
         os.makedirs(link_dir, exist_ok=True)
-        link = os.path.join(link_dir, "foreman.md")
-        if not os.path.islink(link):
-            os.symlink(target, link)
+        link = os.path.join(link_dir, "foreman.md")  # the user's link names the old link, as installs made it
+        os.symlink(os.path.join(os.path.dirname(target), "foreman.md"), link)
         self.assertBlocked(self.write(link), "core")
+        self.assertBlocked(self.write(os.path.join(os.path.dirname(target), "foreman.md")), "core")
+        link2 = os.path.join(link_dir, "sampo.md")  # and a link made straight to the file
+        os.symlink(target, link2)
+        self.assertBlocked(self.write(link2), "core")
 
 
 class Authorization(GuardCase):
@@ -2817,6 +2822,7 @@ class InterpreterWrites(GuardCase):
             ("python3 - <<'EOF'\nopen('{fhome}/plugin/lib/fmguard.py', 'w').write('x')\nEOF", "core"),
             ("python3 -c \"import pathlib; pathlib.Path('{fhome}/plugin/hooks/hook').write_text('')\"", "core"),
             ("node -e \"require('fs').writeFileSync('{fhome}/plugin/rules/foreman.md', '')\"", "core"),
+            ("node -e \"require('fs').writeFileSync('{fhome}/plugin/rules/sampo.md', '')\"", "core"),  # T-5048
             ("python3 - <<'EOF'\nimport json\njson.dump({{}}, open('{fhome}/state/projects/x/meta.json', 'w'))\nEOF",
              "state-direct"),
             ("/usr/bin/python3 -c \"open('{fhome}/plugin/lib/fmguard.py', 'w').write('')\"", "core"),

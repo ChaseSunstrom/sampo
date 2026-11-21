@@ -111,6 +111,20 @@ class lazy:  # lowercase: reads like re.compile at each site
 
 ALIAS_UNTIL = "1.4.0"  # T-3095: the plugin/lib/fm*.py shims (T-2742, renamed at 1.2.x) go from this release: two minors on
 PLUGIN_ROOT =os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
+# T-5048 (slice of T-4334): the rules file is plugin/rules/sampo.md; plugin/rules/foreman.md stays a symlink to it, so a
+# reader or a user link that still says the old name resolves. Every reader takes the name from here (fmguard is stdlib
+# only and keeps its own pair, which test_rules_name holds equal to these).
+RULES_FILE = "sampo.md"
+RULES_OLD = "foreman.md"  # the symlink; also the name of the user's link in ~/.claude/rules (kept: installs have it)
+RULES_NAMES = (RULES_FILE, RULES_OLD)
+
+
+def rules_path(plugin=None):
+    """The rules file under a plugin folder (default: this install's). A tree from before the move (an old commit's
+    checkout, a worktree on an old base) holds only foreman.md as a file: that is its rules."""
+    base = os.path.join(plugin or PLUGIN_ROOT, "rules")
+    new, old = os.path.join(base, RULES_FILE), os.path.join(base, RULES_OLD)
+    return old if not os.path.lexists(new) and os.path.isfile(old) else new
 
 
 def claude_path(env):

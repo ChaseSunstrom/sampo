@@ -1351,7 +1351,7 @@ def ship(p, args):
                 _err(_full_refusal(p, tail, failed, rerun, got, shlex.join(test), wt, run_id))
             for ln in got:
                 print(ln)
-            rules = os.path.join(wt, "plugin", "rules", "foreman.md")
+            rules = c.rules_path(os.path.join(wt, "plugin"))
             try:  # T-2281: Foreman's own footprint, the lean ratchet's baseline; before the push, so a failed push keeps it
                 from sampo import doctor
                 if os.path.isfile(rules):  # any other project's tree holds no Foreman plugin

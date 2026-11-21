@@ -543,7 +543,7 @@ class KeptVerbDocs(unittest.TestCase):
         from sampo import cli, recall
         cli.build_parser()  # its lazy imports done with the real plugin root
         with tempfile.TemporaryDirectory() as d:
-            src, rules, kept = os.path.join(d, "src"), os.path.join(d, "rules", "foreman.md"), os.path.join(d, "kept")
+            src, rules, kept = os.path.join(d, "src"), os.path.join(d, "rules", "sampo.md"), os.path.join(d, "kept")
             os.makedirs(src)
             os.makedirs(os.path.dirname(rules))
 

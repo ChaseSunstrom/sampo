@@ -511,7 +511,7 @@ class Checks(_TmpDir):
         self.write("fh/MASTER.md", "CLI: `fm state|queue`\nSkills: intake. Prose that says doctor and docs doesn't count.\n")
         self.write("fh/README.md", "Flags: `--no-plugins`, `--frobnicate`.\n")
         self.write("fh/install.sh", "#!/bin/bash\n#   --no-plugins     skip\n#   --no-wiring      skip wiring\nset -e\n")
-        self.write("fh/plugin/rules/foreman.md", "Run `fm teleport now` then `fm task set T-1 x=y`.\n")
+        self.write("fh/plugin/rules/sampo.md", "Run `fm teleport now` then `fm task set T-1 x=y`.\n")
         self.write("fh/plugin/skills/intake/SKILL.md", "---\nname: intake\ndescription: x\n---\n")
         self.write("fh/plugin/skills/extra/SKILL.md", "---\nname: extra\ndescription: x\n---\n")
         r = d.check_self_docs(home, os.path.join(home, "plugin"))
@@ -680,13 +680,14 @@ class Checks(_TmpDir):
             os.makedirs(os.path.join(home, ".claude", "rules"))
             for r in (main, wt):
                 os.makedirs(os.path.join(r, "plugin", "rules"))
-                open(os.path.join(r, "plugin", "rules", "foreman.md"), "w").close()
+                open(os.path.join(r, "plugin", "rules", "sampo.md"), "w").close()  # T-5048
+                os.symlink("sampo.md", os.path.join(r, "plugin", "rules", "foreman.md"))
             link = os.path.join(home, ".claude", "rules", "foreman.md")
             with unittest.mock.patch.dict(os.environ, {"HOME": home}):
                 for wired, running, want in ((main, wt, "WARN"), (wt, main, "FAIL")):
                     if os.path.lexists(link):
                         os.remove(link)
-                    os.symlink(os.path.join(wired, "plugin", "rules", "foreman.md"), link)
+                    os.symlink(os.path.join(wired, "plugin", "rules", "foreman.md"), link)  # as installs made it
                     self.assertEqual(d.check_rules_symlink(os.path.join(running, "plugin")).status, want)
             # a missing wired target, a bare command, an unbalanced quote, two unrelated repos: all FAIL
             self.assertEqual(st(os.path.join(main, "plugin", "hooks", "gone"), mine), "FAIL")
@@ -1179,7 +1180,7 @@ class CoreIntegrity(unittest.TestCase):
             r = d.check_footprint(dense, os.path.join(t, "none.md"), plugin=os.path.join(t, "none"))
             self.assertEqual(r.status, "FAIL")
             self.assertIn("chars", r.detail)
-        self.assertEqual(d.check_footprint(os.path.join(PLUGIN, "rules", "foreman.md"),
+        self.assertEqual(d.check_footprint(os.path.join(PLUGIN, "rules", "sampo.md"),
                                            os.path.join(PLUGIN, "none.md")).status, "PASS")
 
 

@@ -865,7 +865,7 @@ def _session_text():
     text = _literals(textwrap.dedent(inspect.getsource(c._next_for)))
     with open(os.path.join(root, "lib", "sampo", "hooks.py"), encoding="utf-8") as f:
         text += _literals(f.read())
-    for path in [os.path.join(root, "rules", "foreman.md"), *sorted(glob.glob(os.path.join(root, "skills", "*", "SKILL.md"))),
+    for path in [c.rules_path(root), *sorted(glob.glob(os.path.join(root, "skills", "*", "SKILL.md"))),
                  *sorted(glob.glob(os.path.join(root, "commands", "*.md")))]:
         try:
             with open(path, encoding="utf-8") as f:
@@ -3550,7 +3550,7 @@ def _lean(root):
     fmcli registers (its add("name", …) lines); None outside a Rune tree."""
     from sampo import doctor
     plugin = os.path.join(root, "plugin")
-    rules, cli = os.path.join(plugin, "rules", "foreman.md"), os.path.join(plugin, "lib", "sampo", "cli.py")
+    rules, cli = c.rules_path(plugin), os.path.join(plugin, "lib", "sampo", "cli.py")
     if not os.path.isfile(cli):  # T-2748: a tree from before the move registers its verbs in lib/fmcli.py
         cli = os.path.join(plugin, "lib", "fmcli.py")
     if not (os.path.isfile(rules) and os.path.isfile(cli)):

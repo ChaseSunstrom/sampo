@@ -150,7 +150,7 @@ def _share(a, share):
         add("output style", len(str(a.get("style"))) + len(_STYLE_NOTE), str(a.get("style")).startswith(c.ns_names("")))
     elif t == "instructions":
         for f in a.get("files") or []:
-            add("rules", len(str(f.get("content") or "")), str(f.get("path") or "").endswith("rules/foreman.md"))
+            add("rules", len(str(f.get("content") or "")), str(f.get("path") or "").endswith(tuple("rules/" + n for n in c.RULES_NAMES)))  # T-5048: the link's path or the file's
     else:  # ponytail: any other attachment counts by its JSON size, a rough measure of what it adds
         share["all"] += len(json.dumps(a))
 
@@ -1675,7 +1675,7 @@ def eval_case(p, b, out_dir=None):
     folder = os.path.join(os.path.abspath(out_dir) if out_dir else os.path.join(p.dir, "evals"), name)
     os.makedirs(os.path.join(folder, "graders"), exist_ok=True)
     request = re.sub(r"(?m)^> ?", "", b.section("Raw request")).strip() or b.title
-    with open(os.path.join(c.PLUGIN_ROOT, "rules", "foreman.md"), encoding="utf-8") as f:
+    with open(c.rules_path(), encoding="utf-8") as f:
         rules = "".join("  " + l if l.strip() else l for l in f)
 
     def q(s):  # a YAML single-quoted scalar

@@ -14,7 +14,7 @@ from helpers import ForemanTestCase
 from sampo import doctor, which
 
 PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RULES = os.path.join(PLUGIN, "rules", "foreman.md")
+RULES = os.path.join(PLUGIN, "rules", "sampo.md")  # T-5048
 TARGET = 6100  # chars by doctor's count: 300 under the 6400 cap
 
 # the phrase a user says -> a regex the `load` column of a which row must match (the verb the rules line named).
@@ -82,7 +82,7 @@ class BriefNamesTheCap(ForemanTestCase):
         tid = (tid[0] if isinstance(tid, list) else tid)["id"]
         with open(json.loads(self.fm("lane", "brief", tid, "--json").stdout)["path"]) as f:
             text = f.read()
-        self.assertIn("rules/foreman.md", text)
+        self.assertIn("rules/sampo.md", text)
         self.assertIn(str(doctor.RULES_CHARS_MAX), text)
 
 

@@ -749,9 +749,9 @@ class Ship(ForemanTestCase):
         self.ship("--test", "false")
         self.assertFalse(os.path.exists(rec))
         self.assertEqual(self.ship("--test", "true").returncode, 0)
-        self.assertFalse(os.path.exists(rec))  # no plugin/rules/foreman.md in this repo: not Foreman's own
+        self.assertFalse(os.path.exists(rec))  # no plugin/rules/sampo.md in this repo: not Foreman's own
         os.makedirs(os.path.join(self.repo, "plugin", "rules"))
-        with open(os.path.join(self.repo, "plugin", "rules", "foreman.md"), "w") as f:
+        with open(os.path.join(self.repo, "plugin", "rules", "sampo.md"), "w") as f:
             f.write("a rule\n")
         sh(self.repo, "add", "plugin")
         sh(self.repo, "commit", "-qm", "rules")
@@ -1155,7 +1155,7 @@ class ShipDirectCommits(ForemanTestCase):
         self.assertEqual((why, judged), ("", 0), inner)
 
     def test_lane_landed_not_rejudged_but_a_direct_commit_touching_no_judged_file_runs_no_gate(self):
-        self.commit({"README.md": "hi\n", "plugin/tests/test_x.py": "pass\n", "plugin/rules/foreman.md": "r\n"}, "docs only")
+        self.commit({"README.md": "hi\n", "plugin/tests/test_x.py": "pass\n", "plugin/rules/sampo.md": "r\n"}, "docs only")
         why, judged = self.ship()
         self.assertEqual((why, judged), ("", 0))
         self.assertIn("docs only", self.main_log())

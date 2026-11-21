@@ -265,7 +265,8 @@ class ClimbThroughLinks(GuardCase):
         lib = self.link("lnk-lib", os.path.join(self.fhome, "plugin", "lib"))
         proj = self.link("lnk-proj", os.path.join(self.fhome, "state", "projects", "x"))
         usr = self.link("lnk-usr", "/usr/lib")
-        for path, want in ((f"{lib}/../rules/foreman.md", "core"), (f"{lib}/../lib/fmguard.py", "core"),
+        for path, want in ((f"{lib}/../rules/foreman.md", "core"), (f"{lib}/../rules/sampo.md", "core"),  # T-5048
+                           (f"{lib}/../lib/fmguard.py", "core"),
                            (f"{proj}/../x/ledger.jsonl", "state-direct"), (f"{usr}/../share/fixture.txt", "system")):
             for tool, arg in (("Write", path), ("Edit", path), ("Bash", f"echo x > {path}"), ("Bash", f"tee {path}"),
                               ("Bash", f"cp {self.repo}/README.md {path}"),

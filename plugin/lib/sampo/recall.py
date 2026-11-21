@@ -436,7 +436,7 @@ def verb_docs(folder=None):
     the whole parser for every task new and capture, ~40 ms of a forked task new's ~90. A missing, stale or unreadable
     file, or one another user owns or others can write, is built again; nothing is written where bytecode isn't."""
     try:
-        files = [os.path.join(c.PLUGIN_ROOT, "rules", "foreman.md")] + sorted(
+        files = [c.rules_path()] + sorted(
             e.path for e in os.scandir(SOURCES) if e.name.endswith(".py"))
     except OSError:
         return _verb_docs()
@@ -498,7 +498,7 @@ def _verb_docs():
                         walk(sub, prefix + name + " ")
     walk(cli.build_parser(), "")
     try:
-        with open(os.path.join(c.PLUGIN_ROOT, "rules", "foreman.md"), encoding="utf-8") as f:
+        with open(c.rules_path(), encoding="utf-8") as f:
             rules = f.read()
     except OSError:
         rules = ""

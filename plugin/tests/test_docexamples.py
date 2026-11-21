@@ -33,7 +33,7 @@ def doc_files():
               if os.path.isfile(os.path.join(skills, d, "SKILL.md"))]
     names += [os.path.join("plugin", "commands", f) for f in sorted(os.listdir(os.path.join(PLUGIN, "commands")))
               if f.endswith(".md")]
-    return names + [os.path.join("plugin", "rules", "foreman.md")]
+    return names + [os.path.join("plugin", "rules", "sampo.md")]  # T-5048
 
 
 def examples(text):

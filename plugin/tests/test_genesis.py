@@ -3095,7 +3095,7 @@ class GenesisSweep(ForemanTestCase):
 
     def foreman_tree(self, rules="rule one\n", verbs=("help", "dev")):
         import subprocess
-        for rel, text in (("plugin/rules/foreman.md", rules),
+        for rel, text in (("plugin/rules/sampo.md", rules),
                           ("plugin/lib/fmcli.py", "".join(f'    s = add("{v}", cmd_{v}, tier=("x", 1))\n' for v in verbs)),
                           ("plugin/skills/x/SKILL.md", "---\ndescription: a skill\n---\nbody\n")):
             os.makedirs(os.path.dirname(os.path.join(self.repo, rel)), exist_ok=True)

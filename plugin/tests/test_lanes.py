@@ -2592,7 +2592,7 @@ class SelfChangeGate(ForemanTestCase):
         self.tid = first(self.fm("task", "new", "Self change", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
                                  "--step", "s", "--json").stdout)["id"]
         self.p = c.find_project(self.repo)
-        self.write({"plugin/lib/fmguard.py": "x = 1\n", "plugin/rules/foreman.md": "r" * 999 + "\n",
+        self.write({"plugin/lib/fmguard.py": "x = 1\n", "plugin/rules/sampo.md": "r" * 999 + "\n",
                     self.CASES: '{"id": "c1", "cmd": "rm -rf ~", "cwd": ".", "should": "block"}\n'
                                 '{"id": "c2", "cmd": "git push --force origin main", "cwd": ".", "should": "block"}\n',
                     self.ALLOW: '{"id": "a1", "cmd": "ls", "cwd": ".", "should": "allow"}\n'})
@@ -2715,7 +2715,7 @@ class SelfChangeGate(ForemanTestCase):
         self.assertEqual(self.gate(bench=self.bench_pair(100.0, 130.0, again=(100.0, 101.0))), [])
 
     def test_footprint_growth_refuses_unless_always_on_context_was_cut_as_much(self):
-        self.branch({"plugin/rules/foreman.md": "r" * 1099 + "\n"})
+        self.branch({"plugin/rules/sampo.md": "r" * 1099 + "\n"})
         rows = self.gate()
         self.assertTrue(any("rules chars" in r for r in rows), rows)
 
@@ -2724,7 +2724,7 @@ class SelfChangeGate(ForemanTestCase):
         self.assertEqual(self.gate(bench=bench), [])
 
     def test_only_the_users_yes_after_the_refusal_passes_never_a_decision(self):
-        self.branch({"plugin/rules/foreman.md": "r" * 1099 + "\n"})
+        self.branch({"plugin/rules/sampo.md": "r" * 1099 + "\n"})
         self.fm("decide", f"{self.tid}: footprint rules chars +10% is fine")
         c.log_event(self.p, "approval_granted", task=self.tid, data={"allow": ["core"], "via": "prompt"})  # before
         time.sleep(1.05)
@@ -2740,7 +2740,7 @@ class SelfChangeGate(ForemanTestCase):
 
     def test_the_standing_yes_passes_a_hold_made_only_of_footprint_verbs_or_hook_speed(self):
         # T-3217: "I said stop asking me for things" (2026-11-05): quality holds take the user's standing core yes
-        self.branch({"plugin/rules/foreman.md": "r" * 1099 + "\n"})
+        self.branch({"plugin/rules/sampo.md": "r" * 1099 + "\n"})
         self.assertTrue(self.gate(), "no standing yes: the footprint hold stands")
         self._standing_core()
         self.assertEqual(self.gate(), [])
@@ -2767,13 +2767,13 @@ class SelfChangeGate(ForemanTestCase):
         self.assertTrue(any("couldn't run" in r and "no bench_hooks.py" in r for r in rows), rows)
 
     def test_the_yes_is_bound_to_the_commit_it_answered(self):  # T-2352 review: no new commits after the yes
-        self.branch({"plugin/rules/foreman.md": "r" * 1099 + "\n"})
+        self.branch({"plugin/rules/sampo.md": "r" * 1099 + "\n"})
         self.assertTrue(self.gate())
         time.sleep(1.05)
         c.log_event(self.p, "approval_granted", task=self.tid, data={"allow": ["core"], "via": "prompt"})
         self.assertEqual(self.gate(), [])
         self.git("checkout", "-q", "foreman/x")
-        self.branch({"plugin/rules/foreman.md": "r" * 1199 + "\n"})  # pushed after the yes
+        self.branch({"plugin/rules/sampo.md": "r" * 1199 + "\n"})  # pushed after the yes
         self.assertTrue(self.gate())
 
     TOY_REPLAY = ("import os\nimport fmguard\ndef resolve_cwd(c):\n    return c\ndef _key(cmd, cwd):\n"
@@ -2804,8 +2804,8 @@ class SelfChangeGate(ForemanTestCase):
         self.assertTrue(any("rm -rf ~" in r and "base destructive, branch allow" in r for r in rows), rows)
 
     def test_gitattributes_cant_hide_a_file_from_the_footprint(self):  # T-2352 review: no git archive
-        self.branch({".gitattributes": "plugin/rules/foreman.md export-ignore\n",
-                     "plugin/rules/foreman.md": "r" * 1099 + "\n"})
+        self.branch({".gitattributes": "plugin/rules/sampo.md export-ignore\n",
+                     "plugin/rules/sampo.md": "r" * 1099 + "\n"})
         self.assertTrue(any("rules chars" in r for r in self.gate()))
 
     def test_a_branch_verdict_that_isnt_a_string_refuses_and_an_old_inability_doesnt(self):

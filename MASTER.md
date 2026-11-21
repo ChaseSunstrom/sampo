@@ -61,7 +61,8 @@ The plugin itself: CLI, hooks, rules, skills, agents, tests.
 - `plugin/hooks/statusline` statusLine: one true-color session line + Sampo line… [→ files-1](docs/map/files-1.md)
 - `plugin/monitors/monitors.json` plugin monitor `foreman-mail`… [→ files-1](docs/map/files-1.md)
 - `plugin/hooks/subagent-statusline` per-subagent rows (task, tokens vs window… [→ files-1](docs/map/files-1.md)
-- `plugin/rules/foreman.md` always-on operating rules (protected; symlinked into… [→ files-1](docs/map/files-1.md)
+- `plugin/rules/sampo.md` always-on operating rules (protected; reached from… [→ files-1](docs/map/files-1.md)
+- `plugin/rules/foreman.md` symlink to `sampo.md`, kept so the user's… [→ files-1](docs/map/files-1.md)
 - `plugin/output-styles/foreman.md` the Sampo reply format (task/stage header… [→ files-1](docs/map/files-1.md)
 - `plugin/skills/` intake (+ references: planning, execute, audit lenses… [→ files-1](docs/map/files-1.md)
 - `plugin/agents/` (T-0768: `effort`, `maxTurns`, and `omitClaudeMd` on the… [→ files-1](docs/map/files-1.md)
@@ -360,7 +361,7 @@ Made on a machine, not shipped in the repo.
 - `state/projects/<slug>/archive/` archived briefs, ledgers, memory copies… [→ files-1](docs/map/files-1.md)
 - `state/archive/projects/<slug>/` a project's whole state once its root folder… [→ files-1](docs/map/files-1.md)
 - `state/projects/<slug>/gate.json` Stop-gate/drive bookkeeping; with… [→ files-1](docs/map/files-1.md)
-- `~/.claude/rules/foreman.md` symlink to `plugin/rules/foreman.md` (runtime… [→ files-1](docs/map/files-1.md)
+- `~/.claude/rules/foreman.md` symlink to `plugin/rules/foreman.md`, itself a link to `sampo.md` (runtime… [→ files-1](docs/map/files-1.md)
 - `~/.claude/CLAUDE.md` your preferences + a 4-line Sampo block between markers… [→ files-1](docs/map/files-1.md)
 - `~/.claude/settings.json` statusLine wrapper, deny rules, drive env, bypass… [→ files-1](docs/map/files-1.md)
 - `~/.claude/projects/<encoded path>/memory/` native auto memory: durable… [→ files-1](docs/map/files-1.md)
@@ -370,7 +371,7 @@ Made on a machine, not shipped in the repo.
 ```mermaid
 flowchart TD
     U[Your prompt] --> UPS[UserPromptSubmit hook<br/>intake tags, override words,<br/>PAUSE/RESUME → meta]
-    UPS -->|factual note ≤ 400 chars| C[Claude + rules/foreman.md + skills]
+    UPS -->|factual note ≤ 400 chars| C[Claude + rules/sampo.md + skills]
     C -->|sampo intake / capture / task / focus / evidence| FM[sampo CLI<br/>atomic writes + lock + ledger]
     FM --> ST[(state/projects/slug<br/>briefs · STATE · INBOX · ledger)]
     C -->|Bash / Write / Edit| PTU[PreToolUse hook<br/>guard: deny + how to authorize<br/>scope note]
@@ -408,7 +409,7 @@ The full walkthrough is in [docs/map/guide-1.md](docs/map/guide-1.md) (T-4562): 
 | In-session checklist | the brief's Steps (built-in task tools are off on current models; the TaskCompleted gate is ready if enabled) | via `sampo resume` |
 | Knowledge graph | none installed | — |
 
-Precedence: your current message > project CLAUDE.md and rules > `rules/foreman.md` > skill defaults. Safety guards are never overridden.
+Precedence: your current message > project CLAUDE.md and rules > `rules/sampo.md` > skill defaults. Safety guards are never overridden.
 
 ## 7. Integrations
 

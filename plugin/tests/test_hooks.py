@@ -892,7 +892,7 @@ class SessionStart(HookCase):
         os.makedirs(os.path.join(home, ".claude"))
         ctx = self.ctx_of(self.hook("SessionStart", {"source": "startup"},
                                     env={"CLAUDE_ENV_FILE": self.env_file, "HOME": home}))
-        self.assertIn(os.path.join("rules", "foreman.md"), ctx)
+        self.assertIn(os.path.join("rules", "sampo.md"), ctx)  # T-5048: the file; ~/.claude/rules/foreman.md below stays the link's name
         self.assertIn("sampo install-user", ctx)
         os.makedirs(os.path.join(home, ".claude", "rules"))
         open(os.path.join(home, ".claude", "rules", "foreman.md"), "w").close()  # wired: nothing to say
@@ -1964,6 +1964,7 @@ class PromptApprovals(HookCase):
         self.task("Another change")  # a later task: no yes of its own
         self.assertEqual(self.write(lib).returncode, 0)
         self.assertEqual(self.write(os.path.join(self.home, "plugin", "rules", "foreman.md")).returncode, 0)
+        self.assertEqual(self.write(os.path.join(self.home, "plugin", "rules", "sampo.md")).returncode, 0)  # T-5048
         self.assertEqual(self.write(os.path.join(self.home, "plugin", "lib", "fmguard.py")).returncode, 2,
                          "the guard itself still asks")
         self.assertEqual(self.write(os.path.join(self.tmp, "u", ".claude", "settings.json")).returncode, 2,

@@ -93,7 +93,10 @@ def next_lesion(p):
     done = {(e.get("data") or {}).get("target") for e in c.ledger_tail(p, 20000, kinds=("evolve",)) if e.get("event") == "evolve"
             and (e.get("data") or {}).get("model") == model}
     root = os.path.dirname(c.PLUGIN_ROOT)
-    files = [os.path.relpath(os.path.join(c.PLUGIN_ROOT, "rules", "foreman.md"), root)] + sorted(
+    rules = os.path.relpath(c.rules_path(), root)
+    if os.path.join(os.path.dirname(rules), c.RULES_OLD) in done:  # T-5048: an ablation logged under the old name counts
+        done.add(rules)
+    files = [rules] + sorted(
         os.path.relpath(x, root) for x in glob.glob(os.path.join(c.PLUGIN_ROOT, "skills", "*", "SKILL.md")))
     return next((f for f in files if f not in done), None)
 

@@ -446,7 +446,7 @@ def task_docs(root, docs_impact):
     unrelated work."""
     named = {os.path.normpath(n) for n in re.findall(r"[\w./-]+\.md\b", docs_impact or "")}
     gone = [n for n in sorted(named) if not os.path.exists(os.path.join(root, n))]
-    try:  # T-1995: name the one tracked doc it most likely meant ("rules/foreman.md" for plugin/rules/foreman.md)
+    try:  # T-1995: name the one tracked doc it most likely meant ("rules/sampo.md" for plugin/rules/sampo.md)
         tracked = subprocess.run(["git", "-C", root, "ls-files", "--", "*.md"], capture_output=True, text=True,
                                  timeout=30).stdout.splitlines() if gone else []
     except (OSError, subprocess.SubprocessError):

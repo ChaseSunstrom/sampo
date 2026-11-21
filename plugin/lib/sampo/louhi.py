@@ -3942,7 +3942,7 @@ _POSTURE = ('    "posture": ("lite", "sampo posture lite turns Sampo\'s hooks of
             '                "sampo posture lite"),  # T-0963\n')
 _RUN_OUT = "            out = handler(payload) if handler else None\n"
 GATE_MUTATIONS = (
-    ("rules", "rules chars", "footprint", [("plugin/rules/foreman.md", "", "\n" + "- Keep each planted note short. " * 12)]),
+    ("rules", "rules chars", "footprint", [("plugin/rules/" + c.RULES_FILE, "", "\n" + "- Keep each planted note short. " * 12)]),
     ("session-line", "SessionStart chars", "footprint", [("plugin/lib/sampo/hooks.py", _RUN_OUT, _RUN_OUT + (
         '            if event == "SessionStart" and isinstance(out, dict):\n'
         '                h = out.get("hookSpecificOutput") or {}\n'
@@ -3969,7 +3969,7 @@ GATE_MUTATIONS = (
                                  '    add("zzlean", lazy("sampo.night", "cmd_night"), tier=("Running elsewhere", 1191), '
                                  'help="a planted verb")\n    s = add("night", ')]),
     ("control-test", None, None, [("plugin/tests/test_zz_lean_control.py", None, "def test_x():\n    pass\n")]),
-    ("control-cut", None, None, [("plugin/rules/foreman.md", "\n## Precedence\n", "\n")]),
+    ("control-cut", None, None, [("plugin/rules/" + c.RULES_FILE, "\n## Precedence\n", "\n")]),
 )
 # T-3171: one process runs a growth plain and again with its check dropped, and a tree already benched or replayed (the
 # base, and the branch the second run shares) is not run again; one pair per bench, since a planted rise is large

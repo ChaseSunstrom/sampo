@@ -90,8 +90,9 @@ class SetupCase(unittest.TestCase):
         self.home = os.path.realpath(self._tmp.name)
         self.fhome = os.path.join(self.home, ".claude", "foreman")
         os.makedirs(os.path.join(self.fhome, "plugin", "rules"))
-        with open(os.path.join(self.fhome, "plugin", "rules", "foreman.md"), "w") as f:
+        with open(os.path.join(self.fhome, "plugin", "rules", "sampo.md"), "w") as f:  # T-5048
             f.write("# Foreman operating rules\n")
+        os.symlink("sampo.md", os.path.join(self.fhome, "plugin", "rules", "foreman.md"))
         self.settings = os.path.join(self.home, ".claude", "settings.json")
         with open(self.settings, "w") as f:
             json.dump(ORIGINAL, f, indent=2)
@@ -162,7 +163,7 @@ class Install(SetupCase):
         self.assertIn("<!-- foreman:begin -->", md)
         self.assertIn("~/.claude/rules/foreman.md", md)
         link = os.path.join(self.home, ".claude", "rules", "foreman.md")
-        self.assertEqual(os.path.realpath(link), os.path.join(self.fhome, "plugin", "rules", "foreman.md"))
+        self.assertEqual(os.path.realpath(link), os.path.join(self.fhome, "plugin", "rules", "sampo.md"))
         m = read_json(self.manifest_path())
         self.assertEqual(m["statusLine_original"], ORIGINAL["statusLine"])
         self.assertTrue(m["statusline_hud"])
@@ -359,6 +360,52 @@ class Install(SetupCase):
         p = self.run_fm("install-user")
         self.assertNotEqual(p.returncode, 0)
         self.assertEqual(read_text(os.path.join(rules_dir, "foreman.md")), "my own file")
+
+    def _stub_link(self):
+        """A checkout without symlink support: plugin/rules/foreman.md is a text file, and the user's link reads it."""
+        old = os.path.join(self.fhome, "plugin", "rules", "foreman.md")
+        os.remove(old)
+        with open(old, "w") as f:
+            f.write("sampo.md")
+        rules_dir = os.path.join(self.home, ".claude", "rules")
+        os.makedirs(rules_dir)
+        link = os.path.join(rules_dir, "foreman.md")
+        os.symlink(old, link)
+        return link
+
+    def test_setup_repoints_a_link_that_reads_the_text_stub(self):  # T-5048: doctor sends the user here
+        link = self._stub_link()
+        p = self.run_fm("install-user")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.path.realpath(link), os.path.join(self.fhome, "plugin", "rules", "sampo.md"))
+        self.assertIn("# Foreman operating rules", read_text(link))
+        self.assertEqual(self.run_fm("install-user").returncode, 0, "a second run is a no-op on the repaired link")
+        self.assertEqual(os.path.realpath(link), os.path.join(self.fhome, "plugin", "rules", "sampo.md"))
+
+    def test_the_stub_repair_is_in_the_dry_run_and_changes_nothing_there(self):
+        link = self._stub_link()
+        p = self.run_fm("install-user", "--dry-run")
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("sampo.md", p.stdout)
+        self.assertEqual(os.path.realpath(link), os.path.join(self.fhome, "plugin", "rules", "foreman.md"))
+
+    def test_a_link_to_someone_elses_file_is_still_refused(self):
+        rules_dir = os.path.join(self.home, ".claude", "rules")
+        os.makedirs(rules_dir)
+        mine = os.path.join(self.home, "mine.md")
+        with open(mine, "w") as f:
+            f.write("sampo.md")  # same text as the stub, but not the plugin's file
+        link = os.path.join(rules_dir, "foreman.md")
+        os.symlink(mine, link)
+        p = self.run_fm("install-user")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertEqual(os.readlink(link), mine)
+        os.remove(link)  # a regular file there, and a plugin foreman.md that is a symlink: both foreign
+        with open(link, "w") as f:
+            f.write("sampo.md")
+        self.assertNotEqual(self.run_fm("install-user").returncode, 0)
+        self.assertFalse(os.path.islink(link))
 
     def test_missing_settings_file_is_created(self):
         os.remove(self.settings)

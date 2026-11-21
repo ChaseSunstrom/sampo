@@ -34,7 +34,7 @@ WHY = {"CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "drive mode: long queues aren't cut at
        "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "compact before long contexts degrade; Sampo state survives compaction",
        "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "every reply re-reads the whole context: a 200k window keeps it small"}
 BEGIN, END = "<!-- foreman:begin -->", "<!-- foreman:end -->"
-BLOCK = (f"{BEGIN}\n# Sampo\nSampo is installed. Operating rules: ~/.claude/rules/foreman.md. "
+BLOCK = (f"{BEGIN}\n# Sampo\nSampo is installed. Operating rules: ~/.claude/rules/{c.RULES_OLD}. "
          f"System map: ~/.claude/foreman/MASTER.md.\n{END}\n")
 STATUSLINE_KEEP = ("padding", "refreshInterval", "hideVimModeIndicator")
 
@@ -47,8 +47,8 @@ def paths():
     claude = os.path.join(os.path.expanduser("~"), ".claude")
     fh = c.foreman_home()
     return {"settings": os.path.join(claude, "settings.json"), "claude_md": os.path.join(claude, "CLAUDE.md"),
-            "rules_link": os.path.join(claude, "rules", "foreman.md"),
-            "rules_target": os.path.join(fh, "plugin", "rules", "foreman.md"),
+            "rules_link": os.path.join(claude, "rules", c.RULES_OLD),  # T-5048: the user's link keeps its name
+            "rules_target": c.rules_path(os.path.join(fh, "plugin")),
             "fm_link": os.path.join(os.path.expanduser("~"), ".local", "bin", "fm"),  # T-0853: fm in any shell
             "fm_target": os.path.join(fh, "plugin", "bin", "fm"),
             "sampo_link": os.path.join(os.path.expanduser("~"), ".local", "bin", "sampo"),  # T-4841: sampo beside fm
@@ -127,7 +127,15 @@ def _backup(P):
 def _link_state(P):
     link = P["rules_link"]
     if os.path.islink(link):
-        return "ours" if os.path.realpath(link) == os.path.realpath(P["rules_target"]) else "foreign"
+        real = os.path.realpath(link)
+        if real == os.path.realpath(P["rules_target"]):
+            return "ours"
+        # T-5048: a checkout without symlink support holds the old-name rules file as a text stub; a link made before the
+        # move that reads it is still Sampo's, and setup repoints it at the real file ("stale"). Any other file is foreign.
+        stub = os.path.join(os.path.dirname(P["rules_target"]), c.RULES_OLD)
+        if os.path.isfile(stub) and not os.path.islink(stub) and real == os.path.realpath(stub):
+            return "stale"
+        return "foreign"
     return "foreign" if os.path.exists(link) else "absent"
 
 
@@ -242,9 +250,10 @@ def plan_install(P):
     link = _link_state(P)
     if link == "foreign":
         raise SetupError(f"{P['rules_link']} exists and isn't Sampo's symlink; move it aside and re-run")
-    if link == "absent":
+    if link in ("absent", "stale"):
         new_m["rules_symlink"] = P["rules_link"]
-        actions.append(f"{P['rules_link']} → {P['rules_target']} (symlink)")
+        actions.append(f"{P['rules_link']} → {P['rules_target']} (symlink"
+                       + ("; repointed, it read the text stub foreman.md)" if link == "stale" else ")"))
     for what, (lk, tg) in _new_links(P):
         on_path = os.path.dirname(lk) in os.environ.get("PATH", "").split(os.pathsep)
         actions.append(f"{lk} → {tg} ({what} in any shell"
@@ -323,7 +332,9 @@ def cmd_install(args):
         c.write_atomic(P["settings"], json.dumps(new_s, indent=2) + "\n")
     if new_md != md:
         c.write_atomic(P["claude_md"], new_md)
-    if link == "absent":
+    if link in ("absent", "stale"):
+        if link == "stale":
+            os.unlink(P["rules_link"])
         os.makedirs(os.path.dirname(P["rules_link"]), exist_ok=True)
         os.symlink(P["rules_target"], P["rules_link"])
     for _what, (lk, tg) in _new_links(P):
@@ -528,7 +539,7 @@ def cmd_uninstall(args):
             os.remove(P["claude_md"])
         else:
             c.write_atomic(P["claude_md"], new_md)
-    if _link_state(P) == "ours":
+    if _link_state(P) in ("ours", "stale"):
         os.unlink(P["rules_link"])
         actions.append("rules symlink removed")
         try:

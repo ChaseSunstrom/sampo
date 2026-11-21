@@ -8,6 +8,7 @@ import unittest
 
 from e2e import sync_evals
 from helpers import PLUGIN, busy_factor, read_text, read_json, read_doc
+from sampo import core as c
 
 SKILLS = ["intake", "next", "resume", "status", "capture", "tidy", "doctor", "reflect", "improve", "playbooks", "brainstorm",
           "directions", "design-extract", "ui-design", "genesis", "initiative", "readme-visuals",
@@ -118,7 +119,7 @@ class LiteRules(unittest.TestCase):  # T-1264
 
 class Rules(unittest.TestCase):
     def test_rules_file_within_always_on_budget(self):
-        lines = read_text(os.path.join(PLUGIN, "rules", "foreman.md")).splitlines()
+        lines = read_text(c.rules_path(PLUGIN)).splitlines()
         self.assertLessEqual(len(lines), 80)
         self.assertTrue(lines[0].startswith("# "))
 
@@ -139,7 +140,7 @@ class Skills(unittest.TestCase):
 
     def test_every_skill_the_rules_map_plain_words_to_is_model_invocable(self):
         # T-1705: a user-only skill can't be loaded by the model, so the rules may not send it there
-        rules = read_text(os.path.join(PLUGIN, "rules", "foreman.md"))
+        rules = read_text(c.rules_path(PLUGIN))
         for name in re.findall(r"→ `/sampo:([\w-]+)`", rules):
             self.assertNotIn(name, USER_ONLY)
 
@@ -217,7 +218,7 @@ class Skills(unittest.TestCase):
 
     def test_the_rules_carry_the_reply_format_and_stay_small(self):
         # T-1279: the rules ride once a session; the output style's reminder rode every turn
-        path = os.path.join(PLUGIN, "rules", "foreman.md")
+        path = c.rules_path(PLUGIN)
         text = read_text(path)
         self.assertIn("## Replies", text)
         self.assertLess(os.path.getsize(path), 6800)
@@ -339,13 +340,13 @@ class PluginParity(unittest.TestCase):
         docs = "".join(read_text(p) for p in glob.glob(os.path.join(PLUGIN, "commands", "*.md"))
                        + glob.glob(os.path.join(PLUGIN, "skills", "*", "SKILL.md"))
                        + glob.glob(os.path.join(PLUGIN, "skills", "*", "references", "*.md"))
-                       + [os.path.join(PLUGIN, "rules", "foreman.md")])
+                       + [c.rules_path(PLUGIN)])
         indexed = {x["name"] for x in which.commands()}
         lost = [v for v, tier in sorted(tiers.items()) if not tier.startswith("Internal")
                 and v not in indexed | which.SELF | which.FOREMAN_ONLY and not re.search(rf"\b(?:fm|sampo) {v}\b", docs)]
         self.assertEqual(lost, [], "verbs a Claude Code session can't find")
         self.assertGreater(len(tiers), 100, "the tier parse found the verbs")
-        rules = read_text(os.path.join(PLUGIN, "rules", "foreman.md"))
+        rules = read_text(c.rules_path(PLUGIN))
         self.assertRegex(rules, r"(?:fm|sampo) which", "the rules point a session at sampo which")
 
 
@@ -550,7 +551,7 @@ class PluginFiles(unittest.TestCase):
     def test_rules_never_contain_a_frontmatter_delimiter(self):
         # Eval cases embed the rules in YAML frontmatter; `claude plugin eval` ends the frontmatter at any "---",
         # which left every case prompt starting mid-rules (found in the 1.1 eval run).
-        self.assertNotIn("---", read_text(os.path.join(PLUGIN, "rules", "foreman.md")))
+        self.assertNotIn("---", read_text(c.rules_path(PLUGIN)))
 
     def test_eval_cases_embed_the_current_rules(self):
         """Eval runs use a temp HOME where ~/.claude/rules/foreman.md isn't installed; each case carries the rules instead."""
@@ -563,7 +564,7 @@ class PluginFiles(unittest.TestCase):
         plugin = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, plugin)
         os.makedirs(os.path.join(plugin, "rules"))
-        with open(os.path.join(plugin, "rules", "foreman.md"), "w") as f:
+        with open(os.path.join(plugin, "rules", "sampo.md"), "w") as f:
             f.write("# Rules\n- new line\n")
         for case, body in (("fresh", "  # Rules\n  - new line\n"), ("stale", "  # Rules\n"), ("bare", None)):
             os.makedirs(os.path.join(plugin, "evals", case))

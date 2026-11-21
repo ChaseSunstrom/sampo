@@ -1173,7 +1173,8 @@ def check_validate(home):
 
 # repo-relative protected core, for comparing with git; the guard's own list (fmguard._is_core, _protected_roots) also
 # covers paths outside the repo (settings, ~/.claude.json, state): change both together
-CORE_PATHS = ("plugin/lib", "plugin/bin", "plugin/hooks", "plugin/evals", "plugin/rules/foreman.md", "BUILD_PROMPT.md")
+CORE_PATHS = ("plugin/lib", "plugin/bin", "plugin/hooks", "plugin/evals",
+              *(f"plugin/rules/{n}" for n in c.RULES_NAMES), "BUILD_PROMPT.md")  # T-5048: the file and its old-name link
 
 
 def check_core_integrity(home, task=None):
@@ -1260,14 +1261,23 @@ def check_deny_rules(settings, manifest):
 
 
 def check_rules_symlink(plugin=PLUGIN):
-    link = os.path.join(os.path.expanduser("~"), ".claude", "rules", "foreman.md")
-    target = os.path.join(plugin, "rules", "foreman.md")
+    link = os.path.join(os.path.expanduser("~"), ".claude", "rules", c.RULES_OLD)  # T-5048: installs keep this name
+    target = c.rules_path(plugin)
     if not os.path.lexists(link):
         return Result("rules symlink", *(("PASS", NO_CC) if not shutil.which("claude") else
                                          ("WARN", f"{link} missing (fm install-user)")))
     ok = os.path.realpath(link) == os.path.realpath(target)
     if not ok and os.path.exists(link) and _sibling_worktree(os.path.dirname(os.path.realpath(link)), os.path.dirname(os.path.realpath(target))):
         return Result("rules symlink", "WARN", f"{WORKTREE_WARN}: {link} → {os.path.realpath(link)}")
+    old = os.path.join(plugin, "rules", c.RULES_OLD)
+    if not ok and os.path.isfile(old) and not os.path.islink(old) and os.path.realpath(link) == os.path.realpath(old):
+        return Result("rules symlink", "WARN", f"{link} reads the text stub {old}, not {c.RULES_FILE} (a checkout without "
+                      f"symlinks): run sampo setup to repoint it at {c.RULES_FILE}")
+    if ok and os.path.isfile(target) and not (os.path.islink(old) and os.path.realpath(old) == os.path.realpath(target)):
+        # T-5048: a checkout without symlink support writes foreman.md as a text file: a link made before the move
+        # (it names foreman.md) then reads that stub, not the rules
+        return Result("rules symlink", "WARN", f"{old} isn't a symlink to {c.RULES_FILE} (a checkout without symlinks: "
+                      f"git config core.symlinks true, then check the file out again)")
     return Result("rules symlink", "PASS" if ok else "FAIL", f"{link} → {os.path.realpath(link)}")
 
 
@@ -1965,7 +1975,7 @@ def check_self_docs(home=None, plugin=PLUGIN):
     home = home or os.path.dirname(os.path.abspath(plugin))
     cmds, bad = _fm_commands(), []
     master = c.master_text(home) or ""  # T-2915: MASTER.md and its docs/map shards
-    docs = [os.path.join(home, f) for f in ("README.md", "MASTER.md")] + c.map_shards(home) + [os.path.join(plugin, "rules", "foreman.md")]
+    docs = [os.path.join(home, f) for f in ("README.md", "MASTER.md")] + c.map_shards(home) + [c.rules_path(plugin)]
     for d, _, files in os.walk(os.path.join(plugin, "skills")):
         if "playbooks" not in d:  # ported third-party procedures don't talk about fm
             docs += [os.path.join(d, f) for f in files if f.endswith(".md")]
@@ -3498,7 +3508,7 @@ def run_all(full=False, accept_supply=False):
         results += [Result(n, "FAIL", f"bench failed: {e}") for n in ("hook latency", "hook exit codes", "injection budgets")]
     results += [check_hook_errors(), check_hook_slo(), check_hook_writers(settings, home), check_name_collisions(settings),
                 check_half_moved(settings),
-                check_footprint(os.path.join(PLUGIN, "rules", "foreman.md"), os.path.join(claude, "CLAUDE.md"),
+                check_footprint(c.rules_path(PLUGIN), os.path.join(claude, "CLAUDE.md"),
                                 project=c.find_project(os.getcwd()), extra=meas),
                 check_frontmatter(), check_unloaded_skills()]
     projects = [p for p, _ in c.all_projects()]

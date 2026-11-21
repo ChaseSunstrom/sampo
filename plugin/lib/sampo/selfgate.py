@@ -421,7 +421,7 @@ def _slower(base, branch, spread=None, machine=1.0, wall=None, note=None):
 
 def _footprint(plugin, sizes):
     from sampo import doctor
-    return dict(doctor.footprint(os.path.join(plugin, "rules", "foreman.md"), plugin),
+    return dict(doctor.footprint(c.rules_path(plugin), plugin),
                 **doctor.measured(None, sizes))
 
 
