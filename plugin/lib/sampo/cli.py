@@ -9734,6 +9734,15 @@ def _build_parser(only=None):
     s.add_argument("--fix", metavar="SIG", help="failed calls whose output contains this error signature")
     s.add_argument("--card", metavar="NAME", help="calls that mention this library card by name")
     s.add_argument("--days", type=int, default=14, help="how far back the session logs are read (default 14)")
+    s = add("fold", lazy("sampo.foldpage", "cmd_fold"), tier=("Reports", 1081), help="the fold ledger (T-5020): one verdict for every "
+                                                             "captured and planned task: set ID VERDICT, page, or counts with the standalone")
+    s.add_argument("action", nargs="?", choices=["set", "page", "check"], help="set ID VERDICT [--to ID] [--evidence path:line] "
+                   "[--why TEXT] (verdicts: joined, merged, dropped, built, stays) | page: every task with its verdict, or unfolded | "
+                   "check: sample the built verdicts (T-5022) | omitted: the counts and the standalone")
+    s.add_argument("words", nargs="*", help="with set: ID VERDICT")
+    s.add_argument("--to", metavar="ID", default="", help="with set joined|merged: the task it went into")
+    s.add_argument("--evidence", metavar="PATH:LINE", default="", help="with set: where the work is (needed for built)")
+    s.add_argument("--why", default="", help="with set: one line of reasoning")
     s = add("outline", lazy("sampo.map", "cmd_outline"), tier=("Finding your way", 350), help="a file's definitions with line ranges (read a range, not all)")
     s.add_argument("path")
     s.add_argument("--grep", metavar="PATTERN", help="keep only the definitions whose printed label (e.g. 'def NAME') "
