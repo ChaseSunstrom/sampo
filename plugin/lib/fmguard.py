@@ -7600,10 +7600,11 @@ def _moves_shell(name, args, cwds, ctx, shell=""):
     return moves, places
 
 
-def _prefix_vars(shell, cmds, home=None, spaces=False):
+def _prefix_vars(shell, cmds, home=None, spaces=False, also=()):
     """T-0183: NAME=literal values a branchy command sets in its straight top-level prefix (the commands before its
     first branch, pipe, subshell, group or keyword run first, in this shell), for names written bare nowhere else in
-    it; {} when nothing qualifies. Only where no builtin can set names indirectly (the caller checks)."""
+    it, or (T-4983) named elsewhere only as words handed to programs that can't rebind them (`also`: _line_literals);
+    {} when nothing qualifies. Only where no builtin can set names indirectly (the caller checks)."""
     # T-0370: a substitution is no branch (a subshell sets nothing here): read the prefix with each one as an unknown
     # value of the same length, so `f=$(ls …); S=/tmp/x; … > $S/a` knows S; f stays unknown, and a name also set
     # inside a substitution is written twice (counts, below, reads the real text)
@@ -7653,7 +7654,7 @@ def _prefix_vars(shell, cmds, home=None, spaces=False):
     def set_first(k):  # T-0370 review: `echo > $S/x; S=/tmp/x` writes /x (S is unset there): no value before it is set
         a, r = re.search(rf"(?<![\w$]){k}=", full), re.search(rf"\$\{{?{k}\b", full)
         return a is not None and (r is None or a.start() < r.start())
-    return {k: v for k, v in env.items() if counts[k] == 1 and set_first(k)}
+    return {k: v for k, v in env.items() if (counts[k] == 1 or k in also) and set_first(k)}
 
 
 def _target_cats(target, known, bare, cwds, lost, shell, ctx, classify, note="", guess=True):
@@ -8204,11 +8205,11 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
     # command also runs an interpreter (cat > t.py <<EOF … EOF; python3 t.py)
     dry = _drop_data_heredocs(cmd)
     shell = _strip_heredocs(cmd)
-    lits = _line_literals(shell)  # T-0587: literal values a computed name, eval or sh -c text may use
     # T-0158: every `…` and $( … ) a shell runs (unquoted heredoc bodies included), read as a command of its own
     # a tail (the text after a substitution opens) is read once as it stands: its own tails are suffixes of it already
     live = [x for t in _live_heredocs(cmd) for x in ([t, _unescape_ticks(t)] if "\\`" in t else [t])]  # T-0669: in
     cmds, top = _split(_tokens(_lines(shell))), _top(shell)
+    lits = _line_literals(shell, cmds, live)  # T-0587: literal values a computed name, eval or sh -c text may use
     found += _installer_lines(cmds, cmd)  # T-3608
     # T-3600 review 4: whether this text's literals hold for sampo words (nested, through the whole line's literals:
     # id=$($R sampo task new …))
@@ -8252,7 +8253,7 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
             re.search(r"[^\w./+:@%,-]", word(x.argv)) for x in _command_words(_split(_tokens(_lines(_frame_free(shell))))))
     # T-0330 review: ~ is $HOME, so once the command may set HOME a ~ in a value isn't the user's home any more
     tilde = None if re.search(r"(?<![\w${])HOME\b", shell) else ctx.home
-    pre = _prefix_vars(shell, cmds, tilde)  # T-0183; also what a path-named command may expand (T-0331)
+    pre = _prefix_vars(shell, cmds, tilde, also=lits)  # T-0183; also what a path-named command may expand (T-0331)
     # T-4785 round 4: what a sampo word may read of the line's literals, those whose assignment runs before every use
     seq = _seq_literals(shell, cmds, lits, tilde) if holds and not _name_computed(shell) else {}
     if not depth:
@@ -11391,6 +11392,17 @@ _INERT_BUILTINS = frozenset("echo test [ true false : pwd cd".split())  # bind n
 _HEADERS = frozenset("for case select in [[ ]] coproc function".split())  # a keyword whose words are no command
 
 
+def _from_command_word(argv):
+    """A simple command's words from its command word on: NAME=value words and keywords before it dropped (a header,
+    for/case/[[ …, kept: its words are no command). `time -p read S` runs read here: time's own -p and -- go too."""
+    words = list(argv)
+    while words and (_ASSIGNISH.match(words[0]) or words[0] in BASH_KEYWORDS and words[0] not in _HEADERS):
+        timed, words = words[0] == "time", words[1:]
+        while timed and words[:1] in (["-p"], ["--"]):
+            words = words[1:]
+    return words
+
+
 def _literals_hold(cmds, shell, vals):
     """T-3600 review 4: whether a name this line sets to a literal still holds where a sampo word reads it. Only code
     running in this shell rebinds a name (a builtin, a function, a sourced file, a trap, a computed command word); an
@@ -11405,9 +11417,7 @@ def _literals_hold(cmds, shell, vals):
             r"(?:^|[\s;&|({])(?:function\s+[^\s(]+|[^\s;&|()<>=$`]+\s*\(\s*\))", masked):
         return False  # a for variable set again, or a function defined here
     for c in cmds:
-        words = list(c.argv)
-        while words and (_ASSIGNISH.match(words[0]) or words[0] in BASH_KEYWORDS and words[0] not in _HEADERS):
-            words = words[1:]
+        words = _from_command_word(c.argv)
         if not words or words[0] in _HEADERS:
             if words and words[0] in ("function", "coproc", "select"):
                 return False
@@ -11859,16 +11869,56 @@ _PUBLISH = {
 _LIT_ASSIGN = lazy(r"(?<![\w$])([A-Za-z_]\w*)=(?:'([^']*)'|\"([^\"$`\\]*)\"|([^\s;&|()<>'\"$`\\]*))(?=[\s;&|)]|$)")
 
 
-def _line_literals(shell):
+_PLAIN_ARG = re.compile(r"[^$`{}<>()\[\]]*")  # T-4983: no expansion, brace, redirection, group or subscript
+
+
+def _inert_args(cmds, shell):
+    """T-4983: the argument words this line hands, as written, to programs that can't rebind a name in its shell:
+    every command word is an external program or an inert builtin (_literals_hold with no values: a builtin that binds,
+    a function defined here, a computed command word each make it None), and the word holds no expansion, brace
+    (`true {S}>f` puts a descriptor number in S, a builtin's redirection runs in this shell), redirection or subscript.
+    None where the line does arithmetic (((…)), $((…)), $[…]): the tokenizer splits those into commands that aren't
+    there, whose words would count."""
+    if re.search(r"\(\(|\$\[", shell) or not _literals_hold(cmds, shell, {}):
+        return None
+    out = []
+    for c in cmds:
+        words = _from_command_word(c.argv)
+        if words and words[0] not in _HEADERS:
+            out += [w for w in words[1:] if _PLAIN_ARG.fullmatch(w)]
+    return out
+
+
+def _line_literals(shell, cmds=None, bodies=()):
     """T-0587: NAME → value for a name set once on the line to a literal (spaces kept: q='rm -rf') and named nowhere
-    else but in $q / ${q}, so no loop, read, declare or second assignment can have changed it."""
-    out = {}
-    for m in _LIT_ASSIGN.finditer(_mask_quotes(shell)):  # an assignment, not quoted text that looks like one
+    else but in $q / ${q}, so no loop, read, declare or second assignment can have changed it. T-4983: or named
+    elsewhere only as plain argument words of programs that can't rebind it (sampo capture x --tier S, given S=/scratch:
+    a write through $S/f was refused as unknown), every such mention accounted for; and never when an unquoted heredoc
+    body names it in an expansion that can assign (`S=; : <<EOF` then `${S:=rm}`: a builtin expands its heredoc in
+    this shell, so $S -rf ~ ran rm). A name with two NAME=literal words is never one: `echo S=ls` is one too (an
+    argument word, inert), so `if true; then S=rm; fi; echo S=ls; env $S -rf ~` balanced each against the other and
+    read $S as ls (T-4983's adversary review); an assignment-shaped mention (S=, S+=, S[) never counts as inert."""
+    out, inert = {}, False
+    found = list(_LIT_ASSIGN.finditer(_mask_quotes(shell)))  # an assignment, not quoted text that looks like one
+    twice = {n for n, k in collections.Counter(m.group(1) for m in found).items() if k > 1}
+    for m in found:
         k = next(k for k in (2, 3, 4) if m.group(k) is not None)
         name, val = m.group(1), shell[m.start(k):m.end(k)]
-        rest = shell[:m.start()] + shell[m.end():]
-        if not re.search(rf"(?<![\w$]){name}(?!\w)|\$\{{[#!]?{name}[^}}]", re.sub(rf"\$(?:\{{{name}\}}|{name}(?!\w))", "", rest)):
-            out[name] = val
+        if name in twice:
+            continue
+        uses = rf"\$(?:\{{{name}\}}|{name}(?!\w))"
+        rest, bare = re.sub(uses, "", shell[:m.start()] + shell[m.end():]), re.compile(rf"(?<![\w$]){name}(?!\w)")
+        if re.search(rf"\$\{{[#!]?{name}[^}}]", rest) or any(
+                re.search(rf"\$(?:\{{|\(\(|\[)[^}}\])]*?(?<![\w$]){name}(?!\w)", re.sub(uses, "", b)) for b in bodies):
+            continue
+        n = len(bare.findall(rest))
+        if n:
+            if inert is False:
+                inert = _inert_args(cmds, shell) if cmds else None
+            plain = re.compile(rf"(?<![\w$]){name}(?!\w)(?!\+?=|\[)")
+            if inert is None or n != sum(len(plain.findall(w)) for w in inert):
+                continue
+        out[name] = val
     return out
 
 
@@ -11902,7 +11952,7 @@ def _seq_literals(shell, cmds, lits, home=None):
             if env is None:
                 break
         return got
-    return {k: v for k, v in _prefix_vars(shell, cmds, home, True).items() if k in lits}
+    return {k: v for k, v in _prefix_vars(shell, cmds, home, True, also=lits).items() if k in lits}
 
 
 def _child_check(text, ctx, depth, handed=None, holds=True):

@@ -564,6 +564,55 @@ class RunTextVar(GuardCase):
         self.assertBlocked(r, "rm-outside")
 
 
+class LineLiterals(NoTaskCase):
+    """T-4983: a name set once to a literal (S=/scratch) was dropped from what the line knows whenever the bare word S
+    stood anywhere else on it, `sampo capture x --tier S` too, so a write through $S/f was refused as an unknown path.
+    A plain word handed to an external program can't rebind a name in this shell; every form that can still drops it."""
+    SCRATCH = "/tmp/claude-1000/x/scratchpad"
+
+    def line(self, middle):
+        return f"S={self.SCRATCH}; {middle}; echo x > $S/p.json"
+
+    def test_a_plain_word_an_external_program_gets_keeps_the_literal(self):
+        heredoc = (f"S={self.SCRATCH}; cat > $S/f <<EOF\nx\nEOF\nsampo task set T-1 --file $S/f | tail -1; "
+                   'sampo capture "x" --tier S')
+        for cmd in (heredoc, self.line('sampo capture "x" --tier S'), self.line("sampo capture x --tier=S"),
+                    self.line('grep -c "S" /dev/null'), self.line("sampo task new 'a S task' --type T --tier S"),
+                    self.line("echo S; test -n S")):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.refusal(cmd), cmd)
+
+    def test_every_form_that_can_rebind_it_still_drops_it(self):
+        for middle in ("read S", "read -r S </dev/null", "for S in a b; do :; done", "select S in a; do break; done",
+                       "declare -n S", "local S", "unset S", "getopts ab S", "mapfile S </dev/null",
+                       "printf -v S %s /etc", "let S++", "(( S++ ))", "/bin/echo ${S:=z}", "/bin/echo $((S=3))",
+                       'f() { read "$1"; }; f S', "function f { read S; }; f", 'set -- S; read "$1"', "$C S",
+                       "C=read; $C S", 'eval "read S"', "trap 'read S' DEBUG", "source ./f S", ". ./f S",
+                       "true {S}>/dev/null", ": {S}>/dev/null", "echo {S}>&2", "exec {S}>/dev/null",
+                       "coproc S { cat; }", "declare -n R=S", "n=S; read ${n}", "alias cat=read\ncat S",
+                       "enable -f ./x.so cat; cat S", "command read S", "builtin read S", "time read S", "time -p read S",
+                       "time -p -- read S", "! time -p read S", "! read S",
+                       "cat <<< $(read S)", "sampo x `read S`", "/bin/echo ${x[S=1]}"):
+            with self.subTest(middle=middle):
+                self.assertIsNotNone(self.refusal(self.line(middle)), middle)
+
+    def test_a_builtin_heredoc_that_assigns_it_drops_it(self):
+        """`:` expands its heredoc in this shell: ${S:=rm} there makes $S -rf ~ run rm (bash, checked by hand)"""
+        for body in ("${S:=rm}", "${S=rm}", "$((S=3))", "$[S=3]", "${x[S=1]}"):
+            with self.subTest(body=body):
+                self.assertBlocked(self.bash(f"S=; : <<EOF\n{body}\nEOF\n$S -rf ~".replace("{", "{{").replace(
+                    "}", "}}")), "rm-outside")
+        self.assertIsNone(self.bash("S=ls; cat > /tmp/x/f <<EOF\n${{S}} and $S\nEOF\n$S -la"))
+
+    def test_an_assignment_shaped_word_never_balances_the_real_one(self):
+        """the adversary review's line: echo's S=ls is a NAME=literal match too; each balanced the other and $S read as ls"""
+        for cmd in ("if true; then S=rm; fi; echo S=ls; env $S -rf ~", "S=rm; echo S=ls; env $S -rf ~",
+                    "echo S=ls; if true; then S=rm; fi; env $S -rf ~", "S=rm; echo S+=ls; env $S -rf ~",
+                    "if true; then S=rm; fi; echo S[0]=ls | cat; env $S -rf ~"):
+            with self.subTest(cmd=cmd):
+                self.assertBlocked(self.bash(cmd.replace("{", "{{").replace("}", "}}")), "rm-outside")
+
+
 class RuleError(ForemanTestCase):
     """T-4146: the user's-rule check refused every command, `true` too, once a rule could not be checked (a hand-edited
     pattern past add_rule's compile check, a rule file that errors): 9 blocks in 48 minutes in the JARVIS session. A rule
