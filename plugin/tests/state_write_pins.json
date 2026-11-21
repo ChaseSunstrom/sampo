@@ -1,0 +1,733 @@
+{
+"fmguard.py::_expand": [
+[
+"expanduser"
+],
+1
+],
+"fmguard.py::_here": [
+[
+"expanduser"
+],
+1
+],
+"fmguard.py::_real_fm.same": [
+[
+"expanduser"
+],
+1
+],
+"fmguard.py::_run_dir": [
+[
+"expanduser"
+],
+1
+],
+"fmguard.py::_script_text": [
+[
+"expanduser"
+],
+1
+],
+"fmguard.py::_script_verdict": [
+[
+"expanduser"
+],
+5
+],
+"fmguard.py::_writes_unrun_draft": [
+[
+"expanduser"
+],
+1
+],
+"fmguard.py::check_bash": [
+[
+"expanduser"
+],
+2
+],
+"sampo/agents.py::_config_dirs": [
+[
+"expanduser"
+],
+1
+],
+"sampo/bench.py::_compactions": [
+[
+"expanduser"
+],
+1
+],
+"sampo/benchtb.py::cache_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/board.py::part_tests": [
+[
+"expanduser"
+],
+1
+],
+"sampo/callcards.py::<module>": [
+[
+"expanduser"
+],
+1
+],
+"sampo/callcards.py::_system_reads": [
+[
+"expanduser"
+],
+1
+],
+"sampo/claude.py::config_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cli.py::_argv": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cli.py::_attachment": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cli.py::_guard_ctx": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cli.py::_queue_preview": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cli.py::_sign_receipt": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cli.py::_without_secrets": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cli.py::cmd_audit": [
+[
+"expanduser"
+],
+1
+],
+"sampo/core.py::_cargo_config_files": [
+[
+"expanduser"
+],
+1
+],
+"sampo/core.py::_until_path": [
+[
+"expanduser"
+],
+2
+],
+"sampo/core.py::claude_path": [
+[
+"HOME",
+"expanduser"
+],
+2
+],
+"sampo/core.py::installed_ids": [
+[
+"expanduser"
+],
+1
+],
+"sampo/core.py::lint_verify": [
+[
+"expanduser"
+],
+1
+],
+"sampo/core.py::redact_local": [
+[
+"expanduser"
+],
+1
+],
+"sampo/core.py::undo_ok": [
+[
+"expanduser"
+],
+1
+],
+"sampo/core.py::unrunnable": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cost.py::_window": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cost.py::burn_findings": [
+[
+"expanduser"
+],
+1
+],
+"sampo/cost.py::transcripts_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/demo.py::cmd_release_check": [
+[
+"HOME"
+],
+2
+],
+"sampo/deps.py::_grep": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::_enabled_plugin_paths": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::_login_fm": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::check_dual_install": [
+[
+"expanduser"
+],
+2
+],
+"sampo/doctor.py::check_file_map": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::check_fm_link": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::check_invisible_text": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::check_mod_release": [
+[
+"expanduser"
+],
+2
+],
+"sampo/doctor.py::check_name_collisions": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::check_rule_conflicts": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::check_rules_symlink": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::check_sampo_link": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::check_usage_burn": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::cmd_wiring": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::instruction_files": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::rule_files": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doctor.py::run_all": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doors.py::_ctx": [
+[
+"expanduser"
+],
+1
+],
+"sampo/doors.py::_full": [
+[
+"expanduser"
+],
+1
+],
+"sampo/edit.py::_check": [
+[
+"expanduser"
+],
+1
+],
+"sampo/fastbuild.py::_account_name": [
+[
+"getpwuid"
+],
+1
+],
+"sampo/fastbuild.py::account_home": [
+[
+"expanduser",
+"getpwuid"
+],
+2
+],
+"sampo/find.py::_tool_env": [
+[
+"HOME"
+],
+1
+],
+"sampo/friction.py::_transcript_commands": [
+[
+"expanduser"
+],
+1
+],
+"sampo/homemove.py::_parent": [
+[
+"expanduser"
+],
+1
+],
+"sampo/hooks.py::_cd_path": [
+[
+"expanduser"
+],
+1
+],
+"sampo/hooks.py::_credential_read": [
+[
+"expanduser"
+],
+1
+],
+"sampo/hooks.py::_guard_ctx": [
+[
+"expanduser"
+],
+1
+],
+"sampo/hooks.py::_rule_hits": [
+[
+"expanduser"
+],
+1
+],
+"sampo/hooks.py::_ui_changed": [
+[
+"expanduser"
+],
+1
+],
+"sampo/hooks.py::session_context": [
+[
+"expanduser"
+],
+1
+],
+"sampo/jeffexport.py::jeff_home": [
+[
+"expanduser"
+],
+1
+],
+"sampo/lake.py::collect": [
+[
+"expanduser"
+],
+1
+],
+"sampo/landlock.py::writable_for": [
+[
+"expanduser"
+],
+1
+],
+"sampo/lanes.py::land_holds": [
+[
+"expanduser"
+],
+1
+],
+"sampo/long.py::_activity": [
+[
+"expanduser"
+],
+1
+],
+"sampo/map.py::ran_tests": [
+[
+"expanduser"
+],
+1
+],
+"sampo/mcp.py::cmd_new": [
+[
+"expanduser"
+],
+1
+],
+"sampo/models.py::secrets_path": [
+[
+"expanduser",
+"getpwuid"
+],
+2
+],
+"sampo/modelup.py::codex_newest": [
+[
+"expanduser"
+],
+1
+],
+"sampo/oracle.py::disagreements": [
+[
+"expanduser"
+],
+1
+],
+"sampo/oracle.py::ran_in": [
+[
+"expanduser"
+],
+1
+],
+"sampo/page.py::_private": [
+[
+"expanduser"
+],
+1
+],
+"sampo/pluginmove.py::config_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/plugins.py::claude_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/profile.py::_home": [
+[
+"expanduser"
+],
+1
+],
+"sampo/profile.py::_logins": [
+[
+"expanduser"
+],
+1
+],
+"sampo/py.py::find": [
+[
+"expanduser"
+],
+2
+],
+"sampo/readme.py::private_hits": [
+[
+"expanduser"
+],
+1
+],
+"sampo/recall.py::explain": [
+[
+"expanduser"
+],
+1
+],
+"sampo/relproof.py::_rust": [
+[
+"expanduser"
+],
+1
+],
+"sampo/replay.py::_ctx": [
+[
+"expanduser"
+],
+1
+],
+"sampo/replay.py::_store_cwd": [
+[
+"expanduser"
+],
+1
+],
+"sampo/replay.py::cmd_replay": [
+[
+"expanduser"
+],
+1
+],
+"sampo/replay.py::mine": [
+[
+"expanduser"
+],
+1
+],
+"sampo/replay.py::resolve_cwd": [
+[
+"expanduser"
+],
+1
+],
+"sampo/replay.py::score": [
+[
+"expanduser"
+],
+1
+],
+"sampo/replay.py::verdicts": [
+[
+"expanduser"
+],
+1
+],
+"sampo/risk.py::_names": [
+[
+"expanduser"
+],
+1
+],
+"sampo/risk.py::_rewrite": [
+[
+"expanduser"
+],
+1
+],
+"sampo/risk.py::_targets": [
+[
+"expanduser"
+],
+1
+],
+"sampo/rune.py::card": [
+[
+"expanduser"
+],
+1
+],
+"sampo/sandbox.py::_homes": [
+[
+"expanduser",
+"getpwuid"
+],
+2
+],
+"sampo/sandbox.py::_settings_path": [
+[
+"expanduser"
+],
+1
+],
+"sampo/secrets.py::_claude": [
+[
+"expanduser"
+],
+1
+],
+"sampo/selfgate.py::_keyfile": [
+[
+"expanduser",
+"getpwuid"
+],
+2
+],
+"sampo/serve.py::_sandbox": [
+[
+"expanduser"
+],
+1
+],
+"sampo/serve.py::_transcript_mark": [
+[
+"expanduser"
+],
+1
+],
+"sampo/serve.py::trusted": [
+[
+"expanduser"
+],
+1
+],
+"sampo/serve.py::unit_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/settings.py::_guard_block": [
+[
+"expanduser"
+],
+1
+],
+"sampo/settings.py::claude_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/settings.py::rows": [
+[
+"expanduser"
+],
+1
+],
+"sampo/setup.py::paths": [
+[
+"expanduser"
+],
+3
+],
+"sampo/shot.py::chrome": [
+[
+"expanduser"
+],
+1
+],
+"sampo/smith.py::Run.hidden": [
+[
+"expanduser"
+],
+1
+],
+"sampo/smith.py::Run.judge": [
+[
+"expanduser"
+],
+1
+],
+"sampo/smith.py::_snapshot": [
+[
+"expanduser"
+],
+1
+],
+"sampo/smith.py::_strict": [
+[
+"expanduser"
+],
+1
+],
+"sampo/smith.py::install_warning": [
+[
+"expanduser"
+],
+1
+],
+"sampo/sync.py::_from_mirror": [
+[
+"expanduser"
+],
+1
+],
+"sampo/sync.py::_namer": [
+[
+"expanduser"
+],
+1
+],
+"sampo/tidy.py::check_global": [
+[
+"expanduser"
+],
+2
+],
+"sampo/tidy.py::dead_paths": [
+[
+"expanduser"
+],
+1
+],
+"sampo/tidy.py::memory_dir": [
+[
+"expanduser"
+],
+1
+],
+"sampo/which.py::binary": [
+[
+"expanduser"
+],
+1
+],
+"sampo/which.py::mcp": [
+[
+"expanduser"
+],
+1
+]
+}
