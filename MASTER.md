@@ -264,6 +264,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmartfill` (T-4994, T-3311 slice: `sampo.artfill.fill_slots(brief)` fills an art card's slots from a one-line brief… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmbenchswe` (sampo/bench_swe, T-3746: `sampo bench swe`, SWE-bench Verified through Smith in each instance's docker image… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmdockershim` (T-3746: the docker-exec tool shim, `sampo-bench-*` containers only… [→ files-lib-4](docs/map/files-lib-4.md)
+- `fmyardstick` (T-5006, slice of T-4314: `sampo.yardstick.rows()` reads the bench, SWE and Terminal-Bench result stores into rows tagged with kind and arm; `gap()` is claude's pass rate minus local's per kind over the tasks both arms ran… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmmint`… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsmoke` + `smoke_web.cjs` (`sampo smoke`: the web UI crawled in the project's… [→ files-lib-4](docs/map/files-lib-4.md)
 - `fmsplit` (`sampo task split`, `sampo task capsule`: a task's files partitioned… [→ files-lib-4](docs/map/files-lib-4.md)
