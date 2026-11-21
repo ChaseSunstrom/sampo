@@ -49,6 +49,18 @@ class MapRoom(ForemanTestCase):
         self.assertGreaterEqual(left, 10000, "MASTER.md's room under its 90000-byte cap")
         self.assertIsNone(selfcheck.map_room(types.SimpleNamespace(root=ROOT), [], time.time()))
 
+    def test_every_index_line_in_the_file_map_is_160_characters_or_fewer(self):
+        # T-5361: an index line is the first words of its entry and a shard link; the rest lives in the shard
+        lines = read(os.path.join(ROOT, "MASTER.md")).split("\n")
+        self.assertIn("## 3. File map", lines, "the section 3 heading")
+        self.assertIn("## 4. Interaction diagram", lines, "the section 4 heading ends section 3")
+        start = lines.index("## 3. File map")
+        end = lines.index("## 4. Interaction diagram")
+        self.assertLess(start, end)
+        long_ones = ["line %d is %d characters" % (i + 1, len(lines[i]))
+                     for i in range(start, end) if lines[i].startswith("- ") and len(lines[i]) > 160]
+        self.assertEqual(long_ones, [], "index lines over 160 characters: cut each to its first words and the shard link")
+
     def test_the_sections_moved_out_of_master_are_linked_and_present_in_their_shard(self):
         master = read(os.path.join(ROOT, "MASTER.md"))
         shard = read(os.path.join(ROOT, "docs", "map", "guide-1.md"))
