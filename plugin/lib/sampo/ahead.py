@@ -86,7 +86,8 @@ def _unproven(p, briefs, now):
 
 
 def _unseen(p, briefs, now):
-    """A task closed (or verifying) in the last UNSEEN_D days whose surface step has no run on the real surface."""
+    """A task closed (or verifying) in the last UNSEEN_D days whose surface step has no run on the real surface, or (when it
+    closed after concerns.PATHS_GATE_FROM, T-5026) that edited user-visible paths and has none."""
     from sampo import concerns
     got = []
     near = []
@@ -94,8 +95,8 @@ def _unseen(p, briefs, now):
         t = c.parse_ts(b.meta.get("updated")) if b.status in ("done", "verifying") else None
         if t and 0 <= now - t.timestamp() <= UNSEEN_D * 86400:
             near.append((t, b))
-    for _, b in sorted(near, key=lambda x: x[0], reverse=True)[:UNSEEN_MAX]:
-        gaps = concerns.surface_gaps(p, b)
+    for t, b in sorted(near, key=lambda x: x[0], reverse=True)[:UNSEEN_MAX]:
+        gaps = concerns.surface_gaps(p, b, paths=c.iso(t.timestamp()) >= concerns.PATHS_GATE_FROM)
         if gaps:
             got.append(f"{b.id}: {c.fit(str(gaps[0]), 100)}")
     return f"{len(got)} closed without a look at the real surface: " + "; ".join(got[:3]) if got else None

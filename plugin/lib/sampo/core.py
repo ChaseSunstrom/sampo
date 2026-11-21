@@ -8432,7 +8432,7 @@ def task_touches(p, tid, window=None):
 def all_touches(p, window=None, only=None):
     """{task id: task_touches' files} in one ledger pass (T-2273: a rollup over many tasks reads the ledger once)."""
     out = {}
-    for e in ledger_tail(p, window or TASK_WINDOW):
+    for e in ledger_tail(p, window or TASK_WINDOW, kinds=("touched",)):
         t = e.get("task")
         f = (e.get("data") or {}).get("file") if e.get("event") == "touched" and t and only in (None, t) else None
         if f and f.startswith(p.root.rstrip("/") + "/"):

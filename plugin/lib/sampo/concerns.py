@@ -53,7 +53,9 @@ SURFACE_STEP = "Look at the real surface first"
 # the commands that look at what the user sees (a command's words, its program's name only); a project adds its own as
 # meta.json "surface_commands" (["make deploy-staging"]). Anything else, a test run above all, is not a surface run.
 SURFACE_CMDS = (("sampo", "smoke"), ("fm", "smoke"), ("sampo", "shot"), ("fm", "shot"), ("sampo", "concerns", "show"),
-                ("fm", "concerns", "show"), ("curl",), ("wget",))
+                ("fm", "concerns", "show"), ("sampo", "stories"), ("fm", "stories"), ("sampo", "flow"), ("fm", "flow"),
+                ("curl",), ("wget",))
+PATHS_GATE_FROM = "2026-11-18T00:00:00Z"  # T-5026: a task closed before the user-visible-paths gate shipped could not have had the run
 PROOF_HELP = ("a proof is git:<ref> (a commit on a remote-tracking branch), url:<address> (it answers), path:<file> "
               "(it exists inside the project) or num:<value> via <command> (a surface command, sampo smoke or shot, curl, "
               "or one in meta.json surface_commands, exits 0 and prints the value; num:<value> up via <command> when a "
@@ -1132,42 +1134,116 @@ def _log_error(where):
 
 
 def _surface_cmd(p, cmd):
-    """Whether a command's words hold one of SURFACE_CMDS or the project's own (meta surface_commands), by the programs'
-    names only (python3 plugin/bin/sampo shot URL is `sampo shot`)."""
-    def names(s):
-        try:
-            return [os.path.basename(w) for w in shlex.split(str(s))]
-        except ValueError:
-            return [os.path.basename(w) for w in str(s).split()]
-    extra = c.read_meta(p).get("surface_commands")
-    heads = [tuple(h) for h in SURFACE_CMDS] + [tuple(names(x)) for x in extra if isinstance(x, str) and x.strip()] \
-        if isinstance(extra, list) else [tuple(h) for h in SURFACE_CMDS]
-    words = names(cmd)
-    return any(h and words[i:i + len(h)] == list(h) for h in heads for i in range(len(words) - len(h) + 1))
+    """Whether a command is a surface run: one of its && / ; segments starts with one of SURFACE_CMDS or the project's own
+    (meta surface_commands, exact heads), judged by the programs' names (python3 plugin/bin/sampo shot URL is `sampo
+    shot`; env prefixes are skipped). Words found later in a command (`echo sampo smoke`, `pytest -k curl`), a
+    command that only names things (core._SAYS) and one with `||` (it can hide a failure) are not."""
+    text = str(cmd)
+    if "||" in text:
+        return False
+    for seg in re.split(r"&&|;|\n", text):
+        seg = seg.strip()
+        if seg and not c._SAYS.match(seg) and _surface_run(p, re.sub(r"^(?:\w+=\S*\s+)+", "", seg)):
+            return True
+    return False
 
 
-_RUN_LINE = re.compile(r"^- \(step (\d+)\) `(.*?)` → (.*)$")
+_RUN_LINE = re.compile(r"^- \((step|ac) (\d+)\) `(.*?)` → (.*)$")
+_RUN_AT = re.compile(r"\((\d{4}-\d\d-\d\dT[\d:]+Z)\)$")
+_WAIVER = re.compile(r"^- \S+ surface waived:\s*(\S.{6,})$")  # sampo task log ID "surface waived: <why>"
 
 
-def surface_gaps(p, b, then=()):
+_TOUCHES = {}  # ledger path -> (its signature, c.all_touches): ahead asks for up to 20 closed tasks in one pass
+
+
+def _touched_files(p, tid):
+    """{file: time of its last edit} the hooks attributed to the task, from one read of the ledger kept while it is unchanged."""
+    path = os.path.join(p.dir, "ledger.jsonl")
+    try:
+        st = os.stat(path)
+        sig = (st.st_ino, st.st_size, st.st_mtime_ns)
+    except OSError:
+        return []
+    hit = _TOUCHES.get(path)
+    if not hit or hit[0] != sig:
+        hit = _TOUCHES[path] = (sig, c.all_touches(p))
+    return dict(hit[1].get(tid, {}))
+
+
+def user_facing(p, b):
+    """T-5026: the paths of a task that the user would look at (core.ui_paths: markup, styles, components, TUI screens;
+    never tests): its scope entries and the files the hooks attributed to its edits. Paths decide, never the words of a
+    title. An edit list that can't be read leaves the scope's answer."""
+    scope = [s for s in b.meta.get("scope") or [] if isinstance(s, str)]
+    try:
+        touched = list(_touched_files(p, b.id))
+    except Exception:
+        _log_error("user_facing")
+        touched = []
+    # terminal UI (TUI screens, mods' hooks, statuslines) is not a page a surface command can look at (core._need_tui)
+    return [f for f in c.ui_paths(list(dict.fromkeys(scope + touched)))
+            if not (c._UI_TUI.search(f.lower()) or c._UI_OTHER.search(f))]
+
+
+def _last_ui_edit(p, b, files):
+    """The time of the newest attributed edit among the user-facing files ('' when none is timed: a scope alone)."""
+    try:
+        times = _touched_files(p, b.id)
+    except Exception:
+        return ""
+    return max((str(times[f]) for f in files if f in times), default="")
+
+
+def _runs(b, n=None, kinds=("step",), since=""):
+    """The commands Sampo ran for the brief's steps (step n only, or every step; kinds adds "ac": a criterion's run) that
+    did not fail, and, with since, were made at or after that time."""
+    out = []
+    for line in b.evidence():
+        ev = _RUN_LINE.match(line)
+        if not ev or ev.group(1) not in kinds or (n is not None and int(ev.group(2)) != n):
+            continue
+        at = _RUN_AT.search(line)
+        if c._RAN_MARK in line and not ev.group(4).lstrip().startswith("✗") and not (since and at and at.group(1) < since):
+            out.append(ev.group(3))
+    return out
+
+
+def _paths_gap(p, b, then, then_ac=()):
+    """T-5026: the one refusal line for a task with user-visible paths and no passing run of a surface command in any
+    step, or []."""
+    files = user_facing(p, b)
+    if not files:
+        return []
+    if any(_WAIVER.match(l) for l in b.section("Log").splitlines()):
+        return []
+    cmds = _runs(b, kinds=("step", "ac"), since=_last_ui_edit(p, b, files)) + [cmd for _, cmd in (*then, *then_ac) if cmd]
+    if any(_surface_cmd(p, x) for x in cmds):
+        return []
+    have = (f" has only {c.joinmore(['`' + x + '`' for x in cmds], 3)}: not a surface run;" if cmds
+            else " has no run on the real surface;")
+    return [f"{b.id} touches what the user looks at ({c.joinmore(files, 3)}) and{have} unit tests alone cannot close it: "
+            f"look at the real surface and record it: sampo task evidence {b.id} --step N --run \"sampo smoke\" "
+            f"(or sampo shot URL, curl URL; a run before the last edit does not count); with no surface to reach (no URL, "
+            f"no browser): sampo task log {b.id} \"surface waived: <why>\""]
+
+
+def surface_gaps(p, b, then=(), then_ac=(), paths=True):
     """T-4189: the refusal lines for a task that carries a surface step (a concern reported again): the step needs a
     passing run, made by Sampo, of a command that looks at the real surface (SURFACE_CMDS or the project's own), or its
-    concern shown (sampo concerns show). then: [(step n, command)] the close is about to run, counted as made. [] for any
-    other task, without reading a ledger."""
+    concern shown (sampo concerns show). T-5026: a task without that step whose scope or attributed edits are
+    user-visible paths needs one such run in any of its steps. then: [(step n, command)] the close is about to run, counted
+    as made (then_ac: the same for criteria and the final --run, counted by the paths gap only; paths=False leaves that
+    gap out). [] for any other task, without reading a concerns ledger."""
     steps = [s for s in b.steps() if s.text.startswith(SURFACE_STEP)]
     if not steps:
-        return []
+        return _paths_gap(p, b, then, then_ac) if paths else []
     shown = None
     out = []
     for s in steps:
         m = _ID.search(s.text.upper())
         cid = m.group(0) if m else None
-        cmds = []
-        for line in b.evidence():
-            ev = _RUN_LINE.match(line)
-            if ev and int(ev.group(1)) == s.n and c._RAN_MARK in line and not ev.group(3).lstrip().startswith("✗"):
-                cmds.append(ev.group(2))
-        cmds += [cmd for n, cmd in then if n == s.n and cmd]
+        cmds = _runs(b, s.n)
+        cmds +=[cmd for n, cmd in then if n == s.n and cmd]
         if any(_surface_cmd(p, x) for x in cmds):
             continue
         if cid:
@@ -1184,10 +1260,10 @@ def surface_gaps(p, b, then=()):
     return out
 
 
-def safe_gaps(p, b, then=()):
+def safe_gaps(p, b, then=(), then_ac=()):
     """surface_gaps for the close gates: a reader that breaks must not stop a close, so it fails open and logs."""
     try:
-        return surface_gaps(p, b, then)
+        return surface_gaps(p, b, then, then_ac)
     except Exception:
         _log_error("surface_gaps")
         return []

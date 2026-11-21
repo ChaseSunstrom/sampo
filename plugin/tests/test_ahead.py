@@ -351,6 +351,25 @@ class Probes(Ahead):
         self.assertEqual(ahead.NAMES, ("unpushed", "unproven", "unseen", "slow_wait", "cpu", "idle_lanes", "unanswered"))
 
 
+class UnseenGate(ForemanTestCase):
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+
+    def test_probe_unseen_skips_a_ui_task_closed_before_the_paths_gate_and_flags_one_after_it(self):
+        from sampo import concerns
+        tid = json.loads(self.fm("capture", "tidy the page", "--type", "FEATURE", "--tier", "S", "--json").stdout)["id"]
+        c.log_event(self.p, "touched", task=tid, data={"file": os.path.join(self.repo, "web/app.css")})
+        gate = c.parse_ts(concerns.PATHS_GATE_FROM).timestamp()
+        b = c.find_brief(self.p, tid)
+        b.meta["status"] = "done"
+        b.meta["updated"] = c.iso(gate - 3600)
+        self.assertIsNone(ahead.PROBES["unseen"](self.p, [b], gate + 3600), "closed before the gate: nothing to look at")
+        b.meta["updated"] = c.iso(gate + 60)
+        self.assertIn(tid, ahead.PROBES["unseen"](self.p, [b], gate + 3600))
+
+
 class Readers(unittest.TestCase):
     """Each probe is a thin function over a reader Sampo already has: it asks that reader and nothing else."""
 
@@ -394,14 +413,14 @@ class Readers(unittest.TestCase):
         briefs = [mk("T-1", "done", recent), mk("T-2", "done", old), mk("T-3", "active", recent)]
         seen = []
 
-        def gaps(p, b, then=()):
+        def gaps(p, b, then=(), **kw):
             seen.append(b.id)
             return ["step 2 has no run on the real surface"] if b.id == "T-1" else []
         with mock.patch.object(concerns, "surface_gaps", gaps):
             got = ahead.PROBES["unseen"](self.p, briefs, self.now)
         self.assertIn("T-1", got)
         self.assertEqual(seen, ["T-1"])  # an old task and an open one are not asked about
-        with mock.patch.object(concerns, "surface_gaps", lambda p, b, then=(): []):
+        with mock.patch.object(concerns, "surface_gaps", lambda p, b, then=(), **kw: []):
             self.assertIsNone(ahead.PROBES["unseen"](self.p, briefs, self.now))
 
     def test_probe_idle_lanes_needs_a_free_builder_slot_and_a_planned_task_waiting(self):

@@ -1819,7 +1819,8 @@ def _task_finish(p, args):
     from sampo import triggers  # T-4743: a follow-up appended to this task must be settled (done, taken, or dropped with a why)
     gaps += triggers.safe_follow_gaps(p, b)
     from sampo import concerns  # T-4189: a task reopened by a repeated report needs a run on the real surface
-    gaps += concerns.safe_gaps(p, b, then=[(n, cmd) for kind, n, cmd in todo if kind == "step" and cmd])
+    gaps += concerns.safe_gaps(p, b, then=[(n, cmd) for kind, n, cmd in todo if kind == "step" and cmd],
+                               then_ac=[(n, cmd) for kind, n, cmd in todo if kind in ("ac", "final") and cmd] + [(0, args.run)])
     if args.commit:  # T-4585: a credential in the files to commit is found now, not after the gates (checked again after)
         try:
             _commit_task(p, b, args.commit, dry=True, with_=args.with_)
