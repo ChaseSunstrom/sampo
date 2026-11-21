@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- The builder contract now tells a FIX builder to record `sampo task prove`, and `sampo lane accept` lists the missing red→green proof the close will still refuse the lane for (T-4209).
 - A train judges its lanes' holds (private scan, guard, self-change gate) four at a time instead of one by one; 55 lanes took about 18 min at about 20 s each (T-5465).
 - A live land times the hooks once on the merged batch instead of once per lane (the self-change gate's bench took 5-12 min a lane); a slower merged batch lands nothing and the next land times each lane to find it (T-5446).
 - Live landing: `sampo lane mode live` lands every finished lane at once on its own check, with no front gate or batch cap; the full suite runs behind on the merged head and reverts the merge that turned it red. 83 finished lanes had waited at 2 landed per 2 h (T-5444).
