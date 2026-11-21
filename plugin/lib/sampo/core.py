@@ -2414,8 +2414,8 @@ def scratch_loss(tree):
             "lock_exists": os.path.exists(tree + ".lock")}
 
 
-CARGO_THROWAWAY_PREFIXES = ("sampo-base-", "sampo-probe-", "sampo-train-", "sampo-batch-", "fm-verify-", "fm-hunks-",
-                            "fm-prove-", "fm-at-", "fm-bench-", "fm-stack-", "fm-train-")  # the mkdtemp prefixes of Sampo's own
+CARGO_THROWAWAY_PREFIXES = ("sampo-base-", "sampo-probe-", "sampo-train-", "sampo-batch-", "sampo-shape-", "fm-verify-",
+                            "fm-hunks-", "fm-prove-", "fm-at-", "fm-bench-", "fm-stack-", "fm-train-")  # the mkdtemp prefixes of Sampo's own (T-5380: the shape batch's)
 
 
 def cargo_throwaway(root):

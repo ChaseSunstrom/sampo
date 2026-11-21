@@ -3224,10 +3224,12 @@ def shape_runs():
 _SCRUBBED = ("FM_STALL", c.RUN_ID_ENV, "FOREMAN_TEST_RUN_ID")  # env prefixes a lane's check never inherits: a test's override, a nested run's id (the legacy name too)
 _CHECK_KEYS = ("check_state", "check_tip", "check_pid", "check_ticks", "check_log", "check_tries", "check_failed",
                "check_queued", "check_solo", "check_shape",  # T-4563: the tip the repo-shape modules ran green at
+               "check_shape_solo",  # T-5380: the tip a shape batch went red or was cut at: its own stage runs alone
+               "check_shape_lead",  # T-5380: "<leader id>:<pid>:<ticks>" while a live shape batch holds the lane
                "check_first",  # T-4892: when this tip's first try started (the wall budget over all its tries)
                "check_code",  # T-4404: the checker's code stamp at the start
                "check_cut_timeout")  # T-4767: the --timeout a cut-off check's deadline line advised
-BATCH_MAX = 8  # T-4528: lanes (the turn's own included) checked as one candidate; the rest wait their own turn
+BATCH_MAX = 8  # T-4528, T-5380: lanes (the turn's own included) checked as one candidate (a long check's, a shape stage's); the rest wait their own turn
 
 
 def _scrub_env(env):
@@ -3651,7 +3653,7 @@ def _take_slot(slots):
 
 
 @contextlib.contextmanager
-def _check_turn(p, waits=None, started=None, name="turn", n=None):
+def _check_turn(p, waits=None, started=None, name="turn", n=None, until=None):
     """T-4416, T-4491: at most lane_checks() lane checks at a time in a project. Five started together (2026-11-11: 1,275
     test modules for 16 slots) were each still running after 15 to 25 minutes and a 59-module one was cut off at its
     run's deadline; in turn the work is the same and the first result comes after one run. One flock per slot
@@ -3659,13 +3661,18 @@ def _check_turn(p, waits=None, started=None, name="turn", n=None):
     ends. A free slot is taken at once. With none free, `waits()` once (the task is told: check queued), then the process
     polls for one every TURN_POLL_S, with no session open; `started()` once it has one, if it waited. No signal handler
     is set here, so the SIGTERM of sampo lane rm (stop_check) ends a waiting one. The land's gate and ship do not take it.
-    T-4947: `name` and `n` make another pool of the same kind (check/shape-N.lock, shape_runs() of them)."""
+    T-4947: `name` and `n` make another pool of the same kind (check/shape-N.lock, shape_runs() of them).
+    T-5380: `until`, asked at each poll (never when a slot is free), ends the wait with no slot: the turn yields False
+    (True when it holds one), and `started()` is called if it had waited."""
     d = os.path.join(p.dir, "check")
     os.makedirs(d, exist_ok=True)
     slots = [open(os.path.join(d, f"{name}-{i}.lock"), "a") for i in range(n or lane_checks())]
     try:
-        waited = False
+        waited, got = False, True
         while not _take_slot(slots):
+            if until and until():
+                got = False
+                break
             if not waited:
                 waited = True
                 if waits:
@@ -3673,7 +3680,7 @@ def _check_turn(p, waits=None, started=None, name="turn", n=None):
             time.sleep(TURN_POLL_S)
         if waited and started:
             started()
-        yield
+        yield got
     finally:
         for f in slots:
             f.close()
@@ -3717,15 +3724,18 @@ def _batch_argv(base):
     return [os.path.join(c.PLUGIN_ROOT, "bin", "sampo"), "check", "--affected", "--hold", "--json", "--since", base]
 
 
-def _mark_members(p, main, members, note, solo=False, **meta):
-    """T-4528: write `meta` (None removes a key), `check_solo` = the member's tip when `solo`, and `note` on each member
-    (brief, tip) whose check still waits at that tip, and only those: a lane whose tip moved or whose check ended
-    meanwhile keeps whatever it has. The ids written."""
+def _mark_members(p, main, members, note, solo=False, solo_key="check_solo", queued=None, **meta):
+    """T-4528: write `meta` (None removes a key), `solo_key` (check_solo; T-5380: the shape stage's own) = the member's
+    tip when `solo`, and `note` on each member (brief, tip) whose check still waits at that tip, and only those: a lane
+    whose tip moved or whose check ended meanwhile keeps whatever it has. T-5380: `queued` also requires its
+    check_queued to be that still (a shape peer that took a slot meanwhile runs its own stage). The ids written."""
     from sampo import cli
     wrote = []
     for x, t in members:
         def go(y, t=t):
             if y.meta.get("check_state") != "running" or y.meta.get("check_tip") != t or _lane_tip(main, y) != t:
+                return
+            if queued and y.meta.get("check_queued") != queued:
                 return
             for k, v in meta.items():
                 if v is None:
@@ -3733,7 +3743,7 @@ def _mark_members(p, main, members, note, solo=False, **meta):
                 else:
                     y.meta[k] = v
             if solo:
-                y.meta["check_solo"] = t
+                y.meta[solo_key] = t
             y.append_log(note.replace("{tip}", t[:9]))
             wrote.append(y.id)
         cli.mutate(p, x.id, go, "check", {k: v for k, v in meta.items() if k == "check_state"})
@@ -3823,9 +3833,14 @@ def _accept_check_child(a):
     if tries == 1 and _shape_wanted(b, main, tip):  # T-4563: the modules first, before the turn: lanes run theirs together
         with _check_turn(p, lambda: _set_check(p, b.id, f"shape queued: {shape_runs()} lanes' repo-shape modules run at once "
                                                         "in this project (T-4947); they start when one ends", check_queued="shape"),
-                         lambda: _set_check(p, b.id, check_queued=None), name="shape", n=shape_runs()):
+                         lambda: _set_check(p, b.id, check_queued=None), name="shape", n=shape_runs(),
+                         until=lambda: _shape_cleared(p, main, b.id, tip)) as slot:
             # T-4947: at most shape_runs() at once; a tip that moved during the wait runs nothing
-            verdict = _shape_stage(p, b, main, tip) if _lane_tip(main, cli.need_brief(p, b.id)) == tip else "moved"
+            if not slot:  # T-5380: a batch cleared it while it waited: out of the shape queue at once, no slot taken
+                _set_check(p, b.id, check_queued=None)
+                verdict = "green"
+            else:
+                verdict = _shape_stage(p, b, main, tip) if _lane_tip(main, cli.need_brief(p, b.id)) == tip else "moved"
         if verdict == "red":
             return 1  # refused at its tip: recorded on the lane, and no long check runs
         if verdict == "moved":
@@ -3953,13 +3968,28 @@ def _shape_tree(path):
     return os.path.isfile(os.path.join(path, "plugin", "tests", "run.py"))
 
 
-def _shape_run(path):
+SHAPE_BATCH_WALL_S = 2 * SHAPE_WALL_S  # T-5380: a batch's run, over the merged tree of up to BATCH_MAX lanes; a cut one costs each lane its own run on top
+SHAPE_BATCH_WALL_ENV = "SAMPO_SHAPE_BATCH_WALL_S"
+
+
+def shape_batch_wall():
+    """T-5380: the wall of a shape batch's run in seconds (SAMPO_SHAPE_BATCH_WALL_S, a positive whole number; else
+    SHAPE_BATCH_WALL_S): a larger tree than one lane's, and a cut one makes every member run its own stage after it."""
+    try:
+        got = int(os.environ.get(SHAPE_BATCH_WALL_ENV) or SHAPE_BATCH_WALL_S)
+    except ValueError:
+        return SHAPE_BATCH_WALL_S
+    return got if got > 0 else SHAPE_BATCH_WALL_S
+
+
+def _shape_run(path, wall=None):
     """T-4542: ('green' | 'red' | 'cut', the failing classes named) for the repo-shape modules run once in the lane's tree,
     niced. Red names the classes its run record carries (else the classes its output names). Cut is no verdict (the
-    deadline, a run that left no record and named no class): the lane's own check runs the same classes with --hold."""
+    deadline, a run that left no record and named no class): the lane's own check runs the same classes with --hold.
+    T-5380: `wall` (seconds) replaces SHAPE_WALL_S: a batch's run has its own."""
     cmd = "python3 plugin/tests/run.py " + " ".join(c.repo_shape_modules())
     rid = c.new_run_id(cmd)
-    code, out = c.run_command(path, cmd, SHAPE_WALL_S, niced=True, run_id=rid)
+    code, out = c.run_command(path, cmd, wall or SHAPE_WALL_S, niced=True, run_id=rid)
     if code == 0:
         return "green", ""
     rec = c.run_record(path, cmd, rid) if code else None
@@ -3984,12 +4014,156 @@ def _shape_clear(b, tip, main):
     return b.meta.get("check_shape") == tip or not _shape_tree(b.meta.get("lane") or main)
 
 
+def _shape_peers(p, main, me, tip):
+    """T-5380: the lanes whose shape stage waits for a slot behind this one, as (brief, tip), oldest task first, at most
+    BATCH_MAX - 1: their process alive and queued as 'shape' (one that took a slot is running its own stage), claimed
+    at the lane's current tip on its first try, not already cleared there, not marked for a solo stage, and not held by
+    another live leader's batch (check_shape_lead: a second slot's leader would run the same lanes again)."""
+    out = []
+    for x in c.load_briefs(p):
+        m = x.meta
+        if (x.id == me or m.get("check_state") != "running" or m.get("check_queued") != "shape" or not _check_alive(m)
+                or int(m.get("check_tries") or 1) != 1 or _shape_held(m, me)):
+            continue
+        t = _lane_tip(main, x)
+        if t and m.get("check_tip") == t and m.get("check_shape") != t and m.get("check_shape_solo") != t:
+            out.append((x, t))
+    return sorted(out, key=lambda r: c.id_num(r[0].id))[:max(BATCH_MAX - 1, 0)]
+
+
+def _shape_held(m, me):
+    """T-5380: whether a lane's meta carries a shape batch's claim ('<leader id>:<pid>:<ticks>') of a live process other
+    than lane `me`'s (a dead leader's, a reused pid's, a malformed one is no claim)."""
+    lead, _, rest = str(m.get("check_shape_lead") or "").partition(":")
+    try:
+        pid, ticks = (int(x) for x in rest.split(":"))
+    except ValueError:
+        return False
+    return bool(lead) and lead != me and ticks > 0 and _ticks(pid) == ticks
+
+
+def _shape_claim_id(lead):
+    """T-5380: '<lead lane id>:<this pid>:<its start ticks>', the value a leader writes as check_shape_lead."""
+    return f"{lead}:{os.getpid()}:{_ticks(os.getpid())}"
+
+
+def _shape_claim(p, main, members, claim, held):
+    """T-5380: write check_shape_lead = `claim` on each member (brief, tip) that still waits for a shape slot at that tip
+    and that no other live leader holds, under the brief's lock (two leaders asking at once get disjoint lanes). Each
+    one written is appended to `held` as it is (so a failure part way still leaves the caller what to drop): the list."""
+    from sampo import cli
+    lead = claim.partition(":")[0]
+    for x, t in members:
+        def go(y, t=t):
+            m = y.meta
+            if (m.get("check_state") != "running" or m.get("check_tip") != t or m.get("check_queued") != "shape"
+                    or _lane_tip(main, y) != t or _shape_held(m, lead)):
+                return
+            m["check_shape_lead"] = claim
+            held.append((y, t))
+        cli.mutate(p, x.id, go, "check", {})
+    return held
+
+
+def _shape_unclaim(p, members, claim):
+    """T-5380: drop `claim` from each member's brief (a claim another leader has since written stays)."""
+    from sampo import cli
+    for x, _ in members:
+        def go(y):
+            if y.meta.get("check_shape_lead") == claim:
+                y.meta.pop("check_shape_lead", None)
+        try:
+            cli.mutate(p, x.id, go, "check", {})
+        except Exception as e:  # a lane removed meanwhile; a dead leader's claim reads as none anyway
+            print(f"shape claim not dropped on {x.id}: {type(e).__name__}", file=sys.stderr)
+
+
+def _shape_cleared(p, main, me, tip):
+    """T-5380: whether a batch has cleared lane `me`'s repo-shape modules at `tip` (its tip still that): the lane
+    waiting for a shape slot leaves the queue at once."""
+    from sampo import cli
+    cur = cli.need_brief(p, me)
+    return cur.meta.get("check_shape") == tip and _lane_tip(main, cur) == tip
+
+
+def _shape_batch(p, main, b, tip, peers, run=None):
+    """T-5380: this lane and the lanes waiting for a shape slot as one candidate: a scratch copy of the trunk with their
+    branches merged (a lane that conflicts with the others is left out; this lane conflicting means no batch), the
+    repo-shape modules run once on it. Green: every member that still waits at its tip is marked check_shape = tip (the
+    peers also still queued as 'shape'), so each skips its own stage; True when this lane is one. Red or cut off: no one
+    is cleared, each member gets a check_shape_solo mark and runs its own stage (the cost of a miss is this one run).
+    False when no batch ran (a single lane, a conflict with the trunk): the caller runs this lane's stage alone.
+    The peers are claimed first (check_shape_lead, dropped when the batch ends) so a second slot's leader batches others;
+    the run has its own wall (shape_batch_wall())."""
+    run = run or _shape_run
+    base = _git(main, "rev-parse", "HEAD").stdout.strip()
+    if not base:
+        return False
+    claim, held = _shape_claim_id(b.id), []
+    try:
+        peers = _shape_claim(p, main, peers, claim, held)
+        if not peers:
+            return False
+        # T-4728: a tree removed under the batch is rebuilt once; lost twice, no batch
+        return _rebuilding(p, "the shape batch", lambda: _shape_batch_once(p, main, b, tip, peers, run, base))
+    except c.PolicyError as e:
+        print(f"shape batch skipped: {c.redact(str(e))[:200]}", file=sys.stderr)  # the check child's own line
+        return False
+    finally:
+        _shape_unclaim(p, held, claim)
+
+
+def _shape_batch_once(p, main, b, tip, peers, run, base):
+    """_shape_batch's work on one scratch tree; raises _Lost when something else removes the tree."""
+    wt = c.scratch_tree("sampo-shape-", main)  # T-4735
+    try:
+        if _git(main, "worktree", "add", "-q", "--detach", wt, base).returncode:
+            return False
+        merged, log = [], []
+        for x, t in [(b, tip), *peers]:
+            _lost_check(wt)
+            if _merge_in(wt, x, t, log, kept={}):
+                merged.append((x, t))
+            elif x.id == b.id:
+                _lost_check(wt)
+                return False
+        if len(merged) < 2:
+            return False
+        what = run(wt, shape_batch_wall())[0]
+        _lost_check(wt)  # a run in a vanished folder is no red batch
+        n, mine, theirs = len(merged), merged[:1], merged[1:]
+        if what != "green":
+            _mark_members(p, main, merged, f"shape batch of {n} lanes was {'red' if what == 'red' else 'cut off'} on {{tip}}: "
+                                           "each lane runs its own repo-shape stage", solo=True, solo_key="check_shape_solo")
+            return False
+        note = f"repo-shape modules green on {{tip}} as one of a batch of {n} lanes (one run on {base[:9]}): no stage of its own"
+        got = _mark_members(p, main, mine, note, check_shape=tip)
+        for x, t in theirs:  # check_shape is each member's own tip: one call each; only those still waiting for a slot
+            _mark_members(p, main, [(x, t)], note, queued="shape", check_shape=t)
+        return b.id in got
+    finally:
+        _git(main, "worktree", "remove", "--force", wt)
+        shutil.rmtree(wt, ignore_errors=True)
+        c.scratch_release(wt)
+        _git(main, "worktree", "prune")
+
+
 def _shape_stage(p, b, main, tip):
     """T-4563: the lane's repo-shape modules, run first in its check child, before the turn (so lanes run theirs at once).
     'red': the lane's tip is recorded red with the failing classes (no retry until it moves) and no long check runs.
     'green': check_shape = tip, so the hold check runs without the classes. 'cut': no verdict, the long check runs them.
     'moved': the tip changed meanwhile; nothing is written, the newer tip's check decides."""
     from sampo import cli
+    cur = cli.need_brief(p, b.id)
+    if cur.meta.get("check_shape") == tip and _lane_tip(main, cur) == tip:
+        return "green"  # T-5380: a batch run by another lane's stage cleared it while it waited for its slot
+    if cur.meta.get("check_shape_solo") != tip:
+        try:
+            peers = _shape_peers(p, main, b.id, tip)
+            if peers and _shape_batch(p, main, cur, tip, peers):
+                return "green"
+        except Exception as e:  # a batch that cannot be built costs nothing: the lane's own stage follows
+            print(f"shape batch skipped: {type(e).__name__}: {c.redact(str(e))[:200]}", file=sys.stderr)
     code = _checker_stamp(main)  # T-4404: taken before the run, as the long check's is: this red is held against it too
     verdict, names = _shape_run(b.meta.get("lane") or main)
     if _lane_tip(main, cli.need_brief(p, b.id)) != tip:

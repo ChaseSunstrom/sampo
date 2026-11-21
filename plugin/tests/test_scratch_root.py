@@ -84,7 +84,7 @@ class Scratch(SampoTestCase):
             self.assertEqual(os.path.dirname(root), self.base)
             self.assertIn(str(os.getuid()), os.path.basename(root), "named for the user")
             self.assertTrue(os.path.basename(root).startswith("sampo-scratch-"))
-            self.assertFalse(os.path.basename(root).startswith(("sampo-train-", "sampo-base-", "sampo-probe-", "sampo-batch-")))
+            self.assertFalse(os.path.basename(root).startswith(("sampo-train-", "sampo-base-", "sampo-probe-", "sampo-batch-", "sampo-shape-")))
             self.assertEqual(self.mode(root), 0o700)
 
     def test_a_root_that_is_a_link_is_never_followed(self):
@@ -105,6 +105,7 @@ class Scratch(SampoTestCase):
         for name in os.listdir(self.base):  # remove everything under the temp root that the old prefixes name
             if fnmatch.fnmatch(name, "sampo-train-*") or fnmatch.fnmatch(name, "sampo-base-*") \
                     or fnmatch.fnmatch(name, "sampo-probe-*") or fnmatch.fnmatch(name, "sampo-batch-*") \
+                    or fnmatch.fnmatch(name, "sampo-shape-*") \
                     or fnmatch.fnmatch(name, "fm-verify-*"):
                 shutil.rmtree(os.path.join(self.base, name))
         self.assertTrue(os.path.isdir(tree))

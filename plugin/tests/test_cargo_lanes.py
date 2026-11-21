@@ -296,7 +296,7 @@ class TheGatesOwnFolder(RustProject):
             wt = self.throwaway(name)
             self.assertFalse(c.cargo_throwaway(wt), name)
             self.assertEqual(self.folder(wt), c.cargo_lane_dir(self.p.slug, wt), f"{name} gets a folder of its own, like a lane")
-        for prefix in ("sampo-base-", "sampo-probe-", "sampo-train-", "sampo-batch-", "fm-verify-"):
+        for prefix in ("sampo-base-", "sampo-probe-", "sampo-train-", "sampo-batch-", "sampo-shape-", "fm-verify-"):  # T-5380: the shape batch's
             self.assertTrue(c.cargo_throwaway(self.throwaway(prefix + "abc12")), prefix)
 
     def test_a_checkout_inside_a_sampo_temp_folder_is_a_throwaway_one_level_down_only(self):
