@@ -181,6 +181,10 @@ def _run(event, raw):
             log_error(event, _tb())
         return 0
     if event == "PreToolUse":
+        try:
+            _TIMING["origin"] = _hook_origin()  # T-5076: one deadline for the whole call, start-up counted
+        except Exception:
+            _TIMING.pop("origin", None)  # no clock: no deadline (the guard needs none); the parts run as before
         code = _pre_typed(raw)
     else:
         code, state = 0, ({} if event in UNBREAKABLE else breaker().get(event) or {})
@@ -245,8 +249,16 @@ def _run(event, raw):
                     extra["guard_ms"] = round((tm["guard"] - t0) * 1000, 1)
                 if "decided" in tm:
                     extra["decided"] = tm["decided"]
+                if tm.get("ran_out"):  # T-5076: the parts that gave way to the deadline; the guard's verdict stood
+                    extra["ran_out"] = tm["ran_out"]
         except Exception:
             extra = {}
+        if extra.get("ran_out"):
+            try:
+                log_error(event, f"hook ran out of time at {ms:g} ms (deadline {HOOK_DEADLINE_S * 1000:g} ms); "
+                                 f"skipped: {', '.join(extra['ran_out'])}; the guard's verdict stood")
+            except Exception:
+                pass
         hl = c.host_load()  # T-2798: load per CPU, so fm doctor's SLO leaves out runs on a busy machine
         _event({"kind": "hook_ms", "event": event, "ms": ms, "rev": _rev(),  # T-0486: fm doctor's SLO by revision
                 **extra,
@@ -257,6 +269,39 @@ def _run(event, raw):
 _REV = None
 _TIMING = {}  # T-3352: the PreToolUse call's tool name and the instant the guard had decided
 SLOW_HOOK_MS = 1000  # T-4780: a call over this logs its stages (one line); the harness kills a hook at 5 s
+HOOK_DEADLINE_S = 3.5  # T-5076: of the harness's 5 s kill, from the process's birth: past it the optional parts give way
+SNAPSHOT_MIN_S = 0.05  # T-5076: less than this is left for a save: it can't finish, so it is skipped and said
+
+
+def _hook_origin():
+    """T-5076: the instant (CLOCK_BOOTTIME s) the deadline counts from: this process's birth (the fork, the wrapper
+    shell, the interpreter's start: 1 to 2 s on a loaded box), else the stage clock's first line, else now."""
+    now = _now()
+    t0 = STAGES.get("t0")
+    if not isinstance(t0, float):
+        return now
+    try:
+        born = _born()
+        if 0 <= t0 - born <= 5:  # a start-up the harness would already have killed is no start-up at all: not trusted
+            return born
+    except (OSError, ValueError, IndexError):  # no procfs (macOS)
+        pass
+    return t0
+
+
+def _left():
+    """T-5076: seconds before the hook's deadline (HOOK_DEADLINE_S from its start); inf outside a PreToolUse call."""
+    origin = _TIMING.get("origin")
+    return HOOK_DEADLINE_S - (_now() - origin) if origin is not None else float("inf")
+
+
+def _skipped(part):
+    """T-5076: an optional part that gave way to the deadline: named in the hook_ms row and the log line (_run)."""
+    ran_out = _TIMING.setdefault("ran_out", [])
+    if part not in ran_out:
+        ran_out.append(part)
+
+
 STAGES = {}  # T-4780: the stage clock's marks (CLOCK_BOOTTIME seconds), set by stage_start and mark
 STAGE_KEYS = ("t0", "event", "imports", "done")  # T-4894: the clock's own keys; every other float in STAGES is a mark
 TEMP_ROOTS = ("/tmp", "/var/tmp", "/dev/shm", "/var/folders")  # T-4780: fixed, never read from the environment
@@ -3343,8 +3388,10 @@ def _pre_tool_use(raw):
                     ("design", lambda: _design_note(pl, p, act)), ("readme", lambda: _readme_note(pl, p, act)),
                     ("gates", lambda: _gates_note(pl, p)), ("closing", lambda: _closing_note(pl, p)))
         off = c.ablated()  # T-1375: a bench arm's features switched off (never the guard, which spoke above)
-        notes = [_each(b, "note." + name) for name, b in builders if name not in off]  # T-4932: a stage each
-        note = " ".join(_said_once(pl, list(filter(None, [made, saved, slow, warn, rule_note] + notes))))
+        notes = _notes_within([(name, b) for name, b in builders if name not in off])  # T-4932: a stage each; T-5076
+        # T-5076 review: the snapshot's line is never held back as "already said": a second unsaved discard in the session
+        # has the same words, and the model must still be told its work wasn't saved
+        note = " ".join(_said_once(pl, list(filter(None, [made, saved, slow, warn, rule_note] + notes)), keep=(saved,)))
         mark("said")
         emit = dict({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": note}} if note else {},
                     **({"systemMessage": user_rule} if user_rule else {}))
@@ -3355,6 +3402,82 @@ def _pre_tool_use(raw):
     except Exception:
         log_error("PreToolUse", _tb())
     return 0
+
+
+class _OutOfTime(BaseException):
+    """T-5076: the hook's deadline ended an optional part. A BaseException: a note builder's own `except Exception`
+    (they fail open) must not swallow it and carry on past the deadline."""
+
+
+def _expire(*_):
+    raise _OutOfTime
+
+
+def _arm(left):
+    """T-5076: SIGALRM in `left` s, so a part blocked in one read or one subprocess is interrupted at the deadline
+    (subprocess.run kills its child on any exception). Returns what _disarm restores; None where there is no alarm (not
+    the main thread, no SIGALRM, an alarm already set for sooner) or no time: the cooperative check between parts still
+    holds there. What was set before (the handler, the timer's time left and interval) is handed back by _disarm."""
+    if left == float("inf") or left <= 0:
+        return None
+    try:
+        import _signal as signal  # the builtin under `signal`: the same calls, and `signal` (T-3577: a heavy module on this hot path) is not loaded
+        before = signal.getitimer(signal.ITIMER_REAL)
+        if 0 < before[0] <= left:  # someone's alarm is due first: it keeps its handler, ours is the check between parts
+            return None
+        old = signal.signal(signal.SIGALRM, _expire)
+    except (ImportError, ValueError, AttributeError, OSError):
+        return None
+    try:
+        signal.setitimer(signal.ITIMER_REAL, left)
+    except (ValueError, OSError):
+        signal.signal(signal.SIGALRM, old if old is not None else signal.SIG_DFL)
+        return None
+    return (old, before, time.monotonic())
+
+
+def _disarm(token):
+    """T-5076: the alarm off and the handler and timer back as _arm found them (a timer that was running resumes with
+    the time it had left); safe to call twice (the alarm can land in the first call's way out)."""
+    if token:
+        import _signal as signal  # see _arm
+        old, (delay, interval), began = token
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, old if old is not None else signal.SIG_DFL)
+        if delay > 0:
+            signal.setitimer(signal.ITIMER_REAL, max(0.001, delay - (time.monotonic() - began)), interval)
+
+
+def _notes_within(builders):
+    """T-5076: the note builders ([(name, build)]) run under the hook's one deadline: one is not started once it has
+    passed, and one still running at it is interrupted; each skipped part is named in the hook's row and log line. The
+    guard has spoken before this runs and is never cut: only these optional parts give way.
+
+    Accepted (T-5076 review): a builder cut after it consumed a once-only state (ambient's note.json, a card's mark, the
+    fixes' warned) but before it returned loses that one nudge for good. The alarm lands where a builder is blocked in a
+    read or a subprocess, which is before it takes the state (each marks as it builds the text, just ahead of its
+    return), and only on a call already past 3.5 s; the window is microseconds, the loss one nudge (never the guard or
+    a save), and closing it would mean reworking each of the builders that mark."""
+    notes, done = [], set()
+    token = _arm(_left())
+    try:
+        try:
+            for name, build in builders:
+                if _left() <= 0:
+                    break
+                try:
+                    notes.append(_each(build, "note." + name))
+                except _OutOfTime:
+                    break
+                done.add(name)
+        finally:
+            _disarm(token)
+    except _OutOfTime:  # the alarm landed between two parts, or in the way out
+        _disarm(token)
+    for name, _ in builders:
+        if name not in done:
+            _skipped("note." + name)
+    return notes
 
 
 def _each(build, stage=None):
@@ -3517,10 +3640,11 @@ def _readme_note(pl, p, act):
             "sampo:readme-visuals (sampo readme plan, shots, diagram, check). A nudge, not a block.")
 
 
-def _said_once(pl, parts):
+def _said_once(pl, parts, keep=()):
     """T-1258: the notes not already in the context: a one-line note given since the session's last start or
     compaction (sessions/<sid>.said, which SessionStart clears with the session's other one-shot files) is dropped;
-    a longer note keeps its own once-rule. Any failure keeps every note."""
+    a longer note keeps its own once-rule. Any failure keeps every note. T-5076: a part in `keep` always passes and is
+    not recorded (the snapshot's line: each unsaved discard is its own news)."""
     sid = pl.get("session_id")
     if not parts or not (isinstance(sid, str) and re.fullmatch(r"[\w-]{1,100}", sid)):
         return parts
@@ -3532,7 +3656,7 @@ def _said_once(pl, parts):
         said = set()
     out, new = [], []
     for x in parts:
-        h = None if "\n" in x else c.sha1(x.encode("utf-8", "replace")).hexdigest()[:12]
+        h = None if "\n" in x or x in keep else c.sha1(x.encode("utf-8", "replace")).hexdigest()[:12]
         if h in said:
             continue
         out.append(x)
@@ -3595,9 +3719,10 @@ def _snapshot_note(pl, guard):
         if not top or (top, what) in done:
             continue
         done.add((top, what))
-        left = deadline - time.monotonic()
-        if left <= 0:
+        left = min(deadline - time.monotonic(), _left())  # T-5076: nor past the whole hook's deadline
+        if left < SNAPSHOT_MIN_S:
             failed.append(f"{top}: no time left in the hook")
+            _skipped("snapshot")
             continue
         try:
             saved += [f"{sha} (restore: {c.restore_line(top, sha, what)})" for sha in c.snapshot(top, why, left, what)]

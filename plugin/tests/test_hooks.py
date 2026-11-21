@@ -358,6 +358,263 @@ class HookMs(HookCase):
         self.assertNotIn("tool", ss)
 
 
+class HookDeadline(HookCase):
+    """T-5076: under load (19 to 60 on 16 cores) the PreToolUse hook passed Claude Code's 5 s timeout and the call was
+    refused, with guard_ms 10 to 40 on the slow calls: the time was the start-up, the snapshot and the note builders.
+    One deadline now covers the whole hook; the guard's verdict is never cut, the optional parts give way and are named."""
+
+    def raw(self, cmd, tool="Bash"):
+        return json.dumps({"session_id": "sess-1", "cwd": self.repo, "hook_event_name": "PreToolUse", "tool_name": tool,
+                           "tool_input": {"command": cmd}})
+
+    def run_hook(self, cmd):
+        import contextlib
+        import io
+        from sampo import hooks
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = hooks._run("PreToolUse", self.raw(cmd))
+        return code, out.getvalue()
+
+    def ran_out(self):
+        rows = [e for e in self.events() if e.get("kind") == "hook_ms" and e.get("event") == "PreToolUse"]
+        return rows[-1].get("ran_out")
+
+    def test_a_note_builder_stuck_past_the_deadline_is_cut_and_named(self):
+        """A builder that blocks in one read (a fake one here, 60 s) is interrupted at the deadline; the rest are
+        skipped; the call returns, and the row and the log line name what gave way."""
+        self.fm("init")
+        from sampo import hooks
+
+        def stuck(pl, p):
+            time.sleep(60)
+        began = time.monotonic()
+        with mock.patch.object(hooks, "HOOK_DEADLINE_S", 0.5), mock.patch.object(hooks, "_fix_note", stuck):
+            code, _ = self.run_hook("echo hi")
+        self.assertEqual(code, 0)
+        self.assertLess(time.monotonic() - began, 30, "the stuck builder was waited for")
+        ran_out = self.ran_out()
+        self.assertIn("note.fix", ran_out or [])
+        self.assertIn("note.closing", ran_out or [], "the builders after it are skipped, not started")
+        self.assertRegex(self.hooks_log(), r"PreToolUse hook ran out of time at [\d.]+ ms \(deadline 500 ms\); skipped: .*note\.fix")
+
+    def test_a_call_within_its_deadline_logs_nothing_and_has_no_ran_out(self):
+        self.fm("init")
+        self.run_hook("echo hi")
+        self.assertIsNone(self.ran_out())
+        self.assertNotIn("ran out of time", self.hooks_log())
+
+    def test_the_guard_still_refuses_when_the_deadline_is_already_past(self):
+        """The guard is not an optional part: with no time left at all it still answers, and with its own verdict."""
+        self.fm("init")
+        from sampo import hooks
+        with mock.patch.object(hooks, "HOOK_DEADLINE_S", -5):
+            code, out = self.run_hook("sampo check | head")
+        self.assertEqual(code, 2, out)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_every_note_gives_way_when_the_guard_took_the_whole_deadline(self):
+        self.fm("init")
+        from sampo import hooks
+        calls = []
+        with mock.patch.object(hooks, "HOOK_DEADLINE_S", -5), mock.patch.object(hooks, "_fix_note", lambda *a: calls.append(a)):
+            code, _ = self.run_hook("echo hi")
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [], "no builder starts after the deadline")
+        ran_out = self.ran_out() or []
+        self.assertEqual([x for x in ran_out if x.startswith("note.")][:2], ["note.fix", "note.deps"])
+
+    def snapshot_note(self, origin_ago):
+        """_snapshot_note for `git reset --hard` with a hook that began `origin_ago` s ago, and the timeouts the save was given."""
+        import fmguard as g
+        from sampo import hooks
+        given = []
+
+        def fake(top, why, timeout=None, what="tree"):
+            given.append(timeout)
+            return ["abc"]
+        hooks._TIMING["origin"] = hooks._now() - origin_ago
+        self.addCleanup(hooks._TIMING.clear)
+        with mock.patch.object(hooks.c, "snapshot", fake):
+            note = hooks._snapshot_note({"tool_input": {"command": "git reset --hard"}, "cwd": self.repo}, g)
+        return note, given
+
+    def test_a_snapshot_with_no_time_left_is_skipped_and_said(self):
+        """The snapshot gives way first, and a destructive command that goes unsaved says so (as a failed save does)."""
+        from sampo import hooks
+        note, given = self.snapshot_note(origin_ago=hooks.HOOK_DEADLINE_S + 1)
+        self.assertEqual(given, [], "no save started")
+        self.assertIn("couldn't save", note)
+        self.assertIn("no time left in the hook", note)
+        self.assertEqual(hooks._TIMING.get("ran_out"), ["snapshot"])
+
+    def test_a_snapshot_is_given_what_the_hook_has_left_not_its_own_three_seconds(self):
+        from sampo import hooks
+        note, given = self.snapshot_note(origin_ago=hooks.HOOK_DEADLINE_S - 1.5)
+        self.assertEqual(len(given), 1, note)
+        self.assertLessEqual(given[0], 1.5, "less than 3 s: the hook's own deadline is nearer")
+        self.assertGreater(given[0], 0)
+        self.assertNotIn("ran_out", hooks._TIMING)
+        full, given = self.snapshot_note(origin_ago=0)
+        self.assertLessEqual(given[0], hooks.SNAPSHOT_S, "with the whole deadline left, the save's own budget holds")
+
+    def test_the_start_up_before_the_hook_s_first_line_counts(self):
+        """The origin is the process's birth (fork, interpreter, wrapper shell), not _run's first line."""
+        from sampo import hooks
+        now = hooks._now()
+        try:
+            hooks.STAGES.update(t0=now, event="PreToolUse", imports=now)
+            with mock.patch.object(hooks, "_born", return_value=now - 2.0):
+                self.assertAlmostEqual(hooks._hook_origin(), now - 2.0, delta=0.01)
+            with mock.patch.object(hooks, "_born", side_effect=FileNotFoundError):  # macOS: no procfs
+                self.assertAlmostEqual(hooks._hook_origin(), now, delta=0.01)
+        finally:
+            hooks.STAGES.clear()
+
+    def test_born_reads_the_real_proc_stat(self):
+        """T-5076 review: _born parses this process's own /proc/self/stat; its age agrees with ps (Linux; elsewhere skipped)."""
+        from sampo import hooks
+        try:
+            born = hooks._born()
+        except OSError:
+            self.skipTest("no procfs")
+        age = hooks._now() - born
+        self.assertGreaterEqual(age, 0)
+        r = subprocess.run(["ps", "-o", "etimes=", "-p", str(os.getpid())], capture_output=True, text=True)
+        if r.returncode or not r.stdout.strip().isdigit():
+            self.skipTest("this ps has no etimes")
+        self.assertLessEqual(abs(age - int(r.stdout)), 2, (age, r.stdout))
+
+    def test_a_builder_that_swallows_exceptions_is_still_cut(self):
+        """T-5076 review: the builders fail open with `except Exception`; the alarm is a BaseException, so it passes them."""
+        self.fm("init")
+        from sampo import hooks
+
+        def stuck(pl, p):
+            try:
+                time.sleep(60)
+            except Exception:
+                pass
+            return "LATE NOTE"
+        began = time.monotonic()
+        with mock.patch.object(hooks, "HOOK_DEADLINE_S", 0.5), mock.patch.object(hooks, "_fix_note", stuck):
+            code, out = self.run_hook("echo hi")
+        self.assertEqual(code, 0)
+        self.assertLess(time.monotonic() - began, 30)
+        self.assertIn("note.fix", self.ran_out() or [])
+        self.assertNotIn("LATE NOTE", out)
+
+    def test_two_skipped_saves_in_one_session_both_reach_the_model(self):
+        """T-5076 review: the 'couldn't save' line is not a once-per-session note: a second unsaved discard says so too."""
+        self.fm("init")
+        subprocess.run(["git", "checkout", "-q", "-b", "feat"], cwd=self.repo, capture_output=True)  # not the default branch
+        from sampo import hooks
+        outs = []
+        with mock.patch.object(hooks, "HOOK_DEADLINE_S", -5):
+            for _ in range(2):
+                outs.append(self.run_hook("git reset --hard")[1])
+        for out in outs:
+            self.assertIn("couldn't save", out)
+
+    def fake_git(self, rc_for, given):
+        """A c._git whose answer per git verb is (returncode, stdout): `rc_for` maps the first of the args that names a verb."""
+        def fake(root, *args, timeout=2, fail="", proc=False):
+            given.append((args, timeout))
+            verb = next((a for a in args if a in rc_for), None)
+            rc, out = rc_for.get(verb, (0, ""))
+            r = subprocess.CompletedProcess(args, rc, out, "timed out after 1 s" if rc == 124 else "")
+            return r if proc else (r.stdout if rc == 0 else fail)
+        return fake
+
+    def test_a_save_step_that_timed_out_is_not_reported_as_made(self):
+        """T-5076 review: a timed-out `stash list`, `rev-parse` or `update-ref` used to read as nothing to save or as saved."""
+        from sampo import core as c
+        for what, verbs in (("stash clear", {"list": (124, "")}),
+                            ("stash drop stash@{0}", {"rev-parse": (124, "")}),
+                            ("stash clear", {"list": (0, "a" * 40 + "\n"), "update-ref": (124, "")}),
+                            ("tree", {"update-ref": (124, ""), "commit-tree": (0, "b" * 40 + "\n")})):
+            with self.subTest(what=what, verbs=verbs), mock.patch.object(c, "_git", self.fake_git(verbs, [])), \
+                    mock.patch.object(c, "worktree_tree", return_value="T" * 40):
+                with self.assertRaises(RuntimeError):
+                    c.snapshot(self.repo, "why", 1.0, what)
+
+    def test_a_timed_out_save_says_so_to_the_model(self):
+        from sampo import core as c
+        from sampo import hooks
+        import fmguard as g
+        with mock.patch.object(c, "_git", self.fake_git({"list": (124, "")}, [])):
+            note = hooks._snapshot_note({"tool_input": {"command": "git stash clear"}, "cwd": self.repo}, g)
+        self.assertIn("couldn't save", note or "")
+
+    def test_the_whole_save_stays_inside_its_budget(self):
+        """T-5076 review: git_head (10 s, then 60 s) ran outside the budget: every git call after the tree read gets what is
+        left, and a HEAD read that times out is a failed save, not a parentless one."""
+        from sampo import core as c
+        given = []
+        slow_head = mock.Mock(side_effect=AssertionError("git_head has its own 10 s and 60 s: the save must not call it"))
+        with mock.patch.object(c, "_git", self.fake_git({"HEAD": (0, "c" * 40 + "\n"), "commit-tree": (0, "d" * 40 + "\n"),
+                                                         "update-ref": (0, "")}, given)), \
+                mock.patch.object(c, "worktree_tree", return_value="T" * 40), mock.patch.object(c, "git_head", slow_head):
+            c.snapshot(self.repo, "why", 1.0)
+        self.assertTrue(any("HEAD" in a for a, _ in given), "HEAD is read through the budgeted runner")
+        self.assertTrue(all(t <= 1.0 for _, t in given), given)
+        with mock.patch.object(c, "_git", self.fake_git({"HEAD": (124, "")}, [])), \
+                mock.patch.object(c, "worktree_tree", return_value="T" * 40):
+            with self.assertRaises(RuntimeError):
+                c.snapshot(self.repo, "why", 1.0)
+
+    def armed(self, left=3.0):
+        from sampo import hooks
+        hooks._TIMING["origin"] = hooks._now()
+        self.addCleanup(hooks._TIMING.clear)
+        return mock.patch.object(hooks, "HOOK_DEADLINE_S", left)
+
+    def outer_alarm(self, seconds):
+        import signal
+
+        def outer(*_):
+            pass
+        old = signal.signal(signal.SIGALRM, outer)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+
+        def undo():
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, old)
+        self.addCleanup(undo)
+        return outer
+
+    def test_the_notes_hand_back_the_handler_and_the_timer_they_found(self):
+        import signal
+        from sampo import hooks
+        outer = self.outer_alarm(100)
+        with self.armed(3.0):
+            self.assertEqual(hooks._notes_within([("a", lambda: "x")]), ["x"])
+        self.assertIs(signal.getsignal(signal.SIGALRM), outer)
+        left, _ = signal.getitimer(signal.ITIMER_REAL)
+        self.assertTrue(90 < left <= 100, left)
+
+    def test_the_handler_and_timer_come_back_when_a_builder_raises(self):
+        import signal
+        from sampo import hooks
+        outer = self.outer_alarm(100)
+
+        def boom():
+            raise KeyboardInterrupt
+        with self.armed(3.0), self.assertRaises(KeyboardInterrupt):
+            hooks._notes_within([("a", boom)])
+        self.assertIs(signal.getsignal(signal.SIGALRM), outer)
+        self.assertTrue(90 < signal.getitimer(signal.ITIMER_REAL)[0] <= 100)
+
+    def test_an_alarm_already_set_for_sooner_is_left_alone(self):
+        import signal
+        from sampo import hooks
+        outer = self.outer_alarm(1)
+        seen = []
+        with self.armed(3.0):
+            hooks._notes_within([("a", lambda: seen.append(signal.getsignal(signal.SIGALRM)))])
+        self.assertEqual(seen, [outer], "the earlier alarm's handler was not replaced")
+
+
 class SessionStart(HookCase):
     def run_ss(self, source="startup"):
         return self.hook("SessionStart", {"source": source}, env={"CLAUDE_ENV_FILE": self.env_file})

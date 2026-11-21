@@ -699,24 +699,36 @@ def snapshot(root, why, timeout=None, what="tree"):
     if not top:
         return []
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    end = time.monotonic() + timeout if timeout else None
+    # T-5076: with a `timeout` (the PreToolUse hook's) every git call after the tree read shares what is left of it (at
+    # least 0.2 s each, so four calls end 0.8 s past it at the worst: a ref write is fast), and a call that fails or times
+    # out fails the save (RuntimeError): "saved" and "nothing to save" are said only of what git answered
+    step = lambda: min(5, max(0.2, end - time.monotonic())) if end else 5  # noqa: E731
+
+    def run(*args, ok=(0,)):
+        r = _git(top, *args, timeout=step(), proc=True)
+        if r.returncode not in ok:
+            raise RuntimeError(f"git {next((a for a in args if not a.startswith('-') and '=' not in a), '')} "
+                               f"{'timed out' if r.returncode == 124 else 'failed'}")
+        return r.stdout.strip()
     if what.startswith("stash"):
         ref = (what.split() + ["stash@{0}"])[2] if what.startswith("stash drop") else None
-        shas = ([_git(top, "rev-parse", "--verify", "-q", ref, timeout=5).strip()] if ref
-                else _git(top, "stash", "list", "--format=%H", timeout=5).split())
+        shas = ([run("rev-parse", "--verify", "-q", ref, ok=(0, 1))] if ref  # 1: no such stash, nothing to lose
+                else run("stash", "list", "--format=%H").split())
         for sha in filter(None, shas):
-            _git(top, "update-ref", f"{SNAPSHOTS}{stamp}-{sha[:7]}-stash", sha, timeout=5)
+            run("update-ref", f"{SNAPSHOTS}{stamp}-{sha[:7]}-stash", sha)
         return [x[:12] for x in shas if x]
     tree = worktree_tree(top, timeout)
     if not tree:
         raise RuntimeError(f"the working files couldn't be read{f' in {timeout:g} s' if timeout else ''}")
-    if tree == _git(top, "rev-parse", "-q", "--verify", "HEAD^{tree}", timeout=5).strip():
+    if tree == run("rev-parse", "-q", "--verify", "HEAD^{tree}", ok=(0, 1)):  # 1: no commit yet
         return []
-    head = git_head(top)
-    sha = _git(top, "-c", "user.name=Sampo", "-c", "user.email=foreman@localhost", "-c", "commit.gpgSign=false",
-               "commit-tree", tree, *(["-p", head] if head else []), "-m", f"Sampo snapshot before: {why}",
-               timeout=5).strip()
-    if not sha or _git(top, "update-ref", f"{SNAPSHOTS}{stamp}-{sha[:7]}", sha, timeout=5, fail=None) is None:
+    head = (run("rev-parse", "--verify", "-q", "HEAD", ok=(0, 1)) if end else git_head(top)) or None
+    sha = run("-c", "user.name=Sampo", "-c", "user.email=foreman@localhost", "-c", "commit.gpgSign=false",
+              "commit-tree", tree, *(["-p", head] if head else []), "-m", f"Sampo snapshot before: {why}")
+    if not sha:
         raise RuntimeError("git couldn't record the snapshot")
+    run("update-ref", f"{SNAPSHOTS}{stamp}-{sha[:7]}", sha)
     return [sha[:12]]
 
 
