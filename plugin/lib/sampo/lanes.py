@@ -677,6 +677,14 @@ def cmd_lane(args):
             c.update_meta(p, builders=int(args.id))
         return cli.out(args, {"builders": builders_cap(p)}, f"Builders at once: {builders_cap(p)} (fm lane max N, "
                          f"1 to {BUILDERS_MAX})")
+    if args.action == "mode":  # T-5444: live (land at once, the full suite behind reverts a red merge) or gated
+        if args.id:
+            if args.id not in ("live", "gated"):
+                raise cli.UsageError("sampo lane mode live|gated")
+            c.update_meta(p, train_mode=args.id)
+        from sampo import train
+        now = "live" if train.live_mode(p) else "gated"
+        return cli.out(args, {"mode": now}, f"Landing: {now} (sampo lane mode live|gated; FOREMAN_FULL_GATE=1 forces gated)")
     if args.action == "andon":  # T-3704: answering an andon is a move, so no agent needs an rm (Claude Code asks about each)
         src = os.path.join(p.root, "ANDON.md")
         if not os.path.isfile(src):
@@ -3531,13 +3539,23 @@ def pm_set(p, sha, **kv):
         return r
 
 
-def pm_cmd(main, uncached=False):
-    """The full suite's command: FM_POSTMERGE_CMD, else this repo's own runner, else none (no verify is recorded)."""
+def pm_cmd(main, uncached=False, p=None):
+    """The full suite's command: FM_POSTMERGE_CMD, else this repo's own runner, else (T-5444, a live project) its gates
+    joined with &&, else none (no verify is recorded)."""
     # T-3638: SAMPO_CACHE_FULL=1 lets run.py skip classes green at the same code (1 in 10 rerun); ship's run stays
     # full, and so does an uncached verify (see _pm_uncached_due)
-    return os.environ.get("FM_POSTMERGE_CMD") or (
-        ("" if uncached else "SAMPO_CACHE_FULL=1 ") + "python3 plugin/tests/run.py"
-        if os.path.exists(os.path.join(main, "plugin", "tests", "run.py")) else "")
+    if os.environ.get("FM_POSTMERGE_CMD"):
+        return os.environ["FM_POSTMERGE_CMD"]
+    if os.path.exists(os.path.join(main, "plugin", "tests", "run.py")):
+        return ("" if uncached else "SAMPO_CACHE_FULL=1 ") + "python3 plugin/tests/run.py"
+    if p is not None:  # T-5444: a live project lands with no front gate, so its own gates are the behind verify
+        try:
+            meta = c.read_meta(p)
+        except (OSError, c.CorruptState):
+            return ""
+        if meta.get("train_mode") == "live":
+            return " && ".join(f"( {x} )" for x in (meta.get("checks") or []) if isinstance(x, str) and x.strip())
+    return ""
 
 
 def cpu_env(p, gate=True):
@@ -3640,7 +3658,7 @@ def pm_record(p, sha, tid, main, spawn=True):
     """A landed merge waits for its verify; start the runner (spawn: a train records each lane's merge, starts one).
     No suite command, no record."""
     os.makedirs(_pm_dir(p), exist_ok=True)
-    if not pm_cmd(main):
+    if not pm_cmd(main, p=p):
         if not os.path.exists(os.path.join(_pm_dir(p), ".nosuite")):  # once
             c.write_atomic(os.path.join(_pm_dir(p), ".nosuite"), "1")
             c.log_event(p, "postmerge_none", task=tid, data={"why": "no post-merge suite: merges land unverified"})
@@ -3851,7 +3869,7 @@ def pm_verify(p, main, sha):
         full = _pm_uncached_due(p)
         if full:
             pm_set(p, sha, uncached=True)
-        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600),
+        code, out = c.run_command(wt, pm_cmd(main, uncached=full, p=p), c.load_scaled(3600),
                                   env=cpu_env(p, gate=False), niced=True,
                                   low=True)  # T-3757: what landed becomes the usual; T-4197; T-4570: yields slots to waiting builders
         if _pm_tree_lost(p, sha, r, tries, wt):  # T-4728: a run in a removed folder ends 127: no merge is reverted for it
@@ -3914,7 +3932,7 @@ def pm_verify(p, main, sha):
     if not code:
         pm_set(p, sha, state="green")
         if full and not gone:  # T-3666: sha's own tree passed the whole suite uncached; a requeued one ran another tree
-            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True))
+            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True, p=p))
         cli.mutate(p, r["task"], lambda x: (x.append_log(f"verified: the full suite is green on {sha[:9]}"),
                                             x.meta.update(lane_verified=sha)), "lane_verified", {"sha": sha})
         return True
@@ -4070,7 +4088,7 @@ def _pm_green_at(p, main, sha, reds=None):
         if _git(main, "worktree", "add", "--detach", wt, sha).returncode:
             return False
         full = _pm_uncached_due(p)
-        code, out = c.run_command(wt, pm_cmd(main, uncached=full), c.load_scaled(3600), env=cpu_env(p, gate=False),
+        code, out = c.run_command(wt, pm_cmd(main, uncached=full, p=p), c.load_scaled(3600), env=cpu_env(p, gate=False),
                                   niced=True, low=True)  # T-4197; T-4570
         if _tree_lost(wt):  # T-4728: a run in a removed folder is no red suite: stop the pass, the merge stays pending
             raise c.PolicyError(f"{VERIFY_GONE} ({sha[:9]}); nothing judged, the next pass runs it again")
@@ -4079,7 +4097,7 @@ def _pm_green_at(p, main, sha, reds=None):
                 reds.extend(k for k in pm_classes(out, code) if not k.startswith("suite exit"))
             return False
         if full:
-            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True))
+            pm_full_pass(p, main, sha, pm_cmd(main, uncached=True, p=p))
         return True
     finally:
         _git(main, "worktree", "remove", "--force", wt)

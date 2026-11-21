@@ -11155,7 +11155,7 @@ def _build_parser(only=None):
                                                        "once, the rest wait as 'check queued'); "
                                                        "recover --all: every lane stopped before its merge, one launch line each (T-3922)")
     s.add_argument("action", choices=["new", "list", "rm", "brief", "merge", "max", "resume", "recover", "race", "pick",
-                                      "stats", "verify", "train", "precheck", "land", "andon", "accept"])
+                                      "stats", "verify", "train", "precheck", "land", "andon", "accept", "mode"])
     s.add_argument("--all", action="store_true", help="recover: every lane stopped before its merge, one launch line each "
                                                       "or the reason it's left (T-3922); merge: every finished lane (T-3119)")
     s.add_argument("--audit", nargs=3, action="append", metavar=("LENS", "HOW", "RESULT"),

@@ -9,6 +9,7 @@ import subprocess
 import time
 import types
 import unittest
+from unittest import mock
 
 from helpers import ForemanTestCase
 
@@ -57,6 +58,74 @@ class TrainCase(ForemanTestCase):
 
 
 class Train(TrainCase):
+    def test_live_land_merges_every_lane_with_no_front_gate_and_records_each_for_the_behind_verify(self):
+        # T-5444: 83 finished lanes waited at 2 per 2 h behind 2-5 h front gates; live lands them at once
+        from sampo import lanes
+        self.fm("lane", "mode", "live")
+        ids = [self.lane(1, "a.txt"), self.lane(2, "b.txt"), self.lane(3, "BREAK")]
+        r = self.train(*ids, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        self.assertEqual(self.gate_runs(), 0, "no gate runs in front of a live train")
+        for name in ("a.txt", "b.txt", "BREAK"):
+            self.assertTrue(os.path.exists(os.path.join(self.repo, name)), f"{name} landed: {r.stdout}{r.stderr}")
+        p = c.find_project(self.repo)
+        self.assertEqual(sorted(r["task"] for r in lanes.pm_records(p).values()), sorted(ids),
+                         "each merge waits for the behind verify, which reverts a red one")
+
+    def test_live_land_never_lands_a_tree_that_does_not_compile(self):
+        from sampo import train
+        self.fm("lane", "mode", "live")
+        os.makedirs(os.path.join(self.repo, "plugin", "lib", "sampo"))
+        with open(os.path.join(self.repo, "plugin", "lib", "sampo", "ok.py"), "w") as f:
+            f.write("x = 1\n")
+        self.git("add", "plugin")
+        self.git("commit", "-qm", "a Sampo-shaped tree")
+        bad = os.path.join("plugin", "lib", "sampo", "broken.py")
+        tid = self.lane(1, bad, "def f(:\n")
+        self.assertIn("SyntaxError", train._live_smoke(os.path.join(self.tmp, "lane1")))
+        self.assertEqual(train._live_smoke(self.repo), "")
+        r = self.train(tid, check=False, env={"FM_POSTMERGE_CMD": "true", "FOREMAN_NO_BACKGROUND": "1"})
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("does not compile", r.stderr + r.stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.repo, bad)))
+
+    def test_live_mode_is_a_project_switch_and_full_gate_forces_gated(self):
+        from sampo import train
+        p = c.find_project(self.repo)
+        self.assertFalse(train.live_mode(p), "a project is gated until it says live")
+        self.assertIn("gated", self.fm("lane", "mode").stdout)
+        self.fm("lane", "mode", "live")
+        self.assertTrue(train.live_mode(p))
+        with mock.patch.dict(os.environ, {"FOREMAN_FULL_GATE": "1"}):
+            self.assertFalse(train.live_mode(p))
+        self.assertNotEqual(self.fm("lane", "mode", "fast", check=False).returncode, 0)
+        self.fm("lane", "mode", "gated")
+        self.assertFalse(train.live_mode(p))
+
+    def test_live_mode_behind_verify_runs_the_projects_gates_when_the_repo_has_no_sampo_runner(self):
+        from sampo import lanes
+        p = c.find_project(self.repo)
+        c.update_meta(p, checks=["cargo fmt --check", "cargo test"])
+        with mock.patch.dict(os.environ, {"FM_POSTMERGE_CMD": ""}):
+            self.assertEqual(lanes.pm_cmd(self.repo, p=p), "", "a gated project with no runner lands unverified as before")
+            self.fm("lane", "mode", "live")
+            self.assertEqual(lanes.pm_cmd(self.repo, p=p), "( cargo fmt --check ) && ( cargo test )")
+            self.assertEqual(lanes.pm_cmd(self.repo), "", "no project, no fallback")
+
+    def test_live_mode_holds_only_a_red_check(self):
+        from sampo import train
+        p = c.find_project(self.repo)
+        b = mock.Mock(meta={})
+        with mock.patch.object(train, "live_mode", return_value=True):
+            for line, held in (("held: check queued behind 2 running at most (pid 1)", False),
+                               ("held: check running (pid 1); it joins the land when green", False),
+                               ("held: check red: test_x.X; the checker's code has changed since it ran: accept", False),
+                               ("held: check red: test_x.X; left out, no retry until the tip moves", True)):
+                with mock.patch.object(train, "_check_hold", return_value=line):
+                    self.assertEqual(bool(train._lane_hold(p, b, "sha", self.repo)), held, line)
+            with mock.patch.object(train, "_check_hold", return_value=None), \
+                    mock.patch.object(train, "_unchecked", return_value="held: no passing affected check"):
+                self.assertIsNone(train._lane_hold(p, b, "sha", self.repo), "no check on record: the behind suite judges it")
+
     def test_gate_runs_hold_tests_to_the_projects_cpu_baseline(self):  # T-3757
         seen = os.path.join(self.tmp, "cpu-env")
         self.fm("check", "add", f'echo "$SAMPO_CPU_BASE $SAMPO_CPU_GATE" >> {seen}')

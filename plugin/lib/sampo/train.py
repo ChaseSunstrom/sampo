@@ -665,6 +665,38 @@ def _ran_green(p, b, tests, changed):
 MOVED = "the lane moved while merging: run it again"  # T-4756: its tip is not the one `lane merge` judged
 
 
+def live_mode(p):
+    """T-5444 (T-4308's mode, a project's meta train_mode=live): a lane lands at once on its own record, with no criteria stage, no front
+    gate and no batch cap; the full suite runs behind on the merged head (lanes.pm_run, T-3141/T-3446/T-3800) and reverts
+    the merge that turned it red. On 2026-11-21 83 finished lanes waited here at 2 landed per 2 h, each train's front gate
+    2-5 h. FOREMAN_FULL_GATE=1 forces the gated train; unset, a project is gated."""
+    if os.environ.get("FOREMAN_FULL_GATE", "") not in ("", "0"):
+        return False
+    return c.read_meta(p).get("train_mode") == "live"  # set per project: sampo lane mode live|gated
+
+
+def _lane_hold(p, b, sha, main):
+    """Why the land leaves this lane out at `sha`, or None. Gated: its own check running, queued, red or missing
+    (_check_hold, _unchecked). Live (T-5444): only a red check that its current checker gave; the behind suite judges
+    the rest after the merge."""
+    why = _check_hold(b, sha, main) or (None if live_mode(p) else _unchecked(b, sha, main))
+    if why and live_mode(p) and not (why.startswith("held: check red") and "has changed since it ran" not in why):
+        return None
+    return why
+
+
+LIVE_SMOKE = ("-m", "compileall", "-q", "plugin/lib", "plugin/hooks")  # T-5444: a merged syntax error never reaches the hooks
+
+
+def _live_smoke(wt):
+    """T-5444: '' when the merged tree compiles (Sampo's own tree: its hooks run from trunk), else the error. Other
+    projects (no plugin/lib/sampo) have nothing to brick: ''."""
+    if not os.path.isdir(os.path.join(wt, "plugin", "lib", "sampo")):
+        return ""
+    r = subprocess.run([sys.executable, *LIVE_SMOKE], cwd=wt, capture_output=True, text=True, timeout=300)
+    return "" if r.returncode == 0 else (r.stdout + r.stderr).strip()[-600:] or f"exit {r.returncode}"
+
+
 def _held(p, b, main, tip):
     """The reason `sampo lane merge` would refuse this lane (private term, guard, self-change gate), or ''. T-4783: the
     private-term check is lanes.private_refusal, the function `merge` calls, first: a lane that carries a term never
@@ -1094,12 +1126,13 @@ def _run(p, main, ids, defer_verify=False, judged=None):
     # process (its own interpreter, no GIL shared), the lane's criteria and probe tests under it
     t0 = time.monotonic()  # T-3596: the phases' minutes, in the result and the report line
     jobs = 1 if c.host_strain(2.0) else PROBE_JOBS
+    live = live_mode(p)  # T-5444: no criteria stage and no front gate: the behind suite judges the merged head
     outs = iter(_fan([_child_argv(p, main, base, b.id, tip, probe_tests, judged.get(b.id) == tip)
-                      for b, tip, why in rows if not why], main, jobs))
+                      for b, tip, why in rows if not why], main, jobs)) if not live else iter(())
     infos = {}  # T-3809: lane id: what its check process said of the criteria stage (covered, total, s)
     for b, tip, why in rows:
         seen = []
-        if not why:
+        if not why and not live:
             why, seen, infos[b.id] = _child_result(next(outs))
             if why.startswith(WT_GONE):  # T-4728: a probe's tree lost twice: the train stops, no lane is left out for it
                 raise c.PolicyError(why)
@@ -1422,14 +1455,16 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         sub = _affected_gate(p, wt, base, checks)
         if moved():  # a lane merged meanwhile: don't spend a gate run on a base that is gone
             raise c.PolicyError(moved_why("since the train started"))
-        why = _base_red(p, main, base, sub) if sub and merged else ""
+        why = _base_red(p, main, base, sub) if sub and merged and not live else ""
         if why:  # T-3625: the base's affected tests first: a red base is known in minutes
             raise c.PolicyError(f"the base {base[:9]} of {branch} is red; fix it before a train can blame a lane: red on "
                                 f"the base (no lane dropped for it): {why}")
         if sub:  # T-3809: the modules a merged lane's covered criteria name run in this gate (after the base probe: a new
             # lane's module is no test of the base); form() keeps those the tree has
             sub = (*sub[:2], list(dict.fromkeys([*sub[2], *(f for b, _ in merged for f in covers(b.id))])))
-        ok = not merged or gate()
+        if live and merged and (smoke := _live_smoke(wt)):  # T-5444: the one front check: the merged tree compiles
+            raise c.PolicyError(f"the merged tree does not compile, nothing landed: {smoke}")
+        ok = not merged or live or gate()
         first = list(results)
         last = {r["cmd"]: r for r in results if not r["exit"]}  # each gate's newest passing row
         # T-3602: what each confirm reruns: every gate but the suite whole; the suite whole only if the red cut it off
@@ -1593,10 +1628,11 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         if merged and top and suite in need:  # what the train landed on: the batch's tests with every lane in, then the
             # red ones and the left-out lanes' reach here; a close reuses it for those (cli._cached_pass)
             last[suite] = dict(last[suite], affected=sorted(set(top["affected"]) | set(last[suite].get("affected") or ())))
-        green = [last[g] for g in checks] if merged else []
+        green = [last[g] for g in checks] if merged and not live else []  # T-5444: live ran no gate: no pass to record
         if not merged:
             raise _none("nothing landed: ", left)
-        _mark_green(p)  # T-3625: this env's gate went green
+        if not live:
+            _mark_green(p)  # T-3625: this env's gate went green
         t2 = time.monotonic()
         tip = here()  # T-4728: a tree lost since the last gate is rebuilt, never read as an empty tip
         if moved():
@@ -1621,14 +1657,15 @@ def _run(p, main, ids, defer_verify=False, judged=None):
         lanes.log_landed(p, ",".join(ids_in), base, tip)  # T-4805: only now it landed; ship and release read it to skip these
         maps =[(i, kept_maps[i]) for i in ids_in if i in kept_maps]  # T-4375: only the lanes that landed this way
         map_task = _map_follow_up(p, maps) if maps else ""
-        part = next((r["affected"] for r in green if r.get("affected")), None)
+        part = next((r["affected"] for r in green if r.get("affected")), None) or (live and "live")  # T-5444: verified behind
         if part:  # T-3544: the full suite the gate skipped verifies each landed merge in the background, newest first
             for i, (b, sha) in enumerate(merged):  # T-4718: a caller that ships next starts the verify after the ship asked
                 pm_record(p, sha, b.id, main, spawn=not defer_verify and i == len(merged) - 1)
         tree = _git(main, "rev-parse", f"{tip}^{{tree}}").stdout.strip()
         ct = c.code_tree(main, tree)
-        c.log_event(p, "check_run", data={"tree": tree[:12], "code_tree": ct, "env": c.env_id(), "train": ids_in,
-                                          "results": green})
+        if not live:  # T-5444: a live train ran no gate; its merges' verify is the behind suite's record
+            c.log_event(p, "check_run", data={"tree": tree[:12], "code_tree": ct, "env": c.env_id(), "train": ids_in,
+                                              "results": green})
         if suite and last.get(suite):  # T-3809: each covered criterion's evidence is this gate's pass, on the tree that landed
             notes += _record_covered(p, merged, cov, last[suite], tree[:12])
         t3 = time.monotonic()
@@ -2517,7 +2554,7 @@ def _land_trains(p, main, batch, owed):
 
     def sort(bs):  # a conflict never costs a criteria or gate run (an old git without merge-tree: no check)
         for b in sorted(bs, key=land_key):
-            if why := _check_hold(b, tip(b), main) or _unchecked(b, tip(b), main):  # T-4286: its check is running, red or cut off at this tip: left out; T-4767: no passing check at the tip at all
+            if why := _lane_hold(p, b, tip(b), main):  # T-4286: its check is running, red or cut off at this tip: left out; T-4767: no passing check at the tip at all
                 print(f"sampo lane land: {b.id}: {why}", file=sys.stderr, flush=True)
                 held.add(b.id)
                 continue
@@ -2544,7 +2581,7 @@ def _land_trains(p, main, batch, owed):
         now, keep = {b.id: b for b in c.load_briefs(p)}, []
         for t in ids:
             b = now.get(t)
-            if b and (why := _check_hold(b, tip(b), main) or _unchecked(b, tip(b), main)):
+            if b and (why := _lane_hold(p, b, tip(b), main)):
                 print(f"sampo lane land: {t}: {why}", file=sys.stderr, flush=True)
                 held.add(t)
             else:
@@ -2555,7 +2592,7 @@ def _land_trains(p, main, batch, owed):
         """T-4767 review: the held lanes whose check is clean now (a hand check or an accept finished while a train ran)
         are sorted in, as the held line promises. Said once: a lane still held is not printed again."""
         now = c.load_briefs(p)
-        back = {b.id for b in now if b.id in held and not (_check_hold(b, tip(b), main) or _unchecked(b, tip(b), main))}
+        back = {b.id for b in now if b.id in held and not (_lane_hold(p, b, tip(b), main))}
         back &= set(lanes.awaiting_merge(p, now, 0, fresh=True))
         sort(b for b in now if b.id in back)
     left = landed + gone  # merged and open (a train by hand, a land cut short): closed after each train's own (T-3884)
@@ -2595,7 +2632,7 @@ def _land_trains(p, main, batch, owed):
             ready = recheck(ready)
         if not ready:
             break
-        ids, ready = ready[:batch], ready[batch:]
+        ids, ready = (ready, []) if live_mode(p) else (ready[:batch], ready[batch:])  # T-5444: live, one train for all
         print(f"sampo lane land: train {trains + 1}: {', '.join(ids)}", file=sys.stderr, flush=True)
         tested.update({i: tip(by[i]) for i in ids})  # train() reads the same heads as it starts
         head0 = c._git(main, "rev-parse", "HEAD", timeout=10).strip()  # T-3851: the skills this train adds
@@ -2921,11 +2958,14 @@ def _close(p, main, tid):
     own = b.section("Why not caught").strip() or not f.get("why_not_caught")
     why_arg = [] if own else [f"--why-not-caught={f['why_not_caught']}"]
     t_finish = time.monotonic()  # T-4600: the close's wall time, lock wait included, beside the steps the finish itself reports
+    # T-5444: a live land's close re-runs no linked tests: the behind suite runs them all on the merged head and reverts
+    live_skip = ["--skip-affected", "live landing: the behind suite verifies the merged head and reverts a red merge"] \
+        if live_mode(p) else []
     try:
         with train_lock_closing(p):  # T-4540: the close commits on trunk: it waits for a running train (bounded), not beside it
             rc, out, err = _sampo(["task", "finish", tid, "--audit", f"{LAND_AUDIT} (lane tip {sha})", "--result", seen,
                                    *[x for lens in sorted(set(fresh) - {"self"}) for x in ("--lens", f"{lens}: {seen}")],
-                                   *why_arg, "--commit", title])
+                                   *why_arg, *live_skip, "--commit", title])
     except c.LockTimeout:
         return ("a running train holds trunk: the close waits for it, and the next land retries it"
                 + ("; its lane is kept" if path else ""), "")
