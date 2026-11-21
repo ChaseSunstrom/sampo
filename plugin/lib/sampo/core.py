@@ -267,6 +267,17 @@ def other_live_session(sid, minutes, mine=None, slug=None):
 
 # ---------------------------------------------------------------- paths and projects
 
+def _default_home(base=None):
+    """The home with no environment variable naming it: <base>/sampo or <base>/foreman (base: ~/.claude, or the folder
+    given: prove names the account database's). Kept apart from foreman_home (sampo-fast mirrors that one byte for
+    byte): the two must choose alike."""
+    base = base or os.path.join(os.path.expanduser("~"), ".claude")
+    new, old = os.path.join(base, "sampo"), os.path.join(base, "foreman")
+    # T-5060: sampo's folder only once the old name is no real folder (gone, or the link the move leaves): a stray
+    # mkdir of ~/.claude/sampo must not hide the real home's state and code
+    return new if os.path.isdir(new) and (os.path.islink(old) or not os.path.isdir(old)) else old
+
+
 def foreman_home():
     h = os.environ.get("FOREMAN_HOME")
     if h:
@@ -276,6 +287,17 @@ def foreman_home():
     # T-5060: sampo's folder only once the old name is no real folder (gone, or the link the move leaves): a stray
     # mkdir of ~/.claude/sampo must not hide the real home's state and code
     return new if os.path.isdir(new) and (os.path.islink(old) or not os.path.isdir(old)) else old
+
+
+def state_overridden():
+    """T-2282: whether the environment moves the state off the default: FOREMAN_STATE is set, or FOREMAN_HOME names a
+    folder other than the default home. SAMPO_HOME and SAMPO_STATE arrive as those two: mirror_env moves them at import
+    (T-2766). A consent kept in state (a trusted tree) must not be read where a session's variable points, since the
+    session wrote what is there. The sandbox fallback (a marker, no variable) is not an override."""
+    if os.environ.get("FOREMAN_STATE"):
+        return True
+    h = os.environ.get("FOREMAN_HOME")
+    return bool(h) and os.path.realpath(os.path.expanduser(h)) != os.path.realpath(_default_home())
 
 
 def _writable(path):
@@ -2162,7 +2184,7 @@ def _scratch_register(root):
     """Record a private fallback root (made in the temp root when the named one could not be used) so a later process's
     doctor and tidy find its trees without ever listing the shared temp root."""
     with contextlib.suppress(OSError):
-        os.makedirs(state_dir(), exist_ok=True)
+        os.makedirs(state_dir(), mode=0o700, exist_ok=True)  # T-2282: a new state folder is private (prove's trust reads it)
         with open(_scratch_registry(), "a") as f:
             f.write(root + "\n")
 
@@ -9606,7 +9628,7 @@ def gate_lock(label, say=None, timeout=None):
     holder (FOREMAN_GATE_HELD names the holder's pid) passes: it runs under the lock its parent holds. A dead holder
     releases the flock itself. timeout None waits for ever; LockTimeout when it runs out."""
     held = os.environ.get("FOREMAN_GATE_HELD")
-    os.makedirs(state_dir(), exist_ok=True)
+    os.makedirs(state_dir(), mode=0o700, exist_ok=True)  # T-2282: a new state folder is private
     path = os.path.join(state_dir(), "gate.lock")
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     deadline = None if timeout is None else time.monotonic() + timeout

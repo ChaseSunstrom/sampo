@@ -103,7 +103,7 @@ def prove(root, cmd, checks, allowed, db=None, limit=RUN_T):
     from sampo import prove as sprove
     r = {"root": root, "cmd": cmd, "checks": [], "tables": {}}
     if not allowed:
-        return r | {"verdict": "refused", "why": sprove.NO_RUN}
+        return r | {"verdict": "refused", "why": sprove.no_run()}
     if not checks or not (cmd or "").strip():
         return r | {"verdict": "nothing", "why": "a data proof needs the data command (--run CMD) and one or more "
                                                  "--check SQL (each returns the violating rows)"}
@@ -181,8 +181,8 @@ def for_task(p, b, say=print):
     if not any(DATA.search(f) or os.path.normpath(f) in words for f in infra.touched(p, b)):  # data, or the command's file
         return None
     if not (sprove.trusted(p.root) or sprove._lane_trusted(p, p.root)):
-        say("data: this task has invariants; proving them runs its data command, so it needs your yes once per tree: "
-            "sampo prove PATH --yes-run")
+        say(sprove.words("data: this task has invariants; proving them runs its data command, so it needs your yes "
+                         "once per tree: sampo prove PATH --yes-run"))
         return None
     r = prove(p.root, inv[0], inv[1], True, limit=FINISH_T)
     if r["verdict"] in ("pass", "fail"):

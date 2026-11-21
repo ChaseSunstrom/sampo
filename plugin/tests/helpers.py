@@ -21,6 +21,7 @@ PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIB = os.path.join(PLUGIN, "lib")
 FM = os.path.join(PLUGIN, "bin", "fm")
 HOOK = os.path.join(PLUGIN, "hooks", "hook")
+FM_TRUSTING = os.path.join(PLUGIN, "tests", "fixtures", "fm_trusting.py")  # T-2282: bin/fm with a test home as the user's
 RELAY = "import subprocess, sys; sys.exit(subprocess.run(sys.argv[1:4]).returncode)"
 if LIB not in sys.path:
     sys.path.insert(0, LIB)
@@ -405,6 +406,13 @@ class SampoTestCase(unittest.TestCase):
         # stats every file of the package, so 630 classes that only made a task depended on all 168 and re-ran on any edit
         os.environ["FOREMAN_NO_COVERED"] = "1"
         os.environ["FOREMAN_HOME"] = self.home
+        # T-2282: a test's own home is no user state, so prove would never trust a tree there; the in-process tests that
+        # remember a tree read the file as the user's (test_prove.TrustUnderAnOverride runs the real check)
+        from unittest import mock
+        from sampo import prove as _prove
+        patch = mock.patch.object(_prove, "_state_is_real", return_value=True)
+        patch.start()
+        self.addCleanup(patch.stop)
         os.environ["FOREMAN_NO_BACKGROUND"] = "1"  # a detached child writing into a test's folder races its cleanup
         os.environ["FOREMAN_NO_LINK"] = "1"  # T-1333: a test's session start never makes ~/.local/bin/fm
         os.environ["FOREMAN_NO_LEFTOVER_SCAN"] = "1"  # T-4720: no tidy or doctor test reads the machine's leftover processes
@@ -448,7 +456,9 @@ class SampoTestCase(unittest.TestCase):
                     raise
                 time.sleep(0.1)
 
-    def fm(self, *args, cwd=None, check=True, env=None, input=None, timeout=30):
+    def fm(self, *args, cwd=None, check=True, env=None, input=None, timeout=30, real_state=False):
+        # T-2282: real_state=True runs bin/fm itself: its prove trust file is read only from the user's own state
+        # (fixtures/fm_trusting.py, the default, makes a test's home count as that)
         # fm run never takes a real inhibitor lock; T-1379: fm doctor skips its hook bench (no test reads its timings)
         # T-4935: nor builds the native fast path of the tree under test (minutes under load, the live hooks' binary)
         e = dict(os.environ, FOREMAN_HOME=self.home, FOREMAN_INHIBITED="1", FOREMAN_DOCTOR_BENCH="0", FOREMAN_DOCTOR_BUILD="0")
@@ -462,7 +472,7 @@ class SampoTestCase(unittest.TestCase):
             e.update(HOME=os.path.join(self.tmp, "nohome"))
         e.update(env or {})
         import forkcli  # T-3252: a fork of a warm Sampo, not a fresh interpreter; the same result
-        p = forkcli.run(FM, args, cwd=cwd or self.repo, env=e, input=input, timeout=timeout * busy_factor())
+        p = forkcli.run(FM if real_state else FM_TRUSTING, args, cwd=cwd or self.repo, env=e, input=input, timeout=timeout * busy_factor())
         if check and p.returncode != 0:
             raise AssertionError(f"fm {' '.join(args)} exited {p.returncode}\nstdout:{p.stdout}\nstderr:{p.stderr}")
         return p

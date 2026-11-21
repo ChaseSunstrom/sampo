@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # T-2288: fm prove --migration: up, down, up again on a throwaway sqlite file, schema compared each time
+import io
 import json
 import os
 import subprocess
@@ -1476,6 +1477,316 @@ class TaskProveRunner(ForemanTestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("proved", r.stdout)
         self.assertIn("kept at its start version: tests/run.py", r.stdout)
+
+
+REAL_STATE_CHECK = sprove._state_is_real  # before any test's setUp patches it (helpers.SampoTestCase)
+APP = "def used():\n    return 1\n\n\ndef unused():\n    return 2\n"
+SUITE = "import unittest\nimport app\n\n\nclass T(unittest.TestCase):\n    def test_used(self):\n        self.assertEqual(app.used(), 1)\n"
+
+
+class TrustUnderAnOverride(ForemanTestCase):
+    """T-2282: an environment variable never grants trust: a session that points FOREMAN_STATE, FOREMAN_HOME or HOME at a
+    folder holding its own prove-trusted.json makes no tree trusted (T-2202: only the user's yes is consent)."""
+
+    def setUp(self):
+        super().setUp()
+        patch = mock.patch.object(sprove, "_state_is_real", REAL_STATE_CHECK)  # the check itself, not the test seam
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.acct = os.path.join(self.tmp, "acct")  # the account's home by the account database
+        os.makedirs(os.path.join(self.acct, ".claude", "foreman", "state"), mode=0o700)
+        acct = mock.Mock(pw_dir=self.acct)
+        pw = mock.patch("pwd.getpwuid", return_value=acct)
+        pw.start()
+        self.addCleanup(pw.stop)
+        self.tree = self.proj({"app.py": APP, "tests/test_app.py": SUITE})
+        self.planted = os.path.join(self.tmp, "planted")
+        write(self.planted, {"prove-trusted.json": json.dumps([os.path.realpath(self.tree)])})
+
+    def proj(self, files):
+        root = os.path.join(self.tmp, "proj")
+        write(root, files)
+        return root
+
+    def env(self, **set_):
+        """The environment of a session with none of the three variables, then the ones given."""
+        e = {k: v for k, v in os.environ.items() if k not in ("FOREMAN_STATE", "FOREMAN_HOME", "HOME")}
+        e.update(HOME=self.acct, **set_)
+        return mock.patch.dict(os.environ, e, clear=True)
+
+    def lane_trusted(self):
+        p = mock.Mock(lane="lane", root=self.tree)
+        with mock.patch.object(sprove.c, "main_worktree", return_value=self.tree):
+            return sprove._lane_trusted(p, self.tree)
+
+    def test_with_neither_variable_set_a_remembered_tree_is_trusted_here_and_in_a_lane(self):
+        with self.env():
+            self.assertFalse(sprove.trusted(self.tree))
+            sprove.remember(self.tree)
+            self.assertTrue(sprove.trusted(self.tree))
+            self.assertTrue(self.lane_trusted())
+            self.assertTrue(os.path.exists(os.path.join(self.acct, ".claude", "foreman", "state", sprove.TRUST)))
+
+    def test_a_planted_file_under_foreman_state_trusts_nothing(self):
+        with self.env(FOREMAN_STATE=self.planted):
+            self.assertFalse(sprove.trusted(self.tree))
+            self.assertFalse(self.lane_trusted())
+
+    def test_a_planted_file_under_foreman_home_trusts_nothing(self):
+        home = os.path.join(self.tmp, "ph")
+        write(home, {"state/prove-trusted.json": json.dumps([self.tree])})
+        with self.env(FOREMAN_HOME=home):
+            self.assertFalse(sprove.trusted(self.tree))
+            self.assertFalse(self.lane_trusted())
+
+    def test_a_planted_home_trusts_nothing(self):
+        fake = os.path.join(self.tmp, "fakehome")
+        write(fake, {".claude/foreman/state/prove-trusted.json": json.dumps([self.tree])})
+        with self.env():
+            os.environ["HOME"] = fake
+            self.assertFalse(sprove.trusted(self.tree))
+
+    def test_the_default_home_named_by_its_own_variable_is_still_trusted(self):
+        real = os.path.join(self.acct, ".claude", "foreman")
+        with self.env(FOREMAN_HOME=real):
+            sprove.remember(self.tree)
+            self.assertTrue(sprove.trusted(self.tree))
+        with self.env(FOREMAN_HOME=real, FOREMAN_STATE=os.path.join(real, "state")):  # FOREMAN_STATE alone is an override
+            self.assertFalse(sprove.trusted(self.tree))
+
+    def test_a_yes_under_an_override_keeps_no_file_a_later_read_would_honour(self):
+        with self.env(FOREMAN_STATE=self.planted):
+            os.remove(os.path.join(self.planted, "prove-trusted.json"))
+            sprove.remember(self.tree)
+            self.assertFalse(os.path.exists(os.path.join(self.planted, "prove-trusted.json")))
+        with self.env():
+            self.assertFalse(sprove.trusted(self.tree))
+
+    def test_a_broken_account_database_trusts_nothing(self):
+        with self.env(), mock.patch("pwd.getpwuid", side_effect=KeyError("uid")):
+            sprove.remember(self.tree)
+            self.assertFalse(sprove.trusted(self.tree))
+
+    def test_sampo_prove_under_a_planted_state_refuses_and_runs_nothing_without_yes_run(self):
+        ran = os.path.join(self.tmp, "suite-ran")
+        write(self.tree, {"tests/test_app.py": f"open({ran!r}, 'w').close()\n" + SUITE})
+        e = {"FOREMAN_STATE": self.planted}
+        r = self.fm("prove", self.tree, "--json", check=False, env=e, real_state=True)
+        said = next(t for t in json.loads(r.stdout)["tickets"] if t["symbol"] == "unused")["evidence"]
+        self.assertIn("needs the user's yes", said, r.stdout + r.stderr)
+        self.assertNotIn("once per tree", said)  # T-2282: a moved state keeps no yes, so no once-per-tree promise
+        self.assertIn("on each run", said)
+        self.assertFalse(os.path.exists(ran))
+        r = self.fm("prove", self.tree, "--json", "--yes-run", check=False, env=e, real_state=True)
+        self.assertTrue(os.path.exists(ran))  # the per-call yes still runs it
+        self.assertIn("not kept", r.stderr)  # ... and says the yes was not kept
+
+    def test_a_yes_under_a_moved_state_says_it_was_not_kept_and_a_real_state_does_not(self):
+        args = mock.Mock(yes_run=True)
+        for env, kept in ((self.env(FOREMAN_STATE=self.planted), False), (self.env(), True)):
+            with env, mock.patch.object(sprove.sys, "stderr", new_callable=io.StringIO) as err:
+                self.assertTrue(sprove._yes(args, self.tree))
+            self.assertEqual("not kept" in err.getvalue(), not kept, err.getvalue())
+            if not kept:
+                self.assertIn("FOREMAN_STATE", err.getvalue())
+
+    def test_the_once_per_tree_promise_is_worded_per_run_under_a_moved_state(self):
+        with self.env():
+            self.assertEqual(sprove.words(sprove.NO_RUN), sprove.NO_RUN)
+            self.assertIn("once per tree", sprove.words(sprove.DOCS_NO_RUN))
+        with self.env(FOREMAN_STATE=self.planted):
+            for s in (sprove.NO_RUN, sprove.DOCS_NO_RUN):
+                self.assertNotIn("once per tree", sprove.words(s))
+                self.assertIn("--yes-run", sprove.words(s))
+
+    def test_a_symlinked_second_home_lands_nothing_on_an_allowed_path(self):
+        """~/.claude/sampo a link to a planted folder beside a real ~/.claude/foreman: the rule picks foreman alone."""
+        claude = os.path.join(self.acct, ".claude")
+        os.symlink(os.path.join(self.planted), os.path.join(claude, "sampo"))
+        write(self.planted, {"state/prove-trusted.json": json.dumps([os.path.realpath(self.tree)])})
+        os.makedirs(os.path.join(self.planted, "state"), exist_ok=True)
+        os.chmod(os.path.join(self.planted, "state"), 0o700)
+        with self.env(), mock.patch.object(sprove.c, "state_dir", return_value=os.path.join(claude, "sampo", "state")):
+            self.assertFalse(sprove.trusted(self.tree))
+            sprove.remember(self.tree)
+            self.assertEqual(json.load(open(os.path.join(self.planted, "state", sprove.TRUST))),
+                             [os.path.realpath(self.tree)])  # still only what was planted
+        with self.env():  # the real foreman state, as the rule picks it, still works
+            sprove.remember(self.tree)
+            self.assertTrue(sprove.trusted(self.tree))
+
+    def test_only_the_home_the_rule_picks_is_real_when_both_exist(self):
+        """Both real folders: foreman is the home (T-5060), so a state under the stray sampo one is not the user's."""
+        claude = os.path.join(self.acct, ".claude")
+        os.makedirs(os.path.join(claude, "sampo", "state"), mode=0o700)
+        with self.env(), mock.patch.object(sprove.c, "state_dir", return_value=os.path.join(claude, "sampo", "state")):
+            self.assertFalse(sprove._state_is_real())
+        with self.env(), mock.patch.object(sprove.c, "state_dir", return_value=os.path.join(claude, "foreman", "state")):
+            self.assertTrue(sprove._state_is_real())
+
+    def test_the_sampo_home_is_the_real_one_once_the_old_name_is_a_link_to_it(self):
+        claude = os.path.join(self.acct, ".claude")
+        os.rename(os.path.join(claude, "foreman"), os.path.join(claude, "sampo"))
+        os.symlink(os.path.join(claude, "sampo"), os.path.join(claude, "foreman"))
+        with self.env():
+            self.assertTrue(sprove._state_is_real())
+            sprove.remember(self.tree)
+            self.assertTrue(sprove.trusted(self.tree))
+
+    def test_a_state_folder_others_can_write_is_not_the_users_own(self):
+        state = os.path.join(self.acct, ".claude", "foreman", "state")
+        for mode in (0o770, 0o707):
+            os.chmod(state, mode)
+            with self.env():
+                self.assertFalse(sprove._state_is_real(), oct(mode))
+                sprove.remember(self.tree)
+                self.assertFalse(os.path.exists(os.path.join(state, sprove.TRUST)), oct(mode))
+        os.chmod(state, 0o700)
+        with self.env():
+            self.assertTrue(sprove._state_is_real())
+
+
+    def group(self, name, mem):
+        """The account (pw_name, pw_gid) and the group the state folder belongs to, by the databases."""
+        st = os.stat(os.path.join(self.acct, ".claude", "foreman", "state"))
+        acct = mock.Mock(pw_dir=self.acct, pw_name="acct", pw_gid=st.st_gid)
+        return (mock.patch("pwd.getpwuid", return_value=acct),
+                mock.patch("grp.getgrgid", return_value=mock.Mock(gr_name=name, gr_mem=mem)))
+
+    def test_a_group_writable_state_in_the_users_private_group_is_the_users_own(self):
+        """T-2282: umask 002 (Fedora, RHEL) makes the real state folder 0o775 in a group of the user's name alone."""
+        os.chmod(os.path.join(self.acct, ".claude", "foreman", "state"), 0o775)
+        pw, gr = self.group("acct", [])
+        with self.env(), pw, gr:
+            self.assertTrue(sprove._state_is_real())
+            sprove.remember(self.tree)
+            self.assertTrue(sprove.trusted(self.tree))
+
+    def test_a_group_writable_state_in_a_group_with_other_members_is_not(self):
+        os.chmod(os.path.join(self.acct, ".claude", "foreman", "state"), 0o775)
+        for name, mem in (("acct", ["bob"]), ("staff", []), ("staff", ["bob"])):
+            pw, gr = self.group(name, mem)
+            with self.env(), pw, gr:
+                self.assertFalse(sprove._state_is_real(), (name, mem))
+                sprove.remember(self.tree)
+                self.assertFalse(sprove.trusted(self.tree))
+
+    def test_a_group_writable_state_in_a_group_that_is_not_the_accounts_own_is_not(self):
+        state = os.path.join(self.acct, ".claude", "foreman", "state")
+        os.chmod(state, 0o775)
+        acct = mock.Mock(pw_dir=self.acct, pw_name="acct", pw_gid=os.stat(state).st_gid + 1)
+        with self.env(), mock.patch("pwd.getpwuid", return_value=acct), \
+                mock.patch("grp.getgrgid", return_value=mock.Mock(gr_name="acct", gr_mem=[])):
+            self.assertFalse(sprove._state_is_real())
+
+    def test_a_world_writable_state_is_not_the_users_own_even_in_a_private_group(self):
+        os.chmod(os.path.join(self.acct, ".claude", "foreman", "state"), 0o777)
+        pw, gr = self.group("acct", [])
+        with self.env(), pw, gr:
+            self.assertFalse(sprove._state_is_real())
+
+    def test_the_reason_a_state_is_not_the_users_own_is_named(self):
+        state = os.path.join(self.acct, ".claude", "foreman", "state")
+        with self.env():
+            self.assertEqual(sprove._state_why(), "")
+        with self.env(FOREMAN_STATE=self.planted):
+            self.assertIn("FOREMAN_STATE", sprove._state_why())
+        with self.env(), mock.patch("pwd.getpwuid", side_effect=KeyError("uid")):
+            self.assertIn("account database", sprove._state_why())
+        os.chmod(state, 0o770)
+        with self.env():
+            self.assertIn("writable by others", sprove._state_why())
+        os.chmod(state, 0o700)
+        with self.env(), mock.patch.object(sprove.c, "state_dir", return_value=os.path.join(self.tmp, "fallback")):
+            self.assertIn("not your account's", sprove._state_why())
+        os.rmdir(state)
+        with self.env():
+            self.assertIn("does not exist", sprove._state_why())
+
+    def test_a_yes_that_is_not_kept_names_the_reason_not_a_blanket_blame(self):
+        state = os.path.join(self.acct, ".claude", "foreman", "state")
+        os.chmod(state, 0o770)
+        with self.env(), mock.patch.object(sprove.sys, "stderr", new_callable=io.StringIO) as err:
+            sprove.keep(self.tree)
+        self.assertIn("writable by others", err.getvalue())
+        self.assertNotIn("FOREMAN_STATE", err.getvalue())
+        with self.env(), mock.patch.object(sprove.sys, "stderr", new_callable=io.StringIO) as err:
+            self.assertIn("writable by others", sprove.words(sprove.NO_RUN))
+            self.assertNotIn("FOREMAN_STATE", sprove.words(sprove.NO_RUN))
+
+    def test_a_new_state_folder_is_made_private_under_a_group_writable_umask(self):
+        """core's makedirs of the state folder: 0o700 when new; an existing folder's mode is left as it is."""
+        fresh = os.path.join(self.tmp, "fresh", "state")
+        old = os.umask(0o002)
+        try:
+            with mock.patch.dict(os.environ, {"FOREMAN_STATE": fresh}):
+                with sprove.c.gate_lock("t"):
+                    pass
+                self.assertEqual(os.stat(fresh).st_mode & 0o777, 0o700)
+                os.chmod(fresh, 0o775)
+                with sprove.c.gate_lock("t"):
+                    pass
+                self.assertEqual(os.stat(fresh).st_mode & 0o777, 0o775)
+        finally:
+            os.umask(old)
+
+
+class StateOverridden(ForemanTestCase):
+    """T-2282: core.state_overridden(), the one test of whether an environment variable moved the state (T-5372 reuses it)."""
+
+    def setUp(self):
+        super().setUp()
+        self.acct = os.path.join(self.tmp, "acct")
+        self.default = os.path.join(self.acct, ".claude", "foreman")
+        os.makedirs(self.default)
+
+    def env(self, **set_):
+        e = {k: v for k, v in os.environ.items() if k not in ("FOREMAN_STATE", "FOREMAN_HOME", "SAMPO_HOME", "HOME")}
+        e.update(HOME=self.acct, **set_)
+        return mock.patch.dict(os.environ, e, clear=True)
+
+    def test_none_set_is_not_an_override(self):
+        with self.env():
+            self.assertFalse(sprove.c.state_overridden())
+
+    def test_foreman_state_alone_is_an_override(self):
+        with self.env(FOREMAN_STATE=os.path.join(self.default, "state")):  # even the default's own path
+            self.assertTrue(sprove.c.state_overridden())
+
+    def test_sampo_home_reaches_state_overridden_through_mirror_env_as_foreman_home(self):
+        """core.mirror_env moves SAMPO_HOME to FOREMAN_HOME and pops it at import, so state_overridden reads only the
+        FOREMAN_ names: a SAMPO_HOME on another folder is an override, one on the default home is none."""
+        for home, want in ((os.path.join(self.tmp, "elsewhere"), True), (self.default, False)):
+            env = {"HOME": self.acct, "SAMPO_HOME": home}
+            sprove.c.mirror_env(env)
+            self.assertNotIn("SAMPO_HOME", env)
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertEqual(sprove.c.state_overridden(), want, home)
+
+    def test_state_overridden_does_not_read_sampo_home_itself(self):
+        """The SAMPO_ names never reach the environment after import (T-2766), so a branch on one would be dead."""
+        with self.env(SAMPO_HOME=os.path.join(self.tmp, "elsewhere")):
+            self.assertFalse(sprove.c.state_overridden())
+
+    def test_foreman_home_is_an_override_only_when_it_differs_from_the_default_home(self):
+        with self.env(FOREMAN_HOME=os.path.join(self.tmp, "elsewhere")):
+            self.assertTrue(sprove.c.state_overridden())
+        with self.env(FOREMAN_HOME=self.default):
+            self.assertFalse(sprove.c.state_overridden())
+        with self.env(FOREMAN_HOME=self.default + "/../foreman/"):  # the same folder spelled another way
+            self.assertFalse(sprove.c.state_overridden())
+        with self.env(FOREMAN_HOME=""):
+            self.assertFalse(sprove.c.state_overridden())
+
+    def test_the_sandbox_fallback_is_not_an_override(self):
+        xdg = os.path.join(self.tmp, "xdg2")
+        alt = os.path.join(xdg, "sampo")
+        os.makedirs(alt, mode=0o700)
+        write(alt, {sprove.c._STATE_MARKER: json.dumps({"default": os.path.join(self.default, "state")})})
+        os.chmod(os.path.join(alt, sprove.c._STATE_MARKER), 0o600)
+        with self.env(XDG_STATE_HOME=xdg):
+            self.assertEqual(sprove.c.state_dir(), alt)  # state did move to the fallback ...
+            self.assertFalse(sprove.c.state_overridden())  # ... by no variable of the state's own
 
 
 if __name__ == "__main__":

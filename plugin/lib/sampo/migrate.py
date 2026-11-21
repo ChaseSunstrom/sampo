@@ -711,8 +711,8 @@ def for_task(p, b, say=print):
     if not any(PATHS.search(f) for f in infra.touched(p, b)):
         return None
     if not (prove.trusted(p.root) or prove._lane_trusted(p, p.root)):
-        say("migration: this task touched migration files; proving them runs the tree's own tool, so it needs your yes "
-            "once per tree: fm prove --migration PATH --yes-run")
+        say(prove.words("migration: this task touched migration files; proving them runs the tree's own tool, so it needs "
+                        "your yes once per tree: fm prove --migration PATH --yes-run"))
         return None
     r = prove.migration(p.root, True, limit=FINISH_T)
     line = f"{r['verdict']}: {r['why']}"

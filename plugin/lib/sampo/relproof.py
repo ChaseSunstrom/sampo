@@ -206,7 +206,7 @@ def prove(root, allowed, limit=RUN_T):
     from sampo import prove as sprove
     r = {"root": root, "entries": []}
     if not allowed:
-        return r | {"verdict": "refused", "why": sprove.NO_RUN}
+        return r | {"verdict": "refused", "why": sprove.no_run()}
     tmp, work = sprove._copy(root)
     end = time.time() + limit
     try:

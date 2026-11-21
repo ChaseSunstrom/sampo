@@ -72,6 +72,18 @@ class InstallEnv(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("Updating " + h, r.stdout)
 
+    def test_a_new_state_folder_is_private_even_under_a_group_writable_umask(self):
+        """T-2282: prove's trust reads the state folder only when it is the user's own; a umask 002 (the private-group
+        default on Fedora and RHEL) must not leave it 0o775."""
+        h = self.home("f")
+        old = os.umask(0o002)
+        try:
+            r = self.run_install(SAMPO_REPO=self.src, SAMPO_HOME=h)
+        finally:
+            os.umask(old)
+        self.check(r, h)
+        self.assertEqual(os.stat(os.path.join(h, "state")).st_mode & 0o777, 0o700)
+
     def test_desktop_repo_names(self):
         # only the one assignment line is run: the rest of install.sh would install things
         for env, want in (({"SAMPO_DESKTOP_REPO": "x/new"}, "x/new"), ({"FOREMAN_DESKTOP_REPO": "x/old"}, "x/old"),

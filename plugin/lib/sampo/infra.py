@@ -345,10 +345,7 @@ def cmd_infra(args, root):
     """fm prove --infra [PATH]: exit 0 none failed (one passed), 1 one failed, 2 nothing checked."""
     from sampo import prove
     if args.yes_run:
-        try:
-            prove.remember(root)
-        except OSError as e:
-            print(f"fm prove: ran on your yes, but couldn't keep it for {root}: {c.plain(str(e))[:300]}", file=sys.stderr)
+        prove.keep(root)
     p = c.find_project(os.getcwd())
     r = infra(root, args.yes_run or prove.trusted(root) or prove._lane_trusted(p, root), p=p)
     from sampo import cli

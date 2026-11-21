@@ -182,7 +182,70 @@ TRUST = "prove-trusted.json"  # T-2202: trees the user ran fm prove --yes-run in
 NO_RUN = "running this tree's tests needs the user's yes, once per tree: sampo prove PATH --yes-run"
 
 
+def _users_own(path, pw):
+    """Whether path is the account's: owned by this uid, not world-writable, and group-writable only when its group is
+    the user's private one (gid is the account's, named for it, no other member): under umask 002 (the Fedora and RHEL
+    default) a folder made without a mode is 0o775 in such a group, which no one else can enter."""
+    if c._private(path):
+        return True
+    try:
+        st, own = os.stat(path), os.lstat(path)
+        if own.st_uid != st.st_uid or st.st_uid != os.getuid() or st.st_mode & 0o002:
+            return False
+        import grp
+        g = grp.getgrgid(st.st_gid)
+        return st.st_gid == pw.pw_gid and g.gr_name == pw.pw_name and not g.gr_mem
+    except (ImportError, KeyError, OSError, AttributeError):
+        return False
+
+
+def _unreal_reason():
+    """Why the state folder fm reads is not the user's own, or "" when it is (T-2282). FOREMAN_STATE and FOREMAN_HOME
+    move it, and so do HOME and a planted XDG_STATE_HOME fallback: the folder is the one core._default_home's rule picks
+    under the account database's home (not $HOME: a session sets that), so a link at the other name lands nothing on it."""
+    if c.state_overridden():
+        return "FOREMAN_STATE or FOREMAN_HOME moves your state folder off your account's home"
+    try:
+        import pwd
+        pw = pwd.getpwuid(os.getuid())
+        base = os.path.join(pw.pw_dir, ".claude")
+    except (ImportError, KeyError, OSError):
+        return "the account database has no entry for you, so your own home can't be told"
+    state = os.path.realpath(os.path.join(c._default_home(base), "state"))
+    if not os.path.isdir(state):
+        return f"{state} does not exist yet"
+    if not _users_own(state, pw):
+        return f"{state} is owned by someone else or writable by others"
+    if os.path.realpath(c.state_dir()) != state:
+        return (f"fm reads its state from {c.state_dir()}, not your account's {state} "
+                "(HOME, XDG_STATE_HOME or the sandbox fallback moved it)")
+    return ""
+
+
+def _state_why():
+    """"" when the state folder is the user's own, else why not. Tests that need a trusted tree patch _state_is_real."""
+    return "" if _state_is_real() else (_unreal_reason() or "it is not your own")
+
+
+def _state_is_real():
+    """T-2282: whether the state folder fm reads is the user's own: no variable can say yes (T-2202), since a session that
+    sets one holds a folder with a trust file of its own making. Tests that need a trusted tree patch this one function."""
+    return _unreal_reason() == ""
+
+
+def words(s):
+    """s, a message that promises "once per tree", worded for a state that keeps no yes (T-2282)."""
+    why = _state_why()
+    return s if not why else s.replace("once per tree", f"on each run (a yes is not kept: {why})")
+
+
+def no_run():
+    return words(NO_RUN)
+
+
 def _trusted():
+    if not _state_is_real():
+        return set()
     try:
         with open(os.path.join(c.state_dir(), TRUST)) as f:
             return {x for x in json.load(f) if isinstance(x, str)}
@@ -192,12 +255,28 @@ def _trusted():
 
 def trusted(root):
     """A tree the user said yes to. Nothing in a tree can say it's the user's (an author email is anyone's to write),
-    and no environment variable either: FOREMAN_HOME is a session's to set (T-2202)."""
+    and no environment variable either: FOREMAN_STATE, FOREMAN_HOME and HOME are a session's to set, so under one
+    that moves the state off the user's own nothing is trusted and each run takes --yes-run (T-2202, T-2282)."""
     return os.path.realpath(root) in _trusted()
 
 
 def remember(root):
+    """Keep the user's yes for root. Under a moved state folder it keeps nothing (the read refuses it anyway), so a
+    planted FOREMAN_STATE gets no file a later read without the variable would honour."""
+    if not _state_is_real():
+        return False
     c.write_atomic(os.path.join(c.state_dir(), TRUST), json.dumps(sorted(_trusted() | {os.path.realpath(root)})))
+    return True
+
+
+def keep(root):
+    """remember(root) for a --yes-run: says so when it can't (a disk error, or a state folder that keeps no yes)."""
+    try:
+        if not remember(root):
+            print(f"fm prove: ran on your yes, but it is not kept for {root}, so the next run asks again: "
+                  f"{_state_why() or 'the state folder is not your own'}", file=sys.stderr)
+    except OSError as e:
+        print(f"fm prove: ran on your yes, but couldn't keep it for {root}: {c.plain(str(e))[:300]}", file=sys.stderr)
 
 
 def _t(end):
@@ -515,14 +594,14 @@ def prove(root, found, limit=10, deadline=DEADLINE, run=True):
                               "only the tree" if again else
                               "not re-found on a fresh copy: it depends on something outside the tree")
         elif f["kind"] == "untested" and not run:
-            t.update(verdict="lead", evidence=NO_RUN)
+            t.update(verdict="lead", evidence=no_run())
         elif f["kind"] == "untested":
             if suite is None and why is None:
                 suite, control, why = _pick(root, _code(root), flagged, t0 + deadline)
             v, e = ("lead", why) if not suite else _untested(root, f, suite, control, t0 + deadline)
             t.update(verdict=v, evidence=e, fixed=e.startswith(RAN))
         elif f["kind"] == "flaky" or f["kind"] in MODEL:
-            v, e = (_flaky if f["kind"] == "flaky" else _written)(root, f, t0 + deadline) if run else ("lead", NO_RUN)
+            v, e = (_flaky if f["kind"] == "flaky" else _written)(root, f, t0 + deadline) if run else ("lead", no_run())
             t.update(verdict=v, evidence=e)
         else:
             t.update(verdict="lead", evidence=f"a {f['kind']} needs a failing test that shows it before it counts")
@@ -543,7 +622,7 @@ def migration(root, allowed, limit=RUN_T):
     SQL dialect can't run it here) or unknown (no tool recognized); the real database is never opened."""
     from sampo import migrate
     if not allowed:
-        return {"root": root, "tool": None, "verdict": "refused", "why": NO_RUN}
+        return {"root": root, "tool": None, "verdict": "refused", "why": no_run()}
     tmp, work = _copy(root)
     try:
         r = migrate.run(os.path.realpath(root), work, tmp, time.time() + limit)
@@ -612,7 +691,7 @@ def docs_proof(root, files, allowed, limit=RUN_T):
             todo.append(x)
     if not allowed:
         for x in todo:
-            x["claim"]["why"] = "not run: " + DOCS_NO_RUN
+            x["claim"]["why"] = "not run: " + words(DOCS_NO_RUN)
     if not allowed or not todo:
         return res
     by = {(x["file"], x["kind"], x["detail"]): x for x in claims}
@@ -725,8 +804,8 @@ def cmd_steer(args):
         print("fm prove --steer: run it inside a Sampo project", file=sys.stderr)
         return 2
     if not _yes(args, p.root):  # each check runs this tree's code at an older commit: the other modes' consent
-        print("fm prove --steer runs this tree's tests at older commits, so it needs the user's yes, once per tree: "
-              "fm prove --steer --yes-run", file=sys.stderr)  # T-2732: the user's to run, as the guard holds it
+        print(words("fm prove --steer runs this tree's tests at older commits, so it needs the user's yes, once per tree: "
+                    "fm prove --steer --yes-run"), file=sys.stderr)  # T-2732: the user's to run, as the guard holds it
         return 2
     rows, briefs, ran, res = c._decision_rows(p), {}, {}, []
     for i, (date, tags, text) in enumerate(rows):
@@ -770,10 +849,7 @@ def cmd_steer(args):
 def _yes(args, root):
     """Whether fm prove may run this tree's code: --yes-run (kept for the tree), a kept yes, or the main checkout's."""
     if args.yes_run:
-        try:
-            remember(root)
-        except OSError as e:
-            print(f"fm prove: ran on your yes, but couldn't keep it for {root}: {c.plain(str(e))[:300]}", file=sys.stderr)
+        keep(root)
     return args.yes_run or trusted(root) or _lane_trusted(c.find_project(os.getcwd()), root)
 
 
@@ -844,10 +920,7 @@ def _prove(args):
         print(f"fm prove: {bad}", file=sys.stderr)
         return 2
     if args.yes_run:  # the user's yes (the guard keeps the flag theirs), kept for this tree once the call is valid (T-2235)
-        try:
-            remember(root)
-        except OSError as e:
-            print(f"fm prove: ran on your yes, but couldn't keep it for {root}: {c.plain(str(e))[:300]}", file=sys.stderr)
+        keep(root)
     try:
         found = find.scan(root, find.precision(p) if p else {})[1]
         for key, f in find.keyed(
@@ -861,8 +934,8 @@ def _prove(args):
         t0, bugs = time.time(), []
         if args.bugs:  # T-2242: a cheap child's candidates, each still proven by a red test
             if not allowed:
-                print("fm prove: --bugs runs the tree's code, so it needs the user's yes, once per tree: fm prove --bugs "
-                      "--yes-run (no candidates asked)", file=sys.stderr)  # T-2732
+                print(words("fm prove: --bugs runs the tree's code, so it needs the user's yes, once per tree: fm prove "
+                            "--bugs --yes-run (no candidates asked)"), file=sys.stderr)  # T-2732
             elif _sensitive(root):
                 print("fm prove: --bugs: sensitive project, no model-written test (no candidates asked)", file=sys.stderr)
             else:
@@ -873,7 +946,7 @@ def _prove(args):
         # ponytail: each --only re-check scans and runs the suite up to three times; cache per tree id if it drags
         m = re.fullmatch(r"bug-(.*)", args.only or "")
         if m:  # a bug-rung id is in no scan: its kept test is rerun
-            fixed, why = _recheck(root, m.group(1), t0 + DEADLINE) if allowed else (False, NO_RUN)
+            fixed, why = _recheck(root, m.group(1), t0 + DEADLINE) if allowed else (False, no_run())
             res = {"root": root, "suite": None, "control": None,
                    "tickets": [{"verdict": "lead", "evidence": why, "fixed": fixed}]}
         else:

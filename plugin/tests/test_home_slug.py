@@ -84,6 +84,9 @@ class HomeNames(ForemanTestCase):
             for mod in mods:
                 self.assertEqual(mod.home_dir(), want, f"{label}: {mod.__name__}")
             self.assertEqual(py.saved_path(), os.path.join(want, "state", "python"), label)
+            bare = {k: v for k, v in os.environ.items() if k != "FOREMAN_HOME"}  # T-2282: state_overridden's copy of the rule
+            with mock.patch.dict(os.environ, bare, clear=True):
+                self.assertEqual(c._default_home(), c.foreman_home(), f"{label}: _default_home")
             return want
 
         self.assertEqual(check("neither"), os.path.join(claude, "foreman"))
