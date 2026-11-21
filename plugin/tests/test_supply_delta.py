@@ -327,7 +327,7 @@ class SupplyDelta(ForemanTestCase):
 
     def test_a_hooks_module_reads_as_a_module_not_an_event(self):
         ui = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-                          "mods", "foreman-ui")
+                          "mods", "sampo-ui")
         caps = plugins.capabilities(ui)
         self.assertEqual(caps["modules"], ["register.tsx"])
         self.assertNotIn("modules", caps["hooks"])

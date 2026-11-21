@@ -342,7 +342,7 @@ The UI mod, the Pages site and the README's recordings.
 
 - `demo/` the README's recordings [→ files-1](docs/map/files-1.md)
 - `site/` the GitHub Pages site (T-1206, T-1220): the hand-built landing… [→ files-1](docs/map/files-1.md)
-- `mods/foreman-ui/` the UI mod (function-hook plugin `sampo-ui@sampo`)… [→ files-1](docs/map/files-1.md)
+- `mods/sampo-ui/` the UI mod (function-hook plugin `sampo-ui@sampo`)… [→ files-1](docs/map/files-1.md)
 
 ### Runtime: local/, backups/, state/ and ~/.claude
 

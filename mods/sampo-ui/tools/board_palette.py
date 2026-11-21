@@ -40,7 +40,7 @@ def main():
                 same = f.read() == want
         except OSError:
             same = False
-        print("board palette: " + ("matches the tokens" if same else "stale: run mods/foreman-ui/tools/board_palette.py"))
+        print("board palette: " + ("matches the tokens" if same else "stale: run mods/sampo-ui/tools/board_palette.py"))
         return 0 if same else 1
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(want)

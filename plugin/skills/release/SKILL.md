@@ -21,7 +21,7 @@ The procedure is `../playbooks/references/release/release-and-changelog.md`; thi
 
 `sampo release VERSION` runs check, bump, changelog, commit, release-check, canary, push and round close as named steps with a checkpoint after each:
 - `sampo release VERSION --dry-run` prints the plan first; `sampo release VERSION --resume` continues a stopped run; `--abandon` forgets one.
-- `--ui V` is required when `mods/foreman-ui` changed since the last release.
+- `--ui V` is required when `mods/sampo-ui` changed since the last release.
 - `sampo release-check` (sampo doctor and sampo demo in a temporary HOME) is one of the steps; run it alone to see a failure.
 - `sampo release VERSION --push` merges into origin's main and pushes; it spends the active task's publish grant and refuses without one, after `--no-check`, or (unless `--stale-ok REASON`) on a red or stale guard replay. Without `--push` nothing leaves the machine; `--push` later runs only the push.
 

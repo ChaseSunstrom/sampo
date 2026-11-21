@@ -16,7 +16,7 @@
     },
     {
       "name": "sampo-ui",
-      "source": "./mods/foreman-ui",
+      "source": "./mods/sampo-ui",
       "description": "Sampo inside Claude Code (mods): one docked panel that fits the screen and never jumps (what needs you, the task with its stage rail and progress, what runs now, live charts of the session, the queue), a band above the prompt when it's closed, toasts and one-press approve/next/drive/inbox actions. Needs a Claude Code build with function-hook plugins.",
       "version": "0.20.0"
     },

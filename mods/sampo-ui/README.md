@@ -5,7 +5,7 @@ Sampo inside Claude Code: the docked pane, the band above the prompt, toasts and
 
     /plugin install sampo-ui --marketplace ChaseSunstrom/sampo
 
-Tests: `claude plugin test mods/foreman-ui`.
+Tests: `claude plugin test mods/sampo-ui` (`mods/foreman-ui` stays a link to this folder, so an install that names the old path keeps loading).
 
 - `tools/pane_replay.py render|twin FIXTURE` (T-1534): the pane drawn from a recorded `fm ui --json` view with no live
   session, through this mod's test kit; `twin` diffs two runs (`--matrix`: a third in another time zone and locale).

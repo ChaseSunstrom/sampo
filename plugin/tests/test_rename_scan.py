@@ -14,7 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 BASELINE = 13  # 2026-11-17 (T-3957: demo/*.py joined the scan, its one line renamed; the count had drifted to 13 under 16); 2026-11-04 (T-2946: surfaces widened to looks.html, hooks.json, READMEs, fmguard, hook, bin/fm; 74 found, the guard now says Ward:/Sampo:, 16 left are readers of the old text); 2026-11-03 (T-2818: widened to install.sh, workflows, templates, site/*.py and site/genesis; their prose renamed, Foreman Desktop and the release-subject grep kept, count unchanged at 19):876 before the rename, 720 after the site and README (T-2753, T-2760), 475 after the skills, commands and output style (T-2768), 402 after the library strings and the mod (T-2779; the rest are protocol: the release subject, fmguard's refusal and posture text, which older transcripts and the guard still carry), 61 after MASTER.md (T-2810: MASTER's lines, and the lowercase-id forms KEPT now keeps on every surface), 42 after the mod (T-2807: the code-matched forms it keeps are listed in KEPT), 23 after the agents, listing, output style and install.sh (T-2808), 19 after the rules (T-2809); the goal is 0
 SURFACES = ("README.md", "MASTER.md", "INSTALL.md", "site/*.html", "site/*.js", "plugin/skills/**/*.md",
             "plugin/commands/*.md", "plugin/agents/*.md", ".claude-plugin/marketplace.json",
-            "plugin/.claude-plugin/plugin.json", "plugin/output-styles/*", "mods/foreman-ui/**", "plugin/rules/*.md",
+            "plugin/.claude-plugin/plugin.json", "plugin/output-styles/*", "mods/sampo-ui/**", "plugin/rules/*.md",
             "install.sh", ".github/workflows/*.yml", "plugin/templates/**", "site/*.py",
             "site/genesis/*.html", "site/genesis/*.js", "site/genesis/*.css",
             # T-2946: the cold review found the guard, the looks page, the hooks and the READMEs outside the scan
@@ -289,7 +289,7 @@ OLD_NS_ALLOWED = {
     "plugin/tests/test_cost.py": "old-id reader cases (a transcript's foreman: listings)",
     "plugin/tests/test_hooks.py": "old-id reader cases (a foreman:fm-builder start, a typed /foreman:next)",
     "plugin/tests/test_setup.py": "old-id reader cases (an install record install.sh leaves to move itself)",
-    "mods/foreman-ui/tests/foreman-ui.test.tsx": "the mod's old-id reader cases",
+    "mods/sampo-ui/tests/foreman-ui.test.tsx": "the mod's old-id reader cases",
 }
 
 
@@ -327,7 +327,7 @@ class PluginIds(unittest.TestCase):
             mk = json.load(f)
         self.assertEqual(mk["name"], "sampo")  # T-3707: sampo@sampo; sampo migrate plugins re-adds it on a machine
         sources = {e["name"]: e["source"] for e in mk["plugins"]}
-        self.assertEqual(sources, {"sampo": "./plugin", "sampo-ui": "./mods/foreman-ui", "sampo-design": "./plugins/foreman-design"})
+        self.assertEqual(sources, {"sampo": "./plugin", "sampo-ui": "./mods/sampo-ui", "sampo-design": "./plugins/foreman-design"})
         self.assertEqual(mk.get("renames"), {"foreman": "sampo", "foreman-ui": "sampo-ui", "foreman-design": "sampo-design"})
         for name, src in sources.items():
             with open(os.path.join(ROOT, src, ".claude-plugin", "plugin.json"), encoding="utf-8") as f:

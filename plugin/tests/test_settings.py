@@ -8,7 +8,7 @@ from helpers import ForemanTestCase, read_json, read_text
 
 from sampo import settings
 
-MOD = os.path.join(os.path.dirname(__file__), "..", "..", "mods", "foreman-ui", ".claude-plugin", "plugin.json")
+MOD = os.path.join(os.path.dirname(__file__), "..", "..", "mods", "sampo-ui", ".claude-plugin", "plugin.json")
 
 
 class Schema(unittest.TestCase):
@@ -549,9 +549,9 @@ class PluginSurface(unittest.TestCase):
         self.assertIn("$ARGUMENTS", body)
 
     def test_the_pane_applies_changed_options_on_its_poll(self):
-        mod = os.path.join(self.ROOT, "mods", "foreman-ui")
+        mod = os.path.join(self.ROOT, "mods", "sampo-ui")
         src = read_text(os.path.join(mod, "hooks", "register.tsx"))
-        # a wiring check only: the behaviour's proof is the mod's own test, run by claude plugin test mods/foreman-ui
+        # a wiring check only: the behaviour's proof is the mod's own test, run by claude plugin test mods/sampo-ui
         poll = src[src.index("async function pollOptions("):src.index("async function tick(")]
         tick = src[src.index("async function tick("):src.index("async function gauge(")]
         self.assertIn("$.config.list()", poll, "the engine's current option values")

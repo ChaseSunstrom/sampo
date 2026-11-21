@@ -386,7 +386,7 @@ class Forge(unittest.TestCase):
                 tree = ast.parse(f.read())
             said = [n.value for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
             self.assertEqual([s for s in said if re.search(r"\bForeman\b|FOREMAN CODE", s)], [], path)
-        mod = os.path.join(os.path.dirname(PLUGIN), "mods", "foreman-ui", "hooks")
+        mod = os.path.join(os.path.dirname(PLUGIN), "mods", "sampo-ui", "hooks")
         for name in sorted(os.listdir(mod)):
             with open(os.path.join(mod, name), encoding="utf-8") as f:
                 for n, line in enumerate(f, 1):
@@ -3793,7 +3793,7 @@ class MotionVisuals(unittest.TestCase):
         self.assertEqual(ssettings.set_plugin("palette", "riso"), "riso")
         self.assertEqual(self.options(), {"palette": "riso"})
         root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        with open(os.path.join(root, "mods", "foreman-ui", "hooks", "kit.ts"), encoding="utf-8") as f:
+        with open(os.path.join(root, "mods", "sampo-ui", "hooks", "kit.ts"), encoding="utf-8") as f:
             riso = re.search(r"\briso: \{([^}]*)\}", f.read())
         night = tui().RISO["night"]  # the pane sits on the terminal's own (dark) background
         self.assertEqual(dict(re.findall(r"(\w+): 0x([0-9a-f]{6})", riso.group(1))),

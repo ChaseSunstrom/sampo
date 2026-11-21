@@ -28,7 +28,7 @@ FM = [sys.executable, os.environ.get("FOREMAN_RELEASE_FM") or os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))), "bin", "fm")]
 STEPS = [("tree", "the working tree is clean"),
          ("check", "fm check passes (the full gates)"),
-         ("bump", "plugin.json, both marketplace.json entries, and foreman-ui's version when it changed"),
+         ("bump", "plugin.json, both marketplace.json entries, and sampo-ui's version when it changed"),
          ("changelog", "CHANGELOG.md's Unreleased entries are headed VERSION"),
          ("commit", "commit 'Foreman VERSION' with the Sampo-Task trailer"),
          ("release-check", "fm release-check: doctor and demo in a temporary HOME"),
@@ -102,7 +102,20 @@ def _gate(root, verb):
 
 def _ui_changed(root):
     last = _git(root, "log", "-1", "--format=%H", "-E", f"--grep={MARK}").strip()
-    return bool(_git(root, "diff", "--name-only", f"{last}..HEAD" if last else "HEAD", "--", "mods/foreman-ui").strip())
+    # T-5059: both folders (the link is one tracked entry, the move shows as changes under each): a pre-move last release asks for --ui once
+    return bool(_git(root, "diff", "--name-only", f"{last}..HEAD" if last else "HEAD", "--",
+                     *(f"mods/{n}" for n in _mod_names())).strip())
+
+
+def _mod_names():
+    from sampo import settings
+    return settings.MOD_DIRS
+
+
+def _mod_rel(root):
+    """The UI mod's folder relative to the checkout, the real one (git refuses a path through a link)."""
+    from sampo import settings
+    return os.path.relpath(settings.mod_dir(root), root)
 
 
 def bad_hour(events, hour, least=5):
@@ -131,14 +144,14 @@ def bad_hour(events, hour, least=5):
 def _bump(ctx):
     root, v, ui, old = ctx["root"], ctx["version"], ctx["ui"], ctx["old"]
     if ui is None and _ui_changed(root):
-        _err("mods/foreman-ui changed since the last release: pass --ui VERSION")
+        _err("mods/sampo-ui changed since the last release: pass --ui VERSION")
     pj = os.path.join(root, "plugin", ".claude-plugin", "plugin.json")
     mk = os.path.join(root, ".claude-plugin", "marketplace.json")
-    uj = os.path.join(root, "mods", "foreman-ui", ".claude-plugin", "plugin.json")
+    uj = os.path.join(root, _mod_rel(root), ".claude-plugin", "plugin.json")
     dj = os.path.join(root, DESIGN_PJ)
     data = _json(mk)  # everything read before anything is written
     if ui and not os.path.isfile(uj):
-        _err("no mods/foreman-ui to give --ui to")
+        _err("no mods/sampo-ui to give --ui to")
     meta = data.get("metadata") or {}
     if meta.get("version") == old:  # only what is at the old version moves, as release.py always did
         meta["version"] = v
@@ -184,7 +197,7 @@ def _commit(ctx):
         files = ["plugin/.claude-plugin/plugin.json", ".claude-plugin/marketplace.json", "CHANGELOG.md",
                  "plugin/defaults.json"]  # T-1549: the defaults this release ships, for the next one to compare
         if ctx["ui"]:
-            files.append("mods/foreman-ui/.claude-plugin/plugin.json")
+            files.append(os.path.join(_mod_rel(root), ".claude-plugin", "plugin.json"))
         if os.path.isfile(os.path.join(root, DESIGN_PJ)):
             files.append(DESIGN_PJ)
         b = c.active_brief_fast(ctx["p"], ctx["p"].lane)

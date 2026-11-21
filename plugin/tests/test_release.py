@@ -55,13 +55,14 @@ def stub_env(tmp, root):
 
 class ReleaseCase(ForemanTestCase):
     replayed = True  # T-1401: a fresh green guard corpus replay on record, so --push isn't refused
+    UI = "mods/sampo-ui"  # T-5059: the mod's folder; a checkout from before the move holds mods/foreman-ui (ReleaseOldLayout)
 
     def setUp(self):
         super().setUp()
         put(self.repo, "plugin/.claude-plugin/plugin.json", '{\n  "name": "foreman",\n  "version": "1.0.0"\n}\n')
         put(self.repo, "CHANGELOG.md", "# Changelog\n\n## Unreleased\n- a thing\n\n## 1.0.0 — 2026-01-01\n- first\n")
-        put(self.repo, "mods/foreman-ui/.claude-plugin/plugin.json", '{\n  "name": "foreman-ui",\n  "version": "0.1.0"\n}\n')
-        put(self.repo, "mods/foreman-ui/hooks/a.tsx", "a\n")
+        put(self.repo, self.UI + "/.claude-plugin/plugin.json", '{\n  "name": "sampo-ui",\n  "version": "0.1.0"\n}\n')
+        put(self.repo, self.UI + "/hooks/a.tsx", "a\n")
         put(self.repo, "plugins/foreman-design/.claude-plugin/plugin.json",
             '{\n  "name": "foreman-design",\n  "version": "1.0.0"\n}\n')
         self.market = {"name": "foreman", "metadata": {"version": "1.0.0"}, "plugins": [
@@ -105,6 +106,23 @@ class ReleaseCase(ForemanTestCase):
         return sh(self.repo, "log", "-1", "--format=%s").strip()
 
 
+class ReleaseOldLayout(ReleaseCase):
+    """T-5059: a checkout from before the move still holds mods/foreman-ui as the real folder: the UI change is seen
+    and the bump and the commit write through that name."""
+    UI = "mods/foreman-ui"
+
+    def test_a_ui_change_in_the_old_folder_needs_a_ui_version_and_is_bumped_there(self):
+        put(self.repo, self.UI + "/hooks/a.tsx", "b\n")
+        sh(self.repo, "commit", "-qam", "ui change")
+        r = self.rel("9.9.9", check=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--ui", r.stderr + r.stdout)
+        self.rel("9.9.9", "--resume", "--ui", "0.2.0")
+        self.assertEqual(read_json(os.path.join(self.repo, self.UI, ".claude-plugin/plugin.json"))["version"], "0.2.0")
+        self.assertEqual(self.subject(), "Foreman 9.9.9")
+        self.assertEqual(sh(self.repo, "status", "--porcelain"), "")
+
+
 class Release(ReleaseCase):
     def test_dry_run_lists_every_step_and_changes_nothing(self):
         out = self.rel("9.9.9", "--dry-run").stdout
@@ -140,7 +158,7 @@ class Release(ReleaseCase):
         self.assertIn("already released", self.rel("9.9.9", "--resume").stdout)
 
     def test_a_resume_keeps_the_first_runs_flags(self):
-        put(self.repo, "mods/foreman-ui/hooks/a.tsx", "b\n")
+        put(self.repo, self.UI + "/hooks/a.tsx", "b\n")
         sh(self.repo, "commit", "-qam", "ui change")
         r = self.rel("9.9.9", check=False)
         self.assertNotEqual(r.returncode, 0)
@@ -148,7 +166,7 @@ class Release(ReleaseCase):
         self.rel("9.9.9", "--resume", "--ui", "0.2.0")
         mk = read_json(os.path.join(self.repo, ".claude-plugin/marketplace.json"))
         self.assertEqual(mk["plugins"][1]["version"], "0.2.0")
-        self.assertEqual(read_json(os.path.join(self.repo, "mods/foreman-ui/.claude-plugin/plugin.json"))["version"], "0.2.0")
+        self.assertEqual(read_json(os.path.join(self.repo, self.UI, ".claude-plugin/plugin.json"))["version"], "0.2.0")
 
     def test_a_ui_version_that_isnt_semver_is_refused(self):
         r = self.rel("9.9.9", "--ui", "0.2", check=False)

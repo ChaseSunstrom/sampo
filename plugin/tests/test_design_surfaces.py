@@ -1,6 +1,6 @@
 """T-1651: fm design tokens compiles DESIGN.md's ## Tokens table (the one fm design extract writes) to CSS custom
 properties, an fm code app theme ([colors] for tui.toml, checked the way fm settings checks it) and the Claude Code
-pane's palette (the C object in mods/foreman-ui/hooks/kit.ts)."""
+pane's palette (the C object in mods/sampo-ui/hooks/kit.ts)."""
 import json
 import os
 import re
@@ -14,7 +14,7 @@ from sampo import settings
 HERE = os.path.dirname(os.path.abspath(__file__))
 DESIGN = os.path.join(HERE, "fixtures", "design-surfaces", "DESIGN.md")
 UI = os.path.join(HERE, "fixtures", "design-tokens", "ui")
-KIT = os.path.join(os.path.dirname(PLUGIN), "mods", "foreman-ui", "hooks", "kit.ts")
+KIT = os.path.join(os.path.dirname(PLUGIN), "mods", "sampo-ui", "hooks", "kit.ts")
 
 
 class PaneSaved(ForemanTestCase):  # T-1717

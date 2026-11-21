@@ -938,12 +938,12 @@ RECORDINGS = [
     ("demo/code-tui.jsonl", None, "edit its events (sampo smith tui --events plays them)"),
     ("demo/code-tui*", "plugin/lib/sampo/smithtui.py", "sampo smith tui --record demo/code-tui.mp4 --events "
      "demo/code-tui.jsonl and sampo smith tui --tour --snapshot demo/code-tui-tour.svg"),
-    ("demo/live.*", "mods/foreman-ui", "python3 demo/record_live.py"),
+    ("demo/live.*", "mods/sampo-ui", "python3 demo/record_live.py"),
     ("demo/examples/*", None, "edit its events (the site draws each one's last screen)"),
     ("demo/figures/*", None, "python3 demo/readme_figures.py --refresh"),
     ("docs/assets/screens/board-*", "plugin/web/live", "sampo readme shots of plugin/web/live fed "
      "plugin/tests/fixtures/live/snap-5.json (README, Testing)"),
-    ("docs/assets/screens/claude-code.png", "mods/foreman-ui", "a still from python3 demo/record_live.py's video"),
+    ("docs/assets/screens/claude-code.png", "mods/sampo-ui", "a still from python3 demo/record_live.py's video"),
     ("docs/assets/screens/smith-tui-*", "plugin/lib/sampo/smithtui.py", "sampo smith tui --events "
      "demo/examples/feature.jsonl --snapshot docs/assets/screens/smith-tui-dark.svg (and -light)"),
 ]
@@ -2303,7 +2303,8 @@ def check_mod_release(home=None, listing=None):
     stayed installed while the repo reached 0.5.0). Its hooks are compared, so code changed without a version bump
     counts too."""
     from sampo import plugins as splugins
-    repo = os.path.join(home or c.foreman_home(), "mods", "foreman-ui")
+    from sampo import settings  # T-5059: mods/sampo-ui, else mods/foreman-ui (a checkout from before the move)
+    repo = settings.mod_dir(home or c.foreman_home())
     pid, rec = _install(listing or os.path.expanduser("~/.claude/plugins/installed_plugins.json"), "ui")
     entry = [rec or {}]
     inst = entry[0].get("installPath") if isinstance(entry[0], dict) else None

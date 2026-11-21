@@ -11,7 +11,7 @@ Mods are tested with `claude plugin test` using the `claude-code/testing` harnes
 ## Verify
 - `claude plugin test <mod-dir>`: runs every test file and prints a pass and fail summary.
 - `claude plugin test <mod-dir>` after editing a helper only: the cheap loop for a pure change.
-- `claude plugin test mods/foreman-ui`: this repo's UI mod. It has no package.json, so never `npx vitest run` in it: `claude-code/testing` resolves only under `claude plugin test`.
+- `claude plugin test mods/sampo-ui`: this repo's UI mod. It has no package.json, so never `npx vitest run` in it: `claude-code/testing` resolves only under `claude plugin test`.
 - `npx tsc --noEmit -p <mod-dir>`: the tests type-check against the engine declarations.
 
 ## Test first

@@ -121,7 +121,7 @@ class CloseAffectedReuse(ForemanTestCase):
                    f"    def test_dir(self):\n        self.assertTrue({c.MIRROR!r})\n")  # links the mirror folder
         subprocess.run(["git", "-C", self.repo, "add", "-A"], check=True)
         subprocess.run(["git", "-C", self.repo, "commit", "-qm", "ui and mirror"], check=True)
-        if gated:  # spelled as this repo's are: the gate `claude plugin test mods/foreman-ui`, the runner `cd … && … .`
+        if gated:  # spelled as this repo's are: the gate `claude plugin test mods/sampo-ui`, the runner `cd … && … .`
             self.fm("check", "add", f"echo ui >> {self.count}")
         self.fm("check", "affected", "--for", ".tsx", "--literal", f"cd ui && echo . >> {self.count}")
         tid = self.close()

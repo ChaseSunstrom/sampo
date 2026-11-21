@@ -45,8 +45,21 @@ SHARED = {
 }
 PLUGIN = "sampo-ui"  # T-2879: the mod's plugin name; PLUGINS also holds the one installs had before (core.plugin_ids)
 PLUGINS = (PLUGIN, "foreman-ui")
-_MOD_JSON = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))), "mods", "foreman-ui",
-                         ".claude-plugin", "plugin.json")
+_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(os.path.dirname(__file__)))))
+MOD_DIRS = ("sampo-ui", "foreman-ui")  # T-5059: the mod's folder under mods/, the new name first (foreman-ui stays a link to it)
+
+
+def mod_dir(root=None):
+    """The UI mod's folder in a checkout: mods/sampo-ui, else mods/foreman-ui (a checkout from before the move);
+    mods/sampo-ui when neither has a manifest, so a missing folder is named by its new name."""
+    root = root or _ROOT
+    for name in MOD_DIRS:
+        if os.path.isfile(os.path.join(root, "mods", name, ".claude-plugin", "plugin.json")):
+            return os.path.join(root, "mods", name)
+    return os.path.join(root, "mods", MOD_DIRS[0])
+
+
+_MOD_JSON = os.path.join(mod_dir(), ".claude-plugin", "plugin.json")
 _PLUGIN_RANGES = {"freshAt": (0, 100), "freshTokens": (0, None)}
 _LAYOUT_HELP = {"top": ("panels", "panels across the top"), "columns": ("columns", "panels per column"),
                 "widths": ("list", "each column's share of the width"),
@@ -125,7 +138,7 @@ def _key_entry(name, default):
 
 
 def mod_manifest():
-    """The foreman-ui mod's plugin.json: beside this checkout, else where Claude Code installed it; {} when neither."""
+    """The sampo-ui mod's plugin.json: beside this checkout, else where Claude Code installed it; {} when neither."""
     paths = [_MOD_JSON]
     try:
         with open(os.path.join(claude_dir(), "plugins", "installed_plugins.json"), encoding="utf-8") as f:
@@ -145,7 +158,7 @@ def mod_manifest():
 
 
 def plugin_schema():
-    """One entry per userConfig option of the foreman-ui mod (its plugin.json is the source)."""
+    """One entry per userConfig option of the sampo-ui mod (its plugin.json is the source)."""
     out = []
     for key, spec in (mod_manifest().get("userConfig") or {}).items():
         shared = SHARED.get(key, {})  # its options list the old words too (Claude Code drops a value not in them)

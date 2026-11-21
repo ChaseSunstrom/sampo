@@ -1380,8 +1380,8 @@ APP_STYLES = {  # role -> (fm code style, field): as fmcodetui._theme paints its
     "raised": (("header", "bg"), ("header_dim", "bg"), ("bar", "bg"), ("bar_dim", "bg"), ("key", "bg"),
                ("input", "bg"), ("chip_todo", "bg"), ("panel", "bg"))}
 PANE_KEYS = {"accent": "accent", "ok": "ok", "warn": "warn", "err": "bad", "dim": "muted", "muted": "muted",
-             "track": "border", "white": "text"}  # the C object in mods/foreman-ui/hooks/kit.ts, by role
-PANE_ALL = core.PANE_ALL  # the C object's keys in mods/foreman-ui/hooks/kit.ts (T-1717: fmcore's, for fm ui's reader)
+             "track": "border", "white": "text"}  # the C object in mods/sampo-ui/hooks/kit.ts, by role
+PANE_ALL = core.PANE_ALL  # the C object's keys in mods/sampo-ui/hooks/kit.ts (T-1717: fmcore's, for fm ui's reader)
 
 
 def read_design(path):

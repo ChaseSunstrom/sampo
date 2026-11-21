@@ -412,7 +412,7 @@ def render(d):
 BRIEF = """# Sampo self-improvement pass
 
 You review Sampo (a Claude Code plugin: `~/.claude/foreman`, CLI `fm`, library `plugin/lib/sampo/*.py`, hooks
-`plugin/hooks/`, UI mod `mods/foreman-ui/`) from its own friction, read-only. The digest below is what went wrong or
+`plugin/hooks/`, UI mod `mods/sampo-ui/`) from its own friction, read-only. The digest below is what went wrong or
 slow since the last pass, from Sampo's ledgers and events.
 
 {digest}

@@ -362,13 +362,13 @@ class UiModTestCommand(unittest.TestCase):  # T-3143
             for f in files:
                 if f.endswith((".md", ".py", ".json", ".txt")):
                     for n, line in enumerate(read_text(os.path.join(d, f)).splitlines(), 1):
-                        if re.search(r"vitest", line) and "never" not in line and re.search(r"mods/|foreman-ui", line):
+                        if re.search(r"vitest", line) and "never" not in line and re.search(r"mods/|sampo-ui|foreman-ui", line):
                             bad.append(f"{f}:{n}")
         self.assertEqual(bad, [])
 
     def test_the_mod_card_names_claude_plugin_test_and_warns_off_vitest(self):
         card = read_text(os.path.join(PLUGIN, "skills", "library", "cards", "claude-code", "cc-mod-testing.md"))
-        self.assertIn("claude plugin test mods/foreman-ui", card)
+        self.assertIn("claude plugin test mods/sampo-ui", card)
         self.assertRegex(card, r"never `npx vitest")
 
 

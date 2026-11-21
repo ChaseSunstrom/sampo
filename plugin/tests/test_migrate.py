@@ -185,10 +185,10 @@ class MigratePlugins(ForemanTestCase):
         self.cl = os.path.join(self.h, ".claude")
         self.mk = os.path.join(self.h, "src", "sampo")  # the checkout the directory marketplace points at
         for rel, data in ((".claude-plugin/marketplace.json", {"name": "sampo", "plugins": [
-                              {"name": "sampo", "source": "./plugin"}, {"name": "sampo-ui", "source": "./mods/foreman-ui"},
+                              {"name": "sampo", "source": "./plugin"}, {"name": "sampo-ui", "source": "./mods/sampo-ui"},
                               {"name": "sampo-design", "source": "./plugins/foreman-design"}]}),
                           ("plugin/.claude-plugin/plugin.json", {"name": "sampo", "version": "9.1.0"}),
-                          ("mods/foreman-ui/.claude-plugin/plugin.json", {"name": "sampo-ui", "version": "0.9.0"})):
+                          ("mods/sampo-ui/.claude-plugin/plugin.json", {"name": "sampo-ui", "version": "0.9.0"})):
             self.write(os.path.join(self.mk, rel), data)
         old = {"source": {"source": "directory", "path": self.mk}}
         self.write(os.path.join(self.cl, "settings.json"), {
@@ -266,7 +266,7 @@ class MigratePlugins(ForemanTestCase):
         self.assertEqual(inst["version"], 2)
         e = inst["plugins"]["sampo@sampo"][0]
         self.assertEqual((e["scope"], e["installPath"], e["version"]), ("user", os.path.join(self.mk, "plugin"), "9.1.0"))
-        self.assertEqual(inst["plugins"]["sampo-ui@sampo"][0]["installPath"], os.path.join(self.mk, "mods", "foreman-ui"))
+        self.assertEqual(inst["plugins"]["sampo-ui@sampo"][0]["installPath"], os.path.join(self.mk, "mods", "sampo-ui"))
         known = self.read("plugins/known_marketplaces.json")
         self.assertEqual(sorted(known), ["official", "sampo"])
         self.assertEqual(known["sampo"]["source"], {"source": "directory", "path": self.mk})

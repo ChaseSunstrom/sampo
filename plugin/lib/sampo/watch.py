@@ -839,7 +839,7 @@ def _worktrees(p, briefs):
 
 
 def view(p):
-    """The `fm ui --json` view model (v1; its TS twin is mods/foreman-ui/types/index.d.ts): one snapshot for a
+    """The `fm ui --json` view model (v1; its TS twin is mods/sampo-ui/types/index.d.ts): one snapshot for a
     surface to render, built from gather() so it shows what fm watch shows."""
     from sampo import doctor, selfcheck
     d = gather(p)

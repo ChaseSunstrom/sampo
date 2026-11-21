@@ -2293,8 +2293,8 @@ def _residual(p, tests, keep):
 
 def suite_gate(root, template, checks):
     """T-3544: the gate `template` (an affected-tests command) runs a part of, or None: `python3 plugin/tests/run.py` for
-    `... {names}`. T-3566: compared as what runs (_argv), so `cd mods/foreman-ui && ~/.local/bin/claude plugin test .`
-    is the gate `claude plugin test mods/foreman-ui`."""
+    `... {names}`. T-3566: compared as what runs (_argv), so `cd mods/sampo-ui && ~/.local/bin/claude plugin test .`
+    is the gate `claude plugin test mods/sampo-ui` (T-5059: and `mods/foreman-ui`, the link to it, the same one)."""
     want = _argv(root, template.replace("{names}", "").replace("{tests}", ""))
     return next((g for g in checks if want and _argv(root, g) == want), None)
 
@@ -2317,8 +2317,10 @@ def _argv(root, cmd):
         return None
     exe = os.path.expanduser(argv[0])
     exe = os.path.join(cwd, exe) if "/" in exe else shutil.which(exe) or exe
-    args = [os.path.relpath(os.path.join(cwd, a), root) if os.path.exists(os.path.join(cwd, a)) else a for a in argv[1:]]
-    here = os.path.relpath(cwd, root)
+    top = os.path.realpath(root)  # T-5059: a link is the folder it names: mods/foreman-ui and mods/sampo-ui compare equal
+    rel = lambda p: os.path.relpath(os.path.realpath(p), top)  # noqa: E731
+    args = [rel(os.path.join(cwd, a)) if os.path.exists(os.path.join(cwd, a)) else a for a in argv[1:]]
+    here = rel(cwd)
     return [os.path.realpath(exe)] + args + ([] if here == "." or here in args else [f"(in {here})"])
 
 
@@ -9833,7 +9835,7 @@ def _build_parser(only=None):
     s.add_argument("version", nargs="?", help="MAJOR.MINOR.PATCH")
     s.add_argument("--remote", metavar="URL", help="push to this remote instead of origin")
     s.add_argument("--abandon", action="store_true", help="forget an unfinished release's checkpoints")
-    s.add_argument("--ui", metavar="VERSION", help="foreman-ui's new version (required when mods/foreman-ui changed since the last release)")
+    s.add_argument("--ui", metavar="VERSION", help="sampo-ui's new version (required when mods/sampo-ui changed since the last release)")
     s.add_argument("--push", action="store_true", help="merge into origin's main and push; needs the active task's publish grant")
     s.add_argument("--resume", action="store_true", help="continue from the first unfinished step")
     s.add_argument("--canary-status", action="store_true", help="print the last canary run's report (T-1362)")

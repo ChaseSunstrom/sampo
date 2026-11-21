@@ -860,7 +860,7 @@ reset-claude.sh       optional: reset Claude Code's behavior layer before instal
 release.py            thin wrapper over `sampo release VERSION [--push]` (--push needs the task's publish grant)
 .claude-plugin/       local marketplace "sampo"
 plugin/               the Sampo plugin (sampo, hooks, skills, rules, agents, tests, evals)
-mods/foreman-ui/      the Claude Code pane mod
+mods/sampo-ui/       the Claude Code pane mod (mods/foreman-ui stays a link to it)
 plugins/              plugins Sampo ships beside its own (foreman-design)
 bench/, research/     the benchmark suites and the research behind the model layer
 design/, scripts/     design tokens; one-off scripts

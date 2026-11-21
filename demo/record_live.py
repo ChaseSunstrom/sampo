@@ -26,7 +26,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-spec = importlib.util.spec_from_file_location("shot", os.path.join(ROOT, "mods", "foreman-ui", "tools", "shot.py"))
+spec = importlib.util.spec_from_file_location("shot", os.path.join(ROOT, "mods", "sampo-ui", "tools", "shot.py"))
 shot = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(shot)
 

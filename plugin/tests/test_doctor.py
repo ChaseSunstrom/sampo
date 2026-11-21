@@ -123,8 +123,8 @@ class Checks(_TmpDir):
     def test_mod_release(self):
         # T-0191: every other session draws the installed foreman-ui; it lagged this repo (0.4.0 vs 0.5.0) unnoticed
         repo = os.path.join(self.t, "fhome")
-        self.write("fhome/mods/foreman-ui/.claude-plugin/plugin.json", json.dumps({"name": "foreman-ui", "version": "0.5.0"}))
-        self.write("fhome/mods/foreman-ui/hooks/register.tsx", "new panels\n")
+        self.write("fhome/mods/sampo-ui/.claude-plugin/plugin.json", json.dumps({"name": "sampo-ui", "version": "0.5.0"}))
+        self.write("fhome/mods/sampo-ui/hooks/register.tsx", "new panels\n")  # T-5059: test_mod_rename covers mods/foreman-ui
         inst = os.path.join(self.t, "cache", "foreman-ui", "0.4.0")
         self.write("cache/foreman-ui/0.4.0/hooks/register.tsx", "old rows\n")
         listing = self.write("home/.claude/plugins/installed_plugins.json", json.dumps(

@@ -1,4 +1,4 @@
-"""The UI snapshot harness (mods/foreman-ui/tools/shot.py) never leaks FOREMAN_* into a tmux server's global
+"""The UI snapshot harness (mods/sampo-ui/tools/shot.py) never leaks FOREMAN_* into a tmux server's global
 environment, where every later session would inherit it (T-0138: a leaked FOREMAN_STATE pointed the user's own
 Claude Code session at the demo state)."""
 import os
@@ -7,7 +7,7 @@ import subprocess
 import sys
 import unittest
 
-SHOT = os.path.join(os.path.dirname(__file__), "..", "..", "mods", "foreman-ui", "tools", "shot.py")
+SHOT = os.path.join(os.path.dirname(__file__), "..", "..", "mods", "sampo-ui", "tools", "shot.py")
 
 
 @unittest.skipUnless(shutil.which("tmux"), "needs tmux")

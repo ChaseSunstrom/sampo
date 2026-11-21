@@ -18,7 +18,7 @@ import time
 import unittest
 from unittest import mock
 
-MOD = os.path.join(os.path.dirname(__file__), "..", "..", "mods", "foreman-ui")
+MOD = os.path.join(os.path.dirname(__file__), "..", "..", "mods", "sampo-ui")
 FIXTURE = os.path.join(MOD, "tests", "fixtures", "pane-busy.ts")
 
 

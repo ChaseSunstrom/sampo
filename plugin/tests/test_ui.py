@@ -1,4 +1,4 @@
-"""fm ui --json: the view model the foreman-ui mod renders (mods/foreman-ui/types/index.d.ts is its TS twin), and
+"""fm ui --json: the view model the foreman-ui mod renders (mods/sampo-ui/types/index.d.ts is its TS twin), and
 fm task show --json carrying steps, criteria and depends (T-0076)."""
 import json
 import os
