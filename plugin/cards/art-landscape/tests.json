@@ -1,0 +1,40 @@
+[
+ {
+  "name": "in the card jail the pair is drawn, then reported unrendered: never applied without a render",
+  "inputs": {
+   "out": "img/land",
+   "title": "mountains at dusk",
+   "time": "dusk",
+   "terrain": "mountains",
+   "layers": 5
+  },
+  "expect": "environment",
+  "error_has": [
+   "not rendered"
+  ]
+ },
+ {
+  "name": "known-bad input: a terrain that isn't one is named",
+  "inputs": {
+   "out": "img/land",
+   "title": "lava",
+   "terrain": "lava"
+  },
+  "expect": "bad_input",
+  "error_has": [
+   "terrain"
+  ]
+ },
+ {
+  "name": "known-bad input: one layer is too few",
+  "inputs": {
+   "out": "img/land",
+   "title": "flat",
+   "layers": 1
+  },
+  "expect": "bad_input",
+  "error_has": [
+   "layers"
+  ]
+ }
+]

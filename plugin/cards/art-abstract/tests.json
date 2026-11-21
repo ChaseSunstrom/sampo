@@ -1,0 +1,40 @@
+[
+ {
+  "name": "in the card jail the pair is drawn, then reported unrendered: never applied without a render",
+  "inputs": {
+   "out": "img/art",
+   "title": "orbits",
+   "composition": "orbits",
+   "density": 12,
+   "seed": 7
+  },
+  "expect": "environment",
+  "error_has": [
+   "not rendered"
+  ]
+ },
+ {
+  "name": "known-bad input: a density past the bound is named",
+  "inputs": {
+   "out": "img/art",
+   "title": "too many",
+   "density": 99
+  },
+  "expect": "bad_input",
+  "error_has": [
+   "density"
+  ]
+ },
+ {
+  "name": "known-bad input: a motion that isn't one of the durations is named",
+  "inputs": {
+   "out": "img/art",
+   "title": "fast",
+   "motion": "1s"
+  },
+  "expect": "bad_input",
+  "error_has": [
+   "motion"
+  ]
+ }
+]

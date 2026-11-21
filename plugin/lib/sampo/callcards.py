@@ -1076,7 +1076,9 @@ def _failed(name, run, who):
         r"ModuleNotFoundError: No module named '([^']+)'", run["err"])
     if m:
         what = m.group(1) if m.group(1).startswith("missing ") else f"missing {m.group(1).split('.')[0]}"
-        return _result(name, "environment", error=f"{what[:200]}: install it, or do this without the card")
+        hint = "do this without the card" if what.startswith("missing a render") else \
+            "install it, or do this without the card"
+        return _result(name, "environment", error=f"{what[:200]}: {hint}")
     return _result(name, f"{who}_failed", error=_why(run, who))
 
 

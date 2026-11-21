@@ -1,0 +1,90 @@
+{
+  "name": "art-abstract",
+  "kind": "py",
+  "deterministic": true,
+  "purpose": "Draw an abstract picture as dark and light SVG in the design tokens' colours (board, blueprint or paper): orbits, drifting ribbons, a tile grid or a burst, still or looping.",
+  "examples": [
+    "draw an abstract picture",
+    "abstract art for my header in the board look",
+    "a looping generative pattern as an svg"
+  ],
+  "inputs": {
+    "type": "object",
+    "required": [
+      "out",
+      "title"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "out": {
+        "type": "string",
+        "format": "newpath",
+        "maxLength": 160,
+        "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+      },
+      "title": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 40,
+        "description": "what a screen reader says the picture is"
+      },
+      "style": {
+        "type": "string",
+        "enum": [
+          "board",
+          "blueprint",
+          "paper"
+        ],
+        "default": "board",
+        "description": "the design tokens the colours come from"
+      },
+      "composition": {
+        "type": "string",
+        "enum": [
+          "orbits",
+          "drift",
+          "grid",
+          "burst"
+        ],
+        "default": "orbits",
+        "description": "orbits: rings round a focus; drift: ribbons and motes; grid: a tile weave; burst: rays from a core"
+      },
+      "density": {
+        "type": "integer",
+        "minimum": 3,
+        "maximum": 24,
+        "default": 10,
+        "description": "how many rings, ribbons (at most 6 are drawn), tiles across or ray groups"
+      },
+      "accent": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 5,
+        "default": 0,
+        "description": "the first of the six accent colours; the next two follow it"
+      },
+      "seed": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 9999,
+        "default": 1,
+        "description": "another seed draws another picture from the same slots"
+      },
+      "motion": {
+        "type": "string",
+        "enum": [
+          "none",
+          "48s",
+          "24s",
+          "12s"
+        ],
+        "default": "24s",
+        "description": "one loop's length as a CSS duration, or none for a still picture"
+      }
+    }
+  },
+  "creates": [
+    "$out-dark.svg",
+    "$out-light.svg"
+  ]
+}
