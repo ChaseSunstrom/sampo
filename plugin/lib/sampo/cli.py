@@ -9998,6 +9998,16 @@ def _build_parser(only=None):
     s.add_argument("--say", action="store_true", help="with --tick: the reply and turn the Stop hook saved for this session "
                                                       "(what the hook starts detached), not the newest transcript's")
 
+    s = add("measure", lazy("sampo.measure", "cmd_measure"), tier=("Reports", 1036),
+            help="a named number from the ledger held to a bound, the median in minutes over the window; exit 1 when it misses "
+                 "--max or --min. accept-to-live: accept to the train's merge; accept-to-pushed: accept to the end of the "
+                 "first good ship after the merge (the number sampo status shows) (T-5005)")
+    s.add_argument("name", nargs="?", help="accept-to-live (accept to the train's merge) | accept-to-pushed (accept to the end of the first good "
+                                      "ship after the merge: the number sampo status shows)")
+    s.add_argument("--max", type=float, metavar="MIN", help="the median may not exceed this many minutes")
+    s.add_argument("--min", type=float, metavar="MIN", help="the median may not fall below this many minutes")
+    s.add_argument("--window", type=float, default=1.0, metavar="DAYS", help="landings in the last DAYS days (default 1)")
+
     s = add("sync", lazy("sampo.sync", "cmd_sync"), tier=("Project and settings", 790),
             help="opt-in mirror of this project's briefs, decisions and research in the repo (.sampo/)")
     s.add_argument("action", nargs="?", default="status", choices=["status", "on", "off", "import", "export"])

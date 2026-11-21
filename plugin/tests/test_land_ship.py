@@ -518,7 +518,7 @@ class Times(ShipCase):
             c.save_brief(self.p, b)
         self.fm("lane", "land", "--batch", "1", env={"SAMPO_LAND_SHIP_WAIT_S": "90"}, timeout=240)
         out = self.fm("status").stdout
-        self.assertRegex(out, r"Last land: 2 lane\(s\) in 2 train\(s\); accept-to-live median [\d.]+ min", out)
+        self.assertRegex(out, r"Last land: 2 lane\(s\) in 2 train\(s\); accept-to-pushed median [\d.]+ min", out)
         got = train.last_land(self.p)
         self.assertEqual(len(got["live"]), 2)
         self.assertGreaterEqual(statistics.median(got["live"]), 10 * 60 - 5)

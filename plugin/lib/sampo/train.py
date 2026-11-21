@@ -12,6 +12,7 @@ import fcntl
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -2211,8 +2212,45 @@ def _train_times(p, land_id, n, got, by, wall):
     return row
 
 
+def finite_num(v):
+    """v as a finite float, or None: a ledger field is data; a bool, a string or a NaN is not a time."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    return float(v)
+
+
+def train_accepts(d):
+    """(at, [accept epochs]) of one land_train event's data, or None when its `at` is not a time."""
+    if not isinstance(d, dict):
+        return None
+    at = finite_num(d.get("at"))
+    if at is None:
+        return None
+    acc = d.get("accepted")
+    return at, ([a for a in map(finite_num, acc.values()) if a] if isinstance(acc, dict) else [])
+
+
+def pushed_seconds(evs, trains):
+    """The one accept-to-pushed rule (status and sampo measure): for each (at, accepts) train, each accept's seconds to the
+    end of the first ship_done with exit 0 that started at or after the train's `at` (first by start, whatever order the
+    ledger holds them); a train no ship has followed gives none."""
+    ships = []
+    for e in evs:
+        d = e.get("data") if isinstance(e, dict) and e.get("event") == "ship_done" else None
+        if isinstance(d, dict) and d.get("exit") == 0 and finite_num(d.get("start")) is not None \
+                and finite_num(d.get("end")) is not None:
+            ships.append((float(d["start"]), float(d["end"])))
+    got = []
+    for at, accepts in trains:
+        later = [s for s in ships if s[0] >= at]
+        if later:
+            end = min(later)[1]
+            got += [max(0.0, end - a) for a in accepts]
+    return got
+
+
 def last_land(p):
-    """T-4239: the newest land's trains from the ledger: {lanes, trains, gate, wait (minutes), live}: `live` is each
+    """T-4239: the newest land's trains from the ledger: {lanes, trains, gate, wait (minutes), live}: `live` (accept-to-pushed) is each
     accepted lane's seconds from its accept to the end of the first successful ship that started after its train. None
     when no land has recorded a train."""
     evs = c.ledger_tail(p, 3000, ["land_train", "ship_done"])
@@ -2221,13 +2259,7 @@ def last_land(p):
         return None
     lid = (trains[-1].get("data") or {}).get("land")
     mine = [e["data"] for e in trains if (e.get("data") or {}).get("land") == lid]
-    ships = [e["data"] for e in evs if e.get("event") == "ship_done" and (e.get("data") or {}).get("exit") == 0]
-    live = []
-    for d in mine:
-        for acc in (d.get("accepted") or {}).values():
-            done = next((s for s in ships if s.get("start", 0) >= d.get("at", 0)), None)
-            if done and acc:
-                live.append(max(0.0, done["end"] - acc))
+    live = pushed_seconds(evs, [x for x in map(train_accepts, mine) if x])
     return {"land": lid, "lanes": sum(len(d.get("lanes") or []) for d in mine), "trains": len(mine),
             "gate": round(sum(d.get("gate_s", 0) for d in mine) / 60, 1),
             "wait": round(sum(d.get("wait_s", 0) for d in mine) / 60, 1), "live": live}
@@ -2238,7 +2270,7 @@ def land_line(p):
     got = last_land(p)
     if not got:
         return ""
-    tail = (f"accept-to-live median {statistics.median(got['live']) / 60:.1f} min" if got["live"] else
+    tail = (f"accept-to-pushed median {statistics.median(got['live']) / 60:.1f} min" if got["live"] else
             f"gate {got['gate']} min, waiting {got['wait']} min")
     return f"Last land: {got['lanes']} lane(s) in {got['trains']} train(s); {tail}"
 
