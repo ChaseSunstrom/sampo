@@ -209,11 +209,95 @@ def dropped_class_lines(p, outs):
     return []
 
 
+_DISSENT_ITEM = re.compile(r"- \[[ xX]\] ")
+_ADOPTED = re.compile(r"answered:\s*adopted\b", re.I)  # T-3951: second.task_dissent's resolve format, "— answered: HOW"
+
+
+def panel_counts(dissent):
+    """T-3951: (items, adopted) in a Dissent section's text: every checkbox line is an item the panel raised, and one
+    answered 'adopted' changed the plan. A line in another wording counts as raised, never as adopted."""
+    lines = [ln for ln in (dissent or "").splitlines() if _DISSENT_ITEM.match(ln)]
+    return len(lines), sum(bool(_ADOPTED.search(ln)) for ln in lines)
+
+
+def record_panel(p, b):
+    """T-3951: at a close, one panel_outcome ledger row when the brief holds Dissent items (task, items, adopted, tier),
+    so the join outlives an edited or archived brief. A close without a panel logs nothing."""
+    items, adopted = panel_counts(b.section("Dissent"))
+    if items:
+        c.log_event(p, "panel_outcome", task=b.id, data={"items": items, "adopted": adopted, "tier": b.tier})
+
+
+def panel_join(p, outs=None):
+    """T-3951: [{id, tier, items, adopted, fate}] for every done task: its Dissent items now (else the last
+    panel_outcome row its close logged, for a brief whose Dissent text is gone) joined to its fate. No model call."""
+    outs = outcomes(p) if outs is None else outs
+    kept = {}
+    for e in c.ledger_events(p, ("panel_outcome",)):  # oldest first: the last close wins
+        d = e.get("data") or {}
+        if e.get("task") and isinstance(d.get("items"), int) and isinstance(d.get("adopted"), int):
+            kept[e["task"]] = (d["items"], d["adopted"])
+    rows = []
+    for b in c.load_briefs(p, include_archive=True):
+        if b.id not in outs:
+            continue
+        items, adopted = panel_counts(b.section("Dissent"))
+        if not items:
+            items, adopted = kept.get(b.id, (0, 0))
+        rows.append({"id": b.id, "tier": outs[b.id]["tier"], "items": items, "adopted": adopted,
+                     "fate": outs[b.id]["fate"], "window_done": bool(outs[b.id].get("window_done"))})
+    return rows
+
+
+def panel_rates(rows):
+    """T-3951: {group: [bad, n, waiting]} for the tasks that adopted a panel's item ('panel'), raised items but adopted
+    none ('raised'), and had no Dissent lines ('nopanel'); bad = fixed later or reverted. n counts only closes whose
+    30-day window ended (as track() does; waiting = the closes still inside it), so a newer practice is not read low.
+    Adopted means the plan text changed, not that the panel caused the outcome."""
+    out = {"panel": [0, 0, 0], "raised": [0, 0, 0], "nopanel": [0, 0, 0]}
+    for r in rows:
+        g = out["panel" if r["adopted"] else "raised" if r["items"] else "nopanel"]
+        if not r.get("window_done"):
+            g[2] += 1
+            continue
+        g[0] += r["fate"] in ("fixed later", "reverted")
+        g[1] += 1
+    return out
+
+
+def _panel_part(label, g):
+    bad, n = g[0], g[1]
+    wait = f" ({g[2]} still in the {SURVIVE_DAYS}-day window)" if len(g) > 2 and g[2] else ""
+    return (f"{label} n=0" if not n else f"{label} {round(100 * bad / n)}% ({bad}/{n}) n={n}") + wait
+
+
+def panel_report(p, outs=None):
+    """T-3951: {rows, rates: {S|M|L|all: {group: [bad, n, waiting]}}, lines}: the fixed-or-reverted-after-close rate of
+    panel against no-panel tasks per tier (rival reads skew to M/L, so a tier is the like-for-like read), each with its
+    n; 'all' mixes tiers and is labelled unmatched."""
+    rows = panel_join(p, outs)
+    rates = {t: panel_rates([r for r in rows if r["tier"] == t]) for t in ("S", "M", "L")}
+    rates["all"] = panel_rates(rows)
+    lines = []
+    for k, g in rates.items():
+        if k in ("M", "L") and not any(r["tier"] == k for r in rows):
+            continue
+        name = "all (tiers unmatched)" if k == "all" else k
+        lines.append(f"{name}: {_panel_part('panel', g['panel'])} · {_panel_part('no panel', g['nopanel'])}")
+        if g["raised"][1]:
+            lines.append("  " + _panel_part("raised, none adopted:", g["raised"]))
+    return {"rows": rows, "rates": rates, "lines": lines}
+
+
 def cmd_outcomes(args):
     from sampo import cli
     if getattr(args, "judgment", False):  # T-2461: fm calibration folded in here
         return cmd_calibration(args)
     p = cli.resolve(args)
+    if getattr(args, "panel", False):  # T-3951: fix-after-close rate, panel against no panel
+        res = panel_report(p)
+        return cli.out(args, res, "Fixed or reverted after close (adopted = the plan text changed; no causal claim):\n"
+                                  + "\n".join(res["lines"]))
     if getattr(args, "silent", False) or getattr(args, "census", False) or getattr(args, "backfill", False):  # T-3934
         return cmd_probes(args, p)
     if getattr(args, "predictions", False) or getattr(args, "unmute", None):  # T-2406: the prediction book

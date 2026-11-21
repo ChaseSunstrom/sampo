@@ -1140,6 +1140,10 @@ def cmd_task(args):
         b, _ = mutate(p, args.id, done, "task_done", logged)
         from sampo import outcomes
         outcomes.record_close(p, logged)  # T-1061
+        try:  # T-3951: the Dissent items adopted at this close, kept for the panel join once the brief is archived
+            outcomes.record_panel(p, b)
+        except Exception as e:  # the task is done already; a missing join row must not make that look failed
+            print(f"sampo: warning: panel row not written: {e}", file=sys.stderr)
         if b.tier in c.BIG_TIERS:  # T-4223: a big task's tree, once per state, into big.jsonl (the next estimate's history)
             try:
                 from sampo import bigview
@@ -9481,6 +9485,8 @@ def _build_parser(only=None):
     s.add_argument("--backfill", action="store_true", help="propose an Outcome signal for each FEATURE closed in the "
                    "window (30 days) that has none, from its criteria and CHANGELOG line (T-3934)")
     s.add_argument("--apply", action="store_true", help="--backfill: write the proposals into the briefs")
+    s.add_argument("--panel", action="store_true", help="fixed-or-reverted-after-close rate of tasks that adopted a panel's "
+                   "item against tasks with no Dissent lines, with the n of each; no model call (T-3951)")
     s.add_argument("--atlas", action="store_true", help="by file and language: where work didn't hold (T-0620)")
     s.add_argument("--calibration", action="store_true", help="per tier: median actual/predicted minutes (T-2290)")
     s.add_argument("--judgment", action="store_true", help="the confidence ledger: stated bets scored by outcomes, "

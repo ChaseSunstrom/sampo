@@ -61,6 +61,116 @@ class Outcomes(Base):
         self.assertEqual(data["tasks"][held]["fate"], "held")
 
 
+class PanelJoin(Base):
+    """T-3951: the fix-after-close rate of tasks that adopted a panel's item against tasks with no Dissent lines, each
+    with its n, from the briefs and the fates alone (no model call)."""
+
+    def paneled(self, title, how):
+        """A done task whose Dissent holds one rival item answered `how`, written before the close."""
+        self.fm("task", "new", title, "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true", "--step", "s", "--focus")
+        tid = c.load_briefs(self.p)[-1].id
+        self.fm("task", "dissent", tid, "add", "rival approach: a queue")
+        self.fm("task", "dissent", tid, "resolve", "1", how)
+        self.fm("task", "finish", tid, "--audit", "self", "--run", "true")
+        return tid
+
+    def fix(self, tid):
+        self.fm("capture", f"Crash after {tid} (from {tid})", "--type", "FIX", "--tier", "S")
+
+    def test_both_rates_print_with_the_n_of_each(self):
+        a = self.paneled("Add cache", "adopted: keep the queue")
+        b = self.paneled("Add export", "adopted: keep the queue")
+        self.fix(b)
+        r = self.done("Rename module")
+        d = self.done("Add button")
+        self.fix(d)
+        for t in (a, b, r, d):
+            self.age(t, 40)
+        out = self.fm("outcomes", "--panel").stdout
+        self.assertIn("all (tiers unmatched): panel 50% (1/2) n=2 · no panel 50% (1/2) n=2", out)
+        self.assertIn("S: panel 50% (1/2) n=2 · no panel 50% (1/2) n=2", out)
+        data = json.loads(self.fm("outcomes", "--panel", "--json").stdout)
+        self.assertEqual(sorted(r["id"] for r in data["rows"] if r["adopted"]), sorted([a, b]))
+        self.assertEqual(data["rates"]["all"]["panel"], [1, 2, 0])
+        self.assertEqual(data["rates"]["all"]["nopanel"], [1, 2, 0])
+
+    def test_a_dissent_answered_without_adopting_is_its_own_group(self):
+        a = self.paneled("Add cache", "rejected: too big")
+        r = self.done("Rename module")
+        self.age(a, 40)
+        self.age(r, 40)
+        out = self.fm("outcomes", "--panel").stdout
+        self.assertIn("all (tiers unmatched): panel n=0 · no panel 0% (0/1) n=1", out)
+        self.assertIn("raised, none adopted: 0% (0/1) n=1", out)
+
+    def test_closes_still_inside_the_window_are_not_in_the_rate(self):
+        a = self.paneled("Add cache", "adopted: keep the queue")
+        self.done("Rename module")  # both just closed: the window has not ended
+        out = self.fm("outcomes", "--panel").stdout
+        self.assertIn("S: panel n=0 (1 still in the 30-day window) · no panel n=0 (1 still in the 30-day window)", out)
+        self.age(a, 40)
+        data = json.loads(self.fm("outcomes", "--panel", "--json").stdout)
+        self.assertEqual(data["rates"]["S"]["panel"], [0, 1, 0])
+        self.assertEqual(data["rates"]["S"]["nopanel"], [0, 0, 1])
+
+    def test_each_tier_is_its_own_matched_row_and_all_is_labelled_unmatched(self):
+        from sampo import outcomes
+        a = self.paneled("Add cache", "adopted: keep the queue")
+        r = self.done("Rename module")
+        self.age(a, 40)
+        self.age(r, 40)
+        outs = outcomes.outcomes(self.p)
+        outs[a]["tier"] = "M"
+        rep = outcomes.panel_report(self.p, outs)
+        self.assertEqual(rep["rates"]["M"]["panel"], [0, 1, 0])
+        self.assertEqual(rep["rates"]["S"]["panel"][1], 0)
+        self.assertEqual(rep["rates"]["S"]["nopanel"][1], 1)
+        self.assertEqual(rep["rates"]["L"]["panel"][1], 0)
+        text = "\n".join(rep["lines"])
+        for want in ("M: panel 0% (0/1) n=1", "S: panel n=0", "all (tiers unmatched):"):
+            self.assertIn(want, text)
+
+    def test_an_empty_ledger_prints_n_zero_and_calls_no_model(self):
+        from unittest import mock
+        from sampo import outcomes
+        cache = os.path.join(self.p.dir, "cache", "reverts.json")
+        if os.path.exists(cache):
+            os.remove(cache)  # the cold path: git log is asked, so only a model call is forbidden
+        real = subprocess.run
+
+        def no_claude(cmd, *a, **k):
+            if cmd and os.path.basename(str(cmd[0])) != "git":
+                raise AssertionError(f"a model call ran: {cmd}")
+            return real(cmd, *a, **k)
+        with mock.patch.object(subprocess, "run", side_effect=no_claude), \
+                mock.patch("socket.socket", side_effect=AssertionError("the network was touched")):
+            res = outcomes.panel_report(self.p)
+        self.assertEqual(res["rows"], [])
+        self.assertIn("all (tiers unmatched): panel n=0 · no panel n=0", "\n".join(res["lines"]))
+        out = self.fm("outcomes", "--panel").stdout
+        self.assertIn("all (tiers unmatched): panel n=0 · no panel n=0", out)
+
+    def test_the_close_leaves_a_ledger_row_that_outlives_the_brief_text(self):
+        t = self.paneled("Add cache", "adopted: keep the queue")
+        ev = [e for e in c.ledger_events(self.p, ("panel_outcome",)) if e.get("task") == t]
+        self.assertEqual([(e["data"]["adopted"], e["data"]["items"]) for e in ev], [(1, 1)])
+        self.done("Rename module")
+        b = c.find_brief(self.p, t)  # the Dissent lines lost, as an edited or archived brief can
+        with open(b.path, encoding="utf-8") as f:
+            text = f.read()
+        with open(b.path, "w", encoding="utf-8") as f:
+            f.write(re.sub(r"(?ms)^## Dissent\n.*?(?=^## |\Z)", "", text))
+        from sampo import outcomes
+        row = {r["id"]: r for r in outcomes.panel_join(self.p)}[t]
+        self.assertEqual(row["adopted"], 1)
+
+    def test_old_dissent_wording_without_answered_adopted_counts_as_raised_only(self):
+        from sampo import outcomes
+        self.assertEqual(outcomes.panel_counts("- [x] a — answered: adopted: it\n- [x] b — answered: Adopted\n"
+                                               "- [ ] c\n- [x] d — answered: no\nnot an item\n"), (4, 2))
+        self.assertEqual(outcomes.panel_counts(""), (0, 0))
+
+
 class KeptReverts(Base):
     """T-3692: reverts' answer is kept while git's refs stand still (core.git_stamp), so a focus's three asks run no
     git; a new Revert commit, another n or another checkout's root asks again."""
