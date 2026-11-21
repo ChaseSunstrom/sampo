@@ -187,6 +187,7 @@ One line per module, so two changes to different modules never touch the same li
 - `fmmovemod` (T-3274: `sampo move OLD NEW`), renames a module and rewrites every reference… [→ files-lib-1](docs/map/files-lib-1.md)
 - `fmhomemove` (T-2746: `sampo migrate [--undo] [--dry-run] [--json]`) renames… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmhooks` (incl [→ files-lib-2](docs/map/files-lib-2.md)
+- `fmhooksmoke` (T-5040: `run(plugin=None)` returns `(ok, why)` after feeding a tree's own hooks/hook SessionStart, UserPromptSubmit and a blocked and an allowed Bash call in a scratch home, in about a second; no CLI yet) [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmideas` (tool-less brainstorm children with a coverage map and holes per… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmimg` (T-1630: `sampo img info|diff`, a stdlib PNG codec, 8-bit and below… [→ files-lib-2](docs/map/files-lib-2.md)
 - `fmincident` (T-2388: `sampo capture --incident '<impact>' --signal CMD` runs… [→ files-lib-2](docs/map/files-lib-2.md)
