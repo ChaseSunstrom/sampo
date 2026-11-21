@@ -37,7 +37,8 @@ sends a job to the profiles naming it, else to those declaring none (T-3744).
 The built-in clouds' default model ids (CLOUD below) are only defaults: a models.json profile of the same name
 overrides one.
 
-429 and 5xx are retried (3 tries in all), waiting Retry-After (capped at 20 s) or 1 s, 2 s. Redirects are never
+5xx is retried (3 tries in all), waiting Retry-After (capped at 20 s) or 1 s, 2 s; a 429 is waited out the same way
+(1 s, 2 s, 4 s, ... 20 s) for up to BUSY_WAIT s in all, never past the call's own timeout (T-5386). Redirects are never
 followed (urllib would carry the key to the new host). The key is read only from the env var the profile names,
 stripped, refused if it holds control characters, never sent over plain http to a host that isn't loopback, and
 scrubbed from every error; nothing here logs or writes it. A base_url with a user or password in it is refused.
@@ -90,6 +91,7 @@ def note_call(profile, kind=None):
         pass
 
 TRIES, RETRY_CAP, MAX_BODY, PROBE_TIMEOUT = 3, 20.0, 32 << 20, 0.3
+BUSY_WAIT = 300.0  # T-5386: seconds a call waits out 429s in all (a llama-swap concurrency limit lasts a generation or two)
 ANTHROPIC_VERSION = "2023-06-01"
 KINDS = ("openai", "anthropic", "systemone")  # T-2887: systemone = Jev's typed-decision API, answers decide() only
 
@@ -320,7 +322,9 @@ def _profile(name, d, where):
         if not (isinstance(pu, list) and pu and all(isinstance(x, str) and x for x in pu)):
             bad("purposes must be a non-empty list of job names")
         p["purposes"] = pu
-    for k in ("slots", "max_out"):  # T-2893: parallel requests the server allows; the output budget of a bulk call
+    # T-2893: parallel requests the server allows; the output budget of a bulk call. T-5386: sessions, the agent sessions
+    # (an exam's Smith runs) the endpoint takes at once box-wide; unset, its slots
+    for k in ("slots", "sessions", "max_out"):
         if k in d:
             if isinstance(d[k], bool) or not isinstance(d[k], int) or d[k] <= 0:
                 bad(f"{k} must be a positive whole number")
@@ -1045,7 +1049,14 @@ def _post(url, body, headers, timeout, key):
 
 def _send(url, body, headers, timeout, key):
     data = json.dumps(body).encode()
-    for attempt in range(TRIES):
+    # T-5386: busy is the seconds slept on 429s so far, up to patience: BUSY_WAIT, never past the call's own timeout
+    attempt, busy = -1, 0.0
+    try:
+        patience = min(BUSY_WAIT, float(timeout)) if timeout else BUSY_WAIT
+    except (TypeError, ValueError):
+        patience = BUSY_WAIT
+    while True:
+        attempt += 1
         req = urllib.request.Request(url, data=data, method="POST",
                                      headers=dict(headers, **{"Content-Type": "application/json"}))
         try:
@@ -1059,12 +1070,18 @@ def _send(url, body, headers, timeout, key):
                 text = ""
             finally:
                 e.close()
-            if (status == 429 or status >= 500) and attempt < TRIES - 1 and UNLOADABLE not in text:  # T-3599
+            # T-5386: a 429 (a server's concurrency limit: free once another call ends) is waited out up to patience s
+            # in all; a 5xx gets TRIES tries
+            if UNLOADABLE not in text and (status == 429 and busy < patience or status >= 500 and attempt < TRIES - 1):
                 try:
                     delay = float(hdrs.get("Retry-After"))
                 except (TypeError, ValueError):
                     delay = float(2 ** attempt)
-                _sleep(min(max(delay, 0.0), RETRY_CAP) if delay == delay else 1.0)  # NaN != NaN
+                delay = min(max(delay, 0.0), RETRY_CAP) if delay == delay else 1.0  # NaN != NaN
+                if status == 429:  # at least 1 s, so a Retry-After of 0 can't spin on the server; never past patience
+                    delay = min(max(delay, 1.0), patience - busy)
+                    busy += delay
+                _sleep(delay)
                 continue
             where = f" -> {hdrs.get('Location')}" if 300 <= status < 400 else ""
             raise ModelError(_scrub(f"{url}: HTTP {status}{where}: {' '.join(text.split())[:300]}", key), status)

@@ -2632,3 +2632,120 @@ class SearchArm(ForemanTestCase):
                 r = self.fm("exam", "run", run, *args, check=False)
                 self.assertNotEqual(r.returncode, 0)
                 self.assertIn("--search", r.stdout + r.stderr)
+
+
+class SessionSlots(ForemanTestCase):
+    """T-5386: an exam's Smith sessions take one of their endpoint's session slots box-wide before their clock starts
+    (12 sessions against a 2-slot server came back HTTP 429 and were graded as the model failing), and an answer whose
+    run ended on an endpoint failure records that as its error, with no URL."""
+
+    def setUp(self):
+        super().setUp()
+        import tempfile
+        self.slots = tempfile.mkdtemp(prefix="fm-slots-")
+        self.addCleanup(shutil.rmtree, self.slots, True)
+        self._slots_env = os.environ.get("SAMPO_SESSION_SLOTS_DIR")
+        os.environ["SAMPO_SESSION_SLOTS_DIR"] = self.slots
+
+    def tearDown(self):
+        if self._slots_env is None:
+            os.environ.pop("SAMPO_SESSION_SLOTS_DIR", None)
+        else:
+            os.environ["SAMPO_SESSION_SLOTS_DIR"] = self._slots_env
+        super().tearDown()
+
+    def test_session_slot_count_comes_from_the_profile(self):
+        from sampo import louhi
+        self.assertEqual(louhi._sessions({"sessions": 3, "slots": 2}), 3)
+        self.assertEqual(louhi._sessions({"slots": 2}), 2 * louhi.SESSIONS_PER_SLOT)
+        self.assertIsNone(louhi._sessions({"base_url": "http://h/v1"}))
+        self.assertIsNone(louhi._sessions({"slots": "2", "sessions": 0}))
+
+    def test_session_slot_holds_n_at_once_and_a_freed_one_is_taken(self):
+        from sampo import louhi
+        prof = {"base_url": "http://h.example/v1", "model": "m", "sessions": 2}
+        with louhi._session_slot(prof) as a, louhi._session_slot(prof) as b:
+            self.assertTrue(a["held"] and b["held"])
+            with louhi._session_slot(prof, wait=0.3) as c:
+                self.assertFalse(c["held"])  # past its wait it goes on unheld, never forever
+                self.assertGreaterEqual(c["waited"], 0.3)
+        with louhi._session_slot(prof, wait=0.3) as d:
+            self.assertTrue(d["held"])
+            self.assertLess(d["waited"], 0.3)
+        other = dict(prof, base_url="http://other.example/v1")
+        with louhi._session_slot(prof) as a, louhi._session_slot(prof) as b, louhi._session_slot(other, wait=0.3) as e:
+            self.assertTrue(e["held"])  # another endpoint has slots of its own
+        for name in os.listdir(self.slots):
+            self.assertNotIn("example", name)  # the files are keyed by a hash, never the host
+
+    def test_session_slot_no_gate_without_slots_or_sessions(self):
+        from sampo import louhi
+        with louhi._session_slot({"base_url": "http://h/v1"}, wait=0.1) as s:
+            self.assertEqual(s, {"held": False, "waited": 0.0, "gated": False})
+
+    def arm(self, script, prof):
+        from unittest import mock
+        import tempfile
+        from sampo import louhi, models, smithbench
+        with tempfile.TemporaryDirectory() as tmp:
+            base = os.path.join(tmp, "base")
+            os.makedirs(os.path.join(base, "repo"))
+            fm = os.path.join(tmp, "fm.py")
+            with open(fm, "w") as h:
+                h.write(script)
+            with mock.patch.object(smithbench, "FM", fm), mock.patch.object(models, "resolve", lambda m: dict(prof, name=m)), \
+                    mock.patch.object(models, "complete", lambda *a, **k: {"text": "{}", "tool_calls": [], "usage": {}}):
+                return louhi._smith_arm(base, {"request": "x", "kind": "vuln"}, os.path.join(tmp, "work"), "fake", None,
+                                        os.path.join(tmp, "e.jsonl"))
+
+    def test_session_slot_is_held_while_the_smith_session_runs(self):
+        import contextlib
+        from unittest import mock
+        from sampo import louhi
+        seen = []
+
+        @contextlib.contextmanager
+        def slot(prof, wait=None):
+            seen.append(("take", prof.get("name")))
+            yield {"held": True, "waited": 0.0, "gated": True}
+            seen.append(("give",))
+
+        mark = os.path.join(self.slots, "ran")
+        script = f"import json\nopen({mark!r}, 'w').write('x')\nprint(json.dumps({{'event': 'answer', 'text': 'ok'}}))\n"
+        real_popen = subprocess.Popen
+
+        def popen(*a, **k):
+            argv = a[0] if a else k.get("args")
+            if isinstance(argv, list) and "code" in argv:  # fm code's session, not the git calls before it
+                seen.append(("start",))
+            return real_popen(*a, **k)
+
+        with mock.patch.object(louhi, "_session_slot", slot), mock.patch.object(louhi.subprocess, "Popen", popen):
+            self.arm(script, {"base_url": "http://h/v1", "slots": 2})
+        self.assertEqual([s[0] for s in seen], ["take", "start", "give"])
+        self.assertTrue(os.path.isfile(mark))
+
+    def test_endpoint_fail_is_the_answers_error_without_its_url(self):
+        cases = {"fm code: model: https://box.example/llm/v1/chat/completions: HTTP 429: {\"error\": \"Too many requests\"}":
+                 "the model endpoint failed: HTTP 429",
+                 "fm code: model: https://box.example/v1/chat/completions: HTTP 503: down":
+                 "the model endpoint failed: HTTP 503",
+                 "fm code: model: https://box.example/v1/chat/completions: TimeoutError('timed out')":
+                 "the model endpoint failed: timed out",
+                 "fm code: model: https://box.example/v1/chat/completions: ConnectionRefusedError(111, 'Connection refused')":
+                 "the model endpoint failed: connection refused"}
+        for text, want in cases.items():
+            with self.subTest(text=text[-40:]):
+                script = f"import json\nprint(json.dumps({{'event': 'error', 'text': {text!r}}}))\n"
+                ans = self.arm(script, {"base_url": "http://h/v1"})
+                self.assertEqual(ans["error"], want)
+                self.assertNotIn("box.example", ans["error"])
+                self.assertFalse(ans["done"])
+
+    def test_endpoint_fail_a_models_own_failure_is_no_endpoint_error(self):
+        for text in ("fm code: stopped: out of time (--deadline 1140 s) before step:1 was done",
+                     "fm code: model: https://box.example/v1/chat/completions: HTTP 400: bad request",
+                     "fm code: the plan was refused twice"):
+            with self.subTest(text=text[:40]):
+                script = f"import json\nprint(json.dumps({{'event': 'error', 'text': {text!r}}}))\n"
+                self.assertIsNone(self.arm(script, {"base_url": "http://h/v1"})["error"])

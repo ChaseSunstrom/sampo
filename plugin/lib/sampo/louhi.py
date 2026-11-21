@@ -19,6 +19,7 @@ import random
 import re
 import shlex
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -4147,6 +4148,13 @@ def _arm(agent, search):
 
 SMITH_T, SMITH_LOAD, SMITH_STEPS = 900, 300, 40  # T-2908: a scenario's seconds, extra for a remote endpoint's model load, turns
 SMITH_MARGIN = 60  # T-4083: seconds of the scenario's clock Smith leaves itself to stop and write its trail
+# T-5386: an endpoint takes the profile's `sessions` Smith runs at once box-wide, else SESSIONS_PER_SLOT per server slot
+# (one each: a timed session sharing a slot waits on the other's generations; on 2026-11-20 four sessions on two slots ran 7 of
+# 12 past their clock); a run waits SLOT_WAIT s for one, polling
+# every SLOT_POLL s, then goes on unheld. 12 sessions on a 2-slot server came back HTTP 429 and were graded as failures.
+SESSIONS_PER_SLOT, SLOT_WAIT, SLOT_POLL = 1, 4 * 3600.0, 0.5
+ENDPOINT_FAIL = re.compile(r"\bmodel: \S+: (?:HTTP (?P<status>429|5\d\d)\b|.*?(?P<why>timed out|Connection refused|"
+                           r"Connection reset|Name or service not known|Temporary failure in name resolution))")
 FAILURE_CLASSES = ("malformed", "wrong_tool", "loop", "false_done", "timeout", "refused",
                    "budget", "plan_refused", "no_plan", "finish_refused")  # T-2926: the last four are how a run ends
 # T-3485 (T-3483 part 2): each failure class -> what answers it in Smith (fm code), where, and its state: closed (built),
@@ -4215,6 +4223,68 @@ def _smith_argv(request, model, t, planner=None, reason=None, small=False, steps
             "--stale-ok", "exam scenario: a throwaway copy in its own Smith home (T-2908)"]
 
 
+def _sessions(prof):
+    """T-5386: how many Smith sessions the profile's endpoint takes at once: a positive whole `sessions`, else `slots` x
+    SESSIONS_PER_SLOT, else None (no gate)."""
+    for k, times in (("sessions", 1), ("slots", SESSIONS_PER_SLOT)):
+        v = prof.get(k)
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v * times
+    return None
+
+
+@contextlib.contextmanager
+def _session_slot(prof, wait=SLOT_WAIT):
+    """T-5386: one of the endpoint's _sessions(prof) session slots, box-wide: a flock on one of N files named by a hash
+    of its base_url (never the host) in SAMPO_SESSION_SLOTS_DIR, else a per-user temp dir; the kernel drops it with the process.
+    Polls until one frees or `wait` s pass, then goes on unheld (a stuck holder never stops an exam). Yields {held,
+    waited, gated}; gated is False with no count, no base_url or a slot dir it can't trust."""
+    n, url = _sessions(prof), str(prof.get("base_url") or "")
+    d = os.environ.get("SAMPO_SESSION_SLOTS_DIR") or os.path.join(tempfile.gettempdir(), f"sampo-slots-{os.getuid()}")
+    try:
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        st = os.lstat(d)
+        trusted = stat.S_ISDIR(st.st_mode) and st.st_uid == os.getuid()
+    except OSError:
+        trusted = False
+    if not (n and url and trusted):
+        yield {"held": False, "waited": 0.0, "gated": False}
+        return
+    key, start, fd = hashlib.sha256(url.rstrip("/").encode()).hexdigest()[:16], time.monotonic(), None
+    try:
+        while True:
+            for i in range(n):
+                try:
+                    f = os.open(os.path.join(d, f"{key}-{i}.lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                except OSError:
+                    continue
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    os.close(f)
+                    continue
+                fd = f
+                break
+            left = wait - (time.monotonic() - start)
+            if fd is not None or left <= 0:
+                break
+            time.sleep(min(SLOT_POLL, left))
+        yield {"held": fd is not None, "waited": round(time.monotonic() - start, 3), "gated": True}
+    finally:
+        if fd is not None:
+            os.close(fd)  # closing the descriptor releases the flock
+
+
+def _endpoint_fail(end):
+    """T-5386: a run that ended on its model endpoint (HTTP 429 or 5xx after the client's retries, a timeout, a refused,
+    reset or unresolved connection) -> 'the model endpoint failed: <why>', with no URL; anything else (a 400, a deadline
+    stop, a refused plan: the model's own doing) -> None."""
+    m = ENDPOINT_FAIL.search(str(end.get("text") or "")) if end.get("event") == "error" else None
+    if not m:
+        return None
+    return "the model endpoint failed: " + (f"HTTP {m['status']}" if m["status"] else m["why"].lower())
+
+
 def _smith_arm(base, key, work, model, request, events, planner=None, reason=None, small=False, search=None):
     """T-2908: fm code on a local model profile in a temp copy of the scenario (own Smith home, no user state, the
     smithbench isolation); the tree it leaves is copied to work, Smith's event stream to `events`. The answer has no
@@ -4233,17 +4303,18 @@ def _smith_arm(base, key, work, model, request, events, planner=None, reason=Non
                 subprocess.run(["git", "-c", "user.name=exam", "-c", "user.email=exam@localhost", *a], cwd=wt, env=env,
                                capture_output=True, timeout=60)
         argv = _smith_argv(request or key["request"], model, t, planner, reason, small, search=search)
-        proc = subprocess.Popen(argv, cwd=wt, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True, start_new_session=True)
-        try:
-            out, err = proc.communicate(timeout=t)
-            late = False
-        except subprocess.TimeoutExpired:
-            c.kill_group(proc)
-            out, err = proc.communicate()
-            late = True
-        finally:
-            smithbench.kill_marked(tmp)  # a check fm code started outlives it
+        with _session_slot(prof):  # T-5386: before the clock starts, so a wait for the endpoint costs no deadline
+            proc = subprocess.Popen(argv, cwd=wt, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True, start_new_session=True)
+            try:
+                out, err = proc.communicate(timeout=t)
+                late = False
+            except subprocess.TimeoutExpired:
+                c.kill_group(proc)
+                out, err = proc.communicate()
+                late = True
+            finally:
+                smithbench.kill_marked(tmp)  # a check fm code started outlives it
         evs = list(smithbench._events(out))
         if late:
             evs.append({"event": "timeout", "text": f"no end after {t} s"})
@@ -4280,7 +4351,9 @@ def _smith_arm(base, key, work, model, request, events, planner=None, reason=Non
     return {"findings": found, "notes": [c.redact(str(end.get("text") or ""))[:400]] if end else [],
             "done": end.get("event") == "closed", "cost": 0, "tokens": tokens,
             "confidence": SMITH_CONF.get(evs_end.get("event"), 5),  # T-3676: the run's own end, never the hidden check
-            "error": "timeout" if late else c.redact(err.strip()[-300:] or "fm code gave no events") if crashed else None,
+            # T-5386: an endpoint failure is an errored session, never a weak model's unanswered work
+            "error": "timeout" if late else c.redact(err.strip()[-300:] or "fm code gave no events") if crashed
+            else _endpoint_fail(end),
             "model": c.plain(model)[:60], "planner": c.plain(planner)[:60] if planner else None,
             "reason": reason, "small": bool(small),
             "search": search,  # T-3010: the arm's --search, and how many requests the model was asked (calls per fix)

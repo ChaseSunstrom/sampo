@@ -230,6 +230,40 @@ class OpenAIShape(Base):
         self.assertEqual(self.slept, [3.0])
         self.assertEqual(len(f.seen), 2)
 
+    def test_busy_endpoint_is_waited_out_past_three_tries(self):
+        # T-5386: a llama-swap concurrency_limit 429 lasts while other generations run; three quick tries (1 s, 2 s)
+        # ended every Smith session of a 12-wide exam, which then graded the model as failing
+        busy = (429, {"error": {"message": "Too many requests", "code": "concurrency_limit"}}, None)
+        f = self.fake(*[busy] * 5, (200, oa_reply("ok"), None))
+        r = m.complete(self.profile(f), [{"role": "user", "content": "hi"}])
+        self.assertEqual(r["text"], "ok")
+        self.assertEqual(self.slept, [1.0, 2.0, 4.0, 8.0, 16.0])
+        self.assertEqual(len(f.seen), 6)
+
+    def test_busy_wait_has_an_end(self):
+        f = self.fake((429, "", None))
+        old, m.BUSY_WAIT = m.BUSY_WAIT, 10.0
+        try:
+            with self.assertRaises(m.ModelError) as cm:
+                m.complete(self.profile(f), [{"role": "user", "content": "hi"}])
+        finally:
+            m.BUSY_WAIT = old
+        self.assertEqual(cm.exception.status, 429)
+        self.assertEqual(self.slept, [1.0, 2.0, 4.0, 3.0])  # the last wait is what is left of BUSY_WAIT
+
+    def test_busy_wait_never_outlasts_the_calls_own_timeout(self):
+        # a hook's 5 s call must not sit 5 minutes behind an exam on the same server
+        f = self.fake((429, "", None))
+        with self.assertRaises(m.ModelError) as cm:
+            m.complete(self.profile(f), [{"role": "user", "content": "hi"}], timeout=6)
+        self.assertEqual(cm.exception.status, 429)
+        self.assertEqual(self.slept, [1.0, 2.0, 3.0])
+
+    def test_busy_retry_after_zero_still_waits(self):
+        f = self.fake((429, "", {"Retry-After": "0"}), (200, oa_reply("ok"), None))
+        m.complete(self.profile(f), [{"role": "user", "content": "hi"}])
+        self.assertEqual(self.slept, [1.0])  # a 0 would spin on the server with no wait counted
+
     def test_retry_after_is_capped(self):
         f = self.fake((429, "", {"Retry-After": "9999"}), (200, oa_reply("ok"), None))
         m.complete(self.profile(f), [{"role": "user", "content": "hi"}])
