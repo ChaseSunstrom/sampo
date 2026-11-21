@@ -169,7 +169,7 @@ The plugin-system install changes nothing outside the plugin: the hooks and the 
 gh repo clone ChaseSunstrom/sampo ~/.claude/foreman && ~/.claude/foreman/install.sh
 ```
 
-**Requirements:** Linux, macOS or WSL (not native Windows), `git`, and Python 3.12.7 or newer as `python3`. Claude Code (`claude`, tested on 2.1.319; the pane needs 2.1.299 or later) is optional: without it the installer skips the Claude Code plugin and settings, puts `sampo` on your PATH and wires Codex, Gemini CLI or opencode if it finds them (or points you at `sampo smith`). When Python is older or missing, the installer gets it with Homebrew on macOS or with `uv` elsewhere (no sudo; `python3` goes in `~/.local/bin`).
+**Requirements:** Linux, macOS or WSL (not native Windows), `git`, and Python 3.12.7 or newer (but not 3.13.0, whose argparse drops trailing arguments) as `python3`. Claude Code (`claude`, tested on 2.1.319; the pane needs 2.1.299 or later) is optional: without it the installer skips the Claude Code plugin and settings, puts `sampo` on your PATH and wires Codex, Gemini CLI or opencode if it finds them (or points you at `sampo smith`). When Python is older or missing, the installer gets it with Homebrew on macOS or with `uv` elsewhere (no sudo; `python3` goes in `~/.local/bin`).
 
 **Flags:**
 
@@ -183,7 +183,7 @@ gh repo clone ChaseSunstrom/sampo ~/.claude/foreman && ~/.claude/foreman/install
 - `--no-wiring`: don't touch `~/.claude`.
 - `--no-native`: don't build the native guard binary (step 7; the full doctor run passes it).
 - `--build`: open Claude Code on `/sampo:build` to rebuild from `BUILD_PROMPT.md`.
-- `--desktop`: also install Sampo Desktop from its newest release (the AppImage and a menu entry on Linux x86_64, the app in `~/Applications` on macOS).
+- `--desktop`: also install the desktop app (still named Foreman Desktop, `foreman-desktop`) from its newest release (the AppImage and a menu entry on Linux x86_64, the app in `~/Applications` on macOS).
 
 **What `install.sh` does:**
 
@@ -592,7 +592,7 @@ Also: per-subagent rows, terminal titles and desktop notifications, `sampo watch
 - A config with comments (JSONC) is left alone with a note.
 - The files that load the hooks are protected core, like Claude Code's settings: `~/.codex/hooks.json` and `config.toml`, `~/.gemini/settings.json`, and opencode's `opencode.json` and `plugins/`, including their project-level copies. An agent that edits them, or runs `sampo agents uninstall`, needs your yes.
 
-**MCP:** `sampo mcp` serves the project read-only to any MCP client: its state, next action, recall, research and briefs, the stack library (`lib_suggest`, `lib_search`, `lib_show`) and the instruments (`outline`, `sym`, `impact`, `why`, `fail` on given text, `logs`, `data`, `trace`), `find`, `exam_scorecard` (Rune' done gate) and `genesis_status` (the tower's stage and next action).
+**MCP:** `sampo mcp` serves the project read-only to any MCP client: its state, next action, recall, research and briefs, the stack library (`lib_suggest`, `lib_search`, `lib_show`) and the instruments (`outline`, `sym`, `impact`, `why`, `fail` on given text, `logs`, `data`, `trace`), `find`, `exam_scorecard` (Rune's done gate) and `genesis_status` (the tower's stage and next action).
 - Paths must resolve inside the project, values can't start with `-`, each is length-capped, each call has a timeout, and everything sent is redacted. `sampo mcp register claude` prints the `claude mcp add` line; `sampo mcp register desktop` prints the `mcpServers` stanza for Claude Desktop's config (the sampo binary by absolute path, the project by `-p`), so Desktop reaches `find` and the rest.
 - `sampo mcp new NAME --wrap 'CMD' [--sub a,b]` writes a stdlib-only MCP server for any CLI, plus a test that drives it over stdio. The server runs argv, never a shell; it has a timeout and an output cap; and it refuses to wrap destructive commands (`rm`, `git push`, a shell…). Register it with `sampo mcp register claude DIR`.
 
@@ -655,7 +655,7 @@ The app never talks to a server: it runs `sampo … --json` on this machine, and
 
 `sampo smith "make calc.add add"` runs Sampo's loop without Claude Code, on whatever model you have: a local server (Ollama, LM Studio, llama.cpp, vLLM), a profile in `$SAMPO_HOME/models.json`, or a cloud whose API key is set (`sampo smith models` lists them).
 
-Or it hands each step to a coding CLI you already have: claude, codex, gemini or aider.
+Or it hands each step to a coding CLI you already have: claude, codex, gemini, aider or any other runner `sampo smith runners` lists.
 
 Every edit and command goes past Sampo's Ward first, the harness runs each check itself, and the task closes and commits only when they pass. Ask in plain words:
 
@@ -723,7 +723,7 @@ Real runs of each kind are on the [Smith page](https://chasesunstrom.github.io/s
 - Themes: board (the default), board_paper, night, paper, signal for colour-blind eyes, mono, `classic` and `classic_paper` (the look before the forge, dark and light), and `theme = "riso"` for risograph inks on a paper stock (`palette = "riso"` puts the inks on any theme, and on the pane). On a terminal that draws a half block one column wide, the built track stands up as a lit rail; `?` shows the keys as a poster.
 - `sampo smith tui --print-config > ~/.claude/foreman/tui.toml` gives you its theme, motion, layout and keys to edit. `sampo settings list` shows them beside the Claude Code pane's, `sampo settings set motion reduced` changes one in place, keeping your comments, `sampo settings diff` lists the ones you changed, `sampo settings export` prints them as one share code for `sampo settings import CODE`, and `sampo settings undo` puts the last set or import back.
 - Inside the app, `,` lists the settings by group with search, changed-only and `:set KEY VALUE`; a theme, palette or motion change is a preview until a key keeps it, and goes back after 10 s without one.
-- A Python file in `~/.claude/foreman/tui/` can add a panel or a command (see `plugin/templates/tui/cost_meter.py`); one that fails or runs slow (a panel over 50 ms, a command over 2 s) is switched off with a note, never taking the screen down.
+- A Python file in `~/.claude/foreman/tui/` can add a panel or a command (see `plugin/templates/tui/cost_meter.py`); one that fails or runs slow (a panel over 50 ms on three frames running, a command over 2 s once) is switched off with a note, never taking the screen down.
 - `sampo smith config` lists every Smith setting with its value and where it came from (a flag, the environment, the project, code.toml or models.json, or the default); `--explain KEY` says what one does and how to change it. A code.toml that doesn't parse is named with its line.
 - What a run costs: a claude CLI's own count, or a models.json profile's `"price": {"in": 3, "out": 15}` (USD per million tokens), goes to `sampo budget`'s ledger call by call and onto the run's close line. `--max-usd 2` stops a run once it has spent $2 (a resume keeps what it spent), and each claude turn gets `--max-budget-usd` with what is left.
 - Run events to your own tools: in `$SAMPO_HOME/code.toml`, `[on]` with `closed = "notify-send done"`, `blocked = "…"` or `needs-you = "…"` runs that command with the event's JSON on stdin, past Sampo's Ward, 30 s at most. `sampo state --line` ends with the newest run (`code T-0007 closed`), for tmux and prompt segments.
@@ -735,7 +735,7 @@ Real runs of each kind are on the [Smith page](https://chasesunstrom.github.io/s
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/chart-models-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="demo/figures/chart-models-light.svg">
-  <img src="demo/figures/chart-models-dark.svg" width="560" alt="How often each model picks a task's type right on projects it never saw (leave one project out), from research/models/bench.jsonl">
+  <img src="demo/figures/chart-models-dark.svg" width="560" alt="How often each model picks a task's type right on projects it never saw (leave one project out), scored from a local bench log and kept in demo/figures/data.json">
 </picture></p>
 
 <details>

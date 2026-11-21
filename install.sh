@@ -12,7 +12,7 @@
 #   --no-bypass      don't set it, and don't ask (on a terminal the installer asks; with no terminal it doesn't set it)
 #   --local-models   pull the pinned Ollama embedding models (bge-m3, nomic-embed-text) for the moons funnel; needs ollama installed
 #   --no-local-models  don't, and don't ask (on a terminal the installer asks; with no terminal it doesn't pull)
-#   --no-mod         don't install the foreman-ui mod (band above the prompt, dashboard pane, toasts)
+#   --no-mod         don't install the sampo-ui mod (band above the prompt, dashboard pane, toasts)
 #   --no-wiring      don't wire Sampo into ~/.claude (statusLine wrapper, deny rules, CLAUDE.md block, rules symlink)
 #   --no-native      don't build the native guard binary (step 7; the full doctor run passes it)
 #   anything else    passed through to setup-plugins.sh (e.g. --security, --docs, --apply-conflicts)
