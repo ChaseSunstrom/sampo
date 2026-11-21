@@ -297,6 +297,172 @@ class KnownVars(GuardCase):
         self.assertEqual(sorted(seen - g._NET_VERBS), [])
         self.assertTrue(set(g.FM_STORING) <= g._NET_VERBS and set(g.USER_ONLY_FM) <= g._NET_VERBS)
 
+    # T-5345: options that take a command, found from the parser (not from the guard's own source). A name that is one on
+    # any verb, or a help text that says the value is a command or shell line.
+    _CMD_OPT = re.compile(r"^(--)?(cmd|cmds|command|commands|run|exec|verify|check|same|stack-check|test|tests|test-cmd|"
+                          r"shell|script|probe|bench|signal|wrap|worker|proof|done-when|on-fail|on-pass|hook)$")
+    _CMD_HELP = re.compile(r"\b(CMD|commands?|shell)\b", re.I)
+    # "verb sub --opt": why a command-taking option runs and stores nothing the guard must read
+    _CMD_EXEMPT = {
+        "backtest --rule": "a regex over recorded calls; runs nothing",
+        "bench guard --cmds": "a file of commands the guard JUDGES for coverage, one per line; none is run",
+        "capture --incident": "words of the harm's impact (its --signal is the command, and is read)",
+        "check --for": "a file extension picking which tests a template is for",
+        "code --ping": "the name of an installed runner to ask one question",
+        "code --probe": "a model profile's name to score",
+        "exam --only": "an fnmatch glob over file paths",
+        "prove --check": "an SQL invariant query run against the data store, never a shell line (--run is read)",
+        "readme --url": "where the already running app answers, fetched, never run",
+        "replay --cmd": "the one command the guard judges; its help says never run",
+        "replay --cwd": "the folder the judged command would run in",
+        "doctor --wrong": "a command filed as a labelled guard case (should allow|block, so a dangerous one is the point): "
+                          "replay judges it, and replay --oracle runs it only in a bwrap sandbox that records every program "
+                          "and starts none (replay.report_oracle, oracle.ran_in)",
+        "task ac --evidence": "CMD RESULT typed by the builder, recorded beside the criterion and never run",
+        "task step --evidence": "CMD RESULT typed by the builder, recorded beside the step and never run",
+        "exam <run>":"the id of a run sampo exam gen printed, not a command",
+        "smoke --expect": "a regex its output must match",
+        "task evidence <cmd>": "what the builder says was run, recorded beside RESULT and never run (--run, --run-file are read)",
+    }
+    # "verb sub --opt": the shape the option's value takes when it is not a bare command ({} is the command)
+    _CMD_SHAPE = {"task new --ac": "x :: {}", "concerns --proof": "num:1 via {}", "task ac --text": "x :: {}",
+                  "sandbox <rest>": "run -- {}"}  # a positional's shape is words: the command stands in {}, whole
+
+    @staticmethod
+    def _parser_options():
+        """(path words, option, positionals needed, help) for every option of sampo's real parser, subparsers walked
+        recursively; an alias parser (the same object under two names) is walked once, under its first name."""
+        import argparse
+        from sampo import cli
+        out, seen = [], set()
+
+        def slots(a):  # the words a positional needs on the line: one each (an optional or trailing one needs none)
+            return a.nargs if isinstance(a.nargs, int) else 1 if a.nargs in (None, "+") else 0
+
+        def walk(parser, path, need):
+            if id(parser) in seen:
+                return
+            seen.add(id(parser))
+            own = [a for a in parser._actions if not a.option_strings and not isinstance(a, argparse._SubParsersAction)]
+            here = list(need)
+            for a in own:
+                here.extend([a.dest] * slots(a))
+            for a in parser._actions:
+                if isinstance(a, argparse._SubParsersAction):
+                    for name, sp in a.choices.items():
+                        walk(sp, path + [name], here)
+                    continue
+                if a.choices or a.type in (int, float) or isinstance(a, argparse._HelpAction):
+                    continue  # a flag, a number or a choice holds no command
+                text = a.help if isinstance(a.help, str) else ""
+                meta = " ".join(a.metavar) if isinstance(a.metavar, tuple) else a.metavar or ""  # T-5345 review: `--reviewer CMD`
+                if a.option_strings:
+                    if a.nargs != 0:
+                        long = [o for o in a.option_strings if o.startswith("--")] or a.option_strings
+                        out.append((path, long[0], here, text, None, meta))
+                else:  # a positional: the command takes its place in the line (an optional one stands last)
+                    before = len(need) + sum(slots(b) for b in own[:own.index(a)])
+                    out.append((path, f"<{a.dest}>", here, text, before if slots(a) else len(here), meta))
+        walk(cli.build_parser(), [], [])
+        return out
+
+    _CMD_META = re.compile(r"\b(CMD|COMMAND)\b", re.I)  # a metavar naming the value a command, whatever its option is called
+
+    def _command_options(self, every=False):
+        """{"verb sub --opt": (path, option, positionals needed, slot)} for each option that takes a command; every=True:
+        for every option of the parser, command or not"""
+        found = {}
+        for path, opt, need, help_, at, meta in self._parser_options():
+            # a positional counts by its name only: the help of `check words` or `smoke words` names a command under an
+            # action word (check add CMD), which the scan above and the table tests of those verbs hold
+            if path and (every or self._CMD_OPT.match(opt.strip("<>")) or self._CMD_META.search(meta)
+                         or at is None and self._CMD_HELP.search(help_)):
+                found[" ".join(path + [opt])] = (path, opt, need, at)
+        return found
+
+    def test_every_sampo_option_that_takes_a_command_is_refused_or_exempt(self):
+        # T-5345: T-5001's `sampo board panel add --cmd` stored a shell command the guard never read, and the scan above keyed on
+        # the guard's own `sub == "X"` literals, so nothing went red. This one starts from the parser: every option that takes a
+        # command (by name, or by a help text naming a command or shell), on every verb, must make check_bash refuse the
+        # dangerous command in both spellings (OPTION CMD, OPTION=CMD), or sit in _CMD_EXEMPT with its reason
+        self.maxDiff = None
+        found = self._command_options()
+        self.assertLessEqual({"task evidence --run", "task ac --verify", "task prove --same", "record <cmd>", "whyred <cmd>",
+                              "notify <command>"}, set(found), "the walk finds what the guard reads today")
+        unguarded = []
+        for key, (path, opt, need, at) in sorted(found.items()):
+            if key in self._CMD_EXEMPT:
+                continue
+            shape = self._CMD_SHAPE.get(key, "{}")
+            value = shlex.quote(shape.replace("{}", "rm -rf ~"))
+            if at is not None and shape != "{}":  # words of its own (`sandbox run -- CMD`): the shape is the whole tail
+                words = ["x"] * len(need)
+                words.insert(at, shape.replace("{}", shlex.quote("rm -rf ~")))
+                spellings = ("sampo " + " ".join(path + words),)
+            elif at is None:
+                head = "sampo " + " ".join(path) + " x" * len(need)
+                spellings = (f"{head} {opt} {value}", f"{head} {opt}={value}")
+            else:  # a positional: the command in its own place, and after `--` (argparse's spelling for a leading dash)
+                words = ["x"] * len(need)
+                words.insert(at, value)
+                spellings = ("sampo " + " ".join(path + words), "sampo " + " ".join(path + words[:at] + ["--"] + words[at:]))
+            for spelling in spellings:
+                if self.bash(spelling) is None:
+                    unguarded.append(spelling)
+        self.assertEqual(unguarded, [], "a command option the guard does not read: add a reader and a test row, or an "
+                                        "_CMD_EXEMPT entry with the reason")
+        everything = self._command_options(every=True)
+        for key in self._CMD_EXEMPT:
+            if key not in everything:
+                self.fail(f"_CMD_EXEMPT names {key}, an option the parser no longer has (renamed or removed): drop or rename it")
+            self.assertIn(key, found, f"_CMD_EXEMPT names {key}: the option exists but no longer looks like one that takes a "
+                                      f"command (its name, help or metavar changed): if it takes one now it is newly unguarded, "
+                                      f"else drop the exemption")
+        for key in self._CMD_SHAPE:
+            self.assertIn(key, found, f"_CMD_SHAPE names {key}, which the walk finds no command option under any more")
+
+    def test_each_stored_command_option_of_a_verb_is_read_in_both_spellings(self):
+        # T-5345: one row per FM_CMD_FLAGS reading: the dangerous command is refused after the flag and after flag=, a harmless
+        # one is let through
+        for verb, flags in g.FM_CMD_FLAGS.items():
+            self.assertIn(verb, g.FM_STORING)
+            for flag in flags:
+                with self.subTest(verb=verb, flag=flag):
+                    for ok, cmd in ((False, "rm -rf ~"), (True, "true")):
+                        for spelling in (f"sampo {verb} x {flag} {shlex.quote(cmd)}", f"sampo {verb} x {flag}={shlex.quote(cmd)}"):
+                            self.assertEqual(self.bash(spelling) is None, ok, spelling)
+
+    def test_task_ac_edit_text_stores_the_command_after_its_double_colon(self):
+        # T-5345 review: `task ac ID edit N --text "x :: CMD"` stores CMD as the criterion's verify; _fm_words drops --text's
+        # value, so only the --text reader sees it. Text with no `::` stores no command.
+        for flag in ("--text {}", "--text={}"):
+            with self.subTest(flag=flag):
+                self.assertIsNotNone(self.bash("sampo task ac T-1 edit 1 " + flag.format(shlex.quote("x :: rm -rf ~"))))
+                self.assertIsNone(self.bash("sampo task ac T-1 edit 1 " + flag.format(shlex.quote("x :: true"))))
+                self.assertIsNone(self.bash("sampo task ac T-1 edit 1 " + flag.format(shlex.quote("rm -rf ~ is a bad plan"))))
+
+    def test_sandbox_run_judges_the_command_after_its_options_as_a_bash_command(self):
+        # T-5345 review: `sampo sandbox run [--write P] -- CMD` confines CMD, but the project (and any --write folder) is
+        # writable inside, so `rm -rf .` or `--write ~ -- rm -rf ~` is still destructive: its words are judged like quiet's
+        for cmd in ("sampo sandbox run -- rm -rf ~", "sampo sandbox run -- rm -rf .", "sampo sandbox run -- npm publish",
+                    "sampo sandbox run --write ~ -- rm -rf ~", "sampo sandbox run --net allow --allow h.example -- npm publish",
+                    "sampo sandbox run --net=on --root . -- rm -rf ~", "sampo sandbox run -p x -- npm publish",
+                    "sampo sandbox run rm -rf ~", "sampo sandbox run -- 'rm -rf ~'", "sampo sandbox --write ~ run -- rm -rf ~"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.bash(cmd))
+        # a --write or --root folder over what the guard protects (home holds the credential and Claude Code folders) is a
+        # tree write there, whatever the command inside is
+        for cmd in ("sampo sandbox run --write {home} -- ls", "sampo sandbox run --write={home} -- ls",
+                    "sampo sandbox run --write {home}/.ssh -- ls", "sampo sandbox run --root {home} -- ls",
+                    "sampo sandbox --write {home} run -- ls", "fm sandbox run --write ~ -- ls"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNotNone(self.bash(cmd))
+        for cmd in ("sampo sandbox run -- pytest -q", "sampo sandbox run -- ls", "sampo sandbox run --write /tmp/x -- ls",
+                    "sampo sandbox run --net on -- ls -la", "sampo sandbox status", "sampo sandbox on",
+                    "sampo sandbox allow example.com", "sampo sandbox show"):
+            with self.subTest(cmd=cmd):
+                self.assertIsNone(self.bash(cmd))
+
     def test_the_expansion_net_is_linear_in_the_words_of_a_command(self):
         # T-4785 round 12 (LOW): many expansions in one command are cut once, not once per expansion
         line = "echo " + " ".join(["$(cat f)", "x"] * 400) + " $(cat f) risk off"

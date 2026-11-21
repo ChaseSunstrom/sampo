@@ -80,7 +80,13 @@ FM_GATED = {"plugins", "night", "agents", "serve", "cpu"}  # T-3600 (serve, cpu:
 # check_bash keys on a later word; a new such check adds its verb here, so a word the shell fills in there is refused
 # too (_fm_unread)
 FM_TRAILING = ("quiet", "at")  # T-4785 round 12: verbs whose trailing words are a command sampo runs (_fm_runs)
-FM_STORING = ("task", "intake", "check", "smoke", "notify", "record", "whyred") + FM_TRAILING  # the verbs _fm_stored and
+FM_CMD_FLAGS = {"task": ("--bench", "--probe"), "capture": ("--signal",), "readme": ("--cmd",), "ship": ("--test",),
+                "goal": ("--done-when",), "exam": ("--test-cmd",), "bench": ("--tests", "--reviewer"), "mcp": ("--wrap",),
+                "decide": ("--check",), "code": ("--worker",)}  # T-5345: verb -> its options whose value sampo stores or runs as
+# a command (_fm_stored reads each, in both spellings). A new such option adds its verb and flag here; a test walks sampo's
+# parser for every option that takes a command and fails on one neither read here nor exempted with a reason
+FM_STORING = tuple(dict.fromkeys(("task", "intake", "check", "smoke", "notify", "record", "whyred", "sandbox") + FM_TRAILING
+                                 + tuple(FM_CMD_FLAGS)))  # the verbs _fm_stored and
 # _fm_runs read a command from: a new one adds its verb here. With USER_ONLY_FM and FM_GATED they make _NET_VERBS, and a
 # test scans the sources for a verb literal missing from it
 
@@ -8293,6 +8299,10 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                     found += _run_file_text(val if eq else b, ctx, depth)
             for stored in _fm_runs(sub, rest, fm_args):  # T-0901, T-0898: a command fm keeps or runs
                 found += check_bash(stored, ctx, depth + 1)
+            if sub == "sandbox":  # T-5345 review: a --write or --root folder is a tree the job may rewrite, as cp -r into it is
+                for target in _fm_sandbox_dirs(rest):
+                    found += _target_cats(target, known, bare, cwds, lost, scan, ctx, classify_tree,
+                                          " (sampo sandbox run makes it writable: the job may rewrite what lies under it)")
             if sub == "plugins" and rest[:1] and rest[0] in ("install", "enable", "disable", "add-marketplace"):
                 target = plugin_mark(_one_plugin([a for a in rest[1:] if not a.startswith('-')])) \
                     if rest[0] in ("install", "enable") else ""
@@ -10893,13 +10903,16 @@ def _fm_stored(sub, rest, fm_args):
     (`--ac "x :: CMD"`, `--verify`, `fm task ac … "x :: CMD"`, an Acceptance criteria text's `verify with \`CMD\``,
     an intake `DONE-WHEN: x :: CMD`), `fm task assume --check`, `--same`, `--stack-check`, `fm check add`/`affected`
     ({tests} and {names} read as one word), `fm smoke set cmd`, `fm notify` ($1 read as NOTIFY_PROBE), and the CMD of
-    `fm record` / `fm whyred`. A capture's text runs nothing, so it isn't one."""
+    `fm record` / `fm whyred`, and each verb's FM_CMD_FLAGS option (T-5345: `task --bench`, `capture --signal`, `readme
+    --cmd`, ...). A capture's text runs nothing, so it isn't one."""
     out, words = [], _fm_words(rest)
     section = ""
     for a, b in zip(fm_args, fm_args[1:] + [""]):  # fm refuses abbreviated options, so these are the spellings
         flag, eq, v = a.partition("=") if a.startswith("--") else (a, "", "")
         v = v if eq else b
         if flag in ("--verify", "--same", "--stack-check") or (flag == "--check" and words[:1] == ["assume"]):
+            out.append(v)
+        elif flag in FM_CMD_FLAGS.get(sub, ()):  # T-5345: this verb's other command options
             out.append(v)
         elif flag == "--ac" and " :: " in v:
             out.append(v.rpartition(" :: ")[2])
@@ -10909,6 +10922,8 @@ def _fm_stored(sub, rest, fm_args):
             section = v
         elif flag == "--text" and words[:1] == ["set"] and section.lower().startswith("acceptance"):
             out += re.findall(r"verify with `([^`]+)`", v)
+        elif flag == "--text" and words[:1] == ["ac"] and " :: " in v:  # T-5345 review: `task ac ID edit N --text "x :: CMD"`
+            out.append(v.rpartition(" :: ")[2])
     if sub == "task" and words[:1] == ["ac"]:  # task ac ID ACTION [N] TEXT: the id and action store nothing
         out += [w.rpartition(" :: ")[2] for w in words[3:] if " :: " in w]
     if sub == "intake":
@@ -10925,10 +10940,41 @@ def _fm_stored(sub, rest, fm_args):
     return [x for x in dict.fromkeys(out) if x.strip()]
 
 
+def _fm_sandbox_cmd(rest):
+    """T-5345 review: the command words of `sampo sandbox run [OPTIONS] [--] CMD…` ([] for any other action). bwrap
+    confines the run, but the project folder and each --write folder stay writable inside it, so the words are judged
+    like quiet's. Options (and their values) may stand before the action word and between it and the command."""
+    valued = ("--net", "--allow", "--write", "--root", "--image", "-p", "--project")
+    i, seen_run = 0, False
+    while i < len(rest):
+        a = rest[i]
+        if a == "--":
+            return rest[i + 1:] if seen_run else []
+        if a in valued:
+            i += 2
+        elif a.startswith("-") and len(a) > 1:
+            i += 1
+        elif not seen_run:
+            if a != "run":
+                return []
+            seen_run, i = True, i + 1
+        else:
+            return rest[i:]
+    return []
+
+
+def _fm_sandbox_dirs(rest):
+    """T-5345 review: the folders `sampo sandbox run` makes writable besides the working one: each --write DIR and the
+    --root DIR ([] for any other action). The job may rewrite whatever lies under them, so they are tree targets."""
+    head = rest[:rest.index("--")] if "--" in rest else rest
+    return _opt_values(head, "--write", "--root") if "run" in head else []
+
+
 def _fm_runs(sub, rest, fm_args):
     """The commands an fm call runs or keeps to run from its own words: _fm_stored's (T-0901), and the trailing command
-    of quiet and at (T-0898: fm quiet -- rm -rf ~ used to pass)."""
-    words = _fm_trailing(rest, 1 if sub == "at" else 0) if sub in FM_TRAILING else []
+    of quiet and at (T-0898: fm quiet -- rm -rf ~ used to pass) and of `sandbox run` (T-5345)."""
+    words = _fm_trailing(rest, 1 if sub == "at" else 0) if sub in FM_TRAILING else (
+        _fm_sandbox_cmd(rest) if sub == "sandbox" else [])
     return _fm_stored(sub, rest, fm_args) + (
         [words[0] if len(words) == 1 else " ".join(map(shlex.quote, words))] if words else [])
 
