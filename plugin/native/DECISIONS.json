@@ -1,0 +1,55 @@
+{
+  "about": "T-5030: one row per hot path weighed for Rust. python_ms and native_ms are ms per call on the box named in source, in the row's unit: cpu (whole-process CPU ms, cold, median of 7), wall, or compile (only the pattern-compile step); where a row's two numbers measure different things, source says so; decision is keep (ported and kept), port (queued, not built) or rejected (measured and turned down); basis is measured, or estimate for a path not built yet. plugin/tests/test_native_decisions.py fails a row missing a number, or one its numbers contradict. Add a row before porting; change its basis to measured with the build's number.",
+  "decisions": [
+    {
+      "hot_path": "PreToolUse Read, Agent/Task and outward tools (sampo-fast)",
+      "python_ms": 39,
+      "native_ms": 4,
+      "unit": "cpu",
+      "decision": "keep",
+      "basis": "measured",
+      "task": "T-3571",
+      "source": "research rust-fast-path-design, 2026-11-06, 16 cores: PreToolUse Read 39 ms in Python; CHANGELOG: about 4 ms with the checksum check; the decided call itself is 1.3 ms CPU (docs/map plugin/native)"
+    },
+    {
+      "hot_path": "PreToolUse Bash guard, every rule compiled as a Rust regex at start",
+      "python_ms": 10.3,
+      "native_ms": 28,
+      "unit": "compile",
+      "decision": "rejected",
+      "basis": "measured",
+      "task": "T-3571",
+      "source": "research rust-fast-path-design section 3: compiling the guard's 346 patterns takes 70-86 ms with regex, 28-42 with regex-lite (28 used here, the best case), against 10.3 ms in Python's sre; both numbers are the compile step alone (unit compile), not a whole call"
+    },
+    {
+      "hot_path": "PreToolUse Bash fast-allow (hand-written tokenizer, read-only commands)",
+      "python_ms": 91,
+      "native_ms": 3,
+      "unit": "cpu",
+      "decision": "port",
+      "basis": "estimate",
+      "task": "T-3571",
+      "source": "research rust-fast-path-design section 4, slice 2: a clean Bash call costs 91 ms cold CPU today; the design puts Rust at 1-3 ms total (an estimate of the whole call, not a measured CPU figure); replace with the build's number"
+    },
+    {
+      "hot_path": "PostToolUse Read, Grep and Glob (append the tool line)",
+      "python_ms": 44,
+      "native_ms": 3,
+      "unit": "cpu",
+      "decision": "port",
+      "basis": "estimate",
+      "task": "T-3571",
+      "source": "research rust-fast-path-design section 4, slice 3: PostToolUse on other tools costs 44 ms cold CPU today (native figure is a total-call estimate); the design puts Rust at 1-3 ms total; replace with the build's number"
+    },
+    {
+      "hot_path": "statusline",
+      "python_ms": 36,
+      "native_ms": 3,
+      "unit": "cpu",
+      "decision": "port",
+      "basis": "estimate",
+      "task": "T-3571",
+      "source": "research rust-fast-path-design section 4, slice 4: 36 ms cold CPU today (native figure is a total-call estimate) at 480 calls an hour; the design puts Rust at 1-3 ms total; replace with the build's number"
+    }
+  ]
+}
