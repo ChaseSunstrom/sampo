@@ -1215,6 +1215,53 @@ def awaiting_merge(p, briefs, quiet_min=30, fresh=False):
             and not (i in by_id and parked(by_id[i]))]  # T-3500: a builder with no process record too
 
 
+ORPHAN_H = 24  # T-4938: a finished lane nobody accepted this long is named, not left to sit unseen
+LAND_HOLD_TRAINS = 2  # T-4938: a new builder waits while more than this many trains of lanes wait to land
+
+
+def land_backlog_cap():
+    """T-4938: lanes that may wait to land before a new builder is held: two trains (train.BATCH_MAX each)."""
+    from sampo import train
+    return LAND_HOLD_TRAINS * train.BATCH_MAX
+
+
+def never_accepted(p, briefs, now=None):
+    """T-4938: [(task id, age in seconds)], oldest first, of finished lanes (awaiting_merge: commits past trunk, clean,
+    quiet) that carry no check_state and no accepted_at and whose last commit is ORPHAN_H hours old. Such a lane never
+    got a check, so no train took it and no line named it: 49 sat 5-12 days. The age is the lane's last commit time
+    finished_lanes keeps per lane (its 'ct'); a lane whose time isn't known is left out."""
+    now = time.time() if now is None else now
+    done = awaiting_merge(p, briefs)
+    if not done:
+        return []
+    try:
+        with open(os.path.join(p.dir, "finished.json"), encoding="utf-8") as f:
+            facts = json.load(f)["lanes"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return []
+    by_id = {b.id: b for b in briefs}
+    out = []
+    for i in done:
+        b = by_id.get(i)
+        ct = (facts.get(i) or {}).get("ct") if isinstance(facts, dict) else None
+        if b is None or b.meta.get("check_state") or b.meta.get("accepted_at") or not isinstance(ct, (int, float)):
+            continue
+        if now - ct >= ORPHAN_H * 3600:
+            out.append((i, now - ct))
+    return sorted(out, key=lambda r: -r[1])
+
+
+def never_accepted_line(rows):
+    """The one line for never_accepted's rows ('' for none): how many, the oldest's age, and the two moves."""
+    if not rows:
+        return ""
+    oldest, age = rows[0]
+    n = len(rows)
+    days = int(age // 86400)
+    return (f"{n} finished lane{'s' if n != 1 else ''} never accepted (oldest {days} day{'s' if days != 1 else ''}): "
+            f"sampo lane accept {oldest}, or sampo lane rm {oldest} if superseded")
+
+
 def recover(p, b, main, args):
     """T-2354: the one recovery for the cause its lane stopped by (STOP_CAUSES), never over a builder that may be alive:
     - a process that ended (this host) is proof: recover, as resume does;
@@ -2780,6 +2827,16 @@ def builder_brief(p, b, args, resume_branch=None, after=""):
         raise _batch_refusal(c.PolicyError(
             f"{len(working)} builders are still working ({', '.join(working)}), the cap is {cap}: wait for one to "
             f"return (fm lane max N raises the cap, up to {BUILDERS_MAX})"))
+    hold = land_backlog_cap()
+    why = (getattr(args, "why", None) or "").strip()
+    if len(waiting) > hold and b.priority != "urgent":  # T-4938: finishing beats starting; urgent work drains the pile
+        if why:
+            print(f"sampo: {b.id} briefed past the land backlog ({len(waiting)} finished lanes wait to land, the bar is "
+                  f"{hold}): {why}", file=sys.stderr)
+        else:
+            raise _batch_refusal(c.PolicyError(
+                f"{len(waiting)} finished lanes wait to land, more than two trains ({hold}): land them first (sampo lane "
+                f"land), or give a reason to start this one anyway (sampo lane brief {b.id} --why REASON)"))
     if len(waiting) >= UNMERGED_MAX and b.priority == "urgent":  # T-3964: urgent work trains first and drains the pile
         print(f"sampo: {b.id} is urgent: briefed past the unmerged cap ({len(waiting)} finished lanes wait, the cap is "
               f"{UNMERGED_MAX})", file=sys.stderr)

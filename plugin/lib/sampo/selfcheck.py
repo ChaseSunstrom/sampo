@@ -218,7 +218,14 @@ def landing_rate(p, briefs, now):
             f"so the pile clears in ~{len(waiting) * each / 60:.0f} h at this rate → measure the slowest step and cut it")
 
 
-CHECKS += (landing_rate,)
+def orphaned_lanes(p, briefs, now):
+    """T-4938: finished lanes with commits past trunk that nobody accepted for a day: no check ran, so no train took them
+    and the land line never counted them as held (49 sat 5-12 days). The oldest is named with the two moves."""
+    from sampo import lanes as slanes
+    return slanes.never_accepted_line(slanes.never_accepted(p, c.load_briefs(p) if briefs is None else briefs, now)) or None
+
+
+CHECKS += (landing_rate, orphaned_lanes)
 
 
 UNTRACKED_H, UNTRACKED_STATS = 1, 500  # untracked this long is left behind, not work in progress; files stat'ed

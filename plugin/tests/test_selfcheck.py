@@ -198,6 +198,21 @@ class SelfCheck(ForemanTestCase):
         with mock.patch.object(slanes, "awaiting_merge", return_value=waiting[:4]):
             self.assertIsNone(selfcheck.landing_rate(self.p, [], time.time()), "a short pile says nothing")
 
+    def test_finished_lanes_never_accepted_for_days_are_named_with_the_oldest_and_what_to_do(self):
+        # T-4938: 49 lanes 5-12 days old held commits nobody accepted; no check, so no train and no line anywhere
+        from unittest import mock
+        from sampo import lanes as slanes
+        day = 86400
+        with mock.patch.object(slanes, "never_accepted", return_value=[("T-0012", 12 * day + 5), ("T-0030", 5 * day)]):
+            hit = selfcheck.orphaned_lanes(self.p, [], time.time())
+        self.assertEqual(hit, "2 finished lanes never accepted (oldest 12 days): sampo lane accept T-0012, or sampo "
+                              "lane rm T-0012 if superseded")
+        with mock.patch.object(slanes, "never_accepted", return_value=[("T-0012", 30 * 3600)]):
+            self.assertIn("1 finished lane never accepted (oldest 1 day)", selfcheck.orphaned_lanes(self.p, [], time.time()))
+        with mock.patch.object(slanes, "never_accepted", return_value=[]):
+            self.assertIsNone(selfcheck.orphaned_lanes(self.p, [], time.time()))
+        self.assertIn(selfcheck.orphaned_lanes, selfcheck.CHECKS)
+
     def test_lines_are_cached_and_reach_sampo_next(self):
         self.ask("remake the rune page as kalevala", 20)
         now = time.time()

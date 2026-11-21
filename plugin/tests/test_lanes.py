@@ -1128,6 +1128,64 @@ class Lanes(ForemanTestCase):
             self.assertIn("urgent", err.getvalue())
             self.assertIn("unmerged", err.getvalue())
 
+    def test_a_land_backlog_over_two_trains_holds_a_new_builder_unless_given_a_reason(self):
+        # T-4938: 49 finished lanes sat 5-12 days while new builders kept starting: finishing beats starting
+        from sampo import lanes as slanes
+        from sampo import train
+        p = c.find_project(self.repo)
+        tid = first(self.fm("task", "new", "Next", "--type", "FEATURE", "--tier", "S", "--ac", "ok :: true",
+                            "--step", "s", "--json").stdout)["id"]
+        self.fm("task", "set", tid, "approved=true")
+        wait = [f"T-{9000 + i}" for i in range(2 * train.BATCH_MAX)]
+
+        def brief(waiting, **kw):
+            with mock.patch.object(slanes, "_slots", return_value=([], list(waiting), [])):
+                return slanes.builder_brief(p, c.find_brief(p, tid), argparse.Namespace(model=None, json=False, **kw))
+        brief(wait)  # exactly two trains wait: not more than two
+        with self.assertRaises(c.PolicyError) as e:
+            brief(wait + ["T-9999"])
+        msg = str(e.exception)
+        self.assertIn(f"{len(wait) + 1} finished lanes wait to land", msg)
+        self.assertIn("--why", msg)
+        self.assertTrue(getattr(e.exception, "batch", False), "it holds every task of a --ready batch")
+        with self.assertRaises(c.PolicyError):
+            brief(wait + ["T-9999"], why="  ")  # a blank reason is no reason
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            brief(wait + ["T-9999"], why="the fix the backlog waits on")
+        self.assertIn("the fix the backlog waits on", err.getvalue())
+        self.assertIn("briefed past the land backlog", err.getvalue())
+        with mock.patch.object(train, "BATCH_MAX", 1):  # the bar is two trains of whatever a train takes
+            with self.assertRaises(c.PolicyError):
+                brief(["T-9001", "T-9002", "T-9003"])
+
+    def test_a_finished_lane_never_accepted_for_a_day_is_named_by_next_with_what_to_do(self):
+        # T-4938: 49 lanes 5-12 days old held commits nobody accepted: no check, no train, no line in sampo next
+        from sampo import lanes as slanes
+        old, _ = self.finished_builder(when="2026-01-01T00:00:00")
+        fresh, _ = self.finished_builder(when=time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(time.time() - 3600)))
+        p = c.find_project(self.repo)
+        got = slanes.never_accepted(p, c.load_briefs(p))
+        self.assertEqual([i for i, _age in got], [old], "the lane an hour old is not an orphan yet")
+        self.assertGreater(got[0][1], 24 * 3600)
+        out = self.fm("next").stdout
+        self.assertIn("1 finished lane never accepted (oldest", out)
+        self.assertIn(f"sampo lane accept {old}", out)
+        self.assertIn(f"sampo lane rm {old} if superseded", out)
+        b = c.find_brief(p, old)  # accepted (its check queued or done): the train sees it, the line drops it
+        b.meta["accepted_at"] = str(time.time())
+        c.save_brief(p, b)
+        self.assertEqual(slanes.never_accepted(p, c.load_briefs(p)), [])
+        b.meta.pop("accepted_at")
+        b.meta["check_state"] = "red"  # a check ran: held with its reason, not unseen
+        c.save_brief(p, b)
+        self.assertEqual(slanes.never_accepted(p, c.load_briefs(p)), [])
+
+    def test_the_parser_takes_why_on_a_brief(self):  # T-4938
+        from sampo import cli
+        args = cli.build_parser().parse_args(["lane", "brief", "T-1", "--why", "the backlog waits on it"])
+        self.assertEqual(args.why, "the backlog waits on it")
+
     def test_a_finished_lane_asks_for_a_merge_not_a_resume(self):
         tid, path = self.finished_builder()
         out = self.fm("next").stdout

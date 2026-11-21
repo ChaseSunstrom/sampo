@@ -11161,7 +11161,9 @@ def _build_parser(only=None):
     s.add_argument("--limit", type=int, metavar="N", help="brief --ready: at most N briefs, never more than the free builder "
                                                           "slots (T-3293)")
     s.add_argument("--why", metavar="REASON", help="rm: drop the builder's work (its branch is kept, a locked worktree "
-                                                   "goes); the next sampo lane brief starts from this (T-1823)")
+                                                   "goes); the next sampo lane brief starts from this (T-1823); brief: start "
+                                                   "this builder although more than two trains of finished lanes wait to "
+                                                   "land (T-4938)")
     s = add("session", lazy("sampo.session", "cmd_session"), tier=("Running elsewhere", 1160), help="agent sessions on this device (claude, codex, gemini (legacy), "
                                                                 "opencode, agy, cursor), detached: start MESSAGE, list, tail ID, "
                                                                 "send ID MESSAGE, stop ID, rm ID, agents")
