@@ -133,6 +133,33 @@ class Train(TrainCase):
         self.assertEqual(seen, [True, False, True, False],
                          "gated times each lane; live times none until a merged hold, then each until one lands")
 
+    def test_holds_run_four_at_once_and_keep_the_candidate_order(self):
+        # T-5465: 55 lanes' holds one by one took about 18 min at about 20 s a lane
+        import threading
+        import time as _time
+        from sampo import train
+        p = c.find_project(self.repo)
+        live, peak, lock = [0], [0], threading.Lock()
+
+        def held(p_, b, main, tip):
+            with lock:
+                live[0] += 1
+                peak[0] = max(peak[0], live[0])
+            _time.sleep(0.2)
+            with lock:
+                live[0] -= 1
+            return f"held {b.id}" if b.id in ("T-2", "T-5") else ""
+        lanes_tips = [(mock.Mock(id=f"T-{i}"), f"tip{i}") for i in range(1, 9)]
+        with mock.patch.object(train, "_held", held):
+            t0 = _time.monotonic()
+            got = train._holds(p, self.repo, lanes_tips)
+            took = _time.monotonic() - t0
+        self.assertEqual(got, ["", "held T-2", "", "", "held T-5", "", "", ""])
+        self.assertEqual(peak[0], 4)
+        self.assertLess(took, 1.2, "8 holds of 0.2 s, 4 at a time: about 0.4 s, not 1.6")
+        with mock.patch.object(train, "_held", side_effect=c.PolicyError("boom")), self.assertRaises(c.PolicyError):
+            train._holds(p, self.repo, lanes_tips[:3])
+
     def test_live_mode_holds_only_a_red_check(self):
         from sampo import train
         p = c.find_project(self.repo)

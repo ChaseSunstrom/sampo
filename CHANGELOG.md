@@ -11,6 +11,7 @@
 
 ### Everything else
 
+- A train judges its lanes' holds (private scan, guard, self-change gate) four at a time instead of one by one; 55 lanes took about 18 min at about 20 s each (T-5465).
 - A live land times the hooks once on the merged batch instead of once per lane (the self-change gate's bench took 5-12 min a lane); a slower merged batch lands nothing and the next land times each lane to find it (T-5446).
 - Live landing: `sampo lane mode live` lands every finished lane at once on its own check, with no front gate or batch cap; the full suite runs behind on the merged head and reverts the merge that turned it red. 83 finished lanes had waited at 2 landed per 2 h (T-5444).
 - After a builder returns, Sampo now says to record the audit and land every finished lane with `sampo lane land --bg` (trains of 8, each task closed from its report), not to merge, focus and finish each lane by hand; a builder held by the land backlog is told to stay planned, not blocked. Kith had merged 298 lanes one at a time, each waiting 1.2-1.9 h between its review and its merge (T-5411).

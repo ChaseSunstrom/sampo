@@ -709,6 +709,29 @@ def _held(p, b, main, tip):
     return lanes.land_holds(p, b, main, tip, timing=not live_mode(p) or bool(c.read_meta(p).get(LIVE_TIMING_HOLD)))
 
 
+HOLD_JOBS_ENV = "SAMPO_HOLD_JOBS"
+
+
+def hold_jobs():
+    """T-5465: how many lanes' holds run at once (SAMPO_HOLD_JOBS, default 4, 1 to 16). Each is a few git and replay
+    subprocesses (about 20 s a lane on Sampo's own tree), so threads overlap them; 55 lanes one by one took about 18 min."""
+    try:
+        return min(16, max(1, int(os.environ.get(HOLD_JOBS_ENV) or 4)))
+    except ValueError:
+        return 4
+
+
+def _holds(p, main, lanes_tips):
+    """T-5465: _held for each (brief, tip), up to hold_jobs() at once; the reasons in the order given. A hold that raises
+    raises here, as the one-by-one loop did (ex.map re-raises the first in order)."""
+    def one(bt):
+        return _held(p, bt[0], main, bt[1])
+    if len(lanes_tips) < 2 or hold_jobs() == 1:
+        return [one(bt) for bt in lanes_tips]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=hold_jobs()) as ex:
+        return list(ex.map(one, lanes_tips))
+
+
 LIVE_TIMING_HOLD = "live_timing_hold"  # T-5446: meta key: the merged batch a live train's hook timing held
 
 
@@ -1120,6 +1143,7 @@ def _run(p, main, ids, defer_verify=False, judged=None):
               "(sampo doctor)", file=sys.stderr, flush=True)
     else:  # T-4783: an unset list holds nothing: say so, never the path (T-4785: an empty one is said apart)
         release.say_no_list("train")
+    todo = []  # T-5465: (row index, brief, tip) whose holds run HOLD_JOBS at once; rows keep the candidate order
     for tid in ids:
         b = cli.need_brief(p, tid)
         br = b.meta.get("lane_branch") or f"foreman/{b.id}"
@@ -1129,8 +1153,15 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             rows.append((b, None, f"no branch {br}"))
         else:
             tip = _git(main, "rev-parse", "--verify", f"{br}^{{commit}}").stdout.strip()
-            rows.append((b, tip, MOVED if b.id in judged and judged[b.id] != tip else
-                         "" if judged.get(b.id) == tip else _held(p, b, main, tip)))
+            if b.id in judged and judged[b.id] != tip:
+                rows.append((b, tip, MOVED))
+            elif judged.get(b.id) == tip:
+                rows.append((b, tip, ""))
+            else:
+                todo.append((len(rows), b, tip))
+                rows.append((b, tip, None))
+    for i, why in zip([i for i, _, _ in todo], _holds(p, main, [(b, tip) for _, b, tip in todo])):
+        rows[i] = (rows[i][0], rows[i][1], why)
 
     # T-3770: when the gate is the suite the affected template runs (T-3544), it runs every lane's affected tests on the
     # merged tree, and a red one bisects on its red classes alone (T-3602): a probe per lane ran them all twice (the
