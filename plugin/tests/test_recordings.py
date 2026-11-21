@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 from helpers import PLUGIN, git_repo
 
@@ -76,6 +77,65 @@ class Recordings(unittest.TestCase):
         commit(self.root, "demo/demo.cast", cast("$ sampo demo --pace 1\r\n"))
         self.assertEqual(d.check_recordings(self.root).status, "PASS")
 
+    def test_a_video_older_than_its_cast_warns_naming_the_remake_and_a_re_rendered_one_passes(self):
+        # T-5039: by commit time, not file time (a checkout resets mtimes); no ffprobe needed
+        commit(self.root, "demo/demo.mp4", "mp4", days_ago=5)
+        commit(self.root, "demo/demo.cast", cast("$ sampo demo\r\n"), days_ago=2)
+        commit(self.root, "demo/live.mp4", "mp4", days_ago=5)
+        commit(self.root, "demo/live.cast", cast("$ sampo\r\n"), days_ago=2)
+        with mock.patch.object(d, "_video_seconds", return_value=None):
+            r = d.check_recordings(self.root)
+            self.assertEqual(r.status, "WARN", r.detail)
+            self.assertIn("demo/demo.mp4 (committed ", r.detail)
+            self.assertIn("is older than demo/demo.cast", r.detail)
+            self.assertIn("python3 demo/record.py --mp4", r.detail)
+            self.assertIn("demo/live.mp4 (committed ", r.detail)
+            self.assertIn("python3 demo/record_live.py", r.detail)
+            self.assertEqual(r.detail, d.check_recordings(self.root).detail)  # same words on a second run
+            commit(self.root, "demo/demo.mp4", "mp4 again")  # rendered after the cast
+            commit(self.root, "demo/live.mp4", "mp4 again")
+            self.assertEqual(d.check_recordings(self.root).status, "PASS")
+
+    def test_a_video_committed_with_its_cast_passes(self):
+        commit(self.root, "demo/live.cast", cast("$ sampo\r\n"), days_ago=2)
+        commit(self.root, "demo/live.mp4", "mp4", days_ago=2)  # the same second: not older
+        with mock.patch.object(d, "_video_seconds", return_value=None):
+            self.assertEqual(d.check_recordings(self.root).status, "PASS")
+
+    def test_a_video_whose_length_is_over_two_seconds_off_its_cast_warns(self):
+        commit(self.root, "demo/live.cast", "".join([CAST, json.dumps([0.5, "o", "a"]) + "\n",
+                                                      json.dumps([30.0, "o", ""]) + "\n"]))
+        commit(self.root, "demo/live.mp4", "mp4")
+        for have, status in ((31.9, "PASS"), (28.1, "PASS"), (33.5, "WARN"), (12.0, "WARN")):
+            with mock.patch.object(d, "_video_seconds", return_value=have):
+                r = d.check_recordings(self.root)
+            self.assertEqual(r.status, status, f"{have}: {r.detail}")
+            if status == "WARN":
+                self.assertIn(f"demo/live.mp4 runs {round(have)} s but demo/live.cast runs 30 s", r.detail)
+                self.assertIn("python3 demo/record_live.py", r.detail)
+
+    def test_the_length_check_is_skipped_without_ffprobe_or_a_readable_cast(self):
+        commit(self.root, "demo/live.cast", cast("$ sampo\r\n"))
+        commit(self.root, "demo/live.mp4", "mp4")
+        with mock.patch.object(d.shutil, "which", return_value=None):
+            self.assertIsNone(d._video_seconds(os.path.join(self.root, "demo/live.mp4")))
+            self.assertEqual(d.check_recordings(self.root).status, "PASS")
+        self.assertIsNone(d._cast_seconds(os.path.join(self.root, "demo/missing.cast")))
+        garbled = os.path.join(self.root, "demo", "garbled.cast")
+        with open(garbled, "w", encoding="utf-8") as f:
+            f.write(CAST + "not json\n[\"x\"]\n[]\n" + json.dumps([4.5, "o", "x"]) + "\n")
+        self.assertEqual(d._cast_seconds(garbled), 4.5)
+        with mock.patch.object(d, "_run", return_value=mock.Mock(returncode=0, stdout="N/A\n")):
+            self.assertIsNone(d._video_seconds("x.mp4"))
+
+    def test_a_video_with_uncommitted_changes_is_a_re_render_waiting_for_its_commit(self):
+        commit(self.root, "demo/live.mp4", "mp4", days_ago=5)
+        commit(self.root, "demo/live.cast", cast("$ sampo\r\n"), days_ago=2)
+        with open(os.path.join(self.root, "demo", "live.mp4"), "a", encoding="utf-8") as f:
+            f.write("rendered")
+        with mock.patch.object(d, "_video_seconds", return_value=None):
+            self.assertEqual(d.check_recordings(self.root).status, "PASS")
+
     def test_an_old_recording_whose_code_never_changed_passes(self):
         commit(self.root, "demo/demo.cast", cast("$ sampo demo\r\n"), days_ago=30)
         self.assertEqual(d.check_recordings(self.root).status, "PASS")
@@ -101,6 +161,46 @@ class ThisRepo(unittest.TestCase):
     def test_every_recording_here_is_mapped_and_free_of_retired_names(self):
         # the text half only: an age check here would turn red with the calendar on a lane that changed nothing
         self.assertEqual(d.recording_problems(ROOT, age=False), ([], []))
+
+
+class VideoProbe(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="fm-recordings-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.root = git_repo(self.tmp)
+        commit(self.root, "plugin/lib/sampo/demo.py", "# the demo\n", days_ago=40)
+
+    def test_a_cast_with_an_absurd_event_time_never_crashes_the_doctor(self):
+        bad = os.path.join(self.root, "demo", "bad.cast")
+        os.makedirs(os.path.dirname(bad), exist_ok=True)
+        with open(bad, "w", encoding="utf-8") as f:
+            f.write(CAST + '[1e999, "o", "x"]\n[' + "9" * 400 + ', "o", "x"]\n' + "[" * 100000 + "\n"
+                    + json.dumps([3.5, "o", "x"]) + "\n")
+        self.assertEqual(d._cast_seconds(bad), 3.5)
+        only = os.path.join(self.root, "demo", "only.cast")
+        with open(only, "w", encoding="utf-8") as f:
+            f.write(CAST + '[1e999, "o", "x"]\n')
+        self.assertIsNone(d._cast_seconds(only))
+
+    def _stub_ffprobe(self, body):
+        bindir = tempfile.mkdtemp(prefix="fm-ffprobe-")
+        self.addCleanup(shutil.rmtree, bindir, True)
+        path = os.path.join(bindir, "ffprobe")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("#!/bin/sh\n" + body + "\n")
+        os.chmod(path, 0o755)
+        return mock.patch.dict(os.environ, {"PATH": bindir + os.pathsep + os.environ.get("PATH", "")})
+
+    def test_a_real_ffprobe_run_end_to_end(self):
+        commit(self.root, "demo/live.cast", "".join([CAST, json.dumps([0.5, "o", "a"]) + "\n",
+                                                      json.dumps([30.0, "o", ""]) + "\n"]))
+        commit(self.root, "demo/live.mp4", "mp4")
+        for body, status in (("echo 30.400000", "PASS"), ("echo 45.000000", "WARN"), ("exit 1", "PASS")):
+            with self._stub_ffprobe(body):
+                r = d.check_recordings(self.root)
+            self.assertEqual(r.status, status, f"{body}: {r.detail}")
+            if status == "WARN":
+                self.assertIn("demo/live.mp4 runs 45 s but demo/live.cast runs 30 s", r.detail)
 
 
 if __name__ == "__main__":

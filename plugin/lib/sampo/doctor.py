@@ -3,6 +3,7 @@ import functools
 import glob
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -1025,7 +1026,55 @@ def recording_problems(root, age=True, now=None):
             if times[module] > last[f]:  # no day or commit counts: scout keys a finding on its text
                 aged.append(f"{f} (recorded {time.strftime('%Y-%m-%d', time.gmtime(last[f]))}) is over {STALE_DAYS} "
                             f"days old and {module} changed since: {remake}")
+        if age and f in VIDEOS:
+            aged += _video_lag(root, f, VIDEOS[f], last, remake)
     return out, aged
+
+
+VIDEOS = {"demo/demo.mp4": "demo/demo.cast", "demo/live.mp4": "demo/live.cast"}  # T-5039: video -> its cast
+VIDEO_SLACK = 2.0  # seconds a video's length may differ from its cast's
+
+
+def _cast_seconds(path):
+    """T-5039: a cast's length: its last event's time. None when unreadable or empty."""
+    end = None
+    for line in (_read(path) or "").splitlines()[1:]:
+        try:
+            ev = json.loads(line)
+            t = float(ev[0])
+        except (ValueError, TypeError, IndexError, KeyError, OverflowError, RecursionError):
+            continue
+        if math.isfinite(t):
+            end = max(end or 0.0, t)
+    return end
+
+
+def _video_seconds(path):
+    """T-5039: a video's length by ffprobe; None without ffprobe or when it can't read the file."""
+    if not shutil.which("ffprobe"):
+        return None
+    r = _run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path], timeout=30)
+    try:
+        return float(r.stdout.strip()) if r.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def _video_lag(root, video, cast_rel, last, remake):
+    """T-5039: lines for a video that fell out of step with the cast it is rendered from: its last commit older than
+    the cast's (by git commit time, since a checkout resets file times; a file with uncommitted changes is a re-record
+    waiting for its commit and was dropped from `last`), or its length over VIDEO_SLACK seconds off the cast's
+    (ffprobe, skipped without it). Text without a day count or length that moves, so scout keys a finding once."""
+    out = []
+    v_at, c_at = last.get(video), last.get(cast_rel)
+    if v_at is not None and c_at is not None and v_at < c_at:
+        out.append(f"{video} (committed {time.strftime('%Y-%m-%d', time.gmtime(v_at))}) is older than {cast_rel} "
+                   f"(committed {time.strftime('%Y-%m-%d', time.gmtime(c_at))}), which it is rendered from: {remake}")
+    have, want = _video_seconds(os.path.join(root, video)), _cast_seconds(os.path.join(root, cast_rel))
+    if have is not None and want is not None and abs(have - want) > VIDEO_SLACK:
+        out.append(f"{video} runs {round(have)} s but {cast_rel} runs {round(want)} s (over {VIDEO_SLACK:g} s apart): "
+                   f"{remake}")
+    return out
 
 
 def check_recordings(root):
