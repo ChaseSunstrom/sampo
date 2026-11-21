@@ -10561,10 +10561,19 @@ def _build_parser(only=None):
                  "wave, every ready child's builder launch at once, cut from the big task's integration branch big/ID, "
                  "capped by the free lane slots and the load gate, and lists failed children with retry, re-plan or drop; "
                  "sync merges the build branch into big/ID and names conflicts (T-4222); status, estimate, report: the "
-                 "tree's progress and cost (T-4223)")
-    s.add_argument("action", choices=["plan", "check", "expand", "run", "sync", "status", "estimate", "report"])
+                 "tree's progress and cost (T-4223); adopt makes an open task a child of the big task and fold merges "
+                 "an inbox item into it, closing the item with where it went (T-4246)")
+    s.add_argument("action", choices=["plan", "check", "expand", "run", "sync", "status", "estimate", "report", "adopt",
+                                      "fold"])
     s.add_argument("id", metavar="ID", nargs="?", help="the big task (status: omit it with --all)")
+    s.add_argument("more", metavar="TASK", nargs="*", help="adopt: the task to adopt; fold: the items to fold in")
     s.add_argument("--all", action="store_true", help="status: every big task, one line each")
+    s.add_argument("--key", help="adopt: the block key to give the child (default: the next free a1, a2, …)")
+    s.add_argument("--after", help="adopt: block keys or child task ids (comma separated) the adopted child waits on")
+    s.add_argument("--move", action="store_true", help="adopt: take a child that has another parent, if it hasn't started")
+    s.add_argument("--why", help="fold: why the item belongs here (kept on the Folded line)")
+    s.add_argument("--anyway", action="store_true", help="fold: merge an item that is planned or started (adopt is "
+                   "usually the right verb for one)")
     s.add_argument("--dry-run", action="store_true", help="expand: list what it would make, make nothing; run: show the "
                    "wave without writing a brief or opening a lane")
     s = add("mandate", lazy("sampo.mandate", "cmd_mandate"), tier=("Project and settings", 772),

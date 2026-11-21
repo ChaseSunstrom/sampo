@@ -34,8 +34,8 @@ MILESTONE_TIERS = ("XL", "HUGE")
 MAX_BLOCKS = 200
 SHOWN = 3  #the gate names this many problems, then counts the rest
 SECTIONS = ("Design", "Breakdown", "Integration")
-KEYS = {"type", "tier", "files", "after", "covers", "criterion", "step", "outcome"}
-MILESTONE_KEYS = {"tier", "after", "covers", "outcome"}
+KEYS = {"type", "tier", "files", "after", "covers", "criterion", "step", "outcome", "folds"}
+MILESTONE_KEYS = {"tier", "after", "covers", "outcome", "folds"}
 INTEGRATION_KEYS = {"criterion", "covers"}
 _HEAD = re.compile(r"^\[([A-Za-z][\w-]*)\]\s+(\S.*)$")
 _LINE = re.compile(r"^([A-Za-z]+):\s*(.*)$")
@@ -43,6 +43,9 @@ _CHILDREN = re.compile(r"^(\S+) → (T-\d+)\b.*?\(block ([0-9a-f]{8})\)\s*$")
 _INHERIT = re.compile(r"^(?:CONTEXT|MUST|NEVER|CONSTRAINT):", re.I)
 _COMMENT = re.compile(r"(?:^|\s)#.*$")  # an inline `# note` on a type, tier, files, after or covers line
 _BAD_FILE = re.compile(r"[()]|^/|\.\.")
+_FOLDED = re.compile(r"^[-*]\s*(T-\d+)\b(.*)$")  # T-4246: a line of the Folded section
+_ANSWER = re.compile(r"→\s*not doing:\s*\S")  # ... answered: that ask will not be done, and says why
+_KEY = re.compile(r"[A-Za-z][\w-]*")
 
 
 def _norm(path):
@@ -109,7 +112,7 @@ def parse_blocks(text, integration=False):
                 problems.append(_problem(key, f"the key {key} is used twice (line {n})", "give each child its own key"))
             seen.add(key)
             cur = {"key": key, "title": c.plain(m.group(2)).strip(), "type": "", "tier": "", "files": [], "after": [],
-                   "covers": [], "criteria": [], "steps": [], "outcome": "", "line": n}
+                   "covers": [], "criteria": [], "steps": [], "outcome": "", "folds": [], "line": n}
             blocks.append(cur)
             continue
         m = _LINE.match(line)
@@ -123,7 +126,7 @@ def parse_blocks(text, integration=False):
                                      "use only " + ", ".join(sorted(allowed)) + " lines, one 'key: value' each"))
         else:
             k, v = m.group(1).lower(), m.group(2).strip()
-            if k in ("type", "tier", "files", "after", "covers"):  # a criterion's command or a step may hold ' #'
+            if k in ("type", "tier", "files", "after", "covers", "folds"):  # a criterion's command or a step may hold ' #'
                 v = _COMMENT.sub("", v).strip()
             if k == "criterion":
                 cur["criteria"].append(c.split_verify(v))
@@ -131,7 +134,7 @@ def parse_blocks(text, integration=False):
                 cur["steps"].append(v)
             elif k == "covers":
                 cur["covers"] += _numbers(v, where, problems)
-            elif k in ("files", "after"):
+            elif k in ("files", "after", "folds"):
                 cur[k] += _words(v)
                 for w in (_words(v) if k == "files" else []):
                     if _BAD_FILE.search(w):
@@ -146,6 +149,16 @@ def parse_blocks(text, integration=False):
 
 def _empty(text):
     return not any(l.strip() and not l.strip().startswith("#") for l in (text or "").splitlines())
+
+
+def folded(b):
+    """T-4246: {task id: (the rest of its line, answered)} from the Folded section, in order: `- T-12: its ask (why)`; a
+    folded ask that will not be done is answered in place with `→ not doing: why`. The first line of an id stands."""
+    out = {}
+    for line in b.section("Folded").splitlines():
+        if (m := _FOLDED.match(line.strip())) and m.group(1) not in out:
+            out[m.group(1)] = (m.group(2).lstrip(": ").strip(), bool(_ANSWER.search(m.group(2))))
+    return out
 
 
 def waves(blocks):
@@ -275,6 +288,7 @@ def analyse(b, root="."):
             problems.append(_problem(k, "no criterion", "add 'criterion: what is true when done :: a command that can fail'"))
         for text, verify in x["criteria"]:
             problems += _weak(k, text, verify, root)
+    problems += _fold_gaps(b, blocks)
     wv, left = waves(blocks)
     if left:
         problems.append(_problem(left[0], f"cycle: {_cycle(blocks, left)}", "no block may wait, however far round, on itself: "
@@ -304,6 +318,26 @@ def analyse(b, root="."):
             "giant": giant}
 
 
+def _fold_gaps(b, blocks):
+    """T-4246: nothing folded is lost: every id of the Folded section is named by a block's `folds:` line or answered in
+    place (`→ not doing: why`), and every `folds:` id is one that is in the section."""
+    fold, named, out = folded(b), set(), []
+    for x in blocks:
+        for w in x["folds"]:
+            if not re.fullmatch(r"T-\d+", w):
+                out.append(_problem(x["key"], f"folds {w!r} is not a task id", "write folds: T-12, T-15"))
+            elif w not in fold:
+                out.append(_problem(x["key"], f"folds {w}, which is not in the Folded section",
+                                    f"fold it in first (sampo big fold {b.id} {w}), or drop it from the folds line"))
+            else:
+                named.add(w)
+    for i, (_, answered) in fold.items():
+        if i not in named and not answered:
+            out.append(_problem("Folded", f"{i} is named by no block", f"add folds: {i} to the block that delivers it, or "
+                                "answer it in the Folded section: → not doing: why"))
+    return out
+
+
 def _weak(block, text, verify, root):
     if not verify:
         return [_problem(block, f"criterion {c.fit(text, 40)!r} has no verify command", "end it with ' :: <a command that "
@@ -320,9 +354,12 @@ def _weakness(verify, root):
 
 def gate_gaps(b, root="."):
     """core.plan_gaps's entry: [] for a task that isn't big or was started; else one gap that names the first problems."""
-    if not is_big(b) or c._started(b):
+    if not is_big(b):
         return []
-    got = analyse(b, root)["problems"]
+    if c._started(b):  # a started plan is not re-checked whole, but what was folded in stays accounted for
+        got = _fold_gaps(b, parse_blocks(b.section("Breakdown"))[0])
+    else:
+        got = analyse(b, root)["problems"]
     if not got:
         return []
     shown = "; ".join(f"{x['block']}: {x['problem']}" for x in got[:SHOWN])
@@ -355,6 +392,7 @@ GUIDE_BREAKDOWN = """# One block per child, in order of work. A block opens with
 # covers: 1, 2                     (numbers of this task's criteria it delivers)
 # criterion: the parser reads one block :: python3 -m unittest tests.test_parser
 # step: write parse() in lib/parser.py
+# folds: T-12, T-15                (asks folded into this task (sampo big fold) that this child delivers)
 """
 GUIDE_GIANT = """# One block per milestone; each is an XL or HUGE task that gets its own plan when it starts.
 # [m1] Parsing lands
@@ -362,6 +400,7 @@ GUIDE_GIANT = """# One block per milestone; each is an XL or HUGE task that gets
 # outcome: the parser exists and reads every block
 # after: m0                        (keys that land first; leave out when none)
 # covers: 1, 2                     (numbers of this task's criteria it delivers)
+# folds: T-12, T-15                (asks folded into this task (sampo big fold) that this milestone delivers)
 """
 GUIDE_INTEGRATION = """# What holds once every child is in, checked by commands that can fail. 'covers: N' names a criterion of this task
 # that only the whole delivers.
@@ -374,6 +413,8 @@ CHECKS = ("every criterion of this task is covered by a child or by Integration 
           "no two children own the same file (a directory, a glob and a ./ or // spelling count) unless one waits on the other",
           "every child has a criterion whose verify command can fail",
           "Design and Integration are filled, with at least one Integration criterion",
+          "every ask folded into this task (sampo big fold) is named by a block's folds: line or answered in the Folded section "
+          "(→ not doing: why)",
           "the child count fits the tier (XL 3..8, HUGE 9..25, GIANT 2+ milestones): a warning, not a refusal")
 
 
@@ -426,6 +467,8 @@ def task_check(p, args):
 
 def _sig(x):
     keep = {k: x.get(k) for k in ("title", "type", "tier", "files", "after", "covers", "criteria", "steps", "outcome")}
+    # `folds` stays out: it is bookkeeping (which asks a block delivers), not the scope a child was cut from, so `sampo big
+    # fold` never makes an existing child report a false change
     return hashlib.sha1(json.dumps(keep, sort_keys=True, default=list).encode()).hexdigest()[:8]
 
 
@@ -460,6 +503,10 @@ def _have(p, b):
     return have, gone
 
 
+def _child_line(k, i, title, sig):
+    return f"{k} → {i}  {c.fit(title, 60)}  (block {sig})"
+
+
 def _write_children(p, parent_id, entries, strip, drop):
     """The parent's side of expand: Children lines for entries [(key, id, title, sig)] (a key's older line goes), the
     ids of `drop` leave depends_on, the new ids join it."""
@@ -467,7 +514,7 @@ def _write_children(p, parent_id, entries, strip, drop):
     out = [l for l in b.section("Children").splitlines()
            if not ((m := _CHILDREN.match(l.strip())) and (m.group(1) in strip or m.group(1) in {e[0] for e in entries}))]
     for k, i, title, sig in entries:
-        out.append(f"{k} → {i}  {c.fit(title, 60)}  (block {sig})")
+        out.append(_child_line(k, i, title, sig))
     b.set_section("Children", "\n".join(out) + "\n" if out else "")
     b.meta["depends_on"] = sorted((set(b.meta.get("depends_on") or []) - set(drop)) | {e[1] for e in entries})
     b.append_log("big expand: " + ", ".join([f"{k}={i}" for k, i, _, _ in entries]
@@ -493,8 +540,12 @@ def _interface(b, files):
 def _make(p, b, x, ids, giant):
     from sampo import cli
     k = x["key"]
+    asks = folded(b)
+    got = [f"- {i}: {asks[i][0]}" for i in x.get("folds", ()) if i in asks]  # T-4246: the planner sees the original asks
     raw = "\n".join([f"{'Milestone' if giant else 'Child'} {k} of {b.id} ({b.title}): {x['title']}"
-                     + (f". Outcome: {x['outcome']}" if giant else "")] + _inherited(b))
+                     + (f". Outcome: {x['outcome']}" if giant else "")]
+                    + ([f"Folded asks this {'milestone' if giant else 'child'} delivers (from {b.id}):"] + got if got else [])
+                    + _inherited(b))
     deps = sorted({ids[a] for a in x["after"] if a in ids})
     kid = cli._create(p, x["title"], x["type"] or b.type, x["tier"] if not giant else x["tier"] or "XL", "planned", raw=raw,
                       scope=x["files"], depends=deps, source=b.meta.get("source", "user"), priority=b.priority,
@@ -528,7 +579,7 @@ def task_expand(p, args):
     if b.status in c.CLOSED:
         raise cli.UsageError(f"{b.id} is {b.status}")
     giant = b.tier == "GIANT"
-    created, existing, changed, dropped = {}, {}, [], []
+    created, existing, changed, dropped, late = {}, {}, [], [], {}
     plan, entries, gone = {}, [], {}  # entries: [(key, id, title, sig)] the parent's Children record still lacks
 
     def work(b, make):
@@ -538,7 +589,7 @@ def task_expand(p, args):
             more = f" (+{len(r['problems']) - SHOWN} more)" if len(r["problems"]) > SHOWN else ""
             raise c.PolicyError(f"{b.id}: the plan has problems, nothing made: {shown}{more}; sampo big check {b.id}")
         blocks, _ = parse_blocks(b.section("Breakdown"))
-        by = {x["key"]: x for x in blocks}
+        by = plan["by"] = {x["key"]: x for x in blocks}
         have, lost = _have(p, b)
         gone.update(lost)
         recorded = _children(b)
@@ -580,6 +631,7 @@ def task_expand(p, args):
             ids = {}
             try:
                 ids = work(b, make)
+                late.update(_wire_late(p, existing, created, plan["by"], ids))
             finally:  # whatever was made is recorded, even when a later one failed; a hard kill is covered by each
                 if entries or gone:  # child's own plan key (_have), so a second run must not make it twice either
                     _write_children(p, b.id, entries, set(gone), set(gone.values()))
@@ -588,6 +640,7 @@ def task_expand(p, args):
              f"{'milestone' if giant else 'child'}(ren){' (dry run)' if args.dry_run else ''}, "
              f"{len(existing)} already there:"]
     lines += [f"  {k} → {i or '(new)'}" for k, i in created.items()]
+    lines += [f"  {k} → {existing[k]} now waits on {', '.join(w)} (made just now: its block says after)" for k, w in late.items()]
     lines += [f"  {k} → {i} changed in the Breakdown since it was made: edit that task by hand (sampo task set/ac/step), "
               "nothing was rewritten" for k, i in changed]
     lines += [f"  {k} → {i} is no longer in the Breakdown and hasn't started: drop it (sampo task set {i} status=dropped) "
@@ -596,7 +649,343 @@ def task_expand(p, args):
         lines.append("Run each in a lane (sampo lane brief ID), in wave order: " +
                      " | ".join(", ".join(ids.get(k, k) for k in w) for w in r["waves"]) + f"; {b.id} closes after its children.")
     return cli.out(args, {"created": created, "existing": existing, "changed": dict(changed), "dropped": dict(dropped),
-                          "waves": r["waves"], "dry_run": bool(args.dry_run)}, "\n".join(lines))
+                          "waves": r["waves"], "dry_run": bool(args.dry_run), "late": late}, "\n".join(lines))
+
+
+def _wire_late(p, existing, created, by, ids):
+    """T-4246: a child that was there already (an adopted one) whose block says `after` a child made just now waits on it
+    from now on, as a child made in the same run does: {key: [ids it now waits on]}."""
+    out = {}
+    for k, i in existing.items():
+        want = {ids[a] for a in by[k]["after"] if a in created and ids.get(a)}
+        kid = c.find_brief(p, i) if want else None
+        if kid and kid.status not in c.CLOSED:
+            have = set(kid.meta.get("depends_on") or [])
+            if want - have:
+                kid.meta["depends_on"] = sorted(have | want)
+                c.save_brief(p, kid)
+                out[k] = sorted(want - have)
+    return out
+
+
+# ---------------------------------------------------------------- adopt and fold (T-4246, part E)
+
+def _clean(text, width=120):
+    """One plain line with no arrow: a title or a reason written into the Folded section can't forge an answer."""
+    return c.fit(" ".join(c.plain(text or "").replace("→", "->").split()), width)
+
+
+def _cut_block(text, key):
+    """The Breakdown without the block [key] (its head line down to the next head); the rest is kept as written."""
+    out, skip = [], False
+    for line in (text or "").splitlines():
+        if m := _HEAD.match(line.strip()):
+            skip = m.group(1) == key
+        if not skip:
+            out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out) + "\n" if out else ""
+
+
+def _outcome(kid):
+    """A milestone's outcome from an adopted task: the first line of its Interpretation, else its title."""
+    for line in kid.section("Interpretation").splitlines():
+        line = line.strip().lstrip("-* ").strip()
+        if line and not line.startswith(("#", "<!--")):
+            return _clean(line, 240)
+    return _clean(kid.title, 240)
+
+
+def _scope_of(kid):
+    s = kid.meta.get("scope") or []
+    return [s] if isinstance(s, str) else [str(x) for x in s]
+
+
+def _block_text(key, kid, giant, after):
+    """The Breakdown block an adopted task is: what expand would have read to make it."""
+    lines = [f"[{key}] {_clean(kid.title, 200)}"]
+    if not giant:
+        lines.append(f"type: {kid.type}")
+    lines.append(f"tier: {kid.tier}")
+    if after:
+        lines.append(f"after: {', '.join(after)}")
+    if giant:
+        lines.append(f"outcome: {_outcome(kid)}")
+    else:
+        lines.append(f"files: {', '.join(_scope_of(kid))}")
+        for a in kid.acceptance():
+            text, verify = _clean(c.strip_verify(a.text), 400).replace(" :: ", " : "), c.verify_of(a.text)
+            lines.append(f"criterion: {text}" + (f" :: {' '.join(verify.split())}" if verify else ""))
+        lines += [f"step: {_clean(s.text, 300)}" for s in kid.steps() if not s.done]
+    return "\n".join(lines) + "\n"
+
+
+def _after_keys(b, kid, raw, blocks, mine):
+    """The block keys of `--after`, which takes keys and the IDs of children; a name that is neither is refused with the
+    keys there."""
+    from sampo import cli
+    keys, out = [x["key"] for x in blocks], []
+    for w in _words(raw):
+        k = w
+        if re.fullmatch(r"[Tt]-\d+", w):
+            w = w.upper()
+            if w == kid.id:
+                raise cli.UsageError(f"--after {w}: a task can't wait on itself")
+            k = mine.get(w)
+            if not k:
+                raise cli.UsageError(f"--after {w}: {w} is not a child of {b.id} (its children: "
+                                     + (", ".join(f"{i} as {k}" for i, k in mine.items()) or "none yet") + "); name a block key "
+                                     "or a child's ID")
+        elif k not in keys:
+            raise cli.UsageError(f"--after {w}: no block has that key; the keys in {b.id}'s Breakdown are "
+                                 f"{', '.join(keys) or 'none'}")
+        if k not in out:
+            out.append(k)
+    return out
+
+
+def _release(p, old_id, kid, new_id):
+    """The move's other half: the old parent drops the child's block, Children line and wait. True when it changed."""
+    o = c.find_brief(p, old_id)
+    if not o:
+        return False
+    key = next((k for k, (i, _) in _children(o).items() if i == kid.id), None) or kid.meta.get("big_key")
+    changed = False
+    if key and any(x["key"] == key for x in parse_blocks(o.section("Breakdown"))[0]):
+        o.set_section("Breakdown", _cut_block(o.section("Breakdown"), key))
+        changed = True
+    rows = o.section("Children").splitlines()
+    keep = [l for l in rows if not ((m := _CHILDREN.match(l.strip())) and m.group(2) == kid.id)]
+    if keep != rows:
+        o.set_section("Children", "\n".join(keep) + "\n" if keep else "")
+        changed = True
+    if kid.id in (o.meta.get("depends_on") or []):
+        o.meta["depends_on"] = sorted(set(o.meta["depends_on"]) - {kid.id})
+        changed = True
+    if changed:
+        o.append_log(f"big adopt: {kid.id} moved to {new_id}")
+        c.save_brief(p, o)
+    return changed
+
+
+def _adopt(p, b, kid, args):
+    """Under the lock: refuse what can't be adopted, else write the parent (block, Children line, wait: one save), take the
+    child off its old parent (--move), then mark the child. Each step is safe to run again: a kill between two leaves a
+    state this finds (the parent's Children line names the child) and finishes."""
+    from sampo import cli
+    giant = b.tier == "GIANT"
+    if b.status in c.CLOSED:
+        raise cli.UsageError(f"{b.id} is {b.status}: a closed big task takes no children")
+    if kid.id == b.id:
+        raise cli.UsageError(f"{kid.id} is the big task itself: it can't be its own child")
+    if kid.status in c.CLOSED:
+        raise cli.UsageError(f"{kid.id} is {kid.status}: only an open task can be adopted")
+    up, seen = b.meta.get("parent"), set()
+    while up and up not in seen:
+        if up == kid.id:
+            raise cli.UsageError(f"{kid.id} is an ancestor of {b.id}: it can't become its child")
+        seen.add(up)
+        par = c.find_brief(p, up)
+        up = par.meta.get("parent") if par else None
+    old = kid.meta.get("parent")
+    have, gone = _have(p, b)
+    mine = {i: k for k, (i, _) in have.items()}
+    if old and old != b.id:
+        if not args.move:
+            raise cli.UsageError(f"{kid.id} is already a child of {old}: sampo big adopt {b.id} {kid.id} --move takes it "
+                                 "from there (only while it hasn't started)")
+        if c._started(kid):
+            raise cli.UsageError(f"{kid.id} has started under {old}: it stays there (finish it, or drop it and capture "
+                                 "the rest again)")
+    if b.id in (kid.meta.get("depends_on") or []):
+        raise cli.UsageError(f"{kid.id} waits on {b.id}, which will wait on it: drop that dependency first "
+                             f"(sampo task set {kid.id} depends_on=…)")
+    key = mine.get(kid.id)
+    if key:  # already recorded here: finish a half-done adoption or say so
+        want = {"parent": b.id, "big_key": key, "big_sig": have[key][1]}
+        if all(kid.meta.get(k) == v for k, v in want.items()):
+            return {"adopted": False, "key": key, "moved_from": None, "after": [], "pending": [], "problems": []}
+        moved = _release(p, old, kid, b.id) if old and old != b.id else False
+        kid.meta.update(want)
+        mine_block = next((x for x in parse_blocks(b.section("Breakdown"))[0] if x["key"] == key), None)
+        ready = sorted({have[k][0] for k in (mine_block["after"] if mine_block else []) if k in have and have[k][0] != kid.id})
+        if ready:  # the first run may have died before the child got its waits: the block's `after` is the record
+            kid.meta["depends_on"] = sorted(set(kid.meta.get("depends_on") or []) | set(ready))
+        kid.append_log(f"big adopt: child {key} of {b.id} (finished)")
+        c.save_brief(p, kid)
+        return {"adopted": True, "key": key, "moved_from": old if moved else None, "after": [], "pending": [],
+                "problems": [], "finished": True}
+    if giant:
+        if kid.tier not in MILESTONE_TIERS:
+            raise cli.UsageError(f"{kid.id} is tier {kid.tier}: a GIANT's milestone is an XL or HUGE task (re-tier it: "
+                                 f"sampo task set {kid.id} tier=XL), or fold its ask into a milestone: sampo big fold {b.id} {kid.id}")
+    else:
+        if kid.tier not in LEAF_TIERS:
+            raise cli.UsageError(f"{kid.id} is tier {kid.tier}: a child is S or M: split it or re-tier it "
+                                 f"(sampo task set {kid.id} tier=M)")
+        if not kid.acceptance():
+            raise cli.UsageError(f"{kid.id} has no acceptance criterion: plan it first (sampo task plan {kid.id}), or "
+                                 f"merge its ask instead: sampo big fold {b.id} {kid.id}")
+        if not _scope_of(kid):
+            raise cli.UsageError(f"{kid.id} has no scope: a child owns files (sampo task set {kid.id} scope=PATH,PATH), "
+                                 f"or merge its ask instead: sampo big fold {b.id} {kid.id}")
+        if any(re.search(r"[\s,]", f) for f in _scope_of(kid)):
+            raise cli.UsageError(f"{kid.id}'s scope has a path with a space or a comma, which a block can't hold: rename "
+                                 "the path or split the entry")
+    blocks, _ = parse_blocks(b.section("Breakdown"))
+    used = {x["key"] for x in blocks} | set(_children(b)) | set(have)
+    if args.key:
+        if not _KEY.fullmatch(args.key):
+            raise cli.UsageError(f"--key {args.key!r} is not a block key: a letter, then letters, digits, _ or -")
+        if args.key in used:
+            raise cli.UsageError(f"the key {args.key} is already used in {b.id} (keys: {', '.join(sorted(used))}): pick "
+                                 "another or leave --key out")
+        key = args.key
+    else:
+        n = 1
+        while f"a{n}" in used:
+            n += 1
+        key = f"a{n}"
+    after = _after_keys(b, kid, args.after, blocks, mine)
+    for d in kid.meta.get("depends_on") or []:  # a wait the task already had on a sibling is the block's after too
+        if d in mine and mine[d] not in after:
+            after.append(mine[d])
+    text = _block_text(key, kid, giant, after)
+    nb, perr = parse_blocks(text)
+    if perr or not nb:
+        raise cli.UsageError(f"{kid.id} can't be written as a block: " + "; ".join(f"{x['problem']} ({x['fix']})" for x in perr[:SHOWN]))
+    nb, sig = nb[0], _sig(nb[0])
+    before = {(x["block"], x["problem"]) for x in analyse(b, p.root)["problems"]}
+    bd, ch = b.section("Breakdown"), b.section("Children")
+    b.set_section("Breakdown", (bd.rstrip("\n") + "\n\n" if bd.strip() else "") + text)
+    b.set_section("Children", (ch.rstrip("\n") + "\n" if ch.strip() else "") + _child_line(key, kid.id, nb["title"], sig) + "\n")
+    b.meta["depends_on"] = sorted(set(b.meta.get("depends_on") or []) | {kid.id})
+    b.append_log(f"big adopt: {key}={kid.id}" + (f" (moved from {old})" if old and old != b.id else ""))
+    c.save_brief(p, b)  # the parent first, in one save: a block and its record are never apart
+    moved = _release(p, old, kid, b.id) if old and old != b.id else False
+    ready = sorted({have[k][0] for k in after if k in have})
+    kid.meta.update(parent=b.id, big_key=key, big_sig=sig)
+    if ready:
+        kid.meta["depends_on"] = sorted(set(kid.meta.get("depends_on") or []) | set(ready))
+    kid.append_log(f"big adopt: child {key} of {b.id}")
+    c.save_brief(p, kid)
+    c.log_event(p, "big_adopt", task=b.id, data={"child": kid.id, "key": key, "after": after,
+                                                  "moved_from": old if moved else None}, session=cli.session())
+    c.export_mirror(p)
+    return {"adopted": True, "key": key, "moved_from": old if moved else None, "after": after,
+            "pending": [k for k in after if k not in have], "before": before}
+
+
+def task_adopt(p, args):
+    from sampo import cli
+    if len(args.more) != 1:
+        raise cli.UsageError("sampo big adopt PARENT TASK: the big task, then the one open task that becomes its child")
+    with c.lock(p.dir):
+        b = cli.need_brief(p, args.id)
+        _need_big(b)
+        kid = cli.need_brief(p, args.more[0])
+        r = _adopt(p, b, kid, args)
+    c.regen_views(p, mirror=False)
+    b = c.find_brief(p, b.id)
+    now = analyse(b, p.root)
+    new = [x for x in now["problems"] + now["warnings"]
+           if (x["block"], x["problem"]) not in r.pop("before", set()) | set()] if r["adopted"] else []
+    key = r["key"]
+    if not r["adopted"]:
+        text = [f"{kid.id} is already a child of {b.id} (block {key}): nothing changed"]
+    else:
+        text = [f"{kid.id} adopted into {b.id} as {key}: {c.fit(kid.title, 60)}"
+                + (" (finished a half-done adoption)" if r.get("finished") else "")]
+        if r["moved_from"]:
+            text.append(f"  taken from {r['moved_from']}: its block, Children line and wait are gone there "
+                        f"(sampo big check {r['moved_from']})")
+        if r["after"]:
+            text.append(f"  {key} waits on {', '.join(r['after'])}" + (
+                f"; {', '.join(r['pending'])} not made yet: sampo big expand {b.id} makes it and wires the wait"
+                if r["pending"] else ""))
+        text += [f"  ✗ {x['block']}: {x['problem']}\n      fix: {x['fix']}" for x in new if x in now["problems"]]
+        text += [f"  ! {x['block']}: {x['problem']}\n      fix: {x['fix']}" for x in new if x in now["warnings"]]
+        text.append(f"Next: sampo big check {b.id}" + ("" if now["ok"] else " (it lists what is left)"))
+    data = {"id": b.id, "parent": b.id, "child": kid.id, "key": key, "adopted": r["adopted"], "after": r["after"],
+            "moved_from": r["moved_from"], "problems": [x for x in new if x in now["problems"]]}
+    return cli.out(args, data, "\n".join(text))
+
+
+def _fold_refusal(p, b, it, args):
+    """Why `it` can't be folded into b ('' when it can)."""
+    from sampo import cli
+    if it.id == b.id:
+        return f"{it.id} is the big task itself: nothing folds into itself"
+    if it.status in c.CLOSED:
+        return f"{it.id} is {it.status}: only an open item folds in"
+    if it.meta.get("parent"):
+        return (f"{it.id} is already a child of {it.meta['parent']}: it is work in a plan, not an ask to merge"
+                + (f" (it is a child of {b.id}: leave it)" if it.meta["parent"] == b.id else ""))
+    if it.status in ("active", "verifying"):
+        return f"{it.id} is {it.status}: finish or pause it before folding it"
+    up, seen = b.meta.get("parent"), set()
+    while up and up not in seen:
+        if up == it.id:
+            return f"{it.id} is an ancestor of {b.id}: it can't fold into its own child"
+        seen.add(up)
+        par = c.find_brief(p, up)
+        up = par.meta.get("parent") if par else None
+    kids = [x.id for x in c.load_briefs(p) if x.meta.get("parent") == it.id and x.status not in c.CLOSED]
+    if kids:
+        return f"{it.id} has open children ({c.joinmore(kids, 3)}): folding it would leave them without a parent"
+    if (it.acceptance() or c._started(it)) and not args.anyway:
+        return (f"{it.id} is planned or started: adopt it instead (sampo big adopt {b.id} {it.id}) so its criteria and "
+                "work stay, or --anyway to fold only its ask")
+    return ""
+
+
+def task_fold(p, args):
+    from sampo import cli
+    b = cli.need_brief(p, args.id)
+    _need_big(b)
+    if b.status in c.CLOSED:
+        raise cli.UsageError(f"{b.id} is {b.status}: nothing folds into a closed big task")
+    ids = list(dict.fromkeys(i.upper() for i in args.more))
+    if not ids:
+        raise cli.UsageError(f"sampo big fold {b.id} ITEM…: name the items to merge in (sampo inbox lists them)")
+    why, there, items = _clean(args.why, 160), folded(b), {}
+    for i in ids:  # every item is looked at before one is written: one refusal and nothing changes
+        it = items[i] = cli.need_brief(p, i)
+        bad = "" if i in there else _fold_refusal(p, b, it, args)
+        if bad:
+            raise cli.UsageError(bad)
+    new = [i for i in ids if i not in there]
+
+    def put(pb):
+        have, add = folded(pb), []
+        for i in new:
+            if i not in have:
+                add.append(f"- {i}: {_clean(items[i].title)}" + (f" ({why})" if why else ""))
+        if add:
+            cur = pb.section("Folded")
+            pb.set_section("Folded", (cur.rstrip("\n") + "\n" if cur.strip() else "") + "\n".join(add) + "\n")
+            pb.append_log("big fold: " + ", ".join(i for i in new if i not in have))
+    if new:
+        cli.mutate(p, b.id, put, "big_fold", {"folded": new, "why": why})  # the line first: an item is never closed unrecorded
+
+    def close(it):
+        if it.status not in c.CLOSED:
+            it.meta.update(status="dropped", folded_into=b.id, dropped_as="folded")
+            it.append_log(f"folded into {b.id} ({_clean(b.title, 60)})" + (f": {why}" if why else ""))
+    closed = []
+    for i in ids:
+        if items[i].status not in c.CLOSED:
+            cli.mutate(p, i, close, "big_fold_item", {"into": b.id})
+            closed.append(i)
+    text = [f"{b.id} ({b.tier}): " + (f"folded {len(new)} item(s)" if new else "nothing new to fold")]
+    text += [f"  {i} → folded into {b.id} and closed" if i in new else f"  {i} is already folded" + (
+        " (closed now)" if i in closed else "") for i in ids]
+    if new or closed:
+        text.append(f"Next: name each in a block that delivers it (folds: ID), or answer it in {b.id}'s Folded section "
+                    f"(→ not doing: why); sampo big check {b.id} refuses the plan until every one is named")
+    return cli.out(args, {"id": b.id, "folded": new, "already": [i for i in ids if i not in new], "closed": closed},
+                   "\n".join(text))
 
 
 # ---------------------------------------------------------------- the integration branch (T-4222, part C1)
@@ -1037,7 +1426,8 @@ def cmd_big(args):
     from sampo import cli, bigview
     p = cli.resolve(args)
     fn = {"plan": task_plan, "check": task_check, "expand": task_expand, "run": task_run, "sync": task_sync,
-          "status": bigview.task_status, "estimate": bigview.task_estimate, "report": bigview.task_report}[args.action]
+          "status": bigview.task_status, "estimate": bigview.task_estimate, "report": bigview.task_report,
+          "adopt": task_adopt, "fold": task_fold}[args.action]
     if not args.id and args.action != "status":  # T-4223: only status takes no ID (--all)
         raise cli.UsageError(f"sampo big {args.action} needs the big task's ID")
     return fn(p, args)
