@@ -4533,6 +4533,10 @@ def _cmd_genesis(args):
                 from sampo import regen
                 args.path = args.module
                 return regen.cmd_regen(args)
+            if verb == "misses":  # T-3051: the user's feature asks no kept moon predicted, each with its nearest moon
+                from sampo import moonscale
+                r = moonscale.misses_or_stored(p)
+                return scli.out(args, r, moonscale.miss_lines(r) if r.get("asks") else moonscale.miss_line(p))
             if verb in ("grow", "coverage", "funnel", "families", "promote", "bench-writers", "yield"):  # T-2868/T-2869: Moonscale
                 from sampo import moonscale
                 if verb == "yield":  # T-3310: kept per hour and survival per generator model, read-only, no model
@@ -4583,9 +4587,13 @@ def _cmd_genesis(args):
                     scli.out(args, {"problems": bad}, "\n".join(bad) or "Moonshot catalogue: no problems.")
                     return 1 if bad else 0
                 raise scli.UsageError("fm genesis moonshot [status|rate|order|check|grow|coverage|funnel|families|"
-                                      "promote|bench-writers|yield|regen]")
+                                      "promote|bench-writers|yield|misses|regen]")
             s = moons.summary(p)
-            return scli.out(args, s, "\n".join(moons.seed_lines(p, current(p) or 1)))  # this generation's work
+            from sampo import moonscale
+            # T-3051: the stored miss rate only (grow, seed and the misses verb refresh it); --status stays read-only and cheap
+            s["misses"] = {k: v for k, v in moonscale._stored(p).items() if k in ("asks", "rate", "method")} | {
+                "history": moonscale.miss_history(p)}
+            return scli.out(args, s, "\n".join(moons.seed_lines(p, current(p) or 1) + [moonscale.miss_line(p)]))  # this generation's work
         if action == "novelty":
             r = novelty(p, int(args.path))
             return scli.out(args, r, f"Novelty: {r['judged']} of {r['ideas']} idea(s) judged; obvious: "
@@ -4601,6 +4609,8 @@ def _cmd_genesis(args):
             r = (select if action == "select" else seed)(p, n, args.agent)
             if action == "seed":
                 _log(p, "genesis_seed", data={"gen": n, "base": r["base"]}, session=scli.session())
+                from sampo import moonscale
+                moonscale.best_effort(moonscale.record_misses, p, n)  # T-3051: this generation's miss rate, kept for the status line
             if action == "seed" or r["verdict"] != "rerun":
                 kick(p)
             if action == "seed":

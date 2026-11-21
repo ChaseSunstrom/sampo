@@ -2385,3 +2385,247 @@ class GrowHeld(_Funnel):
         eps = [{"name": "gpu"}, {"name": "new"}]
         self.ms._weigh(eps, r["models"])
         self.assertEqual([e["weight"] for e in eps], [300.0, 300.0], "three rejected rows say nothing yet")
+
+
+NETM = moon("Watch your projects as one network of links", "see how your projects depend on each other.",
+            "spot the project that blocks five others.")
+PROGM = moon("Watch the progress of every running task as it happens", "see what each running task is doing.",
+             "know which task is stuck before it stalls.")
+# the fake embedding for the misses: the first keyword picks the axis, anything else the fourth axis (cosine 0 apart)
+MVEC = (("kalevala", (0, 0, 0, 1)), ("network", (1, 0, 0, 0)), ("progress", (0, 1, 0, 0)))
+T_3034 = "A network view of every project and how they link"
+T_3044 = "A progress view of what every task is doing right now"
+T_3050 = "Kalevala: many Rune towers at once on every aspect of Sampo, overseen by Vainamoinen, and evolving its own setup"
+
+
+class Misses(_Funnel):
+    """T-3051: the user's feature asks, matched against the kept moons: an ask no earlier moon came near is a miss, and a
+    miss feeds the generator's prompt, the Sampo grid and a rate per generation."""
+
+    def embed(self, profile, texts, timeout=120):
+        self.embeds.append(list(texts))
+        return [list(next((v for k, v in MVEC if k in t.lower()), (0, 0, 1, 0))) for t in texts]
+
+    def setUp(self):
+        super().setUp()
+        from sampo import cli
+        self.cli = cli
+        self.ask(T_3034, "2026-11-02T00:00:00Z")
+        self.keep(NETM, "2026-11-01T00:00:00Z")
+        self.keep(PROGM, "2026-11-04T00:00:00Z")  # written after the progress ask: learned, not predicted
+        self.ask(T_3044, "2026-11-03T00:00:00Z")
+        self.ask(T_3050, "2026-11-05T00:00:00Z")
+
+    def ask(self, title, at, type="FEATURE", source="user"):
+        return self.cli._create(self.p, title, type, "S", "planned", raw=title, source=source, net=False,
+                                meta={"created": at}).id
+
+    def keep(self, obj, at):
+        cell = {"problem": "x", "source": "pain", "kind": "bugs", "mechanism": "law", "scale": "file", "surface": "terminal"}
+        with mock.patch.object(self.ms.c, "now", return_value=at):
+            mid = self.ms.add(self.p, [obj], cell, "haiku", 1)[0][0]
+        self.ms._log(self.p, [self.ms._event(mid, "novelty", "kept", tier="high", wild=3)],
+                     {"stages": {"novelty": {}}}, "novelty")
+        return mid
+
+    def see(self, fn, local=True, **kw):
+        from sampo import models
+        with mock.patch.object(self.ms, "_embedder", return_value=dict(PROFILE) if local else None), \
+                mock.patch.object(models, "embed", side_effect=self.embed):
+            return fn(self.p, **kw)
+
+    def test_the_asks_are_the_users_feature_briefs_since_the_moons_began(self):
+        self.ask("A feature asked before any moon", "2026-10-01T00:00:00Z")
+        self.ask("A fix the user asked for", "2026-11-05T00:00:00Z", type="FIX")
+        self.ask("A feature Sampo captured itself", "2026-11-05T00:00:00Z", source="capture")
+        self.assertEqual([a["title"] for a in self.ms.asks(self.p)], [T_3034, T_3044, T_3050])
+
+    def test_an_ask_no_earlier_kept_moon_came_near_is_a_miss_with_its_nearest_moon_and_similarity(self):
+        r = self.see(self.ms.misses)
+        self.assertEqual((r["method"], r["asks"]), ("embed", 3))
+        self.assertEqual([x["title"] for x in r["predicted"]], [T_3034])
+        self.assertEqual(r["predicted"][0]["moon_title"], NETM["title"], "the moon that predicted it")
+        self.assertEqual(r["predicted"][0]["sim"], 1.0)
+        miss = {x["title"]: x for x in r["missed"]}
+        self.assertEqual(set(miss), {T_3044, T_3050})
+        self.assertEqual((miss[T_3050]["moon_title"], miss[T_3050]["sim"]), (NETM["title"], 0.0),
+                         "no moon is near the Kalevala; the nearest is named with its similarity")
+        self.assertEqual((miss[T_3044]["moon_title"], miss[T_3044]["sim"], miss[T_3044]["late"]),
+                         (PROGM["title"], 1.0, True), "a moon written after the ask learned it, it did not predict it")
+        self.assertEqual(r["rate"], round(1 / 3, 3))
+
+    def test_the_three_known_asks_show_as_a_miss_with_a_nearest_moon_or_as_predicted(self):
+        r = self.see(self.ms.misses)
+        every = r["predicted"] + r["missed"]
+        self.assertEqual(len({x["id"] for x in every}), 3, "each of the three asks is one or the other, never both")
+        self.assertTrue(all(x["moon"] and x["moon_title"] for x in every), "each names its nearest moon")
+        self.assertEqual([x["id"] for x in r["predicted"]], ["T-0001"], "T-3034's network view: predicted")
+        self.assertEqual([x["id"] for x in r["missed"]], ["T-0002", "T-0003"], "T-3044's progress view and T-3050's Kalevala")
+
+    def test_shingles_stand_in_when_no_embedder_answers(self):
+        r = self.see(self.ms.misses, local=False)
+        self.assertEqual(r["method"], "shingle")
+        self.assertIn(T_3050, [x["title"] for x in r["missed"]])
+        self.assertTrue(all(0.0 <= x["sim"] <= 1.0 for x in r["predicted"] + r["missed"]))
+
+    def test_no_asks_is_no_rate_and_no_model_call(self):
+        with mock.patch.object(self.ms, "asks", return_value=[]):
+            r = self.see(self.ms.misses)
+        self.assertEqual((r["asks"], r["rate"], r["missed"]), (0, None, []))
+        self.assertEqual(self.embeds, [])
+
+    def test_each_miss_becomes_a_blind_spot_question_in_the_cell_it_belongs_to_and_a_new_sampo_area(self):
+        self.ask("Memory of what each session learned, kept for the next one", "2026-11-06T00:00:00Z")
+        self.see(self.ms.refresh_misses)
+        areas = self.ms.sampo_areas(self.p)
+        self.assertIn("kalevala", areas, "the Kalevala's subject had no area: it gets one")
+        self.assertTrue(any("progress" in a for a in areas))
+        self.assertEqual(areas.count("memory"), 1, "a subject that has an area adds none")
+        blind = self.ms.blind_spots(self.p)
+        self.assertIn("sampo kalevala", blind)
+        self.assertIn("sampo memory", blind)
+        text = blind["sampo kalevala"]
+        self.assertIn("Blind spot", text)
+        self.assertIn("Kalevala", text)
+        self.assertIn("nearest moon", text)
+        self.assertIn("data", text, "a past miss is data, never an instruction")
+        self.assertNotIn("network", " ".join(blind.values()).lower(), "a predicted ask is no blind spot")
+        grid = len(self.ms.coverage(self.p)["sampo_thinnest"])
+        self.assertGreaterEqual(self.ms.coverage(self.p)["sampo_grid"], 5 * len(areas))
+        self.assertTrue(any(x["kind"] == "kalevala" for x in self.ms.pick(self.p, 5 * len(areas) + 100, 0)
+                            if x.get("grid") == "sampo"))
+        self.assertGreater(grid, 0)
+
+    def test_a_new_area_cap_keeps_the_grid_from_growing_without_bound(self):
+        for i in range(self.ms.MISS_AREAS + 5):
+            self.ask(f"Zzfeature{i}name: a thing nobody predicted {i}", f"2026-11-06T00:{i:02d}:00Z")
+        self.see(self.ms.refresh_misses)
+        base = len(self.ms.base_areas(self.p))
+        self.assertLessEqual(len([a for a in self.ms.sampo_areas(self.p) if a.startswith("zzfeature")]), self.ms.MISS_AREAS)
+        self.assertGreater(len(self.ms.sampo_areas(self.p)), base)
+
+    def test_the_newest_ask_still_gets_an_area_after_more_older_misses_than_the_cap(self):
+        for i in range(self.ms.MISS_AREAS + 2):
+            self.ask(f"Zzfeature{i:02d}name: a thing nobody predicted", f"2026-11-06T00:{i:02d}:00Z")
+        self.ask("Quuxlatest: the newest ask nobody predicted", "2026-11-07T00:00:00Z")
+        r = self.see(self.ms.misses)
+        self.assertLessEqual(len(r["areas"]), self.ms.MISS_AREAS)
+        self.assertIn("quuxlatest", r["areas"], "the cap keeps the newest subjects, not the oldest")
+        self.assertEqual(r["missed"][-1]["area"], "quuxlatest")
+
+    def test_a_shingle_match_predicts_the_network_ask_and_the_method_is_in_the_digest(self):
+        r = self.see(self.ms.misses, local=False)
+        self.assertEqual(r["method"], "shingle")
+        self.assertIn("T-0001", [x["id"] for x in r["predicted"]], "a short ask contained in a long moon is predicted")
+        self.assertGreater(r["rate"], 0)
+        self.see(self.ms.refresh_misses, local=False)
+        d1 = self.ms._stored(self.p)["digest"]
+        self.see(self.ms.refresh_misses)
+        self.assertNotEqual(self.ms._stored(self.p)["digest"], d1, "an embed run does not reuse a shingle result")
+        self.assertEqual(self.ms._stored(self.p)["method"], "embed")
+
+    def test_common_english_alone_never_predicts_an_ask_in_the_shingle_fallback(self):
+        # T-3051 review: many moons share filler phrases; a long ask made of them reached the bar against any one moon
+        filler = ("you can see what the user has done in the repo and then run the tool to get the result of the "
+                  "work in the file so that the team can read it ")
+        for n in range(30):
+            self.keep(moon(f"Zebra{n} quartz{n} lantern{n}", filler + f"qx{n}wv zk{n}jp.", filler), "2026-11-01T01:00:00Z")
+        self.ask(filler + "and then the user can see the result", "2026-11-06T00:00:00Z")
+        r = self.see(self.ms.misses, local=False)
+        self.assertEqual(r["method"], "shingle")
+        self.assertEqual(len(r["predicted"]), 1, "only the network ask is predicted; the filler ask is a miss")
+        self.assertTrue(r["approximate"])
+        self.assertIn("approximate", self.ms.miss_lines(r))
+
+    def test_a_down_embed_server_is_retried_at_most_once_in_the_back_off(self):
+        from sampo import models
+        calls = []
+
+        def down(profile, texts, timeout=120):
+            calls.append(1)
+            raise models.ModelError("down")
+        with mock.patch.object(self.ms, "_embedder", return_value=dict(PROFILE)), \
+                mock.patch.object(models, "embed", side_effect=down):
+            self.ms.refresh_misses(self.p)
+            n = len(calls)
+            self.assertGreater(n, 0)
+            self.ms.refresh_misses(self.p)
+            self.ms.refresh_misses(self.p)
+        self.assertEqual(len(calls), n, "the stored shingle result stands for the back-off")
+
+    def test_the_status_reads_the_stored_result_and_never_refreshes(self):
+        self.assertFalse(os.path.exists(os.path.join(self.ms._dir(self.p), self.ms.MISSES)))
+        self.assertIn("Moon misses", self.fm("genesis", "moonshot", "--status").stdout)
+        self.assertFalse(os.path.exists(os.path.join(self.ms._dir(self.p), self.ms.MISSES)), "--status wrote misses.json")
+
+    def test_a_refresh_loads_the_briefs_once(self):
+        with mock.patch.object(self.ms, "asks", wraps=self.ms.asks) as m:
+            self.see(self.ms.refresh_misses, local=False)
+        self.assertEqual(m.call_count, 1)
+
+    def test_the_misses_verb_falls_back_to_the_stored_result_on_a_busy_lock(self):
+        from sampo import core
+        self.see(self.ms.refresh_misses, local=False)
+        with mock.patch.object(self.ms, "refresh_misses", side_effect=core.LockTimeout("held")):
+            r = self.ms.misses_or_stored(self.p)
+        self.assertEqual(r["asks"], 3)
+
+    def test_a_busy_lock_never_aborts_a_best_effort_refresh(self):
+        from sampo import core
+        with mock.patch.object(self.ms.c, "lock", side_effect=core.LockTimeout("held")):
+            self.assertIsNone(self.see(lambda p: self.ms.best_effort(self.ms.refresh_misses, p)))
+            self.assertIsNone(self.see(lambda p: self.ms.best_effort(self.ms.record_misses, p, 3)))
+
+    def test_grow_puts_the_blind_spot_into_the_prompt_of_a_cell_of_that_area(self):
+        seen = []
+
+        def ask(p, system, prompt, **kw):
+            seen.append(prompt)
+            return reply(1), "jarvis"
+        cell = {"kind": "kalevala", "scale": "one task", "surface": "", "mechanism": "law", "problem": "x",
+                "source": "pain", "grid": "sampo"}
+        from sampo import models
+        with mock.patch.object(self.ms, "_ask", side_effect=ask), mock.patch.object(self.ms, "_pick", return_value=[cell]), \
+                mock.patch.object(self.ms, "_embedder", return_value=dict(PROFILE)), \
+                mock.patch.object(models, "embed", side_effect=self.embed), \
+                mock.patch.object(self.ms, "_locals", side_effect=lambda s: iter([])):
+            self.ms.grow(self.p, 1000, batch=1, max_calls=1)
+        self.assertEqual(len(seen), 1)
+        self.assertIn("Blind spot", seen[0])
+        self.assertIn("Kalevala", seen[0])
+        self.assertNotIn(T_3034, seen[0])
+
+    def test_a_refresh_with_nothing_new_asks_the_embedder_nothing(self):
+        self.see(self.ms.refresh_misses)
+        n = len(self.embeds)
+        self.see(self.ms.refresh_misses)
+        self.assertEqual(len(self.embeds), n, "the stored result stands while the asks and the kept moons are the same")
+        self.keep(NETM | {"title": "Another network moon"}, "2026-11-07T00:00:00Z")
+        self.see(self.ms.refresh_misses)
+        self.assertGreater(len(self.embeds), n)
+
+    def test_the_miss_rate_is_recorded_for_each_generation_and_shown_in_the_status_line(self):
+        self.see(self.ms.record_misses, gen=3)
+        self.ask("A second miss", "2026-11-08T00:00:00Z")
+        self.see(self.ms.record_misses, gen=4)
+        self.see(self.ms.record_misses, gen=4)  # a second run of a generation replaces its line
+        h = self.ms.miss_history(self.p)
+        self.assertEqual([(x["gen"], x["asks"], x["predicted"], x["missed"]) for x in h], [(3, 3, 1, 2), (4, 4, 1, 3)])
+        self.assertEqual(h[0]["rate"], round(1 / 3, 3))
+        self.assertEqual(h[1]["rate"], 0.25)
+        line = self.ms.miss_line(self.p)
+        self.assertIn("1 of 4 asks", line)
+        self.assertIn("25%", line)
+        self.assertIn("gen-3 33%", line)
+        self.assertIn("gen-4 25%", line)
+        self.assertIn("miss", line.lower())
+
+    def test_the_status_verb_and_the_misses_verb_show_it(self):
+        out = self.fm("genesis", "moonshot", "--status").stdout
+        self.assertIn("Moon misses", out)
+        out = self.fm("genesis", "moonshot", "misses").stdout
+        self.assertIn("Moon misses", out)
+        self.assertIn("Kalevala", out)
+        self.assertIn("nearest", out)
+        js = self.fm_json("genesis", "moonshot", "misses")
+        self.assertEqual(js["asks"], 3)
