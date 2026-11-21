@@ -252,7 +252,7 @@ Work runs in the order CLEAN → PERFORMANCE → SECURITY → FIX → FEATURE, a
   <img src="site/assets/diagrams/guard-light.svg" width="880" alt="The Ward: every command passes the Ward hook first; tests, builds and in-scope edits run; commands that would discard uncommitted work are snapshotted first; dangerous ones are refused with how to grant them">
 </picture></p>
 
-Sampo is built for bypass mode (no tool-call prompts), which the installer offers to turn on. What still stops a dangerous command is Sampo's Ward hook, plus 20 deny rules for the truly catastrophic cases.
+Sampo is built for bypass mode (no tool-call prompts), which the installer offers to turn on. What still stops a dangerous command is Sampo's Ward hook, plus 11 deny rules for the truly catastrophic cases.
 
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="demo/figures/the-ward-dark.svg">
