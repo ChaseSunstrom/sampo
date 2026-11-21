@@ -2,3 +2,5 @@
 CHANGELOG.md merge=union
 # T-4649: every lane appends a note to a map file; four lanes in a row conflicted on docs/map/files-lib-4.md
 docs/map/*.md merge=union
+# T-5445: one line per module, a new module beside a neighbour; 16 of 31 parked lanes conflicted only here
+MASTER.md merge=union
