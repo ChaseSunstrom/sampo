@@ -186,7 +186,11 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
     queued 786 s behind full suites); a run that waits SAY_WAIT or more says so once, with the seconds waited so far.
     T-4570: `low` (the post-merge verify's runs, SAMPO_SLOT_LOW=1) leaves freed slots to a waiting ordinary run too: a
     waiting class holds a wait- marker (one per process), and a low class does not take a slot while one is there, for
-    LOW_MAX seconds from the process's first yield (_builder_waiting), then competes as before."""
+    LOW_MAX seconds from the process's first yield (_builder_waiting), then competes as before. T-5050: a gate (a
+    priority run that is not small: its marker ends GATE_SUFFIX) is left freed slots for min(half the run's wait, GATE_MAX),
+    not defer_for(wait). Trade-off: a class that is neither small nor narrow and already holds a slot defers to a gate that
+    long, so under a deadline of D s it starts after D/2 at the latest (never NOT_STARTED by a gate), and a gate waiting past
+    GATE_MAX is shared again; a small or narrow run still takes the reserve's slots beside it at once."""
     n = slot_count()
     folder = _slot_folder() if n and not _env(SLOT_ENV) and fcntl else None
     if not folder:  # nested, off, no flock (Windows) or a folder that isn't safely ours: run without one
@@ -195,6 +199,7 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
     fast, ordinary = lanes(n)
     now, order, prio, mark = time.monotonic(), random.sample(ordinary, len(ordinary)), _env(PRIO_ENV) == "1", None
     end, defer, got, said = now + (min(wait, SMALL_WAIT) if small else wait), now + defer_for(wait), None, False
+    gate_defer = now + min(wait / 2, GATE_MAX)  # T-5050: a gate is deferred to far longer than a plain marker, still not to the end
     told = False  # T-3421: this class wrote the process's one 'waiting' line, so it writes the 'got' line
     low, marked = low and not prio, False
     fair = fair_on()
@@ -218,13 +223,17 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
                 # across the process (every call restarted its own, so a marked waiter holding none held a class 300 s each)
                 # A priority episode is one waiter's stay: a pass that sees no priority waiter ends it, so the next waiter (a
                 # ship's gate after a small priority run) gets its own bounded deferral
+                # T-5050: a gate's marker (-g: a priority run that is not small) is deferred to for as long as it waits, not
+                # DEFER_MAX (a gate waiting 78 min drew 1/N of the freed slots after its first 5); it holds a marker only
+                # while it waits, and small and narrow runs still take their reserve's slots first, above and below
                 now_m, prio_w = time.monotonic(), _prio_waiting(folder)
+                gate_w = prio_w and _prio_waiting(folder, suffix=GATE_SUFFIX)
                 if not prio_w:
                     _DEFER["first"] = None
-                if now_m < defer and (_DEFER["first"] is None or now_m < _DEFER["first"] + DEFER_MAX) and prio_w and (
-                        not fair or _holding() or _prio_first(folder, n, order, snap)):
+                bounded = now_m < defer and (_DEFER["first"] is None or now_m < _DEFER["first"] + DEFER_MAX)
+                if prio_w and ((gate_w and now_m < gate_defer) or bounded) and (not fair or _holding() or _prio_first(folder, n, order, snap)):
                     why = LEFT_PRIO
-                    if _DEFER["first"] is None:
+                    if _DEFER["first"] is None and not gate_w:  # a gate's wait spends no plain marker's bound
                         _DEFER["first"] = now_m
                 elif low and _builder_waiting(folder, order if fair else None, n, snap):
                     why = LEFT_LOW
@@ -257,7 +266,7 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
             if ENDED or time.monotonic() >= end:  # T-4399: a run ended from outside takes no slot any more
                 break
             if prio and not mark:
-                mark = _mark(folder)
+                mark = _mark(folder, suffix="" if small else GATE_SUFFIX)  # T-5050: a gate's is deferred to all its wait
             elif not prio and not low and not marked:  # T-4570: an ordinary run waiting is what a low class yields to
                 marked = _wait_enter(folder, small and fair)  # the -s marker is T-4688's: fair off, the old rule
             began = time.monotonic()
@@ -289,6 +298,8 @@ def cpu_slot(wait=3600.0, poll=0.05, small=False, low=False, narrow=False):
 EXPRESS = ("x0", "x1")  # T-4247: the express slots' lock files, beside the pool's "0".."N-1" in the same folder
 EXPRESS_CLASSES = 2  # T-4247: a run of at most this many classes may take an express slot
 DEFER_MAX = 300.0  # T-4247: a non-priority run leaves freed slots to a waiting priority run at most this long
+GATE_SUFFIX = "-g"  # T-5050: a waiting gate's prio- marker ends so (not a small run's): DEFER_MAX does not bound it
+GATE_MAX = 3600.0  # T-5050: what bounds a deferral to a gate instead: half the run's own wait, at most this (far above DEFER_MAX)
 _DEFER = {"first": None}  # T-4789: when this process first deferred to the priority waiter now there: its DEFER_MAX runs from
 # there, whichever class asks, and a pass that sees no priority waiter clears it (the next waiter gets its own)
 SMALL_WAIT = 20.0  # T-4536: a small run waits at most this long for a slot (express or pool), then runs with none
@@ -859,11 +870,11 @@ def _builder_waiting(folder, ordinary=None, n=0, snap=None):
     return True
 
 
-def _prio_waiting(folder, prefix="prio-"):
+def _prio_waiting(folder, prefix="prio-", suffix=""):
     """T-3614: whether a priority run waits for a slot (holds a prio- marker); a dead waiter's marker is removed.
-    T-4570: prefix wait- asks the same of ordinary waiting runs."""
+    T-4570: prefix wait- asks the same of ordinary waiting runs. T-5050: suffix GATE_SUFFIX asks it of a gate alone."""
     try:
-        names = [x for x in os.listdir(folder) if x.startswith(prefix)]
+        names = [x for x in os.listdir(folder) if x.startswith(prefix) and x.endswith(suffix)]
     except OSError:
         return False
     for name in names:

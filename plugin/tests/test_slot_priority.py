@@ -13,7 +13,9 @@ import run
 from sampo import core as c
 
 
-class LowYieldsToBuilders(ForemanTestCase):
+class SlotCase(ForemanTestCase):
+    """A pool of one slot in the test's own folder, and the process-wide slot state reset."""
+
     def setUp(self):
         super().setUp()
         env = {"XDG_RUNTIME_DIR": self.tmp, "SAMPO_SLOTS": "1"}  # one pool slot
@@ -76,6 +78,8 @@ class LowYieldsToBuilders(ForemanTestCase):
             time.sleep(0.01)
         return what()
 
+
+class LowYieldsToBuilders(SlotCase):
     def test_a_waiting_builder_takes_a_freed_slot_before_a_queued_low_class(self):
         for _ in range(3):  # without the yield the two poll for it and either may win: three rounds
             free, order, lock = self.hold_elsewhere(), [], threading.Lock()
@@ -213,6 +217,105 @@ class LowYieldsToBuilders(ForemanTestCase):
 
     def test_the_low_switch_is_an_operator_switch_never_a_tests(self):
         self.assertIn("SLOT_LOW", run.OPERATOR_SWITCHES)
+
+
+class GateKeepsFirstClaim(SlotCase):
+    """T-5050: a gate (a priority run that is not small) keeps first claim on a freed ordinary slot for its whole wait, not
+    only DEFER_MAX: one waiting 78 min beside ~10 testing builders drew 1/N of the freed slots after the first 5 min. A plain
+    prio- marker (a small priority run's) keeps T-4247's bound, and small and narrow runs still take the reserve's slots."""
+
+    def setUp(self):
+        super().setUp()
+        m = mock.patch.object(run, "DEFER_MAX", 0.3)  # the bound a plain priority marker keeps, short for the test
+        m.start()
+        self.addCleanup(m.stop)
+        self.left = set()
+
+    def marker(self, suffix):
+        """A live waiter's prio- marker ending `suffix`, removed at the test's end unless leave() took it back first."""
+        mark = run._mark(self.folder, "prio-", suffix)
+        self.assertIsNotNone(mark)
+        self.addCleanup(self.leave, mark)
+        return mark
+
+    def leave(self, mark):
+        if mark[1] not in self.left:  # once: a second close could close an fd number reused since
+            self.left.add(mark[1])
+            run._unmark(mark)
+
+    def test_an_ordinary_run_leaves_a_freed_slot_to_a_gate_past_the_deferral_bound(self):
+        mark = self.marker("-g")
+        got = []
+        t = threading.Thread(target=lambda: got.append(self.take()), daemon=True)
+        t.start()
+        time.sleep(1.0)  # over three times DEFER_MAX
+        self.assertEqual(got, [], "a gate still waiting keeps the free slot from an ordinary run past DEFER_MAX")
+        self.leave(mark)  # the gate got its slot or ended: its marker goes with it
+        t.join(10)
+        self.assertEqual(got, [0], "the gate gone, the ordinary run takes the slot")
+
+    def take(self, **kw):
+        with run.cpu_slot(wait=1000, poll=0.01, **kw) as s:
+            return s
+
+    def test_a_plain_priority_marker_still_ends_at_the_bound(self):
+        self.marker("")
+        start = time.monotonic()
+        self.assertEqual(self.take(), 0)
+        waited = time.monotonic() - start
+        self.assertGreaterEqual(waited, 0.25, "it left the slot to the priority run first")
+        self.assertLess(waited, 5, "and for DEFER_MAX only (T-4247): a small priority run's marker is no gate's")
+
+    def test_a_gate_beside_many_ordinary_waiters_takes_the_freed_slot_first(self):
+        for _ in range(2):  # before the fix the gate drew one in five: two rounds
+            free, order, lock = self.hold(), [], threading.Lock()
+
+            def body(who):
+                with run.cpu_slot(wait=1000, poll=0.01):
+                    with lock:
+                        order.append(who)
+                    time.sleep(0.05)
+
+            with mock.patch.dict(os.environ, {"SAMPO_SLOT_PRIORITY": "1"}):  # read at the call: the gate's alone
+                gate = threading.Thread(target=body, args=("gate",), daemon=True)
+                gate.start()
+                self.assertTrue(self.wait_for(lambda: self.markers("prio-")), "the waiting gate leaves its marker")
+            others = [threading.Thread(target=body, args=(f"run{i}",), daemon=True) for i in range(4)]
+            for t in others:
+                t.start()
+            time.sleep(0.6)  # past DEFER_MAX: the ordinary waiters' bounded deferral is over
+            free.set()
+            for t in [gate, *others]:
+                t.join(10)
+            self.assertEqual(len(order), 5)
+            self.assertEqual(order[0], "gate", "the gate takes the freed slot before the ordinary waiters")
+            run._DEFER["first"] = None
+
+    def test_the_gates_marker_is_marked_and_a_small_priority_runs_is_not(self):
+        express = [run._take(self.folder, run.EXPRESS) for _ in run.EXPRESS]  # a small run's fast slots held too
+        self.addCleanup(lambda: [os.close(e[1]) for e in express if e])
+        seen = {}
+        for small in (False, True):
+            free = self.hold()
+            with mock.patch.dict(os.environ, {"SAMPO_SLOT_PRIORITY": "1"}):
+                t = threading.Thread(target=lambda: self.take(small=small), daemon=True)
+                t.start()
+                self.assertTrue(self.wait_for(lambda: self.markers("prio-")))
+            seen[small] = self.markers("prio-")
+            free.set()
+            t.join(10)
+        self.assertTrue(all(m.endswith(run.GATE_SUFFIX) for m in seen[False]), seen)
+        self.assertFalse(any(m.endswith(run.GATE_SUFFIX) for m in seen[True]), seen)
+
+    def test_small_and_narrow_runs_still_take_the_reserve_beside_a_gate(self):
+        self.marker("-g")
+        with mock.patch.dict(os.environ, {"SAMPO_SLOTS": "8"}):  # 6 ordinary slots, 2 reserved (6 and 7)
+            fast, _ = run.lanes(8)
+            for kw in ({"small": True}, {"narrow": True}):
+                start = time.monotonic()
+                s = self.take(**kw)
+                self.assertIn(s, fast, kw)
+                self.assertLess(time.monotonic() - start, 0.25, f"{kw}: a lane run under a deadline is not held by a gate")
 
 
 class HeldSlotsAreRecorded(ForemanTestCase):

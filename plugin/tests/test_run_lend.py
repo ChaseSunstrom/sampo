@@ -493,6 +493,42 @@ class Gate(Pool):
             self.take_fake(100, clock, wait=3)
         self.assertGreater(run.wall_wait(run.left_now()[run.LEFT_SHARE]), 2.0, "and with it still free the pass counts")
 
+    def gate_marker_holding_one(self):
+        """Run 200 is a gate (a -g priority marker) that holds slot 0 and waits for more (T-5050)."""
+        self.fill(200, [0])
+        self.wait_for(200, "prio-", run.GATE_SUFFIX)
+
+    def test_a_run_holding_none_takes_its_first_slot_beside_a_gate_that_holds_one(self):
+        self.gate_marker_holding_one()
+        with self.fake_clock() as clock:
+            slot, waited = self.take_fake(100, clock)
+        self.assertEqual((slot in range(1, ORDINARY), waited), (True, 0.0), "a gate's marker does not hold off every first slot")
+
+    def test_a_run_holding_a_slot_defers_to_a_gate_past_the_plain_bound_and_then_takes_one(self):
+        self.gate_marker_holding_one()
+        run._held_add(1)
+        with mock.patch.object(run, "DEFER_MAX", 10.0), self.fake_clock() as clock:
+            slot, waited = self.take_fake(100, clock)
+        self.assertGreater(waited, 10.0 + 2.6, "past DEFER_MAX, which a plain marker keeps")
+        self.assertTrue(run.GATE_MAX <= waited <= run.GATE_MAX + 2.6, f"and to GATE_MAX: {waited}")
+        self.assertIn(slot, range(1, ORDINARY))
+
+    def test_with_the_switch_off_a_gate_is_deferred_to_for_gate_max_too(self):
+        self.gate_marker_holding_one()
+        with mock.patch.dict(os.environ, {run.FAIR_ENV: "0"}), mock.patch.object(run, "DEFER_MAX", 10.0), self.fake_clock() as clock:
+            slot, waited = self.take_fake(100, clock)
+        self.assertTrue(run.GATE_MAX <= waited <= run.GATE_MAX + 2.6, f"the old rule defers to the gate's marker: {waited}")
+        self.assertIn(slot, range(1, ORDINARY))
+
+    def test_a_lane_class_under_a_deadline_is_not_left_unstarted_by_a_long_gate(self):
+        # T-4247 for a class that is neither small nor narrow: its deferral to a gate is half its own wait at most
+        self.gate_marker_holding_one()
+        run._held_add(1)
+        with self.fake_clock() as clock:
+            slot, waited = self.take_fake(100, clock, wait=600.0)
+        self.assertIsNotNone(slot, "it started: the gate did not hold it to the end of its wait")
+        self.assertTrue(300.0 <= waited <= 302.6, f"half its wait: {waited}")
+
 
 class Bounds(Pool):
     """How long a refusal can cost, on a clock that moves only when run.py sleeps."""
