@@ -608,6 +608,14 @@ def gen(p):
     BIRTHS_MAX towers open for new Frame categories (_births, outside the lock: rune.init takes its own), and run in it."""
     born = _births(p)
     with c.lock(p.dir):
+        gens = load(p).get("gens", {})
+        last = max((int(k) for k in gens), default=0)
+    if last and "giant" not in gens[str(last)] and "verdict" not in gens[str(last)]:  # its GIANT failed to be made: gen again retries it, not a new gen
+        g = gens[str(last)]
+        rows = [t for t in tower_rows(p) if t["name"] in g.get("set", [])]
+        return {"gen": last, "set": g.get("set", []), "based_on": g.get("based_on"),
+                "new_capabilities": g.get("new_capabilities", []), "retried": True, **_giant_for(p, last, rows)}
+    with c.lock(p.dir):
         m = load(p)
         done = m.get("gens", {})
         n = max((int(k) for k in done), default=0) + 1
@@ -632,8 +640,25 @@ def gen(p):
                         "new_capabilities": [i for i in ids if i not in had]}
         m["gens"] = done
         _save(p, m)
-    return {"gen": n, "set": done[str(n)]["set"], "based_on": based,
-            "new_capabilities": done[str(n)]["new_capabilities"], "born": born}
+    out = {"gen": n, "set": done[str(n)]["set"], "based_on": based,
+           "new_capabilities": done[str(n)]["new_capabilities"], "born": born, "giant": None}
+    out.update(_giant_for(p, n, rows))
+    return out
+
+
+def _giant_for(p, n, rows):
+    """T-5014: gen n's GIANT task, made with no project lock held (it takes the lock itself); its id goes on the gen
+    record. Returns {"giant": id} or {"giant": None, "giant_error": why, with how to retry}."""
+    try:
+        from sampo import kalevala_giant
+        gid = kalevala_giant.giant_task(p, n, rows).id
+        with c.lock(p.dir):  # load again: another writer may have saved meanwhile
+            m = load(p)
+            m["gens"][str(n)]["giant"] = gid
+            _save(p, m)
+        return {"giant": gid}
+    except Exception as e:  # noqa: BLE001 — the gen is recorded and its setup written: a GIANT that can't be made says why
+        return {"giant": None, "giant_error": f"{type(e).__name__}: {e}; sampo kalevala gen again retries it"}
 
 
 def select(p, n):
@@ -1084,7 +1109,9 @@ def cmd_kalevala(args):
     if action == "gen":
         r = gen(p)
         return scli.out(args, r, f"kalevala gen {r['gen']}: {len(r['set'])} tower(s), based on {r['based_on']}; "
-                                 f"select it after its steps: fm kalevala select {r['gen']}")
+                                 f"select it after its steps: fm kalevala select {r['gen']}"
+                                 + (f"\n  GIANT task {r['giant']}: sampo big check {r['giant']}" if r.get("giant") else "")
+                                 + (f"\n  no GIANT task ({r['giant_error']})" if r.get("giant_error") else ""))
     if action == "select":
         if args.n is None:
             raise scli.UsageError("kalevala select needs the generation: fm kalevala select N")
