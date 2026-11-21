@@ -9981,6 +9981,10 @@ def _build_parser(only=None):
             help="the self-change gates a change will hit, from past refusals, with the smallest fix each (T-3278)")
     s.add_argument("files", nargs="*", help="repo-relative paths (default: this worktree's git diff)")
 
+    s = add("kickoff", lazy("sampo.kickoff", "cmd_kickoff"), tier=("Reports", 1046),
+            help="dry-run a task's plan before the first edit: files per step, tests, gates, colliding open tasks (T-3291)")
+    s.add_argument("id", help="the task id")
+
     s = add("triggers",lazy("sampo.triggers", "cmd_triggers"), tier=("Reports", 1031),
             help="each trigger that files tasks: fired, done, dropped, open and precision; a mostly-dropped one files "
                  "at low priority (T-2276)")
