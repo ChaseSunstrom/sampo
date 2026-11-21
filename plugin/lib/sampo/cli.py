@@ -9759,6 +9759,11 @@ def _build_parser(only=None):
     s.add_argument("path")
     s.add_argument("--grep", metavar="PATTERN", help="keep only the definitions whose printed label (e.g. 'def NAME') "
                                                      "matches this regex, case-sensitive, before the 400-row cap")
+    s = add("wired", lazy("sampo.wired", "cmd_wired"), tier=("Finding your way", 355),
+            help="public functions in the library no verb or hook reaches, as file:line rows (a static scan: a lead, "
+                 "not a verdict; getattr dispatch is not followed; T-5016)")
+    s.add_argument("--module", metavar="NAME", help="only this module's rows (feat or feat.py)")
+    s.add_argument("--dead", action="store_true", help="only the rows nothing refers to at all, not even other unwired code")
     from sampo import instr  # T-0701: the instruments, their help and arguments come from one registry
     for name in instr.TOOLS:
         instr.arguments(add(name, lazy("sampo.instr", "cmd_" + name), tier=("Finding your way", 530),
