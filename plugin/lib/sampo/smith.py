@@ -45,6 +45,7 @@ Write is reverted and reported. The worker's exit code and reply never mark anyt
 """
 import ast
 import difflib
+import errno
 import glob
 import hashlib
 import itertools
@@ -2221,6 +2222,7 @@ class Run:
         self.json = getattr(args, "json", False)
         self.tid = self.plan = self.request = self.journal = None
         self.done, self.msgs, self.turns, self.tokens = set(), {}, 0, [0, 0]
+        self.watch_steps, self.watching = [], None  # T-4301: the steps run under a _Watch (the plan's flag), and the one on now
         self.baseline = self.model_name = self.close_notes = self.gap_notes = self.plan_msgs = self.form_gap = None
         self.closing_review = []  # T-4576: what the task's own closing notes said could still break it (the next look reads it)
         self.sensitive, self.escalate, self.cap = False, getattr(args, "escalate", None), CAP
@@ -3554,6 +3556,8 @@ class Run:
         code, out = run_bounded(cmd, self.root, RUN_TIMEOUT, self.env(), self.cap, confine=self.confine())
         self.code, self.ran = code, out  # T-4357: how it ended and what it printed, without the failure note that grows
         self.note_fail(cmd.strip(), code, out, time.monotonic() - began)  # T-4292
+        if self.watching is not None:  # T-4301: a command of a reworded step: a file it lost stops the run, now
+            self.watching.check()
         note = ""
         if code == 0:
             self.after("Bash", {"command": cmd}, {"stdout": out, "stderr": "", "interrupted": False})
@@ -6369,6 +6373,156 @@ def _untracked_dirs(root):
     return {e[3:] for e in out.split("\0") if e.startswith("?? ") and e.endswith("/")}
 
 
+WATCH_MAX, HASH_MAX, WATCH_BYTES = 2000, 1 << 20, 64 << 20  # T-4301: files watched; the largest one hashed and copied; copies in all
+
+
+_LOCAL_DATA = re.compile(r"^\.env(\..*)?$|\.(db|sqlite3?|pem|key|p12|pfx)$|^id_(rsa|ed25519|ecdsa)$", re.I)  # T-4301
+
+
+def _watch_bound(name, default):
+    """T-4301: a bound of the watch, from the environment when it names a positive whole number (tests and a machine
+    that wants it tighter; FM_WATCH_MAX, FM_WATCH_HASH), else the default."""
+    try:
+        v = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return v if v > 0 else default
+
+
+def _watch_probe(full, keep, cap=None):
+    """T-4301: (kind, size, mtime_ns, digest, data) of one path without following a link: a regular file within HASH_MAX
+    bytes (when keep) is read once, its digest and bytes returned; a larger one is size and mtime only; a link is its
+    target's digest. None when it isn't there."""
+    try:
+        st = os.lstat(full)
+        if stat.S_ISLNK(st.st_mode):
+            return "l", 0, 0, hashlib.blake2b(os.fsencode(os.readlink(full))).hexdigest(), None
+        if not stat.S_ISREG(st.st_mode):
+            return "o", st.st_size, st.st_mtime_ns, None, None
+        cap = _watch_bound("FM_WATCH_HASH", HASH_MAX) if cap is None else min(cap, _watch_bound("FM_WATCH_HASH", HASH_MAX))
+        if keep and st.st_size <= cap:
+            with open(full, "rb") as f:
+                data = f.read(cap + 1)
+            if len(data) <= cap:
+                return "f", len(data), st.st_mtime_ns, hashlib.blake2b(data).hexdigest(), data
+        return "f", st.st_size, st.st_mtime_ns, None, None
+    except OSError as e:
+        if e.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):  # a parent swapped for a file is gone too
+            return None
+        return "?", 0, 0, None, None  # unreadable now is not gone: a file the step can't be shown to have lost
+
+
+class _Watch:
+    """T-4301: the untracked files before a step that was reworded for the plan gate (git ls-files --others
+    --exclude-standard), and the same files after: one that is gone or whose content changed is a loss. At most
+    WATCH_MAX files are watched (the first by path; the count of the rest is said), a file of at most HASH_MAX bytes by
+    its digest and copied to a scratch folder of its own (WATCH_BYTES of copies in all), a larger one by size and
+    mtime. Files the step creates are not in the set: no loss. Whatever was copied is put back, never anything else."""
+
+    def __init__(self, root, n):
+        self.root, self.n, self.files, self.total, self.copied, self.tmp = root, n, {}, 0, 0, None
+
+    def begin(self):
+        """List and record the files; returns self. A listing that fails watches nothing (total -1)."""
+        try:
+            a = _git(self.root, "ls-files", "--others", "--exclude-standard", "-z")
+            b = _git(self.root, "ls-files", "--others", "--ignored", "--exclude-standard", "-z")
+        except (subprocess.TimeoutExpired, OSError):
+            self.total = -1
+            return self
+        if a.returncode or b.returncode:  # not a repo, a corrupt index: nothing can be said to be watched
+            self.total = -1
+            return self
+        out, ign = a.stdout, b.stdout
+        from sampo import doors  # only ignored local data (.env*, *.db, keys) counts: a build's output (.coverage, *.log) does not
+        found = {p for p in os.fsdecode(out).split("\0") if p}
+        found |= {p for p in os.fsdecode(ign).split("\0") if p and not doors._REGEN & set(p.split("/"))
+                  and _LOCAL_DATA.search(p.rsplit("/", 1)[-1])}
+        paths = sorted(p for p in found if not p.endswith("/") and not core.ARTEFACT.search(p))
+        self.total = len(paths)
+        self.tmp = tempfile.mkdtemp(prefix="fm-watch-")
+        left = WATCH_BYTES
+        for i, rel in enumerate(paths[:_watch_bound("FM_WATCH_MAX", WATCH_MAX)]):
+            full = os.path.join(self.root, rel)
+            got = _watch_probe(full, left > 0, left)  # never read past the copy budget
+            if got is None:
+                continue
+            kind, size, mtime, digest, data = got
+            copy = None
+            if data is not None and size <= left:
+                copy = os.path.join(self.tmp, str(i))
+                try:
+                    with open(copy, "wb") as f:
+                        f.write(data)
+                    shutil.copystat(full, copy)
+                    left -= size
+                    self.copied += 1
+                except OSError:
+                    copy = None
+            self.files[rel] = (kind, size, mtime, digest, copy)  # a digest without a copy still sees a change
+        return self
+
+    def lost(self):
+        """[(rel, 'gone'|'changed')] of the watched files that aren't as they were."""
+        out = []
+        for rel, (kind, size, mtime, digest, copy) in self.files.items():
+            now = _watch_probe(os.path.join(self.root, rel), digest is not None, size if digest is not None else None)
+            if now is None:
+                out.append((rel, "gone"))
+            elif now[0] == "?":
+                continue
+            elif now[0] != kind or ((now[3] != digest) if digest is not None else (now[1], now[2]) != (size, mtime)):
+                out.append((rel, "changed"))
+        return out
+
+    def put_back(self, rel):
+        """Whether the copy of rel was put back where it was; never into a folder that leads outside the tree, never over
+        a folder. Written beside the file and renamed in, so a failure leaves what is there as it is."""
+        copy = self.files[rel][4]
+        if not copy:
+            return False
+        full = os.path.join(self.root, rel)
+        top, parent = os.path.realpath(self.root), os.path.realpath(os.path.dirname(full))
+        try:
+            if os.path.commonpath([top, parent]) != top or (os.path.isdir(full) and not os.path.islink(full)):
+                return False
+            os.makedirs(parent, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=parent, prefix=".fm-watch-")
+            os.close(fd)
+            try:
+                shutil.copy2(copy, tmp)
+                os.replace(tmp, os.path.join(parent, os.path.basename(full)))
+            finally:
+                if os.path.lexists(tmp):
+                    os.unlink(tmp)
+            return True
+        except (OSError, ValueError):
+            return False
+
+    def check(self):
+        """Raises Blocked, naming the first file lost (and how many more), after putting back each one that was copied."""
+        gone = self.lost()
+        if not gone:
+            return
+        back = [rel for rel, _ in gone if self.put_back(rel)]
+        names = [_printable(rel) for rel, _ in gone]
+        said = names[0] + (f" (and {len(names) - 1} more: {core.joinmore(names[1:], 4)})" if len(names) > 1 else "")
+        n = len(gone)
+        if len(back) == n:
+            tail = "; the file was put back from the copy taken before the step" if n == 1 else \
+                f"; the {n} files were put back from the copies taken before the step"
+        else:
+            tail = (f"; {len(back)} of {n} put back from the copies taken before the step, "
+                    f"{core.joinmore([_printable(r) for r, _ in gone if r not in back], 4)} stays as the step left it "
+                    "(no copy: over the size or copy bound, or a folder is in its way)")
+        raise Blocked(f"fm code: step {self.n} changed untracked {said}, which it promised to leave{tail}")
+
+    def close(self):
+        if self.tmp:
+            shutil.rmtree(self.tmp, ignore_errors=True)
+            self.tmp = None
+
+
 def _leave_out_built(root, wrote, had=()):
     """T-4387: [(dir/, count)] of each highest-level untracked directory holding more than BUILT_FILES untracked files
     of which the run's own tools (`wrote`, repo-relative) wrote none, and which `had` (the untracked directories at the
@@ -9155,6 +9309,7 @@ class _ClauseMap(dict):
     the task."""
     mapped = ()
     none_lines = ()
+    watch = ()  # T-4301: the 1-based steps _piece reworded for the plan gate: run under _Watch (a flag, not a match on the text)
 
 
 def _none_line(bare):
@@ -9244,6 +9399,7 @@ def _piece(run, profile, msgs, why):
     the new step again at focus, and each command still meets Smith's guard when it runs. The plan is checked like any
     other before it replaces the refused one."""
     pl = _ClauseMap(run.plan, criteria=list(run.plan["criteria"]), steps=list(run.plan["steps"]))
+    pl.watch = list(getattr(run.plan, "watch", ()))
     pl.mapped, pl.none_lines = (list(getattr(run.plan, k, ())) for k in ("mapped", "none_lines"))  # a plan an earlier
     pl.pop("non_goals", None)  # round repaired keeps its record; a planner's own non_goals is never read
     grp, asked, said, maps, named, worded = _GATE_CLAUSES.search(why), 0, None, [], [], []
@@ -9309,6 +9465,8 @@ def _piece(run, profile, msgs, why):
             if not text or text == old:
                 return None
             pl["steps"][n - 1] = f"{text.rstrip(' .')} ({STEP_LIMIT})"  # the limit goes on in the step the worker reads
+            if n not in pl.watch:  # T-4301: and the step is watched while it runs, whatever the words and the guard let by
+                pl.watch.append(n)
             worded.append(f"step {n} reworded for the plan gate: {_one_line(old, 80)!r} -> {_one_line(text, 120)!r} "
                           f"({STEP_LIMIT})")
             asked += 1
@@ -9541,6 +9699,9 @@ def _make_task(run, profile, repaired=False):
     run.tid = made["id"]
     _hold(run)
     _journal_start(run, profile)
+    run.watch_steps = sorted({n for n in getattr(pl, "watch", ()) if type(n) is int and 1 <= n <= len(pl["steps"])})
+    if run.watch_steps:  # T-4301: replayed by _load: a resumed run watches the same steps
+        run.log(kind="watch", steps=run.watch_steps)
     run.emit("task", f"task {run.tid} created and focused", task=run.tid)
 
 
@@ -10122,10 +10283,37 @@ def _drive(run, profile):
                   f"Now do step {n}" + (f": {step}" if run.own_plan else " of the plan's steps.")
                   + " The step is done when you call done, or when a verify command passes after your edits."
                   + run.red_scaffold(step) + run.carried(n, None if run.worker else profile))
-        if run.worker:  # T-1394: a worker CLI never saw ACT_PROMPT, so it hears what the envelope is here
-            run.work(f"step:{n}", f"{prompt}\n\n{DATA_NOTE}{run.lib_worker_line()}")  # T-4443: a CLI worker opens a card itself
-        else:
-            run.phase(f"step:{n}", profile, prompt)
+        watching = _Watch(run.root, n) if n in run.watch_steps and f"step:{n}" not in run.done else None  # T-4301: reworded
+        stepped = False
+        try:  # for the gate: its untracked files are watched; the scratch copies go on every way out
+            if watching is not None:
+                watching.begin()
+                run.log(kind="watch_before", step=n, total=watching.total, watched=len(watching.files),
+                        copied=watching.copied)
+                if watching.total < 0:
+                    run.emit("note", f"step {n}: the untracked files could not be listed, so none is watched")
+                elif watching.total > len(watching.files):
+                    run.emit("note", f"step {n}: {watching.total} untracked files, {len(watching.files)} watched "
+                                     f"(the first by path; {watching.total - len(watching.files)} more are not)")
+            run.watching = watching
+            if run.worker:  # T-1394: a worker CLI never saw ACT_PROMPT, so it hears what the envelope is here
+                run.work(f"step:{n}", f"{prompt}\n\n{DATA_NOTE}{run.lib_worker_line()}")  # T-4443: a CLI worker opens a card itself
+            else:
+                run.phase(f"step:{n}", profile, prompt)
+            if watching is not None:
+                stepped = True
+                watching.check()  # T-4301: the step's end: a model's write or edit is met here
+        finally:
+            run.watching = None
+            if watching is not None:
+                if not stepped:  # the step raised (a stop, a model error, a cap): what it lost is put back before the copies go
+                    try:
+                        back = [rel for rel, _ in watching.lost() if watching.put_back(rel)]
+                        if back:
+                            run.emit("note", f"step {n} stopped early: put back {core.joinmore([_printable(r) for r in back], 4)}")
+                    except Exception:  # never hides the error the step stopped with
+                        pass
+                watching.close()
         absent = _missing_files(run, profile, n)  # T-4588: a file the step was to create and did not
         run.leave_out_built()  # T-4387: before the file list
         run.snapshot()  # T-4426: the step ended: a stop later puts the files back to here
@@ -10522,6 +10710,8 @@ def _load(run, tid, ended=False):
             run.close_notes = r["notes"]
         elif k == "gap_notes" and isinstance(r.get("notes"), dict):
             run.gap_notes = r["notes"]
+        elif k == "watch" and isinstance(r.get("steps"), list) and isinstance(run.plan, dict):  # T-4301: data: ints in range
+            run.watch_steps = sorted({n for n in r["steps"] if type(n) is int and 1 <= n <= len(run.plan.get("steps") or [])})
         elif k == "unproven" and isinstance(r.get("items"), list):  # T-4386: a journal is data: only whole items count
             run.unproven = [{"text": _one_line(x["text"], 300), "why": _one_line(x.get("why") or "", 400)}
                             for x in r["items"] if isinstance(x, dict) and isinstance(x.get("text"), str)
