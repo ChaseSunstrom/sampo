@@ -416,15 +416,36 @@ def _cause(ask, ts, known, signal, ctx):
 # ---- retrieve -> judge -> verify (T-3931 round 4): a local model reads the loosely retrieved rows and picks one; its
 # words are kept only when every quoted phrase is in the picked row. Anything else falls back to the rules above.
 JUDGE_TIMEOUT, CACHE_MAX, VEC_MAX, RRF_K = 60, 500, 8000, 60
-COS_MIN = 0.575  # ponytail: least ask-row cosine (bge-m3) a pick may have: the 7 asks of 2026-11-08 put hand-checked catchers at .60-.69 and off-topic picks at .52-.56; recalibrate per embedder
+COS_MIN = 0.583  # ponytail: least ask-row cosine (bge-m3) a pick may have: fit_cos_min over the TRAIN rows of tests/misses_golden.json (held rows never set it; test_misses_why pins the two equal); recalibrate per embedder by re-measuring the file's cos column
 QUOTA = {"brief": 3, "event": 2, "verb": 3, "skill": 1}  # per kind, so one kind of row cannot fill the eight
 _QUOTE = re.compile(r"[\"“']([^\"”']{6,})[\"”']")
 
 
+USE_FORMS = {"used", "using", "uses"}  # the verb's forms: an ask's "skills used" must reach the usage row (T-3959)
+THEMES = {"recovery": ("recove", "restor"), "measuring": ("measur", "benchm")}  # ponytail: stems of a topic an ask names that a row can hold under another word (better recovery ~ lanes recover by cause); a theme is added when a real miss needs one
+
+
 def _keys(text):
-    """Loose retrieval keys: the first four letters of each stemmed content word (used ~ usage, measuring ~ measure)."""
+    """Loose retrieval keys: the first four letters of each stemmed content word (used ~ usage, measuring ~ measure);
+    used, using and uses count as usage, the noun a use-kind row (fm usage) is named for."""
+    return {w[:4] for w in _stems(text)}
+
+
+def _stems(text):
+    """The content stems (which's 6-letter cut) of a text, plus "usage" when it says used, using or uses (which's stop list
+    drops those words: the ask "skills used" lost the very word the usage verb is named for)."""
     from sampo import which
-    return {w[:4] for w in which.words(text) if len(w) >= 3}
+    out = {w for w in which.words(text) if len(w) >= 3}
+    if USE_FORMS & set(re.findall(r"[a-z]+", (text or "").lower())):
+        out.add("usage")
+    return out
+
+
+def _themes(text):
+    """The themes a text names (the keys of THEMES): any word whose stem starts with a theme's stems."""
+    from sampo import which
+    ws = which.words(text)
+    return {t for t, stems in THEMES.items() if any(w.startswith(s) for w in ws for s in stems)}
 
 
 def _pool(known, signal, found):
@@ -443,7 +464,7 @@ def _pool(known, signal, found):
             t = f"{x['name']}: {x.get('summary') or x.get('text') or ''}"
             pool.append({"ts": "", "id": str(x["name"]), "kind": k, "status": "", "text": t, "shown": c.fit(c.plain(t), 320)})
     for r in pool:
-        r["keys"] = _keys(r["text"])
+        r["keys"], r["stems"] = _keys(r["text"]), _stems(r["text"])
     return pool
 
 
@@ -453,8 +474,13 @@ def _retrieve(ask, ts, pool, df, sims=None):
     to each pool row) is given; then the cosines are each row's, else empty."""
     import math
     a, n = _keys(ask) - {w[:4] for w in FILLER}, len(pool)
+    ast = _stems(ask)
     ok = [i for i, r in enumerate(pool) if r["kind"] in ("verb", "skill") or r["ts"] < ts or not r["ts"]]
-    stem = sorted(((sum(math.log(1 + n / max(1, df.get(k, 0))) for k in a & pool[i]["keys"]), i) for i in ok
+
+    def weight(k, i):  # rarity of the key; a key the row holds only as a 4-letter prefix (general ~ genesis) counts half
+        w = math.log(1 + n / max(1, df.get(k, 0)))
+        return w if any(s[:4] == k and s in pool[i]["stems"] for s in ast) else w / 2
+    stem = sorted(((sum(weight(k, i) for k in a & pool[i]["keys"]), i) for i in ok
                    if a & pool[i]["keys"]), reverse=True)
     fused = {}
     for rank, (_, i) in enumerate(stem):
@@ -472,14 +498,86 @@ def _retrieve(ask, ts, pool, df, sims=None):
     return [pool[i] for i in out], ([sims[i] for i in out] if sims else [])
 
 
-def _judge(prof, ask, cands, cache, models):
-    """The model's parsed JSON for this ask and candidate set (cached by their hash), or None."""
+# ---- T-3959: the hand-answered set. Rows of plugin/tests/misses_golden.json: {ask, catcher: pool id or null, split:
+# train|held, cos}. Held rows are scored and never used to set COS_MIN; a closed user ask adds one row (see that file's
+# "about"). The stem path is what is scored, so CI needs no embedder.
+GOLDEN_TS = "2026-11-08T10:00:00Z"
+
+
+def golden_pool(rows):
+    """(pool, df) of the golden file's "pool" rows, built as why() builds its judge's pool."""
+    from sampo import which
+    known, signal, found = [], [], {"commands": [], "skills": []}
+    for r in rows:
+        t = str(r.get("text") or "")
+        if r.get("kind") in ("verb", "skill"):
+            name, _, summary = t.partition(": ")
+            found["commands" if r["kind"] == "verb" else "skills"].append({"name": r["id"], "summary": summary or name})
+        elif r.get("kind") == "event":
+            signal.append({"ts": "2026-10-20T00:00:00Z", "id": r["id"], "kind": "event", "status": "", "text": t.split(": ", 2)[-1],
+                           "words": set(which.words(t))})
+        else:
+            known.append({"ts": "2026-11-01T00:00:00Z", "id": r["id"], "kind": r.get("kind") or "brief",
+                          "status": r.get("status") or "", "text": t, "words": set(which.words(t))})
+    pool, df = _pool(known, signal, found), {}
+    for r in pool:
+        for k in r["keys"]:
+            df[k] = df.get(k, 0) + 1
+    return pool, df
+
+
+def fit_cos_min(rows):
+    """COS_MIN fit on the train rows only: the cut (a midpoint between two neighbouring train cosines) that sorts the most
+    train rows right, a catcher's at or over it and a none row's under it; ties go to the widest gap, then the lower cut.
+    None when the train rows hold no measured catcher or no measured none row. Held rows are never read."""
+    pts = sorted((r["cos"], bool(r.get("catcher"))) for r in rows
+                 if r.get("split") == "train" and isinstance(r.get("cos"), float))
+    if not any(h for _, h in pts) or all(h for _, h in pts):
+        return None
+    best = None
+    for (lo, _), (hi, _) in zip(pts, pts[1:]):
+        if lo == hi:
+            continue
+        cut = (lo + hi) / 2
+        wrong = sum((v >= cut) != h for v, h in pts)
+        key = (wrong, -(hi - lo), cut)
+        best = key if best is None or key < best else best
+    return round(best[2], 3) if best else None
+
+
+def score(rows, split, pool_rows, cos_min=None):
+    """{split, n, found, recall, top, gate, line}: over the rows of one split that name a catcher, how many have it among
+    _retrieve's eight stem-path candidates (found/recall) and first (top); and of the rows with a measured cos, the share
+    the cosine gate sorts right (a catcher at or over `cos_min`, none under it). A split with no catcher row scores 1.0."""
+    pool, df = golden_pool(pool_rows)
+    cos_min = COS_MIN if cos_min is None else cos_min
+    mine = [r for r in rows if r.get("split") == split]
+    asked = [r for r in mine if r.get("catcher")]
+    found = top = 0
+    for r in asked:
+        ids = [x["id"] for x in _retrieve(str(r["ask"]), GOLDEN_TS, pool, df)[0]]
+        found += r["catcher"] in ids
+        top += ids[:1] == [r["catcher"]]
+    cos = [r for r in mine if isinstance(r.get("cos"), float)]
+    right = sum((r["cos"] >= cos_min) == bool(r.get("catcher")) for r in cos)
+    out = {"split": split, "n": len(asked), "found": found, "recall": round(found / len(asked), 3) if asked else 1.0,
+           "top": top, "gate": round(right / len(cos), 3) if cos else 1.0}
+    out["line"] = (f"misses golden [{split}]: catcher in the 8 candidates {found}/{len(asked)} (recall {out['recall']}), "
+                   f"first {top}/{len(asked)}, cosine gate {right}/{len(cos)} at COS_MIN {cos_min}")
+    return out
+
+
+def _judge(prof, ask, cands, cache, models, theme=None):
+    """The model's parsed JSON for this ask and candidate set (cached by their hash), or None. `theme` is the topic the ask
+    names that every row shown holds (a second look after an abstain)."""
     import hashlib
     import json
     system = ("A user pointed out something a coding assistant should have noticed itself. Pick the ONE numbered row "
               "that shows what the assistant already had and explain why it did not act: the row closest in topic to the "
               "ask, even when it only half covers it. Answer {\"pick\": null} only when every row is about a different "
               "subject (a row that merely shares a word is one). "
+              + (f"The ask names the theme '{theme}' and each row below holds it, under the same or another word: a row "
+                 "that handles the theme in one case still counts as the closest. " if theme else "") +
               "Answer JSON only: {\"pick\": number or null, \"link2\": what that row shows, \"link3\": why nothing read "
               "it against the ask, \"root\": one of: " + "; ".join(ROOTS) + "}. link2 and link3 must each quote, in "
               "double quotes, a phrase copied exactly from the picked row.")
@@ -681,18 +779,31 @@ class _Judge:
         self.dirty = self.dirty or len(self.cache) != n
         if not j:
             return None
-        if j.get("pick") in (None, "none", 0):  # the judge found no catcher: a blind spot, said so
-            return self._none(cands, cos, sims)
+        held = _themes(ask)
+        if j.get("pick") in (None, "none", 0):  # the judge found no catcher: a second look at the rows that hold a theme the ask names
+            theme = next((t for t in sorted(held) if any(t in _themes(x["text"]) for x in cands)), None)
+            rows = [x for x in cands if theme in _themes(x["text"])]  # only the rows that hold the theme the prompt names
+            if rows:
+                try:
+                    j = _judge(self.prof, ask, rows, self.cache, self.models, theme=theme)
+                except Exception:
+                    self.dead = True
+                    return None
+                self.dirty = self.dirty or len(self.cache) != n
+                cands, cos = rows, [cos[cands.index(x)] for x in rows] if cos else []
+            if not j or j.get("pick") in (None, "none", 0):  # still none: a blind spot, said so
+                return self._none(cands, cos, sims)
         v = _verified(j, cands)
         if not v:
             return None
         i = cands.index(v[0])
-        a = _keys(ask) - {w[:4] for w in FILLER}
+        themed = bool(held & _themes(v[0]["text"]))  # the pick, on either call, holds a theme the ask names
+        a =_keys(ask) - {w[:4] for w in FILLER}
         if sims:
             self.cos = cos[i]
-            if cos[i] < COS_MIN:  # the pick is not about the ask: no catcher existed
+            if cos[i] < COS_MIN and not themed:  # the pick is not about the ask: no catcher existed (a themed pick holds a topic word of the ask: the shared stem stands in for the cosine, T-2354 sits at .567)
                 return self._none(cands, cos, sims)
-        elif len(a & v[0]["keys"]) < min(2, len(a)):  # no embedder: a pick must share two content words with the ask
+        elif len(a & v[0]["keys"]) < (1 if themed else min(2, len(a))):  # no embedder: a pick shares two content words with the ask (one theme word after a themed look)
             return None
         return _judged_cause(*v, ts, known, ctx)
 

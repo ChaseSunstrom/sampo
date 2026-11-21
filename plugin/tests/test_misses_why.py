@@ -3,6 +3,7 @@ structural root, roots clustered with counts, one captured detector per root, re
 user's seven asks of 2026-11-08."""
 import contextlib
 import json
+import os
 
 from helpers import ForemanTestCase
 
@@ -21,6 +22,11 @@ ASKS = [  # (text, miss class)
     ("also figure out a way to come up with why things were missed", "other"),
 ]
 OLD, ASK_TS = "2026-11-01T10:00:00Z", "2026-11-08T10:00:00Z"
+GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "misses_golden.json")
+# T-3959: misses_golden.json is the hand-answered set: real asks, each with the pool row that should have caught it (or
+# null), a train/held split (every third row held) and the cosine of the ask to that row. A closed user ask adds one
+# row at the end, its split the next in the cycle; the held recall floor in the file's "floor" only ever goes up.
+# COS_MIN is fit on train rows alone (selfaware.fit_cos_min); held rows are scored, never fit.
 
 
 class Why(ForemanTestCase):
@@ -342,3 +348,145 @@ class Why(ForemanTestCase):
         self.assertEqual(r["roots"]["nobody in the user's seat"], 2)
         bus._ssh = lambda r, command, timeout=20: (_ for _ in ()).throw(OSError("no route"))
         self.assertEqual(self.sa.why(self.p)["remotes_failed"], ["jarvis"])
+
+    # ---- T-3959: the hand-answered set
+    def _golden(self):
+        with open(GOLDEN, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_the_golden_file_loads_each_row_has_a_catcher_or_none_and_a_split_and_held_rows_never_fit_cos_min(self):
+        g = self._golden()
+        ids = {x["id"] for x in g["pool"]}
+        self.assertEqual([r["ask"] for r in g["rows"][:7]], [a for a, _ in ASKS])  # the seven real asks lead the set
+        for i, r in enumerate(g["rows"]):
+            self.assertTrue(r["catcher"] is None or r["catcher"] in ids, r)  # a pool id or none
+            self.assertEqual(r["split"], "held" if i % 3 == 2 else "train", r)  # every third row is held out
+            self.assertTrue(r["cos"] is None or isinstance(r["cos"], float), r)
+        rows = g["rows"]
+        base = self.sa.fit_cos_min(rows)
+        for r in rows:  # swing every held row's cosine to either extreme: the fit cannot move
+            if r["split"] == "held":
+                r["cos"] = 0.01 if r["catcher"] else 0.99
+        self.assertEqual(self.sa.fit_cos_min(rows), base)
+        self.assertEqual(self.sa.fit_cos_min(self._golden()["rows"]), self.sa.COS_MIN)  # the constant is the train-only fit, not a hand-set number
+        self.assertGreaterEqual(self.sa.score(self._golden()["rows"], "train", g["pool"])["gate"], 0.85)
+        # a fit with no measured train rows on one side is None, never a number made from nothing
+        self.assertIsNone(self.sa.fit_cos_min([dict(r, cos=None) for r in rows]))
+        self.assertIsNone(self.sa.fit_cos_min([{"split": "train", "catcher": "x", "cos": 0.5}, {"split": "train", "catcher": "y", "cos": 0.6}]))
+        self.assertEqual(self.sa.fit_cos_min([{"split": "train", "catcher": "x", "cos": 0.7}, {"split": "train", "catcher": None, "cos": 0.5},
+                                              {"split": "held", "catcher": None, "cos": 0.9}]), 0.6)
+
+    def test_the_stem_path_finds_the_catchers_of_the_three_named_misses(self):
+        g = self._golden()
+        pool, df = self.sa.golden_pool(g["pool"])
+        asks = {r["ask"]: r["catcher"] for r in g["rows"]}
+        for text, want in (("maybe also allow better recovery in general if I don't say anything", "T-2354"),
+                           ("also has the skills work you ever done actually been used and stuff?", "usage"),
+                           ("are you also measuring local models performance and whatever too, to keep improving sampo to have "
+                            "them match your capabilities", "T-3481")):
+            self.assertEqual(asks[text], want)
+            got = [x["id"] for x in self.sa._retrieve(text, self.sa.GOLDEN_TS, pool, df)[0]]
+            self.assertIn(want, got, text)
+            self.assertLess(got.index(want), 3, (text, got))  # near the top, not merely somewhere in the eight
+
+    def test_a_used_or_using_ask_matches_a_row_named_for_usage(self):
+        k = self.sa._keys("have the skills been used or using them")
+        self.assertIn("usag", k)
+        self.assertEqual(self.sa._keys("the usage verb") & {"usag"}, {"usag"})
+        self.assertNotIn("usag", self.sa._keys("the user and users"))
+
+    def test_the_held_out_recall_is_printed_and_never_falls_below_the_recorded_floor(self):
+        g = self._golden()
+        got = {s: self.sa.score(g["rows"], s, g["pool"]) for s in ("train", "held")}
+        for s in got:
+            print(got[s]["line"])
+        self.assertGreaterEqual(got["held"]["recall"], g["floor"]["recall"], got["held"]["line"])
+        self.assertGreaterEqual(got["held"]["gate"], g["floor"]["gate"], got["held"]["line"])
+        self.assertEqual(got["held"]["n"] + got["train"]["n"], sum(1 for r in g["rows"] if r["catcher"]))
+        self.assertIn("recall", got["held"]["line"])
+        self.assertEqual(self.sa.score([], "held", g["pool"])["recall"], 1.0)  # no row to miss: no divide by zero
+        broken = [dict(r, catcher="T-3481") if r["split"] == "held" and r["catcher"] else r for r in g["rows"]]
+        bad = self.sa.score(broken, "held", g["pool"])
+        self.assertLess(bad["recall"], 1.0, bad["line"])  # a swapped catcher must drop the recall
+        self.assertLess(bad["found"], got["held"]["found"])
+        self.assertLess(bad["top"], got["held"]["top"] or 1)
+        self.assertEqual((got["held"]["found"], got["held"]["n"]), (got["held"]["n"], 3))  # the exact held counts
+        self.assertGreaterEqual(got["held"]["top"], g["floor"]["top"], got["held"]["line"])
+        self.assertGreaterEqual(len(g["pool"]), g["floor"]["pool"])
+
+    def _themed_case(self, pick_text):
+        """Ask 1 (names recovery) against a themed brief and an unthemed one, the embedder on and the cosine gate shut
+        (COS_MIN 1.1); the judge's first call picks the row holding pick_text. The record of the ask."""
+        from sampo import models
+        self._embedder()
+        self.addCleanup(setattr, self.sa, "COS_MIN", self.sa.COS_MIN)
+        self.sa.COS_MIN = 1.1
+        self._old_brief("FEATURE: stopped and stalled lanes recover by cause without being told")
+        self._old_brief("FEATURE: general lanes stalled say anything without being told")
+        self._ask(1)
+        calls = self._model({"pick": None})
+
+        def complete(prof, messages, **kw):
+            calls.append(1)
+            n = next(int(ln.split(".")[0]) for ln in messages[-1]["content"].splitlines()
+                     if pick_text in ln and ln[:1].isdigit())
+            return {"text": json.dumps({"pick": n, "link2": f'the row says "{pick_text}"', "root": "missing feedback loop",
+                                        "link3": 'nothing read "without being told" against the ask'})}
+        models.complete = complete
+        r = self.sa.why(self.p, judge=True)["records"][0]
+        self.assertEqual(len(calls), 1)  # a first-call pick, no second look
+        return r
+
+    def test_a_themed_first_call_pick_survives_the_cosine_gate(self):
+        r = self._themed_case("recover by cause")
+        self.assertEqual((r["path"], r["cause"], r["recall"]), ("judged", "known", "stem+embed"))
+
+    def test_an_unthemed_first_call_pick_under_the_cosine_gate_is_no_catcher(self):
+        r = self._themed_case("say anything")
+        self.assertEqual((r["path"], r["cause"]), ("judged", "blind-spot"))
+        self.assertIn("no catcher existed", r["evidence"])
+
+    def test_the_second_look_names_a_theme_every_row_shown_holds(self):
+        from sampo import models
+        self._old_brief("FEATURE: stopped and stalled lanes recover by cause without being told")
+        self._old_brief("FEATURE: benchmark the lanes and measure them without being told")
+        self._event("miss", ASK_TS, {"cls": "unbuilt", "text": "maybe also allow better recovery and measuring in general"})
+        self._model({"pick": None})
+        seen = []
+
+        def complete(prof, messages, **kw):
+            seen.append((messages[0]["content"], messages[-1]["content"]))
+            return {"text": json.dumps({"pick": None})}
+        models.complete = complete
+        self.sa.why(self.p, judge=True)
+        self.assertEqual(len(seen), 2)
+        system, user = seen[1]
+        theme = "recovery" if "'recovery'" in system else "measuring"
+        stem = "recove" if theme == "recovery" else "measur"
+        rows = [ln for ln in user.splitlines() if ln[:1].isdigit()]
+        self.assertTrue(rows)
+        for ln in rows:  # the prompt says each row holds the theme: each does
+            self.assertIn(stem, ln.lower())
+
+    def test_a_false_abstain_on_a_theme_a_row_holds_gets_a_second_look_and_no_theme_no_second_call(self):
+        from sampo import models
+        self._old_brief("FEATURE: stopped and stalled lanes recover by cause without being told")
+        self._event("miss", ASK_TS, {"cls": "unbuilt", "text": ASKS[1][0]})
+        calls = self._model({"pick": None})
+        seq = [{"pick": None}, {"pick": 1, "link2": 'the row says lanes "recover by cause" after a stop', "root": "missing feedback loop",
+                                "link3": 'nothing read "without being told" against the ask'}]
+
+        def complete(prof, messages, **kw):
+            calls.append(messages[0]["content"])
+            return {"text": json.dumps(seq[min(len(calls) - 1, 1)])}
+        models.complete = complete
+        r = self.sa.why(self.p, judge=True)["records"][0]
+        self.assertEqual((r["path"], r["cause"], r["catcher"]), ("judged", "known", "verb:next"))
+        self.assertEqual(len(calls), 2)
+        self.assertIn("recovery", calls[1])  # the second look names the theme
+        self.assertNotIn("theme", calls[0])
+        calls.clear()
+        self._event("miss", ASK_TS, {"cls": "other", "text": ASKS[6][0]})  # no theme in it, or in the row: one call, an abstain stays
+        recs = {x["text"]: x for x in self.sa.why(self.p, judge=True)["records"]}
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(recs[ASKS[6][0]]["cause"], "blind-spot")
