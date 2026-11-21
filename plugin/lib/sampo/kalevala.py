@@ -99,25 +99,40 @@ def tower_rows(p):
     return out
 
 
-def start(p):
-    """Open a tower for each aspect that has none yet: its gen-0 is the root's sealed gen-0 plus the aspect."""
+def start(p, depth=None):
+    """Open a tower for each aspect that has none yet: its gen-0 is the root's sealed gen-0 plus the aspect. depth (T-5018)
+    is recorded in the manifest: 1 opens one genesis (the first aspect, Rune), 2 is today's Kalevala, below 1 is refused;
+    no level logic yet. None keeps the recorded depth (2 on a first start); lowering it over open towers is refused."""
+    if depth is not None and (isinstance(depth, bool) or not isinstance(depth, int) or depth < 1):
+        raise ValueError(f"depth must be a whole number of 1 or more, not {depth!r}")
     bad = rune.sealed(p)
     if bad:  # the root's gen-0 comes first; every tower's gen-0 extends it
         raise ValueError(f"the root gen-0 isn't sealed ({bad}): fm genesis init --file GEN0 first")
-    opened, skipped = _open(p)
+    opened, skipped = _open(p, depth=depth)
     return {"towers": tower_rows(p), "opened": opened, "skipped": skipped}
 
 
 BIRTHS_MAX = 2  # T-3326: towers a generation opens by itself for new Frame areas; the rest wait for the next one
 
 
-def _open(p, limit=None):
+def _open(p, limit=None, depth=None):
     """Open a tower for each aspect with none, at most `limit` (None: all): (opened names, skipped names). The root's
     gen-0 must be sealed (the caller checks). rune.init takes its own lock, so this runs outside the manifest's."""
     with open(os.path.join(rune.root(p), "gen-0.md"), "rb") as f:
         root = f.read()
+    with c.lock(p.dir):
+        m = load(p)
+        if depth is None:
+            depth = m.get("depth", 2)
+        elif m["towers"] and depth < m.get("depth", 2):
+            raise ValueError(f"depth {depth} is below the recorded depth {m.get('depth', 2)} and {len(m['towers'])} "
+                             "tower(s) are open: the depth stays")
+        m["depth"] = depth
+        _save(p, m)
     opened, skipped = [], []
     for aspect, name in aspects(p):
+        if depth == 1 and (opened or load(p)["towers"]):  # one genesis: a tower already open is the one
+            break
         if name in load(p)["towers"]:
             skipped.append(name)
             continue
@@ -1062,14 +1077,21 @@ def cmd_kalevala(args):
     p = scli.resolve(args)
     action = args.action or "status"
     if action == "start":
-        r = start(p)
+        try:
+            r = start(p, depth=args.depth)
+        except ValueError as e:
+            if "depth" in str(e):
+                raise scli.UsageError(f"kalevala start: {e}")
+            raise
         return scli.out(args, r, f"opened {len(r['opened'])} tower(s), {len(r['skipped'])} already open"
                                  + "".join(f"\n  {t['name']}: {t['aspect']}" for t in r["towers"]))
     if action == "status":
         m = load(p)
         shown = acts(p)[-ACTS_SHOWN:]
-        r = {"halted": m.get("halted"), "towers": tower_rows(p), "acts": shown}
+        r = {"halted": m.get("halted"), "depth": m.get("depth"), "towers": tower_rows(p), "acts": shown}
         lines = [f"halted: {m['halted']} (fm kalevala resume)"] if m.get("halted") else []
+        if m.get("depth"):
+            lines.append(f"depth {m['depth']}")
         last = {s.get("tower"): s for s in m.get("steps") or ()}  # T-3841: each tower's newest step, and why it failed
         lines += tower_lines(r["towers"], shutil.get_terminal_size((100, 30)).columns, last)
         lines += [f"{a['act']} {a['tower'] or ''}: {a['reason']}\n    undo: {a['undo']}" for a in shown]

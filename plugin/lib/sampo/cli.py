@@ -10748,6 +10748,9 @@ def _build_parser(only=None):
     s.add_argument("n", nargs="?", type=int, default=None, help="select: the generation to judge")
     s.add_argument("--tower", default=None, help="pause, resume: one tower (pause with neither flag: the whole loop)")
     s.add_argument("--all", action="store_true", help="resume: every tower and the loop's halt (needed with no --tower)")
+    s.add_argument("--depth", type=int, default=None, help="start: the levels to stack, recorded in the manifest (default: "
+                                                            "the recorded depth, else 2, today's Kalevala; 1 opens one "
+                                                            "genesis; below 1 is refused; lowering over open towers is refused)")
     s.add_argument("--stall-hours", type=float, default=None, help="watch: hours with no new generation before a tower "
                                                                     "is stalled (default 24)")
     s.add_argument("--dry-run", action="store_true", help="step: name the jobs and the share; run none")
