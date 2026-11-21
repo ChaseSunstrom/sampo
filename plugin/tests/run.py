@@ -74,6 +74,7 @@ OPERATOR_SWITCHES = {"LOAD_GATE", "LOAD_WAIT", "FULL_GATE", "SENTINEL", "SENTINE
 
 
 SLOT_ENV = "SAMPO_SLOT"  # T-3252: set in a class's children, so a run.py inside a slot never waits on its parent's pool
+OPERATOR_SWITCHES.add("LANE_PREVIEW_BUDGET_S")  # T-3268: the lane list preview's time budget; a test sets its own
 OPERATOR_SWITCHES.add("NO_JOIN")  # T-4267: a run's own switch, never a test's
 OPERATOR_SWITCHES.add("TRAIN_PROBES")  # T-3770: a runner's probe switch is never a test's
 OPERATOR_SWITCHES.add("TOWER_GAP")  # T-3504: the tower-update push gap; a test that needs it sets it itself

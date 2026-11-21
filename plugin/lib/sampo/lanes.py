@@ -24,6 +24,7 @@ import time
 import zlib
 
 from sampo import core as c
+from sampo import lane_preview
 from sampo import racemetrics
 
 _git = functools.partial(c._git, timeout=120, proc=True)  # T-0961: fmcore's runner; callers read returncode/stderr
@@ -757,10 +758,16 @@ def cmd_lane(args):
                              "tasks": [{"id": b.id, "status": b.status, "title": b.title}]})
                 lines.append(f"{b.meta['lane']} [missing]: {b.id} {b.status} {c.fit(b.title, 50)} — fm lane rm {b.id} "
                              f"frees it")
+        # T-3268: which open lanes would conflict with main or with each other, before a lane merge finds out. Every
+        # present lane with a branch (builder lanes too: worktree-agent-*), not just foreman/*
+        s = None if getattr(args, "no_preview", False) else lane_preview.scan(
+            main, [r["branch"] for r in rows if r["branch"] and not r["missing"]])
         from sampo import lane_overlap  # T-3285: open lanes whose branch diffs add the same def or touch the same file
         ov = lane_overlap.scan(main, rows)
-        text = "\n".join(lines + lane_overlap.lines(ov) + git_lock_lines(locks))
-        return cli.out(args, {"lanes": rows, "git_locks": locks, **ov}, text or "No lanes: fm lane new <task id> makes one.")
+        text = "\n".join(lines + lane_preview.warn_lines(s) + lane_overlap.lines(ov) + git_lock_lines(locks))
+        return cli.out(args, {"lanes": rows, "git_locks": locks, "conflicts": lane_preview.rows(s.pairs) if s else [],
+                              "preview": lane_preview.preview_json(s), **ov},
+                       text or "No lanes: fm lane new <task id> makes one.")
     if getattr(args, "revert_route", None):  # T-2353: the off switch for the probe-down route, no task id
         if args.action != "brief" or p.lane:
             raise cli.UsageError("fm lane brief --revert-route DATE runs from the main checkout, with no task id")

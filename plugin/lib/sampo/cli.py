@@ -11375,6 +11375,7 @@ def _build_parser(only=None):
     s.add_argument("--model", choices=["sonnet", "opus", "haiku"], help="brief: the builder's model, over the history's pick (T-2291)")
     s.add_argument("--revert-route", metavar="DATE", help="brief, no id: put back the dearer picks the probe-down route "
                                                           "promoted since DATE (YYYY-MM-DD), probing paused 20 lanes (T-2353)")
+    s.add_argument("--no-preview", action="store_true", help="list: skip the trial merges between lanes (T-3268)")
     s.add_argument("--ready", action="store_true", help="brief, no id: brief every planned S/M task whose deps are closed, "
                                                         "with no open lane and nothing waiting on you, up to the free builder "
                                                         "slots; prints one block of launch lines and lists the skipped (T-3293)")
