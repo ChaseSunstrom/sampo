@@ -2641,8 +2641,11 @@ def _land_trains(p, main, batch, owed):
                     stale.add(b.id)
                     print(f"sampo lane land: {b.id}: {why}", file=sys.stderr, flush=True)
                 if gaps := _close_gaps(b):  # T-3819: said before the trains, so the lines are added while they run
-                    print(f"sampo lane land: {b.id} lands but its close will be refused: {'; '.join(gaps)} (add the "
-                          "lines to its Close fields before its train ends)", file=sys.stderr, flush=True)
+                    proof = [g for g in gaps if g.startswith("no red→green proof")]  # T-4209: recorded in the lane, not a Close field
+                    fields = [g for g in gaps if g not in proof]
+                    said = "; ".join(fields) + (" (add the lines to its Close fields before its train ends)" if fields else "")
+                    print(f"sampo lane land: {b.id} lands but its close will be refused: "
+                          + "; ".join(x for x in (said, *proof) if x), file=sys.stderr, flush=True)
         ready.sort(key=lambda t: t in stale)  # stable: fresh lanes first, each group in land order
     def recheck(ids):
         """T-4767: `ids` without the lanes the hold now catches: sort read it at the land's start, and a lane that waits
@@ -2927,16 +2930,18 @@ def _note_left(p, tid, why):
 
 def _close_gaps(b):
     """T-3819: what a close would refuse for a line the brief lacks (CHANGELOG, DOCS, NUMBERS, LESSON, why not caught;
-    T-4515: the WHY-NOT-CAUGHT line of its Close fields counts for the last)."""
+    T-4515: the WHY-NOT-CAUGHT line of its Close fields counts for the last; T-4209: a FIX's missing red→green proof
+    comes first, said as the close would (Brief.proof_gap), since no Close field gives it)."""
     from types import SimpleNamespace
 
     from sampo import cli
     from sampo import lanes
+    proof = [g] if (g := b.proof_gap()) else []
     f = lanes.close_fields(b.section(lanes.CLOSE_FIELDS))
     if not f.get("changelog"):
-        return ["no CHANGELOG line in its Close fields"]
-    return cli._field_gaps(b, SimpleNamespace(docs=f.get("docs"), numbers=f.get("numbers"), lesson=f.get("lesson"),
-                                              why_not_caught=f.get("why_not_caught")))
+        return proof + ["no CHANGELOG line in its Close fields"]
+    return proof + cli._field_gaps(b, SimpleNamespace(docs=f.get("docs"), numbers=f.get("numbers"), lesson=f.get("lesson"),
+                                                      why_not_caught=f.get("why_not_caught")))
 
 
 def _brief_hash(b):
@@ -4232,8 +4237,9 @@ def accept(p, b, main, args):
     b = cli.need_brief(p, b.id)
     lines = [f"accept {b.id}: {added} audit(s) recorded ({', '.join(sorted({lens for lens, _, _ in rows}))})"
              + (f", {len(rows) - added} already on the brief" if added < len(rows) else "") + "."]
-    lines += [f"  the close will be refused: {g} (add it to the brief's Close fields before the land closes it)"
-              for g in _close_gaps(b)]
+    lines += [f"  the close will be refused: {g}" + ("" if g.startswith("no red→green proof") else
+                                                     " (add it to the brief's Close fields before the land closes it)")
+              for g in _close_gaps(b)]  # T-4209: the proof is recorded in the lane (sampo task prove), not a Close field
     if b.id not in lanes.awaiting_merge(p, c.load_briefs(p), 0, fresh=True):  # T-4265: the review just saw its tip
         lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
                      "fm lane list says what it waits on")

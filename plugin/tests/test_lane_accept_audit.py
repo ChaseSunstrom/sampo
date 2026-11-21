@@ -110,5 +110,36 @@ class ThreeValues(AuditCase):
         self.assertEqual(self.audits(), ["intent"])
 
 
+class CloseStillRefuses(AuditCase):
+    """T-4209: accept names the proof the close will still refuse a FIX lane for, advisory (the lane is still accepted)."""
+
+    def as_type(self, kind, **sections):
+        b = c.find_brief(self.p, self.tid)
+        b.meta["type"] = kind
+        for name, text in sections.items():
+            b.set_section(name, text)
+        c.save_brief(self.p, b)
+
+    AUDIT = ("--audit", "intent", "read the diff", "no findings")
+
+    def test_a_fix_with_no_red_green_proof_is_told_so(self):
+        self.as_type("FIX")
+        code, text = self.accept(*self.AUDIT)
+        self.assertEqual(code, 0, text)
+        self.assertRegex(text, rf"the close will be refused: no red→green proof: sampo task prove {self.tid} --run")
+        self.assertEqual(self.audits(), ["intent"], "advisory: the audit is recorded all the same")
+
+    def test_a_fix_with_its_proof_waived_in_the_brief_is_not_told(self):
+        self.as_type("FIX", **{"Regression test": "none: a doc line"})
+        code, text = self.accept(*self.AUDIT)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("no red→green proof", text)
+
+    def test_a_feature_lane_is_not_told(self):  # the control: only a FIX needs the proof
+        code, text = self.accept(*self.AUDIT)
+        self.assertEqual(code, 0, text)
+        self.assertNotIn("no red→green proof", text)
+
+
 if __name__ == "__main__":
     unittest.main()

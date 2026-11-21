@@ -43,6 +43,16 @@ class Agent(ForemanTestCase):
 
 
 class Brief(_Tasks):
+    def test_the_contract_tells_a_fix_builder_to_record_task_prove(self):  # T-4209
+        """Lanes landed 'left for a hand close: no red→green proof': the contract names the verb, in the agent file and in
+        the brief's copy with the real id."""
+        flat = " ".join(read_text(os.path.join(PLUGIN, "agents", "fm-builder.md")).split())
+        self.assertIn("For a FIX record `sampo task prove <ID>", flat)
+        from sampo import lanes as slanes
+        copy = " ".join(slanes.contract("T-9", "abc123", "/main").split())
+        self.assertIn("For a FIX record `sampo task prove T-9 --run", copy)
+        self.assertIn("lane accept", copy)  # why: the close refuses a FIX with no proof
+
     def test_a_self_contained_brief_and_the_agent_call(self):
         tid = self.task("Parse dates")
         res = json.loads(self.fm("lane", "brief", tid, "--json").stdout)

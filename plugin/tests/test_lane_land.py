@@ -519,6 +519,20 @@ class Land(LandCase):
         self.assertRegex(err, rf"(?m)^sampo lane land: left for a hand close {d}: .*docs impact missing")
         self.assertEqual(self.brief(a).status, "done", err)
 
+    def test_a_missing_proof_gap_is_not_told_to_go_in_the_close_fields(self):
+        # T-4209: the FIX proof is recorded in the lane (sampo task prove), not a Close field
+        d = self.lane(2, "d.txt", when=OLD)
+        self.audited(d)
+        self.fm("task", "set", d, "type=FIX")
+        r = self.hook("SubagentStop", {"agent_type": "sampo:fm-builder", "agent_id": "a1b2c3d4",
+                                       "last_assistant_message": report(d, "Lane two")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.land("--batch", "1")
+        line = re.search(rf"(?m)^sampo lane land: {d} lands but its close will be refused: .*$", r.stderr)
+        self.assertTrue(line, r.stderr)
+        self.assertIn("no red→green proof", line.group(0))
+        self.assertNotRegex(line.group(0), r"no red→green proof[^;]*\(add the lines to its Close fields")
+
     def test_a_refused_close_is_remembered(self):
         # T-3884: 2026-11-08 a land retried 32 merged-open tasks for the same refusals as the land before
         d = self.lane(2, "d.txt", when=OLD)
