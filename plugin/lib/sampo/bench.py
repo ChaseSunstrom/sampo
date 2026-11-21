@@ -4,7 +4,8 @@ commit's parent, the task's original request as the prompt, the commit's test fi
 commands as the grade. `build` keeps a case only if its verify commands fail at the parent with the hidden tests in
 place and pass at the commit (SWE-bench's fail-to-pass check), so a case tells a fix from no fix.
 
-`run` replays cases headless: a temporary git worktree at the parent, a fresh Sampo state (FOREMAN_STATE, seeded with
+`run` replays cases headless: a fresh one-commit `git init` of the parent (no remote, none of the repo's objects, so
+the arm can't `git show` the answers; its transcript is audited and a run that touched them is void), a fresh Sampo state (FOREMAN_STATE, seeded with
 full autonomy and drive on), `claude -p` with the candidate plugin (--plugin-dir; user settings left out so the
 installed Sampo doesn't load beside it); then the hidden tests are restored and the verify commands decide. Cost,
 turns and time come from claude's JSON result. Results are kept per label; `compare` sets two side by side, which is
@@ -91,6 +92,87 @@ def _worktree(root, rev):
             _safe_git(root, "worktree", "prune")
 
 
+@contextlib.contextmanager
+def _fresh(root, rev):
+    """T-3364: (folder, repo) of `git archive rev` in a fresh one-commit `git init`: no remote, no later commits, none of
+    the source repo's objects, so the arm can't `git show` the case commit's hidden tests or reference fix."""
+    from sampo import long
+    tmp = tempfile.mkdtemp(prefix="fm-bench-")
+    wt = os.path.join(tmp, "repo")
+    try:
+        long._archive(root, rev, wt)
+        base = None
+        for cmd in (["init", "-q"], ["add", "-A"], ["-c", "user.name=bench", "-c", "user.email=bench@example.com",
+                                                   "-c", "commit.gpgsign=false", "commit", "-qm", "base"]):
+            subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-C", wt, *cmd], check=True, capture_output=True,
+                           timeout=120)
+        base = subprocess.run(["git", "-C", wt, "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+                              timeout=60).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise OSError(f"fresh tree at {rev[:10]}: {e}") from e
+    try:
+        yield tmp, wt, base  # base: the sha of the one commit, so a judge diffs from it even after the arm commits
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _forms(paths):
+    """The absolute, real, `~` and $HOME spellings of each path."""
+    home = os.path.expanduser("~")
+    paths = {y for x in paths for y in (os.path.abspath(x), os.path.realpath(x))}
+    out = set(paths)
+    for x in paths:
+        if x.startswith(home + os.sep):
+            out |= {"~" + x[len(home):], "$HOME" + x[len(home):]}
+    return out
+
+
+def _needles(p, case, allow=()):
+    """T-3364: the strings that mean a tool call reached the answers: the source repo, Sampo's state folder (cases.json
+    and the spec-suite live there), this case's files, and Claude's own project folders, as absolute, `~` and $HOME forms.
+    `allow`: the arm's own plugin folders (they may sit under the source root); _leaks drops their paths before matching.
+    A best-effort audit: it matches literal strings, so a relative or built-up path isn't caught; the structural
+    isolation (a fresh tree with no history) is what's guaranteed."""
+    paths = {p.root, p.dir, _cases_path(p), os.path.join(p.root, "bench", "spec-suite", str(case.get("id", "")))}
+    return sorted(_forms(paths) | {".claude/projects", ".claude/foreman"})
+
+
+def _leaks(path, needles, allow=()):
+    """T-3364: which needles a session file's tool calls touched: the tool_use inputs only, not the prompt. The `allow`
+    paths (longest first) are removed from the text first, so the arm's own plugin isn't a hit."""
+    skip = sorted(_forms(allow), key=len, reverse=True)
+    hits = set()
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                try:
+                    content = (json.loads(line).get("message") or {}).get("content")
+                except (ValueError, AttributeError):
+                    continue
+                for part in content if isinstance(content, list) else []:
+                    if isinstance(part, dict) and part.get("type") == "tool_use":
+                        text = json.dumps(part.get("input"))
+                        for a in skip:
+                            text = text.replace(a, "")
+                        hits.update(n for n in needles if n in text)
+    except OSError:
+        pass
+    return sorted(hits)
+
+
+def _audit(sid, needles, allow=()):
+    """(leaks, audited) of the kept session `sid` and its subagents' files; audited is False when there is no
+    transcript to read (its file stays for _compactions to remove or keep)."""
+    home = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude")
+    if not sid or not re.fullmatch(r"[\w.-]{1,80}", str(sid)):  # a name out of claude's output: no glob characters
+        return [], False
+    base = os.path.join(glob.escape(home), "projects", "*")
+    main = glob.glob(os.path.join(base, f"{sid}.jsonl"))
+    subs = glob.glob(os.path.join(base, sid, "subagents", "*.jsonl"))
+    return sorted({h for path in main + subs for h in _leaks(path, needles, allow)}), bool(main)
+
+
 # Credentials a replay never needs (claude's own login stays): forge, cloud and package-registry tokens.
 # ponytail: a denylist (names that look like credentials); an allowlist of env names if replays ever run untrusted code
 CREDENTIALS = re.compile(r"^(GITHUB_|GH_|GITLAB_|AWS_|AZURE_|GOOGLE_|GCP_|GCLOUD_|NPM_|PYPI_|TWINE_|DOCKER_|HF_|OPENAI_|"
@@ -119,12 +201,18 @@ def has_guard(plugin):
         isinstance(h, dict) and "Bash" in str(h.get("matcher", "")) for h in pre)
 
 
-def _grade(wt, case, env, timeout=900, failed=None):
+def _grade(wt, case, env, timeout=900, failed=None, src=None):
     """[(cmd, exit code, last lines)] of the case's verify commands, with its hidden tests restored. T-1237 review: and
     every other file in their folders as the reference commit has them, so an arm that edited or gutted an existing
-    test to make its change pass is graded by the real one."""
+    test to make its change pass is graded by the real one. `src`: the source repo, when wt has no such commit (T-3364)."""
     folders = sorted({os.path.dirname(t) for t in case["tests"]} - {""})
-    r = _safe_git(wt, "checkout", case["commit"], "--", *case["tests"], *folders)
+    if src:
+        a = subprocess.run(["git", "-c", "core.fsmonitor=false", "-C", src, "archive", case["commit"], "--",
+                            *case["tests"], *folders], capture_output=True, timeout=120)
+        r = subprocess.run(["tar", "-x", "-C", wt], input=a.stdout, capture_output=True, timeout=120) if not a.returncode else a
+        r.stderr = r.stderr.decode(errors="replace")
+    else:
+        r = _safe_git(wt, "checkout", case["commit"], "--", *case["tests"], *folders)
     if r.returncode:  # grading without the hidden tests would grade whatever the session left
         return [("restore the hidden tests", r.returncode, r.stderr.strip()[-200:])]
     out = []
@@ -174,10 +262,14 @@ def _compactions(sid):
     for path in glob.glob(os.path.join(glob.escape(home), "projects", "*", f"{sid}.jsonl")):
         with open(path, encoding="utf-8", errors="replace") as f:
             n += sum('"compact_boundary"' in line for line in f)
+        folder = path[:-len(".jsonl")]  # its subagents' files
         if keep and os.path.isdir(keep):
             shutil.move(path, os.path.join(keep, os.path.basename(path)))
+            if os.path.isdir(folder):
+                shutil.move(folder, os.path.join(keep, os.path.basename(folder)))
         else:
             os.remove(path)
+        shutil.rmtree(folder, ignore_errors=True)
         with contextlib.suppress(OSError):
             os.rmdir(os.path.dirname(path))  # only when the replay's worktree left nothing else there
     return n
@@ -575,11 +667,14 @@ def _bare_guard(plugin):
 
 
 def run_case(p, case, plugin, model=None, budget=3.0, timeout=30, extra=(), bare=False, compact_at=None, marathon=None,
-             ablate=None, nudges=MAX_NUDGES):
+             ablate=None, fresh=True, nudges=MAX_NUDGES):
     """T-3365: unattended: a session that stops early without claiming done is nudged up to `nudges` times; the result
     carries `unattended` (interventions, stalls, questions)."""
     t0 = time.monotonic()
-    with _worktree(p.root, case["base"]) as (tmp, wt):
+    arm_tree = _fresh if fresh else _worktree  # T-3364: a linked worktree shares the repo's objects: the answers
+    with arm_tree(p.root, case["base"]) as got:
+        tmp, wt, base = got if len(got) == 3 else (*got, case["base"])  # _fresh also yields its tree's base sha
+        keep = bool(compact_at) or fresh
         state = os.path.join(tmp, "state")
         env = _env(plugin, state)
         if ablate and not bare:  # T-1375: this arm's Foreman with one hook feature switched off
@@ -598,32 +693,42 @@ def run_case(p, case, plugin, model=None, budget=3.0, timeout=30, extra=(), bare
             prompt = (f"Task: {case['prompt']}\n\n(Unattended benchmark run: the user is away; finish the work, "
                       f"deciding with your defaults, and say 'done' when you are finished.)")
             res, error = _session(wt, env, [], prompt, model, budget, timeout, settings=_bare_guard(plugin),
-                                  keep=bool(compact_at), nudges=nudges)
+                                  keep=keep, nudges=nudges)
         else:
             _seed(plugin, wt, env)
             prompt = (f"Task: {case['prompt']}\n\n(Unattended benchmark run: the user is away and granted full "
                       f"autonomy; finish the work with Sampo, deciding with your defaults, and say 'done' when you "
                       f"are finished.)")
-            res, error = _session(wt, env, [plugin, *extra], prompt, model, budget, timeout, keep=bool(compact_at),
+            res, error = _session(wt, env, [plugin, *extra], prompt, model, budget, timeout, keep=keep,
                                   nudges=nudges)
-        compactions = _compactions(res.get("session_id")) if compact_at else None
+        leaks, audited = _audit(res.get("session_id"), _needles(p, case), [plugin, *extra]) if fresh else ([], True)
+        compactions = _compactions(res.get("session_id")) if keep else None
+        compactions = compactions if compact_at else None
         capped = bool(marathon and not bare and error and error.startswith("hit the $"))  # review: Foreman's arm
         error = None if capped else error  # a marathon runs until its cap: the asked work is graded either way
+        if leaks:  # T-3364: the run touched the answers: void it, grade nothing
+            error = f"leak: the transcript touched {', '.join(leaks)}"
+        elif not audited and not error:  # no transcript to read: not known clean (graded below, but never a pass)
+            error = "unaudited: no transcript to check for leaks"
         score, reasons, failed = None, [], []
-        if case.get("judge"):  # T-0231: no hidden tests; a judge grades the change against the rubric
-            graded = _grade(wt, case, env) if case.get("impossible") else []  # T-1377: tests that pass broke a rule
+        src = p.root if fresh else None
+        if leaks:
+            graded = []
+        elif case.get("judge"):  # T-0231: no hidden tests; a judge grades the change against the rubric
+            graded = _grade(wt, case, env, src=src) if case.get("impossible") else []  # T-1377: tests that pass broke a rule
             if not error:  # review: a crashed session isn't worth a paid judgement
-                score, reasons, error = _judge(p, wt, case, res.get("result"))
+                score, reasons, error = _judge(p, wt, dict(case, base=base), res.get("result"))
         else:
-            graded = _grade(wt, case, env, failed=failed)
+            graded = _grade(wt, case, env, failed=failed, src=src)
         diag = _diagnose(state)
     sbudget.record("bench", res.get("total_cost_usd"), project=p.slug, detail=case["id"])  # T-0227
     cheated = bool(case.get("impossible") and graded and all(code == 0 for _, code, _ in graded))
-    ok = not error and not cheated and (score >= 4 if case.get("judge") else all(code == 0 for _, code, _ in graded))
+    ok = not leaks and audited and not error and not cheated and (score >= 4 if case.get("judge") else all(code == 0 for _, code, _ in graded))
     return {"id": case["id"], "pass": ok, "diag": diag,
             "verify": [{"cmd": x, "exit": code, "tail": tail} for x, code, tail in graded],
             "cost_usd": res.get("total_cost_usd"), "turns": res.get("num_turns"),
-            "seconds": round(time.monotonic() - t0), "error": error, "tests": count_tests(t for _, _, t in graded),
+            "seconds": round(time.monotonic() - t0), "error": error, **({"status": "leak"} if leaks else {"status": "unaudited"} if str(error).startswith("unaudited") else {}),
+            "mode": "fresh" if fresh else "worktree", "tests": count_tests(t for _, _, t in graded),
             **({"compactions": compactions} if compact_at else {}), **({"capped": capped} if marathon else {}),
             **({"unattended": res["unattended"]} if "unattended" in res else {}), "nudges": nudges,
             **({"failed": sorted(set(failed))[:60]} if failed else {}),
@@ -636,7 +741,7 @@ def run_case_n(p, case, plugin, model=None, budget=3.0, timeout=30, runs=1, extr
                marathon=None, ablate=None, nudges=MAX_NUDGES):
     """T-0221: a case run `runs` times: pass rate, mean cost, turns and time; the first attempt's details kept (T-3365:
     but the unattended counts are the attempts' sum)."""
-    tries = [run_case(p, case, plugin, model, budget, timeout, extra, bare, compact_at, marathon, ablate, nudges)
+    tries = [run_case(p, case, plugin, model, budget, timeout, extra, bare, compact_at, marathon, ablate, nudges=nudges)
              for _ in range(max(1, runs))]
     counts = [t["unattended"] for t in tries if isinstance(t.get("unattended"), dict)]
     rate = sum(t["pass"] for t in tries) / len(tries)
@@ -646,10 +751,11 @@ def run_case_n(p, case, plugin, model=None, budget=3.0, timeout=30, runs=1, extr
         return round(sum(vals) / len(vals), 4) if vals else None
     return dict(tries[0], runs=len(tries), pass_rate=rate, cost_usd=mean("cost_usd"), turns=mean("turns"),
                 seconds=mean("seconds"), **{"pass": rate >= 0.5},
+                **({"status": "leak"} if any(t.get("status") == "leak" for t in tries) else {}),
                 **({"false_done": sum(t["false_done"] for t in tries) / len(tries)} if "false_done" in tries[0] else {}),
                 **({"unattended": {k: sum(o.get(k) or 0 for o in counts) for k in counts[0]}} if counts else {}),
                 attempts=[{k: t.get(k) for k in ("pass", "cost_usd", "turns", "seconds", "error", "tests", "compactions",
-                                                  "unattended")
+                                                  "unattended", "status")
                            if k in t} for t in tries])
 
 
@@ -816,7 +922,7 @@ def soak_case(p, case, plugin, model=None, budget=3.0, timeout=30, turns=3, shad
     t = ideas.taste(p, 8)
     said = t["steered"] + t["corrected"]
     t0, complaints, cost, talk, error, n = time.monotonic(), [], 0.0, [], None, 0
-    with _worktree(p.root, case["base"]) as (tmp, wt):
+    with _fresh(p.root, case["base"]) as (tmp, wt, _):  # T-3364: not a linked worktree: it shares the answers' objects
         env = _env(plugin, os.path.join(tmp, "state"))
         if compact_at:  # T-1259: a compaction storm, as T-1242's duels force one
             env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = str(compact_at)
@@ -846,9 +952,17 @@ def soak_case(p, case, plugin, model=None, budget=3.0, timeout=30, turns=3, shad
             if not nxt or any(x.upper().startswith("DONE") for x in lines):
                 break
             msg = c.defang(c.plain(nxt[:1000]))  # review: a child's words, fed to a bypass-mode session as the user's
-    return {"id": case["id"], "pass": not error and not complaints, "turns": n, "complaints": complaints,
+    leaks, audited = _audit(sid, _needles(p, case), [plugin])  # T-3364: a conversation that touched the answers is void
+    compactions = _compactions(sid)  # always: removes the kept transcript
+    status = "leak" if leaks else "" if audited or error else "unaudited"
+    if leaks:
+        error = f"leak: the transcript touched {', '.join(leaks)}"
+    elif status:
+        error = "unaudited: no transcript to check for leaks"
+    return {"id": case["id"], "pass": not error and not complaints, **({"status": status} if status else {}), "mode": "fresh",
+            "turns": n, "complaints": complaints,
             "cost_usd": round(cost, 4), "seconds": round(time.monotonic() - t0), "error": error, "transcript": talk,
-            **({"compactions": _compactions(sid)} if compact_at else {})}
+            **({"compactions": compactions} if compact_at else {})}
 
 
 def _windows(args):
@@ -889,7 +1003,7 @@ def run_arm(p, cases, plugin, label, model=None, budget=3.0, timeout=30, runs=1,
                          f"replays run in bypass mode, so they never run without it")
     results = []
     res = {"label": label, "plugin": plugin, "model": model, "at": c.now(), "head": head, "claude": claude_version(),
-           "cases": results, "budget": budget, "runs": runs, "nudges": nudges,  # T-1261: what fm bench repro reruns a row with
+           "cases": results, "budget": budget, "runs": runs, "mode": "fresh", "nudges": nudges,  # T-1261: what fm bench repro reruns a row with
            **({"extra": list(extra)} if extra else {}), **({"bare": bare} if bare else {}),
            **({"compact_at": compact_at} if compact_at else {}), **({"marathon": marathon} if marathon else {}),
            **({"ablate": ablate} if ablate else {}), **({"equal_spend": True} if spend is not None else {})}
@@ -1496,6 +1610,10 @@ def cmd_bench(args):
              + (f" · {unattended_text(b.values())}" if unattended_text(b.values()) else "") for r, b in zip(runs, by)]
     lines += [f"  {i}: {' → '.join('✓' if b[i]['pass'] else '✗' for b in by)}" for i in shared
               if by[0][i]["pass"] != by[1][i]["pass"]]
+    modes = [r.get("mode", "worktree") for r in runs]  # T-3364: a run before the stamp ran in a linked worktree
+    if modes[0] != modes[1]:
+        lines.append(f"warning: not comparable: {runs[0]['label']} ran in a {modes[0]} tree, {runs[1]['label']} in a "
+                     f"{modes[1]} one (a worktree arm could read the answers)")
     cli.out(args, {"shared": shared, "runs": [r["label"] for r in runs]}, "\n".join(lines))
 
 

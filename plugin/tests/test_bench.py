@@ -1,5 +1,6 @@
 """fm bench (T-0212): finished tasks replayed as benchmark cases — the repo at the task commit's parent, the original
 request, a fresh Foreman state, the candidate plugin; graded by the task's own tests and verify commands."""
+import glob
 import json
 import os
 import subprocess
@@ -52,12 +53,15 @@ if os.environ.get("STUB_EARLY"):  # T-3365: stop early (no claim of done) this m
     open(n, "w").write(str(k + 1))
     sid = next((args[i + 1] for i, a in enumerate(args) if a in ("--resume", "--session-id")), "s-0")
     if k < int(os.environ["STUB_EARLY"]):
-        if k == 0 and os.environ.get("STUB_ASKTOOL"):  # the session's transcript: one AskUserQuestion call
-            d = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p")
+        if os.environ.get("CLAUDE_CONFIG_DIR") and not os.environ.get("STUB_NO_TRANSCRIPT"):  # T-3364: a run with no
+            d = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p")  # transcript is unaudited: keep one
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, sid + ".jsonl"), "a") as f:
-                f.write(json.dumps({"type": "assistant", "message": {"content": [
-                    {"type": "tool_use", "id": "toolu_1", "name": "AskUserQuestion", "input": {}}]}}) + "\n")
+                if k == 0 and os.environ.get("STUB_ASKTOOL"):  # the session's transcript: one AskUserQuestion call
+                    f.write(json.dumps({"type": "assistant", "message": {"content": [
+                        {"type": "tool_use", "id": "toolu_1", "name": "AskUserQuestion", "input": {}}]}}) + "\n")
+                else:
+                    f.write(json.dumps({"type": "user", "message": {"content": "ok"}}) + "\n")
         if os.environ.get("STUB_SOLVE"):
             with open("calc.py", "w") as f:
                 f.write("def double(x):\n    return 2 * x\n")
@@ -74,8 +78,19 @@ if os.environ.get("STUB_SOLVE") or model and model in os.environ.get("STUB_SOLVE
     with open("calc.py", "w") as f:
         f.write("def double(x):\n    return 2 * x\n")
 cost = {"haiku": 0.05, "sonnet": 0.3, "opus": 1.2}.get(model, 0.42)
+sid = "stub-session"
+if os.environ.get("STUB_COMMIT"):  # an arm that commits its work, as Sampo's rules make it
+    import subprocess
+    subprocess.run(["git", "add", "-A"], capture_output=True)
+    subprocess.run(["git", "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qm", "work"], capture_output=True)
+if os.environ.get("CLAUDE_CONFIG_DIR") and not os.environ.get("STUB_NO_TRANSCRIPT"):  # the kept transcript
+    d = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p")
+    os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, sid + ".jsonl"), "w") as f:  # STUB_LEAK: a tool call that reaches for the answers
+        f.write(json.dumps({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Bash", "input": {"command": "cat " + os.environ.get("STUB_LEAK", "x")}}]}}) + "\n")
 print(json.dumps({"type": "result", "is_error": False, "total_cost_usd": cost, "num_turns": 7, "duration_ms": 1234,
-                  "result": "done"}))
+                  "result": "done", "session_id": sid}))
 '''
 
 
@@ -97,7 +112,8 @@ class Bench(ForemanTestCase):
             f.write(STUB)
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         self.log = os.path.join(self.tmp, "stub.log")
-        self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log}
+        self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
+                    "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cc")}  # T-3364: where the stub keeps its transcript
         self.fm("init")
         self.write("calc.py", "def double(x):\n    return x + x + 1\n")
         git(self.repo, "add", "calc.py")
@@ -364,7 +380,8 @@ class Bench(ForemanTestCase):
     def test_unattended_nudges_zero_is_an_un_nudged_baseline_and_the_default_is_recorded(self):
         self.fm("bench", "build", env=self.env)
         res = json.loads(self.fm("bench", "run", "--nudges", "0", "--label", "plain", "--json",
-                                 env=dict(self.env, STUB_EARLY="2"), check=False).stdout)
+                                 env=dict(self.env, STUB_EARLY="2", CLAUDE_CONFIG_DIR=os.path.join(self.tmp, "cc")),
+                                 check=False).stdout)  # T-3364: a transcript to audit
         self.assertEqual(res["nudges"], 0)
         self.assertEqual(len(self.calls()), 1, "one turn, nobody nudged")
         self.assertNotIn("unattended", res["cases"][0])
@@ -677,6 +694,118 @@ class Bench(ForemanTestCase):
         out = self.fm("bench", "compare", "nofix", "fix", env=self.env).stdout
         self.assertIn("0/1", out)
         self.assertIn("1/1", out)
+
+    def test_the_case_commit_is_unreachable_from_the_arms_tree(self):
+        # T-3364: a linked worktree shares the repo's objects: git show <case commit> gave the answers away
+        from sampo import bench
+        commit = git(self.repo, "rev-parse", "HEAD")
+        with bench._fresh(self.repo, self.base) as (tmp, wt, base):
+            self.assertEqual(git(wt, "log", "--format=%H").count("\n"), 0, "one commit")
+            self.assertEqual(git(wt, "remote"), "", "no remote")
+            probe = subprocess.run(["git", "-C", wt, "cat-file", "-e", commit], capture_output=True)
+            self.assertNotEqual(probe.returncode, 0)
+            self.assertIn("x + x + 1", read_text(os.path.join(wt, "calc.py")))
+            # an arm that commits leaves HEAD past the base: the judge's diff must start at the base sha
+            self.assertEqual(base, git(wt, "rev-parse", "HEAD"))
+            with open(os.path.join(wt, "calc.py"), "w") as f:
+                f.write("def double(x):\n    return 2 * x\n")
+            git(wt, "-c", "user.name=a", "-c", "user.email=a@b", "commit", "-qam", "work")
+            self.assertEqual(git(wt, "diff", "HEAD"), "")
+            self.assertIn("2 * x", git(wt, "diff", base))
+
+    def test_the_judge_diffs_from_the_base_sha_after_an_arm_commits(self):
+        from unittest import mock
+        from sampo import bench
+        seen = []
+        case = {"id": self.tid, "base": self.base, "prompt": "fix", "judge": "rubric", "tests": [], "verify": []}
+        env = dict(self.env, STUB_COMMIT="1", STUB_SOLVE="1")
+        with mock.patch.dict(os.environ, env), mock.patch.object(
+                bench, "_judge", lambda p_, wt, cs, reply: (seen.append((cs["base"], wt)) or (5, [], None))):
+            res = bench.run_case(c.find_project(self.repo), case, c.PLUGIN_ROOT)
+        self.assertEqual(len(seen), 1, res)
+        self.assertNotIn(seen[0][0], ("HEAD", self.base), "the fresh tree's own base sha, not HEAD")
+
+    def test_a_transcript_touching_the_answers_is_flagged(self):
+        from types import SimpleNamespace
+        from sampo import bench
+        p = SimpleNamespace(root=self.repo, dir=os.path.join(self.tmp, "state"))
+        needles = bench._needles(p, {"id": "T-1"})
+        path = os.path.join(self.tmp, "s.jsonl")
+        for cmd, hit in ((f"cat {bench._cases_path(p)}", True), (f"ls {self.repo}/bench/spec-suite/T-1", True),
+                         (f"git -C {self.repo} show HEAD", True), ("cat ~/.claude/projects/x/s.jsonl", True),
+                         ("cat $HOME/.claude/foreman/MASTER.md", True),
+                         ("ls bench/spec-suite/x", False), ("python3 -m unittest", False)):
+            with open(path, "w") as f:
+                f.write(json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]}}) + "\n")
+            self.assertEqual(bool(bench._leaks(path, needles)), hit, cmd)
+
+    def test_the_arms_own_plugin_under_the_source_root_is_not_a_leak(self):
+        from types import SimpleNamespace
+        p = SimpleNamespace(root=self.repo, dir=os.path.join(self.tmp, "state"))
+        plugin = os.path.join(self.repo, "plugin")
+        needles = bench._needles(p, {"id": "T-1"}, allow=[plugin])
+        path = os.path.join(self.tmp, "s.jsonl")
+        for cmd, hit in ((f"python3 {plugin}/bin/fm status", False), (f"ls {self.repo}/bench/spec-suite/T-1", True),
+                         (f"cat {plugin}/x {self.repo}/bench/cases.json", True)):
+            with open(path, "w") as f:
+                f.write(json.dumps({"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Bash", "input": {"command": cmd}}]}}) + "\n")
+            self.assertEqual(bool(bench._leaks(path, needles, allow=[plugin])), hit, cmd)
+
+    def test_audit_ignores_a_session_name_with_glob_characters(self):
+        cc = os.path.join(self.tmp, "cc2")
+        os.makedirs(os.path.join(cc, "projects", "q"))
+        with open(os.path.join(cc, "projects", "q", "real.jsonl"), "w") as f:
+            f.write("{}\n")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cc}):
+            self.assertEqual(bench._audit("re*", ["x"]), ([], False))
+            self.assertEqual(bench._audit("real", ["x"]), ([], True))
+
+    def test_a_kept_session_keeps_its_subagent_transcripts(self):
+        cc, keep = os.path.join(self.tmp, "cc3"), os.path.join(self.tmp, "keep")
+        os.makedirs(os.path.join(cc, "projects", "q", "sid1", "subagents"))
+        os.makedirs(keep)
+        with open(os.path.join(cc, "projects", "q", "sid1.jsonl"), "w") as f:
+            f.write("{}\n")
+        with open(os.path.join(cc, "projects", "q", "sid1", "subagents", "a.jsonl"), "w") as f:
+            f.write("{}\n")
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cc, "FOREMAN_BENCH_SESSIONS": keep}):
+            bench._compactions("sid1")
+        self.assertTrue(os.path.exists(os.path.join(keep, "sid1", "subagents", "a.jsonl")))
+
+    def test_runs_n_shows_a_leaked_attempt(self):
+        tries = [{"pass": True, "cost_usd": 1, "turns": 1, "seconds": 1},
+                 {"pass": False, "cost_usd": 1, "turns": 1, "seconds": 1, "status": "leak"}]
+        with mock.patch.object(bench, "run_case", side_effect=tries):
+            got = bench.run_case_n(None, {}, "plug", runs=2)
+        self.assertEqual(got.get("status"), "leak")
+        self.assertEqual(got["attempts"][1].get("status"), "leak")
+
+    def test_a_leaking_run_is_voided(self):
+        env = dict(self.env, STUB_SOLVE="1", STUB_LEAK="~/.claude/projects/x")
+        self.fm("bench", "build", env=env)
+        case = json.loads(self.fm("bench", "run", "--label", "leak", "--json", env=env, check=False).stdout)["cases"][0]
+        self.assertFalse(case["pass"])
+        self.assertEqual(case.get("status"), "leak")
+        self.assertFalse(glob.glob(os.path.join(self.tmp, "cc", "projects", "*", "*.jsonl")), "transcript removed")
+
+    def test_a_run_with_no_transcript_is_unaudited_not_clean(self):
+        env = dict(self.env, STUB_SOLVE="1", STUB_NO_TRANSCRIPT="1")
+        self.fm("bench", "build", env=env)
+        case = json.loads(self.fm("bench", "run", "--label", "un", "--json", env=env, check=False).stdout)["cases"][0]
+        self.assertFalse(case["pass"])
+        self.assertEqual(case.get("status"), "unaudited")
+        self.assertEqual(case.get("mode"), "fresh")
+
+    def test_compare_warns_when_the_runs_trees_differ(self):
+        self.write_result("old", [("T-1", 1.0, 0.1)])  # no mode stamp: a run from before T-3364, in a worktree
+        self.write_result("new", [("T-1", 1.0, 0.1)])
+        path = os.path.join(c.find_project(self.repo).dir, "bench", "results", "new.json")
+        with open(path, "w") as f:
+            json.dump({"label": "new", "mode": "fresh", "cases": [{"id": "T-1", "pass": True, "cost_usd": 0.1, "turns": 10}]}, f)
+        self.assertIn("not comparable", self.fm("bench", "compare", "old", "new", env=self.env).stdout)
+        self.assertNotIn("not comparable", self.fm("bench", "compare", "new", "new", env=self.env).stdout)
 
 
 @unittest.skipUnless(hasattr(os, "sched_getaffinity"), "no CPU affinity on this system")

@@ -22,11 +22,13 @@ with open(os.environ["STUB_LOG"], "a") as f:
                         "window": os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"),
                         "marathon": os.environ.get("FOREMAN_MARATHON"), "ablate": os.environ.get("FOREMAN_ABLATE"),
                         "claude_md": open("CLAUDE.md").read() if os.path.exists("CLAUDE.md") else None}) + "\n")
-if "--plugin-dir" in args and os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW"):  # a kept session that compacted twice
+if os.environ.get("CLAUDE_CONFIG_DIR") and not os.environ.get("STUB_NO_SID") and (
+        "--plugin-dir" in args or args[1:2] and args[1].startswith("Task:")):  # an arm's kept session (T-3364: audited)
     d = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "-tmp-replay")
     os.makedirs(d, exist_ok=True)
-    with open(os.path.join(d, "s-1.jsonl"), "w") as f:
-        f.write('{"type":"user"}\n' + '{"type":"system","subtype":"compact_boundary"}\n' * 2)
+    with open(os.path.join(d, "s-1.jsonl"), "w") as f:  # compacted twice when a window is set
+        f.write('{"type":"user"}\n' + '{"type":"system","subtype":"compact_boundary"}\n' * 2
+                if "--plugin-dir" in args and os.environ.get("CLAUDE_CODE_AUTO_COMPACT_WINDOW") else '{"type":"user"}\n')
 if "--plugin-dir" not in args and args[1:2] and args[1].startswith("Task:") and os.environ.get("STUB_BARE_FIX"):
     with open("calc.py", "w") as f:  # T-1376: the plain session fixes it
         f.write("def double(x):\n    return x * 2\n")
@@ -51,7 +53,7 @@ elif "You play the user" in system:
 else:  # the judge
     score = os.environ.get("STUB_SCORE", "4")
     print(json.dumps({"result": f"SCORE: {score}\n- the usage section is clear\n- one example is missing",
-                      "total_cost_usd": 0.01}))
+                      "total_cost_usd": 0.01, "session_id": None if os.environ.get("STUB_NO_SID") else "s-1"}))
 '''
 
 
@@ -71,7 +73,8 @@ class _Bench(ForemanTestCase):
             f.write(STUB)
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         self.log = os.path.join(self.tmp, "stub.log")
-        self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log}
+        self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
+                    "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cc0")}  # T-3364: where the stub keeps its transcript
         self.fm("init")
         self.write("calc.py", "def double(x):\n    return x + x + 1\n")
         self.write("README.md", "# calc\n")
@@ -169,8 +172,8 @@ class Judged(_Bench):
             self.fm("bench", "run", "--ids", self.docs, "--label", "p", env=dict(self.env, STUB_PLANT=marker), check=False)
             self.fm("bench", "run", "--ids", self.calc, "--label", "q", env=dict(self.env, STUB_PLANT=marker), check=False)
         finally:
-            git(self.repo, "config", "--unset", "core.fsmonitor")
-            git(self.repo, "config", "--unset", "core.hooksPath")
+            for key in ("core.fsmonitor", "core.hooksPath"):  # T-3364: an arm's own repo takes the config now, not this one
+                subprocess.run(["git", "-C", self.repo, "config", "--unset", key], capture_output=True)
         self.assertFalse(os.path.exists(marker))
 
     def test_the_change_is_fenced_and_a_failed_session_isnt_judged(self):
@@ -286,6 +289,23 @@ class Soak(_Bench):
         shown = self.fm("bench", "show", res["label"], env=self.env).stdout
         self.assertIn("had to repeat: I said never hand me commands", shown)
         self.assertEqual(json.loads(self.fm("ui", "--json").stdout)["bench"]["last"]["repeats"], 2)  # once per turn
+
+    def test_a_soak_runs_in_a_fresh_repo_not_a_linked_worktree(self):
+        # T-3364: a linked worktree shares the repo's objects, so the arm could git show the answers
+        from unittest import mock
+
+        from sampo import bench
+        from helpers import PLUGIN
+        case = json.loads(self.fm("bench", "build", "--json", env=self.env).stdout)["cases"][0]
+        seen = []
+
+        def session(wt, *a, **k):
+            seen.append(os.path.isdir(os.path.join(wt, ".git")))
+            return {}, "stop"
+        with mock.patch.object(bench, "_worktree", side_effect=AssertionError("linked worktree")), \
+                mock.patch.object(bench, "_session", session):
+            bench.soak_case(c.find_project(self.repo), case, PLUGIN)
+        self.assertEqual(seen, [True])
 
     def test_a_soak_needs_the_guard_a_session_id_and_sane_numbers(self):
         self.fm("bench", "build", env=self.env)

@@ -27,7 +27,14 @@ if os.environ.get("STUB_SOLVE") or (os.environ.get("STUB_SOLVE_LIVE_ONLY") and "
     with open("calc.py", "w") as f:
         f.write("def double(x):\n    return 2 * x\n")
 cost = 0.1 if ".evolve" in plugin and os.environ.get("STUB_CHEAPER") else 0.2
-print(json.dumps({"type": "result", "is_error": False, "total_cost_usd": cost, "num_turns": 5, "result": "done"}))
+sid = "stub-session"
+d = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "p")  # T-3364: a fresh run's transcript is audited
+os.makedirs(d, exist_ok=True)
+with open(os.path.join(d, sid + ".jsonl"), "w") as f:
+    f.write(json.dumps({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "name": "Write", "input": {"file_path": "calc.py"}}]}}) + "\n")
+print(json.dumps({"type": "result", "is_error": False, "total_cost_usd": cost, "num_turns": 5, "result": "done",
+                  "session_id": sid}))
 '''
 
 
@@ -40,7 +47,8 @@ class Evolve(ForemanTestCase):
             f.write(STUB)
         os.chmod(os.path.join(bindir, "claude"), 0o755)
         self.log = os.path.join(self.tmp, "stub.log")
-        self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log}
+        self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": self.log,
+                    "CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cc")}  # T-3364: where the stub keeps its transcript
         # a Foreman repo to evolve: a plugin that ships the guard, an fm that runs the real one, one skill
         self.frepo = os.path.join(self.tmp, "fake-foreman")
         files = {"plugin/.claude-plugin/plugin.json": '{"name": "foreman"}',
