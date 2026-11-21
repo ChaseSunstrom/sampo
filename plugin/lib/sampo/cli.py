@@ -9783,10 +9783,13 @@ def _build_parser(only=None):
     s = add("landscape", lazy("sampo.outside", "cmd_landscape"), tier=("Finding your way", 470),
             help="research what people want from coding-agent harnesses now: what's new since the last scan, what "
                  "Sampo lacks")
-    s.add_argument("--if-due", action="store_true", help="only when the last scan is 30+ days old")
-    s.add_argument("--fanout", type=int, default=3)
+    s.add_argument("--if-due", action="store_true", help="only when the last scan is 7+ days old")
+    s.add_argument("--capture", action="store_true", help="file what Sampo lacks: one capture per cluster of new, "
+                   "sourced claims, under the trigger landscape:<track> (T-3362)")
+    s.add_argument("--fanout", type=int, default=4, help="how many of the four fixed tracks to research")
     s.add_argument("--model", default="sonnet")
-    s.add_argument("--no-verify", action="store_true", help="don't fetch the cited pages")
+    s.add_argument("--no-verify", action="store_true", help="don't fetch the cited pages (then unchecked claims are filed too, "
+                   "labelled so)")
     s.add_argument("--timeout", type=int, default=600)
     s = add("deps", lazy("sampo.outside", "cmd_deps"), tier=("Finding your way", 480),
             help="dependencies a major version behind their registry's latest, with the migration question to research")

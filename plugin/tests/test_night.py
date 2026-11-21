@@ -5,6 +5,7 @@ import io
 import json
 import os
 import subprocess
+import time
 from types import SimpleNamespace
 from unittest import mock
 
@@ -68,10 +69,26 @@ class Night(ForemanTestCase):
         with open(os.path.join(d, "s.json"), "w") as f:
             json.dump({"rate_limits": {"seven_day": {"used_percentage": 10}}}, f)
 
-    def test_dry_run_lists_what_fits(self):
-        out = json.loads(self.fm("night", "--dry-run", "--json").stdout)
+    def at_home(self):
+        """T-3362: this project as Sampo's home (scout._is_home): its home is the repo, its state stays where it is."""
+        return {"FOREMAN_HOME": self.repo, "FOREMAN_STATE": c.state_dir()}
+
+    def test_landscape_is_weekly_and_only_in_the_home_project(self):  # T-3362
+        def landscape(env=None):
+            jobs = json.loads(self.fm("night", "--dry-run", "--json", env=env).stdout)["jobs"]
+            return [j["argv"] for j in jobs if j["name"] == "landscape"]
+        self.assertEqual(landscape(self.at_home()), [["landscape", "--if-due", "--capture"]])
+        self.assertEqual(landscape(), [])  # another project's night doesn't list it
+        p = c.find_project(self.repo)
+        for days, listed in ((6.5, False), (7.5, True)):
+            meta = c.read_meta(p)
+            meta["landscape_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - days * 86400))
+            c.write_meta(p, meta)
+            self.assertEqual(bool(landscape(self.at_home())), listed, days)
+        out = json.loads(self.fm("night", "--dry-run", "--json", env=self.at_home()).stdout)
         names = [j["name"] for j in out["jobs"]]
-        self.assertIn("landscape", names)  # never scanned: due
+        self.assertIn("landscape", names)  # never scanned: due (T-3362: in Sampo's home project)
+        self.assertNotIn("landscape", [j["name"] for j in json.loads(self.fm("night", "--dry-run", "--json").stdout)["jobs"]])
         self.assertIn("second session", names)
         self.assertLessEqual(sum(j["usd"] for j in out["jobs"]), out["limit"])
         tight = json.loads(self.fm("night", "--dry-run", "--max-usd", "0.001", "--json").stdout)
@@ -336,7 +353,7 @@ SECOND = r'''#!/usr/bin/env python3
 import json, os, sys
 sys.stdin.read()
 if os.environ.get("STUB_HIGH"):  # usage climbs during the night
-    d = os.path.join(os.environ["FOREMAN_HOME"], "state", "sessions")
+    d = os.path.join(os.environ.get("FOREMAN_STATE") or os.path.join(os.environ["FOREMAN_HOME"], "state"), "sessions")
     os.makedirs(d, exist_ok=True)
     json.dump({"rate_limits": {"seven_day": {"used_percentage": 90}}}, open(os.path.join(d, "late.json"), "w"))
 print(json.dumps({"result": "## Missed\n- none", "total_cost_usd": float(os.environ.get("STUB_COST", "0.5"))}))
@@ -380,7 +397,8 @@ class NightGuards(ForemanTestCase):
         with open(os.path.join(d, "old.jsonl"), "w") as f:
             f.write(json.dumps({"type": "user", "message": {"role": "user", "content": "export the report"}}))
         self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "CLAUDE_CONFIG_DIR": cc,
-                    "FOREMAN_SESSION_ID": "now"}
+                    "FOREMAN_SESSION_ID": "now",
+                    "FOREMAN_HOME": self.repo, "FOREMAN_STATE": c.state_dir()}  # T-3362: landscape runs in Sampo's home only
         from sampo import budget
         budget.record("research", 0.0001, runs=10)  # landscape looks nearly free: it fits the plan
         self.fresh_snapshot(10)

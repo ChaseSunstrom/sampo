@@ -14,11 +14,14 @@ stdin = sys.stdin.read()
 with open(os.environ["STUB_LOG"], "a") as f:
     f.write(json.dumps({"args": args, "stdin": stdin}) + "\n")
 if any("Split the question" in a for a in args):
-    print("- What do users want from harnesses?")
+    for s in ("Which capabilities do users say are missing", "Which models and APIs matter now",
+              "What do rival harnesses ship", "Which MCP servers get used"):  # T-3362: four tracks
+        print("- " + s + (" this week, reworded" if os.environ.get("STUB_REWORD") else ""))
     sys.exit(0)
 print('- CLAIM: users want parallel fresh-context reviewers for every diff | SOURCE: https://a.dev/1 | QUOTE: "parallel reviewers with clean context" | TIER: community | DATE: 2026-10-01')
 print('- CLAIM: users want voice control of the coding agent from a phone | SOURCE: https://b.dev/2 | QUOTE: "drive the agent by voice from my phone" | TIER: community | DATE: 2026-10-02')
 print('- CLAIM: users want re-run the checks recent finished tasks passed and report what fails now | SOURCE: https://c.dev/3 | QUOTE: "rerun old checks to catch regressions" | TIER: community | DATE: 2026-10-02')
+print('- CLAIM: users want an offline mode that runs the whole agent on a local model | SOURCE: https://d.dev/4 | QUOTE: "no cloud, local model only" | TIER: community | DATE: 2026-10-03')
 '''
 
 
@@ -60,6 +63,128 @@ class Landscape(ForemanTestCase):
                 "- users want voice (b.dev) ⟷ nobody wants voice (c.dev)\n\n## Since landscape-20260901\n"
                 "- new: something from the last diff section\n")
         self.assertEqual(outside.items(note), ["users want voice control of the agent"])
+
+
+class LandscapeFiling(ForemanTestCase):
+    """T-3362: what recall.covered misses is clustered locally and filed once per cluster, one trigger per track."""
+    SUBS = ("Which capabilities do users say are missing", "Which models and APIs matter now",
+            "What do rival harnesses ship", "Which MCP servers get used")
+
+    def setUp(self):
+        super().setUp()
+        bindir = os.path.join(self.tmp, "bin")
+        os.makedirs(bindir)
+        with open(os.path.join(bindir, "claude"), "w") as f:
+            f.write(STUB)
+        os.chmod(os.path.join(bindir, "claude"), 0o755)
+        self.env = {"PATH": bindir + os.pathsep + os.environ["PATH"], "STUB_LOG": os.path.join(self.tmp, "log"),
+                    "MOONS_EMBED": ""}  # shingles: no embedding server is asked
+        self.fm("init")
+
+    def scan(self, *extra):
+        return json.loads(self.fm("landscape", "--no-verify", "--fanout", "4", "--json", *extra, env=self.env).stdout)
+
+    def filed(self):
+        from sampo import core as c
+        return [b for b in c.load_briefs(c.find_project(self.repo)) if str(b.meta.get("trigger", "")).startswith("landscape:")]
+
+    def test_four_tracks_of_the_same_claims_are_three_captures_with_sources(self):
+        # four claims in each of four tracks: one is a command Sampo already has (recall.covered), the rest cluster by track
+        res = self.scan("--capture")
+        self.assertEqual(len(res["filed"]), 3, res["filed"])
+        briefs = self.filed()
+        self.assertEqual(len(briefs), 3)
+        from sampo import outside
+        for b in briefs:
+            self.assertEqual(b.meta["trigger"], "landscape:" + outside._track(self.SUBS[0]))  # the first track to find it
+            raw = b.section("Raw request")
+            self.assertRegex(raw, r"(?m)^(?:> )?CONTEXT: landscape [0-9a-f]{10}$")
+            self.assertRegex(raw, r"(?m)^(?:> )?- .+ — https://[abcd]\.dev/\d")  # a member claim and its source
+        self.assertIn("voice control", " ".join(b.section("Raw request") for b in briefs))
+        self.assertEqual(self.scan("--capture")["filed"], [])  # a rerun files 0
+
+    def test_without_capture_nothing_is_filed(self):
+        self.assertEqual(self.scan()["filed"], [])
+        self.assertEqual(self.filed(), [])
+
+    def test_a_muted_track_files_0_and_the_others_still_file(self):
+        from sampo import outside
+        self.fm("triggers", "set", "landscape:" + outside._track(self.SUBS[0]), "--route", "muted")
+        self.assertEqual(self.scan("--capture")["filed"], [])  # every cluster's first track is muted
+        self.assertEqual(self.filed(), [])
+        self.fm("triggers", "set", "landscape:" + outside._track(self.SUBS[0]), "--route", "inbox")
+        self.fm("triggers", "set", "landscape:" + outside._track(self.SUBS[3]), "--route", "muted")
+        self.assertEqual(len(self.scan("--capture")["filed"]), 3)  # a muted track nobody led files nothing less
+
+    def test_unchecked_quotes_and_unsourced_claims_are_not_filed(self):
+        from sampo import outside
+        note = ("## A track\n- ✗ [read] users want a thing nobody quoted right — https://a.dev/1 \"x\" (community, 2026-10-01; not found: no)\n"
+                "- ? [recalled] users want a thing without any source at all — no source (model, 2026-10-01)\n"
+                "- ✓ [read] users want a verified thing with a source — https://b.dev/2 \"y\" (community, 2026-10-01; quote found)\n"
+                "- ? [read] users want an unchecked thing with a source — https://c.dev/3 \"z\" (community, 2026-10-01; unchecked)\n")
+        got = [(r["claim"], r["mark"], r["url"]) for r in outside._rows(note) if outside._fileable(r)]
+        self.assertEqual([x[0] for x in got], ["users want a verified thing with a source",
+                                               "users want an unchecked thing with a source"])
+        self.assertEqual(got[0][2], "https://b.dev/2")
+        # a verified run files only claims whose quote was found; --no-verify files unchecked ones, labelled so
+        strict = [r["claim"] for r in outside._rows(note) if outside._fileable(r, strict=True)]
+        self.assertEqual(strict, ["users want a verified thing with a source"])
+
+    def test_the_trigger_is_the_same_whatever_the_planner_words(self):
+        # review: the track is a fixed one, not the planner's heading of the week
+        from sampo import outside
+        env = dict(self.env, STUB_REWORD="1")
+        res = json.loads(self.fm("landscape", "--no-verify", "--fanout", "4", "--json", "--capture", env=env).stdout)
+        self.assertEqual({x["trigger"] for x in res["filed"]}, {"landscape:" + outside._track(outside.TRACKS[0])})
+
+    def _rows(self, *claims):
+        return [{"item": x, "claim": x, "mark": "✓", "url": f"https://a.dev/{i}", "track": "t"} for i, x in enumerate(claims)]
+
+    def _p(self):
+        from sampo import core as c
+        return c.find_project(self.repo)
+
+    def test_claims_past_the_cap_or_a_failed_filing_are_kept_for_next_time(self):
+        from unittest import mock
+        from sampo import outside
+        rows = self._rows("users want an offline mode that runs the whole agent on a local model",
+                          "users want voice control of the coding agent from a phone",
+                          "users want a dashboard of every running lane with live costs")
+        with mock.patch.dict(os.environ, {"MOONS_EMBED": ""}), mock.patch.object(outside, "MAX_FILED", 1):
+            filed, left, err = outside._file_safely(self._p(), rows, "n")
+        self.assertEqual((len(filed), len(left), err), (1, 2, ""))
+        with mock.patch.object(outside, "_clusters", side_effect=RuntimeError("embed down")):
+            filed, left, err = outside._file_safely(self._p(), rows, "n")
+        self.assertEqual((filed, len(left)), ([], 3))
+        self.assertIn("embed down", err)
+
+    def test_pending_claims_are_filed_by_the_next_scan(self):
+        from sampo import core as c
+        p = self._p()
+        meta = c.read_meta(p)
+        meta["landscape_pending"] = [{"item": "users want a replay of any session as a shareable page",
+                                      "claim": "users want a replay of any session as a shareable page",
+                                      "mark": "?", "url": "https://z.dev/9", "track": "x"}]
+        c.write_meta(p, meta)
+        self.scan("--capture")
+        self.assertIn("replay of any session", " ".join(b.section("Raw request") for b in self.filed()))
+        self.assertEqual(c.read_meta(p).get("landscape_pending"), [])
+
+    def test_claims_with_no_ascii_words_each_get_their_own_key(self):
+        from unittest import mock
+        from sampo import outside
+        rows = self._rows("ユーザーは音声でエージェントを操作したい", "オフラインで全てをローカルモデルで動かしたい")
+        with mock.patch.dict(os.environ, {"MOONS_EMBED": ""}):
+            filed, _, _ = outside._file_safely(self._p(), rows, "n")
+        self.assertEqual(len(filed), 2)
+
+    def test_a_reworded_repeat_of_a_filed_wish_is_not_filed_again(self):
+        from unittest import mock
+        from sampo import outside
+        with mock.patch.dict(os.environ, {"MOONS_EMBED": ""}):
+            a = outside._file_safely(self._p(), self._rows("users want an offline mode that runs the whole agent on a local model"), "n")[0]
+            b = outside._file_safely(self._p(), self._rows("users want offline mode running the whole agent on local models"), "m")[0]
+        self.assertEqual((len(a), len(b)), (1, 0))
 
 
 class _Registry(http.server.BaseHTTPRequestHandler):

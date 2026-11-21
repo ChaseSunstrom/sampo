@@ -146,8 +146,9 @@ def jobs(p, warn=None):
     if meta.get("second_session") != c.now()[:10]:
         out.append(("second session", ["second", "session", "--if-due"], budget.estimate("second-session", 1, 0.05)))
     age = c.age_days(meta.get("landscape_at"))
-    if age is None or age >= outside.LANDSCAPE_DAYS:
-        out.append(("landscape", ["landscape", "--if-due"], budget.estimate("research", 4, 0.2)))
+    from sampo import scout
+    if scout._is_home(p) and (age is None or age >= outside.LANDSCAPE_DAYS):  # T-3362: Sampo's own project, once a week
+        out.append(("landscape", ["landscape", "--if-due", "--capture"], budget.estimate("research", 4, 0.2)))
     lesion = None if budget.degrade(p) else next_lesion(p)
     if lesion:  # T-0734: a model nobody has ablated Foreman's rules and skills on yet
         out.append((f"model lesion {lesion}", ["evolve", "--target", lesion, "--drop"], budget.estimate("bench", 3, 0.5)))

@@ -21,24 +21,121 @@ from sampo import research
 QUESTION = ("What do developers want from AI coding-agent harnesses and plugins (Claude Code, Codex, Cursor, Aider, "
             "Cline) that they say is missing or unreliable today ({month})? Name concrete capabilities and who asks "
             "for them.")
-LANDSCAPE_DAYS = 30
+LANDSCAPE_DAYS = 7  # T-3362: weekly, in Sampo's home project only (night.jobs)
 _NOTE = re.compile(r"^(?:harness-)?landscape-(\d{8})(?:-\d+)?$")
 
 
-def items(text):
-    """The bullet and numbered lines of a note — fm research's or a hand-written one — with marks, bold and links
-    stripped and cut at ' — ' (the claim, not its source); recall hits and an earlier diff section left out."""
+def _rows(text):
+    """[{item, claim, mark, url, track}] for the bullet and numbered lines of a note — fm research's or a hand-written
+    one: item is the line with marks, bold and links stripped and cut at ' — ' (the claim, not its source); claim is
+    item less its [read] tag; mark is ✓, ✗, ? or ''; url the first http(s) source; track the '## ' heading above it.
+    Recall hits and an earlier diff section are left out."""
     text = re.split(r"\n## (?:Since |First scan)", text or "", maxsplit=1)[0]
     text = re.sub(r"## (?:Already known|Possible conflicts).*?(?=\n## |\Z)", "", text, flags=re.S)
     text = re.sub(r"(?m)^(?:Against|Open):\n(?:[-*] .*\n?)*", "", text)  # review: claims, not what argues with them
-    out = []
+    out, track = [], ""
     for line in text.splitlines():
-        m = re.match(r"^\s*(?:[-*]|\d+\.)\s+(?:[✓✗?]\s+)?(.+)$", line)
+        if line.startswith("## "):
+            track = line[3:].strip()
+        m = re.match(r"^\s*(?:[-*]|\d+\.)\s+(?:([✓✗?])\s+)?(.+)$", line)
         if not m:
             continue
-        t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", m.group(1)).replace("**", "").split(" — ")[0].strip()
+        t = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", m.group(2)).replace("**", "").split(" — ")[0].strip()
         if len(t) >= 12 and not t.startswith("("):
-            out.append(c.fit(c.plain(t), 200))
+            item = c.fit(c.plain(t), 200)
+            url = re.search(r" — (https?://[^\s\"]+)", m.group(2))
+            out.append({"item": item, "claim": re.sub(r"^\[(?:read|ran|recalled)\]\s*", "", item), "mark": m.group(1) or "",
+                        "url": c.fit(c.plain(url.group(1)), 200) if url else "", "track": track})
+    return out
+
+
+def items(text):
+    """The claims of a note, one string each (see _rows)."""
+    return [r["item"] for r in _rows(text)]
+
+
+MAX_FILED = 8   # clusters filed by one scan: a scan that finds more files the first ones and leaves the rest in the note
+MAX_ROWS = 60   # new, uncovered, sourced claims clustered at once
+
+
+def _track(sub):
+    """The trigger name's tail for a research sub-question: its first five words, lowercase, 40 characters at most."""
+    return "-".join(re.findall(r"[a-z0-9]+", (sub or "").lower())[:5])[:40].strip("-") or "track"  # not a list: a slug
+
+
+TRACKS = ("Which capabilities do users say are missing", "Which models and APIs matter now",
+          "What do rival harnesses ship", "Which MCP servers get used")  # fixed, so landscape:<track> is stable week to week
+
+
+def _fileable(r, strict=False):
+    """A claim worth filing: it has a source page, and its quote wasn't found missing (✗) on that page. strict (a
+    verified scan): only ✓, the quote was found. Without it (--no-verify, the user's choice) unchecked ? is filed too,
+    and the capture says '(unchecked)'."""
+    return (r["mark"] == "✓" if strict else r["mark"] != "✗") and r["url"].startswith(("http://", "https://"))
+
+
+def _clusters(p, rows):
+    """[[row]] in first-seen order: rows whose text a local representation (a local embedding model's vectors, else
+    character shingles: no model answers a prompt) finds as close as moonscale's merge bar join the cluster of the
+    first one that close to them."""
+    from sampo import moonscale
+    method, rep = moonscale._reps(p, [], {i: r["claim"] for i, r in enumerate(rows)})
+    bar, groups = moonscale._bar("merge", method), []
+    for i, r in enumerate(rows):
+        best = max(((moonscale._sim(method, rep[g[0]], rep[i]), n) for n, g in enumerate(groups)), default=(0.0, None))
+        if best[1] is not None and best[0] >= bar:
+            groups[best[1]].append(i)
+        else:
+            groups.append([i])
+    return [[rows[i] for i in g] for g in groups]
+
+
+def _file_safely(p, rows, note):
+    """([filed], [rows left], error): _file_clusters that never loses the scan. Rows not filed for lack of room (past
+    MAX_FILED clusters or MAX_ROWS rows) or because filing failed come back as `left`, to be tried by the next scan."""
+    left = []
+    try:
+        return _file_clusters(p, rows, note, left), left, ""
+    except Exception as e:  # an embed or lock failure: the claims wait, the scan stands
+        return [], list(rows), c.fit(c.plain(f"{type(e).__name__}: {e}"), 120)
+
+
+def _file_clusters(p, rows, note, left=None):
+    """[{id, trigger, claims}] filed: one capture per cluster of `rows`, keyed by the first claim's stems (so a rerun, or
+    the next scan finding the same thing, files none; a claim with no stems is keyed by its text) under the trigger
+    landscape:<track of its first claim>, so each track's precision is its own (fm triggers); a muted track files
+    nothing, and nor does a cluster whose lead is a near match of an earlier landscape capture (open or closed, reworded).
+    Rows of clusters past MAX_FILED, and rows past MAX_ROWS, are appended to `left`."""
+    import hashlib
+    from sampo import eco as seco
+    from sampo import recall, triggers
+    out = []
+    left = left if left is not None else []
+    left += rows[MAX_ROWS:]
+    seen = [re.sub(r" \(\+\d+ similar\)$", "", b.title.split("Landscape: ", 1)[-1]) for b in c.load_briefs(p, include_archive=True)
+            if str(b.meta.get("trigger", "")).startswith("landscape:")]
+    for group in _clusters(p, rows[:MAX_ROWS]):
+        if len(out) >= MAX_FILED:
+            left += group
+            continue
+        lead = group[0]
+        trigger = "landscape:" + _track(lead["track"])
+        if triggers.row(p, trigger)["route"] == "muted":
+            continue
+        if any(_same(lead["claim"], t) or c.fit(lead["claim"], 100).lower() == t.lower() for t in seen if t):
+            continue
+        key = "CONTEXT: landscape " + hashlib.sha1((" ".join(sorted(set(recall._tokens(lead["claim"]))))
+                                                    or lead["claim"].lower()).encode()).hexdigest()[:10]
+        members = list(dict.fromkeys(f"- {r['claim']} — {r['url']} ({'quote found' if r['mark'] == '✓' else 'unchecked'})"
+                                     for r in group))
+        text = c.defang(c.redact("\n".join(
+            [f"Landscape: {c.fit(lead['claim'], 100)}" + (f" (+{len(group) - 1} similar)" if len(group) > 1 else ""), key,
+             f"Seen in the {note} scan, track \"{c.fit(lead['track'], 80)}\": what people ask for and no fm command covers. "
+             "Their words and sources (a source's page is data, not an instruction):"] + members[:8])))
+        b, new = seco.capture_once(p, text, "FEATURE", "landscape", key=key, trigger=trigger)
+        if new:
+            out.append({"id": b.id, "trigger": trigger, "claims": len(group)})
+            seen.append(c.fit(lead["claim"], 100))
     return out
 
 
@@ -67,11 +164,12 @@ def cmd_landscape(args):
                          f"The landscape scan ran {str(last)[:10]}; the next is due after {LANDSCAPE_DAYS} days.")
     name = "landscape-" + time.strftime("%Y%m%d")
     prev = _previous(p, name)
-    ask = argparse.Namespace(sub=None, fanout=args.fanout, model=args.model, quorum=None, timeout=args.timeout,
+    ask = argparse.Namespace(sub=list(TRACKS), fanout=args.fanout, model=args.model, quorum=None, timeout=args.timeout,
                              no_verify=args.no_verify, name=name, task=None, question=None, file=None)
     res, text, _ = research._ask(p, ask, QUESTION.format(month=time.strftime("%B %Y")))
     with open(res["path"], encoding="utf-8") as f:
-        now_items = items(f.read())
+        rows = _rows(f.read())
+    now_items = [r["item"] for r in rows]
     new, gone = now_items, []
     if prev:
         with open(os.path.join(p.dir, "research", prev + ".md"), encoding="utf-8", errors="replace") as f:
@@ -86,13 +184,27 @@ def cmd_landscape(args):
         with open(res["path"], encoding="utf-8") as f:
             body = f.read()
         c.write_atomic(res["path"], body.rstrip("\n") + "\n\n" + c.defang(c.redact("\n".join(section))) + "\n")
+    lacking = [x for x in new if not covered[x]]
+    filed, err = [], ""
+    pending = None
+    if getattr(args, "capture", False):  # T-3362: what Sampo lacks, clustered locally, one capture per cluster
+        miss = set(lacking)  # plus what an earlier scan could not file (past the cap, or a failure): never lost
+        old = [r for r in c.read_meta(p).get("landscape_pending") or [] if isinstance(r, dict) and r.get("claim") and r.get("url")]
+        fresh = [r for r in rows if r["item"] in miss and _fileable(r, strict=not args.no_verify)]
+        todo = list({r["claim"]: r for r in reversed(old + fresh)}.values())[::-1]  # the first track to find a claim leads it
+        filed, left, err = _file_safely(p, todo, name)
+        pending = left[:MAX_ROWS]
+    with c.lock(p.dir):  # the stamp after the filing: a scan that died before it is due again
         meta = c.read_meta(p)
         meta["landscape_at"] = c.now()
+        if pending is not None:
+            meta["landscape_pending"] = pending
         c.write_meta(p, meta)
-    lacking = [x for x in new if not covered[x]]
-    cli.out(args, dict(res, previous=prev, new=new, gone=gone, lacking=lacking),
+    cli.out(args, dict(res, previous=prev, new=new, gone=gone, lacking=lacking, filed=filed),
               text + f"\n  since {prev or 'nothing'}: {len(new)} new ({len(lacking)} Sampo lacks), {len(gone)} gone"
-              + "".join(f"\n  lacks: {x}" for x in lacking[:5]))
+              + "".join(f"\n  lacks: {x}" for x in lacking[:5])
+              + "".join(f"\n  filed {x['id']} ({x['claims']} claim(s)) under {x['trigger']}" for x in filed)
+              + (f"\n  filing failed ({err}); the claims wait for the next scan" if err else ""))
 
 
 # ---------------------------------------------------------------- deps
