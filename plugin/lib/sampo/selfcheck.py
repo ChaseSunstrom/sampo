@@ -36,19 +36,24 @@ def _age(secs):
     return f"{h:.0f} h" if h >= 1 else f"{secs / 60:.0f} min"
 
 
-def unshipped(p, briefs, now):
-    """Commits since the last sampo ship (its ref) whose oldest is SHIP_H hours old: ship_waiting says how many only
-    when no task is open, so a busy session never saw 22 hours of work wait."""
+def unshipped_read(p, now):
+    """T-3845: (commits since the last sampo ship, the age in seconds of the oldest), (0, 0) when everything shipped;
+    None when there is no ship ref or it isn't on this history. The read unshipped and sampo scorecard share."""
     last = "refs/foreman/shipped"  # release.SHIPPED; re-picked or rebased past it, the range isn't what main lacks
     if c._git(p.root, "merge-base", "--is-ancestor", last, "HEAD", proc=True, timeout=10).returncode:
         return None
     times = c._git(p.root, "log", "--first-parent", "--format=%ct", f"{last}..HEAD", timeout=10).split()
-    if not times:
+    return (len(times), max(0, now - int(times[-1]))) if times else (0, 0)
+
+
+def unshipped(p, briefs, now):
+    """Commits since the last sampo ship (its ref) whose oldest is SHIP_H hours old: ship_waiting says how many only
+    when no task is open, so a busy session never saw 22 hours of work wait."""
+    got = unshipped_read(p, now)
+    if not got or not got[0] or got[1] < SHIP_H * 3600:
         return None
-    oldest = now - int(times[-1])
-    if oldest < SHIP_H * 3600:
-        return None
-    return Hit(f"{len(times)} landed commit(s) unshipped, the oldest {_age(oldest)} → sampo ship", tell=True,
+    n, oldest = got
+    return Hit(f"{n} landed commit(s) unshipped, the oldest {_age(oldest)} → sampo ship", tell=True,
                level=int(oldest // (6 * 3600)))  # T-4118: told; again each 6 h it grows (T-4121 ships it)
 
 
@@ -63,18 +68,23 @@ def old_mirror(p, briefs, now):
     return f"the retired {old}/ is tracked beside {new}/ → sampo sync export folds it in and commits it gone"
 
 
-def _concerns_waiting(held):
-    """T-4200: the open concerns from the last ASK_DAYS days, open ASK_H hours or more, oldest first. A shown or
-    answered one is not waiting; a concern said again after its proof is open again (concerns.fold says so)."""
+def concern_rows(held, max_days=ASK_DAYS):
+    """T-4200: the open concerns from the last ASK_DAYS days, open ASK_H hours or more, oldest first: [(days, concern)].
+    A shown or answered one is not waiting; a concern said again after its proof is open again (concerns.fold says so)."""
     rows = []
     for x in held:
         made = c.age_days(x["opened"])
-        if x["state"] != "open" or made is None or made > ASK_DAYS or made * 24 < ASK_H:
+        if x["state"] != "open" or made is None or (max_days is not None and made > max_days) or made * 24 < ASK_H:
             continue
         rows.append((made, x))
+    rows.sort(key=lambda r: -r[0])
+    return rows
+
+
+def _concerns_waiting(held):
+    rows = concern_rows(held)
     if not rows:
         return None
-    rows.sort(key=lambda r: -r[0])
     shown = [f"{x['id']} ({_age(made * 86400)}, said {x['said']}x, surface: {x['surface'] or 'none'})"
              for made, x in rows[:3]]
     return Hit(f"{len(rows)} of the user's concerns from the last {ASK_DAYS} days aren't shown; oldest: "
@@ -82,26 +92,37 @@ def _concerns_waiting(held):
                level=len(rows) // 5)
 
 
-def asks_waiting(p, briefs, now):
-    """The user's own asks from the last ASK_DAYS days that are open ASK_H hours or more, oldest first, each with
-    where it sits: they ask "why isn't X done" next."""
+def open_asks(p, briefs, max_days=ASK_DAYS):
+    """T-3845: the user's own asks from the last ASK_DAYS days that are open ASK_H hours or more, oldest first:
+    (held, rows), rows [(days old, brief)]. held: the open concerns the steer meter folded (T-4200), the count once
+    it has read any message, else rows are the user's briefs. The read asks_waiting and sampo scorecard share;
+    max_days None lifts the age cap (the scorecard: an ask left past it is neglect, not recovery)."""
     from sampo import concerns, foresight
     briefs = list(briefs)  # read twice below (the concerns' task links, then the old count): a generator would run dry
     held = concerns.fold(p, briefs)  # T-4200: once the steer meter has read any message, its concerns are the count
     if held:
-        return _concerns_waiting(held)
+        return held, []
     tower, rows = foresight._tower_ids(p), []  # review: the tower's own briefs and agent-noted ones aren't the user's
     for b in briefs:
         if b.meta.get("source") != "user" or b.status not in OPEN or b.id in tower \
                 or c._NOTE_RAW.search(b.section("Raw request")):
             continue
         made = c.age_days(b.meta.get("created"))
-        if made is None or made > ASK_DAYS or made * 24 < ASK_H:
+        if made is None or (max_days is not None and made > max_days) or made * 24 < ASK_H:
             continue
         rows.append((made, b))
+    rows.sort(key=lambda r: -r[0])
+    return held, rows
+
+
+def asks_waiting(p, briefs, now):
+    """The user's own asks from the last ASK_DAYS days that are open ASK_H hours or more, oldest first, each with
+    where it sits: they ask "why isn't X done" next."""
+    held, rows = open_asks(p, briefs)
+    if held:
+        return _concerns_waiting(held)
     if not rows:
         return None
-    rows.sort(key=lambda r: -r[0])
     shown = []
     for made, b in rows[:3]:
         where = b.status + (": its lane waits on a merge" if b.meta.get("builder_returned") else "")

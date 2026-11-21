@@ -469,6 +469,12 @@ def tick(p, fetch_ci=None):
                 res["acted"] = selfcheck.act(p)
             except Exception as e:
                 res["notes"].append(f"self-checks: {c.fit(c.plain(str(e)), 120)}")
+            try:  # T-3845: the direction's measures: one task for a measure past its bar on two counted ticks in a row
+                from sampo import scorecard
+                if made := scorecard.tick(p):
+                    res["drift"] = [{"task": t, "measure": m} for t, m in made]
+            except Exception as e:  # the scorecard never costs the tick
+                res["notes"].append(f"scorecard: {c.fit(c.plain(str(e)), 120)}")
             try:  # T-2406: score the pending next-request prediction, make the next (local reads, never sensitive)
                 foresight.prediction_tick(p)
             except Exception as e:  # the book never costs the tick

@@ -9464,7 +9464,11 @@ def _build_parser(only=None):
     s = add("tripwire", lazy("sampo.tripwire", "cmd_tripwire"), tier=("Reports", 977), help="ab: the reopen rate of returns "
             "the reply reader flagged against those it did not, n for each (advisory, T-3949)")
     s.add_argument("words", nargs="*", metavar="ab")
-    s = add("away", lazy("sampo.away", "cmd_away"), tier=("Reports", 975), help="what closed, blocked, was asked or was reverted since you last spoke (T-1155)")
+    s = add("scorecard", lazy("sampo.scorecard", "cmd_scorecard"), tier=("Reports", 978),
+            help="the direction's seven measures, each with its bar and a pass or fail mark: user asks not landed, landed not "
+                 "shipped, lanes waiting, agent CPU share, tokens per closed task, steers per day, Kalevala towers climbing; "
+                 "the hourly tick captures a task for one past its bar on two ticks in a row (T-3845)")
+    s = add("away",lazy("sampo.away", "cmd_away"), tier=("Reports", 975), help="what closed, blocked, was asked or was reverted since you last spoke (T-1155)")
     s = add("outcomes", lazy("sampo.outcomes", "cmd_outcomes"), tier=("Reports", 980), help="what became of finished tasks: reverted, fixed later "
                                                                  "by a task naming them, or held; track record (T-0616)")
     s.add_argument("--silent", action="store_true", help="features whose declared outcome signal (sampo task finish "
