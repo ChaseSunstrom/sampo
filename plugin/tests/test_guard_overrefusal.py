@@ -1,5 +1,6 @@
 """T-2665: three over-refusals the friction pass found: git apply's read-only flags, a sys.path literal, a bare .ssh."""
 import os
+from unittest import mock
 
 from helpers import ForemanTestCase  # noqa: F401  (puts plugin/lib on the path)
 from test_guard import GuardCase, g
@@ -88,6 +89,63 @@ class HeredocFilterTail(GuardCase):
                      "open('{fhome}/state/projects/x/tasks.json', 'w').write('1')"):
             with self.subTest(body=body):
                 self.assertIsNotNone(self.run_py(body, "2>&1 | tail -5"))
+
+
+class HeredocAfterALead(GuardCase):
+    """T-3538: a heredoc fed to python after `cd DIR;`, a chain of other commands, or a flag like -B was no unit, so the
+    text match refused an edit script that names Sampo's modules only in its strings or comments (10 of 16 fires).
+    Such a body is parsed as a unit whose run folder is unknown: strings and comments never count, an import does."""
+    STRING = "p = '{repo}/out.txt'\ns = \"from sampo import core\\ncore.save_brief(x)\"\nopen(p, 'w').write(s)"
+    COMMENT = "# from sampo import cli; cli.cmd_task(x) was the old call\nprint(1)"
+    PASS = ("cd {repo}; python3 -", "cd {repo} && S=/tmp/x && cp a.txt $S/b.txt && python3 -",
+            "mkdir -p {repo}/sub; cd {repo}/sub && python3 -", "python3 -B -", "cd {repo}; python3 -I -u -")
+    USE = "s = \"from sampo import core; core.save_brief(x)\"\n"
+
+    def run_py(self, form, body):
+        return self.bash(form.replace("BODY", body) if "BODY" in form else f"{form} <<'EOF'\n{body}\nEOF", cwd=self.repo)
+
+    def test_a_mention_in_strings_or_comments_passes(self):
+        for form in self.PASS:
+            for body in (self.STRING, self.COMMENT):
+                with self.subTest(form=form, body=body[:12]):
+                    self.assertIsNone(self.run_py(form, body))
+
+    def test_real_use_still_refused(self):
+        for form in self.PASS:
+            for body in ("from sampo import core\ncore.save_brief(x)", self.USE + "exec(s)",
+                         self.USE + "breakpoint()", self.USE + "help(s)",  # pdb, pydoc: imported from the run folder
+                         "import subprocess\n" + self.USE + "subprocess.run(['python3', '-c', s])") + (
+                    ("import re\n" + self.USE + "print(re.escape(s))",) if "; " in form or "&&" in form else ()):
+                with self.subTest(form=form, body=body[:16]):  # after a lead the folder is unknown: any import refuses
+                    self.assertIn("driving Sampo's modules", str(self.run_py(form, body)))
+        self.assertIsNone(self.run_py("python3 -B -", "import re\n" + self.USE + "print(re.escape(s))"))  # its cwd
+
+    def test_a_lead_it_cannot_read_stays_refused(self):
+        for form in ("S=$(echo /tmp) && python3 -", "PATH=/tmp/b && python3 -", "HOME=/tmp/h; python3 -",
+                     "eval x; python3 -", "true || python3 -", "x=1 & python3 -", "cd 'a b'; python3 -",
+                     "cd a\\ b; python3 -", "alias python3=bash; python3 -", "python3() {{ bash; }}; python3 -",
+                     "function python3 {{ bash; }}; python3 -", "set -a; S=/tmp/x && python3 -",
+                     "cd x; python3 - <<EOF\nBODY\nEOF", "cd x; python3 - <<'EOF' | bash\nBODY\nEOF",
+                     "cd x; python3 -m code - <<'EOF'\nBODY\nEOF", "cd x; python3 -i - <<'EOF'\nBODY\nEOF",
+                     "x=$(cd x; python3 - <<'EOF'\nBODY\nEOF\n)", "( cd x; python3 - <<'EOF'\nBODY\nEOF\n) | bash",
+                     "for f in a; do cd $f; python3 - <<'EOF'\nBODY\nEOF\ndone | bash",
+                     "if cd x; then python3 - <<'EOF'\nBODY\nEOF\nfi | bash", "cd x; exec python3 -",
+                     # review (T-3538): a builtin that redefines python or sets a name it or bash reads, in any word
+                     "hash -p /tmp/p/python3 python3; python3 -", "enable -n cd; python3 -", ". f; python3 -",
+                     "source f; python3 -", "trap x EXIT; python3 -", "shopt -s expand_aliases; python3 -",
+                     "export S=/tmp/x; python3 -", "declare -x S=/tmp/x; python3 -", "unset PYTHONSAFEPATH; python3 -",
+                     "command printf -v HOME /tmp/h; python3 -", "builtin read HOME; python3 -",
+                     "printf -v HOME /tmp/h; python3 -", "read HOME; python3 -", "getopts x HOME; python3 -",
+                     "cd x; python3 -c pass - <<'EOF'\nBODY\nEOF", "cd x; python3 -Bc pass -",
+                     # an expansion as a command word, and whatever an earlier line set up
+                     "H=hash; $H -p /tmp/p/python3 python3; python3 -", "cd x; S=1 $H; python3 -",
+                     "H=x\n$H; cd x; python3 -", "python3() {{ bash; }}\ncd x; python3 -", "alias python3=bash\ncd x; python3 -",
+                     "(\ncd x; python3 - <<'EOF'\nBODY\nEOF\n) | bash", "x=$(\ncd x; python3 - <<'EOF'\nBODY\nEOF\n)\n$x",
+                     "for f in a\ndo cd x; python3 - <<'EOF'\nBODY\nEOF\ndone | bash"):
+            with self.subTest(form=form):
+                self.assertIsNotNone(self.run_py(form, self.STRING))
+        with mock.patch.dict(os.environ, {"S": "/tmp/x"}):  # exported already: the new value reaches python
+            self.assertIsNotNone(self.run_py("S=/tmp/y && cp a b && python3 -", self.STRING))
 
 
 class BareCredName(GuardCase):

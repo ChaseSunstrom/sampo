@@ -355,6 +355,8 @@ def _hint(detail, cat=""):
                 "then cd <scratch>/x && git …). Sampo's own tree changes through a task: sampo edit or the Edit tool per "
                 "file (with a standing core yes: sampo ask ID core --standing), sampo task finish to commit.")
     if re.match(r"interpreter code driving (?:Sampo|Foreman)'s modules", detail):  # review of T-1897: 17 in a week, no hint
+        if "run it in the next" in detail:  # T-3554: a script written and run here: the split is the way through
+            return " Two commands: write the file in this one, run it in the next."
         # T-4921: prose for a task or a capture is no source file: a draft file, passed with --file, not sampo edit
         return (" A draft that only names them goes through the Write tool, then sampo edit < draft as the next command; "
                 "prose for a task goes in a file the Write tool makes, passed as sampo task set ID --section S --file PATH.")
@@ -3274,6 +3276,7 @@ def _quote_at(prefix):
 
 _DYNAMIC = {"exec", "eval", "compile", "getattr", "__import__", "import_module", "importlib", "globals", "vars",
             "__builtins__", "builtins", "setattr",
+            "breakpoint", "help",  # review (T-3538): each imports a module (pdb, pydoc) from python's run folder first
             # code in a string can also run in another process (T-0170, own adversary pass)
             "system", "popen", "Popen", "run", "call", "check_call", "check_output", "getoutput", "getstatusoutput",
             "startfile", "posix_spawn", "posix_spawnp", "fork", "forkpty", "spawnl", "spawnle", "spawnlp", "spawnlpe",
@@ -3284,11 +3287,13 @@ _PLAIN_IMPORTS = {"re", "json", "os", "sys", "pathlib", "textwrap", "difflib", "
                   "string", "datetime", "time", "shutil", "glob", "fnmatch", "math"}
 
 
-def _python_units(cmd):
+def _python_units(cmd, loose=False):
     """(the bodies of quoted heredocs fed straight to python, the rest of the command, the lines that feed them, the
     rest's lines before the last of those): a unit only when it's the line's one heredoc, on a `python - <<` line with
     no pipe, `;`, `&`, backtick or `$(` — after a chain of plain `cd DIR &&` (T-0282: a working directory doesn't
-    change what the code does). T-1458: lines after the last unit run after python, so they can't move where it ran."""
+    change what the code does). T-1458: lines after the last unit run after python, so they can't move where it ran.
+    T-3538: loose (for _drives_fm alone) also takes a line whose lead is plain commands chained by ; or && and a python
+    with harmless flags: the same commands on an earlier line already leave a unit; its run folder is unknown."""
     lines, rest, units, starters, seen, i, lead = cmd.split("\n"), [], [], [], [], 0, []
     while i < len(lines):
         line = lines[i]
@@ -3298,9 +3303,14 @@ def _python_units(cmd):
         # T-0315: plain name=value; or && first (T-1887: any case, but never one python or bash reads, nor one already
         # exported, whose new value python would inherit) and the script's own arguments (sys.argv: they pick what it
         # reads, never what it may write, which _open_targets proves from literals) don't change what the code does
-        run = re.match(r"\s*(?P<pre>(?:[A-Za-z_][A-Za-z0-9_]*=[\w./~@+:=,-]*\s*(?:;|&&)\s*)*)"
-                       r"(?:cd\s+[\w./~@+:=,-]+\s*&&\s*)*"
-                       r"(?P<py>python[0-9.]*\s+-(?:\s+(?:'[^'\n]*'|\"[^\"`\n]*\"|[\w./~@+:=,$-]+))*\s*<<.*)$", line)
+        run = re.match(_PY_LEAD + r"(?P<py>python[0-9.]*\s+-" + _PY_ARGS + r"\s*<<.*)$", line)
+        if not run and loose and "python" in line:
+            run = _PY_LOOSE.match(line)
+            # review: the shell text before python (earlier lines too, heredoc bodies out) can't redefine it, change
+            # what it inherits, or open a group, loop or substitution that would take its output
+            before = _DELIM_QUOTES.sub("", "\n".join(seen[:-1] + [run["pre"]])) if run else ""
+            if run and (_FILTER_REDEFINED.search(before) or _LOOSE_DENY.search(before) or re.search(r"[({`]", before)):
+                run = None
         if run and (re.search(r"\bset\s+-\w*a|allexport", cmd) or any(  # set -a exports them all
                 _PRE_DENY.match(n) or n in os.environ for n in re.findall(r"([A-Za-z_]\w*)=", run["pre"]))):
             run = None
@@ -3331,6 +3341,20 @@ def _python_units(cmd):
                 i += 1
             (units if fed else rest).append("\n".join(body))
     return units, rest, starters, lead
+
+
+# a `python -` line's plain lead (T-0315 name=value; or &&, T-0282 cd DIR &&) and its own arguments (sys.argv)
+_PY_LEAD = r"\s*(?P<pre>(?:[A-Za-z_][A-Za-z0-9_]*=[\w./~@+:=,-]*\s*(?:;|&&)\s*)*)(?:cd\s+[\w./~@+:=,-]+\s*&&\s*)*"
+_PY_ARGS = r"""(?:\s+(?:'[^'\n]*'|"[^"`\n]*"|[\w./~@+:=,$-]+))*"""
+# T-3538: a loose lead: plain words chained by ; or && (no quote, escape, paren, brace, redirect, pipe or glob, so no
+# substitution, group or loop holds python), then python with flags that don't change what it runs (not -c, -m, -i)
+_PY_LOOSE = lazy(r"\s*(?P<pre>(?:[\w./~@+:=,$ \t-]*(?:;|&&))*)[ \t]*(?P<py>python[0-9.]*(?:\s+-[bBdEIOPqsSuvV]+)*\s+-"
+                 + _PY_ARGS + r"\s*<<.*)$")
+# a word, in any position, that opens a loop or branch (its output may go elsewhere) or sets a name python or bash reads
+# (printf -v HOME, read PATH, getopts x PATH, let, hash, enable…), and a command word that is an expansion ($H)
+_LOOSE_DENY = lazy(r"(?:^|[\s;&|])(?:for|while|until|if|then|else|elif|do|select|case|coproc|exec|export|declare|typeset"
+                   r"|readonly|local|unset|set|printf|read|getopts|mapfile|readarray|let|builtin|command|type|umask|bind"
+                   r"|hash|enable|trap|shopt)(?=[\s;&|]|$)|(?:^|[;&|\n])\s*(?:[A-Za-z_]\w*=\S*\s+)*\$")
 
 
 # T-2261: what may follow a heredoc fed to python on its line: a stderr merge, then pipes into filters that write no
@@ -3557,7 +3581,10 @@ def _writes_unrun_draft(line, cmd, ctx):
 
 
 def _run_dir(starter, cwd):
-    """The folder `python -` runs in (its sys.path[0]) after the starter's `cd` chain, or None when it can't be known."""
+    """The folder `python -` runs in (its sys.path[0]) after the starter's `cd` chain, or None when it can't be known
+    (T-3538: a lead that isn't a plain cd chain: cd DIR; may fail and leave python where it was)."""
+    if not re.match(_PY_LEAD + r"(?:/[\w./-]*/)?python", starter):
+        return None
     d = cwd
     for target in re.findall(r"\bcd\s+([\w./~@+:=,-]+)\s*&&", starter):
         target = os.path.expanduser(target)
@@ -3645,7 +3672,7 @@ def _drives_fm(cmd, cwd=None, cache=None, inline=None):
     # T-4930: with no index, by any name at all
     gate = named and _fm_gate(cmd)
     wide = gate or named and (idx is None or _fm_gate(cmd, idx))
-    units, rest, starters, _ = _python_units(cmd)
+    units, rest, starters, _ = _python_units(cmd, loose=True)
     c_units, shell, c_starters = _python_c_units("\n".join(rest))
     if wide and _FM_INTERNALS.search(_nfkc("\n".join([shell] + starters))):
         return "shell text it can't read as python names Sampo's modules (a heredoc not fed to python, a file run later)"
