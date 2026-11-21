@@ -4015,9 +4015,10 @@ def accept(p, b, main, args):
         lines.append(f"  not queued: {b.id} is not a finished lane waiting on a merge (commits, a clean tree); "
                      "fm lane list says what it waits on")
         return cli.out(args, {"id": b.id, "queued": False, "audits": len(rows)}, "\n".join(lines))
-    if not skip_check and (not clean or _check_hold(b, tip, main)):
+    if not skip_check and not live_mode(p) and (not clean or _check_hold(b, tip, main)):
         # T-4286: no clean run at its tip, or its check holds it (running, red, cut off: what the land would skip it for):
-        # the lane's own check decides, then it queues; a hold is said as "held", never as queued
+        # the lane's own check decides, then it queues; a hold is said as "held", never as queued. T-5447: a live
+        # project starts no lane check: the behind suite judges the merge and the land still holds a red check
         return _accept_check(p, b, main, args, tip, lines)
 
     def accepted(x):  # T-4239: the start of its accept-to-live time; a check a newer green run cleared is green now

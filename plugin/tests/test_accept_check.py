@@ -151,6 +151,13 @@ class Starts(AcceptCase):
         self.assertEqual(len(self.spawned), 1)
         self.assertEqual(self.queued(), [])
 
+    def test_live_accept_queues_the_lane_with_no_check(self):  # T-5447: the behind suite judges a live merge
+        tid = self.a_lane(1, run=STALE)
+        with mock.patch.object(train, "live_mode", return_value=True):
+            out = self.accept(tid)
+        self.assertEqual(self.spawned, [], out)
+        self.assertEqual(self.queued(), [tid])
+
     def test_no_check_start_under_no_background_says_the_command_to_run_by_hand(self):  # starts
         tid = self.a_lane(1)
         with mock.patch.object(train, "_spawn_check", return_value=None):
