@@ -148,6 +148,14 @@ def _secs(e):
     return d["s"] if "s" in d else sum(r.get("s") or 0 for r in rs)
 
 
+def typical_s(p, event, now):
+    """T-5034: the median seconds of the last HISTORY passing runs of a ledger event (check_run, ship_test) from the
+    last HISTORY_DAYS days, None under 3 runs: one rule for slow_jobs and the live page's job rows (jobprog)."""
+    past = [s for s in map(_secs, c.ledger_events(p, [event], since=c.iso(now - HISTORY_DAYS * 86400))) if s]
+    past = sorted(past[-HISTORY:])
+    return past[len(past) // 2] if len(past) >= 3 else None
+
+
 def slow_jobs(p, briefs, now):
     """T-3482: "why is this stuff taking so long just to push?": a live job past SLOW_X its median of the last HISTORY
     passing runs, the ledger's own history (quiet under 3 runs)."""
@@ -157,9 +165,7 @@ def slow_jobs(p, briefs, now):
         if not start:
             continue
         ran = now - start.timestamp()
-        past = [s for s in map(_secs, c.ledger_events(p, [event], since=c.iso(now - HISTORY_DAYS * 86400))) if s]
-        past = sorted(past[-HISTORY:])
-        typ = past[len(past) // 2] if len(past) >= 3 else None
+        typ = typical_s(p, event, now)
         if typ and ran > SLOW_X * typ and ran - typ > SLOW_OVER_S:
             out.append(f"{name} has run {_age(ran)}, {ran / typ:.1f}x its typical {_age(typ)} → see what it waits on")
     return Hit(" · ".join(out), tell=True) if out else None

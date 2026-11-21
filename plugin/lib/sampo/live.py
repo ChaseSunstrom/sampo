@@ -33,7 +33,7 @@ import urllib.parse
 import urllib.request
 
 from sampo import core as c
-from sampo import settingsserve
+from sampo import jobprog, settingsserve
 
 WEB = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "web", "live"))
 CACHE_S = 1.5  # the snapshot is shared; the stream asks every 2 s
@@ -367,7 +367,9 @@ def _program_at(words):
     return None
 
 
-def jobs(p):
+def jobs(p, ended=False):
+    """The running background jobs, each with elapsed, typical, ratio and last log line (jobprog, T-5034); ended=True
+    adds the ones that ended in the last few minutes, each with its result."""
     out = []
     procs = _procs()
     files = _progress_files({pid for pid, _ in procs})
@@ -390,7 +392,7 @@ def jobs(p):
         out.append({"name": c.fit(rest, 60), "kind": kind, "pid": pid, "since": since, "model": m and m.group(1),
                     "progress": _train_progress(pid) if kind == "train" else
                     _file_progress(pid, files[pid]) if files.get(pid) else None, "line": c.fit(cmd, 100)})
-    return out
+    return jobprog.rows(p, out, time.time(), ended)
 
 
 def _calls(p):
