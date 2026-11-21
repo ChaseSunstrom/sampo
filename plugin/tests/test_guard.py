@@ -4009,6 +4009,34 @@ class InterpreterCodeIsNotBash(GuardCase):  # T-1786
         ], self.bash)
 
 
+class ArithmeticTail(GuardCase):  # T-4931
+    """A $((…)) that closes as arithmetic was read as a possible subshell and its tail, starting inside a quote, read
+    to the end of the line: two grep/cut/sed pairs on one line were refused as a computed sampo word (p-n-cut-d, two
+    false blocks in a day), and a sampo/ folder in a path inside $(…) read as the sampo binary. Braces doubled: bash()
+    formats the text."""
+    pair = 'n=$(grep -n "^def {w}" {p} | cut -d: -f1); sed -n "${{{{n}}}},$((n+22))p" {p}'
+
+    def test_two_read_pairs_with_arithmetic_are_allowed(self):
+        for p in ("plugin/lib/sampo/train.py", "a/b/train.py"):
+            with self.subTest(path=p):
+                cmd = "; ".join(self.pair.format(w=w, p=p) for w in ("_check_hold", "_clean_run"))
+                self.assertIsNone(self.bash(cmd))
+                self.assertIsNone(self.bash('echo "$((1+2))"; x=$(grep -c y ' + p + "); echo $x"))
+
+    def test_a_sampo_word_from_a_substitution_is_still_refused(self):
+        self.run_table([
+            ("$(command -v sampo) task done T-1", "system"),
+            ("S=$(which sampo); $S task done T-1", "system"),
+            ("$(~/.local/bin/sampo) task done T-1", "system"),
+            ('echo "$((1+2))"; $(command -v sampo) task done T-1', "system"),
+            # a substitution inside or after the arithmetic, or a subshell, is still read
+            ("x=$( (sampo mandate off) ); echo $x", "self-authorize"),
+            ("echo $((1+$(sampo mandate off)))", "self-authorize"),
+            ('echo "$((n+1))" $(sampo mandate off)', "self-authorize"),
+            ('n=$(grep -c x a.py); echo "$((n+1))"; sampo mandate off', "self-authorize"),
+        ], self.bash)
+
+
 class ArithmeticValues(GuardCase):
     """T-4934: bash evaluates a name's value where it does arithmetic, and a subscript in that value runs its $( ) or
     backtick even when the value was single-quoted text: `x='a[$(sampo mandate off)]'; echo $((x))` runs it."""

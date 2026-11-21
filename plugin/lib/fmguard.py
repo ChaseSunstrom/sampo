@@ -3107,6 +3107,10 @@ def _unescape_ticks(body):
     return re.sub(r"\\([`$\\])", r"\1", body)
 
 
+# $((n+22)), $(( ${a} * 2 )): a $ only before a name or {, never $( or a backtick (one choice a character: linear)
+_ARITH = lazy(r"\$\(\((?:[^()'\"`$\\]|\$(?=[{\w]))*\)\)")
+
+
 def _subst_bodies(text, tails=True, clean=False):
     """Every command-substitution body a shell would run in text (T-0158): `…` and $( … ), nested ones too, bare or
     inside double quotes, never inside single quotes or after a backslash; $(( … )) is arithmetic. Each $( opens a fresh
@@ -3131,6 +3135,11 @@ def _subst_bodies(text, tails=True, clean=False):
         elif ch == "`":
             tick = i + 1
         elif ch == "$" and text[i + 1:i + 2] == "(":
+            # T-4931: a $(( … )) that closes as arithmetic (no paren, quote, backtick or substitution before its `))`)
+            # runs nothing: no body, no tail (its tail, read from inside a quote, paired the quotes off wrongly)
+            if (arith := _ARITH.match(text, i)) is not None:
+                i = arith.end()
+                continue
             ends.append(text[i + 2:])  # $(( … )) too: bash falls back to a subshell when )) doesn't close it
             tail = [len(ends) - 1]  # T-1924: which tails a clean close may drop
             last = text.rfind(")")  # T-0669: and, when it ends inside a quote, up to the last ): an outer `)"`

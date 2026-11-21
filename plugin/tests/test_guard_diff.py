@@ -24,6 +24,8 @@ FORMS = [
     "case a in a) {p};; esac", "f() { {p}; }; f", "coproc {p}",
     "echo $({p})", "echo \"$({p})\"", "echo `{p}`", "echo \"`{p}`\"", "x=$({p})", "echo $(echo $({p}))",
     "echo \"$(true; {p})\"", "echo $(( 1 )) $({p})",
+    # T-4931: a closed $((…)) is arithmetic (no tail read): what follows or nests in it is still read
+    "n=1; echo \"${n},$((n+2))p\" $({p})", "echo \"$((1+2))\"; {p}", "echo $((1+$({p})))", "echo \"$(( $({p}) ))\"",
     # T-4934: arithmetic evaluates a name's value, and a subscript in it runs its $( ) even from single quotes
     "x='a[$({p})]'; echo $((x))", "x='a[$({p})]'; ((x)); true", "x='a[$({p})]'; let x", "x='a[$({p})]'; [[ x -eq 1 ]]",
     "x='a[`{p}`]'; y=x; echo $((y))", "x='a[$({p})]'; a=(); echo ${a[x]}", "x='a[$({p})]'; echo $[x]",
