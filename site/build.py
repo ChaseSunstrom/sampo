@@ -593,16 +593,21 @@ def render_page(p, stats, pages):
     i = [q["slug"] for q in pages].index(p["slug"])
     nxt = pages[(i + 1) % len(pages)]
     parts.append(f'<p class="next"><a href="{nxt["slug"]}.html">Next: {esc(nxt["nav"])}</a></p>')
-    return layout(p["title"], p["desc"], "".join(parts), pages, p["slug"])
+    return layout(p["title"], desc_of(p, stats), "".join(parts), pages, p["slug"])
 
 
-def render_index(pages):
+def desc_of(p, stats):
+    """T-5035: a page's description; a callable one takes the stats, so a count in it is the build's and not typed."""
+    return p["desc"](stats or {}) if callable(p["desc"]) else p["desc"]
+
+
+def render_index(pages, stats=None):
     """T-3996: the features index in the landing's idiom: an engraved head over the GROUPS, each a
     numbered station of rows, a page's name in the display italic over what it does."""
     by = {p["slug"]: p for p in pages}
     groups = []
     for n, (name, why, slugs) in enumerate(GROUPS):
-        rows = "".join(f'<li><a href="{s}.html"><b>{esc(by[s]["nav"])}</b><span>{esc(by[s]["desc"])}</span></a></li>'
+        rows = "".join(f'<li><a href="{s}.html"><b>{esc(by[s]["nav"])}</b><span>{esc(desc_of(by[s], stats))}</span></a></li>'
                        for s in slugs)
         groups.append(f'<section class="fgroup" style="--i:{n}"><h2><span class="no">{ROMAN[n]}</span>{esc(name)}</h2>'
                       f'<p class="why">{esc(why)}</p><ol class="frows">{rows}</ol></section>')
@@ -896,7 +901,7 @@ def build(out):
         with open(os.path.join(out, "features", p["slug"] + ".html"), "w", encoding="utf-8") as f:
             f.write(render_page(p, stats, P.PAGES))
     with open(os.path.join(out, "features", "index.html"), "w", encoding="utf-8") as f:
-        f.write(render_index(P.PAGES))
+        f.write(render_index(P.PAGES, stats))
     index = os.path.join(out, "cards", "index.json")  # T-3101: the committed export (build.py --cards); none yet → empty
     if not os.path.isfile(index):
         export_cards([], os.path.dirname(index))

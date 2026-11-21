@@ -931,7 +931,8 @@ PAGES = [
           "review it, brainstorm on top, repeat.</li></ul>"),
          ("chart", lambda s: _totals(s, ["tasks_done", "commits", "captures", "subagents"]))]},
     {"slug": "cards", "nav": "Stack library", "title":"It knows your stack, and costs no context until it matters",
-     "desc": "Over a thousand stack cards with exact verify commands, failing-test recipes and the mistakes models make.",
+     "desc": lambda s: (f"{sum((s.get('cards') or {}).values()):,} stack cards with exact verify commands, failing-test "  # T-5035
+                        "recipes and the mistakes models make."),
      "lede": "Each card gives the commands that verify the work, a failing-test recipe, the mistakes models actually "
              "make and a review checklist. Cards cost nothing until a matching file is edited.",
      "blocks": [
