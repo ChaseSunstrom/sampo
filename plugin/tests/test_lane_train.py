@@ -111,6 +111,28 @@ class Train(TrainCase):
             self.assertEqual(lanes.pm_cmd(self.repo, p=p), "( cargo fmt --check ) && ( cargo test )")
             self.assertEqual(lanes.pm_cmd(self.repo), "", "no project, no fallback")
 
+    def test_live_selfgate_times_each_lane_only_after_the_merged_batch_was_held(self):
+        # T-5446: the paired hook bench ran 5-12 min per lane; a live train times the merged batch once
+        from sampo import lanes, selfgate, train
+        p = c.find_project(self.repo)
+        b = mock.Mock(id="T-1", meta={})
+        seen = []
+        with mock.patch.object(lanes, "land_holds", lambda *a, **k: seen.append(k.get("timing")) or ""):
+            train._held(p, b, self.repo, "HEAD")
+            self.fm("lane", "mode", "live")
+            train._held(p, b, self.repo, "HEAD")
+            base = self.git("rev-parse", "HEAD").strip()
+            with mock.patch.object(selfgate, "gate", lambda *a, **k: ["hook Stop p95 100.0 -> 140.0 ms"]):
+                self.assertTrue(train._live_timing(p, self.repo, self.repo, base))
+            self.assertTrue(c.read_meta(p).get(train.LIVE_TIMING_HOLD))
+            train._held(p, b, self.repo, "HEAD")
+            with mock.patch.object(selfgate, "gate", lambda *a, **k: []):
+                self.assertEqual(train._live_timing(p, self.repo, self.repo, base), [])
+            self.assertFalse(c.read_meta(p).get(train.LIVE_TIMING_HOLD))
+            train._held(p, b, self.repo, "HEAD")
+        self.assertEqual(seen, [True, False, True, False],
+                         "gated times each lane; live times none until a merged hold, then each until one lands")
+
     def test_live_mode_holds_only_a_red_check(self):
         from sampo import train
         p = c.find_project(self.repo)

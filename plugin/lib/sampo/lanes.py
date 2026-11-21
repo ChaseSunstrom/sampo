@@ -3268,7 +3268,7 @@ def private_refusal(p, b, main, tip, base="HEAD"):
                    f"{release.private_where(held, where)}{at}")
 
 
-def land_holds(p, b, main, tip, base="HEAD"):
+def land_holds(p, b, main, tip, base="HEAD", timing=True):
     """T-4785: the reason the lane `b` at `tip` must not land on `main` (private term, a scan or git call that failed, a
     file the guard refuses, the self-change gate), or ''. The one function every path that moves a trunk calls before it
     does: the train (train._held), fm serve's integrate and the pull-request train, so none runs fewer holds than the
@@ -3296,7 +3296,7 @@ def land_holds(p, b, main, tip, base="HEAD"):
         blk = fmguard.check("Write", {"file_path": os.path.join(main, f), "content": ""}, ctx)
         if blk:
             return Hold(f"the guard refuses {f} ({blk.category})", "guard", files, (f, blk.category, blk.detail))
-    held = selfgate.gate(p, b, main, tip, files)
+    held = selfgate.gate(p, b, main, tip, files, timing=timing)  # T-5446: a live train times the merged batch once
     if held:
         return Hold("the self-change gate holds it: " + c.joinmore(held, 4, "; "), "self", files, held)
     return Hold("", "", files)

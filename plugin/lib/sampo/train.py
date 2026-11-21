@@ -702,9 +702,27 @@ def _held(p, b, main, tip):
     private-term check is lanes.private_refusal, the function `merge` calls, first: a lane that carries a term never
     reaches a probe or a gate (the train once landed one that only ship met). Its reason names commit, file and line.
     T-4785: the body is lanes.land_holds, shared with fm serve's integrate and the pull-request train.
-    T-4805 exempt: a hold with no landing of its own; _run records the landing (lanes.log_landed) after it fast-forwards."""
+    T-4805 exempt: a hold with no landing of its own; _run records the landing (lanes.log_landed) after it fast-forwards.
+    T-5446: a live train leaves the hook timing out of each lane's hold and times the merged batch once
+    (_live_timing); after a merged timing hold the next land times each lane again, to find the one that slowed it."""
     from sampo import lanes
-    return lanes.land_holds(p, b, main, tip)
+    return lanes.land_holds(p, b, main, tip, timing=not live_mode(p) or bool(c.read_meta(p).get(LIVE_TIMING_HOLD)))
+
+
+LIVE_TIMING_HOLD = "live_timing_hold"  # T-5446: meta key: the merged batch a live train's hook timing held
+
+
+def _live_timing(p, main, wt, base):
+    """T-5446: the self-change gate with its hook timing on a live train's merged tree, once for the whole batch: [] when it
+    holds, else its refusal rows (recorded in meta, so the next land times each lane and leaves out the one that slowed
+    the hooks). Each lane's own hold already ran the guard replay, cases, footprint and verb rows."""
+    import types
+    from sampo import selfgate
+    sha = _git(wt, "rev-parse", "HEAD").stdout.strip()
+    files = [f for f in _git(main, "diff", "--name-only", base, sha).stdout.splitlines() if f.strip()]
+    rows = selfgate.gate(p, types.SimpleNamespace(id="live-train", meta={}), main, sha, files)
+    c.update_meta(p, **{LIVE_TIMING_HOLD: sha if rows else None})
+    return rows
 
 
 def _none(head, left):
@@ -1464,6 +1482,9 @@ def _run(p, main, ids, defer_verify=False, judged=None):
             sub = (*sub[:2], list(dict.fromkeys([*sub[2], *(f for b, _ in merged for f in covers(b.id))])))
         if live and merged and (smoke := _live_smoke(wt)):  # T-5444: the one front check: the merged tree compiles
             raise c.PolicyError(f"the merged tree does not compile, nothing landed: {smoke}")
+        if live and merged and (slow := _live_timing(p, main, wt, base)):  # T-5446: the hooks timed once per batch
+            raise c.PolicyError("the self-change gate holds the merged batch, nothing landed: " + c.joinmore(slow, 4, "; ")
+                                + "; the next land times each lane and leaves out the one that slowed the hooks")
         ok = not merged or live or gate()
         first = list(results)
         last = {r["cmd"]: r for r in results if not r["exit"]}  # each gate's newest passing row

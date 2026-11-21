@@ -2682,6 +2682,26 @@ class SelfChangeGate(ForemanTestCase):
         rows = self.gate(bench=self.bench_pair(140.0, 152.0))  # +8.6%, but past its 150 ms budget
         self.assertTrue(any("budget" in r for r in rows), rows)
 
+    def test_with_timing_off_the_gate_runs_no_bench_and_still_judges_the_guard(self):  # T-5446: a live train's lane
+        self.branch({"plugin/hooks/hook": "#!/bin/sh\n"})
+        files = self.git("diff", "--name-only", "HEAD...foreman/x").split()
+        b = c.find_brief(self.p, self.tid)
+        ran = []
+        with mock.patch.object(self.g, "_bench", lambda tree: ran.append(tree) or ({}, {})), \
+                mock.patch.object(self.g, "_verdicts", lambda t, cmds: ["allow"] * len(cmds)), \
+                mock.patch.object(self.g, "_corpus", lambda: []):
+            self.assertEqual(self.g.gate(self.p, b, self.repo, "foreman/x", files, timing=False), [])
+        self.assertEqual(ran, [], "no hook bench for a live train's lane: the train times the merged batch once")
+        self.branch({"plugin/lib/fmguard.py": "x = 3\n"})
+        files = self.git("diff", "--name-only", "HEAD...foreman/x").split()
+        with mock.patch.object(self.g, "_bench", lambda tree: ran.append(tree) or ({}, {})), \
+                mock.patch.object(self.g, "_verdicts", lambda t, cmds: ["allow"] * len(cmds)), \
+                mock.patch.object(self.g, "_base_verdicts", lambda t, cmds, cache: ["destructive"] * len(cmds)), \
+                mock.patch.object(self.g, "_corpus", lambda: [("rm -rf /", "")]):
+            rows = self.g.gate(self.p, b, self.repo, "foreman/x", files, timing=False)
+        self.assertTrue(any(r.startswith("guard:") for r in rows), rows)
+        self.assertEqual(ran, [])
+
     def test_a_hook_that_blocks_without_burning_cpu_refuses_on_a_loaded_bench_too(self):
         from sampo import selfgate as g  # T-2363: the lean mutation set's sleep in a hook passed a loaded bench (CPU basis only)
         base = {"Stop": {"p95": 40.0, "cpu_p95": 30.0, "load": 2.0, "budget": 150}}

@@ -541,10 +541,12 @@ def _benched(f):  # what a hook can run or read: any plugin file but tests and p
     return (f.startswith("plugin/") and not f.startswith("plugin/tests/") and not f.endswith(".md")) or f == "CHANGELOG.md"
 
 
-def gate(p, b, main, ref, files, cache_name=CACHE_FILE):
+def gate(p, b, main, ref, files, cache_name=CACHE_FILE, timing=True):
     """[refusal lines] for a commit that changes Sampo's own plugin/, [] when it holds, isn't one, or the user said yes
     after its last refusal of this same commit. Each refusal is a self_change_refused ledger event with the sha.
-    cache_name is the file its base half is cached in (T-4805: the push hold's own, not the lane train's)."""
+    cache_name is the file its base half is cached in (T-4805: the push hold's own, not the lane train's).
+    timing=False (T-5446, a live train's per-lane hold) leaves out the hook timing bench; the train times the merged
+    batch once instead (train._live_timing)."""
     if not os.path.isfile(os.path.join(main, "plugin", "lib", "fmguard.py")) or not any(
             f.startswith("plugin/") for f in files):
         return []
@@ -580,8 +582,8 @@ def gate(p, b, main, ref, files, cache_name=CACHE_FILE):
         grown = doctor.grown(f0, f1)
         benched = [f for f in files if _benched(f)]
         # T-3139: timings run when a hook could be slower (a file some hook process imported, a hook entry, a data file)
-        timed = bool(grown) or (bool(benched) and needs_timing(files, hook_map(p, main, head, base)))
-        if benched and not timed:
+        timed = timing and (bool(grown) or (bool(benched) and needs_timing(files, hook_map(p, main, head, base))))
+        if benched and not timed and timing:
             c.log_event(p, "self_gate_timing_skipped", task=b.id, data={"sha": sha, "files": benched[:20]})
         if timed:  # timings, and the injected chars a cut needs
             excused = []
