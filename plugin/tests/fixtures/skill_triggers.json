@@ -99,5 +99,20 @@
     "Add screenshots of the app and an architecture diagram to the README",
     "The README needs visuals: app screenshots in dark and light",
     "Make the docs page show the real app and a flow diagram"
+  ],
+  "skill-writing": [
+    "Write a new skill for release notes and review its triggers, size and test",
+    "Review my skill: are its triggers right, is its size small, does the test check it",
+    "Change a skill so its triggers fire and write a check that it works without the old size"
+  ],
+  "problem-solving": [
+    "My fix failed twice, so rank the causes and probe the cheapest first",
+    "I ask why something happens: the fix failed twice and I need to rank causes",
+    "Why does this happen? Rank the causes and probe the cheapest first"
+  ],
+  "coverage": [
+    "Plan the task and map the whole space: all of it, every case",
+    "I asked for all of it, every edge, a ton of ideas: map the whole space first",
+    "Plan a task that covers every case, the whole space, all of it"
   ]
 }

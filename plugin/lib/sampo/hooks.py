@@ -2664,6 +2664,11 @@ def user_prompt_submit(pl):
     ui_note = f"{ {'design': 'Design', 'readme': 'README'}.get(ui, 'UI')} request: {c.SKILL_FOR[ui]}" if ui else ""
     if ui_note and room(len(ui_note) + 2) and _skill_once(sid, c.SKILL_FOR[ui]):
         parts.append(ui_note)
+    think = c.think_request(text)  # T-3855: the category skills, on the prompt's words; after the UI note, whole or not at all
+    think_note = f"{ {'skill-writing': 'Skill request', 'problem-solving': 'Why question'}.get(think, 'Broad request')}: " \
+                 f"{c.THINK_FOR[think]}" if think else ""
+    if think_note and room(len(think_note) + 2) and _skill_once(sid, c.THINK_FOR[think]):
+        parts.append(think_note)
     if not same:
         nxt = next((x[6:] for x in state if x.startswith("Next: ")), None)
         wait = False
@@ -5547,10 +5552,20 @@ def post_tool_use_failure(pl):
         if re.search(r"(?m)^(Traceback|FAIL:|ERROR:|\s+at .+:\d+)", err):  # T-0706: a red run comes with suspects
             from sampo import debug
             note = " ".join(filter(None, [note, debug.line(p, err)]))
+        note = " ".join(filter(None, [note, _stuck_skill(pl.get("session_id"), act)]))
     except Exception:
         log_error("PostToolUseFailure", _tb())
         return None
     return {"hookSpecificOutput": {"hookEventName": "PostToolUseFailure", "additionalContext": note}} if note else None
+
+
+def _stuck_skill(sid, act):
+    """T-3855: a step's second failed evidence run names the problem-solving skill, once a session (counted from the
+    ledger, which _post_tool_use and the evidence verb have just written, so a new session agrees)."""
+    n = c.step_fails(act)
+    cur = act.current_step() if n >= 2 else None
+    hint = _skill_once(sid, c.THINK_FOR["problem-solving"]) if cur else ""
+    return f"Step {cur.n} has failed {n} runs, so think before another edit: {hint}" if hint else ""
 
 
 # ---------------------------------------------------------------- PreCompact

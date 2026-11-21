@@ -10,7 +10,9 @@ from e2e import sync_evals
 from helpers import PLUGIN, busy_factor, read_text, read_json, read_doc
 
 SKILLS = ["intake", "next", "resume", "status", "capture", "tidy", "doctor", "reflect", "improve", "playbooks", "brainstorm",
-          "directions", "design-extract", "ui-design", "genesis", "initiative", "readme-visuals"]
+          "directions", "design-extract", "ui-design", "genesis", "initiative", "readme-visuals",
+          "skill-writing", "problem-solving", "coverage"]  # T-3855: the category skills, loaded by prompt words, plan stage, failures
+CATEGORY_SKILLS = ("skill-writing", "problem-solving", "coverage")
 # everything else Claude may start itself when the user asks in plain words; design-extract: the 2,000-character
 # listing has no room for it, so Claude reaches its verbs through the directions skill and the UI playbooks (T-1507)
 # T-1705: the rules map these plain words to the fm verbs, not the skills; initiative: no listing room left (T-2123)
@@ -191,8 +193,27 @@ class Skills(unittest.TestCase):
         for name in os.listdir(os.path.join(PLUGIN, "workflows")):
             text = read_text(os.path.join(PLUGIN, "workflows", name))
             total += sum(len(m) for m in re.findall(r"(?m)^\s*(?:description|whenToUse): '([^']*)'", text))
-        self.assertLessEqual(total, 2300, "Foreman's part of the skill listing")  # T-1700/T-1701/T-2072: the job skills
+        self.assertLessEqual(total, 2600, "Foreman's part of the skill listing")  # T-1700/T-1701/T-2072: the job skills
         # T-3703: readme-visuals (+110): a README gets its figures unasked
+        # T-3855: skill-writing, problem-solving, coverage (+303): each a 100-character router line
+
+    def test_the_category_skills_keep_their_core_first_and_stay_short(self):
+        # T-3855: a hook may load only the head of a skill, so the core sits in the first 3,000 characters and the
+        # whole file stays under 6,000; each is loaded by Sampo's routing, so its description says "Use whenever"
+        for name in CATEGORY_SKILLS:
+            with self.subTest(skill=name):
+                path = os.path.join(PLUGIN, "skills", name, "SKILL.md")
+                text = read_text(path, encoding="utf-8")
+                meta, body = frontmatter(path)
+                self.assertLess(len(text), 6000)
+                self.assertTrue(meta["description"].startswith("Use whenever "))
+                self.assertLessEqual(len(meta["description"]), 125)
+                self.assertNotEqual(meta.get("disable-model-invocation"), "true")
+                core = text.index("## The core")
+                after = text.find("\n## ", core + 5)
+                self.assertGreater(after, 0, "the core is a section that something follows")
+                self.assertLessEqual(after, 3000, "the core ends inside the first 3,000 characters")
+                self.assertEqual(fm_mention_problems(body.replace("`sampo ", "`fm ")), [], "names only verbs that exist")
 
     def test_the_rules_carry_the_reply_format_and_stay_small(self):
         # T-1279: the rules ride once a session; the output style's reminder rode every turn

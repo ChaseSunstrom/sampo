@@ -5806,9 +5806,49 @@ SKILL_FOR = {
 }
 
 
+# T-3855: the category skills, loaded by Sampo itself rather than picked from Claude Code's listing: on the prompt's
+# own words (think_request), at the plan stage of an M or L task, and at a step's second failed evidence run. Kept
+# apart from SKILL_FOR, whose keys are the stages and task types `sampo playbooks route` answers for.
+THINK_FOR = {
+    "skill-writing": "load: Skill sampo:skill-writing",
+    "problem-solving": "load: Skill sampo:problem-solving",
+    "coverage": "load: Skill sampo:coverage",
+}
+_THINK_RX = []  # routing.json's think_words, one pattern per skill, built on first use
+
+
+def _think_rx():
+    if not _THINK_RX:
+        table, rx = routing().get("think_words") or {}, {}
+        for skill in THINK_FOR:
+            words = [w for w in table.get(skill) or [] if w.strip()]
+            if words:  # a trailing space ends the word there ("bisect " is not "bisection"); else a stem
+                rx[skill] = re.compile(r"(?i)(?<![\w-])(?:" + "|".join(
+                    re.escape(w.rstrip()) + (r"(?![\w-])" if w != w.rstrip() else "") for w in words) + ")")
+        _THINK_RX.append(rx)
+    return _THINK_RX[0]
+
+
+def think_request(text):
+    """T-3855: the THINK_FOR key a prompt's words call for ("skill-writing", "problem-solving", "coverage"), else "".
+    A request in bulk or for everything is coverage's too (is_broad, is_exhaustive)."""
+    t = text if isinstance(text, str) else ""
+    for skill, rx in _think_rx().items():
+        if rx.search(t):
+            return skill
+    return "coverage" if is_broad(t) or is_exhaustive(t) else ""
+
+
 def skill_for(b, st):
-    """The SKILL_FOR hint for a brief at a stage (next_for's), or ""."""
-    return SKILL_FOR.get(b.type if st == "executing" else st, "") if b is not None else ""
+    """The hint for a brief at a stage (next_for's), or "": the plan of an M or L task gets coverage, a step with two
+    failed runs gets problem-solving (T-3855), else SKILL_FOR's for the task type while executing or the stage."""
+    if b is None:
+        return ""
+    if st == "planning" and at_least(b.tier, "M"):
+        return THINK_FOR["coverage"]
+    if st == "executing" and step_fails(b) >= 2:
+        return THINK_FOR["problem-solving"]
+    return SKILL_FOR.get(b.type if st == "executing" else st, "")
 
 
 def needs_approval(b, autonomy="standard"):
@@ -6591,7 +6631,7 @@ def routing_problem(r):
     strs = lambda v: isinstance(v, list) and all(isinstance(x, str) and 0 < len(x) <= 60 for x in v)
     if not isinstance(r, dict):
         return "not a JSON object"
-    for key in ("stage_words", "builtin_skills", "lens_words", "lens_builtin"):
+    for key in ("stage_words", "builtin_skills", "lens_words", "lens_builtin", "think_words"):  # T-3855: think_words
         v = r.get(key, {})
         if not isinstance(v, dict) or not all(isinstance(k, str) and strs(x) for k, x in v.items()):
             return f"{key} must map stage names to lists of strings"
@@ -7436,18 +7476,32 @@ def race_ask(b):
     return f"choice confidence {pct}% is under the race bar ({bar}%) and a runner-up is on file: {race_line(b)}"
 
 
-def stuck_rung(b):
-    """T-0611: the next rung when the current step keeps failing: its failed fm runs since its last pass, and the
-    task's open hypotheses. None while it isn't stuck."""
-    cur = b.current_step()
+def failed_runs(b):
+    """T-3855 (T-0611's loop, shared): (the current step, the outputs of its failed fm runs since its last pass, numbers
+    zeroed), or (None, []) with no brief or no step to work on. Counted from the ledger, so a new session agrees."""
+    cur = b.current_step() if b is not None else None
     if not cur:
-        return None
+        return None, []
     outs = []
     for line in b.evidence():
         m = _EV_RE.match(line)
         if m and m.group(1) == "step" and int(m.group(2)) == cur.n and _RAN_MARK in line:
             outs = outs + [re.sub(r"\d+", "0", line.split("` → ✗ ", 1)[1].split(_RAN_MARK)[0]).strip().lower()] \
                 if "` → ✗ exit" in line else []
+    return cur, outs
+
+
+def step_fails(b):
+    """T-3855: how many fm runs of the current step failed since its last pass (0 with no step)."""
+    return len(failed_runs(b)[1])
+
+
+def stuck_rung(b):
+    """T-0611: the next rung when the current step keeps failing: its failed fm runs since its last pass, and the
+    task's open hypotheses. None while it isn't stuck."""
+    cur, outs = failed_runs(b)
+    if not cur:
+        return None
     fails, hyps = len(outs), sum(1 for _, st, _ in b.hypotheses() if st == "open")
     why = f" — {stall(outs)}" if fails >= 2 else ""  # T-0593: what kind of stall picks the rung's emphasis
     if fails >= 4:
