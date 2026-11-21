@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-20T21:44:52Z",
- "rev": "a5f7e2086",
+ "updated": "2026-11-21T15:16:43Z",
+ "rev": "8780c3265",
  "capabilities": [
   {
    "n": 1,
@@ -4466,1393 +4466,6 @@
   }
  ],
  "exam": [
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 8,
-   "found": 0,
-   "false_alarms": 0,
-   "exam_defects": 0,
-   "fixable": 8,
-   "fixed": 0,
-   "tf_keyed": 4,
-   "tf_first": 0,
-   "readings_keyed": 2,
-   "readings_hit": 0,
-   "missing_keyed": 1,
-   "missing_hit": 1,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 10,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 10,
-   "conf_missing": 10,
-   "brier_sum": 2.5,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      2
-     ],
-     "rust": [
-      0,
-      3
-     ],
-     "ruby": [
-      0,
-      1
-     ],
-     "python": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      0,
-      1
-     ],
-     "slow": [
-      0,
-      2
-     ],
-     "docs": [
-      0,
-      1
-     ],
-     "flaky": [
-      0,
-      1
-     ],
-     "dep": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 8,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 8,
-    "fixed": 0,
-    "tf_keyed": 4,
-    "tf_first": 0,
-    "readings_keyed": 2,
-    "readings_hit": 0,
-    "missing_keyed": 1,
-    "missing_hit": 1,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 10,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 10,
-    "conf_missing": 10,
-    "brier_sum": 2.5,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       2
-      ],
-      "rust": [
-       0,
-       3
-      ],
-      "ruby": [
-       0,
-       1
-      ],
-      "python": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       0,
-       1
-      ],
-      "slow": [
-       0,
-       2
-      ],
-      "docs": [
-       0,
-       1
-      ],
-      "flaky": [
-       0,
-       1
-      ],
-      "dep": [
-       0,
-       1
-      ]
-     }
-    },
-    "brier": 0.25,
-    "closed_share": 0.1
-   },
-   "cost": 0,
-   "closed": {
-    "train": [
-     "missing-tool-rust-15f302"
-    ],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "brier": 0.25,
-   "closed_share": 0.1,
-   "model": "a large local model",
-   "at": "2026-11-04T08:10:52Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "ambiguous",
-    "bug",
-    "dep",
-    "docs",
-    "flaky",
-    "missing-tool",
-    "slow",
-    "untested",
-    "vague",
-    "vuln"
-   ],
-   "author": "self"
-  },
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 8,
-   "found": 0,
-   "false_alarms": 0,
-   "exam_defects": 0,
-   "fixable": 8,
-   "fixed": 0,
-   "tf_keyed": 4,
-   "tf_first": 0,
-   "readings_keyed": 2,
-   "readings_hit": 0,
-   "missing_keyed": 1,
-   "missing_hit": 0,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 10,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 10,
-   "conf_missing": 10,
-   "brier_sum": 2.5,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      2
-     ],
-     "rust": [
-      0,
-      3
-     ],
-     "ruby": [
-      0,
-      1
-     ],
-     "python": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      0,
-      1
-     ],
-     "slow": [
-      0,
-      2
-     ],
-     "docs": [
-      0,
-      1
-     ],
-     "flaky": [
-      0,
-      1
-     ],
-     "dep": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 8,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 8,
-    "fixed": 0,
-    "tf_keyed": 4,
-    "tf_first": 0,
-    "readings_keyed": 2,
-    "readings_hit": 0,
-    "missing_keyed": 1,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 10,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 10,
-    "conf_missing": 10,
-    "brier_sum": 2.5,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       2
-      ],
-      "rust": [
-       0,
-       3
-      ],
-      "ruby": [
-       0,
-       1
-      ],
-      "python": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       0,
-       1
-      ],
-      "slow": [
-       0,
-       2
-      ],
-      "docs": [
-       0,
-       1
-      ],
-      "flaky": [
-       0,
-       1
-      ],
-      "dep": [
-       0,
-       1
-      ]
-     }
-    },
-    "brier": 0.25,
-    "closed_share": 0.0
-   },
-   "cost": 0,
-   "closed": {
-    "train": [],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "brier": 0.25,
-   "closed_share": 0.0,
-   "model": "a large local model",
-   "at": "2026-11-04T08:26:31Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "ambiguous",
-    "bug",
-    "dep",
-    "docs",
-    "flaky",
-    "missing-tool",
-    "slow",
-    "untested",
-    "vague",
-    "vuln"
-   ],
-   "author": "self"
-  },
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 8,
-   "found": 0,
-   "false_alarms": 0,
-   "exam_defects": 0,
-   "fixable": 8,
-   "fixed": 0,
-   "tf_keyed": 4,
-   "tf_first": 0,
-   "readings_keyed": 2,
-   "readings_hit": 0,
-   "missing_keyed": 1,
-   "missing_hit": 0,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 10,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 10,
-   "conf_missing": 10,
-   "brier_sum": 2.5,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      2
-     ],
-     "rust": [
-      0,
-      3
-     ],
-     "ruby": [
-      0,
-      1
-     ],
-     "python": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      0,
-      1
-     ],
-     "slow": [
-      0,
-      2
-     ],
-     "docs": [
-      0,
-      1
-     ],
-     "flaky": [
-      0,
-      1
-     ],
-     "dep": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 8,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 8,
-    "fixed": 0,
-    "tf_keyed": 4,
-    "tf_first": 0,
-    "readings_keyed": 2,
-    "readings_hit": 0,
-    "missing_keyed": 1,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 10,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 10,
-    "conf_missing": 10,
-    "brier_sum": 2.5,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       2
-      ],
-      "rust": [
-       0,
-       3
-      ],
-      "ruby": [
-       0,
-       1
-      ],
-      "python": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       0,
-       1
-      ],
-      "slow": [
-       0,
-       2
-      ],
-      "docs": [
-       0,
-       1
-      ],
-      "flaky": [
-       0,
-       1
-      ],
-      "dep": [
-       0,
-       1
-      ]
-     }
-    },
-    "brier": 0.25,
-    "closed_share": 0.0
-   },
-   "cost": 0,
-   "closed": {
-    "train": [],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "brier": 0.25,
-   "closed_share": 0.0,
-   "model": "a large local model",
-   "at": "2026-11-04T08:26:36Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "ambiguous",
-    "bug",
-    "dep",
-    "docs",
-    "flaky",
-    "missing-tool",
-    "slow",
-    "untested",
-    "vague",
-    "vuln"
-   ],
-   "author": "self"
-  },
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 8,
-   "found": 0,
-   "false_alarms": 0,
-   "exam_defects": 0,
-   "fixable": 8,
-   "fixed": 0,
-   "tf_keyed": 4,
-   "tf_first": 0,
-   "readings_keyed": 2,
-   "readings_hit": 0,
-   "missing_keyed": 1,
-   "missing_hit": 0,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 10,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 10,
-   "conf_missing": 10,
-   "brier_sum": 2.5,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      2
-     ],
-     "rust": [
-      0,
-      3
-     ],
-     "ruby": [
-      0,
-      1
-     ],
-     "python": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      0,
-      1
-     ],
-     "slow": [
-      0,
-      2
-     ],
-     "docs": [
-      0,
-      1
-     ],
-     "flaky": [
-      0,
-      1
-     ],
-     "dep": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 8,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 8,
-    "fixed": 0,
-    "tf_keyed": 4,
-    "tf_first": 0,
-    "readings_keyed": 2,
-    "readings_hit": 0,
-    "missing_keyed": 1,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 10,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 10,
-    "conf_missing": 10,
-    "brier_sum": 2.5,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       2
-      ],
-      "rust": [
-       0,
-       3
-      ],
-      "ruby": [
-       0,
-       1
-      ],
-      "python": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       0,
-       1
-      ],
-      "slow": [
-       0,
-       2
-      ],
-      "docs": [
-       0,
-       1
-      ],
-      "flaky": [
-       0,
-       1
-      ],
-      "dep": [
-       0,
-       1
-      ]
-     }
-    },
-    "brier": 0.25,
-    "closed_share": 0.0
-   },
-   "cost": 0,
-   "closed": {
-    "train": [],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "brier": 0.25,
-   "closed_share": 0.0,
-   "model": "a large local model",
-   "at": "2026-11-04T08:39:30Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "ambiguous",
-    "bug",
-    "dep",
-    "docs",
-    "flaky",
-    "missing-tool",
-    "slow",
-    "untested",
-    "vague",
-    "vuln"
-   ],
-   "author": "self"
-  },
-  {
-   "run": "s0-001",
-   "agent": "smith",
-   "keyed": 8,
-   "found": 0,
-   "false_alarms": 0,
-   "exam_defects": 0,
-   "fixable": 8,
-   "fixed": 0,
-   "tf_keyed": 4,
-   "tf_first": 0,
-   "readings_keyed": 2,
-   "readings_hit": 0,
-   "missing_keyed": 1,
-   "missing_hit": 0,
-   "rank_keyed": 0,
-   "rank_hit": 0,
-   "false_done": 0,
-   "broken": 0,
-   "scenarios": 10,
-   "errors": 0,
-   "reasked": 0,
-   "proved_by_arm": 0,
-   "brier_n": 10,
-   "conf_missing": 10,
-   "brier_sum": 2.5,
-   "false_proofs": 0,
-   "watch_keyed": 0,
-   "watch_started": 0,
-   "watch_hit": 0,
-   "watch_ran": 0,
-   "lanes_keyed": 0,
-   "lanes_recovered": 0,
-   "lanes_kept": 0,
-   "lanes_dup": 0,
-   "lean_keyed": 0,
-   "lean_ok": 0,
-   "forecast_keyed": 0,
-   "forecast_type": 0,
-   "forecast_overlap": 0,
-   "forecast_base_type": 0,
-   "forecast_base_overlap": 0,
-   "breakage_keyed": 0,
-   "breakage_flagged": 0,
-   "breakage_false": 0,
-   "recall": {
-    "lang": {
-     "c": [
-      0,
-      1
-     ],
-     "js": [
-      0,
-      2
-     ],
-     "rust": [
-      0,
-      3
-     ],
-     "ruby": [
-      0,
-      1
-     ],
-     "python": [
-      0,
-      1
-     ]
-    },
-    "kind": {
-     "bug": [
-      0,
-      1
-     ],
-     "vuln": [
-      0,
-      1
-     ],
-     "untested": [
-      0,
-      1
-     ],
-     "slow": [
-      0,
-      2
-     ],
-     "docs": [
-      0,
-      1
-     ],
-     "flaky": [
-      0,
-      1
-     ],
-     "dep": [
-      0,
-      1
-     ]
-    }
-   },
-   "holdout": {
-    "keyed": 0,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 0,
-    "fixed": 0,
-    "tf_keyed": 0,
-    "tf_first": 0,
-    "readings_keyed": 0,
-    "readings_hit": 0,
-    "missing_keyed": 0,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 0,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 0,
-    "conf_missing": 0,
-    "brier_sum": 0,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {},
-    "brier": null,
-    "closed_share": null
-   },
-   "train": {
-    "keyed": 8,
-    "found": 0,
-    "false_alarms": 0,
-    "exam_defects": 0,
-    "fixable": 8,
-    "fixed": 0,
-    "tf_keyed": 4,
-    "tf_first": 0,
-    "readings_keyed": 2,
-    "readings_hit": 0,
-    "missing_keyed": 1,
-    "missing_hit": 0,
-    "rank_keyed": 0,
-    "rank_hit": 0,
-    "false_done": 0,
-    "broken": 0,
-    "scenarios": 10,
-    "errors": 0,
-    "reasked": 0,
-    "proved_by_arm": 0,
-    "brier_n": 10,
-    "conf_missing": 10,
-    "brier_sum": 2.5,
-    "false_proofs": 0,
-    "watch_keyed": 0,
-    "watch_started": 0,
-    "watch_hit": 0,
-    "watch_ran": 0,
-    "lanes_keyed": 0,
-    "lanes_recovered": 0,
-    "lanes_kept": 0,
-    "lanes_dup": 0,
-    "lean_keyed": 0,
-    "lean_ok": 0,
-    "forecast_keyed": 0,
-    "forecast_type": 0,
-    "forecast_overlap": 0,
-    "forecast_base_type": 0,
-    "forecast_base_overlap": 0,
-    "breakage_keyed": 0,
-    "breakage_flagged": 0,
-    "breakage_false": 0,
-    "recall": {
-     "lang": {
-      "c": [
-       0,
-       1
-      ],
-      "js": [
-       0,
-       2
-      ],
-      "rust": [
-       0,
-       3
-      ],
-      "ruby": [
-       0,
-       1
-      ],
-      "python": [
-       0,
-       1
-      ]
-     },
-     "kind": {
-      "bug": [
-       0,
-       1
-      ],
-      "vuln": [
-       0,
-       1
-      ],
-      "untested": [
-       0,
-       1
-      ],
-      "slow": [
-       0,
-       2
-      ],
-      "docs": [
-       0,
-       1
-      ],
-      "flaky": [
-       0,
-       1
-      ],
-      "dep": [
-       0,
-       1
-      ]
-     }
-    },
-    "brier": 0.25,
-    "closed_share": 0.0
-   },
-   "cost": 0,
-   "closed": {
-    "train": [],
-    "holdout": []
-   },
-   "proved_by_arm_findings": [],
-   "answered": {
-    "holdout": [],
-    "child": []
-   },
-   "ungraded": [],
-   "brier": 0.25,
-   "closed_share": 0.0,
-   "model": "a large local model",
-   "at": "2026-11-04T08:39:36Z",
-   "gen": 4,
-   "split": "train",
-   "kinds": [
-    "ambiguous",
-    "bug",
-    "dep",
-    "docs",
-    "flaky",
-    "missing-tool",
-    "slow",
-    "untested",
-    "vague",
-    "vuln"
-   ],
-   "author": "self"
-  },
   {
    "run": "s0-001",
    "agent": "smith",
@@ -62569,6 +61182,1143 @@
     "goal"
    ],
    "author": "self"
+  },
+  {
+   "run": "s8-060",
+   "agent": "smith",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 8,
+   "tf_keyed": 24,
+   "tf_first": 2,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 2,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 7,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 0.03,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 0,
+    "tf_keyed": 4,
+    "tf_first": 0,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 0,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 1,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 0.005,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 40,
+    "fixed": 8,
+    "tf_keyed": 20,
+    "tf_first": 2,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 2,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 6,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 0.025,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "cost": 0,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 8,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 2,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 3,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 0,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "ts": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 1,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    }
+   },
+   "brier": 0.0025,
+   "closed_share": 0.0,
+   "tokens": 1497927,
+   "fix_rate": 0.0,
+   "tokens_per_fix": null,
+   "model": "a large local model",
+   "thinking": "native",
+   "seed": 8,
+   "ids": "533064b859c1",
+   "at": "2026-11-20T21:44:42Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s21-062",
+   "agent": "smith",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 14,
+   "tf_keyed": 24,
+   "tf_first": 4,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 6,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 1,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 0.03,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 16,
+    "fixed": 6,
+    "tf_keyed": 8,
+    "tf_first": 2,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 3,
+    "broken": 0,
+    "scenarios": 4,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 4,
+    "conf_missing": 0,
+    "brier_sum": 0.01,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 32,
+    "fixed": 8,
+    "tf_keyed": 16,
+    "tf_first": 2,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 3,
+    "broken": 0,
+    "scenarios": 8,
+    "errors": 1,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 8,
+    "conf_missing": 0,
+    "brier_sum": 0.02,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "cost": 0,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-python-6d0315",
+     "goal-rust-7a6086",
+     "goal-rust-9bc45a",
+     "goal-ts-8cc89a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 14,
+     "done": 6,
+     "false_done": 6,
+     "whole": 0
+    }
+   },
+   "by_lang": {
+    "ts": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "rust": {
+     "scenarios": 5,
+     "fixable": 20,
+     "fixed": 5,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 4,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 1,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "js": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 0,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    }
+   },
+   "brier": 0.0025,
+   "closed_share": 0.0,
+   "tokens": 2022423,
+   "fix_rate": 0.0,
+   "tokens_per_fix": null,
+   "model": "a large local model",
+   "thinking": "native",
+   "seed": 21,
+   "ids": "c867db64bba2",
+   "at": "2026-11-20T21:47:12Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s21-062",
+   "agent": "smith",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 14,
+   "tf_keyed": 24,
+   "tf_first": 4,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 6,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 1,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 0.03,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 16,
+    "fixed": 6,
+    "tf_keyed": 8,
+    "tf_first": 2,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 3,
+    "broken": 0,
+    "scenarios": 4,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 4,
+    "conf_missing": 0,
+    "brier_sum": 0.01,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 32,
+    "fixed": 8,
+    "tf_keyed": 16,
+    "tf_first": 2,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 3,
+    "broken": 0,
+    "scenarios": 8,
+    "errors": 1,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 8,
+    "conf_missing": 0,
+    "brier_sum": 0.02,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "cost": 0,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-python-6d0315",
+     "goal-rust-7a6086",
+     "goal-rust-9bc45a",
+     "goal-ts-8cc89a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 14,
+     "done": 6,
+     "false_done": 6,
+     "whole": 0
+    }
+   },
+   "by_lang": {
+    "ts": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "rust": {
+     "scenarios": 5,
+     "fixable": 20,
+     "fixed": 5,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 4,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 1,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "js": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 0,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    }
+   },
+   "brier": 0.0025,
+   "closed_share": 0.0,
+   "tokens": 2022423,
+   "fix_rate": 0.0,
+   "tokens_per_fix": null,
+   "model": "a large local model",
+   "thinking": "native",
+   "seed": 21,
+   "ids": "c867db64bba2",
+   "at": "2026-11-20T21:47:13Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s8-061",
+   "agent": "smith",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 15,
+   "tf_keyed": 24,
+   "tf_first": 4,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 5,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 1,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 0.03,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 2,
+    "tf_keyed": 4,
+    "tf_first": 1,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 1,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 1,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 0.005,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 40,
+    "fixed": 13,
+    "tf_keyed": 20,
+    "tf_first": 3,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 0.025,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "cost": 0,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 15,
+     "done": 5,
+     "false_done": 5,
+     "whole": 0
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 3,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 4,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 5,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "ts": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 1,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    }
+   },
+   "brier": 0.0025,
+   "closed_share": 0.0,
+   "tokens": 1830764,
+   "fix_rate": 0.0,
+   "tokens_per_fix": null,
+   "model": "a large local model",
+   "small": true,
+   "thinking": "native",
+   "seed": 8,
+   "ids": "533064b859c1",
+   "at": "2026-11-20T21:48:55Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self"
+  },
+  {
+   "run": "s8-061",
+   "agent": "smith",
+   "keyed": 0,
+   "found": 0,
+   "false_alarms": 0,
+   "exam_defects": 0,
+   "fixable": 48,
+   "fixed": 15,
+   "tf_keyed": 24,
+   "tf_first": 4,
+   "readings_keyed": 0,
+   "readings_hit": 0,
+   "missing_keyed": 0,
+   "missing_hit": 0,
+   "rank_keyed": 0,
+   "rank_hit": 0,
+   "false_done": 5,
+   "broken": 0,
+   "scenarios": 12,
+   "errors": 1,
+   "reasked": 0,
+   "proved_by_arm": 0,
+   "brier_n": 12,
+   "conf_missing": 0,
+   "brier_sum": 0.03,
+   "false_proofs": 0,
+   "watch_keyed": 0,
+   "watch_started": 0,
+   "watch_hit": 0,
+   "watch_ran": 0,
+   "lanes_keyed": 0,
+   "lanes_recovered": 0,
+   "lanes_kept": 0,
+   "lanes_dup": 0,
+   "lean_keyed": 0,
+   "lean_ok": 0,
+   "forecast_keyed": 0,
+   "forecast_type": 0,
+   "forecast_overlap": 0,
+   "forecast_base_type": 0,
+   "forecast_base_overlap": 0,
+   "breakage_keyed": 0,
+   "breakage_flagged": 0,
+   "breakage_false": 0,
+   "recall": {},
+   "holdout": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 8,
+    "fixed": 2,
+    "tf_keyed": 4,
+    "tf_first": 1,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 1,
+    "broken": 0,
+    "scenarios": 2,
+    "errors": 1,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 2,
+    "conf_missing": 0,
+    "brier_sum": 0.005,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "train": {
+    "keyed": 0,
+    "found": 0,
+    "false_alarms": 0,
+    "exam_defects": 0,
+    "fixable": 40,
+    "fixed": 13,
+    "tf_keyed": 20,
+    "tf_first": 3,
+    "readings_keyed": 0,
+    "readings_hit": 0,
+    "missing_keyed": 0,
+    "missing_hit": 0,
+    "rank_keyed": 0,
+    "rank_hit": 0,
+    "false_done": 4,
+    "broken": 0,
+    "scenarios": 10,
+    "errors": 0,
+    "reasked": 0,
+    "proved_by_arm": 0,
+    "brier_n": 10,
+    "conf_missing": 0,
+    "brier_sum": 0.025,
+    "false_proofs": 0,
+    "watch_keyed": 0,
+    "watch_started": 0,
+    "watch_hit": 0,
+    "watch_ran": 0,
+    "lanes_keyed": 0,
+    "lanes_recovered": 0,
+    "lanes_kept": 0,
+    "lanes_dup": 0,
+    "lean_keyed": 0,
+    "lean_ok": 0,
+    "forecast_keyed": 0,
+    "forecast_type": 0,
+    "forecast_overlap": 0,
+    "forecast_base_type": 0,
+    "forecast_base_overlap": 0,
+    "breakage_keyed": 0,
+    "breakage_flagged": 0,
+    "breakage_false": 0,
+    "recall": {},
+    "brier": 0.0025,
+    "closed_share": 0.0
+   },
+   "cost": 0,
+   "closed": {
+    "train": [],
+    "holdout": []
+   },
+   "proved_by_arm_findings": [],
+   "answered": {
+    "holdout": [
+     "goal-c-e61e7e",
+     "goal-python-14283a"
+    ],
+    "child": []
+   },
+   "ungraded": [],
+   "by_kind": {
+    "goal": {
+     "scenarios": 12,
+     "fixable": 48,
+     "fixed": 15,
+     "done": 5,
+     "false_done": 5,
+     "whole": 0
+    }
+   },
+   "by_lang": {
+    "rust": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 3,
+     "done": 0,
+     "false_done": 0,
+     "whole": 0
+    },
+    "python": {
+     "scenarios": 2,
+     "fixable": 8,
+     "fixed": 4,
+     "done": 2,
+     "false_done": 2,
+     "whole": 0
+    },
+    "c": {
+     "scenarios": 4,
+     "fixable": 16,
+     "fixed": 5,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "ruby": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 2,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    },
+    "ts": {
+     "scenarios": 1,
+     "fixable": 4,
+     "fixed": 1,
+     "done": 1,
+     "false_done": 1,
+     "whole": 0
+    }
+   },
+   "brier": 0.0025,
+   "closed_share": 0.0,
+   "tokens": 1830764,
+   "fix_rate": 0.0,
+   "tokens_per_fix": null,
+   "model": "a large local model",
+   "small": true,
+   "thinking": "native",
+   "seed": 8,
+   "ids": "533064b859c1",
+   "at": "2026-11-20T21:48:56Z",
+   "gen": 4,
+   "split": "all",
+   "kinds": [
+    "goal"
+   ],
+   "author": "self"
   }
  ],
  "coverage": {
@@ -65185,17 +64935,17 @@
  },
  "not_yet": 8,
  "not_yet_open": 0,
- "unproven": 851,
+ "unproven": 842,
  "unproven_kinds": {
   "typed": 83,
-  "meaning-user": 86,
+  "meaning-user": 85,
   "research-uncited": 28,
-  "meaning-notes": 440,
-  "docs": 167,
+  "meaning-notes": 431,
+  "docs": 166,
   "red": 82,
-  "perf-typed": 147,
+  "perf-typed": 146,
   "ui-unshot": 4,
-  "infra": 7,
+  "infra": 8,
   "data": 4,
   "tui-unshot": 4,
   "perf-noise": 1
@@ -66403,28 +66153,28 @@
  },
  "moons_scale": {
   "funnel": {
-   "generated": 76450,
+   "generated": 77851,
    "write": {
-    "title": 461,
-    "line": 4186,
-    "payoff": 71,
-    "kill test": 328,
+    "title": 463,
+    "line": 4214,
+    "payoff": 72,
+    "kill test": 374,
     "code": 43
    },
    "dups": {
     "exact": 16,
-    "embed": 146,
+    "embed": 147,
     "shingle": 0
    },
    "rejected": {
-    "kill": 38068,
+    "kill": 38733,
     "tier": 21623,
-    "novelty": 207
+    "novelty": 208
    },
-   "merged": 2868,
-   "kept": 2947,
-   "pending": 145,
-   "pooled": 5341
+   "merged": 2948,
+   "kept": 3035,
+   "pending": 140,
+   "pooled": 5835
   },
   "families": [
    {
@@ -66463,8 +66213,24 @@
     ]
    },
    {
+    "id": "F-077664",
+    "size": 1,
+    "lead": "Orchestrate an automated evolution of legacy boilerplate",
+    "today": "Today you can't automatically migrate complex project patterns without manual intervention.",
+    "with_this": "With this, you can convert entire folder structures of archaic patterns into modern architectural standards overnight.",
+    "tier": "massive",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "refactors"
+    ]
+   },
+   {
     "id": "F-013109",
-    "size": 627,
+    "size": 642,
     "lead": "Rewind the crash to isolate the exact microsecond of failure",
     "today": "Today you can't reverse-play a production crash to find the precise input sequence that broke the app.",
     "with_this": "With this, you can replay a recorded crash in reverse to identify the exact user interaction that triggered the security flaw, fixing it without guessing.",
@@ -66526,6 +66292,23 @@
     "kinds": [
      "features",
      "performance"
+    ]
+   },
+   {
+    "id": "F-012726",
+    "size": 4,
+    "lead": "Rewind your entire project history to any previous state instantly",
+    "today": "Today you can't undo a week of architectural decisions without losing new work.",
+    "with_this": "With this, you can snapshot the entire repo and infrastructure at any moment and jump back to it in seconds.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "ops",
+     "releases"
     ]
    },
    {
@@ -66609,22 +66392,6 @@
     "evidence": "",
     "kinds": [
      "refactors"
-    ]
-   },
-   {
-    "id": "F-006261",
-    "size": 2,
-    "lead": "Turn release rollback into a time reversal of state",
-    "today": "Today you can't undo a release without manually reverting changes, which risks introducing new errors",
-    "with_this": "With this, you can instantly reverse the exact state of the entire system, returning it to the precise microsecond before the release, as if the time had never passed",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "releases"
     ]
    },
    {
@@ -67008,22 +66775,6 @@
     "tier": "extreme",
     "cold": null,
     "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "ops"
-    ]
-   },
-   {
-    "id": "F-012726",
-    "size": 1,
-    "lead": "Rewind your entire project history to any previous state instantly",
-    "today": "Today you can't undo a week of architectural decisions without losing new work.",
-    "with_this": "With this, you can snapshot the entire repo and infrastructure at any moment and jump back to it in seconds.",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 5,
     "block": null,
     "stage": "candidate",
     "evidence": "",
@@ -67541,22 +67292,6 @@
     "evidence": "",
     "kinds": [
      "migrations"
-    ]
-   },
-   {
-    "id": "F-045853",
-    "size": 1,
-    "lead": "Recursively collapse the entire problem space into a single latent vector",
-    "today": "Today you can't compress a complex, multi-file codebase issue into a single point in a high-dimensional space that represents the 'distance' to the solution.",
-    "with_this": "With this, Sampo can instantly recognize if a new bug is structurally identical to a past one, even if the code looks different, by comparing vector distances rather than text.",
-    "tier": "extreme",
-    "cold": null,
-    "wild": 5,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "exhaustive thinking"
     ]
    },
    {
@@ -68264,6 +67999,118 @@
     ]
    },
    {
+    "id": "F-076568",
+    "size": 1,
+    "lead": "Bridge the gap of missing human signals",
+    "today": "Today you can't prevent a pipeline from dying when a developer is offline.",
+    "with_this": "With this, you can maintain 100% uptime for your deployment workflows.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "ops"
+    ]
+   },
+   {
+    "id": "F-077017",
+    "size": 1,
+    "lead": "Transmute static binaries into fluid velocity streams",
+    "today": "Today you can't adapt code path execution speeds based on real-time network resonance",
+    "with_this": "With this, you can have your production binaries morph their internal logic to flow around congestion points automatically",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
+    "id": "F-077021",
+    "size": 1,
+    "lead": "Compose a recursive harmony of cache hits",
+    "today": "Today you can't guarantee that your data stays 'in tune' with the CPU cache",
+    "with_this": "With this, you can force your application to maintain a perfect state of cache resonance",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "performance"
+    ]
+   },
+   {
+    "id": "F-077030",
+    "size": 1,
+    "lead": "Bridge the gap between designer and raw asset",
+    "today": "Today you can't see the raw data behind a design file while editing it",
+    "with_this": "With this, you can see the real-time data values flowing into your design file as you move elements",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "design"
+    ]
+   },
+   {
+    "id": "F-077328",
+    "size": 1,
+    "lead": "Ghost-twin that dreams the first future break",
+    "today": "Today you can't see how a logic change might ripple through a complex system without running it.",
+    "with_this": "With this, you can spawn a ghost-twin that dreams a future execution world and finds the first future input sequence that breaks the change before it ships.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "multi-user"
+    ]
+   },
+   {
+    "id": "F-077334",
+    "size": 1,
+    "lead": "Multi-modal execution score that hears the off-key bug",
+    "today": "Today you can't see the hidden friction between logic and execution.",
+    "with_this": "With this, you can watch a live execution as a visual score where intended logic and machine behavior clash, and the tool points to the exact bar where the code goes off-key even when no error is thrown.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "model layer"
+    ]
+   },
+   {
+    "id": "F-077497",
+    "size": 1,
+    "lead": "Mirror the ghost-path of every organizational decision",
+    "today": "Today you can't see what the team would have built if you chose a different architectural path.",
+    "with_this": "With this, you can navigate a parallel project history where every major 'what if' was actually executed.",
+    "tier": "extreme",
+    "cold": null,
+    "wild": 5,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "onboarding"
+    ]
+   },
+   {
     "id": "F-011460",
     "size": 5,
     "lead": "Negotiate migration compatibility with AI agents in other repos",
@@ -68352,6 +68199,23 @@
     "evidence": "",
     "kinds": [
      "migrations"
+    ]
+   },
+   {
+    "id": "F-077154",
+    "size": 4,
+    "lead": "Build an immune queue that rejects stale work",
+    "today": "Today you can't have a harness remember its own past mistakes and keep stale inbox items from poisoning the next task.",
+    "with_this": "With this, Sampo can store signatures of completed successes and failures, then scan the remaining queue for non-self patterns before doing more work in any project.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 3,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "anticipation",
+     "onboarding"
     ]
    },
    {
@@ -68637,6 +68501,22 @@
     "kinds": [
      "features",
      "refactors"
+    ]
+   },
+   {
+    "id": "F-077153",
+    "size": 2,
+    "lead": "Develop the next task as a living niche",
+    "today": "Today you can't have a harness treat a completed task as an environment that shapes the next task instead of a closed report.",
+    "with_this": "With this, Sampo can turn finished constraints, tests, and user choices into a niche that develops the next task before any human asks.",
+    "tier": "xhigh",
+    "cold": null,
+    "wild": 4,
+    "block": null,
+    "stage": "candidate",
+    "evidence": "",
+    "kinds": [
+     "anticipation"
     ]
    },
    {
@@ -69566,140 +69446,12 @@
     "kinds": [
      "security"
     ]
-   },
-   {
-    "id": "F-008089",
-    "size": 1,
-    "lead": "Whisper the intent, and every copy obeys",
-    "today": "Today you can't update a business rule across all copied modules in your projects without manually finding and editing each instance.",
-    "with_this": "With this, you can speak the new rule into your phone, and every drifted copy across your portfolio updates instantly to match.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "releases"
-    ]
-   },
-   {
-    "id": "F-008365",
-    "size": 1,
-    "lead": "Grow a feature by grafting competing implementations onto the live branch",
-    "today": "Today you can't merge three different approaches to a new module without manually deleting one or two that look slightly different but solve the same problem in better ways.",
-    "with_this": "With this, you can run parallel design patterns in the same codebase and keep the version that survives integration tests, reducing the time spent debating architectural choices by days.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 3,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "design"
-    ]
-   },
-   {
-    "id": "F-008935",
-    "size": 1,
-    "lead": "Negotiate onboarding contracts via bidirectional pricing auction",
-    "today": "Today you can't see the cost of a missing field until the build breaks days later.",
-    "with_this": "With this, you can watch the onboarding cost drop in real-time as agents bid to fill gaps, saving hours of debugging.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "onboarding"
-    ]
-   },
-   {
-    "id": "F-008941",
-    "size": 1,
-    "lead": "Pool onboarding risks into insurance pools",
-    "today": "Today you can't spread the risk of onboarding failures across multiple projects.",
-    "with_this": "With this, you can join a risk pool, reducing your liability for onboarding failures.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "onboarding"
-    ]
-   },
-   {
-    "id": "F-009495",
-    "size": 1,
-    "lead": "Price missing docs like a volatile asset class",
-    "today": "Today you can't see if stale documentation is worth the cost to update it in CI.",
-    "with_this": "With this, you can see a dynamic price tag on every missing doc that reflects how likely a user is to get confused.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "docs"
-    ]
-   },
-   {
-    "id": "F-009497",
-    "size": 1,
-    "lead": "Short stale docs when user confusion spikes",
-    "today": "Today you can't prioritize doc updates based on real-time user frustration signals.",
-    "with_this": "With this, you can trigger urgent doc rewrites in CI when user support tickets indicate high confusion about specific modules.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "docs"
-    ]
-   },
-   {
-    "id": "F-009680",
-    "size": 1,
-    "lead": "Bid on design fidelity before code is generated",
-    "today": "Today you can't see the cost of high-fidelity UI generation before committing to it.",
-    "with_this": "With this, you can set a budget for visual complexity and let the system propose the cheapest design that meets your acceptance criteria, saving hours of iterative refinement.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 1,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "design"
-    ]
-   },
-   {
-    "id": "F-010013",
-    "size": 1,
-    "lead": "Select migrations by live speed and cost, not just passing tests.",
-    "today": "Today you can't tell which schema design runs faster or cheaper in production until after you've shipped it.",
-    "with_this": "With this, you can pick the cheaper, faster database design before it reaches users, lowering your cloud bill and page-load times.",
-    "tier": "xhigh",
-    "cold": null,
-    "wild": 4,
-    "block": null,
-    "stage": "candidate",
-    "evidence": "",
-    "kinds": [
-     "migrations"
-    ]
    }
   ],
-  "families_total": 2100,
+  "families_total": 2164,
   "catalogue": {
    "file": "moons-catalogue.json",
-   "total": 2947
+   "total": 3035
   }
  },
  "steer": {
@@ -69733,7 +69485,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.5,
+    "idle_h": 320.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121960.535213,
@@ -69756,7 +69508,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.7,
+    "idle_h": 320.2,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.599455,
@@ -69779,7 +69531,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.5,
+    "idle_h": 320.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1794121967.999056,
@@ -69802,7 +69554,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.6,
+    "idle_h": 320.1,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.6324291,
@@ -69825,7 +69577,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.4,
+    "idle_h": 319.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1794122562.2909884,
@@ -69848,7 +69600,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.4,
+    "idle_h": 319.9,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.4659588,
@@ -69871,7 +69623,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.1,
+    "idle_h": 319.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1794123380.885613,
@@ -69894,7 +69646,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.2,
+    "idle_h": 319.7,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.498627,
@@ -69917,7 +69669,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.2,
+    "idle_h": 319.8,
     "spend": 0,
     "missions": 1,
     "restarted": 1793931533.5147183,
@@ -69940,7 +69692,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.9,
+    "idle_h": 321.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794117043.5747485,
@@ -69963,7 +69715,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.5,
+    "idle_h": 321.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118380.3416526,
@@ -69986,7 +69738,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.5,
+    "idle_h": 321.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118361.1994553,
@@ -70009,7 +69761,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.6,
+    "idle_h": 321.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118199.6757877,
@@ -70032,7 +69784,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.6,
+    "idle_h": 321.1,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118077.9765282,
@@ -70055,7 +69807,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.4,
+    "idle_h": 320.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118859.5629494,
@@ -70078,7 +69830,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.4,
+    "idle_h": 320.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118976.4831173,
@@ -70101,7 +69853,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.4,
+    "idle_h": 320.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794118909.105619,
@@ -70124,7 +69876,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.3,
+    "idle_h": 320.9,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119078.902836,
@@ -70147,7 +69899,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.2,
+    "idle_h": 320.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119714.3650527,
@@ -70170,7 +69922,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.1,
+    "idle_h": 320.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119789.0770543,
@@ -70193,7 +69945,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.1,
+    "idle_h": 320.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119787.6820118,
@@ -70216,7 +69968,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.1,
+    "idle_h": 320.7,
     "spend": 0,
     "missions": 0,
     "restarted": 1794119848.5161927,
@@ -70239,7 +69991,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.9,
+    "idle_h": 320.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120496.255495,
@@ -70262,7 +70014,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.9,
+    "idle_h": 320.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120635.9146411,
@@ -70285,7 +70037,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 302.9,
+    "idle_h": 320.4,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120649.5444589,
@@ -70308,7 +70060,7 @@
     "drift": null,
     "closed": null,
     "delta": null,
-    "idle_h": 303.0,
+    "idle_h": 320.5,
     "spend": 0,
     "missions": 0,
     "restarted": 1794120343.9599955,
@@ -70508,7 +70260,7 @@
    }
   ],
   "halted": null,
-  "rounds": 21,
+  "rounds": 22,
   "spent_today": 0,
   "share": 65.0
  }

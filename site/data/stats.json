@@ -1,16 +1,16 @@
 {
- "generated": "2026-11-20",
+ "generated": "2026-11-21",
  "totals": {
-  "tasks_done": 1184,
-  "evidence": 7436,
+  "tasks_done": 1186,
+  "evidence": 7454,
   "proofs": 654,
-  "commits": 837,
-  "gate_runs": 490,
+  "commits": 839,
+  "gate_runs": 496,
   "subagents": 4268,
-  "lanes_merged": 836,
+  "lanes_merged": 861,
   "findings": 1915,
-  "guard_blocks": 1202,
-  "captures": 2019,
+  "guard_blocks": 1204,
+  "captures": 2031,
   "lessons_shown": 2356
  },
  "daily": [
@@ -231,19 +231,30 @@
    "PERFORMANCE": 0,
    "SECURITY": 0,
    "RESEARCH": 0,
-   "lanes": 0,
-   "evidence": 34
+   "lanes": 7,
+   "evidence": 37
+  },
+  {
+   "day": "2026-11-21",
+   "FEATURE": 0,
+   "FIX": 1,
+   "CLEAN": 1,
+   "PERFORMANCE": 0,
+   "SECURITY": 0,
+   "RESEARCH": 0,
+   "lanes": 18,
+   "evidence": 15
   }
  ],
  "tiers": {
-  "S": 589,
+  "S": 591,
   "M": 561,
   "L": 33
  },
  "types": {
   "FEATURE": 337,
-  "FIX": 600,
-  "CLEAN": 59,
+  "FIX": 601,
+  "CLEAN": 60,
   "PERFORMANCE": 122,
   "SECURITY": 42,
   "RESEARCH": 24
@@ -251,7 +262,7 @@
  "guard": {
   "brief": 574,
   "core": 281,
-  "system": 165,
+  "system": 167,
   "state-direct": 55,
   "rm-outside": 48,
   "credentials": 27,
@@ -282,14 +293,14 @@
   "fm-reviewer": 208
  },
  "gate_seconds": {
-  "runs": 490,
-  "median": 440.0
+  "runs": 496,
+  "median": 440.6
  },
  "tools": {
   "misses": 18,
   "resolved": 0,
   "proved": 0,
-  "searches": 354,
+  "searches": 356,
   "queued": 3,
   "refused": 0
  },
@@ -481,15 +492,15 @@
     {
      "lo": 60,
      "hi": 79,
-     "n": 94,
-     "held": 89,
+     "n": 95,
+     "held": 90,
      "pct": 95
     },
     {
      "lo": 80,
      "hi": 94,
-     "n": 410,
-     "held": 385,
+     "n": 468,
+     "held": 441,
      "pct": 94
     },
     {
@@ -503,17 +514,17 @@
   }
  },
  "proof": {
-  "n": 851,
+  "n": 842,
   "counts": {
    "typed": 83,
-   "meaning-user": 86,
+   "meaning-user": 85,
    "research-uncited": 28,
-   "meaning-notes": 440,
-   "docs": 167,
+   "meaning-notes": 431,
+   "docs": 166,
    "red": 82,
-   "perf-typed": 147,
+   "perf-typed": 146,
    "ui-unshot": 4,
-   "infra": 7,
+   "infra": 8,
    "data": 4,
    "tui-unshot": 4,
    "perf-noise": 1
@@ -598,6 +609,10 @@
    {
     "day": "2026-11-20",
     "n": 851
+   },
+   {
+    "day": "2026-11-21",
+    "n": 842
    }
   ]
  },
@@ -605,8 +620,8 @@
   "triggers": [
    {
     "trigger": "discovered",
-    "fired": 1433,
-    "precision": 0.846,
+    "fired": 1420,
+    "precision": 0.849,
     "route": "inbox"
    },
    {
@@ -617,13 +632,13 @@
    },
    {
     "trigger": "self",
-    "fired": 225,
-    "precision": 0.79,
+    "fired": 219,
+    "precision": 0.778,
     "route": "inbox"
    },
    {
     "trigger": "steer",
-    "fired": 139,
+    "fired": 140,
     "precision": 0.45,
     "route": "inbox"
    },
@@ -647,7 +662,7 @@
    },
    {
     "trigger": "spar",
-    "fired": 50,
+    "fired": 53,
     "precision": null,
     "route": "inbox"
    },
@@ -665,7 +680,7 @@
    },
    {
     "trigger": "foresight-date",
-    "fired": 12,
+    "fired": 14,
     "precision": 0.0,
     "route": "inbox"
    },
@@ -682,15 +697,15 @@
     "route": "inbox"
    },
    {
-    "trigger": "foresight-cochange",
-    "fired": 7,
-    "precision": 0.2,
+    "trigger": "friction",
+    "fired": 8,
+    "precision": 0.0,
     "route": "inbox"
    },
    {
-    "trigger": "friction",
+    "trigger": "foresight-cochange",
     "fired": 7,
-    "precision": 0.0,
+    "precision": 0.2,
     "route": "inbox"
    },
    {
@@ -814,6 +829,13 @@
   }
  },
  "decisions": [
+  {
+   "date": "2026-11-21",
+   "text": "read T-5426: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
+   "later": null,
+   "confidence": null,
+   "kind": "costly"
+  },
   {
    "date": "2026-11-20",
    "text": "read T-5414: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
@@ -2209,17 +2231,10 @@
    "later": null,
    "confidence": null,
    "kind": "costly"
-  },
-  {
-   "date": "2026-11-06",
-   "text": "read T-3480: its standing rule was expanded from your words at held-out coverage 22%, under the 70% bar",
-   "later": null,
-   "confidence": null,
-   "kind": "costly"
   }
  ],
  "louhi": {
-  "trials": 295,
+  "trials": 299,
   "runs": [
    {
     "run": "s0-001",
@@ -2584,19 +2599,33 @@
     "scenarios": 24,
     "keyed": 0,
     "found": 0
+   },
+   {
+    "run": "s21-062",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
+   },
+   {
+    "run": "s8-061",
+    "trials": 2,
+    "scenarios": 24,
+    "keyed": 0,
+    "found": 0
    }
   ],
   "agents": [
    {
     "agent": "smith",
-    "trials": 169,
-    "scenarios": 3597,
+    "trials": 173,
+    "scenarios": 3645,
     "keyed": 2869,
     "found": 523,
     "false_alarms": 936,
-    "fixable": 5989,
-    "fixed": 1106,
-    "brier": 0.188
+    "fixable": 6181,
+    "fixed": 1164,
+    "brier": 0.186
    },
    {
     "agent": "foreman",
