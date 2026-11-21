@@ -2297,6 +2297,7 @@ class Run:
         # T-4629: a suite red before the work: the ids of the tests that passed (the check is that they still do), the
         # verbose form of the command that names them, and the per-test results the before-run printed
         self.keep_held, self.keep_vcmd, self.keep_seen = None, None, {}
+        self.keep_was_held = False  # a loaded journal's keep record said it held tests
         # T-4295: the closing look: switched off by --no-look; whether this run looks; the close held while it does; the
         # looks' records; the tries per gap; what each closed task did; the hook a new task runs before its journal moves
         self.no_look, self.looking, self.closing = bool(getattr(args, "no_look", False)), False, None
@@ -2767,7 +2768,7 @@ class Run:
                       **({"flaky": flaky} if flaky else {}))
         if kind != "before":
             self.keep_state = "green" if state == "green" else "red"
-            self.log(kind="keep", cmd=cmd, state=self.keep_state, why=self.keep_why)
+            self.log(kind="keep", cmd=cmd, state=self.keep_state, why=self.keep_why, held=self.keep_held is not None)
             if fresh and state == "green":
                 self.keep_green()
         return state, out
@@ -8440,6 +8441,7 @@ def _per_test(line):
 
 _OPEN_ID = re.compile(r"^(\w+ \([\w.]+\)) \.\.\. ")  # unittest -v: `name (mod.Class.name) ... ` opens a result
 _VERDICT = re.compile(r"^(ok|FAIL|ERROR|skipped\b.*|expected failure|unexpected success)\s*$")  # the line that closes it
+_SUMMARY = re.compile(r"^(?:FAIL|ERROR): (\w+ \([\w.]+\))\s*$")  # unittest's end-of-run `FAIL: name (mod.Class.name)`
 PER_TEST_REACH = 100  # T-4634: the lines a test may write between its open line and its verdict before the id is left unread
 
 
@@ -8456,9 +8458,14 @@ class _PerTest:
     def feed(self, line):
         """One output line; False, for run_bounded's on_line (it shows nothing)."""
         line = line.rstrip("\r\n")
+        if (mt := _SUMMARY.match(line)):  # the end-of-run summary: authoritative, so it overrides any earlier PASSED
+            self.seen.update(_per_test(f"{mt.group(1)} ... FAIL"))
+            return False
         got = _per_test(line)
         if got:
-            self.seen.update(got)
+            for t, s in got.items():  # a FAILED is sticky: a later PASSED line (a test can print one) never replaces it
+                if not (s == "PASSED" and self.seen.get(t) == "FAILED"):
+                    self.seen[t] = s
             self.open = None  # a whole result while one waits: the waiting id has no verdict to be read
         elif (mt := _OPEN_ID.match(line)) and len(line) < 1000:
             self.open, self.gap = (None if self.open else mt.group(1)), 0
@@ -8467,7 +8474,9 @@ class _PerTest:
             if self.gap > PER_TEST_REACH:
                 self.open = None
             elif (mt := _VERDICT.match(line)):
-                self.seen.update(_per_test(f"{self.open} ... {mt.group(1)}"))
+                for t, st in _per_test(f"{self.open} ... {mt.group(1)}").items():
+                    if not (st == "PASSED" and self.seen.get(t) == "FAILED"):
+                        self.seen[t] = st
                 self.open = None
         return False
 
@@ -10088,7 +10097,7 @@ def _lacks(run):
 def _drive(run, profile):
     pl = run.plan
     if (run.keep_cmd or run.keep_state) and not run.keep_logged:  # T-4425: found while planning, before a journal
-        run.log(kind="keep", cmd=run.keep_cmd, state=run.keep_state, why=run.keep_why)
+        run.log(kind="keep", cmd=run.keep_cmd, state=run.keep_state, why=run.keep_why, held=run.keep_held is not None)
         if run.keep_held is not None:  # T-4629: the tests that passed before the work, for a resume to hold the same
             run.log(kind="keep_held", held=_pack_held(run.keep_held), vcmd=run.keep_vcmd)
         run.keep_logged = True
@@ -10484,9 +10493,10 @@ def _load(run, tid, ended=False):
             run.harness_text, run.baseline = r.get("text"), r.get("baseline", run.baseline)
         elif k == "keep" and (r.get("state") in ("green", "red", "none", None)):  # T-4425
             run.keep_state, run.keep_why, run.keep_logged = r.get("state"), r.get("why"), True
+            run.keep_was_held = r.get("held") is True  # the recorded fact, not the prose of keep_why
             run.keep_cmd = r.get("cmd") if isinstance(r.get("cmd"), str) and r.get("state") != "none" else None
         elif k == "keep_held" and isinstance(r.get("held"), str):  # T-4629
-            run.keep_held = _unpack_held(r["held"]) or frozenset()  # unreadable: nothing held, so never blamed
+            run.keep_held = _unpack_held(r["held"]) or None  # never an empty set for "never blamed"
             run.keep_vcmd = r["vcmd"] if isinstance(r.get("vcmd"), str) else None
         elif k == "spec" and isinstance(r.get("docs"), list):  # T-4457: a resumed run hands on the same documents
             run.spec, run.spec_logged = [d for d in r["docs"] if isinstance(d, str)], True
@@ -10531,6 +10541,9 @@ def _load(run, tid, ended=False):
             run.usd = round((run.usd or 0) + r["usd"], 6)
         elif k == "search":  # T-3010: the seconds the run's searches already spent count again after a resume
             replay_search(run, r)
+    if run.keep_held is None and run.keep_cmd and getattr(run, "keep_was_held", False):  # T-4629: a hold whose tests the journal can't give back is no check at all
+        run.keep_cmd, run.keep_state, run.keep_vcmd = None, "none", None
+        run.keep_why = "the held tests could not be read back from the journal"
     run.turn_base = run.turns  # T-4204: the journal's turns are spent; --max-steps (the journal's or the flag's) is new
 
 

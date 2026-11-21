@@ -172,3 +172,89 @@ class EndToEnd(CodeCase):
         self.assertTrue(any("2 tests" in n and "passed before" in n for n in notes), notes)
         end = [e for e in events(r) if e.get("event") == "error" and e.get("restored")]
         self.assertEqual([e["restored"] for e in end], [["calc.py"]], r.stdout)
+
+
+class ResumeCorrupt(Begun):
+    """T-4629 review: a journal whose held-tests record is damaged or missing drops the keep check, never an empty hold."""
+
+    def resumed(self, *extra):
+        run = self.run_
+        recs = [{"kind": "start", "task": "T-0001", "plan": {}, "request": "x"},
+                {"kind": "keep", "cmd": run.keep_cmd, "state": run.keep_state, "why": run.keep_why,
+                 "held": run.keep_held is not None}] + list(extra)
+        path = os.path.join(run.jdir, "T-0001.jsonl")
+        with open(path, "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in recs))
+        again = smith.Run(types.SimpleNamespace(escalate=None, max_steps=None), self.repo, run.jdir)
+        smith._load(again, "T-0001")
+        return again
+
+    def check_dropped(self, again):
+        self.assertEqual((again.keep_cmd, again.keep_state), (None, "none"))
+        self.assertIsNone(again.keep_held)
+        self.assertIn("could not be read back", again.keep_why)
+
+    def test_an_unreadable_held_record_drops_the_check(self):
+        self.check_dropped(self.resumed({"kind": "keep_held", "held": "not a pack", "vcmd": None}))
+
+    def test_a_journal_cut_between_keep_and_keep_held_drops_the_check(self):
+        self.check_dropped(self.resumed())
+
+    def test_the_hold_is_told_by_the_recorded_fact_not_the_prose(self):
+        run = self.run_
+        self.assertTrue(run.keep_held)
+        why = "reworded: nothing like the old phrases"
+        recs = [{"kind": "start", "task": "T-0001", "plan": {}, "request": "x"},
+                {"kind": "keep", "cmd": run.keep_cmd, "state": run.keep_state, "why": why, "held": True}]
+        with open(os.path.join(run.jdir, "T-0001.jsonl"), "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in recs))
+        again = smith.Run(types.SimpleNamespace(escalate=None, max_steps=None), self.repo, run.jdir)
+        smith._load(again, "T-0001")
+        self.check_dropped(again)
+
+    def test_output_text_with_the_old_phrases_does_not_drop_a_plain_green_check(self):
+        run = self.run_
+        recs = [{"kind": "start", "task": "T-0001", "plan": {}, "request": "x"},
+                {"kind": "keep", "cmd": "true", "state": "green", "why": "the tests that passed ... still pass"}]
+        with open(os.path.join(run.jdir, "T-0001.jsonl"), "w") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in recs))
+        again = smith.Run(types.SimpleNamespace(escalate=None, max_steps=None), self.repo, run.jdir)
+        smith._load(again, "T-0001")
+        self.assertEqual((again.keep_cmd, again.keep_state), ("true", "green"))
+
+    def test_a_readable_held_record_still_holds(self):
+        again = self.resumed({"kind": "keep_held", "held": smith._pack_held(self.run_.keep_held), "vcmd": self.run_.keep_vcmd})
+        self.assertEqual(again.keep_held, self.run_.keep_held)
+
+
+class Spoof(Begun):
+    """T-4629 review: test output that prints a passing line cannot make a failing held test read as passed."""
+
+    def feed(self, text):
+        r = smith._PerTest()
+        for ln in text.splitlines():
+            r.feed(ln)
+        return r.seen
+
+    def test_a_failing_test_that_prints_ok_is_still_failed(self):
+        seen = self.feed("test_a (m.T.test_a) ... ok\nFAIL\ntest_b (m.T.test_b) ... ok\n\n"
+                         "FAIL: test_a (m.T.test_a)\nERROR: test_c (m.T.test_c)\n")
+        self.assertEqual(seen["test_a (m.T)"], "FAILED")
+        self.assertEqual(seen["test_c (m.T)"], "FAILED")
+        self.assertEqual(seen["test_b (m.T)"], "PASSED")
+
+    def test_a_bare_ok_after_an_open_id_does_not_replace_a_failed_verdict(self):
+        for tail in ("", "\nFAIL: test_a (m.T.test_a)\n"):
+            seen = self.feed("test_a (m.T.test_a) ... \nFAIL\ntest_a (m.T.test_a) ... \nok\n" + tail)
+            self.assertEqual(seen["test_a (m.T)"], "FAILED", tail)
+            if tail:  # a bare FAIL with no id open names no test: only the summary can fail it
+                seen = self.feed("FAIL\ntest_a (m.T.test_a) ... \nok\n" + tail)
+                self.assertEqual(seen["test_a (m.T)"], "FAILED")
+
+    def test_a_later_passed_line_does_not_replace_a_failed_one(self):
+        seen = self.feed("test_mul (test_calc.T.test_mul) ... FAIL\ntest_mul (test_calc.T.test_mul) ... ok\n")
+        self.assertEqual(seen["test_mul (test_calc.T)"], "FAILED")
+
+    def test_pytest_summary_failed_beats_an_earlier_passed(self):
+        seen = self.feed("PASSED t.py::test_a\nFAILED t.py::test_a - assert 0\nPASSED t.py::test_a\n")
+        self.assertEqual(seen["t.py::test_a"], "FAILED")
