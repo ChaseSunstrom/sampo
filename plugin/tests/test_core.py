@@ -219,6 +219,29 @@ class WritesAndLocks(ForemanTestCase):
             self.assertEqual(f.read(), "two")
         self.assertEqual(os.listdir(os.path.dirname(path)), ["f.txt"])
 
+    def test_write_atomic_fsyncs_by_default_and_durable_false_skips_it(self):
+        # T-5000: 138 of 189 watchdog samples in a slow hook sat in this fsync, for caches the hooks rebuild
+        path = os.path.join(self.tmp, "d", "f.txt")
+        with mock.patch.object(c.os, "fsync", wraps=os.fsync) as fs:
+            c.write_atomic(path, "state")
+            self.assertEqual(fs.call_count, 1)
+            c.write_atomic(path, "state2", durable=True)
+            self.assertEqual(fs.call_count, 2)
+            c.write_atomic(path, "cache", durable=False)
+            self.assertEqual(fs.call_count, 2)
+        with open(path) as f:
+            self.assertEqual(f.read(), "cache")
+
+    def test_write_atomic_durable_false_keeps_mode_bytes_and_leaves_no_temp(self):
+        path = os.path.join(self.tmp, "m", "f.bin")
+        c.write_atomic(path, "one")
+        os.chmod(path, 0o600)
+        c.write_atomic(path, b"\xff\x00two", durable=False)
+        with open(path, "rb") as f:
+            self.assertEqual(f.read(), b"\xff\x00two")
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.assertEqual(os.listdir(os.path.dirname(path)), ["f.bin"])
+
     def test_write_atomic_takes_a_name_near_the_length_limit(self):
         # T-3336: the temp name was '.' + the whole name + '.XXXXXXXX.tmp'; sync refused a 250-byte brainstorm file
         for name in ("n" * 246 + ".md", "é" * 125 + ".md"):  # 249 and 253 bytes

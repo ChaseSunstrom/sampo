@@ -3330,8 +3330,11 @@ def mkstemp(d, prefix, suffix):
     raise FileExistsError(17, "No usable temporary file name found")  # errno.EEXIST
 
 
-def write_atomic(path, text):
-    d = os.path.dirname(path) or "."  # T-1784 review: a bare name has no dirname, and makedirs("") raises
+def write_atomic(path, text, durable=True):
+    """Write `text` to `path` through a temp file and a rename, so no reader sees a torn file. durable=False (T-5000)
+    skips the fsync: for a cache the hooks rebuild (breaker, seen-marks, leads), where a power cut costs one
+    recomputation; state that must survive one (tasks, gates, asks) keeps the default."""
+    d =os.path.dirname(path) or "."  # T-1784 review: a bare name has no dirname, and makedirs("") raises
     os.makedirs(d, exist_ok=True)
     try:
         mode = os.stat(path).st_mode & 0o777
@@ -3347,7 +3350,8 @@ def write_atomic(path, text):
         with os.fdopen(fd, "wb") as f:
             f.write(text if isinstance(text, bytes) else text.encode("utf-8"))  # bytes as they are (T-1099)
             f.flush()
-            os.fsync(f.fileno())
+            if durable:
+                os.fsync(f.fileno())
         os.replace(tmp, path)
     except BaseException:
         with contextlib.suppress(OSError):

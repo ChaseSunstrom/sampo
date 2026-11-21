@@ -122,7 +122,7 @@ def _breaker_set(event, entry):
     br = breaker()
     br.pop(event, None) if entry is None else br.update({event: entry})
     try:  # ponytail: concurrent async hooks can lose an update; the next failure counts again
-        c.write_atomic(os.path.join(c.state_dir(), "logs", "breaker.json"), json.dumps(br))
+        c.write_atomic(os.path.join(c.state_dir(), "logs", "breaker.json"), json.dumps(br), durable=False)
         return True
     except OSError:
         return False
@@ -531,7 +531,7 @@ def _lock_busy(event, e):
     r.update(last=c.now(), holder=c.fit(c.redact_display(c.redact(str(e))), 300), held=getattr(e, "held", None))
     try:
         os.makedirs(os.path.dirname(_lock_busy_path()), exist_ok=True)
-        c.write_atomic(_lock_busy_path(), json.dumps(r))
+        c.write_atomic(_lock_busy_path(), json.dumps(r), durable=False)
     except OSError:
         pass
 
@@ -790,7 +790,7 @@ def _heal_note():
         return ""
     if boot and not failed:
         try:
-            c.write_atomic(mark, boot)
+            c.write_atomic(mark, boot, durable=False)
         except OSError:
             pass
     names = lambda xs: ", ".join(xs[:8]) + (f", and {len(xs) - 8} more" if len(xs) > 8 else "")  # noqa: E731
@@ -1151,7 +1151,7 @@ def _start_seen(notes, every=START_REPEAT):
             if h not in marks:
                 keep.append(text)
                 marks[h] = n
-        c.write_atomic(path, json.dumps({"n": n, "marks": marks}))
+        c.write_atomic(path, json.dumps({"n": n, "marks": marks}), durable=False)
         return keep
     except Exception:
         log_error("SessionStart", _tb())
@@ -1819,7 +1819,7 @@ def _leads_hold(p, pl, tools):
         if rec.get("held"):
             return None
         rec["held"] = True  # recorded before the scan: a crash or a timeout never holds a second time
-        c.write_atomic(path, json.dumps(rec))
+        c.write_atomic(path, json.dumps(rec), durable=False)
     except (OSError, ValueError, KeyError, TypeError):
         return None
     found, _ = _leads_scan(p, "Stop")
@@ -1852,7 +1852,7 @@ def _leads_note(p, sid=None):
                 old = os.path.join(p.dir, name)
                 if name.startswith("leads-") and name.endswith(".json") and time.time() - os.path.getmtime(old) > 7 * 86400:
                     os.unlink(old)
-            c.write_atomic(_leads_path(p, sid), json.dumps({"keys": [_lead_key(f) for f in found[:LEADS]]}))
+            c.write_atomic(_leads_path(p, sid), json.dumps({"keys": [_lead_key(f) for f in found[:LEADS]]}), durable=False)
         except OSError:
             log_error("SessionStart", _tb())
     rows = [_lead_row(f) for f in found[:LEADS]]
@@ -3693,7 +3693,7 @@ def _card_mark(p, tid, name):
         seen = {}
     seen = seen if isinstance(seen, dict) else {}
     seen[tid] = sorted(set(seen.pop(tid, None) or []) | {name})  # re-inserted last: the newest task
-    c.write_atomic(path, json.dumps(dict(list(seen.items())[-50:])))
+    c.write_atomic(path, json.dumps(dict(list(seen.items())[-50:])), durable=False)
 
 
 def _snapshot_note(pl, guard):
@@ -4433,7 +4433,7 @@ def _outline_first(pl):
     if not defs:
         return None
     os.makedirs(os.path.dirname(seen_at), exist_ok=True)
-    c.write_atomic(seen_at, json.dumps((seen + [key])[-200:]))
+    c.write_atomic(seen_at, json.dumps((seen + [key])[-200:]), durable=False)
     top = [x for x in defs if x[2] == 0] or defs
     rows = defs if len(top) <= 6 and len(defs) <= 24 else top  # nested defs only when there are few
     cells = [f"{a} {re.sub(r'^(def|class|function|func|fn|async) ', '', name)}"[:60] for a, b, d, name in rows]
@@ -4866,7 +4866,7 @@ def _touch_seen(p, sid, walk=False):
         os.makedirs(os.path.dirname(mark), exist_ok=True)
         # T-3422: '<claude pid> <project slug>' (atomic: no reader sees it empty): a reader tells a resume (same process)
         # from another session, and another project's from this one's
-        c.write_atomic(mark, f"{_seen_pid(mark, walk)} {p.slug}")
+        c.write_atomic(mark, f"{_seen_pid(mark, walk)} {p.slug}", durable=False)
         if (c.read_meta(p).get("session") or {}).get("id") != sid:
             return
         with c.lock(p.dir, timeout=0):
@@ -6049,7 +6049,7 @@ def wait_timer(raw):
                 os.kill(old, signal.SIGTERM)
         except (OSError, ValueError):
             pass
-        c.write_atomic(pidfile, str(os.getpid()))
+        c.write_atomic(pidfile, str(os.getpid()), durable=False)
         d, w = state()
         if not w or w["at"] < t0 - WAIT_FRESH_S:  # nothing waited on at this Stop
             return 0
@@ -6206,7 +6206,7 @@ def _cc_version():
         m = re.match(r"\s*(\d+)\.(\d+)\.(\d+)", out)
         if not m:
             return ()
-        c.write_atomic(path, ".".join(m.groups()) + "\n")
+        c.write_atomic(path, ".".join(m.groups()) + "\n", durable=False)
         return tuple(int(x) for x in m.groups())
     except (OSError, subprocess.SubprocessError):
         return ()

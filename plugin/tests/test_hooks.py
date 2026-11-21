@@ -5743,6 +5743,59 @@ class ClosingMarker(HookCase):  # T-3030
         self.assertEqual([e.get("task") for e in self.touched(path)], [tid])
 
 
+class DurableWrites(HookCase):  # T-5000: a cache the hooks rebuild skips the fsync; state that must survive a power cut keeps it
+    def writes(self):
+        """The hooks' write_atomic calls as {file name: {durable flags seen}}, the real write still done."""
+        calls = {}
+        real = c.write_atomic
+
+        def rec(path, text, **kw):
+            calls.setdefault(os.path.basename(path), set()).add(kw.get("durable", True))
+            return real(path, text, **kw)
+        return calls, mock.patch.object(c, "write_atomic", side_effect=rec)
+
+    def test_hook_caches_are_written_without_fsync(self):
+        from sampo import hooks
+        self.fm("init")
+        p = self.project()
+        lead = {"file": "kit/store.py", "line": 2, "kind": "vuln", "symbol": "lookup", "says": "SQL built"}
+        calls, patch = self.writes()
+        with patch, mock.patch.object(hooks, "_leads_scan", side_effect=lambda p, event="x": ([lead], None)):
+            hooks._breaker_set("PreToolUse", {"fails": 1, "until": 0})
+            self.busy_once()
+            hooks._leads_note(p, "s5000")
+            hooks._leads_hold(p, {"session_id": "s5000", "last_assistant_message": "x"}, True)
+            hooks._start_seen(["a note"])
+            hooks._card_mark(p, "T-1", "x.svg")
+        self.assertEqual(calls.get("breaker.json"), {False}, calls)
+        self.assertEqual(calls.get(os.path.basename(hooks._lock_busy_path())), {False}, calls)
+        self.assertEqual(calls.get(os.path.basename(hooks._leads_path(p, "s5000"))), {False}, calls)  # the record and its held mark
+        self.assertEqual(calls.get("start-seen.json"), {False}, calls)
+        self.assertEqual(calls.get("cards.json"), {False}, calls)
+        with open(hooks._leads_path(p, "s5000")) as f:
+            self.assertTrue(json.load(f)["held"])  # the held mark was written (and read back) all the same
+
+    def busy_once(self):
+        from sampo import hooks
+        try:
+            raise c.LockTimeout("lock busy: x")
+        except c.LockTimeout as e:
+            hooks._lock_busy("Stop", e)
+
+    def test_gate_and_asks_state_keep_the_fsync(self):
+        from sampo import hooks
+        self.fm("init")
+        p = self.project()
+        calls, patch = self.writes()
+        with patch:
+            hooks._write_gate(p, {"evidence": [], "drive": {}})
+        self.assertEqual(calls[os.path.basename(hooks._gate_path(p))], {True}, calls)
+        src = read_text(os.path.join(os.path.dirname(hooks.__file__), "hooks.py"))
+        for line in src.splitlines():
+            if "write_atomic" in line and ("asks.json" in line or "_prompts_path" in line or "path, json.dumps(seen[-20:])" in line):
+                self.assertNotIn("durable=False", line)
+
+
 class LockBusy(HookCase):  # T-3535: a busy project lock is contention, not a failing hook: one rolled-up count
     def busy(self, event):
         from sampo import hooks

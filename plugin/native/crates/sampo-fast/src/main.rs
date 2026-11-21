@@ -40,7 +40,7 @@ const MS_EPOCH: f64 = 1e11; // T-4669: budget.MS_EPOCH
 const MIRRORS: [(&str, &str); 31] = [
     ("hooks.run", "e9a5910273f5"), ("hooks._run", "b974126f7602"), ("hooks._pre_tool_use", "cc5b79ad2884"),
     ("hooks._credential_like", "a60da1d880d6"),
-    ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "08b8f3abe964"),
+    ("hooks._credential_read", "6ed174ed2226"), ("hooks._outline_first", "249f68c310cb"),
     ("hooks._outward_denial", "1e6d4418ddd5"), ("hooks._event", "6440afe94c6e"), ("hooks._rev", "7ee872410ee6"),
     ("hooks._cwd", "5dfb7c01da10"), ("budget.check_subagent", "4575be89ca9a"),
     ("budget.subagent_pause", "8ea366b833a0"), ("budget.rate_limits", "37cdc34daf37"),
