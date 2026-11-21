@@ -26,6 +26,9 @@ class CpuCap(GuardCase):
             ('fm cpu "ca"p 10', "system"),
             ("fm cpu $ACTION 10", "system"),  # unknown at check time
             ("fm cpu $(echo cap) 10", "system"),
+            ("fm cpu idle on", "system"),  # T-4988: the same set-property on the same scope
+            ("fm cpu idle off", "system"),
+            ("fm cpu --window 5 idle on", "system"),
             ("fm cpu", None),
             ("fm cpu --window 3 --json", None),
             ("fm cpu goal 10", None),

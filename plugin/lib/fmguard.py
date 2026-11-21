@@ -8669,11 +8669,11 @@ def check_bash(cmd, ctx, depth=0, tails=True, at=False):
                 found.append(("remote", "sampo serve starts a persistent Remote Control session reachable from the "
                                         "user's claude.ai account"))
             # T-3592: the action is a choice, matched whole, so any word cap is it wherever options put it (-p x cap);
-            # a word the shell fills in at run time could be cap
+            # a word the shell fills in at run time could be cap. T-4988: idle changes the same scope the same way
             words = [_with_vars(a, known) for a in rest] if sub == "cpu" else []
-            if "cap" in words or any(_unresolvable(w) for w in words):
-                found.append(("system", "sampo cpu cap sets a CPU quota on this session's systemd scope (systemctl "
-                                        "--user set-property)"))
+            if "cap" in words or "idle" in words or any(_unresolvable(w) for w in words):
+                found.append(("system", "sampo cpu cap and sampo cpu idle change this session's systemd scope's CPU "
+                                        "share (systemctl --user set-property)"))
         if name in _AWKS:
             found += _check_awk(args, ctx, depth, cwd, cmd)
         if name in ("touch", "mkdir", "mv") or (name == "install" and any(a in ("-d", "--directory") for a in args)):

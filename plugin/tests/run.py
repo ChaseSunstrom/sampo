@@ -90,6 +90,7 @@ OPERATOR_SWITCHES.add("KEEP_ORPHAN")  # T-4538: a detached run that outlives its
 OPERATOR_SWITCHES.add("SLOT_RESERVE")  # T-4650: the reserved slots' off switch is the operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_TRACE")  # T-4685: the slot trace is an operator's, never a test's
 OPERATOR_SWITCHES.add("SLOT_FAIR")  # T-4688: the fair share's off switch is the operator's, never a test's
+OPERATOR_SWITCHES.add("NO_CPU_IDLE")  # T-4988: helpers set it so no test idles the session's real CPU scope
 OPERATOR_SWITCHES.add("SLOT_LOW")  # T-4570: the post-merge verify's runs yield slots to waiting builders; never a test's
 OPERATOR_SWITCHES.add("NO_LEFTOVER_SCAN")  # T-4720: the test base sets it itself; a caller's never reaches a test of the scan
 OPERATOR_SWITCHES.add("CARGO_CAP_BYTES")  # T-4717: the operator's cap on the shared cargo cache; a test sets its own

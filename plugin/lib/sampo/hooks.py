@@ -832,6 +832,9 @@ def session_start(pl):
             reaped = ideas.sweep_orphans()
         except Exception:  # a sweep that fails must never cost the session its start
             log_error("SessionStart", _tb())
+    if pl.get("source") in (None, "startup", "resume"):  # T-4988: a new process may sit in a new scope; idle priority,
+        from sampo import cpu                             # so its tests and builds leave the user's programs the CPU
+        cpu.idle_at_start(_claude_pid())
     p = c.find_project(_cwd(pl), create=not os.environ.get("FOREMAN_WORKER_OF"))  # T-1438: a worker sets up nothing
     if not p:  # T-3672: a folder Sampo never set up still starts knowing the user, and how to register it
         note = "" if os.environ.get("FOREMAN_WORKER_OF") or _oneoff() else _profile_note(sid, new_folder=True)

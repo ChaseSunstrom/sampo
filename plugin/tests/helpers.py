@@ -57,6 +57,7 @@ with open(os.path.join(_LOCKOUT, "claude"), "w") as _f:
 os.chmod(os.path.join(_LOCKOUT, "claude"), 0o755)
 os.environ["PATH"] = _LOCKOUT + os.pathsep + os.environ.get("PATH", "")
 os.environ["FOREMAN_NATIVE_BIN"] = os.path.join(_LOCKOUT, "none")  # T-0992: nor fmcore's ~/.local/bin fallback
+os.environ["FOREMAN_NO_CPU_IDLE"] = "1"  # T-4988: no test's session start changes the real scope's CPU priority
 atexit.register(shutil.rmtree, _LOCKOUT, True)
 # T-2166: fm genesis put files a tower doc only after a cold read says CLEAN; a test that files one puts this first
 CLEAN_READER = tempfile.mkdtemp(prefix="reader-", dir=OWN)

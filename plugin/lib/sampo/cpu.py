@@ -11,12 +11,18 @@ state/cpu.json and reports how far the average since the newest sample 10+ minut
 `sampo cpu cap PCT|off` (optional; Sampo never sets it) puts CPUQuota on the session's own scope with
 `systemctl --user set-property --runtime` (gone when the scope ends) and records it; the guard files it under system,
 as it does a typed set-property. Linux with systemd user sessions only, and only a .scope (or a .service other than
-user@N) under the user manager. FOREMAN_CGROUP names the folder the meter reads (tests); the cap never reads it."""
+user@N) under the user manager. FOREMAN_CGROUP names the folder the meter reads (tests); the cap never reads it.
+
+T-4988: `sampo cpu idle on|off` puts that scope at idle CPU priority (CPUWeight=idle: cgroup cpu.idle=1), so the user's
+own programs get the CPU they ask for first and the session every cycle they leave. Each session start does it
+(idle_at_start) on a scope that holds only that Claude Code's processes and its shell, and a detached waiter puts it back
+when that Claude Code ends; `sampo cpu idle off` turns that off for later sessions."""
 import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 
 from sampo import core as c
@@ -274,13 +280,19 @@ def suite_trend(path, n=7):
         return []
 
 
+def _session_unit(d):
+    """The unit name when d is a scope (or a service that isn't the user manager) under systemd's user manager, else
+    None: a slice or user@N.service would reach every app the user runs."""
+    unit = os.path.basename(d or "")
+    ok = d and "/user@" in d and (unit.endswith(".scope") or unit.endswith(".service") and not unit.startswith("user@"))
+    return unit if ok else None
+
+
 def cap(pct):
     """CPUQuota on this session's scope (pct of the machine; None lifts it), recorded in state/cpu.json."""
     d = own_scope()  # never FOREMAN_CGROUP: the cap is for the scope this process is in, nothing else
-    unit = os.path.basename(d or "")
-    # a scope (or a service that isn't the user manager): a slice or user@N.service would throttle every app
-    if not d or "/user@" not in d or not (unit.endswith(".scope") or unit.endswith(".service")
-                                          and not unit.startswith("user@")):
+    unit = _session_unit(d)
+    if not unit:
         raise c.PolicyError(f"sampo cpu cap needs a session scope that systemd user manages: this one's cgroup is "
                             f"{d or 'unknown (no cgroup v2 here)'}; nothing was set")
     exe = shutil.which("systemctl")
@@ -297,6 +309,150 @@ def cap(pct):
     return st["cap"]
 
 
+def idle_now(d):
+    """The scope's cgroup cpu.idle: True, False, or None (no such file: an older kernel, or no cgroup v2)."""
+    v = (_read(os.path.join(d, "cpu.idle")) or "").strip() if d else ""
+    return {"1": True, "0": False}.get(v)
+
+
+def _set_idle(d, unit, on, timeout=30):
+    """CPUWeight=idle (systemd's name for cgroup cpu.idle=1, kept when systemd re-applies the unit) or back to the
+    default; written to cpu.idle directly when systemctl is missing or didn't take. The way it went, or None."""
+    exe, how = shutil.which("systemctl"), None
+    if exe:
+        try:
+            r = subprocess.run([exe, "--user", "set-property", "--runtime", unit, "CPUWeight=" + ("idle" if on else "")],
+                               capture_output=True, text=True, timeout=timeout)
+            how = "CPUWeight=" + ("idle" if on else "") if not r.returncode else None
+        except (OSError, subprocess.SubprocessError):
+            pass
+    if idle_now(d) is not on:
+        try:
+            with open(os.path.join(d, "cpu.idle"), "w") as f:
+                f.write("1" if on else "0")
+            how = f"cpu.idle={int(on)}"
+        except OSError:
+            pass
+    return how if idle_now(d) is on else None
+
+
+def idle(on):
+    """T-4988: the session's scope at idle CPU priority beside the user's own programs (they get the CPU they ask for
+    first; the session takes every cycle they leave), or back at normal. Recorded in state/cpu.json, where the choice
+    also decides whether later sessions start idle (idle_at_start)."""
+    d = own_scope()  # as the cap: the scope this process is in, never FOREMAN_CGROUP
+    unit = _session_unit(d)
+    if not unit:
+        raise c.PolicyError(f"sampo cpu idle needs a session scope that systemd user manages: this one's cgroup is "
+                            f"{d or 'unknown (no cgroup v2 here)'}; nothing was set")
+    if idle_now(d) is None:
+        raise c.PolicyError(f"sampo cpu idle needs the kernel's cgroup cpu.idle (Linux 5.15 or later): {unit} has none; "
+                            f"nothing was set")
+    how = _set_idle(d, unit, on)
+    if not how:
+        raise c.PolicyError(f"neither systemctl --user set-property {unit} CPUWeight= nor a write to its cpu.idle took; "
+                            f"nothing was set")
+    path, st = _state()
+    st["idle"] = {"on": bool(on), "unit": unit, "scope": d, "how": how, "at": c.now()}
+    st["idle_at_start"] = bool(on)
+    c.write_atomic(path, json.dumps(st))
+    return st["idle"]
+
+
+SHELLS = frozenset(("sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish"))
+
+
+def _proc(pid, proc, memo):
+    """(parent pid, command name) from /proc/PID/stat, or (None, None) when it's gone."""
+    if pid not in memo:
+        s = _read(os.path.join(proc, pid, "stat")) or ""
+        memo[pid] = (s[s.rfind(")") + 2:].split()[1], s[s.find("(") + 1:s.rfind(")")]) if ")" in s else (None, None)
+    return memo[pid]
+
+
+def claudes_own(d, pid, proc="/proc"):
+    """True when every process in the scope is pid (the session's Claude Code), one of its descendants or a shell it
+    runs under (the terminal window's): a scope Claude shares with anything else (another tab's shell, an editor it
+    runs inside, an app that runs it as an extension) holds the user's own programs, and stays at normal priority."""
+    memo, mine, up, q = {}, {str(pid)}, set(), _proc(str(pid), proc, {})[0]
+    while q and q not in up and q != "0":
+        up.add(q)
+        q = _proc(q, proc, memo)[0]
+    for p in (_read(os.path.join(d, "cgroup.procs")) or "").split():
+        chain, q = [], p
+        while q and q not in mine and q not in chain and q != "0":
+            chain.append(q)
+            q = _proc(q, proc, memo)[0]
+        if q in mine:
+            mine.update(chain)
+        elif _proc(p, proc, memo)[0] is None:  # gone since the list was read: not anyone's
+            continue
+        elif p not in up or _proc(p, proc, memo)[1] not in SHELLS:
+            return False
+    return True
+
+
+def release(d, unit, proc="/proc"):
+    """After the session's Claude Code ended: the scope back to normal priority, so the window's shell (which outlives
+    it) runs the user's next build at normal priority, unless another Claude Code still runs in the scope."""
+    if idle_now(d) is not True:
+        return None
+    memo = {}
+    if any(_proc(p, proc, memo)[1] == "claude" for p in (_read(os.path.join(d, "cgroup.procs")) or "").split()):
+        return None
+    return _set_idle(d, unit, False, timeout=10)
+
+
+def _release_main(d, unit, pid):
+    """What idle_at_start's detached waiter runs: blocks until pid ends (a pidfd: no polling), then release."""
+    try:
+        import select
+        fd = os.pidfd_open(int(pid))
+        select.select([fd], [], [])
+    except (AttributeError, OSError):  # no pidfd (an older kernel or Python): look once every 5 s
+        while True:
+            try:
+                os.kill(int(pid), 0)
+            except ProcessLookupError:
+                break
+            except OSError:
+                pass
+            time.sleep(5)
+    release(d, unit)
+
+
+def idle_at_start(claude_pid, proc="/proc", spawn=True):
+    """SessionStart (T-4988): puts this session's scope at idle priority, so its tests and builds take only the CPU
+    the user's own programs leave, and starts a detached waiter that puts it back when this Claude Code ends (release).
+    Only a scope systemd's user manager runs that holds nothing but this Claude Code's processes and the shell it runs
+    under; not for a worker (its parent's scope), not when the user turned it off (sampo cpu idle off) or
+    FOREMAN_NO_CPU_IDLE is set (the test suite), and nothing at all when it's idle already (a resume or compaction).
+    How it went, or None. Never raises."""
+    try:
+        if os.environ.get("FOREMAN_NO_CPU_IDLE") or os.environ.get("FOREMAN_WORKER_OF") or not claude_pid:
+            return None
+        d = own_scope()
+        unit = _session_unit(d)
+        if not unit or idle_now(d) is not False or _state()[1].get("idle_at_start") is False:
+            return None
+        if not claudes_own(d, claude_pid, proc):
+            return None
+        how = _set_idle(d, unit, True, timeout=2)  # a hung user manager costs the start 2 s; the file write follows
+        if how:
+            path, st = _state()
+            st["idle"] = {"on": True, "unit": unit, "scope": d, "how": how, "at": c.now(), "by": "session start"}
+            c.write_atomic(path, json.dumps(st))
+            if spawn and not os.environ.get("FOREMAN_NO_BACKGROUND"):
+                subprocess.Popen([sys.executable, "-c", "import os, sys; os.nice(10); sys.path.insert(0, sys.argv[1]); "
+                                  "from sampo import cpu; cpu._release_main(*sys.argv[2:])",
+                                  os.path.dirname(os.path.dirname(os.path.abspath(__file__))), d, unit, str(claude_pid)],
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+        return how
+    except Exception:  # noqa: BLE001 — a priority that isn't set must never cost the session its start
+        return None
+
+
 def cmd_cpu(args):
     from sampo import cli
     if args.action == "goal":
@@ -311,6 +467,14 @@ def cmd_cpu(args):
         rec = cap(None if args.value == "off" else _pct(args.value, "cap"))
         return cli.out(args, {"cap": rec}, f"cap: {rec['pct']:g}% of the machine (CPUQuota={rec['quota']} on "
                                            f"{rec['unit']}, until the session ends)" if rec else "cap: off")
+    if args.action == "idle":
+        if args.value not in ("on", "off"):
+            raise cli.UsageError("sampo cpu idle on (the user's own programs get the CPU first) or sampo cpu idle off")
+        rec = idle(args.value == "on")
+        return cli.out(args, {"idle": rec}, (
+            f"priority: idle on {rec['unit']} ({rec['how']}): the user's own programs get the CPU they ask for first, "
+            f"this session every cycle they leave; later sessions start idle too" if rec["on"] else
+            f"priority: normal on {rec['unit']} ({rec['how']}); later sessions start at normal priority too"))
     d = scope()
     got = sample(d, max(0.0, args.window)) if d else None
     if got is None:
@@ -324,15 +488,22 @@ def cmd_cpu(args):
     cpu_max = (_read(os.path.join(d, "cpu.max")) or "").strip()
     rec = _state()[1].get("cap")
     rec = rec if isinstance(rec, dict) and rec.get("scope") == d else None
+    idle_on = idle_now(d)
     data = dict(got, scope=d, machine_cores=ncores(), goal_pct=g, cpu_max=cpu_max, limit_cores=limit(cpu_max), cap=rec,
-                tests_trend=[{"day": k, "cpu_s": v} for k, v in trend])
+                idle=idle_on, tests_trend=[{"day": k, "cpu_s": v} for k, v in trend])
     lines = [f"{os.path.basename(d)}: " + (
         f"{got['cores']:.2f} cores, {got['pct']:.1f}% of the machine's {ncores()} over {got['secs']:.1f} s "
         f"({'over' if got['pct'] > g else 'within'} the {g:g}% goal)" if got["cores"] is not None
         else "not measured (--window 0)")]
     lines.append("limit: " + (f"{limit(cpu_max):g} cores (cpu.max {cpu_max})" if limit(cpu_max) else "none (cpu.max max)")
                  + (f", set by sampo cpu cap {rec['pct']:g} at {rec['at']}" if rec else ""))
-    rows = list(got["kinds"].items()) + ([("short-lived (unsampled)", got["unsampled"])] if got["unsampled"] else [])
+    how = _state()[1].get("idle")
+    how = how if isinstance(how, dict) and how.get("scope") == d and how.get("on") == idle_on else None
+    if idle_on is not None:
+        lines.append(("priority: idle (cpu.idle 1): the user's own programs get the CPU first" if idle_on else
+                      "priority: normal (cpu.idle 0): sampo cpu idle on gives the user's own programs the CPU first")
+                     + (f"; set by {how.get('by') or 'sampo cpu idle'} at {how['at']} ({how['how']})" if how else ""))
+    rows =list(got["kinds"].items()) + ([("short-lived (unsampled)", got["unsampled"])] if got["unsampled"] else [])
     lines += [f"  {k:<24} {v:5.2f} cores" for k, v in rows]
     if trend:  # T-3757: a cost that creeps in under the train's margins shows here day by day
         lines.append(f"test suite: about {trend[-1][1]:,.0f} CPU s a full run ("

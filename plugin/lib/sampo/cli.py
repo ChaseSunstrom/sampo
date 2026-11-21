@@ -10631,9 +10631,11 @@ def _build_parser(only=None):
             help="this session's CPU from its cgroup (exact, short-lived processes included) as cores and %% of the "
                  "machine, split by kind (tests, hooks, fm ui, merge queue, git, builders' commands, Claude itself), "
                  "and its cpu.max; goal PCT: the self-check's goal (default 10); cap PCT|off: an optional CPUQuota on "
-                 "the session's scope (T-3592)")
-    s.add_argument("action", nargs="?", default="show", choices=["show", "goal", "cap"])
-    s.add_argument("value", nargs="?", help="goal: a percent of the machine; cap: a percent of the machine, or off")
+                 "the session's scope (T-3592); idle on|off: the session's scope at idle CPU priority, so the user's "
+                 "own programs get the CPU first (every session starts idle unless turned off, T-4988)")
+    s.add_argument("action", nargs="?", default="show", choices=["show", "goal", "cap", "idle"])
+    s.add_argument("value", nargs="?", help="goal: a percent of the machine; cap: a percent of the machine, or off; "
+                                            "idle: on or off")
     s.add_argument("--window", type=float, default=5.0, help="show: seconds to measure (default 5)")
 
     s = add("profile", lazy("sampo.profile", "cmd_profile"), tier=("Project and settings", 776),
