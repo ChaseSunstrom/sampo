@@ -116,6 +116,65 @@ def _root(p):
     return os.path.join(p.dir, "exam", "long")
 
 
+LONG_DAYS = 7  # T-5038: the night runs the long-horizon exam at most weekly
+
+
+def _failed_file(p, arm):
+    return os.path.join(_root(p), f"cycle-failed-{arm}.json")
+
+
+def _cycle_failed(p, arm):
+    """T-5038: a night cycle that spent and graded nothing is remembered, so the arm waits out LONG_DAYS, not a night."""
+    os.makedirs(_root(p), exist_ok=True)
+    c.write_atomic(_failed_file(p, arm), json.dumps({"at": c.now()}))
+
+
+def due(p, arm=None):
+    """T-5038: True when the arm (foreman or plain; none: either) has no graded long line (exam.jsonl, tier long, not a Haiku
+    smoke line, not dated in the future) and no failed cycle under LONG_DAYS old; a line that cannot be read or dated never
+    counts. Only these two arms make the deciding row, so an oracle, empty or smith line never holds the exam off."""
+    from sampo import rune
+    if arm is None:
+        return any(due(p, a) for a in SESSIONS)
+    try:
+        with open(_failed_file(p, arm), encoding="utf-8") as f:
+            age = c.age_days(json.load(f).get("at"))
+        if age is not None and 0 <= age < LONG_DAYS:
+            return False
+    except (OSError, ValueError, AttributeError):
+        pass
+    for raw in (rune._doc(rune.home(p), "exam.jsonl") or "").splitlines():
+        try:
+            x = json.loads(raw)
+        except ValueError:
+            continue
+        if not (isinstance(x, dict) and x.get("tier") == "long" and x.get("agent") == arm and isinstance(x.get("at"), str)):
+            continue
+        age = c.age_days(x["at"])
+        if age is not None and 0 <= age < LONG_DAYS and not rune.smoke(x):
+            return False
+    return True
+
+
+def _mtime(path):
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def newest_run(p):
+    """T-5038: the newest long run id that loads, or None (the night answers a run someone generated; it never generates)."""
+    names = [n for n in os.listdir(_root(p)) if RUN.fullmatch(n)] if os.path.isdir(_root(p)) else []
+    for n in sorted(names, key=lambda n: (_mtime(os.path.join(_root(p), n, "run.json")), n), reverse=True):
+        try:
+            _load(p, n)
+        except (ValueError, OSError, AttributeError, TypeError):
+            continue
+        return n
+    return None
+
+
 def _own():
     """Sampo's own repo: the toplevel holding this plugin (never an enclosing repo that merely contains it), else None."""
     top = find._git(c.PLUGIN_ROOT, "rev-parse", "--show-toplevel")
@@ -1240,19 +1299,40 @@ def cmd(p, args):
                          + "\n".join(f"  {s['id']}: {s['goal'].splitlines()[0]}" for s in meta["scenarios"])
                          + (f"\ndropped {meta['dropped_pinned']} goal(s) whose checks pin values the goal can't state "
                             f"({', '.join(meta['dropped_ids'])})" if meta["dropped_pinned"] else ""))
-    if verb in ("run", "grade") and rest:
+    if verb in ("run", "grade", "cycle") and rest:  # T-5038: cycle = run, then grade (the night's one-argv step)
         agent = args.agent or "oracle"
         from sampo import louhi
         reg = getattr(args, "regressing", None)
         if reg is not None and not 1 <= reg <= 13:
             raise cli.UsageError(f"--regressing takes a capability number from 1 to 13, not {reg}")
-        if verb == "run" and agent in louhi.SESSIONS and not getattr(args, "final", False) and reg is None:
+        if verb != "grade" and agent in louhi.SESSIONS and not getattr(args, "final", False) and reg is None:
             raise cli.UsageError(  # T-2327: the user's steer 2026-10-31 (1)
                 f"a {agent} session arm runs only at the end-of-run exam (--final) or for one capability a free or "
                 "Haiku arm shows regressing (--regressing N); the free arms (oracle, empty) run any time")
         faults = [f for f in (args.faults or "").split(",") if f]
+        if verb == "cycle":
+            src = _load(p, rest[0]).get("src")  # a missing run is refused before a session spends
+            try:
+                _may_run(p, src) if isinstance(src, str) else None  # so is an untrusted source, and the night waits out the week before it asks again
+            except ValueError:
+                _cycle_failed(p, agent)
+                raise
         r = (run(p, rest[0], agent, args.model, args.budget, args.timeout, faults, args.limit, 1 if args.jobs is None else args.jobs,
-                 getattr(args, "reason", None), bool(getattr(args, "small", False))) if verb == "run" else grade(p, rest[0], agent))
+                 getattr(args, "reason", None), bool(getattr(args, "small", False))) if verb != "grade" else grade(p, rest[0], agent))
+        if verb == "cycle":
+            for sid, err in (r.get("errors") or {}).items():
+                print(f"{sid}: {err}")
+            for sid, why in (r.get("skipped") or {}).items():
+                print(f"{sid}: skipped: {why}")
+            if not [g for g in r["answered"] if g not in (r.get("errors") or {})]:  # nothing answered: a work copy is no answer
+                _cycle_failed(p, agent)
+                raise ValueError(f"{agent} answered no goal of {rest[0]}: not graded")
+            try:
+                r, verb = grade(p, rest[0], agent), "grade"
+            except ValueError:
+                _cycle_failed(p, agent)
+                raise
+            # graded in the same step: a line is what makes the exam not due
         text = (f"{agent} answered {len(r['answered'])} goal(s) of {rest[0]}" if verb == "run" else
                 f"{agent} {rest[0]}: {r['true_done']}/{r['scenarios']} true done, {r['checks_passed']}/{r['checks']} checks, "
                 f"{r['regressions']} regressions\n{went(r)}" + (f"\n{_split_line(r)}" if _split_line(r) else "")
@@ -1269,4 +1349,4 @@ def cmd(p, args):
         return cli.out(args, r, text)
     raise ValueError("fm exam long gen [--from PATH] [--n N up to 100] [--goal raw] [--tier S|M|L] | run RUN --agent oracle|empty|foreman|plain|smith "
                      "[--faults kill,pause,compaction,misleading,missing,door (not smith)] [--model PROFILE --timeout MIN --reason R --small (smith)] | "
-                     "grade RUN --agent oracle|empty|foreman|plain|smith")
+                     "grade RUN --agent oracle|empty|foreman|plain|smith | cycle RUN --agent A (run, then grade)")

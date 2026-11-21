@@ -30,7 +30,7 @@ LAND_POLL_S = 30  # T-4278: how often the wait looks at the land's lock
 HEAVY = ("evolve", "bench", "exam", "sentinel")  # T-4278: a replayed session, exam arms or a bisect's test suites: by a
 # job's first word; such a job never starts while a land runs
 _LEASE = None  # T-0921: the open lock file of a running night
-NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits", "headroom")
+NAMES = ("scout", "dream", "spar", "cold files", "guard cases", "steer checks", "compost", "consolidate", "sentinel", "moons grow", "moons funnel", "model bench", "long exam", "next request", "smoke", "pre-plan", "model lesion", "second session", "landscape", "research debt", "court", "evolve candidate", "queue", "draft", "kalevala rounds", "fits", "headroom")
 
 
 GENERATORS = ("moons grow", "moons funnel", "headroom")  # T-3296: the bulk CPU users; they take the project lock only briefly per row; T-3328: headroom's git log and local-model calls, at idle too
@@ -129,6 +129,11 @@ def jobs(p, warn=None):
     gap_run = None if meta.get("sensitive") or budget.degrade(p) else louhi.gap_pending(p)
     if gap_run:  # T-3930: Haiku on the held-out split a local profile answered, at most weekly (reused inside 7 days)
         out.append(("frontier gap", ["exam", "gap", gap_run, "--ref"], budget.estimate("exam-arm", 3, 0.5)))
+    from sampo import long
+    long_run = None if meta.get("sensitive") or budget.degrade(p) or not long.due(p) else long.newest_run(p)
+    for arm in (a for a in long.SESSIONS if long_run and long.due(p, a)):  # T-5038: each arm with no line this week (a skipped one retries)
+        out.append((f"long exam {arm}", ["exam", "long", "cycle", long_run, "--agent", arm, "--final"],
+                    budget.estimate("exam-arm", 3, 0.5)))  # a session arm answers 3 goals by default
     if not meta.get("sensitive") and moonscale._local(False):  # T-2912: free: the local model's next-request guess
         out.append(("next request", ["outcomes", "--predictions", "--ask-local"], 0.0))
         out.append(("headroom", ["headroom", "--capture"], 0.0))  # T-3328: free: sets the work outgrew, asked locally

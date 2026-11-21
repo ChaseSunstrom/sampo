@@ -519,6 +519,157 @@ class NightMoons(ForemanTestCase):  # T-2916: zero-dollar Moons jobs on the loca
             self.assertEqual(self.names(), {})
 
 
+class NightLong(ForemanTestCase):  # T-5038: the long-horizon exam runs weekly at night, when due and in budget
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        from sampo import long, rune
+        self.long, self.rune, self.p = long, rune, c.find_project(self.repo)
+
+    def make_run(self, run="l001"):
+        d = os.path.join(self.p.dir, "exam", "long", run)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "run.json"), "w") as f:
+            json.dump({"run": run, "scenarios": []}, f)
+
+    def line(self, days, tier="long", agent="foreman"):
+        import datetime
+        at = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.rune.exam_line(self.p, {"tier": tier, "agent": agent, "run": "l001", "at": at, "goals": []})
+
+    def jobs(self):
+        from sampo import night
+        return {n: (argv, usd) for n, argv, usd in night.jobs(self.p) if n.startswith("long exam")}
+
+    def test_due_is_no_graded_long_line_in_seven_days(self):
+        self.assertTrue(self.long.due(self.p, "foreman"), "never graded")
+        self.line(2, tier="short")
+        self.assertTrue(self.long.due(self.p, "foreman"), "a short-tier line is not a long line")
+        self.line(8)
+        self.assertTrue(self.long.due(self.p, "foreman"), "a line from 8 days ago is stale")
+        self.line(2)
+        self.assertFalse(self.long.due(self.p, "foreman"), "graded 2 days ago")
+        self.assertTrue(self.long.due(self.p, "plain"), "each arm is due on its own line")
+
+    def test_only_foreman_and_plain_lines_in_the_past_count(self):
+        self.line(1, agent="oracle")
+        self.line(1, agent="empty")
+        self.line(1, agent="smith")
+        self.line(-3)  # dated in the future
+        self.assertTrue(self.long.due(self.p, "foreman"))
+        self.rune.exam_line(self.p, {"tier": "long", "agent": "plain", "run": "l001", "goals": [], "model": "claude-haiku-4",
+                                     "at": c.now()})
+        self.assertTrue(self.long.due(self.p, "plain"), "a Haiku smoke line never decides")
+
+    def test_a_skipped_arm_is_listed_alone_the_next_night(self):
+        self.make_run()
+        self.line(1, agent="foreman")
+        self.assertEqual(sorted(self.jobs()), ["long exam plain"])
+
+    def test_a_failed_cycle_is_not_retried_within_the_week(self):
+        self.make_run()
+        self.long._cycle_failed(self.p, "plain")
+        self.assertEqual(sorted(self.jobs()), ["long exam foreman"])
+        self.assertTrue(self.long.due(self.p, "foreman"))
+        self.assertFalse(self.long.due(self.p, "plain"))
+
+    def test_newest_run_skips_a_run_json_of_the_wrong_shape(self):
+        self.make_run("l001")
+        for i, body in enumerate(("[]", "null", '{"scenarios": 5}')):
+            d = os.path.join(self.p.dir, "exam", "long", f"l00{i + 2}")
+            os.makedirs(d)
+            with open(os.path.join(d, "run.json"), "w") as f:
+                f.write(body)
+        self.assertEqual(self.long.newest_run(self.p), "l001")
+
+    def test_a_garbled_exam_file_is_never_a_graded_line(self):
+        os.makedirs(self.rune.home(self.p), exist_ok=True)
+        with open(os.path.join(self.rune.home(self.p), "exam.jsonl"), "w") as f:
+            f.write("not json\n[1]\n" + json.dumps({"tier": "long", "at": 5}) + "\n")
+        self.assertTrue(self.long.due(self.p))
+
+    def test_both_session_arms_are_listed_when_due_with_a_run_to_answer(self):
+        self.assertEqual(self.jobs(), {}, "no long run exists: gen is the user's call, not the night's")
+        self.make_run("l001")
+        self.make_run("l002")
+        got = self.jobs()
+        self.assertEqual(sorted(got), ["long exam foreman", "long exam plain"])
+        for arm in ("foreman", "plain"):
+            argv, usd = got["long exam " + arm]
+            self.assertEqual(argv, ["exam", "long", "cycle", "l002", "--agent", arm, "--final"], "the newest run")
+            self.assertGreater(usd, 0, "a session arm spends: the night's limit decides")
+        from sampo import night
+        self.assertIn("long exam", night.NAMES)
+
+    def test_a_graded_week_a_sensitive_project_or_a_slowed_budget_lists_nothing(self):
+        self.make_run()
+        self.line(2)
+        self.line(2, agent="plain")
+        self.assertEqual(self.jobs(), {}, "graded inside the week")
+        self.line(9, agent="plain")
+        self.line(9)
+        with mock.patch("sampo.budget.degrade", return_value="usage runs ahead of pace"):
+            self.assertEqual(self.jobs(), {})
+        c.write_meta(self.p, {**c.read_meta(self.p), "sensitive": True})
+        self.assertEqual(self.jobs(), {})
+
+    def test_the_job_lists_again_once_the_week_is_up(self):
+        self.make_run()
+        self.line(8)
+        self.line(8, agent="plain")
+        self.assertEqual(len(self.jobs()), 2)
+
+    def test_cycle_runs_then_grades_and_refuses_a_missing_run(self):
+        args = SimpleNamespace(run="cycle", rest=["l999"], agent="oracle", model=None, budget=None, timeout=None, faults="",
+                               limit=None, jobs=None, final=False, regressing=None, json=False)
+        with self.assertRaises(ValueError):
+            self.long.cmd(self.p, args)
+        calls = []
+        with mock.patch.object(self.long, "run", side_effect=lambda *a, **k: calls.append("run") or {"answered": ["T-1"], "errors": {}, "skipped": {}}), \
+                mock.patch.object(self.long, "grade", side_effect=lambda *a, **k: calls.append("grade") or {
+                    "true_done": 0, "scenarios": 0, "checks_passed": 0, "checks": 0, "regressions": 0, "skipped": {},
+                    "installs_attempted": None, "brier": None}), \
+                mock.patch.object(self.long, "went", return_value=""), mock.patch.object(self.long, "_split_line", return_value=""):
+            self.make_run("l003")
+            args.rest = ["l003"]
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.long.cmd(self.p, args)
+        self.assertEqual(calls, ["run", "grade"])
+
+
+    def _args(self, **kw):
+        base = dict(run="cycle", rest=["l001"], agent="foreman", model=None, budget=None, timeout=None, faults="", limit=None,
+                    jobs=None, final=True, regressing=None, json=False)
+        return SimpleNamespace(**{**base, **kw})
+
+    def test_cycle_refuses_a_session_arm_without_final_before_anything_runs(self):
+        from sampo import cli
+        self.make_run()
+        with mock.patch.object(self.long, "run") as run, self.assertRaises(cli.UsageError):
+            self.long.cmd(self.p, self._args(final=False))
+        run.assert_not_called()
+
+    def test_cycle_that_answers_nothing_prints_the_errors_exits_nonzero_and_never_grades(self):
+        self.make_run()
+        out = io.StringIO()
+        with mock.patch.object(self.long, "_may_run"), \
+                mock.patch.object(self.long, "run", return_value={"answered": ["g1"], "errors": {"g1": "boom"}, "skipped": {}}), \
+                mock.patch.object(self.long, "grade") as grade, contextlib.redirect_stdout(out), self.assertRaises(ValueError) as e:
+            self.long.cmd(self.p, self._args())
+        grade.assert_not_called()
+        self.assertIn("boom", out.getvalue() + str(e.exception))
+        self.assertNotIn("long exam foreman", self.jobs(), "a failed cycle waits out the week")
+
+    def test_cycle_checks_trust_before_it_runs(self):
+        self.make_run()
+        with mock.patch.object(self.long, "_load", return_value={"src": "/x"}), \
+                mock.patch.object(self.long, "_may_run", side_effect=ValueError("not a tree you trusted")), \
+                mock.patch.object(self.long, "run") as run, self.assertRaises(ValueError):
+            self.long.cmd(self.p, self._args())
+        run.assert_not_called()
+        self.assertNotIn("long exam foreman", self.jobs())
+
+
 class NightStops(ForemanTestCase):  # T-3929: a $0 night runs its free jobs; a busy moons store is neither spend nor a failure
     def setUp(self):
         super().setUp()
