@@ -615,12 +615,21 @@ class ModelBenchVisible(ForemanTestCase):  # T-3093: the Models section, the per
             pass
 
     def test_a_rerun_stamps_its_gen_and_per_task_hits_and_pins_the_frozen_set_once(self):
+        from unittest import mock
+
         from sampo import rune
         for i in range(12):
             title, typ, tier = TASKS[i % 2]
             b = c.find_brief(self.p, json.loads(self.fm("capture", title % i, "--json").stdout)["id"])
             b.meta.update(type=typ, tier=tier, status="done")
             c.save_brief(self.p, b)
+        for t in c.load_briefs(self.p):  # T-5377: only tasks the rules path saw (a shadow row) are pinned, and enough of them
+            for use in louhi.BENCH_USES:
+                if louhi.holdout(t.id):
+                    models.shadow(self.p, use, "x", "FIX", task=t.id)
+        patch = mock.patch.object(louhi, "PROMOTE_MIN", 2)
+        patch.start()
+        self.addCleanup(patch.stop)
         os.makedirs(os.path.join(rune.home(self.p), "gen-3"))
         srv = Server("FIX")
         self.addCleanup(srv.close)
@@ -660,3 +669,313 @@ class ModelBenchVisible(ForemanTestCase):  # T-3093: the Models section, the per
         self.assertEqual(louhi.noise_ceiling(self.p, "intake-tier", ["T-1", "T-2", "T-3", "T-4"]), 0.5)
         self.assertEqual(louhi.noise_ceiling(self.p, "intake-type", ["T-1"]), 1.0)
         self.assertIsNone(louhi.noise_ceiling(self.p, "intake-tier", []))
+
+
+class BenchAudit(ForemanTestCase):
+    """T-5377 (the T-2886 audit): the frozen set the rules path can score, Jeff and SelfJev never scored on what they
+    trained on, a cut or killed run that keeps its rows, and the timeout every row records."""
+
+    def setUp(self):
+        super().setUp()
+        self.fm("init")
+        self.p = c.find_project(self.repo)
+        for i in range(36):
+            title, typ, tier = TASKS[i % 2]
+            tid = json.loads(self.fm("capture", title % i, "--json").stdout)["id"]
+            b = c.find_brief(self.p, tid)
+            b.meta.update(type=typ, tier=tier, status="done")
+            c.save_brief(self.p, b)
+        self.held = sorted(b.id for b in c.load_briefs(self.p) if louhi.holdout(b.id))
+        self.assertGreaterEqual(len(self.held), 7)
+        with open(os.path.join(self.p.dir, models.SHADOW), "w"):  # capture shadowed every task: each test says which ones the path saw
+            pass
+        self.srv = Server("FIX")
+        self.addCleanup(self.srv.close)
+
+    def seen(self, tasks, uses=louhi.BENCH_USES):
+        for t in tasks:
+            for use in uses:
+                models.shadow(self.p, use, "x", "FIX", task=t)
+
+    def patch(self, **kw):
+        from unittest import mock
+        for k, v in kw.items():
+            m = mock.patch.object(louhi, k, v)
+            m.start()
+            self.addCleanup(m.stop)
+
+    def gen_dir(self, n=4):
+        from sampo import rune
+        os.makedirs(os.path.join(rune.home(self.p), f"gen-{n}"))
+
+    def bench_rows(self):
+        with open(os.path.join(self.p.dir, louhi.BENCH)) as f:
+            return [json.loads(x) for x in f]
+
+    def jeff(self):
+        from sampo import jeffexport
+        return dict(self.srv.profile(jeffexport.PROFILE, "systemone"), model=jeffexport.NAME)
+
+    def holds_out(self, holdout):
+        from sampo import jeffexport
+        path = os.path.join(self.p.dir, jeffexport.META)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"holdout": holdout}, f)
+
+    # ---- criterion 1: a frozen set the rules path can score
+    def test_the_frozen_set_is_pinned_from_tasks_with_a_shadow_row_once_enough_have_one(self):
+        self.gen_dir()
+        want = self.held[-5:]
+        self.seen(want[:4], ("intake-type",))
+        self.patch(PROMOTE_MIN=5)
+        self.assertIsNone(louhi.freeze_set(self.p), "4 shadowed tasks of the 5 needed: wait")
+        self.assertFalse(os.path.exists(os.path.join(self.p.root, louhi.FROZEN)))
+        self.seen(want[4:], ("intake-type",))
+        ids = louhi.freeze_set(self.p)
+        self.assertEqual(sorted(ids["intake-type"]), want, "the unshadowed held-out tasks are left out")
+        self.assertNotIn("intake-tier", ids, "a use with no shadow rows is not pinned yet")
+        self.seen(want, ("intake-tier",))
+        louhi.freeze_set(self.p)
+        fz = louhi.frozen_ids(self.p)
+        self.assertEqual((sorted(fz["intake-type"]), sorted(fz["intake-tier"])), (want, want))
+        self.seen(self.held, ("intake-type",))
+        louhi.freeze_set(self.p)
+        self.assertEqual(sorted(louhi.frozen_ids(self.p)["intake-type"]), want, "a use is pinned once")
+
+    def test_a_set_pinned_before_the_shadow_rows_existed_is_pinned_again_and_a_judgeable_one_is_left(self):
+        self.gen_dir()
+        want = self.held[-5:]
+        self.seen(want)
+        self.patch(PROMOTE_MIN=5)
+        path = os.path.join(self.p.root, louhi.FROZEN)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:  # the old pin: ids the path never scored (and tier's, which it did)
+            json.dump({"gen": 4, "ids": {"intake-type": self.held[:5], "intake-tier": want}}, f)
+        louhi.freeze_set(self.p)
+        fz = louhi.frozen_ids(self.p)
+        self.assertEqual((sorted(fz["intake-type"]), sorted(fz["intake-tier"])), (want, want))
+
+    def test_a_pinned_set_over_the_cap_is_a_seeded_hash_sample_not_the_oldest_ids(self):
+        self.gen_dir()
+        self.seen(self.held)
+        self.patch(PROMOTE_MIN=2, FROZEN_MAX=3)
+        got = louhi.freeze_set(self.p)["intake-type"]
+        rank = lambda t: louhi._frozen_rank("intake-type", t)  # noqa: E731
+        self.assertEqual(sorted(got), sorted(sorted(self.held, key=rank)[:3]))
+        self.assertEqual(louhi._frozen_rank("intake-type", self.held[0]), rank(self.held[0]), "seeded: the same every time")
+
+    def test_the_frozen_file_is_written_whole_or_not_at_all(self):
+        from unittest import mock
+        self.gen_dir()
+        self.seen(self.held)
+        self.patch(PROMOTE_MIN=2)
+        with mock.patch.object(c, "write_atomic", wraps=c.write_atomic) as w:
+            louhi.freeze_set(self.p)
+        self.assertEqual([os.path.basename(x.args[0]) for x in w.call_args_list], ["frozen.json"])
+
+    def test_a_run_over_the_pinned_set_is_judgeable_where_the_rules_path_saw_only_some_of_the_tasks(self):
+        self.gen_dir()
+        seen = self.held[-5:]  # the first held-out ids sorted (what the old pin took) hold only some of them
+        self.seen(seen)
+        self.patch(PROMOTE_MIN=5, FROZEN_MAX=len(self.held) - 2)
+        louhi.bench_night(self.p, decision=[self.srv.profile("kev", "systemone")], embedders=[])
+        view = louhi.models_view(louhi._bench_rows(self.p), louhi.frozen_ids(self.p))["uses"]["intake-type"]
+        verdict = view["backends"][0]["verdict"]
+        self.assertTrue(verdict["judgeable"], verdict)
+        self.assertEqual(verdict["n"], 5)
+
+    # ---- criterion 2: Jeff and SelfJev only where they did not train
+    def test_jeff_and_selfjev_are_skipped_in_the_decision_arm_where_they_trained(self):
+        self.srv.states.clear()
+        kev, jeff = self.srv.profile("kev", "systemone"), self.jeff()
+        selfjev = dict(self.srv.profile("typesafe", "systemone"), model="selfjev-4b")
+        louhi.bench_models(self.p, decision=[kev, jeff, selfjev], embedders=[])
+        rows = self.bench_rows()
+        scored = {r["backend"] for r in rows if r["arm"] == "decision"}
+        self.assertIn("kev", scored)
+        self.assertFalse(scored & {jeff["name"], "typesafe"}, "no row for a backend that saw these tasks")
+        skips = {r["backend"]: r for r in rows if r["arm"] == "skipped"}
+        self.assertEqual(sorted(skips), ["jeff-sampo-decide", "typesafe"])
+        for r in skips.values():
+            self.assertIn("trained on this project", r["why"])
+            self.assertEqual(r["cut"], [r["backend"]])
+        by = {b["backend"]: b for b in louhi.models_view(rows)["uses"]["intake-type"]["backends"]}
+        self.assertIsNone(by["kev"]["stale_since"], "a skipped Jeff does not make kev stale")
+
+    def test_jeff_is_scored_on_the_project_its_adapter_held_out(self):
+        from sampo import lake
+        self.holds_out(lake._h(os.path.realpath(self.p.root)))
+        louhi.bench_models(self.p, decision=[self.jeff()], embedders=[])
+        self.assertIn("jeff-sampo-decide", {r["backend"] for r in self.bench_rows() if r["arm"] == "decision"})
+        self.assertFalse([r for r in self.bench_rows() if r["arm"] == "skipped"])
+
+    def test_a_tagged_or_renamed_jeff_model_is_still_taken_as_trained(self):
+        from sampo import jeffexport
+        for prof in ({"name": "jeff-sampo-decide", "model": f"{jeffexport.NAME}:latest"},
+                     {"name": "renamed", "model": f"{jeffexport.NAME}:latest"},
+                     {"name": f"x-{jeffexport.NAME}", "model": None},
+                     {"name": "typesafe", "model": None}):
+            self.assertTrue(louhi._trained_on(self.p, prof), prof)
+        self.assertIsNone(louhi._trained_on(self.p, {"name": "kev", "model": "other"}))
+
+    def test_a_sensitive_project_is_one_the_lake_never_read_so_jeff_is_scored(self):
+        meta = c.read_meta(self.p)
+        meta["sensitive"] = True
+        c.write_meta(self.p, meta)
+        louhi.bench_models(self.p, decision=[self.jeff()], embedders=[])
+        self.assertIn("jeff-sampo-decide", {r["backend"] for r in self.bench_rows() if r["arm"] == "decision"})
+
+    def test_promote_verdict_refuses_a_backend_that_trained_on_the_project_and_the_rule_never_promotes_it(self):
+        from sampo import jeffexport, lake
+        ids = [f"T-{i:04d}" for i in range(1, 201)]
+        name = jeffexport.PROFILE
+        rows = [_row("m1", "orchestrator", gen=5, n=200, acc=0.5, ok=_oks(100, ids, None)),
+                _row("m1", "majority", gen=5, n=200, acc=0.45, ok=_oks(90, ids, None), ceiling=0.9),
+                _row("m1", name, gen=5, n=200, acc=0.75, ok=_oks(150, ids, 0.8))]
+        base = {"path": rows[0], "majority": rows[1]}
+        self.assertTrue(louhi.promote_verdict(rows[2], base, ids)["pass"], "without the project: the old verdict")
+        v = louhi.promote_verdict(rows[2], base, ids, p=self.p)
+        self.assertEqual((v["pass"], v["judgeable"]), (False, False))
+        self.assertIn("trained on this project", v["why"])
+        self.assertTrue(louhi.promote_verdict(dict(rows[2], backend="kev"), base, ids, p=self.p)["pass"])
+        self.holds_out(lake._h(os.path.realpath(self.p.root)))
+        self.assertTrue(louhi.promote_verdict(rows[2], base, ids, p=self.p)["pass"], "its own holdout: a fair test")
+        self.holds_out("someotherproj")
+        path = os.path.join(self.p.dir, louhi.BENCH)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.writelines(json.dumps(r) + "\n" for r in rows)
+        os.makedirs(os.path.join(self.p.root, os.path.dirname(louhi.FROZEN)), exist_ok=True)
+        with open(os.path.join(self.p.root, louhi.FROZEN), "w") as f:
+            json.dump({"gen": 4, "ids": {"intake-type": ids}}, f)
+        self.assertEqual(louhi.apply_promotion(self.p)["intake-type"][0], "shadow")
+        self.assertFalse(models.live(self.p, "intake-type"))
+
+    # ---- criterion 3: rows kept on a kill or a cut
+    def test_each_backends_rows_are_on_disk_before_the_next_backend_starts(self):
+        from unittest import mock
+        kev, nomic = self.srv.profile("kev", "systemone"), self.srv.profile("nomic", "openai")
+        seen = {}
+
+        def killed(*a, **k):
+            seen["rows"] = [(r["backend"], r["use"]) for r in self.bench_rows()]
+            raise RuntimeError("the night's kill")
+        with mock.patch.object(louhi, "_bench_embed", side_effect=killed):
+            with self.assertRaises(RuntimeError):
+                louhi.bench_models(self.p, decision=[kev], embedders=[nomic])
+        self.assertIn(("kev", "intake-type"), seen["rows"])
+        self.assertIn(("kev", "intake-tier"), seen["rows"])
+        self.assertEqual(sorted(set(self.bench_rows()[i]["backend"] for i in range(len(self.bench_rows())))),
+                         ["kev", "majority", "orchestrator"], "what finished stays after the kill")
+
+    def test_a_deadline_hit_inside_a_backend_cuts_it_and_the_rest_and_names_them_in_a_skipped_row(self):
+        from unittest import mock
+        self.gen_dir()
+        real = louhi._bench_decide
+
+        def decide(prof, *a, **k):
+            if prof["name"] == "zslow":
+                raise louhi.BenchCut("deadline")
+            return real(prof, *a, **k)
+        profs = [self.srv.profile("kev", "systemone"), self.srv.profile("zslow", "systemone")]
+        with mock.patch.object(louhi, "_bench_decide", side_effect=decide):
+            res = louhi.bench_night(self.p, decision=profs, embedders=[self.srv.profile("nomic", "openai")])
+        self.assertNotIn("skipped", res, "a cut is not the busy lock's skip")
+        self.assertEqual(res["cut"], ["zslow", "retrieval:nomic"])
+        rows = self.bench_rows()
+        self.assertEqual({r["backend"] for r in rows if r["arm"] == "decision"}, {"kev", "majority", "orchestrator"})
+        self.assertIn("nomic", {r["backend"] for r in rows if r["arm"] == "embedding"})
+        skip = [r for r in rows if r["arm"] == "skipped"]
+        self.assertEqual(len(skip), 1)
+        self.assertEqual((skip[0]["cut"], skip[0]["gen"], skip[0]["run"]), (["zslow", "retrieval:nomic"], 4, res["run"]))
+        self.assertIn("zslow", skip[0]["why"])
+        by = {b["backend"]: b for b in louhi.models_view(rows)["uses"]["intake-type"]["backends"]}
+        self.assertIsNone(by["kev"]["stale_since"], "kev finished this run: the cut does not make it stale")
+
+    def test_a_deadline_already_past_asks_no_backend_and_keeps_the_baselines(self):
+        self.gen_dir()
+        self.srv.states.clear()
+        profs = [self.srv.profile("kev", "systemone")]
+        res = louhi.bench_night(self.p, decision=profs, embedders=[self.srv.profile("nomic", "openai")], limit=0)
+        self.assertEqual(res["cut"], ["kev", "nomic", "retrieval:nomic"])
+        self.assertEqual(self.srv.states, [], "no ask after the deadline")
+        rows = self.bench_rows()
+        self.assertEqual({r["backend"] for r in rows if r["arm"] == "decision"}, {"majority", "orchestrator"})
+        self.assertEqual({r["backend"] for r in rows if r["arm"] == "retrieval"}, {"bm25"}, "BM25 asks no backend: it runs")
+        self.assertFalse([r for r in rows if r["arm"] == "embedding"])
+        self.assertEqual(rows[-1]["arm"], "skipped")
+        self.assertTrue(louhi.bench_due(self.p), "nothing reached a backend: the generation stays due")
+
+    def test_a_cut_backend_keeps_the_generation_due_and_runs_first_next_night(self):
+        from unittest import mock
+        self.gen_dir()
+        real = louhi._bench_decide
+        asked = []
+
+        def decide(prof, *a, **k):
+            asked.append(prof["name"])
+            if prof["name"] == "kev" and not self.srv.busy_ok:
+                raise louhi.BenchCut("deadline")
+            return real(prof, *a, **k)
+        self.srv.busy_ok = False
+        profs = [self.srv.profile("kev", "systemone"), self.srv.profile("zfast", "systemone")]
+        with mock.patch.object(louhi, "_bench_decide", side_effect=decide):
+            louhi.bench_night(self.p, decision=profs, embedders=[])
+            self.assertTrue(louhi.bench_due(self.p), "kev was cut and has no row: not done for the generation")
+            asked.clear()
+            self.srv.busy_ok = True
+            louhi.bench_night(self.p, decision=list(reversed(profs)), embedders=[])
+        self.assertEqual(asked[0], "kev", "the cut backend goes first, whatever the sort says")
+        self.assertFalse(louhi.bench_due(self.p), "every backend has its row this generation")
+
+    def test_the_night_deadline_is_under_the_nights_own_job_timeout(self):
+        from sampo import night
+        self.assertLess(louhi.BENCH_DEADLINE, night.JOB_TIMEOUT)
+
+    # ---- criterion 4: the timeout is recorded
+    def test_decision_and_embedding_rows_record_the_timeout_they_asked_with(self):
+        louhi.bench_models(self.p, decision=[self.srv.profile("kev", "systemone")], embedders=[self.srv.profile("nomic", "openai")])
+        mine = [r for r in self.bench_rows() if r["backend"] in ("kev", "nomic")]
+        self.assertEqual(len(mine), 3)
+        self.assertEqual({r["timeout"] for r in mine}, {120}, "a loopback backend's timeout")
+        view = louhi.models_view(self.bench_rows())["uses"]["intake-type"]["backends"]
+        self.assertEqual(next(b for b in view if b["backend"] == "kev")["timeout"], 120)
+
+    def test_a_down_embedder_still_records_its_timeout(self):
+        from unittest import mock
+        with mock.patch.object(models, "embed", side_effect=models.ModelError("down")):
+            got = louhi._bench_embed({"name": "x"}, [("T-1", "a title", "text")], 77)
+        self.assertEqual((got["n"], got["timeout"]), (0, 77))
+
+    def test_generation_rows_record_the_seed_timeout_their_profile_ran_with(self):
+        grow = lambda pr, n: {"added": 2, "kept": 1, "seconds": 6.0, "scratch": None}  # noqa: E731
+        funnel = lambda pr, s: {"kill": {"in": 1, "kept": 1}, "tier": {"in": 1, "kept": 1}}  # noqa: E731
+        smith = lambda pr: {"closed": 1, "seeds": 2}  # noqa: E731
+        slow = dict(self.srv.profile("gen", "openai"), seed_timeout=900)
+        plain = self.srv.profile("gen2", "openai")
+        rows = louhi.bench_generation(self.p, [slow, plain], grow_fn=grow, funnel_fn=funnel, smith_fn=smith)
+        self.assertEqual({(r["backend"], r["use"]): r["seed_timeout"] for r in rows},
+                         {("gen", "moons-yield"): 900, ("gen", "smith-seeds"): 900, ("gen2", "moons-yield"): 600,
+                          ("gen2", "smith-seeds"): 600})
+
+    # ---- the LOWs
+    def test_a_backend_demoted_after_a_run_is_not_promoted_again_from_that_run(self):
+        ids = [f"T-{i:04d}" for i in range(1, 201)]
+        run = lambda r, hits, gen: [_row(r, "orchestrator", gen=gen, n=200, acc=0.5, ok=_oks(100, ids, None)),  # noqa: E731
+                                    _row(r, "majority", gen=gen, n=200, acc=0.45, ok=_oks(90, ids, None), ceiling=0.9),
+                                    _row(r, "kev", gen=gen, n=200, acc=hits / 200, ok=_oks(hits, ids, 0.8))]
+        path = os.path.join(self.p.dir, louhi.BENCH)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.writelines(json.dumps(r) + "\n" for r in run("m20261104-000000001", 150, 5))
+        os.makedirs(os.path.join(self.p.root, os.path.dirname(louhi.FROZEN)), exist_ok=True)
+        with open(os.path.join(self.p.root, louhi.FROZEN), "w") as f:
+            json.dump({"gen": 4, "ids": {"intake-type": ids}}, f)
+        self.assertEqual(louhi.apply_promotion(self.p)["intake-type"][0], "live")
+        models._set_state(self.p, "shadow", "intake-type", "live agreement 0.4 under the floor 0.6")  # models.demote's row
+        self.assertEqual(louhi.apply_promotion(self.p)["intake-type"][0], "shadow", "the run that promoted it cannot again")
+        self.assertFalse(models.live(self.p, "intake-type"))
+        with open(path, "a") as f:
+            f.writelines(json.dumps(r) + "\n" for r in run("m20261105-000000001", 152, 6))
+        self.assertEqual(louhi.apply_promotion(self.p)["intake-type"][0], "live", "a newer run that passes may")

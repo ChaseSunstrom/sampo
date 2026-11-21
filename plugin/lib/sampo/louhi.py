@@ -894,7 +894,15 @@ BUSY_WAIT, BUSY_TRIES = 2.0, 4  # a backend answering 529 'busy' (one request at
 BENCH_GIVE_UP = 3  # T-3093: this many failed rows in a row and the backend is down: the rest count as errors, unasked
 FROZEN = os.path.join("research", "models", "frozen.json")  # {gen, at, ids: {use: [task ids]}}: pinned once, at FREEZE_GEN
 FREEZE_GEN, PROMOTE_MIN, PROMOTE_POINTS, PROMOTE_P = 4, 200, 0.05, 0.05
-GEN_K, TIER_SAMPLE = 16, 8  # moons grown per generative profile, and how many of the survivors the review model tiers
+BENCH_DEADLINE = int(2.5 * 3600)  # T-5377: a night run stops asking backends after this (night's job timeout is 3 h: a cut is a row, a kill is not)
+SEED_TIMEOUT = 600  # seconds a Smith seed run may take when the profile names no seed_timeout; the generation rows record it
+
+
+class BenchCut(Exception):
+    """T-5377: the run's wall-clock deadline passed: this backend and the ones after it are cut, not failed."""
+
+
+GEN_K, TIER_SAMPLE = 16, 8 # moons grown per generative profile, and how many of the survivors the review model tiers
 
 
 def _pct(xs, q):
@@ -940,10 +948,12 @@ def _bench_data(p, cap, pinned=None):
         attr = "type" if use == "intake-type" else "tier"
         last = {r["task"]: r.get("path") for r in shadow if r.get("use") == use and r.get("task") in briefs}
         rows = [(t, _raw(b), getattr(b, attr), last.get(t)) for t, b in sorted(briefs.items()) if _raw(b)]
-        pin = set((pinned or {}).get(use) or ())  # T-3093: the frozen set is asked first, the cap bounds the rest
+        pin, rows_all = set((pinned or {}).get(use) or ()), rows  # T-3093: the frozen set is asked first, the cap bounds the rest
         rows = [r for r in rows if r[0] in pin] + [r for r in rows if r[0] not in pin][:cap]
         out[use] = (rows, len([1 for t, b in briefs.items() if _raw(b)]), [getattr(b, attr) for b in done if not holdout(b.id)])
         out.setdefault("ids", {})[use] = [t for t, b in sorted(briefs.items()) if _raw(b)]
+        # T-5377: the held-out tasks the rules path scored (a shadow row with a path): the only ones a promotion can be judged on
+        out.setdefault("seen", {})[use] = [r[0] for r in rows_all if last.get(r[0]) is not None]
     pairs = []
     for t, b in sorted(briefs.items()):
         text = (b.section("Interpretation").strip() or b.section("Raw request").strip())[:600]
@@ -964,9 +974,10 @@ def _vote(labels):
     return top[0][0] if top and top[0][1] >= RETRIEVAL_NEED else None
 
 
-def _retrieval_vectors(p, prof, texts, timeout):
+def _retrieval_vectors(p, prof, texts, timeout, deadline=None):
     """{text: unit vector}, cached by (model, sha1 of the text) in RETRIEVAL_VECTORS as moonscale's vectors are."""
     from sampo import models
+    _past(deadline)
     # in Sampo's state, not the repo: the cache is megabytes and every project's bench writes one
     model, path = prof.get("embed_model") or prof.get("model") or "", os.path.join(p.dir, RETRIEVAL_VECTORS)
     key = lambda t: hashlib.sha1(t.encode()).hexdigest()  # noqa: E731
@@ -985,6 +996,7 @@ def _retrieval_vectors(p, prof, texts, timeout):
         pass
     todo = sorted({t for t in texts if key(t) not in have})
     for i in range(0, len(todo), 16):
+        _past(deadline)
         part = todo[i:i + 16]
         got = [[round(float(v), 4) for v in vec] for vec in models.embed(prof, part, timeout=timeout)]
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1025,7 +1037,7 @@ def _bm25(texts):
     return near
 
 
-def _bench_retrieval(p, data, stamp, profiles, timeout_of):
+def _bench_retrieval(p, data, stamp, profiles, timeout_of, deadline=None, cut=None):
     """T-2975: k-NN vote (RETRIEVAL_K, abstain under RETRIEVAL_NEED) from the train split's raw requests: BM25 (recall's
     tokens and formula) and, per embedder, cosine over its vectors. accuracy counts an abstain wrong (every brief, like the
     majority baseline; T-3068), accuracy_answered is on answered rows only."""
@@ -1040,7 +1052,11 @@ def _bench_retrieval(p, data, stamp, profiles, timeout_of):
     for prof in profiles:
         try:
             texts = [t[0] for t in train] + [r[1] for u in BENCH_USES for r in held[u]]
-            vec = _retrieval_vectors(p, prof, texts, timeout_of(prof))
+            vec = _retrieval_vectors(p, prof, texts, timeout_of(prof), deadline)
+        except BenchCut:  # T-5377: the deadline passed (or an earlier backend was cut): no row, and the cut is named
+            if cut is not None:
+                cut.append(f"retrieval:{prof['name']}")
+            continue
         except (models.ModelError, ValueError, *models._TRANSPORT) as e:
             out += [{**base_for(u), "use": u, "backend": f"retrieval:{prof['name']}", "n": 0, "errors": 1,
                      "note": c.fit(str(e), 160)} for u in BENCH_USES]
@@ -1057,11 +1073,18 @@ def _bench_retrieval(p, data, stamp, profiles, timeout_of):
     return out
 
 
-def _bench_decide(profile, rows, use, timeout):
+def _past(deadline):
+    """T-5377: raise BenchCut once the monotonic `deadline` (None: no deadline) has passed."""
+    if deadline is not None and time.monotonic() >= deadline:
+        raise BenchCut("the run's deadline passed")
+
+
+def _bench_decide(profile, rows, use, timeout, deadline=None):
     from sampo import models
     choices = models.shadow_uses()[use]  # with descriptions: the same for every backend
     hits, brier, ms, errors, ok, streak = 0, [], [], 0, {}, 0
     for i, (task, text, truth, _) in enumerate(rows):
+        _past(deadline)  # T-5377: a cut backend is dropped whole, never a row of its first tasks
         if streak >= BENCH_GIVE_UP:  # T-3093: down or hung: stop asking, count the rest as errors
             errors += len(rows) - i
             break
@@ -1086,21 +1109,24 @@ def _bench_decide(profile, rows, use, timeout):
         ok[task] = [int(hit), round(ans["probability"], 3)]
     n = len(ms)
     return {"accuracy": round(hits / n, 3) if n else None, "brier": round(sum(brier) / n, 3) if n else None,
-            "p50_ms": _pct(ms, 0.5), "p95_ms": _pct(ms, 0.95), "n": n, "errors": errors, "ok": ok}
+            "p50_ms": _pct(ms, 0.5), "p95_ms": _pct(ms, 0.95), "n": n, "errors": errors, "ok": ok, "timeout": timeout}
 
 
-def _bench_embed(profile, pairs, timeout):
+def _bench_embed(profile, pairs, timeout, deadline=None):
     """recall@1 and @10 of each title's own brief among the briefs, by cosine; latency is one title's embedding."""
     from sampo import models
     errors, ms, hit1, hit10, n = 0, [], 0, 0, 0
     try:
         docs = []
         for i in range(0, len(pairs), 16):
+            _past(deadline)
             docs += models.embed(profile, [x[2] for x in pairs[i:i + 16]], timeout=timeout)
     except models.ModelError:
-        return {"recall_at_1": None, "recall_at_10": None, "p50_ms": None, "p95_ms": None, "n": 0, "errors": len(pairs)}
+        return {"recall_at_1": None, "recall_at_10": None, "p50_ms": None, "p95_ms": None, "n": 0, "errors": len(pairs),
+                "timeout": timeout}
     norm = lambda v: sum(x * x for x in v) ** 0.5 or 1.0  # noqa: E731
     for i, (_, title, _) in enumerate(pairs):
+        _past(deadline)
         t0 = time.monotonic()
         try:
             q = models.embed(profile, [title], timeout=timeout)[0]
@@ -1118,7 +1144,7 @@ def _bench_embed(profile, pairs, timeout):
         hit1 += rank == 0
         hit10 += rank < 10
     return {"recall_at_1": round(hit1 / n, 3) if n else None, "recall_at_10": round(hit10 / n, 3) if n else None,
-            "p50_ms": _pct(ms, 0.5), "p95_ms": _pct(ms, 0.95), "n": n, "errors": errors}
+            "p50_ms": _pct(ms, 0.5), "p95_ms": _pct(ms, 0.95), "n": n, "errors": errors, "timeout": timeout}
 
 
 def _scratch(p):
@@ -1167,42 +1193,74 @@ def _gen_funnel(p, sp, sample):
 
 def _gen_smith(prof):
     from sampo import smithbench
-    rec = smithbench.bench(smithbench.SEEDS, prof["name"], timeout=prof.get("seed_timeout", 600))
+    rec = smithbench.bench(smithbench.SEEDS, prof["name"], timeout=prof.get("seed_timeout", SEED_TIMEOUT))
     return {"closed": rec["closed"], "seeds": rec["seeds"]}
 
 
-def bench_generation(p, profiles, k=GEN_K, sample=TIER_SAMPLE, grow_fn=None, funnel_fn=None, smith_fn=None, stamp=None):
+def bench_generation(p, profiles, k=GEN_K, sample=TIER_SAMPLE, grow_fn=None, funnel_fn=None, smith_fn=None, stamp=None,
+                     emit=None, deadline=None, cut=None):
     """T-2894: per generative profile, in endpoint order: K moons grown (reasoning off) into a scratch store and
     their yield through admit, kill and tier (tier on a sample, said in the row), moons per minute; and the Smith
-    seeds' pass rate through fm code bench. The injected functions are for tests; the defaults are live."""
+    seeds' pass rate through fm code bench. The injected functions are for tests; the defaults are live. T-5377: `emit`
+    is called with each row as it is made (the caller appends it), and a profile not begun by `deadline` is named in `cut`."""
     rows = []
+
+    def add(r):
+        rows.append(r)
+        if emit:
+            emit(r)
     for _, prof in _bench_order([("generation", x) for x in profiles], _serving(profiles)):
-        base = {**(stamp or {}), "arm": "generation", "backend": prof["name"], "held": None, "errors": 0}
+        try:
+            _past(deadline)
+        except BenchCut:
+            if cut is not None:
+                cut.append(f"generation:{prof['name']}")
+            continue
+        base = {**(stamp or {}), "arm": "generation", "backend": prof["name"], "held": None, "errors": 0,
+                "seed_timeout": prof.get("seed_timeout", SEED_TIMEOUT)}  # T-5377: the limit the smith seeds ran under
         g = {}
         try:
             g = (grow_fn or (lambda pr, n: _gen_grow(p, pr, n)))(prof, k)
             f = (funnel_fn or (lambda pr, s: _gen_funnel(p, g["scratch"], s)))(prof, sample)
-            rows.append({**base, "use": "moons-yield", "k": k, "n": g["added"], "added": g["added"], "admitted": g["kept"],
+            add({**base, "use": "moons-yield", "k": k, "n": g["added"], "added": g["added"], "admitted": g["kept"],
                          "kill_in": f["kill"]["in"], "kill_kept": f["kill"]["kept"], "tier_in": f["tier"]["in"],
                          "tier_kept": f["tier"]["kept"], "fallback": g.get("fallback", 0),
                          "moons_per_min": round(g["added"] / (g["seconds"] / 60), 2) if g["seconds"] else None,
                          "note": f"tier judged a sample of {sample} per profile; kill and tier by the review model"})
         except Exception as e:  # one profile failing is a row, not the end of the run  # noqa: BLE001
-            rows.append({**base, "use": "moons-yield", "k": k, "n": 0, "errors": 1, "note": c.fit(str(e), 160)})
+            add({**base, "use": "moons-yield", "k": k, "n": 0, "errors": 1, "note": c.fit(str(e), 160)})
         finally:
             if g.get("scratch"):
                 shutil.rmtree(g["scratch"].dir, ignore_errors=True)
         try:
             s = (smith_fn or _gen_smith)(prof)
-            rows.append({**base, "use": "smith-seeds", "n": s["seeds"], "pass_rate": round(s["closed"] / s["seeds"], 3)
-                         if s["seeds"] else None})
+            add({**base, "use": "smith-seeds", "n": s["seeds"], "pass_rate": round(s["closed"] / s["seeds"], 3)
+                 if s["seeds"] else None})
         except Exception as e:  # noqa: BLE001
-            rows.append({**base, "use": "smith-seeds", "n": 0, "errors": 1, "note": c.fit(str(e), 160)})
+            add({**base, "use": "smith-seeds", "n": 0, "errors": 1, "note": c.fit(str(e), 160)})
     return rows
 
 
+def _trained_on(p, prof):
+    """T-5377: why this backend must not be scored on this project's tasks, or None. Jeff (the sampo-decide adapter) and
+    SelfJev trained on the training lake, which reads every project that is neither sensitive nor opted out: they saw these
+    tasks, so only the project the adapter held out (jeffexport.holdout_of, the lake's hash of this project) is a fair test.
+    A project the lake never reads is one they never saw."""
+    from sampo import jeffexport, lake
+    name, model = str(prof.get("name") or ""), str(prof.get("model") or "")
+    text = f"{name} {model}".lower()  # a tagged model (sampo-decide:latest), a renamed profile or a row without a model
+    if not (jeffexport.NAME in text or jeffexport.PROFILE in text or "selfjev" in text or name == "typesafe"):
+        return None
+    meta = c.read_meta(p)
+    if meta.get("sensitive") or meta.get("lake_optout"):
+        return None
+    if jeffexport.holdout_of(p) == lake._h(os.path.realpath(p.root)):
+        return None
+    return f"{name} trained on this project's tasks (the lake read them): scored here it would be tested on its own training data"
+
+
 def bench_models(p, decision=None, embedders=None, cap=BENCH_CAP, serving=None, generators=(), k=GEN_K, grow_fn=None,
-                 funnel_fn=None, smith_fn=None):
+                 funnel_fn=None, smith_fn=None, deadline=None):
     """T-2887: the decision arm (intake type and tier, from the raw request of every held-out closed task up to `cap`,
     each choice with its description, through each systemone backend) and the embedding arm (title to brief recall),
     one row per backend and use appended to research/models/bench.jsonl, beside two baselines per use: 'majority' (the
@@ -1221,42 +1279,63 @@ def bench_models(p, decision=None, embedders=None, cap=BENCH_CAP, serving=None, 
     jobs = [("decision", x) for x in decision] + [("embedding", x) for x in embedders]
     data, run, rows = _bench_data(p, cap, frozen_ids(p)), time.strftime("m%Y%m%d-%H%M%S") + f"{time.time_ns() // 1_000_000 % 1000:03d}", []
     stamp = {"run": run, "at": c.now(), "gen": current_gen(p)}
+    path, cut = c.bench_path(p), []
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    def put(r):  # T-5377: a row is on disk as soon as it is made, so a kill or a cut keeps what finished
+        rows.append(r)
+        c.append_line(path, json.dumps(r) + "\n")
     for use in BENCH_USES:
         got, held, train = data[use]
         top = max(sorted(set(train)), key=train.count) if train else None
         base = {**stamp, "arm": "decision", "use": use, "brier": None, "p50_ms": None, "p95_ms": None, "errors": 0, "held": held}
         seen = [r for r in got if r[3] is not None]
-        rows.append({**base, "backend": "majority", "n": len(got), "accuracy": round(sum(r[2] == top for r in got) / len(got), 3)
+        put({**base, "backend": "majority", "n": len(got), "accuracy": round(sum(r[2] == top for r in got) / len(got), 3)
                      if got and top else None, "note": f"always {top}, the most common class of {len(train)} train tasks",
                      "ok": {r[0]: [int(r[2] == top), None] for r in got}, "ceiling": noise_ceiling(p, use, data["ids"][use])})
-        rows.append({**base, "backend": "orchestrator", "n": len(seen), "accuracy": round(sum(r[3] == r[2] for r in seen) / len(seen), 3)
-                     if seen else None, "note": "the orchestrator's own call at capture, not a no-model path",
-                     "ok": {r[0]: [int(r[3] == r[2]), None] for r in seen}})
-    for arm, prof in _bench_order(jobs, _serving(decision + embedders) if serving is None else serving):
+        put({**base, "backend": "orchestrator", "n": len(seen), "accuracy": round(sum(r[3] == r[2] for r in seen) / len(seen), 3)
+             if seen else None, "note": "the orchestrator's own call at capture, not a no-model path",
+             "ok": {r[0]: [int(r[3] == r[2]), None] for r in seen}})
+    owed = (_cut_pending(_bench_rows(p), stamp["gen"]))  # T-5377: backends a past night cut run first, so none starves
+    for arm, prof in sorted(_bench_order(jobs, _serving(decision + embedders) if serving is None else serving),
+                            key=lambda j: owed.index(j[1]["name"]) if j[1]["name"] in owed else len(owed)):
         host = urllib.parse.urlsplit(prof["base_url"]).hostname or ""
         if sensitive and not models.is_loopback(host):
             continue
+        if cut:  # T-5377: an earlier backend ran into the deadline: the rest are not begun
+            cut.append(prof["name"])
+            continue
+        why = _trained_on(p, prof) if arm == "decision" else None
+        if why:  # T-5377: Jeff and SelfJev saw these tasks: a row for them would be a test on training data
+            put({"run": run, "at": stamp["at"], "gen": stamp["gen"], "arm": "skipped", "use": "*", "backend": prof["name"],
+                 "why": c.fit(why, 160), "cut": [prof["name"]]})
+            continue
         timeout = 120 if models.is_loopback(host) else 300  # a first call may load the model (a remote swap takes ~3 min)
-        if arm == "decision":
-            for use in BENCH_USES:
-                got, held, _ = data[use]
-                rows.append({**stamp, "arm": arm, "use": use, "backend": prof["name"], "held": held,
-                             **_bench_decide(prof, got, use, timeout)})
-        else:
-            got, held = data["title-to-brief"]
-            rows.append({**stamp, "arm": arm, "use": "title-to-brief", "backend": prof["name"], "held": held,
-                         **_bench_embed(prof, got, timeout)})
-    rows += _bench_retrieval(p, data, stamp, [x for x in embedders if not sensitive or models.is_loopback(
-        urllib.parse.urlsplit(x["base_url"]).hostname or "")], lambda x: 120 if models.is_loopback(
-        urllib.parse.urlsplit(x["base_url"]).hostname or "") else 300)
+        try:
+            if arm == "decision":
+                made = []  # both uses or neither: a backend cut between its two uses leaves no half row
+                for use in BENCH_USES:
+                    got, held, _ = data[use]
+                    made.append({**stamp, "arm": arm, "use": use, "backend": prof["name"], "model": prof.get("model"),
+                                 "held": held, **_bench_decide(prof, got, use, timeout, deadline)})
+                for r in made:
+                    put(r)
+            else:
+                got, held = data["title-to-brief"]
+                put({**stamp, "arm": arm, "use": "title-to-brief", "backend": prof["name"], "held": held,
+                     **_bench_embed(prof, got, timeout, deadline)})
+        except BenchCut:
+            cut.append(prof["name"])
+    stop = 0.0 if cut else deadline  # a cut run asks no embedder to fill the retrieval arm either
+    for r in _bench_retrieval(p, data, stamp, [x for x in embedders if not sensitive or models.is_loopback(
+            urllib.parse.urlsplit(x["base_url"]).hostname or "")], lambda x: 120 if models.is_loopback(
+            urllib.parse.urlsplit(x["base_url"]).hostname or "") else 300, stop, cut):
+        put(r)
     gens = [x for x in generators if not sensitive or models.is_loopback(urllib.parse.urlsplit(x["base_url"]).hostname or "")]
     if gens:
-        rows += bench_generation(p, gens, k, grow_fn=grow_fn, funnel_fn=funnel_fn, smith_fn=smith_fn, stamp=stamp)
-    path = c.bench_path(p)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    for r in rows:
-        c.append_line(path, json.dumps(r) + "\n")
-    return {"run": run, "rows": rows}
+        bench_generation(p, gens, k, grow_fn=grow_fn, funnel_fn=funnel_fn, smith_fn=smith_fn, stamp=stamp, emit=put,
+                         deadline=stop, cut=cut)
+    return {"run": run, "rows": rows, "cut": cut}
 
 
 # ---------------------------------------------------------------- leave-one-project-out (T-2976)
@@ -1549,16 +1628,32 @@ def frozen_ids(p):
         return {}
 
 
+def _frozen_rank(use, task):
+    """T-5377: a task's place in the pinned sample: a seeded hash, so a project over FROZEN_MAX keeps a spread of its ids,
+    not the oldest ones, and the same ones every time."""
+    return hashlib.sha1(f"frozen-{use}-{task}".encode()).hexdigest()
+
+
 def freeze_set(p):
-    """Pin the held-out task ids once, when the project reaches generation FREEZE_GEN; never rewritten. Returns the ids or None."""
+    """Pin the held-out task ids a promotion is judged on, per use, from gen FREEZE_GEN on; a use's ids are not
+    rewritten once the path can score PROMOTE_MIN of them. T-5377: only the tasks the rules path scored (a shadow row with a path) are pinned, and a use waits until
+    PROMOTE_MIN of them exist, since a frozen set the path scored fewer than PROMOTE_MIN of can never be judged; over
+    FROZEN_MAX a seeded hash sample is kept. Written whole (never half a file). Returns the ids pinned now, or None."""
     path = os.path.join(p.root, FROZEN)
-    if os.path.exists(path) or current_gen(p) < FREEZE_GEN:
+    if current_gen(p) < FREEZE_GEN:
         return None
-    ids = {u: v[:FROZEN_MAX] for u, v in _bench_data(p, 0)["ids"].items()}
+    have = dict(frozen_ids(p))
+    seen = _bench_data(p, 0)["seen"]
+    # a set pinned before the shadow rows existed (fewer than PROMOTE_MIN of its ids scored by the path) can never judge
+    # anything, so no verdict rests on it: it is pinned again; any other pinned use stays
+    new = {u: sorted(sorted(seen[u], key=lambda t, u=u: _frozen_rank(u, t))[:FROZEN_MAX])
+           for u in BENCH_USES if len(seen.get(u) or ()) >= PROMOTE_MIN
+           and (u not in have or len(set(have[u]) & set(seen[u])) < PROMOTE_MIN)}
+    if not new:
+        return None
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"gen": current_gen(p), "at": c.now(), "ids": ids}, f)
-    return ids
+    c.write_atomic(path, json.dumps({"gen": current_gen(p), "at": c.now(), "ids": {**have, **new}}))
+    return {**have, **new}
 
 
 def noise_ceiling(p, use, ids):
@@ -1590,14 +1685,19 @@ def _mcnemar(wins, losses):
     return min(1.0, 2 * sum(math.comb(n, i) for i in range(min(wins, losses) + 1)) / 2 ** n) if n else 1.0
 
 
-def promote_verdict(row, bases, ids):
+def promote_verdict(row, bases, ids, p=None):
     """Whether this run may take a use live: PROMOTE_MIN frozen rows (`ids`) it and the rules path and the majority
     baseline all scored, at least PROMOTE_POINTS better than each with paired p < PROMOTE_P, and a Brier no worse than
     a flat guess at its own accuracy (acc*(1-acc), the best a model with no sense of which answers are right can do).
-    Only `ids` judge: tasks closed since the freeze never do. {pass, judgeable, n, why, acc, gain_*, p_*}."""
+    Only `ids` judge: tasks closed since the freeze never do. T-5377: given the project `p`, a backend that trained on
+    it (_trained_on) is refused, whatever its rows say. {pass, judgeable, n, why, acc, gain_*, p_*}."""
     ok = row.get("ok") or {}
     fz = [t for t in ids if t in ok]
     out = {"pass": False, "judgeable": False, "n": len(fz), "why": ""}
+    why = _trained_on(p, {"name": row.get("backend"), "model": row.get("model")}) if p is not None else None
+    if why:
+        out["why"] = why
+        return out
     if len(fz) < PROMOTE_MIN:
         out["why"] = f"{len(fz)} frozen rows scored, need {PROMOTE_MIN}"
         return out
@@ -1624,18 +1724,22 @@ def promote_verdict(row, bases, ids):
     return out
 
 
-def models_view(rows, frozen=None):
+def models_view(rows, frozen=None, p=None):
     """T-3093, the site's Models section: per use and backend, the latest complete decision run (a partial, failed or
     skipped run never replaces it; stale_since names the first miss after it, 'gen N' or 'run ID'), beside the rules path
-    and the majority baseline of the same run, the noise ceiling and the promotion verdict on the frozen ids."""
+    and the majority baseline of the same run, the noise ceiling and the promotion verdict on the frozen ids. T-5377: a
+    skipped row naming backends (`cut`) leaves the others as fresh as their own run made them; with the project `p`, the
+    verdict refuses a backend that trained on it."""
     frozen, state, by_run, skips = frozen or {}, {}, {}, []
     for r in rows:
         if not isinstance(r, dict):
             continue
         if r.get("arm") == "skipped":
             skips.append(r)
-            for s in state.values():
-                s["miss"] = s["miss"] or r
+            named = r.get("cut") if isinstance(r.get("cut"), list) else None
+            for (_, name), s in state.items():
+                if named is None or name in named:
+                    s["miss"] = s["miss"] or r
         elif r.get("arm") == "decision" and r.get("use") in BENCH_USES and r.get("backend"):
             by_run[(r.get("run"), r["use"], r["backend"])] = r
             s = state.setdefault((r["use"], r["backend"]), {"row": None, "miss": None, "last": r})
@@ -1655,10 +1759,10 @@ def models_view(rows, frozen=None):
         d = out.setdefault(use, {"backends": [], "path": None, "majority": None, "ceiling": None})
         d["backends"].append({
             "backend": name, "run": r.get("run"), "gen": r.get("gen"), "complete": s["row"] is not None,
-            **{k: r.get(k) for k in ("accuracy", "brier", "p50_ms", "p95_ms", "n", "errors")},
+            **{k: r.get(k) for k in ("accuracy", "brier", "p50_ms", "p95_ms", "n", "errors", "timeout")},
             "stale_since": None if not m else f"gen {m['gen']}" if m.get("gen") is not None else f"run {m.get('run')}",
             "frozen_n": len(fz & set(ok)), "rolling_n": len(set(ok) - fz),
-            "verdict": promote_verdict(r, bases, frozen.get(use) or []) if s["row"] and all(bases.values()) else None})
+            "verdict": promote_verdict(r, bases, frozen.get(use) or [], p) if s["row"] and all(bases.values()) else None})
     for use, d in out.items():
         for k, v in (("path", "orchestrator"), ("majority", "majority")):
             s = state.get((use, v))
@@ -1679,12 +1783,23 @@ def _live_backend(p, use):
             return b.group(1) if b else None
 
 
+def _promoted_runs(p, use):
+    """T-5377: the bench runs that have taken `use` live ('exam RUN:' in a model-live decision row for it)."""
+    from sampo import core
+    out = set()
+    for _, _, text in core._decision_rows(p):
+        m = re.match(r"\s*model-live:\s*([\w.-]+):\s*exam (\S+?):", text)
+        if m and m.group(1) == use:
+            out.add(m.group(2))
+    return out
+
+
 def apply_promotion(p):
     """T-3093: the promotion rule on the latest complete run of each backend. A backend that passes (the best one, if
     several) goes live with a decision row citing the run; a live one whose latest run is judgeable and fails goes back to
     shadow with a row citing that run; a run too thin to judge, or stale, changes nothing. Returns {use: (state, why)}."""
     from sampo import models
-    view, out = models_view(_bench_rows(p), frozen_ids(p))["uses"], {}
+    view, out = models_view(_bench_rows(p), frozen_ids(p), p)["uses"], {}
     for use in BENCH_USES:
         bks, live = (view.get(use) or {}).get("backends", []), models.live(p, use)
         lb = _live_backend(p, use)
@@ -1695,6 +1810,8 @@ def apply_promotion(p):
         win = max((b for b in fresh if b["verdict"]["pass"]), key=lambda b: b["accuracy"], default=None)
         cur = next((b for b in fresh if b["backend"] == lb), None)
         v = win and win["verdict"]
+        if win and not live and win["run"] in _promoted_runs(p, use):  # T-5377: demoted since: that run cannot promote it again
+            win = v = None
         if win and win["backend"] != lb:
             models._set_state(p, "live", use, f"exam {win['run']}: backend {win['backend']} beat the rules path by "
                               f"{round(v['gain_path'] * 100, 1)} points (p {v['p_path']}) and the majority by "
@@ -1709,11 +1826,25 @@ def apply_promotion(p):
     return out
 
 
+def _cut_pending(rows, gen):
+    """T-5377: backends a deadline cut named this generation (the latest cut row) that have no row of their own since,
+    and were not skipped as trained-on: they are owed a run. Names of the retrieval and generation arms do not count."""
+    cuts = [r for r in rows if r.get("gen") == gen and r.get("arm") == "skipped" and r.get("backend") == "*"
+            and isinstance(r.get("cut"), list)]
+    if not cuts:
+        return []
+    done = {r.get("backend") for r in rows if r.get("gen") == gen and r.get("n") and r.get("arm") != "skipped"}
+    done |= {r.get("backend") for r in rows if r.get("gen") == gen and r.get("arm") == "skipped" and r.get("backend") != "*"}
+    return [n for n in cuts[-1]["cut"] if ":" not in n and n not in done]
+
+
 def bench_due(p):
-    """True when this Rune generation has no bench run that reached a backend (a skipped or all-down run leaves it due)."""
+    """True when this Rune generation has no bench run that reached a backend (a skipped or all-down run leaves it due),
+    or a deadline cut left a backend with no row this generation (T-5377: it is retried, first, until it has one)."""
     gen = current_gen(p)
+    rows = _bench_rows(p)
     return not any(r.get("gen") == gen and r.get("arm") == "decision" and r.get("backend") not in BASELINES and r.get("n")
-                   for r in _bench_rows(p))
+                   for r in rows) or bool(_cut_pending(rows, gen))
 
 
 EXAM_LOCK = "exam.lock"  # T-3487: a bench run's own flock, in the project's state dir; the moons store's lock is not its lock
@@ -1748,15 +1879,18 @@ def _exam_lock(p, wait=0.0):
         os.close(fd)  # closing the descriptor releases the flock
 
 
-def bench_night(p, **kw):
+def bench_night(p, limit=None, **kw):
     """The $0 nightly rerun: bench_models under the exam lock (T-3487: one bench at a time, never the moons store's, so a
     grow --keep runs beside it), then the promotion rule. A busy exam lock is a 'skipped' row (the last good rows stay); a
-    down or hung backend is already an error row, which never replaces them. Returns bench_models' result, or {skipped, rows}."""
+    down or hung backend is already an error row, which never replaces them. T-5377: a wall-clock deadline (`limit`
+    seconds, BENCH_DEADLINE by default, under the night job's own timeout) cuts the run: what finished stays, and a
+    skipped row names the backends not begun; the exit is clean, so the night's breaker never counts a cut as a failure.
+    Returns bench_models' result (with `cut`), or {skipped, rows}."""
     gen = current_gen(p)
     try:
         with _exam_lock(p):
             freeze_set(p)
-            res = bench_models(p, **kw)
+            res = bench_models(p, deadline=time.monotonic() + (BENCH_DEADLINE if limit is None else limit), **kw)
     except ExamBusy as e:
         row = {"run": time.strftime("m%Y%m%d-%H%M%S") + f"{time.time_ns() // 1_000_000 % 1000:03d}", "at": c.now(),
                "arm": "skipped", "use": "*", "backend": "*", "why": c.fit(str(e), 160), "gen": gen}
@@ -1764,6 +1898,11 @@ def bench_night(p, **kw):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         c.append_line(path, json.dumps(row) + "\n")
         return {"skipped": str(e), "rows": [row]}
+    if res.get("cut"):
+        row = {"run": res["run"], "at": c.now(), "arm": "skipped", "use": "*", "backend": "*", "gen": gen, "cut": res["cut"],
+               "why": c.fit(f"deadline: cut {', '.join(res['cut'])}", 160)}
+        c.append_line(c.bench_path(p), json.dumps(row) + "\n")
+        res["rows"].append(row)
     apply_promotion(p)
     try:  # T-3930: a gap row per profile from the exam lines saved so far; the reference arm costs usage, so it never runs here
         gap_save(p)
@@ -5725,7 +5864,9 @@ def cmd_exam(args):
                     p, cap=args.limit or BENCH_CAP, generators=gens, k=args.n or GEN_K)
                 if res.get("skipped"):
                     return cli.out(args, res, f"skipped: {res['skipped']}; the last good rows stay")
-                return cli.out(args, res, f"{len(res['rows'])} rows written to {BENCH}\n{bench_show(p)}")
+                cut = f"deadline: cut {', '.join(res['cut'])} (named in a skipped row; the rows that finished stay)\n" \
+                    if res.get("cut") else ""
+                return cli.out(args, res, f"{cut}{len(res['rows'])} rows written to {BENCH}\n{bench_show(p)}")
             return cli.out(args, {"table": bench_show(p)}, bench_show(p))
         if action == "steer":  # T-2625: the steer-expansion exam (MOONSHOT.md part B)
             from sampo import steer

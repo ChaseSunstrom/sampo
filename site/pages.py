@@ -197,6 +197,7 @@ def _model_bench(s):
     pct = lambda x: f"{x * 100:.1f}%" if isinstance(x, (int, float)) else "n/a"  # noqa: E731
     two = lambda x: f"{x:.3f}" if isinstance(x, (int, float)) else "n/a"  # noqa: E731
     ms = lambda x: f"{x:.0f} ms" if isinstance(x, (int, float)) else "n/a"  # noqa: E731
+    secs = lambda x: f"{x:g} s" if isinstance(x, (int, float)) and not isinstance(x, bool) else "n/a"  # noqa: E731
     out = ""
     for use, d in sorted(mb.items()):
         rows = []
@@ -205,13 +206,15 @@ def _model_bench(s):
             rows.append((esc(b["backend"]) + (f' <em>stale since {esc(b["stale_since"])}</em>' if b.get("stale_since") else "")
                          + ("" if b.get("complete") else " <em>no complete run</em>"),
                          pct(b.get("accuracy")), two(b.get("brier")), ms(b.get("p50_ms")), ms(b.get("p95_ms")),
+                         secs(b.get("timeout")),
                          b.get("n", 0), b.get("errors", 0), f'{b.get("frozen_n", 0)} frozen, {b.get("rolling_n", 0)} rolling',
                          "passes" if v.get("pass") else esc(v.get("why") or "not judged")))
         for label, k in (("rules path", "path"), ("majority baseline", "majority")):
             r = d.get(k) or {}
-            rows.append((label, pct(r.get("accuracy")), two(r.get("brier")), "-", "-", r.get("n", 0), "-", "-", "-"))
+            rows.append((label, pct(r.get("accuracy")), two(r.get("brier")), "-", "-", "-", r.get("n", 0), "-", "-", "-"))
         ceil = d.get("ceiling")
-        head = ["Backend", "accuracy", "Brier", "p50", "p95", "rows", "timeouts", "held-out set", "promotion"]
+        # T-5377: the timeout the backend was asked with (seconds), and what the errors column counts (it said timeouts)
+        head = ["Backend", "accuracy", "Brier", "p50", "p95", "timeout", "rows", "errors", "held-out set", "promotion"]
         body = "".join("<tr>" + "".join(f"<td>{c if i == 0 and k < len(d['backends']) else esc(str(c))}</td>" for i, c in enumerate(r))
                        + "</tr>" for k, r in enumerate(rows))
         out += (f"<h3>{esc(use)}</h3>" + '<div class="verdicts"><table><thead><tr>' + "".join(f"<th>{h}</th>" for h in head)

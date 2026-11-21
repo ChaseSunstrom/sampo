@@ -798,7 +798,11 @@ def build(out):
                     rows = [json.loads(x) for x in f if x.strip()]
         except (OSError, ValueError, AttributeError):
             pass
-    stats["model_bench"] = louhi.models_view(rows, frozen)
+    try:  # T-5377: the verdict refuses a backend that trained on the project here as it does in `exam models`
+        proj = core.find_project(ROOT)
+    except (AttributeError, OSError):
+        proj = None
+    stats["model_bench"] = louhi.models_view(rows, frozen, p=proj)
     stats = roles(stats)
     with open(os.path.join(HERE, "style.css"), encoding="utf-8") as f:
         check_tokens(f.read())

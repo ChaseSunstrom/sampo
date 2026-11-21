@@ -569,6 +569,18 @@ class NightStops(ForemanTestCase):  # T-3929: a $0 night runs its free jobs; a b
         self.assertEqual([j["busy"] for j in res["ran"]], [True, True, False])  # logged as busy
         self.assertEqual(res["stopped"], "")
 
+    def test_a_deadline_cut_bench_exits_clean_and_never_counts_toward_the_breaker(self):  # T-5377
+        from sampo import louhi
+        p = c.find_project(self.repo, create=False)
+        os.makedirs(os.path.dirname(c.bench_path(p)), exist_ok=True)
+        c.append_line(c.bench_path(p), json.dumps({"run": "m1", "arm": "skipped", "use": "*", "backend": "*", "gen": 1,
+                                                   "cut": ["kev"], "why": "deadline: cut kev"}) + "\n")
+        jobs = [("a", ["stub", "x"], 0.0), ("model bench", ["stub", "bench"], 0.0), ("c", ["stub", "z"], 0.0)]
+        res = self.night(jobs, codes={"x": 1, "z": 1})  # the cut bench exits 0 between two real failures
+        self.assertEqual([j["name"] for j in res["ran"]], ["a", "model bench", "c"])
+        self.assertEqual(res["stopped"], "", "a cut is not a failed job: the streak was reset, not extended")
+        self.assertTrue(louhi._bench_rows(p)[-1]["cut"])
+
     def test_two_real_failures_in_a_row_still_trip_the_breaker(self):
         jobs = [("a", ["stub", "x"], 0.0), ("b", ["stub", "y"], 0.0), ("c", ["stub", "z"], 0.0)]
         res = self.night(jobs, codes={"x": 1, "y": 1})

@@ -106,6 +106,11 @@ class ModelBench(unittest.TestCase):
         for want in ("80.0%", "stale since gen 5", "rules path", "majority baseline", "Noise ceiling 90.0%", "120 ms", "900 ms"):
             self.assertIn(want, html)
         self.assertNotIn("10.0%", html, "a failed run never replaces the last good one")
+        timed = pages._model_bench({"model_bench": louhi.models_view([row("m1", 4, "kev", 0.8, timeout=120)], {})})  # T-5377
+        self.assertIn("<th>timeout</th>", timed)
+        self.assertIn("120 s", timed, "the timeout the run asked with, in seconds")
+        self.assertIn("<th>errors</th>", timed)
+        self.assertNotIn("<th>timeouts</th>", timed, "the column counts failed asks, not timeouts")
         self.assertIn("No model bench run yet", pages._model_bench({}))
 
 

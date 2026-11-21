@@ -65,6 +65,18 @@ class Systemone(tm.Base):
         with self.assertRaises(m.ModelError):
             m.complete(prof, [{"role": "user", "content": "hi"}])
 
+    def test_seed_timeout_is_kept_when_a_positive_number_and_refused_otherwise(self):  # T-5377: _gen_smith reads it
+        def load(v):
+            with open(os.path.join(self._tmp.name, "models.json"), "w") as f:
+                json.dump({"profiles": {"slow": {"kind": "openai", "base_url": "http://127.0.0.1:8765", "model": "s",
+                                                 "seed_timeout": v}}}, f)
+            return m.configured()[1]["slow"]
+        self.assertEqual(load(1800)["seed_timeout"], 1800)
+        self.assertEqual(load(90.5)["seed_timeout"], 90.5)
+        for bad in (0, -5, True, "600", None):
+            with self.assertRaisesRegex(m.ModelError, "seed_timeout must be a positive number of seconds", msg=repr(bad)):
+                load(bad)
+
     def test_the_chat_probe_skips_decision_and_embedding_models(self):
         tags = {"models": [{"name": "kev:4b-q8_0", "capabilities": ["decision"]},
                            {"name": "nomic-embed-text:v1.5", "capabilities": ["embedding"]},
