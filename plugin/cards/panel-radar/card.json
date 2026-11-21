@@ -1,0 +1,113 @@
+{
+ "name": "panel-radar",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a radar panel as dark and light SVG in the Board look (or blueprint, paper): health checks on a radar: each a blip set out by its latency on log rings in its group's sector, lit as the beam sweeps past, a failure pinging, the readings listed beside the scope.",
+ "examples": [
+  "draw a radar panel",
+  "a radar diagram of my project",
+  "health checks on a radar: each a blip set out by its latency on log rings in its group's sector, lit as the beam sweeps past, a failure pinging, the readings listed beside the scope"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 680
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 400
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "checks": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 16
+        },
+        "ms": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 10000000.0
+        },
+        "state": {
+         "type": "string",
+         "enum": [
+          "ok",
+          "warn",
+          "fail"
+         ]
+        },
+        "group": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 10
+        }
+       },
+       "required": [
+        "name",
+        "ms",
+        "state"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 12
+     }
+    },
+    "required": [
+     "checks"
+    ],
+    "additionalProperties": false,
+    "description": "the radar panel's data: checks"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

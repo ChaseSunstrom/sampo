@@ -1,0 +1,145 @@
+{
+ "name": "panel-metro",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a metro panel as dark and light SVG in the Board look (or blueprint, paper): a git history as a metro map: each branch a coloured line off the trunk with its commits as stations, forks and merges as interchanges, tags as flags, trains running every line and the open heads pulsing.",
+ "examples": [
+  "draw a metro panel",
+  "a metro diagram of my project",
+  "a git history as a metro map: each branch a coloured line off the trunk with its commits as stations, forks and merges as interchanges, tags as flags, trains running every line and the open heads pulsing"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 680
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 380
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "branches": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 18
+        },
+        "from": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 18
+        },
+        "into": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 18
+        },
+        "start": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000.0
+        },
+        "end": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000.0
+        },
+        "commits": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000.0
+        }
+       },
+       "required": [
+        "name",
+        "start",
+        "end"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 8
+     },
+     "tags": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "label": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 12
+        },
+        "at": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000.0
+        }
+       },
+       "required": [
+        "label",
+        "at"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 6
+     }
+    },
+    "required": [
+     "branches"
+    ],
+    "additionalProperties": false,
+    "description": "the metro panel's data: branches, tags"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

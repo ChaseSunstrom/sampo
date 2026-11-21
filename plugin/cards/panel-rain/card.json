@@ -1,0 +1,152 @@
+{
+ "name": "panel-rain",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a rain panel as dark and light SVG in the Board look (or blueprint, paper): log rain: each source a column its events fall down as streaks coloured by level, errors splashing where they land, a level bar and counts under each and the latest lines on a ticker.",
+ "examples": [
+  "draw a rain panel",
+  "a rain diagram of my project",
+  "log rain: each source a column its events fall down as streaks coloured by level, errors splashing where they land, a level bar and counts under each and the latest lines on a ticker"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 680
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 420
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "window": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 16
+     },
+     "sources": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 12
+        },
+        "debug": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000000.0
+        },
+        "info": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000000.0
+        },
+        "warn": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000000.0
+        },
+        "error": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000000.0
+        }
+       },
+       "required": [
+        "name"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 8
+     },
+     "recent": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "level": {
+         "type": "string",
+         "enum": [
+          "debug",
+          "info",
+          "warn",
+          "error"
+         ]
+        },
+        "source": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 12
+        },
+        "msg": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 48
+        }
+       },
+       "required": [
+        "level",
+        "msg"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 0,
+      "maxItems": 6
+     }
+    },
+    "required": [
+     "sources"
+    ],
+    "additionalProperties": false,
+    "description": "the rain panel's data: window, sources, recent"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

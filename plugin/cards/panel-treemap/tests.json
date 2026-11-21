@@ -1,0 +1,262 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "treemap",
+   "data": {
+    "unit": "lines",
+    "groups": [
+     {
+      "name": "api/",
+      "files": [
+       {
+        "name": "routes.py",
+        "size": 1840,
+        "churn": 72
+       },
+       {
+        "name": "checkout.py",
+        "size": 1210,
+        "churn": 88
+       },
+       {
+        "name": "auth.py",
+        "size": 640,
+        "churn": 35
+       },
+       {
+        "name": "admin.py",
+        "size": 520,
+        "churn": 12
+       },
+       {
+        "name": "webhooks.py",
+        "size": 380,
+        "churn": 64
+       }
+      ]
+     },
+     {
+      "name": "tests/",
+      "files": [
+       {
+        "name": "test_checkout.py",
+        "size": 1480,
+        "churn": 81
+       },
+       {
+        "name": "test_api.py",
+        "size": 1120,
+        "churn": 29
+       },
+       {
+        "name": "test_cart.py",
+        "size": 920,
+        "churn": 44
+       }
+      ]
+     },
+     {
+      "name": "models/",
+      "files": [
+       {
+        "name": "order.py",
+        "size": 980,
+        "churn": 41
+       },
+       {
+        "name": "cart.py",
+        "size": 760,
+        "churn": 58
+       },
+       {
+        "name": "user.py",
+        "size": 610,
+        "churn": 22
+       },
+       {
+        "name": "product.py",
+        "size": 450,
+        "churn": 9
+       }
+      ]
+     },
+     {
+      "name": "web/",
+      "files": [
+       {
+        "name": "app.tsx",
+        "size": 860,
+        "churn": 33
+       },
+       {
+        "name": "Cart.tsx",
+        "size": 540,
+        "churn": 66
+       },
+       {
+        "name": "theme.css",
+        "size": 300,
+        "churn": 5
+       }
+      ]
+     },
+     {
+      "name": "jobs/",
+      "files": [
+       {
+        "name": "sync.py",
+        "size": 690,
+        "churn": 47
+       },
+       {
+        "name": "email.py",
+        "size": 420,
+        "churn": 18
+       },
+       {
+        "name": "reports.py",
+        "size": 310,
+        "churn": 6
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "treemap",
+   "data": {
+    "unit": "lines",
+    "groups": [
+     {
+      "name": "api/",
+      "files": [
+       {
+        "name": "routes.py",
+        "size": 1840,
+        "churn": 72
+       },
+       {
+        "name": "checkout.py",
+        "size": 1210,
+        "churn": 88
+       },
+       {
+        "name": "auth.py",
+        "size": 640,
+        "churn": 35
+       },
+       {
+        "name": "admin.py",
+        "size": 520,
+        "churn": 12
+       },
+       {
+        "name": "webhooks.py",
+        "size": 380,
+        "churn": 64
+       }
+      ]
+     },
+     {
+      "name": "tests/",
+      "files": [
+       {
+        "name": "test_checkout.py",
+        "size": 1480,
+        "churn": 81
+       },
+       {
+        "name": "test_api.py",
+        "size": 1120,
+        "churn": 29
+       },
+       {
+        "name": "test_cart.py",
+        "size": 920,
+        "churn": 44
+       }
+      ]
+     },
+     {
+      "name": "models/",
+      "files": [
+       {
+        "name": "order.py",
+        "size": 980,
+        "churn": 41
+       },
+       {
+        "name": "cart.py",
+        "size": 760,
+        "churn": 58
+       },
+       {
+        "name": "user.py",
+        "size": 610,
+        "churn": 22
+       },
+       {
+        "name": "product.py",
+        "size": 450,
+        "churn": 9
+       }
+      ]
+     },
+     {
+      "name": "web/",
+      "files": [
+       {
+        "name": "app.tsx",
+        "size": 860,
+        "churn": 33
+       },
+       {
+        "name": "Cart.tsx",
+        "size": 540,
+        "churn": 66
+       },
+       {
+        "name": "theme.css",
+        "size": 300,
+        "churn": 5
+       }
+      ]
+     },
+     {
+      "name": "jobs/",
+      "files": [
+       {
+        "name": "sync.py",
+        "size": 690,
+        "churn": 47
+       },
+       {
+        "name": "email.py",
+        "size": 420,
+        "churn": 18
+       },
+       {
+        "name": "reports.py",
+        "size": 310,
+        "churn": 6
+       }
+      ]
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

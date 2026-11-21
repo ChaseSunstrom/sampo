@@ -1,0 +1,192 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "bloom",
+   "data": {
+    "unit": "kB",
+    "groups": [
+     {
+      "name": "app",
+      "items": [
+       {
+        "name": "checkout",
+        "size": 84
+       },
+       {
+        "name": "cart",
+        "size": 61
+       },
+       {
+        "name": "search",
+        "size": 47
+       },
+       {
+        "name": "account",
+        "size": 33
+       },
+       {
+        "name": "admin",
+        "size": 22
+       }
+      ]
+     },
+     {
+      "name": "ui kit",
+      "items": [
+       {
+        "name": "components",
+        "size": 120
+       },
+       {
+        "name": "charts",
+        "size": 92
+       },
+       {
+        "name": "icons",
+        "size": 38
+       }
+      ]
+     },
+     {
+      "name": "vendor",
+      "items": [
+       {
+        "name": "react-dom",
+        "size": 131
+       },
+       {
+        "name": "lodash",
+        "size": 71
+       },
+       {
+        "name": "zod",
+        "size": 57
+       },
+       {
+        "name": "date-fns",
+        "size": 39
+       }
+      ]
+     },
+     {
+      "name": "data",
+      "items": [
+       {
+        "name": "graphql",
+        "size": 64
+       },
+       {
+        "name": "sync",
+        "size": 26
+       },
+       {
+        "name": "cache",
+        "size": 18
+       }
+      ]
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "bloom",
+   "data": {
+    "unit": "kB",
+    "groups": [
+     {
+      "name": "app",
+      "items": [
+       {
+        "name": "checkout",
+        "size": 84
+       },
+       {
+        "name": "cart",
+        "size": 61
+       },
+       {
+        "name": "search",
+        "size": 47
+       },
+       {
+        "name": "account",
+        "size": 33
+       },
+       {
+        "name": "admin",
+        "size": 22
+       }
+      ]
+     },
+     {
+      "name": "ui kit",
+      "items": [
+       {
+        "name": "components",
+        "size": 120
+       },
+       {
+        "name": "charts",
+        "size": 92
+       },
+       {
+        "name": "icons",
+        "size": 38
+       }
+      ]
+     },
+     {
+      "name": "vendor",
+      "items": [
+       {
+        "name": "react-dom",
+        "size": 131
+       },
+       {
+        "name": "lodash",
+        "size": 71
+       },
+       {
+        "name": "zod",
+        "size": 57
+       },
+       {
+        "name": "date-fns",
+        "size": 39
+       }
+      ]
+     },
+     {
+      "name": "data",
+      "items": [
+       {
+        "name": "graphql",
+        "size": 64
+       },
+       {
+        "name": "sync",
+        "size": 26
+       },
+       {
+        "name": "cache",
+        "size": 18
+       }
+      ]
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

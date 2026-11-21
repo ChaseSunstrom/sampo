@@ -1,0 +1,135 @@
+{
+ "name": "panel-hourglass",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a hourglass panel as dark and light SVG in the Board look (or blueprint, paper): budgets as hourglasses: what is left as sand up top, what is used piled below in strata by part, the stream falling between, with the percent left and the numbers beside.",
+ "examples": [
+  "draw a hourglass panel",
+  "a hourglass diagram of my project",
+  "budgets as hourglasses: what is left as sand up top, what is used piled below in strata by part, the stream falling between, with the percent left and the numbers beside"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 640
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 400
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "glasses": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "label": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 16
+        },
+        "used": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000000.0
+        },
+        "total": {
+         "type": "number",
+         "minimum": 0.001,
+         "maximum": 1000000000000.0
+        },
+        "unit": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 10
+        },
+        "parts": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12
+           },
+           "value": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000000000.0
+           }
+          },
+          "required": [
+           "label",
+           "value"
+          ],
+          "additionalProperties": false
+         },
+         "minItems": 0,
+         "maxItems": 6
+        }
+       },
+       "required": [
+        "label",
+        "used",
+        "total"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 3
+     }
+    },
+    "required": [
+     "glasses"
+    ],
+    "additionalProperties": false,
+    "description": "the hourglass panel's data: glasses"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

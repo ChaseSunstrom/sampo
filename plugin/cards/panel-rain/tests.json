@@ -1,0 +1,154 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "rain",
+   "data": {
+    "window": "last 15 min",
+    "sources": [
+     {
+      "name": "api",
+      "debug": 1840,
+      "info": 9210,
+      "warn": 312,
+      "error": 41
+     },
+     {
+      "name": "worker",
+      "debug": 620,
+      "info": 3120,
+      "warn": 88,
+      "error": 12
+     },
+     {
+      "name": "db",
+      "info": 1480,
+      "warn": 205,
+      "error": 3
+     },
+     {
+      "name": "auth",
+      "debug": 210,
+      "info": 2240,
+      "warn": 19,
+      "error": 27
+     },
+     {
+      "name": "cron",
+      "debug": 95,
+      "info": 410,
+      "warn": 6,
+      "error": 0
+     }
+    ],
+    "recent": [
+     {
+      "level": "error",
+      "source": "api",
+      "msg": "POST /checkout 502 upstream timeout"
+     },
+     {
+      "level": "warn",
+      "source": "db",
+      "msg": "slow query 1.8s orders_by_user"
+     },
+     {
+      "level": "error",
+      "source": "auth",
+      "msg": "token refresh failed: clock skew"
+     },
+     {
+      "level": "info",
+      "source": "worker",
+      "msg": "email batch 412 sent"
+     },
+     {
+      "level": "warn",
+      "source": "api",
+      "msg": "rate limit 80% for key ci-bot"
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "rain",
+   "data": {
+    "window": "last 15 min",
+    "sources": [
+     {
+      "name": "api",
+      "debug": 1840,
+      "info": 9210,
+      "warn": 312,
+      "error": 41
+     },
+     {
+      "name": "worker",
+      "debug": 620,
+      "info": 3120,
+      "warn": 88,
+      "error": 12
+     },
+     {
+      "name": "db",
+      "info": 1480,
+      "warn": 205,
+      "error": 3
+     },
+     {
+      "name": "auth",
+      "debug": 210,
+      "info": 2240,
+      "warn": 19,
+      "error": 27
+     },
+     {
+      "name": "cron",
+      "debug": 95,
+      "info": 410,
+      "warn": 6,
+      "error": 0
+     }
+    ],
+    "recent": [
+     {
+      "level": "error",
+      "source": "api",
+      "msg": "POST /checkout 502 upstream timeout"
+     },
+     {
+      "level": "warn",
+      "source": "db",
+      "msg": "slow query 1.8s orders_by_user"
+     },
+     {
+      "level": "error",
+      "source": "auth",
+      "msg": "token refresh failed: clock skew"
+     },
+     {
+      "level": "info",
+      "source": "worker",
+      "msg": "email batch 412 sent"
+     },
+     {
+      "level": "warn",
+      "source": "api",
+      "msg": "rate limit 80% for key ci-bot"
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

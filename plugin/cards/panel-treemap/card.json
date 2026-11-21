@@ -1,0 +1,129 @@
+{
+ "name": "panel-treemap",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a treemap panel as dark and light SVG in the Board look (or blueprint, paper): a treemap: each file a tile its area by size, grouped by folder, coloured by how often it changes, the changing ones flashing and the hottest breathing.",
+ "examples": [
+  "draw a treemap panel",
+  "a treemap diagram of my project",
+  "a treemap: each file a tile its area by size, grouped by folder, coloured by how often it changes, the changing ones flashing and the hottest breathing"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 680
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 420
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "unit": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 12
+     },
+     "groups": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 16
+        },
+        "files": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+           },
+           "size": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 1000000000000.0
+           },
+           "churn": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+           }
+          },
+          "required": [
+           "name",
+           "size"
+          ],
+          "additionalProperties": false
+         },
+         "minItems": 1,
+         "maxItems": 24
+        }
+       },
+       "required": [
+        "name",
+        "files"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 8
+     }
+    },
+    "required": [
+     "groups"
+    ],
+    "additionalProperties": false,
+    "description": "the treemap panel's data: unit, groups"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

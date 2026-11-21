@@ -1,0 +1,118 @@
+{
+ "name": "panel-flame",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a flame panel as dark and light SVG in the Board look (or blueprint, paper): a trace waterfall: each span a bar on a shared clock, nested under its parent and coloured by service, a flame strip of the whole call on top, a playhead replaying it and a failed span marked.",
+ "examples": [
+  "draw a flame panel",
+  "a flame diagram of my project",
+  "a trace waterfall: each span a bar on a shared clock, nested under its parent and coloured by service, a flame strip of the whole call on top, a playhead replaying it and a failed span marked"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 680
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 400
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "spans": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 28
+        },
+        "parent": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 28
+        },
+        "svc": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 12
+        },
+        "at": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000.0
+        },
+        "took": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000.0
+        },
+        "error": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "name",
+        "at",
+        "took"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 14
+     }
+    },
+    "required": [
+     "spans"
+    ],
+    "additionalProperties": false,
+    "description": "the flame panel's data: spans"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

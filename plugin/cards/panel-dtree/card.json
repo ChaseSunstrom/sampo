@@ -1,0 +1,119 @@
+{
+ "name": "panel-dtree",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a dtree panel as dark and light SVG in the Board look (or blueprint, paper): a decision tree: questions as boxes left to right, each branch as wide as the cases that took it, outcomes with their confidence at the leaves and cases flowing down the paths in proportion.",
+ "examples": [
+  "draw a dtree panel",
+  "a dtree diagram of my project",
+  "a decision tree: questions as boxes left to right, each branch as wide as the cases that took it, outcomes with their confidence at the leaves and cases flowing down the paths in proportion"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 680
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 400
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "nodes": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "id": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 12
+        },
+        "parent": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 12
+        },
+        "label": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 28
+        },
+        "edge": {
+         "type": "string",
+         "minLength": 0,
+         "maxLength": 14
+        },
+        "conf": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 100
+        },
+        "n": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1000000000000.0
+        }
+       },
+       "required": [
+        "id",
+        "label"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 2,
+      "maxItems": 15
+     }
+    },
+    "required": [
+     "nodes"
+    ],
+    "additionalProperties": false,
+    "description": "the dtree panel's data: nodes"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

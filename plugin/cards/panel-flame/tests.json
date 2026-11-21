@@ -1,0 +1,170 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "flame",
+   "data": {
+    "spans": [
+     {
+      "name": "POST /checkout",
+      "svc": "gateway",
+      "at": 0,
+      "took": 182
+     },
+     {
+      "name": "auth.verify",
+      "parent": "POST /checkout",
+      "svc": "auth",
+      "at": 3,
+      "took": 14
+     },
+     {
+      "name": "redis GET session",
+      "parent": "auth.verify",
+      "svc": "cache",
+      "at": 5,
+      "took": 4.5
+     },
+     {
+      "name": "cart.load",
+      "parent": "POST /checkout",
+      "svc": "api",
+      "at": 19,
+      "took": 31
+     },
+     {
+      "name": "SELECT cart_items",
+      "parent": "cart.load",
+      "svc": "db",
+      "at": 22,
+      "took": 24
+     },
+     {
+      "name": "payment.charge",
+      "parent": "POST /checkout",
+      "svc": "api",
+      "at": 52,
+      "took": 104
+     },
+     {
+      "name": "stripe charge",
+      "parent": "payment.charge",
+      "svc": "stripe",
+      "at": 55,
+      "took": 38,
+      "error": true
+     },
+     {
+      "name": "stripe charge retry",
+      "parent": "payment.charge",
+      "svc": "stripe",
+      "at": 98,
+      "took": 54
+     },
+     {
+      "name": "INSERT orders",
+      "parent": "POST /checkout",
+      "svc": "db",
+      "at": 158,
+      "took": 12
+     },
+     {
+      "name": "enqueue email",
+      "parent": "POST /checkout",
+      "svc": "queue",
+      "at": 172,
+      "took": 6
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "flame",
+   "data": {
+    "spans": [
+     {
+      "name": "POST /checkout",
+      "svc": "gateway",
+      "at": 0,
+      "took": 182
+     },
+     {
+      "name": "auth.verify",
+      "parent": "POST /checkout",
+      "svc": "auth",
+      "at": 3,
+      "took": 14
+     },
+     {
+      "name": "redis GET session",
+      "parent": "auth.verify",
+      "svc": "cache",
+      "at": 5,
+      "took": 4.5
+     },
+     {
+      "name": "cart.load",
+      "parent": "POST /checkout",
+      "svc": "api",
+      "at": 19,
+      "took": 31
+     },
+     {
+      "name": "SELECT cart_items",
+      "parent": "cart.load",
+      "svc": "db",
+      "at": 22,
+      "took": 24
+     },
+     {
+      "name": "payment.charge",
+      "parent": "POST /checkout",
+      "svc": "api",
+      "at": 52,
+      "took": 104
+     },
+     {
+      "name": "stripe charge",
+      "parent": "payment.charge",
+      "svc": "stripe",
+      "at": 55,
+      "took": 38,
+      "error": true
+     },
+     {
+      "name": "stripe charge retry",
+      "parent": "payment.charge",
+      "svc": "stripe",
+      "at": 98,
+      "took": 54
+     },
+     {
+      "name": "INSERT orders",
+      "parent": "POST /checkout",
+      "svc": "db",
+      "at": 158,
+      "took": 12
+     },
+     {
+      "name": "enqueue email",
+      "parent": "POST /checkout",
+      "svc": "queue",
+      "at": 172,
+      "took": 6
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

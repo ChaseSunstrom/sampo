@@ -1,0 +1,124 @@
+{
+ "name": "panel-bloom",
+ "kind": "py",
+ "deterministic": true,
+ "purpose": "Draw a bloom panel as dark and light SVG in the Board look (or blueprint, paper): a circle pack: each group a circle of circles, every item's area by its size, the whole breathing in a slow wave out from each group's middle.",
+ "examples": [
+  "draw a bloom panel",
+  "a bloom diagram of my project",
+  "a circle pack: each group a circle of circles, every item's area by its size, the whole breathing in a slow wave out from each group's middle"
+ ],
+ "inputs": {
+  "type": "object",
+  "required": [
+   "out",
+   "title",
+   "data"
+  ],
+  "additionalProperties": false,
+  "properties": {
+   "out": {
+    "type": "string",
+    "format": "newpath",
+    "description": "the file stem: STEM-dark.svg and STEM-light.svg are written"
+   },
+   "title": {
+    "type": "string",
+    "minLength": 1,
+    "maxLength": 40
+   },
+   "style": {
+    "enum": [
+     "board",
+     "blueprint",
+     "paper"
+    ],
+    "default": "board"
+   },
+   "stat": {
+    "type": "string",
+    "maxLength": 24
+   },
+   "foot": {
+    "type": "string",
+    "maxLength": 70
+   },
+   "w": {
+    "type": "integer",
+    "minimum": 420,
+    "maximum": 2400,
+    "default": 640
+   },
+   "h": {
+    "type": "integer",
+    "minimum": 260,
+    "maximum": 1600,
+    "default": 420
+   },
+   "data": {
+    "type": "object",
+    "properties": {
+     "unit": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 12
+     },
+     "groups": {
+      "type": "array",
+      "items": {
+       "type": "object",
+       "properties": {
+        "name": {
+         "type": "string",
+         "minLength": 1,
+         "maxLength": 16
+        },
+        "items": {
+         "type": "array",
+         "items": {
+          "type": "object",
+          "properties": {
+           "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 16
+           },
+           "size": {
+            "type": "number",
+            "minimum": 0.001,
+            "maximum": 1000000000000.0
+           }
+          },
+          "required": [
+           "name",
+           "size"
+          ],
+          "additionalProperties": false
+         },
+         "minItems": 1,
+         "maxItems": 16
+        }
+       },
+       "required": [
+        "name",
+        "items"
+       ],
+       "additionalProperties": false
+      },
+      "minItems": 1,
+      "maxItems": 7
+     }
+    },
+    "required": [
+     "groups"
+    ],
+    "additionalProperties": false,
+    "description": "the bloom panel's data: unit, groups"
+   }
+  }
+ },
+ "creates": [
+  "$out-dark.svg",
+  "$out-light.svg"
+ ]
+}

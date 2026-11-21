@@ -1,0 +1,132 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "metro",
+   "data": {
+    "branches": [
+     {
+      "name": "main",
+      "start": 0,
+      "end": 14,
+      "commits": 14
+     },
+     {
+      "name": "feat/cart",
+      "start": 1,
+      "end": 6,
+      "into": "main",
+      "commits": 5
+     },
+     {
+      "name": "spike/ws",
+      "from": "feat/cart",
+      "start": 2,
+      "end": 4.5,
+      "into": "feat/cart",
+      "commits": 2
+     },
+     {
+      "name": "fix/tax-round",
+      "start": 4,
+      "end": 7,
+      "into": "main",
+      "commits": 2
+     },
+     {
+      "name": "feat/search",
+      "start": 6,
+      "end": 12.5,
+      "commits": 6
+     },
+     {
+      "name": "chore/deps",
+      "start": 9,
+      "end": 11,
+      "into": "main",
+      "commits": 1
+     }
+    ],
+    "tags": [
+     {
+      "label": "v2.3.0",
+      "at": 8
+     },
+     {
+      "label": "v2.4.0",
+      "at": 11.5
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "metro",
+   "data": {
+    "branches": [
+     {
+      "name": "main",
+      "start": 0,
+      "end": 14,
+      "commits": 14
+     },
+     {
+      "name": "feat/cart",
+      "start": 1,
+      "end": 6,
+      "into": "main",
+      "commits": 5
+     },
+     {
+      "name": "spike/ws",
+      "from": "feat/cart",
+      "start": 2,
+      "end": 4.5,
+      "into": "feat/cart",
+      "commits": 2
+     },
+     {
+      "name": "fix/tax-round",
+      "start": 4,
+      "end": 7,
+      "into": "main",
+      "commits": 2
+     },
+     {
+      "name": "feat/search",
+      "start": 6,
+      "end": 12.5,
+      "commits": 6
+     },
+     {
+      "name": "chore/deps",
+      "start": 9,
+      "end": 11,
+      "into": "main",
+      "commits": 1
+     }
+    ],
+    "tags": [
+     {
+      "label": "v2.3.0",
+      "at": 8
+     },
+     {
+      "label": "v2.4.0",
+      "at": 11.5
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

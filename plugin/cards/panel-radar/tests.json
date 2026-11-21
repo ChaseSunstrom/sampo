@@ -1,0 +1,174 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "radar",
+   "data": {
+    "checks": [
+     {
+      "name": "cdn",
+      "group": "edge",
+      "ms": 18,
+      "state": "ok"
+     },
+     {
+      "name": "dns",
+      "group": "edge",
+      "ms": 4,
+      "state": "ok"
+     },
+     {
+      "name": "load balancer",
+      "group": "edge",
+      "ms": 9,
+      "state": "ok"
+     },
+     {
+      "name": "api /health",
+      "group": "api",
+      "ms": 42,
+      "state": "ok"
+     },
+     {
+      "name": "auth",
+      "group": "api",
+      "ms": 120,
+      "state": "ok"
+     },
+     {
+      "name": "search",
+      "group": "api",
+      "ms": 610,
+      "state": "warn"
+     },
+     {
+      "name": "postgres",
+      "group": "data",
+      "ms": 7,
+      "state": "ok"
+     },
+     {
+      "name": "redis",
+      "group": "data",
+      "ms": 2,
+      "state": "ok"
+     },
+     {
+      "name": "queue lag",
+      "group": "data",
+      "ms": 1900,
+      "state": "warn"
+     },
+     {
+      "name": "stripe",
+      "group": "ext",
+      "ms": 380,
+      "state": "ok"
+     },
+     {
+      "name": "s3",
+      "group": "ext",
+      "ms": 95,
+      "state": "ok"
+     },
+     {
+      "name": "mailer",
+      "group": "ext",
+      "ms": 12000,
+      "state": "fail"
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "radar",
+   "data": {
+    "checks": [
+     {
+      "name": "cdn",
+      "group": "edge",
+      "ms": 18,
+      "state": "ok"
+     },
+     {
+      "name": "dns",
+      "group": "edge",
+      "ms": 4,
+      "state": "ok"
+     },
+     {
+      "name": "load balancer",
+      "group": "edge",
+      "ms": 9,
+      "state": "ok"
+     },
+     {
+      "name": "api /health",
+      "group": "api",
+      "ms": 42,
+      "state": "ok"
+     },
+     {
+      "name": "auth",
+      "group": "api",
+      "ms": 120,
+      "state": "ok"
+     },
+     {
+      "name": "search",
+      "group": "api",
+      "ms": 610,
+      "state": "warn"
+     },
+     {
+      "name": "postgres",
+      "group": "data",
+      "ms": 7,
+      "state": "ok"
+     },
+     {
+      "name": "redis",
+      "group": "data",
+      "ms": 2,
+      "state": "ok"
+     },
+     {
+      "name": "queue lag",
+      "group": "data",
+      "ms": 1900,
+      "state": "warn"
+     },
+     {
+      "name": "stripe",
+      "group": "ext",
+      "ms": 380,
+      "state": "ok"
+     },
+     {
+      "name": "s3",
+      "group": "ext",
+      "ms": 95,
+      "state": "ok"
+     },
+     {
+      "name": "mailer",
+      "group": "ext",
+      "ms": 12000,
+      "state": "fail"
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

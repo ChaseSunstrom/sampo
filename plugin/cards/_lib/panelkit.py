@@ -259,7 +259,7 @@ def _named(names, v, where, what):
     return [f"{where} {str(v)[:30]!r} isn't one of the {what} {list(names)[:12]}" + (f": did you mean {near[0]!r}?" if near else "")]
 
 
-# ---------------------------------------------------------------- the 21 kinds
+# ---------------------------------------------------------------- the 29 kinds
 
 def _spread(i, k):
     return 2 * math.pi * i / max(k, 1) - math.pi / 2 + .35
@@ -1551,13 +1551,1104 @@ def _circuit(d, W, H, T):
     return out
 
 
+# ---------------------------------------------------------------- time, scale and state (T-3737)
+# Eight more moving kinds: a git metro map, a trace waterfall, a treemap, log rain, a health radar, an hourglass, a
+# decision tree and a circle pack. The same rules: a still frame that reads alone, SMIL that loops over it.
+
+def _tag(el, c, **data):
+    """el with a class (and data-* attributes): a hook a test or a reader's stylesheet can find."""
+    i = el.index(" ")
+    return el[:i] + f' class="{c}"' + "".join(f' data-{k}="{esc(v)}"' for k, v in data.items()) + el[i:]
+
+
+def _join(el, cap="round"):
+    """A path drawn with round joins and caps: a metro line's bends, a falling streak's ends."""
+    return el[:-2] + f' stroke-linejoin="round" stroke-linecap="{cap}"/>'
+
+
+def _fo(el, v):
+    """A shape with its fill alone faded, its stroke kept whole."""
+    return el[:-2] + f' fill-opacity="{v}"/>'
+
+
+def _ms(v):
+    """A duration as drawn: 4.5ms, 182ms, 1,200ms."""
+    return (f"{round(v):,}" if v >= 100 else N(v)) + "ms"
+
+
+def _tick(v):
+    return f"{round(v, 6):,.10g}"
+
+
+def _ticks(lo, hi, n):
+    """Round values from lo to hi, about n of them."""
+    raw = (hi - lo) / max(n, 1)
+    if raw <= 0:
+        return [lo]
+    mag = 10 ** math.floor(math.log10(raw))
+    s = next(m * mag for m in (1, 2, 5, 10) if m * mag >= raw)
+    k, out = math.ceil(lo / s - 1e-9), []
+    while k * s <= hi + 1e-9 and len(out) < 40:
+        out.append(k * s)
+        k += 1
+    return out
+
+
+def _poly(pts):
+    return "M" + "L".join(f"{N(x)} {N(y)}" for x, y in pts)
+
+
+def _ring(x, y, r):
+    """A circle as a path: one a dash can run round and a group can turn."""
+    return f"M{N(x - r)} {N(y)}a{N(r)} {N(r)} 0 1 0 {N(2 * r)} 0a{N(r)} {N(r)} 0 1 0 {N(-2 * r)} 0"
+
+
+def _tbox(x, y, s, pad=1.5):
+    """The box (x0, y0, x1, y1) a start-anchored SZ text at baseline y covers, padded."""
+    return (x - pad, y - SZ * .78 - pad, x + tw(s) + pad, y + SZ * .24 + pad)
+
+
+def _seg_box(p, q, b):
+    """Whether the segment p..q enters the box b (Liang-Barsky clipping)."""
+    (x0, y0), dx, dy = p, q[0] - p[0], q[1] - p[1]
+    t0, t1 = 0.0, 1.0
+    for pv, qv in ((-dx, x0 - b[0]), (dx, b[2] - x0), (-dy, y0 - b[1]), (dy, b[3] - y0)):
+        if pv == 0:
+            if qv < 0:
+                return False
+            continue
+        t = qv / pv
+        t0, t1 = (max(t0, t), t1) if pv < 0 else (t0, min(t1, t))
+        if t0 > t1:
+            return False
+    return True
+
+
+def _clear(b, segs=(), discs=(), boxes=(), rings=()):
+    """Whether box b keeps off every segment (p, q, half-width), disc (x, y, r), box, and ring outline (x, y, r)."""
+    x0, y0, x1, y1 = b
+    near = lambda x, y: math.hypot(x - min(max(x, x0), x1), y - min(max(y, y0), y1))  # noqa: E731
+    far = lambda x, y: max(math.hypot(x - u, y - v) for u in (x0, x1) for v in (y0, y1))  # noqa: E731
+    return (not any(_seg_box(p, q, (x0 - w, y0 - w, x1 + w, y1 + w)) for p, q, w in segs)
+            and not any(near(x, y) < r for x, y, r in discs)
+            and not any(a[0] < x1 and x0 < a[2] and a[1] < y1 and y0 < a[3] for a in boxes)
+            and not any(near(x, y) < r < far(x, y) for x, y, r in rings))
+
+
+def _halo(el, bg):
+    """A text with a halo of the ground under it: a line passing behind it stops short of the letters."""
+    return el.replace("<text ", f'<text stroke="{bg}" stroke-width="3.5" stroke-linejoin="round" paint-order="stroke" ', 1)
+
+
+def _squarify(sizes, x, y, w, h):
+    """Rects (x, y, w, h) filling the box, each one's area in proportion to its size and kept near square (Bruls, Huizing
+    and van Wijk's squarified layout), in the order the sizes were given."""
+    order = sorted(range(len(sizes)), key=lambda i: (-sizes[i], i))
+    scale = w * h / (sum(sizes) or 1)
+    rest, out = [(i, max(sizes[i], 0) * scale) for i in order], [(x, y, 0, 0)] * len(sizes)
+
+    def worst(row, side):
+        s = sum(a for _, a in row)
+        if s <= 0 or side <= 0:
+            return 1e18
+        return max(max(side * side * a / (s * s), s * s / (side * side * a)) if a > 0 else 1e18 for _, a in row)
+    while rest:
+        side, row = min(w, h), [rest.pop(0)]
+        while rest and worst(row + [rest[0]], side) <= worst(row, side):
+            row.append(rest.pop(0))
+        s = sum(a for _, a in row)
+        if w >= h:  # a column down the left of what is left
+            cw, yy = (s / h if h > 0 else 0), y
+            for i, a in row:
+                hh = a / cw if cw > 0 else 0
+                out[i] = (x, yy, cw, hh)
+                yy += hh
+            x, w = x + cw, max(w - cw, 0)
+        else:  # a row along the top
+            rh, xx = (s / w if w > 0 else 0), x
+            for i, a in row:
+                ww = a / rh if rh > 0 else 0
+                out[i] = (xx, y, ww, rh)
+                xx += ww
+            y, h = y + rh, max(h - rh, 0)
+    return out
+
+
+def _tangent(a, b, r):
+    """Centres of a circle of radius r touching circles a and b (x, y, r): none, or the two."""
+    (x0, y0, r0), (x1, y1, r1) = a, b
+    R0, R1 = r0 + r, r1 + r
+    dx, dy = x1 - x0, y1 - y0
+    dd = math.hypot(dx, dy)
+    if dd == 0 or dd > R0 + R1 or dd < abs(R0 - R1):
+        return []
+    el = (R0 * R0 - R1 * R1 + dd * dd) / (2 * dd)
+    hh = math.sqrt(max(R0 * R0 - el * el, 0))
+    mx, my = x0 + dx * el / dd, y0 + dy * el / dd
+    return [(mx - dy * hh / dd, my + dx * hh / dd), (mx + dy * hh / dd, my - dx * hh / dd)]
+
+
+def _pack(radii, aspect=1.0):
+    """Centres for circles of these radii packed round the origin, none overlapping: largest first, each set where it
+    touches one or two already placed nearest the middle (aspect > 1: the middle of a box that much wider than tall, so
+    the pack spreads to fill it). Deterministic, in the order given."""
+    order = sorted(range(len(radii)), key=lambda i: (-radii[i], i))
+    placed, pos = [], {}
+    for i in order:
+        r = radii[i]
+        if not placed:
+            c = (0.0, 0.0)
+        else:
+            cands = [(a[0] + (a[2] + r) * math.cos(math.pi * k / 6), a[1] + (a[2] + r) * math.sin(math.pi * k / 6))
+                     for a in placed for k in range(12)]
+            for j, a in enumerate(placed):
+                for b in placed[j + 1:]:
+                    cands += _tangent(a, b, r)
+            ok = [p for p in cands if all(math.hypot(p[0] - q[0], p[1] - q[1]) >= q[2] + r - 1e-7 for q in placed)]
+            far = max(math.hypot(q[0], q[1]) + q[2] for q in placed)
+            c = min(ok, key=lambda p: (round(math.hypot(p[0] / aspect, p[1]), 6), p)) if ok else (far + r, 0.0)
+        placed.append((c[0], c[1], r))
+        pos[i] = c
+    return [pos[i] for i in range(len(radii))]
+
+
+def _enclose(cs):
+    """(x, y, R): a circle holding every circle in cs, near the smallest (Badoiu and Clarkson's walk to the farthest)."""
+    x = sum(c[0] for c in cs) / len(cs)
+    y = sum(c[1] for c in cs) / len(cs)
+    for k in range(80):
+        fx, fy, fr = max(cs, key=lambda c: math.hypot(c[0] - x, c[1] - y) + c[2])
+        dd = math.hypot(fx - x, fy - y) or 1
+        tx, ty = fx + (fx - x) / dd * fr, fy + (fy - y) / dd * fr  # the far edge of the farthest circle
+        x, y = x + (tx - x) / (k + 2), y + (ty - y) / (k + 2)
+    return x, y, max(math.hypot(c[0] - x, c[1] - y) + c[2] for c in cs)
+
+
+def _metro_refs(d, where):
+    names, errs = [b["name"] for b in d["branches"]], []
+    for i, b in enumerate(d["branches"]):
+        if names.index(b["name"]) != i:
+            errs.append(f"{where}.branches[{i}].name {b['name']!r} is used twice")
+        for k in ("from", "into"):
+            if b.get(k):
+                errs += _named([v for v in names if v != b["name"]], b[k], f"{where}.branches[{i}].{k}", "other branches")
+        if b["end"] < b["start"]:
+            errs.append(f"{where}.branches[{i}].end {b['end']} is before its start {b['start']}")
+    return errs
+
+
+def _metro_names(br, geo, lane, tags, X, trunk_y, W, ay, T):
+    """Each branch's name and commit count, set by its run where no line, station, flag or other name crosses it: over
+    (under, below the trunk) the run first, then the other side, slid along it; cut only when no whole name fits."""
+    names = [b["name"] for b in br]
+    into = [names.index(b["into"]) if b.get("into") in names and names.index(b["into"]) != i else None for i, b in enumerate(br)]
+    segs = [(p, q, 3.5 if i == 0 else 3) for i, pts in enumerate(geo) for p, q in zip(pts, pts[1:])]
+    segs += [((X(tg["at"]), 0), (X(tg["at"]), trunk_y), 1.5) for tg in tags]
+    discs = [(*pts[0], 7) for pts in geo[1:]] + [(*pts[-1], 7) for i, pts in enumerate(geo) if i and into[i] is not None]
+    discs += [(X(tg["at"]), trunk_y, 8) for tg in tags]
+    boxes = [_tbox(pts[-1][0] + 9, pts[-1][1] + 4, "HEAD") for i, pts in enumerate(geo) if not i or into[i] is None]
+    boxes += [(pts[-1][0] - 3, pts[-1][1] - 9, pts[-1][0] + 3, pts[-1][1] + 9) for i, pts in enumerate(geo) if not i or into[i] is None]
+    boxes += [(X(tg["at"]) - tw(tg["label"]) / 2 - 8, 0, X(tg["at"]) + tw(tg["label"]) / 2 + 8, 17) for tg in tags]
+    out = []
+    for i, (b, pts) in enumerate(zip(br, geo)):
+        (ax, y), (bx, _) = pts[0:2] if i == 0 else pts[1:3]
+        nxt = min((X(o["start"]) for j, o in enumerate(br) if j != i and lane[j] == lane[i] and o["start"] > b["end"]),
+                  default=W)
+        lim, cnt = min(nxt - 14, bx + 40, W - 1), _num(b["commits"]) if "commits" in b else ""
+        full = b["name"]
+        tries = ([(full, cnt)] if cnt else []) + [(full, "")] + [(full[:k - 1] + "…", "") for k in range(len(full) - 1, 3, -1)]
+        sides = [y - 9, y + 18] if lane[i] >= 0 else [y + 18, y - 9]
+        spot = None
+        for name, c in tries:
+            s = name + (" " + c if c else "")
+            wd = tw(s)
+            for ly in sides:
+                if ly < 9 or ly > ay - 6:
+                    continue
+                lo, hi = max(1.0, ax - wd / 2), min(lim, W - 1) - wd
+                # from the run's start rightward first, then leftward back over its climb
+                xs = [ax + 4 + k * 3 for k in range(int(max(hi - ax - 4, -3) // 3) + 1)]
+                xs += [ax + 4 - k * 3 for k in range(1, int(max(ax + 4 - lo, 0) // 3) + 1)]
+                spot = next(((x, ly) for x in xs if lo <= x <= hi and _clear(_tbox(x, ly, s), segs, discs, boxes)), None)
+                if spot:
+                    break
+            if spot:
+                break
+        if not spot:
+            continue  # nowhere clear, even cut: no name beats a name a line runs through
+        x, ly = spot
+        out.append(_tag(txt(x, ly, name, T.txt(i), SZ, weight=700), "bname", branch=b["name"]))
+        if c:
+            out.append(txt(x + tw(name) + SZ * GLYPH, ly, c, T.muted, SZ))
+        boxes.append(_tbox(x, ly, s))
+    return out
+
+
+@kind("metro", "a git history as a metro map: each branch a coloured line off the trunk with its commits as stations, "
+      "forks and merges as interchanges, tags as flags, trains running every line and the open heads pulsing",
+      OBJ({"branches": ARR(OBJ({"name": STR(18), "from": STR(18, 0), "into": STR(18, 0), "start": NUM(0, 1e9),
+                                "end": NUM(0, 1e9), "commits": NUM(0, 1e6)}, ["name", "start", "end"]), 1, 8),
+           "tags": ARR(OBJ({"label": STR(12), "at": NUM(0, 1e9)}, ["label", "at"]), 0, 6)}, ["branches"]),
+      {"branches": [{"name": "main", "start": 0, "end": 14, "commits": 14},
+                    {"name": "feat/cart", "start": 1, "end": 6, "into": "main", "commits": 5},
+                    {"name": "spike/ws", "from": "feat/cart", "start": 2, "end": 4.5, "into": "feat/cart", "commits": 2},
+                    {"name": "fix/tax-round", "start": 4, "end": 7, "into": "main", "commits": 2},
+                    {"name": "feat/search", "start": 6, "end": 12.5, "commits": 6},
+                    {"name": "chore/deps", "start": 9, "end": 11, "into": "main", "commits": 1}],
+       "tags": [{"label": "v2.3.0", "at": 8}, {"label": "v2.4.0", "at": 11.5}]},
+      size=(680, 380), refs=_metro_refs)
+def _metro(d, W, H, T):
+    br, tags, out = d["branches"], d.get("tags", []), []
+    names = [b["name"] for b in br]
+
+    def ref(v, i):
+        return names.index(v) if v in names and names.index(v) != i else None
+    times = [t for b in br for t in (b["start"], b["end"])] + [t["at"] for t in tags]
+    t0, t1 = min(times), max(times)
+    t1 = t1 if t1 > t0 else t0 + 1
+    pad = (t1 - t0) * .06
+    lane, occ = {0: 0}, {0: [(-1e18, 1e18)]}  # the trunk runs lane 0; a branch takes the nearest lane free while it lives
+    for i in sorted(range(1, len(br)), key=lambda i: (br[i]["start"], i)):
+        b, p = br[i], lane.get(ref(br[i].get("from"), i) or 0, 0)
+        s = 1 if p >= 0 else -1
+        cands = ([s * (abs(p) + k) for k in range(1, 9)] + [-s * k for k in range(1, 9)] if p else
+                 [v for k in range(1, 9) for v in (k, -k)])
+        lane[i] = next((k for k in cands if all(b["end"] + pad < a or b["start"] - pad > e for a, e in occ.get(k, []))),
+                       cands[-1])
+        occ.setdefault(lane[i], []).append((b["start"], b["end"]))
+    lo, hi = min(lane.values()), max(lane.values())
+    top, bottom = (38 if tags else 22), H - 30 - (14 if lo < 0 else 0)
+    gap = min(48, max(bottom - top, 0) / max(hi - lo, 1))
+    off = top + (bottom - top - gap * (hi - lo)) / 2
+
+    def Y(k):
+        return off + (hi - k) * gap
+    x0, x1 = 10, W - 44
+
+    def X(t):
+        return x0 + (t - t0) / (t1 - t0) * (x1 - x0)
+    ay = H - 16  # the time axis, its grid up behind the lines
+    ticks = _ticks(t0, t1, max(2, int((x1 - x0) / 70)))
+    out.append(path("".join(f"M{N(X(t))} {N(top - 10)}V{N(ay)}" for t in ticks), T.line, 1, op=.6, dash="2 4"))
+    out.append(line(x0, ay, x1, ay, T.line, 1.25))
+    for t in ticks:
+        out += [line(X(t), ay, X(t), ay + 4, T.muted), txt(X(t), H - 3, _tick(t), T.muted, SZ, "middle")]
+    geo = []
+    for i, b in enumerate(br):  # each line: off its parent at 45 degrees, along its lane, and back down into its target
+        y, xs, xe = Y(lane[i]), X(b["start"]), X(b["end"])
+        if i == 0:
+            geo.append([(xs, y), (xe, y)])
+            continue
+        py, into, run = Y(lane[ref(b.get("from"), i) or 0]), ref(b.get("into"), i), xe - xs
+        b1 = min(abs(y - py), run / (2 if into is not None else 1.5))
+        pts = [(xs, py), (xs + b1, y)]
+        if into is not None:
+            iy = Y(lane[into])
+            pts += [(xe - min(abs(y - iy), run / 2), y), (xe, iy)]
+        else:
+            pts.append((xe, y))
+        geo.append(pts)
+    trunk_y = Y(0)
+    for tg in tags:
+        x = X(tg["at"])
+        w = min(tw(tg["label"]) + 14, W - 2)
+        cx = min(max(x, w / 2 + 1), W - w / 2 - 1)
+        out += [line(x, 16, x, trunk_y - 8, T.a(1), 1, .75, "3 3"), rect(cx - w / 2, 0, w, 16, T.bg, T.a(1), 3),
+                txt(cx, 12, tg["label"], T.txt(1), SZ, "middle", 700, maxw=w - 8)]
+    for i, pts in enumerate(geo):  # the casings first, so a line crossing another reads as passing over it
+        out.append(_join(path(_poly(pts), T.panel, 11 if i == 0 else 10)))
+    for i, pts in enumerate(geo):
+        out.append(_tag(_join(path(_poly(pts), T.a(i), 6 if i == 0 else 5)), "track", branch=names[i]))
+    for i, (b, pts) in enumerate(zip(br, geo)):  # a station tick per commit, as room allows
+        (ax, y), (bx, _) = pts[0:2] if i == 0 else pts[1:3]
+        k = min(int(b.get("commits", 0)), int((bx - ax) / 11))
+        if k > 0:
+            out.append(path("".join(f"M{N(ax + (bx - ax) * (j + 1) / (k + 1))} {N(y + 3)}v4" for j in range(k)), T.a(i), 2.5))
+    for i, (b, pts) in enumerate(zip(br, geo)):
+        if not i:
+            continue
+        spots = [pts[0]] + ([pts[-1]] if ref(b.get("into"), i) is not None else [])
+        for k, (x, y) in enumerate(spots):
+            out.append(_tag(circ(x, y, 5.5, T.panel, T.ink, 2), "xchg"))
+            if k:  # a merge lands: a ring spreads from the interchange
+                beg = -(i * .7) % 2.8
+                out.append(_with(circ(x, y, 6, "none", T.a(i), 1.5, .5), _anim("r", "6;15", 2.8, beg),
+                                 _anim("opacity", ".8;0", 2.8, beg)))
+    for tg in tags:
+        x = X(tg["at"])
+        out.append(path(f"M{N(x)} {N(trunk_y - 7)}L{N(x + 5)} {N(trunk_y)}L{N(x)} {N(trunk_y + 7)}L{N(x - 5)} {N(trunk_y)}Z",
+                        T.bg, 1.5, fill=T.a(1)))
+    out += _metro_names(br, geo, lane, tags, X, trunk_y, W, ay, T)
+    for i, pts in enumerate(geo):  # trains: one a line, two on the trunk, each in its own phase
+        L = sum(math.dist(p, q) for p, q in zip(pts, pts[1:]))
+        if L < 20:
+            continue
+        for j in range(2 if i == 0 else 1):
+            out.append(_rider(pts, (i * .37 + j * .5) % 1, max(3.0, L / 45), lambda x, y: rect(x - 4.5, y - 2, 9, 4, T.ink, rx=2)))
+    for i, (b, pts) in enumerate(zip(br, geo)):  # an open branch ends at its head: a buffer bar and a pulse
+        if i and ref(b.get("into"), i) is not None:
+            continue
+        x, y = pts[-1]
+        out += [_join(line(x, y - 7, x, y + 7, T.a(i), 3)),
+                _with(circ(x, y, 4, "none", T.a(i), 1.5, .6), _anim("r", "4;11", 1.8, -i * .4), _anim("opacity", ".9;0", 1.8, -i * .4)),
+                txt(x + 9, y + 4, "HEAD", T.muted, SZ, weight=700)]
+    return out
+
+
+def _flame_refs(d, where):
+    sp, errs = d["spans"], []
+    names = [s["name"] for s in sp]
+    par = {s["name"]: s.get("parent") for s in sp}
+    for i, s in enumerate(sp):
+        if names.index(s["name"]) != i:
+            errs.append(f"{where}.spans[{i}].name {s['name']!r} is used twice")
+        if s.get("parent"):
+            e = _named([v for v in names if v != s["name"]], s["parent"], f"{where}.spans[{i}].parent", "other spans")
+            seen, p = {s["name"]}, s["parent"]
+            while not e and p and p not in seen:
+                seen.add(p)
+                p = par.get(p)
+            errs += e or ([f"{where}.spans[{i}].parent {s['parent']!r} makes a loop: a span can't be its own ancestor"] if p else [])
+    return errs
+
+
+@kind("flame", "a trace waterfall: each span a bar on a shared clock, nested under its parent and coloured by service, "
+      "a flame strip of the whole call on top, a playhead replaying it and a failed span marked",
+      OBJ({"spans": ARR(OBJ({"name": STR(28), "parent": STR(28, 0), "svc": STR(12, 0), "at": NUM(0, 1e9), "took": NUM(0, 1e9),
+                             "error": {"type": "boolean"}}, ["name", "at", "took"]), 1, 14)}, ["spans"]),
+      {"spans": [{"name": "POST /checkout", "svc": "gateway", "at": 0, "took": 182},
+                 {"name": "auth.verify", "parent": "POST /checkout", "svc": "auth", "at": 3, "took": 14},
+                 {"name": "redis GET session", "parent": "auth.verify", "svc": "cache", "at": 5, "took": 4.5},
+                 {"name": "cart.load", "parent": "POST /checkout", "svc": "api", "at": 19, "took": 31},
+                 {"name": "SELECT cart_items", "parent": "cart.load", "svc": "db", "at": 22, "took": 24},
+                 {"name": "payment.charge", "parent": "POST /checkout", "svc": "api", "at": 52, "took": 104},
+                 {"name": "stripe charge", "parent": "payment.charge", "svc": "stripe", "at": 55, "took": 38, "error": True},
+                 {"name": "stripe charge retry", "parent": "payment.charge", "svc": "stripe", "at": 98, "took": 54},
+                 {"name": "INSERT orders", "parent": "POST /checkout", "svc": "db", "at": 158, "took": 12},
+                 {"name": "enqueue email", "parent": "POST /checkout", "svc": "queue", "at": 172, "took": 6}]},
+      size=(680, 400), refs=_flame_refs)
+def _flame(d, W, H, T):
+    sp, out = d["spans"], []
+    names = {s["name"] for s in sp}
+    kids, roots = {}, []
+    for s in sp:
+        p = s.get("parent")
+        (kids.setdefault(p, []) if p in names and p != s["name"] else roots).append(s)
+    rows, seen = [], set()
+
+    def walk(s, dep, up):
+        if s["name"] in seen:
+            return
+        seen.add(s["name"])
+        rows.append((s, dep, up))
+        me = len(rows) - 1
+        for k in sorted(kids.get(s["name"], []), key=lambda k: k["at"]):
+            walk(k, dep + 1, me)
+    for s in sorted(roots, key=lambda s: s["at"]) + sp:  # then any a loop kept from the roots (the refs refuse those)
+        walk(s, 0, None)
+    t0 = min(s["at"] for s in sp)
+    span = (max(s["at"] + s["took"] for s in sp) - t0) or 1
+    svcs = list(dict.fromkeys(s.get("svc", "") for s in sp))
+    n, deep = len(rows), max(r[1] for r in rows) + 1
+    legend = 18 if any(svcs) else 0
+    nw = min(W * .34, 230)
+    tx0, tx1 = nw + 12, W - 52
+    avail = H - 20 - legend
+    strip = deep * 5 + 8
+    rowh = min(24, (avail - strip) / n)
+    if rowh < 15:  # no room for the flame strip: the rows come first
+        strip, rowh = 0, min(24, avail / n)
+    y0 = 20 + strip
+    yb = y0 + rowh * n
+
+    def TX(t):
+        return tx0 + (t - t0) / span * (tx1 - tx0)
+    ticks = _ticks(0, span, max(2, int((tx1 - tx0) / 80)))
+    for i in range(0, n, 2):
+        out.append(rect(0, y0 + i * rowh, W, rowh, T.line, rx=2, op=.22))
+    out.append(path("".join(f"M{N(TX(t0 + t))} 15V{N(yb)}" for t in ticks), T.line, 1, op=.7, dash="2 4"))
+    out += [txt(TX(t0 + t), 11, _ms(t), T.muted, SZ, "middle") for t in ticks]
+    if strip:  # the flame strip: every span at its depth, the whole call at a glance
+        for s, dep, _ in rows:
+            out.append(rect(TX(s["at"]), 18 + dep * 5, max(TX(s["at"] + s["took"]) - TX(s["at"]), 1), 4,
+                            T.a(svcs.index(s.get("svc", ""))), rx=1, op=.85))
+    bh, D = max(6, min(13, rowh - 6)), 6.0
+    for i, (s, dep, up) in enumerate(rows):
+        mid = y0 + i * rowh + rowh / 2
+        c, err = T.a(svcs.index(s.get("svc", ""))), bool(s.get("error"))
+        dx = 4 + dep * 12
+        if up is not None:  # the tree's elbow from the parent's row
+            out.append(path(f"M{N(dx - 9)} {N(y0 + up * rowh + rowh / 2 + 4)}V{N(mid)}H{N(dx - 2)}", T.line, 1.25))
+        out += [rect(dx, mid - 3, 6, 6, c, rx=1),
+                txt(dx + 10, mid + 4, s["name"], T.txt(2) if err else T.ink, SZ, weight=700 if dep == 0 else 400, maxw=nw - dx - 12)]
+        x, w = TX(s["at"]), max(TX(s["at"] + s["took"]) - TX(s["at"]), 1.5)
+        by = mid - bh / 2
+        out.append(_tag(_fo(rect(x, by, w, bh, c, T.a(2) if err else c, 2, 1.5 if err else 1), .3),
+                        "span err" if err else "span", span=s["name"]))
+        fa, fb = .8 * (s["at"] - t0) / span, .8 * (s["at"] + s["took"] - t0) / span  # filled as the playhead passes
+        kt, vals = _keys([(0, 0), (fa, 0), (fb, N(w)), (.97, N(w)), (1, 0)])
+        out.append(_with(rect(x, by, w, bh, c, rx=2), _anim("width", vals, D, times=kt)))
+        lab, lx = _ms(s["took"]), x + w + (17 if err else 5)
+        if err:
+            ex = x + w + 8
+            out.append(_blink(path(f"M{N(ex - 3)} {N(mid - 3)}L{N(ex + 3)} {N(mid + 3)}M{N(ex + 3)} {N(mid - 3)}L{N(ex - 3)} {N(mid + 3)}",
+                                   T.a(2), 1.75), 1.2, i * .13))
+        if lx + tw(lab) <= W:
+            out.append(txt(lx, mid + 4, lab, T.txt(2) if err else T.muted, SZ))
+        elif w >= tw(lab) + 8:
+            out.append(txt(x + w - 4, mid + 4, lab, T.on(c), SZ, "end"))
+    head = path(f"M{N(tx0 - 4)} 13L{N(tx0 + 4)} 13L{N(tx0)} 18Z", None, fill=T.ink)
+    out.append(f'<g>{line(tx0, 15, tx0, yb, T.ink, 1.25, .8)}{head}<animateTransform attributeName="transform" type="translate" '
+               f'values="0 0;{N(tx1 - tx0)} 0;{N(tx1 - tx0)} 0" keyTimes="0;.8;1" dur="{_s(D)}" repeatCount="indefinite"/></g>')
+    if legend:
+        x = 0
+        for k, sv in enumerate(svcs):
+            if not sv:
+                continue
+            if x + 14 + tw(sv) > W:
+                break
+            out += [rect(x, H - 13, 9, 9, T.a(k), rx=2), txt(x + 14, H - 4, sv, T.muted, SZ)]
+            x += 14 + tw(sv) + 14
+    return out
+
+
+@kind("treemap", "a treemap: each file a tile its area by size, grouped by folder, coloured by how often it changes, the "
+      "changing ones flashing and the hottest breathing",
+      OBJ({"unit": STR(12, 0), "groups": ARR(OBJ({"name": STR(16), "files": ARR(OBJ({
+          "name": STR(24), "size": NUM(.001, 1e12), "churn": NUM(0, 100)}, ["name", "size"]), 1, 24)}, ["name", "files"]), 1, 8)},
+          ["groups"]),
+      {"unit": "lines", "groups": [
+          {"name": "api/", "files": [{"name": "routes.py", "size": 1840, "churn": 72}, {"name": "checkout.py", "size": 1210, "churn": 88},
+                                     {"name": "auth.py", "size": 640, "churn": 35}, {"name": "admin.py", "size": 520, "churn": 12},
+                                     {"name": "webhooks.py", "size": 380, "churn": 64}]},
+          {"name": "tests/", "files": [{"name": "test_checkout.py", "size": 1480, "churn": 81},
+                                       {"name": "test_api.py", "size": 1120, "churn": 29}, {"name": "test_cart.py", "size": 920, "churn": 44}]},
+          {"name": "models/", "files": [{"name": "order.py", "size": 980, "churn": 41}, {"name": "cart.py", "size": 760, "churn": 58},
+                                        {"name": "user.py", "size": 610, "churn": 22}, {"name": "product.py", "size": 450, "churn": 9}]},
+          {"name": "web/", "files": [{"name": "app.tsx", "size": 860, "churn": 33}, {"name": "Cart.tsx", "size": 540, "churn": 66},
+                                     {"name": "theme.css", "size": 300, "churn": 5}]},
+          {"name": "jobs/", "files": [{"name": "sync.py", "size": 690, "churn": 47}, {"name": "email.py", "size": 420, "churn": 18},
+                                      {"name": "reports.py", "size": 310, "churn": 6}]}]},
+      size=(680, 420))
+def _treemap(d, W, H, T):
+    gs, out = d["groups"], []
+    legend = 20 if H >= 150 else 0
+    tot = [sum(f["size"] for f in g["files"]) for g in gs]
+    hues, k = (5, 1, 2), 0
+    for gi, (g, (x, y, w, h)) in enumerate(zip(gs, _squarify(tot, 0, 0, W, H - legend))):
+        out.append(rect(x + .5, y + .5, max(w - 1, 0), max(h - 1, 0), T.bg, T.line, 3))
+        head = 16 if h >= 46 and w >= 44 else 0
+        if head:
+            t = _num(tot[gi])
+            room = tw(t) + 8 if w - 12 >= tw(t) + 8 + 4 * SZ * GLYPH else 0
+            out.append(txt(x + 6, y + 12, g["name"], T.ink, SZ, weight=700, maxw=w - 12 - room))
+            if room:
+                out.append(txt(x + w - 6, y + 12, t, T.muted, SZ, "end"))
+        tiles = _squarify([f["size"] for f in g["files"]], x + 2, y + 2 + head, max(w - 4, 0), max(h - 4 - head, 0))
+        for f, (fx, fy, fw, fh) in zip(g["files"], tiles):
+            ch = f.get("churn", 0)
+            c = T.a(hues[_heat(ch)])
+            out.append(_tag(_fo(rect(fx, fy, fw, fh, c, T.panel, 0, 1.5), round(.1 + ch / 100 * .3, 2)), "tile", file=f["name"]))
+            if fw > 8 and fh > 6:  # the heat edge
+                out.append(rect(fx + 1, fy + 1, 2.5, fh - 2, c, rx=1))
+            if ch >= 30 and fw > 6 and fh > 6:  # it changes: its outline flashes, faster the more it churns
+                out.append(_blink(rect(fx + 1.5, fy + 1.5, fw - 3, fh - 3, "none", c, 1, 1.25), round(4.6 - ch / 30, 2), k * .37, 0))
+            if ch >= 60:  # the hottest breathe
+                out.append(_tag(_with(_fo(rect(fx, fy, fw, fh, c, rx=0), 0), _anim("fill-opacity", "0;.32;0", 1.8, -(k * .29 % 1) * 1.8)), "hot"))
+            if fw >= 36 and fh >= 18:
+                out.append(txt(fx + 7, fy + 13, f["name"], T.ink, SZ, maxw=fw - 10))
+                if fh >= 32:
+                    out.append(txt(fx + 7, fy + 27, _num(f["size"]), T.muted, SZ, maxw=fw - 10))
+            k += 1
+    if legend:
+        y, x = H - 5, 0
+        bits = [("AREA", T.muted, None)] + ([(d["unit"], T.ink, None)] if d.get("unit") else []) + [("", None, None), ("HEAT", T.muted, None)]
+        bits += [(lab, T.muted, hue) for lab, hue in (("COOL", 5), ("WARM", 1), ("HOT", 2))]
+        for s, col, hue in bits:
+            if not s:
+                x += 10
+                continue
+            need = tw(s) + (14 if hue is not None else 0)
+            if x + need > W:
+                break
+            if hue is not None:
+                out.append(_fo(rect(x, y - 8, 10, 8, T.a(hue), T.a(hue), 1.5), .4))
+                x += 14
+            out.append(txt(x, y, s, col, SZ))
+            x += tw(s) + 8
+    return out
+
+
+_LV = ("debug", "info", "warn", "error")
+
+
+def _lvc(T, lv, text=False):
+    if lv == "debug":
+        return T.muted
+    i = {"info": 0, "warn": 1, "error": 2}[lv]
+    return T.txt(i) if text else T.a(i)
+
+
+def _rain_refs(d, where):
+    names, errs = [s["name"] for s in d["sources"]], []
+    for i, r in enumerate(d.get("recent", [])):
+        if r.get("source"):
+            errs += _named(names, r["source"], f"{where}.recent[{i}].source", "sources")
+    return errs
+
+
+@kind("rain", "log rain: each source a column its events fall down as streaks coloured by level, errors splashing where "
+      "they land, a level bar and counts under each and the latest lines on a ticker",
+      OBJ({"window": STR(16, 0), "sources": ARR(OBJ({"name": STR(12), **{lv: NUM(0, 1e12) for lv in _LV}}, ["name"]), 1, 8),
+           "recent": ARR(OBJ({"level": {"type": "string", "enum": list(_LV)}, "source": STR(12, 0), "msg": STR(48)},
+                             ["level", "msg"]), 0, 6)}, ["sources"]),
+      {"window": "last 15 min",
+       "sources": [{"name": "api", "debug": 1840, "info": 9210, "warn": 312, "error": 41},
+                   {"name": "worker", "debug": 620, "info": 3120, "warn": 88, "error": 12},
+                   {"name": "db", "info": 1480, "warn": 205, "error": 3},
+                   {"name": "auth", "debug": 210, "info": 2240, "warn": 19, "error": 27},
+                   {"name": "cron", "debug": 95, "info": 410, "warn": 6, "error": 0}],
+       "recent": [{"level": "error", "source": "api", "msg": "POST /checkout 502 upstream timeout"},
+                  {"level": "warn", "source": "db", "msg": "slow query 1.8s orders_by_user"},
+                  {"level": "error", "source": "auth", "msg": "token refresh failed: clock skew"},
+                  {"level": "info", "source": "worker", "msg": "email batch 412 sent"},
+                  {"level": "warn", "source": "api", "msg": "rate limit 80% for key ci-bot"}]},
+      size=(680, 420), refs=_rain_refs)
+def _rain(d, W, H, T):
+    src, rec, out = d["sources"], d.get("recent", []), []
+    n, head, foot = len(src), 18, 36
+    rows = min(len(rec), max(0, int((H - head - foot - 96) // 17)))
+    gy = H - (rows * 17 + 8 if rows else 0) - foot  # the ground the rain lands on
+    zt, cw = head + 8, W / n
+    lx = W  # the level key, right to left along the top
+    for lv in reversed(_LV):
+        lab = lv.upper()
+        lx -= tw(lab)
+        out += [txt(lx, 11, lab, _lvc(T, lv, True), SZ, weight=700), _join(line(lx - 6, 3, lx - 6, 12, _lvc(T, lv), 2))]
+        lx -= 18
+    if d.get("window") and lx > 40:
+        out.append(txt(0, 11, d["window"], T.muted, SZ, maxw=lx - 6))
+    out.append(line(0, gy, W, gy, T.line))
+    r, zh = rng(f"rain{n}{int(W)}{int(H)}"), gy - zt
+    cap = max(2, int(zh / 14))
+    for i, s in enumerate(src):
+        cx = cw * (i + .5)
+        out += [line(cx, zt, cx, gy, T.line, 1, .5, "1 5"), rect(cx - cw * .36, head, cw * .72, 5, T.line, rx=2.5)]
+        for li, lv in enumerate(_LV):
+            v = s.get(lv, 0)
+            if not v:
+                continue
+            c, ln, sw = _lvc(T, lv), 5 + li * 2.5, 1.25 + li * .35
+            dur = max(zh / (70 + li * 30), .8)  # the heavier the level, the faster it falls
+            for _ in range(min(cap, 1 + round(2.2 * math.log10(1 + v)))):
+                x, f = cx + (next(r) - .5) * cw * .66, next(r)
+                out.append(_rider([(x, zt), (x, gy - ln)], f, dur,
+                                  lambda px, py, c=c, ln=ln, sw=sw, lv=lv: _tag(_join(line(px, py, px, py + ln, c, sw)), "drop " + lv)))
+                if lv == "error":  # it splashes as it lands: in step with its drop
+                    # unseen at rest: the still frame shows no ring where no drop is landing
+                    out.append(_tag(_with(circ(x, gy, 1, "none", c, 1.25, 0), _anim("r", "1;8;8", dur, -f * dur, "0;.2;1"),
+                                          _anim("opacity", ".9;0;0", dur, -f * dur, "0;.2;1")), "splash"))
+        tot, bw = sum(s.get(lv, 0) for lv in _LV), cw * .78
+        acc = cx - bw / 2
+        out.append(rect(acc, gy + 4, bw, 6, T.line, rx=2))
+        for lv in _LV:
+            if tot and s.get(lv):
+                w = bw * s[lv] / tot
+                out.append(rect(acc, gy + 4, w, 6, _lvc(T, lv), rx=0))
+                acc += w
+        out.append(txt(cx, gy + 23, s["name"], T.ink, SZ, "middle", 700, maxw=cw - 8))
+        e, wn = _num(s.get("error", 0)), _num(s.get("warn", 0))
+        if cw >= tw(e) + tw(wn) + 24:
+            out += [txt(cx - 5, gy + 36, wn, _lvc(T, "warn", True), SZ, "end"), txt(cx + 5, gy + 36, e, _lvc(T, "error", True), SZ)]
+        else:
+            out.append(txt(cx, gy + 36, e, _lvc(T, "error", True), SZ, "middle"))
+    if rows:  # the ticker: the latest lines, an error's chip blinking
+        ty, chw = gy + foot + 6, tw("ERROR") + 10
+        out.append(line(0, ty - 2, W, ty - 2, T.line))
+        for k, m in enumerate(rec[:rows]):
+            y, lv = ty + k * 17, m["level"]
+            chip = rect(0, y + 2, chw, 14, T.bg, _lvc(T, lv), 3)
+            out += [_blink(chip, 1.1, k * .3, .2) if lv == "error" else chip, txt(chw / 2, y + 13, lv.upper(), _lvc(T, lv, True), SZ, "middle", 700)]
+            x = chw + 8
+            if m.get("source"):
+                sname = fit(m["source"], 90)
+                out.append(txt(x, y + 13, sname, T.muted, SZ))
+                x += tw(sname) + 8
+            if W - x >= 20:
+                out.append(txt(x, y + 13, m["msg"], T.ink, SZ, maxw=W - x))
+    return out
+
+
+_ST = {"ok": 3, "warn": 1, "fail": 2}
+
+
+@kind("radar", "health checks on a radar: each a blip set out by its latency on log rings in its group's sector, lit as "
+      "the beam sweeps past, a failure pinging, the readings listed beside the scope",
+      OBJ({"checks": ARR(OBJ({"name": STR(16), "ms": NUM(0, 1e7), "state": {"type": "string", "enum": list(_ST)},
+                              "group": STR(10, 0)}, ["name", "ms", "state"]), 1, 12)}, ["checks"]),
+      {"checks": [{"name": "cdn", "group": "edge", "ms": 18, "state": "ok"},
+                  {"name": "dns", "group": "edge", "ms": 4, "state": "ok"},
+                  {"name": "load balancer", "group": "edge", "ms": 9, "state": "ok"},
+                  {"name": "api /health", "group": "api", "ms": 42, "state": "ok"},
+                  {"name": "auth", "group": "api", "ms": 120, "state": "ok"},
+                  {"name": "search", "group": "api", "ms": 610, "state": "warn"},
+                  {"name": "postgres", "group": "data", "ms": 7, "state": "ok"},
+                  {"name": "redis", "group": "data", "ms": 2, "state": "ok"},
+                  {"name": "queue lag", "group": "data", "ms": 1900, "state": "warn"},
+                  {"name": "stripe", "group": "ext", "ms": 380, "state": "ok"},
+                  {"name": "s3", "group": "ext", "ms": 95, "state": "ok"},
+                  {"name": "mailer", "group": "ext", "ms": 12000, "state": "fail"}]},
+      size=(680, 400))
+def _radar(d, W, H, T):
+    ch, out = d["checks"], []
+    n = len(ch)
+    groups = list(dict.fromkeys(c.get("group", "") for c in ch))
+    order = sorted(range(n), key=lambda i: (groups.index(ch[i].get("group", "")), i))  # grouped, as given within
+    slot = {i: k for k, i in enumerate(order)}
+    listw = min(W * .44, 260)
+    R = max(30, min(H / 2 - 4, (W - listw - 24) / 2))
+    ox = max(0, (W - (2 * R + 24 + listw)) / 2)
+    cx, cy, lx = ox + R, H / 2, ox + 2 * R + 24
+    lw = min(listw, W - lx)
+    vals = [max(c["ms"], .1) for c in ch]
+    lo = math.floor(math.log10(min(vals)))
+    hi = max(math.log10(max(vals)), lo + 1)
+    r0, gap = R * .16, 26  # a wedge clockwise of twelve o'clock is kept clear for the rings' scale
+    a0 = -90 + gap
+
+    def rad(ms):  # out from the middle by log latency: a slow check sits near the rim
+        return r0 + (R - 10 - r0) * (math.log10(max(ms, .1)) - lo) / (hi - lo)
+    out.append(_tag(circ(cx, cy, R, T.bg, T.line, 1.25), "scope"))
+    out.append(path(f"M{N(cx - R)} {N(cy)}H{N(cx + R)}M{N(cx)} {N(cy - R)}V{N(cy + R)}", T.line, 1, op=.7))
+    decades = [(10 ** k, rad(10 ** k)) for k in range(lo, math.floor(hi) + 1)]
+    for _, rr in decades:
+        out.append(circ(cx, cy, rr, "none", T.line, 1))
+    if len(groups) > 1:  # the sectors' edges
+        starts = [min(slot[i] for i in range(n) if ch[i].get("group", "") == g) for g in groups]
+        out.append(path("".join(f"M{N(cx + r0 * math.cos(a))} {N(cy + r0 * math.sin(a))}L{N(cx + R * math.cos(a))} {N(cy + R * math.sin(a))}"
+                                for a in (math.radians(a0 + (360 - gap) * s / n) for s in starts)), T.muted, 1, op=.55, dash="3 4"))
+    ticks = "".join(f"M{N(cx + (R - (7 if k % 3 == 0 else 3.5)) * math.cos(math.radians(k * 10)))} "
+                    f"{N(cy + (R - (7 if k % 3 == 0 else 3.5)) * math.sin(math.radians(k * 10)))}"
+                    f"L{N(cx + R * math.cos(math.radians(k * 10)))} {N(cy + R * math.sin(math.radians(k * 10)))}" for k in range(36))
+    out.append(path(ticks, T.muted, 1, op=.8))
+    out.append("<g>" + path(_ring(cx, cy, r0 * .7), T.muted, 1, op=.7, dash="2 3") + _spin(cx, cy, 9, True) + "</g>")
+    # each ring's scale as a contour label: set on its ring just right of the twelve o'clock line, on a plate of the
+    # scope's ground that breaks the ring under it, slid up or down to cross as few other rings as it can; never over
+    # the axis, the rim, a blip, a blip's number or another label
+    spots = [(cx + rad(c["ms"]) * math.cos(math.radians(a0 + (360 - gap) * (slot[i] + .5) / n)),
+              cy + rad(c["ms"]) * math.sin(math.radians(a0 + (360 - gap) * (slot[i] + .5) / n))) for i, c in enumerate(ch)]
+    circles = [(cx, cy, r) for r in [rr for _, rr in decades] + [R - 7.5, r0 * .7]]
+    axis = [((cx, cy - R), (cx, cy + R), 1.5), ((cx - R, cy), (cx + R, cy), 1)]
+    blips = [(x, y, 6) for x, y in spots]
+    taken = [_tbox(x + 6, y - 6, str(slot[i] + 1)) for i, (x, y) in enumerate(spots)] if R >= 70 else []
+    scale = []
+    for v, rr in decades:
+        s, base, best = _ms(v), cy - rr + SZ * .27, None  # base: the baseline that centres the text on the ring's top
+        for dy in sorted(range(-6, 17), key=abs):  # further in than out: the rim crowds the outermost ring
+            b = _tbox(cx + 7, base + dy, s)
+            if b[1] < 0 or not _clear(b, axis, blips, taken, [(cx, cy, R)]):
+                continue
+            k = sum(not _clear(b, rings=[c]) for c in circles if c[2] != rr)
+            if best is None or k < best[0]:
+                best = (k, base + dy, b)
+            if not k:
+                break
+        if best:
+            _, ly, b = best
+            taken.append(b)
+            scale += [rect(b[0], b[1], b[2] - b[0], b[3] - b[1], T.bg, rx=2),
+                      _tag(_halo(txt(cx + 7, ly, s, T.muted, SZ), T.bg), "ring")]
+    dur, bc = 4.0, T.a(3)
+    wedges = []
+    for k in range(12):  # the beam: a fading wake behind its leading edge, turning
+        a1, a2 = math.radians(-90 - k * 3.5), math.radians(-90 - (k + 1) * 3.5)
+        wedges.append(path(f"M{N(cx)} {N(cy)}L{N(cx + R * math.cos(a1))} {N(cy + R * math.sin(a1))}"
+                           f"A{N(R)} {N(R)} 0 0 0 {N(cx + R * math.cos(a2))} {N(cy + R * math.sin(a2))}Z", None, fill=bc,
+                           op=round(.3 * (1 - k / 12), 3)))
+    out.append("<g>" + "".join(wedges) + line(cx, cy, cx, cy - R, bc, 1.5) + _spin(cx, cy, dur) + "</g>")
+    out += scale  # over the beam: it sweeps under the scale, never through it
+    tally = {s: 0 for s in _ST}
+    for i, c in enumerate(ch):
+        tally[c["state"]] += 1
+        a = a0 + (360 - gap) * (slot[i] + .5) / n
+        rr = rad(c["ms"])
+        x, y = cx + rr * math.cos(math.radians(a)), cy + rr * math.sin(math.radians(a))
+        col = T.a(_ST[c["state"]])
+        beg = -(1 - (a + 90) % 360 / 360) * dur  # lit as the beam crosses it
+        out.append(_with(circ(x, y, 9, col, op=.12), _anim("opacity", ".45;0;0", dur, beg, "0;.35;1")))
+        if c["state"] == "warn":
+            out.append(circ(x, y, 7, "none", col, 1))
+        if c["state"] == "fail":
+            out.append(_tag(_with(circ(x, y, 5, "none", col, 1.5, .8), _anim("r", "5;17", 1.6), _anim("opacity", ".9;0", 1.6)), "ping"))
+        out.append(_tag(_with(circ(x, y, 4, col), _anim("opacity", "1;.35;.35", dur, beg, "0;.6;1")), "blip"))
+        if R >= 70:
+            out.append(txt(x + 6, y - 6, str(slot[i] + 1), T.muted, SZ))
+    out.append(circ(cx, cy, 3, bc))
+    x = lx  # the list: tallies, then each check by its number
+    for st in _ST:
+        num, lab = str(tally[st]), st.upper()
+        if x + tw(num) + 4 + tw(lab) > lx + lw:
+            break
+        out += [txt(x, 11, num, T.txt(_ST[st]), SZ, weight=700), txt(x + tw(num) + 4, 11, lab, T.muted, SZ)]
+        x += tw(num) + 4 + tw(lab) + 12
+    heads = len(groups) > 1 and all(groups)
+    rh = (H - 22) / (n + (len(groups) if heads else 0))
+    if rh < 13:
+        heads, rh = False, (H - 22) / n
+    rh, y = min(rh, 20), 22
+    for g in groups:
+        if heads:
+            out.append(txt(lx, y + rh / 2 + 4, g, T.muted, SZ, maxw=lw))
+            y += rh
+        for i in (i for i in order if ch[i].get("group", "") == g):
+            c, my = ch[i], y + rh / 2
+            st, ms = c["state"], _ms(c["ms"])
+            dot = circ(lx + 3, my, 3, T.a(_ST[st]))
+            out += [_blink(dot, .9, i * .1) if st == "fail" else dot, txt(lx + 12, my + 4, str(slot[i] + 1), T.muted, SZ),
+                    txt(lx + lw, my + 4, ms, T.muted if st == "ok" else T.txt(_ST[st]), SZ, "end")]
+            room = lw - 30 - tw(ms) - 8
+            if room >= 2 * SZ * GLYPH:
+                out.append(txt(lx + 30, my + 4, c["name"], T.txt(2) if st == "fail" else T.ink, SZ, maxw=room))
+            y += rh
+    return out
+
+
+def _bulb(u):
+    """An hourglass bulb's width (0..1) at u, from the neck (0) to the cap (1): it swells fast and rounds off at the shoulder."""
+    return math.sin(math.pi / 2 * u ** .75) ** 1.3 * (1 - .22 * max(0, (u - .8) / .2) ** 2)
+
+
+@kind("hourglass", "budgets as hourglasses: what is left as sand up top, what is used piled below in strata by part, the "
+      "stream falling between, with the percent left and the numbers beside",
+      OBJ({"glasses": ARR(OBJ({"label": STR(16), "used": NUM(0, 1e12), "total": NUM(.001, 1e12), "unit": STR(10, 0),
+                               "parts": ARR(OBJ({"label": STR(12), "value": NUM(0, 1e12)}, ["label", "value"]), 0, 6)},
+                              ["label", "used", "total"]), 1, 3)}, ["glasses"]),
+      {"glasses": [{"label": "context", "used": 142000, "total": 200000, "unit": "tokens",
+                    "parts": [{"label": "system", "value": 18000}, {"label": "files", "value": 64000},
+                              {"label": "chat", "value": 41000}, {"label": "tools", "value": 19000}]},
+                   {"label": "weekly quota", "used": 31, "total": 40, "unit": "hours"},
+                   {"label": "API budget", "used": 412, "total": 500, "unit": "USD"}]},
+      size=(640, 400))
+def _hourglass(d, W, H, T):
+    gl, out = d["glasses"], []
+    n = len(gl)
+    cw = W / n
+    side = cw >= 250  # wide: the readings beside the glass, the parts listed; narrow: three lines under it
+    sand, strata = T.a(1), (0, 2, 3, 4, 5)
+    for gi, g in enumerate(gl):
+        x0 = gi * cw
+        if side:
+            gh = H - 6
+            gw = min(gh * .6, cw * .42)
+            xc, yt = x0 + gw / 2 + 4, 3
+        else:
+            gh = H - 50
+            gw = min(gh * .6, cw - 20)
+            xc, yt = x0 + cw / 2, 2
+        ct = max(5, gh * .04)
+        yb, ym = yt + gh, yt + gh / 2
+        bh, mx, neck = gh / 2 - ct, gw / 2 - 9, max(1.6, gw * .035)
+
+        def hw(u, mx=mx, neck=neck):
+            return neck + (mx - neck) * _bulb(u)
+        us = [k / 60 for k in range(61)]
+        cum = [0.0]
+        for a, b in zip(us, us[1:]):
+            cum.append(cum[-1] + (hw(a) + hw(b)) * (b - a) * bh)
+
+        def u_at(area, cum=cum):
+            area = min(max(area, 0), cum[-1])
+            for k in range(60):
+                if cum[k + 1] >= area:
+                    return (k + (area - cum[k]) / ((cum[k + 1] - cum[k]) or 1)) / 60
+            return 1.0
+
+        def side_pts(ua, ub, sgn, down, hw=hw):  # the glass wall from ua to ub, in the top bulb (down=False) or the bottom
+            return [(xc + sgn * hw(u), ym + (1 if down else -1) * u * bh) for u in (ua + (ub - ua) * k / 16 for k in range(17))]
+        frac = min(g["used"] / g["total"], 1)
+        pct = round(100 - frac * 100)
+        cap = cum[-1] * .86
+        top_a, bot_a = (1 - frac) * cap, frac * cap
+        wall = side_pts(1, 0, -1, False) + side_pts(0, 1, -1, True) + side_pts(1, 0, 1, True) + side_pts(0, 1, 1, False)
+        out.append(path(_poly(wall) + "Z", None, fill=T.bg, op=.6))
+        if top_a > cum[-1] * .002:  # what is left: the sand up top, dipping where it drains
+            us_ = u_at(top_a)
+            ys_ = ym - us_ * bh
+            dip = min(5, us_ * bh * .35)
+            pts = side_pts(us_, 0, -1, False) + side_pts(0, us_, 1, False) + [(xc, ys_ + dip)]
+            out.append(_tag(path(_poly(pts) + "Z", None, fill=sand, op=.9), "sand-top", glass=gi))
+        ub = u_at(cum[-1] - bot_a)
+        peak = ym + ub * bh - min(7, (1 - ub) * bh * .4)
+        if bot_a > cum[-1] * .002:  # what is used: piled below, a mound where it lands, the parts laid down as strata
+            pts = side_pts(ub, 1, -1, True) + side_pts(1, ub, 1, True) + [(xc, peak)]
+            out.append(_tag(path(_poly(pts) + "Z", None, fill=sand, op=.9), "sand-bottom", glass=gi))
+            parts, acc = g.get("parts", []), 0.0
+            whole = max(g["used"], sum(p["value"] for p in parts)) or 1
+            for k, p in enumerate(parts):
+                pa = bot_a * p["value"] / whole
+                if pa <= 0:
+                    continue
+                hi_, lo_ = u_at(cum[-1] - acc), u_at(cum[-1] - acc - pa)
+                acc += pa
+                out.append(path(_poly(side_pts(lo_, hi_, -1, True) + side_pts(hi_, lo_, 1, True)) + "Z", None,
+                                fill=T.a(strata[k % 5]), op=.85))
+        else:
+            peak = yb - ct
+        if top_a > cum[-1] * .002:  # the stream: grains falling from the neck onto the pile
+            out.append(_with(_join(line(xc, ym, xc, peak, sand, 1.5, dash="2 3")), _anim("stroke-dashoffset", "10;0", .5)))
+            for j in range(3):
+                out.append(_rider([(xc, ym + 2), (xc, peak)], j / 3, .75, lambda x, y: circ(x, y, 1.3, sand)))
+            out.append(_with(circ(xc, peak, 2, "none", sand, 1, .5), _anim("r", "1;6", .75), _anim("opacity", ".7;0", .75)))
+        out.append(path(_poly(wall) + "Z", T.ink, 1.5, op=.6))
+        out.append(path(_poly([(xc - hw(u) * .72, ym - u * bh) for u in (.3 + .5 * k / 10 for k in range(11))]), T.ink, 2, op=.18))
+        out += [rect(xc - gw / 2, yt, gw, ct, T.line, T.muted, 2), rect(xc - gw / 2, yb - ct, gw, ct, T.line, T.muted, 2),
+                rect(xc - gw / 2 + 2, yt + ct, 3, gh - 2 * ct, T.line, rx=1), rect(xc + gw / 2 - 5, yt + ct, 3, gh - 2 * ct, T.line, rx=1)]
+        hue = 2 if pct <= 10 else 1 if pct <= 30 else 3
+        ptxt = f"{pct}%"
+        nums = [(_num(g["used"]), T.ink), ("OF", T.muted), (_num(g["total"]), T.ink)] + ([(g["unit"], T.muted)] if g.get("unit") else [])
+        width = lambda bits: sum(tw(s) for s, _ in bits) + 5 * (len(bits) - 1)  # noqa: E731
+        if side:
+            rx = x0 + gw + 20
+            rw = x0 + cw - rx - 4
+            out.append(txt(rx, 16, g["label"], T.ink, SZ, weight=700, maxw=rw))
+            pel = txt(rx, 34, ptxt, T.txt(hue), SZ, weight=700)
+            out += [pel.replace("</text>", _anim("opacity", "1;.3;1", 1) + "</text>") if pct <= 0 else pel, txt(rx + tw(ptxt) + 6, 34, "LEFT", T.muted, SZ)]
+            while len(nums) > 3 and width(nums) > rw:
+                nums.pop()
+            x = rx
+            if width(nums) <= rw:
+                for s, col in nums:
+                    out.append(txt(x, 50, s, col, SZ))
+                    x += tw(s) + 5
+            for k, p in enumerate(g.get("parts", [])):
+                y = 74 + k * 17
+                if y > H - 2:
+                    break
+                val = _num(p["value"])
+                out += [rect(rx, y - 8, 9, 9, T.a(strata[k % 5]), rx=2), txt(rx + rw, y, val, T.muted, SZ, "end")]
+                if rw - 14 - tw(val) - 8 >= 2 * SZ * GLYPH:
+                    out.append(txt(rx + 14, y, p["label"], T.ink, SZ, maxw=rw - 14 - tw(val) - 8))
+        else:
+            out.append(txt(xc, yb + 14, g["label"], T.ink, SZ, "middle", 700, maxw=cw - 6))
+            pw = tw(ptxt) + 6 + tw("LEFT")
+            pel = txt(xc - pw / 2, yb + 28, ptxt, T.txt(hue), SZ, weight=700)
+            out += [pel.replace("</text>", _anim("opacity", "1;.3;1", 1) + "</text>") if pct <= 0 else pel, txt(xc - pw / 2 + tw(ptxt) + 6, yb + 28, "LEFT", T.muted, SZ)]
+            while len(nums) > 3 and width(nums) > cw - 6:
+                nums.pop()
+            if width(nums) <= cw - 6:
+                x = xc - width(nums) / 2
+                for s, col in nums:
+                    out.append(txt(x, yb + 42, s, col, SZ))
+                    x += tw(s) + 5
+    return out
+
+
+def _dtree_refs(d, where):
+    nodes, errs = d["nodes"], []
+    ids = [x["id"] for x in nodes]
+    par = {x["id"]: x.get("parent") for x in nodes}
+    for i, x in enumerate(nodes):
+        if ids.index(x["id"]) != i:
+            errs.append(f"{where}.nodes[{i}].id {x['id']!r} is used twice")
+        if x.get("parent"):
+            e = _named([v for v in ids if v != x["id"]], x["parent"], f"{where}.nodes[{i}].parent", "node ids")
+            seen, p = {x["id"]}, x["parent"]
+            while not e and p and p not in seen:
+                seen.add(p)
+                p = par.get(p)
+            errs += e or ([f"{where}.nodes[{i}].parent {x['parent']!r} makes a loop: a node can't be its own ancestor"] if p else [])
+    roots = [x["id"] for x in nodes if not x.get("parent")]
+    if len(roots) != 1:
+        errs.append(f"{where}.nodes has {len(roots)} roots {roots[:4]}: a tree has one root, the node with no parent")
+    return errs
+
+
+@kind("dtree", "a decision tree: questions as boxes left to right, each branch as wide as the cases that took it, outcomes "
+      "with their confidence at the leaves and cases flowing down the paths in proportion",
+      OBJ({"nodes": ARR(OBJ({"id": STR(12), "parent": STR(12, 0), "label": STR(28), "edge": STR(14, 0), "conf": NUM(0, 100),
+                             "n": NUM(0, 1e12)}, ["id", "label"]), 2, 15)}, ["nodes"]),
+      {"nodes": [{"id": "tests", "label": "tests pass?", "n": 541},
+                 {"id": "block", "parent": "tests", "edge": "no", "label": "block merge", "conf": 99, "n": 120},
+                 {"id": "size", "parent": "tests", "edge": "yes", "label": "diff > 400 lines?", "n": 421},
+                 {"id": "auth", "parent": "size", "edge": "yes", "label": "touches auth/?", "n": 89},
+                 {"id": "review", "parent": "auth", "edge": "yes", "label": "human review", "conf": 92, "n": 38},
+                 {"id": "canary", "parent": "auth", "edge": "no", "label": "canary first", "conf": 74, "n": 51},
+                 {"id": "flaky", "parent": "size", "edge": "no", "label": "flaky history?", "n": 332},
+                 {"id": "rerun", "parent": "flaky", "edge": "yes", "label": "rerun twice", "conf": 81, "n": 22},
+                 {"id": "merge", "parent": "flaky", "edge": "no", "label": "auto-merge", "conf": 96, "n": 310}]},
+      size=(680, 400), refs=_dtree_refs)
+def _dtree(d, W, H, T):
+    nodes, out = d["nodes"], []
+    ids = {x["id"]: x for x in nodes}
+    kids = {}
+    for x in nodes:
+        if x.get("parent") in ids and x["parent"] != x["id"]:
+            kids.setdefault(x["parent"], []).append(x)
+    dep, seq = {}, []
+
+    def walk(x, k):
+        if x["id"] in dep:
+            return
+        dep[x["id"]] = k
+        seq.append(x)
+        for c in kids.get(x["id"], []):
+            walk(c, k + 1)
+    for x in nodes:  # from the root (and any other the refs refuse); a loop with no way in is left out
+        if not x.get("parent") or x["parent"] not in ids:
+            walk(x, 0)
+    if not seq:
+        walk(nodes[0], 0)
+    leaves = [x for x in seq if not any(c["id"] in dep and dep[c["id"]] > dep[x["id"]] for c in kids.get(x["id"], []))]
+    deepest, nl = max(dep.values()), len(leaves)
+    lh = H / nl
+    Y = {x["id"]: lh * (j + .5) for j, x in enumerate(leaves)}
+    for x in reversed(seq):
+        if x["id"] not in Y:
+            ys_ = [Y[c["id"]] for c in kids.get(x["id"], []) if c["id"] in Y]
+            Y[x["id"]] = (min(ys_) + max(ys_)) / 2 if ys_ else H / 2
+    isleaf = {x["id"] for x in leaves}
+    # the outcomes as wide as their words need, the questions given the rest: room for the answer on each edge
+    leafw = min(190, W * .34, max(110, W * .2, max(tw(x["label"]) for x in leaves) + 34))
+    step = (W - leafw - 6) / max(deepest, 1)
+    ask = max((tw(x["label"]) + 22 for x in seq if x["id"] not in isleaf), default=60)
+    bw, bh, ph = min(160, ask, max(step * .64, step - 48)), 22, min(34, lh - 6)
+
+    def X(x):
+        return W - leafw if x["id"] in isleaf else 2 + dep[x["id"]] * step
+    pal = (3, 0, 1, 4, 2, 5)
+    outcomes = list(dict.fromkeys(x["label"] for x in leaves))
+    hue = {x["id"]: pal[outcomes.index(x["label"]) % 6] for x in leaves}
+    top_n = max((x.get("n", 0) for x in nodes), default=0) or 1
+    polys = {}
+    for x in seq:  # each edge as wide as the cases that took it
+        p = ids.get(x.get("parent"))
+        if p is None or p["id"] not in dep or x is p:
+            continue
+        dd, pts = curve((X(p) + bw, Y[p["id"]]), (X(x), Y[x["id"]]), .5)
+        polys[x["id"]] = [bez(*pts, t / 16) for t in range(17)]
+        out.append(path(dd, T.muted, round(1.5 + 6 * math.sqrt(x.get("n", 0) / top_n), 1), op=.35))
+    leaf_n = max((x.get("n", 0) for x in leaves), default=0) or 1
+    for li, x in enumerate(leaves):  # cases flowing root to outcome, as many riders as its share; they pass under the boxes
+        chain, v = [], x
+        while v["id"] in polys:
+            chain.append(v)
+            v = ids[v["parent"]]
+        poly = [(X(v) + 2, Y[v["id"]])] + [pt for c in reversed(chain) for pt in polys[c["id"]]] + [(X(x) + 12, Y[x["id"]])]
+        L = sum(math.dist(a, b) for a, b in zip(poly, poly[1:]))
+        k = 1 + round(3 * x.get("n", 0) / leaf_n)
+        c = T.a(hue[x["id"]])
+        for j in range(k):
+            out.append(_rider(poly, (j / k + li * .17) % 1, round(min(max(L / 75, 2.5), 9), 2), lambda px, py, c=c: circ(px, py, 2.6, c)))
+    for x in seq:  # the questions
+        if x["id"] in isleaf:
+            continue
+        bx, by = X(x), Y[x["id"]] - bh / 2
+        out += [rect(bx, by, bw, bh, T.panel, T.a(4), 4, 1.5), txt(bx + 8, by + 15, x["label"], T.ink, SZ, weight=700, maxw=bw - 14)]
+        if dep[x["id"]] == 0 and "n" in x and by - 5 >= 9:
+            out.append(txt(bx, by - 5, _num(x["n"]), T.muted, SZ))
+    for x in leaves:  # the outcomes, each with its confidence
+        lx, ly, c = W - leafw, Y[x["id"]], T.a(hue[x["id"]])
+        conf = x.get("conf")
+        ct = f"{_num(conf)}%" if conf is not None else ""
+        out += [_tag(rect(lx, ly - ph / 2, leafw, ph, T.panel, c, 5, 1.5), "leaf"), rect(lx, ly - ph / 2, 4, ph, c, rx=2)]
+        if ph >= 28:
+            out.append(txt(lx + 12, ly - 2, x["label"], T.ink, SZ, weight=700, maxw=leafw - 18))
+            if ct:
+                barw = leafw - 30 - tw(ct)
+                out += [rect(lx + 12, ly + 6, barw, 4, T.line, rx=2),
+                        _with(rect(lx + 12, ly + 6, barw * conf / 100, 4, c, rx=2), _anim("opacity", "1;.55;1", 2.4, -(hue[x["id"]] * .4))),
+                        txt(lx + leafw - 8, ly + 11, ct, T.txt(hue[x["id"]]), SZ, "end", 700)]
+        else:
+            out.append(txt(lx + 12, ly + 4, x["label"], T.ink, SZ, weight=700, maxw=leafw - 22 - (tw(ct) + 6 if ct else 0)))
+            if ct:
+                out += [txt(lx + leafw - 8, ly + 4, ct, T.txt(hue[x["id"]]), SZ, "end", 700),
+                        rect(lx + 4, ly + ph / 2 - 3, (leafw - 8) * conf / 100, 2, c, rx=1)]
+    for x in seq:  # each answer at the end of its edge, the cases that took it under
+        p = ids.get(x.get("parent"))
+        if x["id"] not in polys:
+            continue
+        room = X(x) - (X(p) + bw) - 10
+        if x.get("edge") and room >= 2 * SZ * GLYPH:
+            out.append(txt(X(x) - 5, Y[x["id"]] - 6, x["edge"], T.ink, SZ, "end", 700, maxw=room))
+        if "n" in x and lh >= 30 and room >= tw(_num(x["n"])):
+            out.append(txt(X(x) - 5, Y[x["id"]] + 14, _num(x["n"]), T.muted, SZ, "end"))
+    return out
+
+
+@kind("bloom", "a circle pack: each group a circle of circles, every item's area by its size, the whole breathing in a "
+      "slow wave out from each group's middle",
+      OBJ({"unit": STR(12, 0), "groups": ARR(OBJ({"name": STR(16), "items": ARR(OBJ({"name": STR(16), "size": NUM(.001, 1e12)},
+                                                                                     ["name", "size"]), 1, 16)},
+                                                 ["name", "items"]), 1, 7)}, ["groups"]),
+      {"unit": "kB", "groups": [
+          {"name": "app", "items": [{"name": "checkout", "size": 84}, {"name": "cart", "size": 61}, {"name": "search", "size": 47},
+                                    {"name": "account", "size": 33}, {"name": "admin", "size": 22}]},
+          {"name": "ui kit", "items": [{"name": "components", "size": 120}, {"name": "charts", "size": 92},
+                                       {"name": "icons", "size": 38}]},
+          {"name": "vendor", "items": [{"name": "react-dom", "size": 131}, {"name": "lodash", "size": 71},
+                                       {"name": "zod", "size": 57}, {"name": "date-fns", "size": 39}]},
+          {"name": "data", "items": [{"name": "graphql", "size": 64}, {"name": "sync", "size": 26}, {"name": "cache", "size": 18}]}]},
+      size=(640, 420))
+def _bloom(d, W, H, T):
+    gs, out = d["groups"], []
+    legend, top = (16 if H >= 170 else 0), 12
+    ah = H - legend - top
+    packs = []
+    for g in gs:  # each group packed on its own, then the groups packed as circles
+        radii = [math.sqrt(it["size"]) for it in g["items"]]
+        cs = [(x, y, r) for (x, y), r in zip(_pack(radii), radii)]
+        ex, ey, er = _enclose(cs)
+        packs.append((cs, ex, ey, er + max(radii) * .12))
+    gpad = max(p[3] for p in packs) * .05
+    gc = _pack([p[3] + gpad for p in packs], max(1.0, min(W / max(ah, 1), 3.0)))
+    x0 = min(x - p[3] for (x, _), p in zip(gc, packs))
+    x1 = max(x + p[3] for (x, _), p in zip(gc, packs))
+    y0 = min(y - p[3] for (_, y), p in zip(gc, packs))
+    y1 = max(y + p[3] for (_, y), p in zip(gc, packs))
+    s = min((W - 4) / ((x1 - x0) or 1), ah / ((y1 - y0) or 1))
+    ox, oy = (W - (x1 - x0) * s) / 2 - x0 * s, top + (ah - (y1 - y0) * s) / 2 - y0 * s
+    pills = []
+    for gi, (g, (cs, ex, ey, er), (gx, gy)) in enumerate(zip(gs, packs, gc)):
+        c = T.a(gi)
+        X, Y, R = ox + gx * s, oy + gy * s, er * s
+        out.append(_tag(_with(_fo(circ(X, Y, R, c, c, 1.25), .06), _anim("stroke-opacity", "1;.35;1", round(4 + gi * .5, 2))), "grp", g=g["name"]))
+        if R > 14:
+            out.append("<g>" + path(_ring(X, Y, R - 4), c, 1, op=.4, dash="2 6") + _spin(X, Y, 40 + gi * 7, gi % 2 == 1) + "</g>")
+        md = max(math.hypot(ix - ex, iy - ey) for ix, iy, _ in cs) or 1
+        for (ix, iy, ir), it in zip(cs, g["items"]):
+            x, y, r = X + (ix - ex) * s, Y + (iy - ey) * s, ir * s
+            r -= min(1.5, r * .2)
+            ph = math.hypot(ix - ex, iy - ey) / md
+            out.append(_tag(_with(_fo(circ(x, y, r, c, c, 1.25), .2), _anim("r", f"{N(r)};{N(r * .88)};{N(r)}", 3.6, -(1 - ph) * 2.2)),
+                            "item", g=g["name"]))
+            if r > 8:
+                out.append(circ(x, y, r * .6, "none", c, .75, .3))
+            room = 2 * r * .86 - 4
+            if r >= 12 and (room >= 4 * SZ * GLYPH or tw(it["name"]) <= room):  # a name, or three letters of it: never a stub
+                out.append(txt(x, y + (0 if r >= 26 else 4), it["name"], T.ink, SZ, "middle", maxw=room))
+                if r >= 26:
+                    out.append(txt(x, y + 13, _num(it["size"]), T.muted, SZ, "middle"))
+        pills += pill(X, Y - R, g["name"], T, gi, W)
+    out += pills
+    if legend:
+        total = sum(it["size"] for g in gs for it in g["items"])
+        bits = [("AREA", T.muted)] + ([(d["unit"], T.ink)] if d.get("unit") else []) + [("TOTAL", T.muted), (_num(total), T.ink)]
+        x = 0
+        for k, (s_, col) in enumerate(bits):
+            if x + tw(s_) > W:
+                break
+            out.append(txt(x, H - 4, s_, col, SZ))
+            x += tw(s_) + (14 if s_ == (d.get("unit") or "AREA") else 6)
+    return out
+
+
 # ---------------------------------------------------------------- panel chrome, spec, render
 
 PANEL = OBJ({"kind": {"type": "string", "enum": list(KINDS)}, "title": STR(40), "stat": STR(24, 0), "foot": STR(70, 0),
              "n": NUM(1, 99), "accent": NUM(0, 5), "w": NUM(MIN_W, MAX_W), "h": NUM(MIN_H, MAX_H), "data": {"type": "object"}},
             ["kind", "title", "data"])
 SPEC = OBJ({"name": STR(40), "title": STR(80), "style": {"type": "string", "enum": list(STYLES_NAMES)},
-            "panels": ARR(PANEL, 1, 24)}, ["panels"])
+            "panels": ARR(PANEL, 1, 40)}, ["panels"])
 
 
 def check_spec(spec):
@@ -1656,18 +2747,20 @@ def chrome(T, x, y, W, H, chip, title, stat="", acc=0, sub="", out=3):
 
 
 def sheet_svg(panels, T, cols=3, gap=18):
-    """Every panel in one svg, in a grid: the contact sheet."""
+    """Every panel in one svg, in a grid: the contact sheet. The panels in a column share its widest one's width, so the
+    column's edges line up."""
     sizes = [size_of(p) for p in panels]
-    cw = max(w for w, _ in sizes)
+    cols = max(1, min(cols, len(sizes)))
+    cw = [max(w for w, _ in sizes[c::cols]) for c in range(cols)]
     rows = [sizes[i:i + cols] for i in range(0, len(sizes), cols)]
     rh = [max(h for _, h in r) for r in rows]
-    W, H = cols * cw + (cols + 1) * gap, sum(rh) + (len(rows) + 1) * gap
+    W, H = sum(cw) + (cols + 1) * gap, sum(rh) + (len(rows) + 1) * gap
     out = [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {N(W)} {N(H)}" width="{N(W)}" height="{N(H)}" '
            f'font-family="{FONT}"><title>panel kit contact sheet</title>', rect(0, 0, W, H, T.bg, rx=0)]
     for i, p in enumerate(panels):
         r, c = divmod(i, cols)
-        x, y = gap + c * (cw + gap), gap + sum(rh[:r]) + r * gap
-        out += [f'<g transform="translate({N(x)} {N(y)})">', panel_svg(p, T, i + 1, f"p{i}", nested=True), "</g>"]
+        x, y = gap + sum(cw[:c]) + c * gap, gap + sum(rh[:r]) + r * gap
+        out += [f'<g transform="translate({N(x)} {N(y)})">', panel_svg(dict(p, w=cw[c]), T, i + 1, f"p{i}", nested=True), "</g>"]
     return "\n".join(out + ["</svg>"]) + "\n"
 
 

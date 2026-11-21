@@ -1,0 +1,162 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "dtree",
+   "data": {
+    "nodes": [
+     {
+      "id": "tests",
+      "label": "tests pass?",
+      "n": 541
+     },
+     {
+      "id": "block",
+      "parent": "tests",
+      "edge": "no",
+      "label": "block merge",
+      "conf": 99,
+      "n": 120
+     },
+     {
+      "id": "size",
+      "parent": "tests",
+      "edge": "yes",
+      "label": "diff > 400 lines?",
+      "n": 421
+     },
+     {
+      "id": "auth",
+      "parent": "size",
+      "edge": "yes",
+      "label": "touches auth/?",
+      "n": 89
+     },
+     {
+      "id": "review",
+      "parent": "auth",
+      "edge": "yes",
+      "label": "human review",
+      "conf": 92,
+      "n": 38
+     },
+     {
+      "id": "canary",
+      "parent": "auth",
+      "edge": "no",
+      "label": "canary first",
+      "conf": 74,
+      "n": 51
+     },
+     {
+      "id": "flaky",
+      "parent": "size",
+      "edge": "no",
+      "label": "flaky history?",
+      "n": 332
+     },
+     {
+      "id": "rerun",
+      "parent": "flaky",
+      "edge": "yes",
+      "label": "rerun twice",
+      "conf": 81,
+      "n": 22
+     },
+     {
+      "id": "merge",
+      "parent": "flaky",
+      "edge": "no",
+      "label": "auto-merge",
+      "conf": 96,
+      "n": 310
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "dtree",
+   "data": {
+    "nodes": [
+     {
+      "id": "tests",
+      "label": "tests pass?",
+      "n": 541
+     },
+     {
+      "id": "block",
+      "parent": "tests",
+      "edge": "no",
+      "label": "block merge",
+      "conf": 99,
+      "n": 120
+     },
+     {
+      "id": "size",
+      "parent": "tests",
+      "edge": "yes",
+      "label": "diff > 400 lines?",
+      "n": 421
+     },
+     {
+      "id": "auth",
+      "parent": "size",
+      "edge": "yes",
+      "label": "touches auth/?",
+      "n": 89
+     },
+     {
+      "id": "review",
+      "parent": "auth",
+      "edge": "yes",
+      "label": "human review",
+      "conf": 92,
+      "n": 38
+     },
+     {
+      "id": "canary",
+      "parent": "auth",
+      "edge": "no",
+      "label": "canary first",
+      "conf": 74,
+      "n": 51
+     },
+     {
+      "id": "flaky",
+      "parent": "size",
+      "edge": "no",
+      "label": "flaky history?",
+      "n": 332
+     },
+     {
+      "id": "rerun",
+      "parent": "flaky",
+      "edge": "yes",
+      "label": "rerun twice",
+      "conf": 81,
+      "n": 22
+     },
+     {
+      "id": "merge",
+      "parent": "flaky",
+      "edge": "no",
+      "label": "auto-merge",
+      "conf": 96,
+      "n": 310
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]

@@ -1,0 +1,102 @@
+[
+ {
+  "name": "the sample data draws a dark and a light panel",
+  "inputs": {
+   "out": "img/p",
+   "title": "hourglass",
+   "data": {
+    "glasses": [
+     {
+      "label": "context",
+      "used": 142000,
+      "total": 200000,
+      "unit": "tokens",
+      "parts": [
+       {
+        "label": "system",
+        "value": 18000
+       },
+       {
+        "label": "files",
+        "value": 64000
+       },
+       {
+        "label": "chat",
+        "value": 41000
+       },
+       {
+        "label": "tools",
+        "value": 19000
+       }
+      ]
+     },
+     {
+      "label": "weekly quota",
+      "used": 31,
+      "total": 40,
+      "unit": "hours"
+     },
+     {
+      "label": "API budget",
+      "used": 412,
+      "total": 500,
+      "unit": "USD"
+     }
+    ]
+   }
+  },
+  "expect": "applied"
+ },
+ {
+  "name": "known-bad input: a field that isn't one is named",
+  "inputs": {
+   "out": "img/p",
+   "title": "hourglass",
+   "data": {
+    "glasses": [
+     {
+      "label": "context",
+      "used": 142000,
+      "total": 200000,
+      "unit": "tokens",
+      "parts": [
+       {
+        "label": "system",
+        "value": 18000
+       },
+       {
+        "label": "files",
+        "value": 64000
+       },
+       {
+        "label": "chat",
+        "value": 41000
+       },
+       {
+        "label": "tools",
+        "value": 19000
+       }
+      ]
+     },
+     {
+      "label": "weekly quota",
+      "used": 31,
+      "total": 40,
+      "unit": "hours"
+     },
+     {
+      "label": "API budget",
+      "used": 412,
+      "total": 500,
+      "unit": "USD"
+     }
+    ],
+    "bogus": 1
+   }
+  },
+  "expect": "generator_failed",
+  "error_has": [
+   "data.bogus"
+  ]
+ }
+]
