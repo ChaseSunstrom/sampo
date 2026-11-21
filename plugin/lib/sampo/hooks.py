@@ -3350,7 +3350,7 @@ def _pre_tool_use(raw):
             return 2
     try:
         _record_asks(pl, p, guard)
-        decision = _ask_prompt(pl, p, guard) or (_taint_check(pl, p) if tool == "Bash" else None) or _gate_pipe_deny(pl) or _builder_check_deny(pl, guard) or _wait_loop(pl) or _rm_var(pl) or _self_match(pl) or _stdin_hang(pl)
+        decision = _ask_prompt(pl, p, guard) or (_taint_check(pl, p) if tool == "Bash" else None) or _gate_pipe_deny(pl) or _builder_check_deny(pl, guard) or _wait_loop(pl) or _rm_var(pl) or _self_match(pl) or _stdin_hang(pl) or _state_env_ask(pl, guard, p)
     except Exception:
         log_error("PreToolUse", _tb())
         decision = None
@@ -4320,6 +4320,43 @@ def _cargo_note(pl, p):
 
 
 _COMPOUND = {"while", "until", "for", "do", "done", "{", "}", "select", "if", "then", "case"}
+
+
+def _state_env_ask(pl, guard=None, p=None):
+    """T-5379 (slice B of T-5372): a Bash command that sets FOREMAN_STATE, FOREMAN_HOME or SAMPO_HOME and runs sampo, fm
+    or plugin code asks the user first. A state the agent names holds its own trust and consent files, so what it reads
+    there is no answer of the user's: T-2282 refuses those files outside the user's own state, and this is the second
+    layer, at the command. An ask where a person can answer (a bench or a demo sets them on purpose); under a headless
+    run or full autonomy nobody answers a prompt, so there it is a deny that names the way forward (sampo task block).
+    The test runner's runs and a setter with nothing of Sampo's to run pass. The guard's own parse
+    (fmguard.state_env_run), so a form it reads
+    for the other rules reads the same here; the rule lives after the guarded-tool split, so sampo-fast, which stops
+    at that split and hands a Bash call to Python, is unchanged."""
+    if pl.get("tool_name") != "Bash":
+        return None
+    cmd = (pl.get("tool_input") or {}).get("command")
+    if not isinstance(cmd, str):
+        return None
+    if guard is None:
+        import fmguard as guard
+    names = guard.state_env_run(cmd, _cwd(pl))  # its own first scan, on the text the shell reads (quotes and backslashes gone)
+    if not names:
+        return None
+    why = (f"Sampo: this command sets {' and '.join(names)} and runs Sampo's code: that moves where Sampo reads its "
+           "state (the trust and consent files in it), so the user decides.")
+    try:
+        deny = bool(_headless() or (p and c.effective_autonomy(p) == "full"))  # nobody can answer a prompt
+    except Exception:
+        deny = False
+    if not deny:
+        return ("ask", why + " Run it only if the user wants that.")
+    try:
+        tid = c.active_brief_fast(p, p.lane) if p else None
+    except Exception:
+        tid = None
+    return ("deny", why + " Nobody can answer a permission prompt here: run it without moving the state, or "
+                          f"sampo task block {tid.id if tid else 'ID'} \"needs the user to approve moving the state "
+                          "folder\".")
 
 
 def _stdin_hang(pl):
